@@ -1,0 +1,22 @@
+{
+  "name": "meta-ads-agent-content",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "remotion:render-content": "node scripts/render-content-video.mjs",
+    "remotion:studio": "remotion studio src/remotion/index.tsx"
+  },
+  "dependencies": {
+    "@remotion/bundler": "4.0.448",
+    "@remotion/cli": "4.0.448",
+    "@remotion/google-fonts": "4.0.448",
+    "@remotion/renderer": "4.0.448",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "remotion": "4.0.448"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "typescript": "^5.0.0"
+  }
+}

@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd /app
+
+mkdir -p /app/runtime /app/dashboard/data /app/output /app/logs /app/brand_guides/products
+chmod 700 /app/runtime /app/dashboard/data /app/output /app/logs || true
+
+if [ ! -f /app/runtime/.env ]; then
+  cp /app/.env.example /app/runtime/.env
+  echo "Created persistent runtime .env"
+fi
+
+if [ ! -f /app/runtime/ad-config.json ]; then
+  cp /app/ad-config.example.json /app/runtime/ad-config.json
+  echo "Created persistent ad-config.json"
+fi
+
+if [ ! -f /app/brand_guides/general_branding.example.md ] && [ -d /app/brand_guides_seed ]; then
+  cp -R /app/brand_guides_seed/. /app/brand_guides/
+fi
+
+ln -sf /app/runtime/.env /app/.env
+ln -sf /app/runtime/ad-config.json /app/ad-config.json
+
+python3 - <<'PY'
+from pathlib import Path
+import hashlib
+import socket
+import uuid
+
+path = Path("/app/runtime/.env")
+text = path.read_text(encoding="utf-8")
+lines = text.splitlines()
+keys = {line.split("=", 1)[0] for line in lines if "=" in line and not line.lstrip().startswith("#")}
+defaults = {
+    "DASHBOARD_HOST": "0.0.0.0",
+    "DASHBOARD_PORT": "7871",
+    "ALLOW_PUBLIC_DASHBOARD": "true",
+    "REQUIRE_DASHBOARD_TOKEN": "true",
+    "LIVE_ACTIONS_ENABLED": "false",
+    "CODEX_CREATIVE_ENABLED": "false",
+    "CODEX_CLI": "codex",
+}
+for key, value in defaults.items():
+    if key not in keys:
+        lines.append(f"{key}={value}")
+if "LICENSE_DEVICE_ID" not in keys:
+    device_id = hashlib.sha256(f"{socket.gethostname()}:{uuid.getnode()}".encode("utf-8")).hexdigest()[:24]
+    lines.append(f"LICENSE_DEVICE_ID={device_id}")
+path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+PY
+
+echo "Checking runtime tools..."
+python3 --version
+node --version
+npm --version
+codex --version || echo "Codex CLI is installed but not authenticated/configured yet."
+
+exec python3 dashboard/monitoring-dashboard.py

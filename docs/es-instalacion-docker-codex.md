@@ -1,0 +1,127 @@
+# Instalacion con Docker + Codex CLI
+
+Esta es la forma mas simple para entregar el producto como paquete instalable: Docker trae casi todo lo necesario dentro de una imagen.
+
+Incluye:
+
+- Python para correr el dashboard y el agente.
+- Node/npm para herramientas creativas.
+- Codex CLI instalado dentro del contenedor.
+- Dashboard en `http://127.0.0.1:7871`.
+- Volumen persistente para configuracion, datos, logs, outputs y guias de marca.
+
+## Requisito del comprador
+
+El comprador solo necesita instalar:
+
+- Docker Desktop en PC/Mac, o
+- Docker Engine + Docker Compose en VPS.
+
+Luego descomprime el ZIP y ejecuta:
+
+```bash
+./scripts/run-docker.sh
+```
+
+Tambien puedes usar los instaladores de doble clic incluidos en la raiz del ZIP:
+
+- `Instalar en Windows.bat`
+- `Instalar en Mac.command`
+- `Instalar en Linux.desktop`
+
+El script hace esto:
+
+1. Crea `.env` desde `.env.example` si no existe.
+2. Construye la imagen Docker.
+3. Instala dependencias dentro de la imagen.
+4. Instala Codex CLI dentro de la imagen.
+5. Arranca el dashboard.
+
+Abrir:
+
+```text
+http://127.0.0.1:7871
+```
+
+## Donde se guarda todo
+
+Docker usa volumenes persistentes:
+
+- `meta_ads_config`: `.env` y `ad-config.json`
+- `meta_ads_data`: datos del dashboard
+- `meta_ads_output`: reportes, creativos y exports
+- `meta_ads_logs`: logs
+- `meta_ads_brand_guides`: guias de marca y producto
+
+Esto significa que si apagas y prendes el contenedor, la configuracion no se pierde.
+
+## Codex CLI
+
+La imagen instala Codex CLI con npm:
+
+```bash
+npm install -g @openai/codex
+```
+
+Dentro del producto, el agente lo llama usando:
+
+```env
+CODEX_CREATIVE_ENABLED=false
+CODEX_CLI=codex
+```
+
+Codex viene instalado pero su puente creativo queda apagado por defecto: es un agente local con acceso adicional al entorno. Si el dueño decide activarlo, se usa para producir estrategia y prompts visuales dentro de una ejecucion aislada; la imagen final la produce el proveedor creativo configurado en el producto.
+
+Para activar la funcion opcional, cambia `CODEX_CREATIVE_ENABLED=true` y configura la autenticacion de Codex segun la cuenta del comprador. Evita guardar credenciales de OpenAI en archivos de marca o prompts. Si se usa una variable en `.env`, pertenece solo a la instalacion local/VPS del comprador:
+
+```env
+OPENAI_API_KEY=sk-...
+```
+
+Importante: esa clave queda en la instalacion local/VPS del comprador. No se incluye en el ZIP.
+
+## Guias creativas
+
+El contenedor crea las guias base si no existen:
+
+```text
+brand_guides/general_branding.md
+brand_guides/products/
+```
+
+Desde el dashboard:
+
+1. Ir a `Creatividades`.
+2. Tocar `Crear guias base`.
+3. Escribir el producto principal.
+4. Editar las guias si hace falta.
+
+Luego el agente puede usar esas guias para pedirle a Codex:
+
+- planes de marketing;
+- conceptos visuales;
+- prompts consistentes;
+- ideas para imagenes 1:1, 4:5 y 9:16;
+- copies cortos para anuncios.
+
+## VPS
+
+En VPS, abre el dashboard con tunel SSH:
+
+```bash
+ssh -L 7871:127.0.0.1:7871 usuario@ip-del-servidor
+```
+
+Luego abre en tu navegador:
+
+```text
+http://127.0.0.1:7871
+```
+
+No expongas el puerto del dashboard directamente a internet salvo que sepas configurar HTTPS, firewall y proxy.
+
+## Cuando usar Docker vs instalacion normal
+
+Usa Docker si quieres la experiencia mas limpia para compradores no tecnicos.
+
+Usa `./scripts/install-local.sh` si el comprador ya tiene Python/Node instalados y prefiere correr todo directamente en su PC/VPS.

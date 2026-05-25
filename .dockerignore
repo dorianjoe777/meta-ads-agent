@@ -1,0 +1,17 @@
+.env
+ad-config.json
+release/
+logs/
+output/
+dashboard/data/
+node_modules/
+*/node_modules/
+__pycache__/
+*/__pycache__/
+.pytest_cache/
+tests/integration_test_results.json
+*.pyc
+*.log
+.git/
+.DS_Store
+*/.DS_Store

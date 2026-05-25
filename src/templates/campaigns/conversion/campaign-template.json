@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "meta-ads-conversion-campaign-template",
+  "title": "Conversion Campaign Template",
+  "description": "Template for Meta Ads conversion campaigns (purchases, leads, signups)",
+  "type": "object",
+  "required": ["name", "objective", "budget", "start_date", "ad_sets"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Campaign name",
+      "examples": ["Q2 Sales Campaign - May 2026"]
+    },
+    "objective": {
+      "type": "string",
+      "enum": ["CONVERSIONS", "LEADS", "PURCHASES"],
+      "description": "Campaign objective"
+    },
+    "budget": {
+      "type": "object",
+      "required": ["daily", "total"],
+      "properties": {
+        "daily": {
+          "type": "number",
+          "minimum": 10,
+          "description": "Daily budget in USD"
+        },
+        "total": {
+          "type": "number",
+          "minimum": 100,
+          "description": "Total campaign budget in USD"
+        }
+      }
+    },
+    "start_date": {
+      "type": "string",
+      "format": "date",
+      "description": "Campaign start date (YYYY-MM-DD)"
+    },
+    "end_date": {
+      "type": "string",
+      "format": "date",
+      "description": "Campaign end date (YYYY-MM-DD)"
+    },
+    "pixel_id": {
+      "type": "string",
+      "description": "Meta Pixel ID for conversion tracking"
+    },
+    "ad_sets": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10,
+      "items": {
+        "$ref": "ad-set-template.json"
+      }
+    }
+  }
+}

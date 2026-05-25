@@ -1,0 +1,28 @@
+services:
+  meta-ads-agent:
+    build: .
+    image: meta-ads-agent:local
+    ports:
+      - "7871:7871"
+    env_file:
+      - .env
+    environment:
+      DASHBOARD_HOST: 0.0.0.0
+      DASHBOARD_PORT: 7871
+      ALLOW_PUBLIC_DASHBOARD: "true"
+      CODEX_CREATIVE_ENABLED: "false"
+      CODEX_CLI: codex
+    volumes:
+      - meta_ads_config:/app/runtime
+      - meta_ads_data:/app/dashboard/data
+      - meta_ads_output:/app/output
+      - meta_ads_logs:/app/logs
+      - meta_ads_brand_guides:/app/brand_guides
+    restart: unless-stopped
+
+volumes:
+  meta_ads_config:
+  meta_ads_data:
+  meta_ads_output:
+  meta_ads_logs:
+  meta_ads_brand_guides:
