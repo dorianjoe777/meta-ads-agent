@@ -5,22 +5,18 @@ import mimetypes
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
-from creative_refresh import read_json, write_json
+from creative_refresh import mark_assets_retained
 from license import license_status
+from local_store import now_iso, read_json, write_json
 from product_config import ROOT_DIR, load_config
 from security import redact_payload
 from social_flow_client import SocialFlowClient
 
 
 ACTIONS_FILE = ROOT_DIR / "dashboard" / "data" / "actions.json"
-
-
-def now_iso():
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
-
 
 def log_action(action_type, payload, status):
     actions = read_json(ACTIONS_FILE, [])
@@ -198,6 +194,14 @@ def execute_with_social_cli(payload_path, payload, missing, config, approved=Fal
     ad_id = extract_social_id(ad_result)
     steps.append({"step": "social_create_paused_ad", "ok": bool(ad_id), "ad_id": ad_id, "result": ad_result})
     final = {"ok": bool(ad_id), "connector": "social_cli", "mode": "live", "executed": True, "creative_id": creative_id, "ad_id": ad_id, "steps": steps}
+    if final["ok"]:
+        mark_assets_retained(
+            payload.get("manifest_path", ""),
+            payload.get("variant_id", ""),
+            payload.get("selected_ratios", []),
+            reason="ad_created",
+            meta={"creative_id": creative_id, "ad_id": ad_id, "connector": "social_cli"},
+        )
     log_action("creative_upload_execute", {"payload_path": str(payload_path), "result": final}, "completed" if final["ok"] else "failed")
     return final
 
@@ -270,5 +274,13 @@ def execute_upload_payload(payload_path, approved=False):
     ad_id = ad_result.get("body", {}).get("id") if isinstance(ad_result.get("body"), dict) else None
     steps.append({"step": "create_paused_ad", "ok": ad_result.get("ok"), "status": ad_result.get("status"), "ad_id": ad_id, "body": ad_result.get("body")})
     final = {"ok": bool(ad_result.get("ok") and ad_id), "mode": "live", "executed": True, "creative_id": creative_id, "ad_id": ad_id, "steps": steps}
+    if final["ok"]:
+        mark_assets_retained(
+            payload.get("manifest_path", ""),
+            payload.get("variant_id", ""),
+            payload.get("selected_ratios", []),
+            reason="ad_created",
+            meta={"creative_id": creative_id, "ad_id": ad_id, "connector": "graph_api"},
+        )
     log_action("creative_upload_execute", {"payload_path": str(payload_path), "result": final}, "completed" if final["ok"] else "failed")
     return final

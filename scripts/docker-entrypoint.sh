@@ -3,8 +3,8 @@ set -euo pipefail
 
 cd /app
 
-mkdir -p /app/runtime /app/dashboard/data /app/output /app/logs /app/brand_guides/products
-chmod 700 /app/runtime /app/dashboard/data /app/output /app/logs || true
+mkdir -p /app/runtime /app/dashboard/data/update-snapshots /app/output /app/logs /app/brand_guides/products
+chmod 700 /app/runtime /app/dashboard/data /app/dashboard/data/update-snapshots /app/output /app/logs || true
 
 if [ ! -f /app/runtime/.env ]; then
   cp /app/.env.example /app/runtime/.env
@@ -34,14 +34,26 @@ text = path.read_text(encoding="utf-8")
 lines = text.splitlines()
 keys = {line.split("=", 1)[0] for line in lines if "=" in line and not line.lstrip().startswith("#")}
 defaults = {
-    "DASHBOARD_HOST": "0.0.0.0",
-    "DASHBOARD_PORT": "7871",
-    "ALLOW_PUBLIC_DASHBOARD": "true",
     "REQUIRE_DASHBOARD_TOKEN": "true",
     "LIVE_ACTIONS_ENABLED": "false",
     "CODEX_CREATIVE_ENABLED": "false",
     "CODEX_CLI": "codex",
 }
+forced = {
+    "DASHBOARD_HOST": "0.0.0.0",
+    "DASHBOARD_PORT": "7871",
+    "ALLOW_PUBLIC_DASHBOARD": "true",
+}
+for key, value in forced.items():
+    replaced = False
+    for index, line in enumerate(lines):
+        if line.startswith(f"{key}="):
+            lines[index] = f"{key}={value}"
+            replaced = True
+            break
+    if not replaced:
+        lines.append(f"{key}={value}")
+keys = {line.split("=", 1)[0] for line in lines if "=" in line and not line.lstrip().startswith("#")}
 for key, value in defaults.items():
     if key not in keys:
         lines.append(f"{key}={value}")

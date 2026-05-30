@@ -4,6 +4,11 @@ ENV PYTHONUNBUFFERED=1 \
     DASHBOARD_HOST=0.0.0.0 \
     DASHBOARD_PORT=7871 \
     ALLOW_PUBLIC_DASHBOARD=true \
+    AGENT_CHAT_PROVIDER=hermes \
+    HERMES_CLI=hermes \
+    HERMES_ENABLED_TOOLSETS=memory,skills,session_search,vision,image_gen,file \
+    HERMES_DISABLED_TOOLSETS=terminal,code_execution \
+    HERMES_USE_PYTHON_LIBRARY=true \
     CODEX_CREATIVE_ENABLED=false \
     CODEX_CLI=codex
 
@@ -15,6 +20,7 @@ RUN apt-get update \
     && ln -sf /usr/bin/python3 /usr/local/bin/python3
 
 RUN npm install -g @openai/codex
+RUN python3 -m pip install --break-system-packages --no-cache-dir "git+https://github.com/NousResearch/hermes-agent.git"
 
 COPY . .
 RUN chmod +x scripts/*.sh \

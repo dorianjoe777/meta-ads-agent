@@ -9,6 +9,7 @@ Usa este archivo como la base visual y verbal de todos los creativos.
 - Pais o mercado principal:
 - Que vende:
 - Promesa principal:
+- Cliente ideal:
 - Personalidad:
 
 ## Estilo visual

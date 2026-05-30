@@ -165,7 +165,7 @@ Preferred Spanish terms:
 
 Recommended v1 offer:
 
-- ZIP product download.
+- OS-specific installer download.
 - Guided setup call.
 - Spanish quick-start docs.
 - Screenshots for creating Meta app/token.
@@ -346,7 +346,7 @@ Recommended page sections:
    - Advanced enterprise teams.
 
 8. What You Get:
-   - ZIP product.
+   - OS-specific installer.
    - Docs.
    - Setup checklist.
    - Video guides.

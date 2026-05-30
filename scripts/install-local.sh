@@ -41,7 +41,15 @@ defaults = {
     "TELEGRAM_LANGUAGE": "es",
     "TELEGRAM_POLL_TIMEOUT": "25",
     "AGENT_PROFILE_DIR": "agent",
-    "AGENT_CHAT_PROVIDER": "minimax",
+    "AGENT_CHAT_PROVIDER": "hermes",
+    "HERMES_CLI": "hermes",
+    "HERMES_HOME": "",
+    "HERMES_MODEL": "",
+    "HERMES_TIMEOUT_SECONDS": "90",
+    "HERMES_MAX_ITERATIONS": "12",
+    "HERMES_ENABLED_TOOLSETS": "memory,skills,session_search,vision,image_gen,file",
+    "HERMES_DISABLED_TOOLSETS": "terminal,code_execution",
+    "HERMES_USE_PYTHON_LIBRARY": "true",
     "MINIMAX_BASE_URL": "https://api.minimax.io/v1",
     "MINIMAX_API": "openai-completions",
     "MINIMAX_MODEL": "MiniMax-M2.7",
@@ -89,6 +97,14 @@ else
   fi
 fi
 
+if command -v hermes >/dev/null 2>&1; then
+  echo "Hermes Agent found: $(command -v hermes)"
+else
+  echo "Hermes Agent was not found."
+  echo "Attempting to install Hermes Agent so the manager can use ChatGPT/Codex OAuth through Hermes."
+  python3 -m pip install --user "git+https://github.com/NousResearch/hermes-agent.git" || echo "Hermes install failed. Install it manually, then run: hermes model"
+fi
+
 python3 -m py_compile src/daily_agent.py dashboard/monitoring-dashboard.py
 
 if command -v social >/dev/null 2>&1; then
@@ -102,5 +118,6 @@ echo
 echo "Install complete."
 echo "Next:"
 echo "  1. Edit .env"
-echo "  2. Run ./scripts/run-dashboard.sh"
-echo "  3. Open http://127.0.0.1:7871"
+echo "  2. Run hermes model and choose OpenAI Codex to use the buyer's ChatGPT subscription"
+echo "  3. Run ./scripts/run-dashboard.sh"
+echo "  4. Open http://127.0.0.1:7871"

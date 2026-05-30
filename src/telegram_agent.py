@@ -2,7 +2,7 @@
 """Telegram entry point for the Meta Ads manager agent.
 
 Uses long polling so a local/VPS buyer does not need a public webhook URL.
-Messages are answered by MiniMax and product tools continue to run through the
+Messages are answered by Hermes and product tools continue to run through the
 same backend guardrails used by the dashboard.
 """
 import argparse
@@ -15,10 +15,11 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from agent_chat import chat as agent_chat
+from local_store import read_json, utc_iso, write_json as write_json_file
 from product_config import ROOT_DIR, env_bool, env_int, load_config
 from security import redact_payload
 
@@ -26,6 +27,7 @@ from security import redact_payload
 DATA_DIR = ROOT_DIR / "dashboard" / "data"
 HISTORY_FILE = DATA_DIR / "telegram_chat_history.json"
 OFFSET_FILE = DATA_DIR / "telegram_offset.json"
+APPROVAL_CONTEXT_FILE = DATA_DIR / "telegram_approval_context.json"
 UPLOAD_DIR = ROOT_DIR / "output" / "telegram_uploads"
 DASHBOARD_PATH = ROOT_DIR / "dashboard" / "monitoring-dashboard.py"
 MAX_HISTORY_ITEMS = 20
@@ -43,25 +45,6 @@ def reject_pending(approval_id, reason=""):
     from daily_agent import reject
 
     return reject(approval_id, reason)
-
-
-def now_iso():
-    return datetime.now(timezone.utc).isoformat()
-
-
-def read_json(path, fallback):
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            return json.load(handle)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return fallback
-
-
-def write_json(path, payload):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2)
-
 
 def load_dashboard_module():
     global _DASHBOARD
@@ -135,12 +118,12 @@ def append_turn(chat_id, user_message, reply):
     history = histories.get(str(chat_id), [])
     history.extend(
         [
-            {"role": "user", "content": str(user_message)[:5000], "created_at": now_iso()},
-            {"role": "agent", "content": str(reply)[:5000], "created_at": now_iso()},
+            {"role": "user", "content": str(user_message)[:5000], "created_at": utc_iso()},
+            {"role": "agent", "content": str(reply)[:5000], "created_at": utc_iso()},
         ]
     )
     histories[str(chat_id)] = history[-MAX_HISTORY_ITEMS:]
-    write_json(HISTORY_FILE, histories)
+    write_json_file(HISTORY_FILE, histories, ensure_ascii=False)
 
 
 def reset_history(chat_id):
@@ -148,7 +131,7 @@ def reset_history(chat_id):
     if not isinstance(histories, dict):
         histories = {}
     histories[str(chat_id)] = []
-    write_json(HISTORY_FILE, histories)
+    write_json_file(HISTORY_FILE, histories, ensure_ascii=False)
 
 
 def help_message():
@@ -163,7 +146,9 @@ def help_message():
         "/nuevo - empezar una conversacion nueva\n"
         "/pendientes - ver decisiones esperando aprobacion\n"
         "/ayuda - ver esta guia\n\n"
-        "Por seguridad, las aprobaciones finales se hacen en el dashboard."
+        "Cuando te muestre una decision pendiente, puedes tocar Aprobar/No aprobar. "
+        "Tambien puedes responder 'aprobar' a esa tarjeta si es una decision normal. "
+        "Si puede quedar activa y gastar dinero, te pedire la frase exacta: Si, crear y dejar activo."
     )
 
 
@@ -174,7 +159,7 @@ def pending_message(pending):
     for item in pending[:8]:
         name = item.get("payload", {}).get("name") or item.get("payload", {}).get("campaign_name") or item.get("type", "Accion")
         lines.append(f"- {name} ({item.get('type', 'accion')})")
-    lines.append("\nToca un boton debajo de cada decision para aprobar o rechazar.")
+    lines.append("\nToca un boton debajo de cada decision, o responde 'aprobar' a una tarjeta concreta.")
     return "\n".join(lines)
 
 
@@ -185,7 +170,7 @@ def approval_title(item):
 
 def approval_body(item):
     payload = item.get("payload", {}) if isinstance(item, dict) else {}
-    lines = [f"Decision pendiente: {approval_title(item)}", f"Tipo: {item.get('type', 'accion')}"]
+    lines = [f"Decision pendiente: {approval_title(item)}", f"ID: {item.get('id', '')}", f"Tipo: {item.get('type', 'accion')}"]
     if payload.get("requested"):
         lines.append(f"Pedido: {payload.get('requested')}")
     if payload.get("connector"):
@@ -195,9 +180,11 @@ def approval_body(item):
     if payload.get("final_status") == "ACTIVE":
         lines.append("")
         lines.append("ATENCION: si apruebas, el anuncio puede quedar ACTIVO y gastar presupuesto real.")
+        lines.append("Para aprobar por texto, responde exactamente: Si, crear y dejar activo")
     else:
         lines.append("")
         lines.append("Si apruebas, ejecutaré exactamente esta accion y guardaré el resultado.")
+        lines.append("Puedes tocar Aprobar o responder: aprobar")
     return "\n".join(lines)
 
 
@@ -213,7 +200,132 @@ def approval_keyboard(item):
 
 
 def send_approval_card(config, chat_id, item):
+    remember_approval_context(chat_id, item)
     return send_message_with_keyboard(config, chat_id, approval_body(item), approval_keyboard(item))
+
+
+def remember_approval_context(chat_id, item):
+    context = read_json(APPROVAL_CONTEXT_FILE, {})
+    if not isinstance(context, dict):
+        context = {}
+    context[str(chat_id)] = {"approval_id": item.get("id", ""), "updated_at": utc_iso()}
+    write_json_file(APPROVAL_CONTEXT_FILE, context, ensure_ascii=False)
+
+
+def last_approval_context(chat_id):
+    context = read_json(APPROVAL_CONTEXT_FILE, {})
+    if not isinstance(context, dict):
+        return ""
+    return str((context.get(str(chat_id)) or {}).get("approval_id") or "")
+
+
+def extract_approval_id(text):
+    match = re.search(r"\bapproval_[A-Za-z0-9_\-]+\b", str(text or ""))
+    return match.group(0) if match else ""
+
+
+def text_approval_decision(text):
+    lowered = str(text or "").strip().lower()
+    if re.search(r"\b(rechaza|rechazar|rechazalo|recházalo|no aprobar|no apruebo|reject|deny)\b", lowered):
+        return "reject"
+    if re.search(r"\b(aprueba|aprobar|aprobalo|apruébalo|approve)\b", lowered):
+        return "approve"
+    if lowered in {
+        "si, crear y dejar activo",
+        "sí, crear y dejar activo",
+        "si crear y dejar activo",
+        "sí crear y dejar activo",
+        "yes, create and leave active",
+        "yes create and leave active",
+        "yes, create and keep active",
+        "yes create and keep active",
+        "yes, approve active",
+        "yes approve active",
+        "create and leave active",
+    }:
+        return "approve"
+    return ""
+
+
+def text_confirms_active(text):
+    lowered = str(text or "").strip().lower()
+    return lowered in {
+        "si, crear y dejar activo",
+        "sí, crear y dejar activo",
+        "si crear y dejar activo",
+        "sí crear y dejar activo",
+        "aprobar activo",
+        "yes, create and leave active",
+        "yes create and leave active",
+        "yes, create and keep active",
+        "yes create and keep active",
+        "yes, approve active",
+        "yes approve active",
+        "create and leave active",
+    }
+
+
+def approval_requires_active_confirmation(item):
+    payload = item.get("payload", {}) if isinstance(item, dict) else {}
+    return item.get("type") == "create_campaign" and str(payload.get("final_status") or "").upper() == "ACTIVE"
+
+
+def resolve_pending_from_text(chat_id, text, pending, reply_approval_id=""):
+    exact = reply_approval_id or extract_approval_id(text)
+    if exact:
+        for item in pending:
+            if item.get("id") == exact:
+                return item, "exact"
+    if len(pending) == 1:
+        return pending[0], "single"
+    context_id = last_approval_context(chat_id)
+    if context_id and re.search(r"\b(esta|esa|this|that)\b", str(text or "").lower()):
+        for item in pending:
+            if item.get("id") == context_id:
+                return item, "context"
+    return None, "ambiguous"
+
+
+def handle_text_approval(config, chat_id, text, dashboard, send=True, reply_approval_id=""):
+    decision = text_approval_decision(text)
+    if not decision:
+        return None
+    pending = dashboard.dashboard_payload().get("pending", [])
+    if not pending:
+        reply = "No veo aprobaciones pendientes ahora mismo."
+        if send:
+            send_message(config, chat_id, reply)
+        return reply
+    item, reason = resolve_pending_from_text(chat_id, text, pending, reply_approval_id=reply_approval_id)
+    if not item:
+        reply = "Tienes varias decisiones pendientes. Responde a la tarjeta exacta con 'aprobar' o escribe /pendientes y usa el boton correcto."
+        if send:
+            send_message(config, chat_id, reply)
+            send_pending_cards(config, chat_id, pending)
+        return reply
+    approval_id = item.get("id", "")
+    if decision == "reject":
+        rejected = reject_pending(approval_id, "Rejected from Telegram text")
+        reply = f"Decision rechazada: {approval_title(item)}" if rejected else "No encontre esa aprobacion pendiente."
+        if send:
+            send_message(config, chat_id, reply)
+        return reply
+    if approval_requires_active_confirmation(item) and not text_confirms_active(text):
+        reply = "Esta decision puede dejar anuncios activos y gastar dinero real. Para aprobar por texto, responde exactamente: Si, crear y dejar activo"
+        if send:
+            send_message(config, chat_id, reply)
+            send_approval_card(config, chat_id, item)
+        return reply
+    result = approve_pending(approval_id)
+    if result:
+        executed = result[0].get("result", {})
+        succeeded = result[0].get("status") == "approved" or (executed.get("ok") is True and not executed.get("blocked"))
+        reply = f"Aprobacion ejecutada: {approval_title(item)}\nEstado: {'completada' if succeeded else 'bloqueada o fallida; sigue pendiente para reintentar'}"
+    else:
+        reply = "No encontre esa aprobacion pendiente."
+    if send:
+        send_message(config, chat_id, reply)
+    return reply
 
 
 def send_pending_cards(config, chat_id, pending):
@@ -226,13 +338,14 @@ def send_pending_cards(config, chat_id, pending):
     return results
 
 
-def agent_payload(message, chat_id, language):
+def agent_payload(message, chat_id, language, image_paths=None):
     dashboard = load_dashboard_module()
     state = dashboard.dashboard_payload()
     return {
         "message": message,
         "language": language,
         "history": load_history(chat_id),
+        "image_paths": image_paths or [],
         "metrics": state.get("metrics", {}),
         "recommendations": state.get("recommendations", []),
         "fatigue": state.get("fatigue", []),
@@ -244,7 +357,7 @@ def agent_payload(message, chat_id, language):
     }
 
 
-def handle_text(config, chat_id, text, send=True):
+def handle_text(config, chat_id, text, send=True, image_paths=None, reply_approval_id=""):
     settings = telegram_settings(config)
     stripped = str(text or "").strip()
     command = stripped.split()[0].lower() if stripped.startswith("/") else ""
@@ -261,19 +374,23 @@ def handle_text(config, chat_id, text, send=True):
             send_message(config, chat_id, reply)
             send_pending_cards(config, chat_id, pending)
             return reply
-    elif re.search(r"\b(aprueba|aprobar|approve|aprobalo|apruébalo)\b", stripped.lower()):
-        reply = "Por seguridad, no apruebo por texto libre. Escribe /pendientes y toca el boton exacto de la decision que quieres aprobar o rechazar."
     else:
-        payload = agent_payload(stripped, chat_id, settings["language"])
-        result = agent_chat(config, payload)
-        tool_result = None
-        if result.get("fallback") and not config.agent_chat_api_key:
-            reply = "Todavia falta conectar el motor del agente. Configura MiniMax en el dashboard para conversar por Telegram."
+        approval_reply = handle_text_approval(config, chat_id, stripped, dashboard, send=send, reply_approval_id=reply_approval_id)
+        if approval_reply is not None:
+            return approval_reply
         else:
-            tool_result = dashboard.execute_agent_tool(result.get("tool_request"), payload)
-            reply = (tool_result or {}).get("reply") or result.get("reply") or "No pude responder en este momento."
-        append_turn(chat_id, stripped, reply)
-        dashboard.log_action("telegram_agent_message", {"chat_id": str(chat_id)[-4:], "tool": (tool_result or {}).get("type") if tool_result else "", "message_length": len(stripped)}, "completed")
+            payload = agent_payload(stripped, chat_id, settings["language"], image_paths=image_paths)
+            result = agent_chat(config, payload)
+            tool_result = None
+            if result.get("fallback") and config.agent_chat_provider == "hermes":
+                reply = result.get("reply") or "Todavia falta conectar Hermes. Ejecuta hermes model y elige OpenAI Codex para usar tu suscripcion de ChatGPT."
+            elif result.get("fallback") and not config.agent_chat_api_key:
+                reply = "Todavia falta conectar el motor del agente."
+            else:
+                tool_result = dashboard.execute_agent_tool(result.get("tool_request"), payload)
+                reply = (tool_result or {}).get("reply") or result.get("reply") or "No pude responder en este momento."
+            append_turn(chat_id, stripped, reply)
+            dashboard.log_action("telegram_agent_message", {"chat_id": str(chat_id)[-4:], "tool": (tool_result or {}).get("type") if tool_result else "", "message_length": len(stripped)}, "completed")
     if send:
         send_message(config, chat_id, reply)
         result_payload = (tool_result or {}).get("result") if "tool_result" in locals() and tool_result else None
@@ -306,17 +423,20 @@ def handle_update(config, update):
         return {"handled": False, "reason": "unauthorized_chat"}
     text = str(message.get("text") or message.get("caption") or "").strip()
     photos = message.get("photo") or []
+    image_paths = []
     if photos:
         target = download_photo(config, photos[-1].get("file_id"))
+        image_paths.append(str(target))
         if text:
-            text = f"{text}\nRuta de imagen creativa disponible: {target}"
+            text = f"{text}\nImagen de referencia adjunta para creativos."
         else:
             reply = f"Imagen recibida y guardada. Para usarla, dime que campaña quieres preparar con esta imagen:\n{target}"
             send_message(config, chat_id, reply)
             return {"handled": True, "type": "photo_saved", "path": str(target)}
     if not text:
         return {"handled": False, "reason": "unsupported_message"}
-    reply = handle_text(config, chat_id, text)
+    reply_approval_id = extract_approval_id((message.get("reply_to_message") or {}).get("text", ""))
+    reply = handle_text(config, chat_id, text, image_paths=image_paths, reply_approval_id=reply_approval_id)
     return {"handled": True, "type": "text", "reply": reply}
 
 
@@ -387,7 +507,7 @@ def poll_once(config, offset=None):
         next_offset = int(update.get("update_id", 0)) + 1
         results.append(handle_update(config, update))
     if next_offset is not None:
-        write_json(OFFSET_FILE, {"offset": next_offset, "updated_at": now_iso()})
+        write_json_file(OFFSET_FILE, {"offset": next_offset, "updated_at": utc_iso()}, ensure_ascii=False)
     return next_offset, results
 
 

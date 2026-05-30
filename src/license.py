@@ -19,6 +19,12 @@ from product_config import ROOT_DIR
 LICENSE_PREFIX = "MAO"
 LICENSE_SALT = "meta-ads-operator-v1"
 LICENSE_CACHE_FILE = ROOT_DIR / "dashboard" / "data" / "license_unlock.json"
+INDIVIDUAL_FEATURES = ["dashboard", "chat", "telegram", "campaign_creation", "live_actions"]
+AGENCY_FEATURES = [*INDIVIDUAL_FEATURES, "agency_workspaces", "multi_telegram_profiles"]
+PLAN_DEFAULTS = {
+    "individual": {"max_devices": 1, "workspace_limit": 1, "features": INDIVIDUAL_FEATURES},
+    "agency": {"max_devices": 4, "workspace_limit": 50, "features": AGENCY_FEATURES},
+}
 
 
 def clean_license_key(value):
@@ -52,6 +58,43 @@ def validate_license_key(value):
     if supplied != expected:
         return {"status": "invalid", "valid": False, "detail": "License checksum mismatch"}
     return {"status": "active", "valid": True, "detail": "License active"}
+
+
+def normalize_license_entitlements(status=None):
+    """Return one safe local entitlement object for UI and server-side checks."""
+    status = status or {}
+    raw_features = status.get("features") or []
+    if isinstance(raw_features, str):
+        raw_features = [raw_features]
+    features = sorted({str(feature).strip() for feature in raw_features if str(feature).strip()})
+    requested_plan = str(status.get("plan") or "").strip().lower()
+    is_agency = requested_plan == "agency" or (not requested_plan and "agency_workspaces" in features)
+    plan = "agency" if is_agency else "individual"
+    defaults = PLAN_DEFAULTS[plan]
+    if not features:
+        features = list(defaults["features"])
+    try:
+        max_devices = int(status.get("max_devices") or defaults["max_devices"])
+    except (TypeError, ValueError):
+        max_devices = defaults["max_devices"]
+    try:
+        workspace_limit = int(status.get("workspace_limit") or defaults["workspace_limit"])
+    except (TypeError, ValueError):
+        workspace_limit = defaults["workspace_limit"]
+    if plan == "individual":
+        max_devices = min(max_devices, defaults["max_devices"])
+        workspace_limit = min(workspace_limit, defaults["workspace_limit"])
+        features = [feature for feature in features if feature not in {"agency_workspaces", "multi_telegram_profiles"}]
+    return {
+        "plan": plan,
+        "max_devices": max(1, max_devices),
+        "workspace_limit": max(1, workspace_limit),
+        "features": features,
+        "is_individual": plan == "individual",
+        "is_agency": plan == "agency",
+        "can_use_agency_workspaces": plan == "agency" and "agency_workspaces" in features,
+        "can_use_multi_telegram_profiles": plan == "agency" and "multi_telegram_profiles" in features,
+    }
 
 
 def now_utc():
@@ -140,12 +183,7 @@ def cached_unlock_status(config):
     if not verify_signature(cache, getattr(config, "license_public_key", "")):
         return {"online": False, "valid": False, "status": "bad_signature", "detail": "License unlock signature failed"}
     expires = parse_time(cache.get("expires_at"))
-    entitlements = {
-        "features": cache.get("features", []),
-        "plan": cache.get("plan", "individual"),
-        "max_devices": int(cache.get("max_devices") or 1),
-        "workspace_limit": int(cache.get("workspace_limit") or 1),
-    }
+    entitlements = normalize_license_entitlements(cache)
     if expires and expires >= now_utc():
         return {"online": False, "valid": True, "status": "active", "detail": "Cloud unlock active", "expires_at": cache.get("expires_at"), **entitlements}
     issued = parse_time(cache.get("issued_at"))
@@ -154,7 +192,7 @@ def cached_unlock_status(config):
     return {"online": False, "valid": False, "status": "expired", "detail": "Cloud unlock expired"}
 
 
-def activate_license(config):
+def activate_license(config, transfer_device=False):
     offline = validate_license_key(config.license_key)
     if not offline["valid"]:
         return offline
@@ -178,6 +216,7 @@ def activate_license(config):
         "device_id": device_id,
         "product": "meta-ads-operator",
         "version": "v1",
+        "transfer_device": bool(transfer_device),
     }
     request = urllib.request.Request(
         f"{config.license_server_url}/api/license/activate",
@@ -212,7 +251,7 @@ def activate_license(config):
     if not verify_signature(unlock, getattr(config, "license_public_key", "")):
         return {"online": True, "valid": False, "status": "bad_signature", "detail": "License response could not be trusted. Contact support."}
     write_unlock_cache(unlock)
-    return {"online": True, "valid": True, "status": "active", "detail": "Cloud license active", "expires_at": unlock.get("expires_at"), "features": unlock.get("features", []), "plan": unlock.get("plan", "individual"), "max_devices": unlock.get("max_devices", 1), "workspace_limit": unlock.get("workspace_limit", 1)}
+    return {"online": True, "valid": True, "status": "active", "detail": "Cloud license active", "expires_at": unlock.get("expires_at"), **normalize_license_entitlements(unlock)}
 
 
 def license_status(config):

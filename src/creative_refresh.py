@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Creative refresh planning and optional Nano Banana image generation."""
 import base64
+import copy
 import json
 import urllib.error
 import urllib.request
@@ -8,32 +9,198 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from product_config import ROOT_DIR, load_config
+from codex_brand_guides import creative_memory
+from local_store import now_iso, read_json, write_json
 
 
 AD_CONFIG_FILE = ROOT_DIR / "ad-config.json"
 AD_CONFIG_EXAMPLE_FILE = ROOT_DIR / "ad-config.example.json"
 OUTPUT_DIR = ROOT_DIR / "output" / "creatives"
 INDEX_FILE = OUTPUT_DIR / "creative_refresh_index.json"
+CREATIVE_IMAGE_STORAGE_POLICY = "manual_cleanup"
+ASSET_STORAGE_KEY = "retention"
 
-
-def now_iso():
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
-
-
-def read_json(path, fallback):
-    if not path.exists():
-        return fallback
+def parse_iso(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            return json.load(handle)
-    except (json.JSONDecodeError, OSError):
-        return fallback
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+def asset_created_at(asset, plan=None, path=None):
+    created = parse_iso(asset.get("created_at") or asset.get(ASSET_STORAGE_KEY, {}).get("created_at") or (plan or {}).get("created_at"))
+    if created:
+        return created
+    if path and Path(path).exists():
+        try:
+            return datetime.fromtimestamp(Path(path).stat().st_mtime, tz=timezone.utc).astimezone()
+        except OSError:
+            return datetime.now(timezone.utc).astimezone()
+    return datetime.now(timezone.utc).astimezone()
 
 
-def write_json(path, payload):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2)
+def asset_storage_state(asset, plan=None):
+    """Return buyer-facing storage metadata for a generated creative asset."""
+    storage = dict(asset.get(ASSET_STORAGE_KEY) or {})
+    path = asset.get("path")
+    created = asset_created_at(asset, plan, path)
+    saved = bool(storage.get("saved") or asset.get("retained_for_ad"))
+    if saved:
+        return {
+            **storage,
+            "kind": storage.get("kind") or "ad_image",
+            "saved": True,
+            "created_at": storage.get("created_at") or created.isoformat(timespec="seconds"),
+            "expires_at": "",
+            "days_remaining": None,
+            "status": "saved",
+        }
+    status = "deleted" if storage.get("deleted_at") else "temporary"
+    return {
+        **storage,
+        "kind": storage.get("kind") or "temporary",
+        "saved": False,
+        "created_at": storage.get("created_at") or created.isoformat(timespec="seconds"),
+        "expires_at": "",
+        "days_remaining": None,
+        "status": status,
+        "cleanup": CREATIVE_IMAGE_STORAGE_POLICY,
+    }
+
+
+def set_asset_storage(asset, storage):
+    asset[ASSET_STORAGE_KEY] = storage
+    return storage
+
+
+def asset_retention(asset, plan=None, *_):
+    """Backward-compatible name for older callers and stored manifest vocabulary."""
+    return asset_storage_state(asset, plan)
+
+
+def manifest_paths():
+    if not OUTPUT_DIR.exists():
+        return []
+    return sorted(OUTPUT_DIR.glob("*/manifest.json"))
+
+
+def normalize_path(value):
+    try:
+        return Path(str(value or "")).expanduser().resolve()
+    except OSError:
+        return None
+
+
+def path_under_output(path):
+    if not path:
+        return False
+    try:
+        Path(path).resolve().relative_to(OUTPUT_DIR.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def iter_variant_assets(plan, variant_id=""):
+    for variant in plan.get("variants", []):
+        if variant_id and variant.get("variant_id") != variant_id:
+            continue
+        for asset in variant.get("assets", []):
+            yield variant, asset
+
+
+def mark_assets_retained(manifest_path, variant_id="", selected_ratios=None, file_paths=None, reason="selected_for_ad", meta=None):
+    manifest_path = Path(manifest_path)
+    plan = read_json(manifest_path, {})
+    if not isinstance(plan, dict) or not plan.get("variants"):
+        return {"updated": 0, "manifest_path": str(manifest_path)}
+    ratios = set(selected_ratios or [])
+    target_paths = {path for path in (normalize_path(item) for item in (file_paths or [])) if path}
+    now = now_iso()
+    updated = 0
+    for _variant, asset in iter_variant_assets(plan, variant_id):
+        asset_path = normalize_path(asset.get("path"))
+        ratio_match = not ratios or asset.get("aspect_ratio") in ratios
+        path_match = not target_paths or (asset_path and asset_path in target_paths)
+        if not asset.get("path") or not ratio_match or not path_match:
+            continue
+        storage = asset_storage_state(asset, plan)
+        set_asset_storage(asset, {
+            **storage,
+            "kind": "ad_image",
+            "saved": True,
+            "saved_at": now,
+            "reason": reason,
+            "meta": meta or {},
+            "expires_at": "",
+            "status": "saved",
+        })
+        asset["retained_for_ad"] = True
+        updated += 1
+    if updated:
+        write_json(manifest_path, plan)
+    return {"updated": updated, "manifest_path": str(manifest_path)}
+
+
+def mark_asset_files_retained(file_paths, reason="ad_created", meta=None):
+    target_paths = {path for path in (normalize_path(item) for item in (file_paths or [])) if path}
+    if not target_paths:
+        return {"updated": 0, "files": 0}
+    updated = 0
+    for manifest_path in manifest_paths():
+        result = mark_assets_retained(manifest_path, file_paths=target_paths, reason=reason, meta=meta)
+        updated += result.get("updated", 0)
+    return {"updated": updated, "files": len(target_paths)}
+
+
+def clear_temporary_creative_assets(reason="manual_storage_cleanup"):
+    stats = {"mode": CREATIVE_IMAGE_STORAGE_POLICY, "scanned": 0, "deleted": 0, "saved": 0, "skipped": 0, "errors": 0}
+    for manifest_path in manifest_paths():
+        plan = read_json(manifest_path, {})
+        if not isinstance(plan, dict):
+            continue
+        changed = False
+        for _variant, asset in iter_variant_assets(plan):
+            raw_path = str(asset.get("path") or "").strip()
+            if not raw_path:
+                continue
+            path = normalize_path(raw_path)
+            stats["scanned"] += 1
+            storage = set_asset_storage(asset, asset_storage_state(asset, plan))
+            if storage.get("saved"):
+                stats["saved"] += 1
+                continue
+            if storage.get("deleted_at"):
+                continue
+            if not path or not path_under_output(path):
+                stats["skipped"] += 1
+                continue
+            try:
+                if path.exists() and path.is_file():
+                    path.unlink()
+                    stats["deleted"] += 1
+                else:
+                    stats["skipped"] += 1
+                asset["path"] = ""
+                set_asset_storage(asset, {
+                    **storage,
+                    "deleted_at": now_iso(),
+                    "deleted_reason": reason,
+                    "status": "deleted",
+                })
+                changed = True
+            except OSError:
+                stats["errors"] += 1
+        if changed:
+            write_json(manifest_path, plan)
+    return stats
 
 
 def load_ad_config():
@@ -69,36 +236,82 @@ def campaigns_needing_refresh(campaigns, ad_config=None):
     return [campaign for campaign in campaigns if should_refresh(campaign, ad_config)]
 
 
+def apply_brand_memory(ad_config, product_guide="", ad_brief=""):
+    effective = copy.deepcopy(ad_config)
+    memory = creative_memory(product_guide, ad_brief)
+    brand = effective.setdefault("brand", {})
+    for key, value in memory.get("brand", {}).items():
+        if value:
+            brand[key] = value
+    return effective, memory
+
+
+def split_axes(value):
+    axes = [item.strip() for item in str(value or "").replace(";", ",").split(",") if item.strip()]
+    return axes or ["color", "gancho visual", "composicion", "beneficio principal"]
+
+
+def variation_count(value, fallback):
+    try:
+        count = int(str(value or "").strip())
+    except (TypeError, ValueError):
+        return fallback
+    return min(max(count, 1), 8)
+
+
 def copy_variants(campaign, ad_config, count):
     brand = ad_config.get("brand", {})
     offer = brand.get("offer", "the offer")
     voice = brand.get("voice", "clear, direct, benefit-led")
     name = campaign.get("name", "Campaign")
-    pain = "ad fatigue" if campaign.get("health") == "fatigue" else "low conversion efficiency"
+    voice = {"clear, direct, benefit-led": "claro, directo y centrado en beneficios"}.get(voice, voice)
+    pain = brand.get("pain") or ("fatiga del anuncio" if campaign.get("health") == "fatigue" else "baja eficiencia de conversión")
+    desire = brand.get("desire") or "un resultado más claro"
+    if brand.get("variation_window") or brand.get("base_ad"):
+        axes = split_axes(brand.get("variation_axes"))
+        promotion = brand.get("promotion") or "la promocion actual"
+        base_ad = brand.get("base_ad") or brand.get("base_ad_name") or "el anuncio que ya funciona"
+        locked = brand.get("locked_elements") or "la promesa central, la oferta y el publico"
+        window = brand.get("variation_window") or "probar cambios pequeños y medibles"
+        variants = []
+        for index in range(count):
+            axis = axes[index % len(axes)]
+            variants.append(
+                {
+                    "headline": f"{offer}: variante de {axis}",
+                    "primary_text": (
+                        f"Partir de {base_ad}. Mantener {locked}. Probar solo {axis} dentro de esta ventana: "
+                        f"{window}. Promocion o idea puntual: {promotion}."
+                    ),
+                    "cta": "Ver oferta",
+                    "angle": f"variacion de {axis}",
+                }
+            )
+        return variants
     templates = [
         {
-            "headline": f"See Why {offer} Works",
-            "primary_text": f"{name} needs a fresh angle. Lead with the strongest outcome, keep the promise specific, and remove friction for the next click.",
-            "cta": "Learn More",
-            "angle": "proof-led refresh",
+            "headline": f"Descubre por qué {offer} funciona",
+            "primary_text": f"{name} necesita un ángulo fresco. Abre con {desire}, haz la promesa concreta y facilita el siguiente clic.",
+            "cta": "Más información",
+            "angle": "prueba y confianza",
         },
         {
-            "headline": "A Better Way To Start",
-            "primary_text": f"Use a {voice} message that speaks directly to {pain}. Show the product clearly and make the first step obvious.",
-            "cta": "Shop Now",
-            "angle": "direct response",
+            "headline": "Una mejor forma de empezar",
+            "primary_text": f"Usa un mensaje {voice} que hable directamente de {pain}. Muestra el producto con claridad y deja obvio el primer paso.",
+            "cta": "Comprar ahora",
+            "angle": "respuesta directa",
         },
         {
-            "headline": "Fresh Creative, Same Offer",
-            "primary_text": f"Reframe {offer} with a clean visual, one benefit, and a simple reason to act today.",
-            "cta": "Get Offer",
-            "angle": "offer refresh",
+            "headline": "Nueva imagen, la misma oferta",
+            "primary_text": f"Presenta {offer} con una imagen limpia, un beneficio y una razón sencilla para actuar hoy.",
+            "cta": "Ver oferta",
+            "angle": "renovar oferta",
         },
         {
-            "headline": "Stop Scrolling. Start Here.",
-            "primary_text": f"Turn the campaign around with a sharper hook and a visual that makes the value instantly legible.",
-            "cta": "Learn More",
-            "angle": "scroll-stopper",
+            "headline": "Detente. Empieza aquí.",
+            "primary_text": "Dale una nueva oportunidad a la campaña con un gancho más claro y una imagen cuyo valor se entienda al instante.",
+            "cta": "Más información",
+            "angle": "detener el scroll",
         },
     ]
     return templates[:count]
@@ -106,24 +319,38 @@ def copy_variants(campaign, ad_config, count):
 
 def image_prompt(campaign, ad_config, variant, aspect_ratio):
     brand = ad_config.get("brand", {})
-    avoid = ", ".join(brand.get("avoid", [])) or "misleading claims, excessive text"
+    avoid_items = brand.get("avoid", [])
+    avoid = ", ".join(avoid_items if isinstance(avoid_items, list) else [str(avoid_items)]) or "misleading claims, excessive text"
+    ad_context = ""
+    if brand.get("variation_window") or brand.get("promotion"):
+        ad_context = (
+            f"Promocion o idea puntual: {brand.get('promotion', 'no especificada')}. "
+            f"Anuncio base o aprendizaje previo: {brand.get('base_ad') or brand.get('base_ad_name') or 'no especificado'}. "
+            f"No cambiar: {brand.get('locked_elements', 'la oferta esencial')}. "
+            f"Ventana creativa permitida: {brand.get('variation_window', 'variaciones moderadas')}. "
+        )
     return (
-        f"Create a Meta ad image for {brand.get('name', 'a premium brand')}. "
-        f"Campaign: {campaign.get('name', 'Campaign')}. "
-        f"Objective: refresh a {campaign.get('health', 'neutral')} ad with angle '{variant['angle']}'. "
-        f"Offer: {brand.get('offer', 'premium product or service')}. "
-        f"Visual style: {brand.get('visual_style', 'clean premium ecommerce photography')}. "
-        f"Aspect ratio: {aspect_ratio}. "
-        "Use a clear focal point, strong product/context signal, realistic lighting, and minimal or no embedded text. "
-        f"Avoid: {avoid}."
+        f"Crea una imagen para anuncio de Meta de {brand.get('name', 'una marca premium')}. "
+        f"Campaña: {campaign.get('name', 'Campaña')}. "
+        f"Objetivo: renovar un anuncio con estado {campaign.get('health', 'neutral')} usando el ángulo '{variant['angle']}'. "
+        f"Oferta: {brand.get('offer', 'producto o servicio premium')}. "
+        f"Audiencia: {brand.get('audience', 'personas interesadas en la oferta')}. "
+        f"{ad_context}"
+        f"Estilo visual: {brand.get('visual_style', 'fotografía ecommerce premium, limpia y confiable')}. "
+        f"Formato: {aspect_ratio}. "
+        "Usa un punto focal claro, producto o contexto reconocible, luz realista y poco o ningún texto integrado. "
+        f"Evita: {avoid}."
     )
 
 
-def build_creative_plan(campaign, ad_config=None, variants_per_campaign=None):
+def build_creative_plan(campaign, ad_config=None, variants_per_campaign=None, product_guide="", ad_brief=""):
     config = load_config()
     ad_config = ad_config or load_ad_config()
+    ad_config, memory = apply_brand_memory(ad_config, product_guide, ad_brief)
     creative_cfg = ad_config.get("creative", {})
-    count = variants_per_campaign or config.creative_variants_per_campaign or int(creative_cfg.get("variants_per_campaign", 3))
+    brand = ad_config.get("brand", {})
+    default_count = config.creative_variants_per_campaign or int(creative_cfg.get("variants_per_campaign", 3))
+    count = variants_per_campaign or variation_count(brand.get("variation_count"), default_count)
     aspect_ratios = creative_cfg.get("default_aspect_ratios", ["1:1", "4:5", "9:16"])
     variants = []
     for index, copy in enumerate(copy_variants(campaign, ad_config, count), start=1):
@@ -135,6 +362,7 @@ def build_creative_plan(campaign, ad_config=None, variants_per_campaign=None):
         "status": "draft",
         "provider": config.creative_provider,
         "image_mode": config.creative_image_mode,
+        "brand_memory": memory,
         "campaign": {
             "id": campaign.get("id"),
             "name": campaign.get("name"),
@@ -191,22 +419,46 @@ def save_generated_asset(refresh_dir, refresh_id, variant_id, aspect_ratio, resu
     path = refresh_dir / filename
     with open(path, "wb") as handle:
         handle.write(base64.b64decode(result["data"]))
-    return {"path": str(path), "mime_type": result.get("mime_type"), "aspect_ratio": aspect_ratio}
+    created_at = now_iso()
+    asset = {
+        "path": str(path),
+        "mime_type": result.get("mime_type"),
+        "aspect_ratio": aspect_ratio,
+        "created_at": created_at,
+    }
+    set_asset_storage(asset, {
+        "kind": "temporary",
+        "saved": False,
+        "created_at": created_at,
+        "status": "temporary",
+        "cleanup": CREATIVE_IMAGE_STORAGE_POLICY,
+    })
+    return asset
 
 
-def generate_creative_refresh(campaign, generate_images=False):
+def generate_creative_refresh(campaign, generate_images=False, product_guide="", ad_brief=""):
     config = load_config()
-    plan = build_creative_plan(campaign)
+    plan = build_creative_plan(campaign, product_guide=product_guide, ad_brief=ad_brief)
     refresh_dir = OUTPUT_DIR / plan["id"]
     refresh_dir.mkdir(parents=True, exist_ok=True)
     if generate_images and config.creative_live:
+        generated_count = 0
+        error_count = 0
         for variant in plan["variants"]:
             for prompt in variant["image_prompts"]:
                 result = call_nano_banana(prompt["prompt"], prompt["aspect_ratio"], config)
                 if result.get("ok"):
                     variant["assets"].append(save_generated_asset(refresh_dir, plan["id"], variant["variant_id"], prompt["aspect_ratio"], result))
+                    generated_count += 1
                 else:
                     variant["assets"].append({"aspect_ratio": prompt["aspect_ratio"], "error": result.get("error", "generation failed")})
+                    error_count += 1
+        if generated_count and error_count:
+            plan["status"] = "partially_generated"
+        elif generated_count:
+            plan["status"] = "images_ready"
+        else:
+            plan["status"] = "generation_failed"
     else:
         plan["status"] = "dry_run"
     manifest_path = refresh_dir / "manifest.json"
@@ -232,4 +484,3 @@ def update_index(plan, manifest_path):
 
 def recent_creative_refreshes(limit=10):
     return read_json(INDEX_FILE, [])[:limit]
-

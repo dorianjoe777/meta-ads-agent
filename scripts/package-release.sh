@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${1:-v1}"
+VERSION="${1:-v1.0.0}"
 RELEASE_DIR="$ROOT_DIR/release"
 BUILD_DIR="$RELEASE_DIR/source-build"
 ZIP_STABLE_NAME="MetaAdsAgent-source.zip"
@@ -36,6 +36,8 @@ rsync -a "$ROOT_DIR/" "$STAGING_DIR/" \
   --exclude "output/*" \
   --exclude "dashboard/data" \
   --exclude "dashboard/data/*" \
+  --exclude "dashboard/data/update-snapshots" \
+  --exclude "dashboard/data/update-snapshots/*" \
   --exclude "dashboard/content-dashboard.py" \
   --exclude "public/content-keyframes" \
   --exclude "public/content-keyframes/*" \
@@ -73,8 +75,14 @@ if not path.exists():
     raise SystemExit(0)
 
 updates = {
-    "BOOTSTRAP_FROM_GITHUB": os.environ.get("META_ADS_BOOTSTRAP_FROM_GITHUB", "true"),
-    "GITHUB_RELEASE_REPO": os.environ.get("META_ADS_GITHUB_REPO", ""),
+    "BOOTSTRAP_PROVIDER": os.environ.get("META_ADS_BOOTSTRAP_PROVIDER", "license_server"),
+    "LICENSE_SERVER_URL": os.environ.get("META_ADS_LICENSE_SERVER_URL", "https://licencias-miro-ai.uboost.lat"),
+    "LICENSE_RELEASE_ENDPOINT": os.environ.get("META_ADS_LICENSE_RELEASE_ENDPOINT", "/api/license/release"),
+    "RELEASE_CHANNEL": os.environ.get("META_ADS_RELEASE_CHANNEL", "stable"),
+    "RELEASE_ASSET_NAME": os.environ.get("META_ADS_RELEASE_ASSET_NAME", "MetaAdsAgent-source.zip"),
+    "ALLOW_GITHUB_FALLBACK": os.environ.get("META_ADS_ALLOW_GITHUB_FALLBACK", "false"),
+    "BOOTSTRAP_FROM_GITHUB": os.environ.get("META_ADS_BOOTSTRAP_FROM_GITHUB", "false"),
+    "GITHUB_RELEASE_REPO": os.environ.get("META_ADS_GITHUB_REPO", "REPLACE_WITH_GITHUB_REPO"),
     "GITHUB_SOURCE_ASSET": os.environ.get("META_ADS_GITHUB_SOURCE_ASSET", "MetaAdsAgent-source.zip"),
     "GITHUB_RELEASE_CHANNEL": os.environ.get("META_ADS_GITHUB_RELEASE_CHANNEL", "latest"),
 }

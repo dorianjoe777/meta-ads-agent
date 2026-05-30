@@ -54,8 +54,8 @@ El agente no aprueba por texto libre. Si escribes "aprueba eso", te pedira usar 
 ## Proteccion importante
 
 - Solo el chat privado elegido puede hablar con el agente.
-- El bot usa MiniMax y las mismas reglas del dashboard.
-- Telegram puede preparar acciones y aprobar solo cuando tocas un boton de una decision exacta.
+- El bot usa Hermes y las mismas reglas del dashboard.
+- Telegram puede preparar acciones y aprobar solo cuando eliges una decision exacta: boton, respuesta a la tarjeta, ID de aprobacion o una sola decision pendiente.
 - Campanas activas y cambios que pueden gastar muestran una confirmacion especial antes de ejecutar.
 
 ## Mantenerlo encendido

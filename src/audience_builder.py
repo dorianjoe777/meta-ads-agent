@@ -68,23 +68,23 @@ def build_audience_strategy(payload, language="es"):
     product = payload.get("product") or ("the offer" if language == "en" else "la oferta")
     buyer = payload.get("buyer") or ("current best buyers" if language == "en" else "los mejores compradores actuales")
 
-    broad_name = "Broad / Advantage+ prospecting" if language == "en" else "Prospección amplia / Advantage+"
-    interest_name = "Interest testing" if language == "en" else "Prueba por intereses"
-    retargeting_name = "Warm retargeting" if language == "en" else "Retargeting tibio"
-    lookalike_name = "Lookalike from seed audience" if language == "en" else "Lookalike desde audiencia semilla"
+    broad_name = "Broad / Advantage+ prospecting" if language == "en" else "Llegar a personas nuevas"
+    interest_name = "Interest testing" if language == "en" else "Personas con intereses relacionados"
+    retargeting_name = "Warm retargeting" if language == "en" else "Personas que ya te conocen"
+    lookalike_name = "Lookalike from seed audience" if language == "en" else "Personas parecidas a tus mejores clientes"
 
     strategies = [
         {
             "name": broad_name,
             "priority": 1,
-            "use_when": "Default starting point when the offer has enough budget to let Meta optimize." if language == "en" else "Punto de partida recomendado cuando la oferta tiene presupuesto para que Meta aprenda.",
+            "use_when": "Default starting point when the offer has enough budget to let Meta optimize." if language == "en" else "Buen comienzo para dejar que Meta encuentre compradores con tus anuncios.",
             "targeting": {
                 "locations": locations,
                 "age": payload.get("age") or "25-54",
                 "interests": [],
                 "expansion": "Advantage+ audience / broad",
             },
-            "why": f"Meta usually finds buyers faster when it is not boxed in too early. Use creative and conversion data to guide it for {product}.",
+            "why": f"Meta usually finds buyers faster when it is not boxed in too early. Use creative and conversion data to guide it for {product}." if language == "en" else "Empieza sin poner demasiados filtros. Las imágenes, textos y resultados ayudarán al agente a encontrar compradores.",
         },
         {
             "name": interest_name,
@@ -96,18 +96,18 @@ def build_audience_strategy(payload, language="es"):
                 "interests": interests[:8],
                 "expansion": "Advantage detailed targeting when allowed",
             },
-            "why": f"Start with interests that describe what {buyer} already follows, buys, or compares.",
+            "why": f"Start with interests that describe what {buyer} already follows, buys, or compares." if language == "en" else "Prueba temas que ya le interesan a tu comprador, sin limitar demasiado el alcance.",
         },
         {
             "name": retargeting_name,
             "priority": 3,
-            "use_when": "Use when there is website traffic, IG/Facebook engagement, leads, or video viewers." if language == "en" else "Úsalo cuando haya visitas web, interacción en IG/Facebook, leads o reproducciones de video.",
+            "use_when": "Use when there is website traffic, IG/Facebook engagement, leads, or video viewers." if language == "en" else "Úsalo cuando ya tengas visitas, mensajes o personas que vieron tus videos.",
             "targeting": {
                 "sources": data_sources or ["Pixel / IG engagement / leads"],
                 "window": "7, 14, and 30 day tests",
                 "exclusions": "Recent buyers when available",
             },
-            "why": "Warm audiences usually convert better, but can fatigue quickly if the audience is small." if language == "en" else "Las audiencias tibias suelen convertir mejor, pero se fatigan rápido si son pequeñas.",
+            "why": "Warm audiences usually convert better, but can fatigue quickly if the audience is small." if language == "en" else "Las personas que ya te conocen suelen comprar más fácilmente, pero el mismo anuncio puede cansarlas si son pocas.",
         },
     ]
 
@@ -116,13 +116,13 @@ def build_audience_strategy(payload, language="es"):
             {
                 "name": lookalike_name,
                 "priority": 4,
-                "use_when": "Use after the seed source is clean and large enough." if language == "en" else "Úsalo cuando la audiencia semilla esté limpia y tenga suficiente tamaño.",
+                "use_when": "Use after the seed source is clean and large enough." if language == "en" else "Úsalo cuando ya tengas suficientes visitas o compradores reales.",
                 "targeting": {
                     "seed": "Pixel/customers/engagement source",
                     "sizes": "1%, 2%, 5% tests",
                     "locations": locations,
                 },
-                "why": "Lookalikes can scale what already works, but the seed quality matters more than the label.",
+                "why": "Lookalikes can scale what already works, but the seed quality matters more than the label." if language == "en" else "Las personas parecidas pueden ampliar lo que ya funciona, siempre que los datos de partida sean buenos.",
             }
         )
 
@@ -133,9 +133,9 @@ def build_audience_strategy(payload, language="es"):
         blockers.append("Confirm consent before uploading customer emails or phones." if language == "en" else "Confirma consentimiento antes de subir emails o teléfonos de clientes.")
 
     next_steps = [
-        "Launch broad + one interest test first." if language == "en" else "Lanza primero amplia + una prueba de intereses.",
-        "Keep retargeting separate if warm traffic exists." if language == "en" else "Separa retargeting si ya existe tráfico tibio.",
-        "Build lookalike only after seed data and consent are clear." if language == "en" else "Crea lookalike solo cuando la data semilla y el consentimiento estén claros.",
+        "Launch broad + one interest test first." if language == "en" else "Empieza llegando a personas nuevas y prueba un grupo con intereses.",
+        "Keep retargeting separate if warm traffic exists." if language == "en" else "Si ya tienes visitas o mensajes, prepara un grupo aparte para esas personas.",
+        "Build lookalike only after seed data and consent are clear." if language == "en" else "Prueba personas parecidas solo cuando tengas suficientes datos y permiso para usarlos.",
     ]
 
     return {

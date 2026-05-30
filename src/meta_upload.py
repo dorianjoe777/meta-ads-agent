@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Build upload-ready Meta ad payloads from creative refresh manifests."""
 import json
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
-from creative_refresh import load_ad_config, read_json, write_json
+from creative_refresh import load_ad_config, mark_assets_retained
+from local_store import now_iso, read_json, write_json
 from product_config import ROOT_DIR, load_config
 from security import redact_payload
 
@@ -13,11 +14,6 @@ UPLOAD_DIR = ROOT_DIR / "output" / "uploads"
 UPLOAD_INDEX_FILE = UPLOAD_DIR / "upload_index.json"
 PENDING_FILE = ROOT_DIR / "dashboard" / "data" / "pending_approvals.json"
 ACTIONS_FILE = ROOT_DIR / "dashboard" / "data" / "actions.json"
-
-
-def now_iso():
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
-
 
 def find_manifest(refresh_id_or_path):
     candidate = Path(refresh_id_or_path)
@@ -194,6 +190,13 @@ def stage_upload(manifest_path, variant_id="v1", selected_ratios=None, request_a
     upload_dir.mkdir(parents=True, exist_ok=True)
     payload_path = upload_dir / "payload.json"
     write_json(payload_path, payload)
+    mark_assets_retained(
+        payload.get("manifest_path", manifest_path),
+        payload.get("variant_id", variant_id),
+        payload.get("selected_ratios", selected_ratios or []),
+        reason="selected_for_ad",
+        meta={"upload_id": payload["id"], "status": payload["status"]},
+    )
     update_upload_index(payload, payload_path)
     approval = None
     if request_approval and payload["status"] == "ready_for_approval":

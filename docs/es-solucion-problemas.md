@@ -19,7 +19,13 @@ Revisa internet. Si el problema sigue, contacta soporte con tu email de compra y
 
 ## El chat no responde
 
-Revisa que `MINIMAX_API_KEY` este configurado. Si no hay clave, el dashboard puede responder con rutas internas, pero no sera la conversacion completa de MiniMax.
+Revisa que Hermes este instalado y conectado. En la terminal ejecuta:
+
+```bash
+hermes model
+```
+
+Elige `OpenAI Codex`, inicia sesion con la cuenta ChatGPT del comprador y vuelve al dashboard. Si Hermes no esta instalado, ejecuta de nuevo el instalador o instala Hermes manualmente.
 
 ## Telegram no responde
 

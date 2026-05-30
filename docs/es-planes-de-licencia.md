@@ -9,6 +9,7 @@ Pensada para una persona que administra su propio negocio.
 - 1 página de Facebook activa.
 - Telegram para ese negocio, si desea conectarlo.
 - Puede cambiar de negocio más adelante, pero el agente elimina la memoria, métricas, historial y guías creativas anteriores para empezar limpio.
+- Puede transferirse a otro equipo si el comprador cambia de PC o reinstala el producto.
 
 Esta regla evita mezclar información de dos negocios y mantiene la licencia adecuada para uso propio.
 
@@ -38,3 +39,9 @@ Un espacio mantiene separado:
 Así una agencia puede trabajar con varios clientes sin mezclar decisiones ni reportes.
 
 Las conexiones privadas de cada espacio se guardan solamente en el PC/VPS del comprador con permisos restringidos al usuario que ejecuta el producto. No se envían al vendedor.
+
+## Cambio de equipo
+
+La licencia Individual tiene un equipo activo a la vez. Si el comprador instala en un nuevo equipo, el instalador puede pedir confirmacion para transferir la licencia.
+
+La licencia Agencia permite hasta 4 dispositivos. Si una agencia supera ese limite, debe contactar soporte para revisar el caso o limpiar dispositivos antiguos desde el servidor de licencias.

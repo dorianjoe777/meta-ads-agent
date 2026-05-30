@@ -17,13 +17,13 @@ El comprador solo necesita instalar:
 - Docker Desktop en PC/Mac, o
 - Docker Engine + Docker Compose en VPS.
 
-Luego descomprime el ZIP y ejecuta:
+Luego abre la carpeta instalada y ejecuta:
 
 ```bash
 ./scripts/run-docker.sh
 ```
 
-Tambien puedes usar los instaladores de doble clic incluidos en la raiz del ZIP:
+Tambien puedes usar los instaladores de doble clic incluidos en la entrega del producto:
 
 - `Instalar en Windows.bat`
 - `Instalar en Mac.command`
@@ -78,7 +78,7 @@ Para activar la funcion opcional, cambia `CODEX_CREATIVE_ENABLED=true` y configu
 OPENAI_API_KEY=sk-...
 ```
 
-Importante: esa clave queda en la instalacion local/VPS del comprador. No se incluye en el ZIP.
+Importante: esa clave queda en la instalacion local/VPS del comprador. No se incluye en el paquete base.
 
 ## Guias creativas
 
@@ -119,6 +119,14 @@ http://127.0.0.1:7871
 ```
 
 No expongas el puerto del dashboard directamente a internet salvo que sepas configurar HTTPS, firewall y proxy.
+
+Si el comprador usa DigitalOcean y quiere abrir el dashboard desde una IP autorizada, usa el modo de acceso estricto:
+
+```bash
+./scripts/install-digitalocean-strict-access.sh
+```
+
+Ese modo actualiza el firewall de DigitalOcean despues de un login SSH exitoso. La guia completa esta en `docs/es-digitalocean-acceso-estricto.md`.
 
 ## Cuando usar Docker vs instalacion normal
 

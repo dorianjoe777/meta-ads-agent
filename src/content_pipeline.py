@@ -6,8 +6,10 @@ import json
 import re
 import shutil
 import subprocess
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
+
+from local_store import now_iso, read_json, write_json
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -47,33 +49,11 @@ FORMATS = {
     "motion": {"size": "1080x1920", "extension": "mp4"},
 }
 
-
-def now_iso():
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
-
-
 def slugify(value):
     replacements = str.maketrans("áéíóúñüÁÉÍÓÚÑÜ", "aeiounuAEIOUNU")
     value = str(value).translate(replacements)
     value = re.sub(r"[^a-zA-Z0-9]+", "-", value.lower()).strip("-")
     return value[:80] or "content"
-
-
-def read_json(path, fallback):
-    if not path.exists():
-        return fallback
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            return json.load(handle)
-    except (json.JSONDecodeError, OSError):
-        return fallback
-
-
-def write_json(path, payload):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, ensure_ascii=True)
-
 
 def load_queue():
     return read_json(QUEUE_FILE, {"items": [], "updated_at": ""})

@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 import importlib.util
 from pathlib import Path
 from datetime import datetime
@@ -19,13 +20,16 @@ from ab_testing import ABTestingManager, CreativeElement
 from scaling_logic import ScalingManager, ScalingMetrics, ScalingStrategy
 from pause_logic import PauseManager, AdPerformance
 from auto_warmup import AutoWarmupManager
-from license import activate_license, format_license, license_status, validate_license_key
+from license import activate_license, format_license, license_status, normalize_license_entitlements, validate_license_key
 from security import dashboard_token_valid, redact_payload
 from product_config import AgentConfig
 from agent_chat import account_context, parse_skill_response
+import agent_chat
+import hermes_bridge
 from audience_builder import build_audience_strategy
 from codex_brand_guides import build_codex_creative_prompt
 import codex_brand_guides
+from creative_refresh import build_creative_plan
 from daily_agent import execute_campaign_creation
 import daily_agent
 from social_flow_client import SocialFlowClient
@@ -335,10 +339,16 @@ class IntegrationTestSuite:
         valid = validate_license_key(valid_key)
         missing = validate_license_key("")
         invalid = validate_license_key("MAO-BAD-KEY-000000")
+        individual = normalize_license_entitlements({"plan": "individual", "features": ["dashboard", "agency_workspaces"], "max_devices": 9, "workspace_limit": 9})
+        agency = normalize_license_entitlements({"plan": "agency"})
 
         self.assert_true(valid["valid"], "Formatted license validates")
         self.assert_true(missing["status"] == "missing", "Missing license is reported")
         self.assert_true(not invalid["valid"], "Invalid license is rejected")
+        self.assert_true(individual["is_individual"] and individual["max_devices"] == 1 and individual["workspace_limit"] == 1, "Individual entitlement clamps device and workspace limits")
+        self.assert_true(not individual["can_use_agency_workspaces"] and "agency_workspaces" not in individual["features"], "Individual entitlement strips agency features")
+        self.assert_true(agency["is_agency"] and agency["max_devices"] == 4 and agency["workspace_limit"] == 50, "Agency entitlement applies default limits")
+        self.assert_true(agency["can_use_agency_workspaces"] and agency["can_use_multi_telegram_profiles"], "Agency entitlement unlocks client spaces and Telegram profiles")
 
     def test_license_status_and_activation(self):
         """Test local/cloud license status helpers."""
@@ -490,6 +500,34 @@ class IntegrationTestSuite:
         self.assert_true(dashboard_token_valid(config, "secret-password"), "Dashboard password unlocks protected routes")
         self.assert_true(not dashboard_token_valid(config, "wrong-password"), "Wrong dashboard password is rejected")
 
+        dashboard = load_dashboard_module()
+        original_load_config = dashboard.load_config
+        original_onboarding = dashboard.load_onboarding_state
+        handler = object.__new__(dashboard.DashboardHandler)
+        try:
+            class NoPassword:
+                dashboard_token = ""
+                dashboard_password = ""
+                dashboard_token_required = True
+
+            class WithPassword:
+                dashboard_token = "secret-password"
+                dashboard_password = "secret-password"
+                dashboard_token_required = True
+
+            dashboard.load_onboarding_state = lambda: {"completed": False}
+            dashboard.load_config = lambda: NoPassword()
+            self.assert_true(not handler.auth_required_for_post("/api/dashboard-password"), "First password creation stays open before a password exists")
+            self.assert_true(not handler.auth_required_for_get("/api/dashboard"), "Initial setup dashboard can load before a password exists")
+            self.assert_true(handler.auth_required_for_post("/api/social/token"), "Meta token save is protected during onboarding")
+            self.assert_true(handler.auth_required_for_get("/api/social/accounts"), "Meta account discovery is protected before a password exists")
+            dashboard.load_config = lambda: WithPassword()
+            self.assert_true(handler.auth_required_for_post("/api/dashboard-password"), "Changing password requires auth after a password exists")
+            self.assert_true(handler.auth_required_for_get("/api/dashboard"), "Dashboard API is protected after password exists even before onboarding is complete")
+        finally:
+            dashboard.load_config = original_load_config
+            dashboard.load_onboarding_state = original_onboarding
+
     def test_secret_redaction(self):
         """Test sensitive buyer fields are redacted from logs."""
         print("\nTesting Secret Redaction...")
@@ -506,6 +544,20 @@ class IntegrationTestSuite:
         self.assert_true(redacted["nested"]["api_key"] == "configured", "Nested API key redacted")
         self.assert_true(redacted["safe"] == "visible", "Non-secret field remains visible")
 
+    def test_website_scanner_blocks_private_urls(self):
+        """Test onboarding website intelligence only reads public websites."""
+        print("\nTesting Website Scanner URL Safety...")
+
+        dashboard = load_dashboard_module()
+        blocked = ["http://127.0.0.1:8000", "http://localhost", "http://10.0.0.5", "http://192.168.1.1"]
+        for url in blocked:
+            try:
+                dashboard.validate_public_website_url(url)
+                self.assert_true(False, f"Private website scan URL should be blocked: {url}")
+            except ValueError:
+                self.assert_true(True, f"Private website scan URL blocked: {url}")
+        self.assert_true(dashboard.normalize_website_url("example.com").startswith("https://example.com"), "Plain domains are normalized to https")
+
     def test_skill_response_parsing(self):
         """Test MiniMax skill JSON parsing."""
         print("\nTesting Skill Response Parsing...")
@@ -514,15 +566,200 @@ class IntegrationTestSuite:
         self.assert_true(parsed["assistant_message"] == "Listo", "Skill assistant message parsed")
         self.assert_true(parsed["tool_request"]["tool"] == "run_daily_check", "Skill tool request parsed")
 
-    def test_chat_approval_guardrail_tool(self):
-        """Test chat cannot approve actions through the skill executor."""
-        print("\nTesting Chat Approval Guardrail Tool...")
+    def test_hermes_provider_parses_tool_request(self):
+        """Test Hermes provider output uses the same protected backend tool contract."""
+        print("\nTesting Hermes Provider Tool Contract...")
+
+        class FakeConfig:
+            agent_chat_provider = "hermes"
+
+        original_hermes_chat = agent_chat.hermes_chat
+        received = []
+        try:
+            agent_chat.hermes_chat = lambda config, payload: received.append(payload) or {
+                "ok": True,
+                "provider": "hermes",
+                "reply": '{"assistant_message":"Listo","tool_request":{"tool":"review_live_readiness","arguments":{}}}',
+            }
+            result = agent_chat.chat(FakeConfig(), {"message": "Que falta para live?", "metrics": {}, "language": "es"})
+            self.assert_true(result["provider"] == "hermes", "Hermes is the active chat provider")
+            self.assert_true(result["tool_request"]["tool"] == "review_live_readiness", "Hermes tool request parsed")
+            self.assert_true("account_context" in received[0], "Hermes receives account context")
+        finally:
+            agent_chat.hermes_chat = original_hermes_chat
+
+    def test_hermes_creative_image_request_routes_to_codex_tool(self):
+        """Test Hermes can route a natural image-creative request to the Codex creative tool."""
+        print("\nTesting Hermes Creative Image Tool Routing...")
+
+        class FakeConfig:
+            agent_chat_provider = "hermes"
+
+        original_hermes_chat = agent_chat.hermes_chat
+        received = []
+        try:
+            agent_chat.hermes_chat = lambda config, payload: received.append(payload) or {
+                "ok": True,
+                "provider": "hermes",
+                "reply": json.dumps(
+                    {
+                        "assistant_message": "Hice el analisis de la imagen. Puedo preparar tres rutas visuales y dejarlas listas para revisar.",
+                        "tool_request": {
+                            "tool": "codex_creative_plan",
+                            "arguments": {
+                                "request": "Prepara 3 creativos para Meta Ads usando Codex Image. Resumen visual: producto fisico protagonista, fondo limpio, promesa clara y formato 4:5.",
+                                "product_guide": "",
+                            },
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+            result = agent_chat.chat(
+                FakeConfig(),
+                {
+                    "message": "Prepara creativos para mis anuncios usando esta imagen del producto.",
+                    "metrics": {},
+                    "language": "es",
+                    "image_paths": [str(ROOT_DIR / "output" / "telegram_uploads" / "producto-test.png")],
+                },
+            )
+            tool_request = result.get("tool_request") or {}
+            self.assert_true(tool_request.get("tool") == "codex_creative_plan", "Creative image requests can route to Codex creative planning")
+            self.assert_true("Resumen visual" in tool_request.get("arguments", {}).get("request", ""), "Hermes includes visual summary for Codex instead of relying on file reads")
+            self.assert_true("account_context" in received[0], "Hermes creative requests receive account context")
+        finally:
+            agent_chat.hermes_chat = original_hermes_chat
+
+    def test_hermes_missing_runtime_gives_chatgpt_setup_guidance(self):
+        """Test missing Hermes runtime gives buyer-friendly ChatGPT/Codex setup guidance."""
+        print("\nTesting Hermes Missing Runtime Guidance...")
+
+        class FakeConfig:
+            hermes_use_python_library = False
+            hermes_cli = "__missing_hermes_binary__"
+            hermes_model = ""
+            hermes_timeout_seconds = 1
+            hermes_max_iterations = 1
+            hermes_enabled_toolsets = ""
+            hermes_disabled_toolsets = "terminal"
+            hermes_home = ""
+
+        result = hermes_bridge.chat(FakeConfig(), {"message": "Hola", "language": "es", "account_context": {}})
+        self.assert_true(result["provider"] == "hermes", "Hermes bridge responds")
+        self.assert_true(result.get("fallback") is True, "Missing Hermes runtime is a fallback state")
+        self.assert_true("hermes model" in result["reply"].lower() and "chatgpt" in result["reply"].lower(), "Fallback explains ChatGPT/Codex OAuth setup")
+
+    def test_hermes_attaches_safe_uploaded_images(self):
+        """Test Hermes sees uploaded reference images without enabling broad file access."""
+        print("\nTesting Hermes Uploaded Image Attachment...")
+
+        class FakeConfig:
+            hermes_cli = "hermes"
+            hermes_model = ""
+            hermes_timeout_seconds = 10
+            hermes_max_iterations = 3
+            hermes_enabled_toolsets = "memory,skills,session_search,vision,image_gen,file"
+            hermes_disabled_toolsets = "terminal,code_execution"
+            hermes_home = ""
+
+        image_dir = ROOT_DIR / "output" / "telegram_uploads"
+        image_dir.mkdir(parents=True, exist_ok=True)
+        safe_image = image_dir / "test-reference.png"
+        safe_image.write_bytes(b"fakepng")
+        unsafe_image = ROOT_DIR / ".env"
+        captured = {}
+
+        class Completed:
+            returncode = 0
+            stdout = "Imagen revisada."
+            stderr = ""
+
+        original_run = hermes_bridge.subprocess.run
+        try:
+            def fake_run(command, **kwargs):
+                captured["command"] = command
+                return Completed()
+
+            hermes_bridge.subprocess.run = fake_run
+            result = hermes_bridge.cli_chat(FakeConfig(), {"message": "Crea creativos", "language": "es", "account_context": {}, "image_paths": [str(safe_image), str(unsafe_image)]})
+            command = captured["command"]
+            self.assert_true(result == "Imagen revisada.", "Hermes CLI response returned")
+            image_index = command.index("--image") + 1
+            attached_image = command[image_index]
+            self.assert_true("--image" in command and attached_image.endswith("test-reference.png"), "Safe uploaded image is attached to Hermes")
+            self.assert_true("dashboard/data/hermes-workspace/current/uploads" in attached_image, "Safe uploaded image is copied into the Hermes workspace before attachment")
+            self.assert_true(str(unsafe_image.resolve()) not in command, "Unsafe local file is not attached as an image")
+            self.assert_true("memory,skills,session_search,vision,image_gen,file" in command, "Creative-friendly Hermes toolsets include scoped file access")
+        finally:
+            hermes_bridge.subprocess.run = original_run
+
+    def test_hermes_business_memory_workspace_is_curated_and_redacted(self):
+        """Test Hermes receives approved business files inside its workspace without leaking secrets."""
+        print("\nTesting Hermes Curated Business Memory...")
+
+        memory = hermes_bridge.business_memory_context()
+        workspace = hermes_bridge.prepare_hermes_workspace({"image_paths": [str(ROOT_DIR / ".env")]})
+        prompt = hermes_bridge.hermes_prompt(
+            type("FakeConfig", (), {"agent_profile_dir": "agent"})(),
+            {"message": "Que sabes de mi negocio?", "language": "es", "account_context": {}, "image_paths": [str(ROOT_DIR / ".env")]},
+            workspace,
+        )
+        self.assert_true("Curated local business memory JSON" in prompt, "Hermes prompt includes curated business memory")
+        self.assert_true("Hermes workspace files" in prompt, "Hermes prompt lists workspace files")
+        self.assert_true("business_profile" in memory and "brand_guides" in memory, "Business and brand memory are included")
+        self.assert_true((hermes_bridge.HERMES_WORKSPACE_DIR / "data" / "business_profile.json").exists(), "Business profile is copied into Hermes workspace")
+        self.assert_true((hermes_bridge.HERMES_WORKSPACE_DIR / "brand_guides" / "general_branding.md").exists(), "Brand guide is copied into Hermes workspace")
+        self.assert_true(".env" not in prompt and "MINIMAX_API_KEY" not in prompt, "Secrets and arbitrary local files are not included")
+        self.assert_true("Uploaded reference images" not in prompt, "Unsafe non-upload image paths are not attached")
+
+    def test_chat_approval_decision_tool(self):
+        """Test chat approvals execute only when they resolve to one exact pending decision."""
+        print("\nTesting Chat Approval Decision Tool...")
 
         dashboard = load_dashboard_module()
-        result = dashboard.execute_agent_tool({"tool": "approval_guardrail", "arguments": {}}, {"language": "es"})
-        self.assert_true(result is not None, "Approval intent is routed locally")
-        self.assert_true(result["type"] == "approval_guardrail", "Approval intent hits guardrail")
-        self.assert_true(result["executed"] is False, "Approval is not executed from chat")
+        original = {
+            "PENDING_FILE": dashboard.PENDING_FILE,
+            "approve_pending": dashboard.approve_pending,
+            "reject_pending": dashboard.reject_pending,
+            "require_license_unlock": dashboard.require_license_unlock,
+        }
+        test_dir = ROOT_DIR / "output" / "test-chat-approval-decision"
+        try:
+            shutil.rmtree(test_dir, ignore_errors=True)
+            test_dir.mkdir(parents=True, exist_ok=True)
+            dashboard.PENDING_FILE = test_dir / "pending.json"
+            dashboard.write_json(
+                dashboard.PENDING_FILE,
+                [
+                    {"id": "approval_exact", "type": "budget_change", "status": "pending", "payload": {"campaign_name": "Campaña Test", "new_budget": 20}},
+                    {"id": "approval_second", "type": "pause_campaign", "status": "pending", "payload": {"campaign_name": "Otra Campaña"}},
+                ],
+            )
+            dashboard.require_license_unlock = lambda *args, **kwargs: None
+            dashboard.approve_pending = lambda approval_id: [{"id": approval_id, "status": "approved", "result": {"ok": True}}]
+            dashboard.reject_pending = lambda approval_id, reason="": [{"id": approval_id, "status": "rejected"}]
+            exact = dashboard.execute_agent_tool({"tool": "approval_decision", "arguments": {"approval_id": "approval_exact", "decision": "approve"}}, {"language": "es"})
+            ambiguous = dashboard.execute_agent_tool({"tool": "approval_guardrail", "arguments": {}}, {"language": "es", "message": "aprueba"})
+            self.assert_true(exact["type"] == "approval_decision", "Approval intent is routed locally")
+            self.assert_true(exact["executed"] is True, "Exact chat approval can execute")
+            self.assert_true("approval_choices" in ambiguous, "Ambiguous approval shows exact choices")
+            dashboard.write_json(
+                dashboard.PENDING_FILE,
+                [
+                    {"id": "approval_active", "type": "create_campaign", "status": "pending", "payload": {"name": "Active Test", "final_status": "ACTIVE"}},
+                ],
+            )
+            blocked_active = dashboard.route_chat_approval_decision({"language": "en", "message": "approve approval_active"})
+            approved_active = dashboard.route_chat_approval_decision({"language": "en", "message": "Yes, create and leave active approval_active"})
+            parsed_active = dashboard.parse_campaign_creation_payload("create ads for coffee active yes, create and leave active", {"message": ""})
+            self.assert_true(blocked_active["routed_action"]["reason"] == "active_confirmation_required", "Active approval needs exact confirmation")
+            self.assert_true(approved_active["routed_action"]["executed"] is True, "English active confirmation is accepted")
+            self.assert_true(parsed_active["active_spend_confirmed"] is True, "English active confirmation is accepted in campaign parsing")
+        finally:
+            for key, value in original.items():
+                setattr(dashboard, key, value)
+            shutil.rmtree(test_dir, ignore_errors=True)
 
     def test_minimax_tool_request_executes_backend_tool(self):
         """Test MiniMax-style tool request can trigger a backend action."""
@@ -544,7 +781,7 @@ class IntegrationTestSuite:
         except ValueError as exc:
             self.assert_true("brand_guides/products" in str(exc), "Codex product guide blocks arbitrary local-file reads")
         context = account_context({"brand_guides": {"general_exists": True, "product_guides": ["brand_guides/products/oferta.md"]}})
-        self.assert_true(context["brand_guides"]["product_guides"] == ["brand_guides/products/oferta.md"], "MiniMax receives safe Codex guide inventory")
+        self.assert_true(context["brand_guides"]["product_guides"] == ["brand_guides/products/oferta.md"], "Hermes receives safe Codex guide inventory")
         dashboard = load_dashboard_module()
         original_call_codex = dashboard.call_codex_cli
         original_load_config = dashboard.load_config
@@ -581,6 +818,240 @@ class IntegrationTestSuite:
             codex_brand_guides.subprocess.run = original_run
             codex_brand_guides.load_config = original_codex_config
 
+    def test_agent_codex_image_creative_request_result(self):
+        """Test the agent result when the buyer asks for ad creatives using Codex image planning."""
+        print("\nTesting Agent Codex Image Creative Request Result...")
+
+        dashboard = load_dashboard_module()
+        image_dir = ROOT_DIR / "output" / "telegram_uploads"
+        image_dir.mkdir(parents=True, exist_ok=True)
+        reference_image = image_dir / "producto-test.png"
+        reference_image.write_bytes(b"fake image content")
+
+        original_load_config = dashboard.load_config
+        original_call_codex = dashboard.call_codex_cli
+        calls = []
+        try:
+            dashboard.load_config = lambda: type("Cfg", (), {"codex_creative_enabled": False})()
+            dashboard.call_codex_cli = lambda prompt: calls.append(prompt) or {"ok": True}
+            disabled = dashboard.execute_agent_tool(
+                {
+                    "tool": "codex_creative_plan",
+                    "arguments": {
+                        "request": "Prepara 3 creativos para Meta Ads usando Codex Image con la foto del producto.",
+                        "product_guide": "",
+                    },
+                },
+                {"language": "es", "image_paths": [str(reference_image)]},
+            )
+            self.assert_true(disabled["type"] == "codex_creative_plan", "Codex creative request routes to the creative planning tool")
+            self.assert_true(disabled["executed"] is False and disabled["blocked"] is True, "Codex creative request is blocked when owner has not enabled Codex")
+            self.assert_true("Codex CLI" in disabled["reply"], "Buyer receives clear Codex setup/enablement guidance")
+            self.assert_true(not calls, "Disabled Codex creative requests do not call the CLI")
+
+            dashboard.load_config = lambda: type("Cfg", (), {"codex_creative_enabled": True})()
+            dashboard.call_codex_cli = lambda prompt: calls.append(prompt) or {
+                "ok": True,
+                "stdout": (
+                    "Diagnostico creativo: la foto del producto debe ser el centro visual.\n"
+                    "Concepto 1: antes/despues con beneficio claro.\n"
+                    "Concepto 2: close-up del producto con texto corto.\n"
+                    "Concepto 3: escena de uso con prueba/confianza.\n"
+                    "Prompt final para ChatGPT Image / Image 2: crear anuncio 4:5 limpio, producto protagonista, texto grande, fondo coherente con marca.\n"
+                    "Variantes: 1:1, 4:5, 9:16.\n"
+                    "Copy: Mejora tus resultados sin abrir Ads Manager a ciegas."
+                ),
+            }
+            enabled = dashboard.execute_agent_tool(
+                {
+                    "tool": "codex_creative_plan",
+                    "arguments": {
+                        "request": "Prepara 3 creativos para Meta Ads usando Codex Image con la foto del producto.",
+                        "product_guide": "",
+                    },
+                },
+                {"language": "es", "image_paths": [str(reference_image)]},
+            )
+            self.assert_true(enabled["executed"] is True, "Enabled Codex creative request executes the optional bridge")
+            self.assert_true("Prompt final para ChatGPT Image / Image 2" in enabled["reply"], "Agent returns Codex image-ready creative prompt output")
+            self.assert_true("Imagen de referencia recibida" in calls[0], "Uploaded image context is forwarded into the Codex planning prompt")
+            self.assert_true(str(reference_image) not in calls[0], "Codex prompt receives visual context without arbitrary local file dependency")
+        finally:
+            dashboard.load_config = original_load_config
+            dashboard.call_codex_cli = original_call_codex
+
+    def test_creative_studio_protects_and_previews_generated_assets(self):
+        """Test the visual studio exposes only generated images from its own refresh batch."""
+        print("\nTesting Creative Studio Protected Previews...")
+
+        dashboard = load_dashboard_module()
+        root = dashboard.CREATIVE_ASSET_ROOT
+        root.mkdir(parents=True, exist_ok=True)
+        refresh_dir = Path(tempfile.mkdtemp(prefix="creative_studio_test_", dir=str(root)))
+        refresh_id = refresh_dir.name
+        image_path = refresh_dir / "preview_4x5.png"
+        image_path.write_bytes(b"png preview")
+        old_temp_path = refresh_dir / "old_temp.png"
+        old_temp_path.write_bytes(b"old temporary")
+        old_saved_path = refresh_dir / "old_saved.png"
+        old_saved_path.write_bytes(b"old saved")
+        outside_path = ROOT_DIR / "output" / f"{refresh_id}_outside.png"
+        outside_path.write_bytes(b"must not be exposed")
+        manifest_path = refresh_dir / "manifest.json"
+        dashboard.write_json(
+            manifest_path,
+            {
+                "id": refresh_id,
+                "created_at": "2026-05-26T10:00:00-05:00",
+                "status": "images_ready",
+                "provider": "nano-banana",
+                "image_mode": "live",
+                "brand_memory": {"product": {"name": "Serum luminoso", "guide": "brand_guides/products/serum.md"}},
+                "campaign": {"id": "camp_1", "name": "Producto prueba"},
+                "upload_policy": {"requires_approval": True},
+                "variants": [
+                    {
+                        "variant_id": "v1",
+                        "copy": {"headline": "Oferta clara", "primary_text": "Texto", "angle": "beneficio", "cta": "Comprar"},
+                        "image_prompts": [{"aspect_ratio": "4:5", "prompt": "prompt"}],
+                        "assets": [
+                            {"path": str(image_path), "mime_type": "image/png", "aspect_ratio": "4:5", "created_at": "2026-05-26T10:00:00-05:00"},
+                            {"path": str(outside_path), "mime_type": "image/png", "aspect_ratio": "1:1"},
+                        ],
+                    },
+                    {
+                        "variant_id": "v2",
+                        "copy": {"headline": "Retención", "primary_text": "Texto", "angle": "control", "cta": "Comprar"},
+                        "image_prompts": [{"aspect_ratio": "1:1", "prompt": "prompt"}],
+                        "assets": [
+                            {"path": str(old_temp_path), "mime_type": "image/png", "aspect_ratio": "1:1", "created_at": "2026-05-01T10:00:00-05:00"},
+                            {"path": str(old_saved_path), "mime_type": "image/png", "aspect_ratio": "4:5", "created_at": "2026-05-01T10:00:00-05:00", "retention": {"saved": True, "kind": "ad_image", "reason": "ad_created"}},
+                        ],
+                    },
+                ],
+            },
+        )
+        original_recent = dashboard.recent_creative_refreshes
+        try:
+            dashboard.recent_creative_refreshes = lambda limit=8: [
+                {
+                    "id": refresh_id,
+                    "created_at": "2026-05-26T10:00:00-05:00",
+                    "status": "images_ready",
+                    "campaign": {"id": "camp_1", "name": "Producto prueba"},
+                    "variant_count": 1,
+                    "manifest_path": str(manifest_path),
+                }
+            ]
+            items = dashboard.creative_studio_items(1)
+            assets = items[0]["variants"][0]["assets"]
+            self.assert_true(items[0]["has_generated_images"] is True, "Creative studio marks a batch with valid generated previews")
+            self.assert_true(items[0]["brand_memory"]["product"]["name"] == "Serum luminoso", "Creative studio retains the selected product memory on its batch")
+            self.assert_true(len(assets) == 1 and assets[0]["preview_url"].startswith("/api/creative-asset?id="), "Studio publishes only its scoped protected preview URL")
+            self.assert_true(assets[0]["temporary"] is True and assets[0]["storage"].get("cleanup") == "manual_cleanup" and assets[0]["filename"] == image_path.name, "Studio exposes local storage metadata and filenames for downloads")
+            self.assert_true(any(asset.get("saved_for_ad") for asset in items[0]["variants"][1]["assets"]), "Studio labels ad images that are kept permanently")
+            self.assert_true(dashboard.creative_asset_path(f"{refresh_id}/preview_4x5.png") == image_path, "Protected creative preview resolves a valid batch asset")
+            dashboard.stage_upload(str(manifest_path), "v1", ["4:5"], request_approval=False)
+            updated = dashboard.read_json(manifest_path, {})
+            retained = updated["variants"][0]["assets"][0]["retention"]
+            self.assert_true(retained.get("saved") is True and retained.get("reason") == "selected_for_ad", "Preparing an image for an ad marks it as retained")
+            cleanup = dashboard.clear_temporary_creative_assets()
+            self.assert_true(cleanup["deleted"] >= 1 and not old_temp_path.exists(), "Manual creative storage cleanup removes only draft images")
+            self.assert_true(image_path.exists() and old_saved_path.exists(), "Ad-selected/generated images marked as saved are retained during storage cleanup")
+            try:
+                dashboard.creative_asset_path(f"../{outside_path.name}")
+                self.assert_true(False, "Protected creative previews reject paths outside the creative directory")
+            except ValueError:
+                self.assert_true(True, "Protected creative previews reject paths outside the creative directory")
+        finally:
+            dashboard.recent_creative_refreshes = original_recent
+            shutil.rmtree(refresh_dir, ignore_errors=True)
+            outside_path.unlink(missing_ok=True)
+
+    def test_brand_memory_documents_feed_creative_generation(self):
+        """Test visual brand/product memory is persisted as Markdown and actually used for creative output."""
+        print("\nTesting Brand Memory Creative Context...")
+
+        general_path = codex_brand_guides.GENERAL_GUIDE
+        product_path = codex_brand_guides.PRODUCT_DIR / "memoria-prueba-integracion.md"
+        ad_brief_path = codex_brand_guides.AD_BRIEF_DIR / "brief-buen-fin-variantes.md"
+        general_before = general_path.read_bytes() if general_path.exists() else None
+        product_before = product_path.read_bytes() if product_path.exists() else None
+        ad_brief_before = ad_brief_path.read_bytes() if ad_brief_path.exists() else None
+        try:
+            blank_fields = codex_brand_guides.general_fields("- Promesa principal:\n- Cliente ideal: Compradora real")
+            self.assert_true(blank_fields["promise"] == "" and blank_fields["ideal_customer"] == "Compradora real", "Blank Markdown fields never absorb the following brand field")
+            library = codex_brand_guides.save_general_guide(
+                {
+                    "brand_name": "Luz Clara",
+                    "offer": "Cuidado facial consciente",
+                    "visual_style": "fondos marfil con acentos coral y fotografia limpia",
+                    "tone": "cercano, decidido y facil de entender",
+                    "avoid_always": "promesas medicas",
+                }
+            )
+            result = codex_brand_guides.save_product_guide(
+                {
+                    "name": "Memoria Prueba Integracion",
+                    "audience": "mujeres que buscan una rutina facial sencilla",
+                    "pain": "piel opaca y rutina confusa",
+                    "desire": "piel luminosa sin complicaciones",
+                    "avoid": "resultados milagrosos",
+                }
+            )
+            plan = build_creative_plan(
+                {"id": "memory_test", "name": "Campaña de prueba", "health": "fatigue"},
+                product_guide=result["guide"],
+            )
+            ad_brief = codex_brand_guides.save_ad_brief(
+                {
+                    "name": "Brief Buen Fin Variantes",
+                    "product_guide": result["guide"],
+                    "campaign_name": "Campaña Buen Fin",
+                    "adset_name": "Lookalike compradores",
+                    "base_ad_name": "Anuncio ganador testimonio",
+                    "promotion": "Bono de Buen Fin por 48 horas",
+                    "base_ad": "un testimonio directo y fondo claro que ya convierte",
+                    "locked_elements": "mantener testimonio, oferta y CTA",
+                    "variation_window": "probar solo paleta de colores y encuadre del producto",
+                    "variation_axes": "colores, encuadre, fondo",
+                    "variation_count": "4",
+                }
+            )
+            ad_plan = build_creative_plan(
+                {"id": "ad_brief_test", "name": "Campaña Buen Fin", "health": "good"},
+                ad_brief=ad_brief["ad_brief"],
+            )
+            prompt = plan["variants"][0]["image_prompts"][0]["prompt"]
+            ad_prompt = ad_plan["variants"][0]["image_prompts"][0]["prompt"]
+            self.assert_true(library["general"]["saved"] is True and product_path.exists(), "Brand and product memory are saved as local Markdown guides")
+            self.assert_true("product.example.md" not in [item["guide"] for item in result["library"]["products"]], "Product template is not presented as buyer memory")
+            self.assert_true(plan["brand_memory"]["product"]["name"] == "Memoria Prueba Integracion", "Creative plan records which product memory it used")
+            self.assert_true("Memoria Prueba Integracion" in plan["variants"][0]["copy"]["headline"], "Product memory informs generated ad copy")
+            self.assert_true("piel luminosa sin complicaciones" in plan["variants"][0]["copy"]["primary_text"], "Desired result from product memory informs the copy")
+            self.assert_true("fondos marfil" in prompt and "mujeres que buscan" in prompt and "resultados milagrosos" in prompt, "Brand style, audience, and exclusions inform image prompts")
+            self.assert_true(ad_brief_path.exists() and ad_plan["brand_memory"]["ad_brief"]["name"] == "Brief Buen Fin Variantes", "Ad brief memory is saved and attached to creative plans")
+            self.assert_true(len(ad_plan["variants"]) == 4, "Ad brief variation count controls the number of variants")
+            self.assert_true("Anuncio ganador testimonio" in ad_plan["brand_memory"]["ad_brief"]["base_ad_name"], "Ad brief records the exact winning/base ad")
+            self.assert_true("Bono de Buen Fin" in ad_prompt and "paleta de colores" in ad_prompt, "Ad brief promotion and creative window inform image prompts")
+            self.assert_true("colores" in ad_plan["variants"][0]["copy"]["headline"].lower(), "Ad brief variation axes become concrete ad variants")
+        finally:
+            if general_before is None:
+                general_path.unlink(missing_ok=True)
+            else:
+                general_path.parent.mkdir(parents=True, exist_ok=True)
+                general_path.write_bytes(general_before)
+            if product_before is None:
+                product_path.unlink(missing_ok=True)
+            else:
+                product_path.parent.mkdir(parents=True, exist_ok=True)
+                product_path.write_bytes(product_before)
+            if ad_brief_before is None:
+                ad_brief_path.unlink(missing_ok=True)
+            else:
+                ad_brief_path.parent.mkdir(parents=True, exist_ok=True)
+                ad_brief_path.write_bytes(ad_brief_before)
+
     def test_audience_builder_readiness(self):
         """Test audience builder creates safe targeting strategy and lookalike readiness."""
         print("\nTesting Audience Builder...")
@@ -598,6 +1069,8 @@ class IntegrationTestSuite:
         )
         self.assert_true(strategy["lookalike_readiness"]["ready"], "Lookalike readiness detected from pixel/engagement")
         self.assert_true(len(strategy["strategies"]) >= 4, "Audience strategy includes lookalike when ready")
+        self.assert_true(strategy["strategies"][0]["name"] == "Llegar a personas nuevas", "Spanish audience advice avoids unexplained prospecting jargon")
+        self.assert_true("personas parecidas" in strategy["next_steps"][2].lower(), "Spanish next steps explain lookalikes in plain language")
 
     def test_chat_audience_tool(self):
         """Test MiniMax audience tool can execute through backend."""
@@ -619,6 +1092,34 @@ class IntegrationTestSuite:
         )
         self.assert_true(result["type"] == "build_audience_strategy", "Audience tool recognized")
         self.assert_true(result["executed"] is True, "Audience strategy generated")
+
+    def test_meta_targeting_search_normalizes_options(self):
+        """Test Meta targeting search returns buyer-safe selectable options."""
+        print("\nTesting Meta Targeting Search...")
+
+        dashboard = load_dashboard_module()
+        original_graph_get = dashboard.graph_get
+        calls = []
+
+        def fake_graph_get(path, params=None, page_token=""):
+            calls.append((path, params or {}))
+            if (params or {}).get("type") == "adinterest":
+                return {"ok": True, "data": {"data": [{"id": "6001", "name": "Ecommerce", "path": ["Business"], "audience_size": 123456}]}}
+            return {"ok": True, "data": {"data": [{"key": "CO", "name": "Colombia", "type": "country", "country_code": "CO"}]}}
+
+        try:
+            dashboard.graph_get = fake_graph_get
+            interests = dashboard.meta_targeting_search({"kind": "interest", "q": "ecommerce"})
+            locations = dashboard.meta_targeting_search({"kind": "location", "q": "Colombia"})
+            self.assert_true(calls[0][0] == "search" and calls[0][1]["type"] == "adinterest", "Interest targeting search uses Meta search")
+            self.assert_true(interests["items"][0]["id"] == "6001" and interests["items"][0]["name"] == "Ecommerce", "Interest search normalizes ID and name")
+            self.assert_true(calls[1][1]["type"] == "adgeolocation" and "location_types" in calls[1][1], "Location targeting search uses Meta geolocation search")
+            self.assert_true(locations["items"][0]["key"] == "CO" and locations["items"][0]["label"].startswith("Colombia"), "Location search normalizes location chips")
+            dashboard.graph_get = lambda *args, **kwargs: {"ok": False, "error": {"error": {"message": "Error validating access token: Session has expired"}}}
+            expired = dashboard.meta_targeting_search({"kind": "interest", "q": "fitness"})
+            self.assert_true("clave nueva" in expired["message"] and "OAuth" not in expired["message"], "Expired Meta key audience-search error is buyer-friendly")
+        finally:
+            dashboard.graph_get = original_graph_get
 
     def test_chat_saves_existing_adset_when_user_provides_it(self):
         """Test chat can store an optional existing ad set ID without making it a beginner requirement."""
@@ -651,6 +1152,7 @@ class IntegrationTestSuite:
         actions_path = dashboard.ACTIONS_FILE
         actions_before = actions_path.read_text(encoding="utf-8") if actions_path.exists() else ""
         try:
+            dashboard.save_chat_history([])
             saved = dashboard.append_chat_turn("Quiero crear un anuncio para mi curso", "Perfecto, empecemos por la oferta.")
             loaded = dashboard.load_chat_history()
             payload = dashboard.dashboard_payload()
@@ -668,6 +1170,111 @@ class IntegrationTestSuite:
                 actions_path.write_text(actions_before, encoding="utf-8")
             elif actions_path.exists():
                 actions_path.unlink()
+
+    def test_creative_memory_wizard_collects_and_saves_guides(self):
+        """Test the chat-guided creative memory flow saves brand, product, and ad brief files."""
+        print("\nTesting Creative Memory Chat Wizard...")
+
+        dashboard = load_dashboard_module()
+        general_path = dashboard.BRAND_GUIDES_DIR / "general_branding.md"
+        product_path = dashboard.BRAND_PRODUCTS_DIR / "oferta-guiada-test.md"
+        brief_path = dashboard.BRAND_GUIDES_DIR / "ad_briefs" / "brief-guiado-test.md"
+        wizard_path = dashboard.CREATIVE_MEMORY_WIZARD_FILE
+        actions_path = dashboard.ACTIONS_FILE
+        backups = {
+            general_path: general_path.read_bytes() if general_path.exists() else None,
+            product_path: product_path.read_bytes() if product_path.exists() else None,
+            brief_path: brief_path.read_bytes() if brief_path.exists() else None,
+            wizard_path: wizard_path.read_bytes() if wizard_path.exists() else None,
+            actions_path: actions_path.read_bytes() if actions_path.exists() else None,
+        }
+        try:
+            dashboard.reset_creative_memory_wizard()
+            general_path.unlink(missing_ok=True)
+            product_path.unlink(missing_ok=True)
+            brief_path.unlink(missing_ok=True)
+            start = dashboard.handle_creative_memory_wizard(
+                {"language": "es", "message": "Completar marca con el agente", "memory_wizard": {"mode": "start", "kind": "general"}}
+            )
+            self.assert_true(start["routed_action"]["type"] == "creative_memory_wizard_start" and "pregunta" in start["reply"].lower(), "Brand wizard starts as a guided chat")
+            result = None
+            for answer in [
+                "Miro Ads Lab",
+                "Un manager IA para mejorar Meta Ads",
+                "Ayudar a entender y optimizar anuncios con menos estrés",
+                "Dueños de negocios pequeños en Latinoamérica",
+                "Cercano, decidido y fácil de entender",
+                "Turquesa, violeta y fondos claros",
+                "Dashboard moderno, humano y con producto protagonista",
+                "Promesas falsas o humo técnico",
+            ]:
+                result = dashboard.handle_creative_memory_wizard({"language": "es", "message": answer})
+            fields = dashboard.guide_library()["general"]["fields"]
+            self.assert_true(result["routed_action"]["type"] == "creative_memory_wizard_complete", "Brand wizard completes and saves")
+            self.assert_true(fields["brand_name"] == "Miro Ads Lab" and "Latinoamérica" in fields["ideal_customer"], "Brand answers are saved into Markdown fields")
+
+            start = dashboard.handle_creative_memory_wizard(
+                {"language": "es", "message": "Completar producto con el agente", "memory_wizard": {"mode": "start", "kind": "product"}}
+            )
+            self.assert_true(start["routed_action"]["kind"] == "product", "Product wizard starts from chat")
+            product_result = None
+            for answer in [
+                "Oferta guiada test",
+                "https://example.com/oferta",
+                "USD $49",
+                "Dashboard, guía y plantillas de anuncios",
+                "Emprendedores que venden con Meta Ads",
+                "No entienden qué está pasando en sus campañas",
+                "Tomar mejores decisiones y subir ROAS",
+                "Miedo a tocar algo mal o perder dinero",
+                "UI, chat del agente y ejemplos visuales",
+                "Lujo falso o resultados garantizados",
+                "Tu cuenta te habla; deja de adivinar",
+            ]:
+                product_result = dashboard.handle_creative_memory_wizard({"language": "es", "message": answer})
+            library = dashboard.guide_library()
+            product = next(item for item in library["products"] if item["id"] == "oferta-guiada-test")
+            self.assert_true(product_result["routed_action"]["type"] == "creative_memory_wizard_complete", "Product wizard completes and saves")
+            self.assert_true(product["fields"]["name"] == "Oferta guiada test" and "ROAS" in product["fields"]["desire"], "Product answers are saved into the product guide")
+
+            start = dashboard.handle_creative_memory_wizard(
+                {
+                    "language": "es",
+                    "message": "Completar brief con el agente",
+                    "memory_wizard": {"mode": "start", "kind": "ad_brief", "product_guide": product["guide"]},
+                }
+            )
+            self.assert_true(start["routed_action"]["kind"] == "ad_brief", "Ad brief wizard starts from chat")
+            brief_result = None
+            for answer in [
+                "Brief guiado test",
+                "Bono de lanzamiento 20%",
+                "Campaña ventas lanzamiento",
+                "Mujeres 25-44 Colombia",
+                "Anuncio ganador testimonio",
+                "Ventas",
+                "Visitantes tibios que necesitan confianza",
+                "Testimonio, oferta y CTA corto",
+                "No cambiar precio ni promesa",
+                "Cambiar solo colores, fondo y encuadre",
+                "colores, fondo, encuadre",
+                "4",
+                "Ver si un fondo más limpio mejora el CTR",
+            ]:
+                brief_result = dashboard.handle_creative_memory_wizard({"language": "es", "message": answer})
+            library = dashboard.guide_library()
+            brief = next(item for item in library["ad_briefs"] if item["id"] == "brief-guiado-test")
+            self.assert_true(brief_result["routed_action"]["type"] == "creative_memory_wizard_complete", "Ad brief wizard completes and saves")
+            self.assert_true(brief["fields"]["variation_count"] == "4" and "colores" in brief["fields"]["variation_window"], "Ad brief answers define variation window and count")
+            self.assert_true(brief["fields"]["product_guide"] == product["guide"], "Ad brief keeps the selected product guide")
+        finally:
+            dashboard.reset_creative_memory_wizard()
+            for path, content in backups.items():
+                if content is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(content)
 
     def test_meta_asset_discovery_saves_connected_assets(self):
         """Test selected ad account can discover and save connected Page/Instagram/URL assets."""
@@ -938,6 +1545,61 @@ class IntegrationTestSuite:
         except ValueError as exc:
             self.assert_true("crear y dejar activo" in str(exc), "Active spend confirmation is required")
 
+    def test_campaign_creation_uses_meta_targeting_selection(self):
+        """Test manual campaign creation stores Meta-selected targeting IDs instead of plain text only."""
+        print("\nTesting Campaign Meta Targeting Selection...")
+
+        dashboard = load_dashboard_module()
+        original = {
+            "OUTPUT_DIR": dashboard.OUTPUT_DIR,
+            "CREATED_FILE": dashboard.CREATED_FILE,
+            "PENDING_FILE": dashboard.PENDING_FILE,
+        }
+        test_dir = ROOT_DIR / "output" / "test-meta-targeting"
+        try:
+            shutil.rmtree(test_dir, ignore_errors=True)
+            dashboard.OUTPUT_DIR = test_dir / "campaigns"
+            dashboard.CREATED_FILE = test_dir / "created.json"
+            dashboard.PENDING_FILE = test_dir / "pending.json"
+            payload = {
+                "name": "Meta Targeting Test",
+                "objective": "PURCHASES",
+                "daily_budget": 25,
+                "total_budget": 750,
+                "final_status": "PAUSED",
+                "targeting_locations_json": json.dumps([{"kind": "location", "key": "CO", "name": "Colombia", "type": "country", "country_code": "CO"}]),
+                "targeting_interests_json": json.dumps([{"kind": "interest", "id": "6001", "name": "Ecommerce"}]),
+            }
+            result = dashboard.create_campaign(payload)
+            created = dashboard.read_json(dashboard.CREATED_FILE, [])
+            campaign = created[0]["campaign"]
+            targeting = campaign["ad_sets"][0]["targeting"]
+            self.assert_true(result["payload"]["requested"]["targeting"]["source"] == "meta_search", "Approval card marks targeting as Meta search")
+            self.assert_true(targeting["meta_targeting"]["locations"][0]["key"] == "CO", "Campaign stores selected Meta location")
+            self.assert_true(targeting["meta_targeting"]["interests"][0]["id"] == "6001", "Campaign stores selected Meta interest ID")
+        finally:
+            for key, value in original.items():
+                setattr(dashboard, key, value)
+            shutil.rmtree(test_dir, ignore_errors=True)
+
+    def test_social_targeting_uses_meta_ids(self):
+        """Test approved campaign execution sends Meta targeting IDs to the connector."""
+        print("\nTesting Social Targeting Meta IDs...")
+
+        spec = daily_agent.targeting_for_social(
+            {
+                "locations": ["US"],
+                "age_range": {"min": 25, "max": 44},
+                "meta_targeting": {
+                    "locations": [{"key": "2420605", "name": "Bogotá", "type": "city", "country_code": "CO"}],
+                    "interests": [{"id": "6001", "name": "Ecommerce"}],
+                },
+            }
+        )
+        self.assert_true(spec["geo_locations"]["cities"][0]["key"] == "2420605", "Social targeting sends selected city key")
+        self.assert_true(spec["interests"][0] == {"id": "6001", "name": "Ecommerce"}, "Social targeting sends selected interest ID")
+        self.assert_true(spec["age_min"] == 25 and spec["age_max"] == 44, "Social targeting preserves age range")
+
     def test_autopilot_action_updates_dashboard_only_after_meta_success(self):
         """Test autopilot UI/chat mutations are real connector actions, not local-only state."""
         print("\nTesting Autopilot Connector Execution...")
@@ -1087,14 +1749,20 @@ class IntegrationTestSuite:
             if campaign_path.exists():
                 campaign_path.unlink()
 
-    def test_chat_stages_campaign_creation_but_cannot_approve(self):
-        """Test natural language can stage campaign creation while chat approvals stay blocked."""
+    def test_chat_stages_campaign_creation_and_requires_exact_approval(self):
+        """Test natural language can stage campaign creation while approvals require an exact pending decision."""
         print("\nTesting Chat Campaign Creation Routing...")
 
         dashboard = load_dashboard_module()
         original_require = dashboard.require_cloud_license
         original_create = dashboard.create_campaign
+        original_pending = dashboard.PENDING_FILE
+        test_dir = ROOT_DIR / "output" / "test-chat-campaign-routing"
         try:
+            shutil.rmtree(test_dir, ignore_errors=True)
+            test_dir.mkdir(parents=True, exist_ok=True)
+            dashboard.PENDING_FILE = test_dir / "pending.json"
+            dashboard.write_json(dashboard.PENDING_FILE, [])
             dashboard.require_cloud_license = lambda *args, **kwargs: None
             dashboard.create_campaign = lambda payload: {"status": "pending", "id": "approval_test", "payload": payload}
             routed = dashboard.route_chat_action(
@@ -1106,11 +1774,13 @@ class IntegrationTestSuite:
             approve = dashboard.route_chat_action({"language": "es", "message": "aprueba esa campaña"})
             self.assert_true(routed["routed_action"]["type"] == "create_campaign_stack", "Chat routes campaign creation")
             self.assert_true(routed["routed_action"]["staged"] is True, "Chat stages campaign creation for approval")
-            self.assert_true(approve["routed_action"]["type"] == "approval_guardrail", "Chat cannot approve actions")
-            self.assert_true(approve["routed_action"]["executed"] is False, "Chat approval request is blocked")
+            self.assert_true(approve["routed_action"]["type"] == "approval_decision", "Chat approval requests route through exact approval logic")
+            self.assert_true(approve["routed_action"]["executed"] is False, "Chat approval without a pending decision is blocked")
         finally:
             dashboard.require_cloud_license = original_require
             dashboard.create_campaign = original_create
+            dashboard.PENDING_FILE = original_pending
+            shutil.rmtree(test_dir, ignore_errors=True)
 
     def test_telegram_channel_routes_agent_and_blocks_approval(self):
         """Test Telegram uses the manager path and approves only through buttons."""
@@ -1162,20 +1832,32 @@ class IntegrationTestSuite:
             telegram_agent.send_message = lambda config, chat_id, text: sent.append(("message", text))
             telegram_agent.send_message_with_keyboard = lambda config, chat_id, text, keyboard: sent.append(("keyboard", text, keyboard))
             telegram_agent.callback_answer = lambda config, callback_id, text="": sent.append(("callback", text))
-            telegram_agent.approve_pending = lambda approval_id: [{"id": approval_id, "result": {"ok": True}}]
+            telegram_agent.approve_pending = lambda approval_id: [{"id": approval_id, "status": "approved", "result": {"ok": True}}]
             telegram_agent.reject_pending = lambda approval_id, reason="": [{"id": approval_id}]
             reply = telegram_agent.handle_text(FakeConfig(), "12345", "Prepara una campaña", send=False)
-            blocked = telegram_agent.handle_text(FakeConfig(), "12345", "Aprueba esa campaña", send=False)
+            approved_text = telegram_agent.handle_text(FakeConfig(), "12345", "Aprueba esa campaña", send=False)
             pending_reply = telegram_agent.handle_text(FakeConfig(), "12345", "/pendientes", send=True)
             callback = telegram_agent.handle_update(FakeConfig(), {"callback_query": {"id": "cb_1", "data": "approve:approval_test", "message": {"chat": {"id": "12345"}}}})
+            fake_dashboard.pending = [
+                {
+                    "id": "approval_active",
+                    "type": "create_campaign",
+                    "status": "pending",
+                    "payload": {"campaign_name": "Campaña Activa", "final_status": "ACTIVE"},
+                }
+            ]
+            blocked_active = telegram_agent.handle_text(FakeConfig(), "12345", "approve", send=False)
+            approved_active = telegram_agent.handle_text(FakeConfig(), "12345", "Yes, create and leave active", send=False)
             self.assert_true(telegram_agent.is_allowed_chat(FakeConfig(), "12345"), "Configured Telegram private chat is allowed")
             self.assert_true(not telegram_agent.is_allowed_chat(FakeConfig(), "99999"), "Unknown Telegram chat is rejected")
             self.assert_true("preparada para aprobación" in reply, "Telegram can stage manager actions through backend tools")
-            self.assert_true("no apruebo por texto libre" in blocked, "Telegram cannot approve ambiguous natural-language requests")
-            self.assert_true(received_payloads[0]["business_profile"]["main_offer"] == "Curso Test", "Telegram gives MiniMax the selected client's business profile")
+            self.assert_true("Aprobacion ejecutada" in approved_text, "Telegram text can approve the single exact pending decision")
+            self.assert_true(received_payloads[0]["business_profile"]["main_offer"] == "Curso Test", "Telegram gives Hermes the selected client's business profile")
             self.assert_true("Decisiones pendientes" in pending_reply, "Telegram lists pending approvals")
             self.assert_true(any(item[0] == "keyboard" for item in sent), "Telegram sends approve/reject buttons")
             self.assert_true(callback["type"] == "approved", "Telegram button can approve the exact pending action")
+            self.assert_true("responde exactamente" in blocked_active, "Telegram blocks active approvals without exact confirmation")
+            self.assert_true("Aprobacion ejecutada" in approved_active, "Telegram accepts English exact active confirmation")
         finally:
             telegram_agent.agent_chat = original_agent_chat
             telegram_agent._DASHBOARD = original_dashboard
@@ -1196,6 +1878,10 @@ class IntegrationTestSuite:
 
         dashboard = load_dashboard_module()
         html = dashboard.HTML
+        post_routes = set(dashboard.DashboardHandler.POST_JSON_ROUTES) | set(dashboard.DashboardHandler.POST_SPECIAL_ROUTES)
+        get_routes = set(dashboard.DashboardHandler.GET_JSON_ROUTES) | dashboard.DashboardHandler.HTML_PATHS | {"/api/social/login", "/api/creative-asset"}
+        self.assert_true(dashboard.DashboardHandler.PROTECTED_POST_PATHS <= post_routes, "Protected dashboard POST routes have handlers")
+        self.assert_true(dashboard.DashboardHandler.PROTECTED_GET_PATHS <= get_routes, "Protected dashboard GET routes have handlers")
         self.assert_true("unlock-overlay" in html, "Unlock overlay exists")
         self.assert_true("security-trust" not in html, "Security trust cards are not shown inside setup")
         self.assert_true("header-guide-btn" in html and "openUsageGuide()" in html, "Guide opens from compact header button")
@@ -1210,8 +1896,40 @@ class IntegrationTestSuite:
         self.assert_true("body.chat-workspace-open header,body.chat-workspace-open main{margin-left" in html, "Agent workspace shifts the whole dashboard to the right")
         self.assert_true("body.chat-workspace-open .chat-panel{display:grid;left:0;right:auto;top:0;bottom:0" in html, "Agent chat panel fills the full left side")
         self.assert_true("agent-bar-breathe" in html, "Agent bar has a subtle idle animation")
-        self.assert_true(".chat-log::-webkit-scrollbar-thumb" in html and "scrollbar-color:rgba(39,199,167" in html, "AI conversation scrollbar matches the dark theme")
+        self.assert_true(".chat-log::-webkit-scrollbar-thumb" in html and "scrollbar-color:rgba(39,199,167" in html, "Base AI conversation scrollbar style exists")
         self.assert_true("chat-fab-breathe" in html, "Legacy chat motion remains available")
+        self.assert_true("body.theme-light" in html and "body.theme-dark" in html and "toggleDashboardTheme" in html, "Dashboard has light and dark visual modes")
+        self.assert_true("theme-aurora" in html and "theme-sapphire" in html and "setDashboardTheme('sapphire')" in html, "Dashboard exposes named Aurora and Sapphire themes")
+        self.assert_true("theme-ember" in html and "setDashboardTheme('ember')" in html and "dashboardTheme==='ember'" in html, "Dashboard exposes the Ember theme as a persistent third option")
+        self.assert_true(".theme-switcher" in html and ".theme-chip" in html, "Theme picker is a compact named-theme switcher")
+        self.assert_true(".onboarding-flow{--surface:#171520" in html and ".onboarding-flow .onboarding-card" in html, "Onboarding uses a dedicated dark buyer setup theme")
+        self.assert_true("view-timeline" in html and "view-analytics" in html and "view-idle" in html, "Overview exposes timeline, total overview, and showcase views")
+        self.assert_true("renderTimelineView" in html and "renderAnalyticsView" in html and "renderIdleView" in html, "Alternate dashboard views render from live dashboard state")
+        self.assert_true("Crear imagen del producto con Codex" in html and "product-orb" in html, "Idle view introduces Codex-ready product showcase direction")
+        self.assert_true("aurora-card" in html and ".aurora-card .starfield{display:none}" in html, "Decorative dotted texture is removed from important cards")
+        self.assert_true("body.theme-sapphire .timeline-shell:before" in html and "linear-gradient(112deg" in html, "Sapphire featured surfaces use a luminous gradient outline")
+        self.assert_true("body.theme-sapphire .idle-hero:before{padding:2px" in html and "drop-shadow(7px 0 12px rgba(255,151,63" in html, "Sapphire showcase has a stronger warm-edged hero frame")
+        self.assert_true("body.theme-sapphire .idle-copy h3" in html and "-webkit-text-fill-color:transparent" in html, "Sapphire showcase title uses multicolor gradient text")
+        self.assert_true(".idle-floating{position:absolute;z-index:2;isolation:isolate" in html and "backdrop-filter:blur(20px) saturate(155%) contrast(110%)" in html and ".idle-floating b{display:block;color:#fbfaff" in html, "Sapphire showcase metric tiles preserve contrast over variable product imagery")
+        self.assert_true("body.theme-aurora .idle-floating,body.theme-light .idle-floating{border-color:rgba(255,255,255,.9);background:linear-gradient(145deg,rgba(255,255,255,.94)" in html and "body.theme-aurora .idle-floating b,body.theme-light .idle-floating b{color:#19162c" in html, "Aurora showcase metric tiles use readable pale glass")
+        self.assert_true("body.theme-sapphire .kpi:before" in html and "body.theme-sapphire .kpi .l .tip" in html, "Sapphire Control KPI cards share the strong frame and gradient labels")
+        self.assert_true("body.theme-sapphire .timeline-head h3" in html and "body.theme-sapphire .analytics-hero .analytics-head h3" in html, "Timeline and Total view lead titles share the Sapphire gradient style")
+        self.assert_true("body.theme-sapphire .chat-panel" in html and "body.theme-sapphire .msg.user" in html and "body.theme-sapphire .chat-log::-webkit-scrollbar-thumb" in html, "Open chat adopts the Sapphire palette instead of the legacy green accents")
+        self.assert_true("sapphire-chat-head-sheen" in html and "sapphire-chat-avatar-pop" in html and "body.theme-sapphire .msg.thinking:before" in html, "Sapphire chat motion and thinking state use theme-specific highlights")
+        self.assert_true("body.theme-sapphire .chat-head{background:linear-gradient(180deg,#050509" in html, "Sapphire open chat header uses a near-black gradient")
+        self.assert_true("body.theme-dark,body.theme-sapphire{--bg:#04040a" in html and "linear-gradient(180deg,#080812 0%,#05050b 20%,#030307 58%,#010103 100%)" in html, "Sapphire canvas settles into a substantially darker blue-black field")
+        self.assert_true("body.theme-dark .section,body.theme-sapphire .section{background:linear-gradient(145deg,rgba(11,11,20,.97),rgba(4,4,9,.96))" in html and "body.theme-dark .card,body.theme-sapphire .card{background:linear-gradient(145deg,rgba(11,11,20,.99),rgba(3,3,8,.97))" in html, "Sapphire panels remain close to black while retaining jeweled accent lighting")
+        self.assert_true("body.theme-sapphire .brief-zone{--zone:#64c894" in html and "body.theme-sapphire .page-title{background:linear-gradient(130deg,rgba(10,10,19,.985),rgba(3,3,8,.97))" in html, "Sapphire structural bands keep their signals on dark rather than washed backgrounds")
+        self.assert_true("body.theme-sapphire .idle-floating{background:linear-gradient(145deg,rgba(7,7,15,.97),rgba(2,2,7,.94))" in html, "Sapphire Showcase metric tiles maintain near-black contrast-safe surfaces")
+        self.assert_true("body.theme-ember{--bg:#020202" in html and "body.theme-ember .btn.primary" in html and "body.theme-ember .tab.active" in html, "Ember uses carbon surfaces with copper action highlights")
+        self.assert_true("linear-gradient(to top right,#010101 0%,#020202 42%,#030303 70%,#090503 100%)" in html and "radial-gradient(ellipse at 100% 12%,rgba(255,116,45,.1)" in html, "Ember canvas falls into near-black at the lower left with directional warm light")
+        self.assert_true("body.theme-ember .section{background:linear-gradient(148deg,rgba(7,7,7,.98),rgba(3,3,3,.97))" in html and "body.theme-ember .card{background:linear-gradient(145deg,rgba(7,7,7,.99),rgba(2,2,2,.97))" in html, "Ember panels stay close to full black instead of a brown wash")
+        self.assert_true("body.theme-ember .idle-hero" in html and "body.theme-ember .product-orb" in html and "body.theme-ember .idle-floating" in html, "Ember Showcase is fully themed for warm dark presentation")
+        self.assert_true("body.theme-ember .chat-panel" in html and "body.theme-ember .msg.user" in html and "body.theme-ember .agent-chat-bar" in html and "ember-chat-head-sheen" in html, "Ember agent conversation uses matching warm dark controls")
+        self.assert_true("@media(max-width:780px){.theme-switcher{grid-template-columns:repeat(3" in html, "Three named themes remain visible on compact screens")
+        self.assert_true(".chat-head .chat-close{flex:0 0 28px" in html and 'aria-label="Cerrar conversación"' in html, "Chat close action stays a small labeled icon on compact screens")
+        self.assert_true("dashboardUiPreview" in html and "full_setup" in html and "ui_preview" in html, "Local UI work mode can bypass onboarding without deleting setup state")
+        self.assert_true("return isLocalWorkbenchHost(window.location.hostname)" not in html, "UI preview is explicit and no longer bypasses onboarding by default on local/LAN")
         self.assert_true('<div id="mode-control"></div><div id="guardrails-panel"></div><div id="onboarding-wizard"></div>' in html, "Setup starts with control level and guardrails")
         self.assert_true("Corre local o en VPS" not in html and "Secretos en .env" not in html, "Removed noisy trust explainer cards from setup")
         self.assert_true(".tabs{display:flex;flex-wrap:wrap" in html, "Desktop tabs wrap instead of horizontal scrolling")
@@ -1225,6 +1943,16 @@ class IntegrationTestSuite:
         self.assert_true("body:not(.left-panel-open) .brief-zone .section,body:not(.right-panel-open) .rail .section{display:none}" in html, "Folded panels keep headers visible while hiding content")
         self.assert_true("togglePanel('left')" in html and "togglePanel('right')" in html, "Both side panels can be toggled")
         self.assert_true("dashboardPanel:${side}" in html, "Side panel state persists locally")
+        self.assert_true("dashboardPanelMobile:${side}" in html and "matchMedia('(max-width: 780px)')" in html, "Mobile panel state is independent so daily intelligence starts folded on phones")
+        self.assert_true('id="daily-brief-badge"' in html and ".zone-label.has-new-brief" in html and "dashboardDailyBriefReadStamp" in html, "Unread daily brief has a visible morning cue until opened")
+        self.assert_true("budgetDialog(campaign_id,current)" in html and "Preguntar al manager" in html, "Budget changes use an in-app manager-first dialog instead of a browser prompt")
+        self.assert_true("showDecisionConfirm" in html and "const ok=confirm" not in html and "const val=prompt" not in html, "Risky choices use branded confirmation cards with agent help instead of browser system dialogs")
+        self.assert_true("submitBrandGuideInit" in html and "brand-guide-init-name" in html, "Brand memory setup is an in-app guided action instead of a browser prompt")
+        self.assert_true("approvalCard" in html and "approvalMeta" in html and "approvalAskDraft" in html, "Approvals render as manager recommendation cards")
+        self.assert_true("Qué pidió el agente" in html and "Qué pasa si apruebas" in html and "Riesgo a revisar" in html, "Approval cards explain request, outcome, and risk in buyer-friendly language")
+        self.assert_true(".approval-card" in html and ".approval-actions" in html and "Preguntar antes" in html, "Approval cards include clear styling and an ask-before-approve path")
+        self.assert_true("appendChatApprovalActions" in html and "chatApproveDecision" in html and "chatRejectDecision" in html, "Agent chat can show approve/reject buttons for exact pending approvals")
+        self.assert_true("/api/reject" in html and "msg-approval-card" in html, "Chat approval decisions include a reject path and compact action cards")
         self.assert_true("onboarding-flow" in html, "Dedicated onboarding flow exists")
         self.assert_true("websiteScanGuide" in html and "/api/business-profile/scan" in html, "Onboarding starts with website intelligence")
         self.assert_true("businessContextGuide" in html and "¿En qué etapa estás ahora?" in html, "Onboarding collects buyer stage and improvement context")
@@ -1235,15 +1963,15 @@ class IntegrationTestSuite:
         self.assert_true("license-panel" in html, "License activation panel exists")
         self.assert_true("/api/license/activate" in html, "License activation endpoint is wired in UI")
         self.assert_true("/api/onboarding/complete" in html, "Onboarding complete endpoint is wired in UI")
-        self.assert_true("Finish onboarding" in html or "Finalizar onboarding" in html, "Onboarding finish control exists")
-        self.assert_true("Set Up Onboarding again" in html, "Completed setup can restart onboarding")
+        self.assert_true("Finish setup" in html or "Terminar configuración" in html, "Initial setup finish control exists")
+        self.assert_true("Revisar configuración inicial" in html, "Completed setup can reopen the initial guide")
         self.assert_true("dashboard password" in html.lower() or "contraseña del dashboard" in html.lower(), "Buyer password wording exists")
         self.assert_true("onboardingFlowTouched=false" in html, "Onboarding auto-advance starts untouched")
         self.assert_true("s.status!=='ok'" in html, "Onboarding opens on first unfinished step")
         self.assert_true("onboardingFlowTouched=true;onboardingFlowStep=Math.max" in html, "Onboarding back button allows completed-step review")
         self.assert_true('href="/api/social/login"' in html, "Meta Developers button uses a real browser link")
         self.assert_true("Abrir Meta" in html, "Spanish onboarding points to Meta")
-        self.assert_true("Tu propia app de Meta" in html, "Spanish onboarding explains buyer-owned Meta app")
+        self.assert_true("Tu propia conexión de Meta" in html and "Clave de acceso de Meta" in html, "Spanish setup explains buyer-owned Meta access plainly")
         self.assert_true("showMetaTokenBox" in html, "Token box can be opened without leaving dashboard")
         self.assert_true("finishButton=isLast" in html, "Onboarding finish button only appears on final step")
         self.assert_true("step.status!=='blocked'" in html, "Onboarding next button hides on blocked steps")
@@ -1277,25 +2005,58 @@ class IntegrationTestSuite:
         self.assert_true("Piloto automático" in html, "Buyer-facing autopilot wording exists")
         self.assert_true("guardrails-panel" in html, "Guardrail settings panel exists")
         self.assert_true("/api/guardrails" in html, "Guardrail settings can be saved")
+        self.assert_true("Cuánto puede hacer solo" in html and "Preguntar si el presupuesto cambia más de" in html, "Guardrails use simple buyer-friendly questions")
+        self.assert_true("Revisión técnica para soporte" in html and "renderSetupBeginnerSummary" in html and "Lo que falta primero" in html, "Configuration leads with simple next steps and hides technical review")
+        self.assert_true("Gasto: " in html and "campañas activas." in html and "señales de cansancio del anuncio." in html, "Daily reading localizes scheduled report answers in Spanish")
+        self.assert_true("recommendationText" in html and "Buen rendimiento: conviene mantener el presupuesto actual." in html, "Budget advice avoids English optimizer wording in Spanish")
+        self.assert_true("demoCampaignName" in html and "Campaña de ventas Q2" in html, "Spanish demo data uses understandable campaign examples")
+        self.assert_true("Ya vendo, pero cada compra me cuesta más." in html and "bajar el costo de cada compra" in html, "Initial context examples avoid unexplained cost acronyms")
+        self.assert_true("VUELVE / $1" in html and "COSTO / COMPRA" in html, "Showcase labels explain results without unexplained acronyms")
+        self.assert_true("En el tiempo" in html and "Anuncios en el tiempo" in html and "Datos de ejemplo" in html, "Dashboard view controls avoid English or technical preview labels in Spanish")
+        self.assert_true("audienceTargetingText" in html and "Llegar a personas nuevas" in html, "Audience cards replace raw targeting structures with plain-language display")
+        self.assert_true("Online course for small business owners" not in html and "data-i18n-placeholder=\"audience_product_example\"" in html, "Audience form uses examples instead of fake prefilled buyer information")
         self.assert_true("telegram-panel" in html and "Hablar por Telegram" in html, "Configuration includes optional Telegram manager access")
         self.assert_true("/api/telegram/config" in html and "/api/telegram/detect" in html and "/api/telegram/test" in html, "Telegram setup actions are wired in UI")
         self.assert_true("aprobar decisiones exactas con botones seguros" in html, "Telegram UI accurately explains button approvals")
-        self.assert_true("brand-guides-panel" in html and "/api/brand-guides/init" in html, "Codex brand guide setup is wired in UI")
-        self.assert_true("Guías de marca para Codex" in html and "Crear guías base" in html, "Codex creative guide copy exists")
-        self.assert_true("Borrador seguro antes de gastar" in html, "Paused creation is explained as safe draft")
-        self.assert_true("todavía no gasta ni entra a aprendizaje" in html, "Approval note explains paused drafts do not enter learning")
-        self.assert_true("prender y apagar algo que ya está aprendiendo" in html, "Paused draft copy distinguishes bad pause/resume habits")
+        self.assert_true("brand-guides-panel" in html and "/api/brand-guides/general" in html and "/api/brand-guides/product" in html and "/api/ad-briefs" in html, "Brand, product, and ad brief memory editing is wired in UI")
+        self.assert_true("brand-memory-overlay" in html and "Lo que el agente recuerda" in html and "Crea tus anuncios" in html, "Creative memory is presented as a simple ad-ideas library")
+        self.assert_true("saveGeneralMemory" in html and "saveProductMemory" in html and "refreshForProduct" in html, "Creative memory can be saved and used to generate for a selected product")
+        self.assert_true("saveAdBriefMemory" in html and "refreshForAdBrief" in html and "Qué se puede cambiar" in html and "Cuántas opciones preparar" in html, "Ad ideas can define optional variations in beginner-friendly language")
+        self.assert_true("startCreativeMemoryWizard" in html and "Contarle cómo es mi marca" in html and "Hablar y crear mi anuncio" in html, "Creative details can be collected conversationally through the agent")
+        self.assert_true("memory_wizard" in html and "creative_memory_wizard_complete" in html, "Guided memory chat sends explicit state and refreshes after completion")
+        self.assert_true("function uiLang()" in html and "function isEs()" in html and "chatForAdBrief(briefId,draftLang='')" in html and "const es=(draftLang||uiLang())==='es'" in html, "Creative chat drafts follow the visible dashboard language")
+        self.assert_true("Ayúdame a definir la idea creativa." in html and "Cuántas opciones preparar" in html and "Ayúdame a definir la ventana creativa para variantes." not in html, "General creative chat starts from an idea instead of assuming variations")
+        self.assert_true("Crear con el agente" in html and "Hablar del brief" not in html and "Crea briefs por promoción" not in html, "Creative studio avoids vague advertising jargon in its primary path")
+        self.assert_true(any("¿Quieres una sola idea o varias opciones para comparar?" in item.get("es", "") for item in dashboard.CREATIVE_MEMORY_WIZARD_SPECS["ad_brief"]["fields"]), "Guided ad idea chat lets buyers choose whether they want variations")
+        self.assert_true("Prefiero escribir los detalles yo" in html and "Solo si ya tienes anuncios en Meta" in html, "Technical ad fields stay optional behind clear progressive disclosure")
+        self.assert_true("Más detalles, si los quieres agregar" in html, "Advanced specifications remain editable without overwhelming the default form")
+        self.assert_true("creative-studio-hero" in html and "renderCreativeStudio" in html and "creative-variants" in html, "Creatives tab renders an agent-centered visual studio")
+        self.assert_true("demoCreativeText" in html and "Campaña para dar a conocer la marca" in html, "Spanish demo creative history is displayed without leftover English sample names")
+        self.assert_true("data-preview-url" in html and "hydrateCreativePreviews" in html and "fetchProtectedFile(path)" in html, "Generated creative previews load through the protected-file mechanism")
+        self.assert_true("Tus imágenes quedan guardadas aquí" in html and "downloadCreativeAsset" in html and "clearCreativeStorage" in html and "/api/creative-storage/clear" in html and "saved_for_ad" in html, "Creative studio explains local image storage, download, protected ad assets, and manual cleanup")
+        self.assert_true("Preparar para publicar" in html and "Imagen lista para que la apruebes" in html, "Finished creative images can be staged for approval with clear wording")
+        self.assert_true("Crear imagen final" in html and "image_generation_ready" in html, "Studio exposes real image generation when its provider is configured")
+        self.assert_true("Tú decides antes de gastar dinero" in html and "solo podrá empezar a gastar después de que la apruebes" in html, "Campaign creation clearly explains approval before spend")
+        self.assert_true("Crear hablando con el agente" in html and "Prefiero escribir los datos yo" in html, "Campaign creator defaults to a beginner-friendly chat path")
+        self.assert_true("/api/targeting/search" in html and "Elige público con opciones de Meta" in html, "Campaign creator can search real Meta targeting options")
+        self.assert_true("campaign-targeting-locations-json" in html and "campaign-targeting-interests-json" in html, "Campaign creator stores selected targeting as structured JSON")
+        self.assert_true("Solo si el buscador no funciona" in html and "searchTargeting('interest')" in html, "Campaign creator keeps manual targeting only as fallback")
+        self.assert_true("campaign_name_example:'Ej: Promo de junio'" in html and "primary_text_example:'Ej: Descubre cómo esta oferta puede ayudarte hoy.'" in html, "Campaign creator examples are localized instead of prefilled")
+        self.assert_true('<select name="final_status"><option value="PAUSED"' in html and "Marcar solo si elegiste empezar a mostrar anuncios" in html, "Campaign creator defaults to ready-without-spend and explains active spend confirmation")
+        self.assert_true("Número de seguimiento de Meta (Pixel ID), opcional" in html and "Solo si ya conoces este dato de Meta" in html, "Technical campaign details are optional and explained")
+        self.assert_true("quedará lista pero apagada" in html and "No mostrará anuncios ni gastará dinero" in html, "Approval note plainly explains a prepared campaign does not spend")
+        self.assert_true("Esto apagará una campaña que ya está mostrando anuncios" in html, "Existing-campaign pause warning is understandable without technical terms")
         self.assert_true("scheduleMetaTokenAutoSave" in html, "Meta token paste auto-saves the local connection")
         self.assert_true("renderTokenSavedState" in html, "Saved token state replaces token input")
-        self.assert_true("Token guardado" in html, "Spanish token saved confirmation exists")
-        self.assert_true("Pegar otro token" in html, "Buyer can intentionally replace token later")
-        self.assert_true("Se guarda automaticamente al pegarlo" in html, "Spanish token copy explains automatic saving")
+        self.assert_true("Clave de Meta guardada" in html, "Spanish key saved confirmation exists")
+        self.assert_true("Cambiar clave de Meta" in html, "Buyer can intentionally replace the Meta key later")
+        self.assert_true("Se guarda automáticamente al pegarla" in html, "Spanish key copy explains automatic saving")
         self.assert_true("Reintentar guardar" in html, "Manual token save is only a retry fallback")
         self.assert_true("Contraseña guardada. Te llevo a la guía final." in html, "Password save clearly advances onboarding")
         self.assert_true("findIndex(s=>s.id==='guide')" in html, "Password save moves to final guide step")
         self.assert_true("goToMetaTokenStep" in html, "Expired-token account search can return to token step")
-        self.assert_true("Pega un token nuevo" in html, "Expired token message is buyer-friendly")
-        self.assert_true("No se guarda en cookies" in html, "Token storage copy avoids cookie confusion")
+        self.assert_true("Pega una clave nueva" in html, "Expired Meta key message is buyer-friendly")
+        self.assert_true("No se guarda en cookies" in html, "Meta key storage copy avoids cookie confusion")
         self.assert_true("send_redirect(social_login_url()" in html or hasattr(dashboard.DashboardHandler, "send_redirect"), "Social login redirect endpoint exists")
         env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
         self.assert_true("LICENSE_SERVER_URL=" in env_example, "License server URL is documented in .env.example")
@@ -1373,6 +2134,7 @@ class IntegrationTestSuite:
         metrics_path = dashboard.METRICS_FILE
         binding_path = dashboard.INDIVIDUAL_BINDING_FILE
         original_entitlements = dashboard.license_entitlements
+        original_output_dirs = dashboard.BUSINESS_OUTPUT_DIRS
         env_before = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
         ad_before = ad_path.read_text(encoding="utf-8") if ad_path.exists() else ""
         business_files_before = {
@@ -1380,13 +2142,22 @@ class IntegrationTestSuite:
             for name in dashboard.BUSINESS_DATA_FILES
         }
         binding_before = binding_path.read_bytes() if binding_path.exists() else None
-        env_backup = {key: os.environ.get(key) for key in ["META_AD_ACCOUNT_ID", "META_ADS_AGENT_MODE", "LIVE_ACTIONS_ENABLED"]}
+        output_creative_root = dashboard.OUTPUT_DIR / "test-individual-switch-creatives"
+        output_upload_root = dashboard.OUTPUT_DIR / "test-individual-switch-uploads"
+        output_creative_dir = output_creative_root / "switch-test"
+        output_upload_dir = output_upload_root / "switch-test"
+        env_backup = {key: os.environ.get(key) for key in ["META_AD_ACCOUNT_ID", "META_ADS_AGENT_MODE", "LIVE_ACTIONS_ENABLED", "LICENSE_KEY", "LICENSE_BUYER_EMAIL", "DASHBOARD_PASSWORD", "DASHBOARD_TOKEN"]}
         try:
             dashboard.license_entitlements = lambda: {"plan": "individual", "is_agency": False, "max_devices": 1, "workspace_limit": 1}
-            dashboard.update_env_values({"META_AD_ACCOUNT_ID": "act_old", "META_ADS_AGENT_MODE": "live", "LIVE_ACTIONS_ENABLED": "true"})
+            dashboard.BUSINESS_OUTPUT_DIRS = [output_creative_root, output_upload_root]
+            dashboard.update_env_values({"META_AD_ACCOUNT_ID": "act_old", "META_ADS_AGENT_MODE": "live", "LIVE_ACTIONS_ENABLED": "true", "LICENSE_KEY": "MAO-TESTBUYER-30628D", "LICENSE_BUYER_EMAIL": "buyer@example.com", "DASHBOARD_PASSWORD": "buyer-pass", "DASHBOARD_TOKEN": "buyer-pass"})
             dashboard.write_json(ad_path, {"account": {"id": "act_old"}, "creative": {"destination": {"page_id": "page_old", "url": "https://old.example"}}})
             dashboard.write_json(onboarding_path, {"completed": True})
             dashboard.write_json(metrics_path, {"source": "meta_graph", "campaigns": [{"name": "Old business"}]})
+            output_creative_dir.mkdir(parents=True, exist_ok=True)
+            (output_creative_dir / "draft.png").write_text("old creative", encoding="utf-8")
+            output_upload_dir.mkdir(parents=True, exist_ok=True)
+            (output_upload_dir / "upload.json").write_text("old upload", encoding="utf-8")
             try:
                 dashboard.save_setup_config({"ad_account_id": "act_new", "page_id": "page_new"})
                 self.assert_true(False, "Individual switch should need explicit replacement confirmation")
@@ -1401,11 +2172,15 @@ class IntegrationTestSuite:
             except ValueError as exc:
                 self.assert_true("CONFIRM_BUSINESS_REPLACE" in str(exc), "Individual limit remains active when onboarding is restarted")
             result = dashboard.save_setup_config({"ad_account_id": "act_new", "page_id": "page_new", "confirm_replace_business": True})
+            env_after = env_path.read_text(encoding="utf-8")
             self.assert_true(result.get("business_replaced") is True, "Confirmed individual switch records a clean replacement")
             self.assert_true(not metrics_path.exists(), "Confirmed individual switch removes old metrics memory")
+            self.assert_true(not output_creative_dir.exists() and not output_upload_dir.exists(), "Confirmed individual switch clears old creative working files")
+            self.assert_true("LICENSE_KEY=MAO-TESTBUYER-30628D" in env_after and "DASHBOARD_PASSWORD=buyer-pass" in env_after, "Confirmed individual switch keeps license and dashboard password")
             self.assert_true(not dashboard.load_onboarding_state().get("completed"), "Confirmed individual switch requires setup for the new business")
         finally:
             dashboard.license_entitlements = original_entitlements
+            dashboard.BUSINESS_OUTPUT_DIRS = original_output_dirs
             env_path.write_text(env_before, encoding="utf-8")
             ad_path.write_text(ad_before, encoding="utf-8")
             for name, content in business_files_before.items():
@@ -1420,6 +2195,9 @@ class IntegrationTestSuite:
                     binding_path.unlink()
             else:
                 binding_path.write_bytes(binding_before)
+            for path in [output_creative_root, output_upload_root]:
+                if path.exists():
+                    shutil.rmtree(path)
             for key, value in env_backup.items():
                 if value is None:
                     os.environ.pop(key, None)
@@ -1507,6 +2285,68 @@ class IntegrationTestSuite:
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
+
+    def test_license_limits_block_individual_and_enforce_agency_caps(self):
+        """Test plan limits are enforced before local client state can be created."""
+        print("\nTesting License Limit Enforcement...")
+
+        dashboard = load_dashboard_module()
+        original_registry_path = dashboard.AGENCY_SPACES_FILE
+        original_spaces_dir = dashboard.AGENCY_SPACES_DIR
+        original_entitlements = dashboard.license_entitlements
+        registry_path = ROOT_DIR / "output" / "test-license-limit-spaces.json"
+        spaces_dir = ROOT_DIR / "output" / "test-license-limit-spaces"
+        try:
+            dashboard.AGENCY_SPACES_FILE = registry_path
+            dashboard.AGENCY_SPACES_DIR = spaces_dir
+            dashboard.write_json(registry_path, {"active_id": "", "spaces": []})
+            dashboard.license_entitlements = lambda: {
+                "plan": "individual",
+                "is_agency": False,
+                "is_individual": True,
+                "max_devices": 1,
+                "workspace_limit": 1,
+                "features": ["dashboard", "chat", "telegram"],
+                "can_use_agency_workspaces": False,
+                "can_use_multi_telegram_profiles": False,
+            }
+            try:
+                dashboard.create_agency_space({"name": "Cliente bloqueado"})
+                self.assert_true(False, "Individual license should not create agency spaces")
+            except ValueError as exc:
+                self.assert_true("Licencia Agencia" in str(exc), "Individual license receives upgrade copy for agency spaces")
+
+            dashboard.license_entitlements = lambda: {
+                "plan": "agency",
+                "is_agency": True,
+                "is_individual": False,
+                "max_devices": 4,
+                "workspace_limit": 1,
+                "features": ["dashboard", "chat", "telegram", "agency_workspaces"],
+                "can_use_agency_workspaces": True,
+                "can_use_multi_telegram_profiles": False,
+            }
+            first = dashboard.create_agency_space({"name": "Cliente Uno"})
+            try:
+                dashboard.create_agency_space({"name": "Cliente Dos"})
+                self.assert_true(False, "Agency workspace limit should block extra clients")
+            except ValueError as exc:
+                self.assert_true("limite de espacios" in str(exc).lower(), "Agency workspace limit is enforced")
+
+            dashboard.write_json(registry_path, {"active_id": first["id"], "spaces": [first, {"id": "cliente-dos", "name": "Cliente Dos"}]})
+            try:
+                dashboard.save_telegram_config({"enabled": "true", "chat_id": "123"})
+                self.assert_true(False, "Agency without multi Telegram feature should block several Telegram profiles")
+            except ValueError as exc:
+                self.assert_true("Telegram" in str(exc) and "Agencia" in str(exc), "Multi-client Telegram needs the right entitlement")
+        finally:
+            dashboard.AGENCY_SPACES_FILE = original_registry_path
+            dashboard.AGENCY_SPACES_DIR = original_spaces_dir
+            dashboard.license_entitlements = original_entitlements
+            if registry_path.exists():
+                registry_path.unlink()
+            if spaces_dir.exists():
+                shutil.rmtree(spaces_dir)
 
     def test_onboarding_state_persists(self):
         """Test onboarding completion is persisted and resettable."""
@@ -1625,6 +2465,74 @@ class IntegrationTestSuite:
                 else:
                     os.environ[key] = value
 
+    def test_update_snapshot_retention_and_restore(self):
+        """Test official update snapshots preserve local state and keep last three restore points."""
+        print("\nTesting Update Snapshots And Rollback...")
+
+        dashboard = load_dashboard_module()
+
+        class NoopTimer:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def start(self):
+                return None
+
+        original_values = {
+            "ROOT_DIR": dashboard.ROOT_DIR,
+            "DATA_DIR": dashboard.DATA_DIR,
+            "OUTPUT_DIR": dashboard.OUTPUT_DIR,
+            "UPDATE_SNAPSHOTS_DIR": dashboard.UPDATE_SNAPSHOTS_DIR,
+            "VERSION_FILE": dashboard.VERSION_FILE,
+            "ACTIONS_FILE": dashboard.ACTIONS_FILE,
+            "METRICS_FILE": dashboard.METRICS_FILE,
+            "threading_Timer": dashboard.threading.Timer,
+        }
+        with tempfile.TemporaryDirectory() as tmp_name:
+            root = Path(tmp_name)
+            (root / "dashboard" / "data").mkdir(parents=True)
+            (root / "dashboard" / "monitoring-dashboard.py").write_text("print('old dashboard')\n", encoding="utf-8")
+            (root / "src").mkdir()
+            (root / "src" / "agent.py").write_text("VERSION='old'\n", encoding="utf-8")
+            (root / "brand_guides").mkdir()
+            (root / "output").mkdir()
+            (root / ".env").write_text("DASHBOARD_PASSWORD=old\n", encoding="utf-8")
+            (root / "ad-config.json").write_text('{"url":"old"}\n', encoding="utf-8")
+            (root / "VERSION").write_text("v1.0.0\n", encoding="utf-8")
+            (root / "dashboard" / "data" / "chat_history.json").write_text('{"turns":["old"]}\n', encoding="utf-8")
+            try:
+                dashboard.ROOT_DIR = root
+                dashboard.DATA_DIR = root / "dashboard" / "data"
+                dashboard.OUTPUT_DIR = root / "output"
+                dashboard.UPDATE_SNAPSHOTS_DIR = dashboard.DATA_DIR / "update-snapshots"
+                dashboard.VERSION_FILE = root / "VERSION"
+                dashboard.ACTIONS_FILE = dashboard.DATA_DIR / "actions.json"
+                dashboard.METRICS_FILE = dashboard.DATA_DIR / "metrics.json"
+                dashboard.threading.Timer = NoopTimer
+                first = dashboard.create_update_snapshot(release={"channel": "stable", "latest_version": "v1.0.1"})
+                (root / ".env").write_text("DASHBOARD_PASSWORD=new\n", encoding="utf-8")
+                (root / "ad-config.json").write_text('{"url":"new"}\n', encoding="utf-8")
+                (root / "VERSION").write_text("v9.9.9\n", encoding="utf-8")
+                (root / "dashboard" / "data" / "chat_history.json").write_text('{"turns":["new"]}\n', encoding="utf-8")
+                result = dashboard.restore_update_snapshot({"snapshot_id": first["id"]})
+                self.assert_true((root / "VERSION").read_text(encoding="utf-8").strip() == "v1.0.0", "Rollback restores previous VERSION")
+                self.assert_true("DASHBOARD_PASSWORD=old" in (root / ".env").read_text(encoding="utf-8"), "Rollback restores local .env")
+                self.assert_true('"old"' in (root / "dashboard" / "data" / "chat_history.json").read_text(encoding="utf-8"), "Rollback restores dashboard local memory")
+                self.assert_true((dashboard.UPDATE_SNAPSHOTS_DIR / first["id"]).exists(), "Rollback preserves snapshot storage while restoring dashboard data")
+                self.assert_true(result.get("rescue_snapshot_id"), "Rollback creates a rescue snapshot before restoring")
+                for index in range(4):
+                    (root / "VERSION").write_text(f"v1.0.{index + 1}\n", encoding="utf-8")
+                    dashboard.create_update_snapshot(release={"channel": "stable", "latest_version": f"v1.0.{index + 2}"})
+                snapshots = dashboard.list_update_snapshots()
+                self.assert_true(len(snapshots) == 3, "Update snapshots retain only the latest three pre-update points")
+                self.assert_true(all(item.get("reason") == "pre_update" for item in snapshots), "Rollback list excludes rescue snapshots")
+            finally:
+                for key, value in original_values.items():
+                    if key == "threading_Timer":
+                        dashboard.threading.Timer = value
+                    else:
+                        setattr(dashboard, key, value)
+
     def test_release_package_excludes_runtime_data_and_includes_buyer_docs(self):
         """Test release script is buyer-safe and docs are included in source package."""
         print("\nTesting Release Package Safety Rules...")
@@ -1634,6 +2542,7 @@ class IntegrationTestSuite:
             '.env',
             'ad-config.json',
             'dashboard/data/*',
+            'dashboard/data/update-snapshots/*',
             'seller/*',
             'docs/es-servidor-licencias.md',
             'docs/es-cierre-v1-vendible.md',
@@ -1669,10 +2578,13 @@ class IntegrationTestSuite:
             "docs/es-instaladores-doble-clic.md",
             "docs/es-instaladores-producto.md",
             "docs/es-planes-de-licencia.md",
+            "docs/es-digitalocean-acceso-estricto.md",
+            "docs/es-cambiar-de-equipo.md",
         ]
         for doc in buyer_docs:
             self.assert_true((ROOT_DIR / doc).exists(), f"Buyer doc exists: {doc}")
         for file in [
+            "VERSION",
             "Dockerfile",
             "docker-compose.yml",
             ".dockerignore",
@@ -1683,6 +2595,13 @@ class IntegrationTestSuite:
             "scripts/build-mac-pkg.sh",
             "scripts/build-windows-exe.sh",
             "scripts/build-linux-bundle.sh",
+            "scripts/digitalocean-refresh-firewall.sh",
+            "scripts/install-digitalocean-strict-access.sh",
+            "scripts/export-migration.sh",
+            "scripts/import-migration.sh",
+            "scripts/export-migration.ps1",
+            "scripts/import-migration.ps1",
+            "deploy/digitalocean/cloud-init-strict-access.yaml",
             "installer/release-bootstrap.env",
             "installer/windows/MetaAdsAgentInstaller.nsi",
             "Instalar en Windows.bat",
@@ -1699,17 +2618,84 @@ class IntegrationTestSuite:
         mac_pkg_builder = (ROOT_DIR / "scripts" / "build-mac-pkg.sh").read_text(encoding="utf-8")
         windows_exe_builder = (ROOT_DIR / "scripts" / "build-windows-exe.sh").read_text(encoding="utf-8")
         nsis_template = (ROOT_DIR / "installer" / "windows" / "MetaAdsAgentInstaller.nsi").read_text(encoding="utf-8")
+        dashboard_source = (ROOT_DIR / "dashboard" / "monitoring-dashboard.py").read_text(encoding="utf-8")
+        dockerignore = (ROOT_DIR / ".dockerignore").read_text(encoding="utf-8")
+        docker_entrypoint = (ROOT_DIR / "scripts" / "docker-entrypoint.sh").read_text(encoding="utf-8")
         self.assert_true("@openai/codex" in dockerfile and "node:22" in dockerfile, "Docker image installs Node and Codex CLI")
         self.assert_true("CODEX_CREATIVE_ENABLED=false" in dockerfile and 'CODEX_CREATIVE_ENABLED: "false"' in compose, "Buyer installs leave optional Codex CLI execution off by default")
+        self.assert_true("seller/" in dockerignore, "Docker build context excludes seller secrets")
+        self.assert_true("forced = {" in docker_entrypoint and "\"DASHBOARD_HOST\": \"0.0.0.0\"" in docker_entrypoint, "Docker entrypoint forces reachable dashboard bind values")
         self.assert_true("meta_ads_config" in compose and "meta_ads_brand_guides" in compose, "Docker Compose persists config and brand guides")
-        self.assert_true("MetaAdsAgent-source.zip" in script, "Release ZIP includes a stable GitHub asset name for bootstrap installers")
-        self.assert_true("install-from-github.ps1" in windows_installer and "install-from-github.sh" in mac_installer and "install-from-github.sh" in linux_installer, "Double-click installers can bootstrap from GitHub releases")
+        self.assert_true("meta_ads_update_snapshots" in compose and "/app/dashboard/data/update-snapshots" in compose, "Docker Compose keeps update rollback snapshots in a named volume")
+        self.assert_true("MetaAdsAgent-source.zip" in script, "Release ZIP includes a stable asset name for bootstrap installers")
+        self.assert_true("install-from-github.ps1" in windows_installer and "install-from-github.sh" in mac_installer and "install-from-github.sh" in linux_installer, "Double-click installers use the shared bootstrap scripts")
         self.assert_true("docker compose up --build" in windows_installer and "./scripts/run-docker.sh" in mac_installer, "Double-click installers launch Docker setup")
         self.assert_true("pkgbuild" in mac_pkg_builder and "productbuild" in mac_pkg_builder, "Mac PKG builder uses native package tools")
         self.assert_true("makensis" in windows_exe_builder and "MetaAdsAgentInstaller.nsi" in windows_exe_builder, "Windows EXE builder uses NSIS when available")
         self.assert_true("CreateShortcut" in nsis_template and "Instalar en Windows.bat" in nsis_template, "Windows NSIS installer creates a buyer shortcut")
         self.assert_true("https://licencias-miro-ai.uboost.lat" in (ROOT_DIR / ".env.example").read_text(encoding="utf-8"), "Buyer release uses deployed license server")
         self.assert_true("LICENSE_PUBLIC_KEY=" in (ROOT_DIR / ".env.example").read_text(encoding="utf-8"), "Buyer release includes only license verification key")
+        self.assert_true("META_ADS_AGENT_VERSION=v1.0.0" in (ROOT_DIR / ".env.example").read_text(encoding="utf-8") and (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip() == "v1.0.0", "Buyer release exposes the installed product version")
+        bootstrap_config = (ROOT_DIR / "installer" / "release-bootstrap.env").read_text(encoding="utf-8")
+        bootstrap_sh = (ROOT_DIR / "scripts" / "install-from-github.sh").read_text(encoding="utf-8")
+        bootstrap_ps1 = (ROOT_DIR / "scripts" / "install-from-github.ps1").read_text(encoding="utf-8")
+        do_firewall_script = (ROOT_DIR / "scripts" / "digitalocean-refresh-firewall.sh").read_text(encoding="utf-8")
+        do_install_script = (ROOT_DIR / "scripts" / "install-digitalocean-strict-access.sh").read_text(encoding="utf-8")
+        do_doc = (ROOT_DIR / "docs" / "es-digitalocean-acceso-estricto.md").read_text(encoding="utf-8")
+        device_transfer_doc = (ROOT_DIR / "docs" / "es-cambiar-de-equipo.md").read_text(encoding="utf-8")
+        export_migration = (ROOT_DIR / "scripts" / "export-migration.sh").read_text(encoding="utf-8")
+        import_migration = (ROOT_DIR / "scripts" / "import-migration.sh").read_text(encoding="utf-8")
+        export_migration_ps1 = (ROOT_DIR / "scripts" / "export-migration.ps1").read_text(encoding="utf-8")
+        import_migration_ps1 = (ROOT_DIR / "scripts" / "import-migration.ps1").read_text(encoding="utf-8")
+        license_activate_api = (ROOT_DIR / "seller" / "vercel-license-api" / "api" / "license" / "activate.js").read_text(encoding="utf-8")
+        license_release_api = (ROOT_DIR / "seller" / "vercel-license-api" / "api" / "license" / "release.js").read_text(encoding="utf-8")
+        license_releases_admin = (ROOT_DIR / "seller" / "vercel-license-api" / "api" / "admin" / "releases.js").read_text(encoding="utf-8")
+        license_download_api = (ROOT_DIR / "seller" / "vercel-license-api" / "api" / "download" / "release.js").read_text(encoding="utf-8")
+        license_lib = (ROOT_DIR / "seller" / "vercel-license-api" / "lib" / "license.js").read_text(encoding="utf-8")
+        license_store = (ROOT_DIR / "seller" / "vercel-license-api" / "lib" / "store.js").read_text(encoding="utf-8")
+        license_server_readme = (ROOT_DIR / "seller" / "vercel-license-api" / "README.md").read_text(encoding="utf-8")
+        self.assert_true("BOOTSTRAP_PROVIDER=license_server" in bootstrap_config and "LICENSE_RELEASE_ENDPOINT=/api/license/release" in bootstrap_config, "Buyer bootstrap defaults to license-server release downloads")
+        self.assert_true("/api/license/release" in bootstrap_sh and "RELEASE_ASSET_NAME" in bootstrap_sh, "macOS/Linux bootstrap can request signed release downloads")
+        self.assert_true("/api/license/release" in bootstrap_ps1 and "RELEASE_ASSET_NAME" in bootstrap_ps1, "Windows bootstrap can request signed release downloads")
+        self.assert_true("validate_zip_archive" in bootstrap_sh and "Test-SafeReleaseArchive" in bootstrap_ps1, "Bootstrap installers validate release archives before extraction")
+        self.assert_true("SSH_CONNECTION" in do_firewall_script and "api.digitalocean.com/v2" in do_firewall_script and "/firewalls/" in do_firewall_script, "DigitalOcean firewall refresh detects SSH client IP and updates the firewall API")
+        self.assert_true("DO_STRICT_ALLOW_SSH_FROM_ANYWHERE" in do_firewall_script and "DASHBOARD_PORT" in do_firewall_script, "DigitalOcean strict mode separates SSH recovery from dashboard access")
+        self.assert_true("$HOME/.profile" in do_install_script and "meta-ads-refresh-access" in do_install_script, "DigitalOcean strict mode can refresh access after SSH login")
+        self.assert_true("migration-panel" in dashboard_source and "/api/migration/export" in dashboard_source and "/api/migration/import" in dashboard_source, "Dashboard exposes backup and restore buttons instead of extra buyer files")
+        self.assert_true("cloud-access-panel" in dashboard_source and "/api/cloud-access/refresh" in dashboard_source and "digitalocean-refresh-firewall.sh" in dashboard_source, "Dashboard exposes DigitalOcean access refresh")
+        self.assert_true("update-banner" in dashboard_source and "/api/update/check" in dashboard_source and "/api/update/apply" in dashboard_source, "Dashboard checks official updates and can apply them after confirmation")
+        self.assert_true("update-cards" in dashboard_source and "Ver mejoras e instalar" in dashboard_source and "Actualización oficial" in dashboard_source, "Dashboard shows update improvements as cards before installing")
+        self.assert_true("UPDATE_SNAPSHOTS_DIR" in dashboard_source and "create_update_snapshot" in dashboard_source and "/api/update/rollback" in dashboard_source, "Dashboard creates local pre-update snapshots and exposes rollback")
+        self.assert_true("Crear copia e instalar" in dashboard_source and "Volver a una versión anterior" in dashboard_source and "snapshot_policy" in dashboard_source, "Update UI explains automatic backups before installing")
+        self.assert_true("responseErrorMessage" in dashboard_source and "data.error||data.detail" in dashboard_source, "Dashboard shows clean API errors instead of raw JSON")
+        self.assert_true("DEFAULT_POST_LIMIT_BYTES" in dashboard_source and "MIGRATION_POST_LIMIT_BYTES" in dashboard_source and "read_body(parsed.path)" in dashboard_source, "Dashboard rejects oversized protected requests")
+        self.assert_true("redact_error_text" in dashboard_source and "client_error_message" in dashboard_source, "Dashboard avoids echoing raw secrets in errors")
+        self.assert_true("X-Frame-Options" in dashboard_source and "X-Content-Type-Options" in dashboard_source, "Dashboard sends basic browser security headers")
+        self.assert_true("official_download_url_allowed" in dashboard_source and "MAX_UPDATE_UNPACKED_BYTES" in dashboard_source and "zip_member_is_safe" in dashboard_source, "Dashboard update and restore paths guard against unsafe archives")
+        self.assert_true(not (ROOT_DIR / "Actualizar acceso DigitalOcean.command").exists() and not (ROOT_DIR / "Crear respaldo para cambiar de equipo.command").exists(), "Buyer folder avoids scary top-level maintenance launchers")
+        self.assert_true("Si SSH todavia entra" in do_doc and "DO_STRICT_ALLOW_SSH_FROM_ANYWHERE=true" in do_doc, "DigitalOcean strict access docs explain IP changes and recovery")
+        self.assert_true("chat_history.json" in export_migration or "dashboard/data" in export_migration, "Migration export includes dashboard local memory")
+        self.assert_true("LICENSE_DEVICE_ID=" in export_migration and "license_unlock.json" in export_migration, "Migration export clears device-specific license unlock")
+        self.assert_true("LICENSE_DEVICE_ID=" in import_migration and "license_unlock.json" in import_migration, "Migration import forces new machine license validation")
+        self.assert_true("Compress-Archive" in export_migration_ps1 and "Expand-Archive" in import_migration_ps1, "Windows migration buttons use native archive commands")
+        self.assert_true("transfer_device" in license_activate_api and "resetDeviceRegistrations" in license_activate_api, "License activation supports explicit Individual device transfer")
+        self.assert_true("transfer_device" in license_release_api and "resetDeviceRegistrations" in license_release_api, "Installer release download supports explicit Individual device transfer")
+        self.assert_true("normalizeEntitlements" in license_lib and "workspace_limit: 50" in license_lib and "max_devices: 4" in license_lib, "License server normalizes Individual and Agency entitlement defaults")
+        self.assert_true('entitlements.plan === "individual"' in license_activate_api and 'entitlements.plan === "individual"' in license_release_api, "License server restricts device transfer to Individual licenses")
+        self.assert_true("license_entitlements" in dashboard_source and "active_workspace" in dashboard_source and "workspace_usage" in dashboard_source and "business_binding" in dashboard_source, "Dashboard exposes license limits and active business metadata")
+        self.assert_true("Tu licencia Individual cuida un solo negocio activo" in dashboard_source and "Para manejar varios clientes, usa Licencia Agencia" in dashboard_source, "Dashboard explains Individual and Agency limits in buyer-friendly copy")
+        self.assert_true("improvements" in license_releases_admin and "improvements" in license_release_api, "Official release metadata includes buyer-facing improvement cards")
+        self.assert_true("timingSafeEqual" in license_lib and "RELEASE_MAX_BYTES" in license_download_api and "response.redirect(302" in license_download_api, "License server uses safer comparisons and avoids proxying large release bodies by default")
+        self.assert_true("export async function resetDeviceRegistrations" in license_store and "del(" in license_store, "License server can clear prior device registrations")
+        self.assert_true("Transferir a este equipo" in dashboard_source, "Dashboard explains and confirms device transfer")
+        self.assert_true("desbloqueo temporal" in device_transfer_doc and "nueva llave SSH" in device_transfer_doc and "Cambiar de equipo sin perder memoria" in device_transfer_doc, "Device transfer docs explain local migration and DigitalOcean recovery")
+        self.assert_true("RELEASE_DOWNLOAD_SECRET" in license_server_readme and "/api/license/release" in license_server_readme, "Seller license server documents signed release download support")
+        for file in [
+            "seller/vercel-license-api/api/admin/releases.js",
+            "seller/vercel-license-api/api/license/release.js",
+            "seller/vercel-license-api/api/download/release.js",
+        ]:
+            self.assert_true((ROOT_DIR / file).exists(), f"Seller release API exists: {file}")
     
     def run_all_tests(self):
         """Run all integration tests."""
@@ -1730,30 +2716,45 @@ class IntegrationTestSuite:
             self.test_cloud_license_blocks_buyer_live_features,
             self.test_dashboard_password_auth,
             self.test_secret_redaction,
+            self.test_website_scanner_blocks_private_urls,
             self.test_skill_response_parsing,
-            self.test_chat_approval_guardrail_tool,
+            self.test_hermes_provider_parses_tool_request,
+            self.test_hermes_creative_image_request_routes_to_codex_tool,
+            self.test_hermes_missing_runtime_gives_chatgpt_setup_guidance,
+            self.test_hermes_attaches_safe_uploaded_images,
+            self.test_hermes_business_memory_workspace_is_curated_and_redacted,
+            self.test_chat_approval_decision_tool,
             self.test_minimax_tool_request_executes_backend_tool,
             self.test_codex_creative_prompt_rejects_local_file_escape,
+            self.test_agent_codex_image_creative_request_result,
+            self.test_creative_studio_protects_and_previews_generated_assets,
+            self.test_brand_memory_documents_feed_creative_generation,
             self.test_audience_builder_readiness,
             self.test_chat_audience_tool,
+            self.test_meta_targeting_search_normalizes_options,
             self.test_chat_saves_existing_adset_when_user_provides_it,
             self.test_chat_history_persists_and_resets,
+            self.test_creative_memory_wizard_collects_and_saves_guides,
             self.test_meta_asset_discovery_saves_connected_assets,
             self.test_live_insights_normalize_into_dashboard_metrics,
             self.test_supervised_daily_reads_real_data_and_stages_pause,
             self.test_demo_metrics_are_labeled,
             self.test_supervised_approval_executes_only_with_valid_license_and_retries_failures,
             self.test_campaign_creation_requires_active_confirmation,
+            self.test_campaign_creation_uses_meta_targeting_selection,
+            self.test_social_targeting_uses_meta_ids,
             self.test_autopilot_action_updates_dashboard_only_after_meta_success,
             self.test_campaign_stack_execution_creates_full_ad_order,
-            self.test_chat_stages_campaign_creation_but_cannot_approve,
+            self.test_chat_stages_campaign_creation_and_requires_exact_approval,
             self.test_telegram_channel_routes_agent_and_blocks_approval,
             self.test_setup_page_contains_unlock_and_trust,
             self.test_setup_config_save_preserves_blank_license,
             self.test_individual_license_replaces_one_business_only_with_confirmation,
             self.test_agency_spaces_keep_client_data_separate,
+            self.test_license_limits_block_individual_and_enforce_agency_caps,
             self.test_onboarding_state_persists,
             self.test_onboarding_requires_real_meta_data,
+            self.test_update_snapshot_retention_and_restore,
             self.test_release_package_excludes_runtime_data_and_includes_buyer_docs,
         ]
         

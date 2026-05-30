@@ -8,6 +8,7 @@ Este producto ya valida licencia desde el dashboard del comprador. Para vender r
 - El dashboard consulta tu dominio para confirmar que la licencia existe.
 - Si tu dominio falla por unas horas, el comprador conserva un desbloqueo guardado en su equipo.
 - Si la licencia no existe, está inactiva o supera el límite de equipos, se bloquean acciones reales y creación de campañas.
+- El mismo servidor puede entregar descargas firmadas de la ultima version publicada sin exponer tu repo privado.
 
 ## Crear una licencia
 
@@ -45,6 +46,12 @@ El dashboard llamará:
 POST https://licencias-miro-ai.uboost.lat/api/license/activate
 ```
 
+Y los instaladores del comprador llamarán:
+
+```text
+POST https://licencias-miro-ai.uboost.lat/api/license/release
+```
+
 ## API ya desplegada en Vercel
 
 La implementación de producción está en `seller/vercel-license-api` y usa un Blob privado de Vercel. Variables privadas del proyecto Vercel:
@@ -53,6 +60,9 @@ La implementación de producción está en `seller/vercel-license-api` y usa un 
 LICENSE_PRIVATE_KEY_B64=clave-privada-solo-en-vercel
 LICENSE_ADMIN_KEY=clave-de-administracion-solo-del-vendedor
 LICENSE_UNLOCK_HOURS=168
+RELEASE_DOWNLOAD_SECRET=secreto-solo-servidor-para-firmar-descargas
+RELEASE_TOKEN_MINUTES=15
+RELEASE_SOURCE_ALLOWLIST=tu-storage.com,downloads.tudominio.com
 BLOB_READ_WRITE_TOKEN=agregado-por-vercel-blob
 ```
 
@@ -62,6 +72,77 @@ Endpoint publicado:
 https://licencias-miro-ai.uboost.lat
 ```
 
+## Publicar una release protegida
+
+Primero generas el ZIP buyer-safe:
+
+```bash
+./scripts/package-release.sh v1
+```
+
+Luego subes `MetaAdsAgent-source.zip` a tu storage privado o a tu dominio.
+
+Despues registras esa version en el servidor:
+
+```bash
+curl -X POST "https://licencias-miro-ai.uboost.lat/api/admin/releases" \
+  -H "Authorization: Bearer TU_CLAVE_ADMIN_PRIVADA" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "channel":"stable",
+    "version":"v1",
+    "asset_name":"MetaAdsAgent-source.zip",
+    "filename":"MetaAdsAgent-source.zip",
+    "content_type":"application/zip",
+    "source_url":"https://downloads.tudominio.com/MetaAdsAgent-source.zip",
+    "improvements":[
+      {
+        "title":"Manager mas claro para principiantes",
+        "body":"La actualizacion mejora textos, guias y tarjetas dentro del dashboard.",
+        "impact":"Usabilidad"
+      },
+      {
+        "title":"Mas seguridad en acciones reales",
+        "body":"Refuerza aprobaciones y protecciones antes de tocar presupuesto real.",
+        "impact":"Confianza"
+      }
+    ]
+  }'
+```
+
+Esas `improvements` son las tarjetas que el comprador ve antes de confirmar la actualizacion desde su dashboard.
+
+Consulta administrativa:
+
+```bash
+curl "https://licencias-miro-ai.uboost.lat/api/admin/releases" \
+  -H "Authorization: Bearer TU_CLAVE_ADMIN_PRIVADA"
+```
+
+## Flujo de instalacion del comprador
+
+1. El comprador abre el instalador.
+2. El instalador pide licencia + email de compra.
+3. El instalador llama `POST /api/license/release`.
+4. Si la licencia es valida, el servidor responde con:
+   - version
+   - asset_name
+   - expires_at
+   - download_url
+5. El instalador descarga desde `GET /api/download/release?token=...`.
+6. El token expira rapido y no revela tu repo privado.
+
+## Rutas del servidor
+
+- `GET /health`
+- `POST /api/license/activate`
+- `POST /api/license/release`
+- `GET /api/download/release?token=...`
+- `GET /api/admin/licenses`
+- `POST /api/admin/licenses`
+- `GET /api/admin/releases`
+- `POST /api/admin/releases`
+
 ## Operación diaria
 
 Cuando Hotmart confirma una compra:
@@ -69,9 +150,10 @@ Cuando Hotmart confirma una compra:
 1. Tomas el email del comprador.
 2. Creas la licencia contra el endpoint administrativo protegido usando tu clave admin.
 3. Envías esa licencia en el email de bienvenida.
-4. El comprador pega licencia + email en onboarding.
-5. El dashboard confirma licencia contra tu dominio.
+4. Publicas o actualizas la release en el registro del servidor.
+5. El comprador pega licencia + email en onboarding o en el instalador.
+6. El dashboard confirma licencia contra tu dominio.
 
 ## Importante
 
-Este servidor es deliberadamente simple para v1. Usa almacenamiento privado persistente y firmas asimétricas: el comprador recibe solo la clave pública; la clave privada nunca sale de Vercel. Para una etapa SaaS futura conviene añadir panel de administración y webhooks de Hotmart.
+Este servidor es deliberadamente simple para v1. Usa almacenamiento privado persistente, firmas asimétricas para licencias y tokens HMAC de corta duracion para descargas. El comprador recibe solo la clave pública; la clave privada y el secreto de descargas nunca salen de Vercel. Para una etapa SaaS futura conviene añadir panel de administración, webhooks de Hotmart y rotación de secretos.

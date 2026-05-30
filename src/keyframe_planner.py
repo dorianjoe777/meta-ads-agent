@@ -2,8 +2,10 @@
 """Plan image-model keyframes and layer maps for Remotion content."""
 import argparse
 import json
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
+
+from local_store import now_iso, read_json, write_json
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -13,27 +15,6 @@ CONTENT_ROOT = ROOT_DIR / "output" / "content-factory"
 
 
 PALETTE = ["#230052", "#5B13B8", "#DCCBFF", "#FFD0CB", "#C7F1B7", "#0D6E62"]
-
-
-def now_iso():
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
-
-
-def read_json(path, fallback):
-    if not path.exists():
-        return fallback
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            return json.load(handle)
-    except (json.JSONDecodeError, OSError):
-        return fallback
-
-
-def write_json(path, payload):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, ensure_ascii=True)
-
 
 def prompt_for_item(item):
     copy = item.get("copy", {})

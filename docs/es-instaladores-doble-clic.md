@@ -1,6 +1,6 @@
 # Instaladores de doble clic
 
-El ZIP incluye instaladores simples para compradores no tecnicos.
+Esta entrega usa instaladores simples para compradores no tecnicos.
 
 ## Windows
 
@@ -14,7 +14,7 @@ Uso:
 
 1. Instala Docker Desktop.
 2. Abre Docker Desktop y espera que diga `Running`.
-3. Descomprime el ZIP del producto.
+3. Ejecuta el instalador que recibiste.
 4. Haz doble clic en `Instalar en Windows.bat`.
 5. Cuando termine de construir, abre:
 
@@ -34,7 +34,7 @@ Uso:
 
 1. Instala Docker Desktop.
 2. Abre Docker Desktop y espera que diga `Running`.
-3. Descomprime el ZIP del producto.
+3. Ejecuta el instalador que recibiste.
 4. Haz doble clic en `Instalar en Mac.command`.
 5. Cuando termine de construir, abre:
 
@@ -56,7 +56,7 @@ Instalar en Linux.desktop
 Uso:
 
 1. Instala Docker Engine y Docker Compose.
-2. Descomprime el ZIP del producto.
+2. Abre la carpeta que dejó lista el instalador.
 3. Haz doble clic en `Instalar en Linux.desktop` si tu entorno lo permite.
 4. Si no, abre terminal en la carpeta y ejecuta:
 
@@ -72,7 +72,7 @@ http://127.0.0.1:7871
 
 ## Que hacen estos instaladores
 
-Los instaladores no guardan claves ni datos del comprador dentro del ZIP.
+Los instaladores no guardan claves ni datos del comprador dentro del paquete base.
 
 Ellos:
 

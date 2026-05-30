@@ -98,6 +98,14 @@ class AgentConfig:
     codex_creative_enabled: bool
     codex_cli: str
     license_public_key: str = ""
+    hermes_cli: str = "hermes"
+    hermes_home: str = ""
+    hermes_model: str = ""
+    hermes_timeout_seconds: int = 90
+    hermes_max_iterations: int = 12
+    hermes_enabled_toolsets: str = "memory,skills,session_search,vision,image_gen,file"
+    hermes_disabled_toolsets: str = "terminal,code_execution"
+    hermes_use_python_library: bool = True
 
     @property
     def live(self):
@@ -145,7 +153,7 @@ def load_config():
         social_cli=os.environ.get("SOCIAL_CLI", "social"),
         ad_account_id=os.environ.get("META_AD_ACCOUNT_ID", ""),
         meta_access_token=os.environ.get("META_ACCESS_TOKEN", ""),
-        meta_graph_api_version=os.environ.get("META_GRAPH_API_VERSION", "v20.0"),
+        meta_graph_api_version=os.environ.get("META_GRAPH_API_VERSION", "v24.0"),
         notify_channel=os.environ.get("META_NOTIFY_CHANNEL", "dashboard").strip().lower(),
         telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
         telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),
@@ -156,7 +164,7 @@ def load_config():
         gemini_api_key=os.environ.get("GEMINI_API_KEY", ""),
         nano_banana_model=os.environ.get("NANO_BANANA_MODEL", "gemini-2.5-flash-image"),
         creative_variants_per_campaign=env_int("CREATIVE_VARIANTS_PER_CAMPAIGN", 3),
-        agent_chat_provider=os.environ.get("AGENT_CHAT_PROVIDER", "minimax").strip().lower(),
+        agent_chat_provider=os.environ.get("AGENT_CHAT_PROVIDER", "hermes").strip().lower(),
         agent_chat_base_url=os.environ.get("MINIMAX_BASE_URL", "https://api.minimax.io/v1").rstrip("/"),
         agent_chat_api_key=os.environ.get("MINIMAX_API_KEY", ""),
         agent_chat_api=os.environ.get("MINIMAX_API", "openai-completions").strip().lower(),
@@ -166,4 +174,12 @@ def load_config():
         codex_creative_enabled=env_bool("CODEX_CREATIVE_ENABLED", False),
         codex_cli=os.environ.get("CODEX_CLI", "codex"),
         license_public_key=os.environ.get("LICENSE_PUBLIC_KEY", ""),
+        hermes_cli=os.environ.get("HERMES_CLI", "hermes"),
+        hermes_home=os.environ.get("HERMES_HOME", ""),
+        hermes_model=os.environ.get("HERMES_MODEL", ""),
+        hermes_timeout_seconds=env_int("HERMES_TIMEOUT_SECONDS", 90),
+        hermes_max_iterations=env_int("HERMES_MAX_ITERATIONS", 12),
+        hermes_enabled_toolsets=os.environ.get("HERMES_ENABLED_TOOLSETS", "memory,skills,session_search,vision,image_gen,file"),
+        hermes_disabled_toolsets=os.environ.get("HERMES_DISABLED_TOOLSETS", "terminal,code_execution"),
+        hermes_use_python_library=env_bool("HERMES_USE_PYTHON_LIBRARY", True),
     )

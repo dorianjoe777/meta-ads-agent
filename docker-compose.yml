@@ -15,6 +15,7 @@ services:
     volumes:
       - meta_ads_config:/app/runtime
       - meta_ads_data:/app/dashboard/data
+      - meta_ads_update_snapshots:/app/dashboard/data/update-snapshots
       - meta_ads_output:/app/output
       - meta_ads_logs:/app/logs
       - meta_ads_brand_guides:/app/brand_guides
@@ -23,6 +24,7 @@ services:
 volumes:
   meta_ads_config:
   meta_ads_data:
+  meta_ads_update_snapshots:
   meta_ads_output:
   meta_ads_logs:
   meta_ads_brand_guides:

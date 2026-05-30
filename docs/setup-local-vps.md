@@ -7,7 +7,7 @@ This guide is written for customers who want a simple install path.
 ### Option A: Docker, recommended for beginners
 
 1. Install Docker Desktop.
-2. Download or unzip the product folder.
+2. Open the installer or product folder you received.
 3. Open a terminal in the folder.
 4. Run:
 
@@ -26,7 +26,7 @@ Docker installs Python, Node/npm, and Codex CLI inside the container.
 ### Option B: Direct local install
 
 1. Install Python 3.10 or newer.
-2. Download or unzip the product folder.
+2. Open the installer or product folder you received.
 3. Open a terminal in the folder.
 4. Run:
 
@@ -47,7 +47,7 @@ http://127.0.0.1:7871
 
 1. Create a small Ubuntu VPS.
 2. Install Docker and Docker Compose.
-3. Upload the product folder.
+3. Upload the installed product folder.
 4. Run:
 
 ```bash
@@ -70,7 +70,7 @@ sudo apt update
 sudo apt install -y python3 python3-venv
 ```
 
-3. Upload the product folder.
+3. Upload the installed product folder.
 4. Run:
 
 ```bash
@@ -100,6 +100,16 @@ Real account changes require:
 - Buyer-created dashboard password for protected dashboard actions
 
 For VPS installs, keep the dashboard local and access it with the SSH tunnel above. Do not expose the dashboard port directly to the internet.
+
+## DigitalOcean strict access
+
+If the buyer wants the dashboard reachable from a DigitalOcean server IP without opening it to everyone, use the strict firewall mode:
+
+```bash
+./scripts/install-digitalocean-strict-access.sh
+```
+
+This mode updates a dedicated DigitalOcean firewall after a successful SSH login. It allows SSH and the dashboard port only from the buyer's current IP. See `docs/es-digitalocean-acceso-estricto.md`.
 
 ## Daily Run
 

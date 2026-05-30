@@ -2,7 +2,7 @@
 
 ## 1. Instalar localmente
 
-"En este video instalamos el operador en tu maquina. Descomprime el ZIP, abre la terminal dentro de la carpeta y ejecuta `./scripts/install-local.sh`. Luego corre `./scripts/run-dashboard.sh` y abre el enlace del dashboard."
+"En este video instalamos el operador en tu maquina. Abre el instalador o la carpeta del producto, entra a la terminal dentro de esa carpeta y ejecuta `./scripts/install-local.sh`. Luego corre `./scripts/run-dashboard.sh` y abre el enlace del dashboard."
 
 ## 2. Agregar licencia
 

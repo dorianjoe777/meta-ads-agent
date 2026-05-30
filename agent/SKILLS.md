@@ -1,12 +1,16 @@
 # SKILLS.md - Meta Ads Manager Action Skill
 
-This skill lets the MiniMax manager understand natural language and request product actions safely. MiniMax is the reasoning layer; the backend is the execution layer.
+This skill lets the Hermes manager understand natural language and request product actions safely. Hermes is the reasoning and memory layer; the backend is the execution layer.
 
 ## Core Rule
 
 Always answer the user naturally first. If the user asks for an action, decide whether enough information exists. If yes, return a structured `tool_request`. If no, ask for the missing detail and do not request a tool.
 
 The backend will validate every tool request, enforce approvals, check `Con supervision` or `Piloto automatico`, and execute or prepare the action.
+
+Hermes receives curated local business memory in the prompt. This includes safe snapshots of `dashboard/data/business_profile.json`, `dashboard/data/audience_strategy.json`, the brand guide files in `brand_guides/`, recent chat turns, recent actions, recent creative refreshes, and explicitly uploaded reference images. Use that memory before asking the buyer repeated questions.
+
+Do not assume broad filesystem access. If a file is not present in the provided memory/context, ask the buyer for the missing detail or request the correct backend tool.
 
 ## Response Contract
 
@@ -175,6 +179,10 @@ If the user wants the campaign active, ask for explicit confirmation before requ
 
 > Sí, crear y dejar activo
 
+In English mode, use:
+
+> Yes, create and leave active
+
 If product, budget, landing URL, creative image path, or active-spend confirmation is missing, ask one clear question and do not request the tool.
 
 ### `review_live_readiness`
@@ -226,9 +234,29 @@ Do not ask for an ad set during normal beginner onboarding. The default product 
 
 If the user asks what an ad set is or where to find the ID, explain in simple language and do not request this tool until they provide the number.
 
+### `approval_decision`
+
+Use when the buyer asks to approve or reject one exact pending approval already visible in context.
+
+Arguments:
+
+```json
+{"approval_id": "approval_...", "decision": "approve"}
+```
+
+Allowed decisions are `approve` and `reject`. Never invent approval IDs. If the request is ambiguous, ask which pending decision they mean and do not request the tool.
+
+If the approval can leave a campaign or ad active, ask for the exact buyer phrase before requesting approval:
+
+> Sí, crear y dejar activo
+
+In English mode, use:
+
+> Yes, create and leave active
+
 ### `approval_guardrail`
 
-Use when the user asks the chat to approve something.
+Legacy fallback when the user asks to approve but the exact approval ID is missing.
 
 Arguments:
 
@@ -236,13 +264,13 @@ Arguments:
 {}
 ```
 
-The chat must not approve actions. Tell the user to open the approval queue and approve there.
+Tell the buyer you need the exact decision and show/mention the pending choices.
 
 ## Safety Rules
 
 - The chat may request an action, but it cannot bypass backend protection.
-- The chat must not approve pending approvals.
-- Telegram natural-language approval requests are not allowed. If an exact pending action is shown with approve/reject buttons, the backend may execute that button action for the authorized private chat.
+- Chat and Telegram may approve pending approvals only through an exact approval button, an exact approval ID, or the approved active-campaign phrase when required.
+- Telegram natural-language approval is allowed only when it resolves to one exact pending decision: a reply to a decision card, one single pending approval, or a message containing the approval ID.
 
 ## Codex Creative Skill
 

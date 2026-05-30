@@ -3,15 +3,16 @@
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from budget_optimizer import BudgetOptimizer, OptimizationStrategy, PerformanceMetrics
-from creative_refresh import campaigns_needing_refresh, generate_creative_refresh, recent_creative_refreshes
+from creative_refresh import campaigns_needing_refresh, generate_creative_refresh, mark_asset_files_retained, recent_creative_refreshes
 from graph_executor import execute_upload_payload
 from license import license_status
+from local_store import now_iso, read_json, write_json
 from meta_upload import recent_uploads, stage_upload
 from product_config import ROOT_DIR, load_config
 from security import redact_payload
@@ -26,27 +27,6 @@ METRICS_FILE = DATA_DIR / "metrics.json"
 ACTIONS_FILE = DATA_DIR / "actions.json"
 PENDING_FILE = DATA_DIR / "pending_approvals.json"
 FATIGUE_LOG = OUTPUT_DIR / "fatigue-log.md"
-
-
-def now_iso():
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
-
-
-def read_json(path, fallback):
-    if not path.exists():
-        return fallback
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            return json.load(handle)
-    except (json.JSONDecodeError, OSError):
-        return fallback
-
-
-def write_json(path, payload):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2)
-
 
 def money(value):
     return round(float(value or 0), 2)
@@ -257,11 +237,45 @@ def targeting_for_social(targeting):
     targeting = targeting or {}
     age_range = targeting.get("age_range") or {}
     countries = [str(item).upper() for item in targeting.get("locations", ["US"]) if item]
-    return {
-        "geo_locations": {"countries": countries or ["US"]},
+    meta_targeting = targeting.get("meta_targeting") or {}
+    geo_locations = {"countries": countries or ["US"]}
+    selected_locations = meta_targeting.get("locations") if isinstance(meta_targeting, dict) else []
+    if isinstance(selected_locations, list) and selected_locations:
+        geo_locations = {}
+        for item in selected_locations:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key") or item.get("id") or "").strip()
+            location_type = str(item.get("type") or "").lower()
+            country_code = str(item.get("country_code") or "").strip().upper()
+            if location_type == "country" or (len(key) == 2 and key.isalpha()):
+                geo_locations.setdefault("countries", []).append(key.upper() if key else country_code)
+            elif location_type == "city" and key:
+                geo_locations.setdefault("cities", []).append({"key": key})
+            elif location_type == "region" and key:
+                geo_locations.setdefault("regions", []).append({"key": key})
+            elif country_code:
+                geo_locations.setdefault("countries", []).append(country_code)
+        if not geo_locations:
+            geo_locations = {"countries": countries or ["US"]}
+    spec = {
+        "geo_locations": geo_locations,
         "age_min": int(age_range.get("min", 18)),
         "age_max": int(age_range.get("max", 65)),
     }
+    selected_interests = meta_targeting.get("interests") if isinstance(meta_targeting, dict) else []
+    if isinstance(selected_interests, list):
+        interests = []
+        for item in selected_interests:
+            if not isinstance(item, dict):
+                continue
+            interest_id = str(item.get("id") or "").strip()
+            name = str(item.get("name") or "").strip()
+            if interest_id and name:
+                interests.append({"id": interest_id, "name": name})
+        if interests:
+            spec["interests"] = interests
+    return spec
 
 
 def execute_campaign_creation(path, client, approved=False):
@@ -359,7 +373,14 @@ def execute_campaign_creation(path, client, approved=False):
     ad_result = client.create_ad(target_adset_id, f"{campaign.get('name', 'New Campaign')} - Ad", creative_id, final_status, approved=approved)
     ad_id = social_id_from_result(ad_result)
     steps.append({"step": "create_ad", "ok": bool(ad_id), "ad_id": ad_id, "final_status": final_status, "result": ad_result})
-    return {"ok": bool(ad_id), "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "creative_id": creative_id, "ad_id": ad_id, "final_status": final_status, "steps": steps}
+    final = {"ok": bool(ad_id), "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "creative_id": creative_id, "ad_id": ad_id, "final_status": final_status, "steps": steps}
+    if final["ok"]:
+        mark_asset_files_retained(
+            [ad_plan.get("creative_image_path")],
+            reason="campaign_ad_created",
+            meta={"campaign_id": campaign_id, "creative_id": creative_id, "ad_id": ad_id, "final_status": final_status},
+        )
+    return final
 
 
 def execute_pending(item, client):

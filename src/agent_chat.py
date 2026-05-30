@@ -6,6 +6,7 @@ import urllib.error
 import urllib.request
 
 from agent_runtime import build_system_prompt
+from hermes_bridge import chat as hermes_chat
 
 
 def account_context(payload):
@@ -126,6 +127,19 @@ def minimax_chat(config, payload):
 
 
 def chat(config, payload):
+    if config.agent_chat_provider == "hermes":
+        hermes_payload = dict(payload)
+        hermes_payload["account_context"] = account_context(payload)
+        result = hermes_chat(config, hermes_payload)
+        raw_reply = result.get("reply", "")
+        parsed = parse_skill_response(raw_reply)
+        if parsed is not None:
+            result["reply"] = parsed.get("assistant_message") or fallback_reply(payload.get("message", ""), payload)
+            result["tool_request"] = parsed.get("tool_request")
+            result["raw_reply"] = result.get("raw_reply") or raw_reply
+        else:
+            result.setdefault("tool_request", None)
+        return result
     if config.agent_chat_provider == "minimax":
         return minimax_chat(config, payload)
     return {"ok": False, "provider": config.agent_chat_provider, "fallback": True, "reply": fallback_reply(payload.get("message", ""), payload), "error": "Unsupported chat provider"}

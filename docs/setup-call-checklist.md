@@ -9,7 +9,7 @@
 
 ## Durante la llamada
 
-1. Descomprimir el ZIP.
+1. Abrir el instalador o la carpeta instalada del producto.
 2. Ejecutar `./scripts/install-local.sh`.
 3. Abrir el dashboard.
 4. Agregar la licencia enviada por email.

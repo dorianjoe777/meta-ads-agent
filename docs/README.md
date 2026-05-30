@@ -56,7 +56,7 @@ Then open:
 http://127.0.0.1:7871
 ```
 
-The installer creates `.env` from `.env.example` if one does not exist. It also generates a local dashboard password and locks down local data permissions.
+The installer creates `.env` from `.env.example` if one does not exist. During onboarding, the buyer creates their own dashboard password; the installer locks down local data permissions.
 
 ## First Supervised Run
 
