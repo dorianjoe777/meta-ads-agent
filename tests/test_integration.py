@@ -650,6 +650,40 @@ class IntegrationTestSuite:
         self.assert_true(result.get("fallback") is True, "Missing Hermes runtime is a fallback state")
         self.assert_true("hermes model" in result["reply"].lower() and "chatgpt" in result["reply"].lower(), "Fallback explains ChatGPT/Codex OAuth setup")
 
+    def test_hermes_blocks_non_codex_runtime_by_default(self):
+        """Test buyer default does not silently chat through a non-Codex Hermes provider."""
+        print("\nTesting Hermes Codex Auth Requirement...")
+
+        class FakeConfig:
+            hermes_require_codex_auth = True
+            hermes_cli = "hermes"
+            hermes_use_python_library = False
+            hermes_model = ""
+            hermes_timeout_seconds = 1
+            hermes_max_iterations = 1
+            hermes_enabled_toolsets = ""
+            hermes_disabled_toolsets = "terminal"
+            hermes_home = ""
+
+        class Completed:
+            returncode = 0
+            stdout = "Provider:     MiniMax\nOpenAI Codex  ✗ not logged in (run: hermes model)"
+            stderr = ""
+
+        original_run = hermes_bridge.subprocess.run
+        original_which = hermes_bridge.shutil.which
+        try:
+            hermes_bridge.shutil.which = lambda _cmd: "/usr/local/bin/hermes"
+            hermes_bridge.subprocess.run = lambda *args, **kwargs: Completed()
+            result = hermes_bridge.chat(FakeConfig(), {"message": "Hola", "language": "es", "account_context": {}})
+            self.assert_true(result["provider"] == "hermes", "Hermes remains the selected provider")
+            self.assert_true(result.get("fallback") is True, "Non-Codex Hermes runtime is blocked as setup fallback")
+            self.assert_true("MiniMax" in result.get("error", ""), "Blocked detail exposes the wrong Hermes provider for diagnostics")
+            self.assert_true("OpenAI Codex" in result.get("error", ""), "Blocked detail mentions Codex auth")
+        finally:
+            hermes_bridge.subprocess.run = original_run
+            hermes_bridge.shutil.which = original_which
+
     def test_hermes_attaches_safe_uploaded_images(self):
         """Test Hermes sees uploaded reference images without enabling broad file access."""
         print("\nTesting Hermes Uploaded Image Attachment...")
@@ -2635,7 +2669,7 @@ class IntegrationTestSuite:
         self.assert_true("CreateShortcut" in nsis_template and "Instalar en Windows.bat" in nsis_template, "Windows NSIS installer creates a buyer shortcut")
         self.assert_true("https://licencias-miro-ai.uboost.lat" in (ROOT_DIR / ".env.example").read_text(encoding="utf-8"), "Buyer release uses deployed license server")
         self.assert_true("LICENSE_PUBLIC_KEY=" in (ROOT_DIR / ".env.example").read_text(encoding="utf-8"), "Buyer release includes only license verification key")
-        self.assert_true("META_ADS_AGENT_VERSION=v1.0.0" in (ROOT_DIR / ".env.example").read_text(encoding="utf-8") and (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip() == "v1.0.0", "Buyer release exposes the installed product version")
+        self.assert_true("META_ADS_AGENT_VERSION=v1.0.1" in (ROOT_DIR / ".env.example").read_text(encoding="utf-8") and (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip() == "v1.0.1", "Buyer release exposes the installed product version")
         bootstrap_config = (ROOT_DIR / "installer" / "release-bootstrap.env").read_text(encoding="utf-8")
         bootstrap_sh = (ROOT_DIR / "scripts" / "install-from-github.sh").read_text(encoding="utf-8")
         bootstrap_ps1 = (ROOT_DIR / "scripts" / "install-from-github.ps1").read_text(encoding="utf-8")
@@ -2721,6 +2755,7 @@ class IntegrationTestSuite:
             self.test_hermes_provider_parses_tool_request,
             self.test_hermes_creative_image_request_routes_to_codex_tool,
             self.test_hermes_missing_runtime_gives_chatgpt_setup_guidance,
+            self.test_hermes_blocks_non_codex_runtime_by_default,
             self.test_hermes_attaches_safe_uploaded_images,
             self.test_hermes_business_memory_workspace_is_curated_and_redacted,
             self.test_chat_approval_decision_tool,

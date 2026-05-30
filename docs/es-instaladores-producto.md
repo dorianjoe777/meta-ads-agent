@@ -128,12 +128,12 @@ MetaAdsAgent-source.zip
 El script de release tambien deja una copia versionada:
 
 ```text
-MetaAdsAgent-v1.0.0-source.zip
+MetaAdsAgent-v1.0.1-source.zip
 ```
 
 ## Flujo recomendado de publicacion
 
-1. Generas el paquete fuente con `./scripts/package-release.sh v1.0.0`.
+1. Generas el paquete fuente con `./scripts/package-release.sh v1.0.1`.
 2. Subes `MetaAdsAgent-source.zip` como asset de una release privada en GitHub.
 3. Registras en el servidor la URL API del asset privado, con formato `https://api.github.com/repos/OWNER/REPO/releases/assets/ASSET_ID`.
 4. Registras esa release en tu servidor:
@@ -144,7 +144,7 @@ curl -X POST "https://licencias-miro-ai.uboost.lat/api/admin/releases" \
   -H "Content-Type: application/json" \
   -d '{
     "channel":"stable",
-    "version":"v1.0.0",
+    "version":"v1.0.1",
     "asset_name":"MetaAdsAgent-source.zip",
     "filename":"MetaAdsAgent-source.zip",
     "source_url":"https://api.github.com/repos/OWNER/REPO/releases/assets/ASSET_ID",

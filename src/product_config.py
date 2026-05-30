@@ -106,6 +106,7 @@ class AgentConfig:
     hermes_enabled_toolsets: str = "memory,skills,session_search,vision,image_gen,file"
     hermes_disabled_toolsets: str = "terminal,code_execution"
     hermes_use_python_library: bool = True
+    hermes_require_codex_auth: bool = True
 
     @property
     def live(self):
@@ -182,4 +183,5 @@ def load_config():
         hermes_enabled_toolsets=os.environ.get("HERMES_ENABLED_TOOLSETS", "memory,skills,session_search,vision,image_gen,file"),
         hermes_disabled_toolsets=os.environ.get("HERMES_DISABLED_TOOLSETS", "terminal,code_execution"),
         hermes_use_python_library=env_bool("HERMES_USE_PYTHON_LIBRARY", True),
+        hermes_require_codex_auth=env_bool("HERMES_REQUIRE_CODEX_AUTH", True),
     )

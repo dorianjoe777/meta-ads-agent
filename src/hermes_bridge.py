@@ -211,6 +211,32 @@ def setup_reply(language="es"):
     )
 
 
+def hermes_codex_ready(config):
+    hermes_cli = shutil.which(getattr(config, "hermes_cli", "hermes") or "hermes")
+    if not hermes_cli:
+        return False, "Hermes not installed"
+    try:
+        completed = subprocess.run(
+            [hermes_cli, "status"],
+            cwd=str(ROOT_DIR),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+    except Exception as exc:
+        return False, f"Could not check Hermes status: {exc}"
+    output = (completed.stdout or "") + "\n" + (completed.stderr or "")
+    provider_line = next((line.strip() for line in output.splitlines() if "Provider:" in line), "")
+    codex_line = next((line.strip() for line in output.splitlines() if "OpenAI Codex" in line), "")
+    provider_ok = "codex" in provider_line.lower() or "openai codex" in provider_line.lower()
+    codex_detail = codex_line.lower()
+    codex_ok = bool(codex_line and "not logged in" not in codex_detail and "\u2717" not in codex_line and "error:" not in codex_detail)
+    detail = f"{provider_line or 'Provider unknown'}; {codex_line or 'OpenAI Codex auth unknown'}"
+    return provider_ok and codex_ok, detail
+
+
 def hermes_prompt(config, payload, workspace_info=None):
     language = payload.get("language", "")
     context = payload.get("account_context") or {}
@@ -327,6 +353,16 @@ def cli_chat(config, payload):
 def chat(config, payload):
     language = payload.get("language", "es")
     try:
+        if getattr(config, "hermes_require_codex_auth", True):
+            ready, detail = hermes_codex_ready(config)
+            if not ready:
+                return {
+                    "ok": False,
+                    "provider": "hermes",
+                    "fallback": True,
+                    "reply": setup_reply(language),
+                    "error": f"Hermes ChatGPT/Codex is not ready: {detail}",
+                }
         images = safe_image_paths(payload)
         if images:
             reply = cli_chat(config, payload)
