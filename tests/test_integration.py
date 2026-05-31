@@ -2543,7 +2543,7 @@ class IntegrationTestSuite:
                 dashboard.ACTIONS_FILE = dashboard.DATA_DIR / "actions.json"
                 dashboard.METRICS_FILE = dashboard.DATA_DIR / "metrics.json"
                 dashboard.threading.Timer = NoopTimer
-                first = dashboard.create_update_snapshot(release={"channel": "stable", "latest_version": "v1.0.1"})
+                first = dashboard.create_update_snapshot(release={"channel": "stable", "latest_version": "v1.0.2"})
                 (root / ".env").write_text("DASHBOARD_PASSWORD=new\n", encoding="utf-8")
                 (root / "ad-config.json").write_text('{"url":"new"}\n', encoding="utf-8")
                 (root / "VERSION").write_text("v9.9.9\n", encoding="utf-8")
@@ -2667,9 +2667,9 @@ class IntegrationTestSuite:
         self.assert_true("pkgbuild" in mac_pkg_builder and "productbuild" in mac_pkg_builder, "Mac PKG builder uses native package tools")
         self.assert_true("makensis" in windows_exe_builder and "MetaAdsAgentInstaller.nsi" in windows_exe_builder, "Windows EXE builder uses NSIS when available")
         self.assert_true("CreateShortcut" in nsis_template and "Instalar en Windows.bat" in nsis_template, "Windows NSIS installer creates a buyer shortcut")
-        self.assert_true("https://licencias-miro-ai.uboost.lat" in (ROOT_DIR / ".env.example").read_text(encoding="utf-8"), "Buyer release uses deployed license server")
+        self.assert_true("https://licencias-admiro-ai.uboost.lat" in (ROOT_DIR / ".env.example").read_text(encoding="utf-8"), "Buyer release uses deployed license server")
         self.assert_true("LICENSE_PUBLIC_KEY=" in (ROOT_DIR / ".env.example").read_text(encoding="utf-8"), "Buyer release includes only license verification key")
-        self.assert_true("META_ADS_AGENT_VERSION=v1.0.1" in (ROOT_DIR / ".env.example").read_text(encoding="utf-8") and (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip() == "v1.0.1", "Buyer release exposes the installed product version")
+        self.assert_true("META_ADS_AGENT_VERSION=v1.0.2" in (ROOT_DIR / ".env.example").read_text(encoding="utf-8") and (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip() == "v1.0.2", "Buyer release exposes the installed product version")
         bootstrap_config = (ROOT_DIR / "installer" / "release-bootstrap.env").read_text(encoding="utf-8")
         bootstrap_sh = (ROOT_DIR / "scripts" / "install-from-github.sh").read_text(encoding="utf-8")
         bootstrap_ps1 = (ROOT_DIR / "scripts" / "install-from-github.ps1").read_text(encoding="utf-8")

@@ -29,13 +29,13 @@ El producto ya tiene:
 La API está desplegada en Vercel y publicada como:
 
 ```text
-https://licencias-miro-ai.uboost.lat
+https://licencias-admiro-ai.uboost.lat
 ```
 
 El release debe mantener:
 
 ```text
-LICENSE_SERVER_URL=https://licencias-miro-ai.uboost.lat
+LICENSE_SERVER_URL=https://licencias-admiro-ai.uboost.lat
 LICENSE_PUBLIC_KEY=clave-publica-de-verificacion
 LICENSE_REQUIRED_FOR_LIVE=true
 ```
@@ -43,7 +43,7 @@ LICENSE_REQUIRED_FOR_LIVE=true
 ### 2. Generar licencia del comprador
 
 ```bash
-curl -X POST "https://licencias-miro-ai.uboost.lat/api/admin/licenses" \
+curl -X POST "https://licencias-admiro-ai.uboost.lat/api/admin/licenses" \
   -H "Authorization: Bearer TU_CLAVE_ADMIN_PRIVADA" \
   -H "Content-Type: application/json" \
   -d '{"buyer_email":"cliente@email.com","buyer_name":"Cliente","plan":"individual"}'

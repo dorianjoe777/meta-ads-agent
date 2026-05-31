@@ -23,7 +23,7 @@ Valores clave:
 
 ```text
 BOOTSTRAP_PROVIDER=license_server
-LICENSE_SERVER_URL=https://licencias-miro-ai.uboost.lat
+LICENSE_SERVER_URL=https://licencias-admiro-ai.uboost.lat
 LICENSE_RELEASE_ENDPOINT=/api/license/release
 RELEASE_CHANNEL=stable
 RELEASE_ASSET_NAME=MetaAdsAgent-source.zip
@@ -94,13 +94,13 @@ Ese script puede descargar la ultima version publicada desde tu servidor de lice
 En Mac:
 
 ```bash
-META_ADS_LICENSE_SERVER_URL=https://licencias-miro-ai.uboost.lat ./scripts/build-mac-pkg.sh v1
+META_ADS_LICENSE_SERVER_URL=https://licencias-admiro-ai.uboost.lat ./scripts/build-mac-pkg.sh v1
 ```
 
 En Windows, usando NSIS:
 
 ```bash
-META_ADS_LICENSE_SERVER_URL=https://licencias-miro-ai.uboost.lat ./scripts/build-windows-exe.sh v1
+META_ADS_LICENSE_SERVER_URL=https://licencias-admiro-ai.uboost.lat ./scripts/build-windows-exe.sh v1
 ```
 
 Si `makensis` no esta instalado, el script deja listo un paquete fuente para compilar el `.exe` en una maquina con NSIS.
@@ -108,13 +108,13 @@ Si `makensis` no esta instalado, el script deja listo un paquete fuente para com
 En Linux:
 
 ```bash
-META_ADS_LICENSE_SERVER_URL=https://licencias-miro-ai.uboost.lat ./scripts/build-linux-bundle.sh v1
+META_ADS_LICENSE_SERVER_URL=https://licencias-admiro-ai.uboost.lat ./scripts/build-linux-bundle.sh v1
 ```
 
 Para generar el paquete fuente interno que descargan los instaladores:
 
 ```bash
-META_ADS_LICENSE_SERVER_URL=https://licencias-miro-ai.uboost.lat ./scripts/package-release.sh v1
+META_ADS_LICENSE_SERVER_URL=https://licencias-admiro-ai.uboost.lat ./scripts/package-release.sh v1
 ```
 
 ## Asset tecnico recomendado para publicar
@@ -128,23 +128,23 @@ MetaAdsAgent-source.zip
 El script de release tambien deja una copia versionada:
 
 ```text
-MetaAdsAgent-v1.0.1-source.zip
+MetaAdsAgent-v1.0.2-source.zip
 ```
 
 ## Flujo recomendado de publicacion
 
-1. Generas el paquete fuente con `./scripts/package-release.sh v1.0.1`.
+1. Generas el paquete fuente con `./scripts/package-release.sh v1.0.2`.
 2. Subes `MetaAdsAgent-source.zip` como asset de una release privada en GitHub.
 3. Registras en el servidor la URL API del asset privado, con formato `https://api.github.com/repos/OWNER/REPO/releases/assets/ASSET_ID`.
 4. Registras esa release en tu servidor:
 
 ```bash
-curl -X POST "https://licencias-miro-ai.uboost.lat/api/admin/releases" \
+curl -X POST "https://licencias-admiro-ai.uboost.lat/api/admin/releases" \
   -H "Authorization: Bearer TU_CLAVE_ADMIN_PRIVADA" \
   -H "Content-Type: application/json" \
   -d '{
     "channel":"stable",
-    "version":"v1.0.1",
+    "version":"v1.0.2",
     "asset_name":"MetaAdsAgent-source.zip",
     "filename":"MetaAdsAgent-source.zip",
     "source_url":"https://api.github.com/repos/OWNER/REPO/releases/assets/ASSET_ID",
