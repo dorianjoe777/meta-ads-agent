@@ -430,6 +430,9 @@ export DO_STRICT_ACCESS_GATE_PORT="$CLOUD_ACCESS_PORT"
 export DO_STRICT_SKIP_DROPLET_ID_PROMPT=true
 export DO_STRICT_INITIAL_CLIENT_IP="$INITIAL_CLIENT_IP"
 ./scripts/install-digitalocean-strict-access.sh || true
+if [ -x /root/.local/bin/meta-ads-refresh-access ]; then
+  install -m 0700 /root/.local/bin/meta-ads-refresh-access /usr/local/bin/meta-ads-refresh-access
+fi
 install_cloud_access_gate() {
   [ -n "$CLOUD_ACCESS_SECRET" ] || return 0
   mkdir -p /opt/admiro-cloud-access-gate /etc/admiro-cloud-access-gate
@@ -450,7 +453,7 @@ import urllib.request
 SECRET = os.environ.get("CLOUD_ACCESS_SECRET", "").strip()
 PORT = int(os.environ.get("CLOUD_ACCESS_PORT", "7870") or "7870")
 DASHBOARD_PORT = os.environ.get("DASHBOARD_PORT", "7871").strip() or "7871"
-REFRESH_COMMAND = os.environ.get("REFRESH_COMMAND", "/root/.local/bin/meta-ads-refresh-access")
+REFRESH_COMMAND = os.environ.get("REFRESH_COMMAND", "/usr/local/bin/meta-ads-refresh-access")
 STATE_DIR = "/var/lib/admiro-cloud-access-gate"
 STATE_FILE = f"{STATE_DIR}/state.json"
 
@@ -639,7 +642,7 @@ PY
 CLOUD_ACCESS_SECRET=$CLOUD_ACCESS_SECRET
 CLOUD_ACCESS_PORT=$CLOUD_ACCESS_PORT
 DASHBOARD_PORT=$DASHBOARD_PORT
-REFRESH_COMMAND=/root/.local/bin/meta-ads-refresh-access
+REFRESH_COMMAND=/usr/local/bin/meta-ads-refresh-access
 EOF
   chmod 600 /etc/admiro-cloud-access-gate/env
   cat > /etc/systemd/system/admiro-cloud-access-gate.service <<'SERVICE'

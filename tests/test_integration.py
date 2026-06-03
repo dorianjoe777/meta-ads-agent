@@ -2849,6 +2849,7 @@ class IntegrationTestSuite:
         self.assert_true("SSH_CONNECTION" in do_firewall_script and "api.digitalocean.com/v2" in do_firewall_script and "/firewalls/" in do_firewall_script, "DigitalOcean firewall refresh detects SSH client IP and updates the firewall API")
         self.assert_true("DO_STRICT_ALLOW_SSH_FROM_ANYWHERE" in do_firewall_script and "DASHBOARD_PORT" in do_firewall_script, "DigitalOcean strict mode separates SSH recovery from dashboard access")
         self.assert_true("$HOME/.profile" in do_install_script and "meta-ads-refresh-access" in do_install_script, "DigitalOcean strict mode can refresh access after SSH login")
+        self.assert_true("/usr/local/bin/meta-ads-refresh-access" in digitalocean_cloud_lib, "DigitalOcean cloud access gate uses a system helper path for one-click dashboard opening")
         self.assert_true("migration-panel" in dashboard_source and "/api/migration/export" in dashboard_source and "/api/migration/import" in dashboard_source, "Dashboard exposes backup and restore buttons instead of extra buyer files")
         self.assert_true("cloud-access-panel" in dashboard_source and "/api/cloud-access/refresh" in dashboard_source and "digitalocean-refresh-firewall.sh" in dashboard_source, "Dashboard exposes DigitalOcean access refresh")
         self.assert_true("update-banner" in dashboard_source and "/api/update/check" in dashboard_source and "/api/update/apply" in dashboard_source, "Dashboard checks official updates and can apply them after confirmation")
