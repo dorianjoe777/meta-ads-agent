@@ -430,9 +430,26 @@ export DO_STRICT_ACCESS_GATE_PORT="$CLOUD_ACCESS_PORT"
 export DO_STRICT_SKIP_DROPLET_ID_PROMPT=true
 export DO_STRICT_INITIAL_CLIENT_IP="$INITIAL_CLIENT_IP"
 ./scripts/install-digitalocean-strict-access.sh || true
-if [ -x /root/.local/bin/meta-ads-refresh-access ]; then
-  install -m 0700 /root/.local/bin/meta-ads-refresh-access /usr/local/bin/meta-ads-refresh-access
-fi
+install -d -m 0700 /root/.meta-ads-agent /usr/local/bin
+cat > /root/.meta-ads-agent/digitalocean-strict-access.env <<EOF
+DIGITALOCEAN_TOKEN=$DIGITALOCEAN_TOKEN
+DIGITALOCEAN_FIREWALL_ID=$DIGITALOCEAN_FIREWALL_ID
+DIGITALOCEAN_DROPLET_ID=
+DASHBOARD_PORT=$DASHBOARD_PORT
+DO_STRICT_EXTRA_TCP_PORTS=
+DO_STRICT_ALLOW_SSH_FROM_ANYWHERE=true
+DO_STRICT_ACCESS_GATE_PORT=$CLOUD_ACCESS_PORT
+EOF
+chmod 0600 /root/.meta-ads-agent/digitalocean-strict-access.env
+cat > /usr/local/bin/meta-ads-refresh-access <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+set -a
+. /root/.meta-ads-agent/digitalocean-strict-access.env
+set +a
+exec /opt/meta-ads-agent/scripts/digitalocean-refresh-firewall.sh "$@"
+SH
+chmod 0700 /usr/local/bin/meta-ads-refresh-access
 install_cloud_access_gate() {
   [ -n "$CLOUD_ACCESS_SECRET" ] || return 0
   mkdir -p /opt/admiro-cloud-access-gate /etc/admiro-cloud-access-gate
