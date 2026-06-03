@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${1:-v1.0.2}"
+VERSION="${1:-v1.0.3}"
 RELEASE_DIR="$ROOT_DIR/release"
 BUILD_DIR="$RELEASE_DIR/linux-build"
 STAGING_PARENT="$BUILD_DIR/stage"
@@ -61,7 +61,7 @@ if not path.exists():
 
 updates = {
     "BOOTSTRAP_PROVIDER": os.environ.get("META_ADS_BOOTSTRAP_PROVIDER", "license_server"),
-    "LICENSE_SERVER_URL": os.environ.get("META_ADS_LICENSE_SERVER_URL", "https://licencias-admiro-ai.uboost.lat"),
+    "LICENSE_SERVER_URL": os.environ.get("META_ADS_LICENSE_SERVER_URL", "https://admiroia.uboost.lat"),
     "LICENSE_RELEASE_ENDPOINT": os.environ.get("META_ADS_LICENSE_RELEASE_ENDPOINT", "/api/license/release"),
     "RELEASE_CHANNEL": os.environ.get("META_ADS_RELEASE_CHANNEL", "stable"),
     "RELEASE_ASSET_NAME": os.environ.get("META_ADS_RELEASE_ASSET_NAME", "MetaAdsAgent-source.zip"),
@@ -87,5 +87,23 @@ PY
 
 tar -czf "$RELEASE_DIR/$TAR_NAME" -C "$STAGING_PARENT" "MetaAdsAgent"
 
+if command -v sha256sum >/dev/null 2>&1; then
+  (cd "$RELEASE_DIR" && sha256sum "$TAR_NAME" > "$TAR_NAME.sha256")
+elif command -v shasum >/dev/null 2>&1; then
+  (cd "$RELEASE_DIR" && shasum -a 256 "$TAR_NAME" > "$TAR_NAME.sha256")
+fi
+
+if [[ "${LINUX_GPG_SIGN:-false}" == "true" ]]; then
+  if ! command -v gpg >/dev/null 2>&1; then
+    echo "LINUX_GPG_SIGN=true requiere gpg instalado."
+    exit 1
+  fi
+  gpg --armor --detach-sign "$RELEASE_DIR/$TAR_NAME"
+fi
+
 echo "Bundle Linux creado:"
 echo "$RELEASE_DIR/$TAR_NAME"
+if [[ "${LINUX_GPG_SIGN:-false}" == "true" ]]; then
+  echo "Firma GPG creada:"
+  echo "$RELEASE_DIR/$TAR_NAME.asc"
+fi

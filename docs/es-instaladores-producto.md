@@ -6,7 +6,9 @@ Desde esta version, la forma recomendada de entrega es:
 
 1. Mantener el codigo fuente en un repo privado.
 2. Publicar un paquete fuente interno en GitHub Releases o en tu infraestructura privada.
-3. Entregar al comprador un instalador que pide licencia + email y descarga una URL firmada desde tu dominio.
+3. Enviar al comprador email + clave de acceso despues de la compra.
+4. El comprador entra a `https://admiroia.uboost.lat/access`.
+5. Elige Mac, Windows o Linux y descarga desde una URL firmada temporal.
 
 Asi separas dos cosas:
 
@@ -23,48 +25,70 @@ Valores clave:
 
 ```text
 BOOTSTRAP_PROVIDER=license_server
-LICENSE_SERVER_URL=https://licencias-admiro-ai.uboost.lat
+LICENSE_SERVER_URL=https://admiroia.uboost.lat
 LICENSE_RELEASE_ENDPOINT=/api/license/release
 RELEASE_CHANNEL=stable
 RELEASE_ASSET_NAME=MetaAdsAgent-source.zip
 ALLOW_GITHUB_FALLBACK=false
 ```
 
-Con eso, los instaladores primero hablan con tu servidor de licencias. Si la licencia es valida, el servidor devuelve una descarga firmada y temporal del paquete.
+Con eso, el portal y los instaladores primero hablan con tu servidor de licencias. Si la licencia es valida, el servidor devuelve una descarga firmada y temporal del paquete.
 
 GitHub puede ser el origen tecnico del paquete, pero no es la experiencia que ve el comprador.
 
-## Mac
+## Portal de descargas
+
+URL recomendada para compradores:
+
+```text
+https://admiroia.uboost.lat/access
+```
+
+El comprador ve una landing simple:
+
+- email de compra;
+- clave de acceso recibida por email;
+- botones para Mac, Windows y Linux;
+- version actual;
+- mejoras incluidas.
+
+La clave de acceso es la licencia, pero en la experiencia de comprador se presenta como una clave privada de descarga para que no suene tecnico.
+
+## Mac recomendado
 
 Archivo esperado:
 
 ```text
-MetaAdsAgent-v1-mac.pkg
+MetaAdsAgent-v1-mac.dmg
 ```
 
-El comprador hace doble clic, instala el producto y luego abre:
+El comprador abre el DMG y luego abre:
 
 ```text
-/Applications/Meta Ads Agent/Instalar en Mac.command
+Meta Ads Agent.app
 ```
 
-Ese archivo primero puede descargar la ultima version publicada desde tu servidor de licencias y despues levanta Docker, crea la configuracion local si falta y abre el dashboard en:
+La app copia el producto a `~/Applications/Meta Ads Agent`, abre Terminal con la instalacion y primero puede descargar la ultima version publicada desde tu servidor de licencias. Despues levanta Docker, crea la configuracion local si falta y abre el dashboard en:
 
 ```text
 http://127.0.0.1:7871
 ```
 
-## Windows
+El `.pkg` sigue disponible como fallback tecnico, pero el `.dmg` con app launcher es la experiencia recomendada para compradores.
+
+## Windows recomendado
 
 Archivo esperado:
 
 ```text
-MetaAdsAgent-v1-windows.exe
+MetaAdsAgent-v1-windows.msi
 ```
 
 El instalador copia el producto en la carpeta local del usuario y crea un acceso directo llamado `Meta Ads Agent`.
 
 Al abrirlo por primera vez, intenta descargar la ultima version publicada desde tu servidor de licencias y luego levantar Docker. El comprador debe tener Docker Desktop instalado y abierto.
+
+El `.exe` de NSIS sigue disponible como fallback tecnico, pero el `.msi` es la experiencia recomendada para venta publica.
 
 ## Linux
 
@@ -89,18 +113,58 @@ Ese script puede descargar la ultima version publicada desde tu servidor de lice
 - Internet para validar licencia, conectar Meta, descargar la imagen inicial y bajar la ultima version publicada desde tu servidor.
 - Licencia enviada por email al comprador.
 
-## Para crear los instaladores
+## Confianza del instalador
 
-En Mac:
+Para venderlo con buena percepcion de seguridad:
 
-```bash
-META_ADS_LICENSE_SERVER_URL=https://licencias-admiro-ai.uboost.lat ./scripts/build-mac-pkg.sh v1
+- Mac debe usar `.dmg` con app firmada con `Developer ID Application` y notarizada por Apple.
+- Windows debe usar `.msi` firmado con Authenticode.
+- Linux debe incluir checksum `.sha256` y, si quieres una capa extra, firma GPG.
+
+Ver:
+
+```text
+docs/es-firma-instaladores.md
 ```
 
-En Windows, usando NSIS:
+## Para crear los instaladores
+
+En Mac, recomendado:
 
 ```bash
-META_ADS_LICENSE_SERVER_URL=https://licencias-admiro-ai.uboost.lat ./scripts/build-windows-exe.sh v1
+MAC_APP_SIGN_IDENTITY="Developer ID Application: TU EMPRESA (TEAMID)" \
+MAC_NOTARIZE=true \
+APPLE_NOTARY_KEYCHAIN_PROFILE="meta-ads-agent-notary" \
+META_ADS_LICENSE_SERVER_URL=https://admiroia.uboost.lat \
+./scripts/build-mac-dmg.sh v1
+```
+
+Fallback PKG firmado/notarizado:
+
+```bash
+MAC_PKG_SIGN_IDENTITY="Developer ID Installer: TU EMPRESA (TEAMID)" \
+MAC_NOTARIZE=true \
+APPLE_NOTARY_KEYCHAIN_PROFILE="meta-ads-agent-notary" \
+META_ADS_LICENSE_SERVER_URL=https://admiroia.uboost.lat \
+./scripts/build-mac-pkg.sh v1
+```
+
+En Windows, recomendado con MSI/WiX:
+
+```bash
+WINDOWS_SIGN_MSI=true \
+META_ADS_LICENSE_SERVER_URL=https://admiroia.uboost.lat \
+./scripts/build-windows-msi.sh v1
+```
+
+Si WiX Toolset no esta instalado, el script deja listo un paquete fuente para compilar el `.msi` en una maquina Windows con WiX.
+
+Fallback EXE con NSIS:
+
+```bash
+WINDOWS_SIGN_EXE=true \
+META_ADS_LICENSE_SERVER_URL=https://admiroia.uboost.lat \
+./scripts/build-windows-exe.sh v1
 ```
 
 Si `makensis` no esta instalado, el script deja listo un paquete fuente para compilar el `.exe` en una maquina con NSIS.
@@ -108,13 +172,19 @@ Si `makensis` no esta instalado, el script deja listo un paquete fuente para com
 En Linux:
 
 ```bash
-META_ADS_LICENSE_SERVER_URL=https://licencias-admiro-ai.uboost.lat ./scripts/build-linux-bundle.sh v1
+META_ADS_LICENSE_SERVER_URL=https://admiroia.uboost.lat ./scripts/build-linux-bundle.sh v1
+```
+
+El script genera checksum. Si tienes llave GPG de publicacion:
+
+```bash
+LINUX_GPG_SIGN=true META_ADS_LICENSE_SERVER_URL=https://admiroia.uboost.lat ./scripts/build-linux-bundle.sh v1
 ```
 
 Para generar el paquete fuente interno que descargan los instaladores:
 
 ```bash
-META_ADS_LICENSE_SERVER_URL=https://licencias-admiro-ai.uboost.lat ./scripts/package-release.sh v1
+META_ADS_LICENSE_SERVER_URL=https://admiroia.uboost.lat ./scripts/package-release.sh v1
 ```
 
 ## Asset tecnico recomendado para publicar
@@ -139,7 +209,7 @@ MetaAdsAgent-v1.0.2-source.zip
 4. Registras esa release en tu servidor:
 
 ```bash
-curl -X POST "https://licencias-admiro-ai.uboost.lat/api/admin/releases" \
+curl -X POST "https://admiroia.uboost.lat/api/admin/releases" \
   -H "Authorization: Bearer TU_CLAVE_ADMIN_PRIVADA" \
   -H "Content-Type: application/json" \
   -d '{

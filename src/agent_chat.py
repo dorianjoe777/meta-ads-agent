@@ -64,9 +64,9 @@ def fallback_reply(message, payload):
     return f"Catch-up rápido: ROAS {roas:.2f}x, CPA ${cpa:,.2f}, presupuesto activo ${budget:,.2f} y {pending} aprobación(es) pendiente(s). Mi sugerencia es revisar presupuesto y fatiga antes de escalar. Lo puedo preparar ahora; dime qué acción quieres que deje lista."
 
 
-def minimax_chat(config, payload):
+def openai_compatible_chat(config, payload):
     if not config.agent_chat_api_key:
-        return {"ok": False, "provider": config.agent_chat_provider, "fallback": True, "reply": fallback_reply(payload.get("message", ""), payload), "error": "MINIMAX_API_KEY is not configured"}
+        return {"ok": False, "provider": config.agent_chat_provider, "fallback": True, "reply": fallback_reply(payload.get("message", ""), payload), "error": "AGENT_CHAT_API_KEY is not configured"}
 
     context = account_context(payload)
     language = payload.get("language", "")
@@ -95,8 +95,11 @@ def minimax_chat(config, payload):
         "messages": messages,
         "temperature": config.agent_chat_temperature,
     }
+    base_url = str(config.agent_chat_base_url or "").rstrip("/")
+    if not base_url:
+        return {"ok": False, "provider": config.agent_chat_provider, "fallback": True, "reply": fallback_reply(payload.get("message", ""), payload), "error": "AGENT_CHAT_BASE_URL is not configured"}
     request = urllib.request.Request(
-        f"{config.agent_chat_base_url}/chat/completions",
+        f"{base_url}/chat/completions",
         data=json.dumps(body).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {config.agent_chat_api_key}",
@@ -140,8 +143,8 @@ def chat(config, payload):
         else:
             result.setdefault("tool_request", None)
         return result
-    if config.agent_chat_provider == "minimax":
-        return minimax_chat(config, payload)
+    if config.agent_chat_provider in {"minimax", "openai_compatible", "openai"}:
+        return openai_compatible_chat(config, payload)
     return {"ok": False, "provider": config.agent_chat_provider, "fallback": True, "reply": fallback_reply(payload.get("message", ""), payload), "error": "Unsupported chat provider"}
 
 

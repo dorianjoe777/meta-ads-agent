@@ -8,7 +8,7 @@ La idea no es que tengas que usar Codex manualmente todos los dias. La idea es q
 
 ## Que se instala
 
-El producto incluye la estructura de memoria. Cuando guardas tu marca, un producto o un brief publicitario desde `Creatividades`, crea localmente los documentos:
+El producto incluye la estructura de memoria. Cuando guardas tu marca, un producto o un brief publicitario desde `Creativos`, crea localmente los documentos:
 
 ```text
 brand_guides/
@@ -123,7 +123,7 @@ Esto evita que el agente invente demasiado cuando lo que necesitas es mejorar un
 
 ## Como usarlo dentro del dashboard
 
-1. Abre `Creatividades`.
+1. Abre `Creativos`.
 2. En `Memoria creativa`, toca `Configurar memoria`.
 3. Completa primero la esencia de tu marca: qué vendes, cliente ideal, estilo visual, voz y límites.
 4. Toca `+ Producto` y crea una ficha por cada producto, servicio u oferta que anuncies.
@@ -138,11 +138,11 @@ Cuando un lote creativo usa una ficha o un brief, la biblioteca lo etiqueta con 
 
 ## Guardado de imagenes
 
-Las imagenes generadas en `Creatividades` quedan guardadas localmente en tu PC o VPS. Como un droplet pequeno suele traer espacio suficiente para empezar, el producto no borra tus creativos automaticamente.
+Las imagenes generadas en `Creativos` quedan guardadas localmente en tu PC o VPS. Como un droplet pequeno suele traer espacio suficiente para empezar, el producto no borra tus creativos automaticamente.
 
 Si quieres conservar una imagen fuera del producto, toca `Descargar` y guardala en tu carpeta de marca, Google Drive, Dropbox o donde organices tus archivos.
 
-Si algun dia tu equipo o droplet se queda corto de espacio, entra a `Creatividades` y usa `Limpiar borradores`. Esa limpieza borra solo imagenes generadas que todavia no elegiste para anuncios.
+Si algun dia tu equipo o droplet se queda corto de espacio, entra a `Creativos` y usa `Limpiar borradores`. Esa limpieza borra solo imagenes generadas que todavia no elegiste para anuncios.
 
 Hay una excepcion importante: cuando eliges una imagen y la preparas para crear un anuncio, esa imagen queda marcada como pieza de anuncio y no se borra con la limpieza de borradores. La idea es simple:
 

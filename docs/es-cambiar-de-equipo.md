@@ -72,6 +72,6 @@ Flujo recomendado:
 
 Despues de eso, el firewall de DigitalOcean permite la IP actual del nuevo PC.
 
-Cuando el dashboard ya abra desde el nuevo PC, el comprador puede entrar a `Configuracion > Acceso cloud / DigitalOcean` y tocar `Actualizar acceso de esta red`. Si todavia no puede abrir el dashboard, debe usar SSH o la consola web de DigitalOcean una sola vez para recuperar entrada.
+Cuando el dashboard ya abra desde el nuevo PC, el comprador puede entrar a `Configuracion > Acceso cloud / DigitalOcean` y tocar `Actualizar acceso de esta red`. Ese boton no es una recuperacion si el dashboard no carga; solo guarda la red cuando ya hay acceso. Si todavia no puede abrir el dashboard, debe usar SSH o la consola web de DigitalOcean una sola vez para recuperar entrada.
 
 Si no puede entrar por SSH, debe usar la consola web de DigitalOcean o agregar temporalmente su IP al firewall desde el panel.

@@ -26,6 +26,7 @@ from product_config import AgentConfig
 from agent_chat import account_context, parse_skill_response
 import agent_chat
 import hermes_bridge
+import decision_memory
 from audience_builder import build_audience_strategy
 from codex_brand_guides import build_codex_creative_prompt
 import codex_brand_guides
@@ -566,6 +567,69 @@ class IntegrationTestSuite:
         self.assert_true(parsed["assistant_message"] == "Listo", "Skill assistant message parsed")
         self.assert_true(parsed["tool_request"]["tool"] == "run_daily_check", "Skill tool request parsed")
 
+    def test_openai_compatible_agent_provider(self):
+        """Test OpenAI-compatible chat providers use the configured URL/model/key."""
+        print("\nTesting OpenAI-Compatible Agent Provider...")
+
+        class FakeConfig:
+            agent_chat_provider = "openai_compatible"
+            agent_chat_base_url = "https://example.test/v1"
+            agent_chat_api_key = "test-key"
+            agent_chat_model = "custom-model"
+            agent_chat_temperature = 0.42
+            agent_profile_dir = "agent"
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps({"choices": [{"message": {"content": "Hice el analisis. Lo puedo preparar ahora."}}]}).encode("utf-8")
+
+        captured = {}
+        original_urlopen = agent_chat.urllib.request.urlopen
+        try:
+            def fake_urlopen(request, timeout=0):
+                captured["url"] = request.full_url
+                captured["headers"] = dict(request.header_items())
+                captured["body"] = json.loads(request.data.decode("utf-8"))
+                captured["timeout"] = timeout
+                return FakeResponse()
+
+            agent_chat.urllib.request.urlopen = fake_urlopen
+            result = agent_chat.chat(FakeConfig(), {"message": "Hola", "metrics": {}, "language": "es"})
+            self.assert_true(result["provider"] == "openai_compatible", "Generic provider stays visible in chat result")
+            self.assert_true(result["model"] == "custom-model", "Configured model is used")
+            self.assert_true(captured["url"] == "https://example.test/v1/chat/completions", "Configured base URL is used for chat completions")
+            self.assert_true(captured["body"]["model"] == "custom-model", "Request body carries configured model")
+            self.assert_true(captured["body"]["temperature"] == 0.42, "Request body carries configured temperature")
+            self.assert_true(any(value == "Bearer test-key" for value in captured["headers"].values()), "Bearer API key is sent as an auth header")
+        finally:
+            agent_chat.urllib.request.urlopen = original_urlopen
+
+    def test_agent_setup_status_accepts_direct_model_provider(self):
+        """Test setup status treats MiniMax/OpenAI-compatible mode as a valid agent brain."""
+        print("\nTesting Direct Agent Model Setup Status...")
+
+        import setup_status
+
+        class FakeConfig:
+            agent_chat_provider = "minimax"
+            agent_chat_base_url = "https://api.minimax.io/v1"
+            agent_chat_model = "MiniMax-M3"
+            agent_chat_api_key = "configured"
+            hermes_cli = "__missing_hermes__"
+            hermes_model = ""
+
+        entries, context = setup_status.agent_chat_section(FakeConfig(), {"missing": [], "sections": {}, "dir": "agent"})
+        statuses = {entry["key"]: entry["status"] for entry in entries}
+        self.assert_true(context["direct_model_ready"] is True, "Direct provider readiness is detected")
+        self.assert_true(statuses["openai_compatible_model"] == "ok", "Direct provider setup row is green")
+        self.assert_true(statuses["hermes_runtime"] == "ok" and statuses["hermes_auth"] == "ok", "Hermes is not treated as missing when direct provider is selected")
+
     def test_hermes_provider_parses_tool_request(self):
         """Test Hermes provider output uses the same protected backend tool contract."""
         print("\nTesting Hermes Provider Tool Contract...")
@@ -746,6 +810,56 @@ class IntegrationTestSuite:
         self.assert_true((hermes_bridge.HERMES_WORKSPACE_DIR / "brand_guides" / "general_branding.md").exists(), "Brand guide is copied into Hermes workspace")
         self.assert_true(".env" not in prompt and "MINIMAX_API_KEY" not in prompt, "Secrets and arbitrary local files are not included")
         self.assert_true("Uploaded reference images" not in prompt, "Unsafe non-upload image paths are not attached")
+
+    def test_decision_memory_profitability_rules_and_hermes_context(self):
+        """Test profitability rules and decision memory feed the agent context."""
+        print("\nTesting Profitability Decision Memory...")
+
+        original = {
+            "PROFITABILITY_RULES_FILE": decision_memory.PROFITABILITY_RULES_FILE,
+            "DECISION_MEMORY_FILE": decision_memory.DECISION_MEMORY_FILE,
+            "LEARNING_LOG_FILE": decision_memory.LEARNING_LOG_FILE,
+        }
+        with tempfile.TemporaryDirectory(prefix="decision-memory-test-") as tmp:
+            tmp_root = Path(tmp)
+            try:
+                decision_memory.PROFITABILITY_RULES_FILE = tmp_root / "profitability_rules.json"
+                decision_memory.DECISION_MEMORY_FILE = tmp_root / "decision_memory.json"
+                decision_memory.LEARNING_LOG_FILE = tmp_root / "learning-log.md"
+                rules = decision_memory.save_profitability_rules({"target_cpa": 42, "target_roas": 3.1, "min_spend_before_judging": 80})
+                campaign = {
+                    "id": "camp_profit",
+                    "name": "Profit Test",
+                    "status": "active",
+                    "daily_budget": 100,
+                    "spend": 120,
+                    "revenue": 540,
+                    "conversions": 6,
+                    "roas": 4.5,
+                    "cpa": 20,
+                    "ctr": 1.7,
+                    "cpc": 1.2,
+                    "frequency": 1.8,
+                    "health": "winning",
+                }
+                rec = {"campaign_id": "camp_profit", "campaign_name": "Profit Test", "change_pct": 15, "recommended_budget": 115}
+                evidence = decision_memory.recommendation_decision_evidence(campaign, rec, rules)
+                memory = decision_memory.record_daily_decision_memory({"campaigns": [campaign]}, [rec], [])
+                payload = decision_memory.decision_memory_payload({"campaigns": [campaign]}, [rec], [])
+
+                self.assert_true(rules["target_cpa"] == 42, "Profitability rules are saved locally")
+                self.assert_true("signal" in evidence and "recommendation" in evidence, "Recommendations receive evidence fields")
+                self.assert_true(memory["decisions"], "Daily decisions are recorded")
+                self.assert_true(payload["recent_decisions"], "Decision payload exposes recent decisions")
+                self.assert_true(decision_memory.LEARNING_LOG_FILE.exists(), "Human-readable learning log file is written")
+
+                hermes_memory = hermes_bridge.business_memory_context()
+                self.assert_true("profitability_memory" in hermes_memory, "Hermes context includes profitability memory")
+                self.assert_true("profitability_rules" in hermes_memory["profitability_memory"], "Hermes receives profitability rules")
+            finally:
+                decision_memory.PROFITABILITY_RULES_FILE = original["PROFITABILITY_RULES_FILE"]
+                decision_memory.DECISION_MEMORY_FILE = original["DECISION_MEMORY_FILE"]
+                decision_memory.LEARNING_LOG_FILE = original["LEARNING_LOG_FILE"]
 
     def test_chat_approval_decision_tool(self):
         """Test chat approvals execute only when they resolve to one exact pending decision."""
@@ -1994,6 +2108,12 @@ class IntegrationTestSuite:
         self.assert_true("requires_repair" in html and "Reconectemos tus datos reales" in html, "Legacy completed setup reopens guidance when real Meta data is missing")
         self.assert_true("tab-audiences" in html, "Audience builder tab exists")
         self.assert_true("setup-config-form" in html, "Setup save form exists")
+        self.assert_true('id="chatgpt-panel"' in html and "renderChatGptPanel()" in html, "Setup includes a dedicated agent model connection panel")
+        self.assert_true("Conectar el modelo del agente" in html and "MiniMax M3" in html and "Guardar modelo del agente" in html, "Agent model setup supports MiniMax M3 and direct providers")
+        self.assert_true("agent_chat_base_url" in html and "agent_chat_api_key" in html and "openai_compatible" in html, "OpenAI-compatible model settings are exposed without showing saved keys")
+        self.assert_true("hermes model" in html and "ssh root@IP-DE-TU-SERVIDOR" in html, "Hermes/ChatGPT setup still explains the DigitalOcean case separately")
+        self.assert_true("{id:'chatgpt',status:chatgptOk?'ok':'warn'}" in html and "chatGptConnectMarkup(true)" in html, "Initial onboarding includes ChatGPT connection before Meta setup")
+        self.assert_true("Antes de conectar Meta, deja listo el cerebro conversacional" in html and "directModelOk" in html, "Onboarding positions model setup as part of installation and accepts direct API readiness")
         self.assert_true("license-panel" in html, "License activation panel exists")
         self.assert_true("/api/license/activate" in html, "License activation endpoint is wired in UI")
         self.assert_true("/api/onboarding/complete" in html, "Onboarding complete endpoint is wired in UI")
@@ -2128,6 +2248,11 @@ class IntegrationTestSuite:
                     "default_adset_id": "67890",
                     "instagram_actor_id": "555",
                     "landing_url": "https://buyer.example",
+                    "agent_chat_provider": "minimax",
+                    "agent_chat_base_url": "https://api.minimax.io/v1",
+                    "agent_chat_model": "MiniMax-M3",
+                    "agent_chat_api": "openai-chat-completions",
+                    "agent_chat_api_key": "direct-model-key",
                 }
             )
             env_after = env_path.read_text(encoding="utf-8")
@@ -2136,6 +2261,10 @@ class IntegrationTestSuite:
             self.assert_true("LICENSE_KEY=MAO-TESTBUYER-30628D" in env_after, "Blank license field preserves existing key")
             self.assert_true("LICENSE_BUYER_EMAIL=buyer@example.com" in env_after, "Buyer email saved to .env")
             self.assert_true("META_AD_ACCOUNT_ID=act_999" in env_after, "Ad account saved to .env")
+            self.assert_true("AGENT_CHAT_PROVIDER=minimax" in env_after, "Agent direct provider saved to .env")
+            self.assert_true("AGENT_CHAT_BASE_URL=https://api.minimax.io/v1" in env_after, "Agent model URL saved to .env")
+            self.assert_true("AGENT_CHAT_MODEL=MiniMax-M3" in env_after, "Agent model name saved to .env")
+            self.assert_true("AGENT_CHAT_API_KEY=direct-model-key" in env_after, "Agent model API key saved locally")
             self.assert_true(saved["creative"]["destination"]["page_id"] == "12345", "Page ID saved to ad-config")
             self.assert_true(saved["creative"]["destination"]["default_adset_id"] == "67890", "Default ad set saved to ad-config")
             self.assert_true(saved["creative"]["destination"]["url"] == "https://buyer.example", "Landing URL saved to ad-config")
@@ -2611,6 +2740,7 @@ class IntegrationTestSuite:
             "docs/es-instalacion-docker-codex.md",
             "docs/es-instaladores-doble-clic.md",
             "docs/es-instaladores-producto.md",
+            "docs/es-firma-instaladores.md",
             "docs/es-planes-de-licencia.md",
             "docs/es-digitalocean-acceso-estricto.md",
             "docs/es-cambiar-de-equipo.md",
@@ -2626,7 +2756,9 @@ class IntegrationTestSuite:
             "scripts/run-docker.sh",
             "scripts/install-from-github.sh",
             "scripts/install-from-github.ps1",
+            "scripts/build-mac-dmg.sh",
             "scripts/build-mac-pkg.sh",
+            "scripts/build-windows-msi.sh",
             "scripts/build-windows-exe.sh",
             "scripts/build-linux-bundle.sh",
             "scripts/digitalocean-refresh-firewall.sh",
@@ -2650,6 +2782,8 @@ class IntegrationTestSuite:
         mac_installer = (ROOT_DIR / "Instalar en Mac.command").read_text(encoding="utf-8")
         linux_installer = (ROOT_DIR / "Instalar en Linux.sh").read_text(encoding="utf-8")
         mac_pkg_builder = (ROOT_DIR / "scripts" / "build-mac-pkg.sh").read_text(encoding="utf-8")
+        mac_dmg_builder = (ROOT_DIR / "scripts" / "build-mac-dmg.sh").read_text(encoding="utf-8")
+        windows_msi_builder = (ROOT_DIR / "scripts" / "build-windows-msi.sh").read_text(encoding="utf-8")
         windows_exe_builder = (ROOT_DIR / "scripts" / "build-windows-exe.sh").read_text(encoding="utf-8")
         nsis_template = (ROOT_DIR / "installer" / "windows" / "MetaAdsAgentInstaller.nsi").read_text(encoding="utf-8")
         dashboard_source = (ROOT_DIR / "dashboard" / "monitoring-dashboard.py").read_text(encoding="utf-8")
@@ -2665,17 +2799,27 @@ class IntegrationTestSuite:
         self.assert_true("install-from-github.ps1" in windows_installer and "install-from-github.sh" in mac_installer and "install-from-github.sh" in linux_installer, "Double-click installers use the shared bootstrap scripts")
         self.assert_true("docker compose up --build" in windows_installer and "./scripts/run-docker.sh" in mac_installer, "Double-click installers launch Docker setup")
         self.assert_true("pkgbuild" in mac_pkg_builder and "productbuild" in mac_pkg_builder, "Mac PKG builder uses native package tools")
+        self.assert_true("MAC_PKG_SIGN_IDENTITY" in mac_pkg_builder and "notarytool submit" in mac_pkg_builder and "stapler staple" in mac_pkg_builder, "Mac PKG builder supports Developer ID signing and notarization")
+        self.assert_true("hdiutil create" in mac_dmg_builder and ".app" in mac_dmg_builder and "MAC_APP_SIGN_IDENTITY" in mac_dmg_builder, "Mac DMG builder creates a signed app launcher experience")
+        self.assert_true("open -a Terminal" in mac_dmg_builder and "$HOME/Applications/Meta Ads Agent" in mac_dmg_builder, "Mac DMG launcher hides the command file and opens the installer from a friendly app")
+        self.assert_true("candle" in windows_msi_builder and "light" in windows_msi_builder and "MetaAdsAgent-" in windows_msi_builder and "windows.msi" in windows_msi_builder, "Windows MSI builder uses WiX Toolset when available")
+        self.assert_true("WINDOWS_SIGN_MSI" in windows_msi_builder and "signtool" in windows_msi_builder and "/fd SHA256" in windows_msi_builder, "Windows MSI builder supports Authenticode signing")
+        self.assert_true('Source="{esc(source_ref)}"' in windows_msi_builder and "MetaAdsAgent\\\\" in windows_msi_builder, "Windows MSI source package uses relative file paths for VPS compilation")
         self.assert_true("makensis" in windows_exe_builder and "MetaAdsAgentInstaller.nsi" in windows_exe_builder, "Windows EXE builder uses NSIS when available")
+        self.assert_true("WINDOWS_SIGN_EXE" in windows_exe_builder and "signtool" in windows_exe_builder and "/fd SHA256" in windows_exe_builder, "Windows EXE builder supports Authenticode signing")
         self.assert_true("CreateShortcut" in nsis_template and "Instalar en Windows.bat" in nsis_template, "Windows NSIS installer creates a buyer shortcut")
-        self.assert_true("https://licencias-admiro-ai.uboost.lat" in (ROOT_DIR / ".env.example").read_text(encoding="utf-8"), "Buyer release uses deployed license server")
-        self.assert_true("LICENSE_PUBLIC_KEY=" in (ROOT_DIR / ".env.example").read_text(encoding="utf-8"), "Buyer release includes only license verification key")
-        self.assert_true("META_ADS_AGENT_VERSION=v1.0.2" in (ROOT_DIR / ".env.example").read_text(encoding="utf-8") and (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip() == "v1.0.2", "Buyer release exposes the installed product version")
+        env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
+        self.assert_true("https://admiroia.uboost.lat" in env_example, "Buyer release uses deployed license server")
+        self.assert_true("LICENSE_PUBLIC_KEY=" in env_example, "Buyer release includes only license verification key")
+        self.assert_true("AGENT_CHAT_BASE_URL=https://api.minimax.io/v1" in env_example and "AGENT_CHAT_MODEL=MiniMax-M3" in env_example and "AGENT_CHAT_PROVIDER=hermes" in env_example, "Buyer release documents Hermes default plus MiniMax M3/OpenAI-compatible model support")
+        self.assert_true("META_ADS_AGENT_VERSION=v1.0.3" in env_example and (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip() == "v1.0.3", "Buyer release exposes the installed product version")
         bootstrap_config = (ROOT_DIR / "installer" / "release-bootstrap.env").read_text(encoding="utf-8")
         bootstrap_sh = (ROOT_DIR / "scripts" / "install-from-github.sh").read_text(encoding="utf-8")
         bootstrap_ps1 = (ROOT_DIR / "scripts" / "install-from-github.ps1").read_text(encoding="utf-8")
         do_firewall_script = (ROOT_DIR / "scripts" / "digitalocean-refresh-firewall.sh").read_text(encoding="utf-8")
         do_install_script = (ROOT_DIR / "scripts" / "install-digitalocean-strict-access.sh").read_text(encoding="utf-8")
         do_doc = (ROOT_DIR / "docs" / "es-digitalocean-acceso-estricto.md").read_text(encoding="utf-8")
+        installer_signing_doc = (ROOT_DIR / "docs" / "es-firma-instaladores.md").read_text(encoding="utf-8")
         device_transfer_doc = (ROOT_DIR / "docs" / "es-cambiar-de-equipo.md").read_text(encoding="utf-8")
         export_migration = (ROOT_DIR / "scripts" / "export-migration.sh").read_text(encoding="utf-8")
         import_migration = (ROOT_DIR / "scripts" / "import-migration.sh").read_text(encoding="utf-8")
@@ -2685,10 +2829,20 @@ class IntegrationTestSuite:
         license_release_api = (ROOT_DIR / "seller" / "vercel-license-api" / "api" / "license" / "release.js").read_text(encoding="utf-8")
         license_releases_admin = (ROOT_DIR / "seller" / "vercel-license-api" / "api" / "admin" / "releases.js").read_text(encoding="utf-8")
         license_download_api = (ROOT_DIR / "seller" / "vercel-license-api" / "api" / "download" / "release.js").read_text(encoding="utf-8")
+        portal_page = (ROOT_DIR / "seller" / "vercel-license-api" / "api" / "portal.js").read_text(encoding="utf-8")
+        portal_session_api = (ROOT_DIR / "seller" / "vercel-license-api" / "api" / "portal" / "session.js").read_text(encoding="utf-8")
+        portal_download_api = (ROOT_DIR / "seller" / "vercel-license-api" / "api" / "portal" / "download.js").read_text(encoding="utf-8")
+        portal_digitalocean_api = (ROOT_DIR / "seller" / "vercel-license-api" / "api" / "portal" / "cloud" / "digitalocean.js").read_text(encoding="utf-8")
+        portal_lib = (ROOT_DIR / "seller" / "vercel-license-api" / "lib" / "download-portal.js").read_text(encoding="utf-8")
+        digitalocean_cloud_lib = (ROOT_DIR / "seller" / "vercel-license-api" / "lib" / "digitalocean-cloud.js").read_text(encoding="utf-8")
+        secret_vault_lib = (ROOT_DIR / "seller" / "vercel-license-api" / "lib" / "secret-vault.js").read_text(encoding="utf-8")
         license_lib = (ROOT_DIR / "seller" / "vercel-license-api" / "lib" / "license.js").read_text(encoding="utf-8")
         license_store = (ROOT_DIR / "seller" / "vercel-license-api" / "lib" / "store.js").read_text(encoding="utf-8")
         license_server_readme = (ROOT_DIR / "seller" / "vercel-license-api" / "README.md").read_text(encoding="utf-8")
+        digitalocean_guided_doc = (ROOT_DIR / "docs" / "es-instalacion-digitalocean-guiada.md").read_text(encoding="utf-8")
+        vercel_config = (ROOT_DIR / "seller" / "vercel-license-api" / "vercel.json").read_text(encoding="utf-8")
         self.assert_true("BOOTSTRAP_PROVIDER=license_server" in bootstrap_config and "LICENSE_RELEASE_ENDPOINT=/api/license/release" in bootstrap_config, "Buyer bootstrap defaults to license-server release downloads")
+        self.assert_true("SHA256SUMS.txt" in script and "LINUX_GPG_SIGN" in (ROOT_DIR / "scripts" / "build-linux-bundle.sh").read_text(encoding="utf-8"), "Release builders produce checksums and optional Linux signatures")
         self.assert_true("/api/license/release" in bootstrap_sh and "RELEASE_ASSET_NAME" in bootstrap_sh, "macOS/Linux bootstrap can request signed release downloads")
         self.assert_true("/api/license/release" in bootstrap_ps1 and "RELEASE_ASSET_NAME" in bootstrap_ps1, "Windows bootstrap can request signed release downloads")
         self.assert_true("validate_zip_archive" in bootstrap_sh and "Test-SafeReleaseArchive" in bootstrap_ps1, "Bootstrap installers validate release archives before extraction")
@@ -2707,7 +2861,7 @@ class IntegrationTestSuite:
         self.assert_true("X-Frame-Options" in dashboard_source and "X-Content-Type-Options" in dashboard_source, "Dashboard sends basic browser security headers")
         self.assert_true("official_download_url_allowed" in dashboard_source and "MAX_UPDATE_UNPACKED_BYTES" in dashboard_source and "zip_member_is_safe" in dashboard_source, "Dashboard update and restore paths guard against unsafe archives")
         self.assert_true(not (ROOT_DIR / "Actualizar acceso DigitalOcean.command").exists() and not (ROOT_DIR / "Crear respaldo para cambiar de equipo.command").exists(), "Buyer folder avoids scary top-level maintenance launchers")
-        self.assert_true("Si SSH todavia entra" in do_doc and "DO_STRICT_ALLOW_SSH_FROM_ANYWHERE=true" in do_doc, "DigitalOcean strict access docs explain IP changes and recovery")
+        self.assert_true("Abrir mi dashboard" in do_doc and "La recuperacion tecnica es por SSH" in do_doc and "DO_STRICT_ALLOW_SSH_FROM_ANYWHERE=true" in do_doc, "DigitalOcean strict access docs explain IP changes and recovery")
         self.assert_true("chat_history.json" in export_migration or "dashboard/data" in export_migration, "Migration export includes dashboard local memory")
         self.assert_true("LICENSE_DEVICE_ID=" in export_migration and "license_unlock.json" in export_migration, "Migration export clears device-specific license unlock")
         self.assert_true("LICENSE_DEVICE_ID=" in import_migration and "license_unlock.json" in import_migration, "Migration import forces new machine license validation")
@@ -2719,15 +2873,88 @@ class IntegrationTestSuite:
         self.assert_true("license_entitlements" in dashboard_source and "active_workspace" in dashboard_source and "workspace_usage" in dashboard_source and "business_binding" in dashboard_source, "Dashboard exposes license limits and active business metadata")
         self.assert_true("Tu licencia Individual cuida un solo negocio activo" in dashboard_source and "Para manejar varios clientes, usa Licencia Agencia" in dashboard_source, "Dashboard explains Individual and Agency limits in buyer-friendly copy")
         self.assert_true("improvements" in license_releases_admin and "improvements" in license_release_api, "Official release metadata includes buyer-facing improvement cards")
+        self.assert_true("buyerFacingImprovements" in portal_lib and "INTERNAL_RELEASE_WORDS" in portal_lib and "Instalacion clara" in portal_lib, "Download portal filters internal release notes before buyers see them")
+        self.assert_true("buyerFacingImprovements(release.improvements" in portal_session_api and "buyerFacingImprovements(release.improvements" in license_release_api, "Buyer download APIs sanitize release improvements")
         self.assert_true("timingSafeEqual" in license_lib and "RELEASE_MAX_BYTES" in license_download_api and "response.redirect(302" in license_download_api, "License server uses safer comparisons and avoids proxying large release bodies by default")
         self.assert_true("export async function resetDeviceRegistrations" in license_store and "del(" in license_store, "License server can clear prior device registrations")
         self.assert_true("Transferir a este equipo" in dashboard_source, "Dashboard explains and confirms device transfer")
         self.assert_true("desbloqueo temporal" in device_transfer_doc and "nueva llave SSH" in device_transfer_doc and "Cambiar de equipo sin perder memoria" in device_transfer_doc, "Device transfer docs explain local migration and DigitalOcean recovery")
         self.assert_true("RELEASE_DOWNLOAD_SECRET" in license_server_readme and "/api/license/release" in license_server_readme, "Seller license server documents signed release download support")
+        self.assert_true("Acceso de comprador" in portal_page and "Email de compra" in portal_page and "Clave de acceso" in portal_page, "Download portal has buyer-friendly email and access key login")
+        self.assert_true("/api/portal/session" in portal_page and "/api/portal/download" in portal_page and "Elige tu sistema" in portal_page, "Download portal renders one-click platform downloads")
+        self.assert_true("Recordar este acceso" in portal_page and "restorePortalSession" in portal_page and "Cerrar sesion" in portal_page, "Download portal remembers buyer access and offers logout")
+        self.assert_true("Estado de tu instalacion" in portal_page and "Acceder a mi dashboard" in portal_page and "renderInstallState" in portal_page, "Download portal leads with installed/not-installed state before installer choices")
+        self.assert_true("install_state" in portal_session_api and "deviceRegistrations" in portal_session_api and "cloud_installation" in portal_session_api, "Portal session returns cloud and local install state")
+        self.assert_true("HttpOnly" in portal_session_api and "Secure" in portal_session_api and "SameSite=Lax" in portal_session_api and "verifyPortalSession(cookieValue" in portal_session_api, "Portal remembered sessions use signed HttpOnly secure cookies")
+        self.assert_true('request.method === "DELETE"' in portal_session_api and "clearPortalCookie" in portal_session_api, "Portal session endpoint supports safe logout without another function")
+        self.assert_true("install_event" in license_activate_api and "onboarding_opened" in license_activate_api and "onboarding_completed" in license_activate_api, "License activation records local onboarding state for the buyer portal")
+        self.assert_true("mark_license_install_state" in dashboard_source and "onboarding_completed" in dashboard_source, "Dashboard reports onboarding progress to the license server without blocking local use")
+        self.assert_true("Instalar en la nube" in portal_page and "/api/portal/cloud/digitalocean" in portal_page and "Crear mi servidor" in portal_page, "Download portal exposes guided DigitalOcean install after buyer access")
+        self.assert_true("cloud-progress" in portal_page and "startCloudProgressPolling" in portal_page and "action: 'status'" in portal_page, "Download portal shows cloud install progress and polls status")
+        self.assert_true("Math.min(98, rawProgress)" in portal_page and "verificando_dashboard" in portal_digitalocean_api and "Math.min(98, cleanProgress" in portal_digitalocean_api, "Download portal never shows 100 percent until the cloud dashboard is actually ready")
+        self.assert_true("Boolean(openUrl && (cloud.dashboard_available" in portal_page and "Boolean(openUrl && (data.ready" in portal_page, "Download portal requires a real dashboard URL before showing cloud as ready")
+        self.assert_true("runtimeStageFromLog" in portal_digitalocean_api and "ADMIRO_STAGE verifying_dashboard" in portal_digitalocean_api, "DigitalOcean status recovers the verifying-dashboard stage from older access gates")
+        self.assert_true("docker_ps" in portal_digitalocean_api and "docker_logs_tail" in portal_digitalocean_api, "DigitalOcean cloud status preserves safe Docker diagnostics")
+        self.assert_true("Tardando mas de lo normal" in portal_page and "tail -n 80 /var/log/admiro-cloud-install.log" in portal_page, "Download portal explains when DigitalOcean is active but dashboard is not ready")
+        self.assert_true("Abrir mi dashboard" in portal_page and "cloud_open_url" in portal_page and "prepara tu red automaticamente" in portal_page, "Download portal exposes a one-click cloud dashboard opener")
+        self.assert_true("Protector automatico de acceso" in portal_page and "/api/portal/cloud/access-keeper" in portal_page and "/api/portal/cloud/access-keeper-ps" in portal_page, "Download portal keeps the optional local access keeper available as an advanced fallback")
+        self.assert_true("Actualizar acceso de esta red" in portal_page and "refreshCloudAccess()" in portal_page and "action: 'refresh_access'" in portal_page, "Download portal can realign cloud SSH/dashboard access from the buyer browser")
+        self.assert_true("Buscar automaticamente con mi token" in portal_page and "cloudRecoveryToken" in portal_page and "refreshCloudIpFromDigitalOcean" in portal_digitalocean_api, "DigitalOcean waiting-for-IP state can recover automatically with the browser-held token")
+        self.assert_true("Guardar este token cifrado" in portal_page and "Olvidar token guardado" in portal_page and "digitalocean_token_saved" in portal_session_api, "Download portal can remember a DigitalOcean token without showing it back to the buyer")
+        self.assert_true("encryptPortalSecret" in secret_vault_lib and "aes-256-gcm" in secret_vault_lib and "PORTAL_SECRET_VAULT_KEY" in secret_vault_lib, "Portal vault encrypts stored buyer cloud tokens server-side")
+        self.assert_true("remember_digitalocean_token" in portal_digitalocean_api and "forget_digitalocean_token" in portal_digitalocean_api and "resolveDigitalOceanToken" in portal_digitalocean_api, "DigitalOcean cloud endpoint can reuse or forget the encrypted saved token")
+        self.assert_true("resetCloudInstall" in portal_page and "Ya borre este servidor. Crear uno nuevo" in portal_page and 'action === "reset_cloud_install"' in portal_digitalocean_api, "Download portal can clear a deleted or stuck DigitalOcean install before recreating")
+        self.assert_true("abre Terminal" in portal_page and "~/.ssh/admiro_ai.pub" in portal_page and "funciona como un candado abierto" in portal_page and "No compartas la llave privada" in portal_page, "DigitalOcean SSH key step explains public/private key safety in buyer-friendly language")
+        self.assert_true("signedPortalSession" in license_lib and "verifyPortalSession" in license_lib and "PORTAL_SESSION_MINUTES" in license_lib, "License server can issue short-lived portal sessions")
+        self.assert_true("minutes: rawMinutes" in license_lib and "Math.min(Math.floor(requestedMinutes), 360)" in license_lib, "License server can issue longer signed release grants for cloud-init installs")
+        self.assert_true("readLicense" in portal_session_api and "releaseWithDiscoveredAssets" in portal_session_api and "validFormat" in portal_session_api, "Portal session validates purchase email and access key server-side")
+        self.assert_true("portal-" in portal_download_api and "deviceRegistrations" not in portal_download_api and "signedReleaseGrant" in portal_download_api and "releaseWithDiscoveredAssets" in portal_download_api, "Portal downloads do not consume device registrations")
+        self.assert_true("verifyPortalSession" in portal_digitalocean_api and "readLicense" in portal_digitalocean_api and "validateSshPublicKey" in portal_digitalocean_api, "DigitalOcean cloud install validates buyer session and SSH input")
+        self.assert_true('action === "status"' in portal_digitalocean_api and "fetchRuntimeStatus" in portal_digitalocean_api and 'install_status: "installing"' in portal_digitalocean_api, "DigitalOcean cloud endpoint supports progress polling without a second Vercel function")
+        self.assert_true('action === "refresh_access"' in portal_digitalocean_api and "refreshFirewallForCurrentIp" in portal_digitalocean_api and "access_refreshed" in portal_digitalocean_api, "DigitalOcean cloud endpoint can refresh firewall access for the current browser IP")
+        self.assert_true("taking_longer" in portal_digitalocean_api and "tardando_mas_de_lo_normal" in portal_digitalocean_api, "DigitalOcean cloud status marks long installs clearly instead of freezing near complete")
+        self.assert_true("https://api.digitalocean.com/v2" in portal_digitalocean_api and "/droplets" in portal_digitalocean_api and "/firewalls" in portal_digitalocean_api and "/account/keys" in portal_digitalocean_api, "DigitalOcean cloud install creates SSH key, firewall, and Droplet through official API")
+        self.assert_true("sshKey?.id || sshKey?.fingerprint" in portal_digitalocean_api, "DigitalOcean cloud install prefers stable SSH key IDs over fingerprints")
+        self.assert_true("signedReleaseGrant" in portal_digitalocean_api and "minutes: 180" in portal_digitalocean_api and "api/download/release" in portal_digitalocean_api, "DigitalOcean cloud install downloads the private release through signed license-server URL")
+        self.assert_true("GITHUB_RELEASE_TOKEN" not in portal_digitalocean_api and "LICENSE_ADMIN_KEY" not in portal_digitalocean_api, "DigitalOcean cloud install does not expose seller GitHub or admin secrets")
+        self.assert_true("cloudAccessSecret" in portal_digitalocean_api and "cloud_open_url" in portal_digitalocean_api and "writeLicense" in portal_digitalocean_api, "DigitalOcean cloud install returns and persists the secure dashboard opener")
+        self.assert_true('action === "runtime_report"' in portal_digitalocean_api and "cloud_secret_mismatch" in portal_digitalocean_api and "report_cloud_runtime" in digitalocean_cloud_lib, "DigitalOcean cloud install reports its public IP back automatically")
+        self.assert_true("buildDigitalOceanCloudInit" in digitalocean_cloud_lib and "DIGITALOCEAN_TOKEN" in digitalocean_cloud_lib and "docker compose up -d --build" in digitalocean_cloud_lib, "DigitalOcean cloud-init installs the app and starts Docker in detached mode")
+        self.assert_true("download.docker.com/linux/ubuntu" in digitalocean_cloud_lib and "docker-compose-linux-$compose_arch" in digitalocean_cloud_lib and "docker compose version" in digitalocean_cloud_lib, "DigitalOcean cloud-init installs Docker Compose reliably on fresh Ubuntu droplets")
+        self.assert_true("currentClientIp" in digitalocean_cloud_lib and "addresses: [clientCidr]" in digitalocean_cloud_lib and "DASHBOARD_PORT" in digitalocean_cloud_lib, "DigitalOcean cloud helper restricts firewall to current buyer IP and dashboard port")
+        self.assert_true("admiro-cloud-access-gate.service" in digitalocean_cloud_lib and "CLOUD_ACCESS_SECRET" in digitalocean_cloud_lib and "/open/" in digitalocean_cloud_lib, "DigitalOcean cloud install creates a secret one-click dashboard access gate")
+        self.assert_true("/status/" in digitalocean_cloud_lib and "dashboard_ready" in digitalocean_cloud_lib and "cloud install complete" in digitalocean_cloud_lib, "DigitalOcean access gate reports install readiness for the portal progress bar")
+        self.assert_true("dashboard_ready=false" in digitalocean_cloud_lib and 'report_cloud_runtime "dashboard_ready" "100" "true"' in digitalocean_cloud_lib and 'report_cloud_runtime "verificando_dashboard" "98" "false"' in digitalocean_cloud_lib, "DigitalOcean cloud-init only reports 100 percent after the dashboard responds")
+        self.assert_true('("ADMIRO_STAGE verifying_dashboard", "verificando_dashboard", 98)' in digitalocean_cloud_lib, "DigitalOcean access gate recognizes the verifying-dashboard marker")
+        self.assert_true("docker_snapshot" in digitalocean_cloud_lib and '\"docker\", \"ps\", \"-a\"' in digitalocean_cloud_lib and '"docker_ps": docker_snapshot()' in digitalocean_cloud_lib, "DigitalOcean access gate reports safe Docker container status")
+        self.assert_true("docker_logs_tail" in digitalocean_cloud_lib and '"docker", "logs", "--tail", "80"' in digitalocean_cloud_lib, "DigitalOcean access gate reports safe dashboard container logs")
+        self.assert_true("install_cloud_status_gate_early" in digitalocean_cloud_lib and "ADMIRO_STAGE running_installer" in digitalocean_cloud_lib and "systemctl restart admiro-cloud-access-gate.service" in digitalocean_cloud_lib, "DigitalOcean cloud-init starts the status gate early and reports real install stages")
+        self.assert_true('"7870"' in digitalocean_cloud_lib and "DO_STRICT_ACCESS_GATE_PORT" in do_firewall_script and "access_gate_port" in do_firewall_script, "DigitalOcean firewall refresh preserves the dashboard access gate")
+        self.assert_true("allowSshFromAnywhere: true" in portal_digitalocean_api and "PasswordAuthentication no" in digitalocean_cloud_lib and 'DO_STRICT_ALLOW_SSH_FROM_ANYWHERE "true"' in digitalocean_cloud_lib, "DigitalOcean cloud install keeps SSH as key-only recovery path")
+        self.assert_true("DO_STRICT_SKIP_DROPLET_ID_PROMPT" in do_install_script and "DO_STRICT_INITIAL_CLIENT_IP" in do_install_script, "DigitalOcean strict access installer supports noninteractive cloud-init first refresh")
+        self.assert_true("Instalacion guiada en DigitalOcean" in digitalocean_guided_doc and "Guardar este token cifrado" in digitalocean_guided_doc and "5 a 10 minutos" in digitalocean_guided_doc, "Buyer docs explain guided DigitalOcean install safely")
+        self.assert_true("barra de progreso" in digitalocean_guided_doc and "Acceder a mi dashboard" in digitalocean_guided_doc, "Buyer docs explain cloud install progress and final access button")
+        self.assert_true("Abrir mi dashboard" in digitalocean_guided_doc and "autoriza la IP actual" in digitalocean_guided_doc and "No contiene el token de DigitalOcean" in digitalocean_guided_doc, "Buyer docs explain the one-click cloud dashboard opener")
+        self.assert_true("Protector automatico de acceso avanzado" in digitalocean_guided_doc and "corre cada hora" in digitalocean_guided_doc and "No guarda el token de DigitalOcean" in digitalocean_guided_doc, "Buyer docs explain the local cloud access keeper as an advanced fallback")
+        self.assert_true(".dmg" in portal_lib and ".msi" in portal_lib and ".tar.gz" in portal_lib, "Portal maps release assets to Mac, Windows and Linux buttons")
+        self.assert_true("releases/tags" in portal_lib and "GITHUB_RELEASE_TOKEN" in portal_lib and "api.github.com/repos" in portal_lib, "Portal can discover platform installers from the private GitHub release")
+        self.assert_true("\"/access\"" in vercel_config and "\"/descargas\"" in vercel_config and "\"/api/portal\"" in vercel_config, "License server routes friendly download URLs to the portal")
+        self.assert_true("Download portal" in license_server_readme and "/api/portal/session" in license_server_readme, "Seller docs explain the buyer download portal")
+        self.assert_true("Developer ID Application" in installer_signing_doc and ".dmg" in installer_signing_doc and ".msi" in installer_signing_doc, "Installer signing docs recommend DMG and MSI for buyer trust")
+        self.assert_true("Developer ID Installer" in installer_signing_doc and "Authenticode" in installer_signing_doc and "SmartScreen" in installer_signing_doc, "Installer signing docs explain platform trust requirements")
         for file in [
             "seller/vercel-license-api/api/admin/releases.js",
             "seller/vercel-license-api/api/license/release.js",
             "seller/vercel-license-api/api/download/release.js",
+            "seller/vercel-license-api/api/portal.js",
+            "seller/vercel-license-api/api/portal/session.js",
+            "seller/vercel-license-api/api/portal/download.js",
+            "seller/vercel-license-api/api/portal/cloud/digitalocean.js",
+            "seller/vercel-license-api/api/portal/cloud/access-keeper.js",
+            "seller/vercel-license-api/api/portal/cloud/access-keeper-ps.js",
+            "seller/vercel-license-api/lib/download-portal.js",
+            "seller/vercel-license-api/lib/digitalocean-cloud.js",
+            "seller/vercel-license-api/lib/secret-vault.js",
         ]:
             self.assert_true((ROOT_DIR / file).exists(), f"Seller release API exists: {file}")
     
@@ -2752,12 +2979,15 @@ class IntegrationTestSuite:
             self.test_secret_redaction,
             self.test_website_scanner_blocks_private_urls,
             self.test_skill_response_parsing,
+            self.test_openai_compatible_agent_provider,
+            self.test_agent_setup_status_accepts_direct_model_provider,
             self.test_hermes_provider_parses_tool_request,
             self.test_hermes_creative_image_request_routes_to_codex_tool,
             self.test_hermes_missing_runtime_gives_chatgpt_setup_guidance,
             self.test_hermes_blocks_non_codex_runtime_by_default,
             self.test_hermes_attaches_safe_uploaded_images,
             self.test_hermes_business_memory_workspace_is_curated_and_redacted,
+            self.test_decision_memory_profitability_rules_and_hermes_context,
             self.test_chat_approval_decision_tool,
             self.test_minimax_tool_request_executes_backend_tool,
             self.test_codex_creative_prompt_rejects_local_file_escape,

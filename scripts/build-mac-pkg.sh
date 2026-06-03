@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${1:-v1.0.2}"
+VERSION="${1:-v1.0.3}"
 IDENTIFIER="${PKG_IDENTIFIER:-co.metaadsagent.local}"
 APP_NAME="Meta Ads Agent"
 RELEASE_DIR="$ROOT_DIR/release"
@@ -67,7 +67,7 @@ if not path.exists():
 
 updates = {
     "BOOTSTRAP_PROVIDER": os.environ.get("META_ADS_BOOTSTRAP_PROVIDER", "license_server"),
-    "LICENSE_SERVER_URL": os.environ.get("META_ADS_LICENSE_SERVER_URL", "https://licencias-admiro-ai.uboost.lat"),
+    "LICENSE_SERVER_URL": os.environ.get("META_ADS_LICENSE_SERVER_URL", "https://admiroia.uboost.lat"),
     "LICENSE_RELEASE_ENDPOINT": os.environ.get("META_ADS_LICENSE_RELEASE_ENDPOINT", "/api/license/release"),
     "RELEASE_CHANNEL": os.environ.get("META_ADS_RELEASE_CHANNEL", "stable"),
     "RELEASE_ASSET_NAME": os.environ.get("META_ADS_RELEASE_ASSET_NAME", "MetaAdsAgent-source.zip"),
@@ -102,12 +102,52 @@ pkgbuild \
   --install-location "/" \
   "$COMPONENT_PKG"
 
-productbuild \
-  --package "$COMPONENT_PKG" \
-  "$FINAL_PKG"
+PRODUCTBUILD_ARGS=(--package "$COMPONENT_PKG")
+if [[ -n "${MAC_PKG_SIGN_IDENTITY:-}" ]]; then
+  PRODUCTBUILD_ARGS+=(--sign "$MAC_PKG_SIGN_IDENTITY")
+fi
+productbuild "${PRODUCTBUILD_ARGS[@]}" "$FINAL_PKG"
+
+if [[ "${MAC_NOTARIZE:-false}" == "true" ]]; then
+  if [[ -z "${MAC_PKG_SIGN_IDENTITY:-}" ]]; then
+    echo "MAC_NOTARIZE=true requiere MAC_PKG_SIGN_IDENTITY con certificado Developer ID Installer."
+    exit 1
+  fi
+  if ! command -v xcrun >/dev/null 2>&1; then
+    echo "No encontre xcrun. Instala Xcode Command Line Tools para notarizar."
+    exit 1
+  fi
+
+  NOTARY_ARGS=(notarytool submit "$FINAL_PKG" --wait)
+  if [[ -n "${APPLE_NOTARY_KEYCHAIN_PROFILE:-}" ]]; then
+    NOTARY_ARGS+=(--keychain-profile "$APPLE_NOTARY_KEYCHAIN_PROFILE")
+  else
+    if [[ -z "${APPLE_ID:-}" || -z "${APPLE_TEAM_ID:-}" || -z "${APPLE_APP_SPECIFIC_PASSWORD:-}" ]]; then
+      echo "Para notarizar define APPLE_NOTARY_KEYCHAIN_PROFILE o APPLE_ID, APPLE_TEAM_ID y APPLE_APP_SPECIFIC_PASSWORD."
+      exit 1
+    fi
+    NOTARY_ARGS+=(--apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD")
+  fi
+
+  xcrun "${NOTARY_ARGS[@]}"
+  xcrun stapler staple "$FINAL_PKG"
+  xcrun stapler validate "$FINAL_PKG" || true
+fi
+
+if command -v shasum >/dev/null 2>&1; then
+  (cd "$RELEASE_DIR" && shasum -a 256 "$(basename "$FINAL_PKG")" > "$(basename "$FINAL_PKG").sha256")
+fi
 
 echo "PKG creado:"
 echo "$FINAL_PKG"
+if [[ -n "${MAC_PKG_SIGN_IDENTITY:-}" ]]; then
+  echo "Firmado con: $MAC_PKG_SIGN_IDENTITY"
+else
+  echo "Aviso: PKG sin firma. macOS mostrara advertencia de desarrollador no verificado."
+fi
+if [[ "${MAC_NOTARIZE:-false}" == "true" ]]; then
+  echo "Notarizado y stapled por Apple."
+fi
 echo
 echo "El comprador instala el .pkg y luego abre:"
 echo "/Applications/$APP_NAME/Instalar en Mac.command"

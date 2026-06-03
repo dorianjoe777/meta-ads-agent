@@ -44,6 +44,14 @@ def env_int(name, default):
         return int(default)
 
 
+def env_first(*names, default=""):
+    for name in names:
+        value = os.environ.get(name)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return default
+
+
 @dataclass
 class AgentConfig:
     mode: str
@@ -122,6 +130,11 @@ def load_config():
     mode = os.environ.get("META_ADS_AGENT_MODE", "dry-run").strip().lower()
     if mode not in {"dry-run", "live"}:
         mode = "dry-run"
+    provider = env_first("AGENT_CHAT_PROVIDER", default="hermes").lower().replace("-", "_")
+    if provider in {"openai-compatible", "openai compatible", "openai_compat", "openai_api"}:
+        provider = "openai_compatible"
+    if provider not in {"hermes", "minimax", "openai_compatible", "openai"}:
+        provider = "hermes"
     return AgentConfig(
         mode=mode,
         dashboard_host=os.environ.get("DASHBOARD_HOST", "127.0.0.1"),
@@ -165,11 +178,11 @@ def load_config():
         gemini_api_key=os.environ.get("GEMINI_API_KEY", ""),
         nano_banana_model=os.environ.get("NANO_BANANA_MODEL", "gemini-2.5-flash-image"),
         creative_variants_per_campaign=env_int("CREATIVE_VARIANTS_PER_CAMPAIGN", 3),
-        agent_chat_provider=os.environ.get("AGENT_CHAT_PROVIDER", "hermes").strip().lower(),
-        agent_chat_base_url=os.environ.get("MINIMAX_BASE_URL", "https://api.minimax.io/v1").rstrip("/"),
-        agent_chat_api_key=os.environ.get("MINIMAX_API_KEY", ""),
-        agent_chat_api=os.environ.get("MINIMAX_API", "openai-completions").strip().lower(),
-        agent_chat_model=os.environ.get("MINIMAX_MODEL", "MiniMax-M2.7"),
+        agent_chat_provider=provider,
+        agent_chat_base_url=env_first("AGENT_CHAT_BASE_URL", "MINIMAX_BASE_URL", default="https://api.minimax.io/v1").rstrip("/"),
+        agent_chat_api_key=env_first("AGENT_CHAT_API_KEY", "MINIMAX_API_KEY", default=""),
+        agent_chat_api=env_first("AGENT_CHAT_API", "MINIMAX_API", default="openai-chat-completions").lower(),
+        agent_chat_model=env_first("AGENT_CHAT_MODEL", "MINIMAX_MODEL", default="MiniMax-M3"),
         agent_chat_temperature=env_float("AGENT_CHAT_TEMPERATURE", 0.65),
         agent_profile_dir=os.environ.get("AGENT_PROFILE_DIR", "agent"),
         codex_creative_enabled=env_bool("CODEX_CREATIVE_ENABLED", False),

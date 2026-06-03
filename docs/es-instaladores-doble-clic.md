@@ -7,42 +7,46 @@ Esta entrega usa instaladores simples para compradores no tecnicos.
 Archivo:
 
 ```text
-Instalar en Windows.bat
+MetaAdsAgent-v1-windows.msi
 ```
 
 Uso:
 
 1. Instala Docker Desktop.
 2. Abre Docker Desktop y espera que diga `Running`.
-3. Ejecuta el instalador que recibiste.
-4. Haz doble clic en `Instalar en Windows.bat`.
-5. Cuando termine de construir, abre:
+3. Abre el instalador `.msi` que recibiste.
+4. Abre el acceso directo `Meta Ads Agent`.
+5. Cuando termine de preparar todo, abre:
 
 ```text
 http://127.0.0.1:7871
 ```
+
+El archivo `Instalar en Windows.bat` queda dentro de la instalacion como motor tecnico, pero el comprador no deberia tener que buscarlo.
 
 ## Mac
 
 Archivo:
 
 ```text
-Instalar en Mac.command
+MetaAdsAgent-v1-mac.dmg
 ```
 
 Uso:
 
 1. Instala Docker Desktop.
 2. Abre Docker Desktop y espera que diga `Running`.
-3. Ejecuta el instalador que recibiste.
-4. Haz doble clic en `Instalar en Mac.command`.
-5. Cuando termine de construir, abre:
+3. Abre el `.dmg` que recibiste.
+4. Abre `Meta Ads Agent.app`.
+5. Cuando termine de preparar todo, abre:
 
 ```text
 http://127.0.0.1:7871
 ```
 
-Si macOS muestra una advertencia de seguridad, haz clic derecho sobre el archivo, elige `Abrir` y confirma.
+Para venta publica, el `.dmg` debe llevar una app firmada y notarizada. Si estas probando un build interno sin firma, macOS puede pedir permiso extra en Privacidad y Seguridad. Eso no debe ser la experiencia normal del comprador.
+
+El archivo `Instalar en Mac.command` queda dentro de la instalacion como motor tecnico, pero el comprador no deberia tener que buscarlo.
 
 ## Linux
 
@@ -81,6 +85,16 @@ Ellos:
 - construyen una imagen con Python, Node/npm y Codex CLI;
 - crean volumenes persistentes para datos, logs, outputs y guias de marca;
 - arrancan el dashboard local.
+
+## Confianza del instalador
+
+Los builds finales de comprador deben prepararse siguiendo:
+
+```text
+docs/es-firma-instaladores.md
+```
+
+Asi el comprador ve un editor verificable en Mac/Windows y puede comprobar checksum en Linux.
 
 ## Importante
 

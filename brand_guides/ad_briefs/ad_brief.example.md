@@ -1,6 +1,6 @@
 # Brief publicitario
 
-Duplica o crea este brief desde la pantalla de Creatividades para una promocion, campana, conjunto de anuncios o anuncio especifico.
+Duplica o crea este brief desde la pantalla de Creativos para una promocion, campana, conjunto de anuncios o anuncio especifico.
 
 ## Ubicacion en Meta Ads
 

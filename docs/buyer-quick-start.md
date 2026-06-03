@@ -52,9 +52,27 @@ Usa los screenshots incluidos con tu compra. La idea es que el acceso quede bajo
 
 Esto es mas seguro para el comprador: el token nace en su propia cuenta de Meta, se guarda localmente en su PC/VPS y puede revocarlo desde Meta cuando quiera.
 
-## 4. Preparar guias creativas
+## 4. Conectar el modelo del agente
 
-En `Creatividades`, toca `Crear guias base`. Esto crea:
+Durante el onboarding veras `Conectar el modelo del agente`. Tienes dos rutas:
+
+- `Hermes + ChatGPT/Codex`: recomendado para usar una suscripcion de ChatGPT/Codex sin pegar una clave de OpenAI en el dashboard.
+- `MiniMax M3` u otra `API compatible OpenAI`: recomendado si prefieres pagar por tokens de un proveedor externo.
+
+Para MiniMax M3, el preset usa:
+
+```text
+URL: https://api.minimax.io/v1
+Modelo: MiniMax-M3
+```
+
+Si tu proveedor usa otro nombre de modelo, cambia ese campo por el nombre exacto que te muestre su panel. La clave API queda guardada localmente en esta instalacion y no se muestra de vuelta en el dashboard.
+
+Importante: esta configuracion cambia el cerebro conversacional del manager. Las imagenes finales de anuncios siguen usando el proveedor creativo configurado en `Creativos`, porque cada proveedor maneja imagenes con una API distinta.
+
+## 5. Preparar guias creativas
+
+En `Creativos`, toca `Crear guias base`. Esto crea:
 
 - `brand_guides/general_branding.md`
 - Un archivo en `brand_guides/products/` para tu producto principal.
@@ -76,7 +94,7 @@ social marketing accounts
 social marketing set-default-account act_XXXX
 ```
 
-## 4. Configurar destino de anuncios
+## 6. Configurar destino de anuncios
 
 El onboarding intentara traer automaticamente tus paginas de Facebook, Instagram conectado y web. Normalmente solo eliges la pagina correcta y sigues.
 
@@ -86,9 +104,9 @@ Si algo no aparece, puedes guardarlo manualmente:
 - Instagram conectado, si aplica
 - URL de tu web o landing
 
-Estos datos permiten crear creatividades, anuncios y campanas completas sin pedirte informacion tecnica cada vez.
+Estos datos permiten crear creativos, anuncios y campanas completas sin pedirte informacion tecnica cada vez.
 
-## 5. Confirmar datos reales
+## 7. Confirmar datos reales
 
 Corre:
 
@@ -99,7 +117,7 @@ python3 src/daily_agent.py status
 
 El dashboard debe mostrar `Datos reales de Meta`. Si ves datos demo, toca `Actualizar datos reales` y revisa token, cuenta y permisos.
 
-## 6. Crear tu primera campana
+## 8. Crear tu primera campana
 
 Dile al agente algo como:
 
@@ -107,11 +125,11 @@ Dile al agente algo como:
 Crea una campana para vender mi curso de reposteria con $20 diarios, para mujeres en Bogota, enviando a https://miweb.com.
 ```
 
-El agente te preguntara solo lo que falte. Cuando este lista, dejara una tarjeta de aprobacion con lo que se va a crear: campana, conjunto, creatividad y anuncio.
+El agente te preguntara solo lo que falte. Cuando este lista, dejara una tarjeta de aprobacion con lo que se va a crear: campana, conjunto, creativo y anuncio.
 
 Si quieres que el anuncio quede activo y pueda gastar, la tarjeta debe decirlo claro y debes confirmar: `Si, crear y dejar activo`.
 
-## 7. Con supervision vs Piloto automatico
+## 9. Con supervision vs Piloto automatico
 
 `Con supervision` significa: el agente lee datos reales, explica y prepara acciones para que tu apruebes. Si apruebas una accion exacta, puede ejecutarla sin que tengas que encender el piloto automatico.
 

@@ -1,4 +1,5 @@
 import { normalizeEntitlements, signedReleaseGrant, validFormat } from "../../lib/license.js";
+import { buyerFacingImprovements } from "../../lib/download-portal.js";
 import { deviceRegistrations, isRegisteredDevice, readLicense, readReleases, registerDevice, resetDeviceRegistrations, writeLicense } from "../../lib/store.js";
 
 function baseUrl(request) {
@@ -75,6 +76,12 @@ export default async function handler(request, response) {
     record.devices ||= [];
     if (!record.devices.includes(deviceId)) record.devices.push(deviceId);
     record.last_activation_at = new Date().toISOString();
+    const localInstall = { ...(record.install_state?.local || {}) };
+    localInstall.activated_at ||= record.last_activation_at;
+    localInstall.last_activation_seen_at = record.last_activation_at;
+    localInstall.last_event = "local_activated";
+    localInstall.last_event_at = record.last_activation_at;
+    record.install_state = { ...(record.install_state || {}), local: localInstall };
     await writeLicense(record);
 
     const releases = await readReleases();
@@ -101,7 +108,7 @@ export default async function handler(request, response) {
       version: release.version,
       asset_name: assetName,
       filename: asset.filename,
-      improvements: release.improvements || [],
+      improvements: buyerFacingImprovements(release.improvements || []),
       expires_at: grant.expires_at,
       download_url: `${baseUrl(request)}/api/download/release?token=${encodeURIComponent(grant.token)}`
     });

@@ -193,6 +193,7 @@ def default_product_guide(product_name="Oferta principal"):
     profile = read_json(BUSINESS_PROFILE_FILE, {})
     angles = profile.get("suggested_angles") or []
     angle_lines = "\n".join(f"{idx}. {angle}" for idx, angle in enumerate(angles, start=1))
+    default_angle_lines = "1. Angulo de dolor:\n2. Angulo de deseo:\n3. Angulo de prueba/confianza:"
     return f"""# Guia de producto
 
 ## Producto
@@ -214,7 +215,7 @@ def default_product_guide(product_name="Oferta principal"):
 
 ## Angulos de anuncios
 
-{angle_lines or '1. Angulo de dolor:\n2. Angulo de deseo:\n3. Angulo de prueba/confianza:'}
+    {angle_lines or default_angle_lines}
 
 ## Reglas creativas
 

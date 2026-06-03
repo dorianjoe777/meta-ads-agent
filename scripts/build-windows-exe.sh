@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${1:-v1.0.2}"
+VERSION="${1:-v1.0.3}"
 RELEASE_DIR="$ROOT_DIR/release"
 BUILD_DIR="$RELEASE_DIR/windows-build"
 STAGING_DIR="$BUILD_DIR/MetaAdsAgent"
@@ -61,7 +61,7 @@ if not path.exists():
 
 updates = {
     "BOOTSTRAP_PROVIDER": os.environ.get("META_ADS_BOOTSTRAP_PROVIDER", "license_server"),
-    "LICENSE_SERVER_URL": os.environ.get("META_ADS_LICENSE_SERVER_URL", "https://licencias-admiro-ai.uboost.lat"),
+    "LICENSE_SERVER_URL": os.environ.get("META_ADS_LICENSE_SERVER_URL", "https://admiroia.uboost.lat"),
     "LICENSE_RELEASE_ENDPOINT": os.environ.get("META_ADS_LICENSE_RELEASE_ENDPOINT", "/api/license/release"),
     "RELEASE_CHANNEL": os.environ.get("META_ADS_RELEASE_CHANNEL", "stable"),
     "RELEASE_ASSET_NAME": os.environ.get("META_ADS_RELEASE_ASSET_NAME", "MetaAdsAgent-source.zip"),
@@ -93,6 +93,40 @@ sed \
 
 if command -v makensis >/dev/null 2>&1; then
   makensis "$NSI_BUILD"
+  if [[ "${WINDOWS_SIGN_EXE:-false}" == "true" ]]; then
+    SIGNTOOL="${WINDOWS_SIGNTOOL_PATH:-}"
+    if [[ -z "$SIGNTOOL" ]]; then
+      if command -v signtool.exe >/dev/null 2>&1; then
+        SIGNTOOL="$(command -v signtool.exe)"
+      elif command -v signtool >/dev/null 2>&1; then
+        SIGNTOOL="$(command -v signtool)"
+      fi
+    fi
+    if [[ -z "$SIGNTOOL" ]]; then
+      echo "WINDOWS_SIGN_EXE=true requiere SignTool del Windows SDK en PATH o WINDOWS_SIGNTOOL_PATH."
+      exit 1
+    fi
+
+    TIMESTAMP_URL="${WINDOWS_TIMESTAMP_URL:-http://timestamp.digicert.com}"
+    SIGN_ARGS=(sign /fd SHA256 /td SHA256 /tr "$TIMESTAMP_URL")
+    if [[ -n "${WINDOWS_SIGNING_CERT_PATH:-}" ]]; then
+      SIGN_ARGS+=(/f "$WINDOWS_SIGNING_CERT_PATH")
+      if [[ -n "${WINDOWS_SIGNING_CERT_PASSWORD:-}" ]]; then
+        SIGN_ARGS+=(/p "$WINDOWS_SIGNING_CERT_PASSWORD")
+      fi
+    else
+      SIGN_ARGS+=(/a)
+    fi
+
+    "$SIGNTOOL" "${SIGN_ARGS[@]}" "$EXE_PATH"
+    "$SIGNTOOL" verify /pa "$EXE_PATH" || true
+    echo "EXE firmado con Authenticode."
+  else
+    echo "Aviso: EXE sin firma. Windows puede mostrar Unknown Publisher o SmartScreen."
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    (cd "$RELEASE_DIR" && shasum -a 256 "$(basename "$EXE_PATH")" > "$(basename "$EXE_PATH").sha256")
+  fi
   echo "EXE creado:"
   echo "$EXE_PATH"
 else

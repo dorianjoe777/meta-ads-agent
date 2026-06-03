@@ -23,7 +23,7 @@ Si Piloto automatico esta apagado, el agente no ejecuta cambios por su cuenta. A
 
 ## Que protege la cola de aprobaciones
 
-Reactivar campanas, cambios grandes de presupuesto, subida de creatividades y creacion de anuncios no deben ejecutarse por sorpresa. Primero quedan preparados para que el comprador revise y apruebe.
+Reactivar campanas, cambios grandes de presupuesto, subida de creativos y creacion de anuncios no deben ejecutarse por sorpresa. Primero quedan preparados para que el comprador revise y apruebe.
 
 ## Licencia cloud
 

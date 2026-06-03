@@ -82,6 +82,20 @@ Importante: esa clave queda en la instalacion local/VPS del comprador. No se inc
 
 ## Guias creativas
 
+## Conectar ChatGPT al agente
+
+Despues de instalar, el onboarding inicial muestra el paso `Conectar ChatGPT al agente` antes de conectar Meta. Si el comprador lo salta o necesita revisarlo despues, puede volver desde `Configuracion > Conectar ChatGPT al agente`.
+
+La tarjeta te guia con palabras simples:
+
+1. Abrir Terminal en el equipo donde corre Admiro AI.
+2. Ejecutar `hermes model`.
+3. Elegir `OpenAI Codex`.
+4. Iniciar sesion con la cuenta ChatGPT del comprador.
+5. Volver al dashboard y tocar `Ya lo hice, revisar conexion`.
+
+Si la instalacion vive en DigitalOcean, ese comando se corre dentro del Droplet por SSH o consola web de DigitalOcean. No se corre en la laptop del comprador, porque el agente esta viviendo en el servidor.
+
 El contenedor crea las guias base si no existen:
 
 ```text
@@ -91,7 +105,7 @@ brand_guides/products/
 
 Desde el dashboard:
 
-1. Ir a `Creatividades`.
+1. Ir a `Creativos`.
 2. Tocar `Crear guias base`.
 3. Escribir el producto principal.
 4. Editar las guias si hace falta.

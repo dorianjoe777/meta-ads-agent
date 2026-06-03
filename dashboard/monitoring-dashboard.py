@@ -56,14 +56,20 @@ from creative_refresh import (
     generate_creative_refresh,
     recent_creative_refreshes,
 )
-from daily_agent import approve as approve_pending, reject as reject_pending, run_daily as run_scheduled_daily
+from daily_agent import approve as approve_pending, build_action_summary, reject as reject_pending, run_daily as run_scheduled_daily
+from decision_memory import (
+    decision_memory_payload,
+    load_profitability_rules,
+    recommendation_decision_evidence,
+    save_profitability_rules as persist_profitability_rules,
+)
 from graph_executor import execute_upload_payload
 from hermes_bridge import safe_image_paths
-from license import activate_license, default_device_id, license_status, normalize_license_entitlements, validate_license_key
+from license import activate_license, default_device_id, license_status, mark_license_install_state, normalize_license_entitlements, validate_license_key
 from local_store import now_iso, read_json, write_json, write_private_json
 from meta_upload import recent_uploads, stage_upload
 from product_config import ENV_FILE, load_config
-from security import dashboard_token_valid, is_public_bind, redact_payload
+from security import dashboard_token_valid, is_local_host, is_public_bind, redact_payload
 from setup_status import build_setup_status
 from social_flow_client import SocialFlowClient
 from telegram_agent import bot_request as telegram_bot_request
@@ -1130,6 +1136,12 @@ def save_guardrails(payload):
     return {"saved": True, "values": values}
 
 
+def save_profitability_rule_settings(payload):
+    rules = persist_profitability_rules(payload)
+    log_action("profitability_rules_update", rules, "completed")
+    return {"saved": True, "rules": rules}
+
+
 def save_telegram_config(payload):
     limits = license_entitlements()
     registry = agency_registry()
@@ -1197,7 +1209,11 @@ def test_telegram_connection():
 
 def activate_license_now(payload=None):
     payload = payload or {}
-    status = activate_license(load_config(), transfer_device=bool(payload.get("transfer_device")))
+    config = load_config()
+    status = activate_license(config, transfer_device=bool(payload.get("transfer_device")))
+    if status.get("valid"):
+        mark_license_install_state(config, "local_activated")
+        mark_license_install_state(config, "onboarding_opened")
     log_action("license_activate", {"status": status.get("status"), "valid": bool(status.get("valid")), "online": bool(status.get("online"))}, "completed" if status.get("valid") else "blocked")
     return status
 
@@ -1699,6 +1715,32 @@ def set_dashboard_password(payload):
     return {"configured": True}
 
 
+def normalize_agent_chat_provider(value):
+    raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "openai": "openai",
+        "openai_compatible": "openai_compatible",
+        "openai_compat": "openai_compatible",
+        "openai_api": "openai_compatible",
+        "compatible": "openai_compatible",
+        "minimax": "minimax",
+        "hermes": "hermes",
+    }
+    return aliases.get(raw, "")
+
+
+def validate_agent_chat_base_url(value):
+    url = str(value or "").strip().rstrip("/")
+    if not url:
+        return ""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme == "https" and parsed.netloc:
+        return url
+    if parsed.scheme == "http" and is_local_host(parsed.hostname or ""):
+        return url
+    raise ValueError("La URL del modelo debe usar https://, excepto modelos locales en http://127.0.0.1 o http://localhost.")
+
+
 def save_setup_config(payload):
     replaced = enforce_individual_business_change(payload)
     env_updates = {}
@@ -1714,6 +1756,30 @@ def save_setup_config(payload):
         if field == "license_key" and not value:
             continue
         env_updates[env_key] = value
+    provider = normalize_agent_chat_provider(payload.get("agent_chat_provider")) if "agent_chat_provider" in payload else ""
+    if provider:
+        env_updates["AGENT_CHAT_PROVIDER"] = provider
+        if provider == "hermes":
+            env_updates["HERMES_REQUIRE_CODEX_AUTH"] = "true"
+    if "agent_chat_base_url" in payload:
+        base_url = validate_agent_chat_base_url(payload.get("agent_chat_base_url"))
+        if base_url:
+            env_updates["AGENT_CHAT_BASE_URL"] = base_url
+    if "agent_chat_model" in payload:
+        model = str(payload.get("agent_chat_model") or "").strip()
+        if model:
+            env_updates["AGENT_CHAT_MODEL"] = model
+    if "agent_chat_api" in payload:
+        api = str(payload.get("agent_chat_api") or "").strip().lower()
+        if api:
+            env_updates["AGENT_CHAT_API"] = api
+    if "agent_chat_api_key" in payload:
+        api_key = str(payload.get("agent_chat_api_key") or "").strip()
+        if api_key:
+            env_updates["AGENT_CHAT_API_KEY"] = api_key
+    if "hermes_model" in payload:
+        hermes_model = str(payload.get("hermes_model") or "").strip()
+        env_updates["HERMES_MODEL"] = hermes_model
     if env_updates:
         update_env_values(env_updates)
 
@@ -2195,6 +2261,7 @@ def complete_onboarding():
         snapshot_workspace(registry["active_id"])
     else:
         save_individual_binding()
+    mark_license_install_state(config, "onboarding_completed")
     log_action("onboarding_complete", {"setup_summary": state["setup_snapshot"], "first_insights_refresh": state["first_insights_refresh"]}, "completed")
     return state
 
@@ -2416,6 +2483,8 @@ def build_summary(campaigns):
 
 def calculate_recommendations(campaigns):
     optimizer = BudgetOptimizer()
+    rules = load_profitability_rules()
+    config = load_config()
     recommendations = []
     for campaign in campaigns:
         metrics = PerformanceMetrics(
@@ -2431,21 +2500,21 @@ def calculate_recommendations(campaigns):
         rec = optimizer.calculate_optimal_budget(metrics, current_budget, OptimizationStrategy.PERFORMANCE_BASED)
         change = rec.recommended_budget - current_budget
         change_pct = (change / current_budget * 100) if current_budget else 0
-        recommendations.append(
-            {
-                "campaign_id": campaign.get("id"),
-                "campaign_name": campaign.get("name"),
-                "current_budget": money(current_budget),
-                "recommended_budget": money(rec.recommended_budget),
-                "change": money(change),
-                "change_pct": round(change_pct, 1),
-                "confidence": round(float(rec.confidence), 1),
-                "reason": rec.reasoning,
-                "requires_approval": abs(change_pct) > 20,
-                "roas": round(campaign.get("roas", 0), 2),
-                "health": campaign.get("health"),
-            }
-        )
+        recommendation = {
+            "campaign_id": campaign.get("id"),
+            "campaign_name": campaign.get("name"),
+            "current_budget": money(current_budget),
+            "recommended_budget": money(rec.recommended_budget),
+            "change": money(change),
+            "change_pct": round(change_pct, 1),
+            "confidence": round(float(rec.confidence), 1),
+            "reason": rec.reasoning,
+            "requires_approval": abs(change_pct) > float(config.approval_required_over_pct or 20),
+            "roas": round(campaign.get("roas", 0), 2),
+            "health": campaign.get("health"),
+        }
+        recommendation["decision_evidence"] = recommendation_decision_evidence(campaign, recommendation, rules)
+        recommendations.append(recommendation)
     return recommendations
 
 
@@ -2484,6 +2553,7 @@ def build_daily_brief(metrics, recommendations):
     losers = sorted([c for c in campaigns if c.get("health") == "losing"], key=lambda c: c.get("roas", 0))
     fatigue = fatigue_items(campaigns)
     projected_spend = summary.get("active_budget", 0)
+    action_summary = build_action_summary(recommendations, [], [], fatigue)
     return {
         "generated_at": now_iso(),
         "questions": [
@@ -2511,6 +2581,7 @@ def build_daily_brief(metrics, recommendations):
         "winners": [{"name": c["name"], "roas": round(c["roas"], 2), "cpa": money(c["cpa"])} for c in winners[:4]],
         "losers": [{"name": c["name"], "roas": round(c["roas"], 2), "cpa": money(c["cpa"])} for c in losers[:4]],
         "pending_actions": [r for r in recommendations if r["requires_approval"]],
+        "action_summary": action_summary,
     }
 
 
@@ -2549,6 +2620,7 @@ def scheduled_brief_or_live(metrics, recommendations):
         "winners": [{"name": c.get("name"), "roas": round(c.get("roas", 0), 2), "cpa": money(c.get("cpa", 0))} for c in brief.get("winners", [])[:4]],
         "losers": [{"name": c.get("name"), "roas": round(c.get("roas", 0), 2), "cpa": money(c.get("cpa", 0))} for c in brief.get("losers", [])[:4]],
         "pending_actions": [r for r in brief.get("recommendations", []) if r.get("requires_approval")],
+        "action_summary": brief.get("action_summary") or fallback.get("action_summary"),
     }
 
 
@@ -3723,7 +3795,7 @@ def route_chat_action(payload):
             return local_chat_route(payload, action)
         if wants_creative:
             action = campaign_creative_action(campaign, payload, "creative_refresh")
-            action["reply"] = chat_reply(payload, f"Listo. Preparé ideas de imágenes y textos para {campaign.get('name')}. Las puedes revisar en Imágenes y textos.", f"Done. I prepared image and text ideas for {campaign.get('name')}. You can review them in Images and text.")
+            action["reply"] = chat_reply(payload, f"Listo. Preparé creativos para {campaign.get('name')}. Los puedes revisar en Creativos.", f"Done. I prepared creatives for {campaign.get('name')}. You can review them in Creatives.")
             return local_chat_route(payload, action)
     return None
 
@@ -3971,6 +4043,8 @@ def require_cloud_license(action_name="buyer feature"):
 def dashboard_payload():
     metrics = load_metrics()
     recommendations = calculate_recommendations(metrics.get("campaigns", []))
+    fatigue = fatigue_items(metrics.get("campaigns", []))
+    decisions = decision_memory_payload(metrics, recommendations, fatigue)
     config = load_config()
     setup = build_setup_status()
     current_license_status = license_status(config)
@@ -3984,7 +4058,8 @@ def dashboard_payload():
         "metrics": metrics,
         "recommendations": recommendations,
         "brief": scheduled_brief_or_live(metrics, recommendations),
-        "fatigue": fatigue_items(metrics.get("campaigns", [])),
+        "fatigue": fatigue,
+        "decision_memory": decisions,
         "actions": read_json(ACTIONS_FILE, [])[:20],
         "pending": read_json(PENDING_FILE, [])[:20],
         "created_campaigns": read_json(CREATED_FILE, [])[:10],
@@ -4015,6 +4090,16 @@ def dashboard_payload():
                 "codex_planning_enabled": bool(config.codex_creative_enabled),
                 "asset_policy": creative_asset_policy(),
             },
+            "agent_model": {
+                "provider": config.agent_chat_provider,
+                "base_url": config.agent_chat_base_url,
+                "api": config.agent_chat_api,
+                "api_key_set": bool(config.agent_chat_api_key),
+                "model": config.agent_chat_model,
+                "temperature": config.agent_chat_temperature,
+                "hermes_model": config.hermes_model,
+                "hermes_require_codex_auth": config.hermes_require_codex_auth,
+            },
             "guardrails": {
                 "autonomy_mode": config.autonomy_mode,
                 "approval_required_over_pct": config.approval_required_over_pct,
@@ -4025,6 +4110,7 @@ def dashboard_payload():
                 "require_approval_for_new_campaigns": config.require_approval_for_new_campaigns,
                 "require_approval_for_creatives": config.require_approval_for_creatives,
             },
+            "profitability_rules": decisions.get("profitability_rules", {}),
             "license_status": current_license_status,
             "license_entitlements": entitlements,
             "license_buyer_email_set": bool(config.license_buyer_email),
@@ -4038,6 +4124,11 @@ def dashboard_payload():
                 "instagram_actor_id": destination.get("instagram_actor_id", ""),
                 "default_adset_id": destination.get("default_adset_id", ""),
                 "landing_url": destination.get("url", ""),
+                "agent_chat_provider": config.agent_chat_provider,
+                "agent_chat_base_url": config.agent_chat_base_url,
+                "agent_chat_model": config.agent_chat_model,
+                "agent_chat_api": config.agent_chat_api,
+                "agent_chat_api_key_set": bool(config.agent_chat_api_key),
             },
         },
         "setup": setup,
@@ -4058,6 +4149,7 @@ HTML = r"""<!DOCTYPE html>
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:radial-gradient(circle at 18% -8%,rgba(39,199,167,.18),transparent 32rem),radial-gradient(circle at 86% 12%,rgba(244,183,64,.12),transparent 26rem),linear-gradient(180deg,#121517 0%,#0f1113 100%);color:var(--text);min-height:100vh;background-attachment:fixed}
 button,input,select,textarea{font:inherit}
 .onboarding-flow{position:fixed;inset:0;z-index:50;display:none;background:linear-gradient(145deg,#101315,#171b1f);overflow:auto;padding:26px}.onboarding-flow.open{display:grid;place-items:center}.onboarding-shell{width:min(1080px,100%);display:grid;grid-template-columns:270px minmax(0,1fr);gap:18px;align-items:start}.onboarding-side{border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.055);padding:16px;box-shadow:var(--shadow),var(--glow);position:sticky;top:26px}.onboarding-side h1{font-size:20px;line-height:1.05}.onboarding-side p{font-size:12px;color:var(--dim);line-height:1.5;margin-top:8px}.onboarding-card{display:block;min-height:0;border:1px solid var(--line);border-radius:10px;background:rgba(22,26,30,.86);box-shadow:var(--shadow),var(--glow);padding:20px}.onboarding-card h2{font-size:23px;line-height:1.1;max-width:720px}.onboarding-card>p{font-size:13px;color:var(--dim);line-height:1.55;margin-top:8px;max-width:760px}.onboarding-progress{display:flex;gap:6px;margin:14px 0}.onboarding-progress span{height:6px;flex:1;border-radius:999px;background:rgba(255,255,255,.1)}.onboarding-progress span.done{background:var(--accent)}.onboarding-step-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.onboarding-command{border:1px solid var(--line);background:rgba(0,0,0,.22);border-radius:8px;padding:10px;margin-top:8px;font-size:12px;color:var(--text);word-break:break-word}.helper-command{margin-top:10px;color:var(--dim);font-size:11px}.helper-command summary{cursor:pointer;font-weight:900;color:var(--accent);list-style:none}.helper-command summary::-webkit-details-marker{display:none}.helper-command summary:before{content:"+";display:inline-grid;place-items:center;width:16px;height:16px;margin-right:6px;border-radius:5px;background:rgba(39,199,167,.13);color:var(--accent)}.helper-command[open] summary:before{content:"-"}.onboarding-helper{border:1px solid rgba(39,199,167,.18);border-radius:8px;padding:10px;background:rgba(39,199,167,.045)}.onboarding-helper .btn{margin-top:8px}.onboarding-mini{display:grid;gap:8px;margin-top:12px}.onboarding-mini.two{grid-template-columns:1fr 1fr}.onboarding-mini label{display:flex;flex-direction:column;gap:5px}.onboarding-mini input,.onboarding-mini textarea{width:100%}.onboarding-mini textarea{resize:vertical;min-height:92px;background:var(--surface2);border:1px solid var(--border);border-radius:7px;color:var(--text);padding:9px;font-size:12px;line-height:1.4}.onboarding-mini .wide{grid-column:1/-1}.onboarding-mini>.btn,.unlock-form>.btn{justify-self:start}.setup-guide{display:grid;gap:12px;margin-top:16px}.guide-card,.guide-panel{border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.055);padding:12px}.guide-card b,.guide-panel b{display:block;font-size:12px;line-height:1.25}.guide-card p,.guide-card li,.guide-panel p,.guide-panel li{font-size:11px;color:var(--dim);line-height:1.45}.guide-card ol,.guide-panel ol{margin:8px 0 0 18px;padding:0}.private-connection{grid-template-columns:1fr}.guide-hero{display:grid;grid-template-columns:minmax(0,1fr) 270px;gap:14px;align-items:stretch;border:1px solid rgba(39,199,167,.2);border-radius:10px;background:linear-gradient(135deg,rgba(39,199,167,.09),rgba(255,255,255,.045));padding:14px;box-shadow:var(--glow)}.guide-main{display:grid;gap:12px;align-content:start}.guide-eyebrow{display:inline-flex;width:max-content;border:1px solid rgba(39,199,167,.24);border-radius:999px;background:rgba(39,199,167,.09);color:var(--accent);padding:5px 8px;font-size:10px;font-weight:950;text-transform:uppercase}.guide-main h3{font-size:18px;line-height:1.12}.guide-main p{font-size:12px;color:var(--dim);line-height:1.55;max-width:610px}.guide-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.guide-actions .btn{text-align:center;text-decoration:none}.guide-checklist{border:1px solid rgba(255,255,255,.1);border-radius:8px;background:rgba(0,0,0,.14);padding:12px}.guide-checklist b{font-size:12px}.guide-checklist ol{margin:9px 0 0 18px}.guide-checklist li{font-size:11px;color:var(--dim);line-height:1.5;margin-bottom:6px}.guide-support-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.manual-account{margin:0}.manual-account .btn{justify-self:start}.fallback-details{border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.035);padding:0}.fallback-details summary{cursor:pointer;list-style:none;padding:11px 12px;font-size:11px;font-weight:900;color:var(--dim)}.fallback-details summary::-webkit-details-marker{display:none}.fallback-details summary:before{content:"+";display:inline-grid;place-items:center;width:16px;height:16px;margin-right:6px;border-radius:5px;background:rgba(255,255,255,.06);color:var(--accent)}.fallback-details[open] summary:before{content:"-"}.fallback-details .manual-account{border:0;border-top:1px solid var(--line);border-radius:0;background:transparent}.token-box{display:none;gap:8px;margin-top:0;border:1px solid rgba(39,199,167,.18);border-radius:8px;background:rgba(0,0,0,.16);padding:10px}.token-box.open{display:grid}.token-box textarea{min-height:86px;resize:vertical;background:var(--surface2);border:1px solid var(--border);border-radius:7px;color:var(--text);padding:9px;font-size:12px;line-height:1.35}.guide-visual{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;gap:8px;align-items:center}.mini-screen{border:1px solid rgba(255,255,255,.14);border-radius:8px;background:rgba(0,0,0,.18);padding:10px;min-height:82px}.mini-screen span{display:block;height:8px;border-radius:99px;background:rgba(255,255,255,.14);margin-bottom:7px}.mini-screen strong{display:block;font-size:11px}.mini-screen em{display:block;font-style:normal;font-size:10px;color:var(--accent);margin-top:5px}.guide-arrow{color:var(--accent);font-weight:950}.passive-guide{display:grid;grid-template-columns:minmax(0,1fr) 230px;gap:12px;margin-top:16px}.passive-card{border:1px solid rgba(99,168,255,.2);border-radius:10px;background:rgba(99,168,255,.065);padding:14px;box-shadow:var(--glow)}.passive-card b,.passive-side b{font-size:12px}.passive-card p,.passive-side p{font-size:12px;color:var(--dim);line-height:1.5;margin-top:6px}.passive-side{border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.045);padding:12px}.passive-state{display:inline-flex;align-items:center;gap:7px;border:1px solid rgba(39,199,167,.22);border-radius:999px;background:rgba(39,199,167,.08);color:var(--accent);font-size:10px;font-weight:950;padding:5px 8px;text-transform:uppercase}.passive-state:before{content:"";width:7px;height:7px;border-radius:50%;background:var(--accent)}
+.settings-stack{display:grid;gap:12px}.profitability-rules{border-top:1px solid var(--line);padding-top:12px}.profitability-rules h3{font-size:15px;line-height:1.15}
 header{position:sticky;top:0;z-index:4;background:rgba(18,21,24,.62);backdrop-filter:blur(22px) saturate(145%);-webkit-backdrop-filter:blur(22px) saturate(145%);border-bottom:1px solid var(--line);display:grid;grid-template-columns:minmax(178px,220px) minmax(360px,1fr) auto auto;align-items:center;gap:12px;padding:12px 18px;box-shadow:0 8px 28px rgba(0,0,0,.18),var(--glow)}
 .brand{min-width:0;position:relative;padding-left:36px}.brand:before{content:"";position:absolute;left:0;top:1px;width:24px;height:24px;border-radius:7px;background:linear-gradient(135deg,var(--accent),var(--accent2));box-shadow:0 0 0 1px rgba(255,255,255,.14) inset}.brand h1{font-size:16px;line-height:1.05;letter-spacing:0;font-weight:900}.brand span{color:var(--accent)}.brand div{font-size:11px;color:var(--dim);margin-top:4px}
 .panel-caret{margin-left:auto;color:var(--zone);font-size:12px;font-weight:950;transition:transform .16s ease}.panel-caret:before{content:"+"}body.left-panel-open .brief-zone .panel-caret:before,body.right-panel-open .rail .panel-caret:before{content:"-"}.zone-badge{display:none;margin-left:auto;border:1px solid var(--zone-border);border-radius:999px;background:color-mix(in srgb,var(--zone) 16%,transparent);color:var(--zone);padding:3px 7px;font-size:9px;font-weight:950;text-transform:uppercase;letter-spacing:.02em}.zone-label.has-new-brief{position:relative;overflow:hidden;border-color:color-mix(in srgb,var(--zone) 62%,var(--zone-border));box-shadow:0 0 0 1px color-mix(in srgb,var(--zone) 18%,transparent) inset,0 0 24px var(--zone-glow)}.zone-label.has-new-brief .zone-badge{display:inline-flex}.zone-label.has-new-brief:before{animation:daily-brief-dot 1.6s ease-in-out infinite}.zone-label.has-new-brief:after{content:"";position:absolute;inset:-1px;background:linear-gradient(105deg,transparent 0%,transparent 34%,rgba(255,255,255,.2) 45%,color-mix(in srgb,var(--zone) 30%,transparent) 52%,transparent 66%,transparent 100%);transform:translateX(-120%);animation:daily-brief-sheen 3.4s ease-in-out infinite;pointer-events:none}.zone-label.has-new-brief>*{position:relative;z-index:1}@keyframes daily-brief-sheen{0%,38%{transform:translateX(-120%)}72%,100%{transform:translateX(120%)}}@keyframes daily-brief-dot{0%,100%{box-shadow:0 0 0 4px var(--zone-glow),0 0 0 0 color-mix(in srgb,var(--zone) 0%,transparent)}50%{box-shadow:0 0 0 4px var(--zone-glow),0 0 0 8px color-mix(in srgb,var(--zone) 16%,transparent)}}@media(prefers-reduced-motion:reduce){.zone-label.has-new-brief:before,.zone-label.has-new-brief:after{animation:none}}
@@ -4280,6 +4372,8 @@ body.theme-ember .creative-studio-hero:before{background:linear-gradient(120deg,
 @media(max-width:780px){.theme-switcher{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:780px){.brand-memory-nav{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));overflow:visible}.brand-nav-item,.brand-new-product{width:100%;min-width:0}.brand-nav-item b{max-width:none;white-space:normal;line-height:1.25}}
 .msg-actions{display:grid;gap:7px;margin-top:10px;padding-top:9px;border-top:1px solid var(--line)}.msg-approval-card{border:1px solid color-mix(in srgb,var(--accent) 22%,var(--line));border-radius:9px;background:rgba(255,255,255,.05);padding:8px}.msg-approval-card b{display:block;font-size:11px;color:var(--text);line-height:1.25}.msg-approval-card span{display:block;font-size:10px;color:var(--dim);margin-top:3px}.msg-approval-buttons{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:7px}.msg-approval-buttons .btn{width:100%;font-size:10px;padding:8px}
+.chatgpt-connect-card{position:relative;overflow:hidden;border:1px solid color-mix(in srgb,var(--accent) 28%,var(--line));border-radius:10px;background:linear-gradient(135deg,rgba(39,199,167,.12),rgba(99,168,255,.08),rgba(255,255,255,.04));padding:13px;margin-bottom:14px;box-shadow:var(--glow)}.chatgpt-connect-card:before{content:"";position:absolute;inset:0;background:linear-gradient(120deg,transparent,rgba(255,255,255,.08),transparent);transform:translateX(-100%);animation:softSweep 8s ease-in-out infinite;pointer-events:none}.chatgpt-connect-card>*{position:relative;z-index:1}.chatgpt-connect-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:10px}.chatgpt-connect-head h3{font-size:15px;line-height:1.14}.chatgpt-connect-head p{font-size:11px;color:var(--dim);line-height:1.45;margin-top:5px}.chatgpt-steps{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:10px 0}.chatgpt-step{border:1px solid var(--line);border-radius:8px;background:rgba(0,0,0,.12);padding:10px}.chatgpt-step span{display:inline-grid;place-items:center;width:24px;height:24px;border-radius:7px;background:color-mix(in srgb,var(--accent) 20%,transparent);color:var(--accent);font-size:11px;font-weight:950}.chatgpt-step b{display:block;font-size:11px;line-height:1.25;margin-top:7px}.chatgpt-step p{font-size:10px;color:var(--dim);line-height:1.45;margin-top:4px}.chatgpt-command{display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid var(--line);border-radius:8px;background:rgba(0,0,0,.18);padding:9px;margin-top:8px}.chatgpt-command code{font-size:12px;font-weight:900;color:var(--text);word-break:break-word}.chatgpt-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px}.chatgpt-foot p{font-size:10px;color:var(--dim);line-height:1.45}.chatgpt-connect-card.ready{border-color:rgba(85,212,122,.3);background:linear-gradient(135deg,rgba(85,212,122,.12),rgba(99,168,255,.06),rgba(255,255,255,.04))}.chatgpt-connect-card.ready .chatgpt-step span{background:rgba(85,212,122,.14);color:var(--green)}@keyframes softSweep{0%,62%{transform:translateX(-120%)}82%,100%{transform:translateX(120%)}}
+@media(max-width:780px){.chatgpt-connect-head,.chatgpt-foot,.chatgpt-command{align-items:flex-start;flex-direction:column}.chatgpt-steps{grid-template-columns:1fr}.chatgpt-command .btn,.chatgpt-foot .btn{width:100%}}
 </style>
 </head>
 <body>
@@ -4323,7 +4417,7 @@ body.theme-ember .creative-studio-hero:before{background:linear-gradient(120deg,
 <div class="dashboard-view hidden" id="view-idle"></div>
 </div>
 <div id="tab-setup" class="hidden">
-<section class="section"><div class="head"><span>03</span><b data-i18n="setup_status">Setup Status</b><button class="btn ask-btn" onclick="openChat(t('draft_setup'))" data-i18n="ask_agent">Ask agent</button><button class="btn" onclick="load()" data-i18n="refresh">Refresh</button></div><div class="body"><div id="mode-control"></div><div id="guardrails-panel"></div><div id="onboarding-wizard"></div><div id="license-panel"></div><div id="agency-panel"></div><div id="setup-config"></div><div id="telegram-panel"></div><div id="migration-panel"></div><div id="update-rollback-panel"></div><div id="cloud-access-panel"></div><div id="setup-summary"></div><div id="setup-sections"></div></div></section>
+<section class="section"><div class="head"><span>03</span><b data-i18n="setup_status">Setup Status</b><button class="btn ask-btn" onclick="openChat(t('draft_setup'))" data-i18n="ask_agent">Ask agent</button><button class="btn" onclick="load()" data-i18n="refresh">Refresh</button></div><div class="body"><div id="mode-control"></div><div id="guardrails-panel"></div><div id="onboarding-wizard"></div><div id="license-panel"></div><div id="agency-panel"></div><div id="setup-config"></div><div id="chatgpt-panel"></div><div id="telegram-panel"></div><div id="migration-panel"></div><div id="update-rollback-panel"></div><div id="cloud-access-panel"></div><div id="setup-summary"></div><div id="setup-sections"></div></div></section>
 </div>
 <div id="tab-creator" class="hidden">
 <section class="section"><div class="head"><span>04</span><b data-i18n="campaign_creator">Campaign Creator</b></div><div class="body">
@@ -4486,7 +4580,7 @@ const copy={
 	  live_ready_yes:'Yes',live_ready_no:'No',check:'Check',draft_where_are_we:'Give me a business catch-up: where are we today, what should I watch, and what would you do next?',draft_catchup:'Explain today’s daily brief like my Meta Ads manager. What matters most?',draft_fatigue:'Review fatigue risk. Which ads need new creative and why?',draft_budget:'Review the budget optimizer. Which recommendations are safe and which need caution?',draft_setup:'Review setup status. What blocks us from going live safely?',draft_audience:'Help me choose targeting. Ask me only what is missing, then recommend broad, interest, retargeting, and lookalike options safely.',chat_welcome:'Hi, I’m your Meta Ads manager. Ask me for a catch-up, a decision, or help taking an action.',chat_summary:'Here is the catch-up: account ROAS is {roas}x, CPA is {cpa}, active budget is {budget}, and {pending} approval(s) are pending. The safest next step is to review budget recommendations and fatigue before going live.',chat_budget:'Budget view: compare current vs suggested budgets. For winning campaigns, scale carefully; for weak campaigns, fix creative or pause before adding spend.',chat_fatigue:'Fatigue view: watch frequency, CTR drops, and rising CPC. If fatigue is present, generate creative refresh drafts before increasing budget.',chat_setup:'Setup view: check blocked items first. Live actions stay protected until credentials, destination IDs, and the live-action switch are ready.',chat_action_hint:'I can open the right workflow from here. For live account changes, the approval queue and dashboard password still protect the account.',toast_resume:'Resume staged for approval',toast_action:'Action complete',toast_budget:'Budget action recorded',toast_daily:'Daily agent report generated',toast_export:'CSV exported: ',toast_approval:'Approval executed',toast_refresh:'Creative refresh draft generated',toast_upload:'Upload payload staged',toast_audience:'Audience strategy generated',toast_setup_saved:'Setup fields saved',toast_license:'License checked',toast_details:'Campaign details visible on this card.',prompt_budget:'New daily budget',unlock_title:'Unlock dashboard',unlock_body:'Enter the dashboard password you created during onboarding. This protects important actions in your account.',dashboard_password:'Dashboard password',remember_device:'Remember this device',unlock_button:'Unlock dashboard',unlock_needed:'Enter the dashboard password you created during onboarding.',unlock_failed:'That password did not unlock the dashboard. Try the password you created during onboarding.',copy_command:'Copy',copied:'Copied'
  },
  es:{
-	  brand_subtitle:'Operador local/VPS para Meta Ads',zone_brief:'Lectura diaria',zone_work:'Área de campañas',zone_actions:'Aprobaciones y actividad',control_center:'Centro de control',control_subtitle:'Decisiones diarias, señales de riesgo y salud de la cuenta en un solo lugar.',safe_mode:'Modo seguro activo',ask_agent:'Preguntar',ask_manager:'Hablar con el agente',chat_fab:'Hablar con el agente',chat_title:'Manager de Meta Ads',chat_subtitle:'Pide resumen, decisiones o acciones.',new_chat:'Nuevo chat',quick_status:'¿Dónde estamos?',quick_budget:'Revisar presupuesto',quick_fatigue:'Ver cansancio',send:'Enviar',usage_guide:'Guía',tab_overview:'Resumen',tab_setup:'Configuración',tab_creator:'Crear campaña',tab_audiences:'Audiencias',tab_creatives:'Imágenes y textos',tab_reports:'Reportes',updated:'Actualizado',new_brief:'Nuevo',daily_brief:'Resumen diario',run:'Actualizar',fatigue_monitor:'Cansancio de anuncios',setup_status:'Configuración y seguridad',setup_form_title:'Datos importantes guardados',setup_form_body:'Aquí puedes cambiar licencia, cuenta, página y web. Normalmente esto ya queda listo en la configuración inicial. Si no sabes qué poner, pregúntale al agente.',license_panel_title:'Activación de licencia',license_panel_body:'Activa el código de compra para usar funciones reales. Este equipo confirma tu licencia con nuestro servidor y guarda permiso temporal para no pedirlo todo el tiempo.',license_active:'Activa',license_missing:'Falta',license_invalid:'Revisar',license_cloud:'Confirmada online',license_local:'Licencia local',license_activate:'Activar licencia',license_key:'Licencia',buyer_email:'Email del comprador',ad_account_id:'Cuenta publicitaria',page_id:'Página de Facebook',instagram_actor_id:'Perfil de Instagram',default_adset_id:'Campo avanzado',landing_url:'Link de tu web',save_setup:'Guardar',refresh:'Actualizar',campaign_creator:'Crear una campaña',creator_kicker:'Nueva campaña',creator_title:'Crea una campaña',creator_body:'Cuéntale al agente qué vendes, quién debe verlo y cuánto puedes gastar. Él organizará la campaña y te la mostrará antes de que pueda gastar dinero.',creator_chat_cta:'Crear hablando con el agente',paused_draft_title:'Tú decides antes de gastar dinero',paused_draft_body:'El agente prepara la campaña y te pide aprobación. Si decides dejarla activa, solo podrá empezar a gastar después de que la apruebes.',creator_manual_title:'Prefiero escribir los datos yo',creator_manual_help:'Opcional: el agente puede preguntarte todo esto en el chat.',creator_basic:'Qué vas a anunciar',campaign_name_simple:'Nombre para esta campaña',campaign_name_example:'Ej: Promo de junio',campaign_goal_simple:'Qué quieres que haga la persona',goal_purchases:'Comprar',goal_contacts:'Dejar sus datos',goal_action:'Hacer una acción en tu página',landing_url_simple:'Página que visitarán',landing_url_example:'https://tu-pagina.com',primary_text_simple:'Mensaje que leerán',primary_text_example:'Ej: Descubre cómo esta oferta puede ayudarte hoy.',headline_simple:'Título corto',headline_example:'Ej: Mira la oferta',image_simple:'Imagen ya preparada, si tienes una',image_path_example:'Opcional: ruta del archivo de imagen',creator_people_budget:'Quién lo verá y cuánto puede gastar',daily_budget_simple:'Máximo que puede gastar al día',total_budget_simple:'Máximo que puede gastar en total',locations_simple:'Dónde viven esas personas',locations_example:'Ej: Colombia, México o Miami',interests_simple:'Qué cosas podrían interesarles',interests_example:'Ej: tiendas online, belleza, educación',age_min_simple:'Edad más joven',age_max_simple:'Edad mayor',creator_decision:'Cómo quieres dejarla preparada',creative_variations_simple:'Cuántas ideas quieres comparar',compare_options_simple:'Comparar esas ideas',compare_yes:'Sí, compararlas',compare_no:'No, usar una sola idea',after_approval_simple:'Después de que la apruebes',active_after_approval:'Empezar a mostrar anuncios y gastar el presupuesto elegido',ready_not_spending:'Dejarla lista sin gastar',confirm_active_spend:'Marcar solo si elegiste empezar a mostrar anuncios: entiendo que, después de aprobar, esta campaña podrá gastar el presupuesto que elegí.',creator_meta_optional:'Solo si ya conoces este dato de Meta',pixel_optional:'Número de seguimiento de Meta (Pixel ID), opcional',creator_review_notice:'Nada se creará en tu cuenta de Meta hasta que revises y apruebes esta solicitud.',audience_builder:'Elegir público',what_sell:'¿Qué vendes?',who_buys:'¿Quién compra hoy?',audience_product_example:'Ej: un curso o un producto de belleza',audience_buyer_example:'Ej: personas que quieren vender más',audience_locations_example:'Ej: Colombia o México',audience_interests_example:'Ej: belleza, educación o negocios locales',audience_data_example:'Ej: personas que escribieron por Instagram o compradores',age_range:'Edad aproximada',budget_level:'Tamaño del presupuesto',budget_small:'Pequeño',budget_medium:'Mediano',budget_large:'Grande',data_sources:'Datos que ya tienes',consent_upload:'Tengo permiso para usar emails/teléfonos de clientes si los subo después.',notes:'Notas',optional:'Opcional',build_audience:'Crear recomendación de público',lookalike_status:'Público parecido',recommended_audiences:'A quién mostrar anuncios',next_steps:'Siguientes pasos',name:'Nombre',objective:'Objetivo',daily_budget:'Presupuesto diario',total_budget:'Presupuesto total',locations:'Países/ubicaciones',interests:'Intereses',age_min:'Edad mínima',age_max:'Edad máxima',creative_variations:'Opciones de anuncios',ab_test:'Comparar ideas',enabled:'Activada',disabled:'Desactivada',stage_campaign:'Enviar para mi aprobación',creative_refresh:'Crear ideas nuevas',generate_drafts:'Crear ideas',upload_payloads:'Anuncios listos para revisar',campaign_comparison:'Comparación de campañas',export_csv:'Descargar reporte',campaign:'Campaña',status:'Estado',budget_optimizer:'Qué hacer con el presupuesto',now:'Actual',rec:'Sugerido',pending_approvals:'Decisiones por aprobar',action_log:'Lo que hizo el agente',
+	  brand_subtitle:'Operador local/VPS para Meta Ads',zone_brief:'Lectura diaria',zone_work:'Área de campañas',zone_actions:'Aprobaciones y actividad',control_center:'Centro de control',control_subtitle:'Decisiones diarias, señales de riesgo y salud de la cuenta en un solo lugar.',safe_mode:'Modo seguro activo',ask_agent:'Preguntar',ask_manager:'Hablar con el agente',chat_fab:'Hablar con el agente',chat_title:'Manager de Meta Ads',chat_subtitle:'Pide resumen, decisiones o acciones.',new_chat:'Nuevo chat',quick_status:'¿Dónde estamos?',quick_budget:'Revisar presupuesto',quick_fatigue:'Ver cansancio',send:'Enviar',usage_guide:'Guía',tab_overview:'Resumen',tab_setup:'Configuración',tab_creator:'Crear campaña',tab_audiences:'Audiencias',tab_creatives:'Creativos',tab_reports:'Reportes',updated:'Actualizado',new_brief:'Nuevo',daily_brief:'Resumen diario',run:'Actualizar',fatigue_monitor:'Cansancio de anuncios',setup_status:'Configuración y seguridad',setup_form_title:'Datos importantes guardados',setup_form_body:'Aquí puedes cambiar licencia, cuenta, página y web. Normalmente esto ya queda listo en la configuración inicial. Si no sabes qué poner, pregúntale al agente.',license_panel_title:'Activación de licencia',license_panel_body:'Activa el código de compra para usar funciones reales. Este equipo confirma tu licencia con nuestro servidor y guarda permiso temporal para no pedirlo todo el tiempo.',license_active:'Activa',license_missing:'Falta',license_invalid:'Revisar',license_cloud:'Confirmada online',license_local:'Licencia local',license_activate:'Activar licencia',license_key:'Licencia',buyer_email:'Email del comprador',ad_account_id:'Cuenta publicitaria',page_id:'Página de Facebook',instagram_actor_id:'Perfil de Instagram',default_adset_id:'Campo avanzado',landing_url:'Link de tu web',save_setup:'Guardar',refresh:'Actualizar',campaign_creator:'Crear una campaña',creator_kicker:'Nueva campaña',creator_title:'Crea una campaña',creator_body:'Cuéntale al agente qué vendes, quién debe verlo y cuánto puedes gastar. Él organizará la campaña y te la mostrará antes de que pueda gastar dinero.',creator_chat_cta:'Crear hablando con el agente',paused_draft_title:'Tú decides antes de gastar dinero',paused_draft_body:'El agente prepara la campaña y te pide aprobación. Si decides dejarla activa, solo podrá empezar a gastar después de que la apruebes.',creator_manual_title:'Prefiero escribir los datos yo',creator_manual_help:'Opcional: el agente puede preguntarte todo esto en el chat.',creator_basic:'Qué vas a anunciar',campaign_name_simple:'Nombre para esta campaña',campaign_name_example:'Ej: Promo de junio',campaign_goal_simple:'Qué quieres que haga la persona',goal_purchases:'Comprar',goal_contacts:'Dejar sus datos',goal_action:'Hacer una acción en tu página',landing_url_simple:'Página que visitarán',landing_url_example:'https://tu-pagina.com',primary_text_simple:'Mensaje que leerán',primary_text_example:'Ej: Descubre cómo esta oferta puede ayudarte hoy.',headline_simple:'Título corto',headline_example:'Ej: Mira la oferta',image_simple:'Imagen ya preparada, si tienes una',image_path_example:'Opcional: ruta del archivo de imagen',creator_people_budget:'Quién lo verá y cuánto puede gastar',daily_budget_simple:'Máximo que puede gastar al día',total_budget_simple:'Máximo que puede gastar en total',locations_simple:'Dónde viven esas personas',locations_example:'Ej: Colombia, México o Miami',interests_simple:'Qué cosas podrían interesarles',interests_example:'Ej: tiendas online, belleza, educación',age_min_simple:'Edad más joven',age_max_simple:'Edad mayor',creator_decision:'Cómo quieres dejarla preparada',creative_variations_simple:'Cuántas ideas quieres comparar',compare_options_simple:'Comparar esas ideas',compare_yes:'Sí, compararlas',compare_no:'No, usar una sola idea',after_approval_simple:'Después de que la apruebes',active_after_approval:'Empezar a mostrar anuncios y gastar el presupuesto elegido',ready_not_spending:'Dejarla lista sin gastar',confirm_active_spend:'Marcar solo si elegiste empezar a mostrar anuncios: entiendo que, después de aprobar, esta campaña podrá gastar el presupuesto que elegí.',creator_meta_optional:'Solo si ya conoces este dato de Meta',pixel_optional:'Número de seguimiento de Meta (Pixel ID), opcional',creator_review_notice:'Nada se creará en tu cuenta de Meta hasta que revises y apruebes esta solicitud.',audience_builder:'Elegir público',what_sell:'¿Qué vendes?',who_buys:'¿Quién compra hoy?',audience_product_example:'Ej: un curso o un producto de belleza',audience_buyer_example:'Ej: personas que quieren vender más',audience_locations_example:'Ej: Colombia o México',audience_interests_example:'Ej: belleza, educación o negocios locales',audience_data_example:'Ej: personas que escribieron por Instagram o compradores',age_range:'Edad aproximada',budget_level:'Tamaño del presupuesto',budget_small:'Pequeño',budget_medium:'Mediano',budget_large:'Grande',data_sources:'Datos que ya tienes',consent_upload:'Tengo permiso para usar emails/teléfonos de clientes si los subo después.',notes:'Notas',optional:'Opcional',build_audience:'Crear recomendación de público',lookalike_status:'Público parecido',recommended_audiences:'A quién mostrar anuncios',next_steps:'Siguientes pasos',name:'Nombre',objective:'Objetivo',daily_budget:'Presupuesto diario',total_budget:'Presupuesto total',locations:'Países/ubicaciones',interests:'Intereses',age_min:'Edad mínima',age_max:'Edad máxima',creative_variations:'Opciones de anuncios',ab_test:'Comparar ideas',enabled:'Activada',disabled:'Desactivada',stage_campaign:'Enviar para mi aprobación',creative_refresh:'Crear ideas nuevas',generate_drafts:'Crear ideas',upload_payloads:'Anuncios listos para revisar',campaign_comparison:'Comparación de campañas',export_csv:'Descargar reporte',campaign:'Campaña',status:'Estado',budget_optimizer:'Qué hacer con el presupuesto',now:'Actual',rec:'Sugerido',pending_approvals:'Decisiones por aprobar',action_log:'Lo que hizo el agente',
   targeting_picker_title:'Elige público con opciones de Meta',targeting_picker_body:'Busca países, ciudades o intereses reales de Meta. Si no sabes qué elegir, pídeselo al agente.',targeting_agent_cta:'Preguntar al agente',targeting_broad_title:'Público amplio',targeting_broad_body:'Buen punto de partida: país, edad y buenos anuncios. Meta aprende con señales.',targeting_guided_title:'Intereses simples',targeting_guided_body:'Úsalos como pistas cuando sabes qué temas le importan a tu cliente.',targeting_warm_title:'Personas que ya te conocen / parecidos',targeting_warm_body:'Solo cuando ya tienes visitas, Instagram activo o clientes con permiso.',targeting_search:'Buscar en Meta',targeting_manual_fallback:'Solo si el buscador no funciona',targeting_no_results:'No encontré opciones en Meta. Prueba otra palabra.',targeting_need_query:'Escribe primero qué quieres buscar.',
   spend:'Gasto',revenue:'Ingresos',conversions:'Conversiones',active_budget:'Presupuesto activo',active_daily_budget:'Presupuesto diario activo',roas:'ROAS',cpa:'CPA',ctr:'CTR',cpc:'CPC',frequency:'Frecuencia',mode:'Modo',ok:'Listo',warnings:'Revisar',blocked:'Falta arreglar',live_ready:'Meta listo?',
   spend_tip:'Dinero que ya se gastó en anuncios.',revenue_tip:'Ventas o valor que los anuncios parecen haber producido.',conversions_tip:'Acciones importantes: compras, formularios, registros u otro objetivo.',active_budget_tip:'Dinero máximo por día que sigue encendido en campañas activas.',active_daily_budget_tip:'Dinero máximo por día que puede gastarse ahora.',daily_budget_tip:'Máximo que una campaña puede gastar por día.',roas_tip:'Cuánto vuelve por cada $1 gastado. ROAS 3x significa que $1 trajo aprox. $3.',cpa_tip:'Cuánto cuesta conseguir una compra, lead o acción importante.',ctr_tip:'De cada 100 personas que ven el anuncio, cuántas hacen clic.',cpc_tip:'Cuánto pagas por cada clic.',frequency_tip:'Cuántas veces ve una persona el mismo anuncio. Si sube mucho, puede cansarse.',mode_tip:'Con supervisión: tú apruebas. Piloto automático: el agente puede actuar solo dentro de tus reglas.',ok_tip:'Esto ya está bien.',warnings_tip:'No es urgente, pero conviene revisarlo.',blocked_tip:'Esto falta antes de usar todo el producto.',live_ready_tip:'Dice si ya puedes permitir acciones reales en Meta Ads.',
@@ -4499,8 +4593,8 @@ const labelKeys={Spend:'spend',Revenue:'revenue',Conversions:'conversions','Acti
 const questionKeys={'Am I on track?':'q_track',"What's running?":'q_running',"How's performance?":'q_performance',"Who's winning/losing?":'q_winners',"Who's winning or losing?":'q_winners','Any fatigue?':'q_fatigue'};
 const esText={
  Files:'Instalación',Runtime:'Funcionamiento',Security:'Protección','Meta Live Requirements':'Conexión con Meta','Creative Generation':'Imágenes de anuncios','Agent Chat':'Chat con el agente',Telegram:'Telegram','Upload Readiness':'Publicación de anuncios',Scheduler:'Lectura diaria automática',
- '.env config':'Llaves locales guardadas','ad-config.json':'Datos de anuncios guardados','Metrics cache':'Datos del dashboard','Dashboard script':'Pantalla del dashboard','Daily agent script':'Agente diario','Agent mode':'Nivel de control','Primary connector':'Conexión principal','social-cli installed':'Conexión con Meta instalada','social-cli onboarding':'Conexión con Meta iniciada','Latest daily report':'Última lectura diaria','Latest action log':'Última acción registrada','Dashboard bind host':'Dónde se abre el dashboard','Dashboard write token':'Contraseña del dashboard','Dashboard password':'Contraseña del dashboard','Token required for writes':'Contraseña requerida para acciones','Password required for actions':'Contraseña requerida para acciones','License key':'Licencia','Public dashboard opt-in':'Acceso público permitido','Live-action kill switch':'Permiso de piloto automático','.env permissions':'Protección de llaves','Dashboard data permissions':'Protección de datos del dashboard','Output permissions':'Protección de archivos creados','Logs permissions':'Protección de registros','Meta ad account':'Cuenta publicitaria de Meta','Direct Graph token':'Clave de acceso de Meta','Meta token':'Clave de acceso de Meta','Page ID':'Página de Facebook','Landing page URL':'Web de destino','Creative refresh enabled':'Ideas nuevas de anuncios activas','Creative image mode':'Modo de imágenes','Nano Banana / Gemini key':'Clave para crear imágenes','Codex CLI':'Codex para creativos','Codex creative bridge (optional local-agent access)':'Codex creativo opcional','Brand guide files':'Memoria de marca','Agent chat provider':'Motor del chat','Hermes runtime':'Hermes instalado','Hermes ChatGPT/Codex login':'ChatGPT/Codex conectado en Hermes','Agent chat model':'Modelo del chat','MiniMax fallback':'Plan B del chat','MiniMax API key':'Clave de MiniMax','Agent profile files':'Personalidad del agente','Telegram agent access':'Chat por Telegram','Telegram bot':'Bot de Telegram','Allowed Telegram chat':'Tu chat privado de Telegram','Upload staging index':'Anuncios preparados','Latest upload payload':'Última publicación preparada','Cron setup script':'Lectura diaria automática','VPS systemd setup script':'Servicio en servidor','Logs directory':'Registros del sistema',
- 'No daily report yet.':'Todavía no hay lectura diaria.','No actions logged yet.':'Todavía no hay acciones registradas.','Run social setup or social onboard, then social auth login.':'Falta terminar la conexión con Meta. Sigue el paso de Meta en la configuración inicial.','Recommended: social setup':'Recomendado: seguir el paso de conexión con Meta','configured':'configurado','Configured inside Hermes':'Listo dentro de Hermes','Hermes not installed':'Hermes no está instalado','Hermes selected model':'Modelo elegido en Hermes','Optional fallback not configured':'Plan B opcional no configurado','Missing DASHBOARD_TOKEN':'Falta contraseña del dashboard','Missing DASHBOARD_PASSWORD':'Falta contraseña del dashboard','License key missing':'Falta la licencia','Invalid license format':'La licencia no se ve correcta','License checksum mismatch':'La licencia no pasó validación','License active':'Licencia activa','Cloud unlock active':'Licencia confirmada online','Cloud license active':'Licencia confirmada online','Offline license active; no license server configured':'Licencia local activa','Cloud unlock expired; grace period active':'Permiso guardado temporalmente activo','Could not validate the license online. Check internet access or contact support.':'No pudimos confirmar tu licencia. Revisa internet o contacta soporte.','License server unavailable; using the saved unlock on this device':'No pudimos contactar el servidor; usando permiso guardado en este equipo','Demo/internal license':'Licencia de prueba','Missing META_AD_ACCOUNT_ID':'Falta elegir cuenta publicitaria','Not configured; paste your Meta token in onboarding.':'Falta pegar tu clave de Meta en la configuración inicial.','Not configured; optional unless using graph_api connector.':'No configurado; normalmente puedes seguir.','Missing creative.destination.page_id':'Falta elegir página de Facebook','Missing creative.destination.url':'Falta guardar el link de tu web','Missing GEMINI_API_KEY':'Falta conectar el generador de imágenes','Missing MINIMAX_API_KEY; chat will use local fallback replies.':'Plan B de chat no configurado. Hermes sigue siendo el principal.','Set MINIMAX_API_KEY in .env for real agent conversation.':'Solo necesario si cambias el chat a MiniMax.','No creative drafts yet.':'Todavía no hay ideas de anuncios.','No upload payloads staged yet.':'Todavía no hay anuncios preparados para publicar.','None':'Ninguno','logs directory not created yet':'Todavía no hay carpeta de registros'
+ '.env config':'Llaves locales guardadas','ad-config.json':'Datos de anuncios guardados','Metrics cache':'Datos del dashboard','Dashboard script':'Pantalla del dashboard','Daily agent script':'Agente diario','Agent mode':'Nivel de control','Primary connector':'Conexión principal','social-cli installed':'Conexión con Meta instalada','social-cli onboarding':'Conexión con Meta iniciada','Latest daily report':'Última lectura diaria','Latest action log':'Última acción registrada','Dashboard bind host':'Dónde se abre el dashboard','Dashboard write token':'Contraseña del dashboard','Dashboard password':'Contraseña del dashboard','Token required for writes':'Contraseña requerida para acciones','Password required for actions':'Contraseña requerida para acciones','License key':'Licencia','Public dashboard opt-in':'Acceso público permitido','Live-action kill switch':'Permiso de piloto automático','.env permissions':'Protección de llaves','Dashboard data permissions':'Protección de datos del dashboard','Output permissions':'Protección de archivos creados','Logs permissions':'Protección de registros','Meta ad account':'Cuenta publicitaria de Meta','Direct Graph token':'Clave de acceso de Meta','Meta token':'Clave de acceso de Meta','Page ID':'Página de Facebook','Landing page URL':'Web de destino','Creative refresh enabled':'Ideas nuevas de anuncios activas','Creative image mode':'Modo de imágenes','Nano Banana / Gemini key':'Clave para crear imágenes','Codex CLI':'Codex para creativos','Codex creative bridge (optional local-agent access)':'Codex creativo opcional','Brand guide files':'Memoria de marca','Agent chat provider':'Motor del chat','Hermes runtime':'Hermes instalado','Hermes ChatGPT/Codex login':'ChatGPT/Codex conectado en Hermes','OpenAI-compatible model':'Modelo externo compatible','Agent chat model':'Modelo del chat','MiniMax fallback':'Plan B del chat','MiniMax API key':'Clave de MiniMax','Agent profile files':'Personalidad del agente','Telegram agent access':'Chat por Telegram','Telegram bot':'Bot de Telegram','Allowed Telegram chat':'Tu chat privado de Telegram','Upload staging index':'Anuncios preparados','Latest upload payload':'Última publicación preparada','Cron setup script':'Lectura diaria automática','VPS systemd setup script':'Servicio en servidor','Logs directory':'Registros del sistema',
+ 'No daily report yet.':'Todavía no hay lectura diaria.','No actions logged yet.':'Todavía no hay acciones registradas.','Run social setup or social onboard, then social auth login.':'Falta terminar la conexión con Meta. Sigue el paso de Meta en la configuración inicial.','Recommended: social setup':'Recomendado: seguir el paso de conexión con Meta','configured':'configurado','Configured inside Hermes':'Listo dentro de Hermes','No usado; el chat usa una API compatible OpenAI.':'No usado; el chat usa el modelo externo configurado.','Hermes not installed':'Hermes no está instalado','Hermes selected model':'Modelo elegido en Hermes','Optional fallback not configured':'Plan B opcional no configurado','Optional unless AGENT_CHAT_PROVIDER is minimax/openai_compatible/openai.':'Opcional si usas Hermes.','Missing AGENT_CHAT_API_KEY, AGENT_CHAT_BASE_URL, or AGENT_CHAT_MODEL':'Falta clave, URL o nombre del modelo externo.','Missing DASHBOARD_TOKEN':'Falta contraseña del dashboard','Missing DASHBOARD_PASSWORD':'Falta contraseña del dashboard','License key missing':'Falta la licencia','Invalid license format':'La licencia no se ve correcta','License checksum mismatch':'La licencia no pasó validación','License active':'Licencia activa','Cloud unlock active':'Licencia confirmada online','Cloud license active':'Licencia confirmada online','Offline license active; no license server configured':'Licencia local activa','Cloud unlock expired; grace period active':'Permiso guardado temporalmente activo','Could not validate the license online. Check internet access or contact support.':'No pudimos confirmar tu licencia. Revisa internet o contacta soporte.','License server unavailable; using the saved unlock on this device':'No pudimos contactar el servidor; usando permiso guardado en este equipo','Demo/internal license':'Licencia de prueba','Missing META_AD_ACCOUNT_ID':'Falta elegir cuenta publicitaria','Not configured; paste your Meta token in onboarding.':'Falta pegar tu clave de Meta en la configuración inicial.','Not configured; optional unless using graph_api connector.':'No configurado; normalmente puedes seguir.','Missing creative.destination.page_id':'Falta elegir página de Facebook','Missing creative.destination.url':'Falta guardar el link de tu web','Missing GEMINI_API_KEY':'Falta conectar el generador de imágenes','Missing MINIMAX_API_KEY; chat will use local fallback replies.':'Plan B de chat no configurado. Hermes sigue siendo el principal.','Set MINIMAX_API_KEY in .env for real agent conversation.':'Solo necesario si cambias el chat a MiniMax.','No creative drafts yet.':'Todavía no hay ideas de anuncios.','No upload payloads staged yet.':'Todavía no hay anuncios preparados para publicar.','None':'Ninguno','logs directory not created yet':'Todavía no hay carpeta de registros'
 };
 function t(key){return (copy[lang]&&copy[lang][key])||copy.en[key]||key}
 function uiLang(){
@@ -4832,6 +4926,41 @@ async function requestUnlock(message=''){return showUnlock(message||t('unlock_ne
 async function responseErrorMessage(res){const text=await res.text();try{const data=JSON.parse(text);return data.error||data.detail||text}catch{return text}}
 async function api(path,opts={}){const headers={'Content-Type':'application/json',...(opts.headers||{})};const password=dashboardPassword();if(password)headers['X-Dashboard-Token']=password;let res=await fetch(path,{...opts,headers});if(res.status===401){const entered=await requestUnlock();if(entered){headers['X-Dashboard-Token']=entered;res=await fetch(path,{...opts,headers});if(res.status===401){localStorage.removeItem('dashboardPassword');await requestUnlock(t('unlock_failed'));throw new Error(t('unlock_failed'))}}}if(!res.ok)throw new Error(await responseErrorMessage(res));return res.json()}
 async function load(){state=await api('/api/dashboard');render();if(!uiWorkbenchPreview&&state.config.dashboard_password_required&&state.config.dashboard_password_set&&!dashboardPassword()&&state.onboarding&&state.onboarding.completed)showUnlock(t('unlock_needed'));checkForUpdates(false)}
+function decisionEvidenceMarkup(card){
+ if(!card)return '';
+ const ask=lang==='es'?`Explícame esta decisión sobre ${card.campaign_name||'mi campaña'} en palabras simples. Señal: ${card.signal||''}. Recomendación: ${card.recommendation||''}`:`Explain this decision about ${card.campaign_name||'my campaign'} in simple words. Signal: ${card.signal||''}. Recommendation: ${card.recommendation||''}`;
+ return `<div class="brief-q decision-card"><b>${escapeHtml(card.title|| (lang==='es'?'Decisión con evidencia':'Decision with evidence'))}: ${escapeHtml(demoCampaignName(card.campaign_name||''))}</b><p>${escapeHtml(card.diagnosis||'')}</p><p><strong>${lang==='es'?'Señal':'Signal'}:</strong> ${escapeHtml(card.signal||'')}</p><p><strong>${lang==='es'?'Sugerencia':'Suggestion'}:</strong> ${escapeHtml(card.recommendation||'')}</p><p><strong>${lang==='es'?'Riesgo':'Risk'}:</strong> ${escapeHtml(card.risk||'')}</p><button class="btn ask-btn" onclick="openChat(${chatArg(ask)})">${t('ask_agent')}</button></div>`;
+}
+function decisionCardsMarkup(){
+ const cards=state.decision_memory?.cards||[];
+ if(!cards.length)return '';
+ return `<div class="decision-memory-stack"><div class="next-step"><div><b>${lang==='es'?'Decisiones con evidencia':'Evidence-backed decisions'}</b><p>${lang==='es'?'El agente guarda por qué recomendó algo y lo revisa después de 24h, 3 días y 7 días.':'The agent saves why it recommended something and checks it again after 24h, 3 days, and 7 days.'}</p></div></div>${cards.slice(0,3).map(decisionEvidenceMarkup).join('')}</div>`;
+}
+function actionLabelText(text){
+ if(lang!=='es')return text;
+ return String(text||'')
+  .replace(/^Paused (\d+) clear bleeder\(s\) under autopilot rules\.$/,'Pausé $1 gasto malo claro bajo tus reglas de piloto automático.')
+  .replace(/^Prepared (\d+) creative refresh draft\(s\)\.$/,'Preparé $1 idea(s) nueva(s) para anuncios.')
+  .replace(/^(\d+) pause decision\(s\) need buyer approval\.$/,'$1 pausa(s) necesitan tu aprobación.')
+  .replace(/^(\d+) budget move\(s\) need buyer approval\.$/,'$1 cambio(s) de presupuesto necesitan tu aprobación.')
+  .replace(/^(\d+) smaller budget move\(s\) are worth reviewing\.$/,'$1 movimiento(s) pequeños de presupuesto valen la pena revisar.')
+  .replace(/^(\d+) fatigue signal\(s\) should feed the next creative test\.$/,'$1 señal(es) de cansancio deberían alimentar la próxima prueba creativa.')
+  .replace('No strong action signal yet. Keep watching pacing, CPA, ROAS, CTR, and frequency.','Todavía no hay una señal fuerte para tocar Meta. Sigo vigilando ritmo de gasto, CPA, ROAS, clics y frecuencia.');
+}
+function actionSummaryMarkup(){
+ const summary=state.brief?.action_summary||{};
+ const buckets=[
+  ['already_done',lang==='es'?'Ya hice':'Already done'],
+  ['waiting_for_approval',lang==='es'?'Necesita tu luz verde':'Waiting for approval'],
+  ['recommended_next',lang==='es'?'Siguiente movimiento':'Next move'],
+  ['watching',lang==='es'?'Estoy vigilando':'Watching']
+ ];
+ const html=buckets.map(([key,title])=>{
+  const items=summary[key]||[];if(!items.length)return '';
+  return `<div class="brief-q action-bucket"><b>${title}</b>${items.map(item=>`<p>${escapeHtml(actionLabelText(item.label||''))}</p>`).join('')}</div>`;
+ }).join('');
+ return html?`<div class="decision-memory-stack action-summary-stack">${html}</div>`:'';
+}
 function render(){
  applyTranslations();
  hydrateChatHistory();
@@ -4841,7 +4970,7 @@ function render(){
  qs('#data-source-signal').textContent=dataSourceText(m);
  const refreshBtn=qs('#real-data-refresh');if(refreshBtn){refreshBtn.classList.toggle('hidden',m.source==='meta_graph');refreshBtn.textContent=lang==='es'?'Actualizar datos reales':'Refresh real data'}
  qs('#kpis').innerHTML=[['Spend',fmtMoney(s.total_spend)],['Revenue',fmtMoney(s.total_revenue)],['Conversions',Number(s.total_conversions||0).toLocaleString()],['Active Budget',fmtMoney(s.active_budget)]].map(x=>kpi(x[0],x[1])).join('');
- qs('#brief').innerHTML=state.brief.questions.map(q=>`<div class="brief-q"><b>${briefQuestion(q.question)}</b><p>${explainTerms(briefAnswer(q.answer))}</p></div>`).join('');
+ qs('#brief').innerHTML=state.brief.questions.map(q=>`<div class="brief-q"><b>${briefQuestion(q.question)}</b><p>${explainTerms(briefAnswer(q.answer))}</p></div>`).join('')+actionSummaryMarkup()+decisionCardsMarkup();
  qs('#fatigue').innerHTML=state.fatigue.length?state.fatigue.map(f=>`<div class="fatigue"><b>${escapeHtml(demoCampaignName(f.campaign_name))}</b><div>${escapeHtml(f.reasons.map(fatigueText).join(' / '))}</div></div>`).join(''):`<p class="notice">${t('no_fatigue')}</p>`;
  qs('#campaigns').innerHTML=m.campaigns.map(card).join('');
  renderOverviewViews();
@@ -5021,7 +5150,7 @@ function renderCreativeStudio(){
  qs('#creative-agent-cta').textContent=lang==='es'?'Crear con el agente':'Create with the agent';
  qs('#creative-refresh-cta').textContent=lang==='es'?'Mejorar un anuncio actual':'Improve an existing ad';
  qs('#creative-library-kicker').textContent=lang==='es'?'Ideas creadas':'Agent ideas';
- qs('#creative-library-title').textContent=lang==='es'?'Imágenes y textos para revisar':'Images and text to review';
+ qs('#creative-library-title').textContent=lang==='es'?'Creativos para revisar':'Images and text to review';
  qs('#creative-upload-kicker').textContent=lang==='es'?'Antes de publicar':'Ready for Meta';
  qs('#creative-upload-title').textContent=lang==='es'?'Anuncios que puedes aprobar':'Ads you can approve';
  const renderer=studio.image_generation_ready?(lang==='es'?'Puede crear imágenes':'Image generator active'):(lang==='es'?'Crear imágenes aún no está activado':'Image generation not active');
@@ -5138,6 +5267,7 @@ function stepCopy(key){
 	  context:['Tell the agent where you are today','Write what stage you are in, what feels confusing, and what you want to improve. This makes the first plan feel personal, not generic.',''],
 	  strategy:['Review the first plan','Before entering the dashboard, the agent creates a simple starting strategy from your website and your answers.',''],
 	  license:['Add your license','Paste the only code you received from us. This code proves this copy belongs to you.',''],
+	  chatgpt:['Connect the agent model','Choose the brain for the manager: ChatGPT/Codex through Hermes, MiniMax M3, or another OpenAI-compatible API URL.',''],
 	  meta:['Create your private Meta connection','You will use your own Meta app and access key. This keeps access under your control and this tool still will not change ads yet.',''],
 	  account:['Choose the ad account','Pick the ad account you want this tool to help with. If you have only one, choose that one.',''],
 	  destination:['Tell us where ads should point','Add the Facebook page, Instagram profile if you use one, and your website link. The agent will prepare the structure through chat.',''],
@@ -5156,6 +5286,7 @@ function stepCopy(key){
 	  context:['Cuéntale al agente en qué punto estás','Escribe en qué etapa estás, qué te confunde y qué sientes que podrías mejorar. Así el primer plan se siente personal, no genérico.',''],
 	  strategy:['Revisa el primer plan','Antes de entrar al dashboard, el agente crea una estrategia inicial simple usando tu web y tus respuestas.',''],
 	  license:['Poner tu licencia','Pega el único código que recibiste de nosotros. Este código confirma que esta copia es tuya.',''],
+	  chatgpt:['Conectar el modelo del agente','Elige el cerebro del manager: ChatGPT/Codex por Hermes, MiniMax M3 u otra URL compatible OpenAI.',''],
 	  meta:['Crear tu conexión privada con Meta','Usarás tu propia app de Meta y tu propia clave de acceso. Así el acceso queda bajo tu control y la herramienta todavía no cambia anuncios.',''],
 	  account:['Escoger la cuenta publicitaria','Elige la cuenta de anuncios que quieres que esta herramienta cuide. Si solo tienes una, elige esa.',''],
 	  destination:['Decir a dónde van tus anuncios','Agrega la página de Facebook, Instagram si lo usas y el link de tu web. El agente preparará la estructura conversando contigo.',''],
@@ -5178,6 +5309,9 @@ function onboardingSteps(){
  const strategyOk=Boolean(profile.initial_plan&&profile.initial_plan.length);
  const licenseOk=Boolean(summary.license_ready);
  const passwordOk=Boolean(dashboardPassword())&&state.config.dashboard_password_set;
+ const model=state.config.agent_model||{};
+ const directModelOk=['openai_compatible','minimax','openai'].includes(model.provider)&&model.api_key_set&&Boolean(model.base_url)&&Boolean(model.model);
+ const chatgptOk=(setupItem('hermes_runtime').status==='ok'&&setupItem('hermes_auth').status==='ok')||directModelOk;
  const accountOk=setupItem('ad_account').status==='ok';
  const destinationOk=['page_id','landing_url'].every(k=>setupItem(k).status==='ok');
  const socialOk=setupItem('social_cli').status==='ok';
@@ -5191,6 +5325,7 @@ function onboardingSteps(){
 	  {id:'strategy',status:strategyOk?'ok':'warn'},
 	  {id:'license',status:licenseOk?'ok':'blocked'},
 	  {id:'password',status:passwordOk?'ok':'blocked'},
+	  {id:'chatgpt',status:chatgptOk?'ok':'warn'},
 	  {id:'meta',status:accountOk?'ok':(socialOk?'warn':'blocked')},
 	  {id:'account',status:accountOk?'ok':'blocked'},
 	  {id:'destination',status:destinationOk?'ok':'blocked'},
@@ -5221,6 +5356,7 @@ function onboardingFormFor(stepId){
  if(stepId==='context')return businessContextGuide();
  if(stepId==='strategy')return initialStrategyGuide();
 	 if(stepId==='license')return `<form class="onboarding-mini two" onsubmit="saveOnboardingSetupConfig(event)"><label>${t('license_key')}<input name="license_key" placeholder="MAO-..."></label><label>${t('buyer_email')}<input name="license_buyer_email" value="${escapeHtml(v.license_buyer_email||'')}" placeholder="buyer@email.com"></label><div class="onboarding-step-actions"><button class="btn primary" type="submit">${t('save_setup')}</button><button class="btn" type="button" onclick="activateLicense()">${t('license_activate')}</button></div></form>`;
+ if(stepId==='chatgpt')return chatGptConnectMarkup(true);
  if(stepId==='meta')return metaConnectionGuide();
  if(stepId==='account')return accountPickerGuide();
  if(stepId==='destination')return destinationPickerGuide();
@@ -5352,7 +5488,8 @@ function scrollToUsageGuide(){openUsageGuide()}
 function renderModeControl(){const live=state.config.mode==='live'&&state.config.live_actions_enabled;const title=lang==='es'?'Nivel de control':'Control level';const detail=live?(lang==='es'?'Piloto automático activo: el agente puede ejecutar cambios reales cuando estén dentro de tus reglas. Lo que supere tus límites pasa a aprobación.':'Autopilot is active: the agent can execute real changes when they fit your rules. Anything over your limits goes to approval.'):(lang==='es'?'Con supervisión activa: el agente lee datos reales, explica y prepara acciones. Solo ejecuta el cambio exacto que tú apruebes.':'Supervised mode is active: the agent reads real data, explains, and prepares actions. It only executes the exact change you approve.');qs('#mode-control').innerHTML=`<div class="mode-panel"><div><h3>${title}: ${live?(lang==='es'?'Piloto automático':'Autopilot'):(lang==='es'?'Con supervisión':'Supervised')}</h3><p>${detail}</p></div><div class="mode-actions"><button class="btn ${!live?'active':''}" onclick="setMode('dry-run')">${lang==='es'?'Con supervisión':'Supervised'}</button><button class="btn ${live?'active':''}" onclick="setMode('live')">${lang==='es'?'Piloto automático':'Autopilot'}</button></div></div>`}
 function renderGuardrails(){
  const g=state.config.guardrails||{};
- qs('#guardrails-panel').innerHTML=`<form class="onboarding-mini two" onsubmit="saveGuardrails(event)"><label>${lang==='es'?'Cuánto puede hacer solo':'How much can it do alone?'}<select name="autonomy_mode"><option value="supervised" ${g.autonomy_mode!=='autopilot'?'selected':''}>${lang==='es'?'Con supervisión: preguntarme primero':'Supervised: ask me first'}</option><option value="autopilot" ${g.autonomy_mode==='autopilot'?'selected':''}>${lang==='es'?'Piloto automático: actuar dentro de mis reglas':'Autopilot: act inside my rules'}</option></select></label><label>${lang==='es'?'Preguntar si el presupuesto cambia más de %':'Ask if budget changes over %'}<input name="approval_required_over_pct" type="number" min="1" step="1" value="${g.approval_required_over_pct||20}"></label><label>${lang==='es'?'Piloto: cambio máximo en %':'Autopilot: max change %'}<input name="auto_budget_change_pct" type="number" min="1" step="1" value="${g.auto_budget_change_pct||10}"></label><label>${lang==='es'?'Piloto: cambio máximo en dinero':'Autopilot: max change amount'}<input name="auto_budget_change_amount" type="number" min="1" step="1" value="${g.auto_budget_change_amount||25}"></label><label>${lang==='es'?'Puede pausar solo si gastó menos de':'Can pause alone only if spend is under'}<input name="auto_pause_max_spend" type="number" min="0" step="1" value="${g.auto_pause_max_spend||100}"></label><label><input type="checkbox" name="require_approval_for_resume" ${g.require_approval_for_resume!==false?'checked':''}> ${lang==='es'?'Para reactivar, siempre preguntarme':'Resume always needs approval'}</label><label><input type="checkbox" name="require_approval_for_new_campaigns" ${g.require_approval_for_new_campaigns!==false?'checked':''}> ${lang==='es'?'Campañas nuevas siempre preguntan primero':'New campaigns always need approval'}</label><label><input type="checkbox" name="require_approval_for_creatives" ${g.require_approval_for_creatives!==false?'checked':''}> ${lang==='es'?'Anuncios nuevos siempre preguntan primero':'New creatives/ads always need approval'}</label><button class="btn primary" type="submit">${lang==='es'?'Guardar reglas':'Save rules'}</button><p class="notice">${lang==='es'?'Estas reglas separan mirar datos reales de tocar dinero real. Chat y Telegram solo aprueban una decisión exacta elegida por ti.':'These rules separate reading real data from touching real money. Chat and Telegram approve only an exact decision chosen by you.'}</p></form>`;
+ const r=state.config.profitability_rules||state.decision_memory?.profitability_rules||{};
+ qs('#guardrails-panel').innerHTML=`<div class="settings-stack"><form class="onboarding-mini two" onsubmit="saveGuardrails(event)"><label>${lang==='es'?'Cuánto puede hacer solo':'How much can it do alone?'}<select name="autonomy_mode"><option value="supervised" ${g.autonomy_mode!=='autopilot'?'selected':''}>${lang==='es'?'Con supervisión: preguntarme primero':'Supervised: ask me first'}</option><option value="autopilot" ${g.autonomy_mode==='autopilot'?'selected':''}>${lang==='es'?'Piloto automático: actuar dentro de mis reglas':'Autopilot: act inside my rules'}</option></select></label><label>${lang==='es'?'Preguntar si el presupuesto cambia más de %':'Ask if budget changes over %'}<input name="approval_required_over_pct" type="number" min="1" step="1" value="${g.approval_required_over_pct||20}"></label><label>${lang==='es'?'Piloto: cambio máximo en %':'Autopilot: max change %'}<input name="auto_budget_change_pct" type="number" min="1" step="1" value="${g.auto_budget_change_pct||10}"></label><label>${lang==='es'?'Piloto: cambio máximo en dinero':'Autopilot: max change amount'}<input name="auto_budget_change_amount" type="number" min="1" step="1" value="${g.auto_budget_change_amount||25}"></label><label>${lang==='es'?'Puede pausar solo si gastó menos de':'Can pause alone only if spend is under'}<input name="auto_pause_max_spend" type="number" min="0" step="1" value="${g.auto_pause_max_spend||100}"></label><label><input type="checkbox" name="require_approval_for_resume" ${g.require_approval_for_resume!==false?'checked':''}> ${lang==='es'?'Para reactivar, siempre preguntarme':'Resume always needs approval'}</label><label><input type="checkbox" name="require_approval_for_new_campaigns" ${g.require_approval_for_new_campaigns!==false?'checked':''}> ${lang==='es'?'Campañas nuevas siempre preguntan primero':'New campaigns always need approval'}</label><label><input type="checkbox" name="require_approval_for_creatives" ${g.require_approval_for_creatives!==false?'checked':''}> ${lang==='es'?'Anuncios nuevos siempre preguntan primero':'New creatives/ads always need approval'}</label><button class="btn primary" type="submit">${lang==='es'?'Guardar reglas':'Save rules'}</button><p class="notice">${lang==='es'?'Estas reglas separan mirar datos reales de tocar dinero real. Chat y Telegram solo aprueban una decisión exacta elegida por ti.':'These rules separate reading real data from touching real money. Chat and Telegram approve only an exact decision chosen by you.'}</p></form><form class="onboarding-mini two profitability-rules" onsubmit="saveProfitabilityRules(event)"><div class="wide"><h3>${lang==='es'?'Reglas de rentabilidad':'Profitability rules'}</h3><p class="notice">${lang==='es'?'Estas son las líneas que el agente usa para explicar por qué recomienda subir, bajar, pausar o crear variantes. Así no decide por “intuición”; decide contra tus reglas.':'These are the lines the agent uses to explain why it recommends scaling, cutting, pausing, or refreshing creatives.'}</p></div><label>${lang==='es'?'CPA objetivo':'Target CPA'}<input name="target_cpa" type="number" min="0" step="1" value="${r.target_cpa||50}"></label><label>${lang==='es'?'ROAS mínimo sano':'Healthy ROAS floor'}<input name="target_roas" type="number" min="0" step=".1" value="${r.target_roas||2.5}"></label><label>${lang==='es'?'Gasto mínimo antes de juzgar':'Min spend before judging'}<input name="min_spend_before_judging" type="number" min="0" step="1" value="${r.min_spend_before_judging||50}"></label><label>${lang==='es'?'Compras mínimas antes de escalar':'Min purchases before scaling'}<input name="min_conversions_before_scaling" type="number" min="0" step="1" value="${r.min_conversions_before_scaling||3}"></label><label>${lang==='es'?'Frecuencia máxima antes de refrescar':'Max frequency before refresh'}<input name="max_frequency_before_refresh" type="number" min="0" step=".1" value="${r.max_frequency_before_refresh||3}"></label><label>${lang==='es'?'CTR mínimo %':'Minimum CTR %'}<input name="min_ctr_pct" type="number" min="0" step=".1" value="${r.min_ctr_pct||0.8}"></label><label class="wide">${lang==='es'?'Notas para el agente':'Notes for the agent'}<textarea name="notes" rows="3" placeholder="${lang==='es'?'Ej: prefiero proteger margen antes que vender más volumen.':'Ex: protect margin before chasing volume.'}">${escapeHtml(r.notes||'')}</textarea></label><button class="btn primary" type="submit">${lang==='es'?'Guardar rentabilidad':'Save profitability rules'}</button></form></div>`;
 }
 function licenseLabel(status){
  if(status.status==='grace')return lang==='es'?'En periodo de gracia':'Grace period';
@@ -5404,6 +5541,56 @@ function renderSetupConfig(){
  </form>`;
  qs('#setup-config-form').addEventListener('submit',saveSetupConfig);
 }
+function chatGptConnectMarkup(onboarding=false){
+ const runtime=setupItem('hermes_runtime');
+ const auth=setupItem('hermes_auth');
+ const codex=setupItem('codex_cli');
+ const model=state.config.agent_model||{};
+ const directProvider=['openai_compatible','minimax','openai'].includes(model.provider);
+ const directReady=directProvider&&model.api_key_set&&Boolean(model.base_url)&&Boolean(model.model);
+ const hermesReady=runtime.status==='ok'&&auth.status==='ok'&&model.provider==='hermes';
+ const ready=hermesReady||directReady;
+ const hermesMissing=runtime.status==='blocked';
+ const command='hermes model';
+ const vpsCommand='ssh root@IP-DE-TU-SERVIDOR\nhermes model';
+ const title=ready?(lang==='es'?'Modelo del agente conectado':'Agent model connected'):(lang==='es'?'Conectar el modelo del agente':'Connect the agent model');
+ const body=ready?(directReady?(lang==='es'?`El manager ya puede conversar usando ${model.model||'el modelo configurado'} por API compatible OpenAI. Las acciones siguen pasando por tus reglas y aprobaciones.`:`The manager can now talk through ${model.model||'the configured model'} using an OpenAI-compatible API. Actions still go through your rules and approvals.`):(lang==='es'?'Hermes ya puede conversar usando tu sesión de ChatGPT/Codex. El chat, Telegram y las herramientas del agente quedan sobre esta conexión.':'Hermes can now talk through your ChatGPT/Codex session. Chat, Telegram, and agent tools use this connection.')):(onboarding?(lang==='es'?'Antes de conectar Meta, deja listo el cerebro conversacional del manager. Puedes usar ChatGPT/Codex con Hermes o una API compatible como MiniMax M3.':'Before connecting Meta, get the manager conversation brain ready. You can use ChatGPT/Codex through Hermes or a compatible API such as MiniMax M3.'):(lang==='es'?'Elige cómo responderá el manager: ChatGPT/Codex con Hermes, MiniMax M3 o cualquier proveedor con URL compatible OpenAI.':'Choose how the manager replies: ChatGPT/Codex with Hermes, MiniMax M3, or any provider with an OpenAI-compatible URL.'));
+ const badge=ready?(lang==='es'?'Listo':'Ready'):(hermesMissing?(lang==='es'?'Falta Hermes':'Hermes missing'):(lang==='es'?'Falta conectar':'Needs connection'));
+ const steps=lang==='es'?[
+  ['1','Elige el motor','ChatGPT/Codex con Hermes es el recomendado. MiniMax M3 o una URL compatible sirven como alternativa directa.'],
+  ['2','Guarda el modelo','Si usas API directa, pega URL, modelo y clave. La clave se guarda localmente y no se muestra en pantalla.'],
+  ['3','Prueba el chat','Escribe al agente. Si falta algo, esta tarjeta te dirá qué revisar.']
+ ]:[
+  ['1','Choose engine','ChatGPT/Codex with Hermes is recommended. MiniMax M3 or a compatible URL works as direct API mode.'],
+  ['2','Save model','For direct API mode, paste URL, model, and key. The key is stored locally and never shown back.'],
+  ['3','Test chat','Talk to the agent. If anything is missing, this card shows what to review.']
+ ];
+ const detail=[runtime.detail,auth.detail,codex.detail].filter(Boolean).map(localText).join(' · ');
+ const draft=lang==='es'?'Ayúdame a conectar el modelo del agente. Explícame si me conviene Hermes/ChatGPT, MiniMax M3 o una API compatible.':'Help me connect the agent model. Explain whether Hermes/ChatGPT, MiniMax M3, or a compatible API is better for me.';
+ const provider=model.provider||'hermes';
+ const base=model.base_url||'https://api.minimax.io/v1';
+ const modelName=model.model||'MiniMax-M3';
+ const api=model.api||'openai-chat-completions';
+ const keyPlaceholder=model.api_key_set?(lang==='es'?'Clave guardada. Pega otra solo si quieres cambiarla.':'Key saved. Paste another only to replace it.'):(lang==='es'?'Pega la clave API del proveedor':'Paste the provider API key');
+ return `<section class="chatgpt-connect-card ${ready?'ready':''}"><div class="chatgpt-connect-head"><div><h3>${title}</h3><p>${body}</p></div><span class="badge ${ready?'ok':'warn'}">${badge}</span></div><div class="chatgpt-steps">${steps.map(step=>`<div class="chatgpt-step"><span>${step[0]}</span><b>${step[1]}</b><p>${step[2]}</p></div>`).join('')}</div><form id="agent-model-form" class="form-grid model-provider-form" onsubmit="saveSetupConfig(event)">
+ <div class="field"><label>${lang==='es'?'Motor del agente':'Agent engine'}</label><select name="agent_chat_provider"><option value="hermes" ${provider==='hermes'?'selected':''}>Hermes + ChatGPT/Codex</option><option value="minimax" ${provider==='minimax'?'selected':''}>MiniMax M3</option><option value="openai_compatible" ${provider==='openai_compatible'||provider==='openai'?'selected':''}>${lang==='es'?'API compatible OpenAI':'OpenAI-compatible API'}</option></select></div>
+ <div class="field"><label>${lang==='es'?'Modelo':'Model'}</label><input name="agent_chat_model" value="${escapeHtml(modelName)}" placeholder="MiniMax-M3"></div>
+ <div class="field wide"><label>${lang==='es'?'URL compatible OpenAI':'OpenAI-compatible URL'}</label><span class="field-help">${lang==='es'?'Debe usar https://. Solo se permite http:// para modelos locales como 127.0.0.1.':'Must use https://. http:// is allowed only for local models such as 127.0.0.1.'}</span><input name="agent_chat_base_url" value="${escapeHtml(base)}" placeholder="https://api.minimax.io/v1"></div>
+ <div class="field wide"><label>${lang==='es'?'Clave API del modelo':'Model API key'}</label><span class="field-help">${lang==='es'?'Se guarda en .env dentro de este PC/VPS. No aparece de vuelta en el dashboard.':'Stored in .env on this PC/VPS. It is never shown back in the dashboard.'}</span><input type="password" name="agent_chat_api_key" value="" placeholder="${escapeHtml(keyPlaceholder)}"></div>
+ <input type="hidden" name="agent_chat_api" value="${escapeHtml(api)}">
+ <div class="field wide model-presets"><button class="btn" type="button" onclick="applyAgentModelPreset('hermes')">Hermes / ChatGPT</button><button class="btn primary" type="button" onclick="applyAgentModelPreset('minimax_m3')">MiniMax M3</button><button class="btn" type="button" onclick="applyAgentModelPreset('custom')">${lang==='es'?'Otra API':'Custom API'}</button></div>
+ <div class="field wide"><button class="btn primary" type="submit">${lang==='es'?'Guardar modelo del agente':'Save agent model'}</button></div>
+ </form><details class="helper-command"><summary>${lang==='es'?'Si eliges Hermes / ChatGPT':'If you choose Hermes / ChatGPT'}</summary><div class="chatgpt-command"><code>${command}</code><button class="btn primary" type="button" onclick="copyCommand(${JSON.stringify(command).replaceAll('"','&quot;')})">${lang==='es'?'Copiar comando':'Copy command'}</button></div><span class="step-command">${lang==='es'?'En DigitalOcean entra al servidor y ejecuta:':'On DigitalOcean enter the server and run:'}<br>${vpsCommand.replace('\n','<br>')}</span><button class="btn" type="button" onclick="copyCommand(${JSON.stringify(vpsCommand).replaceAll('"','&quot;')})">${lang==='es'?'Copiar ejemplo VPS':'Copy VPS example'}</button></details><div class="chatgpt-foot"><p>${lang==='es'?'Estado técnico para soporte':'Technical status'}: ${escapeHtml(detail||'-')}</p><div class="mode-actions"><button class="btn" type="button" onclick="load()">${lang==='es'?'Ya lo hice, revisar conexión':'I did it, recheck'}</button><button class="btn ask-btn" type="button" onclick="openChat(${JSON.stringify(draft).replaceAll('"','&quot;')})">${t('ask_agent')}</button></div></div></section>`;
+}
+function renderChatGptPanel(){
+ qs('#chatgpt-panel').innerHTML=chatGptConnectMarkup(false);
+}
+function applyAgentModelPreset(kind){
+ const form=qs('#agent-model-form');if(!form)return;
+ if(kind==='hermes'){form.agent_chat_provider.value='hermes';return}
+ if(kind==='minimax_m3'){form.agent_chat_provider.value='minimax';form.agent_chat_base_url.value='https://api.minimax.io/v1';form.agent_chat_model.value='MiniMax-M3';return}
+ if(kind==='custom'){form.agent_chat_provider.value='openai_compatible';if(!form.agent_chat_model.value)form.agent_chat_model.value='';}
+}
 function renderTelegramPanel(){
  const v=state.config.telegram_agent||{};
  const ready=v.enabled&&v.bot_configured&&v.chat_id;
@@ -5420,7 +5607,7 @@ function renderMigrationPanel(){
  qs('#migration-panel').innerHTML=`<div class="next-step"><div><b>${lang==='es'?'Cambiar de equipo sin perder memoria':'Move device without losing memory'}</b><p>${lang==='es'?'Crea una copia segura de esta instalación o trae una copia anterior. Incluye chat, marca, productos, configuración y memoria del dashboard.':'Create a safe copy of this install or bring back an earlier one. It includes chat, brand, products, setup, and dashboard memory.'}</p></div><div class="mode-actions"><button class="btn primary" type="button" onclick="downloadMigrationBackup()">${lang==='es'?'Crear copia segura':'Create safe copy'}</button><button class="btn" type="button" onclick="qs('#migration-restore-file').click()">${lang==='es'?'Traer copia anterior':'Restore backup'}</button><input id="migration-restore-file" class="hidden" type="file" accept=".tar.gz,.tgz,.zip,application/gzip,application/zip" onchange="restoreMigrationBackup(event)"></div></div><div id="migration-result"></div><p class="notice">${lang==='es'?'Esa copia puede incluir claves privadas. Guárdala como guardarías una llave de tu negocio.':'The backup may contain private keys. Store it like a key to your business.'}</p>`;
 }
 function renderCloudAccessPanel(){
- qs('#cloud-access-panel').innerHTML=`<div class="next-step"><div><b>${lang==='es'?'Abrir acceso cuando estás en la nube':'Cloud dashboard access'}</b><p>${lang==='es'?'Si instalaste en DigitalOcean y cambiaste de Wi-Fi o ciudad, este botón permite que esta red abra tu dashboard.':'If you installed on DigitalOcean and changed Wi-Fi or city, this button allows this network to open your dashboard.'}</p></div><div class="mode-actions"><button class="btn" type="button" onclick="refreshCloudAccess()">${lang==='es'?'Permitir esta red':'Allow this network'}</button></div></div><div id="cloud-access-result"></div><p class="notice">${lang==='es'?'Si ahora no puedes abrir el dashboard en la nube, entra una vez desde DigitalOcean para recuperar acceso y luego usa este botón.':'If you cannot open the cloud dashboard right now, use DigitalOcean recovery access once, then use this button.'}</p>`;
+ qs('#cloud-access-panel').innerHTML=`<div class="next-step"><div><b>${lang==='es'?'Mantener acceso cuando estás en la nube':'Keep cloud dashboard access'}</b><p>${lang==='es'?'Si este dashboard ya abrió desde tu red actual, este botón autoriza esta red en DigitalOcean. Úsalo cuando cambies de Wi-Fi antes de cerrar la página.':'If this dashboard already opened from your current network, this button authorizes this network in DigitalOcean. Use it when you change Wi-Fi before closing the page.'}</p></div><div class="mode-actions"><button class="btn" type="button" onclick="refreshCloudAccess()">${lang==='es'?'Permitir esta red':'Allow this network'}</button></div></div><div id="cloud-access-result"></div><p class="notice">${lang==='es'?'Si el dashboard no carga porque tu IP ya cambió, este botón no puede ayudarte todavía. Recupera entrada desde el portal de DigitalOcean, SSH o la consola web; después vuelve aquí para dejar la nueva red guardada.':'If the dashboard does not load because your IP already changed, this button cannot help yet. Recover access from the DigitalOcean portal, SSH, or web console; then return here to save the new network.'}</p>`;
 }
 function renderUpdateRollbackPanel(){
  qs('#update-rollback-panel').innerHTML=`<div class="next-step"><div><b>${lang==='es'?'Volver a una versión anterior':'Restore previous update'}</b><p>${lang==='es'?'Antes de instalar una actualización oficial, guardo una copia de seguridad. Conservo las últimas 3 por si necesitas volver a algo que ya funcionaba.':'Before installing an official update, I save a backup. The last 3 are kept so you can return to something that was working.'}</p></div><div class="mode-actions"><button class="btn" type="button" onclick="loadUpdateSnapshots(true)">${lang==='es'?'Ver copias guardadas':'View saved copies'}</button></div></div><div id="update-snapshot-list"></div>`;
@@ -5464,6 +5651,7 @@ function setupSimpleText(item){
   dashboard_token:['Contraseña del dashboard','Crea una contraseña para proteger acciones importantes.'],
   hermes_runtime:['Chat con agente','Falta instalar o conectar Hermes para que el chat use tu sesión de ChatGPT/Codex.'],
   hermes_auth:['ChatGPT/Codex','Conecta Hermes con tu cuenta de ChatGPT/Codex.'],
+  openai_compatible_model:['Modelo del agente','Si usas MiniMax M3 u otra API, falta guardar URL, modelo y clave.'],
   social_cli:['Conexión con Meta','Falta la pieza local que ayuda a leer datos de Meta.'],
   daily_report:['Lectura diaria','Todavía no hay resumen diario. Puedes tocar Actualizar o pedírselo al agente.'],
   gemini_key:['Crear imágenes','Opcional: falta conectar la clave para generar imágenes reales.'],
@@ -5481,6 +5669,7 @@ function setupSimpleText(item){
   dashboard_token:['Dashboard password','Create a password to protect important actions.'],
   hermes_runtime:['Agent chat','Install or connect Hermes so chat can use your ChatGPT/Codex session.'],
   hermes_auth:['ChatGPT/Codex','Connect Hermes with your ChatGPT/Codex account.'],
+  openai_compatible_model:['Agent model','If you use MiniMax M3 or another API, save URL, model, and key.'],
   social_cli:['Meta connection','The local helper for reading Meta data is missing.'],
   daily_report:['Daily reading','No daily brief exists yet. Click Refresh or ask the agent.'],
   gemini_key:['Create images','Optional: connect the key for real image generation.'],
@@ -5506,7 +5695,7 @@ function renderSetupBeginnerSummary(setup){
 function renderSetupTechnicalDetails(setup){
  return `<details class="fallback-details setup-technical-details"><summary>${lang==='es'?'Revisión técnica para soporte':'Technical review for support'}</summary>${setup.sections.map(sec=>`<div class="section"><div class="head"><b>${localText(sec.title)}</b></div><div class="body">${sec.items.map(i=>`<div class="log-item"><b>${statusLabel(i.status)} - ${localText(i.label)}</b><br>${localText(i.detail||'')}${i.action?`<br><span class="notice">${localText(i.action)}</span>`:''}</div>`).join('')}</div></div>`).join('')}</details>`;
 }
-function renderSetup(){const setup=state.setup;const counts=setup.summary.counts;renderModeControl();renderGuardrails();renderOnboarding();renderLicensePanel();renderAgencyPanel();renderSetupConfig();renderTelegramPanel();renderMigrationPanel();renderUpdateRollbackPanel();renderCloudAccessPanel();qs('#setup-summary').innerHTML=`<div class="kpis">${kpi(t('ok'),counts.ok||0)}${kpi(t('warnings'),counts.warn||0)}${kpi(t('blocked'),counts.blocked||0)}${kpi(t('live_ready'),setup.summary.live_ads_ready?t('live_ready_yes'):t('live_ready_no'))}</div>`;qs('#setup-sections').innerHTML=renderSetupBeginnerSummary(setup)+renderSetupTechnicalDetails(setup)}
+function renderSetup(){const setup=state.setup;const counts=setup.summary.counts;renderModeControl();renderGuardrails();renderOnboarding();renderLicensePanel();renderAgencyPanel();renderSetupConfig();renderChatGptPanel();renderTelegramPanel();renderMigrationPanel();renderUpdateRollbackPanel();renderCloudAccessPanel();qs('#setup-summary').innerHTML=`<div class="kpis">${kpi(t('ok'),counts.ok||0)}${kpi(t('warnings'),counts.warn||0)}${kpi(t('blocked'),counts.blocked||0)}${kpi(t('live_ready'),setup.summary.live_ads_ready?t('live_ready_yes'):t('live_ready_no'))}</div>`;qs('#setup-sections').innerHTML=renderSetupBeginnerSummary(setup)+renderSetupTechnicalDetails(setup)}
 function audienceText(value){
  const raw=String(value||'');if(lang!=='es')return raw;
  const exact={
@@ -5579,6 +5768,7 @@ async function exportCsv(){const r=await api('/api/export');toast(t('toast_expor
 async function approvePending(id){const item=(state.pending||[]).find(p=>p.id===id);if(item&&item.type==='create_campaign'&&item.payload?.final_status==='ACTIVE'){const ok=await showDecisionConfirm({title:lang==='es'?'Esta campaña puede empezar a gastar':'This campaign can start spending',body:lang==='es'?'Al aprobar, se creará o encenderá como ACTIVA y podrá usar el presupuesto elegido. Revisa esto como si le dieras luz verde a un manager humano.':'When approved, it will be created or turned on as ACTIVE and may use the selected budget. Review this like giving a human manager the green light.',items:[item.payload?.name||item.payload?.campaign_name||item.type,lang==='es'?'La aprobación debe salir de un botón exacto o de una frase exacta; el agente no puede decidir solo.':'Approval must come from an exact button or exact phrase; the agent cannot decide alone.'],confirmLabel:lang==='es'?'Sí, aprobar activa':'Yes, approve active',agentDraft:lang==='es'?`Explícame esta aprobación de campaña activa antes de que yo decida. ¿Qué riesgo tiene y qué debería revisar?`:`Explain this active campaign approval before I decide. What is the risk and what should I review?`});if(!ok)return []}const res=await api('/api/approve',{method:'POST',body:JSON.stringify({approval_id:id})});const attempted=(res.result||[])[0]||{};toast(attempted.status==='approved'?t('toast_approval'):(lang==='es'?'No se pudo ejecutar. La decisión sigue pendiente para reintentar.':'Execution failed. The decision remains pending so you can retry.'));await load();return res.result||[]}
 async function setMode(mode){if(mode==='live'){const ok=await showDecisionConfirm({title:lang==='es'?'Activar piloto automático':'Turn on autopilot',body:lang==='es'?'El agente podrá ejecutar acciones reales solo cuando entren dentro de tus reglas. Lo que se salga de los límites seguirá pidiendo aprobación.':'The agent can execute real actions only when they fit your rules. Anything outside the limits will still ask for approval.',items:[lang==='es'?'Leer datos reales no cambia nada en Meta.':'Reading real data does not change Meta.',lang==='es'?'Piloto automático sí puede tocar campañas dentro de tus reglas.':'Autopilot can touch campaigns inside your rules.'],confirmLabel:lang==='es'?'Activar piloto':'Turn on autopilot',agentDraft:lang==='es'?'Antes de activar piloto automático, revisa mis reglas y dime si están prudentes para mi cuenta.':'Before turning on autopilot, review my rules and tell me if they are prudent for my account.'});if(!ok)return}await api('/api/mode',{method:'POST',body:JSON.stringify({mode,live_actions_enabled:mode==='live'})});toast(mode==='live'?(lang==='es'?'Piloto automático activado':'Autopilot enabled'):(lang==='es'?'Modo con supervisión activado':'Supervised mode enabled'));await load()}
 async function saveGuardrails(e){e.preventDefault();const form=e.target;const data=Object.fromEntries(new FormData(form).entries());data.require_approval_for_resume=form.require_approval_for_resume.checked;data.require_approval_for_new_campaigns=form.require_approval_for_new_campaigns.checked;data.require_approval_for_creatives=form.require_approval_for_creatives.checked;await api('/api/guardrails',{method:'POST',body:JSON.stringify(data)});toast(lang==='es'?'Reglas guardadas':'Rules saved');await load()}
+async function saveProfitabilityRules(e){e.preventDefault();const form=e.target;const data=Object.fromEntries(new FormData(form).entries());await api('/api/profitability-rules',{method:'POST',body:JSON.stringify(data)});toast(lang==='es'?'Reglas de rentabilidad guardadas':'Profitability rules saved');await load()}
 async function saveTelegramConfig(e){e.preventDefault();const form=e.target;const data=Object.fromEntries(new FormData(form).entries());data.enabled=form.enabled.checked;await api('/api/telegram/config',{method:'POST',body:JSON.stringify(data)});toast(lang==='es'?'Telegram guardado':'Telegram saved');await load()}
 async function fetchProtectedFile(path,opts={}){
  const headers={...(opts.headers||{})};const password=dashboardPassword();if(password)headers['X-Dashboard-Token']=password;
@@ -5771,7 +5961,7 @@ load();
 class DashboardHandler(BaseHTTPRequestHandler):
     HTML_PATHS = {"/", "/dashboard"}
     PROTECTED_GET_PATHS = {"/api/dashboard", "/api/export", "/api/report", "/api/setup", "/api/social/auth-status", "/api/social/accounts", "/api/update/snapshots", "/api/creative-asset"}
-    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/product", "/api/ad-briefs", "/api/codex/creative-plan", "/api/setup-config", "/api/guardrails", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/complete", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
+    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/product", "/api/ad-briefs", "/api/codex/creative-plan", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/complete", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
     ONBOARDING_OPEN_GETS = {"/api/dashboard", "/api/setup"}
     ONBOARDING_OPEN_POSTS = {"/api/dashboard-password", "/api/business-profile", "/api/business-profile/scan", "/api/license/activate"}
     GET_JSON_ROUTES = {
@@ -5801,6 +5991,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         "/api/codex/creative-plan": codex_creative_plan,
         "/api/setup-config": save_setup_config,
         "/api/guardrails": save_guardrails,
+        "/api/profitability-rules": save_profitability_rule_settings,
         "/api/migration/import": restore_migration_archive,
         "/api/update/check": lambda _payload: request_update_release(),
         "/api/update/apply": lambda _payload: apply_official_update(),

@@ -81,6 +81,7 @@ python3 src/daily_agent.py approve APPROVAL_ID
 - `docs/es-usar-telegram.md`
 - `docs/es-planes-de-licencia.md`
 - `docs/es-instaladores-producto.md`
+- `docs/es-firma-instaladores.md`
 - `docs/setup-call-checklist.md`
 - `docs/social-cli-onboarding.md`
 - `docs/security-explanation.md`

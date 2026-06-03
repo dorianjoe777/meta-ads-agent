@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from budget_optimizer import BudgetOptimizer, OptimizationStrategy, PerformanceMetrics
 from creative_refresh import campaigns_needing_refresh, generate_creative_refresh, mark_asset_files_retained, recent_creative_refreshes
+from decision_memory import load_profitability_rules, recommendation_decision_evidence, record_daily_decision_memory
 from graph_executor import execute_upload_payload
 from license import license_status
 from local_store import now_iso, read_json, write_json
@@ -116,6 +117,7 @@ def build_summary(campaigns):
 
 def calculate_recommendations(campaigns):
     config = load_config()
+    rules = load_profitability_rules()
     optimizer = BudgetOptimizer()
     recommendations = []
     for campaign in campaigns:
@@ -132,7 +134,7 @@ def calculate_recommendations(campaigns):
         rec = optimizer.calculate_optimal_budget(metrics, current, OptimizationStrategy.PERFORMANCE_BASED)
         change = rec.recommended_budget - current
         change_pct = (change / current * 100) if current else 100
-        recommendations.append({
+        recommendation = {
             "id": f"budget_{campaign.get('id')}",
             "type": "budget_change",
             "campaign_id": campaign.get("id"),
@@ -145,7 +147,9 @@ def calculate_recommendations(campaigns):
             "requires_approval": abs(change_pct) > config.approval_required_over_pct,
             "reason": rec.reasoning,
             "health": campaign.get("health"),
-        })
+        }
+        recommendation["decision_evidence"] = recommendation_decision_evidence(campaign, recommendation, rules)
+        recommendations.append(recommendation)
     return recommendations
 
 
@@ -551,13 +555,77 @@ def normalize_social_insights(data, previous_metrics):
     }
 
 
-def build_brief(metrics, recommendations, auto_paused, fatigue, proposed_pauses=None):
+def build_action_summary(recommendations, auto_paused, proposed_pauses, fatigue, creative_refreshes=None):
+    creative_refreshes = creative_refreshes or []
+    proposed_pauses = proposed_pauses or []
+    approval_budget = [rec for rec in recommendations if rec.get("requires_approval")]
+    next_budget = [
+        rec
+        for rec in recommendations
+        if not rec.get("requires_approval") and abs(float(rec.get("change_pct", 0) or 0)) >= 1
+    ]
+    already_done = []
+    waiting_for_approval = []
+    recommended_next = []
+    watching = []
+
+    if auto_paused:
+        already_done.append({
+            "type": "auto_pause",
+            "label": f"Paused {len(auto_paused)} clear bleeder(s) under autopilot rules.",
+            "items": auto_paused[:5],
+        })
+    if creative_refreshes:
+        already_done.append({
+            "type": "creative_refresh",
+            "label": f"Prepared {len(creative_refreshes)} creative refresh draft(s).",
+            "items": creative_refreshes[:5],
+        })
+    if proposed_pauses:
+        waiting_for_approval.append({
+            "type": "pause_campaign",
+            "label": f"{len(proposed_pauses)} pause decision(s) need buyer approval.",
+            "items": proposed_pauses[:5],
+        })
+    if approval_budget:
+        waiting_for_approval.append({
+            "type": "budget_change",
+            "label": f"{len(approval_budget)} budget move(s) need buyer approval.",
+            "items": approval_budget[:5],
+        })
+    if next_budget:
+        recommended_next.append({
+            "type": "budget_change",
+            "label": f"{len(next_budget)} smaller budget move(s) are worth reviewing.",
+            "items": next_budget[:5],
+        })
+    if fatigue:
+        recommended_next.append({
+            "type": "creative_refresh",
+            "label": f"{len(fatigue)} fatigue signal(s) should feed the next creative test.",
+            "items": fatigue[:5],
+        })
+    if not already_done and not waiting_for_approval and not recommended_next:
+        watching.append({
+            "type": "monitoring",
+            "label": "No strong action signal yet. Keep watching pacing, CPA, ROAS, CTR, and frequency.",
+        })
+    return {
+        "already_done": already_done,
+        "waiting_for_approval": waiting_for_approval,
+        "recommended_next": recommended_next,
+        "watching": watching,
+    }
+
+
+def build_brief(metrics, recommendations, auto_paused, fatigue, proposed_pauses=None, creative_refreshes=None):
     summary = metrics.get("summary", {})
     campaigns = metrics.get("campaigns", [])
     proposed_pauses = proposed_pauses or []
     winners = sorted([c for c in campaigns if c.get("health") == "winning"], key=lambda c: c.get("roas", 0), reverse=True)
     losers = sorted([c for c in campaigns if c.get("health") == "losing"], key=lambda c: c.get("roas", 0))
     approval_count = len(read_json(PENDING_FILE, []))
+    action_summary = build_action_summary(recommendations, auto_paused, proposed_pauses, fatigue, creative_refreshes)
     lines = [
         f"Spend: ${summary.get('total_spend', 0):,.2f}",
         f"Revenue: ${summary.get('total_revenue', 0):,.2f}",
@@ -573,6 +641,12 @@ def build_brief(metrics, recommendations, auto_paused, fatigue, proposed_pauses=
         lines.append(f"Top winner: {winners[0]['name']} ({winners[0]['roas']:.2f}x ROAS)")
     if losers:
         lines.append(f"Top loser: {losers[0]['name']} ({losers[0]['roas']:.2f}x ROAS)")
+    if action_summary["already_done"]:
+        lines.append(f"Already done: {action_summary['already_done'][0]['label']}")
+    if action_summary["waiting_for_approval"]:
+        lines.append(f"Waiting approval: {len(action_summary['waiting_for_approval'])} action bucket(s)")
+    if action_summary["recommended_next"]:
+        lines.append(f"Next move: {action_summary['recommended_next'][0]['label']}")
     return {
         "generated_at": now_iso(),
         "summary": summary,
@@ -590,6 +664,7 @@ def build_brief(metrics, recommendations, auto_paused, fatigue, proposed_pauses=
         "proposed_pauses": proposed_pauses,
         "fatigue": fatigue,
         "recommendations": recommendations,
+        "action_summary": action_summary,
     }
 
 
@@ -661,8 +736,20 @@ def run_daily():
             rec["approval_id"] = f"approval_budget_{rec['campaign_id']}"
             add_pending("budget_change", rec)
 
-    brief = build_brief(metrics, recommendations, auto_paused, fatigue, proposed_pauses)
+    decision_memory = record_daily_decision_memory(
+        metrics,
+        recommendations,
+        fatigue,
+        proposed_pauses=proposed_pauses,
+        auto_paused=auto_paused,
+        creative_refreshes=creative_refreshes,
+    )
+    brief = build_brief(metrics, recommendations, auto_paused, fatigue, proposed_pauses, creative_refreshes)
     brief["creative_refreshes"] = creative_refreshes
+    brief["decision_memory"] = {
+        "recent_decisions": decision_memory.get("decisions", [])[:6],
+        "learning_log": decision_memory.get("learning_log", [])[:6],
+    }
     report = {"config": config_snapshot(config), "brief": brief}
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     report_path = OUTPUT_DIR / f"daily_brief_{datetime.now().strftime('%Y-%m-%d')}.json"

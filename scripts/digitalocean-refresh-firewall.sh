@@ -31,6 +31,7 @@ Recommended environment or .env values:
 Optional:
   DO_STRICT_EXTRA_TCP_PORTS=443,8443
   DO_STRICT_ALLOW_SSH_FROM_ANYWHERE=false
+  DO_STRICT_ACCESS_GATE_PORT=7870
 
 Run this on the DigitalOcean server after connecting by SSH. When --ip is not
 provided, it uses the client IP from SSH_CONNECTION or SSH_CLIENT.
@@ -69,6 +70,7 @@ DASHBOARD_PORT="${DASHBOARD_PORT:-7871}"
 DO_STRICT_EXTRA_TCP_PORTS="${DO_STRICT_EXTRA_TCP_PORTS:-$(read_env_value DO_STRICT_EXTRA_TCP_PORTS)}"
 DO_STRICT_ALLOW_SSH_FROM_ANYWHERE="${DO_STRICT_ALLOW_SSH_FROM_ANYWHERE:-$(read_env_value DO_STRICT_ALLOW_SSH_FROM_ANYWHERE)}"
 DO_STRICT_ALLOW_SSH_FROM_ANYWHERE="${DO_STRICT_ALLOW_SSH_FROM_ANYWHERE:-false}"
+DO_STRICT_ACCESS_GATE_PORT="${DO_STRICT_ACCESS_GATE_PORT:-$(read_env_value DO_STRICT_ACCESS_GATE_PORT)}"
 
 if [ -z "${DIGITALOCEAN_TOKEN:-}" ] || [ -z "${DIGITALOCEAN_FIREWALL_ID:-}" ]; then
   echo "Missing DIGITALOCEAN_TOKEN or DIGITALOCEAN_FIREWALL_ID."
@@ -103,6 +105,7 @@ export DIGITALOCEAN_DROPLET_ID
 export DASHBOARD_PORT
 export DO_STRICT_EXTRA_TCP_PORTS
 export DO_STRICT_ALLOW_SSH_FROM_ANYWHERE
+export DO_STRICT_ACCESS_GATE_PORT
 export CLIENT_IP
 
 python3 - <<'PY'
@@ -119,6 +122,7 @@ dashboard_port = os.environ.get("DASHBOARD_PORT", "7871").strip() or "7871"
 droplet_id = os.environ.get("DIGITALOCEAN_DROPLET_ID", "").strip()
 extra_ports = [port.strip() for port in os.environ.get("DO_STRICT_EXTRA_TCP_PORTS", "").split(",") if port.strip()]
 allow_ssh_anywhere = os.environ.get("DO_STRICT_ALLOW_SSH_FROM_ANYWHERE", "false").strip().lower() == "true"
+access_gate_port = os.environ.get("DO_STRICT_ACCESS_GATE_PORT", "").strip()
 client_ip = os.environ["CLIENT_IP"].strip()
 
 try:
@@ -158,6 +162,8 @@ inbound_rules = [
     {"protocol": "tcp", "ports": "22", "sources": ssh_sources},
     {"protocol": "tcp", "ports": dashboard_port, "sources": {"addresses": [client_cidr]}},
 ]
+if access_gate_port:
+    inbound_rules.append({"protocol": "tcp", "ports": access_gate_port, "sources": {"addresses": ["0.0.0.0/0", "::/0"]}})
 for port in extra_ports:
     inbound_rules.append({"protocol": "tcp", "ports": port, "sources": {"addresses": [client_cidr]}})
 

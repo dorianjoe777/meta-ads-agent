@@ -5,8 +5,10 @@ Este modo es para compradores que quieren correr el dashboard en un VPS, pero si
 La idea es simple:
 
 - El dashboard puede escuchar en el VPS.
-- El firewall de DigitalOcean solo deja entrar a la IP actual del comprador.
-- Cuando el comprador entra por SSH, el servidor detecta esa IP y actualiza el firewall.
+- El firewall de DigitalOcean solo deja abrir el dashboard desde la IP actual del comprador.
+- El portal entrega un boton `Abrir mi dashboard` que autoriza la IP actual antes de cargar el dashboard.
+- SSH queda disponible con llave, sin contrasena, para recuperar acceso si cambia la IP.
+- Cuando el comprador entra por SSH, el servidor detecta esa IP y actualiza el firewall del dashboard.
 - Telegram sigue siendo la forma mas comoda de hablar con el agente desde cualquier lugar.
 
 ## Cuando usarlo
@@ -37,10 +39,14 @@ DIGITALOCEAN_FIREWALL_ID=
 DIGITALOCEAN_DROPLET_ID=
 DASHBOARD_PORT=7871
 DO_STRICT_EXTRA_TCP_PORTS=
-DO_STRICT_ALLOW_SSH_FROM_ANYWHERE=false
+DO_STRICT_ALLOW_SSH_FROM_ANYWHERE=true
+DO_STRICT_ACCESS_GATE_PORT=7870
+CLOUD_ACCESS_SECRET=
 ```
 
 `DIGITALOCEAN_TOKEN` debe tener permisos para leer/actualizar firewalls y leer droplets. Guardalo solo en el VPS, nunca dentro del instalador ni del paquete fuente interno.
+
+Para instalaciones de comprador, el token debe ser sin vencimiento si DigitalOcean ofrece esa opcion, o de duracion larga. Si el token vence, el agente puede seguir funcionando, pero el servidor no podra actualizar automaticamente el firewall cuando cambie la IP.
 
 ## Configuracion recomendada
 
@@ -84,23 +90,65 @@ http://127.0.0.1:7871
 
 ## Si cambia la IP
 
-Si SSH todavia entra, el sistema se realinea solo.
+El camino normal para el comprador es volver al portal y usar:
 
-Para hacerlo sin tocar la terminal, abre el dashboard y entra a:
+```text
+Abrir mi dashboard
+```
+
+Ese boton llama una puerta segura del Droplet en el puerto `7870`. Esa puerta:
+
+- exige una clave larga generada durante la instalacion;
+- detecta la IP publica actual;
+- actualiza el firewall del dashboard;
+- redirige al dashboard en el puerto `7871`.
+
+No es una puerta para operar el agente, cambiar anuncios o ver datos. Solo autoriza la red actual para cargar el dashboard.
+
+Si el dashboard todavia abre desde la red actual, usa el boton preventivo:
 
 ```text
 Configuracion > Acceso cloud / DigitalOcean > Actualizar acceso de esta red
 ```
 
-Ese boton autoriza la red desde la que estas viendo el dashboard en ese momento.
+Ese boton autoriza la red desde la que ya estas viendo el dashboard. No sirve si el firewall ya bloqueo la nueva IP, porque en ese caso el comprador no puede cargar el dashboard.
 
-Tambien puedes correr manualmente en el VPS:
+La recuperacion tecnica es por SSH. Al entrar con tu llave:
+
+```bash
+ssh root@IP-DEL-VPS
+```
+
+el servidor detecta tu IP y actualiza el firewall automaticamente. Tambien puedes correr manualmente en el VPS:
 
 ```bash
 ~/.local/bin/meta-ads-refresh-access
 ```
 
-Si SSH ya no entra porque la IP cambio y el firewall quedo cerrado, entra al panel de DigitalOcean y agrega temporalmente tu IP actual al puerto `22`, o usa la consola de recuperacion de DigitalOcean. Despues de entrar por SSH, el script vuelve a dejar todo alineado.
+Si SSH no entra, normalmente no es por cambio de IP sino por llave equivocada, usuario equivocado o regla SSH alterada. En ese caso:
+
+1. Entrar al panel de DigitalOcean.
+2. Abrir la consola web del Droplet, o revisar que tu llave publica este autorizada.
+3. Entrar al VPS y correr:
+
+```bash
+~/.local/bin/meta-ads-refresh-access
+```
+
+Despues de eso, el firewall vuelve a permitir la IP actual.
+
+## Protector automatico en el computador
+
+El helper local por hora queda como respaldo avanzado. No debe ser el camino principal del comprador, porque el boton `Abrir mi dashboard` ya hace la recuperacion al momento de entrar.
+
+Ese helper corre cada hora:
+
+- revisa la IP publica actual del computador;
+- si cambio, entra al VPS por SSH con la llave del comprador;
+- ejecuta `~/.local/bin/meta-ads-refresh-access`;
+- actualiza el firewall del dashboard sin guardar el token de DigitalOcean en el computador.
+
+Esto es la forma mas amigable para compradores no tecnicos. Si el computador esta apagado, no puede correr; en ese caso Telegram sigue funcionando y el comprador puede recuperar acceso entrando por SSH cuando vuelva a usar su equipo.
 
 ## Si cambia de PC
 
@@ -121,12 +169,10 @@ Ese comando actualiza el firewall para la IP del nuevo PC.
 
 Cuando el dashboard ya abra desde el nuevo PC, usa `Configuracion > Acceso cloud / DigitalOcean > Actualizar acceso de esta red` para dejar esa red autorizada. Si todavia no abre, usa SSH o la consola de DigitalOcean una sola vez para recuperar entrada.
 
-## Opcion de recuperacion
-
-Para compradores que cambian mucho de red, puedes dejar SSH mas flexible pero mantener el dashboard cerrado:
+## Modelo recomendado
 
 ```env
 DO_STRICT_ALLOW_SSH_FROM_ANYWHERE=true
 ```
 
-Usa esto solo con SSH por llave y contrasena SSH desactivada. El dashboard sigue limitado a la IP detectada.
+Esto deja SSH como puerta de recuperacion, pero solo con llave y con contrasena SSH desactivada. El dashboard sigue limitado a la IP detectada.

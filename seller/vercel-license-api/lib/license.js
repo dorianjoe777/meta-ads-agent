@@ -123,12 +123,15 @@ function canonicalForHmac(payload) {
   return JSON.stringify(safe);
 }
 
-export function signedReleaseGrant({ licenseKey, buyerEmail, deviceId, channel, assetName, version, filename, contentType, sourceUrl }) {
+export function signedReleaseGrant({ licenseKey, buyerEmail, deviceId, channel, assetName, version, filename, contentType, sourceUrl, minutes: rawMinutes }) {
   const secret = String(process.env.RELEASE_DOWNLOAD_SECRET || "");
   if (!secret) {
     throw new Error("RELEASE_DOWNLOAD_SECRET is not configured");
   }
-  const minutes = Number(process.env.RELEASE_TOKEN_MINUTES || 15);
+  const requestedMinutes = Number(rawMinutes);
+  const minutes = Number.isFinite(requestedMinutes) && requestedMinutes > 0
+    ? Math.min(Math.floor(requestedMinutes), 360)
+    : Number(process.env.RELEASE_TOKEN_MINUTES || 15);
   const payload = {
     asset_name: assetName,
     buyer_email: buyerEmail,
@@ -147,6 +150,51 @@ export function signedReleaseGrant({ licenseKey, buyerEmail, deviceId, channel, 
     ...payload,
     token: `${body}.${signature}`
   };
+}
+
+export function signedPortalSession({ licenseKey, buyerEmail, channel = "stable", plan = "individual", minutes: rawMinutes }) {
+  const secret = String(process.env.RELEASE_DOWNLOAD_SECRET || "");
+  if (!secret) {
+    throw new Error("RELEASE_DOWNLOAD_SECRET is not configured");
+  }
+  const requestedMinutes = Number(rawMinutes || process.env.PORTAL_SESSION_MINUTES || 20);
+  const minutes = Math.max(1, Math.min(Math.floor(requestedMinutes), 60 * 24 * 30));
+  const payload = {
+    buyer_email: buyerEmail,
+    channel,
+    expires_at: new Date(Date.now() + minutes * 60000).toISOString(),
+    license_key: licenseKey,
+    plan
+  };
+  const body = Buffer.from(canonicalForHmac(payload), "utf8").toString("base64url");
+  const signature = createHmac("sha256", secret).update(body).digest("base64url");
+  return {
+    ...payload,
+    token: `${body}.${signature}`
+  };
+}
+
+export function verifyPortalSession(token) {
+  const secret = String(process.env.RELEASE_DOWNLOAD_SECRET || "");
+  if (!secret || !token || !String(token).includes(".")) {
+    return null;
+  }
+  const [body, supplied] = String(token).split(".", 2);
+  const expected = createHmac("sha256", secret).update(body).digest("base64url");
+  const suppliedBuffer = Buffer.from(String(supplied || ""));
+  const expectedBuffer = Buffer.from(expected);
+  if (suppliedBuffer.length !== expectedBuffer.length || !timingSafeEqual(suppliedBuffer, expectedBuffer)) {
+    return null;
+  }
+  try {
+    const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+    if (!payload.expires_at || new Date(payload.expires_at).getTime() < Date.now()) {
+      return null;
+    }
+    return payload;
+  } catch {
+    return null;
+  }
 }
 
 export function verifyReleaseGrant(token) {

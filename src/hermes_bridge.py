@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 
 from agent_runtime import build_system_prompt
+from decision_memory import decision_memory_payload, format_learning_log
 from local_store import read_json
 from security import redact_payload
 
@@ -144,6 +145,7 @@ def business_memory_context():
             "actions": scrub_memory(redact_payload(read_json(DATA_DIR / "actions.json", [])[-MEMORY_ITEM_LIMIT:])),
             "creative_refreshes": scrub_memory(redact_payload(read_json(ROOT_DIR / "output" / "creatives" / "index.json", [])[-MEMORY_ITEM_LIMIT:])),
         },
+        "profitability_memory": scrub_memory(redact_payload(decision_memory_payload())),
     }
     return memory
 
@@ -172,6 +174,9 @@ Do not request files outside this workspace. If something is missing, ask the bu
     written.append(write_workspace_file("memory/recent_chat.json", memory["recent_history"]["chat"]))
     written.append(write_workspace_file("memory/recent_actions.json", memory["recent_history"]["actions"]))
     written.append(write_workspace_file("memory/creative_refreshes.json", memory["recent_history"]["creative_refreshes"]))
+    written.append(write_workspace_file("memory/profitability_rules.json", memory["profitability_memory"].get("profitability_rules", {})))
+    written.append(write_workspace_file("memory/decision_memory.json", memory["profitability_memory"]))
+    written.append(write_workspace_file("memory/learning_log.md", format_learning_log()))
     written.append(write_workspace_file("brand_guides/general_branding.md", memory["brand_guides"]["general_branding"]))
     for product in memory["brand_guides"]["products"]:
         name = Path(product["path"]).name
@@ -202,12 +207,14 @@ def setup_reply(language="es"):
     if language == "es":
         return (
             "Todavia falta conectar Hermes. En esta instalacion el agente debe funcionar con Hermes y la sesion "
-            "ChatGPT/Codex del comprador. Abre una terminal en este equipo y ejecuta: "
-            "`hermes model`. Elige `OpenAI Codex`, inicia sesion con tu cuenta de ChatGPT y vuelve al dashboard."
+            "ChatGPT/Codex del comprador. Abre Configuracion > Conectar ChatGPT para ver los pasos guiados. "
+            "El paso clave es abrir una terminal en este equipo y ejecutar: `hermes model`. Elige `OpenAI Codex`, "
+            "inicia sesion con tu cuenta de ChatGPT y vuelve al dashboard."
         )
     return (
         "Hermes is not connected yet. This install expects Hermes to use the buyer's ChatGPT/Codex session. "
-        "Open a terminal on this machine, run `hermes model`, choose `OpenAI Codex`, sign in, then return to the dashboard."
+        "Open Setup > Connect ChatGPT for guided steps. The key step is opening a terminal on this machine, "
+        "running `hermes model`, choosing `OpenAI Codex`, signing in, then returning to the dashboard."
     )
 
 

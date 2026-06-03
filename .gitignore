@@ -5,7 +5,20 @@ __pycache__/
 .DS_Store
 node_modules/
 release/
-seller/
+seller/*
+!seller/vercel-license-api/
+seller/vercel-license-api/.env*
+seller/vercel-license-api/.vercel/
+seller/vercel-license-api/node_modules/
+!seller/vercel-license-api/.gitignore
+!seller/vercel-license-api/README.md
+!seller/vercel-license-api/package.json
+!seller/vercel-license-api/package-lock.json
+!seller/vercel-license-api/vercel.json
+!seller/vercel-license-api/api/
+!seller/vercel-license-api/api/**
+!seller/vercel-license-api/lib/
+!seller/vercel-license-api/lib/**
 
 logs/
 output/

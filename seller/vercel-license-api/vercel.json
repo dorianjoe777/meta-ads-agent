@@ -6,6 +6,22 @@
   },
   "rewrites": [
     {
+      "source": "/",
+      "destination": "/api/portal"
+    },
+    {
+      "source": "/access",
+      "destination": "/api/portal"
+    },
+    {
+      "source": "/descargas",
+      "destination": "/api/portal"
+    },
+    {
+      "source": "/download",
+      "destination": "/api/portal"
+    },
+    {
       "source": "/health",
       "destination": "/api/health"
     }

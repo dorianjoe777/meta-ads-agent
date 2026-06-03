@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${1:-v1.0.2}"
+VERSION="${1:-v1.0.3}"
 RELEASE_DIR="$ROOT_DIR/release"
 BUILD_DIR="$RELEASE_DIR/source-build"
 ZIP_STABLE_NAME="MetaAdsAgent-source.zip"
@@ -76,7 +76,7 @@ if not path.exists():
 
 updates = {
     "BOOTSTRAP_PROVIDER": os.environ.get("META_ADS_BOOTSTRAP_PROVIDER", "license_server"),
-    "LICENSE_SERVER_URL": os.environ.get("META_ADS_LICENSE_SERVER_URL", "https://licencias-admiro-ai.uboost.lat"),
+    "LICENSE_SERVER_URL": os.environ.get("META_ADS_LICENSE_SERVER_URL", "https://admiroia.uboost.lat"),
     "LICENSE_RELEASE_ENDPOINT": os.environ.get("META_ADS_LICENSE_RELEASE_ENDPOINT", "/api/license/release"),
     "RELEASE_CHANNEL": os.environ.get("META_ADS_RELEASE_CHANNEL", "stable"),
     "RELEASE_ASSET_NAME": os.environ.get("META_ADS_RELEASE_ASSET_NAME", "MetaAdsAgent-source.zip"),
@@ -104,7 +104,16 @@ PY
 cp "$RELEASE_DIR/$ZIP_STABLE_NAME" "$RELEASE_DIR/$ZIP_VERSIONED_NAME"
 cp "$RELEASE_DIR/$ZIP_STABLE_NAME" "$RELEASE_DIR/$ZIP_LEGACY_NAME"
 
+if command -v sha256sum >/dev/null 2>&1; then
+  (cd "$RELEASE_DIR" && sha256sum "$ZIP_STABLE_NAME" "$ZIP_VERSIONED_NAME" "$ZIP_LEGACY_NAME" > "SHA256SUMS.txt")
+elif command -v shasum >/dev/null 2>&1; then
+  (cd "$RELEASE_DIR" && shasum -a 256 "$ZIP_STABLE_NAME" "$ZIP_VERSIONED_NAME" "$ZIP_LEGACY_NAME" > "SHA256SUMS.txt")
+fi
+
 echo "Release ZIPs created:"
 echo "$RELEASE_DIR/$ZIP_STABLE_NAME"
 echo "$RELEASE_DIR/$ZIP_VERSIONED_NAME"
 echo "$RELEASE_DIR/$ZIP_LEGACY_NAME"
+if [[ -f "$RELEASE_DIR/SHA256SUMS.txt" ]]; then
+  echo "$RELEASE_DIR/SHA256SUMS.txt"
+fi

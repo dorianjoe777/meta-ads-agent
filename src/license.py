@@ -254,6 +254,30 @@ def activate_license(config, transfer_device=False):
     return {"online": True, "valid": True, "status": "active", "detail": "Cloud license active", "expires_at": unlock.get("expires_at"), **normalize_license_entitlements(unlock)}
 
 
+def mark_license_install_state(config, event):
+    """Best-effort server-side install/onboarding signal for the buyer portal."""
+    if not config.license_server_url or not config.license_key or not config.license_buyer_email:
+        return {"valid": False, "status": "missing_license_context"}
+    device_id = config.license_device_id or default_device_id()
+    payload = {
+        "license_key": config.license_key,
+        "buyer_email": config.license_buyer_email,
+        "device_id": device_id,
+        "install_event": event,
+    }
+    request = urllib.request.Request(
+        f"{config.license_server_url}/api/license/activate",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+        return {"valid": False, "status": "server_unavailable"}
+
+
 def license_status(config):
     offline = validate_license_key(config.license_key)
     if not offline["valid"]:
