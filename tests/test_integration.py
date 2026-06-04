@@ -736,6 +736,38 @@ class IntegrationTestSuite:
             dashboard.launch_hermes_terminal = original_launch
             dashboard.log_action = original_log
 
+    def test_dashboard_chatgpt_connect_action_uses_vps_browserless_bridge(self):
+        """Test the ChatGPT/Codex connection endpoint starts a browser-visible Hermes bridge on VPS/headless installs."""
+        print("\nTesting Dashboard ChatGPT/Codex VPS Browserless Bridge...")
+
+        dashboard = load_dashboard_module()
+        captured = {}
+        original_update = dashboard.update_env_values
+        original_launch = dashboard.launch_hermes_terminal
+        original_start = dashboard.start_hermes_browserless_login
+        original_log = dashboard.log_action
+        try:
+            dashboard.update_env_values = lambda values: captured.update(values)
+            dashboard.launch_hermes_terminal = lambda _config: False
+            dashboard.start_hermes_browserless_login = lambda _config: {
+                "ok": True,
+                "status": "browser_login_started",
+                "command": "hermes model --no-browser",
+                "running": True,
+                "needs_input": True,
+            }
+            dashboard.log_action = lambda *_args, **_kwargs: None
+            result = dashboard.connect_agent_model({})
+            self.assert_true(result["status"] == "browser_login_started", "Headless installs start the browserless Hermes login bridge")
+            self.assert_true(result["command"] == "hermes model --no-browser", "VPS bridge uses Hermes no-browser mode")
+            self.assert_true(captured.get("AGENT_CHAT_PROVIDER") == "hermes", "VPS bridge still selects Hermes")
+            self.assert_true(captured.get("HERMES_REQUIRE_CODEX_AUTH") == "true", "VPS bridge keeps Codex auth required")
+        finally:
+            dashboard.update_env_values = original_update
+            dashboard.launch_hermes_terminal = original_launch
+            dashboard.start_hermes_browserless_login = original_start
+            dashboard.log_action = original_log
+
     def test_hermes_blocks_non_codex_runtime_by_default(self):
         """Test buyer default does not silently chat through a non-Codex Hermes provider."""
         print("\nTesting Hermes Codex Auth Requirement...")
@@ -2136,7 +2168,8 @@ class IntegrationTestSuite:
         self.assert_true("connectChatGpt(event)" in html and "/api/agent-model/connect" in html and "Conectar ahora" in html, "ChatGPT/Codex connection is an automatic dashboard action")
         self.assert_true("Copiar paso" not in html and "Copy step" not in html, "ChatGPT/Codex connection no longer presents copy-only wording")
         self.assert_true("agent_chat_base_url" in html and "agent_chat_api_key" in html and "openai_compatible" in html, "OpenAI-compatible model settings are exposed without showing saved keys")
-        self.assert_true("hermes model" in html and "ssh root@IP-DE-TU-SERVIDOR" in html, "Hermes/ChatGPT setup still explains the DigitalOcean case separately")
+        self.assert_true("hermes model --no-browser" in html and "DigitalOcean sin abrir navegador dentro del servidor" in html, "Hermes/ChatGPT setup has a browser-based VPS path")
+        self.assert_true("/api/agent-model/connect-status" in html and "/api/agent-model/connect-input" in html and "sendChatGptTerminalInput" in html, "VPS Hermes bridge can poll and send guided terminal responses")
         self.assert_true("{id:'chatgpt',status:chatgptOk?'ok':'warn'}" in html and "chatGptConnectMarkup(true)" in html, "Initial onboarding includes ChatGPT connection before Meta setup")
         self.assert_true("{id:'password',status:passwordOk?'ok':'blocked'},\n\t  {id:'chatgpt',status:chatgptOk?'ok':'warn'},\n\t  {id:'website',status:websiteOk?'ok':'blocked'}" in html, "Initial onboarding moves from password directly to agent model connection")
         self.assert_true("Este paso va primero porque el producto se usa hablando con el agente" in html and "directModelOk" in html, "Onboarding positions model setup as part of installation and accepts direct API readiness")
@@ -3024,6 +3057,7 @@ class IntegrationTestSuite:
             self.test_hermes_creative_image_request_routes_to_codex_tool,
             self.test_hermes_missing_runtime_gives_chatgpt_setup_guidance,
             self.test_dashboard_chatgpt_connect_action_opens_terminal,
+            self.test_dashboard_chatgpt_connect_action_uses_vps_browserless_bridge,
             self.test_hermes_blocks_non_codex_runtime_by_default,
             self.test_hermes_attaches_safe_uploaded_images,
             self.test_hermes_business_memory_workspace_is_curated_and_redacted,

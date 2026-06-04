@@ -65,7 +65,7 @@ from decision_memory import (
     save_profitability_rules as persist_profitability_rules,
 )
 from graph_executor import execute_upload_payload
-from hermes_bridge import safe_image_paths
+from hermes_bridge import hermes_codex_ready, hermes_environment, safe_image_paths
 from license import activate_license, default_device_id, license_status, mark_license_install_state, normalize_license_entitlements, validate_license_key
 from local_store import now_iso, read_json, write_json, write_private_json
 from meta_upload import recent_uploads, stage_upload
@@ -114,6 +114,20 @@ PORT = 7871
 TARGET_CPA = 50.0
 TELEGRAM_THREAD = None
 TELEGRAM_STOP = None
+HERMES_LOGIN_OUTPUT_LIMIT = 12000
+HERMES_LOGIN_LOCK = threading.Lock()
+HERMES_LOGIN_STATE = {
+    "id": "",
+    "status": "idle",
+    "title": "",
+    "detail": "",
+    "output": "",
+    "started_at": "",
+    "updated_at": "",
+    "proc": None,
+    "fd": None,
+    "command": "",
+}
 CHAT_HISTORY_LIMIT = 40
 CREATIVE_MEMORY_WIZARD_FILE = DATA_DIR / "creative_memory_wizard.json"
 BUSINESS_DATA_FILES = [
@@ -143,7 +157,7 @@ BUSINESS_OUTPUT_DIRS = [
     OUTPUT_DIR / "telegram_uploads",
 ]
 
-def redact_error_text(value):
+def redact_error_text(value, limit=1200):
     text = str(value or "")
     replacements = [
         (r"EAA[A-Za-z0-9_\-]{20,}", "[meta-token-redacted]"),
@@ -154,7 +168,7 @@ def redact_error_text(value):
     for pattern, replacement in replacements:
         text = re.sub(pattern, replacement, text)
     text = text.replace(str(ROOT_DIR), "[instalacion]")
-    return text[:1200]
+    return text[:limit]
 
 
 def client_error_message(exc):
@@ -1751,6 +1765,24 @@ def hermes_shell_command(config):
     return f"{shlex.quote(cli)} model"
 
 
+def hermes_browserless_command(config):
+    cli = str(getattr(config, "hermes_cli", "") or "hermes").strip() or "hermes"
+    return [cli, "model", "--no-browser"]
+
+
+def hermes_browserless_shell_command(config):
+    return " ".join(shlex.quote(part) for part in hermes_browserless_command(config))
+
+
+def clean_terminal_text(value):
+    text = str(value or "")
+    text = re.sub(r"\x1b\][^\a]*(?:\a|\x1b\\)", "", text)
+    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"\n{4,}", "\n\n\n", text)
+    return text.strip()
+
+
 def extract_urls_from_text(value):
     urls = []
     for match in re.findall(r"https?://[^\s<>'\")]+", str(value or "")):
@@ -1763,19 +1795,22 @@ def extract_urls_from_text(value):
 
 
 def hermes_connect_response(status, title, detail, **extra):
-    output = redact_error_text(extra.pop("output", ""))
+    command = extra.pop("command", "hermes model")
+    should_log = extra.pop("log", True)
+    output = redact_error_text(clean_terminal_text(extra.pop("output", "")), limit=HERMES_LOGIN_OUTPUT_LIMIT)
     payload = {
-        "ok": status in {"terminal_opened", "completed", "needs_login", "needs_terminal"},
+        "ok": status in {"terminal_opened", "completed", "needs_login", "needs_terminal", "browser_login_started", "browser_login_waiting", "browser_login_ready"},
         "status": status,
         "title": title,
         "detail": detail,
-        "command": "hermes model",
+        "command": command,
         "urls": extract_urls_from_text(output),
         "output": output,
         **extra,
     }
-    log_status = "completed" if status in {"terminal_opened", "completed"} else "warn"
-    log_action("agent_model_connect", {"status": status, "mode": payload.get("mode"), "urls_found": len(payload["urls"])}, log_status)
+    if should_log:
+        log_status = "completed" if status in {"terminal_opened", "completed"} else "warn"
+        log_action("agent_model_connect", {"status": status, "mode": payload.get("mode"), "urls_found": len(payload["urls"])}, log_status)
     return payload
 
 
@@ -1848,10 +1883,221 @@ def launch_hermes_terminal(config):
     return False
 
 
+def hermes_browserless_snapshot(config=None):
+    config = config or load_config()
+    ready, auth_detail = hermes_codex_ready(config)
+    with HERMES_LOGIN_LOCK:
+        state = dict(HERMES_LOGIN_STATE)
+        proc = state.get("proc")
+        running = bool(proc and proc.poll() is None)
+        output = state.get("output", "")
+    if ready:
+        return hermes_connect_response(
+            "completed",
+            "ChatGPT/Codex conectado",
+            "Hermes ya tiene lista la conexión con ChatGPT/Codex en esta instalación.",
+            mode="browserless_ready",
+            command=hermes_browserless_shell_command(config),
+            output=output or auth_detail,
+            running=False,
+            job_id=state.get("id") or "",
+            log=False,
+        )
+    if running:
+        status = "needs_login" if extract_urls_from_text(output) else "browser_login_waiting"
+        return hermes_connect_response(
+            status,
+            "Conecta ChatGPT desde este navegador",
+            "Abrí una sesión segura dentro de este servidor. Si ves un enlace, ábrelo aquí. Si Hermes pregunta algo, responde abajo y continúa.",
+            mode="browserless_running",
+            command=hermes_browserless_shell_command(config),
+            output=output,
+            running=True,
+            job_id=state.get("id") or "",
+            needs_input=True,
+            log=False,
+        )
+    if output:
+        return hermes_connect_response(
+            "needs_terminal",
+            "Hermes necesita una respuesta",
+            "La sesión terminó antes de quedar conectada. Revisa el detalle, vuelve a tocar Conectar ahora o usa una API compatible.",
+            mode="browserless_finished",
+            command=hermes_browserless_shell_command(config),
+            output=output or auth_detail,
+            running=False,
+            job_id=state.get("id") or "",
+            log=False,
+        )
+    return hermes_connect_response(
+        "needs_terminal",
+        "Falta conectar ChatGPT/Codex",
+        "Toca Conectar ahora para iniciar el login en este servidor.",
+        mode="browserless_idle",
+        command=hermes_browserless_shell_command(config),
+        output=auth_detail,
+        running=False,
+        job_id=state.get("id") or "",
+        log=False,
+    )
+
+
+def append_hermes_login_output(session_id, text):
+    if not text:
+        return
+    with HERMES_LOGIN_LOCK:
+        if HERMES_LOGIN_STATE.get("id") != session_id:
+            return
+        output = (HERMES_LOGIN_STATE.get("output") or "") + text
+        HERMES_LOGIN_STATE["output"] = output[-HERMES_LOGIN_OUTPUT_LIMIT:]
+        HERMES_LOGIN_STATE["updated_at"] = now_iso()
+
+
+def finish_hermes_browserless_session(session_id, returncode):
+    config = load_config()
+    ready, auth_detail = hermes_codex_ready(config)
+    with HERMES_LOGIN_LOCK:
+        if HERMES_LOGIN_STATE.get("id") != session_id:
+            return
+        HERMES_LOGIN_STATE["status"] = "completed" if ready else "needs_terminal"
+        HERMES_LOGIN_STATE["title"] = "ChatGPT/Codex conectado" if ready else "Hermes necesita una respuesta"
+        HERMES_LOGIN_STATE["detail"] = auth_detail
+        HERMES_LOGIN_STATE["returncode"] = returncode
+        HERMES_LOGIN_STATE["updated_at"] = now_iso()
+        fd = HERMES_LOGIN_STATE.get("fd")
+        HERMES_LOGIN_STATE["proc"] = None
+        HERMES_LOGIN_STATE["fd"] = None
+    if fd is not None:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def read_hermes_browserless_output(session_id, master_fd, proc):
+    while True:
+        try:
+            chunk = os.read(master_fd, 4096)
+        except OSError:
+            break
+        if not chunk:
+            break
+        append_hermes_login_output(session_id, chunk.decode("utf-8", errors="replace"))
+    try:
+        returncode = proc.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        returncode = proc.poll()
+    finish_hermes_browserless_session(session_id, returncode)
+
+
+def start_hermes_browserless_login(config):
+    cli_path = shutil.which(str(getattr(config, "hermes_cli", "") or "hermes").strip() or "hermes")
+    if not cli_path:
+        return hermes_connect_response(
+            "not_installed",
+            "Hermes no está instalado",
+            "Instala o actualiza Admiro AI para incluir Hermes, y vuelve a tocar Conectar ahora.",
+            mode="missing_runtime",
+            command=hermes_browserless_shell_command(config),
+        )
+    ready, auth_detail = hermes_codex_ready(config)
+    if ready:
+        return hermes_connect_response(
+            "completed",
+            "ChatGPT/Codex conectado",
+            "Hermes ya tiene lista la conexión con ChatGPT/Codex.",
+            mode="already_ready",
+            command=hermes_browserless_shell_command(config),
+            output=auth_detail,
+            running=False,
+        )
+    with HERMES_LOGIN_LOCK:
+        proc = HERMES_LOGIN_STATE.get("proc")
+        running = bool(proc and proc.poll() is None)
+    if running:
+        return hermes_browserless_snapshot(config)
+    if os.name == "nt":
+        return probe_hermes_model_login(config)
+    try:
+        import pty
+
+        master_fd, slave_fd = pty.openpty()
+        command = hermes_browserless_command(config)
+        command[0] = cli_path
+        env = hermes_environment(config)
+        env["PYTHONUNBUFFERED"] = "1"
+        proc = subprocess.Popen(
+            command,
+            cwd=str(ROOT_DIR),
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            env=env,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        session_id = f"hermes-{int(datetime.utcnow().timestamp())}"
+        with HERMES_LOGIN_LOCK:
+            HERMES_LOGIN_STATE.update(
+                {
+                    "id": session_id,
+                    "status": "browser_login_started",
+                    "title": "Conecta ChatGPT desde este navegador",
+                    "detail": "Sesion de Hermes abierta dentro de este servidor.",
+                    "output": "",
+                    "started_at": now_iso(),
+                    "updated_at": now_iso(),
+                    "proc": proc,
+                    "fd": master_fd,
+                    "command": hermes_browserless_shell_command(config),
+                }
+            )
+        threading.Thread(target=read_hermes_browserless_output, args=(session_id, master_fd, proc), name="hermes-browserless-login", daemon=True).start()
+        return hermes_connect_response(
+            "browser_login_started",
+            "Conecta ChatGPT desde este navegador",
+            "Abrí Hermes dentro de este servidor. Si aparece un enlace, ábrelo aquí. Si pide elegir proveedor o modelo, responde abajo.",
+            mode="browserless_started",
+            command=hermes_browserless_shell_command(config),
+            running=True,
+            job_id=session_id,
+            needs_input=True,
+        )
+    except Exception as exc:
+        return hermes_connect_response(
+            "needs_terminal",
+            "No pude abrir la sesión segura",
+            "Este servidor no permitió abrir Hermes desde el dashboard. Usa una API compatible o revisa la instalación con soporte.",
+            mode="browserless_error",
+            command=hermes_browserless_shell_command(config),
+            output=str(exc),
+        )
+
+
+def agent_model_connect_status(payload=None):
+    return hermes_browserless_snapshot(load_config())
+
+
+def agent_model_connect_input(payload=None):
+    text = str((payload or {}).get("input") or "")
+    if not text.strip():
+        return hermes_browserless_snapshot(load_config())
+    if not text.endswith("\n"):
+        text += "\n"
+    with HERMES_LOGIN_LOCK:
+        fd = HERMES_LOGIN_STATE.get("fd")
+        proc = HERMES_LOGIN_STATE.get("proc")
+        running = bool(proc and proc.poll() is None and fd is not None)
+    if not running:
+        return hermes_browserless_snapshot(load_config())
+    os.write(fd, text.encode("utf-8", errors="replace"))
+    return hermes_browserless_snapshot(load_config())
+
+
 def probe_hermes_model_login(config):
     cli = str(getattr(config, "hermes_cli", "") or "hermes").strip() or "hermes"
     try:
-        result = subprocess.run([cli, "model"], cwd=str(ROOT_DIR), text=True, capture_output=True, timeout=10, check=False)
+        result = subprocess.run([cli, "model", "--no-browser"], cwd=str(ROOT_DIR), text=True, capture_output=True, timeout=10, check=False)
     except FileNotFoundError:
         return hermes_connect_response(
             "not_installed",
@@ -1866,8 +2112,9 @@ def probe_hermes_model_login(config):
         return hermes_connect_response(
             "needs_login" if extract_urls_from_text(output) else "needs_terminal",
             "Hermes necesita terminar el login",
-            "No pude abrir una terminal en este entorno. Si apareció un enlace, ábrelo; si no, entra al servidor y ejecuta hermes model.",
+            "No pude abrir una terminal en este entorno. Si apareció un enlace, ábrelo; si no, usa Conectar desde este navegador o una API compatible.",
             mode="probe_timeout",
+            command=hermes_browserless_shell_command(config),
             output=output,
         )
     output = "\n".join([(result.stdout or ""), (result.stderr or "")]).strip()
@@ -1877,13 +2124,15 @@ def probe_hermes_model_login(config):
             "Conexión revisada",
             "Hermes terminó correctamente. Ahora revisa la conexión y prueba el chat.",
             mode="probe_completed",
+            command=hermes_browserless_shell_command(config),
             output=output,
         )
     return hermes_connect_response(
         "needs_login" if extract_urls_from_text(output) else "needs_terminal",
         "Falta terminar la conexión",
-        "Hermes respondió, pero todavía necesita que termines el login o elijas el proveedor en una terminal.",
+        "Hermes respondió, pero todavía necesita que termines el login o elijas el proveedor.",
         mode="probe_failed",
+        command=hermes_browserless_shell_command(config),
         output=output,
     )
 
@@ -1898,7 +2147,7 @@ def connect_agent_model(payload=None):
             "Sigue la ventana que se abrió. Cuando termines, vuelve al dashboard y toca Revisar conexión.",
             mode="terminal",
         )
-    return probe_hermes_model_login(config)
+    return start_hermes_browserless_login(config)
 
 
 def save_setup_config(payload):
@@ -5718,7 +5967,7 @@ function chatGptConnectMarkup(onboarding=false){
  const ready=hermesReady||directReady;
  const hermesMissing=runtime.status==='blocked';
  const command='hermes model';
- const vpsCommand='ssh root@IP-DE-TU-SERVIDOR\nhermes model';
+ const vpsCommand='hermes model --no-browser';
  const title=ready?(lang==='es'?'Modelo del agente conectado':'Agent model connected'):(lang==='es'?'Conecta el cerebro del agente':'Connect the agent brain');
  const body=ready?(directReady?(lang==='es'?`El manager ya puede conversar usando ${model.model||'el modelo configurado'} por API compatible OpenAI. Las acciones siguen pasando por tus reglas y aprobaciones.`:`The manager can now talk through ${model.model||'the configured model'} using an OpenAI-compatible API. Actions still go through your rules and approvals.`):(lang==='es'?'Hermes ya puede conversar usando tu sesion de ChatGPT/Codex. El chat, Telegram y las herramientas del agente quedan sobre esta conexión.':'Hermes can now talk through your ChatGPT/Codex session. Chat, Telegram, and agent tools use this connection.')):(onboarding?(lang==='es'?'Este paso va primero porque el producto se usa hablando con el agente. Elige login de ChatGPT/Codex con Hermes o pega una clave API compatible OpenAI.':'This step comes first because the product is used by talking with the agent. Choose ChatGPT/Codex login through Hermes or paste an OpenAI-compatible API key.'):(lang==='es'?'Elige cómo responderá el manager: ChatGPT/Codex con Hermes, MiniMax M3 o cualquier proveedor con URL compatible OpenAI.':'Choose how the manager replies: ChatGPT/Codex with Hermes, MiniMax M3, or any provider with an OpenAI-compatible URL.'));
  const badge=ready?(lang==='es'?'Listo':'Ready'):(hermesMissing?(lang==='es'?'Falta Hermes':'Hermes missing'):(lang==='es'?'Falta conectar':'Needs connection'));
@@ -5738,7 +5987,7 @@ function chatGptConnectMarkup(onboarding=false){
  const modelName=model.model||'MiniMax-M3';
  const api=model.api||'openai-chat-completions';
  const keyPlaceholder=model.api_key_set?(lang==='es'?'Clave guardada. Pega otra solo si quieres cambiarla.':'Key saved. Paste another only to replace it.'):(lang==='es'?'Pega la clave API del proveedor':'Paste the provider API key');
- return `<section class="chatgpt-connect-card ${ready?'ready':''}"><div class="chatgpt-connect-head"><div><h3>${title}</h3><p>${body}</p></div><span class="badge ${ready?'ok':'warn'}">${badge}</span></div><div class="model-route-grid"><div class="model-route-card"><span>1</span><b>${lang==='es'?'Conectar ChatGPT/Codex':'Connect ChatGPT/Codex'}</b><p>${lang==='es'?'Ruta recomendada: toca el botón y el dashboard intentará abrir la terminal para completar el login OAuth de ChatGPT/Codex.':'Recommended route: click the button and the dashboard will try to open the terminal to complete the ChatGPT/Codex OAuth login.'}</p><div class="chatgpt-command"><span>${lang==='es'?'Sin copiar pasos: intento abrirlo por ti.':'No copy-paste first: I will try to open it for you.'}</span><div class="mode-actions"><button class="btn primary" type="button" onclick="connectChatGpt(event)">${lang==='es'?'Conectar ahora':'Connect now'}</button><button class="btn" type="button" onclick="copyCommand(${JSON.stringify(command).replaceAll('"','&quot;')})">${lang==='es'?'Copiar comando':'Copy command'}</button></div></div><div id="chatgpt-connect-result" class="chatgpt-connect-result hidden"></div></div><div class="model-route-card"><span>2</span><b>${lang==='es'?'Usar una API compatible OpenAI':'Use an OpenAI-compatible API'}</b><p>${lang==='es'?'Ruta directa: pega URL, modelo y clave API. Sirve para MiniMax M3 u otro proveedor compatible.':'Direct route: paste URL, model, and API key. Works for MiniMax M3 or another compatible provider.'}</p><button class="btn primary" type="button" onclick="applyAgentModelPreset('minimax_m3')">MiniMax M3</button><button class="btn" type="button" onclick="applyAgentModelPreset('custom')">${lang==='es'?'Otra API':'Custom API'}</button></div></div><div class="chatgpt-steps">${steps.map(step=>`<div class="chatgpt-step"><span>${step[0]}</span><b>${step[1]}</b><p>${step[2]}</p></div>`).join('')}</div><form id="agent-model-form" class="form-grid model-provider-form" onsubmit="saveSetupConfig(event)">
+ return `<section class="chatgpt-connect-card ${ready?'ready':''}"><div class="chatgpt-connect-head"><div><h3>${title}</h3><p>${body}</p></div><span class="badge ${ready?'ok':'warn'}">${badge}</span></div><div class="model-route-grid"><div class="model-route-card"><span>1</span><b>${lang==='es'?'Conectar ChatGPT/Codex':'Connect ChatGPT/Codex'}</b><p>${lang==='es'?'Ruta recomendada: toca el botón. En PC/Mac abriré la terminal; en DigitalOcean/VPS mostraré aquí el login para hacerlo desde este navegador.':'Recommended route: click the button. On PC/Mac I open the terminal; on DigitalOcean/VPS I show the login here so it can be completed from this browser.'}</p><div class="chatgpt-command"><span>${lang==='es'?'Funciona también en DigitalOcean sin abrir navegador dentro del servidor.':'Works on DigitalOcean without opening a browser inside the server.'}</span><div class="mode-actions"><button class="btn primary" type="button" onclick="connectChatGpt(event)">${lang==='es'?'Conectar ahora':'Connect now'}</button><button class="btn" type="button" onclick="copyCommand(${JSON.stringify(command).replaceAll('"','&quot;')})">${lang==='es'?'Copiar comando':'Copy command'}</button></div></div><div id="chatgpt-connect-result" class="chatgpt-connect-result hidden"></div></div><div class="model-route-card"><span>2</span><b>${lang==='es'?'Usar una API compatible OpenAI':'Use an OpenAI-compatible API'}</b><p>${lang==='es'?'Ruta directa: pega URL, modelo y clave API. Sirve para MiniMax M3 u otro proveedor compatible.':'Direct route: paste URL, model, and API key. Works for MiniMax M3 or another compatible provider.'}</p><button class="btn primary" type="button" onclick="applyAgentModelPreset('minimax_m3')">MiniMax M3</button><button class="btn" type="button" onclick="applyAgentModelPreset('custom')">${lang==='es'?'Otra API':'Custom API'}</button></div></div><div class="chatgpt-steps">${steps.map(step=>`<div class="chatgpt-step"><span>${step[0]}</span><b>${step[1]}</b><p>${step[2]}</p></div>`).join('')}</div><form id="agent-model-form" class="form-grid model-provider-form" onsubmit="saveSetupConfig(event)">
  <div class="field"><label>${lang==='es'?'Motor del agente':'Agent engine'}</label><select name="agent_chat_provider"><option value="hermes" ${provider==='hermes'?'selected':''}>Hermes + ChatGPT/Codex</option><option value="minimax" ${provider==='minimax'?'selected':''}>MiniMax M3</option><option value="openai_compatible" ${provider==='openai_compatible'||provider==='openai'?'selected':''}>${lang==='es'?'API compatible OpenAI':'OpenAI-compatible API'}</option></select></div>
  <div class="field"><label>${lang==='es'?'Modelo':'Model'}</label><input name="agent_chat_model" value="${escapeHtml(modelName)}" placeholder="MiniMax-M3"></div>
  <div class="field wide"><label>${lang==='es'?'URL compatible OpenAI':'OpenAI-compatible URL'}</label><span class="field-help">${lang==='es'?'Debe usar https://. Solo se permite http:// para modelos locales como 127.0.0.1.':'Must use https://. http:// is allowed only for local models such as 127.0.0.1.'}</span><input name="agent_chat_base_url" value="${escapeHtml(base)}" placeholder="https://api.minimax.io/v1"></div>
@@ -5746,10 +5995,42 @@ function chatGptConnectMarkup(onboarding=false){
  <input type="hidden" name="agent_chat_api" value="${escapeHtml(api)}">
  <div class="field wide model-presets"><button class="btn" type="button" onclick="applyAgentModelPreset('hermes')">Hermes / ChatGPT</button><button class="btn primary" type="button" onclick="applyAgentModelPreset('minimax_m3')">MiniMax M3</button><button class="btn" type="button" onclick="applyAgentModelPreset('custom')">${lang==='es'?'Otra API':'Custom API'}</button></div>
  <div class="field wide"><button class="btn primary" type="submit">${lang==='es'?'Guardar modelo del agente':'Save agent model'}</button></div>
- </form><details class="helper-command"><summary>${lang==='es'?'Si instalaste en DigitalOcean':'If you installed on DigitalOcean'}</summary><span class="step-command">${lang==='es'?'Este login se hace dentro del servidor. Entra al servidor y ejecuta:':'This login runs inside the server. Enter the server and run:'}<br>${vpsCommand.replace('\n','<br>')}</span><button class="btn" type="button" onclick="copyCommand(${JSON.stringify(vpsCommand).replaceAll('"','&quot;')})">${lang==='es'?'Copiar ejemplo VPS':'Copy VPS example'}</button></details><div class="chatgpt-foot"><p>${lang==='es'?'Estado técnico para soporte':'Technical status'}: ${escapeHtml(detail||'-')}</p><div class="mode-actions"><button class="btn" type="button" onclick="load()">${lang==='es'?'Ya lo hice, revisar conexión':'I did it, recheck'}</button><button class="btn ask-btn" type="button" onclick="openChat(${JSON.stringify(draft).replaceAll('"','&quot;')})">${t('ask_agent')}</button></div></div></section>`;
+ </form><details class="helper-command"><summary>${lang==='es'?'DigitalOcean/VPS':'DigitalOcean/VPS'}</summary><span class="step-command">${lang==='es'?'No necesitas abrir un navegador en el servidor. El dashboard corre Hermes dentro del VPS y te muestra aquí el enlace de ChatGPT. Comando técnico usado por soporte:':'You do not need to open a browser inside the server. The dashboard runs Hermes inside the VPS and shows the ChatGPT link here. Technical support command:'}<br>${vpsCommand}</span></details><div class="chatgpt-foot"><p>${lang==='es'?'Estado técnico para soporte':'Technical status'}: ${escapeHtml(detail||'-')}</p><div class="mode-actions"><button class="btn" type="button" onclick="load()">${lang==='es'?'Ya lo hice, revisar conexión':'I did it, recheck'}</button><button class="btn ask-btn" type="button" onclick="openChat(${JSON.stringify(draft).replaceAll('"','&quot;')})">${t('ask_agent')}</button></div></div></section>`;
 }
 function renderChatGptPanel(){
  qs('#chatgpt-panel').innerHTML=chatGptConnectMarkup(false);
+}
+let chatGptConnectPollTimer=null;
+function scheduleChatGptConnectPoll(result){
+ const r=result?.result||result||{};
+ const status=String(r.status||'');
+ const shouldPoll=Boolean(r.running)||['browser_login_started','browser_login_waiting','needs_login'].includes(status);
+ if(chatGptConnectPollTimer)clearTimeout(chatGptConnectPollTimer);
+ if(!shouldPoll)return;
+ chatGptConnectPollTimer=setTimeout(()=>pollChatGptConnection(),2400);
+}
+async function pollChatGptConnection(){
+ try{
+  const res=await api('/api/agent-model/connect-status',{method:'POST',body:'{}'});
+  renderChatGptConnectResult(res);
+  if((res.result?.status||res.status)==='completed')await load();
+ }catch(_err){
+  if(chatGptConnectPollTimer)clearTimeout(chatGptConnectPollTimer);
+ }
+}
+async function sendChatGptTerminalInput(event){
+ event.preventDefault();
+ const form=event.target;
+ const input=(new FormData(form).get('input')||'').toString();
+ if(!input.trim())return;
+ const btn=form.querySelector('button');if(btn)btn.disabled=true;
+ try{
+  const res=await api('/api/agent-model/connect-input',{method:'POST',body:JSON.stringify({input})});
+  form.reset();
+  renderChatGptConnectResult(res);
+ }finally{
+  if(btn)btn.disabled=false;
+ }
 }
 function renderChatGptConnectResult(response){
  const box=qs('#chatgpt-connect-result');if(!box)return;
@@ -5757,9 +6038,12 @@ function renderChatGptConnectResult(response){
  const status=String(r.status||'');
  const urls=Array.isArray(r.urls)?r.urls:[];
  const output=String(r.output||'').trim();
+ const running=Boolean(r.running);
  const titles={
   terminal_opened:lang==='es'?'Terminal abierta':'Terminal opened',
   completed:lang==='es'?'Conexión revisada':'Connection checked',
+  browser_login_started:lang==='es'?'Login abierto en el servidor':'Server login started',
+  browser_login_waiting:lang==='es'?'Hermes está esperando':'Hermes is waiting',
   needs_login:lang==='es'?'Termina el login':'Finish login',
   needs_terminal:lang==='es'?'Necesita una terminal':'Terminal needed',
   not_installed:lang==='es'?'Hermes no está instalado':'Hermes is not installed'
@@ -5768,23 +6052,26 @@ function renderChatGptConnectResult(response){
  const title=escapeHtml(r.title||titles[status]||fallbackTitle);
  const detail=escapeHtml(r.detail||'');
  const links=urls.length?`<div class="onboarding-step-actions">${urls.map(url=>`<a class="btn primary" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${lang==='es'?'Abrir login':'Open login'}</a>`).join('')}</div>`:'';
- const command=status==='needs_terminal'||status==='not_installed'?`<details class="helper-command"><summary>${lang==='es'?'Plan B manual':'Manual fallback'}</summary><span class="step-command">${escapeHtml(r.command||'hermes model')}</span><button class="btn" type="button" onclick="copyCommand(${JSON.stringify(r.command||'hermes model').replaceAll('"','&quot;')})">${t('copy_command')}</button></details>`:'';
- const outputBlock=output?`<details class="helper-command"><summary>${lang==='es'?'Detalle que devolvió Hermes':'Hermes detail'}</summary><pre class="chatgpt-terminal-output">${escapeHtml(output)}</pre></details>`:'';
- const review=status==='terminal_opened'||status==='completed'||status==='needs_login'?`<button class="btn" type="button" onclick="load()">${lang==='es'?'Revisar conexión':'Recheck connection'}</button>`:'';
- box.innerHTML=`<b>${title}</b><p>${detail}</p>${links}${command}${outputBlock}${review?`<div class="onboarding-step-actions">${review}</div>`:''}`;
+ const inputBox=running&&r.needs_input?`<form class="onboarding-mini chatgpt-inline-input" onsubmit="sendChatGptTerminalInput(event)"><label>${lang==='es'?'Responder a Hermes':'Reply to Hermes'}<input name="input" autocomplete="off" placeholder="${lang==='es'?'Ej: número de OpenAI Codex o Enter':'Ex: OpenAI Codex number or Enter'}"></label><button class="btn primary" type="submit">${lang==='es'?'Enviar':'Send'}</button></form>`:'';
+ const command=status==='needs_terminal'||status==='not_installed'?`<details class="helper-command"><summary>${lang==='es'?'Comando técnico para soporte':'Technical support command'}</summary><span class="step-command">${escapeHtml(r.command||'hermes model --no-browser')}</span><button class="btn" type="button" onclick="copyCommand(${JSON.stringify(r.command||'hermes model --no-browser').replaceAll('"','&quot;')})">${t('copy_command')}</button></details>`:'';
+ const outputBlock=output?`<details class="helper-command" ${running?'open':''}><summary>${lang==='es'?'Pantalla de Hermes':'Hermes screen'}</summary><pre class="chatgpt-terminal-output">${escapeHtml(output)}</pre></details>`:'';
+ const review=status==='terminal_opened'||status==='completed'||status==='needs_login'||status==='browser_login_started'||status==='browser_login_waiting'?`<button class="btn" type="button" onclick="pollChatGptConnection()">${lang==='es'?'Revisar conexión':'Recheck connection'}</button>`:'';
+ box.innerHTML=`<b>${title}</b><p>${detail}</p>${links}${outputBlock}${inputBox}${command}${review?`<div class="onboarding-step-actions">${review}</div>`:''}`;
  box.classList.remove('hidden');
+ scheduleChatGptConnectPoll(r);
 }
 async function connectChatGpt(event){
  const btn=event?.currentTarget||event?.target;
  const box=qs('#chatgpt-connect-result');
  if(btn)btn.disabled=true;
- if(box){box.classList.remove('hidden');box.innerHTML=`<b>${lang==='es'?'Conectando...':'Connecting...'}</b><p>${lang==='es'?'Estoy intentando abrir Hermes por ti.':'I am trying to open Hermes for you.'}</p>`}
+ if(box){box.classList.remove('hidden');box.innerHTML=`<b>${lang==='es'?'Conectando...':'Connecting...'}</b><p>${lang==='es'?'Estoy abriendo Hermes por ti. En VPS aparecerá aquí mismo el login.':'I am opening Hermes for you. On VPS the login appears here.'}</p>`}
  try{
   const res=await api('/api/agent-model/connect',{method:'POST',body:'{}'});
   renderChatGptConnectResult(res);
   const status=res.result?.status||res.status;
   if(status==='terminal_opened')toast(lang==='es'?'Abrí la terminal para conectar ChatGPT/Codex.':'Opened the terminal to connect ChatGPT/Codex.');
   else if(status==='completed')toast(lang==='es'?'Hermes respondió correctamente.':'Hermes responded successfully.');
+  else if(String(status).startsWith('browser_login'))toast(lang==='es'?'Login de Hermes abierto aquí.':'Hermes login opened here.');
  }catch(err){
   if(box){box.classList.remove('hidden');box.innerHTML=`<b>${lang==='es'?'No pude abrirlo todavía':'Could not open it yet'}</b><p>${escapeHtml(err.message||String(err))}</p>`}
  }finally{
@@ -6167,7 +6454,7 @@ load();
 class DashboardHandler(BaseHTTPRequestHandler):
     HTML_PATHS = {"/", "/dashboard"}
     PROTECTED_GET_PATHS = {"/api/dashboard", "/api/export", "/api/report", "/api/setup", "/api/social/auth-status", "/api/social/accounts", "/api/update/snapshots", "/api/creative-asset"}
-    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/agent-model/connect", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/product", "/api/ad-briefs", "/api/codex/creative-plan", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/complete", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
+    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/agent-model/connect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/product", "/api/ad-briefs", "/api/codex/creative-plan", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/complete", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
     ONBOARDING_OPEN_GETS = {"/api/dashboard", "/api/setup"}
     ONBOARDING_OPEN_POSTS = {"/api/dashboard-password", "/api/business-profile", "/api/business-profile/scan", "/api/license/activate"}
     GET_JSON_ROUTES = {
@@ -6187,6 +6474,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         "/api/social/default-account": social_set_default_account,
         "/api/social/discover-assets": social_discover_assets,
         "/api/agent-model/connect": connect_agent_model,
+        "/api/agent-model/connect-status": agent_model_connect_status,
+        "/api/agent-model/connect-input": agent_model_connect_input,
         "/api/targeting/search": meta_targeting_search,
         "/api/audience-strategy": lambda payload: create_audience_strategy(payload, payload.get("language", "es")),
         "/api/business-profile": save_business_context,

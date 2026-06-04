@@ -89,14 +89,19 @@ Despues de instalar, el onboarding inicial muestra el paso `Conectar ChatGPT al 
 La tarjeta te guia con palabras simples:
 
 1. Tocar `Conectar ahora` en el dashboard.
-2. Si se abre una terminal, seguir esa ventana.
-3. Elegir `OpenAI Codex`.
-4. Iniciar sesion con la cuenta ChatGPT del comprador.
-5. Volver al dashboard y tocar `Revisar conexion`.
+2. Si estas en PC/Mac y se abre una terminal, seguir esa ventana.
+3. Si estas en DigitalOcean/VPS, el dashboard muestra la pantalla de Hermes dentro del navegador.
+4. Abrir el enlace de ChatGPT que aparezca, iniciar sesion con la cuenta ChatGPT del comprador y volver al dashboard.
+5. Si Hermes pide elegir proveedor/modelo, responder en la caja del dashboard.
+6. Tocar `Revisar conexion`.
 
-Si Docker o el VPS no permiten abrir una terminal visual, el dashboard mostrara el plan B: entrar al servidor y ejecutar `hermes model`.
+En DigitalOcean no hace falta abrir un navegador dentro del servidor ni entrar por SSH para este paso. El dashboard corre Hermes dentro del Droplet usando el modo sin navegador:
 
-Si la instalacion vive en DigitalOcean, ese comando se corre dentro del Droplet por SSH o consola web de DigitalOcean. No se corre en la laptop del comprador, porque el agente esta viviendo en el servidor.
+```bash
+hermes model --no-browser
+```
+
+Ese comando queda como referencia tecnica para soporte. El comprador deberia poder hacerlo desde el boton `Conectar ahora`.
 
 El contenedor crea las guias base si no existen:
 

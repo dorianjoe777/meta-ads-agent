@@ -14,7 +14,7 @@ The agent now uses Hermes as the main reasoning/runtime layer. The product still
 1. The dashboard sends the user's chat message plus current account context to `/api/chat`.
 2. `src/agent_runtime.py` loads the profile files and builds one combined system prompt.
 3. `src/agent_chat.py` sends the profile and account context through `src/hermes_bridge.py`.
-4. Hermes runs the conversation using the buyer's configured Hermes model. The buyer-facing default is `OpenAI Codex` through `hermes model`, which uses the buyer's ChatGPT/Codex OAuth session. Advanced installs can instead set `AGENT_CHAT_PROVIDER=minimax` or `AGENT_CHAT_PROVIDER=openai_compatible` to use MiniMax M3, OpenRouter, Groq, Together, LM Studio, or another OpenAI-compatible `/chat/completions` URL.
+4. Hermes runs the conversation using the buyer's configured Hermes model. The buyer-facing default is `OpenAI Codex` through Hermes, which uses the buyer's ChatGPT/Codex OAuth session. Advanced installs can instead set `AGENT_CHAT_PROVIDER=minimax` or `AGENT_CHAT_PROVIDER=openai_compatible` to use MiniMax M3, OpenRouter, Groq, Together, LM Studio, or another OpenAI-compatible `/chat/completions` URL.
 5. If Hermes returns a tool request, the dashboard executes it through `execute_agent_tool()` and the normal approval queue.
 6. The backend returns the final manager reply to the chat bubble or Telegram.
 
@@ -44,13 +44,19 @@ The current scanner is intentionally local and simple: HTTP fetch plus HTML pars
 
 ### Hermes + ChatGPT/Codex
 
-The recommended buyer default does not ask for an OpenAI API key for chat. The dashboard first tries to launch the Hermes login automatically with:
+The recommended buyer default does not ask for an OpenAI API key for chat. On local desktop installs, the dashboard first tries to launch Hermes in the system terminal with:
 
 ```bash
 hermes model
 ```
 
-They choose `OpenAI Codex`, complete the OAuth/device login with their ChatGPT account, and Hermes stores those credentials in its own auth store. Our product only calls Hermes; it does not store the buyer's ChatGPT password or OAuth token.
+On Docker, DigitalOcean, or other headless VPS installs, the dashboard starts a restricted Hermes pseudo-terminal in the server with:
+
+```bash
+hermes model --no-browser
+```
+
+The buyer sees the Hermes output inside the dashboard, opens any ChatGPT login link in their own browser, and can answer simple Hermes prompts from the dashboard. Hermes stores the OAuth credentials in its own auth store on that install. Our product only calls Hermes; it does not store the buyer's ChatGPT password or OAuth token.
 
 ### Direct OpenAI-Compatible API
 

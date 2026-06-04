@@ -383,7 +383,7 @@ def handle_text(config, chat_id, text, send=True, image_paths=None, reply_approv
             result = agent_chat(config, payload)
             tool_result = None
             if result.get("fallback") and config.agent_chat_provider == "hermes":
-                reply = result.get("reply") or "Todavia falta conectar Hermes. Ejecuta hermes model y elige OpenAI Codex para usar tu suscripcion de ChatGPT."
+                reply = result.get("reply") or "Todavia falta conectar Hermes. Abre Configuracion > Conectar ChatGPT. En VPS/DigitalOcean el dashboard te mostrara el login desde el navegador."
             elif result.get("fallback") and not config.agent_chat_api_key:
                 reply = "Todavia falta conectar el motor del agente."
             else:

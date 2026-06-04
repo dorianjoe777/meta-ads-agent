@@ -173,8 +173,8 @@ def agent_chat_section(config, agent_profile):
         direct_detail = "Optional unless AGENT_CHAT_PROVIDER is minimax/openai_compatible/openai."
     entries = [
         item("chat_provider", "Agent chat provider", "ok" if config.agent_chat_provider in {"hermes", "minimax", "openai_compatible", "openai"} else "blocked", config.agent_chat_provider, "Recommended provider: hermes, or openai_compatible for MiniMax M3/custom URLs."),
-        item("hermes_runtime", "Hermes runtime", hermes_runtime_status, hermes_runtime_detail, "Install Hermes, then run hermes model and choose OpenAI Codex / ChatGPT OAuth."),
-        item("hermes_auth", "Hermes ChatGPT/Codex login", hermes_auth_status, hermes_auth["detail"], "Run hermes model, choose OpenAI Codex, and sign in with the buyer's ChatGPT subscription."),
+        item("hermes_runtime", "Hermes runtime", hermes_runtime_status, hermes_runtime_detail, "Install Hermes, then use the dashboard ChatGPT connection step. VPS installs use hermes model --no-browser."),
+        item("hermes_auth", "Hermes ChatGPT/Codex login", hermes_auth_status, hermes_auth["detail"], "Use Configuracion > Conectar ChatGPT. On VPS the dashboard shows the Hermes login from the browser."),
         item("openai_compatible_model", "OpenAI-compatible model", "ok" if direct_ready else ("blocked" if direct_selected else "warn"), direct_detail, "Set AGENT_CHAT_PROVIDER=openai_compatible, AGENT_CHAT_BASE_URL, AGENT_CHAT_MODEL, and AGENT_CHAT_API_KEY."),
         item("chat_model", "Agent chat model", "ok", config.hermes_model if config.agent_chat_provider == "hermes" else config.agent_chat_model or "MiniMax-M3"),
         item("agent_profile", "Agent profile files", "ok" if not agent_profile["missing"] else "blocked", f"{len(agent_profile['sections'])}/5 loaded from {agent_profile['dir']}", "Restore agent/SOUL.md, AGENTS.md, TOOLS.md, SKILLS.md, and USER.md." if agent_profile["missing"] else ""),

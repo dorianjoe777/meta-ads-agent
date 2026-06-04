@@ -208,13 +208,14 @@ def setup_reply(language="es"):
         return (
             "Todavia falta conectar Hermes. En esta instalacion el agente debe funcionar con Hermes y la sesion "
             "ChatGPT/Codex del comprador. Abre Configuracion > Conectar ChatGPT para ver los pasos guiados. "
-            "El paso clave es abrir una terminal en este equipo y ejecutar: `hermes model`. Elige `OpenAI Codex`, "
-            "inicia sesion con tu cuenta de ChatGPT y vuelve al dashboard."
+            "En PC/Mac se abre la terminal; en VPS/DigitalOcean el dashboard muestra el login de Hermes desde el navegador. "
+            "El comando tecnico de soporte es `hermes model --no-browser`."
         )
     return (
         "Hermes is not connected yet. This install expects Hermes to use the buyer's ChatGPT/Codex session. "
         "Open Setup > Connect ChatGPT for guided steps. The key step is opening a terminal on this machine, "
-        "running `hermes model`, choosing `OpenAI Codex`, signing in, then returning to the dashboard."
+        "or using the browser-based Hermes login bridge on VPS/DigitalOcean. The technical support command is "
+        "`hermes model --no-browser`."
     )
 
 
