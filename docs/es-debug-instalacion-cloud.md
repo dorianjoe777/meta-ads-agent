@@ -2,6 +2,14 @@
 
 Esta nota existe para futuras sesiones de Codex y para soporte tecnico. Resume que puede romperse cuando un comprador instala desde `https://admiroia.uboost.lat/access`, como diagnosticarlo rapido y que relacion tiene cada pieza con el flujo completo.
 
+Para publicar cambios de producto, primero revisar la checklist especifica:
+
+```text
+docs/es-checklist-publicacion-release-estable.md
+```
+
+Esa checklist evita confundir "rama subida a GitHub" con "asset estable realmente descargado por DigitalOcean".
+
 ## Cadena de instalacion
 
 La instalacion cloud funciona como una cadena:
