@@ -90,7 +90,7 @@ Then open `http://127.0.0.1:7871` on your own computer.
 
 The product starts as `Con supervision`. That means it reads real Meta data, writes reports, prepares approval items, and does not execute risky changes by surprise.
 
-The installer also generates a dashboard password and locks down `.env`, `dashboard/data`, `output`, and `logs`.
+The installer leaves the dashboard password empty so the buyer creates it during onboarding. It also locks down `.env`, `dashboard/data`, `output`, and `logs`.
 
 Real account changes require:
 
