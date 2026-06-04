@@ -119,6 +119,18 @@ Si aparece `No such file or directory: /usr/local/bin/meta-ads-refresh-access`, 
 El HTTPS cloud depende de estas variables en el servidor de licencias:
 
 ```text
+DNS_PROVIDER=vercel
+CLOUD_DASHBOARD_BASE_DOMAIN=cloud.admiroia.uboost.lat
+VERCEL_DNS_DOMAIN=uboost.lat
+VERCEL_DNS_TOKEN=...
+VERCEL_DNS_TEAM_ID=...       # opcional
+VERCEL_DNS_TEAM_SLUG=...     # opcional
+```
+
+Cloudflare queda disponible solo si el DNS se mueve a Cloudflare:
+
+```text
+DNS_PROVIDER=cloudflare
 CLOUD_DASHBOARD_BASE_DOMAIN=cloud.admiroia.uboost.lat
 CLOUDFLARE_ZONE_ID=...
 CLOUDFLARE_API_TOKEN=...
@@ -129,7 +141,7 @@ Si faltan, la instalacion no debe romperse: vuelve al dashboard por IP en HTTP.
 
 Si el dominio HTTPS no abre:
 
-1. Revisar que el registro A exista y apunte al IPv4 del Droplet.
+1. Revisar que el registro A exista en Vercel DNS y apunte al IPv4 del Droplet.
 2. Revisar que el firewall mantenga `80` publico y `443` para la IP autorizada.
 3. Revisar Caddy:
 

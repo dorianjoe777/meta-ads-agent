@@ -14,7 +14,7 @@ El comprador entra a `https://admiroia.uboost.lat/access`, valida su email de co
 6. Deja SSH abierto solo con llave para recuperacion, con contrasena SSH desactivada.
 7. Deja el dashboard disponible en el puerto `7871`, protegido por firewall e inicio de sesion.
 8. Crea un enlace seguro para abrir el dashboard aunque la IP del comprador cambie.
-9. Si el servidor de licencias tiene DNS configurado, crea un subdominio HTTPS y un certificado gratis de Let's Encrypt.
+9. Si el servidor de licencias tiene DNS configurado en Vercel, crea un subdominio HTTPS y un certificado gratis de Let's Encrypt.
 
 ## Que necesita el comprador
 
@@ -89,6 +89,8 @@ https://tu-servidor.cloud.admiroia.uboost.lat
 ```
 
 Esto quita el aviso de `No seguro` del navegador. No cambia la propiedad del servidor: el Droplet sigue estando en la cuenta de DigitalOcean del comprador.
+
+El hosting del portal puede seguir en Vercel. Solo usamos la API de Vercel DNS para crear automaticamente el registro A que apunta al Droplet.
 
 El enlace de apertura usa una clave larga generada durante la instalacion. No contiene el token de DigitalOcean. No permite controlar el agente. Solo permite preparar la red actual para que el dashboard pueda cargar.
 

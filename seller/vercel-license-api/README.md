@@ -18,8 +18,10 @@ Optional environment variables:
 - `GITHUB_RELEASE_TOKEN` for private GitHub release assets registered as `https://api.github.com/repos/OWNER/REPO/releases/assets/ASSET_ID`
 - `RELEASE_PROXY_DOWNLOADS=true` to proxy every release source instead of redirecting public storage URLs. Private GitHub asset URLs are always proxied.
 - `CLOUD_DASHBOARD_BASE_DOMAIN=cloud.admiroia.uboost.lat` to create one HTTPS subdomain per DigitalOcean install.
-- `CLOUDFLARE_ZONE_ID` and `CLOUDFLARE_API_TOKEN` to create those DNS records automatically. Cloudflare's free DNS plan is enough; this does not require an extra paid server.
-- `CLOUDFLARE_DNS_PROXIED=false` is the recommended default because Droplet firewall access is restricted to the buyer's current IP.
+- `DNS_PROVIDER=vercel` is recommended when the domain is managed in Vercel DNS.
+- `VERCEL_DNS_TOKEN` and `VERCEL_DNS_DOMAIN=uboost.lat` let the portal create those DNS records automatically while Vercel keeps hosting the access portal.
+- `VERCEL_DNS_TEAM_ID` or `VERCEL_DNS_TEAM_SLUG` is optional when the domain belongs to a Vercel team.
+- `DNS_PROVIDER=cloudflare`, `CLOUDFLARE_ZONE_ID`, `CLOUDFLARE_API_TOKEN`, and `CLOUDFLARE_DNS_PROXIED=false` remain available if the DNS zone later moves to Cloudflare.
 
 Routes:
 
@@ -63,6 +65,6 @@ DigitalOcean guided install:
 - The generated Droplet uses cloud-init to download the private source release through a signed `/api/download/release` URL.
 - The Droplet stores the buyer's DigitalOcean token locally so the dashboard can refresh strict firewall access later.
 - The Droplet also runs a tiny secret access gate on port `7870`; the portal shows `Abrir mi dashboard`, which asks the Droplet to authorize the buyer's current IP and then redirects to the dashboard on port `7871`.
-- If `CLOUD_DASHBOARD_BASE_DOMAIN` and Cloudflare DNS credentials are configured, the portal creates a per-install subdomain and the Droplet installs Caddy with a free Let's Encrypt certificate. The access gate then redirects to the HTTPS dashboard.
+- If `CLOUD_DASHBOARD_BASE_DOMAIN` and DNS provider credentials are configured, the portal creates a per-install subdomain and the Droplet installs Caddy with a free Let's Encrypt certificate. The access gate then redirects to the HTTPS dashboard.
 - The direct dashboard port remains restricted to the last authorized buyer IP. SSH remains key-only recovery, not the main buyer flow.
 - Recommended scoped DigitalOcean token permissions: Droplets create/read, Firewalls create/read/update, SSH Keys create/read, Tags create/read.

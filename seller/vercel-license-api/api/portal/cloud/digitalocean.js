@@ -20,6 +20,7 @@ const CLOUD_ACCESS_PORT = "7870";
 const CLOUD_HTTPS_PORT = "443";
 const CLOUD_HTTP_CHALLENGE_PORT = "80";
 const CLOUDFLARE_API = "https://api.cloudflare.com/client/v4";
+const VERCEL_API = "https://api.vercel.com";
 
 function baseUrl(request) {
   const host = String(request.headers["x-forwarded-host"] || request.headers.host || "").trim();
@@ -66,12 +67,24 @@ function cloudDashboardBaseDomain() {
   return /^[a-z0-9.-]{4,253}$/.test(cleaned) && cleaned.includes(".") ? cleaned : "";
 }
 
+function cloudDnsProvider() {
+  const configured = String(process.env.DNS_PROVIDER || process.env.CLOUD_DASHBOARD_DNS_PROVIDER || "").trim().toLowerCase();
+  if (configured === "vercel" || configured === "cloudflare") return configured;
+  if (String(process.env.VERCEL_DNS_TOKEN || "").trim()) return "vercel";
+  if (String(process.env.CLOUDFLARE_API_TOKEN || "").trim()) return "cloudflare";
+  return "";
+}
+
 function cloudDnsAutomationConfigured() {
-  return Boolean(
-    cloudDashboardBaseDomain() &&
-    String(process.env.CLOUDFLARE_API_TOKEN || "").trim() &&
-    String(process.env.CLOUDFLARE_ZONE_ID || "").trim()
-  );
+  const provider = cloudDnsProvider();
+  if (!cloudDashboardBaseDomain()) return false;
+  if (provider === "vercel") {
+    return Boolean(String(process.env.VERCEL_DNS_TOKEN || "").trim() && vercelDnsDomain());
+  }
+  if (provider === "cloudflare") {
+    return Boolean(String(process.env.CLOUDFLARE_API_TOKEN || "").trim() && String(process.env.CLOUDFLARE_ZONE_ID || "").trim());
+  }
+  return false;
 }
 
 function cloudHostnameForInstall(id = "") {
@@ -141,10 +154,136 @@ async function ensureCloudflareDnsRecord(hostname = "", ip = "") {
   }
   return {
     status: "active",
+    provider: "cloudflare",
     hostname: host,
     record_id: writeData.result?.id || existing?.id || "",
     proxied: body.proxied
   };
+}
+
+function vercelDnsDomain() {
+  const raw = String(process.env.VERCEL_DNS_DOMAIN || process.env.VERCEL_DOMAIN || "").trim().toLowerCase();
+  const cleaned = raw.replace(/^https?:\/\//, "").replace(/\/.*$/, "").replace(/^\.+|\.+$/g, "");
+  return /^[a-z0-9.-]{4,253}$/.test(cleaned) && cleaned.includes(".") ? cleaned : "";
+}
+
+function vercelRecordName(hostname = "", domain = "") {
+  const host = String(hostname || "").trim().toLowerCase().replace(/^\.+|\.+$/g, "");
+  const zone = String(domain || "").trim().toLowerCase().replace(/^\.+|\.+$/g, "");
+  if (!host || !zone || host === zone || !host.endsWith(`.${zone}`)) return "";
+  const relative = host.slice(0, -(zone.length + 1));
+  return /^[a-z0-9._-]{1,253}$/.test(relative) ? relative : "";
+}
+
+function withVercelTeamParams(path = "") {
+  const url = new URL(`${VERCEL_API}${path}`);
+  const teamId = String(process.env.VERCEL_DNS_TEAM_ID || process.env.VERCEL_TEAM_ID || "").trim();
+  const slug = String(process.env.VERCEL_DNS_TEAM_SLUG || process.env.VERCEL_TEAM_SLUG || "").trim();
+  if (teamId) url.searchParams.set("teamId", teamId);
+  if (slug) url.searchParams.set("slug", slug);
+  return url.toString();
+}
+
+async function vercelRequest(path, { method = "GET", body = null } = {}) {
+  const token = String(process.env.VERCEL_DNS_TOKEN || "").trim();
+  if (!token) {
+    return { ok: false, status: 401, data: {}, detail: "Token DNS de Vercel no configurado." };
+  }
+  const upstream = await fetch(withVercelTeamParams(path), {
+    method,
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json",
+      "Accept": "application/json"
+    },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  const data = await upstream.json().catch(() => ({}));
+  return {
+    ok: upstream.ok,
+    status: upstream.status,
+    data,
+    detail: data?.error?.message || data?.message || ""
+  };
+}
+
+async function ensureVercelDnsRecord(hostname = "", ip = "") {
+  const host = String(hostname || "").trim().toLowerCase();
+  const content = validIpv4(ip);
+  const domain = vercelDnsDomain();
+  const name = vercelRecordName(host, domain);
+  if (!host || !content) return { status: "not_needed" };
+  if (!domain || !name) {
+    return { status: "not_configured", provider: "vercel", detail: "DNS cloud de Vercel no configurado para este dominio." };
+  }
+  const listed = await vercelRequest(`/v4/domains/${encodeURIComponent(domain)}/records?limit=100`);
+  if (!listed.ok) {
+    return { status: "failed", provider: "vercel", detail: listed.detail || "No pude revisar el DNS en Vercel." };
+  }
+  const records = Array.isArray(listed.data?.records)
+    ? listed.data.records
+    : (Array.isArray(listed.data?.dnsRecords) ? listed.data.dnsRecords : []);
+  const existing = records.find((record) => {
+    const recordName = String(record.name || "").trim().toLowerCase();
+    const recordType = String(record.type || record.recordType || "").trim().toUpperCase();
+    return recordName === name && recordType === "A";
+  });
+  const body = {
+    name,
+    type: "A",
+    value: content,
+    ttl: 60,
+    comment: "Admiro AI cloud dashboard"
+  };
+  const existingValue = String(existing?.value || existing?.content || existing?.data || "").trim();
+  if (existing && existingValue === content) {
+    return {
+      status: "active",
+      provider: "vercel",
+      hostname: host,
+      record_id: existing.id || existing.uid || ""
+    };
+  }
+  if (existing?.id || existing?.uid) {
+    const recordId = existing.id || existing.uid;
+    const updated = await vercelRequest(`/v1/domains/records/${encodeURIComponent(recordId)}`, {
+      method: "PATCH",
+      body
+    });
+    if (!updated.ok) {
+      return { status: "failed", provider: "vercel", detail: updated.detail || "No pude actualizar el DNS en Vercel." };
+    }
+    return {
+      status: "active",
+      provider: "vercel",
+      hostname: host,
+      record_id: updated.data?.id || updated.data?.uid || recordId
+    };
+  }
+  const created = await vercelRequest(`/v2/domains/${encodeURIComponent(domain)}/records`, {
+    method: "POST",
+    body
+  });
+  if (!created.ok) {
+    return { status: "failed", provider: "vercel", detail: created.detail || "No pude crear el DNS en Vercel." };
+  }
+  return {
+    status: "active",
+    provider: "vercel",
+    hostname: host,
+    record_id: created.data?.uid || created.data?.id || ""
+  };
+}
+
+async function ensureCloudDnsRecord(hostname = "", ip = "") {
+  const provider = cloudDnsProvider();
+  if (provider === "vercel") {
+    return ensureVercelDnsRecord(hostname, ip);
+  }
+  if (provider === "cloudflare") {
+    return ensureCloudflareDnsRecord(hostname, ip);
+  }
+  return { status: "not_configured", provider: "", detail: "DNS cloud no configurado en el servidor de licencias." };
 }
 
 async function ensureSshKey(token, name, publicKey) {
@@ -362,7 +501,7 @@ async function refreshCloudIpFromDigitalOcean(record, digitalOceanToken = "") {
   const accessGatePort = cleanPort(cloud.access_gate_port, CLOUD_ACCESS_PORT);
   const dashboardPort = cleanPort(cloud.dashboard_port, "7871");
   const cloudHostname = String(cloud.cloud_hostname || cloud.cloud_dashboard_hostname || "").trim().toLowerCase();
-  const dns = cloudHostname ? await ensureCloudflareDnsRecord(cloudHostname, ip).catch((error) => ({ status: "failed", detail: String(error?.message || error) })) : { status: "not_needed" };
+  const dns = cloudHostname ? await ensureCloudDnsRecord(cloudHostname, ip).catch((error) => ({ status: "failed", detail: String(error?.message || error) })) : { status: "not_needed" };
   const urls = dashboardUrls({
     ip,
     dashboardPort,
@@ -376,6 +515,7 @@ async function refreshCloudIpFromDigitalOcean(record, digitalOceanToken = "") {
     ...urls,
     cloud_hostname: cloudHostname,
     dns_status: dns.status,
+    dns_provider: dns.provider || cloud.dns_provider || cloudDnsProvider() || "",
     dns_record_id: dns.record_id || cloud.dns_record_id || "",
     dns_error: dns.status === "failed" ? dns.detail || "No pude crear el DNS cloud." : "",
     cloud_access_secret: accessSecret || cloud.cloud_access_secret || "",
@@ -413,7 +553,7 @@ async function runtimeReport(body = {}, response) {
   const dashboardPort = cleanPort(body.dashboard_port, "7871");
   const accessGatePort = cleanPort(cloud.access_gate_port, CLOUD_ACCESS_PORT);
   const cloudHostname = String(body.cloud_dashboard_hostname || body.cloud_hostname || cloud.cloud_hostname || "").trim().toLowerCase();
-  const dns = cloudHostname ? await ensureCloudflareDnsRecord(cloudHostname, ip).catch((error) => ({ status: "failed", detail: String(error?.message || error) })) : { status: "not_needed" };
+  const dns = cloudHostname ? await ensureCloudDnsRecord(cloudHostname, ip).catch((error) => ({ status: "failed", detail: String(error?.message || error) })) : { status: "not_needed" };
   const urls = dashboardUrls({
     ip,
     dashboardPort,
@@ -432,6 +572,7 @@ async function runtimeReport(body = {}, response) {
       ...urls,
       cloud_hostname: cloudHostname,
       dns_status: dns.status,
+      dns_provider: dns.provider || cloud.dns_provider || cloudDnsProvider() || "",
       dns_record_id: dns.record_id || cloud.dns_record_id || "",
       dns_error: dns.status === "failed" ? dns.detail || "No pude crear el DNS cloud." : "",
       cloud_access_secret: expectedSecret,
@@ -458,6 +599,7 @@ async function runtimeReport(body = {}, response) {
     cloud_open_url: urls.cloud_open_url,
     cloud_hostname: cloudHostname,
     dns_status: dns.status,
+    dns_provider: dns.provider || cloudDnsProvider() || "",
     droplet_ip: ip,
     ssh_command: `ssh root@${ip}`
   });
@@ -498,6 +640,7 @@ function estimatedCloudStatus(cloud = {}) {
       cloud_open_url: "",
       cloud_hostname: cloud.cloud_hostname || "",
       dns_status: cloud.dns_status || "",
+      dns_provider: cloud.dns_provider || "",
       droplet_id: cloud.droplet_id || "",
       droplet_name: cloud.droplet_name || "",
       can_attach_ip: Boolean(cloud.cloud_access_secret),
@@ -521,6 +664,7 @@ function estimatedCloudStatus(cloud = {}) {
     cloud_open_url: cloud.cloud_open_url || "",
     cloud_hostname: cloud.cloud_hostname || "",
     dns_status: cloud.dns_status || "",
+    dns_provider: cloud.dns_provider || "",
     droplet_id: cloud.droplet_id || "",
     droplet_name: cloud.droplet_name || "",
     can_attach_ip: Boolean(cloud.cloud_access_secret),
@@ -731,7 +875,7 @@ export default async function handler(request, response) {
       }
       const accessSecret = parseCloudAccessSecret(cloud);
       const cloudHostname = String(cloud.cloud_hostname || "").trim().toLowerCase();
-      const dns = cloudHostname ? await ensureCloudflareDnsRecord(cloudHostname, ip).catch((error) => ({ status: "failed", detail: String(error?.message || error) })) : { status: "not_needed" };
+      const dns = cloudHostname ? await ensureCloudDnsRecord(cloudHostname, ip).catch((error) => ({ status: "failed", detail: String(error?.message || error) })) : { status: "not_needed" };
       const urls = dashboardUrls({
         ip,
         dashboardPort: "7871",
@@ -748,6 +892,7 @@ export default async function handler(request, response) {
             ...urls,
             cloud_hostname: cloudHostname,
             dns_status: dns.status,
+            dns_provider: dns.provider || cloud.dns_provider || cloudDnsProvider() || "",
             dns_record_id: dns.record_id || cloud.dns_record_id || "",
             dns_error: dns.status === "failed" ? dns.detail || "No pude crear el DNS cloud." : "",
             droplet_ip: ip,
@@ -769,6 +914,7 @@ export default async function handler(request, response) {
           cloud_open_url: "",
           cloud_hostname: cloudHostname,
           dns_status: dns.status,
+          dns_provider: dns.provider || cloudDnsProvider() || "",
           direct_open_only: true,
           droplet_ip: ip,
           droplet_id: cloud.droplet_id,
@@ -781,6 +927,7 @@ export default async function handler(request, response) {
         ...urls,
         cloud_hostname: cloudHostname,
         dns_status: dns.status,
+        dns_provider: dns.provider || cloud.dns_provider || cloudDnsProvider() || "",
         dns_record_id: dns.record_id || cloud.dns_record_id || "",
         dns_error: dns.status === "failed" ? dns.detail || "No pude crear el DNS cloud." : "",
         cloud_access_secret: accessSecret,
@@ -802,6 +949,7 @@ export default async function handler(request, response) {
         cloud_open_url: urls.cloud_open_url,
         cloud_hostname: cloudHostname,
         dns_status: dns.status,
+        dns_provider: dns.provider || cloudDnsProvider() || "",
         droplet_ip: ip,
         ssh_command: `ssh root@${ip}`
       });
@@ -902,7 +1050,7 @@ export default async function handler(request, response) {
       });
       const droplet = dropletResponse.droplet || {};
       const ipv4 = dropletIpv4(droplet) || await waitForDropletIpv4(digitalOceanToken, droplet.id);
-      const dns = ipv4 && cloudHostname ? await ensureCloudflareDnsRecord(cloudHostname, ipv4).catch((error) => ({ status: "failed", detail: String(error?.message || error) })) : { status: cloudHostname ? "pending_ip" : "not_configured" };
+      const dns = ipv4 && cloudHostname ? await ensureCloudDnsRecord(cloudHostname, ipv4).catch((error) => ({ status: "failed", detail: String(error?.message || error) })) : { status: cloudHostname ? "pending_ip" : "not_configured" };
       const urls = dashboardUrls({
         ip: ipv4,
         dashboardPort: "7871",
@@ -924,6 +1072,7 @@ export default async function handler(request, response) {
           ...urls,
           cloud_hostname: cloudHostname,
           dns_status: dns.status,
+          dns_provider: dns.provider || cloudDnsProvider() || "",
           dns_record_id: dns.record_id || "",
           dns_error: dns.status === "failed" ? dns.detail || "No pude crear el DNS cloud." : "",
           cloud_access_secret: accessSecret,
@@ -954,6 +1103,7 @@ export default async function handler(request, response) {
         cloud_open_url: urls.cloud_open_url,
         cloud_hostname: cloudHostname,
         dns_status: dns.status,
+        dns_provider: dns.provider || cloudDnsProvider() || "",
         ready: false,
         progress: ipv4 ? 18 : 28,
         install_status: ipv4 ? "installing" : "waiting_for_ip",
