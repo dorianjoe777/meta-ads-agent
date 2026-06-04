@@ -28,6 +28,26 @@ function baseUrl(request) {
   return `${proto}://${host}`;
 }
 
+function safePublicHttpsBaseUrl(value = "") {
+  try {
+    const url = new URL(String(value || "").trim());
+    const host = url.hostname.toLowerCase();
+    if (url.protocol !== "https:" || !host || host === "localhost" || host.endsWith(".localhost")) return "";
+    if (host === "127.0.0.1" || host === "::1" || /^\d+\.\d+\.\d+\.\d+$/.test(host)) return "";
+    return `https://${host}`;
+  } catch {
+    return "";
+  }
+}
+
+function cloudBootstrapBaseUrl(request) {
+  const configured = safePublicHttpsBaseUrl(process.env.CLOUD_BOOTSTRAP_BASE_URL || process.env.LICENSE_BOOTSTRAP_URL);
+  if (configured) return configured;
+  const vercelHost = String(process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL || "").trim();
+  const vercelUrl = safePublicHttpsBaseUrl(vercelHost.startsWith("http") ? vercelHost : `https://${vercelHost}`);
+  return vercelUrl || baseUrl(request);
+}
+
 function json(response, status, payload) {
   response.setHeader("Cache-Control", "private, no-store");
   response.setHeader("X-Content-Type-Options", "nosniff");
@@ -707,11 +727,27 @@ function runtimeInstallFailed(runtime = {}) {
     combinedLogs.includes("Unable to locate package") ||
     combinedLogs.includes("Release too large") ||
     combinedLogs.includes("Unsafe release archive") ||
+    combinedLogs.includes("Could not resolve host") ||
+    combinedLogs.includes("curl: (6)") ||
     combinedLogs.includes("command not found") ||
     combinedLogs.includes("Traceback (most recent call last)") ||
     combinedLogs.includes("ModuleNotFoundError") ||
     combinedLogs.includes("ImportError")
   );
+}
+
+function runtimeFailureCopy(runtime = {}) {
+  const combinedLogs = `${String(runtime.log_tail || "")}\n${String(runtime.docker_logs_tail || "")}`;
+  if (combinedLogs.includes("Could not resolve host") || combinedLogs.includes("curl: (6)")) {
+    return {
+      detail: "La instalacion se detuvo al descargar el producto por un problema temporal de DNS. Ya corregimos el instalador; borra este Droplet y crea uno nuevo desde aqui.",
+      error_summary: "No pudo descargar el producto por DNS de arranque."
+    };
+  }
+  return {
+    detail: "La instalacion se detuvo al arrancar el dashboard. Ya tengo logs de diagnostico para corregirlo; borra este Droplet y crea uno nuevo cuando publiquemos el arreglo.",
+    error_summary: "El contenedor del dashboard no pudo quedar encendido."
+  };
 }
 
 function runtimeStageFromLog(logTail = "") {
@@ -750,6 +786,7 @@ async function cloudInstallStatus(record, response, options = {}) {
   }
   const ready = Boolean(runtime.ready);
   const failed = !ready && runtimeInstallFailed(runtime);
+  const failureCopy = failed ? runtimeFailureCopy(runtime) : null;
   const logStage = runtimeStageFromLog(runtime.log_tail || "");
   const logProgress = logStage ? Number(logStage[2] || 0) : 0;
   const progress = ready ? 100 : Math.min(98, cleanProgress(Math.max(Number(runtime.progress || 0), logProgress), cleanProgress(estimated.progress, 0)));
@@ -766,8 +803,8 @@ async function cloudInstallStatus(record, response, options = {}) {
     stage: failed ? "instalacion_detenida" : (runtimeTakingLonger ? "tardando_mas_de_lo_normal" : (runtimeStage === "dashboard_ready" && !ready ? "verificando_dashboard" : (runtimeStage || (ready ? "dashboard_ready" : "instalando")))),
     detail: ready
       ? "Tu dashboard ya esta listo."
-      : (failed ? "La instalacion se detuvo al arrancar el dashboard. Ya tengo logs de diagnostico para corregirlo; borra este Droplet y crea uno nuevo cuando publiquemos el arreglo." : (runtimeTakingLonger ? estimated.detail : "El servidor ya responde y esta terminando la instalacion.")),
-    error_summary: failed ? "El contenedor del dashboard no pudo quedar encendido." : "",
+      : (failed ? failureCopy.detail : (runtimeTakingLonger ? estimated.detail : "El servidor ya responde y esta terminando la instalacion.")),
+    error_summary: failed ? failureCopy.error_summary : "",
     docker_ps: Array.isArray(runtime.docker_ps) ? runtime.docker_ps.slice(-8) : [],
     docker_logs_tail: String(runtime.docker_logs_tail || "").slice(-5000),
     checked_at: runtime.checked_at || new Date().toISOString()
@@ -1019,12 +1056,13 @@ export default async function handler(request, response) {
     }
 
     try {
+      const bootstrapBase = cloudBootstrapBaseUrl(request);
       const cloudInit = buildDigitalOceanCloudInit({
-        signedDownloadUrl: `${baseUrl(request)}/api/download/release?token=${encodeURIComponent(grant.token)}`,
+        signedDownloadUrl: `${bootstrapBase}/api/download/release?token=${encodeURIComponent(grant.token)}`,
         licenseKey: session.license_key,
         buyerEmail: session.buyer_email,
         deviceId,
-        licenseServerUrl: baseUrl(request),
+        licenseServerUrl: bootstrapBase,
         digitalOceanToken,
         firewallId,
         initialClientIp: clientIp,

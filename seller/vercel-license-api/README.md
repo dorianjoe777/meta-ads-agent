@@ -18,6 +18,7 @@ Optional environment variables:
 - `GITHUB_RELEASE_TOKEN` for private GitHub release assets registered as `https://api.github.com/repos/OWNER/REPO/releases/assets/ASSET_ID`
 - `RELEASE_PROXY_DOWNLOADS=true` to proxy every release source instead of redirecting public storage URLs. Private GitHub asset URLs are always proxied.
 - `CLOUD_DASHBOARD_BASE_DOMAIN=cloud.admiroia.uboost.lat` to create one HTTPS subdomain per DigitalOcean install.
+- `CLOUD_BOOTSTRAP_BASE_URL=https://miro-ai-license-api.vercel.app` lets fresh Droplets download the release and report progress through Vercel's stable project URL instead of depending on custom-domain DNS during first boot.
 - `DNS_PROVIDER=vercel` is recommended when the domain is managed in Vercel DNS.
 - `VERCEL_DNS_TOKEN` and `VERCEL_DNS_DOMAIN=uboost.lat` let the portal create those DNS records automatically while Vercel keeps hosting the access portal.
 - `VERCEL_DNS_TEAM_ID` or `VERCEL_DNS_TEAM_SLUG` is optional when the domain belongs to a Vercel team.
