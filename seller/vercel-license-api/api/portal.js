@@ -922,7 +922,7 @@ export default async function handler(request, response) {
               '<strong>'+escapeHtml(cloudInstallation.droplet_name || 'Servidor DigitalOcean')+'</strong>' +
               '<p>Creado: '+escapeHtml((cloudInstallation.created_at || '').slice(0,10) || 'reciente')+'</p>' +
               '<p class="cloud-reset-note">Si ya borraste este servidor en DigitalOcean, usa el boton de empezar de nuevo. El portal no puede borrar ni cobrar Droplets por ti.</p>' +
-              '<p class="cloud-direct">Enlace directo de respaldo: '+escapeHtml(cloudInstallation.dashboard_url || 'preparando IP')+'</p>' +
+              '<p class="cloud-direct">Enlace del dashboard: '+escapeHtml(cloudInstallation.dashboard_url || 'preparando IP')+(cloudInstallation.dashboard_http_url && cloudInstallation.dashboard_http_url !== cloudInstallation.dashboard_url?'<br>Respaldo por IP: '+escapeHtml(cloudInstallation.dashboard_http_url):'')+'</p>' +
             '</div>' +
           '</div>';
         installState.classList.add('active');
@@ -964,7 +964,7 @@ export default async function handler(request, response) {
       return 'new';
     }
     function renderCloudResult(data){
-      const dropletIp = data.droplet_ip || String(data.dashboard_url || '').replace(/^https?:\\/\\//,'').split(':')[0];
+      const dropletIp = data.droplet_ip || String(data.dashboard_http_url || data.dashboard_url || '').replace(/^https?:\\/\\//,'').split(':')[0];
       const openUrl = data.cloud_open_url || data.dashboard_url || '';
       const ready = Boolean(openUrl && (data.ready || data.status === 'ready' || data.install_status === 'ready'));
       const failed = Boolean(data.failed || data.status === 'failed' || data.install_status === 'failed');
@@ -976,7 +976,7 @@ export default async function handler(request, response) {
         ? '<a class="cloud-open-button" href="'+escapeHtml(openUrl)+'" target="_blank" rel="noreferrer" aria-label="Abrir mi dashboard">'+(directOnly?'Probar enlace directo':'Acceder a mi dashboard')+'</a>'
         : (failed ? '<span class="cloud-open-button pending" aria-disabled="true">Instalacion detenida</span>' : (waitingForIp ? recoverWaitingForIpMarkup(data) : '<span class="cloud-open-button pending" aria-disabled="true">'+(openUrl?'Dashboard preparando...':'DigitalOcean esta asignando la IP...')+'</span>'));
       const direct = data.dashboard_url
-        ? '<p class="cloud-direct">Enlace directo: '+escapeHtml(data.dashboard_url)+(data.cloud_open_url?'<br>Si tu internet cambia de IP, usa siempre el boton de arriba.':'<br>Este enlace directo puede depender de que tu IP actual siga permitida en el firewall.')+'</p>'
+        ? '<p class="cloud-direct">Enlace del dashboard: '+escapeHtml(data.dashboard_url)+(data.dashboard_http_url && data.dashboard_http_url !== data.dashboard_url?'<br>Respaldo por IP: '+escapeHtml(data.dashboard_http_url):'')+(data.cloud_open_url?'<br>Si tu internet cambia de IP, usa siempre el boton de arriba.':'<br>Este enlace directo puede depender de que tu IP actual siga permitida en el firewall.')+'</p>'
         : '';
       const ssh = data.ssh_command ? '<p class="cloud-direct">Acceso tecnico de respaldo para soporte: '+escapeHtml(data.ssh_command)+'</p>' : '';
       const delayNote = takingLonger ? '<div class="cloud-safe-note"><strong>Importante:</strong> en DigitalOcean el Droplet puede verse como activo aunque Admiro AI siga instalando Docker y el dashboard. Si pasan varios minutos mas, abre la consola del Droplet y revisa <code>tail -n 80 /var/log/admiro-cloud-install.log</code>.</div>' : '';

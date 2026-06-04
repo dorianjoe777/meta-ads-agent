@@ -17,6 +17,9 @@ import {
 
 const DO_API = "https://api.digitalocean.com/v2";
 const CLOUD_ACCESS_PORT = "7870";
+const CLOUD_HTTPS_PORT = "443";
+const CLOUD_HTTP_CHALLENGE_PORT = "80";
+const CLOUDFLARE_API = "https://api.cloudflare.com/client/v4";
 
 function baseUrl(request) {
   const host = String(request.headers["x-forwarded-host"] || request.headers.host || "").trim();
@@ -55,6 +58,93 @@ async function doRequest(token, path, { method = "GET", body = null } = {}) {
     throw error;
   }
   return data;
+}
+
+function cloudDashboardBaseDomain() {
+  const raw = String(process.env.CLOUD_DASHBOARD_BASE_DOMAIN || process.env.CLOUD_DASHBOARD_DOMAIN || "").trim().toLowerCase();
+  const cleaned = raw.replace(/^https?:\/\//, "").replace(/\/.*$/, "").replace(/^\.+|\.+$/g, "");
+  return /^[a-z0-9.-]{4,253}$/.test(cleaned) && cleaned.includes(".") ? cleaned : "";
+}
+
+function cloudDnsAutomationConfigured() {
+  return Boolean(
+    cloudDashboardBaseDomain() &&
+    String(process.env.CLOUDFLARE_API_TOKEN || "").trim() &&
+    String(process.env.CLOUDFLARE_ZONE_ID || "").trim()
+  );
+}
+
+function cloudHostnameForInstall(id = "") {
+  if (!cloudDnsAutomationConfigured()) return "";
+  const base = cloudDashboardBaseDomain();
+  const safeId = String(id || "").trim().toLowerCase().replace(/[^a-z0-9-]/g, "");
+  return base && safeId ? `${safeId}.${base}` : "";
+}
+
+function cloudDashboardHttpsUrl(hostname = "") {
+  const host = String(hostname || "").trim().toLowerCase();
+  return host ? `https://${host}` : "";
+}
+
+function dashboardUrls({ ip = "", dashboardPort = "7871", accessGatePort = CLOUD_ACCESS_PORT, accessSecret = "", hostname = "", dnsActive = false } = {}) {
+  const httpUrl = ip ? `http://${ip}:${dashboardPort}` : "";
+  const httpsUrl = hostname && dnsActive ? cloudDashboardHttpsUrl(hostname) : "";
+  return {
+    dashboard_url: httpsUrl || httpUrl,
+    dashboard_http_url: httpUrl,
+    dashboard_https_url: httpsUrl,
+    cloud_open_url: ip && accessSecret ? `http://${ip}:${accessGatePort}/open/${accessSecret}` : ""
+  };
+}
+
+async function ensureCloudflareDnsRecord(hostname = "", ip = "") {
+  const host = String(hostname || "").trim().toLowerCase();
+  const content = validIpv4(ip);
+  if (!host || !content) {
+    return { status: "not_needed" };
+  }
+  const token = String(process.env.CLOUDFLARE_API_TOKEN || "").trim();
+  const zoneId = String(process.env.CLOUDFLARE_ZONE_ID || "").trim();
+  if (!token || !zoneId) {
+    return { status: "not_configured", detail: "DNS cloud no configurado en el servidor de licencias." };
+  }
+  const headers = {
+    "Authorization": `Bearer ${token}`,
+    "Content-Type": "application/json",
+    "Accept": "application/json"
+  };
+  const listUrl = `${CLOUDFLARE_API}/zones/${encodeURIComponent(zoneId)}/dns_records?type=A&name=${encodeURIComponent(host)}&per_page=1`;
+  const listed = await fetch(listUrl, { headers });
+  const listData = await listed.json().catch(() => ({}));
+  if (!listed.ok || listData.success === false) {
+    return { status: "failed", detail: "No pude revisar el DNS cloud." };
+  }
+  const existing = Array.isArray(listData.result) ? listData.result[0] : null;
+  const body = {
+    type: "A",
+    name: host,
+    content,
+    ttl: 120,
+    proxied: String(process.env.CLOUDFLARE_DNS_PROXIED || "false").toLowerCase() === "true"
+  };
+  const writeUrl = existing?.id
+    ? `${CLOUDFLARE_API}/zones/${encodeURIComponent(zoneId)}/dns_records/${encodeURIComponent(existing.id)}`
+    : `${CLOUDFLARE_API}/zones/${encodeURIComponent(zoneId)}/dns_records`;
+  const written = await fetch(writeUrl, {
+    method: existing?.id ? "PUT" : "POST",
+    headers,
+    body: JSON.stringify(body)
+  });
+  const writeData = await written.json().catch(() => ({}));
+  if (!written.ok || writeData.success === false) {
+    return { status: "failed", detail: "No pude crear el DNS cloud." };
+  }
+  return {
+    status: "active",
+    hostname: host,
+    record_id: writeData.result?.id || existing?.id || "",
+    proxied: body.proxied
+  };
 }
 
 async function ensureSshKey(token, name, publicKey) {
@@ -131,6 +221,8 @@ async function refreshFirewallForCurrentIp(record = {}, digitalOceanToken = "", 
   const inboundRules = [
     { protocol: "tcp", ports: "22", sources: { addresses: ["0.0.0.0/0", "::/0"] } },
     { protocol: "tcp", ports: dashboardPort, sources: { addresses: [clientCidr] } },
+    { protocol: "tcp", ports: CLOUD_HTTP_CHALLENGE_PORT, sources: { addresses: ["0.0.0.0/0", "::/0"] } },
+    { protocol: "tcp", ports: CLOUD_HTTPS_PORT, sources: { addresses: [clientCidr] } },
     { protocol: "tcp", ports: accessGatePort, sources: { addresses: ["0.0.0.0/0", "::/0"] } }
   ];
   await doRequest(digitalOceanToken, `/firewalls/${cloud.firewall_id}`, {
@@ -269,10 +361,23 @@ async function refreshCloudIpFromDigitalOcean(record, digitalOceanToken = "") {
   const accessSecret = parseCloudAccessSecret(cloud);
   const accessGatePort = cleanPort(cloud.access_gate_port, CLOUD_ACCESS_PORT);
   const dashboardPort = cleanPort(cloud.dashboard_port, "7871");
+  const cloudHostname = String(cloud.cloud_hostname || cloud.cloud_dashboard_hostname || "").trim().toLowerCase();
+  const dns = cloudHostname ? await ensureCloudflareDnsRecord(cloudHostname, ip).catch((error) => ({ status: "failed", detail: String(error?.message || error) })) : { status: "not_needed" };
+  const urls = dashboardUrls({
+    ip,
+    dashboardPort,
+    accessGatePort,
+    accessSecret,
+    hostname: cloudHostname,
+    dnsActive: dns.status === "active"
+  });
   const updatedCloud = {
     ...cloud,
-    dashboard_url: `http://${ip}:${dashboardPort}`,
-    cloud_open_url: accessSecret ? `http://${ip}:${accessGatePort}/open/${accessSecret}` : "",
+    ...urls,
+    cloud_hostname: cloudHostname,
+    dns_status: dns.status,
+    dns_record_id: dns.record_id || cloud.dns_record_id || "",
+    dns_error: dns.status === "failed" ? dns.detail || "No pude crear el DNS cloud." : "",
     cloud_access_secret: accessSecret || cloud.cloud_access_secret || "",
     access_gate_port: accessGatePort,
     dashboard_port: dashboardPort,
@@ -307,8 +412,16 @@ async function runtimeReport(body = {}, response) {
   }
   const dashboardPort = cleanPort(body.dashboard_port, "7871");
   const accessGatePort = cleanPort(cloud.access_gate_port, CLOUD_ACCESS_PORT);
-  const dashboardUrl = `http://${ip}:${dashboardPort}`;
-  const cloudOpenUrl = `http://${ip}:${accessGatePort}/open/${expectedSecret}`;
+  const cloudHostname = String(body.cloud_dashboard_hostname || body.cloud_hostname || cloud.cloud_hostname || "").trim().toLowerCase();
+  const dns = cloudHostname ? await ensureCloudflareDnsRecord(cloudHostname, ip).catch((error) => ({ status: "failed", detail: String(error?.message || error) })) : { status: "not_needed" };
+  const urls = dashboardUrls({
+    ip,
+    dashboardPort,
+    accessGatePort,
+    accessSecret: expectedSecret,
+    hostname: cloudHostname,
+    dnsActive: dns.status === "active"
+  });
   const ready = body.ready === true || String(body.ready || "").toLowerCase() === "true";
   const progress = ready ? 100 : Math.min(98, cleanProgress(body.progress, Math.max(Number(cloud.install_progress || 0), 38)));
   const installStatus = ready ? "ready" : (String(body.install_status || body.status || cloud.install_status || "installing").trim() || "installing");
@@ -316,8 +429,11 @@ async function runtimeReport(body = {}, response) {
     ...record,
     cloud_installation: {
       ...cloud,
-      dashboard_url: dashboardUrl,
-      cloud_open_url: cloudOpenUrl,
+      ...urls,
+      cloud_hostname: cloudHostname,
+      dns_status: dns.status,
+      dns_record_id: dns.record_id || cloud.dns_record_id || "",
+      dns_error: dns.status === "failed" ? dns.detail || "No pude crear el DNS cloud." : "",
       cloud_access_secret: expectedSecret,
       access_gate_port: accessGatePort,
       dashboard_port: dashboardPort,
@@ -336,8 +452,12 @@ async function runtimeReport(body = {}, response) {
     progress,
     stage: ready ? "dashboard_ready" : (String(body.stage || "") === "dashboard_ready" ? "verificando_dashboard" : (body.stage || "ip_reported")),
     detail: ready ? "Tu dashboard ya esta listo." : "Servidor conectado automaticamente. Sigo revisando la instalacion.",
-    dashboard_url: dashboardUrl,
-    cloud_open_url: cloudOpenUrl,
+    dashboard_url: urls.dashboard_url,
+    dashboard_http_url: urls.dashboard_http_url,
+    dashboard_https_url: urls.dashboard_https_url,
+    cloud_open_url: urls.cloud_open_url,
+    cloud_hostname: cloudHostname,
+    dns_status: dns.status,
     droplet_ip: ip,
     ssh_command: `ssh root@${ip}`
   });
@@ -373,7 +493,11 @@ function estimatedCloudStatus(cloud = {}) {
         ? "DigitalOcean creo el servidor, pero no devolvio la IP publica a tiempo. Copia el IPv4 del Droplet en DigitalOcean y pegalo aqui para seguir."
         : "DigitalOcean creo el servidor, pero esta instalacion no guardo el enlace seguro. Pega el IPv4 para revisar acceso directo o recrea el servidor con la version actualizada.",
       dashboard_url: "",
+      dashboard_http_url: "",
+      dashboard_https_url: "",
       cloud_open_url: "",
+      cloud_hostname: cloud.cloud_hostname || "",
+      dns_status: cloud.dns_status || "",
       droplet_id: cloud.droplet_id || "",
       droplet_name: cloud.droplet_name || "",
       can_attach_ip: Boolean(cloud.cloud_access_secret),
@@ -392,13 +516,17 @@ function estimatedCloudStatus(cloud = {}) {
       ? "El Droplet puede aparecer activo en DigitalOcean aunque el producto siga instalándose. Esto esta tardando mas de lo normal; revisa la consola del Droplet o intenta abrir el dashboard en unos minutos."
       : (elapsed >= 8 ? "Estamos haciendo las ultimas verificaciones." : "DigitalOcean esta instalando el dashboard."),
     dashboard_url: cloud.dashboard_url || "",
+    dashboard_http_url: cloud.dashboard_http_url || "",
+    dashboard_https_url: cloud.dashboard_https_url || "",
     cloud_open_url: cloud.cloud_open_url || "",
+    cloud_hostname: cloud.cloud_hostname || "",
+    dns_status: cloud.dns_status || "",
     droplet_id: cloud.droplet_id || "",
     droplet_name: cloud.droplet_name || "",
     can_attach_ip: Boolean(cloud.cloud_access_secret),
     direct_open_only: Boolean(cloud.dashboard_url && !cloud.cloud_open_url),
-    droplet_ip: String(cloud.dashboard_url || "").replace(/^https?:\/\//, "").split(":")[0],
-    ssh_command: cloud.dashboard_url ? `ssh root@${String(cloud.dashboard_url || "").replace(/^https?:\/\//, "").split(":")[0]}` : "",
+    droplet_ip: cloud.droplet_ip || String(cloud.dashboard_http_url || cloud.dashboard_url || "").replace(/^https?:\/\//, "").split(":")[0],
+    ssh_command: (cloud.droplet_ip || cloud.dashboard_http_url || cloud.dashboard_url) ? `ssh root@${cloud.droplet_ip || String(cloud.dashboard_http_url || cloud.dashboard_url || "").replace(/^https?:\/\//, "").split(":")[0]}` : "",
     created_at: cloud.created_at || ""
   };
 }
@@ -602,13 +730,27 @@ export default async function handler(request, response) {
         return friendlyFailure(response, "droplet_ip_required", "Pega el IPv4 publico del Droplet. Se ve como 123.45.67.89.");
       }
       const accessSecret = parseCloudAccessSecret(cloud);
-      const dashboardUrl = `http://${ip}:7871`;
+      const cloudHostname = String(cloud.cloud_hostname || "").trim().toLowerCase();
+      const dns = cloudHostname ? await ensureCloudflareDnsRecord(cloudHostname, ip).catch((error) => ({ status: "failed", detail: String(error?.message || error) })) : { status: "not_needed" };
+      const urls = dashboardUrls({
+        ip,
+        dashboardPort: "7871",
+        accessGatePort: CLOUD_ACCESS_PORT,
+        accessSecret,
+        hostname: cloudHostname,
+        dnsActive: dns.status === "active"
+      });
       if (!accessSecret) {
         await writeLicense({
           ...record,
           cloud_installation: {
             ...cloud,
-            dashboard_url: dashboardUrl,
+            ...urls,
+            cloud_hostname: cloudHostname,
+            dns_status: dns.status,
+            dns_record_id: dns.record_id || cloud.dns_record_id || "",
+            dns_error: dns.status === "failed" ? dns.detail || "No pude crear el DNS cloud." : "",
+            droplet_ip: ip,
             install_status: "installing",
             install_progress: Math.max(Number(cloud.install_progress || 0), 38),
             attached_ip_at: new Date().toISOString()
@@ -621,8 +763,12 @@ export default async function handler(request, response) {
           progress: 38,
           stage: "ip_guardada_sin_gate",
           detail: "Guarde el IP como enlace directo. Esta instalacion se creo antes de guardar el boton seguro; si no abre, recrea el servidor con la version actualizada.",
-          dashboard_url: dashboardUrl,
+          dashboard_url: urls.dashboard_url,
+          dashboard_http_url: urls.dashboard_http_url,
+          dashboard_https_url: urls.dashboard_https_url,
           cloud_open_url: "",
+          cloud_hostname: cloudHostname,
+          dns_status: dns.status,
           direct_open_only: true,
           droplet_ip: ip,
           droplet_id: cloud.droplet_id,
@@ -630,13 +776,16 @@ export default async function handler(request, response) {
           ssh_command: `ssh root@${ip}`
         });
       }
-      const cloudOpenUrl = `http://${ip}:${CLOUD_ACCESS_PORT}/open/${accessSecret}`;
       const updatedCloud = {
         ...cloud,
-        dashboard_url: dashboardUrl,
-        cloud_open_url: cloudOpenUrl,
+        ...urls,
+        cloud_hostname: cloudHostname,
+        dns_status: dns.status,
+        dns_record_id: dns.record_id || cloud.dns_record_id || "",
+        dns_error: dns.status === "failed" ? dns.detail || "No pude crear el DNS cloud." : "",
         cloud_access_secret: accessSecret,
         access_gate_port: CLOUD_ACCESS_PORT,
+        droplet_ip: ip,
         install_status: "installing",
         install_progress: Math.max(Number(cloud.install_progress || 0), 38),
         attached_ip_at: new Date().toISOString()
@@ -647,8 +796,12 @@ export default async function handler(request, response) {
         valid: true,
         status: "installing",
         detail: "IP guardado. Ahora puedo revisar si el dashboard termina de instalar.",
-        dashboard_url: dashboardUrl,
-        cloud_open_url: cloudOpenUrl,
+        dashboard_url: urls.dashboard_url,
+        dashboard_http_url: urls.dashboard_http_url,
+        dashboard_https_url: urls.dashboard_https_url,
+        cloud_open_url: urls.cloud_open_url,
+        cloud_hostname: cloudHostname,
+        dns_status: dns.status,
         droplet_ip: ip,
         ssh_command: `ssh root@${ip}`
       });
@@ -686,6 +839,7 @@ export default async function handler(request, response) {
     const firewallName = `admiro-ai-${id}-strict`;
     const keyName = `Admiro AI ${id}`;
     const accessSecret = cloudAccessSecret();
+    const cloudHostname = cloudHostnameForInstall(id);
     const grant = signedReleaseGrant({
       licenseKey: session.license_key,
       buyerEmail: session.buyer_email,
@@ -728,7 +882,8 @@ export default async function handler(request, response) {
         initialClientIp: clientIp,
         dashboardPort: "7871",
         cloudAccessSecret: accessSecret,
-        cloudAccessPort: CLOUD_ACCESS_PORT
+        cloudAccessPort: CLOUD_ACCESS_PORT,
+        cloudDashboardHostname: cloudHostname
       });
       const dropletResponse = await doRequest(digitalOceanToken, "/droplets", {
         method: "POST",
@@ -747,8 +902,15 @@ export default async function handler(request, response) {
       });
       const droplet = dropletResponse.droplet || {};
       const ipv4 = dropletIpv4(droplet) || await waitForDropletIpv4(digitalOceanToken, droplet.id);
-      const dashboardUrl = ipv4 ? `http://${ipv4}:7871` : "";
-      const cloudOpenUrl = ipv4 ? `http://${ipv4}:${CLOUD_ACCESS_PORT}/open/${accessSecret}` : "";
+      const dns = ipv4 && cloudHostname ? await ensureCloudflareDnsRecord(cloudHostname, ipv4).catch((error) => ({ status: "failed", detail: String(error?.message || error) })) : { status: cloudHostname ? "pending_ip" : "not_configured" };
+      const urls = dashboardUrls({
+        ip: ipv4,
+        dashboardPort: "7871",
+        accessGatePort: CLOUD_ACCESS_PORT,
+        accessSecret,
+        hostname: cloudHostname,
+        dnsActive: dns.status === "active"
+      });
       const recordForWrite = recordWithSavedDigitalOceanToken(record, digitalOceanToken, rememberDigitalOceanToken === true);
       await writeLicense({
         ...recordForWrite,
@@ -759,10 +921,15 @@ export default async function handler(request, response) {
           firewall_id: firewallId,
           region,
           size,
-          dashboard_url: dashboardUrl,
-          cloud_open_url: cloudOpenUrl,
+          ...urls,
+          cloud_hostname: cloudHostname,
+          dns_status: dns.status,
+          dns_record_id: dns.record_id || "",
+          dns_error: dns.status === "failed" ? dns.detail || "No pude crear el DNS cloud." : "",
           cloud_access_secret: accessSecret,
           access_gate_port: CLOUD_ACCESS_PORT,
+          dashboard_port: "7871",
+          droplet_ip: ipv4 || "",
           install_status: ipv4 ? "installing" : "waiting_for_ip",
           install_progress: ipv4 ? 18 : 28,
           install_started_at: new Date().toISOString(),
@@ -781,8 +948,12 @@ export default async function handler(request, response) {
         size,
         allowed_ip: `${clientIp}/32`,
         droplet_ip: ipv4,
-        dashboard_url: dashboardUrl,
-        cloud_open_url: cloudOpenUrl,
+        dashboard_url: urls.dashboard_url,
+        dashboard_http_url: urls.dashboard_http_url,
+        dashboard_https_url: urls.dashboard_https_url,
+        cloud_open_url: urls.cloud_open_url,
+        cloud_hostname: cloudHostname,
+        dns_status: dns.status,
         ready: false,
         progress: ipv4 ? 18 : 28,
         install_status: ipv4 ? "installing" : "waiting_for_ip",

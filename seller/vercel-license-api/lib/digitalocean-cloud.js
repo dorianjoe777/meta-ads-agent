@@ -115,7 +115,8 @@ export function buildDigitalOceanCloudInit({
   initialClientIp,
   dashboardPort = "7871",
   cloudAccessSecret = "",
-  cloudAccessPort = "7870"
+  cloudAccessPort = "7870",
+  cloudDashboardHostname = ""
 }) {
   return `#!/usr/bin/env bash
 set -euo pipefail
@@ -133,6 +134,8 @@ INITIAL_CLIENT_IP=${shellQuote(initialClientIp)}
 DASHBOARD_PORT=${shellQuote(String(dashboardPort || "7871"))}
 CLOUD_ACCESS_SECRET=${shellQuote(cloudAccessSecret)}
 CLOUD_ACCESS_PORT=${shellQuote(String(cloudAccessPort || "7870"))}
+CLOUD_DASHBOARD_HOSTNAME=${shellQuote(cloudDashboardHostname)}
+CLOUD_DASHBOARD_HTTPS_URL=${cloudDashboardHostname ? shellQuote(`https://${cloudDashboardHostname}`) : "''"}
 
 report_cloud_runtime() {
   local stage="$1"
@@ -141,12 +144,12 @@ report_cloud_runtime() {
   local public_ip
   public_ip="$(curl -fsS --max-time 4 http://169.254.169.254/metadata/v1/interfaces/public/0/ipv4/address 2>/dev/null || curl -fsS --max-time 4 https://api.ipify.org 2>/dev/null || true)"
   [ -n "$public_ip" ] || return 0
-  python3 - "$LICENSE_SERVER_URL" "$LICENSE_KEY" "$BUYER_EMAIL" "$CLOUD_ACCESS_SECRET" "$public_ip" "$DASHBOARD_PORT" "$stage" "$progress" "$ready" <<'PY'
+  python3 - "$LICENSE_SERVER_URL" "$LICENSE_KEY" "$BUYER_EMAIL" "$CLOUD_ACCESS_SECRET" "$public_ip" "$DASHBOARD_PORT" "$stage" "$progress" "$ready" "$CLOUD_DASHBOARD_HOSTNAME" "$CLOUD_DASHBOARD_HTTPS_URL" <<'PY'
 import json
 import sys
 import urllib.request
 
-base, license_key, buyer_email, secret, ip, dashboard_port, stage, progress, ready = sys.argv[1:10]
+base, license_key, buyer_email, secret, ip, dashboard_port, stage, progress, ready, hostname, https_url = sys.argv[1:12]
 payload = {
     "action": "runtime_report",
     "license_key": license_key,
@@ -157,6 +160,8 @@ payload = {
     "stage": stage,
     "progress": int(progress or "0"),
     "ready": ready.lower() == "true",
+    "cloud_dashboard_hostname": hostname,
+    "dashboard_https_url": https_url,
 }
 request = urllib.request.Request(
     base.rstrip("/") + "/api/portal/cloud/digitalocean",
@@ -424,6 +429,8 @@ set_env_value DIGITALOCEAN_FIREWALL_ID "$DIGITALOCEAN_FIREWALL_ID"
 set_env_value DO_STRICT_ALLOW_SSH_FROM_ANYWHERE "true"
 set_env_value DO_STRICT_ACCESS_GATE_PORT "$CLOUD_ACCESS_PORT"
 set_env_value CLOUD_ACCESS_SECRET "$CLOUD_ACCESS_SECRET"
+set_env_value CLOUD_DASHBOARD_HOSTNAME "$CLOUD_DASHBOARD_HOSTNAME"
+set_env_value CLOUD_DASHBOARD_HTTPS_URL "$CLOUD_DASHBOARD_HTTPS_URL"
 
 export DIGITALOCEAN_TOKEN DIGITALOCEAN_FIREWALL_ID DASHBOARD_PORT
 export DO_STRICT_ACCESS_GATE_PORT="$CLOUD_ACCESS_PORT"
@@ -436,7 +443,8 @@ DIGITALOCEAN_TOKEN=$DIGITALOCEAN_TOKEN
 DIGITALOCEAN_FIREWALL_ID=$DIGITALOCEAN_FIREWALL_ID
 DIGITALOCEAN_DROPLET_ID=
 DASHBOARD_PORT=$DASHBOARD_PORT
-DO_STRICT_EXTRA_TCP_PORTS=
+DO_STRICT_EXTRA_TCP_PORTS=443
+DO_STRICT_PUBLIC_TCP_PORTS=80
 DO_STRICT_ALLOW_SSH_FROM_ANYWHERE=true
 DO_STRICT_ACCESS_GATE_PORT=$CLOUD_ACCESS_PORT
 EOF
@@ -641,8 +649,9 @@ class Handler(BaseHTTPRequestHandler):
                 f"<small>{html.escape(str(exc))}</small>"
             )
             return
+        https_url = os.environ.get("CLOUD_DASHBOARD_HTTPS_URL", "").strip().rstrip("/")
         host = redirect_host(self.headers.get("Host", ""))
-        location = f"http://{host}:{DASHBOARD_PORT}/?cloud_access=ok"
+        location = f"{https_url}/?cloud_access=ok" if https_url else f"http://{host}:{DASHBOARD_PORT}/?cloud_access=ok"
         self.send_response(302)
         self.send_header("Location", location)
         self.send_header("Cache-Control", "no-store")
@@ -659,6 +668,7 @@ PY
 CLOUD_ACCESS_SECRET=$CLOUD_ACCESS_SECRET
 CLOUD_ACCESS_PORT=$CLOUD_ACCESS_PORT
 DASHBOARD_PORT=$DASHBOARD_PORT
+CLOUD_DASHBOARD_HTTPS_URL=$CLOUD_DASHBOARD_HTTPS_URL
 REFRESH_COMMAND=/usr/local/bin/meta-ads-refresh-access
 EOF
   chmod 600 /etc/admiro-cloud-access-gate/env
@@ -687,8 +697,30 @@ SERVICE
 }
 install_cloud_access_gate
 
+install_caddy_https() {
+  [ -n "$CLOUD_DASHBOARD_HOSTNAME" ] || return 0
+  echo "ADMIRO_STAGE configuring_https"
+  if ! command -v caddy >/dev/null 2>&1; then
+    apt-get update || true
+    apt-get install -y caddy || {
+      echo "ADMIRO_STAGE caddy_install_skipped"
+      return 0
+    }
+  fi
+  mkdir -p /etc/caddy
+  cat > /etc/caddy/Caddyfile <<EOF
+$CLOUD_DASHBOARD_HOSTNAME {
+  encode gzip
+  reverse_proxy 127.0.0.1:$DASHBOARD_PORT
+}
+EOF
+  systemctl enable --now caddy || true
+  systemctl reload caddy || systemctl restart caddy || true
+}
+
 echo "ADMIRO_STAGE starting_dashboard"
 docker compose up -d --build
+install_caddy_https
 dashboard_ready=false
 for attempt in $(seq 1 30); do
   if curl -fsS --max-time 2 "http://127.0.0.1:$DASHBOARD_PORT/" >/dev/null 2>&1; then
@@ -723,6 +755,8 @@ export function digitalOceanFirewallPayload({
     inbound_rules: [
       { protocol: "tcp", ports: "22", sources: sshSources },
       { protocol: "tcp", ports: String(dashboardPort || "7871"), sources: { addresses: [clientCidr] } },
+      { protocol: "tcp", ports: "80", sources: { addresses: ["0.0.0.0/0", "::/0"] } },
+      { protocol: "tcp", ports: "443", sources: { addresses: [clientCidr] } },
       { protocol: "tcp", ports: String(accessGatePort || "7870"), sources: { addresses: ["0.0.0.0/0", "::/0"] } }
     ],
     outbound_rules: [

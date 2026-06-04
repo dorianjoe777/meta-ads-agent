@@ -14,6 +14,7 @@ El comprador entra a `https://admiroia.uboost.lat/access`, valida su email de co
 6. Deja SSH abierto solo con llave para recuperacion, con contrasena SSH desactivada.
 7. Deja el dashboard disponible en el puerto `7871`, protegido por firewall e inicio de sesion.
 8. Crea un enlace seguro para abrir el dashboard aunque la IP del comprador cambie.
+9. Si el servidor de licencias tiene DNS configurado, crea un subdominio HTTPS y un certificado gratis de Let's Encrypt.
 
 ## Que necesita el comprador
 
@@ -80,6 +81,14 @@ Ese boton no es un enlace directo simple. Primero abre una pequena puerta segura
 En palabras simples para el comprador:
 
 > Si tu internet cambia de direccion, no tienes que saberlo. Entra desde el mismo boton y el servidor acomoda el acceso antes de abrir.
+
+Si HTTPS esta configurado, ese boton termina abriendo un enlace normal y seguro, por ejemplo:
+
+```text
+https://tu-servidor.cloud.admiroia.uboost.lat
+```
+
+Esto quita el aviso de `No seguro` del navegador. No cambia la propiedad del servidor: el Droplet sigue estando en la cuenta de DigitalOcean del comprador.
 
 El enlace de apertura usa una clave larga generada durante la instalacion. No contiene el token de DigitalOcean. No permite controlar el agente. Solo permite preparar la red actual para que el dashboard pueda cargar.
 

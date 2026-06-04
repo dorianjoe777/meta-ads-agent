@@ -55,6 +55,16 @@ La clave queda guardada localmente en `.env` y no vuelve a aparecer en el dashbo
 - Confirma que el dashboard esta encendido; Telegram escucha junto con el dashboard.
 - En VPS, revisa que el servicio del dashboard este activo.
 
+## La instalacion cloud se queda trabada
+
+Si instalas desde `admiroia.uboost.lat/access` y DigitalOcean parece quedarse instalando, revisa la guia tecnica:
+
+```text
+docs/es-debug-instalacion-cloud.md
+```
+
+Esa guia explica la cadena completa: access page, licencia, release privado, DigitalOcean, cloud-init, Docker, dashboard y access gate.
+
 ## La campana no se crea
 
 Revisa la tarjeta de resultado. Debe decir que falto: licencia, token, pagina, URL, imagen, presupuesto o confirmacion para dejar activo.
