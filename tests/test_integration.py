@@ -2812,7 +2812,7 @@ class IntegrationTestSuite:
         self.assert_true("https://admiroia.uboost.lat" in env_example, "Buyer release uses deployed license server")
         self.assert_true("LICENSE_PUBLIC_KEY=" in env_example, "Buyer release includes only license verification key")
         self.assert_true("AGENT_CHAT_BASE_URL=https://api.minimax.io/v1" in env_example and "AGENT_CHAT_MODEL=MiniMax-M3" in env_example and "AGENT_CHAT_PROVIDER=hermes" in env_example, "Buyer release documents Hermes default plus MiniMax M3/OpenAI-compatible model support")
-        self.assert_true("META_ADS_AGENT_VERSION=v1.0.3" in env_example and (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip() == "v1.0.3", "Buyer release exposes the installed product version")
+        self.assert_true("META_ADS_AGENT_VERSION=v1.0.4" in env_example and (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip() == "v1.0.4", "Buyer release exposes the installed product version")
         bootstrap_config = (ROOT_DIR / "installer" / "release-bootstrap.env").read_text(encoding="utf-8")
         bootstrap_sh = (ROOT_DIR / "scripts" / "install-from-github.sh").read_text(encoding="utf-8")
         bootstrap_ps1 = (ROOT_DIR / "scripts" / "install-from-github.ps1").read_text(encoding="utf-8")

@@ -20,7 +20,7 @@ Si un enlace cambia, puede fallar esa parte aunque el resto este bien.
 
 ## Estado estable actual
 
-- Canal estable: `v1.0.3`.
+- Canal estable: `v1.0.4`.
 - Release privado: `MetaAdsAgent-source.zip`.
 - Dominio de comprador: `https://admiroia.uboost.lat/access`.
 - Dashboard cloud: puerto `7871`.
@@ -194,7 +194,7 @@ Sintoma comun:
 Comprobar release:
 
 ```bash
-gh release view v1.0.3 --repo dorianjoe777/meta-ads-agent --json tagName,assets,url
+gh release view v1.0.4 --repo dorianjoe777/meta-ads-agent --json tagName,assets,url
 ```
 
 ## Checklist rapido de diagnostico
@@ -265,13 +265,13 @@ node --input-type=module -e "import('./lib/store.js').then(async m=>console.log(
 Recrear paquete buyer-safe:
 
 ```bash
-./scripts/package-release.sh v1.0.3
+./scripts/package-release.sh v1.0.4
 ```
 
 Publicar assets en GitHub privado:
 
 ```bash
-gh release view v1.0.3 --repo dorianjoe777/meta-ads-agent
+gh release view v1.0.4 --repo dorianjoe777/meta-ads-agent
 ```
 
 Desplegar servidor de licencias:
