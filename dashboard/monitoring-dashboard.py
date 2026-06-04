@@ -16,6 +16,7 @@ import mimetypes
 import os
 import py_compile
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -1739,6 +1740,165 @@ def validate_agent_chat_base_url(value):
     if parsed.scheme == "http" and is_local_host(parsed.hostname or ""):
         return url
     raise ValueError("La URL del modelo debe usar https://, excepto modelos locales en http://127.0.0.1 o http://localhost.")
+
+
+def running_inside_container():
+    return Path("/.dockerenv").exists() or bool(os.environ.get("container") or os.environ.get("KUBERNETES_SERVICE_HOST"))
+
+
+def hermes_shell_command(config):
+    cli = str(getattr(config, "hermes_cli", "") or "hermes").strip() or "hermes"
+    return f"{shlex.quote(cli)} model"
+
+
+def extract_urls_from_text(value):
+    urls = []
+    for match in re.findall(r"https?://[^\s<>'\")]+", str(value or "")):
+        url = match.rstrip(".,;:")
+        if url not in urls:
+            urls.append(url)
+        if len(urls) >= 4:
+            break
+    return urls
+
+
+def hermes_connect_response(status, title, detail, **extra):
+    output = redact_error_text(extra.pop("output", ""))
+    payload = {
+        "ok": status in {"terminal_opened", "completed", "needs_login", "needs_terminal"},
+        "status": status,
+        "title": title,
+        "detail": detail,
+        "command": "hermes model",
+        "urls": extract_urls_from_text(output),
+        "output": output,
+        **extra,
+    }
+    log_status = "completed" if status in {"terminal_opened", "completed"} else "warn"
+    log_action("agent_model_connect", {"status": status, "mode": payload.get("mode"), "urls_found": len(payload["urls"])}, log_status)
+    return payload
+
+
+def terminal_launcher_command(config):
+    command = hermes_shell_command(config)
+    root = shlex.quote(str(ROOT_DIR))
+    return (
+        f"cd {root}\n"
+        "echo 'Conectando ChatGPT/Codex para Admiro AI...'\n"
+        "echo 'Si Hermes pregunta por proveedor, elige OpenAI Codex / ChatGPT.'\n"
+        "echo\n"
+        f"{command}\n"
+        "status=$?\n"
+        "echo\n"
+        "if [ $status -eq 0 ]; then\n"
+        "  echo 'Listo. Vuelve al dashboard y toca Revisar conexion.'\n"
+        "else\n"
+        "  echo 'Hermes terminó con un aviso. Si ves un enlace o código, complétalo y vuelve al dashboard.'\n"
+        "fi\n"
+        "echo\n"
+    )
+
+
+def launch_hermes_terminal(config):
+    if running_inside_container():
+        return False
+    command = terminal_launcher_command(config)
+    try:
+        if sys.platform == "darwin":
+            command_dir = DATA_DIR / "runtime_commands"
+            command_dir.mkdir(parents=True, exist_ok=True)
+            script_path = command_dir / "connect-chatgpt-codex.command"
+            script_path.write_text(
+                "#!/bin/zsh\n"
+                "clear\n"
+                f"{command}"
+                "echo 'Puedes cerrar esta ventana cuando termines.'\n"
+                "read -k 1 '?Presiona cualquier tecla para cerrar...'\n",
+                encoding="utf-8",
+            )
+            script_path.chmod(0o700)
+            subprocess.Popen(["open", "-a", "Terminal", str(script_path)], cwd=str(ROOT_DIR))
+            return True
+        if os.name == "nt":
+            ps_root = str(ROOT_DIR).replace("'", "''")
+            ps_cli = str(getattr(config, "hermes_cli", "") or "hermes").replace("'", "''")
+            ps_command = (
+                f"Set-Location -LiteralPath '{ps_root}'; "
+                "Write-Host 'Conectando ChatGPT/Codex para Admiro AI...'; "
+                "Write-Host 'Si Hermes pregunta por proveedor, elige OpenAI Codex / ChatGPT.'; "
+                f"& '{ps_cli}' model; "
+                "Read-Host 'Presiona Enter para cerrar'"
+            )
+            subprocess.Popen(["cmd", "/c", "start", "powershell", "-NoExit", "-Command", ps_command], cwd=str(ROOT_DIR))
+            return True
+        if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+            shell_command = command + "read -n 1 -s -r -p 'Presiona una tecla para cerrar...'"
+            launchers = [
+                ("gnome-terminal", ["gnome-terminal", "--", "bash", "-lc", shell_command]),
+                ("konsole", ["konsole", "-e", "bash", "-lc", shell_command]),
+                ("xfce4-terminal", ["xfce4-terminal", "--command", f"bash -lc {shlex.quote(shell_command)}"]),
+                ("xterm", ["xterm", "-e", "bash", "-lc", shell_command]),
+            ]
+            for binary, args in launchers:
+                if shutil.which(binary):
+                    subprocess.Popen(args, cwd=str(ROOT_DIR))
+                    return True
+    except Exception:
+        return False
+    return False
+
+
+def probe_hermes_model_login(config):
+    cli = str(getattr(config, "hermes_cli", "") or "hermes").strip() or "hermes"
+    try:
+        result = subprocess.run([cli, "model"], cwd=str(ROOT_DIR), text=True, capture_output=True, timeout=10, check=False)
+    except FileNotFoundError:
+        return hermes_connect_response(
+            "not_installed",
+            "Hermes no está instalado",
+            "Instala o actualiza Admiro AI para incluir Hermes, y vuelve a tocar Conectar ahora.",
+            mode="missing_runtime",
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+        output = "\n".join([stdout, stderr]).strip()
+        return hermes_connect_response(
+            "needs_login" if extract_urls_from_text(output) else "needs_terminal",
+            "Hermes necesita terminar el login",
+            "No pude abrir una terminal en este entorno. Si apareció un enlace, ábrelo; si no, entra al servidor y ejecuta hermes model.",
+            mode="probe_timeout",
+            output=output,
+        )
+    output = "\n".join([(result.stdout or ""), (result.stderr or "")]).strip()
+    if result.returncode == 0:
+        return hermes_connect_response(
+            "completed",
+            "Conexión revisada",
+            "Hermes terminó correctamente. Ahora revisa la conexión y prueba el chat.",
+            mode="probe_completed",
+            output=output,
+        )
+    return hermes_connect_response(
+        "needs_login" if extract_urls_from_text(output) else "needs_terminal",
+        "Falta terminar la conexión",
+        "Hermes respondió, pero todavía necesita que termines el login o elijas el proveedor en una terminal.",
+        mode="probe_failed",
+        output=output,
+    )
+
+
+def connect_agent_model(payload=None):
+    update_env_values({"AGENT_CHAT_PROVIDER": "hermes", "HERMES_REQUIRE_CODEX_AUTH": "true"})
+    config = load_config()
+    if launch_hermes_terminal(config):
+        return hermes_connect_response(
+            "terminal_opened",
+            "Abrí la terminal",
+            "Sigue la ventana que se abrió. Cuando termines, vuelve al dashboard y toca Revisar conexión.",
+            mode="terminal",
+        )
+    return probe_hermes_model_login(config)
 
 
 def save_setup_config(payload):
@@ -4372,7 +4532,7 @@ body.theme-ember .creative-studio-hero:before{background:linear-gradient(120deg,
 @media(max-width:780px){.theme-switcher{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:780px){.brand-memory-nav{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));overflow:visible}.brand-nav-item,.brand-new-product{width:100%;min-width:0}.brand-nav-item b{max-width:none;white-space:normal;line-height:1.25}}
 .msg-actions{display:grid;gap:7px;margin-top:10px;padding-top:9px;border-top:1px solid var(--line)}.msg-approval-card{border:1px solid color-mix(in srgb,var(--accent) 22%,var(--line));border-radius:9px;background:rgba(255,255,255,.05);padding:8px}.msg-approval-card b{display:block;font-size:11px;color:var(--text);line-height:1.25}.msg-approval-card span{display:block;font-size:10px;color:var(--dim);margin-top:3px}.msg-approval-buttons{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:7px}.msg-approval-buttons .btn{width:100%;font-size:10px;padding:8px}
-.chatgpt-connect-card{position:relative;overflow:hidden;border:1px solid color-mix(in srgb,var(--accent) 28%,var(--line));border-radius:10px;background:linear-gradient(135deg,rgba(39,199,167,.12),rgba(99,168,255,.08),rgba(255,255,255,.04));padding:13px;margin-bottom:14px;box-shadow:var(--glow)}.chatgpt-connect-card:before{content:"";position:absolute;inset:0;background:linear-gradient(120deg,transparent,rgba(255,255,255,.08),transparent);transform:translateX(-100%);animation:softSweep 8s ease-in-out infinite;pointer-events:none}.chatgpt-connect-card>*{position:relative;z-index:1}.chatgpt-connect-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:10px}.chatgpt-connect-head h3{font-size:15px;line-height:1.14}.chatgpt-connect-head p{font-size:11px;color:var(--dim);line-height:1.45;margin-top:5px}.chatgpt-steps,.model-route-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:10px 0}.chatgpt-step,.model-route-card{border:1px solid var(--line);border-radius:8px;background:rgba(0,0,0,.12);padding:10px}.chatgpt-step span,.model-route-card span{display:inline-grid;place-items:center;width:24px;height:24px;border-radius:7px;background:color-mix(in srgb,var(--accent) 20%,transparent);color:var(--accent);font-size:11px;font-weight:950}.chatgpt-step b,.model-route-card b{display:block;font-size:11px;line-height:1.25;margin-top:7px}.chatgpt-step p,.model-route-card p{font-size:10px;color:var(--dim);line-height:1.45;margin-top:4px}.chatgpt-command{display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid var(--line);border-radius:8px;background:rgba(0,0,0,.18);padding:9px;margin-top:8px}.chatgpt-command code{font-size:12px;font-weight:900;color:var(--text);word-break:break-word}.chatgpt-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px}.chatgpt-foot p{font-size:10px;color:var(--dim);line-height:1.45}.chatgpt-connect-card.ready{border-color:rgba(85,212,122,.3);background:linear-gradient(135deg,rgba(85,212,122,.12),rgba(99,168,255,.06),rgba(255,255,255,.04))}.chatgpt-connect-card.ready .chatgpt-step span,.chatgpt-connect-card.ready .model-route-card span{background:rgba(85,212,122,.14);color:var(--green)}@keyframes softSweep{0%,62%{transform:translateX(-120%)}82%,100%{transform:translateX(120%)}}
+.chatgpt-connect-card{position:relative;overflow:hidden;border:1px solid color-mix(in srgb,var(--accent) 28%,var(--line));border-radius:10px;background:linear-gradient(135deg,rgba(39,199,167,.12),rgba(99,168,255,.08),rgba(255,255,255,.04));padding:13px;margin-bottom:14px;box-shadow:var(--glow)}.chatgpt-connect-card:before{content:"";position:absolute;inset:0;background:linear-gradient(120deg,transparent,rgba(255,255,255,.08),transparent);transform:translateX(-100%);animation:softSweep 8s ease-in-out infinite;pointer-events:none}.chatgpt-connect-card>*{position:relative;z-index:1}.chatgpt-connect-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:10px}.chatgpt-connect-head h3{font-size:15px;line-height:1.14}.chatgpt-connect-head p{font-size:11px;color:var(--dim);line-height:1.45;margin-top:5px}.chatgpt-steps,.model-route-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:10px 0}.chatgpt-step,.model-route-card{border:1px solid var(--line);border-radius:8px;background:rgba(0,0,0,.12);padding:10px}.chatgpt-step span,.model-route-card span{display:inline-grid;place-items:center;width:24px;height:24px;border-radius:7px;background:color-mix(in srgb,var(--accent) 20%,transparent);color:var(--accent);font-size:11px;font-weight:950}.chatgpt-step b,.model-route-card b{display:block;font-size:11px;line-height:1.25;margin-top:7px}.chatgpt-step p,.model-route-card p{font-size:10px;color:var(--dim);line-height:1.45;margin-top:4px}.chatgpt-command{display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid var(--line);border-radius:8px;background:rgba(0,0,0,.18);padding:9px;margin-top:8px}.chatgpt-command code,.chatgpt-command>span{font-size:12px;font-weight:900;color:var(--text);word-break:break-word}.chatgpt-command .mode-actions{flex-wrap:wrap}.chatgpt-connect-result{margin-top:8px;border:1px solid color-mix(in srgb,var(--accent) 24%,var(--line));border-radius:8px;background:rgba(255,255,255,.055);padding:10px}.chatgpt-connect-result b{display:block;font-size:12px;line-height:1.25}.chatgpt-connect-result p,.chatgpt-connect-result a{font-size:11px;line-height:1.45}.chatgpt-connect-result a{color:var(--accent);font-weight:900}.chatgpt-terminal-output{max-height:150px;overflow:auto;margin-top:8px;border:1px solid var(--line);border-radius:7px;background:rgba(0,0,0,.22);padding:8px;color:var(--dim);font-size:10px;line-height:1.4;white-space:pre-wrap}.chatgpt-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px}.chatgpt-foot p{font-size:10px;color:var(--dim);line-height:1.45}.chatgpt-connect-card.ready{border-color:rgba(85,212,122,.3);background:linear-gradient(135deg,rgba(85,212,122,.12),rgba(99,168,255,.06),rgba(255,255,255,.04))}.chatgpt-connect-card.ready .chatgpt-step span,.chatgpt-connect-card.ready .model-route-card span{background:rgba(85,212,122,.14);color:var(--green)}@keyframes softSweep{0%,62%{transform:translateX(-120%)}82%,100%{transform:translateX(120%)}}
 @media(max-width:780px){.chatgpt-connect-head,.chatgpt-foot,.chatgpt-command{align-items:flex-start;flex-direction:column}.chatgpt-steps,.model-route-grid{grid-template-columns:1fr}.chatgpt-command .btn,.chatgpt-foot .btn{width:100%}}
 </style>
 </head>
@@ -5564,11 +5724,11 @@ function chatGptConnectMarkup(onboarding=false){
  const badge=ready?(lang==='es'?'Listo':'Ready'):(hermesMissing?(lang==='es'?'Falta Hermes':'Hermes missing'):(lang==='es'?'Falta conectar':'Needs connection'));
  const steps=lang==='es'?[
   ['1','Elige una ruta','ChatGPT/Codex con login OAuth es la ruta recomendada. Una API compatible es la ruta rápida con clave.'],
-  ['2','Guarda o conecta','Si usas API, pega URL, modelo y clave. Si usas ChatGPT/Codex, ejecuta el login de Hermes.'],
+  ['2','Guarda o conecta','Si usas API, pega URL, modelo y clave. Si usas ChatGPT/Codex, toca Conectar ahora.'],
   ['3','Prueba el chat','Escribe al agente. Si falta algo, esta tarjeta te dirá qué revisar.']
  ]:[
   ['1','Choose a route','ChatGPT/Codex with OAuth login is recommended. A compatible API is the fast API-key path.'],
-  ['2','Save or connect','For API mode, paste URL, model, and key. For ChatGPT/Codex, run the Hermes login.'],
+  ['2','Save or connect','For API mode, paste URL, model, and key. For ChatGPT/Codex, click Connect now.'],
   ['3','Test chat','Talk to the agent. If anything is missing, this card shows what to review.']
  ];
  const detail=[runtime.detail,auth.detail,codex.detail].filter(Boolean).map(localText).join(' · ');
@@ -5578,7 +5738,7 @@ function chatGptConnectMarkup(onboarding=false){
  const modelName=model.model||'MiniMax-M3';
  const api=model.api||'openai-chat-completions';
  const keyPlaceholder=model.api_key_set?(lang==='es'?'Clave guardada. Pega otra solo si quieres cambiarla.':'Key saved. Paste another only to replace it.'):(lang==='es'?'Pega la clave API del proveedor':'Paste the provider API key');
- return `<section class="chatgpt-connect-card ${ready?'ready':''}"><div class="chatgpt-connect-head"><div><h3>${title}</h3><p>${body}</p></div><span class="badge ${ready?'ok':'warn'}">${badge}</span></div><div class="model-route-grid"><div class="model-route-card"><span>1</span><b>${lang==='es'?'Conectar ChatGPT/Codex':'Connect ChatGPT/Codex'}</b><p>${lang==='es'?'Ruta recomendada: Hermes abre el login OAuth de ChatGPT/Codex. No pegas tu contraseña ni una clave de OpenAI en el dashboard.':'Recommended route: Hermes opens the ChatGPT/Codex OAuth login. You do not paste your password or an OpenAI key into the dashboard.'}</p><div class="chatgpt-command"><code>${command}</code><button class="btn primary" type="button" onclick="copyCommand(${JSON.stringify(command).replaceAll('"','&quot;')})">${lang==='es'?'Copiar paso':'Copy step'}</button></div></div><div class="model-route-card"><span>2</span><b>${lang==='es'?'Usar una API compatible OpenAI':'Use an OpenAI-compatible API'}</b><p>${lang==='es'?'Ruta directa: pega URL, modelo y clave API. Sirve para MiniMax M3 u otro proveedor compatible.':'Direct route: paste URL, model, and API key. Works for MiniMax M3 or another compatible provider.'}</p><button class="btn primary" type="button" onclick="applyAgentModelPreset('minimax_m3')">MiniMax M3</button><button class="btn" type="button" onclick="applyAgentModelPreset('custom')">${lang==='es'?'Otra API':'Custom API'}</button></div></div><div class="chatgpt-steps">${steps.map(step=>`<div class="chatgpt-step"><span>${step[0]}</span><b>${step[1]}</b><p>${step[2]}</p></div>`).join('')}</div><form id="agent-model-form" class="form-grid model-provider-form" onsubmit="saveSetupConfig(event)">
+ return `<section class="chatgpt-connect-card ${ready?'ready':''}"><div class="chatgpt-connect-head"><div><h3>${title}</h3><p>${body}</p></div><span class="badge ${ready?'ok':'warn'}">${badge}</span></div><div class="model-route-grid"><div class="model-route-card"><span>1</span><b>${lang==='es'?'Conectar ChatGPT/Codex':'Connect ChatGPT/Codex'}</b><p>${lang==='es'?'Ruta recomendada: toca el botón y el dashboard intentará abrir la terminal para completar el login OAuth de ChatGPT/Codex.':'Recommended route: click the button and the dashboard will try to open the terminal to complete the ChatGPT/Codex OAuth login.'}</p><div class="chatgpt-command"><span>${lang==='es'?'Sin copiar pasos: intento abrirlo por ti.':'No copy-paste first: I will try to open it for you.'}</span><div class="mode-actions"><button class="btn primary" type="button" onclick="connectChatGpt(event)">${lang==='es'?'Conectar ahora':'Connect now'}</button><button class="btn" type="button" onclick="copyCommand(${JSON.stringify(command).replaceAll('"','&quot;')})">${lang==='es'?'Copiar comando':'Copy command'}</button></div></div><div id="chatgpt-connect-result" class="chatgpt-connect-result hidden"></div></div><div class="model-route-card"><span>2</span><b>${lang==='es'?'Usar una API compatible OpenAI':'Use an OpenAI-compatible API'}</b><p>${lang==='es'?'Ruta directa: pega URL, modelo y clave API. Sirve para MiniMax M3 u otro proveedor compatible.':'Direct route: paste URL, model, and API key. Works for MiniMax M3 or another compatible provider.'}</p><button class="btn primary" type="button" onclick="applyAgentModelPreset('minimax_m3')">MiniMax M3</button><button class="btn" type="button" onclick="applyAgentModelPreset('custom')">${lang==='es'?'Otra API':'Custom API'}</button></div></div><div class="chatgpt-steps">${steps.map(step=>`<div class="chatgpt-step"><span>${step[0]}</span><b>${step[1]}</b><p>${step[2]}</p></div>`).join('')}</div><form id="agent-model-form" class="form-grid model-provider-form" onsubmit="saveSetupConfig(event)">
  <div class="field"><label>${lang==='es'?'Motor del agente':'Agent engine'}</label><select name="agent_chat_provider"><option value="hermes" ${provider==='hermes'?'selected':''}>Hermes + ChatGPT/Codex</option><option value="minimax" ${provider==='minimax'?'selected':''}>MiniMax M3</option><option value="openai_compatible" ${provider==='openai_compatible'||provider==='openai'?'selected':''}>${lang==='es'?'API compatible OpenAI':'OpenAI-compatible API'}</option></select></div>
  <div class="field"><label>${lang==='es'?'Modelo':'Model'}</label><input name="agent_chat_model" value="${escapeHtml(modelName)}" placeholder="MiniMax-M3"></div>
  <div class="field wide"><label>${lang==='es'?'URL compatible OpenAI':'OpenAI-compatible URL'}</label><span class="field-help">${lang==='es'?'Debe usar https://. Solo se permite http:// para modelos locales como 127.0.0.1.':'Must use https://. http:// is allowed only for local models such as 127.0.0.1.'}</span><input name="agent_chat_base_url" value="${escapeHtml(base)}" placeholder="https://api.minimax.io/v1"></div>
@@ -5590,6 +5750,46 @@ function chatGptConnectMarkup(onboarding=false){
 }
 function renderChatGptPanel(){
  qs('#chatgpt-panel').innerHTML=chatGptConnectMarkup(false);
+}
+function renderChatGptConnectResult(response){
+ const box=qs('#chatgpt-connect-result');if(!box)return;
+ const r=response.result||response||{};
+ const status=String(r.status||'');
+ const urls=Array.isArray(r.urls)?r.urls:[];
+ const output=String(r.output||'').trim();
+ const titles={
+  terminal_opened:lang==='es'?'Terminal abierta':'Terminal opened',
+  completed:lang==='es'?'Conexión revisada':'Connection checked',
+  needs_login:lang==='es'?'Termina el login':'Finish login',
+  needs_terminal:lang==='es'?'Necesita una terminal':'Terminal needed',
+  not_installed:lang==='es'?'Hermes no está instalado':'Hermes is not installed'
+ };
+ const fallbackTitle=lang==='es'?'No pude conectar automáticamente':'Could not connect automatically';
+ const title=escapeHtml(r.title||titles[status]||fallbackTitle);
+ const detail=escapeHtml(r.detail||'');
+ const links=urls.length?`<div class="onboarding-step-actions">${urls.map(url=>`<a class="btn primary" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${lang==='es'?'Abrir login':'Open login'}</a>`).join('')}</div>`:'';
+ const command=status==='needs_terminal'||status==='not_installed'?`<details class="helper-command"><summary>${lang==='es'?'Plan B manual':'Manual fallback'}</summary><span class="step-command">${escapeHtml(r.command||'hermes model')}</span><button class="btn" type="button" onclick="copyCommand(${JSON.stringify(r.command||'hermes model').replaceAll('"','&quot;')})">${t('copy_command')}</button></details>`:'';
+ const outputBlock=output?`<details class="helper-command"><summary>${lang==='es'?'Detalle que devolvió Hermes':'Hermes detail'}</summary><pre class="chatgpt-terminal-output">${escapeHtml(output)}</pre></details>`:'';
+ const review=status==='terminal_opened'||status==='completed'||status==='needs_login'?`<button class="btn" type="button" onclick="load()">${lang==='es'?'Revisar conexión':'Recheck connection'}</button>`:'';
+ box.innerHTML=`<b>${title}</b><p>${detail}</p>${links}${command}${outputBlock}${review?`<div class="onboarding-step-actions">${review}</div>`:''}`;
+ box.classList.remove('hidden');
+}
+async function connectChatGpt(event){
+ const btn=event?.currentTarget||event?.target;
+ const box=qs('#chatgpt-connect-result');
+ if(btn)btn.disabled=true;
+ if(box){box.classList.remove('hidden');box.innerHTML=`<b>${lang==='es'?'Conectando...':'Connecting...'}</b><p>${lang==='es'?'Estoy intentando abrir Hermes por ti.':'I am trying to open Hermes for you.'}</p>`}
+ try{
+  const res=await api('/api/agent-model/connect',{method:'POST',body:'{}'});
+  renderChatGptConnectResult(res);
+  const status=res.result?.status||res.status;
+  if(status==='terminal_opened')toast(lang==='es'?'Abrí la terminal para conectar ChatGPT/Codex.':'Opened the terminal to connect ChatGPT/Codex.');
+  else if(status==='completed')toast(lang==='es'?'Hermes respondió correctamente.':'Hermes responded successfully.');
+ }catch(err){
+  if(box){box.classList.remove('hidden');box.innerHTML=`<b>${lang==='es'?'No pude abrirlo todavía':'Could not open it yet'}</b><p>${escapeHtml(err.message||String(err))}</p>`}
+ }finally{
+  if(btn)btn.disabled=false;
+ }
 }
 function applyAgentModelPreset(kind){
  const form=qs('#agent-model-form');if(!form)return;
@@ -5967,7 +6167,7 @@ load();
 class DashboardHandler(BaseHTTPRequestHandler):
     HTML_PATHS = {"/", "/dashboard"}
     PROTECTED_GET_PATHS = {"/api/dashboard", "/api/export", "/api/report", "/api/setup", "/api/social/auth-status", "/api/social/accounts", "/api/update/snapshots", "/api/creative-asset"}
-    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/product", "/api/ad-briefs", "/api/codex/creative-plan", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/complete", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
+    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/agent-model/connect", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/product", "/api/ad-briefs", "/api/codex/creative-plan", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/complete", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
     ONBOARDING_OPEN_GETS = {"/api/dashboard", "/api/setup"}
     ONBOARDING_OPEN_POSTS = {"/api/dashboard-password", "/api/business-profile", "/api/business-profile/scan", "/api/license/activate"}
     GET_JSON_ROUTES = {
@@ -5986,6 +6186,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         "/api/social/token": social_save_facebook_token,
         "/api/social/default-account": social_set_default_account,
         "/api/social/discover-assets": social_discover_assets,
+        "/api/agent-model/connect": connect_agent_model,
         "/api/targeting/search": meta_targeting_search,
         "/api/audience-strategy": lambda payload: create_audience_strategy(payload, payload.get("language", "es")),
         "/api/business-profile": save_business_context,

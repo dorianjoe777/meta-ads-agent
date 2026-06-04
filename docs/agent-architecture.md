@@ -44,7 +44,7 @@ The current scanner is intentionally local and simple: HTTP fetch plus HTML pars
 
 ### Hermes + ChatGPT/Codex
 
-The recommended buyer default does not ask for an OpenAI API key for chat. Instead, the buyer runs:
+The recommended buyer default does not ask for an OpenAI API key for chat. The dashboard first tries to launch the Hermes login automatically with:
 
 ```bash
 hermes model

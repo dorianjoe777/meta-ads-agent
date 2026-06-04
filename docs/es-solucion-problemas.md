@@ -30,13 +30,15 @@ Si ya terminaste el onboarding, puedes volver al mismo flujo desde el dashboard:
 Configuracion > Conectar el modelo del agente
 ```
 
-Si eliges Hermes, esa tarjeta te dira si falta Hermes o si falta iniciar sesion. Si necesitas hacerlo manualmente, abre Terminal en el mismo equipo donde corre Admiro AI y ejecuta:
+Si eliges Hermes, toca `Conectar ahora`. El dashboard intentara abrir la terminal por ti para iniciar el login de ChatGPT/Codex. Cuando termines, vuelve y toca `Revisar conexion`.
+
+Si el dashboard no puede abrir una terminal porque esta corriendo dentro de Docker, DigitalOcean o un VPS, la tarjeta mostrara el plan B manual. En ese caso, abre la terminal del mismo equipo o servidor donde corre Admiro AI y ejecuta:
 
 ```bash
 hermes model
 ```
 
-Elige `OpenAI Codex`, inicia sesion con la cuenta ChatGPT del comprador y vuelve al dashboard. Despues toca `Ya lo hice, revisar conexion`.
+Elige `OpenAI Codex`, inicia sesion con la cuenta ChatGPT del comprador y vuelve al dashboard. Despues toca `Revisar conexion`.
 
 Si Admiro AI esta instalado en DigitalOcean, este comando se ejecuta dentro del servidor, no en el computador personal. Entra por SSH o por la consola web de DigitalOcean y corre `hermes model` ahi.
 

@@ -88,11 +88,13 @@ Despues de instalar, el onboarding inicial muestra el paso `Conectar ChatGPT al 
 
 La tarjeta te guia con palabras simples:
 
-1. Abrir Terminal en el equipo donde corre Admiro AI.
-2. Ejecutar `hermes model`.
+1. Tocar `Conectar ahora` en el dashboard.
+2. Si se abre una terminal, seguir esa ventana.
 3. Elegir `OpenAI Codex`.
 4. Iniciar sesion con la cuenta ChatGPT del comprador.
-5. Volver al dashboard y tocar `Ya lo hice, revisar conexion`.
+5. Volver al dashboard y tocar `Revisar conexion`.
+
+Si Docker o el VPS no permiten abrir una terminal visual, el dashboard mostrara el plan B: entrar al servidor y ejecutar `hermes model`.
 
 Si la instalacion vive en DigitalOcean, ese comando se corre dentro del Droplet por SSH o consola web de DigitalOcean. No se corre en la laptop del comprador, porque el agente esta viviendo en el servidor.
 

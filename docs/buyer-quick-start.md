@@ -59,6 +59,8 @@ Durante el onboarding veras `Conectar el modelo del agente`. Tienes dos rutas:
 - `Hermes + ChatGPT/Codex`: recomendado para usar una suscripcion de ChatGPT/Codex sin pegar una clave de OpenAI en el dashboard.
 - `MiniMax M3` u otra `API compatible OpenAI`: recomendado si prefieres pagar por tokens de un proveedor externo.
 
+Para la ruta recomendada, toca `Conectar ahora`. El dashboard intentara abrir la terminal y guiar el login de ChatGPT/Codex. Si esta instalado en DigitalOcean o Docker y no puede abrir una terminal visual, veras un plan B claro para hacerlo en el servidor.
+
 Para MiniMax M3, el preset usa:
 
 ```text
