@@ -142,18 +142,35 @@ curl "https://admiroia.uboost.lat/api/admin/releases" \
 - `POST /api/admin/licenses`
 - `GET /api/admin/releases`
 - `POST /api/admin/releases`
+- `POST /api/webhooks/hotmart`
 
 ## Operación diaria
 
-Cuando Hotmart confirma una compra:
+Pega esta URL en Hotmart como `URL para envio de datos`:
 
-1. Tomas el email del comprador.
-2. Creas la licencia contra el endpoint administrativo protegido usando tu clave admin.
-3. Envías esa licencia en el email de bienvenida.
-4. Publicas o actualizas la release en el registro del servidor.
-5. El comprador pega licencia + email en onboarding o en el instalador.
+```text
+https://admiroia.uboost.lat/api/webhooks/hotmart
+```
+
+Configura en Vercel:
+
+- `HOTMART_HOTTOK`: el token que Hotmart manda en el header `X-HOTMART-HOTTOK`.
+- `BUYER_EMAIL_PROVIDER=resend`: envia el correo de acceso con Resend.
+- `RESEND_API_KEY`: API key de Resend.
+- `BUYER_EMAIL_FROM`: remitente con dominio/sender verificado en Resend, por ejemplo `Admiro AI <licenses@admiroia.uboost.lat>`.
+- `BUYER_ACCESS_URL=https://admiroia.uboost.lat/access`.
+
+Cuando Hotmart confirma una compra con `PURCHASE_APPROVED` / `APPROVED`:
+
+1. El webhook valida `X-HOTMART-HOTTOK`.
+2. Toma el email, nombre y transaccion de Hotmart.
+3. Crea o reutiliza una licencia por `purchase.transaction`.
+4. Envia el correo de bienvenida con licencia y link a `/access`.
+5. El comprador entra con email + licencia en el portal.
 6. El dashboard confirma licencia contra tu dominio.
+
+Si Hotmart reintenta el mismo evento, no se duplica la licencia. Si llega reembolso, chargeback, cancelacion o bloqueo, el servidor revoca la licencia asociada a esa transaccion.
 
 ## Importante
 
-Este servidor es deliberadamente simple para v1. Usa almacenamiento privado persistente, firmas asimétricas para licencias y tokens HMAC de corta duracion para descargas. El comprador recibe solo la clave pública; la clave privada y el secreto de descargas nunca salen de Vercel. Para una etapa SaaS futura conviene añadir panel de administración, webhooks de Hotmart y rotación de secretos.
+Este servidor es deliberadamente simple para v1. Usa almacenamiento privado persistente, firmas asimétricas para licencias y tokens HMAC de corta duracion para descargas. El comprador recibe solo la clave pública; la clave privada y el secreto de descargas nunca salen de Vercel. Para una etapa SaaS futura conviene añadir panel de administración completo y rotación de secretos.

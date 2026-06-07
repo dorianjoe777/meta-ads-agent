@@ -27,6 +27,8 @@ Opcion local directa:
 
 Abre el dashboard en el enlace que muestra la terminal.
 
+Si quieres verlo desde tu telefono mientras esta instalado en tu PC/Mac, entra a `Configuracion` y activa `Ver desde mi telefono`. El dashboard te dara un enlace para abrirlo en el celular. El celular debe estar conectado al mismo Wi-Fi o red local, y se sigue protegiendo con tu contrasena del dashboard.
+
 ## 2. Agregar licencia
 
 Pega la licencia que recibiste por email con tu compra. Esa es la unica clave que te damos nosotros.

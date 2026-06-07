@@ -363,6 +363,7 @@ class IntegrationTestSuite:
             dashboard_password="secret-password",
             dashboard_token_required=True,
             allow_public_dashboard=False,
+            lan_access_enabled=False,
             live_actions_enabled=False,
             license_key=format_license("BUYER2026LATAM"),
             license_buyer_email="buyer@example.com",
@@ -452,6 +453,7 @@ class IntegrationTestSuite:
             dashboard_password="secret-password",
             dashboard_token_required=True,
             allow_public_dashboard=False,
+            lan_access_enabled=False,
             live_actions_enabled=False,
             license_key="",
             license_buyer_email="",
@@ -558,6 +560,109 @@ class IntegrationTestSuite:
             except ValueError:
                 self.assert_true(True, f"Private website scan URL blocked: {url}")
         self.assert_true(dashboard.normalize_website_url("example.com").startswith("https://example.com"), "Plain domains are normalized to https")
+
+        stored = {}
+        original_read_json = dashboard.read_json
+        original_write_json = dashboard.write_json
+        original_save_setup_config = dashboard.save_setup_config
+        original_log_action = dashboard.log_action
+        try:
+            dashboard.read_json = lambda path, default=None: dict(stored.get("profile", default or {})) if path == dashboard.BUSINESS_PROFILE_FILE else (default or {})
+            dashboard.write_json = lambda path, data: stored.__setitem__("profile", dict(data)) if path == dashboard.BUSINESS_PROFILE_FILE else None
+            dashboard.save_setup_config = lambda _payload: {"saved": True}
+            dashboard.log_action = lambda *_args, **_kwargs: None
+            skipped = dashboard.save_business_context({"website_skipped": True})
+            self.assert_true(skipped["profile"].get("website_skipped") is True, "Website step can be skipped for buyers without a site")
+            completed = dashboard.save_business_context(
+                {
+                    "main_offer": "Curso de maquillaje",
+                    "ideal_customer": "Mujeres que quieren aprender",
+                    "current_stage": "Estoy empezando",
+                    "what_to_improve": "Crear mi primera campaña",
+                    "context_complete": True,
+                }
+            )
+            self.assert_true(bool(completed["profile"].get("context_completed_at")), "Context wizard completion is persisted after all answers")
+        finally:
+            dashboard.read_json = original_read_json
+            dashboard.write_json = original_write_json
+            dashboard.save_setup_config = original_save_setup_config
+            dashboard.log_action = original_log_action
+
+    def test_website_scan_can_use_hermes_browser_enrichment(self):
+        """Test connected Hermes can enrich onboarding answers from a website scan."""
+        print("\nTesting Hermes Website Enrichment...")
+
+        dashboard = load_dashboard_module()
+
+        class FakeConfig:
+            agent_chat_provider = "hermes"
+
+        captured = {}
+        original_load_config = dashboard.load_config
+        original_ready = dashboard.hermes_codex_ready
+        original_agent_chat = dashboard.agent_chat
+        original_read_json = dashboard.read_json
+        original_write_json = dashboard.write_json
+        original_save_setup_config = dashboard.save_setup_config
+        original_log_action = dashboard.log_action
+        stored = {}
+        try:
+            dashboard.load_config = lambda: FakeConfig()
+            dashboard.hermes_codex_ready = lambda _config: (True, "ready")
+            dashboard.read_json = lambda path, default=None: dict(stored.get(path, default or {}))
+            dashboard.write_json = lambda path, data: stored.__setitem__(path, dict(data))
+            dashboard.save_setup_config = lambda _payload: {"saved": True}
+            dashboard.log_action = lambda *_args, **_kwargs: None
+
+            def fake_agent_chat(_config, payload):
+                captured["message"] = payload["message"]
+                captured["channel"] = payload.get("channel")
+                return {
+                    "ok": True,
+                    "provider": "hermes",
+                    "raw_reply": json.dumps(
+                        {
+                            "main_offer": "Oferta desde Hermes",
+                            "ideal_customer": "Comprador ideal desde Hermes",
+                            "current_stage": "Ya tengo web y quiero lanzar",
+                            "what_to_improve": "Elegir el primer concepto de anuncios",
+                            "initial_plan": ["Revisar web", "Crear campaña con supervisión"],
+                            "questions": [
+                                {
+                                    "key": "main_offer",
+                                    "label": "¿Qué vendes?",
+                                    "help": "Una frase corta.",
+                                    "placeholder": "Ej: cursos, ropa, servicios.",
+                                },
+                                {
+                                    "key": "ideal_customer",
+                                    "label": "¿Quién compra?",
+                                    "help": "La persona que más quieres atraer.",
+                                    "placeholder": "Ej: mamás, dueños de negocio, parejas.",
+                                },
+                            ],
+                        }
+                    ),
+                }
+
+            dashboard.agent_chat = fake_agent_chat
+            profile, source = dashboard.enrich_business_profile_with_agent("https://example.com", {"main_offer": "Base"}, "")
+            self.assert_true(source == "hermes_browser_scan", "Hermes enrichment marks website scan source")
+            self.assert_true(profile["main_offer"] == "Oferta desde Hermes", "Hermes JSON fills suggested onboarding answers")
+            self.assert_true("herramienta de navegador" in captured["message"], "Hermes is explicitly asked to use browser/retrieval when available")
+            generated = dashboard.generate_business_context_questions({"business_type": "Tienda de ropa", "website_url": "https://example.com", "language": "es"})
+            self.assert_true(generated["source"] == "agent_questions", "Hermes-generated onboarding questions are used when the model responds with JSON")
+            self.assert_true(generated["questions"][0]["label"] == "¿Qué vendes?", "Generated questions keep the first question simple")
+            self.assert_true(captured["channel"] == "onboarding_business_questions", "Question generation uses the dedicated onboarding channel")
+        finally:
+            dashboard.load_config = original_load_config
+            dashboard.hermes_codex_ready = original_ready
+            dashboard.agent_chat = original_agent_chat
+            dashboard.read_json = original_read_json
+            dashboard.write_json = original_write_json
+            dashboard.save_setup_config = original_save_setup_config
+            dashboard.log_action = original_log_action
 
     def test_skill_response_parsing(self):
         """Test MiniMax skill JSON parsing."""
@@ -768,6 +873,101 @@ class IntegrationTestSuite:
             dashboard.start_hermes_browserless_login = original_start
             dashboard.log_action = original_log
 
+    def test_dashboard_hermes_browserless_auto_selects_codex(self):
+        """Test the browserless Hermes bridge auto-selects OpenAI Codex and the recommended model."""
+        print("\nTesting Dashboard Hermes Browserless Auto Selection...")
+
+        dashboard = load_dashboard_module()
+        writes = []
+        original_write = dashboard.os.write
+        try:
+            dashboard.os.write = lambda fd, data: writes.append((fd, data)) or len(data)
+            provider_output = (
+                "Select provider:\n"
+                "1. MiniMax\n"
+                "6. OpenAI ▸ (Codex CLI or direct OpenAI API)\n"
+                "Select by number, Enter to confirm.\n"
+            )
+            with dashboard.HERMES_LOGIN_LOCK:
+                dashboard.HERMES_LOGIN_STATE.update({
+                    "id": "auto-test",
+                    "output": provider_output,
+                    "auto_provider_sent": False,
+                    "auto_codex_subprovider_sent": False,
+                    "auto_model_sent": False,
+                    "auto_note": "",
+                })
+            selected_provider = dashboard.maybe_auto_drive_hermes_browserless("auto-test", 99)
+            prompt = dashboard.hermes_login_prompt_state(provider_output, dashboard.HERMES_LOGIN_STATE)
+            self.assert_true(selected_provider is True and writes[-1] == (99, b"6\n"), "Browserless Hermes selects OpenAI Codex automatically")
+            self.assert_true(prompt["needs_input"] is False and "OpenAI Codex" in prompt["detail"], "Provider prompt is explained without asking the buyer for terminal input")
+
+            codex_subprovider_output = (
+                "Select provider:\n"
+                "(●)  1. OpenAI Codex\n"
+                "(○)  2. OpenAI API\n"
+                "Choice [default 1]:\n"
+            )
+            with dashboard.HERMES_LOGIN_LOCK:
+                dashboard.HERMES_LOGIN_STATE.update({
+                    "id": "auto-test",
+                    "output": codex_subprovider_output,
+                    "auto_provider_sent": True,
+                    "auto_codex_subprovider_sent": False,
+                    "auto_model_sent": False,
+                    "auto_note": "",
+                })
+            selected_subprovider = dashboard.maybe_auto_drive_hermes_browserless("auto-test", 99)
+            prompt = dashboard.hermes_login_prompt_state(codex_subprovider_output, dashboard.HERMES_LOGIN_STATE)
+            self.assert_true(selected_subprovider is True and writes[-1] == (99, b"1\n"), "Browserless Hermes explicitly confirms OpenAI Codex in the OpenAI submenu")
+            self.assert_true(prompt["needs_input"] is False and "OpenAI Codex" in prompt["detail"], "OpenAI submenu is handled without buyer terminal input")
+
+            class RunningProc:
+                def poll(self):
+                    return None
+
+            with dashboard.HERMES_LOGIN_LOCK:
+                dashboard.HERMES_LOGIN_STATE.update({
+                    "id": "auto-test",
+                    "output": codex_subprovider_output,
+                    "auto_provider_sent": True,
+                    "auto_codex_subprovider_sent": False,
+                    "auto_model_sent": False,
+                    "proc": RunningProc(),
+                    "fd": 99,
+                })
+            nudged = dashboard.nudge_hermes_browserless_autodrive()
+            self.assert_true(nudged is True and writes[-1] == (99, b"1\n"), "Revisar conexión nudges a stuck Hermes submenu forward automatically")
+
+            model_output = "Select model:\n1. Recommended default\nSelect by number, Enter to confirm.\n"
+            with dashboard.HERMES_LOGIN_LOCK:
+                dashboard.HERMES_LOGIN_STATE.update({
+                    "id": "auto-test",
+                    "output": model_output,
+                    "auto_provider_sent": True,
+                    "auto_codex_subprovider_sent": True,
+                    "auto_model_sent": False,
+                    "auto_note": "",
+                    "proc": None,
+                    "fd": None,
+                })
+            selected_model = dashboard.maybe_auto_drive_hermes_browserless("auto-test", 99)
+            self.assert_true(selected_model is True and writes[-1] == (99, b"\n"), "Browserless Hermes confirms the recommended model automatically")
+
+            login_output = (
+                "Open this URL to continue: https://auth.openai.com/device\n"
+                "OpenAI will ask for the verification code displayed in your terminal.\n"
+                "Verification code: AB12-CD34\n"
+            )
+            prompt = dashboard.hermes_login_prompt_state(login_output, dashboard.HERMES_LOGIN_STATE)
+            response = dashboard.hermes_connect_response("needs_login", prompt["title"], prompt["detail"], output=login_output, log=False)
+            self.assert_true(prompt["phase"] == "login_code" and prompt["login_code"] == "AB12-CD34", "Browserless Hermes extracts the OpenAI terminal code from login output")
+            self.assert_true(response["login_code"] == "AB12-CD34" and response["login_codes"] == ["AB12-CD34"], "Dashboard response exposes the OpenAI code separately from technical logs")
+            letters_only_output = "OpenAI device code displayed in your terminal:\nVerification code: WXYZ-ABCD\n"
+            self.assert_true(dashboard.extract_login_codes_from_text(letters_only_output) == ["WXYZ-ABCD"], "OpenAI terminal code extraction supports letter-only device codes")
+        finally:
+            dashboard.os.write = original_write
+
     def test_hermes_blocks_non_codex_runtime_by_default(self):
         """Test buyer default does not silently chat through a non-Codex Hermes provider."""
         print("\nTesting Hermes Codex Auth Requirement...")
@@ -811,7 +1011,7 @@ class IntegrationTestSuite:
             hermes_model = ""
             hermes_timeout_seconds = 10
             hermes_max_iterations = 3
-            hermes_enabled_toolsets = "memory,skills,session_search,vision,image_gen,file"
+            hermes_enabled_toolsets = "memory,skills,session_search,vision,image_gen,file,web,browser"
             hermes_disabled_toolsets = "terminal,code_execution"
             hermes_home = ""
 
@@ -842,7 +1042,7 @@ class IntegrationTestSuite:
             self.assert_true("--image" in command and attached_image.endswith("test-reference.png"), "Safe uploaded image is attached to Hermes")
             self.assert_true("dashboard/data/hermes-workspace/current/uploads" in attached_image, "Safe uploaded image is copied into the Hermes workspace before attachment")
             self.assert_true(str(unsafe_image.resolve()) not in command, "Unsafe local file is not attached as an image")
-            self.assert_true("memory,skills,session_search,vision,image_gen,file" in command, "Creative-friendly Hermes toolsets include scoped file access")
+            self.assert_true("memory,skills,session_search,vision,image_gen,file,web,browser" in command, "Creative-friendly Hermes toolsets include scoped file and website access")
         finally:
             hermes_bridge.subprocess.run = original_run
 
@@ -2080,6 +2280,7 @@ class IntegrationTestSuite:
 
         dashboard = load_dashboard_module()
         html = dashboard.HTML
+        dashboard_source = Path(dashboard.__file__).read_text(encoding="utf-8")
         post_routes = set(dashboard.DashboardHandler.POST_JSON_ROUTES) | set(dashboard.DashboardHandler.POST_SPECIAL_ROUTES)
         get_routes = set(dashboard.DashboardHandler.GET_JSON_ROUTES) | dashboard.DashboardHandler.HTML_PATHS | {"/api/social/login", "/api/creative-asset"}
         self.assert_true(dashboard.DashboardHandler.PROTECTED_POST_PATHS <= post_routes, "Protected dashboard POST routes have handlers")
@@ -2156,23 +2357,31 @@ class IntegrationTestSuite:
         self.assert_true("appendChatApprovalActions" in html and "chatApproveDecision" in html and "chatRejectDecision" in html, "Agent chat can show approve/reject buttons for exact pending approvals")
         self.assert_true("/api/reject" in html and "msg-approval-card" in html, "Chat approval decisions include a reject path and compact action cards")
         self.assert_true("onboarding-flow" in html, "Dedicated onboarding flow exists")
-        self.assert_true("websiteScanGuide" in html and "/api/business-profile/scan" in html, "Onboarding includes website intelligence after the agent model step")
-        self.assert_true("businessContextGuide" in html and "¿En qué etapa estás ahora?" in html, "Onboarding collects buyer stage and improvement context")
-        self.assert_true("initialStrategyGuide" in html and "Esto entendí de tu negocio" in html, "Onboarding shows an initial strategy before dashboard entry")
+        self.assert_true("websiteScanGuide" in html and "/api/business-profile/questions" in html and "startBusinessInterview" in html and "¿Qué negocio tienes?" in html, "Onboarding starts with a short business intro and generates the next questions")
+        self.assert_true("businessContextGuide" in html and "businessContextQuestions" in html and "saveBusinessContextQuestion" in html and "Guardar y seguir" in html, "Onboarding collects buyer context one simple question at a time")
+        self.assert_true("initialStrategyGuide" in html and "Esto entendí" in html, "Onboarding shows an initial strategy before dashboard entry")
         self.assert_true("requires_repair" in html and "Reconectemos tus datos reales" in html, "Legacy completed setup reopens guidance when real Meta data is missing")
         self.assert_true("tab-audiences" in html, "Audience builder tab exists")
         self.assert_true("setup-config-form" in html, "Setup save form exists")
         self.assert_true('id="chatgpt-panel"' in html and "renderChatGptPanel()" in html, "Setup includes a dedicated agent model connection panel")
+        self.assert_true('id="local-network-panel"' in html and "Ver desde mi teléfono" in html and "/api/local-network-access" in html, "Setup includes same-Wi-Fi phone access as an explicit opt-in")
+        self.assert_true("/api/local-network-access" in dashboard.DashboardHandler.PROTECTED_POST_PATHS and "/api/local-network-access" in dashboard.DashboardHandler.POST_JSON_ROUTES, "Phone LAN access changes require dashboard password and have a handler")
         self.assert_true("Conecta el cerebro del agente" in html and "MiniMax M3" in html and "Guardar modelo del agente" in html, "Agent model setup supports MiniMax M3 and direct providers")
-        self.assert_true("Conectar ChatGPT/Codex" in html and "API compatible OpenAI" in html and "login OAuth" in html, "Onboarding shows ChatGPT OAuth and OpenAI-compatible API choices immediately")
+        self.assert_true("OpenAI API" in html and "ChatGPT suscripción" in html and "Otra API compatible" in html and "OAuth" in html, "Onboarding shows four simple model choices immediately")
+        self.assert_true("routeButton('openai_api')" in html and "routeButton('chatgpt_subscription')" in html and "routeButton('minimax_m3')" in html and "routeButton('custom_api')" in html and "selectAgentModelRoute('${kind}')" in html, "Agent model setup uses four collapsible route buttons")
         self.assert_true("connectChatGpt(event)" in html and "/api/agent-model/connect" in html and "Conectar ahora" in html, "ChatGPT/Codex connection is an automatic dashboard action")
+        self.assert_true("Copiar comando" not in html and ".agent-model-option .route-icon" in html and ".agent-route-panel.active" in html, "ChatGPT/Codex setup hides command-copy UI and keeps route choices readable")
         self.assert_true("Copiar paso" not in html and "Copy step" not in html, "ChatGPT/Codex connection no longer presents copy-only wording")
         self.assert_true("agent_chat_base_url" in html and "agent_chat_api_key" in html and "openai_compatible" in html, "OpenAI-compatible model settings are exposed without showing saved keys")
-        self.assert_true("hermes model --no-browser" in html and "DigitalOcean sin abrir navegador dentro del servidor" in html, "Hermes/ChatGPT setup has a browser-based VPS path")
+        self.assert_true("DigitalOcean mostraré aquí el enlace" in html and "Ver diagnóstico para soporte" in html, "Hermes/ChatGPT setup has a browser-based VPS path with diagnostics folded")
         self.assert_true("/api/agent-model/connect-status" in html and "/api/agent-model/connect-input" in html and "sendChatGptTerminalInput" in html, "VPS Hermes bridge can poll and send guided terminal responses")
+        self.assert_true("Ver detalle técnico de Hermes" in html and "prepareChatGptAuthWindow" in html and "maybeOpenChatGptAuthUrl" in html, "Hermes browserless UI folds support detail and opens the OAuth login in the buyer browser")
+        self.assert_true("chatgpt-device-code" in html and "Copiar código" in html and "login_code" in html, "OpenAI terminal login code is shown as a copyable buyer-facing card")
+        self.assert_true("body .onboarding-flow input:not([type=\"checkbox\"])" in html and "::placeholder" in html and "-webkit-autofill" in html, "Onboarding text fields stay dark and readable across dashboard themes")
+        self.assert_true("Voy a elegir OpenAI Codex y el modelo recomendado automáticamente" in dashboard_source and "maybe_auto_drive_hermes_browserless" in dashboard_source, "Hermes browserless setup auto-selects Codex provider and recommended model")
         self.assert_true("{id:'chatgpt',status:chatgptOk?'ok':'warn'}" in html and "chatGptConnectMarkup(true)" in html, "Initial onboarding includes ChatGPT connection before Meta setup")
         self.assert_true("{id:'password',status:passwordOk?'ok':'blocked'},\n\t  {id:'chatgpt',status:chatgptOk?'ok':'warn'},\n\t  {id:'website',status:websiteOk?'ok':'blocked'}" in html, "Initial onboarding moves from password directly to agent model connection")
-        self.assert_true("Este paso va primero porque el producto se usa hablando con el agente" in html and "directModelOk" in html, "Onboarding positions model setup as part of installation and accepts direct API readiness")
+        self.assert_true("Elige una ruta para el cerebro del agente" in html and "directModelOk" in html, "Onboarding positions model setup as part of installation and accepts direct API readiness")
         self.assert_true("license-panel" in html, "License activation panel exists")
         self.assert_true("/api/license/activate" in html, "License activation endpoint is wired in UI")
         self.assert_true("/api/onboarding/complete" in html, "Onboarding complete endpoint is wired in UI")
@@ -2214,8 +2423,8 @@ class IntegrationTestSuite:
         self.assert_true("Grupo de anuncios a usar" not in html, "Old required-ad-set wording is removed")
         self.assert_true("El grupo de anuncios es opcional" not in html, "Onboarding no longer mentions ad groups")
         self.assert_true("const destinationOk=['page_id','landing_url']" in html, "Onboarding does not require an existing ad set")
-        self.assert_true("Dejar piloto automático apagado por ahora" in html, "Live onboarding recommends supervised mode first")
-        self.assert_true("Qué significa trabajar con supervisión" in html, "Last onboarding step avoids simulation wording")
+        self.assert_true("Deja la supervisión activa" in html, "Live onboarding recommends supervised mode first")
+        self.assert_true("Con supervisión" in html, "Last onboarding step avoids simulation wording")
         self.assert_true("modo simulación" not in html, "Buyer-facing onboarding avoids simulation mode wording")
         self.assert_true("summary.live_ads_ready?'ok':'warn'" in html, "Live onboarding does not block first dashboard entry")
         self.assert_true("No hace falta para entrar al dashboard" in html, "Live smoke test is positioned as optional")
@@ -2853,10 +3062,12 @@ class IntegrationTestSuite:
         dashboard_source = (ROOT_DIR / "dashboard" / "monitoring-dashboard.py").read_text(encoding="utf-8")
         dockerignore = (ROOT_DIR / ".dockerignore").read_text(encoding="utf-8")
         docker_entrypoint = (ROOT_DIR / "scripts" / "docker-entrypoint.sh").read_text(encoding="utf-8")
+        env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
         self.assert_true("@openai/codex" in dockerfile and "node:22" in dockerfile, "Docker image installs Node and Codex CLI")
         self.assert_true("CODEX_CREATIVE_ENABLED=false" in dockerfile and 'CODEX_CREATIVE_ENABLED: "false"' in compose, "Buyer installs leave optional Codex CLI execution off by default")
         self.assert_true("seller/" in dockerignore, "Docker build context excludes seller secrets")
         self.assert_true("forced = {" in docker_entrypoint and "\"DASHBOARD_HOST\": \"0.0.0.0\"" in docker_entrypoint, "Docker entrypoint forces reachable dashboard bind values")
+        self.assert_true("LAN_ACCESS_ENABLED" in env_example and "LAN_ACCESS_ENABLED" in docker_entrypoint and "ADMIRO_HOST_LAN_IP" in compose, "Phone LAN access is off by default and Docker receives the host LAN IP when available")
         self.assert_true("meta_ads_config" in compose and "meta_ads_brand_guides" in compose, "Docker Compose persists config and brand guides")
         self.assert_true("meta_ads_update_snapshots" in compose and "/app/dashboard/data/update-snapshots" in compose, "Docker Compose keeps update rollback snapshots in a named volume")
         self.assert_true("MetaAdsAgent-source.zip" in script, "Release ZIP includes a stable asset name for bootstrap installers")
@@ -2876,7 +3087,7 @@ class IntegrationTestSuite:
         self.assert_true("https://admiroia.uboost.lat" in env_example, "Buyer release uses deployed license server")
         self.assert_true("LICENSE_PUBLIC_KEY=" in env_example, "Buyer release includes only license verification key")
         self.assert_true("AGENT_CHAT_BASE_URL=https://api.minimax.io/v1" in env_example and "AGENT_CHAT_MODEL=MiniMax-M3" in env_example and "AGENT_CHAT_PROVIDER=hermes" in env_example, "Buyer release documents Hermes default plus MiniMax M3/OpenAI-compatible model support")
-        self.assert_true("META_ADS_AGENT_VERSION=v1.0.4" in env_example and (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip() == "v1.0.4", "Buyer release exposes the installed product version")
+        self.assert_true("META_ADS_AGENT_VERSION=v1.0.5" in env_example and (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip() == "v1.0.5", "Buyer release exposes the installed product version")
         bootstrap_config = (ROOT_DIR / "installer" / "release-bootstrap.env").read_text(encoding="utf-8")
         bootstrap_sh = (ROOT_DIR / "scripts" / "install-from-github.sh").read_text(encoding="utf-8")
         bootstrap_ps1 = (ROOT_DIR / "scripts" / "install-from-github.ps1").read_text(encoding="utf-8")
@@ -2938,7 +3149,10 @@ class IntegrationTestSuite:
         self.assert_true("license_entitlements" in dashboard_source and "active_workspace" in dashboard_source and "workspace_usage" in dashboard_source and "business_binding" in dashboard_source, "Dashboard exposes license limits and active business metadata")
         self.assert_true("Tu licencia Individual cuida un solo negocio activo" in dashboard_source and "Para manejar varios clientes, usa Licencia Agencia" in dashboard_source, "Dashboard explains Individual and Agency limits in buyer-friendly copy")
         self.assert_true("improvements" in license_releases_admin and "improvements" in license_release_api, "Official release metadata includes buyer-facing improvement cards")
-        self.assert_true("buyerFacingImprovements" in portal_lib and "INTERNAL_RELEASE_WORDS" in portal_lib and "Instalacion clara" in portal_lib, "Download portal filters internal release notes before buyers see them")
+        self.assert_true("buyerFacingImprovements" in portal_lib and "INTERNAL_RELEASE_WORDS" in portal_lib and "Instalacion en contenedor" in portal_lib, "Download portal filters internal release notes before buyers see them")
+        for technical_release_word in ['"hermes"', '"chatgpt"', '"codex"', '"ssh"', '"vps"', '"minimax"', '"comando"']:
+            self.assert_true(technical_release_word in portal_lib, f"Download portal hides technical release note word {technical_release_word} from buyers")
+        self.assert_true("Docker para Mac" in portal_lib and "Docker para Windows" in portal_lib and "producto se prepara en contenedor" in portal_lib, "Download portal pushes buyers toward Docker-first installation")
         self.assert_true("buyerFacingImprovements(release.improvements" in portal_session_api and "buyerFacingImprovements(release.improvements" in license_release_api, "Buyer download APIs sanitize release improvements")
         self.assert_true("timingSafeEqual" in license_lib and "RELEASE_MAX_BYTES" in license_download_api and "response.redirect(302" in license_download_api, "License server uses safer comparisons and avoids proxying large release bodies by default")
         self.assert_true("export async function resetDeviceRegistrations" in license_store and "del(" in license_store, "License server can clear prior device registrations")
@@ -2947,6 +3161,8 @@ class IntegrationTestSuite:
         self.assert_true("RELEASE_DOWNLOAD_SECRET" in license_server_readme and "/api/license/release" in license_server_readme, "Seller license server documents signed release download support")
         self.assert_true("Acceso de comprador" in portal_page and "Email de compra" in portal_page and "Clave de acceso" in portal_page, "Download portal has buyer-friendly email and access key login")
         self.assert_true("/api/portal/session" in portal_page and "/api/portal/download" in portal_page and "Elige tu sistema" in portal_page, "Download portal renders one-click platform downloads")
+        self.assert_true("Docker Desktop" in portal_page and "launcher Docker" in portal_page and "Instalacion local con Docker" in portal_page, "Download portal explains local installs run through Docker")
+        self.assert_true("Descargar Docker Desktop" in portal_page and "https://www.docker.com/products/docker-desktop/" in portal_page, "Download portal gives buyers a direct Docker Desktop download button")
         self.assert_true("Recordar este acceso" in portal_page and "restorePortalSession" in portal_page and "Cerrar sesion" in portal_page, "Download portal remembers buyer access and offers logout")
         self.assert_true("Estado de tu instalacion" in portal_page and "Acceder a mi dashboard" in portal_page and "renderInstallState" in portal_page, "Download portal leads with installed/not-installed state before installer choices")
         self.assert_true("install_state" in portal_session_api and "deviceRegistrations" in portal_session_api and "cloud_installation" in portal_session_api, "Portal session returns cloud and local install state")
@@ -2955,6 +3171,8 @@ class IntegrationTestSuite:
         self.assert_true("install_event" in license_activate_api and "onboarding_opened" in license_activate_api and "onboarding_completed" in license_activate_api, "License activation records local onboarding state for the buyer portal")
         self.assert_true("mark_license_install_state" in dashboard_source and "onboarding_completed" in dashboard_source, "Dashboard reports onboarding progress to the license server without blocking local use")
         self.assert_true("Instalar en la nube" in portal_page and "/api/portal/cloud/digitalocean" in portal_page and "Crear mi servidor" in portal_page, "Download portal exposes guided DigitalOcean install after buyer access")
+        self.assert_true("Crear cuenta en DigitalOcean" in portal_page and "https://cloud.digitalocean.com/registrations/new" in portal_page and "Haz clic aqui para obtener el token" in portal_page and "cloud-token-cta" in portal_page, "Cloud install gives buyers direct DigitalOcean signup and a clear token action beside the token field")
+        self.assert_true("US$4 a US$6 al mes" in portal_page and "credito inicial" in portal_page and "metodo de pago" in portal_page, "Cloud install explains expected DigitalOcean cost and signup requirements")
         self.assert_true("cloud-progress" in portal_page and "startCloudProgressPolling" in portal_page and "action: 'status'" in portal_page, "Download portal shows cloud install progress and polls status")
         self.assert_true("Math.min(98, rawProgress)" in portal_page and "verificando_dashboard" in portal_digitalocean_api and "Math.min(98, cleanProgress" in portal_digitalocean_api, "Download portal never shows 100 percent until the cloud dashboard is actually ready")
         self.assert_true("Boolean(openUrl && (cloud.dashboard_available" in portal_page and "Boolean(openUrl && (data.ready" in portal_page, "Download portal requires a real dashboard URL before showing cloud as ready")
@@ -2966,11 +3184,11 @@ class IntegrationTestSuite:
         self.assert_true("Protector automatico de acceso" in portal_page and "/api/portal/cloud/access-keeper" in portal_page and "/api/portal/cloud/access-keeper-ps" in portal_page, "Download portal keeps the optional local access keeper available as an advanced fallback")
         self.assert_true("Actualizar acceso de esta red" in portal_page and "refreshCloudAccess()" in portal_page and "action: 'refresh_access'" in portal_page, "Download portal can realign cloud SSH/dashboard access from the buyer browser")
         self.assert_true("Buscar automaticamente con mi token" in portal_page and "cloudRecoveryToken" in portal_page and "refreshCloudIpFromDigitalOcean" in portal_digitalocean_api, "DigitalOcean waiting-for-IP state can recover automatically with the browser-held token")
-        self.assert_true("Guardar este token cifrado" in portal_page and "Olvidar token guardado" in portal_page and "digitalocean_token_saved" in portal_session_api, "Download portal can remember a DigitalOcean token without showing it back to the buyer")
-        self.assert_true("encryptPortalSecret" in secret_vault_lib and "aes-256-gcm" in secret_vault_lib and "PORTAL_SECRET_VAULT_KEY" in secret_vault_lib, "Portal vault encrypts stored buyer cloud tokens server-side")
-        self.assert_true("remember_digitalocean_token" in portal_digitalocean_api and "forget_digitalocean_token" in portal_digitalocean_api and "resolveDigitalOceanToken" in portal_digitalocean_api, "DigitalOcean cloud endpoint can reuse or forget the encrypted saved token")
+        self.assert_true("Guardar este token cifrado" not in portal_page and "Olvidar token guardado" not in portal_page and "digitalocean_token_saved" not in portal_session_api and "rememberDigitalOceanToken" not in portal_page and "forgetDigitalOceanToken" not in portal_page, "Download portal no longer asks buyers to save DigitalOcean tokens")
+        self.assert_true("encryptPortalSecret" in secret_vault_lib and "aes-256-gcm" in secret_vault_lib and "PORTAL_SECRET_VAULT_KEY" in secret_vault_lib, "Portal vault encryption helper remains available for legacy secret records")
+        self.assert_true("remember_digitalocean_token" not in portal_digitalocean_api and "forget_digitalocean_token" not in portal_digitalocean_api and "resolveDigitalOceanToken" in portal_digitalocean_api and "decryptPortalSecret" in portal_digitalocean_api, "DigitalOcean cloud endpoint can read legacy encrypted tokens but does not expose save/forget token actions")
         self.assert_true("resetCloudInstall" in portal_page and "Ya borre este servidor. Crear uno nuevo" in portal_page and 'action === "reset_cloud_install"' in portal_digitalocean_api, "Download portal can clear a deleted or stuck DigitalOcean install before recreating")
-        self.assert_true("abre Terminal" in portal_page and "~/.ssh/admiro_ai.pub" in portal_page and "funciona como un candado abierto" in portal_page and "No compartas la llave privada" in portal_page, "DigitalOcean SSH key step explains public/private key safety in buyer-friendly language")
+        self.assert_true("abre Terminal" in portal_page and "~/.ssh/admiro_ai.pub" in portal_page and "solo tu computador" in portal_page and "La parte privada queda guardada en tu PC" in portal_page and "parte publica, que es segura de compartir" in portal_page and "No compartas la llave privada" in portal_page, "DigitalOcean SSH key step explains public/private key safety in buyer-friendly language")
         self.assert_true("signedPortalSession" in license_lib and "verifyPortalSession" in license_lib and "PORTAL_SESSION_MINUTES" in license_lib, "License server can issue short-lived portal sessions")
         self.assert_true("minutes: rawMinutes" in license_lib and "Math.min(Math.floor(requestedMinutes), 360)" in license_lib, "License server can issue longer signed release grants for cloud-init installs")
         self.assert_true("readLicense" in portal_session_api and "releaseWithDiscoveredAssets" in portal_session_api and "validFormat" in portal_session_api, "Portal session validates purchase email and access key server-side")
@@ -3004,7 +3222,7 @@ class IntegrationTestSuite:
         self.assert_true("DO_STRICT_PUBLIC_TCP_PORTS" in do_firewall_script and "public_ports" in do_firewall_script, "DigitalOcean firewall refresh preserves public certificate challenge ports")
         self.assert_true("allowSshFromAnywhere: true" in portal_digitalocean_api and "PasswordAuthentication no" in digitalocean_cloud_lib and 'DO_STRICT_ALLOW_SSH_FROM_ANYWHERE "true"' in digitalocean_cloud_lib, "DigitalOcean cloud install keeps SSH as key-only recovery path")
         self.assert_true("DO_STRICT_SKIP_DROPLET_ID_PROMPT" in do_install_script and "DO_STRICT_INITIAL_CLIENT_IP" in do_install_script, "DigitalOcean strict access installer supports noninteractive cloud-init first refresh")
-        self.assert_true("Instalacion guiada en DigitalOcean" in digitalocean_guided_doc and "Guardar este token cifrado" in digitalocean_guided_doc and "5 a 10 minutos" in digitalocean_guided_doc, "Buyer docs explain guided DigitalOcean install safely")
+        self.assert_true("Instalacion guiada en DigitalOcean" in digitalocean_guided_doc and "No se muestra una opcion de guardar token" in digitalocean_guided_doc and "5 a 10 minutos" in digitalocean_guided_doc, "Buyer docs explain guided DigitalOcean install safely without suggesting token saving")
         self.assert_true("barra de progreso" in digitalocean_guided_doc and "Acceder a mi dashboard" in digitalocean_guided_doc, "Buyer docs explain cloud install progress and final access button")
         self.assert_true("Abrir mi dashboard" in digitalocean_guided_doc and "autoriza la IP actual" in digitalocean_guided_doc and "No contiene el token de DigitalOcean" in digitalocean_guided_doc, "Buyer docs explain the one-click cloud dashboard opener")
         self.assert_true("Protector automatico de acceso avanzado" in digitalocean_guided_doc and "corre cada hora" in digitalocean_guided_doc and "No guarda el token de DigitalOcean" in digitalocean_guided_doc, "Buyer docs explain the local cloud access keeper as an advanced fallback")
@@ -3058,6 +3276,7 @@ class IntegrationTestSuite:
             self.test_hermes_missing_runtime_gives_chatgpt_setup_guidance,
             self.test_dashboard_chatgpt_connect_action_opens_terminal,
             self.test_dashboard_chatgpt_connect_action_uses_vps_browserless_bridge,
+            self.test_dashboard_hermes_browserless_auto_selects_codex,
             self.test_hermes_blocks_non_codex_runtime_by_default,
             self.test_hermes_attaches_safe_uploaded_images,
             self.test_hermes_business_memory_workspace_is_curated_and_redacted,

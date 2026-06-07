@@ -108,6 +108,8 @@ MIGRATION_POST_LIMIT_BYTES = 140 * 1024 * 1024
 MAX_MIGRATION_ARCHIVE_BYTES = 100 * 1024 * 1024
 MAX_UPDATE_ARCHIVE_BYTES = 220 * 1024 * 1024
 MAX_UPDATE_UNPACKED_BYTES = 300 * 1024 * 1024
+CURRENT_DASHBOARD_BIND_HOST = ""
+CURRENT_DASHBOARD_BIND_PORT = 0
 CREATIVE_ASSET_ROOT = OUTPUT_DIR / "creatives"
 CREATIVE_ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 PORT = 7871
@@ -122,6 +124,11 @@ HERMES_LOGIN_STATE = {
     "title": "",
     "detail": "",
     "output": "",
+    "phase": "",
+    "auto_note": "",
+    "auto_provider_sent": False,
+    "auto_codex_subprovider_sent": False,
+    "auto_model_sent": False,
     "started_at": "",
     "updated_at": "",
     "proc": None,
@@ -756,6 +763,107 @@ def restart_dashboard_process():
         os.execv(sys.executable, [sys.executable] + sys.argv)
     except OSError as exc:
         print(f"[dashboard] restart failed after update: {exc}")
+
+
+def detect_lan_ip():
+    configured = str(os.environ.get("ADMIRO_HOST_LAN_IP") or "").strip()
+    if configured:
+        try:
+            if ipaddress.ip_address(configured).version == 4:
+                return configured
+        except ValueError:
+            pass
+    candidates = []
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.settimeout(0.2)
+            probe.connect(("8.8.8.8", 80))
+            candidates.append(probe.getsockname()[0])
+    except OSError:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET, socket.SOCK_DGRAM):
+            candidates.append(info[4][0])
+    except OSError:
+        pass
+    for candidate in candidates:
+        try:
+            ip = ipaddress.ip_address(candidate)
+        except ValueError:
+            continue
+        if ip.version == 4 and not ip.is_loopback:
+            return str(ip)
+    return ""
+
+
+def install_environment_label():
+    if os.environ.get("CLOUD_DASHBOARD_HOSTNAME") or os.environ.get("DIGITALOCEAN_DROPLET_ID"):
+        return "cloud"
+    if Path("/.dockerenv").exists() or os.environ.get("ADMIRO_HOST_LAN_IP"):
+        return "docker"
+    return "native"
+
+
+def host_header_hostname(raw_host):
+    value = str(raw_host or "").strip()
+    if not value:
+        return ""
+    if value.startswith("[") and "]" in value:
+        return value[1:value.index("]")]
+    return value.split(":", 1)[0].strip().lower()
+
+
+def request_host_is_local(raw_host):
+    hostname = host_header_hostname(raw_host)
+    if hostname in {"localhost", "127.0.0.1", "::1"}:
+        return True
+    try:
+        ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+    return ip.is_loopback
+
+
+def dashboard_network_access_payload():
+    config = load_config()
+    bind_host = CURRENT_DASHBOARD_BIND_HOST or config.dashboard_host
+    bind_port = CURRENT_DASHBOARD_BIND_PORT or config.dashboard_port or PORT
+    public_bind = is_public_bind(bind_host)
+    enabled = bool(config.lan_access_enabled)
+    lan_ip = detect_lan_ip()
+    lan_url = f"http://{lan_ip}:{bind_port}/" if enabled and lan_ip else ""
+    desired_host = "0.0.0.0" if enabled else "127.0.0.1"
+    restart_needed = bool((enabled and not public_bind) or (not enabled and public_bind and install_environment_label() == "native"))
+    return {
+        "enabled": enabled,
+        "active": bool(enabled and public_bind),
+        "lan_url": lan_url,
+        "lan_ip": lan_ip,
+        "port": bind_port,
+        "bind_host": bind_host,
+        "public_bind": public_bind,
+        "restart_needed": restart_needed,
+        "install_environment": install_environment_label(),
+        "desired_host": desired_host,
+    }
+
+
+def set_local_network_access(payload):
+    enabled = str((payload or {}).get("enabled") or "").strip().lower() in {"1", "true", "yes", "on", "si", "sí"}
+    environment = install_environment_label()
+    updates = {"LAN_ACCESS_ENABLED": "true" if enabled else "false"}
+    if environment == "native":
+        updates["DASHBOARD_HOST"] = "0.0.0.0" if enabled else "127.0.0.1"
+        updates["ALLOW_PUBLIC_DASHBOARD"] = "true" if enabled else "false"
+    elif enabled:
+        updates["ALLOW_PUBLIC_DASHBOARD"] = "true"
+    update_env_values(updates)
+    result = dashboard_network_access_payload()
+    should_restart = bool(result["restart_needed"])
+    log_action("local_network_access", {"enabled": enabled, "environment": environment, "restart_needed": should_restart}, "completed")
+    if should_restart:
+        threading.Timer(1.0, restart_dashboard_process).start()
+    return {**result, "saved": True, "restarting": should_restart}
 
 
 def run_update_health_checks():
@@ -1794,10 +1902,199 @@ def extract_urls_from_text(value):
     return urls
 
 
+def extract_login_codes_from_text(value):
+    cleaned = clean_terminal_text(value)
+    if not cleaned:
+        return []
+    codes = []
+    lines = cleaned.splitlines()
+    hint_re = re.compile(r"\b(code|codigo|código|verification|verify|device|one-time|otp)\b", re.I)
+    token_re = re.compile(r"\b[A-Z0-9]{4}(?:[- ][A-Z0-9]{4}){1,3}\b|\b[A-Z0-9]{6,12}\b")
+    for index, line in enumerate(lines):
+        line_without_urls = re.sub(r"https?://[^\s<>'\")]+", " ", line)
+        if not hint_re.search(line_without_urls):
+            continue
+        segment = " ".join(lines[index : index + 3])
+        segment = re.sub(r"https?://[^\s<>'\")]+", " ", segment)
+        for match in token_re.findall(segment.upper()):
+            normalized = re.sub(r"\s+", "-", match.strip())
+            if normalized in {"OPENAI", "HERMES", "CODEX", "MODEL", "DEVICE"}:
+                continue
+            looks_like_code = "-" in normalized or any(char.isdigit() for char in normalized)
+            if looks_like_code and normalized not in codes:
+                codes.append(normalized)
+        if len(codes) >= 2:
+            break
+    return codes[:2]
+
+
+def hermes_provider_prompt_visible(output):
+    lower = clean_terminal_text(output).lower()
+    return "select provider" in lower and (
+        "select by number" in lower
+        or "enter to confirm" in lower
+        or "choice [default" in lower
+        or "choice:" in lower
+    )
+
+
+def hermes_model_prompt_visible(output):
+    lower = clean_terminal_text(output).lower()
+    return (
+        ("select model" in lower or "choose model" in lower or "default model" in lower)
+        and ("select by number" in lower or "enter to confirm" in lower or "default" in lower)
+    )
+
+
+def hermes_openai_subprovider_prompt_visible(output):
+    lower = clean_terminal_text(output).lower()
+    return hermes_provider_prompt_visible(output) and "openai codex" in lower and "openai api" in lower
+
+
+def hermes_choice_number_for_label(output, labels):
+    wanted = [str(label or "").lower() for label in labels if str(label or "").strip()]
+    for line in clean_terminal_text(output).splitlines():
+        lower = line.lower()
+        if not any(label in lower for label in wanted):
+            continue
+        match = re.match(r"^\s*(?:[\[\(]?(\d{1,2})[\]\).:-]?|\b(\d{1,2})\b)\s+", line)
+        if match:
+            return next((part for part in match.groups() if part), "")
+        before_label = lower.split(next((label for label in wanted if label in lower), ""), 1)[0]
+        reverse_match = re.search(r"(\d{1,2})\D*$", before_label)
+        if reverse_match:
+            return reverse_match.group(1)
+    return ""
+
+
+def hermes_codex_provider_choice(output):
+    parsed = hermes_choice_number_for_label(output, ["openai codex", "chatgpt/codex", "chatgpt codex"])
+    if parsed:
+        return parsed
+    if hermes_provider_prompt_visible(output):
+        return str(os.environ.get("HERMES_CODEX_PROVIDER_CHOICE") or "6").strip() or "6"
+    return ""
+
+
+def hermes_login_prompt_state(output, state=None):
+    state = state or {}
+    cleaned = clean_terminal_text(output)
+    lower = cleaned.lower()
+    urls = extract_urls_from_text(cleaned)
+    login_codes = extract_login_codes_from_text(cleaned)
+    auto_provider_sent = bool(state.get("auto_provider_sent"))
+    auto_codex_subprovider_sent = bool(state.get("auto_codex_subprovider_sent"))
+    auto_model_sent = bool(state.get("auto_model_sent"))
+    manual_input = any(marker in lower for marker in ["invalid choice", "invalid selection", "try again", "not recognized"])
+    if urls and login_codes:
+        return {
+            "phase": "login_code",
+            "needs_input": False,
+            "title": "Copia el código de OpenAI",
+            "detail": "OpenAI abrió una pantalla segura y te pedirá este código. Cópialo, vuelve a la pestaña de login y pégalo allí.",
+            "auto_note": state.get("auto_note") or "",
+            "login_code": login_codes[0],
+        }
+    if urls:
+        return {
+            "phase": "login_link",
+            "needs_input": False,
+            "title": "Termina el login",
+            "detail": "Abre el enlace de ChatGPT/Codex que aparece aquí. Después vuelve a esta pantalla y revisaré la conexión.",
+            "auto_note": state.get("auto_note") or "",
+            "login_code": "",
+        }
+    if hermes_openai_subprovider_prompt_visible(cleaned):
+        return {
+            "phase": "codex_subprovider_selection",
+            "needs_input": manual_input,
+            "title": "Confirmando OpenAI Codex",
+            "detail": "Hermes pidió elegir entre OpenAI Codex y OpenAI API. Estoy confirmando OpenAI Codex automáticamente.",
+            "auto_note": "OpenAI Codex confirmado." if auto_codex_subprovider_sent else "Confirmando OpenAI Codex automáticamente.",
+            "login_code": "",
+        }
+    if hermes_provider_prompt_visible(cleaned):
+        return {
+            "phase": "provider_selection",
+            "needs_input": manual_input,
+            "title": "Eligiendo OpenAI Codex",
+            "detail": "Hermes pidió elegir proveedor. Estoy seleccionando OpenAI Codex automáticamente para que no tengas que leer la terminal.",
+            "auto_note": "OpenAI Codex se selecciona automáticamente." if not auto_provider_sent else state.get("auto_note") or "OpenAI Codex seleccionado. Continúo con el siguiente paso.",
+            "login_code": "",
+        }
+    if hermes_model_prompt_visible(cleaned):
+        return {
+            "phase": "model_selection",
+            "needs_input": manual_input,
+            "title": "Eligiendo modelo recomendado",
+            "detail": "Hermes pidió elegir modelo. Estoy aceptando el modelo recomendado por defecto.",
+            "auto_note": "Modelo recomendado confirmado." if auto_model_sent else "Confirmando el modelo recomendado automáticamente.",
+            "login_code": "",
+        }
+    return {
+        "phase": "waiting",
+        "needs_input": manual_input,
+        "title": "Hermes está trabajando",
+        "detail": "Estoy preparando la conexión. Si aparece un enlace de ChatGPT/Codex, ábrelo desde este navegador.",
+        "auto_note": state.get("auto_note") or "",
+        "login_code": login_codes[0] if login_codes else "",
+    }
+
+
+def maybe_auto_drive_hermes_browserless(session_id, master_fd):
+    with HERMES_LOGIN_LOCK:
+        if HERMES_LOGIN_STATE.get("id") != session_id:
+            return False
+        output = HERMES_LOGIN_STATE.get("output") or ""
+        provider_sent = bool(HERMES_LOGIN_STATE.get("auto_provider_sent"))
+        codex_subprovider_sent = bool(HERMES_LOGIN_STATE.get("auto_codex_subprovider_sent"))
+        model_sent = bool(HERMES_LOGIN_STATE.get("auto_model_sent"))
+        if provider_sent and not codex_subprovider_sent and hermes_openai_subprovider_prompt_visible(output):
+            HERMES_LOGIN_STATE["auto_codex_subprovider_sent"] = True
+            HERMES_LOGIN_STATE["phase"] = "codex_subprovider_selection"
+            HERMES_LOGIN_STATE["auto_note"] = "Estoy confirmando OpenAI Codex automáticamente."
+            payload = "1\n"
+        elif not provider_sent:
+            provider_choice = hermes_codex_provider_choice(output)
+            if provider_choice:
+                HERMES_LOGIN_STATE["auto_provider_sent"] = True
+                HERMES_LOGIN_STATE["phase"] = "provider_selection"
+                HERMES_LOGIN_STATE["auto_note"] = "Estoy eligiendo OpenAI Codex automáticamente."
+                payload = f"{provider_choice}\n"
+            else:
+                payload = ""
+        elif not model_sent and hermes_model_prompt_visible(output):
+            HERMES_LOGIN_STATE["auto_model_sent"] = True
+            HERMES_LOGIN_STATE["phase"] = "model_selection"
+            HERMES_LOGIN_STATE["auto_note"] = "Estoy confirmando el modelo recomendado automáticamente."
+            payload = "\n"
+        else:
+            payload = ""
+    if not payload:
+        return False
+    try:
+        os.write(master_fd, payload.encode("utf-8", errors="replace"))
+        return True
+    except OSError:
+        return False
+
+
+def nudge_hermes_browserless_autodrive():
+    with HERMES_LOGIN_LOCK:
+        session_id = HERMES_LOGIN_STATE.get("id") or ""
+        fd = HERMES_LOGIN_STATE.get("fd")
+        proc = HERMES_LOGIN_STATE.get("proc")
+        running = bool(session_id and proc and proc.poll() is None and fd is not None)
+    if running:
+        return maybe_auto_drive_hermes_browserless(session_id, fd)
+    return False
+
+
 def hermes_connect_response(status, title, detail, **extra):
     command = extra.pop("command", "hermes model")
     should_log = extra.pop("log", True)
     output = redact_error_text(clean_terminal_text(extra.pop("output", "")), limit=HERMES_LOGIN_OUTPUT_LIMIT)
+    login_codes = extract_login_codes_from_text(output)
     payload = {
         "ok": status in {"terminal_opened", "completed", "needs_login", "needs_terminal", "browser_login_started", "browser_login_waiting", "browser_login_ready"},
         "status": status,
@@ -1805,6 +2102,8 @@ def hermes_connect_response(status, title, detail, **extra):
         "detail": detail,
         "command": command,
         "urls": extract_urls_from_text(output),
+        "login_codes": login_codes,
+        "login_code": extra.pop("login_code", login_codes[0] if login_codes else ""),
         "output": output,
         **extra,
     }
@@ -1886,6 +2185,8 @@ def launch_hermes_terminal(config):
 def hermes_browserless_snapshot(config=None):
     config = config or load_config()
     ready, auth_detail = hermes_codex_ready(config)
+    if not ready:
+        nudge_hermes_browserless_autodrive()
     with HERMES_LOGIN_LOCK:
         state = dict(HERMES_LOGIN_STATE)
         proc = state.get("proc")
@@ -1904,17 +2205,20 @@ def hermes_browserless_snapshot(config=None):
             log=False,
         )
     if running:
+        prompt = hermes_login_prompt_state(output, state)
         status = "needs_login" if extract_urls_from_text(output) else "browser_login_waiting"
         return hermes_connect_response(
             status,
-            "Conecta ChatGPT desde este navegador",
-            "Abrí una sesión segura dentro de este servidor. Si ves un enlace, ábrelo aquí. Si Hermes pregunta algo, responde abajo y continúa.",
+            prompt["title"],
+            prompt["detail"],
             mode="browserless_running",
             command=hermes_browserless_shell_command(config),
             output=output,
             running=True,
             job_id=state.get("id") or "",
-            needs_input=True,
+            needs_input=prompt["needs_input"],
+            phase=prompt["phase"],
+            auto_note=prompt["auto_note"],
             log=False,
         )
     if output:
@@ -1962,6 +2266,8 @@ def finish_hermes_browserless_session(session_id, returncode):
         HERMES_LOGIN_STATE["status"] = "completed" if ready else "needs_terminal"
         HERMES_LOGIN_STATE["title"] = "ChatGPT/Codex conectado" if ready else "Hermes necesita una respuesta"
         HERMES_LOGIN_STATE["detail"] = auth_detail
+        HERMES_LOGIN_STATE["phase"] = "completed" if ready else "finished"
+        HERMES_LOGIN_STATE["auto_note"] = ""
         HERMES_LOGIN_STATE["returncode"] = returncode
         HERMES_LOGIN_STATE["updated_at"] = now_iso()
         fd = HERMES_LOGIN_STATE.get("fd")
@@ -1983,6 +2289,7 @@ def read_hermes_browserless_output(session_id, master_fd, proc):
         if not chunk:
             break
         append_hermes_login_output(session_id, chunk.decode("utf-8", errors="replace"))
+        maybe_auto_drive_hermes_browserless(session_id, master_fd)
     try:
         returncode = proc.wait(timeout=1)
     except subprocess.TimeoutExpired:
@@ -2045,6 +2352,11 @@ def start_hermes_browserless_login(config):
                     "title": "Conecta ChatGPT desde este navegador",
                     "detail": "Sesion de Hermes abierta dentro de este servidor.",
                     "output": "",
+                    "phase": "starting",
+                    "auto_note": "Estoy preparando Hermes para usar OpenAI Codex.",
+                    "auto_provider_sent": False,
+                    "auto_codex_subprovider_sent": False,
+                    "auto_model_sent": False,
                     "started_at": now_iso(),
                     "updated_at": now_iso(),
                     "proc": proc,
@@ -2056,12 +2368,14 @@ def start_hermes_browserless_login(config):
         return hermes_connect_response(
             "browser_login_started",
             "Conecta ChatGPT desde este navegador",
-            "Abrí Hermes dentro de este servidor. Si aparece un enlace, ábrelo aquí. Si pide elegir proveedor o modelo, responde abajo.",
+            "Abrí Hermes dentro de este servidor. Voy a elegir OpenAI Codex y el modelo recomendado automáticamente. Si aparece un enlace, ábrelo aquí.",
             mode="browserless_started",
             command=hermes_browserless_shell_command(config),
             running=True,
             job_id=session_id,
-            needs_input=True,
+            needs_input=False,
+            phase="starting",
+            auto_note="Estoy preparando Hermes para usar OpenAI Codex.",
         )
     except Exception as exc:
         return hermes_connect_response(
@@ -2361,8 +2675,11 @@ def infer_business_profile(url, parser, context):
         "website_url": url,
         "business_type": business_type,
         "offer": offer,
+        "main_offer": offer,
         "audience": audience,
+        "ideal_customer": audience,
         "current_stage": context[:800],
+        "what_to_improve": "Entender mejor qué anuncios pueden vender esta oferta y preparar el primer plan sin adivinar.",
         "positioning": description or title,
         "detected_title": title,
         "detected_headings": headings[:8],
@@ -2371,6 +2688,264 @@ def infer_business_profile(url, parser, context):
         "source": "website_scan_basic",
         "created_at": now_iso(),
     }
+
+
+def extract_json_object_from_text(text):
+    raw = str(text or "").strip()
+    if not raw:
+        return {}
+    candidates = [raw]
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, flags=re.DOTALL | re.IGNORECASE)
+    if fenced:
+        candidates.insert(0, fenced.group(1))
+    if "{" in raw and "}" in raw:
+        candidates.append(raw[raw.find("{") : raw.rfind("}") + 1])
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
+def apply_business_profile_enrichment(profile, enrichment):
+    allowed_strings = [
+        "business_type",
+        "offer",
+        "main_offer",
+        "audience",
+        "ideal_customer",
+        "current_stage",
+        "what_to_improve",
+        "positioning",
+    ]
+    allowed_lists = ["suggested_angles", "initial_plan", "detected_headings"]
+    merged = dict(profile or {})
+    for key in allowed_strings:
+        value = str((enrichment or {}).get(key) or "").strip()
+        if value:
+            merged[key] = value[:1200]
+    for key in allowed_lists:
+        value = (enrichment or {}).get(key)
+        if isinstance(value, list):
+            merged[key] = [str(item or "").strip()[:300] for item in value if str(item or "").strip()][:8]
+    if merged.get("main_offer") and not merged.get("offer"):
+        merged["offer"] = merged["main_offer"]
+    if merged.get("offer") and not merged.get("main_offer"):
+        merged["main_offer"] = merged["offer"]
+    if merged.get("ideal_customer") and not merged.get("audience"):
+        merged["audience"] = merged["ideal_customer"]
+    if merged.get("audience") and not merged.get("ideal_customer"):
+        merged["ideal_customer"] = merged["audience"]
+    return merged
+
+
+BUSINESS_QUESTION_FIELDS = {
+    "main_offer",
+    "ideal_customer",
+    "sales_channel",
+    "current_stage",
+    "current_ads",
+    "biggest_blocker",
+    "what_to_improve",
+    "success_goal",
+    "budget_comfort",
+    "brand_tone",
+}
+
+
+def default_business_context_questions(business_type="", language="es"):
+    business_type = str(business_type or "").strip()
+    if language != "en":
+        offer_hint = f"Ej: vendo {business_type}" if business_type else "Ej: vendo cursos, ropa, servicios, tratamientos..."
+        return [
+            {"key": "main_offer", "label": "¿Qué vendes?", "help": "Una frase corta.", "placeholder": offer_hint},
+            {"key": "ideal_customer", "label": "¿Quién compra?", "help": "La persona que más quieres atraer.", "placeholder": "Ej: mujeres de 25 a 40, dueños de negocio, mamás..."},
+            {"key": "sales_channel", "label": "¿Dónde vendes?", "help": "Web, WhatsApp, Instagram, tienda física o llamada.", "placeholder": "Ej: vendo por WhatsApp y mi web."},
+            {"key": "current_stage", "label": "¿En qué punto estás?", "help": "Dime si empiezas, ya vendes o ya tienes anuncios.", "placeholder": "Ej: ya vendo, pero mis anuncios me confunden."},
+            {"key": "biggest_blocker", "label": "¿Qué te frena hoy?", "help": "Lo que más te preocupa ahora.", "placeholder": "Ej: no sé qué anuncio pausar o escalar."},
+            {"key": "success_goal", "label": "¿Qué sería una victoria?", "help": "Algo claro para los próximos 30 días.", "placeholder": "Ej: bajar costo por compra o vender 20 unidades más."},
+        ]
+    offer_hint = f"Ex: I sell {business_type}" if business_type else "Ex: courses, clothing, services, treatments..."
+    return [
+        {"key": "main_offer", "label": "What do you sell?", "help": "One short sentence.", "placeholder": offer_hint},
+        {"key": "ideal_customer", "label": "Who buys?", "help": "The person you most want to attract.", "placeholder": "Ex: women 25-40, business owners, moms..."},
+        {"key": "sales_channel", "label": "Where do you sell?", "help": "Website, WhatsApp, Instagram, store, or call.", "placeholder": "Ex: I sell through WhatsApp and my website."},
+        {"key": "current_stage", "label": "Where are you now?", "help": "Starting, already selling, or already running ads.", "placeholder": "Ex: I sell already, but ads confuse me."},
+        {"key": "biggest_blocker", "label": "What blocks you today?", "help": "The thing that worries you most.", "placeholder": "Ex: I do not know what to pause or scale."},
+        {"key": "success_goal", "label": "What would be a win?", "help": "Something clear for the next 30 days.", "placeholder": "Ex: lower purchase cost or sell 20 more units."},
+    ]
+
+
+def normalize_business_context_questions(value, business_type="", language="es"):
+    questions = []
+    seen = set()
+    for item in value if isinstance(value, list) else []:
+        if not isinstance(item, dict):
+            continue
+        key = re.sub(r"[^a-z0-9_]+", "_", str(item.get("key") or "").strip().lower()).strip("_")
+        if key not in BUSINESS_QUESTION_FIELDS or key in seen:
+            continue
+        label = str(item.get("label") or "").strip()
+        help_text = str(item.get("help") or "").strip()
+        placeholder = str(item.get("placeholder") or "").strip()
+        if not label:
+            continue
+        questions.append({
+            "key": key,
+            "label": label[:90],
+            "help": help_text[:180] or ("Respuesta corta." if language != "en" else "Short answer."),
+            "placeholder": placeholder[:180],
+        })
+        seen.add(key)
+        if len(questions) >= 6:
+            break
+    required = ["main_offer", "ideal_customer", "current_stage", "what_to_improve"]
+    existing = {question["key"] for question in questions}
+    fallback = default_business_context_questions(business_type, language)
+    for key in required:
+        if key in existing:
+            continue
+        match = next((question for question in fallback if question["key"] == key), None)
+        if match:
+            questions.append(match)
+            existing.add(key)
+    if len(questions) < 4:
+        return fallback
+    return questions[:6]
+
+
+def generate_business_context_questions(payload):
+    language = str((payload or {}).get("language") or "es").lower()
+    if language not in {"es", "en"}:
+        language = "es"
+    profile = read_json(BUSINESS_PROFILE_FILE, {})
+    if not isinstance(profile, dict):
+        profile = {}
+    business_type = str((payload or {}).get("business_type") or (payload or {}).get("business_short") or "").strip()
+    website_url = str((payload or {}).get("website_url") or "").strip()
+    extra_context = str((payload or {}).get("context") or "").strip()
+    if not business_type:
+        raise ValueError("Escribe en pocas palabras qué tipo de negocio tienes.")
+    profile["business_type"] = business_type[:220]
+    profile["business_short"] = business_type[:220]
+    profile["onboarding_questions_started"] = True
+    if website_url:
+        normalized_url = normalize_website_url(website_url)
+        validate_public_website_url(normalized_url)
+        profile["website_url"] = normalized_url
+        profile["website_skipped"] = False
+        save_setup_config({"landing_url": normalized_url})
+    else:
+        profile["website_skipped"] = True
+    config = load_config()
+    questions = []
+    source = "fallback_questions"
+    agent_detail = ""
+    model_ready = False
+    if config.agent_chat_provider == "hermes":
+        model_ready, agent_detail = hermes_codex_ready(config)
+    else:
+        model_ready = bool(config.agent_chat_api_key and config.agent_chat_base_url and config.agent_chat_model)
+    if model_ready:
+        message = (
+            "Eres un manager experto de Meta Ads para compradores principiantes. "
+            "Crea preguntas de onboarding tipo Typeform, una pregunta a la vez, para entender este negocio antes de mostrar el dashboard. "
+            "Si hay web, puedes usar browser/retrieval para entenderla, pero no inventes datos delicados. "
+            "Devuelve SOLO JSON valido con esta forma: "
+            '{"questions":[{"key":"main_offer","label":"...","help":"...","placeholder":"..."}]}. '
+            "Usa solo estas keys cuando apliquen: main_offer, ideal_customer, sales_channel, current_stage, current_ads, biggest_blocker, what_to_improve, success_goal, budget_comfort, brand_tone. "
+            "Haz 5 o 6 preguntas maximo. Lenguaje para una persona de 8 años: corto, claro, sin jerga. "
+            "La primera pregunta debe confirmar qué vende. Incluye current_stage y what_to_improve. "
+            f"Idioma: {'español latino' if language == 'es' else 'English'}.\n"
+            f"Tipo de negocio dicho por el comprador: {business_type}\n"
+            f"Web: {profile.get('website_url') or 'sin web'}\n"
+            f"Contexto extra: {extra_context or 'sin contexto'}"
+        )
+        result = agent_chat(
+            config,
+            {
+                "message": message,
+                "language": language,
+                "metrics": {},
+                "recommendations": [],
+                "fatigue": [],
+                "pending": [],
+                "business_profile": profile,
+                "brand_guides": {},
+                "channel": "onboarding_business_questions",
+            },
+        )
+        parsed = extract_json_object_from_text(result.get("raw_reply") or result.get("reply") or "") if result.get("ok") and not result.get("fallback") else {}
+        questions = normalize_business_context_questions(parsed.get("questions"), business_type, language)
+        source = "agent_questions" if parsed.get("questions") else "fallback_questions"
+        agent_detail = str(result.get("error") or result.get("reply") or agent_detail or "")[:300]
+    else:
+        questions = default_business_context_questions(business_type, language)
+    profile["onboarding_questions"] = questions
+    profile["onboarding_questions_source"] = source
+    profile["agent_questions_detail"] = agent_detail
+    profile["updated_at"] = now_iso()
+    profile.setdefault("source", "manual_context")
+    write_json(BUSINESS_PROFILE_FILE, profile)
+    log_action("business_questions_generate", {"business_type": business_type, "website_url": profile.get("website_url", ""), "source": source, "count": len(questions)}, "completed")
+    return {"saved": True, "profile": profile, "questions": questions, "source": source}
+
+
+def enrich_business_profile_with_agent(url, profile, context):
+    config = load_config()
+    if config.agent_chat_provider != "hermes":
+        return profile, "basic_scan"
+    ready, detail = hermes_codex_ready(config)
+    if not ready:
+        result = dict(profile)
+        result["agent_scan_status"] = "agent_not_connected"
+        result["agent_scan_detail"] = detail[:300]
+        return result, "basic_scan"
+    message = (
+        "Lee esta web publica con la herramienta de navegador o retrieval de Hermes si esta disponible: "
+        f"{url}\n\n"
+        "Necesito preparar el onboarding de un comprador principiante de Meta Ads. "
+        "Devuelve SOLO JSON valido, sin markdown, con estas claves: "
+        "business_type, main_offer, ideal_customer, current_stage, what_to_improve, positioning, "
+        "suggested_angles, initial_plan. "
+        "Escribe en español latino natural. Si algo no se puede saber por la web, haz una sugerencia prudente para que el comprador la revise. "
+        "Contexto adicional del comprador: "
+        f"{context or 'sin contexto adicional'}\n\n"
+        "Perfil basico detectado hasta ahora:\n"
+        f"{json.dumps(profile, ensure_ascii=False)}"
+    )
+    result = agent_chat(
+        config,
+        {
+            "message": message,
+            "language": "es",
+            "metrics": {},
+            "recommendations": [],
+            "fatigue": [],
+            "pending": [],
+            "business_profile": profile,
+            "brand_guides": {},
+            "channel": "onboarding_website_scan",
+        },
+    )
+    if not result.get("ok") or result.get("fallback"):
+        updated = dict(profile)
+        updated["agent_scan_status"] = "agent_scan_unavailable"
+        updated["agent_scan_detail"] = str(result.get("error") or result.get("reply") or "")[:300]
+        return updated, "basic_scan"
+    enrichment = extract_json_object_from_text(result.get("raw_reply") or result.get("reply") or "")
+    if not enrichment:
+        updated = dict(profile)
+        updated["agent_scan_status"] = "agent_scan_empty"
+        return updated, "basic_scan"
+    updated = apply_business_profile_enrichment(profile, enrichment)
+    updated["agent_scan_status"] = "agent_enriched"
+    updated["agent_scan_detail"] = "Hermes browser/retrieval enrichment applied"
+    updated["source"] = "hermes_browser_scan"
+    return updated, "hermes_browser_scan"
 
 
 def scan_business_website(payload):
@@ -2394,8 +2969,11 @@ def scan_business_website(payload):
             "website_url": url,
             "business_type": "negocio por definir",
             "offer": "oferta por definir",
+            "main_offer": "oferta por definir",
             "audience": "audiencia por definir",
+            "ideal_customer": "audiencia por definir",
             "current_stage": context,
+            "what_to_improve": "Preparar una primera lectura clara del negocio y convertirla en anuncios simples.",
             "positioning": "",
             "detected_title": "",
             "detected_headings": [],
@@ -2417,6 +2995,10 @@ def scan_business_website(payload):
         parser = WebsiteSummaryParser()
         parser.feed(body)
         profile = infer_business_profile(url, parser, context)
+    profile, source = enrich_business_profile_with_agent(url, profile, context)
+    profile["source"] = source or profile.get("source") or "website_scan_basic"
+    profile["onboarding_questions_started"] = True
+    profile["onboarding_questions"] = normalize_business_context_questions(profile.get("onboarding_questions") or [], profile.get("business_type") or "", "es")
     write_json(BUSINESS_PROFILE_FILE, profile)
     save_setup_config({"landing_url": url})
     log_action("business_website_scan", {"website_url": url, "source": profile.get("source"), "scan_error": profile.get("scan_error", "")}, "completed" if not profile.get("scan_error") else "warn")
@@ -2427,11 +3009,15 @@ def save_business_context(payload):
     profile = read_json(BUSINESS_PROFILE_FILE, {})
     if not isinstance(profile, dict):
         profile = {}
-    for field in ["website_url", "current_stage", "what_to_improve", "main_offer", "ideal_customer"]:
+    for field in ["website_url", "business_type", "business_short", "current_stage", "what_to_improve", "main_offer", "ideal_customer", "offer", "audience", "sales_channel", "current_ads", "biggest_blocker", "success_goal", "budget_comfort", "brand_tone"]:
         if field in payload:
             profile[field] = str(payload.get(field) or "").strip()
+    if "website_skipped" in payload:
+        profile["website_skipped"] = bool(payload.get("website_skipped"))
+        profile["onboarding_questions_started"] = True
     if payload.get("website_url"):
         profile["website_url"] = normalize_website_url(payload.get("website_url"))
+        profile["website_skipped"] = False
         save_setup_config({"landing_url": profile["website_url"]})
     if not profile.get("initial_plan"):
         context = " ".join(
@@ -2439,6 +3025,13 @@ def save_business_context(payload):
             for key in ["current_stage", "what_to_improve", "main_offer", "ideal_customer"]
         ).strip()
         profile.update(infer_business_profile(profile.get("website_url", ""), WebsiteSummaryParser(), context))
+    if profile.get("main_offer") and not profile.get("offer"):
+        profile["offer"] = profile["main_offer"]
+    if profile.get("ideal_customer") and not profile.get("audience"):
+        profile["audience"] = profile["ideal_customer"]
+    context_fields = ["main_offer", "ideal_customer", "current_stage", "what_to_improve"]
+    if payload.get("context_complete") and all(str(profile.get(key) or "").strip() for key in context_fields):
+        profile["context_completed_at"] = now_iso()
     profile.setdefault("source", "manual_context")
     profile["updated_at"] = now_iso()
     write_json(BUSINESS_PROFILE_FILE, profile)
@@ -4483,6 +5076,7 @@ def dashboard_payload():
         "active_workspace": active_workspace_payload(),
         "workspace_usage": workspace_usage_payload(),
         "business_binding": business_binding_payload(),
+        "local_network_access": dashboard_network_access_payload(),
         "config": {
             "mode": config.mode,
             "notify_channel": config.notify_channel,
@@ -4557,7 +5151,7 @@ HTML = r"""<!DOCTYPE html>
 :root{--bg:#101113;--shell:#14171a;--surface:#1a1d21;--surface2:#22262b;--surface3:#2b3036;--glass:rgba(28,33,38,.58);--glass2:rgba(255,255,255,.075);--border:#343a42;--line:rgba(255,255,255,.12);--text:#f2f2ee;--dim:#a7adb5;--muted:#777f89;--accent:#27c7a7;--accent2:#f4b740;--green:#55d47a;--red:#ff6b6b;--yellow:#f4c95d;--blue:#63a8ff;--cyan:#4bd4d4;--shadow:0 22px 70px rgba(0,0,0,.34);--glow:0 0 0 1px rgba(255,255,255,.09) inset,0 1px 0 rgba(255,255,255,.12) inset}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:radial-gradient(circle at 18% -8%,rgba(39,199,167,.18),transparent 32rem),radial-gradient(circle at 86% 12%,rgba(244,183,64,.12),transparent 26rem),linear-gradient(180deg,#121517 0%,#0f1113 100%);color:var(--text);min-height:100vh;background-attachment:fixed}
 button,input,select,textarea{font:inherit}
-.onboarding-flow{position:fixed;inset:0;z-index:50;display:none;background:linear-gradient(145deg,#101315,#171b1f);overflow:auto;padding:26px}.onboarding-flow.open{display:grid;place-items:center}.onboarding-shell{width:min(1080px,100%);display:grid;grid-template-columns:270px minmax(0,1fr);gap:18px;align-items:start}.onboarding-side{border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.055);padding:16px;box-shadow:var(--shadow),var(--glow);position:sticky;top:26px}.onboarding-side h1{font-size:20px;line-height:1.05}.onboarding-side p{font-size:12px;color:var(--dim);line-height:1.5;margin-top:8px}.onboarding-card{display:block;min-height:0;border:1px solid var(--line);border-radius:10px;background:rgba(22,26,30,.86);box-shadow:var(--shadow),var(--glow);padding:20px}.onboarding-card h2{font-size:23px;line-height:1.1;max-width:720px}.onboarding-card>p{font-size:13px;color:var(--dim);line-height:1.55;margin-top:8px;max-width:760px}.onboarding-progress{display:flex;gap:6px;margin:14px 0}.onboarding-progress span{height:6px;flex:1;border-radius:999px;background:rgba(255,255,255,.1)}.onboarding-progress span.done{background:var(--accent)}.onboarding-step-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.onboarding-command{border:1px solid var(--line);background:rgba(0,0,0,.22);border-radius:8px;padding:10px;margin-top:8px;font-size:12px;color:var(--text);word-break:break-word}.helper-command{margin-top:10px;color:var(--dim);font-size:11px}.helper-command summary{cursor:pointer;font-weight:900;color:var(--accent);list-style:none}.helper-command summary::-webkit-details-marker{display:none}.helper-command summary:before{content:"+";display:inline-grid;place-items:center;width:16px;height:16px;margin-right:6px;border-radius:5px;background:rgba(39,199,167,.13);color:var(--accent)}.helper-command[open] summary:before{content:"-"}.onboarding-helper{border:1px solid rgba(39,199,167,.18);border-radius:8px;padding:10px;background:rgba(39,199,167,.045)}.onboarding-helper .btn{margin-top:8px}.onboarding-mini{display:grid;gap:8px;margin-top:12px}.onboarding-mini.two{grid-template-columns:1fr 1fr}.onboarding-mini label{display:flex;flex-direction:column;gap:5px}.onboarding-mini input,.onboarding-mini textarea{width:100%}.onboarding-mini textarea{resize:vertical;min-height:92px;background:var(--surface2);border:1px solid var(--border);border-radius:7px;color:var(--text);padding:9px;font-size:12px;line-height:1.4}.onboarding-mini .wide{grid-column:1/-1}.onboarding-mini>.btn,.unlock-form>.btn{justify-self:start}.setup-guide{display:grid;gap:12px;margin-top:16px}.guide-card,.guide-panel{border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.055);padding:12px}.guide-card b,.guide-panel b{display:block;font-size:12px;line-height:1.25}.guide-card p,.guide-card li,.guide-panel p,.guide-panel li{font-size:11px;color:var(--dim);line-height:1.45}.guide-card ol,.guide-panel ol{margin:8px 0 0 18px;padding:0}.private-connection{grid-template-columns:1fr}.guide-hero{display:grid;grid-template-columns:minmax(0,1fr) 270px;gap:14px;align-items:stretch;border:1px solid rgba(39,199,167,.2);border-radius:10px;background:linear-gradient(135deg,rgba(39,199,167,.09),rgba(255,255,255,.045));padding:14px;box-shadow:var(--glow)}.guide-main{display:grid;gap:12px;align-content:start}.guide-eyebrow{display:inline-flex;width:max-content;border:1px solid rgba(39,199,167,.24);border-radius:999px;background:rgba(39,199,167,.09);color:var(--accent);padding:5px 8px;font-size:10px;font-weight:950;text-transform:uppercase}.guide-main h3{font-size:18px;line-height:1.12}.guide-main p{font-size:12px;color:var(--dim);line-height:1.55;max-width:610px}.guide-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.guide-actions .btn{text-align:center;text-decoration:none}.guide-checklist{border:1px solid rgba(255,255,255,.1);border-radius:8px;background:rgba(0,0,0,.14);padding:12px}.guide-checklist b{font-size:12px}.guide-checklist ol{margin:9px 0 0 18px}.guide-checklist li{font-size:11px;color:var(--dim);line-height:1.5;margin-bottom:6px}.guide-support-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.manual-account{margin:0}.manual-account .btn{justify-self:start}.fallback-details{border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.035);padding:0}.fallback-details summary{cursor:pointer;list-style:none;padding:11px 12px;font-size:11px;font-weight:900;color:var(--dim)}.fallback-details summary::-webkit-details-marker{display:none}.fallback-details summary:before{content:"+";display:inline-grid;place-items:center;width:16px;height:16px;margin-right:6px;border-radius:5px;background:rgba(255,255,255,.06);color:var(--accent)}.fallback-details[open] summary:before{content:"-"}.fallback-details .manual-account{border:0;border-top:1px solid var(--line);border-radius:0;background:transparent}.token-box{display:none;gap:8px;margin-top:0;border:1px solid rgba(39,199,167,.18);border-radius:8px;background:rgba(0,0,0,.16);padding:10px}.token-box.open{display:grid}.token-box textarea{min-height:86px;resize:vertical;background:var(--surface2);border:1px solid var(--border);border-radius:7px;color:var(--text);padding:9px;font-size:12px;line-height:1.35}.guide-visual{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;gap:8px;align-items:center}.mini-screen{border:1px solid rgba(255,255,255,.14);border-radius:8px;background:rgba(0,0,0,.18);padding:10px;min-height:82px}.mini-screen span{display:block;height:8px;border-radius:99px;background:rgba(255,255,255,.14);margin-bottom:7px}.mini-screen strong{display:block;font-size:11px}.mini-screen em{display:block;font-style:normal;font-size:10px;color:var(--accent);margin-top:5px}.guide-arrow{color:var(--accent);font-weight:950}.passive-guide{display:grid;grid-template-columns:minmax(0,1fr) 230px;gap:12px;margin-top:16px}.passive-card{border:1px solid rgba(99,168,255,.2);border-radius:10px;background:rgba(99,168,255,.065);padding:14px;box-shadow:var(--glow)}.passive-card b,.passive-side b{font-size:12px}.passive-card p,.passive-side p{font-size:12px;color:var(--dim);line-height:1.5;margin-top:6px}.passive-side{border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.045);padding:12px}.passive-state{display:inline-flex;align-items:center;gap:7px;border:1px solid rgba(39,199,167,.22);border-radius:999px;background:rgba(39,199,167,.08);color:var(--accent);font-size:10px;font-weight:950;padding:5px 8px;text-transform:uppercase}.passive-state:before{content:"";width:7px;height:7px;border-radius:50%;background:var(--accent)}
+.onboarding-flow{position:fixed;inset:0;z-index:50;display:none;background:linear-gradient(145deg,#101315,#171b1f);overflow:auto;padding:26px}.onboarding-flow.open{display:grid;place-items:center}.onboarding-shell{width:min(1080px,100%);display:grid;grid-template-columns:270px minmax(0,1fr);gap:18px;align-items:start}.onboarding-side{border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.055);padding:16px;box-shadow:var(--shadow),var(--glow);position:sticky;top:26px}.onboarding-side h1{font-size:20px;line-height:1.05}.onboarding-side p{font-size:12px;color:var(--dim);line-height:1.5;margin-top:8px}.onboarding-card{display:block;min-height:0;border:1px solid var(--line);border-radius:10px;background:rgba(22,26,30,.86);box-shadow:var(--shadow),var(--glow);padding:20px}.onboarding-card h2{font-size:23px;line-height:1.1;max-width:720px}.onboarding-card>p{font-size:13px;color:var(--dim);line-height:1.55;margin-top:8px;max-width:760px}.onboarding-progress{display:flex;gap:6px;margin:14px 0}.onboarding-progress span{height:6px;flex:1;border-radius:999px;background:rgba(255,255,255,.1)}.onboarding-progress span.done{background:var(--accent)}.onboarding-step-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.onboarding-command{border:1px solid var(--line);background:rgba(0,0,0,.22);border-radius:8px;padding:10px;margin-top:8px;font-size:12px;color:var(--text);word-break:break-word}.helper-command{margin-top:10px;color:var(--dim);font-size:11px}.helper-command summary{cursor:pointer;font-weight:900;color:var(--accent);list-style:none}.helper-command summary::-webkit-details-marker{display:none}.helper-command summary:before{content:"+";display:inline-grid;place-items:center;width:16px;height:16px;margin-right:6px;border-radius:5px;background:rgba(39,199,167,.13);color:var(--accent)}.helper-command[open] summary:before{content:"-"}.onboarding-helper{border:1px solid rgba(39,199,167,.18);border-radius:8px;padding:10px;background:rgba(39,199,167,.045)}.onboarding-helper .btn{margin-top:8px}.onboarding-mini{display:grid;gap:8px;margin-top:12px}.onboarding-mini.two{grid-template-columns:1fr 1fr}.onboarding-mini label{display:flex;flex-direction:column;gap:5px}.onboarding-mini input,.onboarding-mini textarea{width:100%}.onboarding-mini textarea{resize:vertical;min-height:92px;background:var(--surface2);border:1px solid var(--border);border-radius:7px;color:var(--text);padding:9px;font-size:12px;line-height:1.4}.onboarding-mini .wide{grid-column:1/-1}.onboarding-mini>.btn,.unlock-form>.btn{justify-self:start}.business-question-shell{max-width:820px}.compact-business-scan,.compact-business-context{grid-template-columns:minmax(0,1fr) auto}.business-question-progress{display:grid;place-items:center;min-width:92px;border:1px solid rgba(167,124,255,.24);border-radius:10px;background:rgba(0,0,0,.18);padding:12px}.business-question-progress b{font-size:22px}.business-question-progress span{font-size:10px;color:var(--dim);text-transform:uppercase}.business-question-card{display:grid;gap:14px;border:1px solid rgba(167,124,255,.22);border-radius:12px;background:linear-gradient(145deg,rgba(11,10,17,.78),rgba(28,24,39,.72));padding:16px;box-shadow:0 24px 60px rgba(0,0,0,.22),var(--glow)}.business-question-label span{display:inline-flex;border:1px solid rgba(167,124,255,.26);border-radius:999px;background:rgba(167,124,255,.12);color:#cbb8ff;font-size:10px;font-weight:950;padding:5px 8px}.business-question-label h3{font-size:22px;line-height:1.1;margin-top:10px}.business-question-label p{font-size:12px;color:var(--dim);line-height:1.5;margin-top:7px}.business-question-card textarea{min-height:142px;resize:vertical;background:#12101a;border:1px solid rgba(199,178,255,.22);border-radius:10px;color:var(--text);padding:13px;font-size:14px;line-height:1.5}.business-question-card textarea:focus{outline:none;border-color:rgba(167,124,255,.58);box-shadow:0 0 0 3px rgba(167,124,255,.13)}.business-question-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.business-question-actions .btn:first-child{margin-right:auto}.setup-guide{display:grid;gap:12px;margin-top:16px}.guide-card,.guide-panel{border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.055);padding:12px}.guide-card b,.guide-panel b{display:block;font-size:12px;line-height:1.25}.guide-card p,.guide-card li,.guide-panel p,.guide-panel li{font-size:11px;color:var(--dim);line-height:1.45}.guide-card ol,.guide-panel ol{margin:8px 0 0 18px;padding:0}.private-connection{grid-template-columns:1fr}.guide-hero{display:grid;grid-template-columns:minmax(0,1fr) 270px;gap:14px;align-items:stretch;border:1px solid rgba(39,199,167,.2);border-radius:10px;background:linear-gradient(135deg,rgba(39,199,167,.09),rgba(255,255,255,.045));padding:14px;box-shadow:var(--glow)}.guide-main{display:grid;gap:12px;align-content:start}.guide-eyebrow{display:inline-flex;width:max-content;border:1px solid rgba(39,199,167,.24);border-radius:999px;background:rgba(39,199,167,.09);color:var(--accent);padding:5px 8px;font-size:10px;font-weight:950;text-transform:uppercase}.guide-main h3{font-size:18px;line-height:1.12}.guide-main p{font-size:12px;color:var(--dim);line-height:1.55;max-width:610px}.guide-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.guide-actions .btn{text-align:center;text-decoration:none}.guide-checklist{border:1px solid rgba(255,255,255,.1);border-radius:8px;background:rgba(0,0,0,.14);padding:12px}.guide-checklist b{font-size:12px}.guide-checklist ol{margin:9px 0 0 18px}.guide-checklist li{font-size:11px;color:var(--dim);line-height:1.5;margin-bottom:6px}.guide-support-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.manual-account{margin:0}.manual-account .btn{justify-self:start}.fallback-details{border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.035);padding:0}.fallback-details summary{cursor:pointer;list-style:none;padding:11px 12px;font-size:11px;font-weight:900;color:var(--dim)}.fallback-details summary::-webkit-details-marker{display:none}.fallback-details summary:before{content:"+";display:inline-grid;place-items:center;width:16px;height:16px;margin-right:6px;border-radius:5px;background:rgba(255,255,255,.06);color:var(--accent)}.fallback-details[open] summary:before{content:"-"}.fallback-details .manual-account{border:0;border-top:1px solid var(--line);border-radius:0;background:transparent}.token-box{display:none;gap:8px;margin-top:0;border:1px solid rgba(39,199,167,.18);border-radius:8px;background:rgba(0,0,0,.16);padding:10px}.token-box.open{display:grid}.token-box textarea{min-height:86px;resize:vertical;background:var(--surface2);border:1px solid var(--border);border-radius:7px;color:var(--text);padding:9px;font-size:12px;line-height:1.35}.guide-visual{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;gap:8px;align-items:center}.mini-screen{border:1px solid rgba(255,255,255,.14);border-radius:8px;background:rgba(0,0,0,.18);padding:10px;min-height:82px}.mini-screen span{display:block;height:8px;border-radius:99px;background:rgba(255,255,255,.14);margin-bottom:7px}.mini-screen strong{display:block;font-size:11px}.mini-screen em{display:block;font-style:normal;font-size:10px;color:var(--accent);margin-top:5px}.guide-arrow{color:var(--accent);font-weight:950}.passive-guide{display:grid;grid-template-columns:minmax(0,1fr) 230px;gap:12px;margin-top:16px}.passive-card{border:1px solid rgba(99,168,255,.2);border-radius:10px;background:rgba(99,168,255,.065);padding:14px;box-shadow:var(--glow)}.passive-card b,.passive-side b{font-size:12px}.passive-card p,.passive-side p{font-size:12px;color:var(--dim);line-height:1.5;margin-top:6px}.passive-side{border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.045);padding:12px}.passive-state{display:inline-flex;align-items:center;gap:7px;border:1px solid rgba(39,199,167,.22);border-radius:999px;background:rgba(39,199,167,.08);color:var(--accent);font-size:10px;font-weight:950;padding:5px 8px;text-transform:uppercase}.passive-state:before{content:"";width:7px;height:7px;border-radius:50%;background:var(--accent)}.business-start-shell{max-width:820px}.business-start-form textarea{min-height:116px;font-size:13px;line-height:1.45}
 .settings-stack{display:grid;gap:12px}.profitability-rules{border-top:1px solid var(--line);padding-top:12px}.profitability-rules h3{font-size:15px;line-height:1.15}
 header{position:sticky;top:0;z-index:4;background:rgba(18,21,24,.62);backdrop-filter:blur(22px) saturate(145%);-webkit-backdrop-filter:blur(22px) saturate(145%);border-bottom:1px solid var(--line);display:grid;grid-template-columns:minmax(178px,220px) minmax(360px,1fr) auto auto;align-items:center;gap:12px;padding:12px 18px;box-shadow:0 8px 28px rgba(0,0,0,.18),var(--glow)}
 .brand{min-width:0;position:relative;padding-left:36px}.brand:before{content:"";position:absolute;left:0;top:1px;width:24px;height:24px;border-radius:7px;background:linear-gradient(135deg,var(--accent),var(--accent2));box-shadow:0 0 0 1px rgba(255,255,255,.14) inset}.brand h1{font-size:16px;line-height:1.05;letter-spacing:0;font-weight:900}.brand span{color:var(--accent)}.brand div{font-size:11px;color:var(--dim);margin-top:4px}
@@ -4781,8 +5375,15 @@ body.theme-ember .creative-studio-hero:before{background:linear-gradient(120deg,
 @media(max-width:780px){.theme-switcher{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:780px){.brand-memory-nav{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));overflow:visible}.brand-nav-item,.brand-new-product{width:100%;min-width:0}.brand-nav-item b{max-width:none;white-space:normal;line-height:1.25}}
 .msg-actions{display:grid;gap:7px;margin-top:10px;padding-top:9px;border-top:1px solid var(--line)}.msg-approval-card{border:1px solid color-mix(in srgb,var(--accent) 22%,var(--line));border-radius:9px;background:rgba(255,255,255,.05);padding:8px}.msg-approval-card b{display:block;font-size:11px;color:var(--text);line-height:1.25}.msg-approval-card span{display:block;font-size:10px;color:var(--dim);margin-top:3px}.msg-approval-buttons{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:7px}.msg-approval-buttons .btn{width:100%;font-size:10px;padding:8px}
-.chatgpt-connect-card{position:relative;overflow:hidden;border:1px solid color-mix(in srgb,var(--accent) 28%,var(--line));border-radius:10px;background:linear-gradient(135deg,rgba(39,199,167,.12),rgba(99,168,255,.08),rgba(255,255,255,.04));padding:13px;margin-bottom:14px;box-shadow:var(--glow)}.chatgpt-connect-card:before{content:"";position:absolute;inset:0;background:linear-gradient(120deg,transparent,rgba(255,255,255,.08),transparent);transform:translateX(-100%);animation:softSweep 8s ease-in-out infinite;pointer-events:none}.chatgpt-connect-card>*{position:relative;z-index:1}.chatgpt-connect-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:10px}.chatgpt-connect-head h3{font-size:15px;line-height:1.14}.chatgpt-connect-head p{font-size:11px;color:var(--dim);line-height:1.45;margin-top:5px}.chatgpt-steps,.model-route-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:10px 0}.chatgpt-step,.model-route-card{border:1px solid var(--line);border-radius:8px;background:rgba(0,0,0,.12);padding:10px}.chatgpt-step span,.model-route-card span{display:inline-grid;place-items:center;width:24px;height:24px;border-radius:7px;background:color-mix(in srgb,var(--accent) 20%,transparent);color:var(--accent);font-size:11px;font-weight:950}.chatgpt-step b,.model-route-card b{display:block;font-size:11px;line-height:1.25;margin-top:7px}.chatgpt-step p,.model-route-card p{font-size:10px;color:var(--dim);line-height:1.45;margin-top:4px}.chatgpt-command{display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid var(--line);border-radius:8px;background:rgba(0,0,0,.18);padding:9px;margin-top:8px}.chatgpt-command code,.chatgpt-command>span{font-size:12px;font-weight:900;color:var(--text);word-break:break-word}.chatgpt-command .mode-actions{flex-wrap:wrap}.chatgpt-connect-result{margin-top:8px;border:1px solid color-mix(in srgb,var(--accent) 24%,var(--line));border-radius:8px;background:rgba(255,255,255,.055);padding:10px}.chatgpt-connect-result b{display:block;font-size:12px;line-height:1.25}.chatgpt-connect-result p,.chatgpt-connect-result a{font-size:11px;line-height:1.45}.chatgpt-connect-result a{color:var(--accent);font-weight:900}.chatgpt-terminal-output{max-height:150px;overflow:auto;margin-top:8px;border:1px solid var(--line);border-radius:7px;background:rgba(0,0,0,.22);padding:8px;color:var(--dim);font-size:10px;line-height:1.4;white-space:pre-wrap}.chatgpt-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px}.chatgpt-foot p{font-size:10px;color:var(--dim);line-height:1.45}.chatgpt-connect-card.ready{border-color:rgba(85,212,122,.3);background:linear-gradient(135deg,rgba(85,212,122,.12),rgba(99,168,255,.06),rgba(255,255,255,.04))}.chatgpt-connect-card.ready .chatgpt-step span,.chatgpt-connect-card.ready .model-route-card span{background:rgba(85,212,122,.14);color:var(--green)}@keyframes softSweep{0%,62%{transform:translateX(-120%)}82%,100%{transform:translateX(120%)}}
-@media(max-width:780px){.chatgpt-connect-head,.chatgpt-foot,.chatgpt-command{align-items:flex-start;flex-direction:column}.chatgpt-steps,.model-route-grid{grid-template-columns:1fr}.chatgpt-command .btn,.chatgpt-foot .btn{width:100%}}
+.chatgpt-connect-card{position:relative;overflow:hidden;border:1px solid color-mix(in srgb,var(--accent) 28%,var(--line));border-radius:10px;background:linear-gradient(135deg,rgba(39,199,167,.12),rgba(99,168,255,.08),rgba(255,255,255,.04));padding:13px;margin-bottom:14px;box-shadow:var(--glow)}.chatgpt-connect-card:before{content:"";position:absolute;inset:0;background:linear-gradient(120deg,transparent,rgba(255,255,255,.08),transparent);transform:translateX(-100%);animation:softSweep 8s ease-in-out infinite;pointer-events:none}.chatgpt-connect-card>*{position:relative;z-index:1}.chatgpt-connect-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:10px}.chatgpt-connect-head .badge{border:1px solid color-mix(in srgb,var(--accent) 32%,var(--line));background:rgba(0,0,0,.22);color:var(--text);box-shadow:0 8px 22px rgba(0,0,0,.14)}.chatgpt-connect-head .badge.warn{color:#fff;background:linear-gradient(135deg,rgba(123,77,255,.48),rgba(255,111,205,.36))}.chatgpt-connect-head .badge.ok{color:#0b2118;background:linear-gradient(135deg,#6ff0a0,#9ef6d3)}.chatgpt-connect-head h3{font-size:15px;line-height:1.14}.chatgpt-connect-head p{font-size:11px;color:var(--dim);line-height:1.45;margin-top:5px}.model-route-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:10px 0}.model-route-card{border:1px solid var(--line);border-radius:8px;background:rgba(0,0,0,.12);padding:10px}.model-route-card>span{display:inline-grid;place-items:center;width:24px;height:24px;border-radius:7px;background:color-mix(in srgb,var(--accent) 20%,transparent);color:var(--accent);font-size:11px;font-weight:950}.model-route-card b{display:block;font-size:11px;line-height:1.25;margin-top:7px}.model-route-card p{font-size:10px;color:var(--dim);line-height:1.45;margin-top:4px}.agent-model-picker{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:12px 0}.agent-model-option{display:grid;grid-template-columns:auto 1fr;gap:9px;align-items:start;min-height:88px;border:1px solid var(--line);border-radius:11px;background:rgba(0,0,0,.12);color:var(--text);padding:11px;text-align:left;cursor:pointer;transition:transform .16s ease,border-color .16s ease,background .16s ease,box-shadow .16s ease}.agent-model-option:hover{transform:translateY(-1px);border-color:color-mix(in srgb,var(--accent) 38%,var(--line));background:rgba(255,255,255,.055)}.agent-model-option.active{border-color:color-mix(in srgb,var(--accent) 62%,var(--line));background:linear-gradient(135deg,color-mix(in srgb,var(--accent) 16%,transparent),color-mix(in srgb,var(--accent2) 10%,transparent)),rgba(255,255,255,.055);box-shadow:0 14px 34px rgba(0,0,0,.14),var(--glow)}.agent-model-option .route-icon{display:grid;place-items:center;width:31px;height:31px;border-radius:10px;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;font-size:13px;font-weight:950}.agent-model-option b{display:block;font-size:12px;line-height:1.2}.agent-model-option p{margin-top:4px;color:var(--dim);font-size:10px;line-height:1.35}.agent-route-panels{display:grid;gap:10px}.agent-route-panel{display:none;border:1px solid var(--line);border-radius:12px;background:rgba(0,0,0,.14);padding:12px}.agent-route-panel.active{display:block;animation:routePanelIn .18s ease both}.agent-route-panel h4{font-size:14px;line-height:1.2}.agent-route-panel p{margin-top:5px;color:var(--dim);font-size:11px;line-height:1.45}.agent-route-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.agent-route-actions .btn{flex:1 1 170px}.model-provider-form{margin-top:0}.chatgpt-command{display:flex;align-items:flex-start;justify-content:flex-start;flex-direction:column;gap:8px;border:1px solid var(--line);border-radius:8px;background:rgba(0,0,0,.18);padding:9px;margin-top:8px}.chatgpt-command code,.chatgpt-command>span{display:block;width:100%;height:auto;font-size:11px;line-height:1.4;font-weight:800;color:var(--text);word-break:normal;overflow-wrap:anywhere}.chatgpt-command .mode-actions{width:100%;flex-wrap:wrap}.chatgpt-command .mode-actions .btn{flex:1 1 150px}.chatgpt-connect-result{margin-top:8px;border:1px solid color-mix(in srgb,var(--accent) 24%,var(--line));border-radius:8px;background:rgba(255,255,255,.055);padding:10px}.chatgpt-connect-result b{display:block;font-size:12px;line-height:1.25}.chatgpt-connect-result p,.chatgpt-connect-result a{font-size:11px;line-height:1.45}.chatgpt-connect-result a{color:var(--accent);font-weight:900}.chatgpt-terminal-output{max-height:150px;overflow:auto;margin-top:8px;border:1px solid var(--line);border-radius:7px;background:rgba(0,0,0,.22);padding:8px;color:var(--dim);font-size:10px;line-height:1.4;white-space:pre-wrap}.chatgpt-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px}.chatgpt-foot p{font-size:10px;color:var(--dim);line-height:1.45}.chatgpt-connect-card.ready{border-color:rgba(85,212,122,.3);background:linear-gradient(135deg,rgba(85,212,122,.12),rgba(99,168,255,.06),rgba(255,255,255,.04))}@keyframes softSweep{0%,62%{transform:translateX(-120%)}82%,100%{transform:translateX(120%)}}@keyframes routePanelIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
+.chatgpt-device-code{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;margin-top:10px;border:1px solid color-mix(in srgb,var(--accent) 45%,var(--line));border-radius:10px;background:linear-gradient(135deg,color-mix(in srgb,var(--accent) 16%,transparent),rgba(0,0,0,.2));padding:10px}.chatgpt-device-code span{display:block;color:var(--dim);font-size:10px;font-weight:850;text-transform:uppercase;letter-spacing:.02em}.chatgpt-device-code strong{display:block;margin-top:4px;font-size:22px;line-height:1.05;letter-spacing:.08em;color:var(--text);font-weight:950}.chatgpt-device-code .btn{white-space:nowrap}
+@media(max-width:980px){.agent-model-picker{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:780px){.chatgpt-connect-head,.chatgpt-foot,.chatgpt-command{align-items:flex-start;flex-direction:column}.model-route-grid,.agent-model-picker{grid-template-columns:1fr}.chatgpt-command .btn,.chatgpt-foot .btn,.agent-route-actions .btn{width:100%}}
+body .onboarding-flow input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),body .onboarding-flow select,body .onboarding-flow textarea{background:linear-gradient(180deg,#171420,#100f18);border-color:rgba(199,178,255,.26);color:#f7f3ff;caret-color:#ff6bd6;box-shadow:inset 0 1px 0 rgba(255,255,255,.055),0 0 0 1px rgba(0,0,0,.12)}
+body .onboarding-flow input:not([type="checkbox"]):not([type="radio"]):not([type="range"])::placeholder,body .onboarding-flow textarea::placeholder{color:rgba(221,212,240,.52);opacity:1}
+body .onboarding-flow input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus,body .onboarding-flow select:focus,body .onboarding-flow textarea:focus{outline:none;background:#12101a;border-color:rgba(167,124,255,.72);box-shadow:0 0 0 3px rgba(167,124,255,.15),inset 0 1px 0 rgba(255,255,255,.06)}
+body .onboarding-flow input:-webkit-autofill,body .onboarding-flow textarea:-webkit-autofill,body .onboarding-flow select:-webkit-autofill{-webkit-text-fill-color:#f7f3ff;box-shadow:0 0 0 1000px #15131d inset;border-color:rgba(199,178,255,.3)}
+body .onboarding-flow select option{background:#15131d;color:#f7f3ff}
 </style>
 </head>
 <body>
@@ -4826,7 +5427,7 @@ body.theme-ember .creative-studio-hero:before{background:linear-gradient(120deg,
 <div class="dashboard-view hidden" id="view-idle"></div>
 </div>
 <div id="tab-setup" class="hidden">
-<section class="section"><div class="head"><span>03</span><b data-i18n="setup_status">Setup Status</b><button class="btn ask-btn" onclick="openChat(t('draft_setup'))" data-i18n="ask_agent">Ask agent</button><button class="btn" onclick="load()" data-i18n="refresh">Refresh</button></div><div class="body"><div id="mode-control"></div><div id="guardrails-panel"></div><div id="onboarding-wizard"></div><div id="license-panel"></div><div id="agency-panel"></div><div id="setup-config"></div><div id="chatgpt-panel"></div><div id="telegram-panel"></div><div id="migration-panel"></div><div id="update-rollback-panel"></div><div id="cloud-access-panel"></div><div id="setup-summary"></div><div id="setup-sections"></div></div></section>
+<section class="section"><div class="head"><span>03</span><b data-i18n="setup_status">Setup Status</b><button class="btn ask-btn" onclick="openChat(t('draft_setup'))" data-i18n="ask_agent">Ask agent</button><button class="btn" onclick="load()" data-i18n="refresh">Refresh</button></div><div class="body"><div id="mode-control"></div><div id="guardrails-panel"></div><div id="onboarding-wizard"></div><div id="license-panel"></div><div id="agency-panel"></div><div id="setup-config"></div><div id="chatgpt-panel"></div><div id="telegram-panel"></div><div id="local-network-panel"></div><div id="migration-panel"></div><div id="update-rollback-panel"></div><div id="cloud-access-panel"></div><div id="setup-summary"></div><div id="setup-sections"></div></div></section>
 </div>
 <div id="tab-creator" class="hidden">
 <section class="section"><div class="head"><span>04</span><b data-i18n="campaign_creator">Campaign Creator</b></div><div class="body">
@@ -4953,6 +5554,7 @@ let chatHistory=[];
 let chatHydrated=false;
 let onboardingFlowStep=0;
 let onboardingFlowTouched=false;
+let businessContextQuestionIndex=0;
 let destinationAutoDiscoveryKey='';
 let updateCheckStarted=false;
 let updateInfo=null;
@@ -5676,42 +6278,42 @@ function statusLabel(s){return s==='ok'?t('ok'):s==='blocked'?t('blocked'):t('ch
 function setupItem(key){for(const sec of state.setup.sections){const found=sec.items.find(i=>i.key===key);if(found)return found}return {status:'blocked',detail:''}}
 function stepCopy(key){
 	 const en={
-	  title:'Setup path',subtitle:'One small step at a time. First we look only. Real ad changes stay off until you say yes at the end.',progress:'done',done:'Done',next:'Do this next',review:'Check',
-	  helper:'Optional help detail',
-	  website:['Tell the agent what business this is','Paste your website so the agent can understand the offer, products, tone, and landing page before showing the dashboard.',''],
-	  context:['Tell the agent where you are today','Write what stage you are in, what feels confusing, and what you want to improve. This makes the first plan feel personal, not generic.',''],
-	  strategy:['Review the first plan','Before entering the dashboard, the agent creates a simple starting strategy from your website and your answers.',''],
-	  license:['Add your license','Paste the only code you received from us. This code proves this copy belongs to you.',''],
-	  chatgpt:['Connect ChatGPT or an API model','Choose how the agent will think and answer: ChatGPT/Codex login through Hermes, or an OpenAI-compatible API key such as MiniMax M3.',''],
-	  meta:['Create your private Meta connection','You will use your own Meta app and access key. This keeps access under your control and this tool still will not change ads yet.',''],
-	  account:['Choose the ad account','Pick the ad account you want this tool to help with. If you have only one, choose that one.',''],
-	  destination:['Tell us where ads should point','Add the Facebook page, Instagram profile if you use one, and your website link. The agent will prepare the structure through chat.',''],
-	  insights:['Let the tool read your results','The tool checks your real ad numbers so it can give useful advice. It still does not change anything.',''],
-	  dryrun:['Create your first supervised summary','The tool reads real results and prepares suggestions. It does not change Meta Ads without your permission.',''],
-	  approval:['Practice approving a change','Make sure you can review a suggested change before anything real happens.',''],
-	  live:['Keep autopilot off for now','Recommended for the first run: enter the dashboard with supervision. You can turn autopilot on later from Setup when you feel ready.',''],
-	  smoke:['Optional tiny live test later','After you are comfortable, approve one very small change and check that Meta says it worked. This is not needed to enter the dashboard.',''],
-	  password:['Create your dashboard password','Choose a password only you know. From now on, this protects your local dashboard on this computer or server.',''],
-	  guide:['How to use your agent','Read these quick cards before entering the dashboard. You can open them again later from Setup > Guide.','']
+	  title:'Setup',subtitle:'One step at a time. First we look. Then we ask.',progress:'ready',done:'Done',next:'Next',review:'Review',
+	  helper:'Help',
+	  website:['Tell me your business','Write your business in a few words. If you have a website, paste it too.',''],
+	  context:['Answer simple questions','I will ask short questions one by one so I can understand your business better.',''],
+	  strategy:['See the first plan','I turn your answers into a simple first plan before the dashboard opens.',''],
+	  license:['Add your license','Paste the one code you received from us.',''],
+	  chatgpt:['Connect the brain','Choose ChatGPT/Codex login through Hermes or an OpenAI-compatible API key like MiniMax M3.',''],
+	  meta:['Connect Meta','Use your own Meta app and access key.',''],
+	  account:['Pick one account','Choose the ad account this tool should help with.',''],
+	  destination:['Pick where ads go','Add the Facebook Page, Instagram, and website.',''],
+	  insights:['Read real results','I check your real numbers and do not change anything yet.',''],
+	  dryrun:['Review with supervision','The agent prepares suggestions and waits for your yes.',''],
+	  approval:['Approve one change','Check one suggested change before anything real happens.',''],
+	  live:['Keep supervision on','Best for the first run. You can turn autopilot on later.',''],
+	  smoke:['Tiny live test later','Use this only when you are ready for a very small real change.',''],
+	  password:['Create your password','Choose a password only you know.',''],
+	  guide:['Quick guide','Read the short cards before entering the dashboard.','']
 	 };
 	 const es={
-	  title:'Camino de configuración',subtitle:'Un pasito a la vez. Primero solo miramos. Los cambios reales en anuncios quedan apagados hasta que tú digas que sí al final.',progress:'listo',done:'Listo',next:'Haz esto ahora',review:'Revisar',
-	  helper:'Ayuda opcional',
-	  website:['Dile al agente cuál es tu negocio','Pega tu web para que el agente entienda tu oferta, productos, tono y página de destino antes de mostrar el dashboard.',''],
-	  context:['Cuéntale al agente en qué punto estás','Escribe en qué etapa estás, qué te confunde y qué sientes que podrías mejorar. Así el primer plan se siente personal, no genérico.',''],
-	  strategy:['Revisa el primer plan','Antes de entrar al dashboard, el agente crea una estrategia inicial simple usando tu web y tus respuestas.',''],
-	  license:['Poner tu licencia','Pega el único código que recibiste de nosotros. Este código confirma que esta copia es tuya.',''],
-	  chatgpt:['Conectar ChatGPT o un modelo API','Elige cómo pensará y responderá el agente: login de ChatGPT/Codex por Hermes, o una clave API compatible OpenAI como MiniMax M3.',''],
-	  meta:['Crear tu conexión privada con Meta','Usarás tu propia app de Meta y tu propia clave de acceso. Así el acceso queda bajo tu control y la herramienta todavía no cambia anuncios.',''],
-	  account:['Escoger la cuenta publicitaria','Elige la cuenta de anuncios que quieres que esta herramienta cuide. Si solo tienes una, elige esa.',''],
-	  destination:['Decir a dónde van tus anuncios','Agrega la página de Facebook, Instagram si lo usas y el link de tu web. El agente preparará la estructura conversando contigo.',''],
-	  insights:['Dejar que lea tus resultados','La herramienta mira tus números reales para darte buenos consejos. Todavía no cambia nada.',''],
-	  dryrun:['Crear tu primer resumen con supervisión','La herramienta lee resultados reales y prepara sugerencias. No cambia nada en Meta Ads sin tu permiso.',''],
-	  approval:['Practicar una aprobación','Revisa cómo aprobarías un cambio sugerido antes de permitir cualquier cambio real.',''],
-	  live:['Dejar piloto automático apagado por ahora','Recomendado para la primera entrada: entra al dashboard con supervisión. Luego puedes activar piloto automático desde Configuración cuando te sientas listo.',''],
-	  smoke:['Prueba real pequeña para después','Cuando ya estés cómodo, aprueba un cambio mínimo y revisa que Meta confirme que funcionó. No hace falta para entrar al dashboard.',''],
-	  password:['Crear tu contraseña del dashboard','Elige una contraseña que solo tú conozcas. Desde ahora protege tu dashboard local en este computador o servidor.',''],
-	  guide:['Cómo usar tu agente','Lee estas tarjetas rápidas antes de entrar al dashboard. Luego puedes verlas otra vez en Configuración > Guía.','']
+	  title:'Configuración',subtitle:'Un paso a la vez. Primero miramos. Luego preguntamos.',progress:'listo',done:'Listo',next:'Siguiente',review:'Revisar',
+	  helper:'Ayuda',
+	  website:['Dime tu negocio','Escribe tu negocio en pocas palabras. Si tienes web, pégala también.',''],
+	  context:['Responde preguntas simples','Haré preguntas cortas, una por una, para entender mejor tu negocio.',''],
+	  strategy:['Ver el primer plan','Con tus respuestas preparo un plan simple antes de abrir el dashboard.',''],
+	  license:['Pega tu licencia','Pega el único código que recibiste de nosotros.',''],
+	  chatgpt:['Conecta el cerebro','Elige ChatGPT/Codex por Hermes o una API compatible como MiniMax M3.',''],
+	  meta:['Conecta Meta','Usa tu propia app de Meta y tu propia clave.',''],
+	  account:['Elige una cuenta','Escoge la cuenta de anuncios que quieres usar.',''],
+	  destination:['Elige dónde van los anuncios','Agrega la página de Facebook, Instagram y la web.',''],
+	  insights:['Lee datos reales','Miro tus números reales y todavía no cambio nada.',''],
+	  dryrun:['Revisar con supervisión','El agente prepara sugerencias y espera tu sí.',''],
+	  approval:['Aprueba un cambio','Revisa un cambio sugerido antes de que pase algo real.',''],
+	  live:['Deja la supervisión activa','Mejor para la primera vez. Luego puedes activar piloto automático.',''],
+	  smoke:['Prueba pequeña después','Úsalo solo cuando quieras hacer un cambio real muy pequeño.',''],
+	  password:['Crea tu contraseña','Elige una contraseña que solo tú conozcas.',''],
+	  guide:['Guía rápida','Lee las tarjetas cortas antes de entrar al dashboard.','']
 	 };
  return (lang==='es'?es:en)[key];
 }
@@ -5719,8 +6321,9 @@ function copyCommand(value){navigator.clipboard?.writeText(value).then(()=>toast
 function onboardingSteps(){
  const setup=state.setup, summary=setup.summary;
  const profile=state.business_profile||{};
- const websiteOk=Boolean(profile.website_url);
- const contextOk=Boolean(profile.current_stage||profile.what_to_improve||profile.main_offer);
+ const websiteOk=Boolean(profile.onboarding_questions_started||profile.business_type||profile.website_url||profile.website_skipped);
+ const contextFields=Array.isArray(profile.onboarding_questions)&&profile.onboarding_questions.length?profile.onboarding_questions.map(q=>q.key).filter(Boolean):['main_offer','ideal_customer','current_stage','what_to_improve'];
+ const contextOk=Boolean(profile.context_completed_at)||contextFields.every(k=>String(profile[k]||'').trim());
  const strategyOk=Boolean(profile.initial_plan&&profile.initial_plan.length);
  const licenseOk=Boolean(summary.license_ready);
  const passwordOk=Boolean(state.config.dashboard_password_set);
@@ -5763,7 +6366,7 @@ function renderOnboarding(){
  const steps=onboardingSteps(); const done=steps.filter(s=>s.status==='ok').length;
  const labelFor=s=>s.status==='ok'?stepCopy('done'):(s.status==='blocked'?stepCopy('next'):stepCopy('review'));
  const next=steps.find(s=>s.status!=='ok')||steps[steps.length-1]; const nextCopy=stepCopy(next.id);
- qs('#onboarding-wizard').innerHTML=`<div class="onboarding"><div class="onboarding-head"><div><h3>${labels}</h3><p>${sub}</p></div><div class="progress"><b>${done}/${steps.length}</b><span>${progress}</span></div></div><div class="next-step"><div><b>${lang==='es'?'Siguiente paso':'Next step'}: ${nextCopy[0]}</b><p>${nextCopy[1]}</p></div>${nextCopy[2]?`<button class="btn copy-btn" onclick="copyCommand(${JSON.stringify(nextCopy[2]).replaceAll('"','&quot;')})">${t('copy_command')}</button>`:''}</div><div class="step-list">${steps.map((s,i)=>{const c=stepCopy(s.id);return `<div class="setup-step ${s.status}"><div class="step-num">${i+1}</div><div class="step-main"><b>${c[0]}</b><p>${c[1]}</p>${c[2]?`<details class="helper-command"><summary>${stepCopy('helper')}</summary><span class="step-command">${c[2]}</span></details>`:''}</div><div class="step-badge">${labelFor(s)}</div></div>`}).join('')}</div><div class="mode-actions" style="margin-top:10px"><button class="btn ask-btn" onclick="openChat(lang==='es'?'Revisa mi configuración inicial. Explícame el siguiente paso con palabras muy simples.':'Review my initial setup. Explain the next step in very simple words.')">${t('ask_agent')}</button><button class="btn primary" onclick="completeOnboarding()">${lang==='es'?'Terminar configuración':'Finish setup'}</button></div></div>`;
+ qs('#onboarding-wizard').innerHTML=`<div class="onboarding"><div class="onboarding-head"><div><h3>${labels}</h3><p>${sub}</p></div><div class="progress"><b>${done}/${steps.length}</b><span>${progress}</span></div></div><div class="next-step"><div><b>${lang==='es'?'Siguiente':'Next'}: ${nextCopy[0]}</b><p>${nextCopy[1]}</p></div>${nextCopy[2]?`<button class="btn copy-btn" onclick="copyCommand(${JSON.stringify(nextCopy[2]).replaceAll('"','&quot;')})">${t('copy_command')}</button>`:''}</div><div class="step-list">${steps.map((s,i)=>{const c=stepCopy(s.id);return `<div class="setup-step ${s.status}"><div class="step-num">${i+1}</div><div class="step-main"><b>${c[0]}</b><p>${c[1]}</p>${c[2]?`<details class="helper-command"><summary>${stepCopy('helper')}</summary><span class="step-command">${c[2]}</span></details>`:''}</div><div class="step-badge">${labelFor(s)}</div></div>`}).join('')}</div><div class="mode-actions" style="margin-top:10px"><button class="btn ask-btn" onclick="openChat(lang==='es'?'Revisa mi configuración. Explícame el siguiente paso con palabras muy simples.':'Review my setup. Explain the next step in very simple words.')">${t('ask_agent')}</button><button class="btn primary" onclick="completeOnboarding()">${lang==='es'?'Terminar configuración':'Finish setup'}</button></div></div>`;
 }
 function onboardingFormFor(stepId){
 	 const v=state.config.setup_values||{};
@@ -5781,41 +6384,80 @@ function onboardingFormFor(stepId){
 function websiteScanGuide(){
  const p=state.business_profile||{};
  const url=p.website_url||state.config.setup_values?.landing_url||'';
- return `<div class="setup-guide private-connection"><section class="guide-hero business-hero"><div class="guide-main"><span class="guide-eyebrow">${lang==='es'?'Conocer tu negocio':'Business intelligence'}</span><h3>${lang==='es'?'Primero entiendo tu web':'First I understand your website'}</h3><p>${lang==='es'?'Pega el link principal de tu negocio. El agente intenta leer la página para detectar qué vendes, a quién le vendes y qué ideas podrían funcionar en tus anuncios.':'Paste the main link for your business. The agent tries to read the page and detect what you sell, who it is for, and which ad ideas may work.'}</p><form class="onboarding-mini" onsubmit="scanBusinessWebsite(event)"><label>${lang==='es'?'Web del negocio':'Business website'}<input name="website_url" value="${escapeHtml(url)}" placeholder="https://tumarca.com"></label><button class="btn primary" type="submit">${lang==='es'?'Leer mi web':'Read my website'}</button></form></div><aside class="guide-checklist"><b>${lang==='es'?'Qué busca el agente':'What the agent looks for'}</b><ol><li>${lang==='es'?'Lo principal que vendes.':'Main offer and products.'}</li><li>${lang==='es'?'A quién parece dirigida la web.':'Who the site seems to target.'}</li><li>${lang==='es'?'Ideas y frases que podrían servir en anuncios.':'Messaging, promises, objections, and calls to action.'}</li></ol></aside></section><div id="business-scan-results" class="setup-guide">${businessProfileCard()}</div></div>`;
+ const business=p.business_type||p.business_short||'';
+ return `<div class="setup-guide private-connection business-start-shell"><section class="guide-hero business-hero compact-business-scan"><div class="guide-main"><span class="guide-eyebrow">${lang==='es'?'Empezar simple':'Start simple'}</span><h3>${lang==='es'?'¿Qué negocio tienes?':'What business do you have?'}</h3><p>${lang==='es'?'Escríbelo corto. Luego haré preguntas simples, una por una. Si tienes web, pégala también.':'Write it short. Then I will ask simple questions one by one. If you have a website, paste it too.'}</p><form class="onboarding-mini business-start-form" onsubmit="startBusinessInterview(event)"><label>${lang==='es'?'Tu negocio, en pocas palabras':'Your business, in a few words'}<textarea name="business_type" rows="3" required placeholder="${lang==='es'?'Ej: clínica dental, tienda de ropa, curso online...':'Ex: dental clinic, clothing store, online course...'}">${escapeHtml(business)}</textarea></label><label>${lang==='es'?'Web, si tienes una':'Website, if you have one'}<input name="website_url" value="${escapeHtml(url)}" placeholder="https://tumarca.com"></label><div class="onboarding-step-actions"><button class="btn primary" type="submit">${lang==='es'?'Preparar preguntas':'Prepare questions'}</button></div></form></div></section><div id="business-scan-results" class="setup-guide">${businessProfileCard()}</div></div>`;
+}
+function businessQuestionValue(key,p){
+ if(key==='main_offer')return p.main_offer||p.offer||'';
+ if(key==='ideal_customer')return p.ideal_customer||p.audience||'';
+ if(key==='sales_channel')return p.sales_channel||p.channel||'';
+ if(key==='current_ads')return p.current_ads||p.ad_results||'';
+ if(key==='what_to_improve')return p.what_to_improve||'';
+ if(key==='success_goal')return p.success_goal||'';
+ if(key==='budget_comfort')return p.budget_comfort||'';
+ if(key==='brand_tone')return p.brand_tone||'';
+ return p[key]||'';
+}
+function businessContextQuestions(){
+ const p=state.business_profile||{};
+ const custom=Array.isArray(p.onboarding_questions)&&p.onboarding_questions.length?p.onboarding_questions:[];
+ if(custom.length){
+  return custom.slice(0,6).map((q)=>({key:q.key,label:q.label,help:q.help,placeholder:q.placeholder||'',value:businessQuestionValue(q.key,p)}));
+ }
+ const hasWebsite=Boolean(p.website_url);
+ const stageSuggestion=p.current_stage|| (hasWebsite?(lang==='es'?'Tengo una web lista y quiero un plan claro.':'I have a website ready and want a clear plan.'):'');
+ const improvementSuggestion=p.what_to_improve|| (lang==='es'?'Entender qué hacer primero y no adivinar.':'Know what to do first without guessing.');
+ return [
+  {key:'main_offer',label:lang==='es'?'¿Qué vendes?':'What do you sell?',help:lang==='es'?'Una frase corta.':'One short sentence.',placeholder:lang==='es'?'Ej: un curso, una tienda, un servicio...':'Ex: a course, a store, a service...',value:businessQuestionValue('main_offer',p)},
+  {key:'ideal_customer',label:lang==='es'?'¿Quién compra?':'Who buys?',help:lang==='es'?'La persona que más quieres atraer.':'The person you most want to attract.',placeholder:lang==='es'?'Ej: mamás, dueños de negocio, parejas...':'Ex: moms, business owners, couples...',value:businessQuestionValue('ideal_customer',p)},
+  {key:'sales_channel',label:lang==='es'?'¿Dónde vendes?':'Where do you sell?',help:lang==='es'?'Web, WhatsApp, Instagram, tienda física o llamada.':'Website, WhatsApp, Instagram, store, or call.',placeholder:lang==='es'?'Ej: WhatsApp y mi web.':'Ex: WhatsApp and my website.',value:businessQuestionValue('sales_channel',p)},
+  {key:'current_stage',label:lang==='es'?'¿En qué punto estás?':'Where are you now?',help:lang==='es'?'Empiezas, ya vendes o ya tienes anuncios.':'Starting, already selling, or already running ads.',placeholder:lang==='es'?'Ej: Ya vendo, pero cada compra me cuesta más.':'Ex: I already sell, but each purchase costs more.',value:stageSuggestion},
+  {key:'what_to_improve',label:lang==='es'?'¿Qué quieres mejorar?':'What do you want to improve?',help:lang==='es'?'Qué te gustaría arreglar primero.':'What you want to fix first.',placeholder:lang==='es'?'Ej: bajar el costo de cada compra, entender anuncios, vender más.':'Ex: lower the cost per purchase, understand ads, sell more.',value:improvementSuggestion},
+  {key:'success_goal',label:lang==='es'?'¿Cómo se ve una victoria?':'What is a win?',help:lang==='es'?'Algo claro para los próximos 30 días.':'Something clear for the next 30 days.',placeholder:lang==='es'?'Ej: vender 20 más, bajar costo, tener más leads.':'Ex: sell 20 more, lower cost, get more leads.',value:businessQuestionValue('success_goal',p)}
+ ];
 }
 function businessContextGuide(){
  const p=state.business_profile||{};
- return `<form class="setup-guide private-connection" onsubmit="saveBusinessContext(event)"><section class="guide-hero business-hero"><div class="guide-main"><span class="guide-eyebrow">${lang==='es'?'Contexto humano':'Human context'}</span><h3>${lang==='es'?'Ahora cuéntale lo que la web no sabe':'Now tell it what the website cannot know'}</h3><p>${lang==='es'?'Esto es lo que vuelve al agente más útil: no solo ve una web, entiende tu momento actual. Escribe simple, como se lo contarías a una persona.':'This makes the agent more useful: it does not just see a website, it understands your current moment. Write simply, like you would tell a person.'}</p></div><aside class="guide-checklist"><b>${lang==='es'?'Ejemplos':'Examples'}</b><ol><li>${lang==='es'?'Estoy empezando y no sé qué campaña lanzar.':'I am starting and do not know which campaign to launch.'}</li><li>${lang==='es'?'Ya vendo, pero cada compra me cuesta más.':'I already sell, but CPA increased.'}</li><li>${lang==='es'?'Tengo visitas, pero pocas compras.':'I get visitors, but few purchases.'}</li></ol></aside></section><div class="onboarding-mini two"><label>${lang==='es'?'Oferta principal':'Main offer'}<input name="main_offer" value="${escapeHtml(p.main_offer||p.offer||'')}" placeholder="${lang==='es'?'Ej: curso, tienda online, servicio o aplicación':'Ex: course, ecommerce, service, software'}"></label><label>${lang==='es'?'Cliente ideal':'Ideal customer'}<input name="ideal_customer" value="${escapeHtml(p.ideal_customer||p.audience||'')}" placeholder="${lang==='es'?'Quién compra o debería comprar':'Who buys or should buy'}"></label><label class="wide">${lang==='es'?'¿En qué etapa estás ahora?':'What stage are you in now?'}<textarea name="current_stage" rows="4" placeholder="${lang==='es'?'Cuéntame si estás empezando, si ya vendes, si tienes anuncios activos o si algo te preocupa...':'Tell me if you are starting, already selling, have active campaigns, or something worries you...'}">${escapeHtml(p.current_stage||'')}</textarea></label><label class="wide">${lang==='es'?'¿Qué sientes que podrías mejorar?':'What do you feel could improve?'}<textarea name="what_to_improve" rows="3" placeholder="${lang==='es'?'Ej: entender mis resultados, bajar el costo de cada compra, crear mejores anuncios o saber qué pausar...':'Ex: understand my numbers, lower CPA, create better ads, know what to pause...'}">${escapeHtml(p.what_to_improve||'')}</textarea></label></div><button class="btn primary" type="submit">${lang==='es'?'Guardar contexto y crear plan':'Save context and create plan'}</button></form>`;
+ const questions=businessContextQuestions();
+ businessContextQuestionIndex=Math.max(0,Math.min(businessContextQuestionIndex,questions.length-1));
+ const q=questions[businessContextQuestionIndex];
+ const sourceNote=p.agent_scan_status==='agent_enriched'
+  ? (lang==='es'?'Leí tu web y dejé una sugerencia.':'I read your site and made a suggestion.')
+  : (p.website_url?(lang==='es'?'Tomé tu web como guía. Puedes cambiar todo.':'I used your website as a guide. You can change anything.'):(lang==='es'?'Sin web no pasa nada. Te haré preguntas cortas.':'No website is fine. I will ask short questions.'));
+ const isLast=businessContextQuestionIndex>=questions.length-1;
+ const progress=`${businessContextQuestionIndex+1}/${questions.length}`;
+ const draft=lang==='es'?`Ayúdame a responder esta pregunta con palabras simples: "${q.label}". Lo que tengo ahora es: "${q.value||'vacío'}". Si falta algo, hazme una sola pregunta.`:`Help me answer this question in simple words: "${q.label}". Current answer: "${q.value||'empty'}". If something is missing, ask one question.`;
+ return `<div class="setup-guide private-connection business-question-shell"><section class="guide-hero business-hero compact-business-context"><div class="guide-main"><span class="guide-eyebrow">${lang==='es'?'Preguntas del negocio':'Business questions'}</span><h3>${lang==='es'?'Una pregunta a la vez':'One question at a time'}</h3><p>${sourceNote}</p></div><div class="business-question-progress"><b>${progress}</b><span>${lang==='es'?'pregunta':'question'}</span></div></section><form class="business-question-card" onsubmit="saveBusinessContextQuestion(event)"><input type="hidden" name="field" value="${escapeHtml(q.key)}"><div class="business-question-label"><span>${progress}</span><h3>${escapeHtml(q.label)}</h3><p>${escapeHtml(q.help)}</p></div><textarea name="answer" rows="6" placeholder="${escapeHtml(q.placeholder)}">${escapeHtml(q.value||'')}</textarea><div class="business-question-actions"><button class="btn" type="button" onclick="setBusinessContextQuestionIndex(${businessContextQuestionIndex-1})" ${businessContextQuestionIndex===0?'disabled':''}>${lang==='es'?'Atrás':'Back'}</button><button class="btn ask-btn" type="button" onclick="openChat(${chatArg(draft)})">${lang==='es'?'Ayudarme':'Help me'}</button><button class="btn primary" type="submit">${isLast?(lang==='es'?'Guardar y crear plan':'Save and build plan'):(lang==='es'?'Guardar y seguir':'Save and continue')}</button></div></form>${businessProfileCard()}</div>`;
 }
 function initialStrategyGuide(){
  const p=state.business_profile||{};
  const plan=(p.initial_plan&&p.initial_plan.length?p.initial_plan:[
-  lang==='es'?'Conectar Meta para leer datos reales.':'Connect Meta to read real data.',
-  lang==='es'?'Conversar con el agente para preparar la primera campaña.':'Talk to the agent to prepare the first campaign.',
-  lang==='es'?'Trabajar con supervisión antes de activar piloto automático.':'Work with supervision before enabling autopilot.'
- ]);
- const angles=p.suggested_angles||[];
- return `<div class="setup-guide private-connection"><section class="guide-hero business-hero"><div class="guide-main"><span class="guide-eyebrow">${lang==='es'?'Primer plan':'First plan'}</span><h3>${lang==='es'?'Esto entendí de tu negocio':'This is what I understood about your business'}</h3><p>${escapeHtml(p.positioning||p.detected_title||p.offer|| (lang==='es'?'Todavía falta más contexto, pero ya podemos empezar con una estrategia simple.':'We still need more context, but we can start with a simple strategy.'))}</p><div class="business-summary-grid"><div><b>${lang==='es'?'Tipo':'Type'}</b><span>${escapeHtml(p.business_type||'-')}</span></div><div><b>${lang==='es'?'Oferta':'Offer'}</b><span>${escapeHtml(p.main_offer||p.offer||'-')}</span></div><div><b>${lang==='es'?'Cliente':'Customer'}</b><span>${escapeHtml(p.ideal_customer||p.audience||'-')}</span></div></div></div><aside class="guide-checklist"><b>${lang==='es'?'Plan inicial':'Initial plan'}</b><ol>${plan.map(item=>`<li>${escapeHtml(item)}</li>`).join('')}</ol></aside></section>${angles.length?`<div class="guide-panel"><b>${lang==='es'?'Ideas iniciales para anuncios':'Initial ad ideas'}</b><ol>${angles.map(item=>`<li>${escapeHtml(item)}</li>`).join('')}</ol></div>`:''}<div class="onboarding-step-actions"><button class="btn" type="button" onclick="onboardingFlowStep=Math.max(0,onboardingFlowStep-1);renderOnboardingFlow()">${lang==='es'?'Editar respuestas':'Edit answers'}</button><button class="btn primary" type="button" onclick="onboardingFlowTouched=true;onboardingFlowStep=Math.min(onboardingSteps().length-1,onboardingFlowStep+1);renderOnboardingFlow()">${lang==='es'?'Me sirve, seguir':'Looks good, continue'}</button><button class="btn ask-btn" type="button" onclick="openChat('${lang==='es'?'Revisa esta información de mi negocio y dime qué estrategia inicial prepararías para Meta Ads.':'Review this business profile and tell me what initial Meta Ads strategy you would prepare.'}')">${t('ask_agent')}</button></div></div>`;
+  lang==='es'?'Conectar Meta.':'Connect Meta.',
+  lang==='es'?'Hablar con el agente.':'Talk to the agent.',
+  lang==='es'?'Empezar con supervisión.':'Start with supervision.'
+  ]);
+  const angles=p.suggested_angles||[];
+ return `<div class="setup-guide private-connection"><section class="guide-hero business-hero"><div class="guide-main"><span class="guide-eyebrow">${lang==='es'?'Primer plan':'First plan'}</span><h3>${lang==='es'?'Esto entendí':'This is what I understood'}</h3><p>${escapeHtml(p.positioning||p.detected_title||p.offer|| (lang==='es'?'Todavía falta más contexto.':'We still need more context.'))}</p><div class="business-summary-grid"><div><b>${lang==='es'?'Tipo':'Type'}</b><span>${escapeHtml(p.business_type||'-')}</span></div><div><b>${lang==='es'?'Oferta':'Offer'}</b><span>${escapeHtml(p.main_offer||p.offer||'-')}</span></div><div><b>${lang==='es'?'Cliente':'Customer'}</b><span>${escapeHtml(p.ideal_customer||p.audience||'-')}</span></div></div></div><aside class="guide-checklist"><b>${lang==='es'?'Plan inicial':'Initial plan'}</b><ol>${plan.map(item=>`<li>${escapeHtml(item)}</li>`).join('')}</ol></aside></section>${angles.length?`<div class="guide-panel"><b>${lang==='es'?'Ideas iniciales':'Initial ideas'}</b><ol>${angles.map(item=>`<li>${escapeHtml(item)}</li>`).join('')}</ol></div>`:''}<div class="onboarding-step-actions"><button class="btn" type="button" onclick="onboardingFlowStep=Math.max(0,onboardingFlowStep-1);renderOnboardingFlow()">${lang==='es'?'Editar':'Edit'}</button><button class="btn primary" type="button" onclick="onboardingFlowTouched=true;onboardingFlowStep=Math.min(onboardingSteps().length-1,onboardingFlowStep+1);renderOnboardingFlow()">${lang==='es'?'Seguir':'Continue'}</button><button class="btn ask-btn" type="button" onclick="openChat('${lang==='es'?'Revisa esta información de mi negocio y dime qué estrategia inicial prepararías para Meta Ads.':'Review this business profile and tell me what initial Meta Ads strategy you would prepare.'}')">${t('ask_agent')}</button></div></div>`;
 }
 function businessProfileCard(){
  const p=state.business_profile||{};
- if(!p.website_url)return '';
- return `<div class="guide-card"><b>${lang==='es'?'Perfil guardado':'Profile saved'}</b><p>${escapeHtml(p.website_url)}${p.scan_error?` · ${lang==='es'?'No pude leer toda la web, pero guardé el link y puedes seguir.':'I could not read the full site, but saved the link and you can continue.'}`:''}</p>${p.offer?`<p>${lang==='es'?'Oferta detectada':'Detected offer'}: ${escapeHtml(p.offer)}</p>`:''}</div>`;
+ if(!p.website_url&&!p.business_type&&!p.onboarding_questions_started)return '';
+ return `<div class="guide-card"><b>${lang==='es'?'Perfil guardado':'Profile saved'}</b><p>${escapeHtml(p.business_type||p.website_url||'')}${p.website_url?` · ${escapeHtml(p.website_url)}`:''}${p.scan_error?` · ${lang==='es'?'No pude leer toda la web, pero guardé el link y puedes seguir.':'I could not read the full site, but saved the link and you can continue.'}`:''}</p>${p.main_offer||p.offer?`<p>${lang==='es'?'Oferta detectada':'Detected offer'}: ${escapeHtml(p.main_offer||p.offer)}</p>`:''}${p.onboarding_questions_started?`<p class="notice">${lang==='es'?'Ya preparé las preguntas iniciales.':'I already prepared the first questions.'}</p>`:''}</div>`;
 }
 function passiveStepGuide(stepId){
  const es={
-  insights:['Lectura segura','El agente intenta leer resultados reales para darte mejores recomendaciones. Sigue en modo lectura: no cambia anuncios.','Cuando tu cuenta este conectada, este paso se valida con una lectura de resultados.'],
-  dryrun:['Resumen con supervisión','El resumen diario usa datos reales y prepara recomendaciones sin hacer cambios importantes por su cuenta. Sirve para ver si el agente entiende tus campañas antes de permitir piloto automático.','Puedes usar Actualizar en Lectura diaria o pedirle al chat que haga una revisión.'],
-  approval:['Prueba una decisión','Aquí confirmamos que los cambios importantes esperan tu sí antes de ejecutarse. Nada riesgoso debe saltarse este paso.','Revisa la zona de Aprobaciones para ver solicitudes pendientes.'],
-  live:['Qué significa trabajar con supervisión','Con supervisión el agente puede leer datos reales, explicar y preparar acciones, pero los cambios importantes esperan tu aprobación. Para la primera vez, este es el camino recomendado.','Toca Siguiente y entra al dashboard. Cuando quieras que el agente actúe solo dentro de tus reglas, ve a Configuración y activa piloto automático.'],
-  smoke:['Prueba pequeña para más adelante','Esta prueba es opcional y sirve cuando ya quieres confirmar que las acciones reales funcionan. Debe ser algo mínimo: presupuesto bajo, una pausa o una acción fácil de revisar.','Puedes saltar este paso ahora. La recomendación para empezar es conversar con el agente y revisar sugerencias con supervisión.']
+  insights:['Leer sin tocar','El agente lee datos reales y no cambia anuncios.','Cuando conectes Meta, este paso se valida con datos reales.'],
+  dryrun:['Revisar con ayuda','El resumen diario usa datos reales y prepara ideas sin tocar dinero.','Puedes actualizarlo desde Lectura diaria o desde el chat.'],
+  approval:['Pedir tu sí','Los cambios importantes esperan tu aprobación.','Revisa Aprobaciones para ver las solicitudes pendientes.'],
+  live:['Con supervisión','El agente lee datos reales y prepara acciones. Los cambios importantes esperan tu sí.','Entra al dashboard y deja la supervisión activa.'],
+  smoke:['Prueba pequeña','Solo cuando quieras probar un cambio real muy pequeño.','No hace falta para entrar al dashboard.']
  };
  const en={
-  insights:['Safe reading','The agent tries to read real results so it can give better recommendations. This is still read-only: it does not change ads.','Once your account is connected, this step is validated with a results read.'],
-  dryrun:['Practice with supervision','The daily brief uses real data and prepares recommendations without executing important changes by itself. This shows whether the agent understands your campaigns before autopilot is allowed.','Use Refresh in Daily Brief or ask chat to run a review.'],
-  approval:['Practice an approval','This confirms important changes go through a queue before execution. Risky actions should never skip this gate.','Check the Approvals area for pending requests.'],
-  live:['What supervised mode means','With supervision, the agent can read real data, explain, and prepare actions, but important changes wait for your approval. For the first run, this is the recommended path.','Click Next and enter the dashboard. When you want the agent to act by itself inside your rules, go to Setup and enable autopilot.'],
-  smoke:['Tiny test for later','This test is optional and useful when you are ready to confirm real actions work. It should be minimal: low budget, one pause, or an action that is easy to verify.','You can skip this now. The best first step is to chat with the agent and review suggestions with supervision.']
+  insights:['Read only','The agent reads real data and does not change ads.','Once Meta is connected, this step checks real results.'],
+  dryrun:['Review with help','The daily brief uses real data and prepares ideas without spending money.','You can refresh it from Daily Brief or ask chat.'],
+  approval:['Ask for your yes','Important changes wait for your approval.','Check Approvals for pending requests.'],
+  live:['Supervised mode','The agent reads real data and prepares actions. Important changes wait for your yes.','Enter the dashboard and keep supervision on.'],
+  smoke:['Tiny test','Only when you want to try a very small real change.','You do not need this to enter the dashboard.']
  };
  if(stepId==='guide')return usageCheatSheetMarkup(true);
  const copy=(lang==='es'?es:en)[stepId]||[stepCopy(stepId)[0],stepCopy(stepId)[1],lang==='es'?'Usa Siguiente cuando estes listo.':'Use Next when you are ready.'];
@@ -5966,41 +6608,77 @@ function chatGptConnectMarkup(onboarding=false){
  const hermesReady=runtime.status==='ok'&&auth.status==='ok'&&model.provider==='hermes';
  const ready=hermesReady||directReady;
  const hermesMissing=runtime.status==='blocked';
- const command='hermes model';
- const vpsCommand='hermes model --no-browser';
  const title=ready?(lang==='es'?'Modelo del agente conectado':'Agent model connected'):(lang==='es'?'Conecta el cerebro del agente':'Connect the agent brain');
- const body=ready?(directReady?(lang==='es'?`El manager ya puede conversar usando ${model.model||'el modelo configurado'} por API compatible OpenAI. Las acciones siguen pasando por tus reglas y aprobaciones.`:`The manager can now talk through ${model.model||'the configured model'} using an OpenAI-compatible API. Actions still go through your rules and approvals.`):(lang==='es'?'Hermes ya puede conversar usando tu sesion de ChatGPT/Codex. El chat, Telegram y las herramientas del agente quedan sobre esta conexión.':'Hermes can now talk through your ChatGPT/Codex session. Chat, Telegram, and agent tools use this connection.')):(onboarding?(lang==='es'?'Este paso va primero porque el producto se usa hablando con el agente. Elige login de ChatGPT/Codex con Hermes o pega una clave API compatible OpenAI.':'This step comes first because the product is used by talking with the agent. Choose ChatGPT/Codex login through Hermes or paste an OpenAI-compatible API key.'):(lang==='es'?'Elige cómo responderá el manager: ChatGPT/Codex con Hermes, MiniMax M3 o cualquier proveedor con URL compatible OpenAI.':'Choose how the manager replies: ChatGPT/Codex with Hermes, MiniMax M3, or any provider with an OpenAI-compatible URL.'));
+ const body=ready?(directReady?(lang==='es'?`El manager ya puede conversar usando ${model.model||'el modelo configurado'} por API compatible OpenAI. Las acciones siguen pasando por tus reglas y aprobaciones.`:`The manager can now talk through ${model.model||'the configured model'} using an OpenAI-compatible API. Actions still go through your rules and approvals.`):(lang==='es'?'Hermes ya puede conversar usando tu sesion de ChatGPT/Codex. El chat, Telegram y las herramientas del agente quedan sobre esta conexión.':'Hermes can now talk through your ChatGPT/Codex session. Chat, Telegram, and agent tools use this connection.')):(onboarding?(lang==='es'?'Elige una ruta para el cerebro del agente. Toca una opción y solo verás los pasos que necesitas.':'Choose one route for the agent brain. Click an option and only the steps you need will open.'):(lang==='es'?'Elige cómo responderá el manager: OpenAI, tu suscripción de ChatGPT, MiniMax M3 u otra API compatible.':'Choose how the manager replies: OpenAI, your ChatGPT subscription, MiniMax M3, or another compatible API.'));
  const badge=ready?(lang==='es'?'Listo':'Ready'):(hermesMissing?(lang==='es'?'Falta Hermes':'Hermes missing'):(lang==='es'?'Falta conectar':'Needs connection'));
- const steps=lang==='es'?[
-  ['1','Elige una ruta','ChatGPT/Codex con login OAuth es la ruta recomendada. Una API compatible es la ruta rápida con clave.'],
-  ['2','Guarda o conecta','Si usas API, pega URL, modelo y clave. Si usas ChatGPT/Codex, toca Conectar ahora.'],
-  ['3','Prueba el chat','Escribe al agente. Si falta algo, esta tarjeta te dirá qué revisar.']
- ]:[
-  ['1','Choose a route','ChatGPT/Codex with OAuth login is recommended. A compatible API is the fast API-key path.'],
-  ['2','Save or connect','For API mode, paste URL, model, and key. For ChatGPT/Codex, click Connect now.'],
-  ['3','Test chat','Talk to the agent. If anything is missing, this card shows what to review.']
- ];
  const detail=[runtime.detail,auth.detail,codex.detail].filter(Boolean).map(localText).join(' · ');
  const draft=lang==='es'?'Ayúdame a conectar el cerebro del agente. Explícame en palabras simples si me conviene login ChatGPT/Codex con Hermes o una API compatible como MiniMax M3.':'Help me connect the agent brain. Explain simply whether ChatGPT/Codex login with Hermes or an API-compatible model like MiniMax M3 is better for me.';
  const provider=model.provider||'hermes';
- const base=model.base_url||'https://api.minimax.io/v1';
- const modelName=model.model||'MiniMax-M3';
+ const savedBase=model.base_url||'';
+ const selectedRoute=provider==='hermes'?'chatgpt_subscription':(provider==='minimax'||savedBase.includes('minimax')?'minimax_m3':(savedBase.includes('api.openai.com')?'openai_api':'custom_api'));
+ const base=model.base_url||(selectedRoute==='openai_api'?'https://api.openai.com/v1':(selectedRoute==='custom_api'?'':'https://api.minimax.io/v1'));
+ const modelName=model.model||(selectedRoute==='openai_api'?'gpt-4.1-mini':(selectedRoute==='custom_api'?'':'MiniMax-M3'));
  const api=model.api||'openai-chat-completions';
  const keyPlaceholder=model.api_key_set?(lang==='es'?'Clave guardada. Pega otra solo si quieres cambiarla.':'Key saved. Paste another only to replace it.'):(lang==='es'?'Pega la clave API del proveedor':'Paste the provider API key');
- return `<section class="chatgpt-connect-card ${ready?'ready':''}"><div class="chatgpt-connect-head"><div><h3>${title}</h3><p>${body}</p></div><span class="badge ${ready?'ok':'warn'}">${badge}</span></div><div class="model-route-grid"><div class="model-route-card"><span>1</span><b>${lang==='es'?'Conectar ChatGPT/Codex':'Connect ChatGPT/Codex'}</b><p>${lang==='es'?'Ruta recomendada: toca el botón. En PC/Mac abriré la terminal; en DigitalOcean/VPS mostraré aquí el login para hacerlo desde este navegador.':'Recommended route: click the button. On PC/Mac I open the terminal; on DigitalOcean/VPS I show the login here so it can be completed from this browser.'}</p><div class="chatgpt-command"><span>${lang==='es'?'Funciona también en DigitalOcean sin abrir navegador dentro del servidor.':'Works on DigitalOcean without opening a browser inside the server.'}</span><div class="mode-actions"><button class="btn primary" type="button" onclick="connectChatGpt(event)">${lang==='es'?'Conectar ahora':'Connect now'}</button><button class="btn" type="button" onclick="copyCommand(${JSON.stringify(command).replaceAll('"','&quot;')})">${lang==='es'?'Copiar comando':'Copy command'}</button></div></div><div id="chatgpt-connect-result" class="chatgpt-connect-result hidden"></div></div><div class="model-route-card"><span>2</span><b>${lang==='es'?'Usar una API compatible OpenAI':'Use an OpenAI-compatible API'}</b><p>${lang==='es'?'Ruta directa: pega URL, modelo y clave API. Sirve para MiniMax M3 u otro proveedor compatible.':'Direct route: paste URL, model, and API key. Works for MiniMax M3 or another compatible provider.'}</p><button class="btn primary" type="button" onclick="applyAgentModelPreset('minimax_m3')">MiniMax M3</button><button class="btn" type="button" onclick="applyAgentModelPreset('custom')">${lang==='es'?'Otra API':'Custom API'}</button></div></div><div class="chatgpt-steps">${steps.map(step=>`<div class="chatgpt-step"><span>${step[0]}</span><b>${step[1]}</b><p>${step[2]}</p></div>`).join('')}</div><form id="agent-model-form" class="form-grid model-provider-form" onsubmit="saveSetupConfig(event)">
- <div class="field"><label>${lang==='es'?'Motor del agente':'Agent engine'}</label><select name="agent_chat_provider"><option value="hermes" ${provider==='hermes'?'selected':''}>Hermes + ChatGPT/Codex</option><option value="minimax" ${provider==='minimax'?'selected':''}>MiniMax M3</option><option value="openai_compatible" ${provider==='openai_compatible'||provider==='openai'?'selected':''}>${lang==='es'?'API compatible OpenAI':'OpenAI-compatible API'}</option></select></div>
- <div class="field"><label>${lang==='es'?'Modelo':'Model'}</label><input name="agent_chat_model" value="${escapeHtml(modelName)}" placeholder="MiniMax-M3"></div>
- <div class="field wide"><label>${lang==='es'?'URL compatible OpenAI':'OpenAI-compatible URL'}</label><span class="field-help">${lang==='es'?'Debe usar https://. Solo se permite http:// para modelos locales como 127.0.0.1.':'Must use https://. http:// is allowed only for local models such as 127.0.0.1.'}</span><input name="agent_chat_base_url" value="${escapeHtml(base)}" placeholder="https://api.minimax.io/v1"></div>
- <div class="field wide"><label>${lang==='es'?'Clave API del modelo':'Model API key'}</label><span class="field-help">${lang==='es'?'Se guarda en .env dentro de este PC/VPS. No aparece de vuelta en el dashboard.':'Stored in .env on this PC/VPS. It is never shown back in the dashboard.'}</span><input type="password" name="agent_chat_api_key" value="" placeholder="${escapeHtml(keyPlaceholder)}"></div>
+ const routeCopy={
+  openai_api:{icon:'OA',title:lang==='es'?'OpenAI API':'OpenAI API',desc:lang==='es'?'Si tienes una clave API de OpenAI.':'If you have an OpenAI API key.',panel:lang==='es'?'Pega tu clave API de OpenAI. Esta ruta no usa tu suscripción normal de ChatGPT.':'Paste your OpenAI API key. This route does not use your regular ChatGPT subscription.'},
+  chatgpt_subscription:{icon:'CG',title:lang==='es'?'ChatGPT suscripción':'ChatGPT subscription',desc:lang==='es'?'Login OAuth con ChatGPT/Codex.':'OAuth login with ChatGPT/Codex.',panel:lang==='es'?'Toca Conectar ahora. En PC/Mac abriré la terminal; en DigitalOcean mostraré aquí el enlace para iniciar sesión desde este navegador.':'Click Connect now. On PC/Mac I open the terminal; on DigitalOcean I show the login link here in this browser.'},
+  minimax_m3:{icon:'M3',title:'MiniMax M3',desc:lang==='es'?'Ruta rápida con clave de MiniMax.':'Fast route with a MiniMax key.',panel:lang==='es'?'Pega tu clave de MiniMax. Ya dejé URL y modelo listos para M3.':'Paste your MiniMax key. URL and model are already set for M3.'},
+  custom_api:{icon:'{}',title:lang==='es'?'Otra API compatible':'Other compatible API',desc:lang==='es'?'Para proveedores tipo OpenAI.':'For OpenAI-style providers.',panel:lang==='es'?'Pega la URL, el nombre del modelo y la clave del proveedor.':'Paste the provider URL, model name, and key.'}
+ };
+ const routeButton=kind=>`<button class="agent-model-option ${selectedRoute===kind?'active':''}" type="button" data-agent-route="${kind}" aria-expanded="${selectedRoute===kind?'true':'false'}" onclick="selectAgentModelRoute('${kind}')"><span class="route-icon">${routeCopy[kind].icon}</span><span><b>${routeCopy[kind].title}</b><p>${routeCopy[kind].desc}</p></span></button>`;
+ const apiPanelTitle=selectedRoute==='chatgpt_subscription'?routeCopy.minimax_m3.title:routeCopy[selectedRoute].title;
+ const apiPanelHelp=selectedRoute==='chatgpt_subscription'?routeCopy.minimax_m3.panel:routeCopy[selectedRoute].panel;
+ const providerValue=provider==='openai'?'openai_compatible':provider;
+ return `<section class="chatgpt-connect-card ${ready?'ready':''}"><div class="chatgpt-connect-head"><div><h3>${title}</h3><p>${body}</p></div><span class="badge ${ready?'ok':'warn'}">${badge}</span></div><div class="agent-model-picker" role="tablist" aria-label="${lang==='es'?'Opciones de modelo del agente':'Agent model options'}">${routeButton('openai_api')}${routeButton('chatgpt_subscription')}${routeButton('minimax_m3')}${routeButton('custom_api')}</div><form id="agent-model-form" class="model-provider-form" onsubmit="saveSetupConfig(event)">
+ <input type="hidden" name="agent_chat_provider" value="${escapeHtml(providerValue)}">
  <input type="hidden" name="agent_chat_api" value="${escapeHtml(api)}">
- <div class="field wide model-presets"><button class="btn" type="button" onclick="applyAgentModelPreset('hermes')">Hermes / ChatGPT</button><button class="btn primary" type="button" onclick="applyAgentModelPreset('minimax_m3')">MiniMax M3</button><button class="btn" type="button" onclick="applyAgentModelPreset('custom')">${lang==='es'?'Otra API':'Custom API'}</button></div>
- <div class="field wide"><button class="btn primary" type="submit">${lang==='es'?'Guardar modelo del agente':'Save agent model'}</button></div>
- </form><details class="helper-command"><summary>${lang==='es'?'DigitalOcean/VPS':'DigitalOcean/VPS'}</summary><span class="step-command">${lang==='es'?'No necesitas abrir un navegador en el servidor. El dashboard corre Hermes dentro del VPS y te muestra aquí el enlace de ChatGPT. Comando técnico usado por soporte:':'You do not need to open a browser inside the server. The dashboard runs Hermes inside the VPS and shows the ChatGPT link here. Technical support command:'}<br>${vpsCommand}</span></details><div class="chatgpt-foot"><p>${lang==='es'?'Estado técnico para soporte':'Technical status'}: ${escapeHtml(detail||'-')}</p><div class="mode-actions"><button class="btn" type="button" onclick="load()">${lang==='es'?'Ya lo hice, revisar conexión':'I did it, recheck'}</button><button class="btn ask-btn" type="button" onclick="openChat(${JSON.stringify(draft).replaceAll('"','&quot;')})">${t('ask_agent')}</button></div></div></section>`;
+ <div class="agent-route-panels">
+  <div class="agent-route-panel ${selectedRoute==='chatgpt_subscription'?'active':''}" data-agent-route-panel="chatgpt_subscription"><h4>${routeCopy.chatgpt_subscription.title}</h4><p>${routeCopy.chatgpt_subscription.panel}</p><div class="agent-route-actions"><button class="btn primary" type="button" onclick="connectChatGpt(event)">${lang==='es'?'Conectar ahora':'Connect now'}</button><button class="btn ask-btn" type="button" onclick="openChat(${JSON.stringify(draft).replaceAll('"','&quot;')})">${t('ask_agent')}</button></div><div id="chatgpt-connect-result" class="chatgpt-connect-result hidden"></div></div>
+  <div class="agent-route-panel ${selectedRoute!=='chatgpt_subscription'?'active':''}" data-agent-route-panel="api"><h4 id="agent-api-route-title">${apiPanelTitle}</h4><p id="agent-api-route-help">${apiPanelHelp}</p><div class="form-grid">
+   <div class="field"><label>${lang==='es'?'Modelo':'Model'}</label><input name="agent_chat_model" value="${escapeHtml(modelName)}" placeholder="${lang==='es'?'Nombre del modelo':'Model name'}"></div>
+   <div class="field"><label>${lang==='es'?'URL compatible OpenAI':'OpenAI-compatible URL'}</label><span class="field-help">${lang==='es'?'Debe usar https://. Solo se permite http:// para modelos locales como 127.0.0.1.':'Must use https://. http:// is allowed only for local models such as 127.0.0.1.'}</span><input name="agent_chat_base_url" value="${escapeHtml(base)}" placeholder="https://api.ejemplo.com/v1"></div>
+   <div class="field wide"><label>${lang==='es'?'Clave API del modelo':'Model API key'}</label><span class="field-help">${lang==='es'?'Se guarda dentro de este PC/VPS. No aparece de vuelta en el dashboard.':'Stored on this PC/VPS. It is never shown back in the dashboard.'}</span><input type="password" name="agent_chat_api_key" value="" placeholder="${escapeHtml(keyPlaceholder)}"></div>
+   <div class="field wide"><button class="btn primary" type="submit">${lang==='es'?'Guardar modelo del agente':'Save agent model'}</button></div>
+  </div></div>
+ </div>
+ </form><details class="helper-command"><summary>${lang==='es'?'Ver diagnóstico para soporte':'Show support diagnostics'}</summary><span class="step-command">${escapeHtml(detail||'-')}</span></details><div class="chatgpt-foot"><div></div><div class="mode-actions"><button class="btn" type="button" onclick="load()">${lang==='es'?'Ya lo hice, revisar conexión':'I did it, recheck'}</button></div></div></section>`;
 }
 function renderChatGptPanel(){
  qs('#chatgpt-panel').innerHTML=chatGptConnectMarkup(false);
 }
 let chatGptConnectPollTimer=null;
+let chatGptAuthWindow=null;
+let chatGptAuthOpenedUrl='';
+function prepareChatGptAuthWindow(){
+ try{
+  chatGptAuthWindow=window.open('about:blank','admiro_chatgpt_login');
+  if(!chatGptAuthWindow)return false;
+  chatGptAuthWindow.document.write(`<!doctype html><html><head><title>Admiro AI</title><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#101113;color:#f2f2ee;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.card{width:min(420px,calc(100vw - 32px));border:1px solid rgba(255,255,255,.14);border-radius:14px;background:linear-gradient(135deg,rgba(39,199,167,.12),rgba(99,168,255,.08));padding:22px;box-shadow:0 24px 70px rgba(0,0,0,.34)}h1{font-size:20px;margin:0 0 8px}p{color:#a7adb5;font-size:14px;line-height:1.45;margin:0}.dot{width:10px;height:10px;border-radius:50%;background:#27c7a7;box-shadow:0 0 22px #27c7a7;margin-bottom:14px;animation:pulse 1.2s ease-in-out infinite}@keyframes pulse{0%,100%{transform:scale(.85);opacity:.55}50%{transform:scale(1.18);opacity:1}}</style></head><body><div class="card"><div class="dot"></div><h1>${lang==='es'?'Preparando login':'Preparing login'}</h1><p>${lang==='es'?'Estoy buscando el enlace seguro de ChatGPT/Codex. Esta pestaña se abrirá sola cuando esté listo.':'I am finding the secure ChatGPT/Codex link. This tab will open automatically when it is ready.'}</p></div></body></html>`);
+  chatGptAuthWindow.document.close();
+  return true;
+ }catch(_err){
+  chatGptAuthWindow=null;
+  return false;
+ }
+}
+function maybeOpenChatGptAuthUrl(url){
+ const raw=String(url||'').trim();
+ if(!raw||raw===chatGptAuthOpenedUrl)return false;
+ let parsed;
+ try{parsed=new URL(raw)}catch(_err){return false}
+ if(!['https:','http:'].includes(parsed.protocol))return false;
+ if(parsed.protocol==='http:'&&!['127.0.0.1','localhost','::1'].includes(parsed.hostname))return false;
+ chatGptAuthOpenedUrl=raw;
+ try{
+  if(chatGptAuthWindow&&!chatGptAuthWindow.closed){
+   try{chatGptAuthWindow.opener=null}catch(_err){}
+   chatGptAuthWindow.location.href=raw;
+   return true;
+  }
+ }catch(_err){}
+ return false;
+}
 function scheduleChatGptConnectPoll(result){
  const r=result?.result||result||{};
  const status=String(r.status||'');
@@ -6037,6 +6715,7 @@ function renderChatGptConnectResult(response){
  const r=response.result||response||{};
  const status=String(r.status||'');
  const urls=Array.isArray(r.urls)?r.urls:[];
+ if(urls.length)maybeOpenChatGptAuthUrl(urls[0]);
  const output=String(r.output||'').trim();
  const running=Boolean(r.running);
  const titles={
@@ -6046,17 +6725,21 @@ function renderChatGptConnectResult(response){
   browser_login_waiting:lang==='es'?'Hermes está esperando':'Hermes is waiting',
   needs_login:lang==='es'?'Termina el login':'Finish login',
   needs_terminal:lang==='es'?'Necesita una terminal':'Terminal needed',
-  not_installed:lang==='es'?'Hermes no está instalado':'Hermes is not installed'
+ not_installed:lang==='es'?'Hermes no está instalado':'Hermes is not installed'
  };
  const fallbackTitle=lang==='es'?'No pude conectar automáticamente':'Could not connect automatically';
  const title=escapeHtml(r.title||titles[status]||fallbackTitle);
  const detail=escapeHtml(r.detail||'');
+ const autoNote=String(r.auto_note||'').trim();
+ const phaseNote=autoNote?`<div class="notice">${escapeHtml(autoNote)}</div>`:'';
+ const loginCode=String(r.login_code||(Array.isArray(r.login_codes)&&r.login_codes.length?r.login_codes[0]:'')||'').trim();
+ const codeBlock=loginCode?`<div class="chatgpt-device-code"><div><span>${lang==='es'?'OpenAI te pedirá este código':'OpenAI will ask for this code'}</span><strong>${escapeHtml(loginCode)}</strong></div><button class="btn primary" type="button" onclick="copyCommand(${JSON.stringify(loginCode).replaceAll('"','&quot;')})">${lang==='es'?'Copiar código':'Copy code'}</button></div>`:'';
  const links=urls.length?`<div class="onboarding-step-actions">${urls.map(url=>`<a class="btn primary" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${lang==='es'?'Abrir login':'Open login'}</a>`).join('')}</div>`:'';
  const inputBox=running&&r.needs_input?`<form class="onboarding-mini chatgpt-inline-input" onsubmit="sendChatGptTerminalInput(event)"><label>${lang==='es'?'Responder a Hermes':'Reply to Hermes'}<input name="input" autocomplete="off" placeholder="${lang==='es'?'Ej: número de OpenAI Codex o Enter':'Ex: OpenAI Codex number or Enter'}"></label><button class="btn primary" type="submit">${lang==='es'?'Enviar':'Send'}</button></form>`:'';
  const command=status==='needs_terminal'||status==='not_installed'?`<details class="helper-command"><summary>${lang==='es'?'Comando técnico para soporte':'Technical support command'}</summary><span class="step-command">${escapeHtml(r.command||'hermes model --no-browser')}</span><button class="btn" type="button" onclick="copyCommand(${JSON.stringify(r.command||'hermes model --no-browser').replaceAll('"','&quot;')})">${t('copy_command')}</button></details>`:'';
- const outputBlock=output?`<details class="helper-command" ${running?'open':''}><summary>${lang==='es'?'Pantalla de Hermes':'Hermes screen'}</summary><pre class="chatgpt-terminal-output">${escapeHtml(output)}</pre></details>`:'';
+ const outputBlock=output?`<details class="helper-command"><summary>${lang==='es'?'Ver detalle técnico de Hermes':'Show Hermes technical detail'}</summary><pre class="chatgpt-terminal-output">${escapeHtml(output)}</pre></details>`:'';
  const review=status==='terminal_opened'||status==='completed'||status==='needs_login'||status==='browser_login_started'||status==='browser_login_waiting'?`<button class="btn" type="button" onclick="pollChatGptConnection()">${lang==='es'?'Revisar conexión':'Recheck connection'}</button>`:'';
- box.innerHTML=`<b>${title}</b><p>${detail}</p>${links}${outputBlock}${inputBox}${command}${review?`<div class="onboarding-step-actions">${review}</div>`:''}`;
+ box.innerHTML=`<b>${title}</b><p>${detail}</p>${phaseNote}${codeBlock}${links}${outputBlock}${inputBox}${command}${review?`<div class="onboarding-step-actions">${review}</div>`:''}`;
  box.classList.remove('hidden');
  scheduleChatGptConnectPoll(r);
 }
@@ -6064,7 +6747,8 @@ async function connectChatGpt(event){
  const btn=event?.currentTarget||event?.target;
  const box=qs('#chatgpt-connect-result');
  if(btn)btn.disabled=true;
- if(box){box.classList.remove('hidden');box.innerHTML=`<b>${lang==='es'?'Conectando...':'Connecting...'}</b><p>${lang==='es'?'Estoy abriendo Hermes por ti. En VPS aparecerá aquí mismo el login.':'I am opening Hermes for you. On VPS the login appears here.'}</p>`}
+ const popupReady=prepareChatGptAuthWindow();
+ if(box){box.classList.remove('hidden');box.innerHTML=`<b>${lang==='es'?'Conectando...':'Connecting...'}</b><p>${popupReady?(lang==='es'?'Abrí una pestaña de espera. Cuando aparezca el login seguro, la llevaré ahí automáticamente.':'I opened a waiting tab. When the secure login appears, I will send it there automatically.'):(lang==='es'?'Si el navegador bloqueó la pestaña, te mostraré un botón para abrir el login.':'If the browser blocked the tab, I will show a button to open the login.')}</p>`}
  try{
   const res=await api('/api/agent-model/connect',{method:'POST',body:'{}'});
   renderChatGptConnectResult(res);
@@ -6080,9 +6764,50 @@ async function connectChatGpt(event){
 }
 function applyAgentModelPreset(kind){
  const form=qs('#agent-model-form');if(!form)return;
- if(kind==='hermes'){form.agent_chat_provider.value='hermes';return}
- if(kind==='minimax_m3'){form.agent_chat_provider.value='minimax';form.agent_chat_base_url.value='https://api.minimax.io/v1';form.agent_chat_model.value='MiniMax-M3';return}
- if(kind==='custom'){form.agent_chat_provider.value='openai_compatible';if(!form.agent_chat_model.value)form.agent_chat_model.value='';}
+ const fields=form.elements;
+ const route=kind==='hermes'?'chatgpt_subscription':(kind==='custom'?'custom_api':kind);
+ if(fields.agent_chat_api)fields.agent_chat_api.value='openai-chat-completions';
+ if(route==='chatgpt_subscription'){fields.agent_chat_provider.value='hermes';return}
+ if(route==='openai_api'){
+  fields.agent_chat_provider.value='openai_compatible';
+  fields.agent_chat_base_url.value='https://api.openai.com/v1';
+  if(!fields.agent_chat_model.value||fields.agent_chat_model.value.includes('MiniMax'))fields.agent_chat_model.value='gpt-4.1-mini';
+  return;
+ }
+ if(route==='minimax_m3'){
+  fields.agent_chat_provider.value='minimax';
+  fields.agent_chat_base_url.value='https://api.minimax.io/v1';
+  fields.agent_chat_model.value='MiniMax-M3';
+  return;
+ }
+ if(route==='custom_api'){
+  fields.agent_chat_provider.value='openai_compatible';
+  if(fields.agent_chat_base_url.value.includes('api.minimax.io')||fields.agent_chat_base_url.value.includes('api.openai.com'))fields.agent_chat_base_url.value='';
+  if(fields.agent_chat_model.value.includes('MiniMax')||fields.agent_chat_model.value.includes('gpt-'))fields.agent_chat_model.value='';
+ }
+}
+function selectAgentModelRoute(kind){
+ const route=kind==='hermes'?'chatgpt_subscription':(kind==='custom'?'custom_api':kind);
+ applyAgentModelPreset(route);
+ document.querySelectorAll('[data-agent-route]').forEach(btn=>{
+  const active=btn.dataset.agentRoute===route;
+  btn.classList.toggle('active',active);
+  btn.setAttribute('aria-expanded',active?'true':'false');
+ });
+ document.querySelectorAll('[data-agent-route-panel]').forEach(panel=>{
+  const panelRoute=panel.dataset.agentRoutePanel;
+  panel.classList.toggle('active',panelRoute===route||(panelRoute==='api'&&route!=='chatgpt_subscription'));
+ });
+ const copy={
+  openai_api:{title:lang==='es'?'OpenAI API':'OpenAI API',help:lang==='es'?'Pega tu clave API de OpenAI. Esta ruta no usa tu suscripción normal de ChatGPT.':'Paste your OpenAI API key. This route does not use your regular ChatGPT subscription.'},
+  minimax_m3:{title:'MiniMax M3',help:lang==='es'?'Pega tu clave de MiniMax. Ya dejé URL y modelo listos para M3.':'Paste your MiniMax key. URL and model are already set for M3.'},
+  custom_api:{title:lang==='es'?'Otra API compatible':'Other compatible API',help:lang==='es'?'Pega la URL, el nombre del modelo y la clave del proveedor.':'Paste the provider URL, model name, and key.'}
+ };
+ if(copy[route]){
+  const title=qs('#agent-api-route-title');const help=qs('#agent-api-route-help');
+  if(title)title.textContent=copy[route].title;
+  if(help)help.textContent=copy[route].help;
+ }
 }
 function renderTelegramPanel(){
  const v=state.config.telegram_agent||{};
@@ -6098,6 +6823,21 @@ function renderTelegramPanel(){
 }
 function renderMigrationPanel(){
  qs('#migration-panel').innerHTML=`<div class="next-step"><div><b>${lang==='es'?'Cambiar de equipo sin perder memoria':'Move device without losing memory'}</b><p>${lang==='es'?'Crea una copia segura de esta instalación o trae una copia anterior. Incluye chat, marca, productos, configuración y memoria del dashboard.':'Create a safe copy of this install or bring back an earlier one. It includes chat, brand, products, setup, and dashboard memory.'}</p></div><div class="mode-actions"><button class="btn primary" type="button" onclick="downloadMigrationBackup()">${lang==='es'?'Crear copia segura':'Create safe copy'}</button><button class="btn" type="button" onclick="qs('#migration-restore-file').click()">${lang==='es'?'Traer copia anterior':'Restore backup'}</button><input id="migration-restore-file" class="hidden" type="file" accept=".tar.gz,.tgz,.zip,application/gzip,application/zip" onchange="restoreMigrationBackup(event)"></div></div><div id="migration-result"></div><p class="notice">${lang==='es'?'Esa copia puede incluir claves privadas. Guárdala como guardarías una llave de tu negocio.':'The backup may contain private keys. Store it like a key to your business.'}</p>`;
+}
+function renderLocalNetworkPanel(){
+ const box=qs('#local-network-panel');if(!box)return;
+ const net=state.local_network_access||{};
+ if(net.install_environment==='cloud'){box.innerHTML='';return}
+ const enabled=Boolean(net.enabled);
+ const active=Boolean(net.active);
+ const url=net.lan_url||'';
+ const status=enabled?(active?(lang==='es'?'Activo':'Active'):(lang==='es'?'Reiniciando':'Restarting')):(lang==='es'?'Apagado':'Off');
+ const body=lang==='es'
+  ? 'Actívalo solo cuando quieras abrir este dashboard desde tu teléfono. El teléfono debe estar conectado al mismo Wi‑Fi o red local, y seguirá pidiendo tu contraseña.'
+  : 'Turn this on only when you want to open this dashboard from your phone. The phone must be on the same Wi‑Fi or local network, and your password is still required.';
+ const linkBlock=enabled?`<div class="guide-card"><b>${lang==='es'?'Enlace para tu teléfono':'Phone link'}</b><p>${url?escapeHtml(url):(lang==='es'?'No pude detectar el IP automáticamente. Usa el IP local de este computador con el puerto '+escapeHtml(String(net.port||7871))+'.':'I could not detect the IP automatically. Use this computer local IP with port '+escapeHtml(String(net.port||7871))+'.')}</p><div class="onboarding-step-actions">${url?`<button class="btn primary" type="button" onclick="copyCommand(${JSON.stringify(url).replaceAll('"','&quot;')})">${lang==='es'?'Copiar enlace':'Copy link'}</button>`:''}<button class="btn ask-btn" type="button" onclick="openChat(${chatArg(lang==='es'?'Quiero abrir el dashboard desde mi teléfono. Explícame los pasos simples y qué revisar si no carga.':'I want to open the dashboard from my phone. Explain the simple steps and what to check if it does not load.')})">${t('ask_agent')}</button></div></div>`:'';
+ const restartNote=net.restart_needed?`<p class="notice">${lang==='es'?'Estoy aplicando el cambio. Si la página se desconecta unos segundos, vuelve a abrir el enlace cuando termine.':'Applying the change. If the page disconnects for a few seconds, reopen the link when it finishes.'}</p>`:'';
+ box.innerHTML=`<section class="chatgpt-connect-card local-network-card ${enabled?'ready':''}"><div class="chatgpt-connect-head"><div><h3>${lang==='es'?'Ver desde mi teléfono':'View from my phone'}</h3><p>${body}</p></div><span class="badge ${enabled?'ok':'warn'}">${status}</span></div><div class="model-route-grid"><div class="model-route-card"><span>1</span><b>${lang==='es'?'Mismo Wi‑Fi':'Same Wi‑Fi'}</b><p>${lang==='es'?'Tu teléfono y este computador deben estar en la misma red.':'Your phone and this computer must be on the same network.'}</p></div><div class="model-route-card"><span>2</span><b>${lang==='es'?'Con contraseña':'Password protected'}</b><p>${lang==='es'?'Aunque alguien vea el enlace, necesita la contraseña del dashboard para acciones y datos protegidos.':'Even if someone sees the link, the dashboard password is required for protected data and actions.'}</p></div></div>${linkBlock}${restartNote}<div class="mode-actions"><button class="btn ${enabled?'':'primary'}" type="button" onclick="setLocalNetworkAccess(true)">${lang==='es'?'Activar para teléfono':'Turn on phone access'}</button><button class="btn ${enabled?'primary':''}" type="button" onclick="setLocalNetworkAccess(false)">${lang==='es'?'Apagar acceso por Wi‑Fi':'Turn off Wi‑Fi access'}</button></div></section>`;
 }
 function renderCloudAccessPanel(){
  qs('#cloud-access-panel').innerHTML=`<div class="next-step"><div><b>${lang==='es'?'Mantener acceso cuando estás en la nube':'Keep cloud dashboard access'}</b><p>${lang==='es'?'Si este dashboard ya abrió desde tu red actual, este botón autoriza esta red en DigitalOcean. Úsalo cuando cambies de Wi-Fi antes de cerrar la página.':'If this dashboard already opened from your current network, this button authorizes this network in DigitalOcean. Use it when you change Wi-Fi before closing the page.'}</p></div><div class="mode-actions"><button class="btn" type="button" onclick="refreshCloudAccess()">${lang==='es'?'Permitir esta red':'Allow this network'}</button></div></div><div id="cloud-access-result"></div><p class="notice">${lang==='es'?'Si el dashboard no carga porque tu IP ya cambió, este botón no puede ayudarte todavía. Recupera entrada desde el portal de DigitalOcean, SSH o la consola web; después vuelve aquí para dejar la nueva red guardada.':'If the dashboard does not load because your IP already changed, this button cannot help yet. Recover access from the DigitalOcean portal, SSH, or web console; then return here to save the new network.'}</p>`;
@@ -6188,7 +6928,7 @@ function renderSetupBeginnerSummary(setup){
 function renderSetupTechnicalDetails(setup){
  return `<details class="fallback-details setup-technical-details"><summary>${lang==='es'?'Revisión técnica para soporte':'Technical review for support'}</summary>${setup.sections.map(sec=>`<div class="section"><div class="head"><b>${localText(sec.title)}</b></div><div class="body">${sec.items.map(i=>`<div class="log-item"><b>${statusLabel(i.status)} - ${localText(i.label)}</b><br>${localText(i.detail||'')}${i.action?`<br><span class="notice">${localText(i.action)}</span>`:''}</div>`).join('')}</div></div>`).join('')}</details>`;
 }
-function renderSetup(){const setup=state.setup;const counts=setup.summary.counts;renderModeControl();renderGuardrails();renderOnboarding();renderLicensePanel();renderAgencyPanel();renderSetupConfig();renderChatGptPanel();renderTelegramPanel();renderMigrationPanel();renderUpdateRollbackPanel();renderCloudAccessPanel();qs('#setup-summary').innerHTML=`<div class="kpis">${kpi(t('ok'),counts.ok||0)}${kpi(t('warnings'),counts.warn||0)}${kpi(t('blocked'),counts.blocked||0)}${kpi(t('live_ready'),setup.summary.live_ads_ready?t('live_ready_yes'):t('live_ready_no'))}</div>`;qs('#setup-sections').innerHTML=renderSetupBeginnerSummary(setup)+renderSetupTechnicalDetails(setup)}
+function renderSetup(){const setup=state.setup;const counts=setup.summary.counts;renderModeControl();renderGuardrails();renderOnboarding();renderLicensePanel();renderAgencyPanel();renderSetupConfig();renderChatGptPanel();renderTelegramPanel();renderLocalNetworkPanel();renderMigrationPanel();renderUpdateRollbackPanel();renderCloudAccessPanel();qs('#setup-summary').innerHTML=`<div class="kpis">${kpi(t('ok'),counts.ok||0)}${kpi(t('warnings'),counts.warn||0)}${kpi(t('blocked'),counts.blocked||0)}${kpi(t('live_ready'),setup.summary.live_ads_ready?t('live_ready_yes'):t('live_ready_no'))}</div>`;qs('#setup-sections').innerHTML=renderSetupBeginnerSummary(setup)+renderSetupTechnicalDetails(setup)}
 function audienceText(value){
  const raw=String(value||'');if(lang!=='es')return raw;
  const exact={
@@ -6260,6 +7000,19 @@ async function refreshInsights(){const res=await api('/api/action',{method:'POST
 async function exportCsv(){const r=await api('/api/export');toast(t('toast_export')+r.path)}
 async function approvePending(id){const item=(state.pending||[]).find(p=>p.id===id);if(item&&item.type==='create_campaign'&&item.payload?.final_status==='ACTIVE'){const ok=await showDecisionConfirm({title:lang==='es'?'Esta campaña puede empezar a gastar':'This campaign can start spending',body:lang==='es'?'Al aprobar, se creará o encenderá como ACTIVA y podrá usar el presupuesto elegido. Revisa esto como si le dieras luz verde a un manager humano.':'When approved, it will be created or turned on as ACTIVE and may use the selected budget. Review this like giving a human manager the green light.',items:[item.payload?.name||item.payload?.campaign_name||item.type,lang==='es'?'La aprobación debe salir de un botón exacto o de una frase exacta; el agente no puede decidir solo.':'Approval must come from an exact button or exact phrase; the agent cannot decide alone.'],confirmLabel:lang==='es'?'Sí, aprobar activa':'Yes, approve active',agentDraft:lang==='es'?`Explícame esta aprobación de campaña activa antes de que yo decida. ¿Qué riesgo tiene y qué debería revisar?`:`Explain this active campaign approval before I decide. What is the risk and what should I review?`});if(!ok)return []}const res=await api('/api/approve',{method:'POST',body:JSON.stringify({approval_id:id})});const attempted=(res.result||[])[0]||{};toast(attempted.status==='approved'?t('toast_approval'):(lang==='es'?'No se pudo ejecutar. La decisión sigue pendiente para reintentar.':'Execution failed. The decision remains pending so you can retry.'));await load();return res.result||[]}
 async function setMode(mode){if(mode==='live'){const ok=await showDecisionConfirm({title:lang==='es'?'Activar piloto automático':'Turn on autopilot',body:lang==='es'?'El agente podrá ejecutar acciones reales solo cuando entren dentro de tus reglas. Lo que se salga de los límites seguirá pidiendo aprobación.':'The agent can execute real actions only when they fit your rules. Anything outside the limits will still ask for approval.',items:[lang==='es'?'Leer datos reales no cambia nada en Meta.':'Reading real data does not change Meta.',lang==='es'?'Piloto automático sí puede tocar campañas dentro de tus reglas.':'Autopilot can touch campaigns inside your rules.'],confirmLabel:lang==='es'?'Activar piloto':'Turn on autopilot',agentDraft:lang==='es'?'Antes de activar piloto automático, revisa mis reglas y dime si están prudentes para mi cuenta.':'Before turning on autopilot, review my rules and tell me if they are prudent for my account.'});if(!ok)return}await api('/api/mode',{method:'POST',body:JSON.stringify({mode,live_actions_enabled:mode==='live'})});toast(mode==='live'?(lang==='es'?'Piloto automático activado':'Autopilot enabled'):(lang==='es'?'Modo con supervisión activado':'Supervised mode enabled'));await load()}
+async function setLocalNetworkAccess(enabled){
+ const box=qs('#local-network-panel');
+ if(box)box.insertAdjacentHTML('afterbegin',`<div class="guide-card"><p>${enabled?(lang==='es'?'Preparando enlace para tu teléfono...':'Preparing phone link...'):(lang==='es'?'Apagando acceso por Wi‑Fi...':'Turning off Wi‑Fi access...')}</p></div>`);
+ const res=await api('/api/local-network-access',{method:'POST',body:JSON.stringify({enabled})});
+ const result=res.result||res;
+ if(result.restarting){
+  toast(enabled?(lang==='es'?'Activando acceso por Wi‑Fi. El dashboard se reiniciará.':'Turning on Wi‑Fi access. The dashboard will restart.'):(lang==='es'?'Apagando acceso por Wi‑Fi. El dashboard se reiniciará.':'Turning off Wi‑Fi access. The dashboard will restart.'));
+  setTimeout(()=>window.location.reload(),2200);
+  return;
+ }
+ toast(enabled?(lang==='es'?'Acceso para teléfono activado.':'Phone access enabled.'):(lang==='es'?'Acceso por Wi‑Fi apagado.':'Wi‑Fi access turned off.'));
+ await load();
+}
 async function saveGuardrails(e){e.preventDefault();const form=e.target;const data=Object.fromEntries(new FormData(form).entries());data.require_approval_for_resume=form.require_approval_for_resume.checked;data.require_approval_for_new_campaigns=form.require_approval_for_new_campaigns.checked;data.require_approval_for_creatives=form.require_approval_for_creatives.checked;await api('/api/guardrails',{method:'POST',body:JSON.stringify(data)});toast(lang==='es'?'Reglas guardadas':'Rules saved');await load()}
 async function saveProfitabilityRules(e){e.preventDefault();const form=e.target;const data=Object.fromEntries(new FormData(form).entries());await api('/api/profitability-rules',{method:'POST',body:JSON.stringify(data)});toast(lang==='es'?'Reglas de rentabilidad guardadas':'Profitability rules saved');await load()}
 async function saveTelegramConfig(e){e.preventDefault();const form=e.target;const data=Object.fromEntries(new FormData(form).entries());data.enabled=form.enabled.checked;await api('/api/telegram/config',{method:'POST',body:JSON.stringify(data)});toast(lang==='es'?'Telegram guardado':'Telegram saved');await load()}
@@ -6355,8 +7108,35 @@ async function saveSetupConfig(e){e.preventDefault();await saveSetupPayload(Obje
 async function saveOnboardingSetupConfig(e){e.preventDefault();await saveSetupPayload(Object.fromEntries(new FormData(e.target).entries()),true)}
 async function createAgencySpace(e){e.preventDefault();const payload=Object.fromEntries(new FormData(e.target).entries());await api('/api/agency/spaces',{method:'POST',body:JSON.stringify(payload)});toast(lang==='es'?'Cliente agregado. Ábrelo para configurarlo.':'Client added. Open it to configure it.');await load()}
 async function switchAgencySpace(id){await api('/api/agency/spaces/switch',{method:'POST',body:JSON.stringify({space_id:id})});toast(lang==='es'?'Cliente activo cambiado.':'Active client changed.');await load()}
-async function scanBusinessWebsite(e){e.preventDefault();const payload=Object.fromEntries(new FormData(e.target).entries());const box=qs('#business-scan-results');if(box)box.innerHTML=`<div class="guide-card"><p>${lang==='es'?'Leyendo tu web y preparando el perfil inicial...':'Reading your website and preparing the initial profile...'}</p></div>`;try{const res=await api('/api/business-profile/scan',{method:'POST',body:JSON.stringify(payload)});toast(lang==='es'?'Web analizada. Te llevo al contexto del negocio.':'Website scanned. Taking you to business context.');await load();const steps=onboardingSteps();const idx=steps.findIndex(s=>s.id==='context');onboardingFlowTouched=true;onboardingFlowStep=idx>=0?idx:onboardingFlowStep;renderOnboardingFlow();return res}catch(err){if(box)box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'No pude leer la web todavía':'I could not read the website yet'}</b><p>${escapeHtml(err.message||String(err))}</p></div>`;throw err}}
-async function saveBusinessContext(e){e.preventDefault();const payload=Object.fromEntries(new FormData(e.target).entries());await api('/api/business-profile',{method:'POST',body:JSON.stringify(payload)});toast(lang==='es'?'Contexto guardado. Te muestro el primer plan.':'Context saved. Showing the first plan.');await load();const steps=onboardingSteps();const idx=steps.findIndex(s=>s.id==='strategy');onboardingFlowTouched=true;onboardingFlowStep=idx>=0?idx:onboardingFlowStep;renderOnboardingFlow()}
+async function startBusinessInterview(e){
+ e.preventDefault();
+ const payload=Object.fromEntries(new FormData(e.target).entries());
+ payload.language=lang;
+ const business=String(payload.business_type||'').trim();
+ if(!business){toast(lang==='es'?'Escribe tu negocio en pocas palabras.':'Write your business in a few words.');return}
+ const box=qs('#business-scan-results');
+ if(box)box.innerHTML=`<div class="guide-card"><p>${lang==='es'?'Preparando preguntas...':'Preparing questions...'}</p></div>`;
+ try{
+  const res=await api('/api/business-profile/questions',{method:'POST',body:JSON.stringify(payload)});
+  toast(lang==='es'?'Listo. Ahora vamos pregunta por pregunta.':'Ready. Now we go one question at a time.');
+  await load();
+  businessContextQuestionIndex=0;
+  const steps=onboardingSteps();
+  const idx=steps.findIndex(s=>s.id==='context');
+  onboardingFlowTouched=true;
+  onboardingFlowStep=idx>=0?idx:onboardingFlowStep;
+  renderOnboardingFlow();
+  return res;
+ }catch(err){
+  if(box)box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'No pude preparar las preguntas':'Could not prepare the questions'}</b><p>${escapeHtml(err.message||String(err))}</p></div>`;
+  throw err;
+ }
+}
+async function scanBusinessWebsite(e){e.preventDefault();const payload=Object.fromEntries(new FormData(e.target).entries());const box=qs('#business-scan-results');if(box)box.innerHTML=`<div class="guide-card"><p>${lang==='es'?'Leyendo tu web y preparando respuestas sugeridas...':'Reading your website and preparing suggested answers...'}</p></div>`;try{const res=await api('/api/business-profile/scan',{method:'POST',body:JSON.stringify(payload)});toast(lang==='es'?'Web analizada. Ahora revisamos una respuesta a la vez.':'Website scanned. Now we review one answer at a time.');await load();businessContextQuestionIndex=0;const steps=onboardingSteps();const idx=steps.findIndex(s=>s.id==='context');onboardingFlowTouched=true;onboardingFlowStep=idx>=0?idx:onboardingFlowStep;renderOnboardingFlow();return res}catch(err){if(box)box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'No pude leer la web todavía':'I could not read the website yet'}</b><p>${escapeHtml(err.message||String(err))}</p></div>`;throw err}}
+async function skipWebsiteScan(){await api('/api/business-profile',{method:'POST',body:JSON.stringify({website_skipped:true})});toast(lang==='es'?'Perfecto. Te haré preguntas simples.':'Perfect. I will ask simple questions.');await load();businessContextQuestionIndex=0;const steps=onboardingSteps();const idx=steps.findIndex(s=>s.id==='context');onboardingFlowTouched=true;onboardingFlowStep=idx>=0?idx:onboardingFlowStep;renderOnboardingFlow()}
+function setBusinessContextQuestionIndex(index){const questions=businessContextQuestions();businessContextQuestionIndex=Math.max(0,Math.min(Number(index)||0,questions.length-1));renderOnboardingFlow()}
+async function saveBusinessContextQuestion(e){e.preventDefault();const form=e.target;const field=String(new FormData(form).get('field')||'').trim();const answer=String(new FormData(form).get('answer')||'').trim();if(!field||!answer){toast(lang==='es'?'Escribe una respuesta corta para seguir.':'Write a short answer to continue.');return}const questions=businessContextQuestions();const idx=Math.max(0,questions.findIndex(q=>q.key===field));const isLast=idx>=questions.length-1;const payload={[field]:answer};if(isLast)payload.context_complete=true;await api('/api/business-profile',{method:'POST',body:JSON.stringify(payload)});await load();if(isLast){toast(lang==='es'?'Contexto listo. Te muestro el primer plan.':'Context ready. Showing the first plan.');const steps=onboardingSteps();const strategyIndex=steps.findIndex(s=>s.id==='strategy');onboardingFlowTouched=true;onboardingFlowStep=strategyIndex>=0?strategyIndex:onboardingFlowStep}else{toast(lang==='es'?'Respuesta guardada. Vamos con la siguiente.':'Answer saved. On to the next one.');businessContextQuestionIndex=Math.min(idx+1,questions.length-1)}renderOnboardingFlow()}
+async function saveBusinessContext(e){e.preventDefault();const payload=Object.fromEntries(new FormData(e.target).entries());payload.context_complete=true;await api('/api/business-profile',{method:'POST',body:JSON.stringify(payload)});toast(lang==='es'?'Contexto guardado. Te muestro el primer plan.':'Context saved. Showing the first plan.');await load();const steps=onboardingSteps();const idx=steps.findIndex(s=>s.id==='strategy');onboardingFlowTouched=true;onboardingFlowStep=idx>=0?idx:onboardingFlowStep;renderOnboardingFlow()}
 function showMetaTokenBox(){const box=qs('#meta-token-box');if(box)box.classList.add('open')}
 function goToMetaTokenStep(reason='',output=''){const steps=onboardingSteps();const idx=steps.findIndex(s=>s.id==='meta');onboardingFlowTouched=true;onboardingFlowStep=idx>=0?idx:1;renderOnboardingFlow();setTimeout(()=>{showMetaTokenBox();const box=qs('#social-account-results');if(box&&reason==='expired'){box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'Pega una clave nueva':'Paste a new key'}</b><p>${lang==='es'?'Meta rechazó la clave anterior porque venció o ya no sirve. Pega aquí la clave nueva; el dashboard la guarda automáticamente y después vuelve a buscar tus cuentas.':'Meta rejected the previous key because it expired or is no longer valid. Paste the new key here; the dashboard saves it automatically and then finds your accounts again.'}</p><p class="notice">${lang==='es'?'Cuando pegas una clave válida, queda guardada localmente en este computador o VPS. No se guarda en cookies del navegador.':'When you paste a valid key, it is stored locally on this computer or VPS. It is not stored in browser cookies.'}</p>${output?`<details class="helper-command"><summary>${lang==='es'?'Detalles técnicos':'Technical details'}</summary><span class="step-command">${escapeHtml(String(output).slice(0,900))}</span></details>`:''}</div>`}},0)}
 function connectMetaStarted(){showMetaTokenBox();toast(lang==='es'?'Meta Developers se abrirá en otra pestaña. Sigue tus screenshots y pega aquí tu clave.':'Meta Developers will open in another tab. Follow your screenshots and paste your key here.')}
@@ -6454,9 +7234,9 @@ load();
 class DashboardHandler(BaseHTTPRequestHandler):
     HTML_PATHS = {"/", "/dashboard"}
     PROTECTED_GET_PATHS = {"/api/dashboard", "/api/export", "/api/report", "/api/setup", "/api/social/auth-status", "/api/social/accounts", "/api/update/snapshots", "/api/creative-asset"}
-    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/agent-model/connect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/product", "/api/ad-briefs", "/api/codex/creative-plan", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/complete", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
+    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/agent-model/connect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/product", "/api/ad-briefs", "/api/codex/creative-plan", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/complete", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/local-network-access", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
     ONBOARDING_OPEN_GETS = {"/api/dashboard", "/api/setup"}
-    ONBOARDING_OPEN_POSTS = {"/api/dashboard-password", "/api/business-profile", "/api/business-profile/scan", "/api/license/activate"}
+    ONBOARDING_OPEN_POSTS = {"/api/dashboard-password", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/license/activate"}
     GET_JSON_ROUTES = {
         "/api/dashboard": dashboard_payload,
         "/api/export": export_csv,
@@ -6480,6 +7260,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         "/api/audience-strategy": lambda payload: create_audience_strategy(payload, payload.get("language", "es")),
         "/api/business-profile": save_business_context,
         "/api/business-profile/scan": scan_business_website,
+        "/api/business-profile/questions": generate_business_context_questions,
         "/api/brand-guides/init": initialize_brand_guides,
         "/api/brand-guides/general": save_general_brand_memory,
         "/api/brand-guides/product": save_product_brand_memory,
@@ -6492,6 +7273,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         "/api/update/check": lambda _payload: request_update_release(),
         "/api/update/apply": lambda _payload: apply_official_update(),
         "/api/update/rollback": restore_update_snapshot,
+        "/api/local-network-access": set_local_network_access,
         "/api/agency/spaces": create_agency_space,
         "/api/agency/spaces/switch": switch_agency_space,
         "/api/telegram/config": save_telegram_config,
@@ -6562,6 +7344,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def send_local_network_disabled(self, parsed):
+        message = "Ver desde mi teléfono está apagado. Actívalo desde Configuración en el computador principal y vuelve a abrir este enlace."
+        if parsed.path in self.HTML_PATHS:
+            body = f"""<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Acceso local apagado</title><style>body{{margin:0;min-height:100vh;display:grid;place-items:center;background:#101113;color:#f2f2ee;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:22px}}main{{max-width:430px;border:1px solid rgba(255,255,255,.14);border-radius:14px;background:rgba(255,255,255,.06);padding:22px;box-shadow:0 22px 70px rgba(0,0,0,.34)}}h1{{font-size:22px;margin:0 0 8px}}p{{color:#a7adb5;line-height:1.5}}</style></head><body><main><h1>Acceso por Wi‑Fi apagado</h1><p>{message}</p><p>El teléfono debe estar en el mismo Wi‑Fi y el dashboard seguirá protegido por contraseña.</p></main></body></html>""".encode("utf-8")
+            self.send_response(403)
+            self.send_security_headers()
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        self.send_json({"error": message}, 403)
+
+    def local_network_request_allowed(self):
+        config = load_config()
+        if install_environment_label() == "cloud" or config.lan_access_enabled:
+            return True
+        return request_host_is_local(self.headers.get("Host", ""))
 
     def send_redirect(self, url):
         self.send_response(302)
@@ -6692,6 +7494,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        if not self.local_network_request_allowed():
+            self.send_local_network_disabled(parsed)
+            return
         if self.auth_required_for_get(parsed.path) and not self.require_auth(parsed):
             return
         if parsed.path in self.HTML_PATHS:
@@ -6712,6 +7517,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             parsed = urlparse(self.path)
+            if not self.local_network_request_allowed():
+                self.send_local_network_disabled(parsed)
+                return
             payload = self.read_body(parsed.path)
             if self.auth_required_for_post(parsed.path) and not self.require_auth(parsed, payload):
                 return
@@ -6738,6 +7546,7 @@ def write_static_snapshot():
 
 
 def main():
+    global CURRENT_DASHBOARD_BIND_HOST, CURRENT_DASHBOARD_BIND_PORT
     query = parse_qs(urlparse(sys.argv[1]).query) if len(sys.argv) > 1 and sys.argv[1].startswith("?") else {}
     config = load_config()
     host = query.get("host", [config.dashboard_host])[0]
@@ -6750,6 +7559,8 @@ def main():
     write_static_snapshot()
     ensure_telegram_listener()
     server = ThreadingHTTPServer((host, port), DashboardHandler)
+    CURRENT_DASHBOARD_BIND_HOST = host
+    CURRENT_DASHBOARD_BIND_PORT = port
     print("Meta Ads Agent dashboard")
     print(f"URL: http://{host}:{port}")
     print(f"Dashboard password required: {config.dashboard_token_required}")

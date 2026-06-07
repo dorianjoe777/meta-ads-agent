@@ -87,7 +87,7 @@ Hermes is configured for the agent-centered creative workflow, but not with broa
 Default enabled toolsets:
 
 ```text
-memory,skills,session_search,vision,image_gen,file
+memory,skills,session_search,vision,image_gen,file,web,browser
 ```
 
 These allow Hermes to remember useful context, use the agent profile, read the curated Hermes workspace, inspect uploaded product/reference images, and prepare image-generation direction. Uploaded Telegram images are saved under `output/telegram_uploads/`, copied into the Hermes workspace, and passed to Hermes with the CLI image attachment path.

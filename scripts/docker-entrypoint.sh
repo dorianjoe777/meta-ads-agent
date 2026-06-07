@@ -36,6 +36,7 @@ keys = {line.split("=", 1)[0] for line in lines if "=" in line and not line.lstr
 defaults = {
     "REQUIRE_DASHBOARD_TOKEN": "true",
     "LIVE_ACTIONS_ENABLED": "false",
+    "LAN_ACCESS_ENABLED": "false",
     "CODEX_CREATIVE_ENABLED": "false",
     "CODEX_CLI": "codex",
 }

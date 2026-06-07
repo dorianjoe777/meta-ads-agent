@@ -1,7 +1,7 @@
 import { signedReleaseGrant, verifyPortalSession } from "../../../lib/license.js";
 import { releaseWithDiscoveredAssets } from "../../../lib/download-portal.js";
 import { readLicense, readReleases, writeLicense } from "../../../lib/store.js";
-import { decryptPortalSecret, encryptPortalSecret, encryptedPortalSecretExists } from "../../../lib/secret-vault.js";
+import { decryptPortalSecret } from "../../../lib/secret-vault.js";
 import {
   buildDigitalOceanCloudInit,
   cloudAccessSecret,
@@ -447,32 +447,6 @@ function resolveDigitalOceanToken(record = {}, suppliedToken = "") {
   return { token: "", source: "" };
 }
 
-function recordWithSavedDigitalOceanToken(record = {}, token = "", remember = false) {
-  if (remember !== true || !validateDigitalOceanToken(token)) {
-    return record;
-  }
-  const encrypted = encryptPortalSecret(token);
-  if (!encrypted) {
-    return record;
-  }
-  return {
-    ...record,
-    portal_vault: {
-      ...(record.portal_vault || {}),
-      digitalocean_token: encrypted
-    }
-  };
-}
-
-function recordWithoutDigitalOceanToken(record = {}) {
-  const nextVault = { ...(record.portal_vault || {}) };
-  delete nextVault.digitalocean_token;
-  return {
-    ...record,
-    portal_vault: Object.keys(nextVault).length ? nextVault : undefined
-  };
-}
-
 function parseCloudAccessSecret(cloud = {}) {
   if (cloud.cloud_access_secret) return String(cloud.cloud_access_secret);
   try {
@@ -832,7 +806,6 @@ export default async function handler(request, response) {
       portal_token: token = "",
       action: rawAction = "create",
       digitalocean_token: rawDigitalOceanToken = "",
-      remember_digitalocean_token: rememberDigitalOceanToken = false,
       ssh_public_key: rawSshPublicKey = "",
       region: rawRegion = "",
       size: rawSize = ""
@@ -871,21 +844,10 @@ export default async function handler(request, response) {
         detail: "Listo. Ya puedes crear un servidor nuevo."
       });
     }
-    if (action === "forget_digitalocean_token") {
-      await writeLicense(recordWithoutDigitalOceanToken(record)).catch(() => {});
-      return json(response, 200, {
-        valid: true,
-        status: "digitalocean_token_forgotten",
-        digitalocean_token_saved: false,
-        detail: "Listo. Ya no guardo el token de DigitalOcean en este portal."
-      });
-    }
     if (action === "refresh_access") {
       const resolvedDigitalOceanToken = resolveDigitalOceanToken(record, rawDigitalOceanToken);
       if (!validateDigitalOceanToken(resolvedDigitalOceanToken.token)) {
-        return friendlyFailure(response, "digitalocean_token_required", encryptedPortalSecretExists(record.portal_vault?.digitalocean_token)
-          ? "No pude usar el token guardado. Pega un token valido de DigitalOcean para reemplazarlo."
-          : "Pega tu token de DigitalOcean para actualizar el acceso de esta red.");
+        return friendlyFailure(response, "digitalocean_token_required", "Pega tu token de DigitalOcean para actualizar el acceso de esta red.");
       }
       try {
         const refreshed = await refreshFirewallForCurrentIp(record, resolvedDigitalOceanToken.token, request);
@@ -995,9 +957,7 @@ export default async function handler(request, response) {
     const digitalOceanToken = resolvedDigitalOceanToken.token;
     const sshPublicKey = String(rawSshPublicKey || "").trim();
     if (!validateDigitalOceanToken(digitalOceanToken)) {
-      return friendlyFailure(response, "digitalocean_token_required", encryptedPortalSecretExists(record.portal_vault?.digitalocean_token)
-        ? "No pude usar el token guardado. Pega un token valido de DigitalOcean para reemplazarlo."
-        : "Pega un token valido de DigitalOcean.");
+      return friendlyFailure(response, "digitalocean_token_required", "Pega un token valido de DigitalOcean.");
     }
     if (!validateSshPublicKey(sshPublicKey)) {
       return friendlyFailure(response, "ssh_key_required", "Pega tu llave publica SSH. Debe empezar por ssh-ed25519 o ssh-rsa.");
@@ -1097,9 +1057,8 @@ export default async function handler(request, response) {
         hostname: cloudHostname,
         dnsActive: dns.status === "active"
       });
-      const recordForWrite = recordWithSavedDigitalOceanToken(record, digitalOceanToken, rememberDigitalOceanToken === true);
       await writeLicense({
-        ...recordForWrite,
+        ...record,
         cloud_installation: {
           provider: "digitalocean",
           droplet_id: droplet.id,
@@ -1146,7 +1105,6 @@ export default async function handler(request, response) {
         progress: ipv4 ? 18 : 28,
         install_status: ipv4 ? "installing" : "waiting_for_ip",
         stage: ipv4 ? "creando_servidor" : "esperando_ip",
-        digitalocean_token_saved: encryptedPortalSecretExists(recordForWrite.portal_vault?.digitalocean_token),
         ssh_command: ipv4 ? `ssh root@${ipv4}` : "",
         can_attach_ip: true,
         next_step: ipv4 ? "Espera 5 a 10 minutos y abre el dashboard cuando el servidor termine de instalar." : "DigitalOcean creo el servidor, pero aun no devolvio la IP. Si aparece en DigitalOcean, pegala aqui para continuar."

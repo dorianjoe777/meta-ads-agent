@@ -70,6 +70,18 @@ function Get-DefaultDeviceId {
     return ([System.BitConverter]::ToString($hash)).Replace("-", "").ToLowerInvariant().Substring(0, 24)
 }
 
+function Get-HostLanIp {
+    try {
+        $socket = New-Object System.Net.Sockets.Socket([System.Net.Sockets.AddressFamily]::InterNetwork, [System.Net.Sockets.SocketType]::Dgram, [System.Net.Sockets.ProtocolType]::Udp)
+        $socket.Connect("8.8.8.8", 80)
+        $ip = $socket.LocalEndPoint.Address.ToString()
+        $socket.Close()
+        return $ip
+    } catch {
+        return ""
+    }
+}
+
 function Save-BootstrapEnvValues {
     param(
         [string]$EnvFile,
@@ -369,6 +381,9 @@ try {
     Write-Host $InstallDir
     Write-Host ""
     Write-Host "Construyendo y abriendo el dashboard..."
+    if ([string]::IsNullOrWhiteSpace($env:ADMIRO_HOST_LAN_IP)) {
+        $env:ADMIRO_HOST_LAN_IP = Get-HostLanIp
+    }
     Push-Location $InstallDir
     try {
         docker compose up --build

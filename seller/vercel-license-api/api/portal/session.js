@@ -1,7 +1,6 @@
 import { normalizeEntitlements, signedPortalSession, validFormat, verifyPortalSession } from "../../lib/license.js";
 import { buyerFacingImprovements, platformCards, releaseWithDiscoveredAssets } from "../../lib/download-portal.js";
 import { deviceRegistrations, readLicense, readReleases } from "../../lib/store.js";
-import { encryptedPortalSecretExists } from "../../lib/secret-vault.js";
 
 const PORTAL_COOKIE = "admiro_portal_session";
 
@@ -127,9 +126,7 @@ async function portalPayload({ request, response, licenseKey, buyerEmail, channe
       platforms: platformCards(fullRelease),
       install_state: installState,
       cloud_installation: cloudInstallation,
-      cloud_secrets: {
-        digitalocean_token_saved: encryptedPortalSecretExists(record.portal_vault?.digitalocean_token)
-      }
+      cloud_secrets: {}
     });
 }
 

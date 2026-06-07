@@ -320,4 +320,4 @@ No basta con que el droplet aparezca `active` en DigitalOcean. La instalacion so
 
 ## Seguridad
 
-Si un token de DigitalOcean se pega en chat, documento o log, se debe rotar despues de la prueba. El portal puede guardar el token cifrado para el comprador, pero no debe imprimirse ni documentarse en texto plano.
+Si un token de DigitalOcean se pega en chat, documento o log, se debe rotar despues de la prueba. El portal no debe mostrar una opcion de guardar token para compradores; si se requiere reinstalar, el comprador pega un token valido de nuevo.

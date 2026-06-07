@@ -11,10 +11,24 @@ Required environment variables:
 - `RELEASE_DOWNLOAD_SECRET`
 - `RELEASE_TOKEN_MINUTES=15`
 - `PORTAL_SESSION_MINUTES=20`
+- `HOTMART_HOTTOK` must match the Hotmart account token sent in the `X-HOTMART-HOTTOK` webhook header.
 
 Optional environment variables:
 
 - `RELEASE_SOURCE_ALLOWLIST=downloads.example.com,cdn.example.com`
+- `BUYER_ACCESS_URL=https://admiroia.uboost.lat/access` is the buyer portal link included in purchase emails.
+- `BUYER_EMAIL_PROVIDER=resend` sends buyer emails through Resend. This is the default.
+- `RESEND_API_KEY` is required when buyer email delivery is requested.
+- `BUYER_EMAIL_FROM="Admiro AI <licenses@admiroia.uboost.lat>"` must use a Resend-verified domain or sender.
+- `BUYER_EMAIL_REPLY_TO=support@admiroia.uboost.lat` is optional.
+- `BUYER_EMAIL_PRODUCT_NAME="Admiro AI"` is optional email copy branding.
+- `BUYER_EMAIL_AUTO_SEND=true` sends the buyer access email automatically for every newly created license. Leave unset/false if the checkout webhook will pass `send_buyer_email: true` explicitly.
+- `HOTMART_SEND_BUYER_EMAIL=true` sends the license/access email when Hotmart confirms an approved purchase. Set to `false` only for dry runs.
+- `BUYER_EMAIL_PROVIDER=smtp`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, and `SMTP_PASS` remain supported as an optional Spacemail SMTP fallback.
+- `HOTMART_PRODUCT_ID` or `HOTMART_PRODUCT_IDS=123,456` restricts processing to specific Hotmart product IDs.
+- `HOTMART_PRODUCT_UCODE` or `HOTMART_PRODUCT_UCODES=...` restricts processing to specific Hotmart product UCODEs.
+- `HOTMART_DEFAULT_PLAN=individual` controls the plan created from Hotmart purchases unless an agency offer is matched.
+- `HOTMART_AGENCY_OFFER_CODES=AGENCY2026` maps specific Hotmart offer codes to the agency plan.
 - `GITHUB_RELEASE_TOKEN` for private GitHub release assets registered as `https://api.github.com/repos/OWNER/REPO/releases/assets/ASSET_ID`
 - `RELEASE_PROXY_DOWNLOADS=true` to proxy every release source instead of redirecting public storage URLs. Private GitHub asset URLs are always proxied.
 - `CLOUD_DASHBOARD_BASE_DOMAIN=cloud.admiroia.uboost.lat` to create one HTTPS subdomain per DigitalOcean install.
@@ -33,6 +47,7 @@ Routes:
 - `POST /api/portal/session`
 - `POST /api/portal/download`
 - `POST /api/portal/cloud/digitalocean`
+- `POST /api/webhooks/hotmart`
 - `POST /api/license/activate`
 - `POST /api/license/release`
 - `GET /api/download/release?token=...`
@@ -47,6 +62,54 @@ Device transfer:
 - `POST /api/license/activate` and `POST /api/license/release` accept `transfer_device: true`.
 - When the license has `max_devices=1`, transfer clears prior device registrations and registers the new `device_id`.
 - Existing offline unlocks can remain valid until their signed unlock/grace period expires.
+
+Buyer purchase email:
+
+- Create a license and send the buyer email in one protected admin call:
+
+```bash
+curl -X POST "https://admiroia.uboost.lat/api/admin/licenses" \
+  -H "Authorization: Bearer $LICENSE_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "buyer_email": "buyer@example.com",
+    "buyer_name": "Buyer Name",
+    "plan": "individual",
+    "send_buyer_email": true
+  }'
+```
+
+- Resend an existing buyer access email with the same license key:
+
+```bash
+curl -X POST "https://admiroia.uboost.lat/api/admin/licenses" \
+  -H "Authorization: Bearer $LICENSE_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "buyer_email": "buyer@example.com",
+    "license_key": "MAO-...",
+    "action": "send_email"
+  }'
+```
+
+- The email includes the purchase email, license/access key, plan, and `https://admiroia.uboost.lat/access`.
+- If email delivery fails, the API returns `502 buyer_email_send_failed` and still includes the created license in the response so the buyer can be recovered manually.
+- Resend is the recommended production path for this project because delivery uses HTTPS from Vercel and gives clearer delivery logs.
+- If using the SMTP fallback on Vercel, use authenticated submission on port `465` or `587`, never port `25`, and the function waits for the send to finish before responding.
+
+Hotmart webhook:
+
+- Paste this URL into Hotmart's `URL para envio de dados` field:
+
+```text
+https://admiroia.uboost.lat/api/webhooks/hotmart
+```
+
+- Configure Hotmart to send purchase events, especially `PURCHASE_APPROVED`.
+- The endpoint validates `X-HOTMART-HOTTOK` against `HOTMART_HOTTOK`.
+- On `PURCHASE_APPROVED` / `APPROVED`, it creates or reuses one license for the Hotmart transaction and sends the buyer access email.
+- Hotmart retries are idempotent by `purchase.transaction`, so the same sale will not create duplicate licenses.
+- On refunded, chargeback, canceled/cancelled, or blocked notifications, a matching license is marked `revoked`.
 
 Download portal:
 

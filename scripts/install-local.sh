@@ -29,6 +29,7 @@ text = path.read_text(encoding="utf-8") if path.exists() else ""
 defaults = {
     "REQUIRE_DASHBOARD_TOKEN": "true",
     "ALLOW_PUBLIC_DASHBOARD": "false",
+    "LAN_ACCESS_ENABLED": "false",
     "LIVE_ACTIONS_ENABLED": "false",
     "LICENSE_KEY": "",
     "LICENSE_BUYER_EMAIL": "",
@@ -47,7 +48,7 @@ defaults = {
     "HERMES_MODEL": "",
     "HERMES_TIMEOUT_SECONDS": "90",
     "HERMES_MAX_ITERATIONS": "12",
-    "HERMES_ENABLED_TOOLSETS": "memory,skills,session_search,vision,image_gen,file",
+    "HERMES_ENABLED_TOOLSETS": "memory,skills,session_search,vision,image_gen,file,web,browser",
     "HERMES_DISABLED_TOOLSETS": "terminal,code_execution",
     "HERMES_USE_PYTHON_LIBRARY": "true",
     "MINIMAX_BASE_URL": "https://api.minimax.io/v1",

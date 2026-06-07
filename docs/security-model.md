@@ -10,6 +10,7 @@ This product is designed to run as a self-hosted local/VPS operator. The safe de
 - `DASHBOARD_HOST=127.0.0.1` keeps the dashboard local by default.
 - `REQUIRE_DASHBOARD_TOKEN=true` requires the dashboard password for protected routes.
 - `ALLOW_PUBLIC_DASHBOARD=false` refuses public dashboard binds unless explicitly changed.
+- `LAN_ACCESS_ENABLED=false` keeps same-Wi-Fi phone access off until the buyer turns it on from Configuracion.
 - `.env`, `dashboard/data`, `output`, and `logs` are made private by the installer.
 - Action logs redact tokens, API keys, secrets, and passwords before writing records.
 
@@ -20,6 +21,20 @@ The installer leaves the dashboard password empty. The buyer creates their own d
 The dashboard shows an unlock screen the first time the user performs a protected action. If the user chooses "Remember this device", the password is stored in browser local storage on that device. The password is never sent in the dashboard payload.
 
 Protected routes include approvals, campaign creation, budget actions, creative refresh generation, upload staging, upload execution, CSV export, and report generation.
+
+## Phone On Same Wi-Fi
+
+For local installs, the dashboard starts as "this computer only". If the buyer wants to review it from a phone, they can open Configuracion and turn on `Ver desde mi telefono`.
+
+The dashboard then shows a LAN link like:
+
+```text
+http://192.168.1.50:7871/
+```
+
+The phone must be connected to the same Wi-Fi or local network. The dashboard password still protects private data and actions. Turning phone access off returns native installs to `DASHBOARD_HOST=127.0.0.1` and `ALLOW_PUBLIC_DASHBOARD=false`.
+
+Docker and VPS installs have different network requirements. Docker may need the container port reachable from the host; VPS/cloud access should use the DigitalOcean access gate, firewall, and HTTPS path instead of the same-Wi-Fi LAN option.
 
 ## Piloto Automatico Checklist
 

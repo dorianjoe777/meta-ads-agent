@@ -1,7 +1,14 @@
+import { sendBuyerLicenseEmail, shouldAutoSendBuyerEmail } from "../../lib/buyer-email.js";
+import { handleHotmartWebhook } from "../../lib/hotmart-webhook-handler.js";
 import { bearerAllowed, entitlementDefaults, formatLicense, normalizeEntitlements } from "../../lib/license.js";
 import { readLicense, readRegistry, writeLicense, writeRegistry } from "../../lib/store.js";
 
 export default async function handler(request, response) {
+  const requestUrl = new URL(request.url || "/", `https://${request.headers.host || "localhost"}`);
+  if (requestUrl.searchParams.get("webhook") === "hotmart") {
+    return handleHotmartWebhook(request, response);
+  }
+
   if (!bearerAllowed(request)) {
     return response.status(401).json({ ok: false, error: "unauthorized" });
   }
@@ -61,5 +68,26 @@ export default async function handler(request, response) {
   if (body.action === "activate") record.status = "active";
   if (!existing) registry.licenses.push(record);
   await Promise.all([writeRegistry(registry), writeLicense(record)]);
-  return response.status(200).json({ ok: true, license: record });
+
+  const wantsBuyerEmail = body.send_buyer_email === true
+    || body.email_buyer === true
+    || body.action === "send_email"
+    || (!existing && shouldAutoSendBuyerEmail());
+  if (!wantsBuyerEmail) {
+    return response.status(200).json({ ok: true, license: record });
+  }
+
+  try {
+    const delivery = await sendBuyerLicenseEmail(record);
+    record.last_buyer_email = delivery;
+    await writeLicense(record);
+    return response.status(200).json({ ok: true, license: record, buyer_email: { ok: true, ...delivery } });
+  } catch (error) {
+    return response.status(502).json({
+      ok: false,
+      error: "buyer_email_send_failed",
+      detail: error.message,
+      license: record
+    });
+  }
 }

@@ -6,6 +6,10 @@
   },
   "rewrites": [
     {
+      "source": "/api/webhooks/hotmart",
+      "destination": "/api/admin/licenses?webhook=hotmart"
+    },
+    {
       "source": "/",
       "destination": "/api/portal"
     },

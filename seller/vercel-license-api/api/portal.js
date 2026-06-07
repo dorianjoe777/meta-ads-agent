@@ -432,6 +432,22 @@ export default async function handler(request, response) {
       flex-wrap:wrap;
       justify-content:flex-end;
     }
+    .docker-download{
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      min-height:38px;
+      border:1px solid rgba(49,200,223,.28);
+      border-radius:999px;
+      padding:0 13px;
+      color:#2940a8;
+      background:linear-gradient(135deg,rgba(49,200,223,.14),rgba(95,53,216,.10));
+      font-size:13px;
+      font-weight:950;
+      text-decoration:none;
+      box-shadow:0 14px 30px rgba(49,88,170,.08);
+      white-space:nowrap;
+    }
     .logout-btn{
       min-height:38px;
       border:1px solid rgba(123,77,255,.18);
@@ -521,10 +537,77 @@ export default async function handler(request, response) {
     }
     .cloud h3{margin:0;font-size:24px}
     .cloud p{margin:6px 0 0;color:var(--dim);line-height:1.5}
+    .cloud-actions{
+      display:flex;
+      flex-wrap:wrap;
+      gap:10px;
+      justify-content:flex-end;
+      align-items:center;
+    }
     .cloud-toggle{
       min-width:188px;
       background:linear-gradient(135deg,var(--accent),var(--cyan));
       color:#fff;
+    }
+    .cloud-link-button{
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      min-height:42px;
+      padding:0 15px;
+      border:1px solid rgba(95,53,216,.18);
+      border-radius:999px;
+      background:rgba(255,255,255,.72);
+      color:#5f35d8;
+      font-weight:900;
+      text-decoration:none;
+      box-shadow:0 14px 34px rgba(90,102,140,.10);
+    }
+    .cloud-intro{
+      display:grid;
+      grid-template-columns:1.15fr .85fr;
+      gap:12px;
+      margin-bottom:15px;
+    }
+    .cloud-intro-card{
+      border:1px solid rgba(95,53,216,.14);
+      border-radius:16px;
+      padding:14px;
+      background:rgba(255,255,255,.58);
+    }
+    .cloud-intro-card strong{
+      display:block;
+      margin-bottom:5px;
+      color:#172036;
+      font-size:14px;
+    }
+    .cloud-intro-card p{font-size:13px}
+    .cloud-steps{
+      margin:10px 0 0;
+      padding:0;
+      list-style:none;
+      display:grid;
+      gap:8px;
+    }
+    .cloud-steps li{
+      display:flex;
+      gap:8px;
+      color:#5e6477;
+      font-size:13px;
+      line-height:1.35;
+    }
+    .cloud-steps span{
+      flex:0 0 22px;
+      width:22px;
+      height:22px;
+      border-radius:999px;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      background:linear-gradient(135deg,var(--accent),var(--cyan));
+      color:#fff;
+      font-size:12px;
+      font-weight:900;
     }
     .cloud-form{
       display:none;
@@ -539,6 +622,30 @@ export default async function handler(request, response) {
       gap:14px;
     }
     .cloud-grid .wide{grid-column:1/-1}
+    .cloud-field-head{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:12px;
+      margin:14px 0 8px;
+    }
+    .cloud-field-head label{margin:0}
+    .cloud-token-cta{
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      min-height:44px;
+      padding:0 18px;
+      border-radius:999px;
+      background:linear-gradient(135deg,#171a22 0%,#5f35d8 50%,#31c8df 100%);
+      color:#fff;
+      font-size:13px;
+      font-weight:950;
+      text-decoration:none;
+      box-shadow:0 16px 36px rgba(95,53,216,.22);
+      white-space:nowrap;
+    }
+    .cloud-token-cta:hover{transform:translateY(-1px);box-shadow:0 20px 44px rgba(95,53,216,.28)}
     .helper{
       margin-top:8px;
       color:var(--dim);
@@ -626,10 +733,17 @@ export default async function handler(request, response) {
       .cards,.improvements{grid-template-columns:1fr}
       .downloads{padding:24px 22px}
       .download-head{align-items:start;flex-direction:column}
+      .download-tools{width:100%;justify-content:stretch}
+      .docker-download,.logout-btn,.version{width:100%;text-align:center}
       .state-grid{grid-template-columns:1fr}
       .cloud-top{align-items:start;flex-direction:column}
+      .cloud-actions{width:100%;justify-content:stretch}
       .cloud-toggle{width:100%}
+      .cloud-link-button{width:100%}
+      .cloud-intro{grid-template-columns:1fr}
       .cloud-grid{grid-template-columns:1fr}
+      .cloud-field-head{align-items:stretch;flex-direction:column}
+      .cloud-token-cta{width:100%}
       .aurora-orb{display:none}
       h1{font-size:clamp(34px,12vw,54px)}
     }
@@ -648,7 +762,7 @@ export default async function handler(request, response) {
             </div>
           </div>
           <h1>Descarga tu <span class="gradient">manager IA</span> para Meta Ads</h1>
-          <p class="copy">Entra con el email de compra y la clave de acceso que recibiste. Luego descarga el instalador correcto para tu equipo.</p>
+          <p class="copy">Entra con el email de compra y la clave de acceso que recibiste. Luego descarga el launcher correcto para correr Admiro AI en Docker.</p>
           <div class="aurora-orb" aria-hidden="true"></div>
         </div>
         <form class="login" id="loginForm">
@@ -671,9 +785,10 @@ export default async function handler(request, response) {
         <div class="download-head">
           <div>
             <h2 id="downloadTitle">Elige tu sistema</h2>
-            <p id="downloadSubtitle">Si no sabes cual elegir: Mac para Apple, Windows para PC, Linux para VPS.</p>
+            <p id="downloadSubtitle">Para instalacion local usa Docker Desktop: Mac para Apple, Windows para PC, Linux para VPS o equipos avanzados.</p>
           </div>
           <div class="download-tools">
+            <a class="docker-download" href="https://www.docker.com/products/docker-desktop/" target="_blank" rel="noreferrer">Descargar Docker Desktop</a>
             <button class="logout-btn" id="logoutButton" type="button">Cerrar sesion</button>
             <div class="version" id="version">Version lista</div>
           </div>
@@ -684,28 +799,47 @@ export default async function handler(request, response) {
           <div class="cloud-top">
             <div>
               <h3>Instalar en la nube</h3>
-              <p>Para dejar el manager encendido aunque tu PC este apagado. Crearemos un servidor nuevo en tu propia cuenta de DigitalOcean.</p>
+              <p>Para dejar el manager encendido aunque tu PC este apagado. Recomendamos DigitalOcean porque es un servicio cloud confiable, estable y sencillo de pagar.</p>
             </div>
-            <button class="cloud-toggle" id="cloudToggle" type="button">Instalar en DigitalOcean</button>
+            <div class="cloud-actions">
+              <a class="cloud-link-button" href="https://cloud.digitalocean.com/registrations/new" target="_blank" rel="noreferrer">Crear cuenta en DigitalOcean</a>
+              <button class="cloud-toggle" id="cloudToggle" type="button">Instalar en DigitalOcean</button>
+            </div>
           </div>
           <form class="cloud-form" id="cloudForm">
+            <div class="cloud-intro">
+              <div class="cloud-intro-card">
+                <strong>Como funciona</strong>
+                <p>Creas tu cuenta en DigitalOcean, agregas un metodo de pago y pegas aqui un token API. Con ese token, el portal crea automaticamente el servidor, instala Admiro AI y deja listo el boton para entrar al dashboard.</p>
+                <ul class="cloud-steps">
+                  <li><span>1</span><b>Crea tu cuenta y metodo de pago.</b></li>
+                  <li><span>2</span><b>Abre el area API de DigitalOcean y crea un token.</b></li>
+                  <li><span>3</span><b>Pega el token y tu llave publica SSH aqui.</b></li>
+                </ul>
+              </div>
+              <div class="cloud-intro-card">
+                <strong>Costo esperado</strong>
+                <p>DigitalOcean suele ofrecer credito inicial para cuentas nuevas. Despues, el servidor basico normalmente queda cerca de US$4 a US$6 al mes, segun el tamano elegido. Revisa siempre el precio final en DigitalOcean antes de crear el servidor.</p>
+              </div>
+            </div>
             <div class="cloud-grid">
               <div class="wide">
-                <label for="digitalOceanToken">Token de DigitalOcean</label>
+                <div class="cloud-field-head">
+                  <label for="digitalOceanToken">Token de DigitalOcean</label>
+                  <a class="cloud-token-cta" href="https://cloud.digitalocean.com/account/api/tokens" target="_blank" rel="noreferrer">Haz clic aqui para obtener el token</a>
+                </div>
                 <input id="digitalOceanToken" type="password" autocomplete="off" placeholder="Pega aqui tu token de DigitalOcean" required />
-                <div class="helper" id="cloudTokenSavedStatus">Lo usamos para crear el servidor y el firewall. Si marcas guardar, queda cifrado en este portal y no se muestra de nuevo. Crea este token sin fecha de vencimiento, o con una duracion larga, para que pueda recuperar acceso si tu IP cambia.</div>
-                <label class="remember-row" for="rememberDigitalOceanToken">
-                  <input id="rememberDigitalOceanToken" type="checkbox" checked />
-                  <span>Guardar este token cifrado para futuras reinstalaciones.</span>
-                </label>
-                <button class="cloud-reset-button" id="forgetDigitalOceanToken" type="button" hidden>Olvidar token guardado</button>
+                <div class="helper" id="cloudTokenSavedStatus">Lo usamos para crear el servidor, instalar el producto y configurar el acceso seguro. En DigitalOcean crea un token sin fecha de vencimiento, o con una duracion larga, para que el servidor pueda recuperar acceso si tu IP cambia.</div>
               </div>
               <div class="wide">
                 <label for="sshPublicKey">Llave publica SSH</label>
+                <div class="cloud-safe-note">
+                  <strong>Por que pedimos esto:</strong> la llave SSH hace que solo tu computador pueda entrar por la puerta tecnica del servidor. La parte privada queda guardada en tu PC y no se pega aqui. Aqui solo pegas la parte publica, que es segura de compartir y sirve para que DigitalOcean reconozca tu computador cuando intente acceder al servidor.
+                </div>
                 <textarea id="sshPublicKey" placeholder="ssh-ed25519 AAAA... tu@email.com" required></textarea>
                 <div class="helper">
                   <strong>Si no tienes una llave, abre Terminal en tu computador y pega este comando.</strong>
-                  Al final aparecera una linea larga que empieza por <strong>ssh-ed25519</strong>. Esa es la llave publica: funciona como un candado abierto que cualquiera puede tener. Es seguro pegarla aqui porque no abre tu computador ni tu servidor por si sola. La llave privada, que queda guardada en tu PC, es la unica pieza que puede abrir ese candado. No compartas la llave privada.
+                  Al final aparecera una linea larga que empieza por <strong>ssh-ed25519</strong>. Copia esa linea completa y pegala en el campo de arriba. No compartas la llave privada.
                   <code>ssh-keygen -t ed25519 -C "admiro-ai" -f ~/.ssh/admiro_ai && cat ~/.ssh/admiro_ai.pub</code>
                 </div>
               </div>
@@ -753,7 +887,6 @@ export default async function handler(request, response) {
     let cloudProgressTimer = null;
     let cloudRecoveryToken = '';
     let cloudRecoveryRetryTimer = null;
-    let savedDigitalOceanToken = false;
 
     function setStatus(message, isError = false){
       statusBox.textContent = message || '';
@@ -874,21 +1007,14 @@ export default async function handler(request, response) {
       }, 10000);
     }
     function updateDigitalOceanTokenUi(cloudSecrets){
-      savedDigitalOceanToken = Boolean(cloudSecrets && cloudSecrets.digitalocean_token_saved);
       const tokenInput = document.getElementById('digitalOceanToken');
       const status = document.getElementById('cloudTokenSavedStatus');
-      const forgetButton = document.getElementById('forgetDigitalOceanToken');
       if(tokenInput){
-        tokenInput.required = !savedDigitalOceanToken;
-        tokenInput.placeholder = savedDigitalOceanToken ? 'Token guardado: puedes dejar esto vacio' : 'Pega aqui tu token de DigitalOcean';
+        tokenInput.required = true;
+        tokenInput.placeholder = 'Pega aqui tu token de DigitalOcean';
       }
       if(status){
-        status.textContent = savedDigitalOceanToken
-          ? 'Token guardado y cifrado. Puedes dejar este campo vacio para reinstalar; si pegas otro token, lo reemplazo si mantienes marcada la casilla de guardar.'
-          : 'Lo usamos para crear el servidor y el firewall. Si marcas guardar, queda cifrado en este portal y no se muestra de nuevo. Crea este token sin fecha de vencimiento, o con una duracion larga, para que pueda recuperar acceso si tu IP cambia.';
-      }
-      if(forgetButton){
-        forgetButton.hidden = !savedDigitalOceanToken;
+        status.textContent = 'Lo usamos para crear el servidor, instalar el producto y configurar el acceso seguro. En DigitalOcean crea un token sin fecha de vencimiento, o con una duracion larga, para que el servidor pueda recuperar acceso si tu IP cambia.';
       }
     }
     function renderInstallState(data){
@@ -905,7 +1031,7 @@ export default async function handler(request, response) {
         const directOnly = Boolean(openUrl && !cloudInstallation.cloud_open_url && (cloudInstallation.attached_ip_at || cloudInstallation.direct_open_only || cloud.direct_open_only));
         const progressData = { ...cloudInstallation, ...cloud, ready, progress: cloud.progress || cloudInstallation.progress || (ready ? 100 : 18), status: failed ? 'failed' : (ready ? 'ready' : (cloud.status || cloudInstallation.install_status || 'installing')) };
         downloadTitle.textContent = 'Opciones de instalacion';
-        downloadSubtitle.textContent = ready ? 'Tu servidor cloud ya existe. Los instaladores quedan abajo solo por si quieres instalar en otro equipo.' : (failed ? 'Esta instalacion se detuvo. Borra ese Droplet en DigitalOcean y crea uno nuevo desde aqui.' : (waitingForIp ? 'DigitalOcean ya creo el servidor. Estoy conectando el IP automaticamente.' : 'Tu servidor cloud se esta preparando. Te aviso aqui cuando puedas entrar.'));
+        downloadSubtitle.textContent = ready ? 'Tu servidor cloud ya existe. Los launchers Docker quedan abajo solo por si quieres instalar en otro equipo.' : (failed ? 'Esta instalacion se detuvo. Borra ese Droplet en DigitalOcean y crea uno nuevo desde aqui.' : (waitingForIp ? 'DigitalOcean ya creo el servidor. Estoy conectando el IP automaticamente.' : 'Tu servidor cloud se esta preparando. Te aviso aqui cuando puedas entrar.'));
         installState.innerHTML =
           '<h2>Estado de tu instalacion: '+(ready?'cloud lista':(failed?'cloud detenida':(waitingForIp?'cloud conectando IP':(takingLonger?'cloud tardando mas de lo normal':'cloud en preparacion'))))+'</h2>' +
           '<p>'+(ready?'Cuando quieras entrar, usa este boton. Primero prepara tu red de forma segura y despues abre el dashboard.':(failed?'La instalacion anterior no pudo terminar. Ya corregimos el instalador; empieza limpio con un Droplet nuevo.':(waitingForIp?'El servidor existe. Normalmente se conecta solo en unos minutos; deja esta pagina abierta.':(takingLonger?'DigitalOcean ya puede mostrar el Droplet activo, pero todavia no pude confirmar el dashboard. Sigo revisando.':'Estamos instalando el producto en DigitalOcean. Puedes dejar esta pagina abierta; el boton aparece cuando termine.'))))+'</p>' +
@@ -952,12 +1078,12 @@ export default async function handler(request, response) {
         return 'local';
       }
       downloadTitle.textContent = 'Elige tu sistema';
-      downloadSubtitle.textContent = 'Aun no vemos una instalacion activa. Elige Mac, Windows, Linux o crea un servidor en DigitalOcean.';
+      downloadSubtitle.textContent = 'Aun no vemos una instalacion activa. Para tu PC/Mac elige un launcher Docker; para nube crea un servidor en DigitalOcean.';
       installState.innerHTML =
         '<h2>Estado de tu instalacion: aun no instalada</h2>' +
         '<p>Empieza con una de las opciones de abajo. Si quieres que el agente quede encendido siempre, elige DigitalOcean.</p>' +
         '<div class="state-grid">' +
-          '<div class="state-card"><span class="state-pill empty">PC o laptop</span><strong>Instalacion local</strong><p>Descarga el instalador de tu sistema y sigue la guia inicial.</p></div>' +
+          '<div class="state-card"><span class="state-pill empty">PC o laptop</span><strong>Instalacion local con Docker</strong><p>Descarga el launcher de tu sistema, abre Docker Desktop y sigue la guia inicial.</p></div>' +
           '<div class="state-card"><span class="state-pill empty">Siempre encendido</span><strong>Instalacion cloud</strong><p>Crea un servidor en tu propia cuenta de DigitalOcean.</p></div>' +
         '</div>';
       installState.classList.add('active');
@@ -1009,7 +1135,7 @@ export default async function handler(request, response) {
     function recoverWaitingForIpMarkup(data){
       return '<div class="cloud-ip-form">' +
         '<button class="cloud-open-button" type="button" onclick="focusDigitalOceanToken()">Buscar automaticamente con mi token</button>' +
-        '<p class="cloud-direct">Si se queda en este paso, puedo usar el token guardado. Si vencio, pega de nuevo tu token de DigitalOcean abajo para encontrar el servidor y seguir.</p>' +
+        '<p class="cloud-direct">Si se queda en este paso, pega tu token de DigitalOcean abajo para encontrar el servidor y seguir.</p>' +
         '<details class="cloud-direct"><summary>Respaldo tecnico: pegar IPv4 manualmente</summary>'+attachIpMarkup(data)+'</details>' +
       '</div>';
     }
@@ -1063,7 +1189,7 @@ export default async function handler(request, response) {
           digitalocean_token: typedToken
         });
         if(!data.valid){
-          setStatus(data.detail || 'No pude actualizar el acceso. Si el token guardado vencio, pega uno nuevo de DigitalOcean.', true);
+          setStatus(data.detail || 'No pude actualizar el acceso. Pega tu token de DigitalOcean y vuelve a intentar.', true);
           return;
         }
         renderCloudResult(data);
@@ -1188,15 +1314,11 @@ export default async function handler(request, response) {
         const data = await postJson('/api/portal/cloud/digitalocean', {
           portal_token: portalToken,
           digitalocean_token: digitalOceanToken,
-          remember_digitalocean_token: document.getElementById('rememberDigitalOceanToken').checked,
           ssh_public_key: document.getElementById('sshPublicKey').value,
           region: document.getElementById('cloudRegion').value,
           size: document.getElementById('cloudSize').value
         });
         if(!data.valid) throw new Error(data.detail || 'No pude crear el servidor.');
-        if(data.digitalocean_token_saved){
-          updateDigitalOceanTokenUi({digitalocean_token_saved:true});
-        }
         renderCloudResult(data);
         renderInstallState({
           cloud_installation: data,
@@ -1214,19 +1336,6 @@ export default async function handler(request, response) {
       }finally{
         button.textContent = original;
         button.disabled = false;
-      }
-    });
-    document.getElementById('forgetDigitalOceanToken').addEventListener('click', async () => {
-      if(!portalToken) return;
-      setStatus('Olvidando token guardado...');
-      try{
-        const data = await postJson('/api/portal/cloud/digitalocean', { portal_token: portalToken, action: 'forget_digitalocean_token' });
-        if(!data.valid) throw new Error(data.detail || 'No pude olvidar el token.');
-        cloudRecoveryToken = '';
-        updateDigitalOceanTokenUi({digitalocean_token_saved:false});
-        setStatus('Listo. Ya no guardo el token de DigitalOcean.');
-      }catch(error){
-        setStatus(error.message || 'No pude olvidar el token.', true);
       }
     });
     logoutButton.addEventListener('click', async () => {

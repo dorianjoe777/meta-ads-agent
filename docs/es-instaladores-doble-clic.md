@@ -1,6 +1,6 @@
-# Instaladores de doble clic
+# Launchers de doble clic
 
-Esta entrega usa instaladores simples para compradores no tecnicos.
+Esta entrega usa launchers simples para compradores no tecnicos. Su trabajo no es instalar una app nativa compleja: su trabajo es levantar el producto dentro de Docker.
 
 ## Windows
 
@@ -88,13 +88,13 @@ Ellos:
 
 ## Confianza del instalador
 
-Los builds finales de comprador deben prepararse siguiendo:
+La confianza principal de la ruta recomendada viene de Docker, licencia, descarga temporal segura y checksums. La firma de Mac/Windows es una capa extra para que el launcher se vea mejor ante el sistema operativo, especialmente si se distribuye masivamente:
 
 ```text
 docs/es-firma-instaladores.md
 ```
 
-Asi el comprador ve un editor verificable en Mac/Windows y puede comprobar checksum en Linux.
+Si no hay firma todavia, la venta puede seguir empujando la ruta Docker. Los usuarios avanzados que pidan instalacion nativa entenderan mejor esos avisos.
 
 ## Importante
 

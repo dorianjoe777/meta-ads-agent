@@ -1,8 +1,8 @@
-# Firma de instaladores
+# Firma de launchers e instaladores avanzados
 
-Esta guia existe para evitar que el comprador vea avisos raros como `desarrollador no verificado`, `Unknown Publisher` o bloqueos de seguridad.
+Esta guia no cambia la decision principal del producto: **la ruta vendible recomendada es Docker/contenedor**. Mac, Windows y Linux reciben launchers que preparan Docker y abren el dashboard. La firma es una capa de presentacion para esos launchers o para instalaciones nativas avanzadas, no el nucleo del producto.
 
-La solucion real no es esconder el aviso. La solucion profesional es firmar los instaladores con certificados oficiales.
+Esta guia existe para entender avisos como `desarrollador no verificado`, `Unknown Publisher` o SmartScreen cuando distribuyes launchers de escritorio. La solucion profesional para eliminar o reducir esos avisos es firmar con certificados oficiales, pero para v1 no debe bloquear la venta si el comprador usa Docker como camino principal.
 
 ## Que pasa si no firmamos
 
@@ -12,9 +12,9 @@ En Windows, un `.exe` o `.msi` sin firma puede aparecer como editor desconocido 
 
 En Linux, normalmente no aparece el mismo aviso visual, pero el comprador tecnico puede querer checksum o firma GPG para confirmar que el archivo no fue cambiado.
 
-## Mac recomendado: DMG con app launcher
+## Mac launcher: DMG con app
 
-Para venta publica, la experiencia recomendada es:
+Para la ruta Docker-first, el DMG es solo una forma comoda de abrir el instalador:
 
 ```text
 MetaAdsAgent-v1.0.2-mac.dmg
@@ -26,7 +26,7 @@ Ese DMG contiene `Meta Ads Agent.app`. Al abrirla, copia el producto a:
 ~/Applications/Meta Ads Agent
 ```
 
-Despues abre Terminal con el instalador local. Asi el comprador no tiene que buscar archivos raros dentro de una carpeta.
+Despues abre Terminal con el instalador local y levanta Docker. Asi el comprador no tiene que buscar archivos raros dentro de una carpeta.
 
 Necesitas:
 
@@ -79,15 +79,15 @@ El script firma el `.pkg`, lo envia a notarizacion con `notarytool`, le pega el 
 
 Usa `.pkg` si quieres una instalacion clasica en `/Applications`. Usa `.dmg` si quieres una experiencia mas familiar para compradores no tecnicos.
 
-## Windows recomendado: MSI
+## Windows launcher: MSI
 
-Para venta publica, la experiencia recomendada es:
+Para la ruta Docker-first, el MSI es solo una forma comoda de copiar archivos y crear acceso directo:
 
 ```text
 MetaAdsAgent-v1.0.2-windows.msi
 ```
 
-El `.msi` se siente mas normal para instalacion empresarial y crea accesos directos sin presentar el producto como un ejecutable suelto.
+El `.msi` se siente mas normal para instalacion empresarial y crea accesos directos sin presentar el producto como un ejecutable suelto. Despues, el producto sigue corriendo en Docker.
 
 Necesitas una de estas opciones:
 
@@ -142,21 +142,28 @@ LINUX_GPG_SIGN=true ./scripts/build-linux-bundle.sh v1.0.2
 
 ## Que entregar al comprador
 
-Para una entrega profesional:
+Para la venta principal:
+
+- Mac: launcher que lleva a Docker.
+- Windows: launcher que lleva a Docker.
+- Linux/VPS: bundle que levanta Docker Compose.
+- Checksums visibles para confirmar integridad.
+
+Para una entrega avanzada o mas corporativa:
 
 - Mac: `.dmg` con app firmada, notarizada y stapled.
 - Windows: `.msi` firmado con Authenticode.
 - Linux: `.tar.gz` con `.sha256` y, si aplica, `.asc`.
 
-Mantener `.pkg` y `.exe` como fallback esta bien, pero no deberian ser la primera experiencia para compradores no tecnicos.
+Mantener `.pkg`, `.exe` o instalacion nativa como fallback esta bien, pero no deberian ser la primera experiencia para compradores no tecnicos.
 
 No prometas `sin ningun aviso` en Windows al principio. Lo honesto es: `instalador firmado por el editor`, y luego construir reputacion de descarga.
 
 ## Checklist antes de publicar
 
 1. Crear build limpio.
-2. Firmar instalador.
-3. Notarizar Mac.
+2. Confirmar que el launcher empuja a Docker.
+3. Firmar/notarizar solo si vas a publicar wrappers de escritorio como experiencia masiva.
 4. Generar checksum.
 5. Probar en una maquina limpia.
 6. Subir solo los instaladores finales al release.

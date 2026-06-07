@@ -4,9 +4,11 @@ Esta opcion es para compradores que quieren dejar Admiro AI encendido aunque su 
 
 El comprador entra a `https://admiroia.uboost.lat/access`, valida su email de compra y clave de acceso, y puede elegir `Instalar en la nube`.
 
+Recomendamos DigitalOcean para esta opcion porque es un proveedor cloud confiable, simple de usar y con precios previsibles. Sus Droplets basicos suelen empezar cerca de US$4 a US$6 al mes, segun el tamano elegido. Las cuentas nuevas pueden ver credito inicial o promociones; el comprador siempre debe revisar el precio final en DigitalOcean antes de crear el servidor.
+
 ## Que hace el portal
 
-1. Crea una llave SSH en la cuenta de DigitalOcean del comprador.
+1. Registra la llave publica SSH del comprador en su cuenta de DigitalOcean.
 2. Crea un firewall donde el dashboard queda cerrado a la IP actual del comprador.
 3. Crea un Droplet Ubuntu nuevo.
 4. Instala Docker y Admiro AI con `cloud-init`.
@@ -21,6 +23,16 @@ El comprador entra a `https://admiroia.uboost.lat/access`, valida su email de co
 - Una cuenta de DigitalOcean.
 - Un token de DigitalOcean con permisos limitados.
 - Una llave publica SSH de su equipo.
+- Un metodo de pago activo en DigitalOcean.
+
+En palabras simples:
+
+1. Crear cuenta en DigitalOcean.
+2. Agregar metodo de pago.
+3. Abrir el area API de DigitalOcean.
+4. Crear un token API.
+5. Pegar ese token en el portal de Admiro AI.
+6. Pegar la llave publica SSH.
 
 Permisos recomendados para el token:
 
@@ -29,7 +41,7 @@ Permisos recomendados para el token:
 - SSH Keys: crear y leer.
 - Tags: crear y leer.
 
-El token puede guardarse en el portal solo si el comprador marca `Guardar este token cifrado`. En ese caso queda cifrado en el servidor de licencias y nunca vuelve a mostrarse en pantalla. Sirve para reinstalar o recuperar el acceso sin volver a pegar el token. Si el comprador no marca esa opcion, el token solo se usa en ese momento.
+El portal usa el token para crear el servidor, configurar la llave SSH, preparar el firewall e instalar Admiro AI. No se muestra una opcion de guardar token en la pagina de acceso; si el comprador necesita reinstalar, vuelve a pegar un token valido de DigitalOcean.
 
 El token tambien queda dentro del Droplet del comprador para que el servidor pueda actualizar el acceso seguro cuando cambie la IP de su red.
 
@@ -54,7 +66,9 @@ DigitalOcean Marketplace puede ser una buena version futura, pero requiere empaq
 
 ## Por que es seguro pegar la llave publica SSH
 
-La llave publica SSH es como un candado abierto. Se puede compartir porque por si sola no abre nada. Solo sirve para decirle al servidor: "permite entrar a quien tenga la llave privada correcta".
+La llave SSH es la capa que evita que cualquier persona de internet pueda intentar entrar al dashboard. La parte privada queda guardada en el computador del comprador. El portal solo pide la parte publica.
+
+La llave publica SSH se puede compartir porque por si sola no abre nada. Solo sirve para decirle al servidor: "permite entrar a quien tenga la llave privada correcta".
 
 La llave privada es la parte secreta. Esa queda guardada en el computador del comprador y no debe compartirse. Sin esa llave privada, ni Admiro AI, ni soporte, ni otra persona puede entrar al servidor usando solo la llave publica.
 

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${1:-v1.0.3}"
+VERSION="${1:-$(cat "$ROOT_DIR/VERSION")}"
 APP_VERSION="${VERSION#v}"
 if [[ ! "$APP_VERSION" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
   APP_VERSION="1.0.0"

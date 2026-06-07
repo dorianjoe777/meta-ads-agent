@@ -9,6 +9,25 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
+detect_lan_ip() {
+  python3 - <<'PY' 2>/dev/null || true
+import socket
+
+ip = ""
+try:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(0.2)
+    sock.connect(("8.8.8.8", 80))
+    ip = sock.getsockname()[0]
+    sock.close()
+except OSError:
+    pass
+print(ip)
+PY
+}
+
+export ADMIRO_HOST_LAN_IP="${ADMIRO_HOST_LAN_IP:-$(detect_lan_ip)}"
+
 if [ ! -f .env ]; then
   cp .env.example .env
   echo "Created .env from .env.example for Docker Compose."

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${1:-v1.0.3}"
+VERSION="${1:-$(cat "$ROOT_DIR/VERSION")}"
 IDENTIFIER="${PKG_IDENTIFIER:-co.metaadsagent.local}"
 APP_NAME="Meta Ads Agent"
 RELEASE_DIR="$ROOT_DIR/release"

@@ -1,6 +1,6 @@
 # Instaladores del producto
 
-La entrega recomendada para compradores es por instaladores segun sistema operativo.
+La entrega recomendada para compradores es **instalacion en contenedor Docker**. Los archivos de Mac, Windows y Linux son envoltorios faciles para descargar el producto, preparar Docker y abrir el dashboard; no son la promesa principal del producto.
 
 Desde esta version, la forma recomendada de entrega es:
 
@@ -8,7 +8,7 @@ Desde esta version, la forma recomendada de entrega es:
 2. Publicar un paquete fuente interno en GitHub Releases o en tu infraestructura privada.
 3. Enviar al comprador email + clave de acceso despues de la compra.
 4. El comprador entra a `https://admiroia.uboost.lat/access`.
-5. Elige Mac, Windows o Linux y descarga desde una URL firmada temporal.
+5. Elige Mac, Windows o Linux y descarga el launcher de instalacion Docker desde una URL temporal segura.
 
 Asi separas dos cosas:
 
@@ -48,13 +48,13 @@ El comprador ve una landing simple:
 
 - email de compra;
 - clave de acceso recibida por email;
-- botones para Mac, Windows y Linux;
+- botones para Mac, Windows y Linux orientados a Docker;
 - version actual;
 - mejoras incluidas.
 
 La clave de acceso es la licencia, pero en la experiencia de comprador se presenta como una clave privada de descarga para que no suene tecnico.
 
-## Mac recomendado
+## Mac con Docker
 
 Archivo esperado:
 
@@ -74,9 +74,9 @@ La app copia el producto a `~/Applications/Meta Ads Agent`, abre Terminal con la
 http://127.0.0.1:7871
 ```
 
-El `.pkg` sigue disponible como fallback tecnico, pero el `.dmg` con app launcher es la experiencia recomendada para compradores.
+El `.pkg` sigue disponible como fallback tecnico. Para la venta principal, el punto importante no es `.dmg` vs `.pkg`: es que ambos deben llevar al comprador a correr el producto dentro de Docker.
 
-## Windows recomendado
+## Windows con Docker
 
 Archivo esperado:
 
@@ -88,7 +88,7 @@ El instalador copia el producto en la carpeta local del usuario y crea un acceso
 
 Al abrirlo por primera vez, intenta descargar la ultima version publicada desde tu servidor de licencias y luego levantar Docker. El comprador debe tener Docker Desktop instalado y abierto.
 
-El `.exe` de NSIS sigue disponible como fallback tecnico, pero el `.msi` es la experiencia recomendada para venta publica.
+El `.exe` de NSIS y el `.msi` son envoltorios de instalacion. El comprador no deberia elegir "nativo vs Docker"; el producto debe empujarlo siempre a Docker, porque ahi vive la experiencia limpia, aislada y mas facil de soportar.
 
 ## Linux
 
@@ -115,10 +115,19 @@ Ese script puede descargar la ultima version publicada desde tu servidor de lice
 
 ## Confianza del instalador
 
-Para venderlo con buena percepcion de seguridad:
+Para la ruta principal con Docker, la confianza viene de:
 
-- Mac debe usar `.dmg` con app firmada con `Developer ID Application` y notarizada por Apple.
-- Windows debe usar `.msi` firmado con Authenticode.
+- contenedor aislado;
+- servidor de licencias;
+- descarga temporal segura;
+- checksum de release;
+- secretos guardados localmente;
+- dashboard protegido por contrasena.
+
+Firmar Mac/Windows es una capa extra para que el launcher se vea mas profesional, pero no debe bloquear el lanzamiento Docker-first. Si decides ofrecer instaladores nativos o wrappers publicos a gran escala:
+
+- Mac puede usar `.dmg` con app firmada con `Developer ID Application` y notarizada por Apple.
+- Windows puede usar `.msi` firmado con Authenticode.
 - Linux debe incluir checksum `.sha256` y, si quieres una capa extra, firma GPG.
 
 Ver:
@@ -127,9 +136,9 @@ Ver:
 docs/es-firma-instaladores.md
 ```
 
-## Para crear los instaladores
+## Para crear los launchers de instalacion
 
-En Mac, recomendado:
+En Mac, launcher Docker:
 
 ```bash
 MAC_APP_SIGN_IDENTITY="Developer ID Application: TU EMPRESA (TEAMID)" \
@@ -139,7 +148,7 @@ META_ADS_LICENSE_SERVER_URL=https://admiroia.uboost.lat \
 ./scripts/build-mac-dmg.sh v1
 ```
 
-Fallback PKG firmado/notarizado:
+Fallback PKG:
 
 ```bash
 MAC_PKG_SIGN_IDENTITY="Developer ID Installer: TU EMPRESA (TEAMID)" \
@@ -149,7 +158,7 @@ META_ADS_LICENSE_SERVER_URL=https://admiroia.uboost.lat \
 ./scripts/build-mac-pkg.sh v1
 ```
 
-En Windows, recomendado con MSI/WiX:
+En Windows, launcher MSI/WiX:
 
 ```bash
 WINDOWS_SIGN_MSI=true \
@@ -159,7 +168,7 @@ META_ADS_LICENSE_SERVER_URL=https://admiroia.uboost.lat \
 
 Si WiX Toolset no esta instalado, el script deja listo un paquete fuente para compilar el `.msi` en una maquina Windows con WiX.
 
-Fallback EXE con NSIS:
+Launcher EXE con NSIS:
 
 ```bash
 WINDOWS_SIGN_EXE=true \

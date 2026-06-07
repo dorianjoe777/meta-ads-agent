@@ -2,17 +2,17 @@ const PLATFORM_DEFINITIONS = [
   {
     id: "mac",
     label: "Mac",
-    badge: "Recomendado: DMG",
+    badge: "Docker para Mac",
     formats: [".dmg", ".pkg"],
-    description: "Para Mac con Docker Desktop. Abre la app y el instalador se prepara solo.",
+    description: "Ruta recomendada: instala con Docker Desktop. Abre el launcher y el producto se prepara en contenedor.",
     button: "Descargar para Mac"
   },
   {
     id: "windows",
     label: "Windows",
-    badge: "Recomendado: MSI",
+    badge: "Docker para Windows",
     formats: [".msi", ".exe"],
-    description: "Para Windows con Docker Desktop. Instala y abre el acceso directo.",
+    description: "Ruta recomendada: usa Docker Desktop. El launcher crea el acceso y levanta el contenedor.",
     button: "Descargar para Windows"
   },
   {
@@ -27,9 +27,9 @@ const PLATFORM_DEFINITIONS = [
 
 const DEFAULT_BUYER_IMPROVEMENTS = [
   {
-    title: "Instalacion clara",
-    body: "Elige Mac, Windows o Linux y sigue el instalador paso a paso.",
-    impact: "Inicio rapido"
+    title: "Instalacion en contenedor",
+    body: "Elige Mac, Windows o Linux y corre el producto en Docker para una instalacion mas limpia y facil de soportar.",
+    impact: "Docker"
   },
   {
     title: "Manager IA actualizado",
@@ -38,23 +38,35 @@ const DEFAULT_BUYER_IMPROVEMENTS = [
   },
   {
     title: "Listo para PC, VPS o nube",
-    body: "Puedes instalarlo localmente o dejarlo corriendo en tu propio servidor.",
+    body: "Puedes instalarlo localmente con Docker o dejarlo corriendo en tu propio servidor.",
     impact: "Instalacion"
   }
 ];
 
 const INTERNAL_RELEASE_WORDS = [
+  "api compatible",
   "bootstrap",
+  "chatgpt",
+  "codex",
+  "comando",
+  "digitalocean",
   "dominio",
   "endpoint",
   "github",
+  "hermes",
   "license server",
   "licencias",
+  "minimax",
   "migracion",
   "migrar",
+  "no-browser",
+  "oauth",
   "repo",
   "repositorio",
+  "ssh",
   "servidor de licencias",
+  "terminal",
+  "vps",
   "vercel"
 ];
 

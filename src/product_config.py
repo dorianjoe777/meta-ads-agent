@@ -61,6 +61,7 @@ class AgentConfig:
     dashboard_password: str
     dashboard_token_required: bool
     allow_public_dashboard: bool
+    lan_access_enabled: bool
     live_actions_enabled: bool
     license_key: str
     license_buyer_email: str
@@ -111,7 +112,7 @@ class AgentConfig:
     hermes_model: str = ""
     hermes_timeout_seconds: int = 90
     hermes_max_iterations: int = 12
-    hermes_enabled_toolsets: str = "memory,skills,session_search,vision,image_gen,file"
+    hermes_enabled_toolsets: str = "memory,skills,session_search,vision,image_gen,file,web,browser"
     hermes_disabled_toolsets: str = "terminal,code_execution"
     hermes_use_python_library: bool = True
     hermes_require_codex_auth: bool = True
@@ -143,6 +144,7 @@ def load_config():
         dashboard_password=os.environ.get("DASHBOARD_PASSWORD", "") or os.environ.get("DASHBOARD_TOKEN", ""),
         dashboard_token_required=env_bool("REQUIRE_DASHBOARD_TOKEN", True),
         allow_public_dashboard=env_bool("ALLOW_PUBLIC_DASHBOARD", False),
+        lan_access_enabled=env_bool("LAN_ACCESS_ENABLED", False),
         live_actions_enabled=env_bool("LIVE_ACTIONS_ENABLED", False),
         license_key=os.environ.get("LICENSE_KEY", ""),
         license_buyer_email=os.environ.get("LICENSE_BUYER_EMAIL", ""),
@@ -193,7 +195,7 @@ def load_config():
         hermes_model=os.environ.get("HERMES_MODEL", ""),
         hermes_timeout_seconds=env_int("HERMES_TIMEOUT_SECONDS", 90),
         hermes_max_iterations=env_int("HERMES_MAX_ITERATIONS", 12),
-        hermes_enabled_toolsets=os.environ.get("HERMES_ENABLED_TOOLSETS", "memory,skills,session_search,vision,image_gen,file"),
+        hermes_enabled_toolsets=os.environ.get("HERMES_ENABLED_TOOLSETS", "memory,skills,session_search,vision,image_gen,file,web,browser"),
         hermes_disabled_toolsets=os.environ.get("HERMES_DISABLED_TOOLSETS", "terminal,code_execution"),
         hermes_use_python_library=env_bool("HERMES_USE_PYTHON_LIBRARY", True),
         hermes_require_codex_auth=env_bool("HERMES_REQUIRE_CODEX_AUTH", True),
