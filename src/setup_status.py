@@ -8,6 +8,7 @@ from pathlib import Path
 from creative_refresh import INDEX_FILE as CREATIVE_INDEX_FILE
 from creative_refresh import load_ad_config, read_json
 from agent_runtime import load_agent_profile
+from hermes_bridge import hermes_brain_ready, hermes_brain_settings
 from license import license_status as current_license_status
 from meta_upload import UPLOAD_INDEX_FILE, recent_uploads
 from product_config import ENV_FILE, ROOT_DIR, load_config
@@ -41,11 +42,12 @@ def configured(value):
 
 
 def direct_model_ready(config):
+    brain = hermes_brain_settings(config)
     return (
-        config.agent_chat_provider in {"minimax", "openai_compatible", "openai"}
-        and configured(config.agent_chat_base_url)
-        and configured(config.agent_chat_model)
-        and configured(config.agent_chat_api_key)
+        brain.get("brain") in {"minimax", "openai_api", "custom_api"}
+        and configured(brain.get("model"))
+        and configured(brain.get("api_key"))
+        and (brain.get("provider") != "custom" or configured(brain.get("base_url")))
     )
 
 
@@ -157,29 +159,26 @@ def creative_section(config, codex_path):
 def agent_chat_section(config, agent_profile):
     hermes_cli = shutil.which(config.hermes_cli)
     hermes_library = importlib.util.find_spec("run_agent") is not None
+    brain = hermes_brain_settings(config)
     direct_ready = direct_model_ready(config)
-    direct_selected = config.agent_chat_provider in {"minimax", "openai_compatible", "openai"}
-    hermes_auth = hermes_codex_status(config) if config.agent_chat_provider == "hermes" else {"ready": False, "detail": "Hermes not selected"}
+    brain_ready, brain_detail = hermes_brain_ready(config)
+    hermes_auth = {"ready": brain_ready, "detail": brain_detail}
     hermes_runtime_status = "ok" if (hermes_cli or hermes_library) else "blocked"
     hermes_auth_status = "ok" if hermes_auth["ready"] else "blocked"
     hermes_runtime_detail = hermes_cli or ("Python library installed" if hermes_library else "Hermes not installed")
-    if direct_selected:
-        hermes_runtime_status = "ok"
-        hermes_auth_status = "ok"
-        hermes_runtime_detail = "No usado; el chat usa una API compatible OpenAI."
-        hermes_auth = {"ready": False, "detail": "No usado; el chat usa una API compatible OpenAI."}
-    direct_detail = "configured" if direct_ready else "Missing AGENT_CHAT_API_KEY, AGENT_CHAT_BASE_URL, or AGENT_CHAT_MODEL"
-    if not direct_selected:
-        direct_detail = "Optional unless AGENT_CHAT_PROVIDER is minimax/openai_compatible/openai."
+    api_brain_selected = brain.get("brain") in {"minimax", "openai_api", "custom_api"}
+    direct_detail = "configured inside Hermes" if direct_ready else "Missing AGENT_CHAT_API_KEY, AGENT_CHAT_BASE_URL, or AGENT_CHAT_MODEL"
+    if not api_brain_selected:
+        direct_detail = "Opcional: solo si eliges MiniMax M3, OpenAI API u otra API compatible como cerebro del agente."
     entries = [
-        item("chat_provider", "Agent chat provider", "ok" if config.agent_chat_provider in {"hermes", "minimax", "openai_compatible", "openai"} else "blocked", config.agent_chat_provider, "Recommended provider: hermes, or openai_compatible for MiniMax M3/custom URLs."),
+        item("chat_provider", "Agent runtime", "ok" if config.agent_chat_provider == "hermes" else "blocked", "hermes", "Hermes is the fixed agent runtime; model options are used inside Hermes."),
         item("hermes_runtime", "Hermes runtime", hermes_runtime_status, hermes_runtime_detail, "Install Hermes, then use the dashboard ChatGPT connection step. VPS installs use hermes model --no-browser."),
-        item("hermes_auth", "Hermes ChatGPT/Codex login", hermes_auth_status, hermes_auth["detail"], "Use Configuracion > Conectar ChatGPT. On VPS the dashboard shows the Hermes login from the browser."),
-        item("openai_compatible_model", "OpenAI-compatible model", "ok" if direct_ready else ("blocked" if direct_selected else "warn"), direct_detail, "Set AGENT_CHAT_PROVIDER=openai_compatible, AGENT_CHAT_BASE_URL, AGENT_CHAT_MODEL, and AGENT_CHAT_API_KEY."),
-        item("chat_model", "Agent chat model", "ok", config.hermes_model if config.agent_chat_provider == "hermes" else config.agent_chat_model or "MiniMax-M3"),
+        item("hermes_auth", "Agent brain", hermes_auth_status, hermes_auth["detail"], "Use Configuracion > Conectar ChatGPT/modelo API. On VPS the dashboard shows the login from the browser."),
+        item("openai_compatible_model", "API model inside Hermes", "ok" if direct_ready else ("blocked" if api_brain_selected else "warn"), direct_detail, "Save model URL, model name, and API key; Hermes remains the agent runtime."),
+        item("chat_model", "Agent chat model", "ok", brain.get("model") or "configured in Hermes"),
         item("agent_profile", "Agent profile files", "ok" if not agent_profile["missing"] else "blocked", f"{len(agent_profile['sections'])}/5 loaded from {agent_profile['dir']}", "Restore agent/SOUL.md, AGENTS.md, TOOLS.md, SKILLS.md, and USER.md." if agent_profile["missing"] else ""),
     ]
-    return entries, {"hermes_cli": hermes_cli, "hermes_library": hermes_library, "hermes_auth": hermes_auth, "direct_model_ready": direct_ready}
+    return entries, {"hermes_cli": hermes_cli, "hermes_library": hermes_library, "hermes_auth": hermes_auth, "direct_model_ready": direct_ready, "agent_brain": brain}
 
 
 def telegram_access_section(telegram):
@@ -225,8 +224,7 @@ def setup_summary(config, sections, context):
         "direct_graph_ready": all(entry["status"] == "ok" for entry in meta),
         "creative_ready": config.creative_refresh_enabled and (config.creative_image_mode == "dry-run" or configured(config.gemini_api_key)),
         "agent_chat_ready": (
-            (config.agent_chat_provider == "hermes" and bool(context["hermes_cli"] or context["hermes_library"]) and context["hermes_auth"]["ready"])
-            or bool(context.get("direct_model_ready"))
+            bool(context["hermes_cli"] or context["hermes_library"]) and context["hermes_auth"]["ready"]
         ),
         "telegram_ready": context["telegram"]["enabled"] and context["telegram"]["bot_configured"] and bool(context["telegram"]["chat_id"]),
         "agent_profile_ready": not context["agent_profile"]["missing"],

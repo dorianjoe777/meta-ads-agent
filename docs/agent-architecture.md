@@ -14,13 +14,13 @@ The agent now uses Hermes as the main reasoning/runtime layer. The product still
 1. The dashboard sends the user's chat message plus current account context to `/api/chat`.
 2. `src/agent_runtime.py` loads the profile files and builds one combined system prompt.
 3. `src/agent_chat.py` sends the profile and account context through `src/hermes_bridge.py`.
-4. Hermes runs the conversation using the buyer's configured Hermes model. The buyer-facing default is `OpenAI Codex` through Hermes, which uses the buyer's ChatGPT/Codex OAuth session. Advanced installs can instead set `AGENT_CHAT_PROVIDER=minimax` or `AGENT_CHAT_PROVIDER=openai_compatible` to use MiniMax M3, OpenRouter, Groq, Together, LM Studio, or another OpenAI-compatible `/chat/completions` URL.
+4. Hermes runs the conversation using the buyer's configured brain model. The buyer-facing default is `OpenAI Codex` through Hermes, which uses the buyer's ChatGPT/Codex OAuth session. Advanced installs can set `AGENT_BRAIN_PROVIDER=minimax`, `openai_api`, or `custom_api` to use MiniMax M3, OpenAI API, OpenRouter, Groq, Together, LM Studio, or another OpenAI-compatible `/chat/completions` URL inside Hermes.
 5. If Hermes returns a tool request, the dashboard executes it through `execute_agent_tool()` and the normal approval queue.
 6. The backend returns the final manager reply to the chat bubble or Telegram.
 
 Hermes receives the profile and account summary as context, but the backend still owns permissions. The agent cannot bypass dashboard authorization, Con supervision/Piloto automatico rules, approvals, license checks, or the live-action switch.
 
-The direct model path is intentionally narrow: it changes the conversation brain, not the product's safety layer. Meta actions, approvals, Telegram approvals, license checks, and audit logs still run through the backend. The dashboard never shows the saved API key back to the browser; it only reports whether a key is configured.
+There is no buyer runtime that bypasses Hermes. Model choices change the conversation brain inside Hermes, not the product's agentic infrastructure or safety layer. Meta actions, approvals, Telegram approvals, license checks, and audit logs still run through the backend. The dashboard never shows the saved API key back to the browser; it only reports whether a key is configured.
 
 ## Telegram Channel
 
@@ -58,12 +58,13 @@ hermes model --no-browser
 
 The buyer sees the Hermes output inside the dashboard, opens any ChatGPT login link in their own browser, and can answer simple Hermes prompts from the dashboard. Hermes stores the OAuth credentials in its own auth store on that install. Our product only calls Hermes; it does not store the buyer's ChatGPT password or OAuth token.
 
-### Direct OpenAI-Compatible API
+### API Brain Inside Hermes
 
 For buyers who prefer token-based providers, the setup card can save:
 
 ```text
-AGENT_CHAT_PROVIDER=minimax
+AGENT_CHAT_PROVIDER=hermes
+AGENT_BRAIN_PROVIDER=minimax
 AGENT_CHAT_BASE_URL=https://api.minimax.io/v1
 AGENT_CHAT_MODEL=MiniMax-M3
 AGENT_CHAT_API_KEY=...
@@ -72,13 +73,16 @@ AGENT_CHAT_API_KEY=...
 Or:
 
 ```text
-AGENT_CHAT_PROVIDER=openai_compatible
+AGENT_CHAT_PROVIDER=hermes
+AGENT_BRAIN_PROVIDER=custom_api
 AGENT_CHAT_BASE_URL=https://provider.example/v1
 AGENT_CHAT_MODEL=provider-model-name
 AGENT_CHAT_API_KEY=...
 ```
 
 Use `https://` for remote providers. `http://` is allowed only for local model servers such as `127.0.0.1` or `localhost`.
+
+Legacy installs that still contain `AGENT_CHAT_PROVIDER=minimax` or `AGENT_CHAT_PROVIDER=openai_compatible` are interpreted as `AGENT_CHAT_PROVIDER=hermes` plus the matching `AGENT_BRAIN_PROVIDER`. This preserves old installs while preventing a direct chat bypass.
 
 ## Image-Aware Defaults
 

@@ -134,6 +134,14 @@ def reset_history(chat_id):
     write_json_file(HISTORY_FILE, histories, ensure_ascii=False)
 
 
+def reset_polling_state():
+    for path in (OFFSET_FILE, APPROVAL_CONTEXT_FILE):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def help_message():
     return (
         "Soy tu manager IA de Meta Ads.\n\n"
@@ -383,7 +391,7 @@ def handle_text(config, chat_id, text, send=True, image_paths=None, reply_approv
             result = agent_chat(config, payload)
             tool_result = None
             if result.get("fallback") and config.agent_chat_provider == "hermes":
-                reply = result.get("reply") or "Todavia falta conectar Hermes. Abre Configuracion > Conectar ChatGPT. En VPS/DigitalOcean el dashboard te mostrara el login desde el navegador."
+                reply = result.get("reply") or "Todavia falta conectar el cerebro del agente. Abre Configuracion > Conectar ChatGPT o modelo API. En VPS/DigitalOcean el dashboard te mostrara el login desde el navegador."
             elif result.get("fallback") and not config.agent_chat_api_key:
                 reply = "Todavia falta conectar el motor del agente."
             else:

@@ -200,22 +200,94 @@ def hermes_environment(config):
     hermes_home = getattr(config, "hermes_home", "") or ""
     if hermes_home:
         env["HERMES_HOME"] = str(Path(hermes_home).expanduser())
+    settings = hermes_brain_settings(config)
+    if settings.get("provider") == "minimax" and settings.get("api_key"):
+        env["MINIMAX_API_KEY"] = settings["api_key"]
+        if settings.get("base_url"):
+            env["MINIMAX_BASE_URL"] = settings["base_url"]
+    if settings.get("provider") == "custom" and settings.get("api_key"):
+        env["OPENAI_API_KEY"] = settings["api_key"]
+        if settings.get("base_url"):
+            env["OPENAI_BASE_URL"] = settings["base_url"]
     return env
+
+
+def hermes_brain_settings(config):
+    brain = str(getattr(config, "agent_brain_provider", "") or "").strip().lower().replace("-", "_")
+    if not brain:
+        legacy = str(getattr(config, "agent_chat_provider", "") or "").strip().lower().replace("-", "_")
+        if legacy == "minimax":
+            brain = "minimax"
+        elif legacy in {"openai", "openai_compatible"}:
+            base = str(getattr(config, "agent_chat_base_url", "") or "")
+            brain = "openai_api" if "api.openai.com" in base else "custom_api"
+        else:
+            brain = "openai_codex"
+    if brain in {"chatgpt", "chatgpt_subscription", "codex", "openai_codex", "hermes"}:
+        return {
+            "brain": "openai_codex",
+            "provider": "openai-codex",
+            "model": str(getattr(config, "hermes_model", "") or "").strip(),
+            "base_url": "",
+            "api_key": "",
+            "requires_codex_auth": True,
+        }
+    if brain in {"minimax", "minimax_m3"}:
+        return {
+            "brain": "minimax",
+            "provider": "minimax",
+            "model": str(getattr(config, "agent_chat_model", "") or "MiniMax-M3").strip(),
+            "base_url": str(getattr(config, "agent_chat_base_url", "") or "https://api.minimax.io/v1").strip().rstrip("/"),
+            "api_key": str(getattr(config, "agent_chat_api_key", "") or "").strip(),
+            "requires_codex_auth": False,
+        }
+    if brain in {"openai", "openai_api"}:
+        return {
+            "brain": "openai_api",
+            "provider": "custom",
+            "model": str(getattr(config, "agent_chat_model", "") or "gpt-4.1-mini").strip(),
+            "base_url": str(getattr(config, "agent_chat_base_url", "") or "https://api.openai.com/v1").strip().rstrip("/"),
+            "api_key": str(getattr(config, "agent_chat_api_key", "") or "").strip(),
+            "requires_codex_auth": False,
+        }
+    return {
+        "brain": "custom_api",
+        "provider": "custom",
+        "model": str(getattr(config, "agent_chat_model", "") or "").strip(),
+        "base_url": str(getattr(config, "agent_chat_base_url", "") or "").strip().rstrip("/"),
+        "api_key": str(getattr(config, "agent_chat_api_key", "") or "").strip(),
+        "requires_codex_auth": False,
+    }
+
+
+def hermes_brain_ready(config):
+    settings = hermes_brain_settings(config)
+    if settings["requires_codex_auth"]:
+        ready, detail = hermes_codex_ready(config)
+        return ready, detail
+    missing = []
+    if not settings.get("api_key"):
+        missing.append("API key")
+    if not settings.get("model"):
+        missing.append("model")
+    if settings.get("provider") == "custom" and not settings.get("base_url"):
+        missing.append("base URL")
+    if missing:
+        return False, "Missing " + ", ".join(missing)
+    label = settings["brain"].replace("_", " ")
+    return True, f"{label} configured inside Hermes"
 
 
 def setup_reply(language="es"):
     if language == "es":
         return (
-            "Todavia falta conectar Hermes. En esta instalacion el agente debe funcionar con Hermes y la sesion "
-            "ChatGPT/Codex del comprador. Abre Configuracion > Conectar ChatGPT para ver los pasos guiados. "
-            "En PC/Mac se abre la terminal; en VPS/DigitalOcean el dashboard muestra el login de Hermes desde el navegador. "
-            "El comando tecnico de soporte es `hermes model --no-browser`."
+            "Todavia falta conectar el cerebro del agente. Abre Configuracion > Conectar ChatGPT o modelo API "
+            "para terminar el paso guiado. En PC/Mac se abre la terminal; en VPS/DigitalOcean el dashboard "
+            "muestra el login desde el navegador."
         )
     return (
-        "Hermes is not connected yet. This install expects Hermes to use the buyer's ChatGPT/Codex session. "
-        "Open Setup > Connect ChatGPT for guided steps. The key step is opening a terminal on this machine, "
-        "or using the browser-based Hermes login bridge on VPS/DigitalOcean. The technical support command is "
-        "`hermes model --no-browser`."
+        "The agent brain is not connected yet. Open Setup > Connect ChatGPT or API model for guided steps. "
+        "On desktop it can open a terminal; on VPS/DigitalOcean the dashboard shows the login in the browser."
     )
 
 
@@ -283,13 +355,20 @@ def library_chat(config, payload):
     from run_agent import AIAgent
 
     workspace_info = prepare_hermes_workspace(payload)
+    brain = hermes_brain_settings(config)
     kwargs = {
         "quiet_mode": True,
         "platform": payload.get("channel") or "dashboard",
         "max_iterations": max(1, int(getattr(config, "hermes_max_iterations", 12) or 12)),
     }
-    if getattr(config, "hermes_model", ""):
-        kwargs["model"] = config.hermes_model
+    if brain.get("provider"):
+        kwargs["provider"] = brain["provider"]
+    if brain.get("base_url"):
+        kwargs["base_url"] = brain["base_url"]
+    if brain.get("api_key"):
+        kwargs["api_key"] = brain["api_key"]
+    if brain.get("model"):
+        kwargs["model"] = brain["model"]
     enabled = split_csv(getattr(config, "hermes_enabled_toolsets", ""))
     disabled = split_csv(getattr(config, "hermes_disabled_toolsets", ""))
     if enabled:
@@ -325,6 +404,7 @@ def cli_chat(config, payload):
     workspace_info = prepare_hermes_workspace(payload)
     prompt = hermes_prompt(config, payload, workspace_info)
     images = workspace_info.get("image_paths") or []
+    brain = hermes_brain_settings(config)
     command = [
         getattr(config, "hermes_cli", "hermes") or "hermes",
         "chat",
@@ -336,8 +416,10 @@ def cli_chat(config, payload):
         "-q",
         prompt,
     ]
-    if getattr(config, "hermes_model", ""):
-        command.extend(["--model", config.hermes_model])
+    if brain.get("provider"):
+        command.extend(["--provider", brain["provider"]])
+    if brain.get("model"):
+        command.extend(["--model", brain["model"]])
     enabled = ",".join(split_csv(getattr(config, "hermes_enabled_toolsets", "")))
     if enabled:
         command.extend(["--toolsets", enabled])
@@ -361,15 +443,26 @@ def cli_chat(config, payload):
 def chat(config, payload):
     language = payload.get("language", "es")
     try:
-        if getattr(config, "hermes_require_codex_auth", True):
-            ready, detail = hermes_codex_ready(config)
+        brain = hermes_brain_settings(config)
+        if getattr(config, "hermes_require_codex_auth", True) or brain.get("requires_codex_auth"):
+            ready, detail = hermes_brain_ready(config)
             if not ready:
                 return {
                     "ok": False,
                     "provider": "hermes",
                     "fallback": True,
                     "reply": setup_reply(language),
-                    "error": f"Hermes ChatGPT/Codex is not ready: {detail}",
+                    "error": f"Hermes brain is not ready: {detail}",
+                }
+        elif not brain.get("requires_codex_auth"):
+            ready, detail = hermes_brain_ready(config)
+            if not ready:
+                return {
+                    "ok": False,
+                    "provider": "hermes",
+                    "fallback": True,
+                    "reply": setup_reply(language),
+                    "error": f"Hermes brain is not ready: {detail}",
                 }
         images = safe_image_paths(payload)
         if images:
@@ -381,7 +474,7 @@ def chat(config, payload):
                 reply = cli_chat(config, payload)
         else:
             reply = cli_chat(config, payload)
-        return {"ok": True, "provider": "hermes", "model": getattr(config, "hermes_model", "") or "configured-in-hermes", "reply": reply}
+        return {"ok": True, "provider": "hermes", "brain_provider": brain.get("brain"), "model": brain.get("model") or "configured-in-hermes", "reply": reply}
     except (ImportError, ModuleNotFoundError) as exc:
         return {"ok": False, "provider": "hermes", "fallback": True, "reply": setup_reply(language), "error": f"Hermes Python library is not installed: {exc}"}
     except FileNotFoundError as exc:

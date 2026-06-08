@@ -56,9 +56,9 @@ Esto es mas seguro para el comprador: el token nace en su propia cuenta de Meta,
 
 ## 4. Conectar el modelo del agente
 
-Durante el onboarding veras `Conectar el modelo del agente`. Tienes dos rutas:
+Durante el onboarding veras `Conectar el modelo del agente`. Tienes varias formas de darle cerebro al manager, pero la infraestructura del agente siempre es la misma: memoria, herramientas y aprobaciones.
 
-- `Hermes + ChatGPT/Codex`: recomendado para usar una suscripcion de ChatGPT/Codex sin pegar una clave de OpenAI en el dashboard.
+- `ChatGPT/Codex`: recomendado para usar una suscripcion de ChatGPT/Codex sin pegar una clave de OpenAI en el dashboard.
 - `MiniMax M3` u otra `API compatible OpenAI`: recomendado si prefieres pagar por tokens de un proveedor externo.
 
 Para la ruta recomendada, toca `Conectar ahora`. El dashboard intentara abrir la terminal y guiar el login de ChatGPT/Codex. Si esta instalado en DigitalOcean o Docker y no puede abrir una terminal visual, veras un plan B claro para hacerlo en el servidor.
@@ -72,7 +72,7 @@ Modelo: MiniMax-M3
 
 Si tu proveedor usa otro nombre de modelo, cambia ese campo por el nombre exacto que te muestre su panel. La clave API queda guardada localmente en esta instalacion y no se muestra de vuelta en el dashboard.
 
-Importante: esta configuracion cambia el cerebro conversacional del manager. Las imagenes finales de anuncios siguen usando el proveedor creativo configurado en `Creativos`, porque cada proveedor maneja imagenes con una API distinta.
+Importante: esta configuracion cambia el cerebro conversacional del manager, no sus reglas. Las imagenes finales de anuncios siguen usando el proveedor creativo configurado en `Creativos`, porque cada proveedor maneja imagenes con una API distinta.
 
 ## 5. Preparar guias creativas
 

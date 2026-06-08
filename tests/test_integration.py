@@ -583,6 +583,9 @@ class IntegrationTestSuite:
                 }
             )
             self.assert_true(bool(completed["profile"].get("context_completed_at")), "Context wizard completion is persisted after all answers")
+            snapshot = dashboard.business_context_snapshot(completed["profile"])
+            self.assert_true(snapshot["ready"] is True and "Curso de maquillaje" in snapshot["summary"], "Business owner answers produce a dashboard business snapshot")
+            self.assert_true(bool(snapshot["audience_hint"]) and bool(snapshot["creative_hint"]), "Business snapshot derives audience and creative guidance")
         finally:
             dashboard.read_json = original_read_json
             dashboard.write_json = original_write_json
@@ -673,47 +676,43 @@ class IntegrationTestSuite:
         self.assert_true(parsed["tool_request"]["tool"] == "run_daily_check", "Skill tool request parsed")
 
     def test_openai_compatible_agent_provider(self):
-        """Test OpenAI-compatible chat providers use the configured URL/model/key."""
+        """Test OpenAI-compatible brains are routed through Hermes instead of a direct chat client."""
         print("\nTesting OpenAI-Compatible Agent Provider...")
 
         class FakeConfig:
             agent_chat_provider = "openai_compatible"
+            agent_brain_provider = "custom_api"
             agent_chat_base_url = "https://example.test/v1"
             agent_chat_api_key = "test-key"
             agent_chat_model = "custom-model"
             agent_chat_temperature = 0.42
             agent_profile_dir = "agent"
 
-        class FakeResponse:
-            def __enter__(self):
-                return self
+        settings = hermes_bridge.hermes_brain_settings(FakeConfig())
+        env = hermes_bridge.hermes_environment(FakeConfig())
+        self.assert_true(settings["provider"] == "custom", "OpenAI-compatible brain maps to Hermes custom provider")
+        self.assert_true(settings["model"] == "custom-model", "Configured model is passed to Hermes")
+        self.assert_true(settings["base_url"] == "https://example.test/v1", "Configured base URL is passed to Hermes")
+        self.assert_true(settings["api_key"] == "test-key", "Configured API key is passed to Hermes")
+        self.assert_true(env["OPENAI_API_KEY"] == "test-key" and env["OPENAI_BASE_URL"] == "https://example.test/v1", "Hermes receives OpenAI-compatible credentials through its environment")
 
-            def __exit__(self, *_args):
-                return False
-
-            def read(self):
-                return json.dumps({"choices": [{"message": {"content": "Hice el analisis. Lo puedo preparar ahora."}}]}).encode("utf-8")
-
-        captured = {}
-        original_urlopen = agent_chat.urllib.request.urlopen
+        received = []
+        original_hermes_chat = agent_chat.hermes_chat
         try:
-            def fake_urlopen(request, timeout=0):
-                captured["url"] = request.full_url
-                captured["headers"] = dict(request.header_items())
-                captured["body"] = json.loads(request.data.decode("utf-8"))
-                captured["timeout"] = timeout
-                return FakeResponse()
-
-            agent_chat.urllib.request.urlopen = fake_urlopen
+            agent_chat.hermes_chat = lambda config, payload: received.append(payload) or {
+                "ok": True,
+                "provider": "hermes",
+                "brain_provider": "custom_api",
+                "model": "custom-model",
+                "reply": "Hice el analisis. Lo puedo preparar ahora.",
+            }
             result = agent_chat.chat(FakeConfig(), {"message": "Hola", "metrics": {}, "language": "es"})
-            self.assert_true(result["provider"] == "openai_compatible", "Generic provider stays visible in chat result")
+            self.assert_true(result["provider"] == "hermes", "OpenAI-compatible brain still uses Hermes runtime")
+            self.assert_true(result["brain_provider"] == "custom_api", "Brain provider stays visible in chat result")
             self.assert_true(result["model"] == "custom-model", "Configured model is used")
-            self.assert_true(captured["url"] == "https://example.test/v1/chat/completions", "Configured base URL is used for chat completions")
-            self.assert_true(captured["body"]["model"] == "custom-model", "Request body carries configured model")
-            self.assert_true(captured["body"]["temperature"] == 0.42, "Request body carries configured temperature")
-            self.assert_true(any(value == "Bearer test-key" for value in captured["headers"].values()), "Bearer API key is sent as an auth header")
+            self.assert_true("account_context" in received[0], "Hermes receives account context for API brains too")
         finally:
-            agent_chat.urllib.request.urlopen = original_urlopen
+            agent_chat.hermes_chat = original_hermes_chat
 
     def test_agent_setup_status_accepts_direct_model_provider(self):
         """Test setup status treats MiniMax/OpenAI-compatible mode as a valid agent brain."""
@@ -733,7 +732,7 @@ class IntegrationTestSuite:
         statuses = {entry["key"]: entry["status"] for entry in entries}
         self.assert_true(context["direct_model_ready"] is True, "Direct provider readiness is detected")
         self.assert_true(statuses["openai_compatible_model"] == "ok", "Direct provider setup row is green")
-        self.assert_true(statuses["hermes_runtime"] == "ok" and statuses["hermes_auth"] == "ok", "Hermes is not treated as missing when direct provider is selected")
+        self.assert_true(statuses["hermes_runtime"] == "blocked" and statuses["hermes_auth"] == "ok", "API brain can be ready but Hermes runtime remains required")
 
     def test_hermes_provider_parses_tool_request(self):
         """Test Hermes provider output uses the same protected backend tool contract."""
@@ -817,7 +816,7 @@ class IntegrationTestSuite:
         result = hermes_bridge.chat(FakeConfig(), {"message": "Hola", "language": "es", "account_context": {}})
         self.assert_true(result["provider"] == "hermes", "Hermes bridge responds")
         self.assert_true(result.get("fallback") is True, "Missing Hermes runtime is a fallback state")
-        self.assert_true("hermes model" in result["reply"].lower() and "chatgpt" in result["reply"].lower(), "Fallback explains ChatGPT/Codex OAuth setup")
+        self.assert_true("cerebro del agente" in result["reply"].lower() and "chatgpt" in result["reply"].lower(), "Fallback explains ChatGPT/Codex setup without exposing technical commands")
 
     def test_dashboard_chatgpt_connect_action_opens_terminal(self):
         """Test the dashboard ChatGPT/Codex connection endpoint prefers an automatic terminal action."""
@@ -965,6 +964,15 @@ class IntegrationTestSuite:
             self.assert_true(response["login_code"] == "AB12-CD34" and response["login_codes"] == ["AB12-CD34"], "Dashboard response exposes the OpenAI code separately from technical logs")
             letters_only_output = "OpenAI device code displayed in your terminal:\nVerification code: WXYZ-ABCD\n"
             self.assert_true(dashboard.extract_login_codes_from_text(letters_only_output) == ["WXYZ-ABCD"], "OpenAI terminal code extraction supports letter-only device codes")
+            spaced_code_output = (
+                "Visit https://auth.openai.com/device to continue.\n"
+                "OpenAI will ask for the code displayed in your terminal.\n\n"
+                "Copy this code into the browser:\n\n"
+                "WXYZ ABCD\n"
+            )
+            self.assert_true(dashboard.extract_login_codes_from_text(spaced_code_output) == ["WXYZ-ABCD"], "OpenAI terminal code extraction supports spaced codes several lines after the hint")
+            compact_code_output = "Device login code: A1B2C3D4\nOpen https://auth.openai.com/device\n"
+            self.assert_true(dashboard.extract_login_codes_from_text(compact_code_output) == ["A1B2C3D4"], "OpenAI terminal code extraction supports compact alphanumeric codes")
         finally:
             dashboard.os.write = original_write
 
@@ -2185,7 +2193,7 @@ class IntegrationTestSuite:
             shutil.rmtree(test_dir, ignore_errors=True)
 
     def test_telegram_channel_routes_agent_and_blocks_approval(self):
-        """Test Telegram uses the manager path and approves only through buttons."""
+        """Test Telegram uses the manager path and approves only exact decisions."""
         print("\nTesting Telegram Agent Channel...")
 
         class FakeConfig:
@@ -2274,6 +2282,66 @@ class IntegrationTestSuite:
             elif history_path.exists():
                 history_path.unlink()
 
+    def test_telegram_connection_change_resets_polling_state(self):
+        """Test changing Telegram bot or chat clears stale polling state."""
+        print("\nTesting Telegram Config Polling Reset...")
+
+        dashboard = load_dashboard_module()
+        offset_path = telegram_agent.OFFSET_FILE
+        context_path = telegram_agent.APPROVAL_CONTEXT_FILE
+        offset_path.parent.mkdir(parents=True, exist_ok=True)
+        before_offset = offset_path.read_text(encoding="utf-8") if offset_path.exists() else None
+        before_context = context_path.read_text(encoding="utf-8") if context_path.exists() else None
+        original_update = dashboard.update_env_values
+        original_load = dashboard.load_config
+        original_settings = dashboard.telegram_settings
+        original_ensure = dashboard.ensure_telegram_listener
+        original_entitlements = dashboard.license_entitlements
+        original_registry = dashboard.agency_registry
+
+        class FakeConfig:
+            def __init__(self, bot, chat):
+                self.telegram_bot_token = bot
+                self.telegram_chat_id = chat
+
+        calls = []
+        configs = [FakeConfig("old-bot", "old-chat"), FakeConfig("new-bot", "new-chat")]
+        try:
+            offset_path.write_text(json.dumps({"offset": 999}), encoding="utf-8")
+            context_path.write_text(json.dumps({"old-chat": {"approval_id": "approval_old"}}), encoding="utf-8")
+            dashboard.update_env_values = lambda values: calls.append(values)
+            dashboard.load_config = lambda: configs.pop(0) if configs else FakeConfig("new-bot", "new-chat")
+            dashboard.telegram_settings = lambda config: {"enabled": True, "language": "es", "poll_timeout": 25, "bot_configured": bool(config.telegram_bot_token), "chat_id": config.telegram_chat_id}
+            dashboard.ensure_telegram_listener = lambda: True
+            dashboard.license_entitlements = lambda: {
+                "plan": "individual",
+                "is_agency": False,
+                "is_individual": True,
+                "can_use_multi_telegram_profiles": False,
+            }
+            dashboard.agency_registry = lambda: {"active_id": "", "spaces": []}
+            status = dashboard.save_telegram_config({"enabled": "true", "bot_token": "new-bot", "chat_id": "new-chat", "language": "es"})
+            self.assert_true(status["listener_started"] is True, "Telegram listener restarts after connection save")
+            self.assert_true(not offset_path.exists() and not context_path.exists(), "Telegram bot/chat change clears stale polling offset and approval context")
+            self.assert_true(calls and calls[0]["TELEGRAM_BOT_TOKEN"] == "new-bot" and calls[0]["TELEGRAM_CHAT_ID"] == "new-chat", "Telegram config saves the new bot and chat")
+        finally:
+            dashboard.update_env_values = original_update
+            dashboard.load_config = original_load
+            dashboard.telegram_settings = original_settings
+            dashboard.ensure_telegram_listener = original_ensure
+            dashboard.license_entitlements = original_entitlements
+            dashboard.agency_registry = original_registry
+            if before_offset is None:
+                if offset_path.exists():
+                    offset_path.unlink()
+            else:
+                offset_path.write_text(before_offset, encoding="utf-8")
+            if before_context is None:
+                if context_path.exists():
+                    context_path.unlink()
+            else:
+                context_path.write_text(before_context, encoding="utf-8")
+
     def test_setup_page_contains_unlock_and_trust(self):
         """Test dashboard has unlock screen and trust panel placeholders."""
         print("\nTesting Setup UI Markup...")
@@ -2348,6 +2416,7 @@ class IntegrationTestSuite:
         self.assert_true("dashboardPanel:${side}" in html, "Side panel state persists locally")
         self.assert_true("dashboardPanelMobile:${side}" in html and "matchMedia('(max-width: 780px)')" in html, "Mobile panel state is independent so daily intelligence starts folded on phones")
         self.assert_true('id="daily-brief-badge"' in html and ".zone-label.has-new-brief" in html and "dashboardDailyBriefReadStamp" in html, "Unread daily brief has a visible morning cue until opened")
+        self.assert_true('id="business-profile-panel"' in html and "businessSnapshotData" in html and "business_context_snapshot" in dashboard_source, "Dashboard turns owner business answers into a visible business profile snapshot")
         self.assert_true("budgetDialog(campaign_id,current)" in html and "Preguntar al manager" in html, "Budget changes use an in-app manager-first dialog instead of a browser prompt")
         self.assert_true("showDecisionConfirm" in html and "const ok=confirm" not in html and "const val=prompt" not in html, "Risky choices use branded confirmation cards with agent help instead of browser system dialogs")
         self.assert_true("submitBrandGuideInit" in html and "brand-guide-init-name" in html, "Brand memory setup is an in-app guided action instead of a browser prompt")
@@ -2366,22 +2435,24 @@ class IntegrationTestSuite:
         self.assert_true('id="chatgpt-panel"' in html and "renderChatGptPanel()" in html, "Setup includes a dedicated agent model connection panel")
         self.assert_true('id="local-network-panel"' in html and "Ver desde mi teléfono" in html and "/api/local-network-access" in html, "Setup includes same-Wi-Fi phone access as an explicit opt-in")
         self.assert_true("/api/local-network-access" in dashboard.DashboardHandler.PROTECTED_POST_PATHS and "/api/local-network-access" in dashboard.DashboardHandler.POST_JSON_ROUTES, "Phone LAN access changes require dashboard password and have a handler")
-        self.assert_true("Conecta el cerebro del agente" in html and "MiniMax M3" in html and "Guardar modelo del agente" in html, "Agent model setup supports MiniMax M3 and direct providers")
+        self.assert_true("Conecta el cerebro del agente" in html and "MiniMax M3" in html and "Guardar modelo del agente" in html, "Agent model setup supports MiniMax M3 as a Hermes brain")
         self.assert_true("OpenAI API" in html and "ChatGPT suscripción" in html and "Otra API compatible" in html and "OAuth" in html, "Onboarding shows four simple model choices immediately")
         self.assert_true("routeButton('openai_api')" in html and "routeButton('chatgpt_subscription')" in html and "routeButton('minimax_m3')" in html and "routeButton('custom_api')" in html and "selectAgentModelRoute('${kind}')" in html, "Agent model setup uses four collapsible route buttons")
         self.assert_true("connectChatGpt(event)" in html and "/api/agent-model/connect" in html and "Conectar ahora" in html, "ChatGPT/Codex connection is an automatic dashboard action")
         self.assert_true("Copiar comando" not in html and ".agent-model-option .route-icon" in html and ".agent-route-panel.active" in html, "ChatGPT/Codex setup hides command-copy UI and keeps route choices readable")
         self.assert_true("Copiar paso" not in html and "Copy step" not in html, "ChatGPT/Codex connection no longer presents copy-only wording")
-        self.assert_true("agent_chat_base_url" in html and "agent_chat_api_key" in html and "openai_compatible" in html, "OpenAI-compatible model settings are exposed without showing saved keys")
+        self.assert_true("agent_chat_base_url" in html and "agent_chat_api_key" in html and "custom_api" in html, "OpenAI-compatible brain settings are exposed without showing saved keys")
         self.assert_true("DigitalOcean mostraré aquí el enlace" in html and "Ver diagnóstico para soporte" in html, "Hermes/ChatGPT setup has a browser-based VPS path with diagnostics folded")
         self.assert_true("/api/agent-model/connect-status" in html and "/api/agent-model/connect-input" in html and "sendChatGptTerminalInput" in html, "VPS Hermes bridge can poll and send guided terminal responses")
         self.assert_true("Ver detalle técnico de Hermes" in html and "prepareChatGptAuthWindow" in html and "maybeOpenChatGptAuthUrl" in html, "Hermes browserless UI folds support detail and opens the OAuth login in the buyer browser")
-        self.assert_true("chatgpt-device-code" in html and "Copiar código" in html and "login_code" in html, "OpenAI terminal login code is shown as a copyable buyer-facing card")
+        self.assert_true("chatgpt-device-code" in html and "Copiar código" in html and "login_code" in html and "font-size:clamp(34px" in html and "scrollIntoView({behavior:'smooth',block:'center'})" in html, "OpenAI terminal login code is shown as a large copyable buyer-facing card")
         self.assert_true("body .onboarding-flow input:not([type=\"checkbox\"])" in html and "::placeholder" in html and "-webkit-autofill" in html, "Onboarding text fields stay dark and readable across dashboard themes")
         self.assert_true("Voy a elegir OpenAI Codex y el modelo recomendado automáticamente" in dashboard_source and "maybe_auto_drive_hermes_browserless" in dashboard_source, "Hermes browserless setup auto-selects Codex provider and recommended model")
         self.assert_true("{id:'chatgpt',status:chatgptOk?'ok':'warn'}" in html and "chatGptConnectMarkup(true)" in html, "Initial onboarding includes ChatGPT connection before Meta setup")
-        self.assert_true("{id:'password',status:passwordOk?'ok':'blocked'},\n\t  {id:'chatgpt',status:chatgptOk?'ok':'warn'},\n\t  {id:'website',status:websiteOk?'ok':'blocked'}" in html, "Initial onboarding moves from password directly to agent model connection")
-        self.assert_true("Elige una ruta para el cerebro del agente" in html and "directModelOk" in html, "Onboarding positions model setup as part of installation and accepts direct API readiness")
+        self.assert_true("{id:'telegram',status:telegramOk?'ok':'warn'}" in html and "telegramOnboardingGuide()" in html, "Initial onboarding includes Telegram as an important guided setup step")
+        self.assert_true("Habla con tu manager por Telegram" in html and "Abrir BotFather" in html and "Detectar mi chat" in html, "Telegram onboarding explains BotFather, chat detection, and phone-first manager access")
+        self.assert_true("{id:'password',status:passwordOk?'ok':'blocked'},\n\t  {id:'chatgpt',status:chatgptOk?'ok':'warn'},\n\t  {id:'telegram',status:telegramOk?'ok':'warn'},\n\t  {id:'website',status:websiteOk?'ok':'blocked'}" in html, "Initial onboarding moves from password to agent model, Telegram, and then business context")
+        self.assert_true("Elige qué modelo usará el agente" in html and "apiBrainOk" in html, "Onboarding positions model setup as part of installation and accepts API brain readiness")
         self.assert_true("license-panel" in html, "License activation panel exists")
         self.assert_true("/api/license/activate" in html, "License activation endpoint is wired in UI")
         self.assert_true("/api/onboarding/complete" in html, "Onboarding complete endpoint is wired in UI")
@@ -2534,7 +2605,8 @@ class IntegrationTestSuite:
             self.assert_true("LICENSE_KEY=MAO-TESTBUYER-30628D" in env_after, "Blank license field preserves existing key")
             self.assert_true("LICENSE_BUYER_EMAIL=buyer@example.com" in env_after, "Buyer email saved to .env")
             self.assert_true("META_AD_ACCOUNT_ID=act_999" in env_after, "Ad account saved to .env")
-            self.assert_true("AGENT_CHAT_PROVIDER=minimax" in env_after, "Agent direct provider saved to .env")
+            self.assert_true("AGENT_CHAT_PROVIDER=hermes" in env_after, "Hermes runtime remains fixed in .env")
+            self.assert_true("AGENT_BRAIN_PROVIDER=minimax" in env_after, "Agent brain provider saved to .env")
             self.assert_true("AGENT_CHAT_BASE_URL=https://api.minimax.io/v1" in env_after, "Agent model URL saved to .env")
             self.assert_true("AGENT_CHAT_MODEL=MiniMax-M3" in env_after, "Agent model name saved to .env")
             self.assert_true("AGENT_CHAT_API_KEY=direct-model-key" in env_after, "Agent model API key saved locally")
@@ -3086,7 +3158,7 @@ class IntegrationTestSuite:
         env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
         self.assert_true("https://admiroia.uboost.lat" in env_example, "Buyer release uses deployed license server")
         self.assert_true("LICENSE_PUBLIC_KEY=" in env_example, "Buyer release includes only license verification key")
-        self.assert_true("AGENT_CHAT_BASE_URL=https://api.minimax.io/v1" in env_example and "AGENT_CHAT_MODEL=MiniMax-M3" in env_example and "AGENT_CHAT_PROVIDER=hermes" in env_example, "Buyer release documents Hermes default plus MiniMax M3/OpenAI-compatible model support")
+        self.assert_true("AGENT_CHAT_BASE_URL=https://api.minimax.io/v1" in env_example and "AGENT_CHAT_MODEL=MiniMax-M3" in env_example and "AGENT_CHAT_PROVIDER=hermes" in env_example and "AGENT_BRAIN_PROVIDER=openai_codex" in env_example, "Buyer release documents Hermes runtime plus MiniMax M3/OpenAI-compatible brain support")
         self.assert_true("META_ADS_AGENT_VERSION=v1.0.5" in env_example and (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip() == "v1.0.5", "Buyer release exposes the installed product version")
         bootstrap_config = (ROOT_DIR / "installer" / "release-bootstrap.env").read_text(encoding="utf-8")
         bootstrap_sh = (ROOT_DIR / "scripts" / "install-from-github.sh").read_text(encoding="utf-8")
@@ -3305,6 +3377,7 @@ class IntegrationTestSuite:
             self.test_campaign_stack_execution_creates_full_ad_order,
             self.test_chat_stages_campaign_creation_and_requires_exact_approval,
             self.test_telegram_channel_routes_agent_and_blocks_approval,
+            self.test_telegram_connection_change_resets_polling_state,
             self.test_setup_page_contains_unlock_and_trust,
             self.test_setup_config_save_preserves_blank_license,
             self.test_individual_license_replaces_one_business_only_with_confirmation,

@@ -130,22 +130,18 @@ def openai_compatible_chat(config, payload):
 
 
 def chat(config, payload):
-    if config.agent_chat_provider == "hermes":
-        hermes_payload = dict(payload)
-        hermes_payload["account_context"] = account_context(payload)
-        result = hermes_chat(config, hermes_payload)
-        raw_reply = result.get("reply", "")
-        parsed = parse_skill_response(raw_reply)
-        if parsed is not None:
-            result["reply"] = parsed.get("assistant_message") or fallback_reply(payload.get("message", ""), payload)
-            result["tool_request"] = parsed.get("tool_request")
-            result["raw_reply"] = result.get("raw_reply") or raw_reply
-        else:
-            result.setdefault("tool_request", None)
-        return result
-    if config.agent_chat_provider in {"minimax", "openai_compatible", "openai"}:
-        return openai_compatible_chat(config, payload)
-    return {"ok": False, "provider": config.agent_chat_provider, "fallback": True, "reply": fallback_reply(payload.get("message", ""), payload), "error": "Unsupported chat provider"}
+    hermes_payload = dict(payload)
+    hermes_payload["account_context"] = account_context(payload)
+    result = hermes_chat(config, hermes_payload)
+    raw_reply = result.get("reply", "")
+    parsed = parse_skill_response(raw_reply)
+    if parsed is not None:
+        result["reply"] = parsed.get("assistant_message") or fallback_reply(payload.get("message", ""), payload)
+        result["tool_request"] = parsed.get("tool_request")
+        result["raw_reply"] = result.get("raw_reply") or raw_reply
+    else:
+        result.setdefault("tool_request", None)
+    return result
 
 
 def clean_reply(text):

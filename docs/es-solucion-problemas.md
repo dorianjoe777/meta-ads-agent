@@ -19,9 +19,9 @@ Revisa internet. Si el problema sigue, contacta soporte con tu email de compra y
 
 ## El chat no responde
 
-Revisa primero el paso `Conectar el modelo del agente` en Configuracion. Ahí puedes usar una de dos rutas:
+Revisa primero el paso `Conectar el modelo del agente` en Configuracion. Ahí eliges qué cerebro usará el manager:
 
-- `Hermes + ChatGPT/Codex`: recomendado si quieres usar tu suscripcion de ChatGPT/Codex.
+- `ChatGPT/Codex`: recomendado si quieres usar tu suscripcion de ChatGPT/Codex.
 - `MiniMax M3` u otra `API compatible OpenAI`: recomendado si quieres pagar por tokens de un proveedor externo.
 
 Si ya terminaste el onboarding, puedes volver al mismo flujo desde el dashboard:
@@ -30,9 +30,9 @@ Si ya terminaste el onboarding, puedes volver al mismo flujo desde el dashboard:
 Configuracion > Conectar el modelo del agente
 ```
 
-Si eliges Hermes, toca `Conectar ahora`. En PC/Mac el dashboard intentara abrir la terminal por ti. En DigitalOcean, Docker o VPS, el dashboard mostrara la pantalla de Hermes dentro del navegador para que puedas abrir el enlace de ChatGPT desde tu propio equipo.
+Si eliges ChatGPT/Codex, toca `Conectar ahora`. En PC/Mac el dashboard intentara abrir la terminal por ti. En DigitalOcean, Docker o VPS, el dashboard mostrara el login dentro del navegador para que puedas abrir el enlace de ChatGPT desde tu propio equipo.
 
-Si aparece un enlace, abrelo, inicia sesion con ChatGPT/Codex y vuelve al dashboard. Si Hermes pregunta algo, responde en la caja que aparece debajo del detalle de Hermes.
+Si aparece un enlace, abrelo, inicia sesion con ChatGPT/Codex y vuelve al dashboard. Si el instalador pregunta algo, responde en la caja que aparece debajo.
 
 Comando tecnico usado por soporte en VPS:
 

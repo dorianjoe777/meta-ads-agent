@@ -74,6 +74,7 @@ from security import dashboard_token_valid, is_local_host, is_public_bind, redac
 from setup_status import build_setup_status
 from social_flow_client import SocialFlowClient
 from telegram_agent import bot_request as telegram_bot_request
+from telegram_agent import reset_polling_state as reset_telegram_polling_state
 from telegram_agent import run as run_telegram_listener
 from telegram_agent import send_message as send_telegram_message
 from telegram_agent import telegram_settings
@@ -116,6 +117,7 @@ PORT = 7871
 TARGET_CPA = 50.0
 TELEGRAM_THREAD = None
 TELEGRAM_STOP = None
+TELEGRAM_FINGERPRINT = None
 HERMES_LOGIN_OUTPUT_LIMIT = 12000
 HERMES_LOGIN_LOCK = threading.Lock()
 HERMES_LOGIN_STATE = {
@@ -1198,7 +1200,7 @@ def create_agency_space(payload):
 
 
 def switch_agency_space(payload):
-    global TELEGRAM_THREAD, TELEGRAM_STOP
+    global TELEGRAM_THREAD, TELEGRAM_STOP, TELEGRAM_FINGERPRINT
     limits = license_entitlements()
     if not limits.get("can_use_agency_workspaces", bool(limits.get("is_agency"))):
         raise ValueError("Cambiar entre clientes requiere Licencia Agencia.")
@@ -1216,6 +1218,7 @@ def switch_agency_space(payload):
         TELEGRAM_STOP.set()
     TELEGRAM_THREAD = None
     TELEGRAM_STOP = None
+    TELEGRAM_FINGERPRINT = None
     ensure_telegram_listener()
     log_action("agency_space_switch", {"space_id": target_id, "name": target["name"]}, "completed")
     return agency_spaces_payload()
@@ -1266,6 +1269,7 @@ def save_profitability_rule_settings(payload):
 
 
 def save_telegram_config(payload):
+    old_config = load_config()
     limits = license_entitlements()
     registry = agency_registry()
     if limits.get("is_agency") and not limits.get("can_use_multi_telegram_profiles", bool(limits.get("is_agency"))) and len(registry.get("spaces", [])) > 1:
@@ -1279,8 +1283,13 @@ def save_telegram_config(payload):
         values["TELEGRAM_CHAT_ID"] = str(payload.get("chat_id") or "").strip()
     if "language" in payload:
         values["TELEGRAM_LANGUAGE"] = "en" if str(payload.get("language")).strip().lower() == "en" else "es"
+    next_bot = values.get("TELEGRAM_BOT_TOKEN", old_config.telegram_bot_token)
+    next_chat = values.get("TELEGRAM_CHAT_ID", old_config.telegram_chat_id)
+    connection_changed = next_bot != old_config.telegram_bot_token or next_chat != old_config.telegram_chat_id
     if values:
         update_env_values(values)
+    if connection_changed:
+        reset_telegram_polling_state()
     config = load_config()
     status = telegram_settings(config)
     status["listener_started"] = ensure_telegram_listener()
@@ -1289,18 +1298,23 @@ def save_telegram_config(payload):
 
 
 def ensure_telegram_listener():
-    global TELEGRAM_THREAD, TELEGRAM_STOP
+    global TELEGRAM_THREAD, TELEGRAM_STOP, TELEGRAM_FINGERPRINT
     config = load_config()
     status = telegram_settings(config)
+    fingerprint = (config.telegram_bot_token, status["chat_id"], status["enabled"], status["language"])
     if not (status["enabled"] and status["bot_configured"] and status["chat_id"]):
         if TELEGRAM_STOP:
             TELEGRAM_STOP.set()
+        TELEGRAM_FINGERPRINT = None
         return False
-    if TELEGRAM_THREAD and TELEGRAM_THREAD.is_alive() and not (TELEGRAM_STOP and TELEGRAM_STOP.is_set()):
+    if TELEGRAM_THREAD and TELEGRAM_THREAD.is_alive() and not (TELEGRAM_STOP and TELEGRAM_STOP.is_set()) and TELEGRAM_FINGERPRINT == fingerprint:
         return True
+    if TELEGRAM_STOP:
+        TELEGRAM_STOP.set()
     TELEGRAM_STOP = threading.Event()
     TELEGRAM_THREAD = threading.Thread(target=run_telegram_listener, args=(TELEGRAM_STOP,), name="telegram-agent", daemon=True)
     TELEGRAM_THREAD.start()
+    TELEGRAM_FINGERPRINT = fingerprint
     return True
 
 
@@ -1841,13 +1855,20 @@ def set_dashboard_password(payload):
 def normalize_agent_chat_provider(value):
     raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
     aliases = {
-        "openai": "openai",
-        "openai_compatible": "openai_compatible",
-        "openai_compat": "openai_compatible",
-        "openai_api": "openai_compatible",
-        "compatible": "openai_compatible",
+        "hermes": "openai_codex",
+        "chatgpt": "openai_codex",
+        "chatgpt_subscription": "openai_codex",
+        "codex": "openai_codex",
+        "openai_codex": "openai_codex",
+        "openai": "openai_api",
+        "openai_api": "openai_api",
+        "openai_compatible": "custom_api",
+        "openai_compat": "custom_api",
+        "compatible": "custom_api",
+        "custom": "custom_api",
+        "custom_api": "custom_api",
         "minimax": "minimax",
-        "hermes": "hermes",
+        "minimax_m3": "minimax",
     }
     return aliases.get(raw, "")
 
@@ -1910,19 +1931,61 @@ def extract_login_codes_from_text(value):
     lines = cleaned.splitlines()
     hint_re = re.compile(r"\b(code|codigo|código|verification|verify|device|one-time|otp)\b", re.I)
     token_re = re.compile(r"\b[A-Z0-9]{4}(?:[- ][A-Z0-9]{4}){1,3}\b|\b[A-Z0-9]{6,12}\b")
+    blocked_parts = {
+        "OPENAI",
+        "HERMES",
+        "CODEX",
+        "MODEL",
+        "DEVICE",
+        "CODE",
+        "CODIGO",
+        "VERIFICATION",
+        "VERIFY",
+        "TERMINAL",
+        "DISPLAYED",
+        "BROWSER",
+        "OPEN",
+        "THIS",
+        "URL",
+        "CONTINUE",
+        "AUTH",
+        "ASK",
+        "FOR",
+        "LOGIN",
+        "PROVIDER",
+        "DEFAULT",
+    }
+
+    def add_code(raw):
+        normalized = re.sub(r"[^A-Z0-9]+", "-", str(raw or "").upper()).strip("-")
+        if not normalized:
+            return
+        parts = [part for part in normalized.split("-") if part]
+        compact = "".join(parts)
+        if not 6 <= len(compact) <= 16:
+            return
+        if any(part in blocked_parts for part in parts):
+            return
+        looks_like_code = "-" in normalized or any(char.isdigit() for char in compact)
+        if looks_like_code and normalized not in codes:
+            codes.append(normalized)
+
+    label_re = re.compile(
+        r"(?:verification|device|one[- ]time|login|openai|codex|auth)?\s*(?:code|codigo|código)\s*[:=\-]?\s*([A-Z0-9]{4}(?:[-\s][A-Z0-9]{4}){1,3}|[A-Z0-9]{6,12})",
+        re.I,
+    )
+    for match in label_re.findall(re.sub(r"https?://[^\s<>'\")]+", " ", cleaned)):
+        add_code(match)
+        if len(codes) >= 2:
+            return codes[:2]
     for index, line in enumerate(lines):
         line_without_urls = re.sub(r"https?://[^\s<>'\")]+", " ", line)
         if not hint_re.search(line_without_urls):
             continue
-        segment = " ".join(lines[index : index + 3])
+        segment = " ".join(lines[max(0, index - 1) : min(len(lines), index + 8)])
         segment = re.sub(r"https?://[^\s<>'\")]+", " ", segment)
         for match in token_re.findall(segment.upper()):
-            normalized = re.sub(r"\s+", "-", match.strip())
-            if normalized in {"OPENAI", "HERMES", "CODEX", "MODEL", "DEVICE"}:
-                continue
-            looks_like_code = "-" in normalized or any(char.isdigit() for char in normalized)
-            if looks_like_code and normalized not in codes:
-                codes.append(normalized)
+            add_code(match)
         if len(codes) >= 2:
             break
     return codes[:2]
@@ -2452,7 +2515,7 @@ def probe_hermes_model_login(config):
 
 
 def connect_agent_model(payload=None):
-    update_env_values({"AGENT_CHAT_PROVIDER": "hermes", "HERMES_REQUIRE_CODEX_AUTH": "true"})
+    update_env_values({"AGENT_CHAT_PROVIDER": "hermes", "AGENT_BRAIN_PROVIDER": "openai_codex", "HERMES_REQUIRE_CODEX_AUTH": "true"})
     config = load_config()
     if launch_hermes_terminal(config):
         return hermes_connect_response(
@@ -2481,9 +2544,9 @@ def save_setup_config(payload):
         env_updates[env_key] = value
     provider = normalize_agent_chat_provider(payload.get("agent_chat_provider")) if "agent_chat_provider" in payload else ""
     if provider:
-        env_updates["AGENT_CHAT_PROVIDER"] = provider
-        if provider == "hermes":
-            env_updates["HERMES_REQUIRE_CODEX_AUTH"] = "true"
+        env_updates["AGENT_CHAT_PROVIDER"] = "hermes"
+        env_updates["AGENT_BRAIN_PROVIDER"] = provider
+        env_updates["HERMES_REQUIRE_CODEX_AUTH"] = "true" if provider == "openai_codex" else "false"
     if "agent_chat_base_url" in payload:
         base_url = validate_agent_chat_base_url(payload.get("agent_chat_base_url"))
         if base_url:
@@ -3547,21 +3610,91 @@ def fatigue_items(campaigns):
     return items
 
 
-def build_daily_brief(metrics, recommendations):
+def business_context_snapshot(profile):
+    profile = profile if isinstance(profile, dict) else {}
+    business_type = str(profile.get("business_type") or profile.get("business_short") or "").strip()
+    main_offer = str(profile.get("main_offer") or profile.get("offer") or "").strip()
+    ideal_customer = str(profile.get("ideal_customer") or profile.get("audience") or "").strip()
+    current_stage = str(profile.get("current_stage") or "").strip()
+    what_to_improve = str(profile.get("what_to_improve") or "").strip()
+    success_goal = str(profile.get("success_goal") or "").strip()
+    sales_channel = str(profile.get("sales_channel") or profile.get("channel") or "").strip()
+    brand_tone = str(profile.get("brand_tone") or "").strip()
+    website_url = str(profile.get("website_url") or "").strip()
+    current_ads = str(profile.get("current_ads") or "").strip()
+    ready = bool(business_type or main_offer or ideal_customer or current_stage or what_to_improve or website_url)
+    summary_parts = [part for part in [business_type, main_offer, ideal_customer, current_stage] if part]
+    summary = " · ".join(summary_parts)
+    if not summary and website_url:
+        summary = website_url
+    if not summary:
+        summary = "Perfil del negocio pendiente"
+    if not main_offer:
+        next_step = "Definir en una frase qué vendes."
+    elif not ideal_customer:
+        next_step = "Decir quién compra hoy."
+    elif not current_stage:
+        next_step = "Contar en qué punto está el negocio."
+    elif not what_to_improve:
+        next_step = "Decir qué quiere mejorar primero."
+    else:
+        next_step = "Convertir esto en un plan simple de anuncios."
+    if any(term in sales_channel.lower() for term in ["whatsapp", "instagram", "dm", "mensaje", "mensajes"]):
+        audience_hint = "Empezar amplio y dejar mensajes o retargeting para personas que ya conocen el negocio."
+    elif website_url:
+        audience_hint = "Probar una audiencia amplia con el sitio como destino y dejar que Meta aprenda."
+    else:
+        audience_hint = "Empezar con una audiencia amplia y ajustar luego con datos reales."
+    if current_stage.lower().startswith(("ya vendo", "already", "ya tengo", "tengo anuncios")) or current_ads:
+        creative_hint = "Buscar un ángulo nuevo sin perder lo que ya funcionó."
+    elif what_to_improve:
+        creative_hint = f"Crear creativos que ataquen: {what_to_improve.lower()}"
+    else:
+        creative_hint = "Usar una imagen clara, un beneficio directo y poco texto."
+    if "lead" in success_goal.lower() or "mensaje" in success_goal.lower():
+        campaign_hint = "Campaña de leads o mensajes, con supervisión primero."
+    elif "venta" in success_goal.lower() or "buy" in success_goal.lower() or website_url:
+        campaign_hint = "Campaña de conversiones o compras, con una oferta fácil de entender."
+    else:
+        campaign_hint = "Campaña simple, visible y fácil de medir."
+    return {
+        "ready": ready,
+        "business_type": business_type,
+        "main_offer": main_offer,
+        "ideal_customer": ideal_customer,
+        "current_stage": current_stage,
+        "what_to_improve": what_to_improve,
+        "success_goal": success_goal,
+        "sales_channel": sales_channel,
+        "brand_tone": brand_tone,
+        "website_url": website_url,
+        "current_ads": current_ads,
+        "summary": summary,
+        "next_step": next_step,
+        "audience_hint": audience_hint,
+        "creative_hint": creative_hint,
+        "campaign_hint": campaign_hint,
+    }
+
+
+def build_daily_brief(metrics, recommendations, business_profile=None):
     campaigns = metrics.get("campaigns", [])
     summary = metrics.get("summary", {})
+    business_context = business_context_snapshot(business_profile)
     active = [c for c in campaigns if c.get("status") == "active"]
     winners = sorted([c for c in campaigns if c.get("health") == "winning"], key=lambda c: c.get("roas", 0), reverse=True)
     losers = sorted([c for c in campaigns if c.get("health") == "losing"], key=lambda c: c.get("roas", 0))
     fatigue = fatigue_items(campaigns)
     projected_spend = summary.get("active_budget", 0)
     action_summary = build_action_summary(recommendations, [], [], fatigue)
+    business_prefix = f"{business_context.get('summary')} · {business_context.get('next_step')} · " if business_context.get("ready") else ""
     return {
         "generated_at": now_iso(),
+        "business_context": business_context,
         "questions": [
             {
                 "question": "Am I on track?",
-                "answer": f"Active daily budget is ${projected_spend:,.2f}; account ROAS is {summary.get('overall_roas', 0):.2f}x with CPA ${summary.get('overall_cpa', 0):,.2f}.",
+                "answer": f"{business_prefix}Active daily budget is ${projected_spend:,.2f}; account ROAS is {summary.get('overall_roas', 0):.2f}x with CPA ${summary.get('overall_cpa', 0):,.2f}.",
             },
             {
                 "question": "What's running?",
@@ -3597,12 +3730,13 @@ def latest_daily_report():
     return None
 
 
-def scheduled_brief_or_live(metrics, recommendations):
+def scheduled_brief_or_live(metrics, recommendations, business_profile=None):
     report = latest_daily_report()
     if not report:
-        return build_daily_brief(metrics, recommendations)
+        return build_daily_brief(metrics, recommendations, business_profile)
     brief = report.get("brief", {})
     five = brief.get("five_questions", {})
+    business_context = business_context_snapshot(business_profile)
     questions = [
         ("Am I on track?", five.get("am_i_on_track")),
         ("What's running?", five.get("whats_running")),
@@ -3610,11 +3744,12 @@ def scheduled_brief_or_live(metrics, recommendations):
         ("Who's winning/losing?", five.get("winning_losing")),
         ("Any fatigue?", five.get("fatigue")),
     ]
-    fallback = build_daily_brief(metrics, recommendations)
+    fallback = build_daily_brief(metrics, recommendations, business_profile)
     return {
         "generated_at": brief.get("generated_at") or report.get("generated_at") or now_iso(),
         "source": "scheduled_daily_agent",
         "report_path": report.get("_path"),
+        "business_context": business_context,
         "questions": [
             {"question": question, "answer": answer or fallback["questions"][idx]["answer"]}
             for idx, (question, answer) in enumerate(questions)
@@ -5056,10 +5191,11 @@ def dashboard_payload():
     onboarding = onboarding_health(load_onboarding_state(), config, metrics, current_license_status, destination, business_profile)
     entitlements = license_entitlements()
     business_spaces = agency_spaces_payload()
+    business_snapshot = business_context_snapshot(business_profile)
     return {
         "metrics": metrics,
         "recommendations": recommendations,
-        "brief": scheduled_brief_or_live(metrics, recommendations),
+        "brief": scheduled_brief_or_live(metrics, recommendations, business_profile),
         "fatigue": fatigue,
         "decision_memory": decisions,
         "actions": read_json(ACTIONS_FILE, [])[:20],
@@ -5071,6 +5207,7 @@ def dashboard_payload():
         "creative_uploads": creative_upload_studio_items(8),
         "chat_history": load_chat_history(),
         "business_profile": business_profile,
+        "business_snapshot": business_snapshot,
         "license_entitlements": entitlements,
         "business_spaces": business_spaces,
         "active_workspace": active_workspace_payload(),
@@ -5095,6 +5232,7 @@ def dashboard_payload():
             },
             "agent_model": {
                 "provider": config.agent_chat_provider,
+                "brain_provider": getattr(config, "agent_brain_provider", "openai_codex"),
                 "base_url": config.agent_chat_base_url,
                 "api": config.agent_chat_api,
                 "api_key_set": bool(config.agent_chat_api_key),
@@ -5128,6 +5266,7 @@ def dashboard_payload():
                 "default_adset_id": destination.get("default_adset_id", ""),
                 "landing_url": destination.get("url", ""),
                 "agent_chat_provider": config.agent_chat_provider,
+                "agent_brain_provider": getattr(config, "agent_brain_provider", "openai_codex"),
                 "agent_chat_base_url": config.agent_chat_base_url,
                 "agent_chat_model": config.agent_chat_model,
                 "agent_chat_api": config.agent_chat_api,
@@ -5176,6 +5315,7 @@ main{display:grid;grid-template-columns:320px minmax(500px,1fr) 380px;gap:14px;m
 .trust-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:0 0 14px}.trust-card{border:1px solid var(--line);background:rgba(255,255,255,.055);border-radius:8px;padding:10px;box-shadow:0 1px 0 rgba(255,255,255,.08) inset}.trust-card b{display:block;font-size:11px;line-height:1.25}.trust-card p{font-size:11px;color:var(--dim);line-height:1.45;margin-top:5px}
 .update-banner{margin:0 8px 8px;border:1px solid rgba(244,183,64,.42);background:linear-gradient(135deg,rgba(244,183,64,.13),rgba(39,199,167,.08));border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between;gap:10px;box-shadow:0 1px 0 rgba(255,255,255,.08) inset}.update-banner b{font-size:12px}.update-banner p{font-size:11px;color:var(--dim);line-height:1.4;margin-top:3px}.update-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin-top:12px}.update-card{border:1px solid rgba(244,183,64,.25);background:rgba(244,183,64,.06);border-radius:8px;padding:10px}.update-card span{display:inline-block;font-size:9px;font-weight:950;text-transform:uppercase;color:var(--accent2);margin-bottom:6px}.update-card b{display:block;font-size:12px;line-height:1.25}.update-card p{font-size:11px;color:var(--dim);line-height:1.45;margin-top:5px}
 .brief-q{background:rgba(255,255,255,.07);border:1px solid var(--line);border-radius:8px;padding:11px;margin-bottom:9px;box-shadow:0 1px 0 rgba(255,255,255,.08) inset}.brief-q b{font-size:12px;color:var(--text);font-weight:900}.brief-q p{font-size:12px;color:var(--dim);line-height:1.5;margin-top:6px}
+.business-profile-panel{display:grid;gap:9px}.business-profile-hero{border:1px solid var(--line);border-radius:9px;background:linear-gradient(135deg,var(--zone-bg),rgba(255,255,255,.055));padding:12px;box-shadow:var(--glow)}.business-profile-hero h3{font-size:15px;line-height:1.15}.business-profile-hero p{font-size:12px;color:var(--dim);line-height:1.45;margin-top:6px}.business-profile-pills{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}.business-profile-pill{display:inline-flex;max-width:100%;border:1px solid var(--zone-border);border-radius:999px;background:color-mix(in srgb,var(--zone) 10%,transparent);color:var(--text);font-size:10px;font-weight:850;line-height:1.2;padding:5px 8px}.business-profile-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.business-profile-mini{border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.05);padding:10px}.business-profile-mini span{display:block;color:var(--dim);font-size:9px;font-weight:950;letter-spacing:.02em;text-transform:uppercase}.business-profile-mini b{display:block;font-size:12px;line-height:1.32;margin-top:5px}.business-profile-actions{display:flex;gap:7px;flex-wrap:wrap}.business-profile-empty{border:1px dashed var(--line);border-radius:9px;padding:12px;background:rgba(255,255,255,.035)}.business-profile-empty p{font-size:12px;color:var(--dim);line-height:1.45}.business-profile-empty .btn{margin-top:9px}@media(max-width:760px){.business-profile-grid{grid-template-columns:1fr}}
 table{width:100%;border-collapse:separate;border-spacing:0;font-size:12px}th,td{padding:10px;border-bottom:1px solid var(--line);text-align:left}th{color:var(--dim);font-size:10px;text-transform:uppercase;background:rgba(255,255,255,.035)}td:last-child{text-align:right}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.field{display:flex;flex-direction:column;gap:5px}.field.wide{grid-column:1/-1}.field-help{display:block;margin-top:1px;color:var(--dim);font-size:10px;line-height:1.35;text-transform:none;font-weight:650;opacity:.86}label{font-size:10px;color:var(--dim);font-weight:800;text-transform:uppercase}input,select{background:var(--surface2);border:1px solid var(--border);border-radius:7px;color:var(--text);padding:9px;font-size:12px}input:focus,select:focus{outline:none;border-color:var(--accent)}
 .creator-hero{position:relative;overflow:hidden;margin-bottom:12px;border:1px solid color-mix(in srgb,var(--accent) 26%,var(--line));border-radius:14px;background:linear-gradient(130deg,color-mix(in srgb,var(--accent) 10%,transparent),color-mix(in srgb,var(--accent2) 8%,transparent)),var(--glass);padding:18px;box-shadow:var(--shadow),var(--glow)}.creator-hero:after{content:"";position:absolute;right:-72px;bottom:-100px;width:230px;height:190px;border-radius:50%;background:color-mix(in srgb,var(--accent) 16%,transparent);filter:blur(42px);pointer-events:none}.creator-hero>*{position:relative;z-index:1}.creator-hero h2{font-size:23px;line-height:1.1;font-weight:950}.creator-hero p{max-width:540px;margin-top:8px;color:var(--dim);font-size:12px;line-height:1.55}.creator-hero-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.creator-safety{display:flex;align-items:flex-start;gap:10px;margin-bottom:12px;padding:12px;border:1px solid rgba(85,212,122,.23);border-radius:11px;background:rgba(85,212,122,.06)}.creator-safety-mark{display:grid;place-items:center;width:24px;height:24px;flex:none;border-radius:999px;background:rgba(85,212,122,.14);color:var(--green);font-size:12px;font-weight:950}.creator-safety b{display:block;font-size:12px}.creator-safety p{margin-top:4px;color:var(--dim);font-size:11px;line-height:1.5}.creator-manual-entry{border:1px solid var(--line);border-radius:12px;background:var(--glass);padding:0;overflow:hidden}.creator-manual-entry>summary{display:flex;align-items:center;justify-content:space-between;cursor:pointer;list-style:none;padding:13px 14px;color:var(--text);font-size:12px;font-weight:850}.creator-manual-entry>summary::-webkit-details-marker{display:none}.creator-manual-entry>summary:after{content:"+";color:var(--accent);font-size:17px}.creator-manual-entry[open]>summary{border-bottom:1px solid var(--line)}.creator-manual-entry[open]>summary:after{content:"-"}.creator-manual-entry b{display:block;font-size:12px}.creator-manual-entry small{display:block;margin-top:4px;color:var(--dim);font-size:10px;font-weight:600}.creator-manual-form{display:grid;gap:17px;padding:14px}.creator-form-section{display:grid;gap:11px}.creator-form-section+.creator-form-section{padding-top:14px;border-top:1px solid var(--line)}.creator-form-section h3{font-size:11px;font-weight:950;color:var(--dim);text-transform:uppercase}.creator-confirm{display:flex;align-items:flex-start;gap:8px;color:var(--dim);font-size:11px;font-weight:750;line-height:1.45;text-transform:none}.creator-confirm input{margin-top:2px;flex:none}.creator-advanced{border:1px solid var(--line);border-radius:8px;overflow:hidden;background:rgba(0,0,0,.08)}.creator-advanced summary{cursor:pointer;list-style:none;padding:11px;color:var(--dim);font-size:11px;font-weight:850}.creator-advanced summary::-webkit-details-marker{display:none}.creator-advanced summary:before{content:"+";margin-right:7px;color:var(--accent)}.creator-advanced[open] summary:before{content:"-"}.creator-advanced .form-grid{padding:0 11px 11px}.creator-submit-note{color:var(--dim);font-size:11px;line-height:1.5}.targeting-workbench{grid-column:1/-1;display:grid;gap:11px;border:1px solid color-mix(in srgb,var(--accent) 18%,var(--line));border-radius:12px;background:color-mix(in srgb,var(--surface) 86%,transparent);padding:12px}.targeting-intro{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}.targeting-intro b{font-size:12px}.targeting-intro p{margin-top:4px;color:var(--dim);font-size:11px;line-height:1.45}.targeting-mode-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.targeting-mode-card{min-height:84px;border:1px solid var(--line);border-radius:10px;background:var(--glass);color:var(--text);padding:10px;text-align:left;cursor:pointer}.targeting-mode-card.active,.targeting-mode-card:hover{border-color:color-mix(in srgb,var(--accent) 48%,var(--line));box-shadow:var(--glow)}.targeting-mode-card b{display:block;font-size:11px}.targeting-mode-card span{display:block;margin-top:5px;color:var(--dim);font-size:10px;line-height:1.35}.targeting-search-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}.targeting-picker{display:grid;gap:7px;min-width:0}.targeting-search-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px}.targeting-results{display:grid;gap:6px}.targeting-result{display:flex;align-items:center;justify-content:space-between;gap:8px;border:1px solid var(--line);border-radius:9px;background:var(--surface2);padding:8px;text-align:left}.targeting-result b{display:block;font-size:11px}.targeting-result span{display:block;color:var(--dim);font-size:10px;line-height:1.35}.targeting-chips{display:flex;gap:6px;flex-wrap:wrap;min-height:26px}.targeting-chip{display:inline-flex;align-items:center;gap:6px;border:1px solid color-mix(in srgb,var(--accent) 26%,var(--line));border-radius:999px;background:color-mix(in srgb,var(--accent) 8%,transparent);padding:5px 8px;color:var(--text);font-size:10px;font-weight:850}.targeting-chip button{display:grid;place-items:center;width:16px;height:16px;border:0;border-radius:50%;background:rgba(255,255,255,.09);color:inherit;cursor:pointer}.targeting-empty,.targeting-error{border:1px dashed var(--line);border-radius:9px;padding:9px;color:var(--dim);font-size:11px;line-height:1.45}.targeting-error{border-color:rgba(245,176,46,.38);background:rgba(245,176,46,.07)}.targeting-manual-fallback{border:1px solid var(--line);border-radius:9px;background:rgba(0,0,0,.08);overflow:hidden}.targeting-manual-fallback summary{cursor:pointer;list-style:none;padding:10px;color:var(--dim);font-size:11px;font-weight:900}.targeting-manual-fallback summary::-webkit-details-marker{display:none}.targeting-manual-fallback summary:before{content:"+";margin-right:7px;color:var(--accent)}.targeting-manual-fallback[open] summary:before{content:"-"}.targeting-manual-fallback .form-grid{padding:0 10px 10px}
@@ -5376,9 +5516,9 @@ body.theme-ember .creative-studio-hero:before{background:linear-gradient(120deg,
 @media(max-width:780px){.brand-memory-nav{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));overflow:visible}.brand-nav-item,.brand-new-product{width:100%;min-width:0}.brand-nav-item b{max-width:none;white-space:normal;line-height:1.25}}
 .msg-actions{display:grid;gap:7px;margin-top:10px;padding-top:9px;border-top:1px solid var(--line)}.msg-approval-card{border:1px solid color-mix(in srgb,var(--accent) 22%,var(--line));border-radius:9px;background:rgba(255,255,255,.05);padding:8px}.msg-approval-card b{display:block;font-size:11px;color:var(--text);line-height:1.25}.msg-approval-card span{display:block;font-size:10px;color:var(--dim);margin-top:3px}.msg-approval-buttons{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:7px}.msg-approval-buttons .btn{width:100%;font-size:10px;padding:8px}
 .chatgpt-connect-card{position:relative;overflow:hidden;border:1px solid color-mix(in srgb,var(--accent) 28%,var(--line));border-radius:10px;background:linear-gradient(135deg,rgba(39,199,167,.12),rgba(99,168,255,.08),rgba(255,255,255,.04));padding:13px;margin-bottom:14px;box-shadow:var(--glow)}.chatgpt-connect-card:before{content:"";position:absolute;inset:0;background:linear-gradient(120deg,transparent,rgba(255,255,255,.08),transparent);transform:translateX(-100%);animation:softSweep 8s ease-in-out infinite;pointer-events:none}.chatgpt-connect-card>*{position:relative;z-index:1}.chatgpt-connect-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:10px}.chatgpt-connect-head .badge{border:1px solid color-mix(in srgb,var(--accent) 32%,var(--line));background:rgba(0,0,0,.22);color:var(--text);box-shadow:0 8px 22px rgba(0,0,0,.14)}.chatgpt-connect-head .badge.warn{color:#fff;background:linear-gradient(135deg,rgba(123,77,255,.48),rgba(255,111,205,.36))}.chatgpt-connect-head .badge.ok{color:#0b2118;background:linear-gradient(135deg,#6ff0a0,#9ef6d3)}.chatgpt-connect-head h3{font-size:15px;line-height:1.14}.chatgpt-connect-head p{font-size:11px;color:var(--dim);line-height:1.45;margin-top:5px}.model-route-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:10px 0}.model-route-card{border:1px solid var(--line);border-radius:8px;background:rgba(0,0,0,.12);padding:10px}.model-route-card>span{display:inline-grid;place-items:center;width:24px;height:24px;border-radius:7px;background:color-mix(in srgb,var(--accent) 20%,transparent);color:var(--accent);font-size:11px;font-weight:950}.model-route-card b{display:block;font-size:11px;line-height:1.25;margin-top:7px}.model-route-card p{font-size:10px;color:var(--dim);line-height:1.45;margin-top:4px}.agent-model-picker{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:12px 0}.agent-model-option{display:grid;grid-template-columns:auto 1fr;gap:9px;align-items:start;min-height:88px;border:1px solid var(--line);border-radius:11px;background:rgba(0,0,0,.12);color:var(--text);padding:11px;text-align:left;cursor:pointer;transition:transform .16s ease,border-color .16s ease,background .16s ease,box-shadow .16s ease}.agent-model-option:hover{transform:translateY(-1px);border-color:color-mix(in srgb,var(--accent) 38%,var(--line));background:rgba(255,255,255,.055)}.agent-model-option.active{border-color:color-mix(in srgb,var(--accent) 62%,var(--line));background:linear-gradient(135deg,color-mix(in srgb,var(--accent) 16%,transparent),color-mix(in srgb,var(--accent2) 10%,transparent)),rgba(255,255,255,.055);box-shadow:0 14px 34px rgba(0,0,0,.14),var(--glow)}.agent-model-option .route-icon{display:grid;place-items:center;width:31px;height:31px;border-radius:10px;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;font-size:13px;font-weight:950}.agent-model-option b{display:block;font-size:12px;line-height:1.2}.agent-model-option p{margin-top:4px;color:var(--dim);font-size:10px;line-height:1.35}.agent-route-panels{display:grid;gap:10px}.agent-route-panel{display:none;border:1px solid var(--line);border-radius:12px;background:rgba(0,0,0,.14);padding:12px}.agent-route-panel.active{display:block;animation:routePanelIn .18s ease both}.agent-route-panel h4{font-size:14px;line-height:1.2}.agent-route-panel p{margin-top:5px;color:var(--dim);font-size:11px;line-height:1.45}.agent-route-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.agent-route-actions .btn{flex:1 1 170px}.model-provider-form{margin-top:0}.chatgpt-command{display:flex;align-items:flex-start;justify-content:flex-start;flex-direction:column;gap:8px;border:1px solid var(--line);border-radius:8px;background:rgba(0,0,0,.18);padding:9px;margin-top:8px}.chatgpt-command code,.chatgpt-command>span{display:block;width:100%;height:auto;font-size:11px;line-height:1.4;font-weight:800;color:var(--text);word-break:normal;overflow-wrap:anywhere}.chatgpt-command .mode-actions{width:100%;flex-wrap:wrap}.chatgpt-command .mode-actions .btn{flex:1 1 150px}.chatgpt-connect-result{margin-top:8px;border:1px solid color-mix(in srgb,var(--accent) 24%,var(--line));border-radius:8px;background:rgba(255,255,255,.055);padding:10px}.chatgpt-connect-result b{display:block;font-size:12px;line-height:1.25}.chatgpt-connect-result p,.chatgpt-connect-result a{font-size:11px;line-height:1.45}.chatgpt-connect-result a{color:var(--accent);font-weight:900}.chatgpt-terminal-output{max-height:150px;overflow:auto;margin-top:8px;border:1px solid var(--line);border-radius:7px;background:rgba(0,0,0,.22);padding:8px;color:var(--dim);font-size:10px;line-height:1.4;white-space:pre-wrap}.chatgpt-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px}.chatgpt-foot p{font-size:10px;color:var(--dim);line-height:1.45}.chatgpt-connect-card.ready{border-color:rgba(85,212,122,.3);background:linear-gradient(135deg,rgba(85,212,122,.12),rgba(99,168,255,.06),rgba(255,255,255,.04))}@keyframes softSweep{0%,62%{transform:translateX(-120%)}82%,100%{transform:translateX(120%)}}@keyframes routePanelIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
-.chatgpt-device-code{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;margin-top:10px;border:1px solid color-mix(in srgb,var(--accent) 45%,var(--line));border-radius:10px;background:linear-gradient(135deg,color-mix(in srgb,var(--accent) 16%,transparent),rgba(0,0,0,.2));padding:10px}.chatgpt-device-code span{display:block;color:var(--dim);font-size:10px;font-weight:850;text-transform:uppercase;letter-spacing:.02em}.chatgpt-device-code strong{display:block;margin-top:4px;font-size:22px;line-height:1.05;letter-spacing:.08em;color:var(--text);font-weight:950}.chatgpt-device-code .btn{white-space:nowrap}
+.chatgpt-connect-result.has-device-code{border-color:color-mix(in srgb,var(--warning) 60%,var(--accent));background:linear-gradient(135deg,rgba(244,183,64,.18),color-mix(in srgb,var(--accent) 12%,transparent),rgba(0,0,0,.22));box-shadow:0 18px 48px rgba(0,0,0,.24),0 0 0 1px rgba(244,183,64,.18) inset}.chatgpt-device-code{display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center;margin:12px 0 4px;border:2px solid color-mix(in srgb,var(--warning) 64%,var(--accent));border-radius:16px;background:linear-gradient(135deg,rgba(244,183,64,.22),color-mix(in srgb,var(--accent) 18%,transparent),rgba(0,0,0,.28));padding:16px;box-shadow:0 20px 54px rgba(0,0,0,.24),0 0 34px color-mix(in srgb,var(--warning) 18%,transparent)}.chatgpt-device-code span{display:block;color:var(--text);font-size:12px;font-weight:950;text-transform:uppercase;letter-spacing:.02em}.chatgpt-device-code small{display:block;margin-top:8px;color:var(--dim);font-size:12px;line-height:1.35;font-weight:700;text-transform:none}.chatgpt-device-code strong{display:block;margin-top:7px;font-size:clamp(34px,7vw,58px);line-height:.98;letter-spacing:.09em;color:#fff;font-weight:950;text-shadow:0 4px 24px rgba(0,0,0,.34);overflow-wrap:anywhere}.chatgpt-device-code .btn{white-space:nowrap;min-height:46px;padding:12px 16px;font-size:12px}
 @media(max-width:980px){.agent-model-picker{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(max-width:780px){.chatgpt-connect-head,.chatgpt-foot,.chatgpt-command{align-items:flex-start;flex-direction:column}.model-route-grid,.agent-model-picker{grid-template-columns:1fr}.chatgpt-command .btn,.chatgpt-foot .btn,.agent-route-actions .btn{width:100%}}
+@media(max-width:780px){.chatgpt-connect-head,.chatgpt-foot,.chatgpt-command{align-items:flex-start;flex-direction:column}.model-route-grid,.agent-model-picker{grid-template-columns:1fr}.chatgpt-command .btn,.chatgpt-foot .btn,.agent-route-actions .btn{width:100%}.chatgpt-device-code{grid-template-columns:1fr}.chatgpt-device-code .btn{width:100%}}
 body .onboarding-flow input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),body .onboarding-flow select,body .onboarding-flow textarea{background:linear-gradient(180deg,#171420,#100f18);border-color:rgba(199,178,255,.26);color:#f7f3ff;caret-color:#ff6bd6;box-shadow:inset 0 1px 0 rgba(255,255,255,.055),0 0 0 1px rgba(0,0,0,.12)}
 body .onboarding-flow input:not([type="checkbox"]):not([type="radio"]):not([type="range"])::placeholder,body .onboarding-flow textarea::placeholder{color:rgba(221,212,240,.52);opacity:1}
 body .onboarding-flow input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus,body .onboarding-flow select:focus,body .onboarding-flow textarea:focus{outline:none;background:#12101a;border-color:rgba(167,124,255,.72);box-shadow:0 0 0 3px rgba(167,124,255,.15),inset 0 1px 0 rgba(255,255,255,.06)}
@@ -5411,8 +5551,9 @@ body .onboarding-flow select option{background:#15131d;color:#f7f3ff}
 <main>
 <aside class="col brief-zone">
 <button class="zone-label" id="toggle-left-panel" type="button" onclick="togglePanel('left')"><span data-i18n="zone_brief">Daily intelligence</span><small class="zone-badge" id="daily-brief-badge" data-i18n="new_brief">New</small><i class="panel-caret" aria-hidden="true"></i></button>
-<section class="section"><div class="head"><span>01</span><b data-i18n="daily_brief">Daily Brief</b><button class="btn ask-btn" onclick="openChat(t('draft_catchup'))" data-i18n="ask_agent">Ask agent</button><button class="btn" onclick="runAgent()" data-i18n="run">Run</button></div><div class="body" id="brief"></div></section>
-<section class="section"><div class="head"><span>02</span><b data-i18n="fatigue_monitor">Fatigue Monitor</b><button class="btn ask-btn" onclick="openChat(t('draft_fatigue'))" data-i18n="ask_agent">Ask agent</button></div><div class="body" id="fatigue"></div></section>
+<section class="section"><div class="head"><span>01</span><b id="business-profile-title">Perfil del negocio</b><button class="btn ask-btn" onclick="openChat(businessProfileChatPrompt())" data-i18n="ask_agent">Ask agent</button></div><div class="body" id="business-profile-panel"></div></section>
+<section class="section"><div class="head"><span>02</span><b data-i18n="daily_brief">Daily Brief</b><button class="btn ask-btn" onclick="openChat(t('draft_catchup'))" data-i18n="ask_agent">Ask agent</button><button class="btn" onclick="runAgent()" data-i18n="run">Run</button></div><div class="body" id="brief"></div></section>
+<section class="section"><div class="head"><span>03</span><b data-i18n="fatigue_monitor">Fatigue Monitor</b><button class="btn ask-btn" onclick="openChat(t('draft_fatigue'))" data-i18n="ask_agent">Ask agent</button></div><div class="body" id="fatigue"></div></section>
 </aside>
 <section class="col work-zone">
 <div class="zone-label" data-i18n="zone_work">Campaign workspace</div>
@@ -5584,7 +5725,7 @@ let dashboardTheme=normalizeDashboardTheme(localStorage.getItem('dashboardTheme'
 let uiWorkbenchPreview=readUiWorkbenchPreview();
 const copy={
  en:{
-	  brand_subtitle:'Self-hosted local/VPS operator',zone_brief:'Daily intelligence',zone_work:'Campaign workspace',zone_actions:'Approvals and activity',control_center:'Control Center',control_subtitle:'Daily decisions, risk signals, and ad account health in one place.',safe_mode:'Safe mode active',ask_agent:'Ask agent',ask_manager:'Ask manager',chat_fab:'Talk to agent',chat_title:'Meta Ads Manager',chat_subtitle:'Ask for catchups, actions, or explanations.',new_chat:'New chat',quick_status:'Where are we?',quick_budget:'Review budget',quick_fatigue:'Check fatigue',send:'Send',usage_guide:'Guide',tab_overview:'Overview',tab_setup:'Setup',tab_creator:'Create campaign',tab_audiences:'Audiences',tab_creatives:'Creatives',tab_reports:'Reports',updated:'Updated',new_brief:'New',daily_brief:'Daily Brief',run:'Refresh',fatigue_monitor:'Fatigue Monitor',setup_status:'Setup Status',setup_form_title:'Buyer setup fields',setup_form_body:'Save the few account details the assistant needs. No technical file editing here.',license_panel_title:'License unlock',license_panel_body:'Activate the license before live setup. If cloud validation is configured, this device checks your seller domain and caches a safe unlock.',license_active:'Active',license_missing:'Missing',license_invalid:'Needs attention',license_cloud:'Cloud validation',license_local:'Local license',license_activate:'Activate license',license_key:'License key',buyer_email:'Buyer email',ad_account_id:'Ad account',page_id:'Facebook page',instagram_actor_id:'Instagram profile',default_adset_id:'Advanced field',landing_url:'Website link',save_setup:'Save',refresh:'Refresh',campaign_creator:'Create a campaign',creator_kicker:'New campaign',creator_title:'Create a campaign',creator_body:'Tell the agent what you sell, who should see it, and how much you can spend. It will organize the campaign and show it to you before anything can spend money.',creator_chat_cta:'Create by talking to the agent',paused_draft_title:'You decide before money is spent',paused_draft_body:'The agent prepares the campaign and asks for your approval. If you choose to leave it active, it can start spending only after you approve it.',creator_manual_title:'I prefer to enter the details myself',creator_manual_help:'Optional: the agent can ask you these questions in chat.',creator_basic:'What will you advertise?',campaign_name_simple:'Name for this campaign',campaign_name_example:'Example: June promotion',campaign_goal_simple:'What should people do?',goal_purchases:'Buy',goal_contacts:'Leave their details',goal_action:'Take an action on your website',landing_url_simple:'Page people will visit',landing_url_example:'https://your-page.com',primary_text_simple:'Message people will read',primary_text_example:'Example: Discover how this offer can help you today.',headline_simple:'Short title',headline_example:'Example: See the offer',image_simple:'Image already prepared, if you have one',image_path_example:'Optional: image file path',creator_people_budget:'Who will see it and how much can it spend?',daily_budget_simple:'Maximum to spend each day',total_budget_simple:'Maximum to spend in total',locations_simple:'Where those people live',locations_example:'Example: Colombia, Mexico, or Miami',interests_simple:'Things they may be interested in',interests_example:'Example: online stores, beauty, education',age_min_simple:'Youngest age',age_max_simple:'Oldest age',creator_decision:'How should it be prepared?',creative_variations_simple:'How many ideas to compare?',compare_options_simple:'Compare those ideas?',compare_yes:'Yes, compare them',compare_no:'No, use one idea',after_approval_simple:'After you approve it',active_after_approval:'Start showing the ads and spending the chosen budget',ready_not_spending:'Leave it ready without spending',confirm_active_spend:'Only if I choose to turn it on: I understand that after approving, this campaign may start spending my chosen budget.',creator_meta_optional:'Only if you already know this Meta detail',pixel_optional:'Meta tracking number (Pixel ID), optional',creator_review_notice:'Nothing will be created in your Meta account until you review and approve this request.',audience_builder:'Audience Builder',what_sell:'What do you sell?',who_buys:'Who buys today?',audience_product_example:'Example: an online course or beauty product',audience_buyer_example:'Example: people who want to sell more',audience_locations_example:'Example: Colombia or Mexico',audience_interests_example:'Example: beauty, education, local stores',audience_data_example:'Example: people who messaged on Instagram or buyers',age_range:'Age range',budget_level:'Budget level',budget_small:'Small',budget_medium:'Medium',budget_large:'Large',data_sources:'Data sources',consent_upload:'I have consent to use customer emails/phones if I upload them later.',notes:'Notes',optional:'Optional',build_audience:'Build Audience Strategy',lookalike_status:'Lookalike status',recommended_audiences:'Recommended audiences',next_steps:'Next steps',name:'Name',objective:'Objective',daily_budget:'Daily Budget',total_budget:'Total Budget',locations:'Locations',interests:'Interests',age_min:'Age Min',age_max:'Age Max',creative_variations:'Creative Variations',ab_test:'A/B Test',enabled:'Enabled',disabled:'Disabled',stage_campaign:'Send for my approval',creative_refresh:'Creative Refresh',generate_drafts:'Generate Drafts',upload_payloads:'Upload Payloads',campaign_comparison:'Campaign Comparison',export_csv:'Export CSV',campaign:'Campaign',status:'Status',budget_optimizer:'Budget Optimizer',now:'Now',rec:'Rec',pending_approvals:'Pending Approvals',action_log:'Action Log',
+	  brand_subtitle:'Self-hosted local/VPS operator',zone_brief:'Profile and daily read',zone_work:'Campaign workspace',zone_actions:'Approvals and activity',control_center:'Control Center',control_subtitle:'Daily decisions, risk signals, and ad account health in one place.',safe_mode:'Safe mode active',ask_agent:'Ask agent',ask_manager:'Ask manager',chat_fab:'Talk to agent',chat_title:'Meta Ads Manager',chat_subtitle:'Ask for catchups, actions, or explanations.',new_chat:'New chat',quick_status:'Where are we?',quick_budget:'Review budget',quick_fatigue:'Check fatigue',send:'Send',usage_guide:'Guide',tab_overview:'Overview',tab_setup:'Setup',tab_creator:'Create campaign',tab_audiences:'Audiences',tab_creatives:'Creatives',tab_reports:'Reports',updated:'Updated',new_brief:'New',daily_brief:'Daily Brief',run:'Refresh',fatigue_monitor:'Fatigue Monitor',setup_status:'Setup Status',setup_form_title:'Buyer setup fields',setup_form_body:'Save the few account details the assistant needs. No technical file editing here.',license_panel_title:'License unlock',license_panel_body:'Activate the license before live setup. If cloud validation is configured, this device checks your seller domain and caches a safe unlock.',license_active:'Active',license_missing:'Missing',license_invalid:'Needs attention',license_cloud:'Cloud validation',license_local:'Local license',license_activate:'Activate license',license_key:'License key',buyer_email:'Buyer email',ad_account_id:'Ad account',page_id:'Facebook page',instagram_actor_id:'Instagram profile',default_adset_id:'Advanced field',landing_url:'Website link',save_setup:'Save',refresh:'Refresh',campaign_creator:'Create a campaign',creator_kicker:'New campaign',creator_title:'Create a campaign',creator_body:'Tell the agent what you sell, who should see it, and how much you can spend. It will organize the campaign and show it to you before anything can spend money.',creator_chat_cta:'Create by talking to the agent',paused_draft_title:'You decide before money is spent',paused_draft_body:'The agent prepares the campaign and asks for your approval. If you choose to leave it active, it can start spending only after you approve it.',creator_manual_title:'I prefer to enter the details myself',creator_manual_help:'Optional: the agent can ask you these questions in chat.',creator_basic:'What will you advertise?',campaign_name_simple:'Name for this campaign',campaign_name_example:'Example: June promotion',campaign_goal_simple:'What should people do?',goal_purchases:'Buy',goal_contacts:'Leave their details',goal_action:'Take an action on your website',landing_url_simple:'Page people will visit',landing_url_example:'https://your-page.com',primary_text_simple:'Message people will read',primary_text_example:'Example: Discover how this offer can help you today.',headline_simple:'Short title',headline_example:'Example: See the offer',image_simple:'Image already prepared, if you have one',image_path_example:'Optional: image file path',creator_people_budget:'Who will see it and how much can it spend?',daily_budget_simple:'Maximum to spend each day',total_budget_simple:'Maximum to spend in total',locations_simple:'Where those people live',locations_example:'Example: Colombia, Mexico, or Miami',interests_simple:'Things they may be interested in',interests_example:'Example: online stores, beauty, education',age_min_simple:'Youngest age',age_max_simple:'Oldest age',creator_decision:'How should it be prepared?',creative_variations_simple:'How many ideas to compare?',compare_options_simple:'Compare those ideas?',compare_yes:'Yes, compare them',compare_no:'No, use one idea',after_approval_simple:'After you approve it',active_after_approval:'Start showing the ads and spending the chosen budget',ready_not_spending:'Leave it ready without spending',confirm_active_spend:'Only if I choose to turn it on: I understand that after approving, this campaign may start spending my chosen budget.',creator_meta_optional:'Only if you already know this Meta detail',pixel_optional:'Meta tracking number (Pixel ID), optional',creator_review_notice:'Nothing will be created in your Meta account until you review and approve this request.',audience_builder:'Audience Builder',what_sell:'What do you sell?',who_buys:'Who buys today?',audience_product_example:'Example: an online course or beauty product',audience_buyer_example:'Example: people who want to sell more',audience_locations_example:'Example: Colombia or Mexico',audience_interests_example:'Example: beauty, education, local stores',audience_data_example:'Example: people who messaged on Instagram or buyers',age_range:'Age range',budget_level:'Budget level',budget_small:'Small',budget_medium:'Medium',budget_large:'Large',data_sources:'Data sources',consent_upload:'I have consent to use customer emails/phones if I upload them later.',notes:'Notes',optional:'Optional',build_audience:'Build Audience Strategy',lookalike_status:'Lookalike status',recommended_audiences:'Recommended audiences',next_steps:'Next steps',name:'Name',objective:'Objective',daily_budget:'Daily Budget',total_budget:'Total Budget',locations:'Locations',interests:'Interests',age_min:'Age Min',age_max:'Age Max',creative_variations:'Creative Variations',ab_test:'A/B Test',enabled:'Enabled',disabled:'Disabled',stage_campaign:'Send for my approval',creative_refresh:'Creative Refresh',generate_drafts:'Generate Drafts',upload_payloads:'Upload Payloads',campaign_comparison:'Campaign Comparison',export_csv:'Export CSV',campaign:'Campaign',status:'Status',budget_optimizer:'Budget Optimizer',now:'Now',rec:'Rec',pending_approvals:'Pending Approvals',action_log:'Action Log',
   targeting_picker_title:'Choose the audience with Meta options',targeting_picker_body:'Search locations and interests from Meta, or let the agent suggest the safest audience.',targeting_agent_cta:'Ask the agent',targeting_broad_title:'Broad audience',targeting_broad_body:'Best default: age, location, creative and Meta learning.',targeting_guided_title:'Guided interests',targeting_guided_body:'Use Meta interests as hints when the niche is clear.',targeting_warm_title:'Retargeting / lookalike',targeting_warm_body:'Only when pixel, page, Instagram or customer data is ready.',targeting_search:'Search Meta',targeting_manual_fallback:'If Meta search is not available',targeting_no_results:'No Meta options found. Try another word.',targeting_need_query:'Write what you want to search first.',
   spend:'Spend',revenue:'Revenue',conversions:'Conversions',active_budget:'Active Budget',active_daily_budget:'Active daily budget',roas:'ROAS',cpa:'CPA',ctr:'CTR',cpc:'CPC',frequency:'Frequency',mode:'Mode',ok:'OK',warnings:'Warnings',blocked:'Blocked',live_ready:'Live Ready',
   spend_tip:'How much money has been spent on ads in this period.',revenue_tip:'How much sales value the ads are estimated to have produced.',conversions_tip:'How many desired actions happened, such as purchases, leads, or signups.',active_budget_tip:'The total daily budget still running across active campaigns.',active_daily_budget_tip:'The total daily ad budget currently running across active campaigns.',daily_budget_tip:'How much the campaign is allowed to spend per day.',roas_tip:'Return on ad spend. If ROAS is 3x, every $1 in ads brought about $3 back.',cpa_tip:'Cost per acquisition. This is roughly what you paid to get one conversion.',ctr_tip:'Click-through rate. The percent of people who saw the ad and clicked it.',cpc_tip:'Cost per click. The average amount paid for one click.',frequency_tip:'How many times the average person has seen the ad. High frequency can mean people are getting tired of it.',mode_tip:'The current control level. Supervised means real data is read, but changes wait for approval; autopilot can act inside your rules.',ok_tip:'Items already configured correctly.',warnings_tip:'Items that are not blocking the demo, but should be reviewed before going live.',blocked_tip:'Items that must be fixed before the full live workflow can run.',live_ready_tip:'Whether the install has the key pieces needed before live Meta Ads actions are allowed.',
@@ -5593,7 +5734,7 @@ const copy={
 	  live_ready_yes:'Yes',live_ready_no:'No',check:'Check',draft_where_are_we:'Give me a business catch-up: where are we today, what should I watch, and what would you do next?',draft_catchup:'Explain today’s daily brief like my Meta Ads manager. What matters most?',draft_fatigue:'Review fatigue risk. Which ads need new creative and why?',draft_budget:'Review the budget optimizer. Which recommendations are safe and which need caution?',draft_setup:'Review setup status. What blocks us from going live safely?',draft_audience:'Help me choose targeting. Ask me only what is missing, then recommend broad, interest, retargeting, and lookalike options safely.',chat_welcome:'Hi, I’m your Meta Ads manager. Ask me for a catch-up, a decision, or help taking an action.',chat_summary:'Here is the catch-up: account ROAS is {roas}x, CPA is {cpa}, active budget is {budget}, and {pending} approval(s) are pending. The safest next step is to review budget recommendations and fatigue before going live.',chat_budget:'Budget view: compare current vs suggested budgets. For winning campaigns, scale carefully; for weak campaigns, fix creative or pause before adding spend.',chat_fatigue:'Fatigue view: watch frequency, CTR drops, and rising CPC. If fatigue is present, generate creative refresh drafts before increasing budget.',chat_setup:'Setup view: check blocked items first. Live actions stay protected until credentials, destination IDs, and the live-action switch are ready.',chat_action_hint:'I can open the right workflow from here. For live account changes, the approval queue and dashboard password still protect the account.',toast_resume:'Resume staged for approval',toast_action:'Action complete',toast_budget:'Budget action recorded',toast_daily:'Daily agent report generated',toast_export:'CSV exported: ',toast_approval:'Approval executed',toast_refresh:'Creative refresh draft generated',toast_upload:'Upload payload staged',toast_audience:'Audience strategy generated',toast_setup_saved:'Setup fields saved',toast_license:'License checked',toast_details:'Campaign details visible on this card.',prompt_budget:'New daily budget',unlock_title:'Unlock dashboard',unlock_body:'Enter the password for this dashboard to continue.',unlock_create_title:'Create your password',unlock_create_body:'This is your private password for this dashboard on this computer or server. You choose it now; we do not send one to you.',dashboard_password:'Dashboard password',dashboard_password_confirm:'Repeat password',remember_device:'Remember this device',unlock_button:'Unlock dashboard',unlock_create_button:'Save my password',unlock_needed:'Enter the password for this dashboard to continue.',unlock_create_needed:'Create a password to protect this dashboard before continuing.',unlock_failed:'That password did not unlock the dashboard. Try again.',dashboard_password_short:'Use at least 8 characters.',dashboard_password_mismatch:'Passwords do not match.',copy_command:'Copy',copied:'Copied'
  },
  es:{
-	  brand_subtitle:'Operador local/VPS para Meta Ads',zone_brief:'Lectura diaria',zone_work:'Área de campañas',zone_actions:'Aprobaciones y actividad',control_center:'Centro de control',control_subtitle:'Decisiones diarias, señales de riesgo y salud de la cuenta en un solo lugar.',safe_mode:'Modo seguro activo',ask_agent:'Preguntar',ask_manager:'Hablar con el agente',chat_fab:'Hablar con el agente',chat_title:'Manager de Meta Ads',chat_subtitle:'Pide resumen, decisiones o acciones.',new_chat:'Nuevo chat',quick_status:'¿Dónde estamos?',quick_budget:'Revisar presupuesto',quick_fatigue:'Ver cansancio',send:'Enviar',usage_guide:'Guía',tab_overview:'Resumen',tab_setup:'Configuración',tab_creator:'Crear campaña',tab_audiences:'Audiencias',tab_creatives:'Creativos',tab_reports:'Reportes',updated:'Actualizado',new_brief:'Nuevo',daily_brief:'Resumen diario',run:'Actualizar',fatigue_monitor:'Cansancio de anuncios',setup_status:'Configuración y seguridad',setup_form_title:'Datos importantes guardados',setup_form_body:'Aquí puedes cambiar licencia, cuenta, página y web. Normalmente esto ya queda listo en la configuración inicial. Si no sabes qué poner, pregúntale al agente.',license_panel_title:'Activación de licencia',license_panel_body:'Activa el código de compra para usar funciones reales. Este equipo confirma tu licencia con nuestro servidor y guarda permiso temporal para no pedirlo todo el tiempo.',license_active:'Activa',license_missing:'Falta',license_invalid:'Revisar',license_cloud:'Confirmada online',license_local:'Licencia local',license_activate:'Activar licencia',license_key:'Licencia',buyer_email:'Email del comprador',ad_account_id:'Cuenta publicitaria',page_id:'Página de Facebook',instagram_actor_id:'Perfil de Instagram',default_adset_id:'Campo avanzado',landing_url:'Link de tu web',save_setup:'Guardar',refresh:'Actualizar',campaign_creator:'Crear una campaña',creator_kicker:'Nueva campaña',creator_title:'Crea una campaña',creator_body:'Cuéntale al agente qué vendes, quién debe verlo y cuánto puedes gastar. Él organizará la campaña y te la mostrará antes de que pueda gastar dinero.',creator_chat_cta:'Crear hablando con el agente',paused_draft_title:'Tú decides antes de gastar dinero',paused_draft_body:'El agente prepara la campaña y te pide aprobación. Si decides dejarla activa, solo podrá empezar a gastar después de que la apruebes.',creator_manual_title:'Prefiero escribir los datos yo',creator_manual_help:'Opcional: el agente puede preguntarte todo esto en el chat.',creator_basic:'Qué vas a anunciar',campaign_name_simple:'Nombre para esta campaña',campaign_name_example:'Ej: Promo de junio',campaign_goal_simple:'Qué quieres que haga la persona',goal_purchases:'Comprar',goal_contacts:'Dejar sus datos',goal_action:'Hacer una acción en tu página',landing_url_simple:'Página que visitarán',landing_url_example:'https://tu-pagina.com',primary_text_simple:'Mensaje que leerán',primary_text_example:'Ej: Descubre cómo esta oferta puede ayudarte hoy.',headline_simple:'Título corto',headline_example:'Ej: Mira la oferta',image_simple:'Imagen ya preparada, si tienes una',image_path_example:'Opcional: ruta del archivo de imagen',creator_people_budget:'Quién lo verá y cuánto puede gastar',daily_budget_simple:'Máximo que puede gastar al día',total_budget_simple:'Máximo que puede gastar en total',locations_simple:'Dónde viven esas personas',locations_example:'Ej: Colombia, México o Miami',interests_simple:'Qué cosas podrían interesarles',interests_example:'Ej: tiendas online, belleza, educación',age_min_simple:'Edad más joven',age_max_simple:'Edad mayor',creator_decision:'Cómo quieres dejarla preparada',creative_variations_simple:'Cuántas ideas quieres comparar',compare_options_simple:'Comparar esas ideas',compare_yes:'Sí, compararlas',compare_no:'No, usar una sola idea',after_approval_simple:'Después de que la apruebes',active_after_approval:'Empezar a mostrar anuncios y gastar el presupuesto elegido',ready_not_spending:'Dejarla lista sin gastar',confirm_active_spend:'Marcar solo si elegiste empezar a mostrar anuncios: entiendo que, después de aprobar, esta campaña podrá gastar el presupuesto que elegí.',creator_meta_optional:'Solo si ya conoces este dato de Meta',pixel_optional:'Número de seguimiento de Meta (Pixel ID), opcional',creator_review_notice:'Nada se creará en tu cuenta de Meta hasta que revises y apruebes esta solicitud.',audience_builder:'Elegir público',what_sell:'¿Qué vendes?',who_buys:'¿Quién compra hoy?',audience_product_example:'Ej: un curso o un producto de belleza',audience_buyer_example:'Ej: personas que quieren vender más',audience_locations_example:'Ej: Colombia o México',audience_interests_example:'Ej: belleza, educación o negocios locales',audience_data_example:'Ej: personas que escribieron por Instagram o compradores',age_range:'Edad aproximada',budget_level:'Tamaño del presupuesto',budget_small:'Pequeño',budget_medium:'Mediano',budget_large:'Grande',data_sources:'Datos que ya tienes',consent_upload:'Tengo permiso para usar emails/teléfonos de clientes si los subo después.',notes:'Notas',optional:'Opcional',build_audience:'Crear recomendación de público',lookalike_status:'Público parecido',recommended_audiences:'A quién mostrar anuncios',next_steps:'Siguientes pasos',name:'Nombre',objective:'Objetivo',daily_budget:'Presupuesto diario',total_budget:'Presupuesto total',locations:'Países/ubicaciones',interests:'Intereses',age_min:'Edad mínima',age_max:'Edad máxima',creative_variations:'Opciones de anuncios',ab_test:'Comparar ideas',enabled:'Activada',disabled:'Desactivada',stage_campaign:'Enviar para mi aprobación',creative_refresh:'Crear ideas nuevas',generate_drafts:'Crear ideas',upload_payloads:'Anuncios listos para revisar',campaign_comparison:'Comparación de campañas',export_csv:'Descargar reporte',campaign:'Campaña',status:'Estado',budget_optimizer:'Qué hacer con el presupuesto',now:'Actual',rec:'Sugerido',pending_approvals:'Decisiones por aprobar',action_log:'Lo que hizo el agente',
+	  brand_subtitle:'Operador local/VPS para Meta Ads',zone_brief:'Perfil y lectura',zone_work:'Área de campañas',zone_actions:'Aprobaciones y actividad',control_center:'Centro de control',control_subtitle:'Decisiones diarias, señales de riesgo y salud de la cuenta en un solo lugar.',safe_mode:'Modo seguro activo',ask_agent:'Preguntar',ask_manager:'Hablar con el agente',chat_fab:'Hablar con el agente',chat_title:'Manager de Meta Ads',chat_subtitle:'Pide resumen, decisiones o acciones.',new_chat:'Nuevo chat',quick_status:'¿Dónde estamos?',quick_budget:'Revisar presupuesto',quick_fatigue:'Ver cansancio',send:'Enviar',usage_guide:'Guía',tab_overview:'Resumen',tab_setup:'Configuración',tab_creator:'Crear campaña',tab_audiences:'Audiencias',tab_creatives:'Creativos',tab_reports:'Reportes',updated:'Actualizado',new_brief:'Nuevo',daily_brief:'Resumen diario',run:'Actualizar',fatigue_monitor:'Cansancio de anuncios',setup_status:'Configuración y seguridad',setup_form_title:'Datos importantes guardados',setup_form_body:'Aquí puedes cambiar licencia, cuenta, página y web. Normalmente esto ya queda listo en la configuración inicial. Si no sabes qué poner, pregúntale al agente.',license_panel_title:'Activación de licencia',license_panel_body:'Activa el código de compra para usar funciones reales. Este equipo confirma tu licencia con nuestro servidor y guarda permiso temporal para no pedirlo todo el tiempo.',license_active:'Activa',license_missing:'Falta',license_invalid:'Revisar',license_cloud:'Confirmada online',license_local:'Licencia local',license_activate:'Activar licencia',license_key:'Licencia',buyer_email:'Email del comprador',ad_account_id:'Cuenta publicitaria',page_id:'Página de Facebook',instagram_actor_id:'Perfil de Instagram',default_adset_id:'Campo avanzado',landing_url:'Link de tu web',save_setup:'Guardar',refresh:'Actualizar',campaign_creator:'Crear una campaña',creator_kicker:'Nueva campaña',creator_title:'Crea una campaña',creator_body:'Cuéntale al agente qué vendes, quién debe verlo y cuánto puedes gastar. Él organizará la campaña y te la mostrará antes de que pueda gastar dinero.',creator_chat_cta:'Crear hablando con el agente',paused_draft_title:'Tú decides antes de gastar dinero',paused_draft_body:'El agente prepara la campaña y te pide aprobación. Si decides dejarla activa, solo podrá empezar a gastar después de que la apruebes.',creator_manual_title:'Prefiero escribir los datos yo',creator_manual_help:'Opcional: el agente puede preguntarte todo esto en el chat.',creator_basic:'Qué vas a anunciar',campaign_name_simple:'Nombre para esta campaña',campaign_name_example:'Ej: Promo de junio',campaign_goal_simple:'Qué quieres que haga la persona',goal_purchases:'Comprar',goal_contacts:'Dejar sus datos',goal_action:'Hacer una acción en tu página',landing_url_simple:'Página que visitarán',landing_url_example:'https://tu-pagina.com',primary_text_simple:'Mensaje que leerán',primary_text_example:'Ej: Descubre cómo esta oferta puede ayudarte hoy.',headline_simple:'Título corto',headline_example:'Ej: Mira la oferta',image_simple:'Imagen ya preparada, si tienes una',image_path_example:'Opcional: ruta del archivo de imagen',creator_people_budget:'Quién lo verá y cuánto puede gastar',daily_budget_simple:'Máximo que puede gastar al día',total_budget_simple:'Máximo que puede gastar en total',locations_simple:'Dónde viven esas personas',locations_example:'Ej: Colombia, México o Miami',interests_simple:'Qué cosas podrían interesarles',interests_example:'Ej: tiendas online, belleza, educación',age_min_simple:'Edad más joven',age_max_simple:'Edad mayor',creator_decision:'Cómo quieres dejarla preparada',creative_variations_simple:'Cuántas ideas quieres comparar',compare_options_simple:'Comparar esas ideas',compare_yes:'Sí, compararlas',compare_no:'No, usar una sola idea',after_approval_simple:'Después de que la apruebes',active_after_approval:'Empezar a mostrar anuncios y gastar el presupuesto elegido',ready_not_spending:'Dejarla lista sin gastar',confirm_active_spend:'Marcar solo si elegiste empezar a mostrar anuncios: entiendo que, después de aprobar, esta campaña podrá gastar el presupuesto que elegí.',creator_meta_optional:'Solo si ya conoces este dato de Meta',pixel_optional:'Número de seguimiento de Meta (Pixel ID), opcional',creator_review_notice:'Nada se creará en tu cuenta de Meta hasta que revises y apruebes esta solicitud.',audience_builder:'Elegir público',what_sell:'¿Qué vendes?',who_buys:'¿Quién compra hoy?',audience_product_example:'Ej: un curso o un producto de belleza',audience_buyer_example:'Ej: personas que quieren vender más',audience_locations_example:'Ej: Colombia o México',audience_interests_example:'Ej: belleza, educación o negocios locales',audience_data_example:'Ej: personas que escribieron por Instagram o compradores',age_range:'Edad aproximada',budget_level:'Tamaño del presupuesto',budget_small:'Pequeño',budget_medium:'Mediano',budget_large:'Grande',data_sources:'Datos que ya tienes',consent_upload:'Tengo permiso para usar emails/teléfonos de clientes si los subo después.',notes:'Notas',optional:'Opcional',build_audience:'Crear recomendación de público',lookalike_status:'Público parecido',recommended_audiences:'A quién mostrar anuncios',next_steps:'Siguientes pasos',name:'Nombre',objective:'Objetivo',daily_budget:'Presupuesto diario',total_budget:'Presupuesto total',locations:'Países/ubicaciones',interests:'Intereses',age_min:'Edad mínima',age_max:'Edad máxima',creative_variations:'Opciones de anuncios',ab_test:'Comparar ideas',enabled:'Activada',disabled:'Desactivada',stage_campaign:'Enviar para mi aprobación',creative_refresh:'Crear ideas nuevas',generate_drafts:'Crear ideas',upload_payloads:'Anuncios listos para revisar',campaign_comparison:'Comparación de campañas',export_csv:'Descargar reporte',campaign:'Campaña',status:'Estado',budget_optimizer:'Qué hacer con el presupuesto',now:'Actual',rec:'Sugerido',pending_approvals:'Decisiones por aprobar',action_log:'Lo que hizo el agente',
   targeting_picker_title:'Elige público con opciones de Meta',targeting_picker_body:'Busca países, ciudades o intereses reales de Meta. Si no sabes qué elegir, pídeselo al agente.',targeting_agent_cta:'Preguntar al agente',targeting_broad_title:'Público amplio',targeting_broad_body:'Buen punto de partida: país, edad y buenos anuncios. Meta aprende con señales.',targeting_guided_title:'Intereses simples',targeting_guided_body:'Úsalos como pistas cuando sabes qué temas le importan a tu cliente.',targeting_warm_title:'Personas que ya te conocen / parecidos',targeting_warm_body:'Solo cuando ya tienes visitas, Instagram activo o clientes con permiso.',targeting_search:'Buscar en Meta',targeting_manual_fallback:'Solo si el buscador no funciona',targeting_no_results:'No encontré opciones en Meta. Prueba otra palabra.',targeting_need_query:'Escribe primero qué quieres buscar.',
   spend:'Gasto',revenue:'Ingresos',conversions:'Conversiones',active_budget:'Presupuesto activo',active_daily_budget:'Presupuesto diario activo',roas:'ROAS',cpa:'CPA',ctr:'CTR',cpc:'CPC',frequency:'Frecuencia',mode:'Modo',ok:'Listo',warnings:'Revisar',blocked:'Falta arreglar',live_ready:'Meta listo?',
   spend_tip:'Dinero que ya se gastó en anuncios.',revenue_tip:'Ventas o valor que los anuncios parecen haber producido.',conversions_tip:'Acciones importantes: compras, formularios, registros u otro objetivo.',active_budget_tip:'Dinero máximo por día que sigue encendido en campañas activas.',active_daily_budget_tip:'Dinero máximo por día que puede gastarse ahora.',daily_budget_tip:'Máximo que una campaña puede gastar por día.',roas_tip:'Cuánto vuelve por cada $1 gastado. ROAS 3x significa que $1 trajo aprox. $3.',cpa_tip:'Cuánto cuesta conseguir una compra, lead o acción importante.',ctr_tip:'De cada 100 personas que ven el anuncio, cuántas hacen clic.',cpc_tip:'Cuánto pagas por cada clic.',frequency_tip:'Cuántas veces ve una persona el mismo anuncio. Si sube mucho, puede cansarse.',mode_tip:'Con supervisión: tú apruebas. Piloto automático: el agente puede actuar solo dentro de tus reglas.',ok_tip:'Esto ya está bien.',warnings_tip:'No es urgente, pero conviene revisarlo.',blocked_tip:'Esto falta antes de usar todo el producto.',live_ready_tip:'Dice si ya puedes permitir acciones reales en Meta Ads.',
@@ -5756,7 +5897,7 @@ function scheduleVisibleBriefRead(){
  dailyBriefReadTimer=setTimeout(()=>{if(panelOpen('left')&&dailyBriefStamp()===stamp)markDailyBriefRead()},2200);
 }
 function panelTitle(side,open){
- if(side==='left')return open?(lang==='es'?'Ocultar lectura diaria':'Hide daily intelligence'):(lang==='es'?'Mostrar lectura diaria':'Show daily intelligence');
+ if(side==='left')return open?(lang==='es'?'Ocultar perfil y lectura':'Hide profile and daily read'):(lang==='es'?'Mostrar perfil y lectura':'Show profile and daily read');
  return open?(lang==='es'?'Ocultar aprobaciones y actividad':'Hide approvals and activity'):(lang==='es'?'Mostrar aprobaciones y actividad':'Show approvals and activity')
 }
 function syncPanels(){
@@ -5987,6 +6128,7 @@ function render(){
  qs('#data-source-signal').textContent=dataSourceText(m);
  const refreshBtn=qs('#real-data-refresh');if(refreshBtn){refreshBtn.classList.toggle('hidden',m.source==='meta_graph');refreshBtn.textContent=lang==='es'?'Actualizar datos reales':'Refresh real data'}
  qs('#kpis').innerHTML=[['Spend',fmtMoney(s.total_spend)],['Revenue',fmtMoney(s.total_revenue)],['Conversions',Number(s.total_conversions||0).toLocaleString()],['Active Budget',fmtMoney(s.active_budget)]].map(x=>kpi(x[0],x[1])).join('');
+ renderBusinessProfilePanel();
  qs('#brief').innerHTML=state.brief.questions.map(q=>`<div class="brief-q"><b>${briefQuestion(q.question)}</b><p>${explainTerms(briefAnswer(q.answer))}</p></div>`).join('')+actionSummaryMarkup()+decisionCardsMarkup();
  qs('#fatigue').innerHTML=state.fatigue.length?state.fatigue.map(f=>`<div class="fatigue"><b>${escapeHtml(demoCampaignName(f.campaign_name))}</b><div>${escapeHtml(f.reasons.map(fatigueText).join(' / '))}</div></div>`).join(''):`<p class="notice">${t('no_fatigue')}</p>`;
  qs('#campaigns').innerHTML=m.campaigns.map(card).join('');
@@ -6284,7 +6426,8 @@ function stepCopy(key){
 	  context:['Answer simple questions','I will ask short questions one by one so I can understand your business better.',''],
 	  strategy:['See the first plan','I turn your answers into a simple first plan before the dashboard opens.',''],
 	  license:['Add your license','Paste the one code you received from us.',''],
-	  chatgpt:['Connect the brain','Choose ChatGPT/Codex login through Hermes or an OpenAI-compatible API key like MiniMax M3.',''],
+	  chatgpt:['Connect the brain','Choose ChatGPT/Codex or an API model like MiniMax M3. The same agent memory, tools, and approvals stay active.',''],
+	  telegram:['Connect Telegram','Recommended: talk to the manager from your phone and approve exact decisions with buttons.',''],
 	  meta:['Connect Meta','Use your own Meta app and access key.',''],
 	  account:['Pick one account','Choose the ad account this tool should help with.',''],
 	  destination:['Pick where ads go','Add the Facebook Page, Instagram, and website.',''],
@@ -6303,7 +6446,8 @@ function stepCopy(key){
 	  context:['Responde preguntas simples','Haré preguntas cortas, una por una, para entender mejor tu negocio.',''],
 	  strategy:['Ver el primer plan','Con tus respuestas preparo un plan simple antes de abrir el dashboard.',''],
 	  license:['Pega tu licencia','Pega el único código que recibiste de nosotros.',''],
-	  chatgpt:['Conecta el cerebro','Elige ChatGPT/Codex por Hermes o una API compatible como MiniMax M3.',''],
+	  chatgpt:['Conecta el cerebro','Elige ChatGPT/Codex o un modelo API como MiniMax M3. La misma memoria, herramientas y aprobaciones siguen activas.',''],
+	  telegram:['Conecta Telegram','Recomendado: habla con el manager desde tu celular y aprueba decisiones exactas con botones.',''],
 	  meta:['Conecta Meta','Usa tu propia app de Meta y tu propia clave.',''],
 	  account:['Elige una cuenta','Escoge la cuenta de anuncios que quieres usar.',''],
 	  destination:['Elige dónde van los anuncios','Agrega la página de Facebook, Instagram y la web.',''],
@@ -6328,8 +6472,11 @@ function onboardingSteps(){
  const licenseOk=Boolean(summary.license_ready);
  const passwordOk=Boolean(state.config.dashboard_password_set);
  const model=state.config.agent_model||{};
- const directModelOk=['openai_compatible','minimax','openai'].includes(model.provider)&&model.api_key_set&&Boolean(model.base_url)&&Boolean(model.model);
- const chatgptOk=(setupItem('hermes_runtime').status==='ok'&&setupItem('hermes_auth').status==='ok')||directModelOk;
+ const brain=model.brain_provider||'openai_codex';
+ const apiBrainOk=['openai_api','minimax','custom_api'].includes(brain)&&model.api_key_set&&Boolean(model.base_url)&&Boolean(model.model);
+ const chatgptOk=(setupItem('hermes_runtime').status==='ok'&&setupItem('hermes_auth').status==='ok')||apiBrainOk;
+ const telegram=state.config.telegram_agent||{};
+ const telegramOk=Boolean(telegram.enabled&&telegram.bot_configured&&telegram.chat_id);
  const accountOk=setupItem('ad_account').status==='ok';
  const destinationOk=['page_id','landing_url'].every(k=>setupItem(k).status==='ok');
  const socialOk=setupItem('social_cli').status==='ok';
@@ -6340,6 +6487,7 @@ function onboardingSteps(){
  return [
 	  {id:'password',status:passwordOk?'ok':'blocked'},
 	  {id:'chatgpt',status:chatgptOk?'ok':'warn'},
+	  {id:'telegram',status:telegramOk?'ok':'warn'},
 	  {id:'website',status:websiteOk?'ok':'blocked'},
 	  {id:'context',status:contextOk?'ok':'blocked'},
 	  {id:'strategy',status:strategyOk?'ok':'warn'},
@@ -6375,6 +6523,7 @@ function onboardingFormFor(stepId){
  if(stepId==='strategy')return initialStrategyGuide();
 	 if(stepId==='license')return `<form class="onboarding-mini two" onsubmit="saveOnboardingSetupConfig(event)"><label>${t('license_key')}<input name="license_key" placeholder="MAO-..."></label><label>${t('buyer_email')}<input name="license_buyer_email" value="${escapeHtml(v.license_buyer_email||'')}" placeholder="buyer@email.com"></label><div class="onboarding-step-actions"><button class="btn primary" type="submit">${t('save_setup')}</button><button class="btn" type="button" onclick="activateLicense()">${t('license_activate')}</button></div></form>`;
  if(stepId==='chatgpt')return chatGptConnectMarkup(true);
+ if(stepId==='telegram')return telegramOnboardingGuide();
  if(stepId==='meta')return metaConnectionGuide();
  if(stepId==='account')return accountPickerGuide();
  if(stepId==='destination')return destinationPickerGuide();
@@ -6443,6 +6592,66 @@ function businessProfileCard(){
  const p=state.business_profile||{};
  if(!p.website_url&&!p.business_type&&!p.onboarding_questions_started)return '';
  return `<div class="guide-card"><b>${lang==='es'?'Perfil guardado':'Profile saved'}</b><p>${escapeHtml(p.business_type||p.website_url||'')}${p.website_url?` · ${escapeHtml(p.website_url)}`:''}${p.scan_error?` · ${lang==='es'?'No pude leer toda la web, pero guardé el link y puedes seguir.':'I could not read the full site, but saved the link and you can continue.'}`:''}</p>${p.main_offer||p.offer?`<p>${lang==='es'?'Oferta detectada':'Detected offer'}: ${escapeHtml(p.main_offer||p.offer)}</p>`:''}${p.onboarding_questions_started?`<p class="notice">${lang==='es'?'Ya preparé las preguntas iniciales.':'I already prepared the first questions.'}</p>`:''}</div>`;
+}
+function businessSnapshotData(){
+ const p=state.business_profile||{};
+ const s=state.business_snapshot||state.brief?.business_context||{};
+ return {
+  ready:Boolean(s.ready||p.business_type||p.main_offer||p.offer||p.ideal_customer||p.audience||p.website_url),
+  business_type:s.business_type||p.business_type||p.business_short||'',
+  main_offer:s.main_offer||p.main_offer||p.offer||p.detected_title||'',
+  ideal_customer:s.ideal_customer||p.ideal_customer||p.audience||'',
+  current_stage:s.current_stage||p.current_stage||'',
+  what_to_improve:s.what_to_improve||p.what_to_improve||'',
+  success_goal:s.success_goal||p.success_goal||'',
+  sales_channel:s.sales_channel||p.sales_channel||p.channel||'',
+  brand_tone:s.brand_tone||p.brand_tone||'',
+  website_url:s.website_url||p.website_url||'',
+  next_step:s.next_step||'',
+  audience_hint:s.audience_hint||'',
+  creative_hint:s.creative_hint||'',
+  campaign_hint:s.campaign_hint||'',
+  summary:s.summary||''
+ };
+}
+function businessProfileFallbacks(d){
+ const es=lang==='es';
+ return {
+  title:d.business_type||d.main_offer||(es?'Negocio por definir':'Business to define'),
+  summary:d.summary||[d.main_offer,d.ideal_customer,d.current_stage].filter(Boolean).join(' · ')||(es?'Cuéntame qué vendes y a quién ayudas.':'Tell me what you sell and who you help.'),
+  offer:d.main_offer||(es?'Falta decir qué vendes':'Need what you sell'),
+  customer:d.ideal_customer||(es?'Falta decir quién compra':'Need who buys'),
+  stage:d.current_stage||(es?'Falta decir en qué punto estás':'Need current stage'),
+  improve:d.what_to_improve||(es?'Falta elegir qué mejorar primero':'Need first improvement target'),
+  next:d.next_step||(es?'Completar oferta, cliente y objetivo.':'Complete offer, customer, and goal.'),
+  audience:d.audience_hint||(es?'Empezar amplio y ajustar con datos reales.':'Start broad and refine with real data.'),
+  creative:d.creative_hint||(es?'Imagen clara, beneficio directo y poco texto.':'Clear image, direct benefit, little text.'),
+  campaign:d.campaign_hint||(es?'Campaña simple, visible y fácil de medir.':'Simple, visible, easy-to-measure campaign.')
+ };
+}
+function businessProfileChatPrompt(){
+ const d=businessSnapshotData();
+ if(!d.ready)return lang==='es'?'Quiero contarte mi negocio para que personalices el dashboard. Hazme preguntas fáciles, una por una.':'I want to tell you about my business so you can personalize the dashboard. Ask me simple questions one at a time.';
+ const c=businessProfileFallbacks(d);
+ return lang==='es'?`Revisa mi perfil de negocio y dime qué harías hoy. Negocio: ${c.title}. Oferta: ${c.offer}. Cliente: ${c.customer}. Quiero mejorar: ${c.improve}. Dime el siguiente paso, una audiencia inicial y una idea de creativo.`:`Review my business profile and tell me what you would do today. Business: ${c.title}. Offer: ${c.offer}. Customer: ${c.customer}. I want to improve: ${c.improve}. Give me the next step, an initial audience, and one creative idea.`;
+}
+function businessMini(label,value){return `<div class="business-profile-mini"><span>${escapeHtml(label)}</span><b>${escapeHtml(value)}</b></div>`}
+function renderBusinessProfilePanel(){
+ const title=qs('#business-profile-title');if(title)title.textContent=lang==='es'?'Perfil del negocio':'Business profile';
+ const box=qs('#business-profile-panel');if(!box)return;
+ const d=businessSnapshotData();
+ if(!d.ready){
+  box.innerHTML=`<div class="business-profile-empty"><p>${lang==='es'?'Todavía no sé suficiente del negocio. Cuéntame qué vendes para que el brief, los creativos y las audiencias tengan contexto real.':'I do not know enough about the business yet. Tell me what you sell so the brief, creatives, and audiences have real context.'}</p><button class="btn primary ask-btn" onclick="openChat(${chatArg(businessProfileChatPrompt())})">${lang==='es'?'Contarle al agente':'Tell the agent'}</button></div>`;
+  return;
+ }
+ const c=businessProfileFallbacks(d);
+ const pills=[
+  d.website_url?[lang==='es'?'Web':'Website',d.website_url]:null,
+  d.sales_channel?[lang==='es'?'Venta':'Sales',d.sales_channel]:null,
+  d.success_goal?[lang==='es'?'Meta':'Goal',d.success_goal]:null,
+  d.brand_tone?[lang==='es'?'Tono':'Tone',d.brand_tone]:null
+ ].filter(Boolean);
+ box.innerHTML=`<div class="business-profile-panel"><div class="business-profile-hero"><h3>${escapeHtml(c.title)}</h3><p>${escapeHtml(c.summary)}</p>${pills.length?`<div class="business-profile-pills">${pills.map(([label,value])=>`<span class="business-profile-pill">${escapeHtml(label)}: ${escapeHtml(value)}</span>`).join('')}</div>`:''}</div><div class="business-profile-grid">${businessMini(lang==='es'?'Oferta':'Offer',c.offer)}${businessMini(lang==='es'?'Cliente':'Customer',c.customer)}${businessMini(lang==='es'?'Siguiente paso':'Next step',c.next)}${businessMini(lang==='es'?'Creativo':'Creative',c.creative)}</div><div class="business-profile-grid">${businessMini(lang==='es'?'Audiencia':'Audience',c.audience)}${businessMini(lang==='es'?'Campaña':'Campaign',c.campaign)}</div><div class="business-profile-actions"><button class="btn primary ask-btn" onclick="openChat(${chatArg(businessProfileChatPrompt())})">${lang==='es'?'Preguntar qué haría':'Ask what to do'}</button><button class="btn" onclick="openChat(${chatArg(lang==='es'?'Quiero corregir o completar mi perfil de negocio. Hazme una pregunta simple a la vez.':'I want to correct or complete my business profile. Ask me one simple question at a time.')})">${lang==='es'?'Ajustar perfil':'Adjust profile'}</button></div></div>`;
 }
 function passiveStepGuide(stepId){
  const es={
@@ -6603,33 +6812,33 @@ function chatGptConnectMarkup(onboarding=false){
  const auth=setupItem('hermes_auth');
  const codex=setupItem('codex_cli');
  const model=state.config.agent_model||{};
- const directProvider=['openai_compatible','minimax','openai'].includes(model.provider);
- const directReady=directProvider&&model.api_key_set&&Boolean(model.base_url)&&Boolean(model.model);
- const hermesReady=runtime.status==='ok'&&auth.status==='ok'&&model.provider==='hermes';
- const ready=hermesReady||directReady;
+ const brain=model.brain_provider||'openai_codex';
+ const apiBrain=['openai_api','minimax','custom_api'].includes(brain);
+ const apiReady=apiBrain&&model.api_key_set&&Boolean(model.base_url)&&Boolean(model.model);
+ const chatgptReady=runtime.status==='ok'&&auth.status==='ok'&&brain==='openai_codex';
+ const ready=chatgptReady||apiReady;
  const hermesMissing=runtime.status==='blocked';
  const title=ready?(lang==='es'?'Modelo del agente conectado':'Agent model connected'):(lang==='es'?'Conecta el cerebro del agente':'Connect the agent brain');
- const body=ready?(directReady?(lang==='es'?`El manager ya puede conversar usando ${model.model||'el modelo configurado'} por API compatible OpenAI. Las acciones siguen pasando por tus reglas y aprobaciones.`:`The manager can now talk through ${model.model||'the configured model'} using an OpenAI-compatible API. Actions still go through your rules and approvals.`):(lang==='es'?'Hermes ya puede conversar usando tu sesion de ChatGPT/Codex. El chat, Telegram y las herramientas del agente quedan sobre esta conexión.':'Hermes can now talk through your ChatGPT/Codex session. Chat, Telegram, and agent tools use this connection.')):(onboarding?(lang==='es'?'Elige una ruta para el cerebro del agente. Toca una opción y solo verás los pasos que necesitas.':'Choose one route for the agent brain. Click an option and only the steps you need will open.'):(lang==='es'?'Elige cómo responderá el manager: OpenAI, tu suscripción de ChatGPT, MiniMax M3 u otra API compatible.':'Choose how the manager replies: OpenAI, your ChatGPT subscription, MiniMax M3, or another compatible API.'));
- const badge=ready?(lang==='es'?'Listo':'Ready'):(hermesMissing?(lang==='es'?'Falta Hermes':'Hermes missing'):(lang==='es'?'Falta conectar':'Needs connection'));
+ const body=ready?(apiReady?(lang==='es'?`El manager ya puede pensar con ${model.model||'el modelo configurado'} sin perder memoria, herramientas ni aprobaciones.`:`The manager can now think with ${model.model||'the configured model'} while keeping memory, tools, and approvals.`):(lang==='es'?'El manager ya puede conversar usando tu sesion de ChatGPT/Codex. El chat, Telegram y las herramientas quedan sobre esta conexión.':'The manager can now talk through your ChatGPT/Codex session. Chat, Telegram, and agent tools use this connection.')):(onboarding?(lang==='es'?'Elige qué modelo usará el agente. Toca una opción y solo verás lo necesario.':'Choose which model the agent will use. Click an option and only the needed steps will open.'):(lang==='es'?'Elige cómo pensará el manager: OpenAI, tu suscripción de ChatGPT, MiniMax M3 u otra API compatible.':'Choose how the manager thinks: OpenAI, your ChatGPT subscription, MiniMax M3, or another compatible API.'));
+ const badge=ready?(lang==='es'?'Listo':'Ready'):(hermesMissing?(lang==='es'?'Falta base del agente':'Agent base missing'):(lang==='es'?'Falta conectar':'Needs connection'));
  const detail=[runtime.detail,auth.detail,codex.detail].filter(Boolean).map(localText).join(' · ');
- const draft=lang==='es'?'Ayúdame a conectar el cerebro del agente. Explícame en palabras simples si me conviene login ChatGPT/Codex con Hermes o una API compatible como MiniMax M3.':'Help me connect the agent brain. Explain simply whether ChatGPT/Codex login with Hermes or an API-compatible model like MiniMax M3 is better for me.';
- const provider=model.provider||'hermes';
+ const draft=lang==='es'?'Ayúdame a elegir el cerebro del agente. Explícame en palabras simples si me conviene ChatGPT/Codex, MiniMax M3 u otra API.':'Help me choose the agent brain. Explain simply whether ChatGPT/Codex, MiniMax M3, or another API is better for me.';
  const savedBase=model.base_url||'';
- const selectedRoute=provider==='hermes'?'chatgpt_subscription':(provider==='minimax'||savedBase.includes('minimax')?'minimax_m3':(savedBase.includes('api.openai.com')?'openai_api':'custom_api'));
+ const selectedRoute=brain==='openai_codex'?'chatgpt_subscription':(brain==='minimax'||savedBase.includes('minimax')?'minimax_m3':(brain==='openai_api'||savedBase.includes('api.openai.com')?'openai_api':'custom_api'));
  const base=model.base_url||(selectedRoute==='openai_api'?'https://api.openai.com/v1':(selectedRoute==='custom_api'?'':'https://api.minimax.io/v1'));
  const modelName=model.model||(selectedRoute==='openai_api'?'gpt-4.1-mini':(selectedRoute==='custom_api'?'':'MiniMax-M3'));
  const api=model.api||'openai-chat-completions';
  const keyPlaceholder=model.api_key_set?(lang==='es'?'Clave guardada. Pega otra solo si quieres cambiarla.':'Key saved. Paste another only to replace it.'):(lang==='es'?'Pega la clave API del proveedor':'Paste the provider API key');
  const routeCopy={
-  openai_api:{icon:'OA',title:lang==='es'?'OpenAI API':'OpenAI API',desc:lang==='es'?'Si tienes una clave API de OpenAI.':'If you have an OpenAI API key.',panel:lang==='es'?'Pega tu clave API de OpenAI. Esta ruta no usa tu suscripción normal de ChatGPT.':'Paste your OpenAI API key. This route does not use your regular ChatGPT subscription.'},
+  openai_api:{icon:'OA',title:lang==='es'?'OpenAI API':'OpenAI API',desc:lang==='es'?'Si tienes una clave API de OpenAI.':'If you have an OpenAI API key.',panel:lang==='es'?'Pega tu clave API de OpenAI. El agente seguirá usando su memoria, herramientas y aprobaciones.':'Paste your OpenAI API key. The agent still keeps its memory, tools, and approvals.'},
   chatgpt_subscription:{icon:'CG',title:lang==='es'?'ChatGPT suscripción':'ChatGPT subscription',desc:lang==='es'?'Login OAuth con ChatGPT/Codex.':'OAuth login with ChatGPT/Codex.',panel:lang==='es'?'Toca Conectar ahora. En PC/Mac abriré la terminal; en DigitalOcean mostraré aquí el enlace para iniciar sesión desde este navegador.':'Click Connect now. On PC/Mac I open the terminal; on DigitalOcean I show the login link here in this browser.'},
-  minimax_m3:{icon:'M3',title:'MiniMax M3',desc:lang==='es'?'Ruta rápida con clave de MiniMax.':'Fast route with a MiniMax key.',panel:lang==='es'?'Pega tu clave de MiniMax. Ya dejé URL y modelo listos para M3.':'Paste your MiniMax key. URL and model are already set for M3.'},
-  custom_api:{icon:'{}',title:lang==='es'?'Otra API compatible':'Other compatible API',desc:lang==='es'?'Para proveedores tipo OpenAI.':'For OpenAI-style providers.',panel:lang==='es'?'Pega la URL, el nombre del modelo y la clave del proveedor.':'Paste the provider URL, model name, and key.'}
+  minimax_m3:{icon:'M3',title:'MiniMax M3',desc:lang==='es'?'Con clave de MiniMax.':'With a MiniMax key.',panel:lang==='es'?'Pega tu clave de MiniMax. Ya dejé URL y modelo listos para M3. El agente seguirá usando su memoria y herramientas.':'Paste your MiniMax key. URL and model are already set for M3. The agent still keeps memory and tools.'},
+  custom_api:{icon:'{}',title:lang==='es'?'Otra API compatible':'Other compatible API',desc:lang==='es'?'Para proveedores tipo OpenAI.':'For OpenAI-style providers.',panel:lang==='es'?'Pega la URL, el nombre del modelo y la clave del proveedor. El agente la usará como cerebro.':'Paste the provider URL, model name, and key. The agent will use it as its brain.'}
  };
  const routeButton=kind=>`<button class="agent-model-option ${selectedRoute===kind?'active':''}" type="button" data-agent-route="${kind}" aria-expanded="${selectedRoute===kind?'true':'false'}" onclick="selectAgentModelRoute('${kind}')"><span class="route-icon">${routeCopy[kind].icon}</span><span><b>${routeCopy[kind].title}</b><p>${routeCopy[kind].desc}</p></span></button>`;
  const apiPanelTitle=selectedRoute==='chatgpt_subscription'?routeCopy.minimax_m3.title:routeCopy[selectedRoute].title;
  const apiPanelHelp=selectedRoute==='chatgpt_subscription'?routeCopy.minimax_m3.panel:routeCopy[selectedRoute].panel;
- const providerValue=provider==='openai'?'openai_compatible':provider;
+ const providerValue=brain;
  return `<section class="chatgpt-connect-card ${ready?'ready':''}"><div class="chatgpt-connect-head"><div><h3>${title}</h3><p>${body}</p></div><span class="badge ${ready?'ok':'warn'}">${badge}</span></div><div class="agent-model-picker" role="tablist" aria-label="${lang==='es'?'Opciones de modelo del agente':'Agent model options'}">${routeButton('openai_api')}${routeButton('chatgpt_subscription')}${routeButton('minimax_m3')}${routeButton('custom_api')}</div><form id="agent-model-form" class="model-provider-form" onsubmit="saveSetupConfig(event)">
  <input type="hidden" name="agent_chat_provider" value="${escapeHtml(providerValue)}">
  <input type="hidden" name="agent_chat_api" value="${escapeHtml(api)}">
@@ -6646,6 +6855,16 @@ function chatGptConnectMarkup(onboarding=false){
 }
 function renderChatGptPanel(){
  qs('#chatgpt-panel').innerHTML=chatGptConnectMarkup(false);
+}
+function telegramOnboardingGuide(){
+ const v=state.config.telegram_agent||{};
+ const ready=Boolean(v.enabled&&v.bot_configured&&v.chat_id);
+ const checked=v.enabled||!v.bot_configured?'checked':'';
+ const result=ready
+  ? `<div class="guide-card"><b>${lang==='es'?'Telegram listo':'Telegram ready'}</b><p>${lang==='es'?'Ya puedes hablar con el manager desde tu celular. También podrá mostrarte aprobaciones con botones seguros.':'You can now talk with the manager from your phone. It can also show approval buttons safely.'}</p><button class="btn" type="button" onclick="testTelegram()">${lang==='es'?'Enviar prueba':'Send test'}</button></div>`
+  : `<div class="guide-card"><b>${lang==='es'?'Cuando guardes el bot':'After saving the bot'}</b><p>${lang==='es'?'Abre Telegram, envíale “hola” a tu bot y vuelve aquí para tocar Detectar mi chat.':'Open Telegram, send “hello” to your bot, then come back and click Detect my chat.'}</p></div>`;
+ if(lang==='es')return `<div class="setup-guide private-connection telegram-onboarding"><section class="guide-hero"><div class="guide-main"><span class="guide-eyebrow">Celular</span><h3>Habla con tu manager por Telegram</h3><p>Esto es recomendado. Te permite pedir resúmenes, enviar imágenes y aprobar decisiones exactas desde el celular, usando el mismo agente, memoria y reglas del dashboard.</p><div class="guide-actions"><a class="btn primary" href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer">Abrir BotFather</a><button class="btn" type="button" onclick="openChat('Explícame cómo crear mi bot de Telegram con palabras simples, paso por paso.')">${t('ask_agent')}</button></div></div><aside class="guide-checklist"><b>Qué harás</b><ol><li>Crear un bot privado con BotFather.</li><li>Pegar aquí la clave del bot.</li><li>Enviar un “hola” al bot desde Telegram.</li><li>Tocar Detectar mi chat y elegir tu chat.</li></ol></aside></section><form class="onboarding-mini two" onsubmit="saveTelegramConfig(event)"><label class="wide">Clave del bot de Telegram<span class="field-help">BotFather te entrega esta clave al crear el bot. Queda guardada solo en este PC/VPS.</span><input type="password" name="bot_token" value="" placeholder="${v.bot_configured?'Bot guardado. Pega otra clave solo si quieres cambiarlo.':'Pega aquí la clave de BotFather'}"></label><label>Idioma del manager<select name="language"><option value="es" ${v.language!=='en'?'selected':''}>Español</option><option value="en" ${v.language==='en'?'selected':''}>English</option></select></label><label><input type="checkbox" name="enabled" ${checked}> Activar Telegram</label><div class="field wide onboarding-step-actions"><button class="btn primary" type="submit">Guardar bot</button><button class="btn" type="button" onclick="detectTelegramChats()">Detectar mi chat</button><button class="btn" type="button" onclick="testTelegram()">Enviar prueba</button></div></form><div id="telegram-results" class="setup-guide">${result}</div><details class="fallback-details"><summary>Lo puedo hacer después</summary><p class="notice">Puedes seguir ahora y volver a este paso desde Configuración. Para usar Telegram, el dashboard debe estar encendido en tu PC/VPS.</p></details></div>`;
+ return `<div class="setup-guide private-connection telegram-onboarding"><section class="guide-hero"><div class="guide-main"><span class="guide-eyebrow">Phone</span><h3>Talk to your manager through Telegram</h3><p>This is recommended. It lets you ask for catch-ups, send images, and approve exact decisions from your phone using the same agent, memory, and dashboard rules.</p><div class="guide-actions"><a class="btn primary" href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer">Open BotFather</a><button class="btn" type="button" onclick="openChat('Explain how to create my Telegram bot in simple step-by-step words.')">${t('ask_agent')}</button></div></div><aside class="guide-checklist"><b>What you will do</b><ol><li>Create a private bot with BotFather.</li><li>Paste the bot key here.</li><li>Send “hello” to the bot from Telegram.</li><li>Click Detect my chat and choose your chat.</li></ol></aside></section><form class="onboarding-mini two" onsubmit="saveTelegramConfig(event)"><label class="wide">Telegram bot key<span class="field-help">BotFather gives you this key when you create the bot. It stays saved only on this PC/VPS.</span><input type="password" name="bot_token" value="" placeholder="${v.bot_configured?'Bot saved. Paste another key only to replace it.':'Paste the BotFather key here'}"></label><label>Manager language<select name="language"><option value="es" ${v.language!=='en'?'selected':''}>Español</option><option value="en" ${v.language==='en'?'selected':''}>English</option></select></label><label><input type="checkbox" name="enabled" ${checked}> Enable Telegram</label><div class="field wide onboarding-step-actions"><button class="btn primary" type="submit">Save bot</button><button class="btn" type="button" onclick="detectTelegramChats()">Detect my chat</button><button class="btn" type="button" onclick="testTelegram()">Send test</button></div></form><div id="telegram-results" class="setup-guide">${result}</div><details class="fallback-details"><summary>I can do this later</summary><p class="notice">You can continue now and come back from Setup. To use Telegram, the dashboard must be running on your PC/VPS.</p></details></div>`;
 }
 let chatGptConnectPollTimer=null;
 let chatGptAuthWindow=null;
@@ -6733,14 +6952,16 @@ function renderChatGptConnectResult(response){
  const autoNote=String(r.auto_note||'').trim();
  const phaseNote=autoNote?`<div class="notice">${escapeHtml(autoNote)}</div>`:'';
  const loginCode=String(r.login_code||(Array.isArray(r.login_codes)&&r.login_codes.length?r.login_codes[0]:'')||'').trim();
- const codeBlock=loginCode?`<div class="chatgpt-device-code"><div><span>${lang==='es'?'OpenAI te pedirá este código':'OpenAI will ask for this code'}</span><strong>${escapeHtml(loginCode)}</strong></div><button class="btn primary" type="button" onclick="copyCommand(${JSON.stringify(loginCode).replaceAll('"','&quot;')})">${lang==='es'?'Copiar código':'Copy code'}</button></div>`:'';
+ const codeBlock=loginCode?`<div class="chatgpt-device-code" role="status" aria-live="polite"><div><span>${lang==='es'?'Código para OpenAI':'Code for OpenAI'}</span><strong>${escapeHtml(loginCode)}</strong><small>${lang==='es'?'Pégalo en la pestaña de OpenAI/Codex que se abrió. Si no la ves, toca Abrir login.':'Paste it in the OpenAI/Codex tab that opened. If you do not see it, click Open login.'}</small></div><button class="btn primary" type="button" onclick="copyCommand(${JSON.stringify(loginCode).replaceAll('"','&quot;')})">${lang==='es'?'Copiar código':'Copy code'}</button></div>`:'';
  const links=urls.length?`<div class="onboarding-step-actions">${urls.map(url=>`<a class="btn primary" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${lang==='es'?'Abrir login':'Open login'}</a>`).join('')}</div>`:'';
  const inputBox=running&&r.needs_input?`<form class="onboarding-mini chatgpt-inline-input" onsubmit="sendChatGptTerminalInput(event)"><label>${lang==='es'?'Responder a Hermes':'Reply to Hermes'}<input name="input" autocomplete="off" placeholder="${lang==='es'?'Ej: número de OpenAI Codex o Enter':'Ex: OpenAI Codex number or Enter'}"></label><button class="btn primary" type="submit">${lang==='es'?'Enviar':'Send'}</button></form>`:'';
  const command=status==='needs_terminal'||status==='not_installed'?`<details class="helper-command"><summary>${lang==='es'?'Comando técnico para soporte':'Technical support command'}</summary><span class="step-command">${escapeHtml(r.command||'hermes model --no-browser')}</span><button class="btn" type="button" onclick="copyCommand(${JSON.stringify(r.command||'hermes model --no-browser').replaceAll('"','&quot;')})">${t('copy_command')}</button></details>`:'';
  const outputBlock=output?`<details class="helper-command"><summary>${lang==='es'?'Ver detalle técnico de Hermes':'Show Hermes technical detail'}</summary><pre class="chatgpt-terminal-output">${escapeHtml(output)}</pre></details>`:'';
  const review=status==='terminal_opened'||status==='completed'||status==='needs_login'||status==='browser_login_started'||status==='browser_login_waiting'?`<button class="btn" type="button" onclick="pollChatGptConnection()">${lang==='es'?'Revisar conexión':'Recheck connection'}</button>`:'';
+ box.classList.toggle('has-device-code',Boolean(loginCode));
  box.innerHTML=`<b>${title}</b><p>${detail}</p>${phaseNote}${codeBlock}${links}${outputBlock}${inputBox}${command}${review?`<div class="onboarding-step-actions">${review}</div>`:''}`;
  box.classList.remove('hidden');
+ if(loginCode)setTimeout(()=>box.querySelector('.chatgpt-device-code')?.scrollIntoView({behavior:'smooth',block:'center'}),80);
  scheduleChatGptConnectPoll(r);
 }
 async function connectChatGpt(event){
@@ -6767,9 +6988,9 @@ function applyAgentModelPreset(kind){
  const fields=form.elements;
  const route=kind==='hermes'?'chatgpt_subscription':(kind==='custom'?'custom_api':kind);
  if(fields.agent_chat_api)fields.agent_chat_api.value='openai-chat-completions';
- if(route==='chatgpt_subscription'){fields.agent_chat_provider.value='hermes';return}
+ if(route==='chatgpt_subscription'){fields.agent_chat_provider.value='openai_codex';return}
  if(route==='openai_api'){
-  fields.agent_chat_provider.value='openai_compatible';
+  fields.agent_chat_provider.value='openai_api';
   fields.agent_chat_base_url.value='https://api.openai.com/v1';
   if(!fields.agent_chat_model.value||fields.agent_chat_model.value.includes('MiniMax'))fields.agent_chat_model.value='gpt-4.1-mini';
   return;
@@ -6781,7 +7002,7 @@ function applyAgentModelPreset(kind){
   return;
  }
  if(route==='custom_api'){
-  fields.agent_chat_provider.value='openai_compatible';
+  fields.agent_chat_provider.value='custom_api';
   if(fields.agent_chat_base_url.value.includes('api.minimax.io')||fields.agent_chat_base_url.value.includes('api.openai.com'))fields.agent_chat_base_url.value='';
   if(fields.agent_chat_model.value.includes('MiniMax')||fields.agent_chat_model.value.includes('gpt-'))fields.agent_chat_model.value='';
  }
@@ -6799,9 +7020,9 @@ function selectAgentModelRoute(kind){
   panel.classList.toggle('active',panelRoute===route||(panelRoute==='api'&&route!=='chatgpt_subscription'));
  });
  const copy={
-  openai_api:{title:lang==='es'?'OpenAI API':'OpenAI API',help:lang==='es'?'Pega tu clave API de OpenAI. Esta ruta no usa tu suscripción normal de ChatGPT.':'Paste your OpenAI API key. This route does not use your regular ChatGPT subscription.'},
-  minimax_m3:{title:'MiniMax M3',help:lang==='es'?'Pega tu clave de MiniMax. Ya dejé URL y modelo listos para M3.':'Paste your MiniMax key. URL and model are already set for M3.'},
-  custom_api:{title:lang==='es'?'Otra API compatible':'Other compatible API',help:lang==='es'?'Pega la URL, el nombre del modelo y la clave del proveedor.':'Paste the provider URL, model name, and key.'}
+  openai_api:{title:lang==='es'?'OpenAI API':'OpenAI API',help:lang==='es'?'Pega tu clave API de OpenAI. El agente la usará como cerebro sin perder memoria, herramientas ni aprobaciones.':'Paste your OpenAI API key. The agent will use it as its brain while keeping memory, tools, and approvals.'},
+  minimax_m3:{title:'MiniMax M3',help:lang==='es'?'Pega tu clave de MiniMax. Ya dejé URL y modelo listos para M3. El agente seguirá usando su memoria y herramientas.':'Paste your MiniMax key. URL and model are already set for M3. The agent still keeps memory and tools.'},
+  custom_api:{title:lang==='es'?'Otra API compatible':'Other compatible API',help:lang==='es'?'Pega la URL, el nombre del modelo y la clave del proveedor. El agente la usará como cerebro.':'Paste the provider URL, model name, and key. The agent will use it as its brain.'}
  };
  if(copy[route]){
   const title=qs('#agent-api-route-title');const help=qs('#agent-api-route-help');
@@ -7075,8 +7296,8 @@ async function rollbackUpdateSnapshot(snapshotId){
  const box=qs('#confirm-overlay');box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'Volviendo a la versión elegida':'Restoring'}</h2><p>${lang==='es'?'Estoy usando la copia guardada y conservando una copia de lo que tienes ahora.':'Restoring the saved copy and keeping a copy of what you have now.'}</p></div>`;box.classList.add('open');
  try{const res=await api('/api/update/rollback',{method:'POST',body:JSON.stringify({snapshot_id:snapshotId})});box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'Versión lista':'Version restored'}</h2><p>${escapeHtml(res.result?.message||'')}</p><p class="notice">${lang==='es'?'Copia de lo anterior':'Backup of previous state'}: ${escapeHtml(res.result?.rescue_snapshot_id||'')}</p></div>`;toast(lang==='es'?'Ya estás usando la versión anterior':'Previous version restored')}catch(err){box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'No pude volver a esa versión':'Could not restore'}</h2><p>${escapeHtml(err.message||String(err))}</p><div class="confirm-actions"><button class="btn primary" type="button" onclick="closeConfirm()">${lang==='es'?'Cerrar':'Close'}</button></div></div>`}
 }
-async function detectTelegramChats(){const res=await api('/api/telegram/detect',{method:'POST',body:'{}'});const rows=res.result||[];const box=qs('#telegram-results');if(!rows.length){box.innerHTML=`<p class="notice">${lang==='es'?'No encontré mensajes. Escríbele primero a tu bot en Telegram y vuelve a intentar.':'I found no messages. Message your bot in Telegram first, then try again.'}</p>`;return}box.innerHTML=rows.map(c=>`<div class="log-item"><b>${escapeHtml(c.label)} ${escapeHtml(c.username||'')}</b><br><button class="btn primary" type="button" onclick="selectTelegramChat('${escapeHtml(c.id)}')">${lang==='es'?'Usar este chat':'Use this chat'}</button></div>`).join('')}
-async function selectTelegramChat(id){await api('/api/telegram/config',{method:'POST',body:JSON.stringify({chat_id:id})});toast(lang==='es'?'Chat de Telegram guardado':'Telegram chat saved');await load()}
+async function detectTelegramChats(){const res=await api('/api/telegram/detect',{method:'POST',body:'{}'});const rows=res.result||[];const box=qs('#telegram-results');if(!rows.length){box.innerHTML=`<p class="notice">${lang==='es'?'No encontré mensajes. Escríbele primero a tu bot en Telegram y vuelve a intentar.':'I found no messages. Message your bot in Telegram first, then try again.'}</p>`;return}box.innerHTML=rows.map(c=>`<div class="log-item"><b>${escapeHtml(c.label)} ${escapeHtml(c.username||'')}</b><br><button class="btn primary" type="button" onclick="selectTelegramChat('${escapeHtml(c.id)}',qs('#onboarding-flow')?.classList.contains('open'))">${lang==='es'?'Usar este chat':'Use this chat'}</button></div>`).join('')}
+async function selectTelegramChat(id,fromOnboarding=false){await api('/api/telegram/config',{method:'POST',body:JSON.stringify(fromOnboarding?{chat_id:id,enabled:'true'}:{chat_id:id})});toast(lang==='es'?'Chat de Telegram guardado':'Telegram chat saved');await load();if(fromOnboarding){const steps=onboardingSteps();const idx=steps.findIndex(s=>s.id==='telegram');onboardingFlowTouched=true;onboardingFlowStep=Math.min(steps.length-1,(idx>=0?idx:onboardingFlowStep)+1);renderOnboardingFlow()}}
 async function testTelegram(){await api('/api/telegram/test',{method:'POST',body:'{}'});toast(lang==='es'?'Mensaje enviado a Telegram':'Test message sent to Telegram')}
 function showDetails(campaign_id){const c=state.metrics.campaigns.find(item=>item.id===campaign_id);if(c)toast(lang==='es'?`${t('details')}: ${demoCampaignName(c.name)} · vuelve ${Number(c.roas).toFixed(2)}x por cada $1 · cada compra cuesta ${fmtMoney(c.cpa)}`:`${t('details')}: ${c.name} · ROAS ${Number(c.roas).toFixed(2)}x · CPA ${fmtMoney(c.cpa)}`);else toast(t('toast_details'))}
 function initBrandGuides(){

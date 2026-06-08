@@ -49,12 +49,12 @@ Si una campana quedara activa y podria gastar presupuesto real, el boton dira cl
 Si, crear y dejar activo
 ```
 
-El agente no aprueba por texto libre. Si escribes "aprueba eso", te pedira usar el boton de la accion exacta.
+El agente no aprueba una orden vaga como "hazlo todo". Por seguridad, solo acepta texto cuando la decision queda clara: respondes a la tarjeta exacta, escribes el ID de aprobacion o solo hay una decision pendiente. Si hay varias opciones, te pedira usar el boton correcto.
 
 ## Proteccion importante
 
 - Solo el chat privado elegido puede hablar con el agente.
-- El bot usa Hermes y las mismas reglas del dashboard.
+- El bot usa el mismo manager, memoria y reglas del dashboard.
 - Telegram puede preparar acciones y aprobar solo cuando eliges una decision exacta: boton, respuesta a la tarjeta, ID de aprobacion o una sola decision pendiente.
 - Campanas activas y cambios que pueden gastar muestran una confirmacion especial antes de ejecutar.
 

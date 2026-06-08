@@ -52,6 +52,51 @@ def env_first(*names, default=""):
     return default
 
 
+def normalize_chat_provider(value):
+    raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "hermes": "hermes",
+        "openai": "openai_compatible",
+        "openai_api": "openai_compatible",
+        "openai_compatible": "openai_compatible",
+        "openai_compat": "openai_compatible",
+        "compatible": "openai_compatible",
+        "custom": "openai_compatible",
+        "custom_api": "openai_compatible",
+        "minimax": "minimax",
+        "minimax_m3": "minimax",
+    }
+    return aliases.get(raw, "hermes")
+
+
+def normalize_agent_brain_provider(value, legacy_chat_provider="hermes", base_url=""):
+    raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "hermes": "openai_codex",
+        "chatgpt": "openai_codex",
+        "chatgpt_subscription": "openai_codex",
+        "codex": "openai_codex",
+        "openai_codex": "openai_codex",
+        "openai": "openai_api",
+        "openai_api": "openai_api",
+        "minimax": "minimax",
+        "minimax_m3": "minimax",
+        "openai_compatible": "custom_api",
+        "openai_compat": "custom_api",
+        "compatible": "custom_api",
+        "custom": "custom_api",
+        "custom_api": "custom_api",
+    }
+    if raw in aliases:
+        return aliases[raw]
+    legacy = normalize_chat_provider(legacy_chat_provider)
+    if legacy == "minimax":
+        return "minimax"
+    if legacy in {"openai_compatible", "openai"}:
+        return "openai_api" if "api.openai.com" in str(base_url or "") else "custom_api"
+    return "openai_codex"
+
+
 @dataclass
 class AgentConfig:
     mode: str
@@ -106,6 +151,7 @@ class AgentConfig:
     agent_profile_dir: str
     codex_creative_enabled: bool
     codex_cli: str
+    agent_brain_provider: str = "openai_codex"
     license_public_key: str = ""
     hermes_cli: str = "hermes"
     hermes_home: str = ""
@@ -131,11 +177,13 @@ def load_config():
     mode = os.environ.get("META_ADS_AGENT_MODE", "dry-run").strip().lower()
     if mode not in {"dry-run", "live"}:
         mode = "dry-run"
-    provider = env_first("AGENT_CHAT_PROVIDER", default="hermes").lower().replace("-", "_")
-    if provider in {"openai-compatible", "openai compatible", "openai_compat", "openai_api"}:
-        provider = "openai_compatible"
-    if provider not in {"hermes", "minimax", "openai_compatible", "openai"}:
-        provider = "hermes"
+    legacy_chat_provider = normalize_chat_provider(env_first("AGENT_CHAT_PROVIDER", default="hermes"))
+    base_url = env_first("AGENT_CHAT_BASE_URL", "MINIMAX_BASE_URL", default="https://api.minimax.io/v1").rstrip("/")
+    brain_provider = normalize_agent_brain_provider(
+        env_first("AGENT_BRAIN_PROVIDER", default=""),
+        legacy_chat_provider=legacy_chat_provider,
+        base_url=base_url,
+    )
     return AgentConfig(
         mode=mode,
         dashboard_host=os.environ.get("DASHBOARD_HOST", "127.0.0.1"),
@@ -180,8 +228,8 @@ def load_config():
         gemini_api_key=os.environ.get("GEMINI_API_KEY", ""),
         nano_banana_model=os.environ.get("NANO_BANANA_MODEL", "gemini-2.5-flash-image"),
         creative_variants_per_campaign=env_int("CREATIVE_VARIANTS_PER_CAMPAIGN", 3),
-        agent_chat_provider=provider,
-        agent_chat_base_url=env_first("AGENT_CHAT_BASE_URL", "MINIMAX_BASE_URL", default="https://api.minimax.io/v1").rstrip("/"),
+        agent_chat_provider="hermes",
+        agent_chat_base_url=base_url,
         agent_chat_api_key=env_first("AGENT_CHAT_API_KEY", "MINIMAX_API_KEY", default=""),
         agent_chat_api=env_first("AGENT_CHAT_API", "MINIMAX_API", default="openai-chat-completions").lower(),
         agent_chat_model=env_first("AGENT_CHAT_MODEL", "MINIMAX_MODEL", default="MiniMax-M3"),
@@ -189,6 +237,7 @@ def load_config():
         agent_profile_dir=os.environ.get("AGENT_PROFILE_DIR", "agent"),
         codex_creative_enabled=env_bool("CODEX_CREATIVE_ENABLED", False),
         codex_cli=os.environ.get("CODEX_CLI", "codex"),
+        agent_brain_provider=brain_provider,
         license_public_key=os.environ.get("LICENSE_PUBLIC_KEY", ""),
         hermes_cli=os.environ.get("HERMES_CLI", "hermes"),
         hermes_home=os.environ.get("HERMES_HOME", ""),

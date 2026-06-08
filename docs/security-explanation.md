@@ -9,7 +9,7 @@ Este producto esta pensado para dar tranquilidad sin volver la instalacion compl
 - El nivel inicial es `Con supervision`: lee datos reales, explica y prepara acciones sin ejecutar cambios peligrosos por sorpresa.
 - Las acciones reales requieren licencia activa y una autorizacion clara: tu aprobacion exacta, o Piloto automatico activo dentro de tus reglas.
 - Cambios riesgosos pasan por cola de aprobacion.
-- El chat puede ayudarte a preparar acciones. En Telegram solo se puede aprobar tocando un boton de una decision exacta; no se aprueba por texto libre.
+- El chat puede ayudarte a preparar acciones. En Telegram solo se puede aprobar una decision exacta: boton, respuesta a la tarjeta, ID de aprobacion o una sola decision pendiente.
 - En licencia Individual, las claves quedan en `.env`.
 - En licencia Agencia, cada espacio guarda su conexión Meta/Telegram local en archivos privados del backend, con acceso restringido al usuario del PC/VPS. No se envían al vendedor.
 
