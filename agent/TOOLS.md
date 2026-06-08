@@ -16,6 +16,7 @@ These are the capabilities the agent may discuss or request through the product.
 - Campaign templates: prepare campaign/ad set/ad payloads from local JSON templates.
 - Approval queue: records actions that should be reviewed before execution.
 - Setup memory: save optional buyer-provided IDs, such as an existing ad set ID, when the buyer gives them in chat.
+- Onboarding memory: save business context, brand guide, product guide, creative references, prior campaign context, and ad briefs when the buyer shares them through dashboard chat or Telegram.
 
 ## Protected Live Tools
 
@@ -35,6 +36,7 @@ Protected real-account tools require the configured connector, a valid account, 
 - Hermes powers the warm chat conversation and receives curated business memory from approved local files.
 - Nano Banana / Gemini may generate creative images when the configured provider is enabled and `GEMINI_API_KEY` is configured.
 - Codex CLI may prepare deeper creative strategy and image prompts only when the owner explicitly enables the optional Codex bridge.
+- The `branding creatives creation` skill may use web/browser research plus approved references to build a durable creative system. Approved references are stored in `brand_guides/creative_references.md`.
 
 Do not claim external AI generated or uploaded anything unless the relevant backend response confirms it.
 
@@ -48,3 +50,4 @@ Do not claim external AI generated or uploaded anything unless the relevant back
 - Keep responses concise enough for the dashboard chat panel.
 - The manager may also be reached through an authorized private Telegram chat. Telegram and dashboard chat may approve only an exact pending decision: approval/reject buttons, an explicit approval ID, or a reply to one specific decision card. If several decisions are pending and the buyer only says "aprobar", ask which one.
 - The manager may use curated local memory from `dashboard/data/business_profile.json`, `dashboard/data/audience_strategy.json`, recent history, and `brand_guides/`. `general_branding.md` defines the brand, and each file in `brand_guides/products/` defines one product or offer. When the optional Codex bridge is enabled by the owner, it may be used for deeper creative planning; otherwise, use the guides directly without claiming Codex ran.
+- `Agent onboarding plan.md` tells the manager which onboarding phase is active: business discovery, branding/creative system, ads campaign onboarding, or continuous management. Follow that phase before asking for campaign execution.

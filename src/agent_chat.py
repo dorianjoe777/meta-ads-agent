@@ -19,7 +19,9 @@ def account_context(payload):
     audience_strategy = payload.get("audience_strategy", {})
     business_profile = payload.get("business_profile", {})
     brand_guides = payload.get("brand_guides", {})
+    agent_onboarding_phase = payload.get("agent_onboarding_phase", {})
     return {
+        "agent_onboarding_phase": agent_onboarding_phase if isinstance(agent_onboarding_phase, dict) else {},
         "business_profile": business_profile if isinstance(business_profile, dict) else {},
         "summary": summary,
         "campaigns": [
@@ -44,6 +46,8 @@ def account_context(payload):
         "brand_guides": {
             "general_exists": bool(brand_guides.get("general_exists")),
             "product_guides": list(brand_guides.get("product_guides", []))[:20],
+            "creative_references_exists": bool(brand_guides.get("creative_references_exists")),
+            "creative_references": brand_guides.get("creative_references", ""),
         } if isinstance(brand_guides, dict) else {},
     }
 

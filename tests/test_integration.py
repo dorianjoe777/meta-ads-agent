@@ -566,11 +566,14 @@ class IntegrationTestSuite:
         original_write_json = dashboard.write_json
         original_save_setup_config = dashboard.save_setup_config
         original_log_action = dashboard.log_action
+        original_write_onboarding_questions_memory = dashboard.write_onboarding_questions_memory
+        setup_payloads = []
         try:
             dashboard.read_json = lambda path, default=None: dict(stored.get("profile", default or {})) if path == dashboard.BUSINESS_PROFILE_FILE else (default or {})
             dashboard.write_json = lambda path, data: stored.__setitem__("profile", dict(data)) if path == dashboard.BUSINESS_PROFILE_FILE else None
-            dashboard.save_setup_config = lambda _payload: {"saved": True}
+            dashboard.save_setup_config = lambda payload: setup_payloads.append(dict(payload)) or {"saved": True}
             dashboard.log_action = lambda *_args, **_kwargs: None
+            dashboard.write_onboarding_questions_memory = lambda _profile, status="pending": {"path": "memory", "status": status}
             skipped = dashboard.save_business_context({"website_skipped": True})
             self.assert_true(skipped["profile"].get("website_skipped") is True, "Website step can be skipped for buyers without a site")
             completed = dashboard.save_business_context(
@@ -586,11 +589,25 @@ class IntegrationTestSuite:
             snapshot = dashboard.business_context_snapshot(completed["profile"])
             self.assert_true(snapshot["ready"] is True and "Curso de maquillaje" in snapshot["summary"], "Business owner answers produce a dashboard business snapshot")
             self.assert_true(bool(snapshot["audience_hint"]) and bool(snapshot["creative_hint"]), "Business snapshot derives audience and creative guidance")
+            stored["profile"] = {}
+            setup_payloads.clear()
+            social_only = dashboard.save_business_links_for_agent(
+                {
+                    "links": "instagram.com/mi-tienda\nfacebook.com/mi-tienda",
+                    "business_type": "tienda de ropa",
+                }
+            )
+            self.assert_true(not social_only["profile"].get("website_url") and len(social_only["profile"].get("social_links", [])) == 2, "Social-only links are saved as social profiles, not as the business website")
+            self.assert_true(not setup_payloads, "Social-only links do not overwrite the Meta landing URL")
+            site_and_social = dashboard.save_business_links_for_agent({"links": "mitienda.com\ninstagram.com/mi-tienda"})
+            self.assert_true(site_and_social["profile"].get("website_url") == "https://mitienda.com", "Non-social link becomes the business website")
+            self.assert_true(setup_payloads[-1].get("landing_url") == "https://mitienda.com", "Only a real website updates the setup landing URL")
         finally:
             dashboard.read_json = original_read_json
             dashboard.write_json = original_write_json
             dashboard.save_setup_config = original_save_setup_config
             dashboard.log_action = original_log_action
+            dashboard.write_onboarding_questions_memory = original_write_onboarding_questions_memory
 
     def test_website_scan_can_use_hermes_browser_enrichment(self):
         """Test connected Hermes can enrich onboarding answers from a website scan."""
@@ -609,6 +626,7 @@ class IntegrationTestSuite:
         original_write_json = dashboard.write_json
         original_save_setup_config = dashboard.save_setup_config
         original_log_action = dashboard.log_action
+        original_write_onboarding_questions_memory = dashboard.write_onboarding_questions_memory
         stored = {}
         try:
             dashboard.load_config = lambda: FakeConfig()
@@ -617,8 +635,10 @@ class IntegrationTestSuite:
             dashboard.write_json = lambda path, data: stored.__setitem__(path, dict(data))
             dashboard.save_setup_config = lambda _payload: {"saved": True}
             dashboard.log_action = lambda *_args, **_kwargs: None
+            dashboard.write_onboarding_questions_memory = lambda _profile, status="pending": {"path": "memory", "status": status}
 
             def fake_agent_chat(_config, payload):
+                captured.setdefault("calls", []).append(payload)
                 captured["message"] = payload["message"]
                 captured["channel"] = payload.get("channel")
                 return {
@@ -628,6 +648,7 @@ class IntegrationTestSuite:
                         {
                             "main_offer": "Oferta desde Hermes",
                             "ideal_customer": "Comprador ideal desde Hermes",
+                            "products_services": ["Producto uno", "Servicio dos"],
                             "current_stage": "Ya tengo web y quiero lanzar",
                             "what_to_improve": "Elegir el primer concepto de anuncios",
                             "initial_plan": ["Revisar web", "Crear campaña con supervisión"],
@@ -658,6 +679,16 @@ class IntegrationTestSuite:
             self.assert_true(generated["source"] == "agent_questions", "Hermes-generated onboarding questions are used when the model responds with JSON")
             self.assert_true(generated["questions"][0]["label"] == "¿Qué vendes?", "Generated questions keep the first question simple")
             self.assert_true(captured["channel"] == "onboarding_business_questions", "Question generation uses the dedicated onboarding channel")
+            links_scan = dashboard.save_business_links_for_agent(
+                {
+                    "links": "https://example.com\nhttps://instagram.com/mi-tienda",
+                    "business_type": "tienda de skincare",
+                }
+            )
+            link_call = next(call for call in captured["calls"] if call.get("channel") == "onboarding_public_links_scan")
+            self.assert_true(links_scan["profile"].get("source") == "hermes_links_scan", "Saving public links triggers an immediate Hermes intelligent scan")
+            self.assert_true("Producto uno" in links_scan["profile"].get("products_services", []), "Hermes public-link scan stores detected products or services")
+            self.assert_true("instagram.com/mi-tienda" in link_call["message"] and "No inicies sesion" in link_call["message"], "Hermes link scan receives social links with safe public-reading rules")
         finally:
             dashboard.load_config = original_load_config
             dashboard.hermes_codex_ready = original_ready
@@ -666,6 +697,7 @@ class IntegrationTestSuite:
             dashboard.write_json = original_write_json
             dashboard.save_setup_config = original_save_setup_config
             dashboard.log_action = original_log_action
+            dashboard.write_onboarding_questions_memory = original_write_onboarding_questions_memory
 
     def test_skill_response_parsing(self):
         """Test MiniMax skill JSON parsing."""
@@ -1011,6 +1043,9 @@ class IntegrationTestSuite:
                 "  (○) 24. OpenCode ▸ (Zen pay-as-you-go or Go subscription)\n"
             )
             self.assert_true(dashboard.extract_login_codes_from_text(provider_menu_only_output) == [], "Provider menus alone do not produce fake OpenAI login codes")
+            device_auth_output = 'Enable device code authorization for Codex in ChatGPT Security Settings, then run "codex login --device-auth" again.'
+            prompt = dashboard.hermes_login_prompt_state(device_auth_output, dashboard.HERMES_LOGIN_STATE)
+            self.assert_true(prompt["phase"] == "device_auth_settings" and "Ajustes > Seguridad" in prompt["detail"], "Disabled Codex device-code auth is turned into buyer-friendly ChatGPT settings guidance")
         finally:
             dashboard.os.write = original_write
 
@@ -1106,8 +1141,11 @@ class IntegrationTestSuite:
         self.assert_true("Curated local business memory JSON" in prompt, "Hermes prompt includes curated business memory")
         self.assert_true("Hermes workspace files" in prompt, "Hermes prompt lists workspace files")
         self.assert_true("business_profile" in memory and "brand_guides" in memory, "Business and brand memory are included")
+        self.assert_true("onboarding_plan" in memory and "creative_references" in memory and "Agent onboarding phase plan" in prompt, "Hermes receives onboarding phase and creative reference memory")
         self.assert_true((hermes_bridge.HERMES_WORKSPACE_DIR / "data" / "business_profile.json").exists(), "Business profile is copied into Hermes workspace")
         self.assert_true((hermes_bridge.HERMES_WORKSPACE_DIR / "brand_guides" / "general_branding.md").exists(), "Brand guide is copied into Hermes workspace")
+        self.assert_true((hermes_bridge.HERMES_WORKSPACE_DIR / "memory" / "Agent onboarding plan.md").exists(), "Agent onboarding plan is copied into Hermes workspace")
+        self.assert_true((hermes_bridge.HERMES_WORKSPACE_DIR / "brand_guides" / "creative_references.md").exists(), "Creative references are copied into Hermes workspace")
         self.assert_true(".env" not in prompt and "MINIMAX_API_KEY" not in prompt, "Secrets and arbitrary local files are not included")
         self.assert_true("Uploaded reference images" not in prompt, "Unsafe non-upload image paths are not attached")
 
@@ -1424,6 +1462,8 @@ class IntegrationTestSuite:
         product_path = codex_brand_guides.PRODUCT_DIR / "memoria-prueba-integracion.md"
         ad_brief_path = codex_brand_guides.AD_BRIEF_DIR / "brief-buen-fin-variantes.md"
         general_before = general_path.read_bytes() if general_path.exists() else None
+        references_path = codex_brand_guides.CREATIVE_REFERENCES_FILE
+        references_before = references_path.read_bytes() if references_path.exists() else None
         product_before = product_path.read_bytes() if product_path.exists() else None
         ad_brief_before = ad_brief_path.read_bytes() if ad_brief_path.exists() else None
         try:
@@ -1470,6 +1510,21 @@ class IntegrationTestSuite:
                 {"id": "ad_brief_test", "name": "Campaña Buen Fin", "health": "good"},
                 ad_brief=ad_brief["ad_brief"],
             )
+            references = codex_brand_guides.save_creative_references(
+                {
+                    "web_references": "Referencia ecommerce de skincare: layout limpio, producto protagonista, fondo claro.",
+                    "generated_references": "Imagen 2: paleta coral/marfil, close-up premium.",
+                    "approved_references": "Mantener producto grande y texto minimo.",
+                    "notes": "Usar referencias como direccion, no como copia exacta.",
+                }
+            )
+            codex_brand_guides.save_creative_references(
+                {
+                    "approved_references": "Agregar sello de oferta y mantener layout aprobado.",
+                    "append": True,
+                }
+            )
+            codex_prompt = build_codex_creative_prompt(result["guide"], "Crea un concepto para la siguiente campaña.")
             prompt = plan["variants"][0]["image_prompts"][0]["prompt"]
             ad_prompt = ad_plan["variants"][0]["image_prompts"][0]["prompt"]
             self.assert_true(library["general"]["saved"] is True and product_path.exists(), "Brand and product memory are saved as local Markdown guides")
@@ -1483,6 +1538,8 @@ class IntegrationTestSuite:
             self.assert_true("Anuncio ganador testimonio" in ad_plan["brand_memory"]["ad_brief"]["base_ad_name"], "Ad brief records the exact winning/base ad")
             self.assert_true("Bono de Buen Fin" in ad_prompt and "paleta de colores" in ad_prompt, "Ad brief promotion and creative window inform image prompts")
             self.assert_true("colores" in ad_plan["variants"][0]["copy"]["headline"].lower(), "Ad brief variation axes become concrete ad variants")
+            self.assert_true(references["creative_references"] == "brand_guides/creative_references.md" and "Referencia ecommerce" in codex_prompt, "Approved creative references are saved and included in Codex creative prompts")
+            self.assert_true("Mantener producto grande" in codex_prompt and "Agregar sello de oferta" in codex_prompt, "Appending creative references preserves prior approved direction instead of replacing it")
         finally:
             if general_before is None:
                 general_path.unlink(missing_ok=True)
@@ -1499,6 +1556,124 @@ class IntegrationTestSuite:
             else:
                 ad_brief_path.parent.mkdir(parents=True, exist_ok=True)
                 ad_brief_path.write_bytes(ad_brief_before)
+            if references_before is None:
+                references_path.unlink(missing_ok=True)
+            else:
+                references_path.parent.mkdir(parents=True, exist_ok=True)
+                references_path.write_bytes(references_before)
+
+    def test_agent_onboarding_phase_tools_create_durable_memory(self):
+        """Test Telegram/dashboard agent tools can move from business to branding to campaign memory."""
+        print("\nTesting Agent Onboarding Phase Tools...")
+
+        dashboard = load_dashboard_module()
+        paths = [
+            dashboard.BUSINESS_PROFILE_FILE,
+            dashboard.ONBOARDING_QUESTIONS_FILE,
+            dashboard.AGENT_ONBOARDING_PLAN_FILE,
+            dashboard.ADS_ONBOARDING_FILE,
+            codex_brand_guides.GENERAL_GUIDE,
+            codex_brand_guides.CREATIVE_REFERENCES_FILE,
+            codex_brand_guides.PRODUCT_DIR / "oferta-fase-prueba.md",
+            codex_brand_guides.AD_BRIEF_DIR / "brief-fase-prueba.md",
+        ]
+        backups = {path: (path.read_bytes() if path.exists() else None) for path in paths}
+        try:
+            business = dashboard.execute_agent_tool(
+                {
+                    "tool": "save_business_context",
+                    "arguments": {
+                        "business_type": "clinica dental",
+                        "main_offer": "blanqueamiento dental",
+                        "ideal_customer": "adultos que quieren verse mejor",
+                        "current_stage": "ya vende y quiere escalar",
+                        "what_to_improve": "bajar el costo por cita",
+                        "success_goal": "mas citas en 30 dias",
+                        "context_complete": True,
+                    },
+                },
+                {"language": "es"},
+            )
+            phase_after_business = dashboard.agent_onboarding_phase()
+            dashboard.execute_agent_tool(
+                {
+                    "tool": "save_brand_guide",
+                    "arguments": {
+                        "brand_name": "Sonrisa Clara",
+                        "offer": "tratamientos dentales esteticos",
+                        "ideal_customer": "adultos profesionales",
+                        "colors": "azul profundo, blanco, acento dorado",
+                        "typography": "sans serif limpia y premium",
+                        "visual_style": "clinico premium, luz suave, sonrisa natural",
+                        "references": "referencias aprobadas por el cliente",
+                    },
+                },
+                {"language": "es"},
+            )
+            dashboard.execute_agent_tool(
+                {
+                    "tool": "save_product_guide",
+                    "arguments": {
+                        "name": "Oferta Fase Prueba",
+                        "audience": "personas que quieren una sonrisa mas blanca",
+                        "pain": "inseguridad al sonreir",
+                        "desire": "verse mejor en fotos y reuniones",
+                    },
+                },
+                {"language": "es"},
+            )
+            refs = dashboard.execute_agent_tool(
+                {
+                    "tool": "save_creative_references",
+                    "arguments": {
+                        "web_references": "Anuncios dentales premium: rostro feliz, fondo limpio, prueba social.",
+                        "approved_references": "Usar fondo limpio y texto minimo.",
+                    },
+                },
+                {"language": "es"},
+            )
+            phase_after_branding = dashboard.agent_onboarding_phase()
+            ads = dashboard.execute_agent_tool(
+                {
+                    "tool": "save_ads_onboarding",
+                    "arguments": {
+                        "promoted_before": "promociones en Instagram",
+                        "previous_ads_results": "muchos mensajes pero pocas citas",
+                        "campaign_goal": "agendar citas",
+                        "budget_comfort": "20 dolares diarios",
+                        "first_strategy": "campana de mensajes con creativos premium y retargeting simple",
+                        "ads_onboarding_complete": True,
+                    },
+                },
+                {"language": "es"},
+            )
+            brief = dashboard.execute_agent_tool(
+                {
+                    "tool": "save_ad_brief",
+                    "arguments": {
+                        "name": "Brief Fase Prueba",
+                        "promotion": "evaluacion dental inicial",
+                        "base_ad": "sonrisa natural con prueba social",
+                        "variation_window": "probar colores y encuadre sin cambiar oferta",
+                    },
+                },
+                {"language": "es"},
+            )
+            final_phase = dashboard.agent_onboarding_phase()
+            plan_text = dashboard.AGENT_ONBOARDING_PLAN_FILE.read_text(encoding="utf-8")
+            skill_text = (ROOT_DIR / "agent" / "SKILLS.md").read_text(encoding="utf-8")
+            self.assert_true(business["executed"] is True and phase_after_business["phase"] == "branding_creatives_creation", "Business context tool moves onboarding to branding creatives phase")
+            self.assert_true(refs["executed"] is True and phase_after_branding["phase"] == "ads_campaign_onboarding", "Brand and creative reference tools move onboarding to campaign history phase")
+            self.assert_true(ads["executed"] is True and brief["executed"] is True and final_phase["phase"] == "continuous_ads_manager", "Campaign onboarding and ad brief tools finish the chat onboarding phase")
+            self.assert_true("branding creatives creation" in skill_text and "save_creative_references" in skill_text, "Branding creatives creation skill is documented for Hermes")
+            self.assert_true("continuous_ads_manager" in plan_text and "save_ads_onboarding" in plan_text, "Agent onboarding plan records the continuous manager phase")
+        finally:
+            for path, content in backups.items():
+                if content is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(content)
 
     def test_audience_builder_readiness(self):
         """Test audience builder creates safe targeting strategy and lookalike readiness."""
@@ -2464,9 +2639,9 @@ class IntegrationTestSuite:
         self.assert_true("appendChatApprovalActions" in html and "chatApproveDecision" in html and "chatRejectDecision" in html, "Agent chat can show approve/reject buttons for exact pending approvals")
         self.assert_true("/api/reject" in html and "msg-approval-card" in html, "Chat approval decisions include a reject path and compact action cards")
         self.assert_true("onboarding-flow" in html, "Dedicated onboarding flow exists")
-        self.assert_true("websiteScanGuide" in html and "/api/business-profile/questions" in html and "startBusinessInterview" in html and "¿Qué negocio tienes?" in html, "Onboarding starts with a short business intro and generates the next questions")
-        self.assert_true("businessContextGuide" in html and "businessContextQuestions" in html and "saveBusinessContextQuestion" in html and "Guardar y seguir" in html, "Onboarding collects buyer context one simple question at a time")
-        self.assert_true("initialStrategyGuide" in html and "Esto entendí" in html, "Onboarding shows an initial strategy before dashboard entry")
+        self.assert_true("websiteScanGuide" in html and "/api/business-profile/links" in html and "saveBusinessLinks" in html and "Pega tu web y redes" in html, "Onboarding collects only website/social links before handing the deep interview to the agent")
+        self.assert_true("Onboarding questions.md" in dashboard_source and "write_onboarding_questions_memory" in dashboard_source and "pregunta lo minimo necesario" in dashboard_source, "Business discovery is stored as agent memory for Telegram/chat instead of a long setup form")
+        self.assert_true("businessContextGuide" in html and "businessContextQuestions" in html and "saveBusinessContextQuestion" in html, "Buyer context editor remains available outside the required onboarding path")
         self.assert_true("requires_repair" in html and "Reconectemos tus datos reales" in html, "Legacy completed setup reopens guidance when real Meta data is missing")
         self.assert_true("tab-audiences" in html, "Audience builder tab exists")
         self.assert_true("setup-config-form" in html, "Setup save form exists")
@@ -2481,16 +2656,19 @@ class IntegrationTestSuite:
         self.assert_true("Copiar paso" not in html and "Copy step" not in html, "ChatGPT/Codex connection no longer presents copy-only wording")
         self.assert_true("agent_chat_base_url" in html and "agent_chat_api_key" in html and "custom_api" in html, "OpenAI-compatible brain settings are exposed without showing saved keys")
         self.assert_true("DigitalOcean mostraré aquí el enlace" in html and "Ver diagnóstico para soporte" in html, "Hermes/ChatGPT setup has a browser-based VPS path with diagnostics folded")
+        self.assert_true("Ajustes > Seguridad" in html and "Enable device code authorization for Codex" in html and "chatgpt-preflight" in html, "ChatGPT/Codex setup tells buyers to enable device-code authorization before login")
         self.assert_true("/api/agent-model/connect-status" in html and "/api/agent-model/connect-input" in html and "sendChatGptTerminalInput" in html, "VPS Hermes bridge can poll and send guided terminal responses")
+        self.assert_true("chatgpt-settings-help" in html and "device_auth_settings" in html, "ChatGPT/Codex setup shows a clear recovery card when device-code auth is disabled")
         self.assert_true("Ver detalle técnico de Hermes" in html and "prepareChatGptAuthWindow" in html and "maybeOpenChatGptAuthUrl" in html, "Hermes browserless UI folds support detail and opens the OAuth login in the buyer browser")
         self.assert_true("chatgpt-device-code" in html and "Copiar código" in html and "login_code" in html and "font-size:clamp(30px" in html and "word-break:break-all" in html and "scrollIntoView({behavior:'smooth',block:'center'})" in html, "OpenAI terminal login code is shown as a large copyable buyer-facing card that cannot clip longer codes")
         self.assert_true("body .onboarding-flow input:not([type=\"checkbox\"])" in html and "::placeholder" in html and "-webkit-autofill" in html, "Onboarding text fields stay dark and readable across dashboard themes")
         self.assert_true("Voy a elegir OpenAI Codex y el modelo recomendado automáticamente" in dashboard_source and "maybe_auto_drive_hermes_browserless" in dashboard_source, "Hermes browserless setup auto-selects Codex provider and recommended model")
-        self.assert_true("{id:'chatgpt',status:chatgptOk?'ok':'warn'}" in html and "chatGptConnectMarkup(true)" in html, "Initial onboarding includes ChatGPT connection before Meta setup")
-        self.assert_true("{id:'telegram',status:telegramOk?'ok':'warn'}" in html and "telegramOnboardingGuide()" in html, "Initial onboarding includes Telegram as an important guided setup step")
+        self.assert_true("{id:'chatgpt',status:chatgptOk?'ok':'warn'}" in html and "chatGptConnectMarkup(true)" in html, "Initial onboarding includes ChatGPT/Codex connection after Meta setup")
+        self.assert_true("{id:'telegram',status:telegramOk?'ok':'warn'}" in html and "telegramOnboardingGuide()" in html, "Initial onboarding finishes with Telegram as the manager channel")
         self.assert_true("Habla con tu manager por Telegram" in html and "Descargar Telegram" in html and "Abrir BotFather" in html and "Copiar /newbot" in html and "Detectar mi chat" in html, "Telegram onboarding explains download, BotFather, command copy, chat detection, and phone-first manager access")
         self.assert_true("usuario parecido, pero terminado en <b>bot</b>" in html and "Esto se configura una sola vez" in html and "No puedo crear el bot por ti" in html, "Telegram onboarding explains the BotFather username rule, one-time setup, and automation limits")
-        self.assert_true("{id:'password',status:passwordOk?'ok':'blocked'},\n\t  {id:'chatgpt',status:chatgptOk?'ok':'warn'},\n\t  {id:'telegram',status:telegramOk?'ok':'warn'},\n\t  {id:'website',status:websiteOk?'ok':'blocked'}" in html, "Initial onboarding moves from password to agent model, Telegram, and then business context")
+        self.assert_true("{id:'meta',status:tokenOk?'ok':(socialOk?'warn':'blocked')}" in html and "{id:'account',status:accountOk?'ok':'blocked'}" in html and "{id:'destination',status:destinationOk?'ok':'blocked'}" in html, "Initial onboarding starts with the buyer Facebook/Meta connection")
+        self.assert_true("{id:'destination',status:destinationOk?'ok':'blocked'},\n\t  {id:'chatgpt',status:chatgptOk?'ok':'warn'},\n\t  {id:'website',status:websiteOk?'ok':'warn'},\n\t  {id:'telegram',status:telegramOk?'ok':'warn'}" in html, "Initial onboarding moves from Facebook setup to ChatGPT, quick link scan, and finishes with Telegram")
         self.assert_true("Elige qué modelo usará el agente" in html and "apiBrainOk" in html, "Onboarding positions model setup as part of installation and accepts API brain readiness")
         self.assert_true("license-panel" in html, "License activation panel exists")
         self.assert_true("/api/license/activate" in html, "License activation endpoint is wired in UI")
@@ -2502,7 +2680,7 @@ class IntegrationTestSuite:
         self.assert_true("unlock_create_title" in html and "Crea tu contraseña" in html, "First-run unlock modal can ask buyers to create a password")
         self.assert_true("unlockMode==='create'" in html and "/api/dashboard-password" in html, "First-run password creation is wired through the dashboard password endpoint")
         self.assert_true("!state.config.dashboard_password_set)showUnlock(t('unlock_create_needed'),'create')" in html, "Clean installs proactively ask buyers to create a dashboard password")
-        self.assert_true("Ahora conecta el cerebro del agente" in html and "const modelIndex=steps.findIndex(s=>s.id==='chatgpt')" in html, "Password creation advances to the agent model connection")
+        self.assert_true("Contraseña guardada. Sigamos con el siguiente paso." in html and "advanceOnboardingAfterLoad()" in html, "Password creation advances to the next missing onboarding step")
         self.assert_true("onboardingFlowTouched=false" in html, "Onboarding auto-advance starts untouched")
         self.assert_true("s.status!=='ok'" in html, "Onboarding opens on first unfinished step")
         self.assert_true("onboardingFlowTouched=true;onboardingFlowStep=Math.max" in html, "Onboarding back button allows completed-step review")
@@ -2536,8 +2714,8 @@ class IntegrationTestSuite:
         self.assert_true("Deja la supervisión activa" in html, "Live onboarding recommends supervised mode first")
         self.assert_true("Con supervisión" in html, "Last onboarding step avoids simulation wording")
         self.assert_true("modo simulación" not in html, "Buyer-facing onboarding avoids simulation mode wording")
-        self.assert_true("summary.live_ads_ready?'ok':'warn'" in html, "Live onboarding does not block first dashboard entry")
-        self.assert_true("No hace falta para entrar al dashboard" in html, "Live smoke test is positioned as optional")
+        self.assert_true("/api/onboarding/skip" in html and "Saltar y completar luego" in html, "Live setup details do not block first dashboard entry")
+        self.assert_true("deferred-onboarding-banner" in html and "Completa la configuración cuando puedas" in html, "Skipped setup creates a visible reminder instead of trapping the buyer")
         self.assert_true("Con supervisión" in html, "Buyer-facing supervised control wording exists")
         self.assert_true("Piloto automático" in html, "Buyer-facing autopilot wording exists")
         self.assert_true("guardrails-panel" in html, "Guardrail settings panel exists")
@@ -2589,8 +2767,8 @@ class IntegrationTestSuite:
         self.assert_true("Cambiar clave de Meta" in html, "Buyer can intentionally replace the Meta key later")
         self.assert_true("Se guarda automáticamente al pegarla" in html, "Spanish key copy explains automatic saving")
         self.assert_true("Reintentar guardar" in html, "Manual token save is only a retry fallback")
-        self.assert_true("Contraseña guardada. Ahora conecta el cerebro del agente." in html, "Password save clearly advances to the agent-first setup step")
-        self.assert_true("findIndex(s=>s.id==='chatgpt')" in html, "Password save moves to agent model connection step")
+        self.assert_true("Contraseña guardada. Sigamos con el siguiente paso." in html, "Password save clearly advances without forcing an outdated step")
+        self.assert_true("advanceOnboardingAfterLoad()" in html, "Password save moves to the next unfinished onboarding step")
         self.assert_true("goToMetaTokenStep" in html, "Expired-token account search can return to token step")
         self.assert_true("Pega una clave nueva" in html, "Expired Meta key message is buyer-friendly")
         self.assert_true("No se guarda en cookies" in html, "Meta key storage copy avoids cookie confusion")
@@ -3398,6 +3576,7 @@ class IntegrationTestSuite:
             self.test_agent_codex_image_creative_request_result,
             self.test_creative_studio_protects_and_previews_generated_assets,
             self.test_brand_memory_documents_feed_creative_generation,
+            self.test_agent_onboarding_phase_tools_create_durable_memory,
             self.test_audience_builder_readiness,
             self.test_chat_audience_tool,
             self.test_meta_targeting_search_normalizes_options,

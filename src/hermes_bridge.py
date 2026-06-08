@@ -102,9 +102,13 @@ def copy_workspace_file(source_path, relative_dir):
 def business_memory_files():
     files = {
         "business_profile": DATA_DIR / "business_profile.json",
+        "onboarding_questions": DATA_DIR / "Onboarding questions.md",
+        "onboarding_plan": DATA_DIR / "Agent onboarding plan.md",
+        "ads_onboarding": DATA_DIR / "Ads campaign onboarding.md",
         "audience_strategy": DATA_DIR / "audience_strategy.json",
         "individual_business_binding": DATA_DIR / "individual_business_binding.json",
         "general_branding": BRAND_GUIDES_DIR / "general_branding.md",
+        "creative_references": BRAND_GUIDES_DIR / "creative_references.md",
     }
     product_guides = []
     products_dir = BRAND_GUIDES_DIR / "products"
@@ -129,6 +133,10 @@ def business_memory_context():
         "business_profile": redact_payload(read_json(files["business_profile"], {})),
         "audience_strategy": redact_payload(read_json(files["audience_strategy"], {})),
         "business_binding": redact_payload(read_json(files["individual_business_binding"], {})),
+        "onboarding_questions": read_text(files["onboarding_questions"]),
+        "onboarding_plan": read_text(files["onboarding_plan"]),
+        "ads_onboarding": read_text(files["ads_onboarding"]),
+        "creative_references": read_text(files["creative_references"]),
         "brand_guides": {
             "general_branding": read_text(files["general_branding"]),
             "products": [
@@ -169,6 +177,9 @@ Do not request files outside this workspace. If something is missing, ask the bu
         )
     )
     written.append(write_workspace_file("data/business_profile.json", memory["business_profile"]))
+    written.append(write_workspace_file("memory/Onboarding questions.md", memory.get("onboarding_questions", "")))
+    written.append(write_workspace_file("memory/Agent onboarding plan.md", memory.get("onboarding_plan", "")))
+    written.append(write_workspace_file("memory/Ads campaign onboarding.md", memory.get("ads_onboarding", "")))
     written.append(write_workspace_file("data/audience_strategy.json", memory["audience_strategy"]))
     written.append(write_workspace_file("data/business_binding.json", memory["business_binding"]))
     written.append(write_workspace_file("memory/recent_chat.json", memory["recent_history"]["chat"]))
@@ -178,6 +189,7 @@ Do not request files outside this workspace. If something is missing, ask the bu
     written.append(write_workspace_file("memory/decision_memory.json", memory["profitability_memory"]))
     written.append(write_workspace_file("memory/learning_log.md", format_learning_log()))
     written.append(write_workspace_file("brand_guides/general_branding.md", memory["brand_guides"]["general_branding"]))
+    written.append(write_workspace_file("brand_guides/creative_references.md", memory.get("creative_references", "")))
     for product in memory["brand_guides"]["products"]:
         name = Path(product["path"]).name
         written.append(write_workspace_file(f"brand_guides/products/{name}", product["content"]))
@@ -343,6 +355,12 @@ def hermes_prompt(config, payload, workspace_info=None):
         + json.dumps(context, ensure_ascii=False)
         + "\n\nCurated local business memory JSON:\n"
         + json.dumps(memory, ensure_ascii=False)
+        + "\n\nOnboarding interview instructions, if pending:\n"
+        + str(memory.get("onboarding_questions") or "")[:4000]
+        + "\n\nAgent onboarding phase plan:\n"
+        + str(memory.get("onboarding_plan") or "")[:4000]
+        + "\n\nAds campaign onboarding memory:\n"
+        + str(memory.get("ads_onboarding") or "")[:3000]
         + image_note
         + "\n\nReturn normal helpful text for explanations. If the user asks for a product action, return this JSON contract only:\n"
         + '{"assistant_message":"short user-facing reply","tool_request":{"tool":"tool_name","arguments":{}}}\n'

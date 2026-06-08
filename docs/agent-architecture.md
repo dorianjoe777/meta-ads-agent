@@ -26,19 +26,38 @@ There is no buyer runtime that bypasses Hermes. Model choices change the convers
 
 `src/telegram_agent.py` exposes the same manager through a private Telegram bot using long polling, so local/VPS installs do not need a public webhook. It keeps a small Telegram-specific conversation history, accepts creative images into local storage, restricts access to the selected private chat ID, and sends tool requests through the same backend guardrails. Exact pending actions can be approved or rejected through Telegram buttons, a reply to the decision card, an explicit approval ID, or the single pending decision shortcut. If the action can leave ads active, Telegram still requires the exact active-spend confirmation phrase.
 
-## Website Intelligence Onboarding
+## Agent-Led Onboarding
 
-The first-run onboarding now starts before Meta setup with a business discovery layer:
+The first-run UI onboarding stays short. It connects the operational essentials first:
 
-- The buyer enters the business website.
-- The local scanner reads title, description, headings, Page/landing URL clues, and simple offer signals.
-- The buyer then writes their current stage, what feels confusing, and what they want to improve.
-- The system saves this into `dashboard/data/business_profile.json`.
-- Before the dashboard opens, the buyer sees an initial plan and ad-angle suggestions.
+1. Facebook/Meta connection
+2. ad account
+3. Page/Instagram/website destination
+4. ChatGPT/Codex or compatible model
+5. website/social links for a quick scan
+6. Telegram
 
-This profile is included in the Hermes account context, so the manager does not answer only from ad metrics. It also understands the offer, buyer stage, likely audience, and first strategic direction.
+After Telegram is ready, the deeper onboarding happens conversationally. The buyer should not fill a long form before using the product. Hermes reads `dashboard/data/Agent onboarding plan.md` and moves through these phases:
 
-The current scanner is intentionally local and simple: HTTP fetch plus HTML parsing. Hermes can later strengthen this with browser retrieval for JavaScript-heavy websites, product catalogs, screenshots, or deeper competitive research.
+1. `business_discovery`: understand offer, products/services, customer, stage, struggle, and goals.
+2. `branding_creatives_creation`: research visual references, propose palettes/fonts/feelings/style, decide what is brand-wide vs product-specific, and save approved references.
+3. `ads_campaign_onboarding`: understand previous promotions, results, lessons, constraints, budgets, and campaign goals.
+4. `continuous_ads_manager`: use metrics, profitability memory, decisions, brand guides, references, ad briefs, and campaign context to manage the account coherently over time.
+
+The backend persists this memory into:
+
+```text
+dashboard/data/business_profile.json
+dashboard/data/Onboarding questions.md
+dashboard/data/Agent onboarding plan.md
+dashboard/data/Ads campaign onboarding.md
+brand_guides/general_branding.md
+brand_guides/creative_references.md
+brand_guides/products/*.md
+brand_guides/ad_briefs/*.md
+```
+
+The website/social links are context for the agent and optional scanner, not the whole onboarding. Hermes can strengthen discovery with browser retrieval when available, especially for product catalogs, visual references, and competitor/ad-design research.
 
 ## Model Options
 
@@ -114,12 +133,16 @@ Included memory:
 
 ```text
 dashboard/data/business_profile.json
+dashboard/data/Onboarding questions.md
+dashboard/data/Agent onboarding plan.md
+dashboard/data/Ads campaign onboarding.md
 dashboard/data/audience_strategy.json
 dashboard/data/individual_business_binding.json
 dashboard/data/profitability_rules.json
 dashboard/data/decision_memory.json
 output/learning-log.md
 brand_guides/general_branding.md
+brand_guides/creative_references.md
 brand_guides/products/*.md
 recent chat turns
 recent action log entries

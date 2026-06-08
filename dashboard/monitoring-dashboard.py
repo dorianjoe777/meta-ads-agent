@@ -46,6 +46,7 @@ from codex_brand_guides import (
     call_codex_cli,
     ensure_brand_guides,
     guide_library,
+    save_creative_references,
     save_ad_brief,
     save_general_guide,
     save_product_guide,
@@ -91,6 +92,9 @@ AUDIENCE_FILE = DATA_DIR / "audience_strategy.json"
 ONBOARDING_FILE = DATA_DIR / "onboarding_state.json"
 CHAT_HISTORY_FILE = DATA_DIR / "chat_history.json"
 BUSINESS_PROFILE_FILE = DATA_DIR / "business_profile.json"
+ONBOARDING_QUESTIONS_FILE = DATA_DIR / "Onboarding questions.md"
+AGENT_ONBOARDING_PLAN_FILE = DATA_DIR / "Agent onboarding plan.md"
+ADS_ONBOARDING_FILE = DATA_DIR / "Ads campaign onboarding.md"
 INDIVIDUAL_BINDING_FILE = DATA_DIR / "individual_business_binding.json"
 AGENCY_SPACES_FILE = DATA_DIR / "agency_spaces.json"
 AGENCY_SPACES_DIR = DATA_DIR / "agency_spaces"
@@ -149,6 +153,9 @@ BUSINESS_DATA_FILES = [
     "chat_history.json",
     "creative_memory_wizard.json",
     "business_profile.json",
+    "Onboarding questions.md",
+    "Agent onboarding plan.md",
+    "Ads campaign onboarding.md",
     "telegram_chat_history.json",
     "telegram_offset.json",
 ]
@@ -1293,6 +1300,23 @@ def save_telegram_config(payload):
     config = load_config()
     status = telegram_settings(config)
     status["listener_started"] = ensure_telegram_listener()
+    if status.get("enabled") and status.get("bot_configured") and status.get("chat_id"):
+        profile = read_json(BUSINESS_PROFILE_FILE, {})
+        if isinstance(profile, dict) and not profile.get("telegram_onboarding_message_sent_at"):
+            try:
+                write_onboarding_questions_memory(profile, "pending")
+                send_telegram_message(
+                    config,
+                    status["chat_id"],
+                    "Listo, ya puedo hablar contigo por Telegram.\n\n"
+                    "Cuando quieras, respóndeme: quiero completar mi negocio.\n"
+                    "Te haré preguntas fáciles, una por una: primero tu negocio, luego el estilo de tus creativos y después tus campañas.",
+                )
+                profile["telegram_onboarding_message_sent_at"] = now_iso()
+                write_json(BUSINESS_PROFILE_FILE, profile)
+                status["onboarding_message_sent"] = True
+            except Exception as exc:
+                status["onboarding_message_error"] = str(exc)[:220]
     log_action("telegram_config_save", {"enabled": status["enabled"], "bot_configured": status["bot_configured"], "chat_id_set": bool(status["chat_id"])}, "completed")
     return status
 
@@ -2111,6 +2135,15 @@ def hermes_codex_provider_choice(output):
     return ""
 
 
+def codex_device_auth_disabled(output):
+    lower = clean_terminal_text(output).lower()
+    return (
+        "enable device code authorization" in lower
+        or ("device code authorization" in lower and "chatgpt security settings" in lower)
+        or ("codex login --device-auth" in lower and "security settings" in lower)
+    )
+
+
 def hermes_login_prompt_state(output, state=None):
     state = state or {}
     cleaned = clean_terminal_text(output)
@@ -2121,6 +2154,15 @@ def hermes_login_prompt_state(output, state=None):
     auto_codex_subprovider_sent = bool(state.get("auto_codex_subprovider_sent"))
     auto_model_sent = bool(state.get("auto_model_sent"))
     manual_input = any(marker in lower for marker in ["invalid choice", "invalid selection", "try again", "not recognized"])
+    if codex_device_auth_disabled(cleaned):
+        return {
+            "phase": "device_auth_settings",
+            "needs_input": False,
+            "title": "Activa el login por código",
+            "detail": "ChatGPT pide activar el login por código para Codex. Abre ChatGPT, entra a Ajustes > Seguridad y activa Enable device code authorization for Codex. Luego vuelve aquí y toca Conectar ahora.",
+            "auto_note": "Es una protección de ChatGPT para permitir login desde servidores o contenedores.",
+            "login_code": "",
+        }
     if urls and login_codes:
         return {
             "phase": "login_code",
@@ -2357,6 +2399,22 @@ def hermes_browserless_snapshot(config=None):
             log=False,
         )
     if output:
+        prompt = hermes_login_prompt_state(output, state)
+        if prompt["phase"] == "device_auth_settings":
+            return hermes_connect_response(
+                "needs_login",
+                prompt["title"],
+                prompt["detail"],
+                mode="browserless_device_auth_disabled",
+                command=hermes_browserless_shell_command(config),
+                output=output or auth_detail,
+                running=False,
+                job_id=state.get("id") or "",
+                needs_input=False,
+                phase=prompt["phase"],
+                auto_note=prompt["auto_note"],
+                log=False,
+            )
         return hermes_connect_response(
             "needs_terminal",
             "Hermes necesita una respuesta",
@@ -2856,7 +2914,7 @@ def apply_business_profile_enrichment(profile, enrichment):
         "what_to_improve",
         "positioning",
     ]
-    allowed_lists = ["suggested_angles", "initial_plan", "detected_headings"]
+    allowed_lists = ["suggested_angles", "initial_plan", "detected_headings", "products_services"]
     merged = dict(profile or {})
     for key in allowed_strings:
         value = str((enrichment or {}).get(key) or "").strip()
@@ -3083,6 +3141,63 @@ def enrich_business_profile_with_agent(url, profile, context):
     return updated, "hermes_browser_scan"
 
 
+def enrich_business_links_with_agent(links, profile, context=""):
+    config = load_config()
+    if config.agent_chat_provider != "hermes":
+        return profile, "links_saved_for_agent"
+    ready, detail = hermes_codex_ready(config)
+    if not ready:
+        result = dict(profile)
+        result["agent_scan_status"] = "agent_not_connected"
+        result["agent_scan_detail"] = detail[:300]
+        return result, "links_saved_for_agent"
+    link_block = "\n".join(f"- {link}" for link in links[:8])
+    message = (
+        "Analiza estos links publicos con browser/retrieval de Hermes si esta disponible:\n"
+        f"{link_block}\n\n"
+        "Objetivo: antes de que el cliente hable por Telegram, necesito una idea general de que tipo de negocio es, "
+        "que productos o servicios ofrece, cual parece ser la oferta principal y que angulos de anuncios podrian tener sentido. "
+        "No inicies sesion, no intentes saltar restricciones y no inventes datos privados. "
+        "Si una red social bloquea contenido, usa solo lo visible y marca lo demas como sugerencia prudente. "
+        "Devuelve SOLO JSON valido, sin markdown, con estas claves: "
+        "business_type, main_offer, offer, products_services, ideal_customer, audience, current_stage, "
+        "what_to_improve, positioning, suggested_angles, initial_plan. "
+        "Escribe en español latino natural y simple para principiantes. "
+        f"Contexto breve escrito por el comprador: {context or 'sin contexto adicional'}\n\n"
+        "Perfil guardado hasta ahora:\n"
+        f"{json.dumps(profile, ensure_ascii=False)}"
+    )
+    result = agent_chat(
+        config,
+        {
+            "message": message,
+            "language": "es",
+            "metrics": {},
+            "recommendations": [],
+            "fatigue": [],
+            "pending": [],
+            "business_profile": profile,
+            "brand_guides": {},
+            "channel": "onboarding_public_links_scan",
+        },
+    )
+    if not result.get("ok") or result.get("fallback"):
+        updated = dict(profile)
+        updated["agent_scan_status"] = "agent_scan_unavailable"
+        updated["agent_scan_detail"] = str(result.get("error") or result.get("reply") or "")[:300]
+        return updated, "links_saved_for_agent"
+    enrichment = extract_json_object_from_text(result.get("raw_reply") or result.get("reply") or "")
+    if not enrichment:
+        updated = dict(profile)
+        updated["agent_scan_status"] = "agent_scan_empty"
+        return updated, "links_saved_for_agent"
+    updated = apply_business_profile_enrichment(profile, enrichment)
+    updated["agent_scan_status"] = "agent_enriched"
+    updated["agent_scan_detail"] = "Hermes browser/retrieval enrichment applied to public links"
+    updated["source"] = "hermes_links_scan"
+    return updated, "hermes_links_scan"
+
+
 def scan_business_website(payload):
     url = normalize_website_url(payload.get("website_url"))
     context = str(payload.get("current_stage") or "").strip()
@@ -3140,6 +3255,285 @@ def scan_business_website(payload):
     return {"saved": True, "profile": profile}
 
 
+def onboarding_interview_status(profile=None):
+    profile = profile if isinstance(profile, dict) else read_json(BUSINESS_PROFILE_FILE, {})
+    if not isinstance(profile, dict):
+        profile = {}
+    if profile.get("context_completed_at"):
+        return "completed"
+    if profile.get("telegram_onboarding_requested_at"):
+        return "pending_telegram"
+    if profile.get("website_url") or profile.get("social_links") or profile.get("business_type"):
+        return "ready_to_ask"
+    return "empty"
+
+
+def branding_creatives_status():
+    library = guide_library()
+    general = (library.get("general") or {}).get("fields") or {}
+    has_product = bool(library.get("product_count"))
+    visual_fields = [
+        general.get("colors"),
+        general.get("typography"),
+        general.get("visual_style"),
+        general.get("references"),
+        library.get("creative_references_text"),
+    ]
+    ready = bool(library.get("general_exists") and has_product and any(str(item or "").strip() for item in visual_fields))
+    if ready:
+        return "completed"
+    if library.get("general_exists") or has_product or library.get("creative_references_exists"):
+        return "in_progress"
+    return "pending"
+
+
+def ads_campaign_onboarding_status(profile=None):
+    profile = profile if isinstance(profile, dict) else read_json(BUSINESS_PROFILE_FILE, {})
+    if not isinstance(profile, dict):
+        profile = {}
+    if profile.get("ads_onboarding_completed_at"):
+        return "completed"
+    fields = ["promoted_before", "previous_ads_results", "current_campaign_context", "campaign_goal", "campaign_constraints"]
+    if any(str(profile.get(key) or "").strip() for key in fields) or ADS_ONBOARDING_FILE.exists():
+        return "in_progress"
+    return "pending"
+
+
+def agent_onboarding_phase(profile=None):
+    profile = profile if isinstance(profile, dict) else read_json(BUSINESS_PROFILE_FILE, {})
+    if not isinstance(profile, dict):
+        profile = {}
+    business = onboarding_interview_status(profile)
+    branding = branding_creatives_status()
+    campaigns = ads_campaign_onboarding_status(profile)
+    if business != "completed":
+        phase = "business_discovery"
+        next_step = "Entrevistar al cliente sobre negocio, oferta, cliente ideal, etapa actual, problemas y meta de 30 dias."
+    elif branding != "completed":
+        phase = "branding_creatives_creation"
+        next_step = "Usar el skill branding creatives creation para definir estilo visual, referencias, paletas, fuentes y reglas de creativos."
+    elif campaigns != "completed":
+        phase = "ads_campaign_onboarding"
+        next_step = "Entender que ha promovido antes, resultados, aprendizajes, restricciones y primera estrategia de campanas."
+    else:
+        phase = "continuous_ads_manager"
+        next_step = "Operar como manager continuo: leer datos, recordar decisiones, proponer acciones, esperar resultados cuando conviene."
+    return {
+        "phase": phase,
+        "business": business,
+        "branding": branding,
+        "campaigns": campaigns,
+        "next_step": next_step,
+    }
+
+
+def agent_onboarding_deferred_reasons(profile=None):
+    phase = agent_onboarding_phase(profile)
+    reasons = []
+    if phase["business"] != "completed":
+        reasons.append("entrevista_negocio")
+    if phase["branding"] != "completed":
+        reasons.append("branding_creativos")
+    if phase["campaigns"] != "completed":
+        reasons.append("campanas_anuncios")
+    return reasons
+
+
+def write_agent_onboarding_plan(profile=None):
+    profile = profile if isinstance(profile, dict) else read_json(BUSINESS_PROFILE_FILE, {})
+    if not isinstance(profile, dict):
+        profile = {}
+    phase = agent_onboarding_phase(profile)
+    body = f"""# Agent onboarding plan
+
+Estado actual: {phase["phase"]}.
+
+Siguiente movimiento: {phase["next_step"]}
+
+## Fases
+
+1. business_discovery
+   - Entender que vende, oferta principal, productos/servicios prioritarios, cliente ideal, etapa actual, dolores, meta de 30 dias y tono comercial.
+   - Preguntar una sola cosa a la vez.
+   - Guardar lo aprendido con `save_business_context`.
+
+2. branding_creatives_creation
+   - Usar el skill `branding creatives creation`.
+   - Buscar referencias visuales de anuncios del nicho con las herramientas web/browser disponibles.
+   - Proponer estilos, paletas, fuentes, sensaciones y reglas visuales.
+   - Distinguir que es continuo para toda la marca y que cambia por producto, servicio o campana.
+   - Si el cliente aprueba referencias encontradas, generadas o ambas, guardarlas con `save_creative_references`.
+   - Guardar la guia general con `save_brand_guide` y fichas por producto con `save_product_guide`.
+
+3. ads_campaign_onboarding
+   - Entender que anuncio antes, que resultados tuvo, que cree que fallo, que quiere mantener, presupuesto, paises, ofertas y restricciones.
+   - Guardar contexto con `save_ads_onboarding`.
+   - Crear briefs por promocion, campana, conjunto o anuncio con `save_ad_brief`.
+
+4. continuous_ads_manager
+   - Usar metricas, memoria de decisiones, guias de marca, referencias, briefs y contexto de campanas para responder como manager coherente.
+   - Si no hay accion clara, decir que conviene esperar y que senal revisar despues.
+   - Si hay accion clara, preparar o ejecutar bajo las reglas del backend.
+
+## Estado resumido
+
+- Negocio: {phase["business"]}
+- Branding/creativos: {phase["branding"]}
+- Campanas/anuncios previos: {phase["campaigns"]}
+"""
+    AGENT_ONBOARDING_PLAN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    AGENT_ONBOARDING_PLAN_FILE.write_text(body, encoding="utf-8")
+    return {"path": str(AGENT_ONBOARDING_PLAN_FILE), **phase}
+
+
+def write_onboarding_questions_memory(profile=None, status="pending"):
+    profile = profile if isinstance(profile, dict) else read_json(BUSINESS_PROFILE_FILE, {})
+    if not isinstance(profile, dict):
+        profile = {}
+    status = str(status or "pending").strip().lower()
+    links = []
+    if profile.get("website_url"):
+        links.append(str(profile.get("website_url")))
+    for item in profile.get("social_links") or []:
+        if item:
+            links.append(str(item))
+    business_hint = str(profile.get("business_type") or profile.get("business_short") or "negocio por entender").strip()
+    link_block = "\n".join(f"- {link}" for link in links) or "- No hay links guardados todavia."
+    if status == "completed":
+        body = f"""# Onboarding questions
+
+Estado: completado.
+
+El cliente ya compartio suficiente contexto inicial. Usa `dashboard/data/business_profile.json`, `brand_guides/general_branding.md`, las fichas de producto y los briefs publicitarios para responder con memoria real.
+
+Si el cliente pide revisar su negocio desde cero, vuelve a preguntar una cosa a la vez y actualiza la memoria con las herramientas disponibles.
+"""
+    else:
+        body = f"""# Onboarding questions
+
+Estado: todavia no preguntado al cliente.
+
+Cuando el cliente escriba por Telegram o por el chat del dashboard, empieza una entrevista corta y amable para entender su negocio antes de recomendar anuncios.
+
+Instrucciones para el agente:
+- Habla en espanol latino natural, como manager calido y directo.
+- Haz una sola pregunta a la vez.
+- No hagas una lista enorme de preguntas en un solo mensaje.
+- Usa los links guardados como contexto, pero deja que el cliente corrija todo.
+- Documenta lo aprendido en el perfil del negocio y en las guias de marca/producto/brief cuando corresponda.
+- Si falta informacion, pregunta lo minimo necesario para poder actuar.
+- Cuando el negocio este claro, pasa a la fase de branding/creativos; no saltes directo a campanas si faltan estilo, referencias, colores o reglas visuales.
+- Despues de branding, pregunta por anuncios/campanas anteriores y guarda aprendizajes antes de proponer la estrategia inicial.
+
+Preguntas que debes cubrir poco a poco:
+1. Que vende exactamente y cual es su oferta principal.
+2. Que productos o servicios quiere priorizar.
+3. Quien compra o quien deberia comprar.
+4. En que etapa esta ahora: empezando, ya vende, ya corre anuncios, o quiere escalar.
+5. Que le duele hoy: costo alto, poco ROAS, no entiende Ads Manager, falta de creativos, pocas ventas, etc.
+6. Que quiere lograr en 30 dias.
+7. Que tono y estilo visual quiere para sus anuncios.
+
+Despues de estas preguntas:
+- Usa `save_business_context`.
+- Luego usa el skill `branding creatives creation`.
+- Luego usa `save_ads_onboarding`.
+- Solo despues propone una estrategia inicial robusta pero clara.
+
+Contexto inicial guardado:
+- Tipo de negocio: {business_hint}
+- Links para revisar:
+{link_block}
+"""
+    ONBOARDING_QUESTIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ONBOARDING_QUESTIONS_FILE.write_text(body, encoding="utf-8")
+    write_agent_onboarding_plan(profile)
+    return {"path": str(ONBOARDING_QUESTIONS_FILE), "status": status}
+
+
+SOCIAL_PROFILE_DOMAINS = (
+    "instagram.com",
+    "facebook.com",
+    "fb.com",
+    "tiktok.com",
+    "wa.me",
+    "whatsapp.com",
+    "youtube.com",
+    "linkedin.com",
+    "x.com",
+    "twitter.com",
+    "threads.net",
+)
+
+
+def is_social_profile_url(value):
+    lower = str(value or "").lower()
+    return any(domain in lower for domain in SOCIAL_PROFILE_DOMAINS)
+
+
+def classify_business_links(links):
+    website = next((link for link in links if not is_social_profile_url(link)), "")
+    social_links = [link for link in links if link != website]
+    return website, social_links
+
+
+def save_business_links_for_agent(payload):
+    profile = read_json(BUSINESS_PROFILE_FILE, {})
+    if not isinstance(profile, dict):
+        profile = {}
+    raw_links = []
+    for key in ("website_url", "social_links", "links"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            raw_links.extend(value)
+        elif value:
+            raw_links.extend(str(value).replace(",", "\n").splitlines())
+    links = []
+    for raw in raw_links:
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        if not re.match(r"^https?://", value, re.I):
+            value = f"https://{value}"
+        try:
+            validate_public_website_url(value)
+        except ValueError as exc:
+            raise ValueError("Pega solo links publicos de tu web o redes sociales.") from exc
+        if value not in links:
+            links.append(value[:300])
+        if len(links) >= 8:
+            break
+    business_type = str(payload.get("business_type") or payload.get("business_short") or "").strip()
+    if business_type:
+        profile["business_type"] = business_type[:220]
+        profile["business_short"] = business_type[:220]
+    if links:
+        website, social_links = classify_business_links(links)
+        profile["social_links"] = social_links
+        if website:
+            profile["website_url"] = website
+            save_setup_config({"landing_url": website})
+        profile["website_skipped"] = False
+        profile, scan_source = enrich_business_links_with_agent(links, profile, business_type)
+        profile["source"] = scan_source or profile.get("source") or "links_for_agent_scan"
+    elif payload.get("website_skipped"):
+        profile["website_skipped"] = True
+    profile["onboarding_questions_started"] = False
+    profile["telegram_onboarding_requested_at"] = now_iso()
+    profile.setdefault("source", "links_for_agent_scan")
+    if not profile.get("initial_plan"):
+        profile["initial_plan"] = [
+            "Revisar los links guardados.",
+            "Entrevistar al cliente por Telegram con una pregunta a la vez.",
+            "Guardar oferta, cliente ideal, estilo y objetivo antes de preparar campanas.",
+        ]
+    profile["updated_at"] = now_iso()
+    write_json(BUSINESS_PROFILE_FILE, profile)
+    memory = write_onboarding_questions_memory(profile, "pending")
+    log_action("business_links_save", {"links_count": len(links), "interview_memory": memory["status"]}, "completed")
+    return {"saved": True, "profile": profile, "onboarding_questions": memory}
+
+
 def save_business_context(payload):
     profile = read_json(BUSINESS_PROFILE_FILE, {})
     if not isinstance(profile, dict):
@@ -3170,25 +3564,89 @@ def save_business_context(payload):
     profile.setdefault("source", "manual_context")
     profile["updated_at"] = now_iso()
     write_json(BUSINESS_PROFILE_FILE, profile)
+    if profile.get("context_completed_at"):
+        write_onboarding_questions_memory(profile, "completed")
+    write_agent_onboarding_plan(profile)
     log_action("business_context_save", {"website_url": profile.get("website_url"), "fields": sorted(payload.keys())}, "completed")
     return {"saved": True, "profile": profile}
+
+
+def save_ads_campaign_onboarding(payload):
+    profile = read_json(BUSINESS_PROFILE_FILE, {})
+    if not isinstance(profile, dict):
+        profile = {}
+    allowed = [
+        "promoted_before",
+        "previous_ads_results",
+        "current_campaign_context",
+        "campaign_goal",
+        "campaign_constraints",
+        "budget_comfort",
+        "countries",
+        "offers_to_promote",
+        "lessons_learned",
+        "first_strategy",
+    ]
+    changed = {}
+    for key in allowed:
+        value = str(payload.get(key) or "").strip()
+        if value:
+            profile[key] = value[:1600]
+            changed[key] = profile[key]
+    if payload.get("ads_onboarding_complete") or payload.get("completed"):
+        profile["ads_onboarding_completed_at"] = now_iso()
+    profile["updated_at"] = now_iso()
+    write_json(BUSINESS_PROFILE_FILE, profile)
+    body = f"""# Ads campaign onboarding
+
+Usa este archivo para recordar lo que el cliente ya intento en anuncios y que estrategia inicial conviene.
+
+## Historial
+
+- Ha promovido antes: {profile.get('promoted_before', '')}
+- Resultados anteriores: {profile.get('previous_ads_results', '')}
+- Contexto actual de campanas: {profile.get('current_campaign_context', '')}
+- Aprendizajes: {profile.get('lessons_learned', '')}
+
+## Objetivo y limites
+
+- Meta principal: {profile.get('campaign_goal', '')}
+- Presupuesto comodo: {profile.get('budget_comfort', '')}
+- Paises o zonas: {profile.get('countries', '')}
+- Ofertas a promover: {profile.get('offers_to_promote', '')}
+- Restricciones: {profile.get('campaign_constraints', '')}
+
+## Primera estrategia
+
+{profile.get('first_strategy') or 'Pendiente de preparar despues de entender negocio, marca y campanas previas.'}
+
+Estado: {'completado' if profile.get('ads_onboarding_completed_at') else 'pendiente'}
+"""
+    ADS_ONBOARDING_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ADS_ONBOARDING_FILE.write_text(body, encoding="utf-8")
+    write_agent_onboarding_plan(profile)
+    log_action("ads_campaign_onboarding_save", {"fields": sorted(changed.keys()), "completed": bool(profile.get("ads_onboarding_completed_at"))}, "completed")
+    return {"saved": True, "profile": profile, "path": str(ADS_ONBOARDING_FILE), "phase": agent_onboarding_phase(profile)}
 
 
 def initialize_brand_guides(payload):
     product_name = str(payload.get("product_name") or "").strip() or "Oferta principal"
     result = ensure_brand_guides(product_name)
+    write_agent_onboarding_plan()
     log_action("brand_guides_init", {"product_name": product_name, "created": result.get("created", [])}, "completed")
     return result
 
 
 def save_general_brand_memory(payload):
     result = save_general_guide(payload)
+    write_agent_onboarding_plan()
     log_action("brand_general_save", {"brand_name": result.get("general", {}).get("fields", {}).get("brand_name", "")}, "completed")
     return result
 
 
 def save_product_brand_memory(payload):
     result = save_product_guide(payload)
+    write_agent_onboarding_plan()
     product = next(
         (item for item in result["library"].get("products", []) if item.get("id") == result.get("product_id")),
         {},
@@ -3199,11 +3657,19 @@ def save_product_brand_memory(payload):
 
 def save_ad_brief_memory(payload):
     result = save_ad_brief(payload)
+    write_agent_onboarding_plan()
     brief = next(
         (item for item in result["library"].get("ad_briefs", []) if item.get("id") == result.get("ad_brief_id")),
         {},
     )
     log_action("ad_brief_save", {"ad_brief_id": result.get("ad_brief_id"), "name": brief.get("name", "")}, "completed")
+    return result
+
+
+def save_creative_references_memory(payload):
+    result = save_creative_references(payload)
+    write_agent_onboarding_plan()
+    log_action("creative_references_save", {"path": result.get("creative_references", "")}, "completed")
     return result
 
 
@@ -3345,6 +3811,9 @@ def load_onboarding_state():
     if not isinstance(state, dict):
         state = {}
     state.setdefault("completed", False)
+    state.setdefault("skipped", False)
+    state.setdefault("deferred", False)
+    state.setdefault("deferred_reasons", [])
     state.setdefault("completed_at", "")
     state.setdefault("completed_by", "")
     state.setdefault("setup_snapshot", {})
@@ -3367,15 +3836,21 @@ def complete_onboarding():
     if not destination.get("page_id") or not destination.get("url"):
         raise ValueError("Elige tu pagina de Facebook y el link de tu web antes de terminar.")
     business_profile = read_json(BUSINESS_PROFILE_FILE, {})
-    if not business_profile.get("website_url") or not (business_profile.get("initial_plan") or business_profile.get("what_to_improve")):
-        raise ValueError("Primero deja listo el perfil del negocio y el plan inicial del agente.")
+    if not isinstance(business_profile, dict):
+        business_profile = {}
+    if not business_profile.get("website_url") and not business_profile.get("social_links"):
+        write_onboarding_questions_memory(business_profile, "pending")
     setup = build_setup_status()
     insights_refresh = refresh_real_metrics(reason="onboarding_complete") if config.ad_account_id and config.meta_access_token else {"ok": False, "saved": False, "reason": "missing_account_or_token"}
     metrics = load_metrics()
     if not insights_refresh.get("ok") and metrics.get("source") != "meta_graph":
         raise ValueError("Todavía no pude leer datos reales de Meta. Cambia tu clave o revisa sus permisos y vuelve a intentar.")
+    deferred_reasons = agent_onboarding_deferred_reasons(business_profile)
     state = {
         "completed": True,
+        "skipped": False,
+        "deferred": bool(deferred_reasons),
+        "deferred_reasons": deferred_reasons,
         "completed_at": now_iso(),
         "completed_by": "dashboard",
         "setup_snapshot": setup.get("summary", {}),
@@ -3403,11 +3878,52 @@ def complete_onboarding():
     return state
 
 
+def skip_onboarding():
+    config = load_config()
+    if not (config.dashboard_password or config.dashboard_token):
+        raise ValueError("Crea primero la contraseña del dashboard.")
+    business_profile = read_json(BUSINESS_PROFILE_FILE, {})
+    if not isinstance(business_profile, dict):
+        business_profile = {}
+    if not ONBOARDING_QUESTIONS_FILE.exists():
+        write_onboarding_questions_memory(business_profile, "pending")
+    missing = []
+    if not license_status(config).get("valid"):
+        missing.append("licencia")
+    if not config.meta_access_token:
+        missing.append("conexion_facebook")
+    if not config.ad_account_id:
+        missing.append("cuenta_publicitaria")
+    if not (config.agent_chat_provider == "hermes" or config.agent_chat_api_key):
+        missing.append("cerebro_agente")
+    if not telegram_settings(config).get("chat_id"):
+        missing.append("telegram")
+    for reason in agent_onboarding_deferred_reasons(business_profile):
+        if reason not in missing:
+            missing.append(reason)
+    state = {
+        "completed": True,
+        "skipped": True,
+        "deferred": True,
+        "deferred_reasons": missing,
+        "completed_at": now_iso(),
+        "completed_by": "skip_and_complete_later",
+        "setup_snapshot": build_setup_status().get("summary", {}),
+        "business_profile_snapshot": redact_payload(business_profile),
+    }
+    write_json(ONBOARDING_FILE, state)
+    log_action("onboarding_skip", {"deferred_reasons": missing}, "completed")
+    return state
+
+
 def reset_onboarding():
     if load_onboarding_state().get("completed") and not license_entitlements()["is_agency"]:
         save_individual_binding()
     state = {
         "completed": False,
+        "skipped": False,
+        "deferred": False,
+        "deferred_reasons": [],
         "completed_at": "",
         "completed_by": "",
         "setup_snapshot": {},
@@ -3423,7 +3939,11 @@ def onboarding_health(state, config, metrics, current_license_status, destinatio
     result = dict(state)
     result["requires_repair"] = False
     result["repair_reasons"] = []
+    result.setdefault("deferred", bool(result.get("skipped")))
+    result.setdefault("deferred_reasons", [])
     if not result.get("completed"):
+        return result
+    if result.get("skipped"):
         return result
     checks = [
         (current_license_status.get("valid"), "licencia"),
@@ -5132,6 +5652,127 @@ def handle_init_brand_guides_tool(arguments, chat_payload, tool):
     )
 
 
+def handle_save_business_context_tool(arguments, chat_payload, tool):
+    if not any(arguments.get(key) for key in ["main_offer", "ideal_customer", "current_stage", "what_to_improve", "success_goal", "business_type"]):
+        return agent_action_result(
+            tool,
+            False,
+            chat_reply(chat_payload, "Puedo guardar el perfil, pero necesito al menos oferta, cliente ideal o etapa actual.", "I can save the profile, but I need at least the offer, ideal customer, or current stage."),
+            blocked=True,
+            reason="missing_business_context",
+        )
+    result = save_business_context(arguments)
+    phase = agent_onboarding_phase(result.get("profile"))
+    return agent_action_result(
+        tool,
+        True,
+        chat_reply(
+            chat_payload,
+            f"Listo. Guardé esa parte del negocio. Siguiente paso: {phase['next_step']}",
+            f"Done. I saved that business context. Next step: {phase['next_step']}",
+        ),
+        result=result,
+    )
+
+
+def handle_save_brand_guide_tool(arguments, chat_payload, tool):
+    if not arguments.get("brand_name") and not arguments.get("offer"):
+        return agent_action_result(
+            tool,
+            False,
+            chat_reply(chat_payload, "Necesito al menos el nombre de marca o qué vende para guardar la guía.", "I need at least the brand name or what it sells to save the guide."),
+            blocked=True,
+            reason="missing_brand_core",
+        )
+    result = save_general_brand_memory(arguments)
+    phase = agent_onboarding_phase()
+    return agent_action_result(
+        tool,
+        True,
+        chat_reply(chat_payload, f"Listo. Guardé la guía visual y verbal de la marca. Siguiente paso: {phase['next_step']}", f"Done. I saved the brand's visual and verbal guide. Next step: {phase['next_step']}"),
+        result=result,
+    )
+
+
+def handle_save_product_guide_tool(arguments, chat_payload, tool):
+    if not arguments.get("name"):
+        return agent_action_result(
+            tool,
+            False,
+            chat_reply(chat_payload, "Dime el nombre del producto u oferta para guardar su ficha.", "Tell me the product or offer name so I can save its guide."),
+            blocked=True,
+            reason="missing_product_name",
+        )
+    result = save_product_brand_memory(arguments)
+    phase = agent_onboarding_phase()
+    return agent_action_result(
+        tool,
+        True,
+        chat_reply(chat_payload, f"Listo. Guardé la ficha del producto. Siguiente paso: {phase['next_step']}", f"Done. I saved the product guide. Next step: {phase['next_step']}"),
+        result=result,
+    )
+
+
+def handle_save_creative_references_tool(arguments, chat_payload, tool):
+    image_paths = safe_image_paths(chat_payload)
+    if image_paths and not arguments.get("generated_references"):
+        arguments = dict(arguments)
+        arguments["generated_references"] = "\n".join(image_paths)
+    result = save_creative_references_memory(arguments)
+    phase = agent_onboarding_phase()
+    return agent_action_result(
+        tool,
+        True,
+        chat_reply(chat_payload, f"Listo. Guardé las referencias creativas aprobadas. Siguiente paso: {phase['next_step']}", f"Done. I saved the approved creative references. Next step: {phase['next_step']}"),
+        result=result,
+    )
+
+
+def handle_save_ads_onboarding_tool(arguments, chat_payload, tool):
+    if not any(arguments.get(key) for key in ["promoted_before", "previous_ads_results", "campaign_goal", "first_strategy", "current_campaign_context"]):
+        return agent_action_result(
+            tool,
+            False,
+            chat_reply(chat_payload, "Necesito saber qué ha promovido antes, resultados o meta de campaña para guardar esta etapa.", "I need to know what they promoted before, the results, or the campaign goal to save this stage."),
+            blocked=True,
+            reason="missing_ads_onboarding_context",
+        )
+    result = save_ads_campaign_onboarding(arguments)
+    phase = result.get("phase") or agent_onboarding_phase(result.get("profile"))
+    return agent_action_result(
+        tool,
+        True,
+        chat_reply(chat_payload, f"Listo. Guardé el contexto de campañas. Siguiente paso: {phase['next_step']}", f"Done. I saved the campaign context. Next step: {phase['next_step']}"),
+        result=result,
+    )
+
+
+def handle_save_ad_brief_tool(arguments, chat_payload, tool):
+    if not any(arguments.get(key) for key in ["name", "promotion", "campaign_name", "base_ad_name"]):
+        return agent_action_result(
+            tool,
+            False,
+            chat_reply(chat_payload, "Necesito al menos nombre, promoción, campaña o anuncio base para guardar el brief.", "I need at least a name, promotion, campaign, or base ad to save the brief."),
+            blocked=True,
+            reason="missing_ad_brief_core",
+        )
+    if not arguments.get("variation_window"):
+        arguments = dict(arguments)
+        arguments["variation_window"] = chat_reply(
+            chat_payload,
+            "Probar variaciones claras sin cambiar la oferta, el beneficio principal ni el destino.",
+            "Test clear variations without changing the offer, main benefit, or destination.",
+        )
+    result = save_ad_brief_memory(arguments)
+    phase = agent_onboarding_phase()
+    return agent_action_result(
+        tool,
+        True,
+        chat_reply(chat_payload, f"Listo. Guardé el brief del anuncio. Siguiente paso: {phase['next_step']}", f"Done. I saved the ad brief. Next step: {phase['next_step']}"),
+        result=result,
+    )
+
+
 def handle_codex_creative_plan_tool(arguments, chat_payload, tool):
     image_paths = safe_image_paths(chat_payload)
     if image_paths:
@@ -5201,6 +5842,12 @@ AGENT_TOOL_HANDLERS = {
     "create_campaign_stack": handle_create_campaign_stack_tool,
     "build_audience_strategy": handle_build_audience_strategy_tool,
     "init_brand_guides": handle_init_brand_guides_tool,
+    "save_business_context": handle_save_business_context_tool,
+    "save_brand_guide": handle_save_brand_guide_tool,
+    "save_product_guide": handle_save_product_guide_tool,
+    "save_creative_references": handle_save_creative_references_tool,
+    "save_ads_onboarding": handle_save_ads_onboarding_tool,
+    "save_ad_brief": handle_save_ad_brief_tool,
     "codex_creative_plan": handle_codex_creative_plan_tool,
     "save_existing_adset": handle_save_existing_adset_tool,
     "pause_campaign": handle_campaign_mutation_tool,
@@ -5280,6 +5927,11 @@ def dashboard_payload():
         "chat_history": load_chat_history(),
         "business_profile": business_profile,
         "business_snapshot": business_snapshot,
+        "onboarding_questions": {
+            "status": onboarding_interview_status(business_profile),
+            "file_exists": ONBOARDING_QUESTIONS_FILE.exists(),
+        },
+        "agent_onboarding_phase": agent_onboarding_phase(business_profile),
         "license_entitlements": entitlements,
         "business_spaces": business_spaces,
         "active_workspace": active_workspace_payload(),
@@ -5385,7 +6037,7 @@ main{display:grid;grid-template-columns:320px minmax(500px,1fr) 380px;gap:14px;m
 .next-step{display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid rgba(39,199,167,.26);background:rgba(39,199,167,.075);border-radius:8px;padding:11px;margin-bottom:10px}.next-step b{display:block;font-size:12px}.next-step p{font-size:11px;color:var(--dim);line-height:1.45;margin-top:4px}.copy-btn{white-space:nowrap}
 .mode-panel{display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid rgba(99,168,255,.24);background:rgba(99,168,255,.07);border-radius:8px;padding:12px;margin-bottom:14px}.mode-panel h3{font-size:13px;line-height:1.2}.mode-panel p{font-size:11px;color:var(--dim);line-height:1.45;margin-top:4px}.mode-actions{display:flex;gap:7px;flex:0 0 auto}.mode-actions .btn.active{background:var(--accent);border-color:var(--accent);color:#061512}
 .trust-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:0 0 14px}.trust-card{border:1px solid var(--line);background:rgba(255,255,255,.055);border-radius:8px;padding:10px;box-shadow:0 1px 0 rgba(255,255,255,.08) inset}.trust-card b{display:block;font-size:11px;line-height:1.25}.trust-card p{font-size:11px;color:var(--dim);line-height:1.45;margin-top:5px}
-.update-banner{margin:0 8px 8px;border:1px solid rgba(244,183,64,.42);background:linear-gradient(135deg,rgba(244,183,64,.13),rgba(39,199,167,.08));border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between;gap:10px;box-shadow:0 1px 0 rgba(255,255,255,.08) inset}.update-banner b{font-size:12px}.update-banner p{font-size:11px;color:var(--dim);line-height:1.4;margin-top:3px}.update-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin-top:12px}.update-card{border:1px solid rgba(244,183,64,.25);background:rgba(244,183,64,.06);border-radius:8px;padding:10px}.update-card span{display:inline-block;font-size:9px;font-weight:950;text-transform:uppercase;color:var(--accent2);margin-bottom:6px}.update-card b{display:block;font-size:12px;line-height:1.25}.update-card p{font-size:11px;color:var(--dim);line-height:1.45;margin-top:5px}
+.update-banner,.deferred-onboarding-banner{margin:0 8px 8px;border:1px solid rgba(244,183,64,.42);background:linear-gradient(135deg,rgba(244,183,64,.13),rgba(39,199,167,.08));border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between;gap:10px;box-shadow:0 1px 0 rgba(255,255,255,.08) inset}.update-banner b,.deferred-onboarding-banner b{font-size:12px}.update-banner p,.deferred-onboarding-banner p{font-size:11px;color:var(--dim);line-height:1.4;margin-top:3px}.deferred-onboarding-banner{border-color:rgba(167,124,255,.5);background:linear-gradient(135deg,rgba(167,124,255,.16),rgba(48,215,180,.1));box-shadow:0 0 0 1px rgba(167,124,255,.1) inset,0 0 28px rgba(167,124,255,.16)}.deferred-onboarding-banner .pulse-dot{width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 0 rgba(167,124,255,.5);animation:setup-pulse 1.7s ease-in-out infinite;flex:none}@keyframes setup-pulse{0%,100%{box-shadow:0 0 0 0 rgba(167,124,255,.5);transform:scale(.9)}50%{box-shadow:0 0 0 9px rgba(167,124,255,0);transform:scale(1.08)}}.deferred-onboarding-copy{display:flex;align-items:flex-start;gap:9px}.update-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin-top:12px}.update-card{border:1px solid rgba(244,183,64,.25);background:rgba(244,183,64,.06);border-radius:8px;padding:10px}.update-card span{display:inline-block;font-size:9px;font-weight:950;text-transform:uppercase;color:var(--accent2);margin-bottom:6px}.update-card b{display:block;font-size:12px;line-height:1.25}.update-card p{font-size:11px;color:var(--dim);line-height:1.45;margin-top:5px}
 .brief-q{background:rgba(255,255,255,.07);border:1px solid var(--line);border-radius:8px;padding:11px;margin-bottom:9px;box-shadow:0 1px 0 rgba(255,255,255,.08) inset}.brief-q b{font-size:12px;color:var(--text);font-weight:900}.brief-q p{font-size:12px;color:var(--dim);line-height:1.5;margin-top:6px}
 .business-profile-panel{display:grid;gap:9px}.business-profile-hero{border:1px solid var(--line);border-radius:9px;background:linear-gradient(135deg,var(--zone-bg),rgba(255,255,255,.055));padding:12px;box-shadow:var(--glow)}.business-profile-hero h3{font-size:15px;line-height:1.15}.business-profile-hero p{font-size:12px;color:var(--dim);line-height:1.45;margin-top:6px}.business-profile-pills{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}.business-profile-pill{display:inline-flex;max-width:100%;border:1px solid var(--zone-border);border-radius:999px;background:color-mix(in srgb,var(--zone) 10%,transparent);color:var(--text);font-size:10px;font-weight:850;line-height:1.2;padding:5px 8px}.business-profile-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.business-profile-mini{border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.05);padding:10px}.business-profile-mini span{display:block;color:var(--dim);font-size:9px;font-weight:950;letter-spacing:.02em;text-transform:uppercase}.business-profile-mini b{display:block;font-size:12px;line-height:1.32;margin-top:5px}.business-profile-actions{display:flex;gap:7px;flex-wrap:wrap}.business-profile-empty{border:1px dashed var(--line);border-radius:9px;padding:12px;background:rgba(255,255,255,.035)}.business-profile-empty p{font-size:12px;color:var(--dim);line-height:1.45}.business-profile-empty .btn{margin-top:9px}@media(max-width:760px){.business-profile-grid{grid-template-columns:1fr}}
 table{width:100%;border-collapse:separate;border-spacing:0;font-size:12px}th,td{padding:10px;border-bottom:1px solid var(--line);text-align:left}th{color:var(--dim);font-size:10px;text-transform:uppercase;background:rgba(255,255,255,.035)}td:last-child{text-align:right}
@@ -5620,6 +6272,7 @@ body .onboarding-flow select option{background:#15131d;color:#f7f3ff}
 </div>
 </header>
 <section class="update-banner hidden" id="update-banner"></section>
+<section class="deferred-onboarding-banner hidden" id="deferred-onboarding-banner"></section>
 <main>
 <aside class="col brief-zone">
 <button class="zone-label" id="toggle-left-panel" type="button" onclick="togglePanel('left')"><span data-i18n="zone_brief">Daily intelligence</span><small class="zone-badge" id="daily-brief-badge" data-i18n="new_brief">New</small><i class="panel-caret" aria-hidden="true"></i></button>
@@ -6195,6 +6848,7 @@ function render(){
  applyTranslations();
  hydrateChatHistory();
  renderUpdateBanner(updateInfo);
+ renderDeferredOnboardingBanner();
  const m=state.metrics, s=m.summary;
  qs('#s-roas').textContent=Number(s.overall_roas||0).toFixed(2)+'x'; qs('#s-cpa').textContent=fmtMoney(s.overall_cpa); qs('#s-mode').textContent=modeText(state.config.mode); qs('#s-updated').textContent=new Date(m.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
  qs('#data-source-signal').textContent=dataSourceText(m);
@@ -6492,14 +7146,14 @@ function statusLabel(s){return s==='ok'?t('ok'):s==='blocked'?t('blocked'):t('ch
 function setupItem(key){for(const sec of state.setup.sections){const found=sec.items.find(i=>i.key===key);if(found)return found}return {status:'blocked',detail:''}}
 function stepCopy(key){
 	 const en={
-	  title:'Setup',subtitle:'One step at a time. First we look. Then we ask.',progress:'ready',done:'Done',next:'Next',review:'Review',
+	  title:'Initial setup',subtitle:'Connect the essentials. The deep business questions happen later through the agent.',progress:'ready',done:'Done',next:'Next',review:'Review',
 	  helper:'Help',
-	  website:['Tell me your business','Write your business in a few words. If you have a website, paste it too.',''],
-	  context:['Answer simple questions','I will ask short questions one by one so I can understand your business better.',''],
-	  strategy:['See the first plan','I turn your answers into a simple first plan before the dashboard opens.',''],
+	  website:['Paste your website and social media','I scan your public links so the agent has a first map of your products and services.',''],
+	  context:['Business interview','The agent asks this later through Telegram, one question at a time.',''],
+	  strategy:['First plan','The agent prepares this after the interview.',''],
 	  license:['Add your license','Paste the one code you received from us.',''],
-	  chatgpt:['Connect the brain','Choose ChatGPT/Codex or an API model like MiniMax M3. The same agent memory, tools, and approvals stay active.',''],
-	  telegram:['Connect Telegram','Recommended: talk to the manager from your phone and approve exact decisions with buttons.',''],
+	  chatgpt:['Connect ChatGPT','Choose ChatGPT/Codex or an API model like MiniMax M3.',''],
+	  telegram:['Finish with Telegram','Recommended: talk to the manager from your phone. After this, the agent can ask the business questions there.',''],
 	  meta:['Connect my Facebook account','Secure step: use your own Facebook/Meta connection and access key.',''],
 	  account:['Pick one account','Choose the ad account this tool should help with.',''],
 	  destination:['Pick where ads go','Add the Facebook Page, Instagram, and website.',''],
@@ -6512,14 +7166,14 @@ function stepCopy(key){
 	  guide:['Quick guide','Read the short cards before entering the dashboard.','']
 	 };
 	 const es={
-	  title:'Configuración',subtitle:'Un paso a la vez. Primero miramos. Luego preguntamos.',progress:'listo',done:'Listo',next:'Siguiente',review:'Revisar',
+	  title:'Configuración inicial',subtitle:'Conecta lo esencial. La entrevista profunda la hace el agente después.',progress:'listo',done:'Listo',next:'Siguiente',review:'Revisar',
 	  helper:'Ayuda',
-	  website:['Dime tu negocio','Escribe tu negocio en pocas palabras. Si tienes web, pégala también.',''],
-	  context:['Responde preguntas simples','Haré preguntas cortas, una por una, para entender mejor tu negocio.',''],
-	  strategy:['Ver el primer plan','Con tus respuestas preparo un plan simple antes de abrir el dashboard.',''],
+	  website:['Pega tu web y redes','Escaneo tus links públicos para que el agente tenga un primer mapa de productos y servicios.',''],
+	  context:['Entrevista del negocio','El agente la hace después por Telegram, una pregunta a la vez.',''],
+	  strategy:['Primer plan','El agente lo prepara después de la entrevista.',''],
 	  license:['Pega tu licencia','Pega el único código que recibiste de nosotros.',''],
-	  chatgpt:['Conecta el cerebro','Elige ChatGPT/Codex o un modelo API como MiniMax M3. La misma memoria, herramientas y aprobaciones siguen activas.',''],
-	  telegram:['Conecta Telegram','Recomendado: habla con el manager desde tu celular y aprueba decisiones exactas con botones.',''],
+	  chatgpt:['Conecta ChatGPT','Elige ChatGPT/Codex o un modelo API como MiniMax M3.',''],
+	  telegram:['Termina con Telegram','Recomendado: habla con el manager desde tu celular. Después de esto, el agente puede hacerte la entrevista del negocio allí.',''],
 	  meta:['Conectar mi cuenta de Facebook','Paso seguro: usa tu propia conexión de Facebook/Meta y tu propia clave.',''],
 	  account:['Elige una cuenta','Escoge la cuenta de anuncios que quieres usar.',''],
 	  destination:['Elige dónde van los anuncios','Agrega la página de Facebook, Instagram y la web.',''],
@@ -6537,10 +7191,7 @@ function copyCommand(value){navigator.clipboard?.writeText(value).then(()=>toast
 function onboardingSteps(){
  const setup=state.setup, summary=setup.summary;
  const profile=state.business_profile||{};
- const websiteOk=Boolean(profile.onboarding_questions_started||profile.business_type||profile.website_url||profile.website_skipped);
- const contextFields=Array.isArray(profile.onboarding_questions)&&profile.onboarding_questions.length?profile.onboarding_questions.map(q=>q.key).filter(Boolean):['main_offer','ideal_customer','current_stage','what_to_improve'];
- const contextOk=Boolean(profile.context_completed_at)||contextFields.every(k=>String(profile[k]||'').trim());
- const strategyOk=Boolean(profile.initial_plan&&profile.initial_plan.length);
+ const websiteOk=Boolean(profile.website_url||(profile.social_links&&profile.social_links.length)||profile.telegram_onboarding_requested_at||profile.website_skipped);
  const licenseOk=Boolean(summary.license_ready);
  const passwordOk=Boolean(state.config.dashboard_password_set);
  const model=state.config.agent_model||{};
@@ -6549,31 +7200,25 @@ function onboardingSteps(){
  const chatgptOk=(setupItem('hermes_runtime').status==='ok'&&setupItem('hermes_auth').status==='ok')||apiBrainOk;
  const telegram=state.config.telegram_agent||{};
  const telegramOk=Boolean(telegram.enabled&&telegram.bot_configured&&telegram.chat_id);
+ const tokenOk=setupItem('access_token').status==='ok';
  const accountOk=setupItem('ad_account').status==='ok';
  const destinationOk=['page_id','landing_url'].every(k=>setupItem(k).status==='ok');
  const socialOk=setupItem('social_cli').status==='ok';
  const dryrunOk=setupItem('daily_report').status==='ok';
  const approvalOk=state.pending.length>0||state.actions.some(a=>String(a.status)==='pending_approval'||String(a.status)==='completed');
  const insightsOk=state.metrics?.source==='meta_graph'||state.actions.some(a=>a.type==='live_insights_pull'||a.type==='daily_agent_run')||dryrunOk;
- const smokeOk=state.actions.some(a=>a.type==='live_smoke_test'||(a.status==='completed'&&a.payload&&a.payload.connector));
- return [
-	  {id:'password',status:passwordOk?'ok':'blocked'},
-	  {id:'chatgpt',status:chatgptOk?'ok':'warn'},
-	  {id:'telegram',status:telegramOk?'ok':'warn'},
-	  {id:'website',status:websiteOk?'ok':'blocked'},
-	  {id:'context',status:contextOk?'ok':'blocked'},
-	  {id:'strategy',status:strategyOk?'ok':'warn'},
-	  {id:'license',status:licenseOk?'ok':'blocked'},
-	  {id:'meta',status:accountOk?'ok':(socialOk?'warn':'blocked')},
+ const steps=[];
+ if(!passwordOk)steps.push({id:'password',status:'blocked'});
+ if(!licenseOk)steps.push({id:'license',status:'blocked'});
+ steps.push(
+	  {id:'meta',status:tokenOk?'ok':(socialOk?'warn':'blocked')},
 	  {id:'account',status:accountOk?'ok':'blocked'},
 	  {id:'destination',status:destinationOk?'ok':'blocked'},
-	  {id:'insights',status:insightsOk?'ok':(accountOk?'warn':'blocked')},
-	  {id:'dryrun',status:dryrunOk?'ok':'warn'},
-	  {id:'approval',status:approvalOk?'ok':'warn'},
-	  {id:'live',status:summary.live_ads_ready?'ok':'warn'},
-	  {id:'smoke',status:smokeOk?'ok':'warn'},
-	  {id:'guide',status:'warn'},
-	 ];
+	  {id:'chatgpt',status:chatgptOk?'ok':'warn'},
+	  {id:'website',status:websiteOk?'ok':'warn'},
+	  {id:'telegram',status:telegramOk?'ok':'warn'}
+	 );
+ return steps;
 	}
 function renderOnboarding(){
  const doneState=state.onboarding||{};
@@ -6604,9 +7249,9 @@ function onboardingFormFor(stepId){
 	}
 function websiteScanGuide(){
  const p=state.business_profile||{};
- const url=p.website_url||state.config.setup_values?.landing_url||'';
+ const links=[p.website_url,...(p.social_links||[])].filter(Boolean).filter((item,index,arr)=>arr.indexOf(item)===index).join('\n');
  const business=p.business_type||p.business_short||'';
- return `<div class="setup-guide private-connection business-start-shell"><section class="guide-hero business-hero compact-business-scan"><div class="guide-main"><span class="guide-eyebrow">${lang==='es'?'Empezar simple':'Start simple'}</span><h3>${lang==='es'?'¿Qué negocio tienes?':'What business do you have?'}</h3><p>${lang==='es'?'Escríbelo corto. Luego haré preguntas simples, una por una. Si tienes web, pégala también.':'Write it short. Then I will ask simple questions one by one. If you have a website, paste it too.'}</p><form class="onboarding-mini business-start-form" onsubmit="startBusinessInterview(event)"><label>${lang==='es'?'Tu negocio, en pocas palabras':'Your business, in a few words'}<textarea name="business_type" rows="3" required placeholder="${lang==='es'?'Ej: clínica dental, tienda de ropa, curso online...':'Ex: dental clinic, clothing store, online course...'}">${escapeHtml(business)}</textarea></label><label>${lang==='es'?'Web, si tienes una':'Website, if you have one'}<input name="website_url" value="${escapeHtml(url)}" placeholder="https://tumarca.com"></label><div class="onboarding-step-actions"><button class="btn primary" type="submit">${lang==='es'?'Preparar preguntas':'Prepare questions'}</button></div></form></div></section><div id="business-scan-results" class="setup-guide">${businessProfileCard()}</div></div>`;
+ return `<div class="setup-guide private-connection business-start-shell"><section class="guide-hero business-hero compact-business-scan"><div class="guide-main"><span class="guide-eyebrow">${lang==='es'?'Escaneo rápido':'Quick scan'}</span><h3>${lang==='es'?'Pega tu web y redes':'Paste your website and social media'}</h3><p>${lang==='es'?'El agente las revisa ahora para tener una primera idea de tus productos y servicios. Después seguirá la entrevista por Telegram, con calma y una pregunta a la vez.':'The agent scans them now to get a first idea of your products and services. The full interview continues later through Telegram, one question at a time.'}</p><form class="onboarding-mini business-start-form" onsubmit="saveBusinessLinks(event)"><label>${lang==='es'?'Web, Instagram, Facebook, TikTok o tienda':'Website, Instagram, Facebook, TikTok, or store'}<textarea name="links" rows="5" placeholder="${lang==='es'?'Pega un link por línea. Ej:\\nhttps://tumarca.com\\nhttps://instagram.com/tumarca':'Paste one link per line. Ex:\\nhttps://yourbrand.com\\nhttps://instagram.com/yourbrand'}">${escapeHtml(links)}</textarea></label><label>${lang==='es'?'Qué vendes, en pocas palabras':'What you sell, in a few words'}<input name="business_type" value="${escapeHtml(business)}" placeholder="${lang==='es'?'Ej: curso de uñas, clínica dental, tienda de ropa':'Ex: nail course, dental clinic, clothing store'}"></label><div class="onboarding-step-actions"><button class="btn primary" type="submit">${lang==='es'?'Guardar y escanear ahora':'Save and scan now'}</button><button class="btn" type="button" onclick="skipWebsiteScan()">${lang==='es'?'No tengo links ahora':'I do not have links now'}</button></div></form></div><aside class="guide-checklist"><b>${lang==='es'?'Qué pasa después':'What happens next'}</b><ol><li>${lang==='es'?'El agente revisa lo público y guarda una primera lectura.':'The agent reads what is public and saves a first view.'}</li><li>${lang==='es'?'Por Telegram te preguntará lo que falte.':'Through Telegram it asks what is missing.'}</li><li>${lang==='es'?'Lo aprendido queda guardado para campañas y creativos.':'What it learns is saved for campaigns and ads.'}</li></ol></aside></section><div id="business-scan-results" class="setup-guide">${businessProfileCard()}</div></div>`;
 }
 function businessQuestionValue(key,p){
  if(key==='main_offer')return p.main_offer||p.offer||'';
@@ -6662,8 +7307,9 @@ function initialStrategyGuide(){
 }
 function businessProfileCard(){
  const p=state.business_profile||{};
- if(!p.website_url&&!p.business_type&&!p.onboarding_questions_started)return '';
- return `<div class="guide-card"><b>${lang==='es'?'Perfil guardado':'Profile saved'}</b><p>${escapeHtml(p.business_type||p.website_url||'')}${p.website_url?` · ${escapeHtml(p.website_url)}`:''}${p.scan_error?` · ${lang==='es'?'No pude leer toda la web, pero guardé el link y puedes seguir.':'I could not read the full site, but saved the link and you can continue.'}`:''}</p>${p.main_offer||p.offer?`<p>${lang==='es'?'Oferta detectada':'Detected offer'}: ${escapeHtml(p.main_offer||p.offer)}</p>`:''}${p.onboarding_questions_started?`<p class="notice">${lang==='es'?'Ya preparé las preguntas iniciales.':'I already prepared the first questions.'}</p>`:''}</div>`;
+ const links=[p.website_url,...(p.social_links||[])].filter(Boolean).filter((item,index,arr)=>arr.indexOf(item)===index);
+ if(!links.length&&!p.business_type&&!p.telegram_onboarding_requested_at)return '';
+ return `<div class="guide-card"><b>${lang==='es'?'Contexto inicial guardado':'Initial context saved'}</b><p>${escapeHtml(p.business_type||links[0]||'')}${links.length?` · ${links.length} ${lang==='es'?'link(s)':'link(s)'}`:''}${p.scan_error?` · ${lang==='es'?'No pude leer toda la web, pero guardé el link y puedes seguir.':'I could not read the full site, but saved the link and you can continue.'}`:''}</p>${p.main_offer||p.offer?`<p>${lang==='es'?'Oferta detectada':'Detected offer'}: ${escapeHtml(p.main_offer||p.offer)}</p>`:''}<p class="notice">${lang==='es'?'La entrevista profunda queda pendiente para el agente por Telegram.':'The deep interview is pending for the agent through Telegram.'}</p></div>`;
 }
 function businessSnapshotData(){
  const p=state.business_profile||{};
@@ -6782,11 +7428,12 @@ function renderOnboardingFlow(){
  const canGoNext=!isLast&&step.status!=='blocked';
  const nextButton=canGoNext?`<button class="btn" onclick="onboardingFlowTouched=true;onboardingFlowStep=Math.min(${steps.length-1},onboardingFlowStep+1);renderOnboardingFlow()">${lang==='es'?'Siguiente':'Next'}</button>`:'';
  const finishButton=isLast?`<button class="btn primary" onclick="completeOnboarding()">${lang==='es'?'Terminar y abrir dashboard':'Finish and open dashboard'}</button>`:'';
+ const skipButton=`<button class="btn" onclick="skipOnboarding()">${lang==='es'?'Saltar y completar luego':'Skip and finish later'}</button>`;
  const spaces=state.business_spaces||{};
  const agencySwitch=spaces.is_agency&&spaces.spaces?.length?`<div class="guide-card" style="margin-top:14px"><b>${lang==='es'?'Clientes de agencia':'Agency clients'}</b><p>${lang==='es'?'Abre otro cliente cuando quieras continuar su configuración. Sus datos se mantienen separados.':'Open another client when you want to continue its setup. Its data remains separate.'}</p>${spaces.spaces.map(s=>`<button class="btn ${spaces.active_id===s.id?'primary':''}" style="margin:5px 5px 0 0" type="button" onclick="switchAgencySpace('${escapeHtml(s.id)}')">${escapeHtml(s.name)}</button>`).join('')}</div>`:'';
  const repairNotice=doneState.requires_repair?`<div class="guide-card"><b>${lang==='es'?'Reconectemos tus datos reales':'Reconnect your real data'}</b><p>${lang==='es'?'Tu configuración anterior quedó incompleta o perdió la conexión con Meta. Completa los pasos que falten para que el dashboard no use información de demostración.':'Your previous setup is incomplete or lost its Meta connection. Complete the missing steps so the dashboard does not use demonstration information.'}</p></div>`:'';
  flow.classList.add('open');
- flow.innerHTML=`<div class="onboarding-shell"><aside class="onboarding-side"><h1>Meta Ads Agent</h1><p>${lang==='es'?'Vamos a dejar todo listo con calma. Al terminar, se abre el dashboard completo.':'We will get everything ready calmly. When you finish, the full dashboard opens.'}</p><div class="onboarding-progress">${steps.map((s,i)=>`<span class="${i<=onboardingFlowStep?'done':''}"></span>`).join('')}</div><p>${doneCount}/${steps.length} ${stepCopy('progress')}</p>${agencySwitch}</aside><main class="onboarding-card">${repairNotice}<h2>${copyStep[0]}</h2><p>${copyStep[1]}</p>${onboardingFormFor(step.id)}<div class="onboarding-step-actions"><button class="btn" ${onboardingFlowStep===0?'disabled':''} onclick="onboardingFlowTouched=true;onboardingFlowStep=Math.max(0,onboardingFlowStep-1);renderOnboardingFlow()">${lang==='es'?'Atrás':'Back'}</button>${nextButton}${finishButton}</div></main></div>`;
+ flow.innerHTML=`<div class="onboarding-shell"><aside class="onboarding-side"><h1>Meta Ads Agent</h1><p>${lang==='es'?'Conecta lo esencial. Después hablarás con el agente por Telegram para contarle tu negocio con calma.':'Connect the essentials. Then you talk with the agent through Telegram so it can learn the business calmly.'}</p><div class="onboarding-progress">${steps.map((s,i)=>`<span class="${i<=onboardingFlowStep?'done':''}"></span>`).join('')}</div><p>${doneCount}/${steps.length} ${stepCopy('progress')}</p>${agencySwitch}</aside><main class="onboarding-card">${repairNotice}<h2>${copyStep[0]}</h2><p>${copyStep[1]}</p>${onboardingFormFor(step.id)}<div class="onboarding-step-actions"><button class="btn" ${onboardingFlowStep===0?'disabled':''} onclick="onboardingFlowTouched=true;onboardingFlowStep=Math.max(0,onboardingFlowStep-1);renderOnboardingFlow()">${lang==='es'?'Atrás':'Back'}</button>${nextButton}${skipButton}${finishButton}</div></main></div>`;
  maybeAutoDiscoverDestination(step.id);
 }
 function maybeAutoDiscoverDestination(stepId){
@@ -6903,7 +7550,7 @@ function chatGptConnectMarkup(onboarding=false){
  const keyPlaceholder=model.api_key_set?(lang==='es'?'Clave guardada. Pega otra solo si quieres cambiarla.':'Key saved. Paste another only to replace it.'):(lang==='es'?'Pega la clave API del proveedor':'Paste the provider API key');
  const routeCopy={
   openai_api:{icon:'OA',title:lang==='es'?'OpenAI API':'OpenAI API',desc:lang==='es'?'Si tienes una clave API de OpenAI.':'If you have an OpenAI API key.',panel:lang==='es'?'Pega tu clave API de OpenAI. El agente seguirá usando su memoria, herramientas y aprobaciones.':'Paste your OpenAI API key. The agent still keeps its memory, tools, and approvals.'},
-  chatgpt_subscription:{icon:'CG',title:lang==='es'?'ChatGPT suscripción':'ChatGPT subscription',desc:lang==='es'?'Login OAuth con ChatGPT/Codex.':'OAuth login with ChatGPT/Codex.',panel:lang==='es'?'Toca Conectar ahora. En PC/Mac abriré la terminal; en DigitalOcean mostraré aquí el enlace para iniciar sesión desde este navegador.':'Click Connect now. On PC/Mac I open the terminal; on DigitalOcean I show the login link here in this browser.'},
+  chatgpt_subscription:{icon:'CG',title:lang==='es'?'ChatGPT suscripción':'ChatGPT subscription',desc:lang==='es'?'Login OAuth con ChatGPT/Codex.':'OAuth login with ChatGPT/Codex.',panel:lang==='es'?'Primero, en ChatGPT abre Ajustes > Seguridad y activa el login por código para Codex. Después toca Conectar ahora; en PC/Mac abriré la terminal y en DigitalOcean mostraré aquí el enlace seguro.':'First, in ChatGPT open Settings > Security and enable device-code login for Codex. Then click Connect now; on PC/Mac I open the terminal and on DigitalOcean I show the secure link here.'},
   minimax_m3:{icon:'M3',title:'MiniMax M3',desc:lang==='es'?'Con clave de MiniMax.':'With a MiniMax key.',panel:lang==='es'?'Pega tu clave de MiniMax. Ya dejé URL y modelo listos para M3. El agente seguirá usando su memoria y herramientas.':'Paste your MiniMax key. URL and model are already set for M3. The agent still keeps memory and tools.'},
   custom_api:{icon:'{}',title:lang==='es'?'Otra API compatible':'Other compatible API',desc:lang==='es'?'Para proveedores tipo OpenAI.':'For OpenAI-style providers.',panel:lang==='es'?'Pega la URL, el nombre del modelo y la clave del proveedor. El agente la usará como cerebro.':'Paste the provider URL, model name, and key. The agent will use it as its brain.'}
  };
@@ -6915,7 +7562,7 @@ function chatGptConnectMarkup(onboarding=false){
  <input type="hidden" name="agent_chat_provider" value="${escapeHtml(providerValue)}">
  <input type="hidden" name="agent_chat_api" value="${escapeHtml(api)}">
  <div class="agent-route-panels">
-  <div class="agent-route-panel ${selectedRoute==='chatgpt_subscription'?'active':''}" data-agent-route-panel="chatgpt_subscription"><h4>${routeCopy.chatgpt_subscription.title}</h4><p>${routeCopy.chatgpt_subscription.panel}</p><div class="agent-route-actions"><button class="btn primary" type="button" onclick="connectChatGpt(event)">${lang==='es'?'Conectar ahora':'Connect now'}</button><button class="btn ask-btn" type="button" onclick="openChat(${JSON.stringify(draft).replaceAll('"','&quot;')})">${t('ask_agent')}</button></div><div id="chatgpt-connect-result" class="chatgpt-connect-result hidden"></div></div>
+  <div class="agent-route-panel ${selectedRoute==='chatgpt_subscription'?'active':''}" data-agent-route-panel="chatgpt_subscription"><h4>${routeCopy.chatgpt_subscription.title}</h4><p>${routeCopy.chatgpt_subscription.panel}</p><div class="chatgpt-preflight"><b>${lang==='es'?'Antes de conectar':'Before connecting'}</b><ol><li>${lang==='es'?'Abre ChatGPT en otra pestaña.':'Open ChatGPT in another tab.'}</li><li>${lang==='es'?'Entra a Ajustes > Seguridad.':'Go to Settings > Security.'}</li><li>${lang==='es'?'Activa “Enable device code authorization for Codex”.':'Turn on “Enable device code authorization for Codex”.'}</li></ol></div><div class="agent-route-actions"><button class="btn primary" type="button" onclick="connectChatGpt(event)">${lang==='es'?'Conectar ahora':'Connect now'}</button><button class="btn ask-btn" type="button" onclick="openChat(${JSON.stringify(draft).replaceAll('"','&quot;')})">${t('ask_agent')}</button></div><div id="chatgpt-connect-result" class="chatgpt-connect-result hidden"></div></div>
   <div class="agent-route-panel ${selectedRoute!=='chatgpt_subscription'?'active':''}" data-agent-route-panel="api"><h4 id="agent-api-route-title">${apiPanelTitle}</h4><p id="agent-api-route-help">${apiPanelHelp}</p><div class="form-grid">
    <div class="field"><label>${lang==='es'?'Modelo':'Model'}</label><input name="agent_chat_model" value="${escapeHtml(modelName)}" placeholder="${lang==='es'?'Nombre del modelo':'Model name'}"></div>
    <div class="field"><label>${lang==='es'?'URL compatible OpenAI':'OpenAI-compatible URL'}</label><span class="field-help">${lang==='es'?'Debe usar https://. Solo se permite http:// para modelos locales como 127.0.0.1.':'Must use https://. http:// is allowed only for local models such as 127.0.0.1.'}</span><input name="agent_chat_base_url" value="${escapeHtml(base)}" placeholder="https://api.ejemplo.com/v1"></div>
@@ -7023,6 +7670,7 @@ function renderChatGptConnectResult(response){
  const detail=escapeHtml(r.detail||'');
  const autoNote=String(r.auto_note||'').trim();
  const phaseNote=autoNote?`<div class="notice">${escapeHtml(autoNote)}</div>`:'';
+ const deviceAuthHelp=r.phase==='device_auth_settings'?`<div class="guide-card chatgpt-settings-help"><b>${lang==='es'?'Haz esto en ChatGPT':'Do this in ChatGPT'}</b><ol><li>${lang==='es'?'Abre ChatGPT con la misma cuenta que usarás aquí.':'Open ChatGPT with the same account you will use here.'}</li><li>${lang==='es'?'Ve a Ajustes > Seguridad.':'Go to Settings > Security.'}</li><li>${lang==='es'?'Activa “Enable device code authorization for Codex”.':'Turn on “Enable device code authorization for Codex”.'}</li><li>${lang==='es'?'Vuelve aquí y toca Conectar ahora otra vez.':'Come back here and click Connect now again.'}</li></ol></div>`:'';
  const loginCode=String(r.login_code||(Array.isArray(r.login_codes)&&r.login_codes.length?r.login_codes[0]:'')||'').trim();
  const codeBlock=loginCode?`<div class="chatgpt-device-code" role="status" aria-live="polite"><div><span>${lang==='es'?'Código para OpenAI':'Code for OpenAI'}</span><strong>${escapeHtml(loginCode)}</strong><small>${lang==='es'?'Pégalo en la pestaña de OpenAI/Codex que se abrió. Si no la ves, toca Abrir login.':'Paste it in the OpenAI/Codex tab that opened. If you do not see it, click Open login.'}</small></div><button class="btn primary" type="button" onclick="copyCommand(${JSON.stringify(loginCode).replaceAll('"','&quot;')})">${lang==='es'?'Copiar código':'Copy code'}</button></div>`:'';
  const links=urls.length?`<div class="onboarding-step-actions">${urls.map(url=>`<a class="btn primary" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${lang==='es'?'Abrir login':'Open login'}</a>`).join('')}</div>`:'';
@@ -7031,7 +7679,7 @@ function renderChatGptConnectResult(response){
  const outputBlock=output?`<details class="helper-command"><summary>${lang==='es'?'Ver detalle técnico de Hermes':'Show Hermes technical detail'}</summary><pre class="chatgpt-terminal-output">${escapeHtml(output)}</pre></details>`:'';
  const review=status==='terminal_opened'||status==='completed'||status==='needs_login'||status==='browser_login_started'||status==='browser_login_waiting'?`<button class="btn" type="button" onclick="pollChatGptConnection()">${lang==='es'?'Revisar conexión':'Recheck connection'}</button>`:'';
  box.classList.toggle('has-device-code',Boolean(loginCode));
- box.innerHTML=`<b>${title}</b><p>${detail}</p>${phaseNote}${codeBlock}${links}${outputBlock}${inputBox}${command}${review?`<div class="onboarding-step-actions">${review}</div>`:''}`;
+ box.innerHTML=`<b>${title}</b><p>${detail}</p>${phaseNote}${deviceAuthHelp}${codeBlock}${links}${outputBlock}${inputBox}${command}${review?`<div class="onboarding-step-actions">${review}</div>`:''}`;
  box.classList.remove('hidden');
  if(loginCode)setTimeout(()=>box.querySelector('.chatgpt-device-code')?.scrollIntoView({behavior:'smooth',block:'center'}),80);
  scheduleChatGptConnectPoll(r);
@@ -7152,6 +7800,30 @@ function renderUpdateBanner(info){
  if(!info||!info.available){box.classList.add('hidden');box.innerHTML='';return}
  box.classList.remove('hidden');
  box.innerHTML=`<div><b>${lang==='es'?'Actualización oficial disponible':'Official update available'}: ${escapeHtml(info.latest_version||'')}</b><p>${lang==='es'?'Antes de instalarla puedes ver qué mejora. Crearé una copia de seguridad automática.':'Review what improved before installing. I will create an automatic backup.'}</p></div><button class="btn primary" type="button" onclick="showUpdateDetails()">${lang==='es'?'Ver mejoras e instalar':'View improvements and install'}</button>`;
+}
+function renderDeferredOnboardingBanner(){
+ const box=qs('#deferred-onboarding-banner');if(!box)return;
+ const onboarding=state.onboarding||{};
+ const deferred=Boolean(onboarding.deferred||onboarding.skipped||onboarding.requires_repair);
+ if(!deferred){box.classList.add('hidden');box.innerHTML='';return}
+ const reasons=(onboarding.deferred_reasons||onboarding.repair_reasons||[]).filter(Boolean);
+ const labelMap={
+  licencia:lang==='es'?'licencia':'license',
+  conexion_facebook:lang==='es'?'Facebook':'Facebook',
+  cuenta_publicitaria:lang==='es'?'cuenta publicitaria':'ad account',
+  cerebro_agente:lang==='es'?'ChatGPT':'ChatGPT',
+  telegram:'Telegram',
+  entrevista_negocio:lang==='es'?'entrevista del negocio':'business interview',
+  branding_creativos:lang==='es'?'marca y creativos':'brand and creatives',
+  campanas_anuncios:lang==='es'?'campañas previas':'past campaigns',
+  conexion_meta:lang==='es'?'Facebook':'Facebook',
+  destinos:lang==='es'?'página y web':'Page and website',
+  datos_reales:lang==='es'?'datos reales':'real data',
+  perfil_negocio:lang==='es'?'perfil del negocio':'business profile'
+ };
+ const summary=reasons.length?reasons.slice(0,3).map(reason=>labelMap[reason]||reason).join(', '):(lang==='es'?'algunos pasos':'some steps');
+ box.classList.remove('hidden');
+ box.innerHTML=`<div class="deferred-onboarding-copy"><span class="pulse-dot"></span><div><b>${lang==='es'?'Completa la configuración cuando puedas':'Finish setup when you can'}</b><p>${lang==='es'?`Falta revisar: ${summary}. Puedes usar el dashboard, pero el agente funcionará mejor cuando termines.`:`Still to review: ${summary}. You can use the dashboard, but the agent works better after this is done.`}</p></div></div><button class="btn primary" type="button" onclick="resumeOnboarding()">${lang==='es'?'Completar ahora':'Finish now'}</button>`;
 }
 function showUpdateDetails(){
  if(!updateInfo)return;
@@ -7401,6 +8073,26 @@ async function saveSetupConfig(e){e.preventDefault();await saveSetupPayload(Obje
 async function saveOnboardingSetupConfig(e){e.preventDefault();await saveSetupPayload(Object.fromEntries(new FormData(e.target).entries()),true)}
 async function createAgencySpace(e){e.preventDefault();const payload=Object.fromEntries(new FormData(e.target).entries());await api('/api/agency/spaces',{method:'POST',body:JSON.stringify(payload)});toast(lang==='es'?'Cliente agregado. Ábrelo para configurarlo.':'Client added. Open it to configure it.');await load()}
 async function switchAgencySpace(id){await api('/api/agency/spaces/switch',{method:'POST',body:JSON.stringify({space_id:id})});toast(lang==='es'?'Cliente activo cambiado.':'Active client changed.');await load()}
+async function saveBusinessLinks(e){
+ e.preventDefault();
+ const payload=Object.fromEntries(new FormData(e.target).entries());
+ const box=qs('#business-scan-results');
+ if(box)box.innerHTML=`<div class="guide-card"><p>${lang==='es'?'Guardando links para que el agente los revise...':'Saving links for the agent to review...'}</p></div>`;
+ try{
+  const res=await api('/api/business-profile/links',{method:'POST',body:JSON.stringify(payload)});
+  toast(lang==='es'?'Listo. El agente usará esto para entrevistarte por Telegram.':'Ready. The agent will use this when interviewing you through Telegram.');
+  await load();
+  const steps=onboardingSteps();
+  const idx=steps.findIndex(s=>s.id==='telegram');
+  onboardingFlowTouched=true;
+  onboardingFlowStep=idx>=0?idx:onboardingFlowStep;
+  renderOnboardingFlow();
+  return res;
+ }catch(err){
+  if(box)box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'No pude guardar esos links':'I could not save those links'}</b><p>${escapeHtml(err.message||String(err))}</p></div>`;
+  throw err;
+ }
+}
 async function startBusinessInterview(e){
  e.preventDefault();
  const payload=Object.fromEntries(new FormData(e.target).entries());
@@ -7426,7 +8118,7 @@ async function startBusinessInterview(e){
  }
 }
 async function scanBusinessWebsite(e){e.preventDefault();const payload=Object.fromEntries(new FormData(e.target).entries());const box=qs('#business-scan-results');if(box)box.innerHTML=`<div class="guide-card"><p>${lang==='es'?'Leyendo tu web y preparando respuestas sugeridas...':'Reading your website and preparing suggested answers...'}</p></div>`;try{const res=await api('/api/business-profile/scan',{method:'POST',body:JSON.stringify(payload)});toast(lang==='es'?'Web analizada. Ahora revisamos una respuesta a la vez.':'Website scanned. Now we review one answer at a time.');await load();businessContextQuestionIndex=0;const steps=onboardingSteps();const idx=steps.findIndex(s=>s.id==='context');onboardingFlowTouched=true;onboardingFlowStep=idx>=0?idx:onboardingFlowStep;renderOnboardingFlow();return res}catch(err){if(box)box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'No pude leer la web todavía':'I could not read the website yet'}</b><p>${escapeHtml(err.message||String(err))}</p></div>`;throw err}}
-async function skipWebsiteScan(){await api('/api/business-profile',{method:'POST',body:JSON.stringify({website_skipped:true})});toast(lang==='es'?'Perfecto. Te haré preguntas simples.':'Perfect. I will ask simple questions.');await load();businessContextQuestionIndex=0;const steps=onboardingSteps();const idx=steps.findIndex(s=>s.id==='context');onboardingFlowTouched=true;onboardingFlowStep=idx>=0?idx:onboardingFlowStep;renderOnboardingFlow()}
+async function skipWebsiteScan(){await api('/api/business-profile/links',{method:'POST',body:JSON.stringify({website_skipped:true})});toast(lang==='es'?'Perfecto. El agente te preguntará lo necesario después.':'Perfect. The agent will ask what it needs later.');await load();const steps=onboardingSteps();const idx=steps.findIndex(s=>s.id==='telegram');onboardingFlowTouched=true;onboardingFlowStep=idx>=0?idx:onboardingFlowStep;renderOnboardingFlow()}
 function setBusinessContextQuestionIndex(index){const questions=businessContextQuestions();businessContextQuestionIndex=Math.max(0,Math.min(Number(index)||0,questions.length-1));renderOnboardingFlow()}
 async function saveBusinessContextQuestion(e){e.preventDefault();const form=e.target;const field=String(new FormData(form).get('field')||'').trim();const answer=String(new FormData(form).get('answer')||'').trim();if(!field||!answer){toast(lang==='es'?'Escribe una respuesta corta para seguir.':'Write a short answer to continue.');return}const questions=businessContextQuestions();const idx=Math.max(0,questions.findIndex(q=>q.key===field));const isLast=idx>=questions.length-1;const payload={[field]:answer};if(isLast)payload.context_complete=true;await api('/api/business-profile',{method:'POST',body:JSON.stringify(payload)});await load();if(isLast){toast(lang==='es'?'Contexto listo. Te muestro el primer plan.':'Context ready. Showing the first plan.');const steps=onboardingSteps();const strategyIndex=steps.findIndex(s=>s.id==='strategy');onboardingFlowTouched=true;onboardingFlowStep=strategyIndex>=0?strategyIndex:onboardingFlowStep}else{toast(lang==='es'?'Respuesta guardada. Vamos con la siguiente.':'Answer saved. On to the next one.');businessContextQuestionIndex=Math.min(idx+1,questions.length-1)}renderOnboardingFlow()}
 async function saveBusinessContext(e){e.preventDefault();const payload=Object.fromEntries(new FormData(e.target).entries());payload.context_complete=true;await api('/api/business-profile',{method:'POST',body:JSON.stringify(payload)});toast(lang==='es'?'Contexto guardado. Te muestro el primer plan.':'Context saved. Showing the first plan.');await load();const steps=onboardingSteps();const idx=steps.findIndex(s=>s.id==='strategy');onboardingFlowTouched=true;onboardingFlowStep=idx>=0?idx:onboardingFlowStep;renderOnboardingFlow()}
@@ -7483,7 +8175,7 @@ function renderDiscoveredAssets(res){
 async function discoverMetaAssets(id){const box=discoveryResultsBox();if(box)box.innerHTML=`<div class="guide-card"><p>${lang==='es'?'Buscando página, Instagram y web conectados...':'Finding connected Page, Instagram, and website...'}</p></div>`;const res=await api('/api/social/discover-assets',{method:'POST',body:JSON.stringify({ad_account_id:id})});renderDiscoveredAssets(res);return res}
 async function selectSocialAccount(id){try{await api('/api/social/default-account',{method:'POST',body:JSON.stringify({ad_account_id:id})})}catch(err){if(needsBusinessReplacement(err)){showBusinessReplacementConfirm({ad_account_id:id});return}throw err}const input=qs('input[name="ad_account_id"]');if(input)input.value=id;toast(lang==='es'?'Cuenta guardada. Buscando perfiles conectados...':'Account saved. Finding connected assets...');const discovered=await discoverMetaAssets(id);try{await api('/api/action',{method:'POST',body:JSON.stringify({action:'refresh_insights'})})}catch(err){}await load();const steps=onboardingSteps();const destinationIndex=steps.findIndex(s=>s.id==='destination');if(destinationIndex>=0){onboardingFlowTouched=true;onboardingFlowStep=destinationIndex;renderOnboardingFlow();renderDiscoveredAssets(discovered)}else advanceOnboardingAfterLoad()}
 async function unlockFromOnboarding(e){e.preventDefault();const input=qs('#onboarding-password');const err=qs('#onboarding-unlock-error');const value=(input?.value||'').trim();if(!value)return;if(err){err.textContent='';err.classList.remove('show')}const res=await fetch('/api/unlock',{method:'POST',headers:{'Content-Type':'application/json','X-Dashboard-Token':value},body:JSON.stringify({})});if(!res.ok){if(err){err.textContent=t('unlock_failed');err.classList.add('show')}return}localStorage.removeItem('dashboardToken');if(qs('#onboarding-remember')?.checked)localStorage.setItem('dashboardPassword',value);else localStorage.removeItem('dashboardPassword');toast(lang==='es'?'Dashboard desbloqueado':'Dashboard unlocked');onboardingFlowStep=Math.max(onboardingFlowStep,1);await load()}
-async function setDashboardPasswordFromOnboarding(e){e.preventDefault();const password=(qs('#new-dashboard-password')?.value||'').trim();const confirm=(qs('#confirm-dashboard-password')?.value||'').trim();const err=qs('#dashboard-password-error');if(err){err.textContent='';err.classList.remove('show')}if(password.length<8){if(err){err.textContent=lang==='es'?'Usa al menos 8 caracteres.':'Use at least 8 characters.';err.classList.add('show')}return}if(password!==confirm){if(err){err.textContent=lang==='es'?'Las contraseñas no coinciden.':'Passwords do not match.';err.classList.add('show')}return}const res=await fetch('/api/dashboard-password',{method:'POST',headers:{'Content-Type':'application/json','X-Dashboard-Token':dashboardPassword()},body:JSON.stringify({password,confirm_password:confirm})});if(!res.ok){if(err){err.textContent=await responseErrorMessage(res);err.classList.add('show')}return}localStorage.removeItem('dashboardToken');if(qs('#new-dashboard-remember')?.checked)localStorage.setItem('dashboardPassword',password);else localStorage.removeItem('dashboardPassword');toast(lang==='es'?'Contraseña guardada. Ahora conecta el cerebro del agente.':'Password saved. Now connect the agent brain.');await load();const steps=onboardingSteps();const modelIndex=steps.findIndex(s=>s.id==='chatgpt');onboardingFlowTouched=true;onboardingFlowStep=modelIndex>=0?modelIndex:onboardingFlowStep;renderOnboardingFlow()}
+async function setDashboardPasswordFromOnboarding(e){e.preventDefault();const password=(qs('#new-dashboard-password')?.value||'').trim();const confirm=(qs('#confirm-dashboard-password')?.value||'').trim();const err=qs('#dashboard-password-error');if(err){err.textContent='';err.classList.remove('show')}if(password.length<8){if(err){err.textContent=lang==='es'?'Usa al menos 8 caracteres.':'Use at least 8 characters.';err.classList.add('show')}return}if(password!==confirm){if(err){err.textContent=lang==='es'?'Las contraseñas no coinciden.':'Passwords do not match.';err.classList.add('show')}return}const res=await fetch('/api/dashboard-password',{method:'POST',headers:{'Content-Type':'application/json','X-Dashboard-Token':dashboardPassword()},body:JSON.stringify({password,confirm_password:confirm})});if(!res.ok){if(err){err.textContent=await responseErrorMessage(res);err.classList.add('show')}return}localStorage.removeItem('dashboardToken');if(qs('#new-dashboard-remember')?.checked)localStorage.setItem('dashboardPassword',password);else localStorage.removeItem('dashboardPassword');toast(lang==='es'?'Contraseña guardada. Sigamos con el siguiente paso.':'Password saved. Let us continue with the next step.');await load();onboardingFlowTouched=true;advanceOnboardingAfterLoad()}
 async function activateLicense(transferDevice=false){const res=await api('/api/license/activate',{method:'POST',body:JSON.stringify({transfer_device:transferDevice})});const result=res.result||{};toast(`${t('toast_license')}: ${localText(result.detail||result.status||'')}`);await load();if(result&&result.valid){advanceOnboardingAfterLoad();return}if(result.status==='device_limit'&&result.transfer_available&&!transferDevice)showLicenseTransferConfirm()}
 function showLicenseTransferConfirm(){const box=qs('#confirm-overlay');box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'Usar licencia en este equipo':'Use license on this device'}</h2><p>${lang==='es'?'Esta licencia Individual ya esta activa en otro equipo. Si continuas, este equipo quedara como el equipo activo para nuevas validaciones y el anterior perdera acceso cuando vuelva a validar la licencia online.':'This Individual license is already active on another device. If you continue, this device becomes the active device for new validations and the previous one loses access when it validates online again.'}</p><p class="notice">${lang==='es'?'Si estas cambiando de PC o reinstalando el producto, esta es la opcion correcta.':'If you are changing PC or reinstalling the product, this is the right option.'}</p><div class="confirm-actions"><button class="btn" type="button" onclick="closeConfirm()">${lang==='es'?'Cancelar':'Cancel'}</button><button class="btn primary" type="button" onclick="closeConfirm();activateLicense(true)">${lang==='es'?'Transferir a este equipo':'Transfer to this device'}</button></div></div>`;box.classList.add('open')}
 let decisionConfirmResolver=null;
@@ -7502,6 +8194,8 @@ function showDecisionConfirm(options={}){
 function showOnboardingCompleteConfirm(){const box=qs('#confirm-overlay');box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'Terminar configuración inicial':'Finish initial setup'}</h2><p>${lang==='es'?'La guía inicial dejará de aparecer automáticamente en este equipo. Esto no bloquea nada: podrás cambiar todo después desde Configuración.':'The initial guide will stop opening automatically on this device. This does not lock anything: you can change everything later from Setup.'}</p><ul><li>${lang==='es'?'Cuenta publicitaria':'Ad account'}</li><li>${lang==='es'?'Página de Facebook, Instagram y web':'Facebook Page, Instagram, and website'}</li><li>${lang==='es'?'Contraseña del dashboard':'Dashboard password'}</li><li>${lang==='es'?'Reglas de supervisión y piloto automático':'Supervision and autopilot rules'}</li></ul><div class="confirm-actions"><button class="btn" type="button" onclick="closeConfirm()">${lang==='es'?'Seguir revisando':'Keep reviewing'}</button><button class="btn primary" type="button" onclick="finishOnboardingConfirmed()">${lang==='es'?'Terminar y abrir dashboard':'Finish and open dashboard'}</button></div></div>`;box.classList.add('open')}
 async function finishOnboardingConfirmed(){closeConfirm();await api('/api/onboarding/complete',{method:'POST',body:JSON.stringify({})});toast(lang==='es'?'Configuración inicial terminada. Puedes editarla cuando quieras.':'Initial setup complete. You can edit it anytime.');await load()}
 async function completeOnboarding(){if(!state.config.dashboard_password_set){toast(lang==='es'?'Primero crea tu contraseña del dashboard.':'Create your dashboard password first.');const steps=onboardingSteps();const passwordIndex=steps.findIndex(s=>s.id==='password');onboardingFlowStep=passwordIndex>=0?passwordIndex:onboardingFlowStep;renderOnboardingFlow();return}showOnboardingCompleteConfirm()}
+async function skipOnboarding(){const ok=await showDecisionConfirm({title:lang==='es'?'Completar después':'Finish later',body:lang==='es'?'Abriré el dashboard ahora. Arriba verás un aviso brillante para volver y terminar lo pendiente cuando quieras.':'I will open the dashboard now. A glowing notice at the top will bring you back to finish the pending parts later.',confirmLabel:lang==='es'?'Abrir dashboard':'Open dashboard'});if(!ok)return;await api('/api/onboarding/skip',{method:'POST',body:JSON.stringify({})});toast(lang==='es'?'Puedes completar la configuración después.':'You can finish setup later.');await load()}
+async function resumeOnboarding(){await api('/api/onboarding/reset',{method:'POST',body:JSON.stringify({})});toast(lang==='es'?'Sigamos con lo pendiente.':'Let us finish the pending setup.');await load()}
 async function resetOnboarding(){const ok=await showDecisionConfirm({title:lang==='es'?'Revisar configuración inicial':'Run initial setup again',body:lang==='es'?'La guía inicial volverá a aparecer para revisar conexión, cuenta, página y reglas. No borra tus datos por sí sola.':'The initial guide will appear again to review connection, account, Page, and rules. It does not delete your data by itself.',confirmLabel:lang==='es'?'Abrir guía inicial':'Open initial guide',agentDraft:lang==='es'?'Ayúdame a revisar si necesito repetir la configuración inicial o solo cambiar una parte.':'Help me decide whether I should rerun initial setup or only change one setup area.'});if(!ok)return;await api('/api/onboarding/reset',{method:'POST',body:JSON.stringify({})});toast(lang==='es'?'Guía inicial abierta':'Initial guide opened');await load()}
 qs('#unlock-form').addEventListener('submit',async e=>{e.preventDefault();const value=qs('#unlock-password').value.trim();if(!value)return;setUnlockError('');if(unlockMode==='create'){const confirm=(qs('#unlock-confirm-password')?.value||'').trim();if(value.length<8){setUnlockError(t('dashboard_password_short'));return}if(value!==confirm){setUnlockError(t('dashboard_password_mismatch'));return}const res=await fetch('/api/dashboard-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:value,confirm_password:confirm})});if(!res.ok){setUnlockError(await responseErrorMessage(res));return}localStorage.removeItem('dashboardToken');if(qs('#remember-device').checked)localStorage.setItem('dashboardPassword',value);else localStorage.removeItem('dashboardPassword');hideUnlock();if(unlockResolver){unlockResolver(value);unlockResolver=null}qs('#unlock-password').value='';qs('#unlock-confirm-password').value='';toast(lang==='es'?'Contraseña creada. Seguimos con la configuración.':'Password created. Continuing setup.');await load();return}localStorage.removeItem('dashboardToken');if(qs('#remember-device').checked)localStorage.setItem('dashboardPassword',value);else localStorage.removeItem('dashboardPassword');hideUnlock();if(unlockResolver){unlockResolver(value);unlockResolver=null}qs('#unlock-password').value=''})
 qs('#language-select').addEventListener('change',e=>{lang=e.target.value;localStorage.setItem('dashboardLang',lang);render()})
@@ -7527,9 +8221,9 @@ load();
 class DashboardHandler(BaseHTTPRequestHandler):
     HTML_PATHS = {"/", "/dashboard"}
     PROTECTED_GET_PATHS = {"/api/dashboard", "/api/export", "/api/report", "/api/setup", "/api/social/auth-status", "/api/social/accounts", "/api/update/snapshots", "/api/creative-asset"}
-    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/agent-model/connect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/product", "/api/ad-briefs", "/api/codex/creative-plan", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/complete", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/local-network-access", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
+    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/agent-model/connect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/product", "/api/ad-briefs", "/api/codex/creative-plan", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/complete", "/api/onboarding/skip", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/local-network-access", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
     ONBOARDING_OPEN_GETS = {"/api/dashboard", "/api/setup"}
-    ONBOARDING_OPEN_POSTS = {"/api/dashboard-password", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/license/activate"}
+    ONBOARDING_OPEN_POSTS = {"/api/dashboard-password", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/license/activate"}
     GET_JSON_ROUTES = {
         "/api/dashboard": dashboard_payload,
         "/api/export": export_csv,
@@ -7554,6 +8248,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         "/api/business-profile": save_business_context,
         "/api/business-profile/scan": scan_business_website,
         "/api/business-profile/questions": generate_business_context_questions,
+        "/api/business-profile/links": save_business_links_for_agent,
         "/api/brand-guides/init": initialize_brand_guides,
         "/api/brand-guides/general": save_general_brand_memory,
         "/api/brand-guides/product": save_product_brand_memory,
@@ -7574,6 +8269,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         "/api/telegram/test": lambda _payload: test_telegram_connection(),
         "/api/license/activate": activate_license_now,
         "/api/onboarding/complete": lambda _payload: complete_onboarding(),
+        "/api/onboarding/skip": lambda _payload: skip_onboarding(),
         "/api/onboarding/reset": lambda _payload: reset_onboarding(),
         "/api/reject": lambda payload: reject_pending(payload.get("approval_id"), payload.get("reason") or "Rejected from dashboard"),
         "/api/mode": set_mode,
@@ -7741,6 +8437,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         chat_payload.setdefault("audience_strategy", dashboard["audience_strategy"])
         chat_payload.setdefault("brand_guides", dashboard["brand_guides"])
         chat_payload.setdefault("business_profile", dashboard.get("business_profile", {}))
+        chat_payload.setdefault("agent_onboarding_phase", dashboard.get("agent_onboarding_phase", {}))
         chat_result = route_chat_approval_decision(chat_payload)
         if not chat_result:
             chat_result = handle_creative_memory_wizard(chat_payload)

@@ -13,6 +13,7 @@ BRAND_DIR = ROOT_DIR / "brand_guides"
 PRODUCT_DIR = BRAND_DIR / "products"
 AD_BRIEF_DIR = BRAND_DIR / "ad_briefs"
 GENERAL_GUIDE = BRAND_DIR / "general_branding.md"
+CREATIVE_REFERENCES_FILE = BRAND_DIR / "creative_references.md"
 GENERAL_EXAMPLE = BRAND_DIR / "general_branding.example.md"
 PRODUCT_EXAMPLE = PRODUCT_DIR / "product.example.md"
 AD_BRIEF_EXAMPLE = AD_BRIEF_DIR / "ad_brief.example.md"
@@ -251,6 +252,8 @@ def brand_guide_status():
     return {
         "general_exists": GENERAL_GUIDE.exists(),
         "general_guide": str(GENERAL_GUIDE),
+        "creative_references_exists": CREATIVE_REFERENCES_FILE.exists(),
+        "creative_references": str(CREATIVE_REFERENCES_FILE),
         "product_count": len(products),
         "product_guides": [str(path) for path in products[:20]],
         "ad_brief_count": len(ad_briefs),
@@ -306,6 +309,7 @@ def guide_library():
                 "saved": GENERAL_GUIDE.exists(),
                 "fields": general_fields(read_text(GENERAL_GUIDE, suggested_general)),
             },
+            "creative_references_text": read_text(CREATIVE_REFERENCES_FILE),
             "products": product_cards,
             "ad_briefs": brief_cards,
         }
@@ -438,6 +442,65 @@ Crear variaciones que respeten lo que ya funciona, cambien solo dentro de la ven
 """
 
 
+def render_creative_references(fields):
+    web_references = clean_field(fields.get("web_references", ""))
+    generated_references = clean_field(fields.get("generated_references", ""))
+    approved_references = clean_field(fields.get("approved_references", ""))
+    rejected_references = clean_field(fields.get("rejected_references", ""))
+    notes = clean_field(fields.get("notes", ""))
+    return f"""# Referencias creativas aprobadas
+
+Usa este archivo para mantener un mapa visual de lo que el cliente acepta como direccion creativa para anuncios.
+
+## Referencias encontradas en la web
+
+{web_references or 'Pendiente.'}
+
+## Referencias creadas con imagen
+
+{generated_references or 'Pendiente.'}
+
+## Referencias aprobadas por el cliente
+
+{approved_references or 'Pendiente.'}
+
+## Referencias rechazadas o estilos a evitar
+
+{rejected_references or 'Pendiente.'}
+
+## Notas para nuevos creativos
+
+{notes or 'Mantener coherencia con la guia general, la ficha del producto y el brief publicitario.'}
+"""
+
+
+CREATIVE_REFERENCE_SECTIONS = {
+    "web_references": "Referencias encontradas en la web",
+    "generated_references": "Referencias creadas con imagen",
+    "approved_references": "Referencias aprobadas por el cliente",
+    "rejected_references": "Referencias rechazadas o estilos a evitar",
+    "notes": "Notas para nuevos creativos",
+}
+
+
+def markdown_section(content, heading):
+    if not content:
+        return ""
+    pattern = rf"^## {re.escape(heading)}\s*\n(.*?)(?=^## |\Z)"
+    match = re.search(pattern, content, re.S | re.M)
+    return match.group(1).strip() if match else ""
+
+
+def merge_creative_reference_fields(existing, fields):
+    merged = dict(fields)
+    for key, heading in CREATIVE_REFERENCE_SECTIONS.items():
+        previous = markdown_section(existing, heading)
+        current = str(merged.get(key) or "").strip()
+        if previous and previous != "Pendiente." and previous not in current:
+            merged[key] = f"{previous}\n\n{current}".strip() if current else previous
+    return merged
+
+
 def save_general_guide(payload):
     current = general_fields(read_text(GENERAL_GUIDE, default_general_guide()))
     fields = form_values(payload, GENERAL_FIELD_LABELS, current)
@@ -483,6 +546,23 @@ def save_ad_brief(payload):
     return {"library": guide_library(), "ad_brief_id": ad_brief_id, "ad_brief": product_reference(path)}
 
 
+def save_creative_references(payload):
+    existing = read_text(CREATIVE_REFERENCES_FILE)
+    fields = {
+        "web_references": payload.get("web_references") or "",
+        "generated_references": payload.get("generated_references") or "",
+        "approved_references": payload.get("approved_references") or "",
+        "rejected_references": payload.get("rejected_references") or "",
+        "notes": payload.get("notes") or "",
+    }
+    if existing and payload.get("append"):
+        fields = merge_creative_reference_fields(existing, fields)
+    if not any(str(value or "").strip() for value in fields.values()):
+        raise ValueError("Guarda al menos una referencia o nota creativa.")
+    write_text(CREATIVE_REFERENCES_FILE, render_creative_references(fields))
+    return {"library": guide_library(), "creative_references": product_reference(CREATIVE_REFERENCES_FILE)}
+
+
 def creative_memory(product_guide="", ad_brief=""):
     ad_brief_path = resolve_ad_brief(ad_brief)
     ad_fields = ad_brief_fields(read_text(ad_brief_path)) if ad_brief_path else {}
@@ -508,6 +588,7 @@ def creative_memory(product_guide="", ad_brief=""):
         "variation_axes": ad_fields.get("variation_axes", ""),
         "variation_count": ad_fields.get("variation_count", ""),
         "creative_hypothesis": ad_fields.get("creative_hypothesis", ""),
+        "creative_references": read_text(CREATIVE_REFERENCES_FILE),
     }
     return {
         "brand": {key: value for key, value in brand.items() if value},
@@ -597,6 +678,10 @@ Usa estas guias para crear prompts de imagen consistentes y una mini estrategia 
 ## Brief publicitario
 
 {ad_text}
+
+## Referencias creativas aprobadas
+
+{read_text(CREATIVE_REFERENCES_FILE)}
 
 ## Pedido del manager
 

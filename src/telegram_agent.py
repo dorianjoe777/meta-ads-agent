@@ -361,6 +361,7 @@ def agent_payload(message, chat_id, language, image_paths=None):
         "audience_strategy": state.get("audience_strategy", {}),
         "brand_guides": state.get("brand_guides", {}),
         "business_profile": state.get("business_profile", {}),
+        "agent_onboarding_phase": state.get("agent_onboarding_phase", {}),
         "channel": "telegram",
     }
 
