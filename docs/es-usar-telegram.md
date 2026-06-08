@@ -4,14 +4,32 @@ Telegram es opcional. Sirve para preguntarle al manager desde el celular, pedir 
 
 ## Conectar el bot
 
-1. En Telegram, busca `@BotFather`.
-2. Crea un bot nuevo con `/newbot`.
-3. Copia el token que te entrega BotFather.
-4. En el dashboard, abre `Configuracion` y busca `Hablar por Telegram`.
-5. Pega el token del bot y guarda.
-6. Abre tu bot en Telegram y enviale un mensaje, por ejemplo `Hola`.
-7. Vuelve al dashboard y toca `Detectar mi chat`.
-8. Elige tu chat privado, activa la conversacion y toca `Enviar prueba`.
+1. Descarga Telegram en tu celular.
+2. Recomendado: descarga Telegram tambien en tu PC para copiar y pegar la clave larga mas facil.
+3. En Telegram, usa el buscador y escribe `BotFather`.
+4. Entra al chat oficial de BotFather.
+5. Escribe `/newbot`.
+6. BotFather pedira un nombre. Puedes escribir cualquier nombre, por ejemplo `Manager de anuncios`.
+7. BotFather pedira un usuario. Puede ser parecido al nombre, pero debe terminar en `bot`, por ejemplo `manageranuncios_bot`.
+8. BotFather te enviara una clave larga.
+9. En el dashboard, abre `Configuracion` y busca `Hablar por Telegram`.
+10. Pega la clave larga y guarda.
+11. Abre tu bot en Telegram y enviale un mensaje, por ejemplo `Hola`.
+12. Vuelve al dashboard y toca `Detectar mi chat`.
+13. Elige tu chat privado, activa la conversacion y toca `Enviar prueba`.
+
+Esto se hace una sola vez. Despues, mientras el dashboard este encendido en tu PC/VPS, podras hablar con el agente desde Telegram.
+
+## Que se puede automatizar
+
+Telegram no permite que el dashboard cree el bot por ti: la clave solo la entrega BotFather dentro de Telegram. El dashboard si ayuda con lo siguiente:
+
+- abrir Telegram/BotFather desde un boton;
+- copiar el comando `/newbot`;
+- guardar la clave larga;
+- detectar tu chat privado despues de que le escribas al bot;
+- enviar un mensaje de prueba;
+- dejar el manager listo para responder y mostrar aprobaciones.
 
 ## Que puedes pedirle
 

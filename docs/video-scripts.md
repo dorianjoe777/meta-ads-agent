@@ -34,4 +34,4 @@
 
 ## 9. Hablar con el agente por Telegram
 
-"Desde Configuracion puedes conectar un bot privado de Telegram. Crea el bot con BotFather, pega el token, enviale un hola y toca Detectar mi chat. Asi consultas al manager desde el celular y apruebas decisiones exactas con botones o respondiendo a la tarjeta correcta. Si hay varias decisiones, el agente te pide elegir una."
+"Desde Configuracion puedes conectar Telegram. Primero instala Telegram en el celular; si puedes, tambien en tu PC para copiar mas facil. Busca BotFather, escribe /newbot, pon cualquier nombre y luego un usuario que termine en bot. BotFather te dara una clave larga: la pegas aqui, le escribes hola a tu bot y tocas Detectar mi chat. Esto se hace una sola vez. Desde ahi consultas al manager por Telegram y apruebas decisiones exactas con botones."
