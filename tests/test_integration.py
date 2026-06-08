@@ -973,6 +973,18 @@ class IntegrationTestSuite:
             self.assert_true(dashboard.extract_login_codes_from_text(spaced_code_output) == ["WXYZ-ABCD"], "OpenAI terminal code extraction supports spaced codes several lines after the hint")
             compact_code_output = "Device login code: A1B2C3D4\nOpen https://auth.openai.com/device\n"
             self.assert_true(dashboard.extract_login_codes_from_text(compact_code_output) == ["A1B2C3D4"], "OpenAI terminal code extraction supports compact alphanumeric codes")
+            nine_letter_output = (
+                "OpenAI will ask for the code displayed in your terminal.\n\n"
+                "Copy this code into the browser:\n"
+                "ABCDEFGHI\n"
+            )
+            self.assert_true(dashboard.extract_login_codes_from_text(nine_letter_output) == ["ABCDEFGHI"], "OpenAI terminal code extraction supports full 9-letter standalone lines")
+            longer_changed_output = (
+                "OpenAI will ask for the code displayed in your terminal.\n\n"
+                "Copy this code into the browser:\n"
+                "ABCD EFGHI JK\n"
+            )
+            self.assert_true(dashboard.extract_login_codes_from_text(longer_changed_output) == ["ABCD-EFGHI-JK"], "OpenAI terminal code extraction reads the full standalone code line when length changes")
         finally:
             dashboard.os.write = original_write
 
@@ -2445,7 +2457,7 @@ class IntegrationTestSuite:
         self.assert_true("DigitalOcean mostraré aquí el enlace" in html and "Ver diagnóstico para soporte" in html, "Hermes/ChatGPT setup has a browser-based VPS path with diagnostics folded")
         self.assert_true("/api/agent-model/connect-status" in html and "/api/agent-model/connect-input" in html and "sendChatGptTerminalInput" in html, "VPS Hermes bridge can poll and send guided terminal responses")
         self.assert_true("Ver detalle técnico de Hermes" in html and "prepareChatGptAuthWindow" in html and "maybeOpenChatGptAuthUrl" in html, "Hermes browserless UI folds support detail and opens the OAuth login in the buyer browser")
-        self.assert_true("chatgpt-device-code" in html and "Copiar código" in html and "login_code" in html and "font-size:clamp(34px" in html and "scrollIntoView({behavior:'smooth',block:'center'})" in html, "OpenAI terminal login code is shown as a large copyable buyer-facing card")
+        self.assert_true("chatgpt-device-code" in html and "Copiar código" in html and "login_code" in html and "font-size:clamp(30px" in html and "word-break:break-all" in html and "scrollIntoView({behavior:'smooth',block:'center'})" in html, "OpenAI terminal login code is shown as a large copyable buyer-facing card that cannot clip longer codes")
         self.assert_true("body .onboarding-flow input:not([type=\"checkbox\"])" in html and "::placeholder" in html and "-webkit-autofill" in html, "Onboarding text fields stay dark and readable across dashboard themes")
         self.assert_true("Voy a elegir OpenAI Codex y el modelo recomendado automáticamente" in dashboard_source and "maybe_auto_drive_hermes_browserless" in dashboard_source, "Hermes browserless setup auto-selects Codex provider and recommended model")
         self.assert_true("{id:'chatgpt',status:chatgptOk?'ok':'warn'}" in html and "chatGptConnectMarkup(true)" in html, "Initial onboarding includes ChatGPT connection before Meta setup")

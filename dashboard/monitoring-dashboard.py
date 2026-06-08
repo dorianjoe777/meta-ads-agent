@@ -1930,7 +1930,11 @@ def extract_login_codes_from_text(value):
     codes = []
     lines = cleaned.splitlines()
     hint_re = re.compile(r"\b(code|codigo|código|verification|verify|device|one-time|otp)\b", re.I)
-    token_re = re.compile(r"\b[A-Z0-9]{4}(?:[- ][A-Z0-9]{4}){1,3}\b|\b[A-Z0-9]{6,12}\b")
+    token_re = re.compile(r"\b[A-Z0-9]{4}(?:[- ][A-Z0-9]{2,8}){1,5}\b|\b[A-Z0-9]{6,24}\b")
+    label_re = re.compile(
+        r"(?:verification|device|one[- ]time|login|openai|codex|auth)?\s*(?:code|codigo|código)\s*[:=\-]?\s*([A-Z0-9][A-Z0-9\- ]{4,40}[A-Z0-9])\s*$",
+        re.I,
+    )
     blocked_parts = {
         "OPENAI",
         "HERMES",
@@ -1956,32 +1960,54 @@ def extract_login_codes_from_text(value):
         "DEFAULT",
     }
 
-    def add_code(raw):
+    def add_code(raw, contextual=False):
         normalized = re.sub(r"[^A-Z0-9]+", "-", str(raw or "").upper()).strip("-")
         if not normalized:
             return
         parts = [part for part in normalized.split("-") if part]
         compact = "".join(parts)
-        if not 6 <= len(compact) <= 16:
+        if not 6 <= len(compact) <= 24:
             return
-        if any(part in blocked_parts for part in parts):
+        if compact in blocked_parts or any(part in blocked_parts for part in parts):
             return
-        looks_like_code = "-" in normalized or any(char.isdigit() for char in compact)
+        looks_like_code = contextual or "-" in normalized or any(char.isdigit() for char in compact)
         if looks_like_code and normalized not in codes:
             codes.append(normalized)
 
-    label_re = re.compile(
-        r"(?:verification|device|one[- ]time|login|openai|codex|auth)?\s*(?:code|codigo|código)\s*[:=\-]?\s*([A-Z0-9]{4}(?:[-\s][A-Z0-9]{4}){1,3}|[A-Z0-9]{6,12})",
-        re.I,
-    )
-    for match in label_re.findall(re.sub(r"https?://[^\s<>'\")]+", " ", cleaned)):
-        add_code(match)
+    def standalone_code_line(line):
+        candidate = re.sub(r"https?://[^\s<>'\")]+", " ", str(line or ""))
+        candidate = candidate.strip().strip("`'\"|>.,;:()[]{}")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9\- ]{4,40}[A-Za-z0-9]", candidate):
+            return ""
+        compact = re.sub(r"[^A-Za-z0-9]+", "", candidate)
+        if not 6 <= len(compact) <= 24:
+            return ""
+        tokens = [token for token in re.split(r"[-\s]+", candidate.strip()) if token]
+        has_separator = len(tokens) > 1
+        if has_separator and any(len(token) > 8 for token in tokens):
+            return ""
+        has_digit = any(char.isdigit() for char in compact)
+        has_upper_signal = any(char.isupper() for char in candidate) and candidate.upper() == candidate
+        if not (has_digit or has_upper_signal or has_separator):
+            return ""
+        return candidate
+
+    for line in lines:
+        line_without_urls = re.sub(r"https?://[^\s<>'\")]+", " ", line)
+        match = label_re.search(line_without_urls)
+        if match:
+            add_code(match.group(1), contextual=True)
         if len(codes) >= 2:
             return codes[:2]
     for index, line in enumerate(lines):
         line_without_urls = re.sub(r"https?://[^\s<>'\")]+", " ", line)
         if not hint_re.search(line_without_urls):
             continue
+        for candidate_line in lines[index + 1 : min(len(lines), index + 10)]:
+            candidate = standalone_code_line(candidate_line)
+            if candidate:
+                add_code(candidate, contextual=True)
+                break
         segment = " ".join(lines[max(0, index - 1) : min(len(lines), index + 8)])
         segment = re.sub(r"https?://[^\s<>'\")]+", " ", segment)
         for match in token_re.findall(segment.upper()):
@@ -5516,7 +5542,7 @@ body.theme-ember .creative-studio-hero:before{background:linear-gradient(120deg,
 @media(max-width:780px){.brand-memory-nav{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));overflow:visible}.brand-nav-item,.brand-new-product{width:100%;min-width:0}.brand-nav-item b{max-width:none;white-space:normal;line-height:1.25}}
 .msg-actions{display:grid;gap:7px;margin-top:10px;padding-top:9px;border-top:1px solid var(--line)}.msg-approval-card{border:1px solid color-mix(in srgb,var(--accent) 22%,var(--line));border-radius:9px;background:rgba(255,255,255,.05);padding:8px}.msg-approval-card b{display:block;font-size:11px;color:var(--text);line-height:1.25}.msg-approval-card span{display:block;font-size:10px;color:var(--dim);margin-top:3px}.msg-approval-buttons{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:7px}.msg-approval-buttons .btn{width:100%;font-size:10px;padding:8px}
 .chatgpt-connect-card{position:relative;overflow:hidden;border:1px solid color-mix(in srgb,var(--accent) 28%,var(--line));border-radius:10px;background:linear-gradient(135deg,rgba(39,199,167,.12),rgba(99,168,255,.08),rgba(255,255,255,.04));padding:13px;margin-bottom:14px;box-shadow:var(--glow)}.chatgpt-connect-card:before{content:"";position:absolute;inset:0;background:linear-gradient(120deg,transparent,rgba(255,255,255,.08),transparent);transform:translateX(-100%);animation:softSweep 8s ease-in-out infinite;pointer-events:none}.chatgpt-connect-card>*{position:relative;z-index:1}.chatgpt-connect-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:10px}.chatgpt-connect-head .badge{border:1px solid color-mix(in srgb,var(--accent) 32%,var(--line));background:rgba(0,0,0,.22);color:var(--text);box-shadow:0 8px 22px rgba(0,0,0,.14)}.chatgpt-connect-head .badge.warn{color:#fff;background:linear-gradient(135deg,rgba(123,77,255,.48),rgba(255,111,205,.36))}.chatgpt-connect-head .badge.ok{color:#0b2118;background:linear-gradient(135deg,#6ff0a0,#9ef6d3)}.chatgpt-connect-head h3{font-size:15px;line-height:1.14}.chatgpt-connect-head p{font-size:11px;color:var(--dim);line-height:1.45;margin-top:5px}.model-route-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:10px 0}.model-route-card{border:1px solid var(--line);border-radius:8px;background:rgba(0,0,0,.12);padding:10px}.model-route-card>span{display:inline-grid;place-items:center;width:24px;height:24px;border-radius:7px;background:color-mix(in srgb,var(--accent) 20%,transparent);color:var(--accent);font-size:11px;font-weight:950}.model-route-card b{display:block;font-size:11px;line-height:1.25;margin-top:7px}.model-route-card p{font-size:10px;color:var(--dim);line-height:1.45;margin-top:4px}.agent-model-picker{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:12px 0}.agent-model-option{display:grid;grid-template-columns:auto 1fr;gap:9px;align-items:start;min-height:88px;border:1px solid var(--line);border-radius:11px;background:rgba(0,0,0,.12);color:var(--text);padding:11px;text-align:left;cursor:pointer;transition:transform .16s ease,border-color .16s ease,background .16s ease,box-shadow .16s ease}.agent-model-option:hover{transform:translateY(-1px);border-color:color-mix(in srgb,var(--accent) 38%,var(--line));background:rgba(255,255,255,.055)}.agent-model-option.active{border-color:color-mix(in srgb,var(--accent) 62%,var(--line));background:linear-gradient(135deg,color-mix(in srgb,var(--accent) 16%,transparent),color-mix(in srgb,var(--accent2) 10%,transparent)),rgba(255,255,255,.055);box-shadow:0 14px 34px rgba(0,0,0,.14),var(--glow)}.agent-model-option .route-icon{display:grid;place-items:center;width:31px;height:31px;border-radius:10px;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;font-size:13px;font-weight:950}.agent-model-option b{display:block;font-size:12px;line-height:1.2}.agent-model-option p{margin-top:4px;color:var(--dim);font-size:10px;line-height:1.35}.agent-route-panels{display:grid;gap:10px}.agent-route-panel{display:none;border:1px solid var(--line);border-radius:12px;background:rgba(0,0,0,.14);padding:12px}.agent-route-panel.active{display:block;animation:routePanelIn .18s ease both}.agent-route-panel h4{font-size:14px;line-height:1.2}.agent-route-panel p{margin-top:5px;color:var(--dim);font-size:11px;line-height:1.45}.agent-route-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.agent-route-actions .btn{flex:1 1 170px}.model-provider-form{margin-top:0}.chatgpt-command{display:flex;align-items:flex-start;justify-content:flex-start;flex-direction:column;gap:8px;border:1px solid var(--line);border-radius:8px;background:rgba(0,0,0,.18);padding:9px;margin-top:8px}.chatgpt-command code,.chatgpt-command>span{display:block;width:100%;height:auto;font-size:11px;line-height:1.4;font-weight:800;color:var(--text);word-break:normal;overflow-wrap:anywhere}.chatgpt-command .mode-actions{width:100%;flex-wrap:wrap}.chatgpt-command .mode-actions .btn{flex:1 1 150px}.chatgpt-connect-result{margin-top:8px;border:1px solid color-mix(in srgb,var(--accent) 24%,var(--line));border-radius:8px;background:rgba(255,255,255,.055);padding:10px}.chatgpt-connect-result b{display:block;font-size:12px;line-height:1.25}.chatgpt-connect-result p,.chatgpt-connect-result a{font-size:11px;line-height:1.45}.chatgpt-connect-result a{color:var(--accent);font-weight:900}.chatgpt-terminal-output{max-height:150px;overflow:auto;margin-top:8px;border:1px solid var(--line);border-radius:7px;background:rgba(0,0,0,.22);padding:8px;color:var(--dim);font-size:10px;line-height:1.4;white-space:pre-wrap}.chatgpt-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px}.chatgpt-foot p{font-size:10px;color:var(--dim);line-height:1.45}.chatgpt-connect-card.ready{border-color:rgba(85,212,122,.3);background:linear-gradient(135deg,rgba(85,212,122,.12),rgba(99,168,255,.06),rgba(255,255,255,.04))}@keyframes softSweep{0%,62%{transform:translateX(-120%)}82%,100%{transform:translateX(120%)}}@keyframes routePanelIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
-.chatgpt-connect-result.has-device-code{border-color:color-mix(in srgb,var(--warning) 60%,var(--accent));background:linear-gradient(135deg,rgba(244,183,64,.18),color-mix(in srgb,var(--accent) 12%,transparent),rgba(0,0,0,.22));box-shadow:0 18px 48px rgba(0,0,0,.24),0 0 0 1px rgba(244,183,64,.18) inset}.chatgpt-device-code{display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center;margin:12px 0 4px;border:2px solid color-mix(in srgb,var(--warning) 64%,var(--accent));border-radius:16px;background:linear-gradient(135deg,rgba(244,183,64,.22),color-mix(in srgb,var(--accent) 18%,transparent),rgba(0,0,0,.28));padding:16px;box-shadow:0 20px 54px rgba(0,0,0,.24),0 0 34px color-mix(in srgb,var(--warning) 18%,transparent)}.chatgpt-device-code span{display:block;color:var(--text);font-size:12px;font-weight:950;text-transform:uppercase;letter-spacing:.02em}.chatgpt-device-code small{display:block;margin-top:8px;color:var(--dim);font-size:12px;line-height:1.35;font-weight:700;text-transform:none}.chatgpt-device-code strong{display:block;margin-top:7px;font-size:clamp(34px,7vw,58px);line-height:.98;letter-spacing:.09em;color:#fff;font-weight:950;text-shadow:0 4px 24px rgba(0,0,0,.34);overflow-wrap:anywhere}.chatgpt-device-code .btn{white-space:nowrap;min-height:46px;padding:12px 16px;font-size:12px}
+.chatgpt-connect-result.has-device-code{border-color:color-mix(in srgb,var(--warning) 60%,var(--accent));background:linear-gradient(135deg,rgba(244,183,64,.18),color-mix(in srgb,var(--accent) 12%,transparent),rgba(0,0,0,.22));box-shadow:0 18px 48px rgba(0,0,0,.24),0 0 0 1px rgba(244,183,64,.18) inset}.chatgpt-device-code{display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center;margin:12px 0 4px;border:2px solid color-mix(in srgb,var(--warning) 64%,var(--accent));border-radius:16px;background:linear-gradient(135deg,rgba(244,183,64,.22),color-mix(in srgb,var(--accent) 18%,transparent),rgba(0,0,0,.28));padding:16px;box-shadow:0 20px 54px rgba(0,0,0,.24),0 0 34px color-mix(in srgb,var(--warning) 18%,transparent);min-width:0}.chatgpt-device-code span{display:block;color:var(--text);font-size:12px;font-weight:950;text-transform:uppercase;letter-spacing:.02em}.chatgpt-device-code small{display:block;margin-top:8px;color:var(--dim);font-size:12px;line-height:1.35;font-weight:700;text-transform:none}.chatgpt-device-code strong{display:block;margin-top:7px;font-size:clamp(30px,6vw,54px);line-height:1;letter-spacing:.04em;color:#fff;font-weight:950;text-shadow:0 4px 24px rgba(0,0,0,.34);overflow-wrap:anywhere;word-break:break-all;max-width:100%}.chatgpt-device-code .btn{white-space:nowrap;min-height:46px;padding:12px 16px;font-size:12px}
 @media(max-width:980px){.agent-model-picker{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:780px){.chatgpt-connect-head,.chatgpt-foot,.chatgpt-command{align-items:flex-start;flex-direction:column}.model-route-grid,.agent-model-picker{grid-template-columns:1fr}.chatgpt-command .btn,.chatgpt-foot .btn,.agent-route-actions .btn{width:100%}.chatgpt-device-code{grid-template-columns:1fr}.chatgpt-device-code .btn{width:100%}}
 body .onboarding-flow input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),body .onboarding-flow select,body .onboarding-flow textarea{background:linear-gradient(180deg,#171420,#100f18);border-color:rgba(199,178,255,.26);color:#f7f3ff;caret-color:#ff6bd6;box-shadow:inset 0 1px 0 rgba(255,255,255,.055),0 0 0 1px rgba(0,0,0,.12)}
