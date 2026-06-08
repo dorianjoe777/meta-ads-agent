@@ -985,6 +985,32 @@ class IntegrationTestSuite:
                 "ABCD EFGHI JK\n"
             )
             self.assert_true(dashboard.extract_login_codes_from_text(longer_changed_output) == ["ABCD-EFGHI-JK"], "OpenAI terminal code extraction reads the full standalone code line when length changes")
+            hermes_menu_then_real_code_output = (
+                "Select provider:\n"
+                "  (○)  6. OpenAI ▸ (Codex CLI or direct OpenAI API)\n"
+                "  (○)  7. Qwen Cloud / DashScope (Qwen + multi-provider)\n"
+                "  (○) 24. OpenCode ▸ (Zen pay-as-you-go or Go subscription)\n"
+                "Choice [default 1]: 6\n\n"
+                "Select provider:\n"
+                "  (●)  1. OpenAI Codex\n"
+                "  (○)  2. OpenAI API\n"
+                "Choice [default 1]: 1\n\n"
+                "Not logged into OpenAI Codex. Starting login...\n"
+                "Signing in to OpenAI Codex...\n\n"
+                "To continue, follow these steps:\n"
+                "  1. Open this URL in your browser:\n"
+                "     https://auth.openai.com/codex/device\n\n"
+                "  2. Enter this code:\n"
+                "     BM35-9UQFA\n\n"
+                "Waiting for sign-in... (press Ctrl+C to cancel)\n"
+            )
+            self.assert_true(dashboard.extract_login_codes_from_text(hermes_menu_then_real_code_output) == ["BM35-9UQFA"], "OpenAI terminal code extraction ignores provider menu labels like Qwen Cloud and prefers the final device code")
+            provider_menu_only_output = (
+                "Select provider:\n"
+                "  (○)  7. Qwen Cloud / DashScope (Qwen + multi-provider)\n"
+                "  (○) 24. OpenCode ▸ (Zen pay-as-you-go or Go subscription)\n"
+            )
+            self.assert_true(dashboard.extract_login_codes_from_text(provider_menu_only_output) == [], "Provider menus alone do not produce fake OpenAI login codes")
         finally:
             dashboard.os.write = original_write
 

@@ -1992,6 +1992,48 @@ def extract_login_codes_from_text(value):
             return ""
         return candidate
 
+    explicit_code_prompt_re = re.compile(
+        r"\b(?:enter|copy|use|paste|ingresa|copia|usa|pega)\b.{0,40}\b(?:code|codigo|código)\b|\b(?:verification|device|login|auth|openai|codex)\s+(?:code|codigo|código)\b",
+        re.I,
+    )
+
+    def prioritized_codes():
+        found = []
+
+        def remember(raw):
+            before = len(codes)
+            add_code(raw, contextual=True)
+            if len(codes) > before:
+                found.append(codes.pop())
+
+        for index in range(len(lines) - 1, -1, -1):
+            line_without_urls = re.sub(r"https?://[^\s<>'\")]+", " ", lines[index])
+            if not explicit_code_prompt_re.search(line_without_urls):
+                continue
+            match = label_re.search(line_without_urls)
+            if match:
+                remember(match.group(1))
+            tail = line_without_urls.split(":", 1)[1] if ":" in line_without_urls else ""
+            tail_candidate = standalone_code_line(tail)
+            if tail_candidate:
+                remember(tail_candidate)
+            for candidate_line in lines[index + 1 : min(len(lines), index + 7)]:
+                candidate = standalone_code_line(candidate_line)
+                if candidate:
+                    remember(candidate)
+                    break
+            if len(found) >= 2:
+                break
+        unique = []
+        for code in found:
+            if code not in unique:
+                unique.append(code)
+        return unique[:2]
+
+    high_confidence = prioritized_codes()
+    if high_confidence:
+        return high_confidence
+
     for line in lines:
         line_without_urls = re.sub(r"https?://[^\s<>'\")]+", " ", line)
         match = label_re.search(line_without_urls)
@@ -2008,7 +2050,11 @@ def extract_login_codes_from_text(value):
             if candidate:
                 add_code(candidate, contextual=True)
                 break
-        segment = " ".join(lines[max(0, index - 1) : min(len(lines), index + 8)])
+        segment_lines = lines[max(0, index - 1) : min(len(lines), index + 8)]
+        segment_for_menu_check = "\n".join(segment_lines).lower()
+        if "select provider" in segment_for_menu_check or "(○)" in segment_for_menu_check or "(●)" in segment_for_menu_check:
+            continue
+        segment = " ".join(segment_lines)
         segment = re.sub(r"https?://[^\s<>'\")]+", " ", segment)
         for match in token_re.findall(segment.upper()):
             add_code(match)
