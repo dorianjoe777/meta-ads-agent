@@ -1434,7 +1434,8 @@ def social_save_facebook_token(payload):
     result = social_command(["auth", "login", "--token", token], timeout=30)
     redacted = dict(result)
     redacted["output"] = re.sub(re.escape(token), "[token hidden]", redacted.get("output", ""))
-    redacted["saved"] = bool(result.get("ok"))
+    redacted["saved"] = True
+    redacted["cli_ready"] = bool(result.get("ok"))
     redacted["token_kind"] = token_kind
     return redacted
 
@@ -1847,6 +1848,81 @@ def normalize_social_accounts(payload):
     return accounts
 
 
+def normalize_graph_account_rows(rows):
+    accounts = normalize_social_accounts(rows)
+    deduped = []
+    seen = set()
+    for account in accounts:
+        account_id = account.get("id")
+        if not account_id or account_id in seen:
+            continue
+        seen.add(account_id)
+        deduped.append(account)
+    return deduped
+
+
+def graph_business_account_rows(rows):
+    found = []
+    for business in rows or []:
+        if not isinstance(business, dict):
+            continue
+        for edge in ("owned_ad_accounts", "client_ad_accounts"):
+            nested = business.get(edge) or {}
+            if isinstance(nested, dict):
+                found.extend(nested.get("data") or [])
+    return found
+
+
+def graph_marketing_accounts():
+    direct = graph_get(
+        "/me/adaccounts",
+        {"fields": "id,account_id,name,currency,account_status,business{name}", "limit": 100},
+    )
+    if direct.get("ok"):
+        accounts = normalize_graph_account_rows((direct.get("data") or {}).get("data") or [])
+        if accounts:
+            return {"ok": True, "accounts": accounts, "source": "graph_api", "graph_checked": True}
+    businesses = graph_get(
+        "/me/businesses",
+        {
+            "fields": "id,name,owned_ad_accounts{id,account_id,name,currency,account_status},client_ad_accounts{id,account_id,name,currency,account_status}",
+            "limit": 50,
+        },
+    )
+    if businesses.get("ok"):
+        accounts = normalize_graph_account_rows(graph_business_account_rows((businesses.get("data") or {}).get("data") or []))
+        if accounts:
+            return {"ok": True, "accounts": accounts, "source": "graph_businesses", "graph_checked": True}
+    errors = []
+    if not direct.get("ok"):
+        errors.append(graph_error_message(direct))
+    if not businesses.get("ok"):
+        errors.append(graph_error_message(businesses))
+    return {
+        "ok": direct.get("ok") or businesses.get("ok"),
+        "accounts": [],
+        "source": "graph_api",
+        "graph_checked": True,
+        "graph_empty": direct.get("ok") or businesses.get("ok"),
+        "graph_error": " | ".join([item for item in errors if item])[:900],
+    }
+
+
+def social_accounts_friendly_message(cli_result, graph_result):
+    raw = " ".join([
+        str(cli_result.get("output") or ""),
+        str(graph_result.get("graph_error") or ""),
+    ])
+    raw_lower = raw.lower()
+    if any(token in raw_lower for token in ["expired", "oauthexception", "code: 190", "validating access token"]):
+        return "Tu clave de Meta venció o Meta la rechazó. Pega una clave nueva y vuelve a buscar tus cuentas."
+    if any(token in raw_lower for token in ["permission", "permissions", "permis", "ads_read", "ads_management"]):
+        return "La clave está guardada, pero Meta no permitió leer cuentas publicitarias. Revisa que la clave tenga permisos de anuncios y que tu usuario tenga acceso a esa cuenta."
+    if graph_result.get("graph_empty"):
+        return "La clave respondió, pero Meta devolvió 0 cuentas publicitarias. Revisa que estés usando el usuario correcto y que ese usuario tenga acceso a la cuenta de anuncios en Meta Business."
+    return "No pude traer cuentas todavía. La clave quedó guardada; revisa permisos de anuncios o intenta crear una clave nueva."
+
+
 def social_marketing_accounts():
     result = social_command(["marketing", "accounts", "--json"], timeout=30)
     output = result.get("output", "")
@@ -1854,12 +1930,24 @@ def social_marketing_accounts():
     token_expired = "expired" in output_lower or "oauth" in output_lower or "code: 190" in output_lower or "auth login" in output_lower
     payload = extract_json_payload(output)
     accounts = normalize_social_accounts(payload)
+    cli_accounts_found = bool(accounts)
+    graph_result = graph_marketing_accounts()
+    graph_accounts = graph_result.get("accounts") or []
+    if not accounts and graph_accounts:
+        accounts = graph_accounts
+    friendly_message = social_accounts_friendly_message(result, graph_result) if not accounts else ""
+    graph_error_lower = str(graph_result.get("graph_error") or "").lower()
+    graph_expired = "expired" in graph_error_lower or "oauthexception" in graph_error_lower or "code: 190" in graph_error_lower or "validating access token" in graph_error_lower
     return {
         **result,
         "accounts": accounts,
-        "needs_login": not result.get("ok") and token_expired,
-        "token_expired": token_expired,
-        "friendly_reason": "token_expired" if token_expired else "",
+        "ok": bool(accounts) or bool(result.get("ok")) or bool(graph_result.get("ok")),
+        "source": "social_cli" if cli_accounts_found else ("graph_api" if graph_accounts else "social_cli"),
+        "graph_checked": bool(graph_result.get("graph_checked")),
+        "needs_login": not accounts and ((not result.get("ok") and token_expired) or graph_expired),
+        "token_expired": token_expired or graph_expired,
+        "friendly_reason": "token_expired" if token_expired or graph_expired else ("empty_accounts" if not accounts else ""),
+        "message": friendly_message,
     }
 
 
@@ -6258,11 +6346,20 @@ body.theme-ember .creative-studio-hero:before{background:linear-gradient(120deg,
 .chatgpt-connect-result.has-device-code{border-color:color-mix(in srgb,var(--warning) 60%,var(--accent));background:linear-gradient(135deg,rgba(244,183,64,.18),color-mix(in srgb,var(--accent) 12%,transparent),rgba(0,0,0,.22));box-shadow:0 18px 48px rgba(0,0,0,.24),0 0 0 1px rgba(244,183,64,.18) inset}.chatgpt-device-code{display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center;margin:12px 0 4px;border:2px solid color-mix(in srgb,var(--warning) 64%,var(--accent));border-radius:16px;background:linear-gradient(135deg,rgba(244,183,64,.22),color-mix(in srgb,var(--accent) 18%,transparent),rgba(0,0,0,.28));padding:16px;box-shadow:0 20px 54px rgba(0,0,0,.24),0 0 34px color-mix(in srgb,var(--warning) 18%,transparent);min-width:0}.chatgpt-device-code span{display:block;color:var(--text);font-size:12px;font-weight:950;text-transform:uppercase;letter-spacing:.02em}.chatgpt-device-code small{display:block;margin-top:8px;color:var(--dim);font-size:12px;line-height:1.35;font-weight:700;text-transform:none}.chatgpt-device-code strong{display:block;margin-top:7px;font-size:clamp(30px,6vw,54px);line-height:1;letter-spacing:.04em;color:#fff;font-weight:950;text-shadow:0 4px 24px rgba(0,0,0,.34);overflow-wrap:anywhere;word-break:break-all;max-width:100%}.chatgpt-device-code .btn{white-space:nowrap;min-height:46px;padding:12px 16px;font-size:12px}.chatgpt-device-actions{display:grid;gap:8px;min-width:190px}.chatgpt-retry-login{display:flex;width:100%;align-items:center;justify-content:center;margin-top:12px;min-height:52px;padding:14px 18px;font-size:13px}
 @media(max-width:980px){.agent-model-picker{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:780px){.chatgpt-connect-head,.chatgpt-foot,.chatgpt-command{align-items:flex-start;flex-direction:column}.model-route-grid,.agent-model-picker{grid-template-columns:1fr}.chatgpt-command .btn,.chatgpt-foot .btn,.agent-route-actions .btn{width:100%}.chatgpt-device-code{grid-template-columns:1fr}.chatgpt-device-code .btn{width:100%}}
+body .onboarding-flow .guide-card,body .onboarding-flow .guide-panel,body .onboarding-flow .guide-checklist,body .onboarding-flow .mini-screen,body .onboarding-flow .passive-card,body .onboarding-flow .passive-side,body .onboarding-flow .fallback-details{background:linear-gradient(145deg,rgba(18,16,28,.96),rgba(31,25,43,.9));border-color:rgba(199,178,255,.24);color:#f7f3ff;box-shadow:0 14px 34px rgba(0,0,0,.22),inset 0 1px 0 rgba(255,255,255,.055)}
+body .onboarding-flow .guide-card p,body .onboarding-flow .guide-card li,body .onboarding-flow .guide-panel p,body .onboarding-flow .guide-panel li,body .onboarding-flow .guide-checklist li,body .onboarding-flow .fallback-details p{color:#c9bedc}
+body .onboarding-flow .guide-eyebrow{background:rgba(167,124,255,.18);border-color:rgba(199,178,255,.34);color:#dccfff}
+body .onboarding-flow .guide-main,body .onboarding-flow .guide-checklist,body .onboarding-flow .guide-card,body .onboarding-flow .guide-panel,body .onboarding-flow .mini-screen{min-width:0;overflow-wrap:anywhere}
+body .onboarding-flow .btn:not(.primary){background:rgba(255,255,255,.075);border-color:rgba(199,178,255,.22);color:#f7f3ff}
+body .onboarding-flow .btn.primary{background:linear-gradient(135deg,#a77cff,#ff6bd6);border-color:rgba(255,255,255,.16);color:#100d16}
+body .onboarding-flow .btn:disabled{opacity:.52;cursor:not-allowed}
 body .onboarding-flow input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),body .onboarding-flow select,body .onboarding-flow textarea{background:linear-gradient(180deg,#171420,#100f18);border-color:rgba(199,178,255,.26);color:#f7f3ff;caret-color:#ff6bd6;box-shadow:inset 0 1px 0 rgba(255,255,255,.055),0 0 0 1px rgba(0,0,0,.12)}
 body .onboarding-flow input:not([type="checkbox"]):not([type="radio"]):not([type="range"])::placeholder,body .onboarding-flow textarea::placeholder{color:rgba(221,212,240,.52);opacity:1}
 body .onboarding-flow input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus,body .onboarding-flow select:focus,body .onboarding-flow textarea:focus{outline:none;background:#12101a;border-color:rgba(167,124,255,.72);box-shadow:0 0 0 3px rgba(167,124,255,.15),inset 0 1px 0 rgba(255,255,255,.06)}
 body .onboarding-flow input:-webkit-autofill,body .onboarding-flow textarea:-webkit-autofill,body .onboarding-flow select:-webkit-autofill{-webkit-text-fill-color:#f7f3ff;box-shadow:0 0 0 1000px #15131d inset;border-color:rgba(199,178,255,.3)}
 body .onboarding-flow select option{background:#15131d;color:#f7f3ff}
+@media(max-width:1120px){body .onboarding-flow .guide-hero{grid-template-columns:1fr}body .onboarding-flow .guide-checklist{max-width:none}body .onboarding-flow .guide-actions{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:920px){body .onboarding-shell{grid-template-columns:1fr}body .onboarding-side{position:static}body .onboarding-flow .guide-actions,body .onboarding-flow .guide-support-grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -8180,8 +8277,9 @@ function renderSocialAccountResults(res){
   goToMetaTokenStep('expired',output);
   return;
  }
- const loginHint=lang==='es'?'No pude traer cuentas todavía. Pega tu clave de Meta, o revisa que esa clave tenga permisos de anuncios.':'I could not fetch accounts yet. Paste your Meta key, or check that the key has ads permissions.';
- box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'No encontré cuentas':'No accounts found'}</b><p>${loginHint}</p><div class="onboarding-step-actions"><button class="btn primary" type="button" onclick="goToMetaTokenStep()">${lang==='es'?'Pegar clave':'Paste key'}</button></div>${output?`<details class="helper-command"><summary>${lang==='es'?'Detalles técnicos':'Technical details'}</summary><span class="step-command">${escapeHtml(output)}</span></details>`:''}</div>`;
+ const loginHint=res.message||(lang==='es'?'No pude traer cuentas todavía. La clave quedó guardada; revisa permisos de anuncios o intenta crear una clave nueva.':'I could not fetch accounts yet. The key was saved; check ad permissions or try creating a new key.');
+ const detail=res.graph_checked?(lang==='es'?'Probé también con Meta Graph directo.':'I also checked directly with Meta Graph.'):'';
+ box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'No encontré cuentas publicitarias':'No ad accounts found'}</b><p>${escapeHtml(loginHint)}</p>${detail?`<p class="notice">${detail}</p>`:''}<div class="onboarding-step-actions"><button class="btn primary" type="button" onclick="goToMetaTokenStep()">${lang==='es'?'Pegar otra clave':'Paste another key'}</button><button class="btn" type="button" onclick="refreshSocialAccounts()">${lang==='es'?'Buscar otra vez':'Search again'}</button></div>${output?`<details class="helper-command"><summary>${lang==='es'?'Detalles técnicos':'Technical details'}</summary><span class="step-command">${escapeHtml(output)}</span></details>`:''}</div>`;
 }
 async function refreshSocialAccounts(){const box=qs('#social-account-results');if(box)box.innerHTML=`<div class="guide-card"><p>${lang==='es'?'Buscando cuentas...':'Finding accounts...'}</p></div>`;const res=await api('/api/social/accounts');renderSocialAccountResults(res)}
 function discoveryResultsBox(){return qs('#destination-discovery-results')||qs('#social-account-results')}

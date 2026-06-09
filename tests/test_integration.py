@@ -1790,6 +1790,52 @@ class IntegrationTestSuite:
         finally:
             dashboard.graph_get = original_graph_get
 
+    def test_social_accounts_use_graph_api_fallback(self):
+        """Test Graph API Explorer keys can list ad accounts even when social-cli is empty."""
+        print("\nTesting Social Account Graph Fallback...")
+
+        dashboard = load_dashboard_module()
+        original_social_command = dashboard.social_command
+        original_graph_get = dashboard.graph_get
+
+        def fake_social_command(args, timeout=30):
+            return {"ok": False, "code": 1, "command": "social marketing accounts --json", "output": "No accounts returned by cli"}
+
+        def fake_graph_get(path, params=None, page_token=""):
+            if path == "/me/adaccounts":
+                return {
+                    "ok": True,
+                    "data": {
+                        "data": [
+                            {"account_id": "123456789", "name": "Cuenta Principal", "currency": "USD", "account_status": 1}
+                        ]
+                    },
+                }
+            if path == "/me/businesses":
+                return {"ok": True, "data": {"data": []}}
+            return {"ok": False, "error": "unexpected path"}
+
+        try:
+            dashboard.social_command = fake_social_command
+            dashboard.graph_get = fake_graph_get
+            result = dashboard.social_marketing_accounts()
+            self.assert_true(result["accounts"][0]["id"] == "act_123456789", "Graph API fallback lists buyer ad accounts")
+            self.assert_true(result["source"] == "graph_api" and result["graph_checked"], "Account discovery records direct Graph fallback")
+            self.assert_true(result["ok"] is True, "Graph fallback makes account discovery successful")
+
+            dashboard.social_command = lambda args, timeout=30: {"ok": True, "code": 0, "command": "social marketing accounts --json", "output": json.dumps([{"account_id": "555", "name": "CLI Account"}])}
+            social_first = dashboard.social_marketing_accounts()
+            self.assert_true(social_first["accounts"][0]["id"] == "act_555", "social-cli accounts remain the primary account discovery source")
+            self.assert_true(social_first["source"] == "social_cli", "Graph fallback does not override social-cli when social-cli works")
+
+            dashboard.social_command = fake_social_command
+            dashboard.graph_get = lambda path, params=None, page_token="": {"ok": True, "data": {"data": []}}
+            empty = dashboard.social_marketing_accounts()
+            self.assert_true("0 cuentas publicitarias" in empty["message"], "Empty Graph response explains that Meta returned no ad accounts")
+        finally:
+            dashboard.social_command = original_social_command
+            dashboard.graph_get = original_graph_get
+
     def test_chat_saves_existing_adset_when_user_provides_it(self):
         """Test chat can store an optional existing ad set ID without making it a beginner requirement."""
         print("\nTesting Chat Existing Ad Set Memory...")
@@ -2716,6 +2762,7 @@ class IntegrationTestSuite:
         self.assert_true("Haz clic aquí si te apareció un error" in html and "toggleChatGptDeviceAuthHelp" in html and "Activar autorización con códigos de dispositivo para Codex" in html, "OpenAI code card includes a manual buyer help button for browser-side Codex device-code errors")
         self.assert_true("Cierra la pestaña de login de ChatGPT/Codex" in html and "Ya lo activé, abrir login de nuevo" in html and "reopenChatGptAuthUrl" in html and "chatgpt-retry-login" in html, "Device-code help tells buyers to close the failed login tab and reopen it from a large CTA")
         self.assert_true("body .onboarding-flow input:not([type=\"checkbox\"])" in html and "::placeholder" in html and "-webkit-autofill" in html, "Onboarding text fields stay dark and readable across dashboard themes")
+        self.assert_true("body .onboarding-flow .guide-card" in html and "background:linear-gradient(145deg,rgba(18,16,28,.96)" in html, "Onboarding cards keep dark readable contrast across dashboard themes")
         self.assert_true("Voy a elegir OpenAI Codex y el modelo recomendado automáticamente" in dashboard_source and "maybe_auto_drive_hermes_browserless" in dashboard_source, "Hermes browserless setup auto-selects Codex provider and recommended model")
         hermes_bridge_source = (ROOT_DIR / "src" / "hermes_bridge.py").read_text(encoding="utf-8")
         self.assert_true("hermes_status_timeout_seconds" in hermes_bridge_source and "hermes_response_timeout_seconds" in hermes_bridge_source, "Hermes status checks and real response timeouts stay separate")
@@ -3436,7 +3483,7 @@ class IntegrationTestSuite:
         self.assert_true("https://admiroia.uboost.lat" in env_example, "Buyer release uses deployed license server")
         self.assert_true("LICENSE_PUBLIC_KEY=" in env_example, "Buyer release includes only license verification key")
         self.assert_true("AGENT_CHAT_BASE_URL=https://api.minimax.io/v1" in env_example and "AGENT_CHAT_MODEL=MiniMax-M3" in env_example and "AGENT_CHAT_PROVIDER=hermes" in env_example and "AGENT_BRAIN_PROVIDER=openai_codex" in env_example, "Buyer release documents Hermes runtime plus MiniMax M3/OpenAI-compatible brain support")
-        self.assert_true("META_ADS_AGENT_VERSION=v1.0.7" in env_example and (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip() == "v1.0.7", "Buyer release exposes the installed product version")
+        self.assert_true("META_ADS_AGENT_VERSION=v1.0.8" in env_example and (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip() == "v1.0.8", "Buyer release exposes the installed product version")
         bootstrap_config = (ROOT_DIR / "installer" / "release-bootstrap.env").read_text(encoding="utf-8")
         bootstrap_sh = (ROOT_DIR / "scripts" / "install-from-github.sh").read_text(encoding="utf-8")
         bootstrap_ps1 = (ROOT_DIR / "scripts" / "install-from-github.ps1").read_text(encoding="utf-8")
