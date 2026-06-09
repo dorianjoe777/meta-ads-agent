@@ -355,6 +355,62 @@ function digitalOceanErrorDetail(error) {
   return "No pude crear el servidor en DigitalOcean. Revisa el token o intenta otra vez.";
 }
 
+function digitalOceanResourceMissing(error) {
+  const status = String(error?.doStatus || "").toLowerCase();
+  return error?.statusCode === 404 || status.includes("not_found") || status.includes("not found");
+}
+
+async function clearCloudInstallation(record = {}, reason = "buyer_reset") {
+  const installState = { ...(record.install_state || {}) };
+  const clearedAt = new Date().toISOString();
+  await writeLicense({
+    ...record,
+    cloud_installation: null,
+    cloud_installation_reset_at: clearedAt,
+    cloud_installation_reset_reason: reason,
+    install_state: {
+      ...installState,
+      cloud: {
+        installed: false,
+        status: "not_started",
+        progress: 0,
+        dashboard_available: false,
+        cleared_at: clearedAt,
+        reset_reason: reason
+      }
+    }
+  });
+  return {
+    valid: true,
+    status: "not_started",
+    ready: false,
+    progress: 0,
+    stage: "sin_instalacion",
+    cloud_installation: null,
+    install_state: { cloud: {}, local: installState.local || {} },
+    detail: "Listo. Ya puedes crear un servidor nuevo."
+  };
+}
+
+async function clearIfDigitalOceanDropletMissing(record = {}, digitalOceanToken = "") {
+  const cloud = record.cloud_installation || null;
+  if (!cloud?.droplet_id || !validateDigitalOceanToken(digitalOceanToken)) {
+    return null;
+  }
+  if (minutesSince(cloud.created_at || cloud.install_started_at) < 1) {
+    return null;
+  }
+  try {
+    await doRequest(digitalOceanToken, `/droplets/${cloud.droplet_id}`);
+    return null;
+  } catch (error) {
+    if (!digitalOceanResourceMissing(error)) {
+      return null;
+    }
+    return clearCloudInstallation(record, "droplet_missing_in_digitalocean");
+  }
+}
+
 async function refreshFirewallForCurrentIp(record = {}, digitalOceanToken = "", request = null) {
   const cloud = record.cloud_installation || null;
   if (!cloud?.firewall_id || !cloud?.droplet_id) {
@@ -823,6 +879,15 @@ export default async function handler(request, response) {
       return friendlyFailure(response, "access_revoked", "No pude confirmar esta compra. Contacta soporte.");
     }
     if (action === "status") {
+      const resolvedDigitalOceanToken = resolveDigitalOceanToken(record, rawDigitalOceanToken);
+      const clearedMissingDroplet = await clearIfDigitalOceanDropletMissing(record, resolvedDigitalOceanToken.token);
+      if (clearedMissingDroplet) {
+        return json(response, 200, {
+          ...clearedMissingDroplet,
+          cleared_deleted_cloud: true,
+          detail: "No encontre ese Droplet en DigitalOcean. Limpie el portal para que puedas crear uno nuevo."
+        });
+      }
       const recoveredCloud = await refreshCloudIpFromDigitalOcean(record, String(rawDigitalOceanToken || "").trim());
       if (recoveredCloud) {
         return cloudInstallStatus({ ...record, cloud_installation: recoveredCloud }, response);
@@ -830,19 +895,8 @@ export default async function handler(request, response) {
       return cloudInstallStatus(record, response);
     }
     if (action === "reset_cloud_install") {
-      await writeLicense({
-        ...record,
-        cloud_installation: null,
-        cloud_installation_reset_at: new Date().toISOString()
-      }).catch(() => {});
-      return json(response, 200, {
-        valid: true,
-        status: "cloud_reset",
-        ready: false,
-        progress: 0,
-        stage: "sin_instalacion",
-        detail: "Listo. Ya puedes crear un servidor nuevo."
-      });
+      const cleared = await clearCloudInstallation(record, "buyer_confirmed_deleted_droplet");
+      return json(response, 200, { ...cleared, status: "cloud_reset" });
     }
     if (action === "refresh_access") {
       const resolvedDigitalOceanToken = resolveDigitalOceanToken(record, rawDigitalOceanToken);

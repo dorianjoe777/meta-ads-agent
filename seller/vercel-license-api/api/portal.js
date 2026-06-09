@@ -887,6 +887,7 @@ export default async function handler(request, response) {
     let cloudProgressTimer = null;
     let cloudRecoveryToken = '';
     let cloudRecoveryRetryTimer = null;
+    let cloudStateVersion = 0;
 
     function setStatus(message, isError = false){
       statusBox.textContent = message || '';
@@ -964,12 +965,21 @@ export default async function handler(request, response) {
         cloudProgressTimer = null;
       }
     }
-    async function pollCloudProgress(){
+    async function pollCloudProgress(expectedVersion = cloudStateVersion){
       if(!portalToken) return;
       const tokenInput = document.getElementById('digitalOceanToken');
       const recoveryToken = cloudRecoveryToken || (tokenInput ? tokenInput.value.trim() : '');
       const data = await postJson('/api/portal/cloud/digitalocean', { portal_token: portalToken, action: 'status', digitalocean_token: recoveryToken });
+      if(expectedVersion !== cloudStateVersion) return data;
       if(!data.valid) throw new Error(data.detail || 'No pude revisar la instalacion.');
+      if(data.status === 'not_started' || data.cleared_deleted_cloud){
+        stopCloudProgressPolling();
+        cloudResult.classList.remove('active');
+        cloudResult.innerHTML = '';
+        renderInstallState(data);
+        setStatus(data.detail || 'El servidor anterior ya no existe. Puedes crear uno nuevo.');
+        return data;
+      }
       renderCloudResult(data);
       renderInstallState({
         cloud_installation: data,
@@ -1001,9 +1011,10 @@ export default async function handler(request, response) {
     }
     function startCloudProgressPolling(){
       stopCloudProgressPolling();
-      pollCloudProgress().catch(() => {});
+      const expectedVersion = ++cloudStateVersion;
+      pollCloudProgress(expectedVersion).catch(() => {});
       cloudProgressTimer = setInterval(() => {
-        pollCloudProgress().catch(() => {});
+        pollCloudProgress(expectedVersion).catch(() => {});
       }, 10000);
     }
     function updateDigitalOceanTokenUi(cloudSecrets){
@@ -1202,22 +1213,30 @@ export default async function handler(request, response) {
     }
     async function resetCloudInstall(){
       if(!portalToken) return;
+      const expectedVersion = ++cloudStateVersion;
       stopCloudProgressPolling();
       setStatus('Limpiando el servidor anterior del portal...');
-      const data = await postJson('/api/portal/cloud/digitalocean', { portal_token: portalToken, action: 'reset_cloud_install' });
-      if(!data.valid){
-        setStatus(data.detail || 'No pude limpiar esa instalacion.', true);
-        return;
+      try{
+        const data = await postJson('/api/portal/cloud/digitalocean', { portal_token: portalToken, action: 'reset_cloud_install' });
+        if(expectedVersion !== cloudStateVersion) return;
+        if(!data.valid){
+          setStatus(data.detail || 'No pude limpiar esa instalacion.', true);
+          return;
+        }
+        cloudResult.classList.remove('active');
+        cloudResult.innerHTML = '';
+        renderInstallState(data);
+        cloudInstall.classList.add('active');
+        cloudToggle.textContent = 'Ocultar instalacion cloud';
+        const tokenInput = document.getElementById('digitalOceanToken');
+        if(tokenInput) tokenInput.focus();
+        cloudInstall.scrollIntoView({behavior:'smooth', block:'start'});
+        setStatus('Listo. Ahora puedes crear un servidor nuevo.');
+      }catch(error){
+        if(expectedVersion === cloudStateVersion){
+          setStatus(error.message || 'No pude limpiar esa instalacion.', true);
+        }
       }
-      cloudResult.classList.remove('active');
-      cloudResult.innerHTML = '';
-      renderInstallState({ install_state: { cloud: {}, local: {} } });
-      cloudInstall.classList.add('active');
-      cloudToggle.textContent = 'Ocultar instalacion cloud';
-      const tokenInput = document.getElementById('digitalOceanToken');
-      if(tokenInput) tokenInput.focus();
-      cloudInstall.scrollIntoView({behavior:'smooth', block:'start'});
-      setStatus('Listo. Ahora puedes crear un servidor nuevo.');
     }
     function renderPortalData(data){
       portalToken = data.portal_token;
