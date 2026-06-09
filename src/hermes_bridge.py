@@ -307,6 +307,7 @@ def hermes_codex_ready(config):
     hermes_cli = shutil.which(getattr(config, "hermes_cli", "hermes") or "hermes")
     if not hermes_cli:
         return False, "Hermes not installed"
+    status_timeout = max(12, min(30, int(getattr(config, "hermes_timeout_seconds", 90) or 90)))
     try:
         completed = subprocess.run(
             [hermes_cli, "status"],
@@ -314,7 +315,7 @@ def hermes_codex_ready(config):
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=5,
+            timeout=status_timeout,
             check=False,
         )
     except Exception as exc:
@@ -490,8 +491,18 @@ def chat(config, payload):
                 reply = library_chat(config, payload)
             except (ImportError, ModuleNotFoundError):
                 reply = cli_chat(config, payload)
+            if not str(reply or "").strip():
+                reply = cli_chat(config, payload)
         else:
             reply = cli_chat(config, payload)
+        if not str(reply or "").strip():
+            return {
+                "ok": False,
+                "provider": "hermes",
+                "fallback": True,
+                "reply": "",
+                "error": "Hermes returned an empty reply",
+            }
         return {"ok": True, "provider": "hermes", "brain_provider": brain.get("brain"), "model": brain.get("model") or "configured-in-hermes", "reply": reply}
     except (ImportError, ModuleNotFoundError) as exc:
         return {"ok": False, "provider": "hermes", "fallback": True, "reply": setup_reply(language), "error": f"Hermes Python library is not installed: {exc}"}

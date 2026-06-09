@@ -145,6 +145,10 @@ def chat(config, payload):
         result["raw_reply"] = result.get("raw_reply") or raw_reply
     else:
         result.setdefault("tool_request", None)
+    if not str(result.get("reply") or "").strip():
+        result["fallback"] = True
+        result["reply"] = fallback_reply(payload.get("message", ""), payload)
+        result["error"] = result.get("error") or "Hermes returned an empty reply"
     return result
 
 

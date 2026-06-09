@@ -3,8 +3,8 @@ set -euo pipefail
 
 cd /app
 
-mkdir -p /app/runtime /app/dashboard/data/update-snapshots /app/output /app/logs /app/brand_guides/products
-chmod 700 /app/runtime /app/dashboard/data /app/dashboard/data/update-snapshots /app/output /app/logs || true
+mkdir -p /app/runtime/hermes /app/dashboard/data/update-snapshots /app/output /app/logs /app/brand_guides/products
+chmod 700 /app/runtime /app/runtime/hermes /app/dashboard/data /app/dashboard/data/update-snapshots /app/output /app/logs || true
 
 if [ ! -f /app/runtime/.env ]; then
   cp /app/.env.example /app/runtime/.env
@@ -39,6 +39,7 @@ defaults = {
     "LAN_ACCESS_ENABLED": "false",
     "CODEX_CREATIVE_ENABLED": "false",
     "CODEX_CLI": "codex",
+    "HERMES_HOME": "/app/runtime/hermes",
 }
 forced = {
     "DASHBOARD_HOST": "0.0.0.0",

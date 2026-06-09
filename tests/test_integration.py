@@ -785,8 +785,48 @@ class IntegrationTestSuite:
             self.assert_true(result["provider"] == "hermes", "Hermes is the active chat provider")
             self.assert_true(result["tool_request"]["tool"] == "review_live_readiness", "Hermes tool request parsed")
             self.assert_true("account_context" in received[0], "Hermes receives account context")
+
+            agent_chat.hermes_chat = lambda config, payload: received.append(payload) or {
+                "ok": True,
+                "provider": "hermes",
+                "reply": "",
+            }
+            empty_result = agent_chat.chat(FakeConfig(), {"message": "Hola", "metrics": {}, "language": "es"})
+            self.assert_true(empty_result.get("fallback") is True and empty_result.get("reply") and "No pude responder" not in empty_result.get("reply"), "Empty Hermes replies become useful manager fallback text")
         finally:
             agent_chat.hermes_chat = original_hermes_chat
+
+    def test_hermes_empty_library_reply_falls_back_to_cli(self):
+        """Test Hermes Python runtime empty replies are retried through the CLI path."""
+        print("\nTesting Hermes Empty Library Reply Fallback...")
+
+        class FakeConfig:
+            agent_chat_provider = "hermes"
+            agent_brain_provider = "custom_api"
+            agent_chat_base_url = "https://example.test/v1"
+            agent_chat_api_key = "test-key"
+            agent_chat_model = "custom-model"
+            hermes_require_codex_auth = False
+            hermes_use_python_library = True
+            hermes_max_iterations = 1
+            hermes_timeout_seconds = 1
+            hermes_enabled_toolsets = ""
+            hermes_disabled_toolsets = "terminal"
+            hermes_cli = "hermes"
+            hermes_home = ""
+
+        calls = []
+        original_library = hermes_bridge.library_chat
+        original_cli = hermes_bridge.cli_chat
+        try:
+            hermes_bridge.library_chat = lambda config, payload: calls.append("library") or ""
+            hermes_bridge.cli_chat = lambda config, payload: calls.append("cli") or "Respuesta desde CLI."
+            result = hermes_bridge.chat(FakeConfig(), {"message": "Hola", "language": "es", "account_context": {}})
+            self.assert_true(result["ok"] is True and result["reply"] == "Respuesta desde CLI.", "Hermes retries the CLI path when the library returns an empty reply")
+            self.assert_true(calls == ["library", "cli"], "Hermes library empty response triggers exactly one CLI retry")
+        finally:
+            hermes_bridge.library_chat = original_library
+            hermes_bridge.cli_chat = original_cli
 
     def test_hermes_creative_image_request_routes_to_codex_tool(self):
         """Test Hermes can route a natural image-creative request to the Codex creative tool."""
@@ -2639,6 +2679,7 @@ class IntegrationTestSuite:
         self.assert_true("appendChatApprovalActions" in html and "chatApproveDecision" in html and "chatRejectDecision" in html, "Agent chat can show approve/reject buttons for exact pending approvals")
         self.assert_true("/api/reject" in html and "msg-approval-card" in html, "Chat approval decisions include a reject path and compact action cards")
         self.assert_true("onboarding-flow" in html, "Dedicated onboarding flow exists")
+        self.assert_true("onboarding-security-note" in html and "nada de lo que coloques aquí lo podemos ver nosotros" in html and "más privada que entregar tus credenciales a un SaaS" in html, "Onboarding shows a persistent local/private install reassurance")
         self.assert_true("websiteScanGuide" in html and "/api/business-profile/links" in html and "saveBusinessLinks" in html and "Pega tu web y redes" in html, "Onboarding collects only website/social links before handing the deep interview to the agent")
         self.assert_true("Onboarding questions.md" in dashboard_source and "write_onboarding_questions_memory" in dashboard_source and "pregunta lo minimo necesario" in dashboard_source, "Business discovery is stored as agent memory for Telegram/chat instead of a long setup form")
         self.assert_true("businessContextGuide" in html and "businessContextQuestions" in html and "saveBusinessContextQuestion" in html, "Buyer context editor remains available outside the required onboarding path")
@@ -2665,12 +2706,13 @@ class IntegrationTestSuite:
         self.assert_true("Cierra la pestaña de login de ChatGPT/Codex" in html and "Ya lo activé, abrir login de nuevo" in html and "reopenChatGptAuthUrl" in html and "chatgpt-retry-login" in html, "Device-code help tells buyers to close the failed login tab and reopen it from a large CTA")
         self.assert_true("body .onboarding-flow input:not([type=\"checkbox\"])" in html and "::placeholder" in html and "-webkit-autofill" in html, "Onboarding text fields stay dark and readable across dashboard themes")
         self.assert_true("Voy a elegir OpenAI Codex y el modelo recomendado automáticamente" in dashboard_source and "maybe_auto_drive_hermes_browserless" in dashboard_source, "Hermes browserless setup auto-selects Codex provider and recommended model")
-        self.assert_true("{id:'chatgpt',status:chatgptOk?'ok':'warn'}" in html and "chatGptConnectMarkup(true)" in html, "Initial onboarding includes ChatGPT/Codex connection after Meta setup")
-        self.assert_true("{id:'telegram',status:telegramOk?'ok':'warn'}" in html and "telegramOnboardingGuide()" in html, "Initial onboarding finishes with Telegram as the manager channel")
+        self.assert_true("status_timeout = max(12" in (ROOT_DIR / "src" / "hermes_bridge.py").read_text(encoding="utf-8"), "Hermes status check has enough timeout for fresh Docker/VPS installs")
+        self.assert_true("{id:'chatgpt',status:chatgptOk?'ok':'warn'}" in html and "chatGptConnectMarkup(true)" in html, "Initial onboarding includes ChatGPT/Codex before the Telegram manager channel")
+        self.assert_true("{id:'telegram',status:telegramOk?'ok':'warn'}" in html and "telegramOnboardingGuide()" in html, "Initial onboarding includes Telegram before connecting Facebook/Meta")
         self.assert_true("Habla con tu manager por Telegram" in html and "Descargar Telegram" in html and "Abrir BotFather" in html and "Copiar /newbot" in html and "Detectar mi chat" in html, "Telegram onboarding explains download, BotFather, command copy, chat detection, and phone-first manager access")
         self.assert_true("usuario parecido, pero terminado en <b>bot</b>" in html and "Esto se configura una sola vez" in html and "No puedo crear el bot por ti" in html, "Telegram onboarding explains the BotFather username rule, one-time setup, and automation limits")
-        self.assert_true("{id:'meta',status:tokenOk?'ok':(socialOk?'warn':'blocked')}" in html and "{id:'account',status:accountOk?'ok':'blocked'}" in html and "{id:'destination',status:destinationOk?'ok':'blocked'}" in html, "Initial onboarding starts with the buyer Facebook/Meta connection")
-        self.assert_true("{id:'destination',status:destinationOk?'ok':'blocked'},\n\t  {id:'chatgpt',status:chatgptOk?'ok':'warn'},\n\t  {id:'website',status:websiteOk?'ok':'warn'},\n\t  {id:'telegram',status:telegramOk?'ok':'warn'}" in html, "Initial onboarding moves from Facebook setup to ChatGPT, quick link scan, and finishes with Telegram")
+        self.assert_true("{id:'meta',status:tokenOk?'ok':(socialOk?'warn':'blocked')}" in html and "{id:'account',status:accountOk?'ok':'blocked'}" in html and "{id:'destination',status:destinationOk?'ok':'blocked'}" in html, "Initial onboarding still includes the buyer Facebook/Meta connection")
+        self.assert_true("{id:'chatgpt',status:chatgptOk?'ok':'warn'},\n\t  {id:'telegram',status:telegramOk?'ok':'warn'},\n\t  {id:'meta',status:tokenOk?'ok':(socialOk?'warn':'blocked')}" in html, "Initial onboarding moves from ChatGPT to Telegram and then immediately to Facebook/Meta")
         self.assert_true("Elige qué modelo usará el agente" in html and "apiBrainOk" in html, "Onboarding positions model setup as part of installation and accepts API brain readiness")
         self.assert_true("license-panel" in html, "License activation panel exists")
         self.assert_true("/api/license/activate" in html, "License activation endpoint is wired in UI")
@@ -3360,6 +3402,7 @@ class IntegrationTestSuite:
         self.assert_true("forced = {" in docker_entrypoint and "\"DASHBOARD_HOST\": \"0.0.0.0\"" in docker_entrypoint, "Docker entrypoint forces reachable dashboard bind values")
         self.assert_true("LAN_ACCESS_ENABLED" in env_example and "LAN_ACCESS_ENABLED" in docker_entrypoint and "ADMIRO_HOST_LAN_IP" in compose, "Phone LAN access is off by default and Docker receives the host LAN IP when available")
         self.assert_true("meta_ads_config" in compose and "meta_ads_brand_guides" in compose, "Docker Compose persists config and brand guides")
+        self.assert_true("HERMES_HOME: /app/runtime/hermes" in compose and "mkdir -p /app/runtime/hermes" in docker_entrypoint and '"HERMES_HOME": "/app/runtime/hermes"' in docker_entrypoint, "Docker installs persist Hermes ChatGPT/Codex auth across rebuilds")
         self.assert_true("meta_ads_update_snapshots" in compose and "/app/dashboard/data/update-snapshots" in compose, "Docker Compose keeps update rollback snapshots in a named volume")
         self.assert_true("MetaAdsAgent-source.zip" in script, "Release ZIP includes a stable asset name for bootstrap installers")
         self.assert_true("install-from-github.ps1" in windows_installer and "install-from-github.sh" in mac_installer and "install-from-github.sh" in linux_installer, "Double-click installers use the shared bootstrap scripts")
@@ -3563,6 +3606,7 @@ class IntegrationTestSuite:
             self.test_openai_compatible_agent_provider,
             self.test_agent_setup_status_accepts_direct_model_provider,
             self.test_hermes_provider_parses_tool_request,
+            self.test_hermes_empty_library_reply_falls_back_to_cli,
             self.test_hermes_creative_image_request_routes_to_codex_tool,
             self.test_hermes_missing_runtime_gives_chatgpt_setup_guidance,
             self.test_dashboard_chatgpt_connect_action_opens_terminal,
