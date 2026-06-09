@@ -41,7 +41,7 @@ Usar el canal estable actual salvo que se decida publicar una version completa n
 ```bash
 META_ADS_LICENSE_SERVER_URL=https://admiroia.uboost.lat \
 META_ADS_GITHUB_REPO=dorianjoe777/meta-ads-agent \
-./scripts/package-release.sh v1.0.4
+./scripts/package-release.sh "$(cat VERSION)"
 ```
 
 Verificar que el ZIP contiene el cambio esperado y no contiene el texto viejo. Ejemplo para el fix de Hermes:
@@ -62,9 +62,10 @@ El segundo comando no debe encontrar nada.
 ## 3. Reemplazar asset estable en GitHub
 
 ```bash
-gh release upload v1.0.4 \
+VERSION="$(cat VERSION)"
+gh release upload "$VERSION" \
   release/MetaAdsAgent-source.zip \
-  release/MetaAdsAgent-v1.0.4-source.zip \
+  "release/MetaAdsAgent-$VERSION-source.zip" \
   release/SHA256SUMS.txt \
   --repo dorianjoe777/meta-ads-agent \
   --clobber
@@ -73,7 +74,7 @@ gh release upload v1.0.4 \
 Luego obtener el nuevo `apiUrl`, `digest` y fecha:
 
 ```bash
-gh release view v1.0.4 --repo dorianjoe777/meta-ads-agent --json assets \
+gh release view "$(cat VERSION)" --repo dorianjoe777/meta-ads-agent --json assets \
   | python3 -c 'import json,sys; p=json.load(sys.stdin); [print(a["name"], a.get("apiUrl"), a.get("digest"), a.get("updatedAt")) for a in p["assets"] if a["name"]=="MetaAdsAgent-source.zip"]'
 ```
 
@@ -88,6 +89,8 @@ https://api.github.com/repos/dorianjoe777/meta-ads-agent/releases/assets/ASSET_I
 ```
 
 Se puede actualizar por API admin si `LICENSE_ADMIN_KEY` esta disponible, o directamente con `seller/vercel-license-api/lib/store.js` usando `BLOB_READ_WRITE_TOKEN` local de Vercel.
+
+Nota: `vercel env pull` puede dejar algunas variables sensibles vacias en archivos locales aunque existan en Vercel como `Encrypted`. Si `POST /api/admin/releases` responde `401` y `LICENSE_ADMIN_KEY` local esta vacio o desactualizado, usar la ruta directa de Blob con `BLOB_READ_WRITE_TOKEN` y verificar el registry despues de esperar el cache de hasta 60 segundos.
 
 Verificar despues:
 
@@ -121,7 +124,7 @@ Como minimo, descargar el asset publicado desde GitHub y revisar contenido:
 ```bash
 rm -rf /tmp/admiro-release-test
 mkdir -p /tmp/admiro-release-test
-gh release download v1.0.4 \
+gh release download "$(cat VERSION)" \
   --repo dorianjoe777/meta-ads-agent \
   --pattern MetaAdsAgent-source.zip \
   --dir /tmp/admiro-release-test \
@@ -141,7 +144,7 @@ con `license_key`, `buyer_email`, `device_id`, `channel=stable` y `asset_name=Me
 
 ## 6. Version nueva o mismo canal
 
-No crear `v1.0.5` solo con `MetaAdsAgent-source.zip` si el portal necesita descubrir instaladores Mac/Windows/Linux por tag. Si se publica una version nueva, subir tambien los assets de plataforma:
+No crear una version nueva solo con `MetaAdsAgent-source.zip` si el portal necesita descubrir instaladores Mac/Windows/Linux por tag. Si se publica una version nueva, subir tambien los assets de plataforma:
 
 - Mac `.dmg` o `.pkg`
 - Windows `.msi` o `.exe`
