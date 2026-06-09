@@ -57,7 +57,13 @@ for key, value in forced.items():
         lines.append(f"{key}={value}")
 keys = {line.split("=", 1)[0] for line in lines if "=" in line and not line.lstrip().startswith("#")}
 for key, value in defaults.items():
-    if key not in keys:
+    replaced_blank = False
+    for index, line in enumerate(lines):
+        if line.startswith(f"{key}=") and not line.split("=", 1)[1].strip():
+            lines[index] = f"{key}={value}"
+            replaced_blank = True
+            break
+    if key not in keys and not replaced_blank:
         lines.append(f"{key}={value}")
 if "LICENSE_DEVICE_ID" not in keys:
     device_id = hashlib.sha256(f"{socket.gethostname()}:{uuid.getnode()}".encode("utf-8")).hexdigest()[:24]

@@ -3402,7 +3402,7 @@ class IntegrationTestSuite:
         self.assert_true("forced = {" in docker_entrypoint and "\"DASHBOARD_HOST\": \"0.0.0.0\"" in docker_entrypoint, "Docker entrypoint forces reachable dashboard bind values")
         self.assert_true("LAN_ACCESS_ENABLED" in env_example and "LAN_ACCESS_ENABLED" in docker_entrypoint and "ADMIRO_HOST_LAN_IP" in compose, "Phone LAN access is off by default and Docker receives the host LAN IP when available")
         self.assert_true("meta_ads_config" in compose and "meta_ads_brand_guides" in compose, "Docker Compose persists config and brand guides")
-        self.assert_true("HERMES_HOME: /app/runtime/hermes" in compose and "mkdir -p /app/runtime/hermes" in docker_entrypoint and '"HERMES_HOME": "/app/runtime/hermes"' in docker_entrypoint, "Docker installs persist Hermes ChatGPT/Codex auth across rebuilds")
+        self.assert_true("HERMES_HOME: /app/runtime/hermes" in compose and "mkdir -p /app/runtime/hermes" in docker_entrypoint and '"HERMES_HOME": "/app/runtime/hermes"' in docker_entrypoint and "replaced_blank" in docker_entrypoint, "Docker installs persist Hermes ChatGPT/Codex auth across rebuilds")
         self.assert_true("meta_ads_update_snapshots" in compose and "/app/dashboard/data/update-snapshots" in compose, "Docker Compose keeps update rollback snapshots in a named volume")
         self.assert_true("MetaAdsAgent-source.zip" in script, "Release ZIP includes a stable asset name for bootstrap installers")
         self.assert_true("install-from-github.ps1" in windows_installer and "install-from-github.sh" in mac_installer and "install-from-github.sh" in linux_installer, "Double-click installers use the shared bootstrap scripts")
