@@ -1,7 +1,7 @@
 import { signedReleaseGrant, verifyPortalSession } from "../../../lib/license.js";
 import { releaseWithDiscoveredAssets } from "../../../lib/download-portal.js";
 import { readLicense, readReleases, writeLicense } from "../../../lib/store.js";
-import { decryptPortalSecret } from "../../../lib/secret-vault.js";
+import { decryptPortalSecret, encryptPortalSecret } from "../../../lib/secret-vault.js";
 import {
   buildDigitalOceanCloudInit,
   cloudAccessSecret,
@@ -503,6 +503,17 @@ function resolveDigitalOceanToken(record = {}, suppliedToken = "") {
   return { token: "", source: "" };
 }
 
+function withSavedDigitalOceanToken(record = {}, token = "") {
+  if (!validateDigitalOceanToken(token)) return record;
+  return {
+    ...record,
+    portal_vault: {
+      ...(record.portal_vault || {}),
+      digitalocean_token: encryptPortalSecret(token)
+    }
+  };
+}
+
 function parseCloudAccessSecret(cloud = {}) {
   if (cloud.cloud_access_secret) return String(cloud.cloud_access_secret);
   try {
@@ -906,6 +917,9 @@ export default async function handler(request, response) {
       try {
         const refreshed = await refreshFirewallForCurrentIp(record, resolvedDigitalOceanToken.token, request);
         const statusPayload = await cloudInstallStatus({ ...record, cloud_installation: refreshed.cloud }, response, { returnPayload: true });
+        if (validateDigitalOceanToken(rawDigitalOceanToken)) {
+          await writeLicense(withSavedDigitalOceanToken({ ...record, cloud_installation: refreshed.cloud }, rawDigitalOceanToken)).catch(() => {});
+        }
         return json(response, 200, {
           ...statusPayload,
           valid: true,
@@ -990,7 +1004,7 @@ export default async function handler(request, response) {
         install_progress: Math.max(Number(cloud.install_progress || 0), 38),
         attached_ip_at: new Date().toISOString()
       };
-      await writeLicense({ ...record, cloud_installation: updatedCloud }).catch(() => {});
+      await writeLicense({ ...withSavedDigitalOceanToken(record, rawDigitalOceanToken), cloud_installation: updatedCloud }).catch(() => {});
       return json(response, 200, {
         ...estimatedCloudStatus(updatedCloud),
         valid: true,
@@ -1112,7 +1126,7 @@ export default async function handler(request, response) {
         dnsActive: dns.status === "active"
       });
       await writeLicense({
-        ...record,
+        ...withSavedDigitalOceanToken(record, digitalOceanToken),
         cloud_installation: {
           provider: "digitalocean",
           droplet_id: droplet.id,

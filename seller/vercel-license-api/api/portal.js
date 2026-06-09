@@ -979,12 +979,24 @@ export default async function handler(request, response) {
       const data = await postJson('/api/portal/cloud/digitalocean', { portal_token: portalToken, action: 'status', digitalocean_token: recoveryToken });
       if(expectedVersion !== cloudStateVersion) return data;
       if(!data.valid) throw new Error(data.detail || 'No pude revisar la instalacion.');
-      if(data.status === 'not_started' || data.cleared_deleted_cloud){
+      if(data.cleared_deleted_cloud){
         stopCloudProgressPolling();
         cloudResult.classList.remove('active');
         cloudResult.innerHTML = '';
         renderInstallState(data);
         setStatus(data.detail || 'El servidor anterior ya no existe. Puedes crear uno nuevo.');
+        return data;
+      }
+      if(data.status === 'not_started'){
+        if(cloudResult.classList.contains('active')){
+          setStatus(data.detail || 'Sigo revisando la instalacion. Si acabas de crear el servidor, espera unos segundos.');
+          return data;
+        }
+        stopCloudProgressPolling();
+        cloudResult.classList.remove('active');
+        cloudResult.innerHTML = '';
+        renderInstallState(data);
+        setStatus(data.detail || 'Todavia no hay instalacion cloud.');
         return data;
       }
       renderCloudResult(data);

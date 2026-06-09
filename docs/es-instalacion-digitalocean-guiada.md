@@ -41,7 +41,7 @@ Permisos recomendados para el token:
 - SSH Keys: crear y leer.
 - Tags: crear y leer.
 
-El portal usa el token para crear el servidor, configurar la llave SSH, preparar el firewall e instalar Admiro AI. No se muestra una opcion de guardar token en la pagina de acceso; si el comprador necesita reinstalar, vuelve a pegar un token valido de DigitalOcean.
+El portal usa el token para crear el servidor, configurar la llave SSH, preparar el firewall e instalar Admiro AI. No se muestra una opcion confusa de "guardar token" en la pagina de acceso: el portal lo conserva cifrado para poder recuperar acceso o reinstalar sin pedirlo otra vez. Si el comprador borra el token desde DigitalOcean, puede pegar uno nuevo cuando lo necesite.
 
 El token tambien queda dentro del Droplet del comprador para que el servidor pueda actualizar el acceso seguro cuando cambie la IP de su red.
 

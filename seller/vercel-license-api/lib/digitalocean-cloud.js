@@ -187,6 +187,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 import subprocess
+import socket
 import time
 import urllib.error
 import urllib.parse
@@ -495,6 +496,17 @@ def redirect_host(raw_host):
         return host
     return "127.0.0.1"
 
+def hostname_resolves(raw_url):
+    try:
+        parsed = urllib.parse.urlparse(raw_url)
+        hostname = (parsed.hostname or "").strip().lower()
+        if not hostname:
+            return False
+        socket.getaddrinfo(hostname, 443, proto=socket.IPPROTO_TCP)
+        return True
+    except Exception:
+        return False
+
 def save_state(payload):
     os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
     with open(STATE_FILE, "w", encoding="utf-8") as handle:
@@ -651,7 +663,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         https_url = os.environ.get("CLOUD_DASHBOARD_HTTPS_URL", "").strip().rstrip("/")
         host = redirect_host(self.headers.get("Host", ""))
-        location = f"{https_url}/?cloud_access=ok" if https_url else f"http://{host}:{DASHBOARD_PORT}/?cloud_access=ok"
+        location = f"{https_url}/?cloud_access=ok" if https_url and hostname_resolves(https_url) else f"http://{host}:{DASHBOARD_PORT}/?cloud_access=ok"
         self.send_response(302)
         self.send_header("Location", location)
         self.send_header("Cache-Control", "no-store")
