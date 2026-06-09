@@ -2476,6 +2476,8 @@ class IntegrationTestSuite:
                 return {"metrics": {}, "recommendations": [], "fatigue": [], "pending": self.pending, "audience_strategy": {}, "business_profile": {"main_offer": "Curso Test"}}
 
             def execute_agent_tool(self, tool_request, payload):
+                if not tool_request:
+                    return {}
                 return {"type": "create_campaign_stack", "executed": False, "staged": True, "reply": "Campaña preparada para aprobación."}
 
             def log_action(self, *args):
@@ -2507,6 +2509,8 @@ class IntegrationTestSuite:
             approved_text = telegram_agent.handle_text(FakeConfig(), "12345", "Aprueba esa campaña", send=False)
             pending_reply = telegram_agent.handle_text(FakeConfig(), "12345", "/pendientes", send=True)
             callback = telegram_agent.handle_update(FakeConfig(), {"callback_query": {"id": "cb_1", "data": "approve:approval_test", "message": {"chat": {"id": "12345"}}}})
+            telegram_agent.agent_chat = lambda config, payload: {"reply": "", "tool_request": None}
+            empty_reply = telegram_agent.handle_text(FakeConfig(), "12345", "hola", send=False)
             fake_dashboard.pending = [
                 {
                     "id": "approval_active",
@@ -2520,6 +2524,7 @@ class IntegrationTestSuite:
             self.assert_true(telegram_agent.is_allowed_chat(FakeConfig(), "12345"), "Configured Telegram private chat is allowed")
             self.assert_true(not telegram_agent.is_allowed_chat(FakeConfig(), "99999"), "Unknown Telegram chat is rejected")
             self.assert_true("preparada para aprobación" in reply, "Telegram can stage manager actions through backend tools")
+            self.assert_true("No pude responder" not in empty_reply and "dashboard" in empty_reply.lower(), "Telegram empty agent replies become buyer-actionable recovery text")
             self.assert_true("Aprobacion ejecutada" in approved_text, "Telegram text can approve the single exact pending decision")
             self.assert_true(received_payloads[0]["business_profile"]["main_offer"] == "Curso Test", "Telegram gives Hermes the selected client's business profile")
             self.assert_true("Decisiones pendientes" in pending_reply, "Telegram lists pending approvals")
@@ -2686,7 +2691,7 @@ class IntegrationTestSuite:
         self.assert_true("/api/reject" in html and "msg-approval-card" in html, "Chat approval decisions include a reject path and compact action cards")
         self.assert_true("onboarding-flow" in html, "Dedicated onboarding flow exists")
         self.assert_true("onboarding-security-note" in html and "nada de lo que coloques aquí lo podemos ver nosotros" in html and "más privada que entregar tus credenciales a un SaaS" in html, "Onboarding shows a persistent local/private install reassurance")
-        self.assert_true("websiteScanGuide" in html and "/api/business-profile/links" in html and "saveBusinessLinks" in html and "Pega tu web y redes" in html, "Onboarding collects only website/social links before handing the deep interview to the agent")
+        self.assert_true("websiteScanGuide" in html and "/api/business-profile/links" in html and "saveBusinessLinks" in html and "Pega tu web y redes" in html and "Qué vendes, en pocas palabras" not in html, "Onboarding collects only website/social links before handing the deep interview to the agent")
         self.assert_true("Onboarding questions.md" in dashboard_source and "write_onboarding_questions_memory" in dashboard_source and "pregunta lo minimo necesario" in dashboard_source, "Business discovery is stored as agent memory for Telegram/chat instead of a long setup form")
         self.assert_true("businessContextGuide" in html and "businessContextQuestions" in html and "saveBusinessContextQuestion" in html, "Buyer context editor remains available outside the required onboarding path")
         self.assert_true("requires_repair" in html and "Reconectemos tus datos reales" in html, "Legacy completed setup reopens guidance when real Meta data is missing")
@@ -2715,11 +2720,11 @@ class IntegrationTestSuite:
         hermes_bridge_source = (ROOT_DIR / "src" / "hermes_bridge.py").read_text(encoding="utf-8")
         self.assert_true("hermes_status_timeout_seconds" in hermes_bridge_source and "hermes_response_timeout_seconds" in hermes_bridge_source, "Hermes status checks and real response timeouts stay separate")
         self.assert_true("{id:'chatgpt',status:chatgptOk?'ok':'warn'}" in html and "chatGptConnectMarkup(true)" in html, "Initial onboarding includes ChatGPT/Codex before the Telegram manager channel")
-        self.assert_true("{id:'telegram',status:telegramOk?'ok':'warn'}" in html and "telegramOnboardingGuide()" in html, "Initial onboarding includes Telegram before connecting Facebook/Meta")
+        self.assert_true("{id:'telegram',status:telegramOk?'ok':'warn'}" in html and "telegramOnboardingGuide()" in html, "Initial onboarding ends with Telegram as the manager channel")
         self.assert_true("Habla con tu manager por Telegram" in html and "Descargar Telegram" in html and "Abrir BotFather" in html and "Copiar /newbot" in html and "Detectar mi chat" in html, "Telegram onboarding explains download, BotFather, command copy, chat detection, and phone-first manager access")
         self.assert_true("usuario parecido, pero terminado en <b>bot</b>" in html and "Esto se configura una sola vez" in html and "No puedo crear el bot por ti" in html, "Telegram onboarding explains the BotFather username rule, one-time setup, and automation limits")
-        self.assert_true("{id:'meta',status:tokenOk?'ok':(socialOk?'warn':'blocked')}" in html and "{id:'account',status:accountOk?'ok':'blocked'}" in html and "{id:'destination',status:destinationOk?'ok':'blocked'}" in html, "Initial onboarding still includes the buyer Facebook/Meta connection")
-        self.assert_true("{id:'chatgpt',status:chatgptOk?'ok':'warn'},\n\t  {id:'telegram',status:telegramOk?'ok':'warn'},\n\t  {id:'meta',status:tokenOk?'ok':(socialOk?'warn':'blocked')}" in html, "Initial onboarding moves from ChatGPT to Telegram and then immediately to Facebook/Meta")
+        self.assert_true("{id:'meta',status:tokenOk?'ok':(socialOk?'warn':'blocked')}" in html and "{id:'account',status:accountOk?'ok':'blocked'}" in html and "{id:'destination',status:destinationOk?'ok':'blocked'}" in html, "Initial onboarding starts with the buyer Facebook/Meta connection")
+        self.assert_true("{id:'meta',status:tokenOk?'ok':(socialOk?'warn':'blocked')},\n\t  {id:'account',status:accountOk?'ok':'blocked'},\n\t  {id:'destination',status:destinationOk?'ok':'blocked'},\n\t  {id:'chatgpt',status:chatgptOk?'ok':'warn'},\n\t  {id:'website',status:websiteOk?'ok':'warn'},\n\t  {id:'telegram',status:telegramOk?'ok':'warn'}" in html, "Initial onboarding goes Facebook, account, destination, ChatGPT, links, and finishes with Telegram")
         self.assert_true("Elige qué modelo usará el agente" in html and "apiBrainOk" in html, "Onboarding positions model setup as part of installation and accepts API brain readiness")
         self.assert_true("license-panel" in html, "License activation panel exists")
         self.assert_true("/api/license/activate" in html, "License activation endpoint is wired in UI")
@@ -3429,7 +3434,7 @@ class IntegrationTestSuite:
         self.assert_true("https://admiroia.uboost.lat" in env_example, "Buyer release uses deployed license server")
         self.assert_true("LICENSE_PUBLIC_KEY=" in env_example, "Buyer release includes only license verification key")
         self.assert_true("AGENT_CHAT_BASE_URL=https://api.minimax.io/v1" in env_example and "AGENT_CHAT_MODEL=MiniMax-M3" in env_example and "AGENT_CHAT_PROVIDER=hermes" in env_example and "AGENT_BRAIN_PROVIDER=openai_codex" in env_example, "Buyer release documents Hermes runtime plus MiniMax M3/OpenAI-compatible brain support")
-        self.assert_true("META_ADS_AGENT_VERSION=v1.0.5" in env_example and (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip() == "v1.0.5", "Buyer release exposes the installed product version")
+        self.assert_true("META_ADS_AGENT_VERSION=v1.0.6" in env_example and (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip() == "v1.0.6", "Buyer release exposes the installed product version")
         bootstrap_config = (ROOT_DIR / "installer" / "release-bootstrap.env").read_text(encoding="utf-8")
         bootstrap_sh = (ROOT_DIR / "scripts" / "install-from-github.sh").read_text(encoding="utf-8")
         bootstrap_ps1 = (ROOT_DIR / "scripts" / "install-from-github.ps1").read_text(encoding="utf-8")

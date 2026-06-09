@@ -212,6 +212,16 @@ def send_approval_card(config, chat_id, item):
     return send_message_with_keyboard(config, chat_id, approval_body(item), approval_keyboard(item))
 
 
+def agent_recovery_reply(config, result=None):
+    result = result or {}
+    if getattr(config, "agent_chat_provider", "hermes") == "hermes":
+        return result.get("reply") or (
+            "Estoy revisando la conexión del agente. Si acabas de instalar, abre el dashboard y termina "
+            "Conectar ChatGPT/Codex o el modelo API. Después vuelve a escribirme aquí."
+        )
+    return result.get("reply") or "Estoy revisando la conexión del motor del agente. Abre el dashboard y termina el paso del modelo."
+
+
 def remember_approval_context(chat_id, item):
     context = read_json(APPROVAL_CONTEXT_FILE, {})
     if not isinstance(context, dict):
@@ -397,7 +407,7 @@ def handle_text(config, chat_id, text, send=True, image_paths=None, reply_approv
                 reply = "Todavia falta conectar el motor del agente."
             else:
                 tool_result = dashboard.execute_agent_tool(result.get("tool_request"), payload)
-                reply = (tool_result or {}).get("reply") or result.get("reply") or "No pude responder en este momento."
+                reply = (tool_result or {}).get("reply") or result.get("reply") or agent_recovery_reply(config, result)
             append_turn(chat_id, stripped, reply)
             dashboard.log_action("telegram_agent_message", {"chat_id": str(chat_id)[-4:], "tool": (tool_result or {}).get("type") if tool_result else "", "message_length": len(stripped)}, "completed")
     if send:
