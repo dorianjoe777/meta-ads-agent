@@ -164,6 +164,8 @@ class AgentConfig:
     hermes_disabled_toolsets: str = "terminal,code_execution"
     hermes_use_python_library: bool = True
     hermes_require_codex_auth: bool = True
+    meta_access_token_kind: str = ""
+    meta_access_token_saved_at: str = ""
 
     @property
     def live(self):
@@ -219,6 +221,8 @@ def load_config():
         social_cli=os.environ.get("SOCIAL_CLI", "social"),
         ad_account_id=os.environ.get("META_AD_ACCOUNT_ID", ""),
         meta_access_token=os.environ.get("META_ACCESS_TOKEN", ""),
+        meta_access_token_kind=os.environ.get("META_ACCESS_TOKEN_KIND", ""),
+        meta_access_token_saved_at=os.environ.get("META_ACCESS_TOKEN_SAVED_AT", ""),
         meta_graph_api_version=os.environ.get("META_GRAPH_API_VERSION", "v24.0"),
         notify_channel=os.environ.get("META_NOTIFY_CHANNEL", "dashboard").strip().lower(),
         telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),

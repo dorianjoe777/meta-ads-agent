@@ -3,6 +3,7 @@
 import shutil
 import importlib.util
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 from creative_refresh import INDEX_FILE as CREATIVE_INDEX_FILE
@@ -39,6 +40,40 @@ def exists_item(key, label, path, action=""):
 
 def configured(value):
     return bool(str(value or "").strip())
+
+
+def meta_token_age_days(config):
+    saved_at = str(getattr(config, "meta_access_token_saved_at", "") or "").strip()
+    if not saved_at:
+        return None
+    try:
+        saved = datetime.fromisoformat(saved_at)
+        now = datetime.now(saved.tzinfo) if saved.tzinfo else datetime.now()
+        return max(0, int((now - saved).total_seconds() // 86400))
+    except ValueError:
+        return None
+
+
+def meta_token_detail(config):
+    kind = str(getattr(config, "meta_access_token_kind", "") or "").strip().lower()
+    if kind == "stable":
+        return "Clave estable recomendada guardada"
+    if kind == "quick":
+        days = meta_token_age_days(config)
+        if days is None:
+            return "Clave rápida guardada; recuerda renovarla aproximadamente cada 60 días"
+        return f"Clave rápida guardada hace {days} días; recuerda renovarla aproximadamente cada 60 días"
+    return "configured"
+
+
+def meta_token_renewal_item(config):
+    kind = str(getattr(config, "meta_access_token_kind", "") or "").strip().lower()
+    if kind != "quick" or not configured(config.meta_access_token):
+        return item("access_token_renewal", "Meta key renewal", "ok", "No renewal reminder needed")
+    days = meta_token_age_days(config)
+    if days is not None and days >= 55:
+        return item("access_token_renewal", "Meta key renewal", "warn", f"Clave rápida guardada hace {days} días", "Renueva la clave rápida o cambia a clave estable desde Configuración.")
+    return item("access_token_renewal", "Meta key renewal", "ok", "Recordatorio activo para renovar la clave rápida alrededor de 60 días")
 
 
 def direct_model_ready(config):
@@ -138,7 +173,8 @@ def security_section(config, license_status):
 def meta_section(config, destination):
     return [
         item("ad_account", "Meta ad account", "ok" if configured(config.ad_account_id) else "blocked", config.ad_account_id or "Missing META_AD_ACCOUNT_ID", "Run social marketing accounts, then set META_AD_ACCOUNT_ID or social marketing set-default-account act_XXXX."),
-        item("access_token", "Meta token", "ok" if configured(config.meta_access_token) else ("blocked" if config.live and config.meta_connector == "graph_api" else "warn"), "configured" if configured(config.meta_access_token) else "Not configured; paste your Meta token in onboarding.", "Pega el token creado en tu propia app de Meta."),
+        item("access_token", "Meta access key", "ok" if configured(config.meta_access_token) else ("blocked" if config.live and config.meta_connector == "graph_api" else "warn"), meta_token_detail(config) if configured(config.meta_access_token) else "Not configured; paste your Meta key in onboarding.", "Pega la clave creada en tu propia app de Meta."),
+        meta_token_renewal_item(config),
         item("page_id", "Page ID", "ok" if configured(destination.get("page_id")) else "blocked", destination.get("page_id") or "Missing creative.destination.page_id", "Set creative.destination.page_id in ad-config.json."),
         item("landing_url", "Landing page URL", "ok" if configured(destination.get("url")) else "blocked", destination.get("url") or "Missing creative.destination.url", "Set creative.destination.url in ad-config.json."),
     ]

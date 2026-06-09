@@ -2,14 +2,12 @@
 
 This is an advanced/historical connector note, not the current default buyer path.
 
-The current buyer-facing path is:
+The current buyer-facing path shows two options:
 
-1. Create a stable Meta Business connection with a System User.
-2. Assign the buyer's own ad account and Facebook Page to that System User.
-3. Generate a stable access key/token.
-4. Paste it into the Admiro onboarding.
+1. Recommended: create a stable Meta Business connection with a System User.
+2. Faster start: use Graph API Explorer and renew later if needed.
 
-Graph API Explorer is only a quick testing path because its token can expire. `social-cli` remains useful as a connector layer and fallback, but buyer docs should not present terminal auth as the main beginner flow.
+Graph API Explorer can be useful when the buyer wants to start quickly or does not control the Business Portfolio owner yet. Its token can expire, so the dashboard copy should explain renewal reminders around 60 days and the option to switch to a stable key later from Setup. `social-cli` remains useful as a connector layer and fallback, but buyer docs should not present terminal auth as the main beginner flow.
 
 The installed `social` CLI supports Meta authentication and Marketing API commands:
 
@@ -25,7 +23,7 @@ social marketing create-creative
 social marketing create-ad
 ```
 
-Most buyers should not start by running terminal auth commands. They should follow the guided Meta Business/System User connection in the dashboard or during the free installation call.
+Most buyers should not start by running terminal auth commands. They should follow the guided Meta connection in the dashboard: stable key recommended, quick key accepted for faster starts.
 
 ## Buyer Flow
 

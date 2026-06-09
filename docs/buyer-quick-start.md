@@ -43,7 +43,9 @@ Al final del onboarding crearas tu propia contrasena del dashboard para proteger
 
 ## 3. Crear tu conexion privada con Meta
 
-Usa los screenshots incluidos con tu compra. La idea es que el acceso quede bajo tu control:
+Usa los screenshots incluidos con tu compra. La idea es que el acceso quede bajo tu control. Tienes dos opciones:
+
+**Opcion recomendada: conexion estable**
 
 1. Abre Meta Business Settings.
 2. Crea un `Usuario del sistema` para Admiro.
@@ -54,7 +56,9 @@ Usa los screenshots incluidos con tu compra. La idea es que el acceso quede bajo
 
 Esto es mas seguro para el comprador: la clave nace en su propio Meta Business, se guarda localmente en su PC/VPS y puede revocarla desde Meta cuando quiera.
 
-Graph API Explorer queda como ruta de prueba rapida. Puede servir para una demo, pero no es la conexion recomendada para uso diario porque puede vencer y pedir reconexion.
+**Opcion rapida: empezar hoy**
+
+Tambien puedes usar Graph API Explorer si quieres avanzar mas rapido o si todavia no tienes acceso al dueño del Business Portfolio. Esta clave puede vencer, por eso Admiro te avisara para renovarla aproximadamente cada 60 dias. Mas adelante puedes ir a `Configuracion` y cambiarla por una clave estable.
 
 ## 4. Conectar el modelo del agente
 

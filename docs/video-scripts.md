@@ -10,7 +10,7 @@
 
 ## 3. Crear conexion privada con Meta
 
-"Ahora vamos a crear tu conexion privada con Meta. La ruta recomendada es usar tu propio Meta Business y crear un Usuario del sistema para Admiro. Le das acceso a tu cuenta publicitaria y a tu pagina, generas una clave estable y la pegas en el dashboard. Nosotros no recibimos esa clave: queda guardada localmente en tu computador o VPS. Graph API Explorer queda solo como prueba rapida, porque puede vencer y pedir reconexion."
+"Ahora vamos a crear tu conexion privada con Meta. Veras dos opciones. La recomendada es crear una clave estable desde tu propio Meta Business con un Usuario del sistema. Si quieres empezar mas rapido, tambien puedes usar Graph API Explorer. Esa clave puede pedir renovacion cada 60 dias aproximadamente, pero puedes cambiar a clave estable mas adelante desde Configuracion. Nosotros no recibimos esa clave: queda guardada localmente en tu computador o VPS."
 
 ## 4. Elegir cuenta publicitaria
 
