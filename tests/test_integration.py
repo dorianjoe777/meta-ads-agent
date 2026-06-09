@@ -810,6 +810,8 @@ class IntegrationTestSuite:
             hermes_use_python_library = True
             hermes_max_iterations = 1
             hermes_timeout_seconds = 1
+            hermes_status_timeout_seconds = 1
+            hermes_response_timeout_seconds = 300
             hermes_enabled_toolsets = ""
             hermes_disabled_toolsets = "terminal"
             hermes_cli = "hermes"
@@ -1099,6 +1101,8 @@ class IntegrationTestSuite:
             hermes_use_python_library = False
             hermes_model = ""
             hermes_timeout_seconds = 1
+            hermes_status_timeout_seconds = 1
+            hermes_response_timeout_seconds = 300
             hermes_max_iterations = 1
             hermes_enabled_toolsets = ""
             hermes_disabled_toolsets = "terminal"
@@ -1131,6 +1135,8 @@ class IntegrationTestSuite:
             hermes_cli = "hermes"
             hermes_model = ""
             hermes_timeout_seconds = 10
+            hermes_status_timeout_seconds = 10
+            hermes_response_timeout_seconds = 300
             hermes_max_iterations = 3
             hermes_enabled_toolsets = "memory,skills,session_search,vision,image_gen,file,web,browser"
             hermes_disabled_toolsets = "terminal,code_execution"
@@ -2706,7 +2712,8 @@ class IntegrationTestSuite:
         self.assert_true("Cierra la pestaña de login de ChatGPT/Codex" in html and "Ya lo activé, abrir login de nuevo" in html and "reopenChatGptAuthUrl" in html and "chatgpt-retry-login" in html, "Device-code help tells buyers to close the failed login tab and reopen it from a large CTA")
         self.assert_true("body .onboarding-flow input:not([type=\"checkbox\"])" in html and "::placeholder" in html and "-webkit-autofill" in html, "Onboarding text fields stay dark and readable across dashboard themes")
         self.assert_true("Voy a elegir OpenAI Codex y el modelo recomendado automáticamente" in dashboard_source and "maybe_auto_drive_hermes_browserless" in dashboard_source, "Hermes browserless setup auto-selects Codex provider and recommended model")
-        self.assert_true("status_timeout = max(12" in (ROOT_DIR / "src" / "hermes_bridge.py").read_text(encoding="utf-8"), "Hermes status check has enough timeout for fresh Docker/VPS installs")
+        hermes_bridge_source = (ROOT_DIR / "src" / "hermes_bridge.py").read_text(encoding="utf-8")
+        self.assert_true("hermes_status_timeout_seconds" in hermes_bridge_source and "hermes_response_timeout_seconds" in hermes_bridge_source, "Hermes status checks and real response timeouts stay separate")
         self.assert_true("{id:'chatgpt',status:chatgptOk?'ok':'warn'}" in html and "chatGptConnectMarkup(true)" in html, "Initial onboarding includes ChatGPT/Codex before the Telegram manager channel")
         self.assert_true("{id:'telegram',status:telegramOk?'ok':'warn'}" in html and "telegramOnboardingGuide()" in html, "Initial onboarding includes Telegram before connecting Facebook/Meta")
         self.assert_true("Habla con tu manager por Telegram" in html and "Descargar Telegram" in html and "Abrir BotFather" in html and "Copiar /newbot" in html and "Detectar mi chat" in html, "Telegram onboarding explains download, BotFather, command copy, chat detection, and phone-first manager access")
@@ -3403,6 +3410,7 @@ class IntegrationTestSuite:
         self.assert_true("LAN_ACCESS_ENABLED" in env_example and "LAN_ACCESS_ENABLED" in docker_entrypoint and "ADMIRO_HOST_LAN_IP" in compose, "Phone LAN access is off by default and Docker receives the host LAN IP when available")
         self.assert_true("meta_ads_config" in compose and "meta_ads_brand_guides" in compose, "Docker Compose persists config and brand guides")
         self.assert_true("HERMES_HOME: /app/runtime/hermes" in compose and "mkdir -p /app/runtime/hermes" in docker_entrypoint and '"HERMES_HOME": "/app/runtime/hermes"' in docker_entrypoint and "replaced_blank" in docker_entrypoint, "Docker installs persist Hermes ChatGPT/Codex auth across rebuilds")
+        self.assert_true("HERMES_STATUS_TIMEOUT_SECONDS=20" in env_example and "HERMES_RESPONSE_TIMEOUT_SECONDS=300" in env_example and '"HERMES_RESPONSE_TIMEOUT_SECONDS": "300"' in docker_entrypoint, "Hermes real replies get a longer timeout than quick status checks")
         self.assert_true("meta_ads_update_snapshots" in compose and "/app/dashboard/data/update-snapshots" in compose, "Docker Compose keeps update rollback snapshots in a named volume")
         self.assert_true("MetaAdsAgent-source.zip" in script, "Release ZIP includes a stable asset name for bootstrap installers")
         self.assert_true("install-from-github.ps1" in windows_installer and "install-from-github.sh" in mac_installer and "install-from-github.sh" in linux_installer, "Double-click installers use the shared bootstrap scripts")

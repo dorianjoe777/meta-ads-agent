@@ -307,7 +307,7 @@ def hermes_codex_ready(config):
     hermes_cli = shutil.which(getattr(config, "hermes_cli", "hermes") or "hermes")
     if not hermes_cli:
         return False, "Hermes not installed"
-    status_timeout = max(12, min(30, int(getattr(config, "hermes_timeout_seconds", 90) or 90)))
+    status_timeout = max(8, min(45, int(getattr(config, "hermes_status_timeout_seconds", 20) or 20)))
     try:
         completed = subprocess.run(
             [hermes_cli, "status"],
@@ -451,7 +451,7 @@ def cli_chat(config, payload):
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        timeout=max(10, int(getattr(config, "hermes_timeout_seconds", 90) or 90)),
+        timeout=max(30, int(getattr(config, "hermes_response_timeout_seconds", getattr(config, "hermes_timeout_seconds", 300)) or 300)),
         check=False,
     )
     if completed.returncode != 0:

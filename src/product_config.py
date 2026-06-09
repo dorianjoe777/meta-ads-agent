@@ -156,7 +156,9 @@ class AgentConfig:
     hermes_cli: str = "hermes"
     hermes_home: str = ""
     hermes_model: str = ""
-    hermes_timeout_seconds: int = 90
+    hermes_timeout_seconds: int = 300
+    hermes_status_timeout_seconds: int = 20
+    hermes_response_timeout_seconds: int = 300
     hermes_max_iterations: int = 12
     hermes_enabled_toolsets: str = "memory,skills,session_search,vision,image_gen,file,web,browser"
     hermes_disabled_toolsets: str = "terminal,code_execution"
@@ -242,7 +244,9 @@ def load_config():
         hermes_cli=os.environ.get("HERMES_CLI", "hermes"),
         hermes_home=os.environ.get("HERMES_HOME", ""),
         hermes_model=os.environ.get("HERMES_MODEL", ""),
-        hermes_timeout_seconds=env_int("HERMES_TIMEOUT_SECONDS", 90),
+        hermes_timeout_seconds=env_int("HERMES_TIMEOUT_SECONDS", 300),
+        hermes_status_timeout_seconds=env_int("HERMES_STATUS_TIMEOUT_SECONDS", 20),
+        hermes_response_timeout_seconds=env_int("HERMES_RESPONSE_TIMEOUT_SECONDS", env_int("HERMES_TIMEOUT_SECONDS", 300)),
         hermes_max_iterations=env_int("HERMES_MAX_ITERATIONS", 12),
         hermes_enabled_toolsets=os.environ.get("HERMES_ENABLED_TOOLSETS", "memory,skills,session_search,vision,image_gen,file,web,browser"),
         hermes_disabled_toolsets=os.environ.get("HERMES_DISABLED_TOOLSETS", "terminal,code_execution"),

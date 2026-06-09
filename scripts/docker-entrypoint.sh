@@ -40,6 +40,9 @@ defaults = {
     "CODEX_CREATIVE_ENABLED": "false",
     "CODEX_CLI": "codex",
     "HERMES_HOME": "/app/runtime/hermes",
+    "HERMES_STATUS_TIMEOUT_SECONDS": "20",
+    "HERMES_RESPONSE_TIMEOUT_SECONDS": "300",
+    "HERMES_TIMEOUT_SECONDS": "300",
 }
 forced = {
     "DASHBOARD_HOST": "0.0.0.0",
