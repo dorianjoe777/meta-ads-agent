@@ -45,14 +45,16 @@ Al final del onboarding crearas tu propia contrasena del dashboard para proteger
 
 Usa los screenshots incluidos con tu compra. La idea es que el acceso quede bajo tu control:
 
-1. Abre Meta Developers.
-2. Crea tu propia app de Meta.
-3. Agrega Marketing API o abre Graph API Explorer para esa app.
-4. Genera un token con permisos de anuncios.
-5. Pega el token en el dashboard local. Se guarda automaticamente en esta instalacion.
-6. Toca `Buscar cuentas` y elige la cuenta publicitaria.
+1. Abre Meta Business Settings.
+2. Crea un `Usuario del sistema` para Admiro.
+3. Dale acceso a tu cuenta publicitaria y a tu pagina de Facebook.
+4. Genera una clave estable para ese Usuario del sistema con permisos de anuncios y paginas.
+5. Pega la clave en el dashboard local. Se guarda automaticamente en esta instalacion.
+6. Toca `Buscar mis cuentas` y elige la cuenta publicitaria.
 
-Esto es mas seguro para el comprador: el token nace en su propia cuenta de Meta, se guarda localmente en su PC/VPS y puede revocarlo desde Meta cuando quiera.
+Esto es mas seguro para el comprador: la clave nace en su propio Meta Business, se guarda localmente en su PC/VPS y puede revocarla desde Meta cuando quiera.
+
+Graph API Explorer queda como ruta de prueba rapida. Puede servir para una demo, pero no es la conexion recomendada para uso diario porque puede vencer y pedir reconexion.
 
 ## 4. Conectar el modelo del agente
 

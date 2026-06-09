@@ -1,6 +1,15 @@
 # Social-CLI Onboarding
 
-This is the recommended buyer path.
+This is an advanced/historical connector note, not the current default buyer path.
+
+The current buyer-facing path is:
+
+1. Create a stable Meta Business connection with a System User.
+2. Assign the buyer's own ad account and Facebook Page to that System User.
+3. Generate a stable access key/token.
+4. Paste it into the Admiro onboarding.
+
+Graph API Explorer is only a quick testing path because its token can expire. `social-cli` remains useful as a connector layer and fallback, but buyer docs should not present terminal auth as the main beginner flow.
 
 The installed `social` CLI supports Meta authentication and Marketing API commands:
 
@@ -16,7 +25,7 @@ social marketing create-creative
 social marketing create-ad
 ```
 
-This means most buyers should not start by creating a Facebook Developer app. They should start by connecting through `social`.
+Most buyers should not start by running terminal auth commands. They should follow the guided Meta Business/System User connection in the dashboard or during the free installation call.
 
 ## Buyer Flow
 
@@ -69,9 +78,11 @@ META_AD_ACCOUNT_ID=act_XXXX
 
 7. Check the dashboard `Setup` tab.
 
-## Why This Is The Default
+## Why This Is Not The Default Anymore
 
-The direct Graph API path requires app/token setup and more explanation. `social-cli` already provides:
+The terminal flow is harder for beginner buyers and can still depend on session/token behavior. The System User path is a better match for a self-hosted product because the buyer owns the Meta Business connection and can revoke it directly from Meta.
+
+`social-cli` still provides useful lower-level operations:
 
 - onboarding
 - auth status

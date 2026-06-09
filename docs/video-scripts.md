@@ -10,7 +10,7 @@
 
 ## 3. Crear conexion privada con Meta
 
-"Ahora vamos a crear tu conexion privada con Meta. Esto significa que usas tu propia app de Meta y tu propio token. Nosotros no recibimos ese token: queda guardado localmente en tu computador o VPS. Sigue los screenshots incluidos: abre Meta Developers, crea la app, genera el token y vuelve al dashboard para pegarlo."
+"Ahora vamos a crear tu conexion privada con Meta. La ruta recomendada es usar tu propio Meta Business y crear un Usuario del sistema para Admiro. Le das acceso a tu cuenta publicitaria y a tu pagina, generas una clave estable y la pegas en el dashboard. Nosotros no recibimos esa clave: queda guardada localmente en tu computador o VPS. Graph API Explorer queda solo como prueba rapida, porque puede vencer y pedir reconexion."
 
 ## 4. Elegir cuenta publicitaria
 
