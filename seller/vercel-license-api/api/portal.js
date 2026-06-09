@@ -885,6 +885,7 @@ export default async function handler(request, response) {
     const logoutButton = document.getElementById('logoutButton');
     let portalToken = '';
     let cloudProgressTimer = null;
+    let cloudCreatePreviewTimer = null;
     let cloudRecoveryToken = '';
     let cloudRecoveryRetryTimer = null;
     let cloudStateVersion = 0;
@@ -959,6 +960,12 @@ export default async function handler(request, response) {
       return '<div class="cloud-progress" style="--progress:'+progress+'%"><span></span></div>' +
         '<div class="cloud-progress-meta"><span>'+escapeHtml(cloudStageLabel(data))+'</span><span>'+progress+'%</span></div>';
     }
+    function stopCloudCreatePreview(){
+      if(cloudCreatePreviewTimer){
+        clearInterval(cloudCreatePreviewTimer);
+        cloudCreatePreviewTimer = null;
+      }
+    }
     function stopCloudProgressPolling(){
       if(cloudProgressTimer){
         clearInterval(cloudProgressTimer);
@@ -1010,12 +1017,50 @@ export default async function handler(request, response) {
       }, 650);
     }
     function startCloudProgressPolling(){
+      stopCloudCreatePreview();
       stopCloudProgressPolling();
       const expectedVersion = ++cloudStateVersion;
       pollCloudProgress(expectedVersion).catch(() => {});
       cloudProgressTimer = setInterval(() => {
         pollCloudProgress(expectedVersion).catch(() => {});
       }, 10000);
+    }
+    function renderCloudCreatePreview(progress = 8){
+      const progressData = { status:'creating_request', stage:'creando_servidor', progress };
+      downloadTitle.textContent = 'Creando tu servidor';
+      downloadSubtitle.textContent = 'Estoy pidiendo a DigitalOcean que cree el Droplet y deje lista la instalacion.';
+      installState.innerHTML =
+        '<h2>Creando tu servidor cloud</h2>' +
+        '<p>No cierres esta pagina. Primero DigitalOcean crea el servidor; despues Admiro AI se instala solo y aqui aparecera el boton para entrar.</p>' +
+        '<div class="state-grid">' +
+          '<div class="state-card">' +
+            '<span class="state-pill pending">Creacion iniciada</span>' +
+            '<strong>DigitalOcean esta preparando tu Droplet</strong>' +
+            '<p>Este primer paso puede tardar unos segundos. Luego veras el avance real de instalacion.</p>' +
+            cloudProgressMarkup(progressData) +
+          '</div>' +
+          '<div class="state-card">' +
+            '<span class="state-pill empty">Siguiente</span>' +
+            '<strong>Instalacion automatica</strong>' +
+            '<p>Cuando DigitalOcean responda, revisare el dashboard cada pocos segundos hasta que quede listo.</p>' +
+          '</div>' +
+        '</div>';
+      installState.classList.add('active');
+      cloudResult.innerHTML =
+        '<strong>Creando tu servidor en DigitalOcean.</strong>' +
+        '<p>Ya empece. Puedes dejar esta pagina abierta; la barra se actualiza sola.</p>' +
+        cloudProgressMarkup(progressData) +
+        '<span class="cloud-open-button pending" aria-disabled="true">Creando servidor...</span>';
+      cloudResult.classList.add('active');
+    }
+    function startCloudCreatePreview(){
+      stopCloudCreatePreview();
+      let previewProgress = 8;
+      renderCloudCreatePreview(previewProgress);
+      cloudCreatePreviewTimer = setInterval(() => {
+        previewProgress = Math.min(32, previewProgress + (previewProgress < 18 ? 3 : 2));
+        renderCloudCreatePreview(previewProgress);
+      }, 2400);
     }
     function updateDigitalOceanTokenUi(cloudSecrets){
       const tokenInput = document.getElementById('digitalOceanToken');
@@ -1214,6 +1259,7 @@ export default async function handler(request, response) {
     async function resetCloudInstall(){
       if(!portalToken) return;
       const expectedVersion = ++cloudStateVersion;
+      stopCloudCreatePreview();
       stopCloudProgressPolling();
       setStatus('Limpiando el servidor anterior del portal...');
       try{
@@ -1325,7 +1371,9 @@ export default async function handler(request, response) {
       button.disabled = true;
       const original = button.textContent;
       button.textContent = 'Creando servidor...';
-      cloudResult.classList.remove('active');
+      const expectedVersion = ++cloudStateVersion;
+      startCloudCreatePreview();
+      installState.scrollIntoView({behavior:'smooth', block:'start'});
       setStatus('Creando tu servidor en DigitalOcean...');
       try{
         const digitalOceanToken = document.getElementById('digitalOceanToken').value.trim();
@@ -1337,6 +1385,8 @@ export default async function handler(request, response) {
           region: document.getElementById('cloudRegion').value,
           size: document.getElementById('cloudSize').value
         });
+        if(expectedVersion !== cloudStateVersion) return;
+        stopCloudCreatePreview();
         if(!data.valid) throw new Error(data.detail || 'No pude crear el servidor.');
         renderCloudResult(data);
         renderInstallState({
@@ -1349,6 +1399,8 @@ export default async function handler(request, response) {
         startCloudProgressPolling();
         setStatus('Servidor creado. Espera unos minutos para abrirlo.');
       }catch(error){
+        if(expectedVersion !== cloudStateVersion) return;
+        stopCloudCreatePreview();
         cloudResult.textContent = error.message || 'No pude crear el servidor.';
         cloudResult.classList.add('active');
         setStatus(error.message || 'No pude crear el servidor.', true);
@@ -1358,6 +1410,7 @@ export default async function handler(request, response) {
       }
     });
     logoutButton.addEventListener('click', async () => {
+      stopCloudCreatePreview();
       stopCloudProgressPolling();
       await fetch('/api/portal/session', { method:'DELETE', credentials:'same-origin' }).catch(() => {});
       portalToken = '';
