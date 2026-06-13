@@ -8,6 +8,16 @@ Esta guia existe para entender avisos como `desarrollador no verificado`, `Unkno
 
 En Mac, un `.pkg`, `.dmg`, `.app` o `.command` sin firma y sin notarizacion puede pedir al comprador ir a Privacidad y Seguridad para permitir la instalacion.
 
+Fallback temporal para compradores Mac mientras no haya firma/notarizacion:
+
+1. Abrir `Configuracion del Sistema`.
+2. Entrar a `Privacidad y seguridad`.
+3. Bajar hasta la seccion `Seguridad`.
+4. Hacer clic en `Abrir de todos modos` para `Admira IA`.
+5. Confirmar y abrir `Admira IA.app` otra vez.
+
+No presentar esto como la experiencia ideal. Es solo el camino temporal para builds sin firma. La solucion profesional sigue siendo firmar el `.app`, crear el `.dmg`, notarizarlo con Apple y hacer `staple` del ticket.
+
 En Windows, un `.exe` o `.msi` sin firma puede aparecer como editor desconocido y activar SmartScreen.
 
 En Linux, normalmente no aparece el mismo aviso visual, pero el comprador tecnico puede querer checksum o firma GPG para confirmar que el archivo no fue cambiado.
@@ -20,13 +30,13 @@ Para la ruta Docker-first, el DMG es solo una forma comoda de abrir el instalado
 MetaAdsAgent-v1.0.2-mac.dmg
 ```
 
-Ese DMG contiene `Meta Ads Agent.app`. Al abrirla, copia el producto a:
+Ese DMG contiene `Admira IA.app`. Al abrirla, copia el producto a:
 
 ```text
-~/Applications/Meta Ads Agent
+~/Applications/Admira IA
 ```
 
-Despues abre Terminal con el instalador local y levanta Docker. Asi el comprador no tiene que buscar archivos raros dentro de una carpeta.
+Despues levanta Docker directamente en segundo plano y abre el dashboard local en el navegador. Asi el comprador no tiene que buscar archivos raros dentro de una carpeta ni mirar una terminal.
 
 Necesitas:
 

@@ -1,6 +1,6 @@
 # Instalacion guiada en DigitalOcean
 
-Esta opcion es para compradores que quieren dejar Admiro AI encendido aunque su PC este apagado.
+Esta opcion es para compradores que quieren dejar Admira IA encendido aunque su PC este apagado.
 
 El comprador entra a `https://admiroia.uboost.lat/access`, valida su email de compra y clave de acceso, y puede elegir `Instalar en la nube`.
 
@@ -11,7 +11,7 @@ Recomendamos DigitalOcean para esta opcion porque es un proveedor cloud confiabl
 1. Registra la llave publica SSH del comprador en su cuenta de DigitalOcean.
 2. Crea un firewall donde el dashboard queda cerrado a la IP actual del comprador.
 3. Crea un Droplet Ubuntu nuevo.
-4. Instala Docker y Admiro AI con `cloud-init`.
+4. Instala Docker y Admira IA con `cloud-init`.
 5. Descarga la release privada usando una URL firmada del servidor de licencias.
 6. Deja SSH abierto solo con llave para recuperacion, con contrasena SSH desactivada.
 7. Deja el dashboard disponible en el puerto `7871`, protegido por firewall e inicio de sesion.
@@ -31,7 +31,7 @@ En palabras simples:
 2. Agregar metodo de pago.
 3. Abrir el area API de DigitalOcean.
 4. Crear un token API.
-5. Pegar ese token en el portal de Admiro AI.
+5. Pegar ese token en el portal de Admira IA.
 6. Pegar la llave publica SSH.
 
 Permisos recomendados para el token:
@@ -41,7 +41,7 @@ Permisos recomendados para el token:
 - SSH Keys: crear y leer.
 - Tags: crear y leer.
 
-El portal usa el token para crear el servidor, configurar la llave SSH, preparar el firewall e instalar Admiro AI. No se muestra una opcion confusa de "guardar token" en la pagina de acceso: el portal lo conserva cifrado para poder recuperar acceso o reinstalar sin pedirlo otra vez. Si el comprador borra el token desde DigitalOcean, puede pegar uno nuevo cuando lo necesite.
+El portal usa el token para crear el servidor, configurar la llave SSH, preparar el firewall e instalar Admira IA. No se muestra una opcion confusa de "guardar token" en la pagina de acceso: el portal lo conserva cifrado para poder recuperar acceso o reinstalar sin pedirlo otra vez. Si el comprador borra el token desde DigitalOcean, puede pegar uno nuevo cuando lo necesite.
 
 El token tambien queda dentro del Droplet del comprador para que el servidor pueda actualizar el acceso seguro cuando cambie la IP de su red.
 
@@ -70,7 +70,7 @@ La llave SSH es la capa que evita que cualquier persona de internet pueda intent
 
 La llave publica SSH se puede compartir porque por si sola no abre nada. Solo sirve para decirle al servidor: "permite entrar a quien tenga la llave privada correcta".
 
-La llave privada es la parte secreta. Esa queda guardada en el computador del comprador y no debe compartirse. Sin esa llave privada, ni Admiro AI, ni soporte, ni otra persona puede entrar al servidor usando solo la llave publica.
+La llave privada es la parte secreta. Esa queda guardada en el computador del comprador y no debe compartirse. Sin esa llave privada, ni Admira IA, ni soporte, ni otra persona puede entrar al servidor usando solo la llave publica.
 
 En palabras simples para el comprador:
 

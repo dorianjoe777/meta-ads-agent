@@ -5,6 +5,7 @@ Integration tests for Meta Ads Agent modules.
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import importlib.util
@@ -21,14 +22,16 @@ from scaling_logic import ScalingManager, ScalingMetrics, ScalingStrategy
 from pause_logic import PauseManager, AdPerformance
 from auto_warmup import AutoWarmupManager
 from license import activate_license, format_license, license_status, normalize_license_entitlements, validate_license_key
-from security import dashboard_token_valid, redact_payload
+from security import dashboard_token_valid, hash_dashboard_password, redact_payload
 from product_config import AgentConfig
 from agent_chat import account_context, parse_skill_response
 import agent_chat
 import hermes_bridge
 import decision_memory
+import graph_executor
+import meta_upload
 from audience_builder import build_audience_strategy
-from codex_brand_guides import build_codex_creative_prompt
+from codex_brand_guides import build_codex_creative_prompt, build_codex_image_prompt_package
 import codex_brand_guides
 from creative_refresh import build_creative_plan
 from daily_agent import execute_campaign_creation
@@ -408,6 +411,7 @@ class IntegrationTestSuite:
             agent_profile_dir="agent",
             codex_creative_enabled=True,
             codex_cli="codex",
+            codex_creative_model="",
         )
         status = license_status(config)
         activated = activate_license(config)
@@ -498,24 +502,33 @@ class IntegrationTestSuite:
             agent_profile_dir="agent",
             codex_creative_enabled=True,
             codex_cli="codex",
+            codex_creative_model="",
         )
 
         self.assert_true(dashboard_token_valid(config, "secret-password"), "Dashboard password unlocks protected routes")
         self.assert_true(not dashboard_token_valid(config, "wrong-password"), "Wrong dashboard password is rejected")
+        config.dashboard_token = ""
+        config.dashboard_password = ""
+        config.dashboard_password_hash = hash_dashboard_password("secret-password")
+        self.assert_true(dashboard_token_valid(config, "secret-password"), "Hashed dashboard password unlocks protected routes")
+        self.assert_true(not dashboard_token_valid(config, "wrong-password"), "Wrong hashed dashboard password is rejected")
 
         dashboard = load_dashboard_module()
         original_load_config = dashboard.load_config
         original_onboarding = dashboard.load_onboarding_state
+        original_sessions_file = dashboard.DASHBOARD_SESSIONS_FILE
         handler = object.__new__(dashboard.DashboardHandler)
         try:
             class NoPassword:
                 dashboard_token = ""
                 dashboard_password = ""
+                dashboard_password_hash = ""
                 dashboard_token_required = True
 
             class WithPassword:
                 dashboard_token = "secret-password"
                 dashboard_password = "secret-password"
+                dashboard_password_hash = ""
                 dashboard_token_required = True
 
             dashboard.load_onboarding_state = lambda: {"completed": False}
@@ -527,9 +540,17 @@ class IntegrationTestSuite:
             dashboard.load_config = lambda: WithPassword()
             self.assert_true(handler.auth_required_for_post("/api/dashboard-password"), "Changing password requires auth after a password exists")
             self.assert_true(handler.auth_required_for_get("/api/dashboard"), "Dashboard API is protected after password exists even before onboarding is complete")
+            with tempfile.TemporaryDirectory() as tmpdir:
+                dashboard.DASHBOARD_SESSIONS_FILE = Path(tmpdir) / "dashboard_sessions.json"
+                session = dashboard.create_dashboard_session(remember=False)
+                raw_sessions = dashboard.read_json(dashboard.DASHBOARD_SESSIONS_FILE, {"sessions": []}).get("sessions", [])
+                self.assert_true(session["session_token"].startswith("das_"), "Dashboard unlock returns an opaque session token")
+                self.assert_true(dashboard.dashboard_session_valid(session["session_token"]), "Dashboard session token unlocks protected routes")
+                self.assert_true(raw_sessions and raw_sessions[0].get("digest") and all(value != session["session_token"] for item in raw_sessions for value in item.values()), "Dashboard sessions store only hashed token digests")
         finally:
             dashboard.load_config = original_load_config
             dashboard.load_onboarding_state = original_onboarding
+            dashboard.DASHBOARD_SESSIONS_FILE = original_sessions_file
 
     def test_secret_redaction(self):
         """Test sensitive buyer fields are redacted from logs."""
@@ -793,6 +814,12 @@ class IntegrationTestSuite:
             }
             empty_result = agent_chat.chat(FakeConfig(), {"message": "Hola", "metrics": {}, "language": "es"})
             self.assert_true(empty_result.get("fallback") is True and empty_result.get("reply") and "No pude responder" not in empty_result.get("reply"), "Empty Hermes replies become useful manager fallback text")
+            noisy = "⚠ tirith security scanner enabled but not available — command scanning will use pattern matching only\n  ┊ review diff\na/data/business_profile.json → b/data/business_profile.json\n@@ -1,3 +1,4 @@\n-  \"source\": \"links\"\n+  \"source\": \"dashboard_chat\"\nTenés razón. Sigo con una pregunta a la vez."
+            clean = agent_chat.clean_reply(noisy)
+            self.assert_true(clean.startswith("Tenés razón") and "business_profile" not in clean and "tirith" not in clean.lower(), "Technical Hermes/Codex diff output is stripped before reaching buyers")
+            agent_chat.hermes_chat = lambda config, payload: {"ok": True, "provider": "hermes", "reply": noisy}
+            clean_result = agent_chat.chat(FakeConfig(), {"message": "Hola", "metrics": {}, "language": "es"})
+            self.assert_true(clean_result["reply"].startswith("Tenés razón") and "tirith" not in clean_result["reply"].lower(), "Plain Hermes replies are cleaned before any channel sends them")
         finally:
             agent_chat.hermes_chat = original_hermes_chat
 
@@ -831,7 +858,7 @@ class IntegrationTestSuite:
             hermes_bridge.cli_chat = original_cli
 
     def test_hermes_creative_image_request_routes_to_codex_tool(self):
-        """Test Hermes can route a natural image-creative request to the Codex creative tool."""
+        """Test Hermes can route a natural image-creative request to the Codex image tool."""
         print("\nTesting Hermes Creative Image Tool Routing...")
 
         class FakeConfig:
@@ -847,10 +874,11 @@ class IntegrationTestSuite:
                     {
                         "assistant_message": "Hice el analisis de la imagen. Puedo preparar tres rutas visuales y dejarlas listas para revisar.",
                         "tool_request": {
-                            "tool": "codex_creative_plan",
+                            "tool": "codex_image_generate",
                             "arguments": {
-                                "request": "Prepara 3 creativos para Meta Ads usando Codex Image. Resumen visual: producto fisico protagonista, fondo limpio, promesa clara y formato 4:5.",
+                                "request": "Genera un creativo final para Meta Ads usando Codex/Image. Producto fisico protagonista, fondo limpio, promesa clara y formato 4:5.",
                                 "product_guide": "",
+                                "reference_image_summary": "producto fisico protagonista, fondo limpio, promesa clara y formato 4:5",
                             },
                         },
                     },
@@ -867,8 +895,8 @@ class IntegrationTestSuite:
                 },
             )
             tool_request = result.get("tool_request") or {}
-            self.assert_true(tool_request.get("tool") == "codex_creative_plan", "Creative image requests can route to Codex creative planning")
-            self.assert_true("Resumen visual" in tool_request.get("arguments", {}).get("request", ""), "Hermes includes visual summary for Codex instead of relying on file reads")
+            self.assert_true(tool_request.get("tool") == "codex_image_generate", "Creative image requests route to the Codex/Image backend bridge")
+            self.assert_true("reference_image_summary" in tool_request.get("arguments", {}), "Hermes includes visual summary for Codex instead of relying on file reads")
             self.assert_true("account_context" in received[0], "Hermes creative requests receive account context")
         finally:
             agent_chat.hermes_chat = original_hermes_chat
@@ -900,10 +928,12 @@ class IntegrationTestSuite:
         captured = {}
         original_update = dashboard.update_env_values
         original_launch = dashboard.launch_hermes_terminal
+        original_ready = dashboard.hermes_codex_ready
         original_log = dashboard.log_action
         try:
             dashboard.update_env_values = lambda values: captured.update(values)
             dashboard.launch_hermes_terminal = lambda _config: True
+            dashboard.hermes_codex_ready = lambda _config: (False, "Provider unknown; OpenAI Codex not logged in")
             dashboard.log_action = lambda *_args, **_kwargs: None
             result = dashboard.connect_agent_model({})
             self.assert_true(result["status"] == "terminal_opened", "Connect action opens the terminal when the environment allows it")
@@ -912,6 +942,37 @@ class IntegrationTestSuite:
         finally:
             dashboard.update_env_values = original_update
             dashboard.launch_hermes_terminal = original_launch
+            dashboard.hermes_codex_ready = original_ready
+            dashboard.log_action = original_log
+
+    def test_dashboard_chatgpt_connect_does_not_reopen_login_when_ready(self):
+        """Test already connected ChatGPT/Codex saves model choice without opening another login path."""
+        print("\nTesting Dashboard ChatGPT/Codex Already Connected...")
+
+        dashboard = load_dashboard_module()
+        captured = {}
+        launched = []
+        original_update = dashboard.update_env_values
+        original_launch = dashboard.launch_hermes_terminal
+        original_start = dashboard.start_hermes_browserless_login
+        original_ready = dashboard.hermes_codex_ready
+        original_log = dashboard.log_action
+        try:
+            dashboard.update_env_values = lambda values: captured.update(values)
+            dashboard.launch_hermes_terminal = lambda _config: launched.append("terminal") or True
+            dashboard.start_hermes_browserless_login = lambda _config: launched.append("browserless") or {"status": "browser_login_started"}
+            dashboard.hermes_codex_ready = lambda _config: (True, "Provider: OpenAI Codex; OpenAI Codex ✓ logged in")
+            dashboard.log_action = lambda *_args, **_kwargs: None
+            result = dashboard.connect_agent_model({"hermes_model": "gpt-5.5"})
+            self.assert_true(result["status"] == "completed", "Connect action reports completed when ChatGPT/Codex is already ready")
+            self.assert_true(result["mode"] == "already_ready", "Already-ready state is explicit")
+            self.assert_true(captured.get("HERMES_MODEL") == "gpt-5.5", "Exact Codex model choice is still saved")
+            self.assert_true(launched == [], "Already-ready connect does not open terminal or browserless login")
+        finally:
+            dashboard.update_env_values = original_update
+            dashboard.launch_hermes_terminal = original_launch
+            dashboard.start_hermes_browserless_login = original_start
+            dashboard.hermes_codex_ready = original_ready
             dashboard.log_action = original_log
 
     def test_dashboard_chatgpt_connect_action_uses_vps_browserless_bridge(self):
@@ -923,10 +984,12 @@ class IntegrationTestSuite:
         original_update = dashboard.update_env_values
         original_launch = dashboard.launch_hermes_terminal
         original_start = dashboard.start_hermes_browserless_login
+        original_ready = dashboard.hermes_codex_ready
         original_log = dashboard.log_action
         try:
             dashboard.update_env_values = lambda values: captured.update(values)
             dashboard.launch_hermes_terminal = lambda _config: False
+            dashboard.hermes_codex_ready = lambda _config: (False, "Provider unknown; OpenAI Codex not logged in")
             dashboard.start_hermes_browserless_login = lambda _config: {
                 "ok": True,
                 "status": "browser_login_started",
@@ -944,6 +1007,7 @@ class IntegrationTestSuite:
             dashboard.update_env_values = original_update
             dashboard.launch_hermes_terminal = original_launch
             dashboard.start_hermes_browserless_login = original_start
+            dashboard.hermes_codex_ready = original_ready
             dashboard.log_action = original_log
 
     def test_dashboard_hermes_browserless_auto_selects_codex(self):
@@ -1026,6 +1090,27 @@ class IntegrationTestSuite:
                 })
             selected_model = dashboard.maybe_auto_drive_hermes_browserless("auto-test", 99)
             self.assert_true(selected_model is True and writes[-1] == (99, b"\n"), "Browserless Hermes confirms the recommended model automatically")
+
+            exact_model_output = (
+                "Select model:\n"
+                "  1. gpt-5.4-mini\n"
+                "  2. gpt-5.5\n"
+                "Select by number, Enter to confirm.\n"
+            )
+            with dashboard.HERMES_LOGIN_LOCK:
+                dashboard.HERMES_LOGIN_STATE.update({
+                    "id": "auto-test",
+                    "output": exact_model_output,
+                    "auto_provider_sent": True,
+                    "auto_codex_subprovider_sent": True,
+                    "auto_model_sent": False,
+                    "preferred_model": "gpt-5.5",
+                    "auto_note": "",
+                    "proc": None,
+                    "fd": None,
+                })
+            selected_exact_model = dashboard.maybe_auto_drive_hermes_browserless("auto-test", 99)
+            self.assert_true(selected_exact_model is True and writes[-1] == (99, b"2\n"), "Browserless Hermes selects the buyer's exact Codex model when it appears")
 
             login_output = (
                 "Open this URL to continue: https://auth.openai.com/device\n"
@@ -1138,8 +1223,8 @@ class IntegrationTestSuite:
             hermes_status_timeout_seconds = 10
             hermes_response_timeout_seconds = 300
             hermes_max_iterations = 3
-            hermes_enabled_toolsets = "memory,skills,session_search,vision,image_gen,file,web,browser"
-            hermes_disabled_toolsets = "terminal,code_execution"
+            hermes_enabled_toolsets = "memory,skills,session_search,vision,file,web,browser"
+            hermes_disabled_toolsets = "terminal,code_execution,image_gen"
             hermes_home = ""
 
         image_dir = ROOT_DIR / "output" / "telegram_uploads"
@@ -1169,7 +1254,120 @@ class IntegrationTestSuite:
             self.assert_true("--image" in command and attached_image.endswith("test-reference.png"), "Safe uploaded image is attached to Hermes")
             self.assert_true("dashboard/data/hermes-workspace/current/uploads" in attached_image, "Safe uploaded image is copied into the Hermes workspace before attachment")
             self.assert_true(str(unsafe_image.resolve()) not in command, "Unsafe local file is not attached as an image")
-            self.assert_true("memory,skills,session_search,vision,image_gen,file,web,browser" in command, "Creative-friendly Hermes toolsets include scoped file and website access")
+            self.assert_true("memory,skills,session_search,vision,file,web,browser" in command, "Creative-friendly Hermes toolsets include scoped file and website access")
+            self.assert_true("image_gen" not in command[command.index("--toolsets") + 1], "Hermes internal image generation stays disabled so Codex/Image bridge owns final creatives")
+        finally:
+            hermes_bridge.subprocess.run = original_run
+
+    def test_hermes_telegram_uses_persistent_session_not_prompt_history(self):
+        """Test Telegram sends the current message to a persistent Hermes session instead of replaying chat history."""
+        print("\nTesting Hermes Telegram Session Routing...")
+
+        class FakeConfig:
+            hermes_cli = "hermes"
+            hermes_model = ""
+            hermes_timeout_seconds = 10
+            hermes_status_timeout_seconds = 10
+            hermes_response_timeout_seconds = 300
+            hermes_max_iterations = 3
+            hermes_enabled_toolsets = "memory,skills,file,web,browser"
+            hermes_disabled_toolsets = "terminal,code_execution"
+            hermes_home = ""
+            agent_chat_provider = "hermes"
+            agent_brain_provider = "custom_api"
+            agent_chat_base_url = "https://example.test/v1"
+            agent_chat_api_key = "test-key"
+            agent_chat_model = "custom-model"
+
+        captured = {}
+
+        class Completed:
+            returncode = 0
+            stdout = "Entendido. Lo tomo como respuesta a la pregunta anterior."
+            stderr = ""
+
+        original_run = hermes_bridge.subprocess.run
+        try:
+            def fake_run(command, **kwargs):
+                captured["command"] = command
+                return Completed()
+
+            hermes_bridge.subprocess.run = fake_run
+            payload = {
+                "message": "a todos ellos",
+                "language": "es",
+                "channel": "telegram",
+                "session_key": "telegram:12345",
+                "account_context": {"summary": {"overall_roas": 5.2}},
+                "history": [{"role": "agent", "content": "Historia que no debe ir en el prompt"}],
+            }
+            result = hermes_bridge.cli_chat(FakeConfig(), payload)
+            command = captured["command"]
+            query = command[command.index("-q") + 1]
+            self.assert_true(result.startswith("Entendido"), "Hermes CLI returns the buyer-facing reply")
+            self.assert_true("--continue" in command and "meta-ads-agent-telegram-" in command[command.index("--continue") + 1], "Telegram uses a persistent Hermes session")
+            self.assert_true("Historia que no debe ir en el prompt" not in query, "Telegram does not replay prompt history to Hermes")
+            self.assert_true("a todos ellos" in query and len(query) < 700, "Only the current Telegram message plus a short context note is sent")
+        finally:
+            hermes_bridge.subprocess.run = original_run
+
+    def test_hermes_telegram_creates_missing_persistent_session(self):
+        """Test first Telegram message creates and names the Hermes session when it does not exist yet."""
+        print("\nTesting Hermes Telegram Missing Session Bootstrap...")
+
+        class FakeConfig:
+            hermes_cli = "hermes"
+            hermes_model = ""
+            hermes_timeout_seconds = 10
+            hermes_status_timeout_seconds = 10
+            hermes_response_timeout_seconds = 300
+            hermes_max_iterations = 3
+            hermes_enabled_toolsets = "memory,skills,file,web,browser"
+            hermes_disabled_toolsets = "terminal,code_execution"
+            hermes_home = ""
+            agent_chat_provider = "hermes"
+            agent_brain_provider = "custom_api"
+            agent_chat_base_url = "https://example.test/v1"
+            agent_chat_api_key = "test-key"
+            agent_chat_model = "custom-model"
+
+        calls = []
+
+        class Completed:
+            def __init__(self, returncode=0, stdout="", stderr=""):
+                self.returncode = returncode
+                self.stdout = stdout
+                self.stderr = stderr
+
+        original_run = hermes_bridge.subprocess.run
+        try:
+            def fake_run(command, **kwargs):
+                calls.append(command)
+                if command[:2] == ["hermes", "chat"] and "--continue" in command:
+                    return Completed(1, stderr="No session found matching 'meta-ads-agent-telegram-abc123'.")
+                if command[:2] == ["hermes", "chat"]:
+                    return Completed(0, stdout="Primera respuesta creada.")
+                if command[:3] == ["hermes", "sessions", "list"]:
+                    return Completed(0, stdout="Preview  now  meta-ads-agent-telegram  20260610_210000_abcd12\n")
+                if command[:3] == ["hermes", "sessions", "rename"]:
+                    return Completed(0, stdout="renamed")
+                return Completed(0)
+
+            hermes_bridge.subprocess.run = fake_run
+            result = hermes_bridge.cli_chat(
+                FakeConfig(),
+                {
+                    "message": "hola",
+                    "language": "es",
+                    "channel": "telegram",
+                    "session_key": "telegram:first-run",
+                    "account_context": {},
+                },
+            )
+            self.assert_true(result == "Primera respuesta creada.", "Missing Hermes session is created on the first Telegram turn")
+            self.assert_true(any(command[:2] == ["hermes", "chat"] and "--continue" in command for command in calls), "First attempt tries the persistent session")
+            self.assert_true(any(command[:2] == ["hermes", "chat"] and "--continue" not in command for command in calls), "Missing session retries by creating a fresh Hermes session")
+            self.assert_true(any(command[:3] == ["hermes", "sessions", "rename"] for command in calls), "Fresh Hermes session is named for the next turn")
         finally:
             hermes_bridge.subprocess.run = original_run
 
@@ -1178,20 +1376,35 @@ class IntegrationTestSuite:
         print("\nTesting Hermes Curated Business Memory...")
 
         memory = hermes_bridge.business_memory_context()
-        workspace = hermes_bridge.prepare_hermes_workspace({"image_paths": [str(ROOT_DIR / ".env")]})
+        hermes_payload = {
+            "message": "Que sabes de mi negocio?",
+            "language": "es",
+            "account_context": {},
+            "image_paths": [str(ROOT_DIR / ".env")],
+            "history": [
+                {"role": "agent", "content": "¿A quién quieres venderle principalmente este agente?"},
+                {"role": "user", "content": "a todos ellos"},
+            ],
+        }
+        workspace = hermes_bridge.prepare_hermes_workspace(hermes_payload)
         prompt = hermes_bridge.hermes_prompt(
             type("FakeConfig", (), {"agent_profile_dir": "agent"})(),
-            {"message": "Que sabes de mi negocio?", "language": "es", "account_context": {}, "image_paths": [str(ROOT_DIR / ".env")]},
+            hermes_payload,
             workspace,
         )
-        self.assert_true("Curated local business memory JSON" in prompt, "Hermes prompt includes curated business memory")
-        self.assert_true("Hermes workspace files" in prompt, "Hermes prompt lists workspace files")
+        self.assert_true("Hermes workspace files" in prompt, "Hermes prompt lists workspace files without embedding all memory")
         self.assert_true("business_profile" in memory and "brand_guides" in memory, "Business and brand memory are included")
-        self.assert_true("onboarding_plan" in memory and "creative_references" in memory and "Agent onboarding phase plan" in prompt, "Hermes receives onboarding phase and creative reference memory")
+        self.assert_true("onboarding_plan" in memory and "creative_references" in memory, "Hermes memory builder includes onboarding phase and creative reference memory")
+        self.assert_true((hermes_bridge.HERMES_WORKSPACE_DIR / "AGENTS.md").exists(), "Hermes receives product role and tool rules as workspace AGENTS.md")
+        self.assert_true((hermes_bridge.HERMES_WORKSPACE_DIR / "SOUL.md").exists(), "Hermes receives product soul instructions")
+        self.assert_true((hermes_bridge.HERMES_WORKSPACE_DIR / "CURRENT_CONTEXT.json").exists(), "Hermes receives current turn account context as a scoped workspace file")
         self.assert_true((hermes_bridge.HERMES_WORKSPACE_DIR / "data" / "business_profile.json").exists(), "Business profile is copied into Hermes workspace")
         self.assert_true((hermes_bridge.HERMES_WORKSPACE_DIR / "brand_guides" / "general_branding.md").exists(), "Brand guide is copied into Hermes workspace")
         self.assert_true((hermes_bridge.HERMES_WORKSPACE_DIR / "memory" / "Agent onboarding plan.md").exists(), "Agent onboarding plan is copied into Hermes workspace")
         self.assert_true((hermes_bridge.HERMES_WORKSPACE_DIR / "brand_guides" / "creative_references.md").exists(), "Creative references are copied into Hermes workspace")
+        self.assert_true(not (hermes_bridge.HERMES_WORKSPACE_DIR / "memory" / "recent_chat.json").exists(), "Hermes workspace does not duplicate chat history")
+        self.assert_true(not (hermes_bridge.HERMES_WORKSPACE_DIR / "memory" / "current_channel_history.json").exists(), "Hermes continuity is session-based, not prompt-history based")
+        self.assert_true("Recent conversation in this same channel JSON" not in prompt and "a todos ellos" not in prompt, "Hermes prompt does not replay channel history")
         self.assert_true(".env" not in prompt and "MINIMAX_API_KEY" not in prompt, "Secrets and arbitrary local files are not included")
         self.assert_true("Uploaded reference images" not in prompt, "Unsafe non-upload image paths are not attached")
 
@@ -1320,7 +1533,7 @@ class IntegrationTestSuite:
         calls = []
         try:
             dashboard.load_config = lambda: type("Cfg", (), {"codex_creative_enabled": True})()
-            dashboard.call_codex_cli = lambda prompt: calls.append(prompt) or {"ok": True}
+            dashboard.call_codex_cli = lambda prompt, **kwargs: calls.append(prompt) or {"ok": True}
             blocked = dashboard.codex_creative_plan({"product_guide": ".env", "request": "Prepara creativos"})
             self.assert_true(blocked["ok"] is False, "Backend Codex tool rejects escaped guide paths")
             self.assert_true(not calls, "Blocked Codex requests never invoke the CLI")
@@ -1334,7 +1547,7 @@ class IntegrationTestSuite:
         original_codex_config = codex_brand_guides.load_config
         captured = {}
         try:
-            codex_brand_guides.load_config = lambda: type("Cfg", (), {"codex_cli": "codex"})()
+            codex_brand_guides.load_config = lambda: type("Cfg", (), {"codex_cli": "codex", "codex_creative_model": "gpt-5.5"})()
             def fake_run(command, **kwargs):
                 captured["command"] = command
                 captured["cwd"] = kwargs.get("cwd")
@@ -1345,13 +1558,187 @@ class IntegrationTestSuite:
             self.assert_true(result["ok"] is True, "Optional Codex bridge can complete isolated creative planning")
             self.assert_true("--sandbox" in command and "read-only" in command, "Codex bridge uses read-only sandbox")
             self.assert_true("--ephemeral" in command and "--ignore-user-config" in command and "--ignore-rules" in command, "Codex bridge avoids saved sessions and local rules")
+            self.assert_true("-m" in command and command[command.index("-m") + 1] == "gpt-5.5", "Codex bridge can pin a supported creative model")
             self.assert_true(str(captured["cwd"]).startswith("/var/") or "meta-ads-codex-" in str(captured["cwd"]), "Codex bridge executes in an isolated temporary folder")
+
+            def fake_unauth_run(command, **kwargs):
+                return type("Result", (), {"returncode": 1, "stdout": "", "stderr": "HTTP error: 401 Unauthorized. Missing bearer or basic authentication in header"})()
+            codex_brand_guides.subprocess.run = fake_unauth_run
+            unauth = codex_brand_guides.call_codex_cli(safe_prompt, model="gpt-5.5")
+            self.assert_true(unauth["ok"] is False and "no esta autenticado" in unauth.get("error", ""), "Codex CLI auth errors become buyer-friendly")
         finally:
             codex_brand_guides.subprocess.run = original_run
             codex_brand_guides.load_config = original_codex_config
 
+    def test_codex_image_prompt_lab_builds_fixed_and_free_packages(self):
+        """Test Codex image prompt packages preserve brand locks while enabling varied routes."""
+        print("\nTesting Codex Image Prompt Lab...")
+
+        test_root = Path(tempfile.mkdtemp(prefix="codex_image_prompt_lab_"))
+        brand_dir = test_root / "brand_guides"
+        product_dir = brand_dir / "products"
+        brief_dir = brand_dir / "ad_briefs"
+        product_dir.mkdir(parents=True, exist_ok=True)
+        brief_dir.mkdir(parents=True, exist_ok=True)
+        (brand_dir / "general_branding.md").write_text(
+            "# Guia general de marca\n\n"
+            "- Nombre de marca: Aurora Skin\n"
+            "- Colores principales: azul profundo, menta y blanco\n"
+            "- Tipografias o estilo de letras: sans elegante, titulares grandes\n"
+            "- Evitar siempre: promesas medicas imposibles\n",
+            encoding="utf-8",
+        )
+        (product_dir / "serum.md").write_text(
+            "# Guia de producto\n\n"
+            "- Nombre: Serum Luminoso\n"
+            "- Para quien es: mujeres que quieren una rutina simple\n"
+            "- Dolor principal: piel apagada\n"
+            "- Deseo principal: verse fresca sin maquillaje pesado\n"
+            "- Mostrar: textura del serum y rostro luminoso\n",
+            encoding="utf-8",
+        )
+        (brief_dir / "promo.md").write_text(
+            "# Brief publicitario\n\n"
+            "- Nombre del brief: Promo serum\n"
+            "- Ficha de producto: brand_guides/products/serum.md\n"
+            "- Promocion o idea puntual: lanzamiento con descuento\n"
+            "- No cambiar: precio y nombre del serum\n"
+            "- Ventana creativa para variaciones: cambiar composicion y fondo\n",
+            encoding="utf-8",
+        )
+        (brand_dir / "creative_references.md").write_text(
+            "# Referencias creativas aprobadas\n\n## Notas para nuevos creativos\n\nLuz suave, producto visible, nada saturado.\n",
+            encoding="utf-8",
+        )
+        original = {
+            "ROOT_DIR": codex_brand_guides.ROOT_DIR,
+            "BRAND_DIR": codex_brand_guides.BRAND_DIR,
+            "PRODUCT_DIR": codex_brand_guides.PRODUCT_DIR,
+            "AD_BRIEF_DIR": codex_brand_guides.AD_BRIEF_DIR,
+            "GENERAL_GUIDE": codex_brand_guides.GENERAL_GUIDE,
+            "CREATIVE_REFERENCES_FILE": codex_brand_guides.CREATIVE_REFERENCES_FILE,
+        }
+        try:
+            codex_brand_guides.ROOT_DIR = test_root
+            codex_brand_guides.BRAND_DIR = brand_dir
+            codex_brand_guides.PRODUCT_DIR = product_dir
+            codex_brand_guides.AD_BRIEF_DIR = brief_dir
+            codex_brand_guides.GENERAL_GUIDE = brand_dir / "general_branding.md"
+            codex_brand_guides.CREATIVE_REFERENCES_FILE = brand_dir / "creative_references.md"
+            fixed = build_codex_image_prompt_package(
+                product_guide="serum",
+                ad_brief="promo",
+                request="Crear imagen para Meta Ads",
+                mode="fixed",
+                variations=2,
+                seed="stable",
+            )
+            free = build_codex_image_prompt_package(
+                product_guide="serum",
+                ad_brief="promo",
+                request="Crear rutas muy distintas para probar",
+                mode="free",
+                variations=5,
+                seed="variety",
+            )
+            free_axes = [item["design_axis"] for item in free["variation_ledger"]]
+            self.assert_true(fixed["mode"] == "fixed" and fixed["variation_count"] == 2, "Fixed image package uses requested mode and count")
+            self.assert_true("MODO FIJO" in fixed["codex_prompt"] and "azul profundo" in fixed["codex_prompt"], "Fixed package includes strict brand context")
+            self.assert_true(free["mode"] == "free" and len(set(free_axes)) == len(free_axes), "Free image package produces distinct design axes")
+            self.assert_true("MODO LIBRE" in free["codex_prompt"] and "Nunca repitas" in free["codex_prompt"], "Free package forces prompt diversity")
+            self.assert_true("colores, tipografias" in free["brand_lock"], "Free package still locks essential brand elements")
+            self.assert_true("Crear rutas muy distintas para probar" in free["prompts"][0]["image_prompt"], "Final image prompts include the buyer's concrete request")
+            self.assert_true("No escribas 'faltan datos'" in free["prompts"][0]["image_prompt"] and "placeholders" in free["brand_lock"], "Final image prompts do not turn missing brand data into placeholder images")
+            self.assert_true("oferta, descuento, 2x1" in free["prompts"][0]["image_prompt"] and "no escondas la promocion principal" in free["prompts"][0]["image_prompt"], "Final image prompts force buyer promotions to appear visibly")
+            try:
+                build_codex_image_prompt_package(product_guide="../../.env", request="malicious", mode="free")
+                self.assert_true(False, "Image prompt package should reject escaped product guides")
+            except ValueError as exc:
+                self.assert_true("brand_guides/products" in str(exc), "Image prompt package blocks local file escape")
+
+            script_out = test_root / "manifest.json"
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT_DIR / "scripts" / "codex-image-prompt-lab.py"),
+                    "--root",
+                    str(test_root),
+                    "--mode",
+                    "free",
+                    "--product",
+                    "serum",
+                    "--ad-brief",
+                    "promo",
+                    "--variations",
+                    "4",
+                    "--seed",
+                    "cli-test",
+                    "--request",
+                    "Preparar prompts de imagen",
+                    "--out",
+                    str(script_out),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            manifest = json.loads(script_out.read_text(encoding="utf-8")) if script_out.exists() else {}
+            self.assert_true(completed.returncode == 0 and manifest.get("mode") == "free", "Prompt lab script writes a free-mode manifest")
+            self.assert_true("codex_result" not in manifest, "Prompt lab script does not call Codex unless explicitly requested")
+        finally:
+            for key, value in original.items():
+                setattr(codex_brand_guides, key, value)
+            shutil.rmtree(test_root, ignore_errors=True)
+
+    def test_codex_image_cli_bridge_copies_generated_asset(self):
+        """Test the Codex/Image bridge uses authenticated Codex and publishes a protected asset."""
+        print("\nTesting Codex Image CLI Bridge...")
+
+        test_root = Path(tempfile.mkdtemp(prefix="codex_image_bridge_"))
+        generated_root = test_root / "codex_home" / "generated_images"
+        output_root = test_root / "creatives"
+        generated_file = generated_root / "run-001" / "image.png"
+        captured = {}
+        original_run = codex_brand_guides.subprocess.run
+        original_load_config = codex_brand_guides.load_config
+        original_generated_root = codex_brand_guides.codex_generated_images_root
+        try:
+            codex_brand_guides.load_config = lambda: type("Cfg", (), {"codex_cli": "codex", "codex_creative_model": "gpt-5.5", "hermes_model": ""})()
+            codex_brand_guides.codex_generated_images_root = lambda: generated_root
+
+            def fake_run(command, **kwargs):
+                if command[:3] == ["codex", "login", "status"]:
+                    return type("Result", (), {"returncode": 0, "stdout": "Logged in using ChatGPT", "stderr": ""})()
+                captured["command"] = command
+                generated_file.parent.mkdir(parents=True, exist_ok=True)
+                generated_file.write_bytes(b"fake png")
+                last_message = Path(command[command.index("--output-last-message") + 1])
+                last_message.write_text("Imagen generada.", encoding="utf-8")
+                return type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+
+            codex_brand_guides.subprocess.run = fake_run
+            result = codex_brand_guides.call_codex_image_cli("Genera un anuncio 4:5", output_root=output_root, output_name="anuncio-prueba")
+            command = captured["command"]
+            self.assert_true(result["ok"] is True and Path(result["image_path"]).exists(), "Codex/Image bridge copies the generated image into creative assets")
+            self.assert_true(result["asset_id"].startswith("codex-") and result["preview_url"].startswith("/api/creative-asset?id="), "Codex/Image bridge returns protected preview metadata")
+            self.assert_true("--sandbox" in command and "workspace-write" in command, "Codex/Image bridge uses a workspace sandbox")
+            self.assert_true("--ephemeral" not in command and "--ignore-user-config" not in command, "Codex/Image bridge keeps the buyer's authenticated Codex session")
+            self.assert_true("$imagegen" in command[-1] and "No crees SVG" in command[-1], "Codex/Image prompt requires a real raster image")
+
+            def fake_unauth_run(command, **kwargs):
+                return type("Result", (), {"returncode": 1, "stdout": "", "stderr": "Not logged in"})()
+
+            codex_brand_guides.subprocess.run = fake_unauth_run
+            unauth = codex_brand_guides.call_codex_image_cli("Genera un anuncio", output_root=output_root)
+            self.assert_true(unauth["ok"] is False and "Codex/Image" in unauth["error"], "Missing Codex auth gives a buyer-friendly image error")
+        finally:
+            codex_brand_guides.subprocess.run = original_run
+            codex_brand_guides.load_config = original_load_config
+            codex_brand_guides.codex_generated_images_root = original_generated_root
+            shutil.rmtree(test_root, ignore_errors=True)
+
     def test_agent_codex_image_creative_request_result(self):
-        """Test the agent result when the buyer asks for ad creatives using Codex image planning."""
+        """Test the agent result when the buyer asks for final ad images using Codex/Image."""
         print("\nTesting Agent Codex Image Creative Request Result...")
 
         dashboard = load_dashboard_module()
@@ -1362,27 +1749,32 @@ class IntegrationTestSuite:
 
         original_load_config = dashboard.load_config
         original_call_codex = dashboard.call_codex_cli
+        original_call_codex_image = dashboard.call_codex_image_cli
         calls = []
         try:
-            dashboard.load_config = lambda: type("Cfg", (), {"codex_creative_enabled": False})()
+            dashboard.load_config = lambda: type("Cfg", (), {"codex_creative_enabled": False, "codex_creative_model": "gpt-5.5"})()
             dashboard.call_codex_cli = lambda prompt: calls.append(prompt) or {"ok": True}
+            dashboard.call_codex_image_cli = lambda prompt, **kwargs: calls.append(prompt) or {
+                "ok": False,
+                "error": "Codex/Image todavia no esta conectado en este PC/VPS. Conecta ChatGPT/Codex y vuelve a intentar.",
+            }
             disabled = dashboard.execute_agent_tool(
                 {
-                    "tool": "codex_creative_plan",
+                    "tool": "codex_image_generate",
                     "arguments": {
-                        "request": "Prepara 3 creativos para Meta Ads usando Codex Image con la foto del producto.",
+                        "request": "Genera un creativo final para Meta Ads usando Codex Image con la foto del producto.",
                         "product_guide": "",
                     },
                 },
                 {"language": "es", "image_paths": [str(reference_image)]},
             )
-            self.assert_true(disabled["type"] == "codex_creative_plan", "Codex creative request routes to the creative planning tool")
-            self.assert_true(disabled["executed"] is False and disabled["blocked"] is True, "Codex creative request is blocked when owner has not enabled Codex")
-            self.assert_true("Codex CLI" in disabled["reply"], "Buyer receives clear Codex setup/enablement guidance")
-            self.assert_true(not calls, "Disabled Codex creative requests do not call the CLI")
+            self.assert_true(disabled["type"] == "codex_image_generate", "Codex image request routes to the image generation tool")
+            self.assert_true(disabled["executed"] is False and disabled["blocked"] is True, "Codex image request is blocked when Codex/Image is not connected")
+            self.assert_true("Codex/Image" in disabled["reply"] and "otra API" in disabled["reply"], "Buyer receives clear Codex/Image setup guidance without external provider wording")
 
-            dashboard.load_config = lambda: type("Cfg", (), {"codex_creative_enabled": True})()
-            dashboard.call_codex_cli = lambda prompt: calls.append(prompt) or {
+            calls.clear()
+            dashboard.load_config = lambda: type("Cfg", (), {"codex_creative_enabled": True, "codex_creative_model": "gpt-5.5"})()
+            dashboard.call_codex_cli = lambda prompt, **kwargs: calls.append(prompt) or {
                 "ok": True,
                 "stdout": (
                     "Diagnostico creativo: la foto del producto debe ser el centro visual.\n"
@@ -1394,23 +1786,31 @@ class IntegrationTestSuite:
                     "Copy: Mejora tus resultados sin abrir Ads Manager a ciegas."
                 ),
             }
+            dashboard.call_codex_image_cli = lambda prompt, **kwargs: calls.append(prompt) or {
+                "ok": True,
+                "image_path": str(dashboard.CREATIVE_ASSET_ROOT / "codex-test" / "meta-ad.png"),
+                "asset_id": "codex-test/meta-ad.png",
+                "preview_url": "/api/creative-asset?id=codex-test%2Fmeta-ad.png",
+            }
             enabled = dashboard.execute_agent_tool(
                 {
-                    "tool": "codex_creative_plan",
+                    "tool": "codex_image_generate",
                     "arguments": {
-                        "request": "Prepara 3 creativos para Meta Ads usando Codex Image con la foto del producto.",
+                        "request": "Genera un creativo final para Meta Ads usando Codex Image con la foto del producto.",
                         "product_guide": "",
                     },
                 },
                 {"language": "es", "image_paths": [str(reference_image)]},
             )
-            self.assert_true(enabled["executed"] is True, "Enabled Codex creative request executes the optional bridge")
-            self.assert_true("Prompt final para ChatGPT Image / Image 2" in enabled["reply"], "Agent returns Codex image-ready creative prompt output")
-            self.assert_true("Imagen de referencia recibida" in calls[0], "Uploaded image context is forwarded into the Codex planning prompt")
+            self.assert_true(enabled["executed"] is True, "Connected Codex/Image request executes the backend bridge")
+            self.assert_true("/api/creative-asset" in enabled["reply"], "Agent returns a protected preview URL for the generated image")
+            self.assert_true("Referencia visual" in calls[0], "Uploaded image context is forwarded into the Codex image prompt")
+            self.assert_true(enabled["result"]["prompt_package"]["mode"] == "fixed" and enabled["result"]["asset_id"], "Codex image tool returns the generated asset metadata")
             self.assert_true(str(reference_image) not in calls[0], "Codex prompt receives visual context without arbitrary local file dependency")
         finally:
             dashboard.load_config = original_load_config
             dashboard.call_codex_cli = original_call_codex
+            dashboard.call_codex_image_cli = original_call_codex_image
 
     def test_creative_studio_protects_and_previews_generated_assets(self):
         """Test the visual studio exposes only generated images from its own refresh batch."""
@@ -1487,6 +1887,31 @@ class IntegrationTestSuite:
             updated = dashboard.read_json(manifest_path, {})
             retained = updated["variants"][0]["assets"][0]["retention"]
             self.assert_true(retained.get("saved") is True and retained.get("reason") == "selected_for_ad", "Preparing an image for an ad marks it as retained")
+            self.assert_true(meta_upload.find_manifest(str(manifest_path)) == manifest_path, "Creative upload accepts scoped generated manifests")
+            try:
+                meta_upload.find_manifest("/etc/passwd")
+                self.assert_true(False, "Creative upload rejects arbitrary manifest paths")
+            except ValueError:
+                self.assert_true(True, "Creative upload rejects arbitrary manifest paths")
+            payload_path = dashboard.OUTPUT_DIR / "uploads" / "security-test" / "payload.json"
+            payload_path.parent.mkdir(parents=True, exist_ok=True)
+            dashboard.write_json(
+                payload_path,
+                {
+                    "id": "security-test",
+                    "status": "ready_for_approval",
+                    "missing_requirements": [],
+                    "asset_uploads": [{"file_path": str(ROOT_DIR / "secrets.txt")}],
+                },
+            )
+            self.assert_true(graph_executor.safe_upload_payload_path(payload_path) == payload_path, "Graph executor accepts scoped upload payloads")
+            try:
+                graph_executor.safe_upload_payload_path("/etc/passwd")
+                self.assert_true(False, "Graph executor rejects arbitrary payload paths")
+            except ValueError:
+                self.assert_true(True, "Graph executor rejects arbitrary payload paths")
+            missing = graph_executor.validate_payload(dashboard.read_json(payload_path, {}), dashboard.load_config(), approved=False)
+            self.assert_true(any("inside output" in item for item in missing), "Graph executor rejects asset paths outside generated output")
             cleanup = dashboard.clear_temporary_creative_assets()
             self.assert_true(cleanup["deleted"] >= 1 and not old_temp_path.exists(), "Manual creative storage cleanup removes only draft images")
             self.assert_true(image_path.exists() and old_saved_path.exists(), "Ad-selected/generated images marked as saved are retained during storage cleanup")
@@ -1797,6 +2222,14 @@ class IntegrationTestSuite:
         dashboard = load_dashboard_module()
         original_social_command = dashboard.social_command
         original_graph_get = dashboard.graph_get
+        env_path = dashboard.ENV_FILE
+        ad_path = dashboard.AD_CONFIG_FILE
+        onboarding_path = dashboard.ONBOARDING_FILE
+        binding_path = dashboard.INDIVIDUAL_BINDING_FILE
+        env_before = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+        ad_before = ad_path.read_text(encoding="utf-8") if ad_path.exists() else ""
+        onboarding_before = onboarding_path.read_text(encoding="utf-8") if onboarding_path.exists() else ""
+        binding_before = binding_path.read_bytes() if binding_path.exists() else None
 
         def fake_social_command(args, timeout=30):
             return {"ok": False, "code": 1, "command": "social marketing accounts --json", "output": "No accounts returned by cli"}
@@ -1822,6 +2255,14 @@ class IntegrationTestSuite:
             self.assert_true(result["accounts"][0]["id"] == "act_123456789", "Graph API fallback lists buyer ad accounts")
             self.assert_true(result["source"] == "graph_api" and result["graph_checked"], "Account discovery records direct Graph fallback")
             self.assert_true(result["ok"] is True, "Graph fallback makes account discovery successful")
+            dashboard.write_json(onboarding_path, {"completed": False})
+            if binding_path.exists():
+                binding_path.unlink()
+            selected = dashboard.social_set_default_account({"ad_account_id": "act_987654321"})
+            env_after = env_path.read_text(encoding="utf-8")
+            saved_config = json.loads(ad_path.read_text(encoding="utf-8"))
+            self.assert_true(selected["ok"] is True and selected["local_saved"] is True and selected["social_cli_default_set"] is False, "Graph-selected account is saved locally even if social-cli default fails")
+            self.assert_true("META_AD_ACCOUNT_ID=act_987654321" in env_after and saved_config["account"]["id"] == "act_987654321", "Graph-selected account persists to env and ad-config")
 
             dashboard.social_command = lambda args, timeout=30: {"ok": True, "code": 0, "command": "social marketing accounts --json", "output": json.dumps([{"account_id": "555", "name": "CLI Account"}])}
             social_first = dashboard.social_marketing_accounts()
@@ -1835,6 +2276,14 @@ class IntegrationTestSuite:
         finally:
             dashboard.social_command = original_social_command
             dashboard.graph_get = original_graph_get
+            env_path.write_text(env_before, encoding="utf-8")
+            ad_path.write_text(ad_before, encoding="utf-8")
+            onboarding_path.write_text(onboarding_before, encoding="utf-8")
+            if binding_before is None:
+                if binding_path.exists():
+                    binding_path.unlink()
+            else:
+                binding_path.write_bytes(binding_before)
 
     def test_chat_saves_existing_adset_when_user_provides_it(self):
         """Test chat can store an optional existing ad set ID without making it a beginner requirement."""
@@ -1999,9 +2448,11 @@ class IntegrationTestSuite:
         ad_path = dashboard.AD_CONFIG_FILE
         onboarding_path = dashboard.ONBOARDING_FILE
         binding_path = dashboard.INDIVIDUAL_BINDING_FILE
+        profile_path = dashboard.BUSINESS_PROFILE_FILE
         ad_before = ad_path.read_text(encoding="utf-8") if ad_path.exists() else ""
         onboarding_before = onboarding_path.read_text(encoding="utf-8") if onboarding_path.exists() else ""
         binding_before = binding_path.read_bytes() if binding_path.exists() else None
+        profile_before = profile_path.read_bytes() if profile_path.exists() else None
         original_graph_get = dashboard.graph_get
         try:
             def fake_graph_get(path, params=None, page_token=""):
@@ -2019,6 +2470,20 @@ class IntegrationTestSuite:
                             ]
                         },
                     }
+                if path == "/111":
+                    return {
+                        "ok": True,
+                        "data": {
+                            "id": "111",
+                            "name": "Buyer Page",
+                            "category": "Beauty service",
+                            "link": "https://facebook.com/buyer",
+                            "website": "https://buyer.example",
+                            "about": "Tratamientos faciales premium para mujeres ocupadas.",
+                            "description": "Agenda por WhatsApp y compra rutinas de cuidado facial.",
+                            "instagram_business_account": {"id": "222", "username": "buyer_ig"},
+                        },
+                    }
                 if path == "/act_999/ads":
                     return {"ok": True, "data": {"data": []}}
                 return {"ok": False, "error": "unexpected path"}
@@ -2034,6 +2499,12 @@ class IntegrationTestSuite:
             self.assert_true(destination["page_id"] == "111", "Discovered Page ID saved")
             self.assert_true(destination["instagram_actor_id"] == "222", "Discovered Instagram ID saved")
             self.assert_true(destination["url"] == "https://buyer.example", "Discovered website saved")
+            profile = json.loads(profile_path.read_text(encoding="utf-8"))
+            self.assert_true(profile["website_url"] == "https://buyer.example", "Discovered website is saved into business memory")
+            self.assert_true("https://instagram.com/buyer_ig" in profile["social_links"], "Discovered Instagram is saved as business context")
+            self.assert_true(profile["meta_assets"]["page_id"] == "111", "Discovered Page metadata is saved for onboarding context")
+            self.assert_true(profile["meta_page_profile"]["about"].startswith("Tratamientos faciales"), "Authorized Facebook Page Graph profile is saved as initial business context")
+            self.assert_true("Tratamientos faciales" in profile["meta_page_context"], "Facebook Page Graph context is prepared for the agent memory")
         finally:
             dashboard.graph_get = original_graph_get
             ad_path.write_text(ad_before, encoding="utf-8")
@@ -2046,6 +2517,11 @@ class IntegrationTestSuite:
                     binding_path.unlink()
             else:
                 binding_path.write_bytes(binding_before)
+            if profile_before is None:
+                if profile_path.exists():
+                    profile_path.unlink()
+            else:
+                profile_path.write_bytes(profile_before)
 
     def test_live_insights_normalize_into_dashboard_metrics(self):
         """Test real Meta insights rows are normalized into dashboard metric cache shape."""
@@ -2181,6 +2657,32 @@ class IntegrationTestSuite:
         self.assert_true(sample["source"] == "demo", "New sample metrics are explicitly demo")
         legacy = {"timestamp": "2026-01-01", "campaigns": [{"id": "camp_001", "name": "Q2 Conversion Campaign"}]}
         self.assert_true(dashboard.looks_like_demo_metrics(legacy), "Legacy demo cache is detected")
+        context = agent_chat.account_context({"metrics": sample, "recommendations": dashboard.calculate_recommendations(sample["campaigns"]), "fatigue": dashboard.fatigue_items(sample["campaigns"])})
+        self.assert_true(context["metrics_source"]["is_real_meta_data"] is False, "Agent context marks demo metrics as not real")
+        self.assert_true(context["campaigns"] == [] and context["recommendations"] == [] and context["fatigue"] == [], "Agent context hides demo campaigns, recommendations and fatigue")
+        fallback = agent_chat.fallback_reply("cual campaña va mejor", {"metrics": sample})
+        self.assert_true("Retargeting - Warm Leads" not in fallback and "ROAS" not in fallback and "no tengo campañas reales" in fallback, "Fallback does not cite demo campaign performance")
+        self.assert_true(agent_chat.reply_uses_unverified_performance("Empezaria con Retargeting - Warm Leads porque ROAS 8.0, CTR 4.79% y CPA 4.", sample), "Demo performance claims are blocked even if Hermes remembers them")
+        test_dir = Path(tempfile.mkdtemp(prefix="demo_metrics_blocked_"))
+        original_metrics_file = dashboard.METRICS_FILE
+        original_demo_env = os.environ.pop("ADMIRO_ALLOW_DEMO_METRICS", None)
+        try:
+            dashboard.METRICS_FILE = test_dir / "metrics.json"
+            missing = dashboard.load_metrics()
+            self.assert_true(missing["source"] == "missing" and missing["campaigns"] == [], "Fresh buyer installs do not seed fake demo campaigns")
+            dashboard.write_json(dashboard.METRICS_FILE, legacy)
+            blocked = dashboard.load_metrics()
+            self.assert_true(blocked["source"] == "missing" and blocked["campaigns"] == [], "Legacy demo caches are hidden in buyer mode")
+            os.environ["ADMIRO_ALLOW_DEMO_METRICS"] = "true"
+            allowed = dashboard.load_metrics()
+            self.assert_true(allowed["source"] == "demo" and allowed["campaigns"], "Explicit internal demo mode can still show sample campaigns")
+        finally:
+            dashboard.METRICS_FILE = original_metrics_file
+            if original_demo_env is None:
+                os.environ.pop("ADMIRO_ALLOW_DEMO_METRICS", None)
+            else:
+                os.environ["ADMIRO_ALLOW_DEMO_METRICS"] = original_demo_env
+            shutil.rmtree(test_dir, ignore_errors=True)
 
     def test_supervised_approval_executes_only_with_valid_license_and_retries_failures(self):
         """Test explicit approval is live-capable without activating autopilot."""
@@ -2536,6 +3038,7 @@ class IntegrationTestSuite:
         original_settings = telegram_agent.telegram_settings
         original_send = telegram_agent.send_message
         original_keyboard = telegram_agent.send_message_with_keyboard
+        original_chat_action = telegram_agent.send_chat_action
         original_answer = telegram_agent.callback_answer
         original_approve = telegram_agent.approve_pending
         original_reject = telegram_agent.reject_pending
@@ -2548,15 +3051,20 @@ class IntegrationTestSuite:
             sent = []
             telegram_agent.send_message = lambda config, chat_id, text: sent.append(("message", text))
             telegram_agent.send_message_with_keyboard = lambda config, chat_id, text, keyboard: sent.append(("keyboard", text, keyboard))
+            telegram_agent.send_chat_action = lambda config, chat_id, action="typing": sent.append(("typing", action))
             telegram_agent.callback_answer = lambda config, callback_id, text="": sent.append(("callback", text))
             telegram_agent.approve_pending = lambda approval_id: [{"id": approval_id, "status": "approved", "result": {"ok": True}}]
             telegram_agent.reject_pending = lambda approval_id, reason="": [{"id": approval_id}]
+            telegram_agent.handle_text(FakeConfig(), "12345", "Prepara una campaña", send=True)
             reply = telegram_agent.handle_text(FakeConfig(), "12345", "Prepara una campaña", send=False)
             approved_text = telegram_agent.handle_text(FakeConfig(), "12345", "Aprueba esa campaña", send=False)
             pending_reply = telegram_agent.handle_text(FakeConfig(), "12345", "/pendientes", send=True)
             callback = telegram_agent.handle_update(FakeConfig(), {"callback_query": {"id": "cb_1", "data": "approve:approval_test", "message": {"chat": {"id": "12345"}}}})
             telegram_agent.agent_chat = lambda config, payload: {"reply": "", "tool_request": None}
             empty_reply = telegram_agent.handle_text(FakeConfig(), "12345", "hola", send=False)
+            noisy_reply = "⚠ tirith security scanner enabled but not available\n  ┊ review diff\na/data/business_profile.json → b/data/business_profile.json\n@@ -1 +1 @@\n- old\n+ new\nGracias, sigo con una pregunta."
+            telegram_agent.append_turn("12345", "respuesta corta", noisy_reply)
+            stored_history = json.loads(history_path.read_text(encoding="utf-8"))
             fake_dashboard.pending = [
                 {
                     "id": "approval_active",
@@ -2570,9 +3078,12 @@ class IntegrationTestSuite:
             self.assert_true(telegram_agent.is_allowed_chat(FakeConfig(), "12345"), "Configured Telegram private chat is allowed")
             self.assert_true(not telegram_agent.is_allowed_chat(FakeConfig(), "99999"), "Unknown Telegram chat is rejected")
             self.assert_true("preparada para aprobación" in reply, "Telegram can stage manager actions through backend tools")
+            self.assert_true(any(item == ("typing", "typing") for item in sent), "Telegram shows typing while Hermes prepares a reply")
             self.assert_true("No pude responder" not in empty_reply and "dashboard" in empty_reply.lower(), "Telegram empty agent replies become buyer-actionable recovery text")
+            self.assert_true("tirith" not in json.dumps(stored_history).lower() and "business_profile" not in json.dumps(stored_history), "Telegram history stores cleaned agent replies")
             self.assert_true("Aprobacion ejecutada" in approved_text, "Telegram text can approve the single exact pending decision")
             self.assert_true(received_payloads[0]["business_profile"]["main_offer"] == "Curso Test", "Telegram gives Hermes the selected client's business profile")
+            self.assert_true("session_key" in received_payloads[0] and "history" not in received_payloads[0], "Telegram passes a Hermes session key instead of replaying chat history")
             self.assert_true("Decisiones pendientes" in pending_reply, "Telegram lists pending approvals")
             self.assert_true(any(item[0] == "keyboard" for item in sent), "Telegram sends approve/reject buttons")
             self.assert_true(callback["type"] == "approved", "Telegram button can approve the exact pending action")
@@ -2584,6 +3095,7 @@ class IntegrationTestSuite:
             telegram_agent.telegram_settings = original_settings
             telegram_agent.send_message = original_send
             telegram_agent.send_message_with_keyboard = original_keyboard
+            telegram_agent.send_chat_action = original_chat_action
             telegram_agent.callback_answer = original_answer
             telegram_agent.approve_pending = original_approve
             telegram_agent.reject_pending = original_reject
@@ -2591,6 +3103,92 @@ class IntegrationTestSuite:
                 history_path.write_text(before, encoding="utf-8")
             elif history_path.exists():
                 history_path.unlink()
+
+    def test_telegram_codex_image_request_sends_generated_photo(self):
+        """Test a Telegram creative-image request executes the Codex/Image backend tool and sends the result."""
+        print("\nTesting Telegram Codex/Image Delivery...")
+
+        class FakeConfig:
+            telegram_chat_id = "12345"
+            telegram_bot_token = "fake"
+            agent_chat_api_key = "configured"
+            agent_chat_provider = "hermes"
+
+        image_dir = ROOT_DIR / "output" / "test-telegram-codex-image"
+        image_dir.mkdir(parents=True, exist_ok=True)
+        generated_image = image_dir / "creative.png"
+        generated_image.write_bytes(b"fake png")
+
+        class FakeDashboard:
+            def dashboard_payload(self):
+                return {
+                    "metrics": {},
+                    "recommendations": [],
+                    "fatigue": [],
+                    "pending": [],
+                    "audience_strategy": {},
+                    "brand_guides": {},
+                    "business_profile": {},
+                    "agent_onboarding_phase": {},
+                }
+
+            def execute_agent_tool(self, tool_request, payload):
+                return {
+                    "type": "codex_image_generate",
+                    "executed": True,
+                    "reply": "Listo. Generé la imagen final con Codex/Image.",
+                    "result": {
+                        "ok": True,
+                        "image_path": str(generated_image),
+                        "asset_id": "test-telegram-codex-image/creative.png",
+                        "preview_url": "/api/creative-asset?id=test-telegram-codex-image%2Fcreative.png",
+                    },
+                }
+
+            def log_action(self, *args):
+                return None
+
+        original_agent_chat = telegram_agent.agent_chat
+        original_dashboard = telegram_agent._DASHBOARD
+        original_settings = telegram_agent.telegram_settings
+        original_send = telegram_agent.send_message
+        original_photo = telegram_agent.send_photo
+        original_chat_action = telegram_agent.send_chat_action
+        try:
+            received_payloads = []
+            sent = []
+            telegram_agent._DASHBOARD = FakeDashboard()
+            telegram_agent.telegram_settings = lambda config: {"enabled": True, "language": "es", "poll_timeout": 25, "bot_configured": True, "chat_id": "12345"}
+            telegram_agent.agent_chat = lambda config, payload: received_payloads.append(payload) or {
+                "ok": True,
+                "provider": "hermes",
+                "reply": "Lo preparo con Codex/Image.",
+                "tool_request": {
+                    "tool": "codex_image_generate",
+                    "arguments": {
+                        "request": "Genera un creativo para Meta Ads con estilo de marca.",
+                        "mode": "free",
+                    },
+                },
+            }
+            telegram_agent.send_message = lambda config, chat_id, text: sent.append(("message", text))
+            telegram_agent.send_photo = lambda config, chat_id, path, caption="": sent.append(("photo", path, caption))
+            telegram_agent.send_chat_action = lambda config, chat_id, action="typing": sent.append(("typing", action))
+
+            reply = telegram_agent.handle_text(FakeConfig(), "12345", "Hazme una imagen para anunciar mi producto", send=True)
+
+            self.assert_true("Codex/Image" in reply, "Telegram returns the Codex/Image tool reply")
+            self.assert_true(received_payloads and received_payloads[0]["channel"] == "telegram", "Telegram request is routed through the Hermes channel")
+            self.assert_true(any(item[0] == "photo" and item[1] == str(generated_image) for item in sent), "Telegram sends the generated image file back to the buyer")
+            self.assert_true(any(item[0] == "message" and "imagen final" in item[1].lower() for item in sent), "Telegram still sends a concise text confirmation")
+        finally:
+            telegram_agent.agent_chat = original_agent_chat
+            telegram_agent._DASHBOARD = original_dashboard
+            telegram_agent.telegram_settings = original_settings
+            telegram_agent.send_message = original_send
+            telegram_agent.send_photo = original_photo
+            telegram_agent.send_chat_action = original_chat_action
+            shutil.rmtree(image_dir, ignore_errors=True)
 
     def test_telegram_connection_change_resets_polling_state(self):
         """Test changing Telegram bot or chat clears stale polling state."""
@@ -2657,7 +3255,12 @@ class IntegrationTestSuite:
         print("\nTesting Setup UI Markup...")
 
         dashboard = load_dashboard_module()
-        html = dashboard.HTML
+        dashboard_static = (
+            (ROOT_DIR / "public" / "dashboard" / "dashboard.css").read_text(encoding="utf-8")
+            + "\n"
+            + (ROOT_DIR / "public" / "dashboard" / "dashboard.js").read_text(encoding="utf-8")
+        )
+        html = dashboard.HTML + "\n" + dashboard_static
         dashboard_source = Path(dashboard.__file__).read_text(encoding="utf-8")
         post_routes = set(dashboard.DashboardHandler.POST_JSON_ROUTES) | set(dashboard.DashboardHandler.POST_SPECIAL_ROUTES)
         get_routes = set(dashboard.DashboardHandler.GET_JSON_ROUTES) | dashboard.DashboardHandler.HTML_PATHS | {"/api/social/login", "/api/creative-asset"}
@@ -2737,7 +3340,7 @@ class IntegrationTestSuite:
         self.assert_true("/api/reject" in html and "msg-approval-card" in html, "Chat approval decisions include a reject path and compact action cards")
         self.assert_true("onboarding-flow" in html, "Dedicated onboarding flow exists")
         self.assert_true("onboarding-security-note" in html and "nada de lo que coloques aquí lo podemos ver nosotros" in html and "más privada que entregar tus credenciales a un SaaS" in html, "Onboarding shows a persistent local/private install reassurance")
-        self.assert_true("websiteScanGuide" in html and "/api/business-profile/links" in html and "saveBusinessLinks" in html and "Pega tu web y redes" in html and "Qué vendes, en pocas palabras" not in html, "Onboarding collects only website/social links before handing the deep interview to the agent")
+        self.assert_true("websiteScanGuide" in html and "/api/business-profile/links" in html and "saveBusinessLinks" in html and "Primer mapa del negocio" in html and "asset-status-grid" in html and "Qué vendes, en pocas palabras" not in html, "Onboarding collects website/social links, shows what is missing, and hands the deep interview to the agent")
         self.assert_true("Onboarding questions.md" in dashboard_source and "write_onboarding_questions_memory" in dashboard_source and "pregunta lo minimo necesario" in dashboard_source, "Business discovery is stored as agent memory for Telegram/chat instead of a long setup form")
         self.assert_true("businessContextGuide" in html and "businessContextQuestions" in html and "saveBusinessContextQuestion" in html, "Buyer context editor remains available outside the required onboarding path")
         self.assert_true("requires_repair" in html and "Reconectemos tus datos reales" in html, "Legacy completed setup reopens guidance when real Meta data is missing")
@@ -2749,29 +3352,34 @@ class IntegrationTestSuite:
         self.assert_true("Conecta el cerebro del agente" in html and "MiniMax M3" in html and "Guardar modelo del agente" in html, "Agent model setup supports MiniMax M3 as a Hermes brain")
         self.assert_true("OpenAI API" in html and "ChatGPT suscripción" in html and "Otra API compatible" in html and "OAuth" in html, "Onboarding shows four simple model choices immediately")
         self.assert_true("routeButton('openai_api')" in html and "routeButton('chatgpt_subscription')" in html and "routeButton('minimax_m3')" in html and "routeButton('custom_api')" in html and "selectAgentModelRoute('${kind}')" in html, "Agent model setup uses four collapsible route buttons")
-        self.assert_true("connectChatGpt(event)" in html and "/api/agent-model/connect" in html and "Conectar ahora" in html, "ChatGPT/Codex connection is an automatic dashboard action")
+        self.assert_true("connectChatGpt(event)" in html and "saveChatGptModel(event)" in html and "/api/agent-model/connect" in html and "Ya lo hice, conectar a ChatGPT ahora" in html, "ChatGPT/Codex connection saves model choice before connecting and uses a buyer-friendly CTA")
         self.assert_true("Copiar comando" not in html and ".agent-model-option .route-icon" in html and ".agent-route-panel.active" in html, "ChatGPT/Codex setup hides command-copy UI and keeps route choices readable")
         self.assert_true("Copiar paso" not in html and "Copy step" not in html, "ChatGPT/Codex connection no longer presents copy-only wording")
+        self.assert_true("Modelo para ChatGPT/Codex" in html and "<select name=\"hermes_model\">" in html and "agentModelFormPayload()" in html, "ChatGPT/Codex setup exposes and submits a clear model selector")
         self.assert_true("agent_chat_base_url" in html and "agent_chat_api_key" in html and "custom_api" in html, "OpenAI-compatible brain settings are exposed without showing saved keys")
         self.assert_true("DigitalOcean mostraré aquí el enlace" in html and "Ver diagnóstico para soporte" in html, "Hermes/ChatGPT setup has a browser-based VPS path with diagnostics folded")
-        self.assert_true("Ajustes > Seguridad" in html and "Enable device code authorization for Codex" in html and "chatgpt-preflight" in html, "ChatGPT/Codex setup tells buyers to enable device-code authorization before login")
+        self.assert_true("Ajustes > Seguridad" in html and "Enable device code authorization for Codex" in html and "chatgpt-preflight" in html and ".chatgpt-preflight ol" in html, "ChatGPT/Codex setup tells buyers to enable device-code authorization before login without overlapping the model field")
         self.assert_true("/api/agent-model/connect-status" in html and "/api/agent-model/connect-input" in html and "sendChatGptTerminalInput" in html, "VPS Hermes bridge can poll and send guided terminal responses")
         self.assert_true("chatgpt-settings-help" in html and "device_auth_settings" in html, "ChatGPT/Codex setup shows a clear recovery card when device-code auth is disabled")
-        self.assert_true("Ver detalle técnico de Hermes" in html and "prepareChatGptAuthWindow" in html and "maybeOpenChatGptAuthUrl" in html, "Hermes browserless UI folds support detail and opens the OAuth login in the buyer browser")
-        self.assert_true("chatgpt-device-code" in html and "Copiar código" in html and "login_code" in html and "font-size:clamp(30px" in html and "word-break:break-all" in html and "scrollIntoView({behavior:'smooth',block:'center'})" in html, "OpenAI terminal login code is shown as a large copyable buyer-facing card that cannot clip longer codes")
+        self.assert_true("Ver diagnóstico técnico" in html and "prepareChatGptAuthWindow" in html and "maybeOpenChatGptAuthUrl" in html, "ChatGPT/Codex browserless UI folds support detail and opens the OAuth login in the buyer browser")
+        self.assert_true("chatgpt-device-code" in html and "Copiar código" in html and "login_code" in html and "copyVisibleChatGptCode(event)" in html and "font-size:clamp(30px" in html and "word-break:break-all" in html and "scrollIntoView({behavior:'smooth',block:'center'})" in html, "OpenAI terminal login code is shown as a large copyable buyer-facing card that copies the visible code and cannot clip longer codes")
+        self.assert_true("advanceOnboardingAfterChatGptConnected" in html and "onboardingFlowStep=Math.min(steps.length-1,idx+1)" in html, "ChatGPT/Codex connection advances onboarding automatically after success")
         self.assert_true("Haz clic aquí si te apareció un error" in html and "toggleChatGptDeviceAuthHelp" in html and "Activar autorización con códigos de dispositivo para Codex" in html, "OpenAI code card includes a manual buyer help button for browser-side Codex device-code errors")
         self.assert_true("Cierra la pestaña de login de ChatGPT/Codex" in html and "Ya lo activé, abrir login de nuevo" in html and "reopenChatGptAuthUrl" in html and "chatgpt-retry-login" in html, "Device-code help tells buyers to close the failed login tab and reopen it from a large CTA")
         self.assert_true("body .onboarding-flow input:not([type=\"checkbox\"])" in html and "::placeholder" in html and "-webkit-autofill" in html, "Onboarding text fields stay dark and readable across dashboard themes")
         self.assert_true("body .onboarding-flow .guide-card" in html and "background:linear-gradient(145deg,rgba(18,16,28,.96)" in html, "Onboarding cards keep dark readable contrast across dashboard themes")
-        self.assert_true("Voy a elegir OpenAI Codex y el modelo recomendado automáticamente" in dashboard_source and "maybe_auto_drive_hermes_browserless" in dashboard_source, "Hermes browserless setup auto-selects Codex provider and recommended model")
+        self.assert_true("Voy a elegir OpenAI Codex" in dashboard_source and "preferred_model" in dashboard_source and "maybe_auto_drive_hermes_browserless" in dashboard_source, "Hermes browserless setup auto-selects Codex provider and the chosen or recommended model")
         hermes_bridge_source = (ROOT_DIR / "src" / "hermes_bridge.py").read_text(encoding="utf-8")
         self.assert_true("hermes_status_timeout_seconds" in hermes_bridge_source and "hermes_response_timeout_seconds" in hermes_bridge_source, "Hermes status checks and real response timeouts stay separate")
         self.assert_true("{id:'chatgpt',status:chatgptOk?'ok':'warn'}" in html and "chatGptConnectMarkup(true)" in html, "Initial onboarding includes ChatGPT/Codex before the Telegram manager channel")
         self.assert_true("{id:'telegram',status:telegramOk?'ok':'warn'}" in html and "telegramOnboardingGuide()" in html, "Initial onboarding ends with Telegram as the manager channel")
         self.assert_true("Habla con tu manager por Telegram" in html and "Descargar Telegram" in html and "Abrir BotFather" in html and "Copiar /newbot" in html and "Detectar mi chat" in html, "Telegram onboarding explains download, BotFather, command copy, chat detection, and phone-first manager access")
         self.assert_true("usuario parecido, pero terminado en <b>bot</b>" in html and "Esto se configura una sola vez" in html and "No puedo crear el bot por ti" in html, "Telegram onboarding explains the BotFather username rule, one-time setup, and automation limits")
-        self.assert_true("{id:'meta',status:tokenOk?'ok':(socialOk?'warn':'blocked')}" in html and "{id:'account',status:accountOk?'ok':'blocked'}" in html and "{id:'destination',status:destinationOk?'ok':'blocked'}" in html, "Initial onboarding starts with the buyer Facebook/Meta connection")
-        self.assert_true("{id:'meta',status:tokenOk?'ok':(socialOk?'warn':'blocked')},\n\t  {id:'account',status:accountOk?'ok':'blocked'},\n\t  {id:'destination',status:destinationOk?'ok':'blocked'},\n\t  {id:'chatgpt',status:chatgptOk?'ok':'warn'},\n\t  {id:'website',status:websiteOk?'ok':'warn'},\n\t  {id:'telegram',status:telegramOk?'ok':'warn'}" in html, "Initial onboarding goes Facebook, account, destination, ChatGPT, links, and finishes with Telegram")
+        self.assert_true("finishOnboardingAndStartTour('telegram')" in html and "maybeFinishTelegramOnboarding" in html, "Choosing the Telegram chat can complete onboarding and open the dashboard tour")
+        self.assert_true("dashboardIntroTourPending" in html and "startDashboardIntroTourIfPending" in html, "Completed onboarding queues the first dashboard tour")
+        self.assert_true("Elige el estilo que más te guste" in html and "#theme-toggle" in html and ".tour-spot" in html, "The post-onboarding tour starts with theme selection coach marks")
+        self.assert_true("{id:'meta',status:tokenOk?'ok':(socialOk?'warn':'blocked')}" in html and "{id:'account',status:accountOk?'ok':'blocked'}" in html and "{id:'destination',status:destinationStatus}" in html, "Initial onboarding starts with the buyer Facebook/Meta connection")
+        self.assert_true("{id:'meta',status:tokenOk?'ok':(socialOk?'warn':'blocked')},\n\t  {id:'account',status:accountOk?'ok':'blocked'},\n\t  {id:'destination',status:destinationStatus},\n\t  {id:'chatgpt',status:chatgptOk?'ok':'warn'},\n\t  {id:'website',status:websiteOk?'ok':'warn'},\n\t  {id:'telegram',status:telegramOk?'ok':'warn'}" in html, "Initial onboarding goes Facebook, account, destination, ChatGPT, links, and finishes with Telegram")
         self.assert_true("Elige qué modelo usará el agente" in html and "apiBrainOk" in html, "Onboarding positions model setup as part of installation and accepts API brain readiness")
         self.assert_true("license-panel" in html, "License activation panel exists")
         self.assert_true("/api/license/activate" in html, "License activation endpoint is wired in UI")
@@ -2783,16 +3391,20 @@ class IntegrationTestSuite:
         self.assert_true("unlock_create_title" in html and "Crea tu contraseña" in html, "First-run unlock modal can ask buyers to create a password")
         self.assert_true("unlockMode==='create'" in html and "/api/dashboard-password" in html, "First-run password creation is wired through the dashboard password endpoint")
         self.assert_true("!state.config.dashboard_password_set)showUnlock(t('unlock_create_needed'),'create')" in html, "Clean installs proactively ask buyers to create a dashboard password")
+        self.assert_true("localStorage.setItem('dashboardPassword'" not in html and "localStorage.setItem(\"dashboardPassword\"" not in html, "Dashboard never stores the real buyer password in browser storage")
+        self.assert_true("dashboardSession" in html and "remember_device" in html and "/api/unlock" in html, "Remember this device stores an opaque dashboard session instead of the password")
         self.assert_true("Contraseña guardada. Sigamos con el siguiente paso." in html and "advanceOnboardingAfterLoad()" in html, "Password creation advances to the next missing onboarding step")
         self.assert_true("onboardingFlowTouched=false" in html, "Onboarding auto-advance starts untouched")
         self.assert_true("s.status!=='ok'" in html, "Onboarding opens on first unfinished step")
         self.assert_true("onboardingFlowTouched=true;onboardingFlowStep=Math.max" in html, "Onboarding back button allows completed-step review")
-        self.assert_true('href="/api/social/login"' in html, "Facebook/Meta connection button uses a real browser link")
+        self.assert_true("href:'/api/social/login'" in html and "Abrir Meta Business" in html, "Facebook/Meta connection button uses a real browser link inside the required Meta Business slide")
         self.assert_true("Conectar mi cuenta de Facebook" in html and "Paso seguro" in html, "Spanish onboarding names the Meta step as a safer Facebook account connection")
-        self.assert_true("Crear clave estable" in html and "Clave de Facebook/Meta" in html, "Spanish setup explains buyer-owned Meta connection plainly")
-        self.assert_true("Conexión estable" in html and "Empezar más rápido" in html and "renovar la clave cada 60 días" in html, "Meta onboarding recommends stable System User tokens while allowing a faster Graph API Explorer start")
-        self.assert_true("showMetaTokenBox('quick')" in html and "token_kind:metaTokenKind" in html, "Meta onboarding records whether the buyer chose quick or stable access")
-        self.assert_true("showMetaTokenBox" in html, "Token box can be opened without leaving dashboard")
+        self.assert_true("Abrir Meta Business" in html and "Clave de Facebook/Meta" in html, "Spanish setup explains buyer-owned Meta connection plainly")
+        self.assert_true("Entra a Meta Developers" in html and "Marca Marketing API" in html and "Pega la clave aquí" in html, "Meta onboarding uses a guided Meta app and System User token slider")
+        self.assert_true("tutorial-meta/paso-01-meta-developers.png" in html and "tutorial-meta/paso-08-dashboard-basic.png" in html, "Meta onboarding slider includes buyer screenshot walkthrough assets")
+        self.assert_true("Falta tu captura: Usuario del sistema" in html and "Falta tu captura: generar clave" in html, "Meta onboarding keeps clear placeholders for the missing System User/token screenshots")
+        self.assert_true("Empezar más rápido" not in html and "renovar la clave cada 60 días" not in html and "showMetaTokenBox('quick')" not in html, "Meta onboarding no longer presents Graph API Explorer as a buyer-facing path")
+        self.assert_true("showMetaTokenBox('stable')" in html and "token_kind:metaTokenKind" in html, "Token box opens as the stable path while the backend still records token kind")
         self.assert_true("finishButton=isLast" in html, "Onboarding finish button only appears on final step")
         self.assert_true("step.status!=='blocked'" in html, "Onboarding next button hides on blocked steps")
         self.assert_true("confirm-overlay" in html, "Onboarding completion uses in-app confirmation")
@@ -2811,6 +3423,7 @@ class IntegrationTestSuite:
         self.assert_true("Usar esta página" in html, "Buyer can select a discovered Page")
         self.assert_true("Solo si no aparece tu página" in html, "Manual Page entry is hidden as fallback")
         self.assert_true("selectMetaDestination" in html, "Selected Page is saved without manual ID paste")
+        self.assert_true("const destinationStatus=destinationOk?'ok':(accountOk?'warn':'blocked')" in html and "{id:'destination',status:destinationStatus}" in html, "Destination step can be reviewed later after an ad account is selected")
         self.assert_true("Guía rápida de uso" in html, "Onboarding includes final usage guide cards")
         self.assert_true("La filosofía: conversa con el agente" in html, "Usage guide explains chat-first philosophy")
         self.assert_true("Grupo de anuncios a usar" not in html, "Old required-ad-set wording is removed")
@@ -2820,7 +3433,9 @@ class IntegrationTestSuite:
         self.assert_true("Con supervisión" in html, "Last onboarding step avoids simulation wording")
         self.assert_true("modo simulación" not in html, "Buyer-facing onboarding avoids simulation mode wording")
         self.assert_true("/api/onboarding/skip" in html and "Saltar y completar luego" in html, "Live setup details do not block first dashboard entry")
-        self.assert_true("deferred-onboarding-banner" in html and "Completa la configuración cuando puedas" in html, "Skipped setup creates a visible reminder instead of trapping the buyer")
+        self.assert_true("deferred-onboarding-banner" in html and "Completa la configuración para ver datos reales" in html, "Skipped setup creates a visible reminder instead of trapping the buyer")
+        self.assert_true("Configuración inicial pendiente" in html and "el agente no analizará campañas reales" in html, "Deferred onboarding is not described as fully finished")
+        self.assert_true("Datos de ejemplo, no reales" in html, "Demo metrics are labeled as not real in the UI")
         self.assert_true("Con supervisión" in html, "Buyer-facing supervised control wording exists")
         self.assert_true("Piloto automático" in html, "Buyer-facing autopilot wording exists")
         self.assert_true("guardrails-panel" in html, "Guardrail settings panel exists")
@@ -2881,9 +3496,9 @@ class IntegrationTestSuite:
         env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
         self.assert_true("LICENSE_SERVER_URL=" in env_example, "License server URL is documented in .env.example")
         self.assert_true("LICENSE_REQUIRED_FOR_LIVE=true" in env_example, "License live requirement default is documented")
-        self.assert_true("agency-panel" in html and "Licencia Individual: un negocio activo" in html, "Setup explains individual one-business limit")
-        self.assert_true("/api/agency/spaces" in html and "Licencia Agencia: espacios por cliente" in html, "Setup exposes agency client spaces")
-        self.assert_true("agencySwitch" in html and "Clientes de agencia" in html, "Agency client switch remains available during onboarding")
+        self.assert_true("meta-connection-panel" in html and "Conexión Facebook / Meta" in html, "Setup exposes a clear Meta/Facebook connection area")
+        self.assert_true("Cambiar clave de Facebook" in html and "Buscar/cambiar cuenta publicitaria" in html, "Setup lets buyers replace Meta connection and account from settings")
+        self.assert_true("agency-panel" not in html and "Licencia Agencia" not in html and "Agregar cliente" not in html and "Clientes de agencia" not in html, "Buyer UI does not expose agency/client workspace copy")
 
     def test_setup_config_save_preserves_blank_license(self):
         """Test setup form saves live IDs without wiping an existing license key."""
@@ -3144,7 +3759,7 @@ class IntegrationTestSuite:
                 dashboard.create_agency_space({"name": "Cliente bloqueado"})
                 self.assert_true(False, "Individual license should not create agency spaces")
             except ValueError as exc:
-                self.assert_true("Licencia Agencia" in str(exc), "Individual license receives upgrade copy for agency spaces")
+                self.assert_true("un solo negocio activo" in str(exc) and "otra licencia separada" in str(exc), "Individual license receives one-business copy for extra workspaces")
 
             dashboard.license_entitlements = lambda: {
                 "plan": "agency",
@@ -3168,7 +3783,7 @@ class IntegrationTestSuite:
                 dashboard.save_telegram_config({"enabled": "true", "chat_id": "123"})
                 self.assert_true(False, "Agency without multi Telegram feature should block several Telegram profiles")
             except ValueError as exc:
-                self.assert_true("Telegram" in str(exc) and "Agencia" in str(exc), "Multi-client Telegram needs the right entitlement")
+                self.assert_true("Telegram" in str(exc) and "no están disponibles" in str(exc), "Multi-client Telegram needs the right entitlement")
         finally:
             dashboard.AGENCY_SPACES_FILE = original_registry_path
             dashboard.AGENCY_SPACES_DIR = original_spaces_dir
@@ -3453,12 +4068,19 @@ class IntegrationTestSuite:
         windows_msi_builder = (ROOT_DIR / "scripts" / "build-windows-msi.sh").read_text(encoding="utf-8")
         windows_exe_builder = (ROOT_DIR / "scripts" / "build-windows-exe.sh").read_text(encoding="utf-8")
         nsis_template = (ROOT_DIR / "installer" / "windows" / "MetaAdsAgentInstaller.nsi").read_text(encoding="utf-8")
-        dashboard_source = (ROOT_DIR / "dashboard" / "monitoring-dashboard.py").read_text(encoding="utf-8")
+        dashboard_server_source = (ROOT_DIR / "dashboard" / "monitoring-dashboard.py").read_text(encoding="utf-8")
+        dashboard_css_source = (ROOT_DIR / "public" / "dashboard" / "dashboard.css").read_text(encoding="utf-8")
+        dashboard_js_source = (ROOT_DIR / "public" / "dashboard" / "dashboard.js").read_text(encoding="utf-8")
+        dashboard_source = dashboard_server_source + "\n" + dashboard_css_source + "\n" + dashboard_js_source
+        content_dashboard_source = (ROOT_DIR / "dashboard" / "content-dashboard.py").read_text(encoding="utf-8")
         dockerignore = (ROOT_DIR / ".dockerignore").read_text(encoding="utf-8")
         docker_entrypoint = (ROOT_DIR / "scripts" / "docker-entrypoint.sh").read_text(encoding="utf-8")
+        run_docker = (ROOT_DIR / "scripts" / "run-docker.sh").read_text(encoding="utf-8")
         env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
         self.assert_true("@openai/codex" in dockerfile and "node:22" in dockerfile, "Docker image installs Node and Codex CLI")
-        self.assert_true("CODEX_CREATIVE_ENABLED=false" in dockerfile and 'CODEX_CREATIVE_ENABLED: "false"' in compose, "Buyer installs leave optional Codex CLI execution off by default")
+        self.assert_true("CODEX_CREATIVE_ENABLED=true" in dockerfile and 'CODEX_CREATIVE_ENABLED: "true"' in compose and '"CODEX_CREATIVE_ENABLED": "true"' in docker_entrypoint, "Buyer Docker installs enable Codex/Image creative generation by default")
+        self.assert_true("CODEX_HOME=/app/runtime/codex" in dockerfile and "CODEX_HOME: /app/runtime/codex" in compose and "/app/runtime/codex/generated_images" in docker_entrypoint, "Docker persists the buyer's ChatGPT/Codex login and generated images across updates")
+        self.assert_true("HERMES_DISABLED_TOOLSETS=terminal,code_execution,image_gen" in dockerfile and "HERMES_DISABLED_TOOLSETS: terminal,code_execution,image_gen" in compose and "HERMES_ENABLED_TOOLSETS=memory,skills,session_search,vision,file" in dockerfile, "Docker disables Hermes internal image generation so Codex/Image owns final creatives")
         self.assert_true("seller/" in dockerignore, "Docker build context excludes seller secrets")
         self.assert_true("forced = {" in docker_entrypoint and "\"DASHBOARD_HOST\": \"0.0.0.0\"" in docker_entrypoint, "Docker entrypoint forces reachable dashboard bind values")
         self.assert_true("LAN_ACCESS_ENABLED" in env_example and "LAN_ACCESS_ENABLED" in docker_entrypoint and "ADMIRO_HOST_LAN_IP" in compose, "Phone LAN access is off by default and Docker receives the host LAN IP when available")
@@ -3472,7 +4094,12 @@ class IntegrationTestSuite:
         self.assert_true("pkgbuild" in mac_pkg_builder and "productbuild" in mac_pkg_builder, "Mac PKG builder uses native package tools")
         self.assert_true("MAC_PKG_SIGN_IDENTITY" in mac_pkg_builder and "notarytool submit" in mac_pkg_builder and "stapler staple" in mac_pkg_builder, "Mac PKG builder supports Developer ID signing and notarization")
         self.assert_true("hdiutil create" in mac_dmg_builder and ".app" in mac_dmg_builder and "MAC_APP_SIGN_IDENTITY" in mac_dmg_builder, "Mac DMG builder creates a signed app launcher experience")
-        self.assert_true("open -a Terminal" in mac_dmg_builder and "$HOME/Applications/Meta Ads Agent" in mac_dmg_builder, "Mac DMG launcher hides the command file and opens the installer from a friendly app")
+        self.assert_true("ADMIRO_DOCKER_DETACHED=true" in mac_dmg_builder and "$HOME/Applications/Admira IA" in mac_dmg_builder and "mac-docker-launcher.log" in mac_dmg_builder, "Mac DMG launcher runs Docker directly without asking the buyer to open the command file")
+        self.assert_true('DASHBOARD_URL="http://127.0.0.1:7871/"' in mac_dmg_builder and 'open "$DASHBOARD_URL"' in mac_dmg_builder, "Mac DMG launcher opens the dashboard after Docker starts")
+        self.assert_true("ensure_docker_ready" in mac_dmg_builder and "Docker Desktop" in mac_dmg_builder and "https://www.docker.com/products/docker-desktop/" in mac_dmg_builder, "Mac DMG launcher checks Docker before running the technical install command")
+        self.assert_true("No arrastres nada a Aplicaciones" in mac_dmg_builder and ".background/background.png" in mac_dmg_builder and "set background picture" in mac_dmg_builder, "Mac DMG gives one-click visual instructions instead of an Applications drag workflow")
+        self.assert_true("Privacidad y seguridad" in mac_dmg_builder and "Abrir de todos modos" in mac_dmg_builder and "aun no esta firmada por Apple" in mac_dmg_builder, "Mac DMG README explains the temporary unsigned-app security prompt")
+        self.assert_true("ADMIRO_DOCKER_SKIP_BUILD" in run_docker and "up)" in run_docker and "--build" in run_docker, "Docker runner can start an existing container without rebuilding every time")
         self.assert_true("candle" in windows_msi_builder and "light" in windows_msi_builder and "MetaAdsAgent-" in windows_msi_builder and "windows.msi" in windows_msi_builder, "Windows MSI builder uses WiX Toolset when available")
         self.assert_true("WINDOWS_SIGN_MSI" in windows_msi_builder and "signtool" in windows_msi_builder and "/fd SHA256" in windows_msi_builder, "Windows MSI builder supports Authenticode signing")
         self.assert_true('Source="{esc(source_ref)}"' in windows_msi_builder and "MetaAdsAgent\\\\" in windows_msi_builder, "Windows MSI source package uses relative file paths for VPS compilation")
@@ -3490,6 +4117,7 @@ class IntegrationTestSuite:
         do_firewall_script = (ROOT_DIR / "scripts" / "digitalocean-refresh-firewall.sh").read_text(encoding="utf-8")
         do_install_script = (ROOT_DIR / "scripts" / "install-digitalocean-strict-access.sh").read_text(encoding="utf-8")
         do_doc = (ROOT_DIR / "docs" / "es-digitalocean-acceso-estricto.md").read_text(encoding="utf-8")
+        security_next_doc = (ROOT_DIR / "docs" / "es-proximas-revisiones-seguridad.md").read_text(encoding="utf-8")
         installer_signing_doc = (ROOT_DIR / "docs" / "es-firma-instaladores.md").read_text(encoding="utf-8")
         device_transfer_doc = (ROOT_DIR / "docs" / "es-cambiar-de-equipo.md").read_text(encoding="utf-8")
         export_migration = (ROOT_DIR / "scripts" / "export-migration.sh").read_text(encoding="utf-8")
@@ -3509,6 +4137,7 @@ class IntegrationTestSuite:
         secret_vault_lib = (ROOT_DIR / "seller" / "vercel-license-api" / "lib" / "secret-vault.js").read_text(encoding="utf-8")
         license_lib = (ROOT_DIR / "seller" / "vercel-license-api" / "lib" / "license.js").read_text(encoding="utf-8")
         license_store = (ROOT_DIR / "seller" / "vercel-license-api" / "lib" / "store.js").read_text(encoding="utf-8")
+        blob_publish_script = (ROOT_DIR / "seller" / "vercel-license-api" / "scripts" / "publish-release-assets.mjs").read_text(encoding="utf-8")
         license_server_readme = (ROOT_DIR / "seller" / "vercel-license-api" / "README.md").read_text(encoding="utf-8")
         digitalocean_guided_doc = (ROOT_DIR / "docs" / "es-instalacion-digitalocean-guiada.md").read_text(encoding="utf-8")
         vercel_config = (ROOT_DIR / "seller" / "vercel-license-api" / "vercel.json").read_text(encoding="utf-8")
@@ -3532,9 +4161,21 @@ class IntegrationTestSuite:
         self.assert_true("DEFAULT_POST_LIMIT_BYTES" in dashboard_source and "MIGRATION_POST_LIMIT_BYTES" in dashboard_source and "read_body(parsed.path)" in dashboard_source, "Dashboard rejects oversized protected requests")
         self.assert_true("redact_error_text" in dashboard_source and "client_error_message" in dashboard_source, "Dashboard avoids echoing raw secrets in errors")
         self.assert_true("X-Frame-Options" in dashboard_source and "X-Content-Type-Options" in dashboard_source, "Dashboard sends basic browser security headers")
+        self.assert_true("Content-Security-Policy" in dashboard_source and "frame-ancestors 'none'" in dashboard_source and "object-src 'none'" in dashboard_source, "Dashboard sends a content security policy that reduces browser injection impact")
+        dashboard_html_block = dashboard_server_source.split('HTML = r"""', 1)[1].split('"""\n\n\nclass DashboardHandler', 1)[0]
+        self.assert_true("/assets/dashboard/dashboard.css" in dashboard_html_block and "/assets/dashboard/dashboard.js" in dashboard_html_block, "Dashboard HTML loads first-party CSS and JS assets instead of embedding the large app inline")
+        self.assert_true("<style>" not in dashboard_html_block and "<script>" not in dashboard_html_block, "Dashboard HTML no longer embeds inline style or script blocks")
+        self.assert_true(not any(token in dashboard_html_block for token in ["onclick=", "onsubmit=", "onchange=", "oninput=", "onpaste=", " style="]), "Dashboard HTML does not ship inline handlers or style attributes")
+        self.assert_true(not any(token in dashboard_js_source for token in ["onclick=", "onsubmit=", "onchange=", "oninput=", "onpaste=", " style=", "<style>"]), "Dashboard JS templates do not generate inline handlers, style attributes, or style blocks")
+        self.assert_true("data-action-code" in dashboard_source and "installDelegatedActions" in dashboard_source and "allowedActionCall" in dashboard_source, "Dashboard dynamic actions use delegated allowlisted handlers")
+        self.assert_true("PUBLIC_ASSET_EXTENSIONS" in dashboard_server_source and '".css"' in dashboard_server_source and '".js"' in dashboard_server_source and "send_public_asset" in dashboard_server_source, "Dashboard serves extracted CSS and JS through the local static asset route")
+        self.assert_true("script-src 'self';" in dashboard_server_source and "script-src-elem 'self';" in dashboard_server_source and "style-src 'self';" in dashboard_server_source, "Dashboard CSP blocks inline script/style elements on the main app")
+        self.assert_true("script-src-attr 'none'" in dashboard_server_source and "style-src-attr 'none'" in dashboard_server_source and "unsafe-inline" not in dashboard_server_source, "Dashboard CSP blocks inline script/style attributes without unsafe-inline")
+        self.assert_true("relative_to(ROOT_DIR)" in content_dashboard_source and "from html import escape" in content_dashboard_source, "Secondary content dashboard avoids path-prefix checks and escapes generated content")
         self.assert_true("official_download_url_allowed" in dashboard_source and "MAX_UPDATE_UNPACKED_BYTES" in dashboard_source and "zip_member_is_safe" in dashboard_source, "Dashboard update and restore paths guard against unsafe archives")
         self.assert_true(not (ROOT_DIR / "Actualizar acceso DigitalOcean.command").exists() and not (ROOT_DIR / "Crear respaldo para cambiar de equipo.command").exists(), "Buyer folder avoids scary top-level maintenance launchers")
         self.assert_true("Abrir mi dashboard" in do_doc and "La recuperacion tecnica es por SSH" in do_doc and "DO_STRICT_ALLOW_SSH_FROM_ANYWHERE=true" in do_doc, "DigitalOcean strict access docs explain IP changes and recovery")
+        self.assert_true("Docker ayuda, pero no reemplaza CSP" in security_next_doc and "public/dashboard/dashboard.css" in security_next_doc and "script-src-attr 'none'" in security_next_doc and "no expongas tu dashboard local a internet" in security_next_doc, "Security next-steps doc records Docker, strict CSP, and public exposure follow-ups")
         self.assert_true("chat_history.json" in export_migration or "dashboard/data" in export_migration, "Migration export includes dashboard local memory")
         self.assert_true("LICENSE_DEVICE_ID=" in export_migration and "license_unlock.json" in export_migration, "Migration export clears device-specific license unlock")
         self.assert_true("LICENSE_DEVICE_ID=" in import_migration and "license_unlock.json" in import_migration, "Migration import forces new machine license validation")
@@ -3544,12 +4185,13 @@ class IntegrationTestSuite:
         self.assert_true("normalizeEntitlements" in license_lib and "workspace_limit: 50" in license_lib and "max_devices: 4" in license_lib, "License server normalizes Individual and Agency entitlement defaults")
         self.assert_true('entitlements.plan === "individual"' in license_activate_api and 'entitlements.plan === "individual"' in license_release_api, "License server restricts device transfer to Individual licenses")
         self.assert_true("license_entitlements" in dashboard_source and "active_workspace" in dashboard_source and "workspace_usage" in dashboard_source and "business_binding" in dashboard_source, "Dashboard exposes license limits and active business metadata")
-        self.assert_true("Tu licencia Individual cuida un solo negocio activo" in dashboard_source and "Para manejar varios clientes, usa Licencia Agencia" in dashboard_source, "Dashboard explains Individual and Agency limits in buyer-friendly copy")
+        self.assert_true("Tu licencia Individual cuida un solo negocio activo" in dashboard_source and "otra licencia separada" in dashboard_source, "Dashboard explains Individual one-business limit in buyer-friendly copy")
+        self.assert_true("Licencia Agencia" not in dashboard_source and "Agregar cliente" not in dashboard_source and "Clientes de agencia" not in dashboard_source, "Dashboard does not expose paused agency workspace copy")
         self.assert_true("improvements" in license_releases_admin and "improvements" in license_release_api, "Official release metadata includes buyer-facing improvement cards")
         self.assert_true("buyerFacingImprovements" in portal_lib and "INTERNAL_RELEASE_WORDS" in portal_lib and "Instalacion en contenedor" in portal_lib, "Download portal filters internal release notes before buyers see them")
         for technical_release_word in ['"hermes"', '"chatgpt"', '"codex"', '"ssh"', '"vps"', '"minimax"', '"comando"']:
             self.assert_true(technical_release_word in portal_lib, f"Download portal hides technical release note word {technical_release_word} from buyers")
-        self.assert_true("Docker para Mac" in portal_lib and "Docker para Windows" in portal_lib and "producto se prepara en contenedor" in portal_lib, "Download portal pushes buyers toward Docker-first installation")
+        self.assert_true("Launcher Docker para Mac" in portal_lib and "Launcher Docker para Windows" in portal_lib and "abre Docker Desktop" in portal_lib, "Download portal pushes buyers toward Docker-first installers")
         self.assert_true("buyerFacingImprovements(release.improvements" in portal_session_api and "buyerFacingImprovements(release.improvements" in license_release_api, "Buyer download APIs sanitize release improvements")
         self.assert_true("timingSafeEqual" in license_lib and "RELEASE_MAX_BYTES" in license_download_api and "response.redirect(302" in license_download_api, "License server uses safer comparisons and avoids proxying large release bodies by default")
         self.assert_true("export async function resetDeviceRegistrations" in license_store and "del(" in license_store, "License server can clear prior device registrations")
@@ -3558,8 +4200,11 @@ class IntegrationTestSuite:
         self.assert_true("RELEASE_DOWNLOAD_SECRET" in license_server_readme and "/api/license/release" in license_server_readme, "Seller license server documents signed release download support")
         self.assert_true("Acceso de comprador" in portal_page and "Email de compra" in portal_page and "Clave de acceso" in portal_page, "Download portal has buyer-friendly email and access key login")
         self.assert_true("/api/portal/session" in portal_page and "/api/portal/download" in portal_page and "Elige tu sistema" in portal_page, "Download portal renders one-click platform downloads")
+        self.assert_true("universalInstallerAsset" in portal_lib and "metaadsagent-source.zip" in portal_lib.lower() and "universal_fallback" in portal_lib, "Download portal can still recognize the stable universal package for allowed fallback paths")
+        self.assert_true("allowUniversalFallback: false" in portal_lib and "Instalador Docker pendiente de publicar" in portal_page and "source" in portal_lib, "Download portal does not expose the source ZIP as the normal Mac/Windows installer")
         self.assert_true("Docker Desktop" in portal_page and "launcher Docker" in portal_page and "Instalacion local con Docker" in portal_page, "Download portal explains local installs run through Docker")
         self.assert_true("Descargar Docker Desktop" in portal_page and "https://www.docker.com/products/docker-desktop/" in portal_page, "Download portal gives buyers a direct Docker Desktop download button")
+        self.assert_true("local-security-note" in portal_page and "no expongas el dashboard local a internet" in portal_page and "misma red Wi-Fi" in portal_page, "Download portal warns local Docker buyers not to expose the dashboard publicly")
         self.assert_true("Recordar este acceso" in portal_page and "restorePortalSession" in portal_page and "Cerrar sesion" in portal_page, "Download portal remembers buyer access and offers logout")
         self.assert_true("Estado de tu instalacion" in portal_page and "Acceder a mi dashboard" in portal_page and "renderInstallState" in portal_page, "Download portal leads with installed/not-installed state before installer choices")
         self.assert_true("install_state" in portal_session_api and "deviceRegistrations" in portal_session_api and "cloud_installation" in portal_session_api, "Portal session returns cloud and local install state")
@@ -3578,6 +4223,7 @@ class IntegrationTestSuite:
         self.assert_true("Could not resolve host" in portal_digitalocean_api and "No pudo descargar el producto por DNS de arranque" in portal_digitalocean_api, "DigitalOcean cloud status recognizes first-boot DNS download failures instead of freezing progress")
         self.assert_true("Tardando mas de lo normal" in portal_page and "tail -n 80 /var/log/admiro-cloud-install.log" in portal_page, "Download portal explains when DigitalOcean is active but dashboard is not ready")
         self.assert_true("Abrir mi dashboard" in portal_page and "cloud_open_url" in portal_page and "prepara tu red automaticamente" in portal_page, "Download portal exposes a one-click cloud dashboard opener")
+        self.assert_true("function safeHttpUrl" in portal_page and "url.protocol === 'http:' || url.protocol === 'https:'" in portal_page and "const openUrl = safeHttpUrl" in portal_page, "Download portal only renders http/https cloud dashboard links")
         self.assert_true("Protector automatico de acceso" in portal_page and "/api/portal/cloud/access-keeper" in portal_page and "/api/portal/cloud/access-keeper-ps" in portal_page, "Download portal keeps the optional local access keeper available as an advanced fallback")
         self.assert_true("Actualizar acceso de esta red" in portal_page and "refreshCloudAccess()" in portal_page and "action: 'refresh_access'" in portal_page, "Download portal can realign cloud SSH/dashboard access from the buyer browser")
         self.assert_true("Buscar automaticamente con mi token" in portal_page and "cloudRecoveryToken" in portal_page and "refreshCloudIpFromDigitalOcean" in portal_digitalocean_api, "DigitalOcean waiting-for-IP state can recover automatically with the browser-held token")
@@ -3627,8 +4273,9 @@ class IntegrationTestSuite:
         self.assert_true("barra de progreso" in digitalocean_guided_doc and "Acceder a mi dashboard" in digitalocean_guided_doc, "Buyer docs explain cloud install progress and final access button")
         self.assert_true("Abrir mi dashboard" in digitalocean_guided_doc and "autoriza la IP actual" in digitalocean_guided_doc and "No contiene el token de DigitalOcean" in digitalocean_guided_doc, "Buyer docs explain the one-click cloud dashboard opener")
         self.assert_true("Protector automatico de acceso avanzado" in digitalocean_guided_doc and "corre cada hora" in digitalocean_guided_doc and "No guarda el token de DigitalOcean" in digitalocean_guided_doc, "Buyer docs explain the local cloud access keeper as an advanced fallback")
-        self.assert_true(".dmg" in portal_lib and ".msi" in portal_lib and ".tar.gz" in portal_lib, "Portal maps release assets to Mac, Windows and Linux buttons")
+        self.assert_true(".dmg" in portal_lib and ".exe" in portal_lib and ".tar.gz" in portal_lib and ".pkg" not in portal_lib and ".msi" not in portal_lib, "Portal maps Docker-first release assets to Mac, Windows and Linux buttons")
         self.assert_true("releases/tags" in portal_lib and "GITHUB_RELEASE_TOKEN" in portal_lib and "api.github.com/repos" in portal_lib, "Portal can discover platform installers from the private GitHub release")
+        self.assert_true("blob_path" in license_lib and "blob_path" in license_download_api and "@vercel/blob" in license_download_api and "access: \"private\"" in blob_publish_script and "publish-release-assets" in str(ROOT_DIR / "seller" / "vercel-license-api" / "scripts" / "publish-release-assets.mjs"), "Portal can serve private Vercel Blob release installers")
         self.assert_true("\"/access\"" in vercel_config and "\"/descargas\"" in vercel_config and "\"/api/portal\"" in vercel_config, "License server routes friendly download URLs to the portal")
         self.assert_true("Download portal" in license_server_readme and "/api/portal/session" in license_server_readme, "Seller docs explain the buyer download portal")
         self.assert_true("Developer ID Application" in installer_signing_doc and ".dmg" in installer_signing_doc and ".msi" in installer_signing_doc, "Installer signing docs recommend DMG and MSI for buyer trust")
@@ -3681,11 +4328,15 @@ class IntegrationTestSuite:
             self.test_dashboard_hermes_browserless_auto_selects_codex,
             self.test_hermes_blocks_non_codex_runtime_by_default,
             self.test_hermes_attaches_safe_uploaded_images,
+            self.test_hermes_telegram_uses_persistent_session_not_prompt_history,
+            self.test_hermes_telegram_creates_missing_persistent_session,
             self.test_hermes_business_memory_workspace_is_curated_and_redacted,
             self.test_decision_memory_profitability_rules_and_hermes_context,
             self.test_chat_approval_decision_tool,
             self.test_minimax_tool_request_executes_backend_tool,
             self.test_codex_creative_prompt_rejects_local_file_escape,
+            self.test_codex_image_prompt_lab_builds_fixed_and_free_packages,
+            self.test_codex_image_cli_bridge_copies_generated_asset,
             self.test_agent_codex_image_creative_request_result,
             self.test_creative_studio_protects_and_previews_generated_assets,
             self.test_brand_memory_documents_feed_creative_generation,
@@ -3708,6 +4359,7 @@ class IntegrationTestSuite:
             self.test_campaign_stack_execution_creates_full_ad_order,
             self.test_chat_stages_campaign_creation_and_requires_exact_approval,
             self.test_telegram_channel_routes_agent_and_blocks_approval,
+            self.test_telegram_codex_image_request_sends_generated_photo,
             self.test_telegram_connection_change_resets_polling_state,
             self.test_setup_page_contains_unlock_and_trust,
             self.test_setup_config_save_preserves_blank_license,

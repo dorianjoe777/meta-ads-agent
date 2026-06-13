@@ -52,6 +52,7 @@ export default async function handler(request, response) {
       version: release.version,
       filename: asset.filename,
       contentType: asset.content_type,
+      blobPath: asset.blob_path,
       sourceUrl: asset.source_url
     });
     return json(response, 200, {

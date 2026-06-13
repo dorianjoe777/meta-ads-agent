@@ -37,14 +37,26 @@ Uso:
 1. Instala Docker Desktop.
 2. Abre Docker Desktop y espera que diga `Running`.
 3. Abre el `.dmg` que recibiste.
-4. Abre `Meta Ads Agent.app`.
+4. Abre `Admira IA.app`.
 5. Cuando termine de preparar todo, abre:
 
 ```text
 http://127.0.0.1:7871
 ```
 
-Para venta publica, el `.dmg` debe llevar una app firmada y notarizada. Si estas probando un build interno sin firma, macOS puede pedir permiso extra en Privacidad y Seguridad. Eso no debe ser la experiencia normal del comprador.
+Si macOS muestra un aviso diciendo que no puede verificar el desarrollador:
+
+1. Abre `Configuracion del Sistema`.
+2. Entra a `Privacidad y seguridad`.
+3. Baja hasta `Seguridad`.
+4. Haz clic en `Abrir de todos modos` junto a `Admira IA`.
+5. Confirma y vuelve a abrir `Admira IA.app`.
+
+Esto puede pasar mientras el launcher de Mac no este firmado y notarizado por Apple. La instalacion recomendada sigue siendo Docker: el producto corre aislado dentro de tu propio equipo.
+
+Para venta publica, el `.dmg` debe llevar una app firmada y notarizada. Mientras no tengamos esa firma, la guia de arriba es el fallback temporal para Mac.
+
+El portal de descargas no debe entregar el ZIP universal como instalador de Mac. Si no existe un `.dmg` o `.pkg` oficial para la version estable, el boton de Mac debe quedar desactivado hasta publicar ese asset. Asi evitamos que el comprador termine abriendo un archivo tecnico y vea alertas innecesarias de macOS.
 
 El archivo `Instalar en Mac.command` queda dentro de la instalacion como motor tecnico, pero el comprador no deberia tener que buscarlo.
 
@@ -98,4 +110,4 @@ Si no hay firma todavia, la venta puede seguir empujando la ruta Docker. Los usu
 
 ## Importante
 
-Si se cierra la ventana del instalador, el dashboard puede apagarse. Para uso continuo en VPS se recomienda correrlo con Docker en segundo plano o instalar el servicio systemd.
+En Mac y Windows la ruta recomendada deja Docker corriendo en segundo plano. Si el comprador cierra el navegador, el dashboard sigue vivo mientras Docker Desktop siga abierto. Para uso continuo en VPS se recomienda la instalacion cloud con Docker en segundo plano o servicio systemd.

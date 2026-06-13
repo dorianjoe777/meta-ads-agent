@@ -6,11 +6,23 @@ Este producto instala un manager IA para Meta Ads en tu PC o VPS. La idea es sim
 
 Opcion mas facil con Docker:
 
-Haz doble clic en el archivo de tu sistema:
+Descarga el instalador de tu sistema desde la pagina de acceso:
 
-- `Instalar en Windows.bat`
-- `Instalar en Mac.command`
-- `Instalar en Linux.desktop`
+- Mac: abre el `.dmg` y luego `Admira IA.app`.
+- Windows: abre el instalador de Windows y luego el acceso directo `Meta Ads Agent`.
+- Linux: abre el bundle de Linux o usa `Instalar en Linux.desktop`.
+
+En Mac no abras `Instalar en Mac.command` como paso principal. Ese archivo queda dentro del producto como motor tecnico; la experiencia normal debe ser abrir la app del `.dmg`, que prepara Docker por ti.
+
+Si macOS muestra un aviso de seguridad al abrir `Admira IA.app`, haz esto:
+
+1. Abre `Configuracion del Sistema`.
+2. Entra a `Privacidad y seguridad`.
+3. Baja hasta la parte de `Seguridad`.
+4. Toca `Abrir de todos modos` para `Admira IA`.
+5. Vuelve a abrir `Admira IA.app`.
+
+Ese aviso puede aparecer en esta version porque el launcher de Mac todavia no esta firmado por Apple. El producto sigue corriendo dentro de Docker en tu propio equipo.
 
 O usa terminal:
 
@@ -48,7 +60,7 @@ Usa los screenshots incluidos con tu compra. La idea es que el acceso quede bajo
 **Opcion recomendada: conexion estable**
 
 1. Abre Meta Business Settings.
-2. Crea un `Usuario del sistema` para Admiro.
+2. Crea un `Usuario del sistema` para Admira.
 3. Dale acceso a tu cuenta publicitaria y a tu pagina de Facebook.
 4. Genera una clave estable para ese Usuario del sistema con permisos de anuncios y paginas.
 5. Pega la clave en el dashboard local. Se guarda automaticamente en esta instalacion.
@@ -58,7 +70,7 @@ Esto es mas seguro para el comprador: la clave nace en su propio Meta Business, 
 
 **Opcion rapida: empezar hoy**
 
-Tambien puedes usar Graph API Explorer si quieres avanzar mas rapido o si todavia no tienes acceso al dueño del Business Portfolio. Esta clave puede vencer, por eso Admiro te avisara para renovarla aproximadamente cada 60 dias. Mas adelante puedes ir a `Configuracion` y cambiarla por una clave estable.
+Tambien puedes usar Graph API Explorer si quieres avanzar mas rapido o si todavia no tienes acceso al dueño del Business Portfolio. Esta clave puede vencer, por eso Admira te avisara para renovarla aproximadamente cada 60 dias. Mas adelante puedes ir a `Configuracion` y cambiarla por una clave estable.
 
 ## 4. Conectar el modelo del agente
 
@@ -78,7 +90,7 @@ Modelo: MiniMax-M3
 
 Si tu proveedor usa otro nombre de modelo, cambia ese campo por el nombre exacto que te muestre su panel. La clave API queda guardada localmente en esta instalacion y no se muestra de vuelta en el dashboard.
 
-Importante: esta configuracion cambia el cerebro conversacional del manager, no sus reglas. Las imagenes finales de anuncios siguen usando el proveedor creativo configurado en `Creativos`, porque cada proveedor maneja imagenes con una API distinta.
+Importante: esta configuracion cambia el cerebro conversacional del manager, no sus reglas. Las imagenes finales de anuncios se crean con Codex/Image usando tu conexion ChatGPT/Codex.
 
 ## 5. Preparar guias creativas
 

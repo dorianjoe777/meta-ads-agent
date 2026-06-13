@@ -47,7 +47,7 @@ Frase comercial:
 No construir scraper propio todavia. Para v1:
 
 1. El comprador pega un link publico de Meta Ad Library o sube una captura.
-2. Hermes analiza visualmente la referencia.
+2. El agente analiza visualmente la referencia.
 3. El agente extrae patron creativo, no copia exacta.
 4. Codex/imagen genera variantes originales usando `brand_guides/` y `ad_briefs/`.
 5. El resultado queda como borrador y, si se quiere usar en Meta, pasa por aprobacion.

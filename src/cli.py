@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Meta Ads Agent CLI
+Admira IA CLI
 Command-line interface for managing Meta Ads campaigns.
 """
 import argparse
@@ -16,9 +16,9 @@ from budget_optimizer import BudgetOptimizer, OptimizationStrategy
 
 
 def main():
-    """CLI entry point for Meta Ads Agent."""
+    """CLI entry point for Admira IA."""
     parser = argparse.ArgumentParser(
-        description="Meta Ads Agent - Campaign Management CLI",
+        description="Admira IA - Campaign Management CLI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

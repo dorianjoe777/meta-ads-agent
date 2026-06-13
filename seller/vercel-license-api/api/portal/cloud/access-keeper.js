@@ -194,7 +194,7 @@ install_systemd_or_cron() {
     mkdir -p "$user_dir"
     cat > "$user_dir/admiro-cloud-access-keeper.service" <<SERVICE
 [Unit]
-Description=Admiro AI cloud access keeper
+Description=Admira IA cloud access keeper
 
 [Service]
 Type=oneshot
@@ -203,7 +203,7 @@ SERVICE
     local interval_seconds="$((INTERVAL_MINUTES * 60))"
     cat > "$user_dir/admiro-cloud-access-keeper.timer" <<TIMER
 [Unit]
-Description=Run Admiro AI cloud access keeper
+Description=Run Admira IA cloud access keeper
 
 [Timer]
 OnBootSec=2min
@@ -235,7 +235,7 @@ if [ "$RUN_NOW" = "true" ]; then
   "$BIN_FILE" || true
 fi
 
-echo "Admiro AI access keeper installed."
+echo "Admira IA access keeper installed."
 echo "It will check this computer public IP every $INTERVAL_MINUTES minutes."
 echo "Log: $LOG_FILE"
 `;

@@ -1,6 +1,6 @@
-# SKILLS.md - Meta Ads Manager Action Skill
+# SKILLS.md - Admira IA Action Skill
 
-This skill lets the Hermes manager understand natural language and request product actions safely. Hermes is the reasoning and memory layer; the backend is the execution layer.
+This skill lets Admira IA understand natural language and request product actions safely. Hermes is the internal reasoning and memory layer; the backend is the execution layer.
 
 ## Core Rule
 
@@ -8,7 +8,7 @@ Always answer the user naturally first. If the user asks for an action, decide w
 
 The backend will validate every tool request, enforce approvals, check `Con supervision` or `Piloto automatico`, and execute or prepare the action.
 
-Hermes receives curated local business memory in the prompt. This includes safe snapshots of `dashboard/data/business_profile.json`, `dashboard/data/audience_strategy.json`, the brand guide files in `brand_guides/`, profitability rules, decision memory, learning log, recent chat turns, recent actions, recent creative refreshes, and explicitly uploaded reference images. Use that memory before asking the buyer repeated questions.
+Hermes owns the conversation session. The backend should not paste the whole chat history into every message. Instead, Hermes receives a scoped workspace with curated local business memory: safe snapshots of `dashboard/data/business_profile.json`, `dashboard/data/audience_strategy.json`, the brand guide files in `brand_guides/`, profitability rules, decision memory, learning log, recent actions, recent creative refreshes, and explicitly uploaded reference images. Use those workspace files before asking the buyer repeated questions.
 
 Hermes also receives an `Agent onboarding plan.md` file. Treat that file as the current onboarding state. The normal buyer journey is:
 
@@ -48,7 +48,7 @@ Before recommending budget, pause, resume, or creative refresh decisions, read t
 
 When the buyer asks "que hacemos hoy" or opens a new chat about a product already discussed, treat this memory as the starting point. Mention the evidence briefly: signal, diagnosis, recommended action, risk, and what you will check later.
 
-Do not assume broad filesystem access. If a file is not present in the provided memory/context, ask the buyer for the missing detail or request the correct backend tool.
+Do not assume broad filesystem access. Read only the files made available inside the Hermes workspace. If a file is not present there, ask the buyer for the missing detail or request the correct backend tool.
 
 ## Response Contract
 
@@ -76,6 +76,20 @@ If the action is ambiguous:
 ```
 
 Never invent campaign IDs, budgets, account IDs, page IDs, or approval IDs. Use the campaign list and context JSON provided by the dashboard.
+
+## Real Data Guardrail
+
+Before giving performance advice, check `CURRENT_CONTEXT.json` and its `account_context.metrics_source.is_real_meta_data` value.
+
+If `is_real_meta_data` is `false`:
+
+- Say clearly that there are no real Meta campaigns available yet.
+- Do not name demo campaigns such as retargeting, warm leads, prospecting, Q2, or brand awareness as if they belonged to the buyer.
+- Do not cite ROAS, CPA, CTR, frequency, spend, conversions, winners, losers, or budget recommendations.
+- Do not recommend pausing, scaling, refreshing, or changing a campaign based on demo data.
+- The next useful step is to help the buyer connect Meta, refresh real data, or explain what the agent will analyze once real data exists.
+
+If `is_real_meta_data` is `true`, you may use the campaigns and metrics in `CURRENT_CONTEXT.json` as the current account snapshot.
 
 ## Available Tools
 
@@ -150,18 +164,48 @@ Arguments:
 
 ### `codex_creative_plan`
 
-Use when the user asks for a deeper marketing plan, visual concepts, image prompts, or consistent graphic content using Codex, and only if the optional Codex bridge has been explicitly enabled by the owner.
+Use when the user asks for a deeper marketing plan, visual concepts, image prompts, or consistent graphic content using Codex. This prepares the creative direction; it does not claim that a final image file was generated.
+
+- Use `mode: "fixed"` when the user wants brand consistency, small variants, or versions of an existing ad that already works.
+- Use `mode: "free"` when the user asks for new ideas, very different directions, a creative exploration, or says they wants designs that do not look similar.
+- Even in `free`, preserve the important brand bases: colors, fonts, product promise, audience, forbidden elements, approved references, and locked offer details.
 
 Arguments:
 
 ```json
 {
   "request": "Prepare 3 visual ad concepts for this product using the brand guides.",
-  "product_guide": "brand_guides/products/oferta-principal.md"
+  "product_guide": "brand_guides/products/oferta-principal.md",
+  "ad_brief": "brand_guides/ad_briefs/promo.md",
+  "mode": "free",
+  "variations": 5
 }
 ```
 
 If the brand/product guides do not exist yet, use `init_brand_guides` first or ask for the product name.
+
+### `codex_image_generate`
+
+Use when the buyer asks to create, generate, render, produce, or finish an actual image/PNG/creative for an ad through Codex/ChatGPT.
+
+Do not use Hermes internal image generation. Do not mention FAL, Nous, or any external image API. The product backend will call Codex/Image using the buyer's connected ChatGPT/Codex session and will return a saved preview URL.
+
+Use `codex_creative_plan` first only when the buyer wants ideas, strategy, or several possible directions. If the buyer asks for a final image, request this tool.
+
+Arguments:
+
+```json
+{
+  "request": "Genera una imagen final 4:5 para Meta Ads con el producto protagonista, texto corto y estilo de marca.",
+  "product_guide": "brand_guides/products/oferta-principal.md",
+  "ad_brief": "brand_guides/ad_briefs/promo.md",
+  "mode": "fixed",
+  "variations": 1,
+  "output_name": "promo-principal"
+}
+```
+
+If the buyer uploaded a reference image, first use vision to describe it briefly, then include that description in `reference_image_summary`. Do not pass arbitrary local file paths to Codex.
 
 ### `save_business_context`
 

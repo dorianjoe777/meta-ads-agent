@@ -14,7 +14,7 @@ test("renders buyer license email with license and access link", () => {
     accessUrl: "https://admiroia.uboost.lat/access"
   });
 
-  assert.equal(rendered.subject, "Tu acceso a Admiro AI esta listo");
+  assert.equal(rendered.subject, "Tu acceso a Admira IA esta listo");
   assert.match(rendered.text, /MAO-TEST-BUYR-LICN-ABC123/);
   assert.match(rendered.text, /buyer@example\.com/);
   assert.match(rendered.text, /https:\/\/admiroia\.uboost\.lat\/access/);
@@ -34,7 +34,7 @@ test("sends buyer license email through Resend payload", async () => {
   const delivery = await sendBuyerLicenseEmail(license, {
     provider: "resend",
     apiKey: "test_resend_key",
-    from: "Admiro AI <licenses@example.com>",
+    from: "Admira IA <licenses@example.com>",
     replyTo: "support@example.com",
     accessUrl: "https://admiroia.uboost.lat/access",
     fetchImpl
@@ -66,7 +66,7 @@ test("sends buyer license email through SMTP transport", async () => {
     provider: "smtp",
     smtpUser: "licenses@admiroia.uboost.lat",
     smtpPass: "test_password",
-    from: "Admiro AI <licenses@admiroia.uboost.lat>",
+    from: "Admira IA <licenses@admiroia.uboost.lat>",
     replyTo: "support@admiroia.uboost.lat",
     accessUrl: "https://admiroia.uboost.lat/access",
     smtpTransport
@@ -74,7 +74,7 @@ test("sends buyer license email through SMTP transport", async () => {
 
   assert.equal(delivery.provider, "smtp");
   assert.equal(delivery.id, "smtp_123");
-  assert.equal(captured.from, "Admiro AI <licenses@admiroia.uboost.lat>");
+  assert.equal(captured.from, "Admira IA <licenses@admiroia.uboost.lat>");
   assert.equal(captured.to, "buyer@example.com");
   assert.equal(captured.replyTo, "support@admiroia.uboost.lat");
   assert.match(captured.html, /MAO-TEST-BUYR-LICN-ABC123/);

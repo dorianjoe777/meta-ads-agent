@@ -50,7 +50,7 @@ Creative generation:
 
 - creative refresh enabled
 - image generation mode
-- Gemini/Nano Banana key
+- Codex/Image login
 - creative drafts index
 
 Upload readiness:

@@ -1,6 +1,6 @@
-# Usar Codex para estrategia creativa y prompts de imagen
+# Usar Codex para creativos e imagen final
 
-Esta parte es opcional. Viene apagada por defecto para proteger mejor una instalacion de comprador.
+Esta es la ruta principal para crear imagenes finales de anuncios en Admira IA.
 
 El manager IA principal conversa contigo, lee Meta Ads y prepara decisiones. Codex puede funcionar como un segundo cerebro creativo: ayuda a crear planes de marketing, prompts de imagen y variaciones visuales consistentes para tus anuncios.
 
@@ -19,7 +19,7 @@ brand_guides/
     promo-o-anuncio-especifico.md
 ```
 
-Si Codex CLI ya esta instalado, el producto lo detecta. El agente, las guias y el proveedor creativo siguen funcionando aunque no actives Codex.
+Si Codex CLI ya esta instalado y conectado con ChatGPT/Codex, el producto lo detecta. El agente usa esas guias para pedirle a Codex imagenes finales coherentes con la marca y el producto.
 
 En una instalacion avanzada puedes pedir que el instalador intente instalar Codex CLI usando:
 
@@ -27,18 +27,21 @@ En una instalacion avanzada puedes pedir que el instalador intente instalar Code
 INSTALL_CODEX_CLI=true ./scripts/install-local.sh
 ```
 
-En esta version, Codex prepara el plan y el prompt visual. La imagen se genera despues con el proveedor creativo configurado en el producto. La generacion directa de una imagen mediante Codex/OpenAI todavia no forma parte del flujo confirmado de v1.
+En esta version, Codex prepara el plan visual y tambien genera la imagen final mediante la conexion ChatGPT/Codex del comprador. No hace falta configurar una API adicional de imagenes para el flujo principal.
 
 ## Seguridad antes de activarlo
 
-Codex CLI es un agente que corre localmente, no una simple caja de texto. Por eso el producto no lo activa automaticamente. Si decides usarlo, configura:
+Codex CLI es un agente que corre localmente, no una simple caja de texto. Por eso el onboarding pide conectar ChatGPT/Codex de forma clara. La configuracion recomendada es:
 
 ```env
 CODEX_CREATIVE_ENABLED=true
 CODEX_CLI=codex
+CODEX_CREATIVE_MODEL=
 ```
 
-El producto lo ejecuta en una carpeta temporal, en modo de solo lectura, sin reglas locales ni conversacion persistente. Aun asi, mientras una herramienta local pueda inspeccionar el equipo, debes considerarla una funcion avanzada y activarla solo en una instalacion que controlas.
+El producto ejecuta las tareas de planificacion en una carpeta temporal. Para imagen final, usa la sesion autenticada de Codex del comprador, guarda el archivo resultante dentro de `output/creatives/` y lo muestra como una vista previa protegida en el dashboard o Telegram.
+
+Si Codex CLI responde que el modelo por defecto no esta disponible para tu cuenta de ChatGPT/Codex, soporte puede indicar un modelo compatible y guardarlo en `CODEX_CREATIVE_MODEL`.
 
 ## Guia general de marca
 
@@ -57,8 +60,6 @@ El producto lo ejecuta en una carpeta temporal, en modo de solo lectura, sin reg
 - Reglas para imagenes.
 
 Esta guia evita que cada creativo se vea como si fuera de una marca diferente.
-
-En la licencia Agencia, estas guias quedan separadas por espacio de cliente. Cuando cambias de cliente, el agente usa las guias de esa marca, no las del cliente anterior.
 
 ## Guia por producto
 
@@ -135,6 +136,37 @@ Esto evita que el agente invente demasiado cuando lo que necesitas es mejorar un
 No necesitas buscar ni editar archivos manualmente. La interfaz guarda por detrás `general_branding.md`, una ficha Markdown por producto y un Markdown por brief publicitario para que esa memoria sea local, respaldable y legible por el agente.
 
 Cuando un lote creativo usa una ficha o un brief, la biblioteca lo etiqueta con el producto y el brief correspondiente. Así puedes distinguir ideas generales de producto vs variaciones de un anuncio real.
+
+## Dos modos para generar prompts
+
+El sistema prepara prompts de imagen con dos estilos:
+
+- `Fijo`: para mantener la marca muy controlada. Sirve cuando ya tienes una direccion clara, una promocion concreta o un anuncio ganador y solo quieres variantes seguras.
+- `Libre`: para explorar ideas muy diferentes. Sirve cuando quieres descubrir nuevos estilos, composiciones, escenas o conceptos. Aun asi, respeta colores, tipografias, oferta, publico, reglas prohibidas y referencias aprobadas.
+
+Ejemplo de prueba local sin ejecutar Codex:
+
+```bash
+python3 scripts/codex-image-prompt-lab.py \
+  --mode free \
+  --product nombre-del-producto \
+  --variations 5 \
+  --request "Crear rutas visuales muy distintas para Meta Ads"
+```
+
+Ejemplo pidiendo que Codex refine el paquete:
+
+```bash
+python3 scripts/codex-image-prompt-lab.py \
+  --mode fixed \
+  --product nombre-del-producto \
+  --ad-brief promo-junio \
+  --variations 3 \
+  --request "Crear prompts para una promocion de junio" \
+  --execute-codex
+```
+
+El primer comando solo guarda un manifiesto JSON. El segundo tambien llama Codex CLI, siempre dentro de una carpeta temporal y en modo de solo lectura.
 
 ## Guardado de imagenes
 

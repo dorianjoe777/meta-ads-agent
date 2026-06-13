@@ -20,7 +20,7 @@ export default async function handler(request, response) {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Descargar Admiro AI Meta Ads Agent</title>
+  <title>Descargar Admira IA</title>
   <style>
     :root{
       color-scheme:light;
@@ -448,6 +448,17 @@ export default async function handler(request, response) {
       box-shadow:0 14px 30px rgba(49,88,170,.08);
       white-space:nowrap;
     }
+    .local-security-note{
+      margin:18px 0 0;
+      padding:14px 16px;
+      border:1px solid rgba(95,53,216,.16);
+      border-radius:18px;
+      background:linear-gradient(135deg,rgba(255,255,255,.82),rgba(241,246,255,.74));
+      color:var(--ink);
+      box-shadow:0 16px 42px rgba(63,52,122,.08);
+    }
+    .local-security-note strong{display:block;font-size:14px;margin-bottom:4px}
+    .local-security-note p{margin:0;color:var(--dim);font-size:13px;line-height:1.45}
     .logout-btn{
       min-height:38px;
       border:1px solid rgba(123,77,255,.18);
@@ -757,12 +768,12 @@ export default async function handler(request, response) {
           <div class="brand">
             <div class="mark" aria-hidden="true"></div>
             <div>
-              <strong>Admiro AI</strong>
-              <span>Meta Ads Agent local/VPS</span>
+              <strong>Admira IA</strong>
+              <span>Manager IA local/VPS para Meta Ads</span>
             </div>
           </div>
           <h1>Descarga tu <span class="gradient">manager IA</span> para Meta Ads</h1>
-          <p class="copy">Entra con el email de compra y la clave de acceso que recibiste. Luego descarga el launcher correcto para correr Admiro AI en Docker.</p>
+          <p class="copy">Entra con el email de compra y la clave de acceso que recibiste. Luego descarga el launcher Docker correcto para tu sistema.</p>
           <div class="aurora-orb" aria-hidden="true"></div>
         </div>
         <form class="login" id="loginForm">
@@ -785,7 +796,7 @@ export default async function handler(request, response) {
         <div class="download-head">
           <div>
             <h2 id="downloadTitle">Elige tu sistema</h2>
-            <p id="downloadSubtitle">Para instalacion local usa Docker Desktop: Mac para Apple, Windows para PC, Linux para VPS o equipos avanzados.</p>
+            <p id="downloadSubtitle">Para instalacion local usa Docker Desktop: Mac, Windows y Linux descargan un launcher que abre Docker y prepara Admira IA.</p>
           </div>
           <div class="download-tools">
             <a class="docker-download" href="https://www.docker.com/products/docker-desktop/" target="_blank" rel="noreferrer">Descargar Docker Desktop</a>
@@ -793,6 +804,10 @@ export default async function handler(request, response) {
             <div class="version" id="version">Version lista</div>
           </div>
         </div>
+        <section class="local-security-note">
+          <strong>Consejo de seguridad para instalacion local</strong>
+          <p>Usa Admira IA dentro de Docker y no expongas el dashboard local a internet con tuneles, puertos abiertos o reglas del router. Si quieres verlo desde el telefono, activalo desde Configuracion y usalo solo en la misma red Wi-Fi. Para acceso remoto real, usa la instalacion cloud recomendada.</p>
+        </section>
         <div class="cards" id="cards"></div>
         <div class="improvements" id="improvements"></div>
         <section class="cloud" id="cloudInstall">
@@ -810,7 +825,7 @@ export default async function handler(request, response) {
             <div class="cloud-intro">
               <div class="cloud-intro-card">
                 <strong>Como funciona</strong>
-                <p>Creas tu cuenta en DigitalOcean, agregas un metodo de pago y pegas aqui un token API. Con ese token, el portal crea automaticamente el servidor, instala Admiro AI y deja listo el boton para entrar al dashboard.</p>
+                <p>Creas tu cuenta en DigitalOcean, agregas un metodo de pago y pegas aqui un token API. Con ese token, el portal crea automaticamente el servidor, instala Admira IA y deja listo el boton para entrar al dashboard.</p>
                 <ul class="cloud-steps">
                   <li><span>1</span><b>Crea tu cuenta y metodo de pago.</b></li>
                   <li><span>2</span><b>Abre el area API de DigitalOcean y crea un token.</b></li>
@@ -897,6 +912,13 @@ export default async function handler(request, response) {
     function escapeHtml(value){
       return String(value || '').replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
     }
+    function safeHttpUrl(value){
+      try {
+        const url = new URL(String(value || ''), window.location.origin);
+        if(url.protocol === 'http:' || url.protocol === 'https:') return url.href;
+      } catch(_err) {}
+      return '';
+    }
     function buyerCopy(value){
       return String(value || '')
         .replaceAll('licencias-admiro-ai.uboost.lat/descargas', 'admiroia.uboost.lat/access')
@@ -921,7 +943,7 @@ export default async function handler(request, response) {
           '<span class="badge">'+escapeHtml(platform.badge)+'</span>' +
           '<h3>'+escapeHtml(platform.label)+'</h3>' +
           '<p>'+escapeHtml(platform.description)+'</p>' +
-          '<div class="file">'+(platform.available ? escapeHtml(platform.filename) : 'Todavia no publicado')+'</div>' +
+          '<div class="file">'+(platform.available ? escapeHtml(platform.filename) : 'Instalador Docker pendiente de publicar')+'</div>' +
           '<button class="download-btn" data-platform="'+escapeHtml(platform.id)+'" '+(disabled?'disabled':'')+'>'+escapeHtml(platform.button)+'</button>' +
         '</article>';
       }).join('');
@@ -946,7 +968,7 @@ export default async function handler(request, response) {
       if(stage.includes('descargando')) return 'Descargando producto';
       if(stage.includes('archivos')) return 'Preparando archivos';
       if(stage.includes('dependencias')) return 'Instalando componentes';
-      if(stage.includes('instalando')) return 'Instalando Admiro AI';
+      if(stage.includes('instalando')) return 'Instalando Admira IA';
       if(stage.includes('verificando')) return 'Verificando dashboard';
       if(stage.includes('dashboard')) return 'Preparando dashboard';
       if(stage.includes('tardando')) return 'Tardando mas de lo normal';
@@ -1043,7 +1065,7 @@ export default async function handler(request, response) {
       downloadSubtitle.textContent = 'Estoy pidiendo a DigitalOcean que cree el Droplet y deje lista la instalacion.';
       installState.innerHTML =
         '<h2>Creando tu servidor cloud</h2>' +
-        '<p>No cierres esta pagina. Primero DigitalOcean crea el servidor; despues Admiro AI se instala solo y aqui aparecera el boton para entrar.</p>' +
+        '<p>No cierres esta pagina. Primero DigitalOcean crea el servidor; despues Admira IA se instala solo y aqui aparecera el boton para entrar.</p>' +
         '<div class="state-grid">' +
           '<div class="state-card">' +
             '<span class="state-pill pending">Creacion iniciada</span>' +
@@ -1090,7 +1112,7 @@ export default async function handler(request, response) {
       const cloud = state.cloud || {};
       const local = state.local || {};
       const cloudInstallation = data.cloud_installation || {};
-      const openUrl = cloudInstallation.cloud_open_url || cloudInstallation.dashboard_url || '';
+      const openUrl = safeHttpUrl(cloudInstallation.cloud_open_url || cloudInstallation.dashboard_url || '');
       if(cloud.installed || cloudInstallation.droplet_id || cloudInstallation.provider){
         const ready = Boolean(openUrl && (cloud.dashboard_available || cloud.status === 'ready' || cloudInstallation.ready));
         const failed = Boolean(cloud.status === 'failed' || cloudInstallation.status === 'failed' || cloudInstallation.install_status === 'failed' || cloudInstallation.failed);
@@ -1128,7 +1150,7 @@ export default async function handler(request, response) {
         const completed = Boolean(local.onboarding_completed_at);
         installState.innerHTML =
           '<h2>Estado de tu instalacion: local activada</h2>' +
-          '<p>Para abrirla, usa el icono o acceso directo en el computador donde instalaste Admiro AI. Desde aqui puedes descargar otra vez si necesitas reinstalar.</p>' +
+          '<p>Para abrirla, usa el icono o acceso directo en el computador donde instalaste Admira IA. Desde aqui puedes descargar otra vez si necesitas reinstalar.</p>' +
           '<div class="state-grid">' +
             '<div class="state-card">' +
               '<span class="state-pill '+(completed?'':'pending')+'">'+(completed?'Onboarding completado':'Onboarding pendiente o no reportado')+'</span>' +
@@ -1146,7 +1168,7 @@ export default async function handler(request, response) {
         return 'local';
       }
       downloadTitle.textContent = 'Elige tu sistema';
-      downloadSubtitle.textContent = 'Aun no vemos una instalacion activa. Para tu PC/Mac elige un launcher Docker; para nube crea un servidor en DigitalOcean.';
+      downloadSubtitle.textContent = 'Aun no vemos una instalacion activa. Para tu PC/Mac/Linux elige un launcher Docker; para nube crea un servidor en DigitalOcean.';
       installState.innerHTML =
         '<h2>Estado de tu instalacion: aun no instalada</h2>' +
         '<p>Empieza con una de las opciones de abajo. Si quieres que el agente quede encendido siempre, elige DigitalOcean.</p>' +
@@ -1159,7 +1181,7 @@ export default async function handler(request, response) {
     }
     function renderCloudResult(data){
       const dropletIp = data.droplet_ip || String(data.dashboard_http_url || data.dashboard_url || '').replace(/^https?:\\/\\//,'').split(':')[0];
-      const openUrl = data.cloud_open_url || data.dashboard_url || '';
+      const openUrl = safeHttpUrl(data.cloud_open_url || data.dashboard_url || '');
       const ready = Boolean(openUrl && (data.ready || data.status === 'ready' || data.install_status === 'ready'));
       const failed = Boolean(data.failed || data.status === 'failed' || data.install_status === 'failed');
       const takingLonger = Boolean(data.taking_longer || data.status === 'taking_longer');
@@ -1173,7 +1195,7 @@ export default async function handler(request, response) {
         ? '<p class="cloud-direct">Enlace del dashboard: '+escapeHtml(data.dashboard_url)+(data.dashboard_http_url && data.dashboard_http_url !== data.dashboard_url?'<br>Respaldo por IP: '+escapeHtml(data.dashboard_http_url):'')+(data.cloud_open_url?'<br>Si tu internet cambia de IP, usa siempre el boton de arriba.':'<br>Este enlace directo puede depender de que tu IP actual siga permitida en el firewall.')+'</p>'
         : '';
       const ssh = data.ssh_command ? '<p class="cloud-direct">Acceso tecnico de respaldo para soporte: '+escapeHtml(data.ssh_command)+'</p>' : '';
-      const delayNote = takingLonger ? '<div class="cloud-safe-note"><strong>Importante:</strong> en DigitalOcean el Droplet puede verse como activo aunque Admiro AI siga instalando Docker y el dashboard. Si pasan varios minutos mas, abre la consola del Droplet y revisa <code>tail -n 80 /var/log/admiro-cloud-install.log</code>.</div>' : '';
+      const delayNote = takingLonger ? '<div class="cloud-safe-note"><strong>Importante:</strong> en DigitalOcean el Droplet puede verse como activo aunque Admira IA siga instalando Docker y el dashboard. Si pasan varios minutos mas, abre la consola del Droplet y revisa <code>tail -n 80 /var/log/admiro-cloud-install.log</code>.</div>' : '';
       const keeper = dropletIp ? '<div class="keeper-box"><strong>Protector automatico de acceso</strong><p>Incluido en el servidor cloud: cuando abres el boton de dashboard, el Droplet prepara tu red antes de cargar. No necesitas correr comandos para esto.</p><span class="cloud-direct" data-helper-endpoints="/api/portal/cloud/access-keeper /api/portal/cloud/access-keeper-ps">El helper local por hora queda disponible solo como respaldo avanzado.</span></div>' : '';
       cloudResult.innerHTML =
         '<strong>'+title+'</strong>' +

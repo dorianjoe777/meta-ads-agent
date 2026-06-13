@@ -253,7 +253,7 @@ async function ensureVercelDnsRecord(hostname = "", ip = "") {
     type: "A",
     value: content,
     ttl: 60,
-    comment: "Admiro AI cloud dashboard"
+    comment: "Admira IA cloud dashboard"
   };
   const existingValue = String(existing?.value || existing?.content || existing?.data || "").trim();
   if (existing && existingValue === content) {
@@ -338,10 +338,20 @@ async function createTag(token, tag) {
 
 function sourceZipAsset(release = {}) {
   const assets = release.assets || {};
-  return Object.entries(assets).find(([name, asset]) => {
+  const version = String(release.version || "").toLowerCase();
+  const candidates = Object.entries(assets).map(([name, asset]) => {
     const filename = String(asset?.filename || name).toLowerCase();
-    return filename === "metaadsagent-source.zip" || filename.endsWith("metaadsagent-source.zip");
+    const sourceZip = filename === "metaadsagent-source.zip" || filename.endsWith("-source.zip");
+    let score = sourceZip ? 10 : -1;
+    if (sourceZip && version && filename.includes(version)) score += 50;
+    if (sourceZip && filename === "metaadsagent-source.zip") score += 30;
+    if (sourceZip && asset?.blob_path) score += 20;
+    if (sourceZip && asset?.source_url) score -= 5;
+    return { entry: [name, asset], score };
   });
+  return candidates
+    .filter((candidate) => candidate.score >= 0)
+    .sort((left, right) => right.score - left.score)[0]?.entry || null;
 }
 
 function digitalOceanErrorDetail(error) {
@@ -794,7 +804,7 @@ function runtimeFailureCopy(runtime = {}) {
 function runtimeStageFromLog(logTail = "") {
   const markers = [
     ["ADMIRO_STAGE verifying_dashboard", "verificando_dashboard", 98],
-    ["Admiro AI cloud install complete", "verificando_dashboard", 98],
+    ["Admira IA cloud install complete", "verificando_dashboard", 98],
     ["ADMIRO_STAGE starting_dashboard", "iniciando_dashboard", 92],
     ["ADMIRO_STAGE app_installed", "preparando_dashboard", 86],
     ["ADMIRO_STAGE running_installer", "instalando_dependencias", 72],
@@ -1050,7 +1060,7 @@ export default async function handler(request, response) {
     const tag = `admiro-ai-${id}`;
     const dropletName = `admiro-ai-${id}`;
     const firewallName = `admiro-ai-${id}-strict`;
-    const keyName = `Admiro AI ${id}`;
+    const keyName = `Admira IA ${id}`;
     const accessSecret = cloudAccessSecret();
     const cloudHostname = cloudHostnameForInstall(id);
     const grant = signedReleaseGrant({
@@ -1062,6 +1072,7 @@ export default async function handler(request, response) {
       version: release.version,
       filename: asset.filename,
       contentType: asset.content_type,
+      blobPath: asset.blob_path,
       sourceUrl: asset.source_url,
       minutes: 180
     });

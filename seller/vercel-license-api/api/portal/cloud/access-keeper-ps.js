@@ -68,11 +68,11 @@ function Install-AdmiroAccessKeeper {
     identity_path = $IdentityPath
     remote_refresh_command = "~/.local/bin/meta-ads-refresh-access"
   } | ConvertTo-Json | Set-Content -Path $ConfigPath -Encoding UTF8
-  $TaskName = "Admiro AI Cloud Access Keeper"
+  $TaskName = "Admira IA Cloud Access Keeper"
   $TaskCommand = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + $ScriptPath + '" -RunKeeper'
   schtasks /Create /F /SC MINUTE /MO $IntervalMinutes /TN "$TaskName" /TR "$TaskCommand" | Out-Null
   if ($RunNow) { Invoke-AdmiroAccessKeeper }
-  Write-Host "Admiro AI access keeper installed. It checks this PC public IP every $IntervalMinutes minutes."
+  Write-Host "Admira IA access keeper installed. It checks this PC public IP every $IntervalMinutes minutes."
 }
 
 if ($RunKeeper) {

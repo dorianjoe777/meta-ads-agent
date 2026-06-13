@@ -2,7 +2,7 @@
 
 The creative layer is designed as a draft-and-approval workflow first.
 
-It uses the ad account benchmarks and brand settings from `ad-config.json` to identify campaigns that need fresh creative, generate copy variants, and prepare Nano Banana image prompts.
+It uses the ad account benchmarks and brand settings from `ad-config.json` to identify campaigns that need fresh creative, generate copy variants, and prepare Codex/Image prompts.
 
 ## What It Does In v1
 
@@ -14,7 +14,7 @@ It uses the ad account benchmarks and brand settings from `ad-config.json` to id
   - `9:16`
 - Saves a manifest under `output/creatives/`.
 - Shows recent refresh drafts in the dashboard.
-- Can optionally call Nano Banana through Gemini API when explicitly enabled.
+- Can call the Codex/Image bridge after the buyer connects ChatGPT/Codex.
 
 ## What It Does Not Do Automatically
 
@@ -43,10 +43,10 @@ Creative environment settings:
 ```bash
 CREATIVE_REFRESH_ENABLED=true
 CREATIVE_AUTO_GENERATE_ON_DAILY=true
-CREATIVE_PROVIDER=nano-banana
-CREATIVE_IMAGE_MODE=dry-run
-GEMINI_API_KEY=
-NANO_BANANA_MODEL=gemini-2.5-flash-image
+CREATIVE_PROVIDER=codex-image
+CREATIVE_IMAGE_MODE=codex-image
+CODEX_CREATIVE_ENABLED=true
+CODEX_CLI=codex
 CREATIVE_VARIANTS_PER_CAMPAIGN=3
 ```
 
@@ -76,30 +76,13 @@ The output manifest includes:
 
 - campaign performance context
 - ad copy variants
-- Nano Banana prompts
+- Codex/Image prompts
 - aspect ratios
 - upload policy
 
-## Live Nano Banana Generation
+## Final Codex/Image Generation
 
-Google’s official Nano Banana API uses Gemini image models. The baseline model documented by Google is:
-
-```text
-gemini-2.5-flash-image
-```
-
-To enable image generation:
-
-```bash
-CREATIVE_IMAGE_MODE=live
-GEMINI_API_KEY=your_google_ai_studio_key
-```
-
-Then run:
-
-```bash
-python3 src/daily_agent.py creative-refresh
-```
+Final images use the buyer's ChatGPT/Codex connection through Codex CLI. Connect it in onboarding or in `Configuracion`, then ask the agent to create the final image from a saved creative brief.
 
 Generated image files are saved next to the manifest under:
 

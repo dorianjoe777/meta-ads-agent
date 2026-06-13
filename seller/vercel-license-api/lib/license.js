@@ -123,7 +123,7 @@ function canonicalForHmac(payload) {
   return JSON.stringify(safe);
 }
 
-export function signedReleaseGrant({ licenseKey, buyerEmail, deviceId, channel, assetName, version, filename, contentType, sourceUrl, minutes: rawMinutes }) {
+export function signedReleaseGrant({ licenseKey, buyerEmail, deviceId, channel, assetName, version, filename, contentType, sourceUrl, blobPath, minutes: rawMinutes }) {
   const secret = String(process.env.RELEASE_DOWNLOAD_SECRET || "");
   if (!secret) {
     throw new Error("RELEASE_DOWNLOAD_SECRET is not configured");
@@ -141,6 +141,7 @@ export function signedReleaseGrant({ licenseKey, buyerEmail, deviceId, channel, 
     expires_at: new Date(Date.now() + minutes * 60000).toISOString(),
     filename: filename || assetName,
     license_key: licenseKey,
+    blob_path: blobPath || "",
     source_url: sourceUrl,
     version: version || "latest"
   };

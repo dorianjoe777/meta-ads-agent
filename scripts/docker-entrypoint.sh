@@ -3,8 +3,8 @@ set -euo pipefail
 
 cd /app
 
-mkdir -p /app/runtime/hermes /app/dashboard/data/update-snapshots /app/output /app/logs /app/brand_guides/products
-chmod 700 /app/runtime /app/runtime/hermes /app/dashboard/data /app/dashboard/data/update-snapshots /app/output /app/logs || true
+mkdir -p /app/runtime/hermes /app/runtime/codex /app/runtime/codex/generated_images /app/dashboard/data/update-snapshots /app/output /app/logs /app/brand_guides/products
+chmod 700 /app/runtime /app/runtime/hermes /app/runtime/codex /app/runtime/codex/generated_images /app/dashboard/data /app/dashboard/data/update-snapshots /app/output /app/logs || true
 
 if [ ! -f /app/runtime/.env ]; then
   cp /app/.env.example /app/runtime/.env
@@ -37,12 +37,15 @@ defaults = {
     "REQUIRE_DASHBOARD_TOKEN": "true",
     "LIVE_ACTIONS_ENABLED": "false",
     "LAN_ACCESS_ENABLED": "false",
-    "CODEX_CREATIVE_ENABLED": "false",
+    "CODEX_CREATIVE_ENABLED": "true",
     "CODEX_CLI": "codex",
+    "CODEX_HOME": "/app/runtime/codex",
     "HERMES_HOME": "/app/runtime/hermes",
     "HERMES_STATUS_TIMEOUT_SECONDS": "20",
     "HERMES_RESPONSE_TIMEOUT_SECONDS": "300",
     "HERMES_TIMEOUT_SECONDS": "300",
+    "HERMES_ENABLED_TOOLSETS": "memory,skills,session_search,vision,file,web,browser",
+    "HERMES_DISABLED_TOOLSETS": "terminal,code_execution,image_gen",
 }
 forced = {
     "DASHBOARD_HOST": "0.0.0.0",
@@ -68,6 +71,14 @@ for key, value in defaults.items():
             break
     if key not in keys and not replaced_blank:
         lines.append(f"{key}={value}")
+for index, line in enumerate(lines):
+    if line.startswith("HERMES_ENABLED_TOOLSETS=") and "image_gen" in line:
+        toolsets = [item for item in line.split("=", 1)[1].split(",") if item and item != "image_gen"]
+        lines[index] = "HERMES_ENABLED_TOOLSETS=" + ",".join(toolsets)
+    if line.startswith("HERMES_DISABLED_TOOLSETS=") and "image_gen" not in line:
+        disabled = [item for item in line.split("=", 1)[1].split(",") if item]
+        disabled.append("image_gen")
+        lines[index] = "HERMES_DISABLED_TOOLSETS=" + ",".join(disabled)
 if "LICENSE_DEVICE_ID" not in keys:
     device_id = hashlib.sha256(f"{socket.gethostname()}:{uuid.getnode()}".encode("utf-8")).hexdigest()[:24]
     lines.append(f"LICENSE_DEVICE_ID={device_id}")

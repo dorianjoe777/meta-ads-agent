@@ -121,9 +121,9 @@ Default disabled/sensitive capability posture:
 terminal,code_execution
 ```
 
-Codex creative planning still runs through the product backend and guardrails. If Hermes sees an uploaded image and asks for `codex_creative_plan`, it should include a visual summary in the request so Codex receives the useful creative context without needing arbitrary filesystem access.
+Codex creative planning still runs through the product backend and guardrails. If Hermes sees an uploaded image and asks for `codex_creative_plan` or `codex_image_generate`, it should include a visual summary in the request so Codex receives the useful creative context without needing arbitrary filesystem access.
 
-Image generation is separate from chat because image APIs are not all OpenAI-compatible. Current v1 creative rendering still uses the configured creative provider, such as Nano Banana/Gemini, while Codex/Hermes prepares strategy and prompts. MiniMax image generation can be added later as a dedicated creative-provider adapter.
+Final image generation in v1 uses the backend `codex_image_generate` tool, which calls Codex CLI with the buyer's authenticated ChatGPT/Codex session and saves the raster image in `output/creatives/`. Other image providers are legacy/disabled unless we intentionally add a new adapter later.
 
 ## Curated Business Memory
 

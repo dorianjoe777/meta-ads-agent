@@ -17,6 +17,9 @@ from social_flow_client import SocialFlowClient
 
 
 ACTIONS_FILE = ROOT_DIR / "dashboard" / "data" / "actions.json"
+UPLOAD_ROOT = ROOT_DIR / "output" / "uploads"
+GENERATED_OUTPUT_ROOT = ROOT_DIR / "output"
+ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
 def log_action(action_type, payload, status):
     actions = read_json(ACTIONS_FILE, [])
@@ -24,6 +27,38 @@ def log_action(action_type, payload, status):
     actions.insert(0, record)
     write_json(ACTIONS_FILE, actions[:500])
     return record
+
+
+def safe_upload_payload_path(payload_path):
+    root = UPLOAD_ROOT.resolve()
+    candidate = Path(str(payload_path or ""))
+    if candidate.is_absolute():
+        candidate = candidate.resolve()
+    else:
+        candidate = (ROOT_DIR / candidate).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("Upload payload must be inside output/uploads") from exc
+    if candidate.name != "payload.json":
+        raise ValueError("Upload payload path must end in payload.json")
+    return candidate
+
+
+def safe_generated_asset_path(path):
+    root = GENERATED_OUTPUT_ROOT.resolve()
+    candidate = Path(str(path or ""))
+    if candidate.is_absolute():
+        candidate = candidate.resolve()
+    else:
+        candidate = (ROOT_DIR / candidate).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("Asset upload file must be inside output") from exc
+    if candidate.suffix.lower() not in ALLOWED_IMAGE_EXTENSIONS:
+        raise ValueError("Asset upload file must be an image")
+    return candidate
 
 
 def validate_payload(payload, config, approved=False):
@@ -38,7 +73,13 @@ def validate_payload(payload, config, approved=False):
         missing.append("payload status is blocked")
     for upload in payload.get("asset_uploads", []):
         path = upload.get("file_path")
-        if not path or not Path(path).exists():
+        try:
+            safe_path = safe_generated_asset_path(path)
+        except ValueError as exc:
+            missing.append(str(exc))
+            continue
+        upload["file_path"] = str(safe_path)
+        if not safe_path.exists():
             missing.append(f"asset file missing: {path}")
     return sorted(set(missing))
 
@@ -217,7 +258,8 @@ def extract_image_hash(result):
 
 def execute_upload_payload(payload_path, approved=False):
     config = load_config()
-    payload = read_json(Path(payload_path), {})
+    payload_path = safe_upload_payload_path(payload_path)
+    payload = read_json(payload_path, {})
     missing = validate_payload(payload, config, approved=approved)
     if config.license_required_for_live and (approved or config.live or config.live_actions_enabled):
         status = license_status(config)

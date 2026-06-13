@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Setup diagnostics for the self-hosted Meta Ads Agent."""
+"""Setup diagnostics for Admira IA."""
 import shutil
 import importlib.util
 import subprocess
 from datetime import datetime
 from pathlib import Path
 
+from codex_brand_guides import codex_cli_auth_status
 from creative_refresh import INDEX_FILE as CREATIVE_INDEX_FILE
 from creative_refresh import load_ad_config, read_json
 from agent_runtime import load_agent_profile
@@ -181,12 +182,14 @@ def meta_section(config, destination):
 
 
 def creative_section(config, codex_path):
+    codex_status = codex_cli_auth_status(timeout=2) if codex_path else {"ok": False, "error": f"{config.codex_cli} not found"}
+    codex_ready = bool(codex_status.get("ok"))
     return [
         item("creative_enabled", "Creative refresh enabled", "ok" if config.creative_refresh_enabled else "warn", str(config.creative_refresh_enabled)),
-        item("creative_mode", "Creative image mode", "ok" if config.creative_image_mode == "dry-run" else "warn", config.creative_image_mode, "Live image generation requires GEMINI_API_KEY." if config.creative_image_mode == "live" else ""),
-        item("gemini_key", "Nano Banana / Gemini key", "ok" if configured(config.gemini_api_key) else ("blocked" if config.creative_live else "warn"), "configured" if configured(config.gemini_api_key) else "Missing GEMINI_API_KEY", "Set GEMINI_API_KEY to generate images live."),
-        item("codex_cli", "Codex CLI", "ok" if codex_path else "warn", codex_path or f"{config.codex_cli} not found", "Install Codex CLI to use the Codex creative strategy bridge."),
-        item("codex_creative", "Codex creative bridge (optional local-agent access)", "ok" if config.codex_creative_enabled else "warn", str(config.codex_creative_enabled), "Optional and off by default; enable only after reviewing local CLI access."),
+        item("creative_mode", "Image generation path", "ok", "Codex/Image via ChatGPT/Codex", "Final ad images are generated through Codex CLI, not a separate image API."),
+        item("codex_cli", "Codex CLI", "ok" if codex_path else "blocked", codex_path or f"{config.codex_cli} not found", "Install Codex CLI to create final ad images."),
+        item("codex_image_auth", "Codex/Image login", "ok" if codex_ready else "blocked", "connected" if codex_ready else (codex_status.get("error") or "Connect ChatGPT/Codex"), "Connect ChatGPT/Codex before asking for final ad images."),
+        item("codex_creative", "Codex creative bridge", "ok" if config.codex_creative_enabled else "warn", str(config.codex_creative_enabled), "Keep enabled so the agent can request Codex/Image creative generation."),
         item("brand_guides", "Brand guide files", "ok" if (ROOT_DIR / "brand_guides" / "general_branding.md").exists() else "warn", str(ROOT_DIR / "brand_guides" / "general_branding.md"), "Create base guides from Creativos."),
         item("creative_index", "Creative drafts", "ok" if CREATIVE_INDEX_FILE.exists() else "warn", str(CREATIVE_INDEX_FILE) if CREATIVE_INDEX_FILE.exists() else "No creative drafts yet.", "Run python3 src/daily_agent.py creative-refresh --all"),
     ]
@@ -201,17 +204,17 @@ def agent_chat_section(config, agent_profile):
     hermes_auth = {"ready": brain_ready, "detail": brain_detail}
     hermes_runtime_status = "ok" if (hermes_cli or hermes_library) else "blocked"
     hermes_auth_status = "ok" if hermes_auth["ready"] else "blocked"
-    hermes_runtime_detail = hermes_cli or ("Python library installed" if hermes_library else "Hermes not installed")
+    hermes_runtime_detail = hermes_cli or ("Agent base installed" if hermes_library else "Agent base not installed")
     api_brain_selected = brain.get("brain") in {"minimax", "openai_api", "custom_api"}
-    direct_detail = "configured inside Hermes" if direct_ready else "Missing AGENT_CHAT_API_KEY, AGENT_CHAT_BASE_URL, or AGENT_CHAT_MODEL"
+    direct_detail = "configured inside the agent" if direct_ready else "Missing AGENT_CHAT_API_KEY, AGENT_CHAT_BASE_URL, or AGENT_CHAT_MODEL"
     if not api_brain_selected:
         direct_detail = "Opcional: solo si eliges MiniMax M3, OpenAI API u otra API compatible como cerebro del agente."
     entries = [
-        item("chat_provider", "Agent runtime", "ok" if config.agent_chat_provider == "hermes" else "blocked", "hermes", "Hermes is the fixed agent runtime; model options are used inside Hermes."),
-        item("hermes_runtime", "Hermes runtime", hermes_runtime_status, hermes_runtime_detail, "Install Hermes, then use the dashboard ChatGPT connection step. VPS installs use hermes model --no-browser."),
+        item("chat_provider", "Agent base", "ok" if config.agent_chat_provider == "hermes" else "blocked", "fixed", "The agent base is fixed; you only choose the brain/model."),
+        item("hermes_runtime", "Agent base installed", hermes_runtime_status, hermes_runtime_detail, "Use the dashboard ChatGPT/Codex connection step."),
         item("hermes_auth", "Agent brain", hermes_auth_status, hermes_auth["detail"], "Use Configuracion > Conectar ChatGPT/modelo API. On VPS the dashboard shows the login from the browser."),
-        item("openai_compatible_model", "API model inside Hermes", "ok" if direct_ready else ("blocked" if api_brain_selected else "warn"), direct_detail, "Save model URL, model name, and API key; Hermes remains the agent runtime."),
-        item("chat_model", "Agent chat model", "ok", brain.get("model") or "configured in Hermes"),
+        item("openai_compatible_model", "API-compatible brain", "ok" if direct_ready else ("blocked" if api_brain_selected else "warn"), direct_detail, "Save model URL, model name, and API key; the agent base remains the same."),
+        item("chat_model", "Agent chat model", "ok", brain.get("model") or "configured in the agent"),
         item("agent_profile", "Agent profile files", "ok" if not agent_profile["missing"] else "blocked", f"{len(agent_profile['sections'])}/5 loaded from {agent_profile['dir']}", "Restore agent/SOUL.md, AGENTS.md, TOOLS.md, SKILLS.md, and USER.md." if agent_profile["missing"] else ""),
     ]
     return entries, {"hermes_cli": hermes_cli, "hermes_library": hermes_library, "hermes_auth": hermes_auth, "direct_model_ready": direct_ready, "agent_brain": brain}
@@ -250,6 +253,8 @@ def setup_summary(config, sections, context):
         all_items.extend(section["items"])
     security = next(section["items"] for section in sections if section["title"] == "Security")
     meta = next(section["items"] for section in sections if section["title"] == "Meta Live Requirements")
+    creative = next(section["items"] for section in sections if section["title"] == "Creative Generation")
+    codex_image_ready = any(entry["key"] == "codex_image_auth" and entry["status"] == "ok" for entry in creative)
     return {
         "counts": status_counts(all_items),
         "demo_ready": ENV_FILE.exists() and METRICS_FILE.exists(),
@@ -258,7 +263,7 @@ def setup_summary(config, sections, context):
         "live_actions_enabled": config.live_actions_enabled,
         "live_ads_ready": bool(context["social_path"] and configured(config.ad_account_id) and config.live_actions_enabled),
         "direct_graph_ready": all(entry["status"] == "ok" for entry in meta),
-        "creative_ready": config.creative_refresh_enabled and (config.creative_image_mode == "dry-run" or configured(config.gemini_api_key)),
+        "creative_ready": config.creative_refresh_enabled and codex_image_ready,
         "agent_chat_ready": (
             bool(context["hermes_cli"] or context["hermes_library"]) and context["hermes_auth"]["ready"]
         ),

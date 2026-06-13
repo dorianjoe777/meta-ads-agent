@@ -33,10 +33,18 @@ if [ ! -f .env ]; then
   echo "Created .env from .env.example for Docker Compose."
 fi
 
+compose_args=(up)
+if [ "${ADMIRO_DOCKER_SKIP_BUILD:-false}" != "true" ]; then
+  compose_args+=(--build)
+fi
+if [ "${ADMIRO_DOCKER_DETACHED:-false}" = "true" ]; then
+  compose_args+=(--detach)
+fi
+
 if docker compose version >/dev/null 2>&1; then
-  docker compose up --build
+  docker compose "${compose_args[@]}"
 elif command -v docker-compose >/dev/null 2>&1; then
-  docker-compose up --build
+  docker-compose "${compose_args[@]}"
 else
   echo "Docker Compose is required. Install Docker Desktop or docker compose plugin."
   exit 1

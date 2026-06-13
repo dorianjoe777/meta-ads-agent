@@ -9,8 +9,59 @@ from agent_runtime import build_system_prompt
 from hermes_bridge import chat as hermes_chat
 
 
+DEMO_CAMPAIGN_IDS = {"camp_001", "camp_002", "camp_003", "camp_004"}
+DEMO_CAMPAIGN_NAMES = {
+    "Q2 Conversion Campaign",
+    "Brand Awareness Campaign",
+    "Retargeting - Warm Leads",
+    "Prospecting - Broad Testing",
+}
+
+
+def looks_like_demo_metrics(metrics):
+    if not isinstance(metrics, dict):
+        return False
+    campaigns = metrics.get("campaigns", [])
+    if not isinstance(campaigns, list):
+        return False
+    ids = {str(c.get("id") or "") for c in campaigns if isinstance(c, dict)}
+    names = {str(c.get("name") or "") for c in campaigns if isinstance(c, dict)}
+    return bool(DEMO_CAMPAIGN_IDS & ids) or bool(DEMO_CAMPAIGN_NAMES & names)
+
+
+def metrics_are_real_meta(metrics):
+    return isinstance(metrics, dict) and metrics.get("source") == "meta_graph" and not looks_like_demo_metrics(metrics)
+
+
+def metrics_source_context(metrics):
+    if not isinstance(metrics, dict):
+        return {
+            "source": "missing",
+            "source_label": "Sin datos reales de Meta",
+            "is_real_meta_data": False,
+            "notice": "No hay campañas reales disponibles todavía. No cites campañas, ROAS, CPA, CTR ni presupuestos como si fueran reales.",
+        }
+    source = str(metrics.get("source") or "unknown")
+    if metrics_are_real_meta(metrics):
+        return {
+            "source": source,
+            "source_label": metrics.get("source_label") or "Datos reales de Meta",
+            "is_real_meta_data": True,
+            "notice": "Puedes usar estas campañas y métricas como datos reales de Meta.",
+        }
+    label = metrics.get("source_label") or ("Datos de ejemplo" if source == "demo" else "Datos guardados no confirmados")
+    return {
+        "source": source,
+        "source_label": label,
+        "is_real_meta_data": False,
+        "notice": "No hay campañas reales de Meta confirmadas en esta conversación. No recomiendes ganadoras, perdedoras, retargeting, ROAS, CPA, CTR, presupuesto ni acciones usando datos demo o guardados no confirmados.",
+    }
+
+
 def account_context(payload):
     metrics = payload.get("metrics", {})
+    source_context = metrics_source_context(metrics)
+    has_real_metrics = source_context["is_real_meta_data"]
     summary = metrics.get("summary", {})
     campaigns = metrics.get("campaigns", [])
     recommendations = payload.get("recommendations", [])
@@ -23,7 +74,8 @@ def account_context(payload):
     return {
         "agent_onboarding_phase": agent_onboarding_phase if isinstance(agent_onboarding_phase, dict) else {},
         "business_profile": business_profile if isinstance(business_profile, dict) else {},
-        "summary": summary,
+        "metrics_source": source_context,
+        "summary": summary if has_real_metrics else {},
         "campaigns": [
             {
                 "id": c.get("id"),
@@ -37,10 +89,10 @@ def account_context(payload):
                 "frequency": c.get("frequency"),
                 "daily_budget": c.get("daily_budget"),
             }
-            for c in campaigns[:8]
+            for c in (campaigns[:8] if has_real_metrics else [])
         ],
-        "recommendations": recommendations[:6],
-        "fatigue": fatigue[:6],
+        "recommendations": recommendations[:6] if has_real_metrics else [],
+        "fatigue": fatigue[:6] if has_real_metrics else [],
         "pending_approvals": pending[:6],
         "audience_strategy": audience_strategy if isinstance(audience_strategy, dict) else {},
         "brand_guides": {
@@ -53,7 +105,14 @@ def account_context(payload):
 
 
 def fallback_reply(message, payload):
-    summary = payload.get("metrics", {}).get("summary", {})
+    metrics = payload.get("metrics", {})
+    if not metrics_are_real_meta(metrics):
+        return (
+            "Todavía no tengo campañas reales de Meta para analizar en esta instalación. "
+            "Lo correcto ahora es conectar o actualizar los datos reales de Facebook/Meta Ads. "
+            "Cuando entren esos datos, sí puedo decirte qué campaña va mejor, cuál conviene pausar y qué movería primero."
+        )
+    summary = metrics.get("summary", {})
     roas = float(summary.get("overall_roas") or 0)
     cpa = float(summary.get("overall_cpa") or 0)
     budget = float(summary.get("active_budget") or 0)
@@ -66,6 +125,20 @@ def fallback_reply(message, payload):
     if any(word in text for word in ["audiencia", "segmentación", "segmentacion", "targeting", "lookalike", "retargeting"]):
         return "Para segmentación, empezaría simple: una campaña amplia/Advantage+, una prueba de intereses si el nicho es claro, y retargeting separado si ya hay tráfico. Lookalike solo cuando exista una fuente semilla limpia, como pixel, engagement o lista de clientes con consentimiento."
     return f"Catch-up rápido: ROAS {roas:.2f}x, CPA ${cpa:,.2f}, presupuesto activo ${budget:,.2f} y {pending} aprobación(es) pendiente(s). Mi sugerencia es revisar presupuesto y fatiga antes de escalar. Lo puedo preparar ahora; dime qué acción quieres que deje lista."
+
+
+def reply_uses_unverified_performance(reply, metrics):
+    if metrics_are_real_meta(metrics):
+        return False
+    text = str(reply or "")
+    lowered = text.lower()
+    if any(name.lower() in lowered for name in DEMO_CAMPAIGN_NAMES):
+        return True
+    if any(campaign_id.lower() in lowered for campaign_id in DEMO_CAMPAIGN_IDS):
+        return True
+    metric_claim = re.search(r"\b(roas|cpa|ctr|cpc|frecuencia|conversiones|presupuesto|spend)\b[^\n]{0,80}\d", lowered, flags=re.IGNORECASE)
+    performance_claim = re.search(r"\b(ganadora|mejor rindiendo|mejor esta rindiendo|pausar|escalar|retargeting|warm leads)\b", lowered, flags=re.IGNORECASE)
+    return bool(metric_claim and performance_claim)
 
 
 def openai_compatible_chat(config, payload):
@@ -144,17 +217,54 @@ def chat(config, payload):
         result["tool_request"] = parsed.get("tool_request")
         result["raw_reply"] = result.get("raw_reply") or raw_reply
     else:
+        result["reply"] = clean_reply(raw_reply)
         result.setdefault("tool_request", None)
     if not str(result.get("reply") or "").strip():
         result["fallback"] = True
         result["reply"] = fallback_reply(payload.get("message", ""), payload)
         result["error"] = result.get("error") or "Hermes returned an empty reply"
+    elif reply_uses_unverified_performance(result.get("reply", ""), payload.get("metrics", {})):
+        result["fallback"] = True
+        result["reply"] = fallback_reply(payload.get("message", ""), payload)
+        result["error"] = result.get("error") or "Agent reply used unverified performance data"
     return result
 
 
 def clean_reply(text):
     text = re.sub(r"<think>.*?</think>", "", str(text or ""), flags=re.DOTALL | re.IGNORECASE)
-    return text.strip()
+    text = re.sub(r"```(?:diff|patch)\s+.*?```", "", text, flags=re.DOTALL | re.IGNORECASE)
+    return strip_technical_preamble(text).strip()
+
+
+def strip_technical_preamble(text):
+    lines = str(text or "").splitlines()
+    cleaned = []
+    skipping = False
+    for line in lines:
+        normalized = line.strip()
+        lowered = normalized.lower()
+        starts_noise = (
+            "tirith security scanner" in lowered
+            or lowered in {"┊ review diff", "review diff"}
+            or re.match(r"^(a|b)/.+\s(→|->)\s.+$", normalized)
+            or normalized.startswith("@@ ")
+        )
+        if starts_noise:
+            skipping = True
+            continue
+        if skipping:
+            diff_like = (
+                not normalized
+                or normalized.startswith(("+", "-", "@@"))
+                or re.match(r'^[+\- ]*["{}\[\],]', line)
+                or re.match(r"^[+\-]?\}?\]?[,]?$", normalized)
+                or re.match(r"^(a|b)/", normalized)
+            )
+            if diff_like:
+                continue
+            skipping = False
+        cleaned.append(line)
+    return "\n".join(cleaned)
 
 
 def parse_skill_response(text):

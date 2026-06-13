@@ -1,4 +1,4 @@
-# Admiro AI License API
+# Admira IA License API
 
 Seller-only Vercel API for `admiroia.uboost.lat`.
 
@@ -19,9 +19,9 @@ Optional environment variables:
 - `BUYER_ACCESS_URL=https://admiroia.uboost.lat/access` is the buyer portal link included in purchase emails.
 - `BUYER_EMAIL_PROVIDER=resend` sends buyer emails through Resend. This is the default.
 - `RESEND_API_KEY` is required when buyer email delivery is requested.
-- `BUYER_EMAIL_FROM="Admiro AI <licenses@admiroia.uboost.lat>"` must use a Resend-verified domain or sender.
+- `BUYER_EMAIL_FROM="Admira IA <licenses@admiroia.uboost.lat>"` must use a Resend-verified domain or sender.
 - `BUYER_EMAIL_REPLY_TO=support@admiroia.uboost.lat` is optional.
-- `BUYER_EMAIL_PRODUCT_NAME="Admiro AI"` is optional email copy branding.
+- `BUYER_EMAIL_PRODUCT_NAME="Admira IA"` is optional email copy branding.
 - `BUYER_EMAIL_AUTO_SEND=true` sends the buyer access email automatically for every newly created license. Leave unset/false if the checkout webhook will pass `send_buyer_email: true` explicitly.
 - `HOTMART_SEND_BUYER_EMAIL=true` sends the license/access email when Hotmart confirms an approved purchase. Set to `false` only for dry runs.
 - `BUYER_EMAIL_PROVIDER=smtp`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, and `SMTP_PASS` remain supported as an optional Spacemail SMTP fallback.
@@ -116,6 +116,19 @@ Download portal:
 - The buyer enters purchase email + access key.
 - The access key is the license key sent after purchase, shown to the buyer as a friendlier password-like phrase.
 - The portal returns Mac, Windows and Linux buttons from the currently published stable release assets.
+- The main local release path uses private Vercel Blob assets, not public GitHub links. Publish the Docker-first installers after building them:
+
+```bash
+./scripts/build-mac-dmg.sh
+./scripts/build-windows-exe.sh
+./scripts/build-linux-bundle.sh
+./scripts/package-release.sh
+
+cd seller/vercel-license-api
+npm run publish:release-assets -- v1.0.9
+```
+
+- The current buyer-facing local assets are `MetaAdsAgent-vX.Y.Z-mac.dmg`, `MetaAdsAgent-vX.Y.Z-windows.exe`, and `MetaAdsAgent-vX.Y.Z-linux.tar.gz`. The source ZIP remains available for cloud installs and support, but it is not the normal Mac/Windows download button.
 - The portal also returns install state: cloud dashboard ready, local install activated, onboarding opened, and onboarding completed. Local install state is updated through `/api/license/activate`.
 - The portal can remember a buyer in the same browser using a signed, HttpOnly, Secure, SameSite=Lax cookie. The frontend never stores the license key in localStorage.
 - Portal downloads do not register a device; device limits are enforced later during install/onboarding.

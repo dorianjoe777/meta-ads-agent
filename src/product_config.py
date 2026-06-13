@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Configuration helpers for the self-hosted Meta Ads Agent."""
+"""Configuration helpers for Admira IA."""
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -151,7 +151,9 @@ class AgentConfig:
     agent_profile_dir: str
     codex_creative_enabled: bool
     codex_cli: str
+    codex_creative_model: str
     agent_brain_provider: str = "openai_codex"
+    dashboard_password_hash: str = ""
     license_public_key: str = ""
     hermes_cli: str = "hermes"
     hermes_home: str = ""
@@ -160,8 +162,8 @@ class AgentConfig:
     hermes_status_timeout_seconds: int = 20
     hermes_response_timeout_seconds: int = 300
     hermes_max_iterations: int = 12
-    hermes_enabled_toolsets: str = "memory,skills,session_search,vision,image_gen,file,web,browser"
-    hermes_disabled_toolsets: str = "terminal,code_execution"
+    hermes_enabled_toolsets: str = "memory,skills,session_search,vision,file,web,browser"
+    hermes_disabled_toolsets: str = "terminal,code_execution,image_gen"
     hermes_use_python_library: bool = True
     hermes_require_codex_auth: bool = True
     meta_access_token_kind: str = ""
@@ -229,10 +231,10 @@ def load_config():
         telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),
         creative_refresh_enabled=env_bool("CREATIVE_REFRESH_ENABLED", True),
         creative_auto_generate_on_daily=env_bool("CREATIVE_AUTO_GENERATE_ON_DAILY", True),
-        creative_provider=os.environ.get("CREATIVE_PROVIDER", "nano-banana").strip().lower(),
-        creative_image_mode=os.environ.get("CREATIVE_IMAGE_MODE", "dry-run").strip().lower(),
+        creative_provider=os.environ.get("CREATIVE_PROVIDER", "codex-image").strip().lower(),
+        creative_image_mode=os.environ.get("CREATIVE_IMAGE_MODE", "codex-image").strip().lower(),
         gemini_api_key=os.environ.get("GEMINI_API_KEY", ""),
-        nano_banana_model=os.environ.get("NANO_BANANA_MODEL", "gemini-2.5-flash-image"),
+        nano_banana_model=os.environ.get("NANO_BANANA_MODEL", ""),
         creative_variants_per_campaign=env_int("CREATIVE_VARIANTS_PER_CAMPAIGN", 3),
         agent_chat_provider="hermes",
         agent_chat_base_url=base_url,
@@ -241,9 +243,11 @@ def load_config():
         agent_chat_model=env_first("AGENT_CHAT_MODEL", "MINIMAX_MODEL", default="MiniMax-M3"),
         agent_chat_temperature=env_float("AGENT_CHAT_TEMPERATURE", 0.65),
         agent_profile_dir=os.environ.get("AGENT_PROFILE_DIR", "agent"),
-        codex_creative_enabled=env_bool("CODEX_CREATIVE_ENABLED", False),
+        codex_creative_enabled=env_bool("CODEX_CREATIVE_ENABLED", True),
         codex_cli=os.environ.get("CODEX_CLI", "codex"),
+        codex_creative_model=os.environ.get("CODEX_CREATIVE_MODEL", ""),
         agent_brain_provider=brain_provider,
+        dashboard_password_hash=os.environ.get("DASHBOARD_PASSWORD_HASH", ""),
         license_public_key=os.environ.get("LICENSE_PUBLIC_KEY", ""),
         hermes_cli=os.environ.get("HERMES_CLI", "hermes"),
         hermes_home=os.environ.get("HERMES_HOME", ""),
@@ -252,8 +256,8 @@ def load_config():
         hermes_status_timeout_seconds=env_int("HERMES_STATUS_TIMEOUT_SECONDS", 20),
         hermes_response_timeout_seconds=env_int("HERMES_RESPONSE_TIMEOUT_SECONDS", env_int("HERMES_TIMEOUT_SECONDS", 300)),
         hermes_max_iterations=env_int("HERMES_MAX_ITERATIONS", 12),
-        hermes_enabled_toolsets=os.environ.get("HERMES_ENABLED_TOOLSETS", "memory,skills,session_search,vision,image_gen,file,web,browser"),
-        hermes_disabled_toolsets=os.environ.get("HERMES_DISABLED_TOOLSETS", "terminal,code_execution"),
+        hermes_enabled_toolsets=os.environ.get("HERMES_ENABLED_TOOLSETS", "memory,skills,session_search,vision,file,web,browser"),
+        hermes_disabled_toolsets=os.environ.get("HERMES_DISABLED_TOOLSETS", "terminal,code_execution,image_gen"),
         hermes_use_python_library=env_bool("HERMES_USE_PYTHON_LIBRARY", True),
         hermes_require_codex_auth=env_bool("HERMES_REQUIRE_CODEX_AUTH", True),
     )

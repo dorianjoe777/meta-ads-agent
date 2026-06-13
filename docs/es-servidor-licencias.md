@@ -157,7 +157,7 @@ Configura en Vercel:
 - `HOTMART_HOTTOK`: el token que Hotmart manda en el header `X-HOTMART-HOTTOK`.
 - `BUYER_EMAIL_PROVIDER=resend`: envia el correo de acceso con Resend.
 - `RESEND_API_KEY`: API key de Resend.
-- `BUYER_EMAIL_FROM`: remitente con dominio/sender verificado en Resend, por ejemplo `Admiro AI <licenses@admiroia.uboost.lat>`.
+- `BUYER_EMAIL_FROM`: remitente con dominio/sender verificado en Resend, por ejemplo `Admira IA <licenses@admiroia.uboost.lat>`.
 - `BUYER_ACCESS_URL=https://admiroia.uboost.lat/access`.
 
 Cuando Hotmart confirma una compra con `PURCHASE_APPROVED` / `APPROVED`:

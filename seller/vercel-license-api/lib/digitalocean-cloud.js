@@ -214,7 +214,7 @@ def install_log_tail():
 
 def stage_from_log(log_tail):
     markers = [
-        ("Admiro AI cloud install complete", "verificando_dashboard", 98),
+        ("Admira IA cloud install complete", "verificando_dashboard", 98),
         ("ADMIRO_STAGE verifying_dashboard", "verificando_dashboard", 98),
         ("ADMIRO_STAGE starting_dashboard", "iniciando_dashboard", 92),
         ("ADMIRO_STAGE app_installed", "preparando_dashboard", 86),
@@ -322,7 +322,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, status_payload())
             return
         if parsed.path.startswith("/open/"):
-            self.send_text(503, "<h1>Dashboard preparandose</h1><p>DigitalOcean ya creo el servidor, pero Admiro AI todavia se esta instalando. Vuelve a intentar en unos minutos.</p>")
+            self.send_text(503, "<h1>Dashboard preparandose</h1><p>DigitalOcean ya creo el servidor, pero Admira IA todavia se esta instalando. Vuelve a intentar en unos minutos.</p>")
             return
         self.send_json(404, {"ok": False, "ready": False, "stage": "not_found", "progress": 0})
 
@@ -340,7 +340,7 @@ EOF
   chmod 600 /etc/admiro-cloud-access-gate/env
   cat > /etc/systemd/system/admiro-cloud-access-gate.service <<'SERVICE'
 [Unit]
-Description=Admiro AI dashboard access gate
+Description=Admira IA dashboard access gate
 After=network-online.target
 Wants=network-online.target
 
@@ -530,7 +530,7 @@ def install_log_tail():
 
 def stage_from_log(log_tail):
     markers = [
-        ("Admiro AI cloud install complete", "verificando_dashboard", 98),
+        ("Admira IA cloud install complete", "verificando_dashboard", 98),
         ("ADMIRO_STAGE verifying_dashboard", "verificando_dashboard", 98),
         ("ADMIRO_STAGE starting_dashboard", "iniciando_dashboard", 92),
         ("ADMIRO_STAGE app_installed", "preparando_dashboard", 86),
@@ -686,7 +686,7 @@ EOF
   chmod 600 /etc/admiro-cloud-access-gate/env
   cat > /etc/systemd/system/admiro-cloud-access-gate.service <<'SERVICE'
 [Unit]
-Description=Admiro AI dashboard access gate
+Description=Admira IA dashboard access gate
 After=network-online.target docker.service
 Wants=network-online.target
 
@@ -743,7 +743,7 @@ for attempt in $(seq 1 30); do
 done
 if [ "$dashboard_ready" = "true" ]; then
   report_cloud_runtime "dashboard_ready" "100" "true" || true
-  echo "Admiro AI cloud install complete. Dashboard port: $DASHBOARD_PORT"
+  echo "Admira IA cloud install complete. Dashboard port: $DASHBOARD_PORT"
 else
   report_cloud_runtime "verificando_dashboard" "98" "false" || true
   echo "ADMIRO_STAGE verifying_dashboard"

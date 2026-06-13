@@ -65,10 +65,10 @@ MetaAdsAgent-v1-mac.dmg
 El comprador abre el DMG y luego abre:
 
 ```text
-Meta Ads Agent.app
+Admira IA.app
 ```
 
-La app copia el producto a `~/Applications/Meta Ads Agent`, abre Terminal con la instalacion y primero puede descargar la ultima version publicada desde tu servidor de licencias. Despues levanta Docker, crea la configuracion local si falta y abre el dashboard en:
+La app copia el producto a `~/Applications/Admira IA`, abre Docker Desktop si hace falta, crea la configuracion local si falta, levanta el contenedor en segundo plano y abre el dashboard en:
 
 ```text
 http://127.0.0.1:7871

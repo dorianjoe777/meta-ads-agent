@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build upload-ready Meta ad payloads from creative refresh manifests."""
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -11,15 +12,41 @@ from security import redact_payload
 
 
 UPLOAD_DIR = ROOT_DIR / "output" / "uploads"
+CREATIVE_MANIFEST_DIR = ROOT_DIR / "output" / "creatives"
+SAFE_REFRESH_ID = re.compile(r"^[A-Za-z0-9_.-]+$")
 UPLOAD_INDEX_FILE = UPLOAD_DIR / "upload_index.json"
 PENDING_FILE = ROOT_DIR / "dashboard" / "data" / "pending_approvals.json"
 ACTIONS_FILE = ROOT_DIR / "dashboard" / "data" / "actions.json"
 
+
+def resolve_under(root, value, label):
+    root = root.resolve()
+    candidate = Path(str(value))
+    if candidate.is_absolute():
+        candidate = candidate.resolve()
+    else:
+        candidate = (ROOT_DIR / candidate).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"{label} must be inside {root.relative_to(ROOT_DIR)}") from exc
+    return candidate
+
+
 def find_manifest(refresh_id_or_path):
-    candidate = Path(refresh_id_or_path)
-    if candidate.exists():
-        return candidate
-    matches = list((ROOT_DIR / "output" / "creatives").glob(f"{refresh_id_or_path}/manifest.json"))
+    value = str(refresh_id_or_path or "").strip()
+    if not value:
+        raise FileNotFoundError("Creative manifest not found.")
+    if "/" in value or "\\" in value or value.endswith("manifest.json"):
+        candidate = resolve_under(CREATIVE_MANIFEST_DIR, value, "Creative manifest")
+        if candidate.name != "manifest.json":
+            raise ValueError("Creative manifest path must end in manifest.json")
+        if candidate.exists():
+            return candidate
+        raise FileNotFoundError(f"Creative manifest not found: {refresh_id_or_path}")
+    if not SAFE_REFRESH_ID.match(value):
+        raise ValueError("Creative refresh id contains unsupported characters.")
+    matches = list(CREATIVE_MANIFEST_DIR.glob(f"{value}/manifest.json"))
     if matches:
         return matches[0]
     raise FileNotFoundError(f"Creative manifest not found: {refresh_id_or_path}")
@@ -74,10 +101,11 @@ def build_upload_payload(manifest_path, variant_id, selected_ratios=None):
             missing.append(f"generated image asset for {ratio}")
             image_hash_by_ratio[ratio] = ""
             continue
+        safe_asset_path = resolve_under(ROOT_DIR / "output", asset["path"], "Creative asset")
         asset_uploads.append({
             "endpoint": f"/{config.ad_account_id}/adimages",
             "method": "POST",
-            "file_path": asset["path"],
+            "file_path": str(safe_asset_path),
             "expected_result": "image_hash",
             "aspect_ratio": ratio,
         })

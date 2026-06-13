@@ -20,7 +20,7 @@ El post muestra cuatro ideas importantes:
 3. **La arquitectura no termina en reporte**: agente -> skills -> social-cli -> Meta API -> datos + decisiones + acciones -> Telegram.
 4. **La parte creativa cierra el loop**: datos dicen que gana; el sistema creativo ayuda a producir mas versiones.
 
-## Como debe funcionar Admiro AI
+## Como debe funcionar Admira IA
 
 Cada lectura diaria debe terminar con accion, aunque la accion sea "dejar preparado para aprobar".
 

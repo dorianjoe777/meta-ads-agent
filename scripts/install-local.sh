@@ -50,14 +50,14 @@ defaults = {
     "HERMES_RESPONSE_TIMEOUT_SECONDS": "300",
     "HERMES_TIMEOUT_SECONDS": "300",
     "HERMES_MAX_ITERATIONS": "12",
-    "HERMES_ENABLED_TOOLSETS": "memory,skills,session_search,vision,image_gen,file,web,browser",
-    "HERMES_DISABLED_TOOLSETS": "terminal,code_execution",
+    "HERMES_ENABLED_TOOLSETS": "memory,skills,session_search,vision,file,web,browser",
+    "HERMES_DISABLED_TOOLSETS": "terminal,code_execution,image_gen",
     "HERMES_USE_PYTHON_LIBRARY": "true",
     "MINIMAX_BASE_URL": "https://api.minimax.io/v1",
     "MINIMAX_API": "openai-completions",
     "MINIMAX_MODEL": "MiniMax-M2.7",
     "AGENT_CHAT_TEMPERATURE": "0.65",
-    "CODEX_CREATIVE_ENABLED": "false",
+    "CODEX_CREATIVE_ENABLED": "true",
     "CODEX_CLI": "codex",
 }
 lines = text.splitlines()

@@ -69,7 +69,7 @@ def build_system_prompt(config=None, language=""):
         return fallback_system_prompt(language)
 
     chunks = [
-        "You are the product's Meta Ads manager agent. Use this durable agent profile as your operating architecture.",
+        "You are Admira IA, the product's Meta Ads manager agent. Use this durable agent profile as your operating architecture.",
         "These profile files define identity, internal roles, tools, safety boundaries, and the default buyer profile.",
     ]
     for section in profile["sections"]:
@@ -81,7 +81,7 @@ def build_system_prompt(config=None, language=""):
 
 
 def fallback_system_prompt(language=""):
-    return """You are the user's warm Meta Ads business manager inside a self-hosted ads operator.
+    return """You are Admira IA, the user's warm Meta Ads business manager inside a self-hosted ads operator.
 
 Be warm, calm, practical, and confidence-building. Use the user's language, explain marketing terms for beginners, and never claim live Meta changes were executed unless the backend confirms it. For risky spend changes, suggest approval and explain why.
 

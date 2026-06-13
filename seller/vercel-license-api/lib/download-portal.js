@@ -2,25 +2,28 @@ const PLATFORM_DEFINITIONS = [
   {
     id: "mac",
     label: "Mac",
-    badge: "Docker para Mac",
-    formats: [".dmg", ".pkg"],
-    description: "Ruta recomendada: instala con Docker Desktop. Abre el launcher y el producto se prepara en contenedor.",
+    badge: "Launcher Docker para Mac",
+    formats: [".dmg"],
+    allowUniversalFallback: false,
+    description: "Descarga el DMG, abre Admira IA y el launcher abre Docker Desktop, prepara el contenedor y abre el dashboard.",
     button: "Descargar para Mac"
   },
   {
     id: "windows",
     label: "Windows",
-    badge: "Docker para Windows",
-    formats: [".msi", ".exe"],
-    description: "Ruta recomendada: usa Docker Desktop. El launcher crea el acceso y levanta el contenedor.",
+    badge: "Launcher Docker para Windows",
+    formats: [".exe"],
+    allowUniversalFallback: false,
+    description: "Descarga el instalador, abre Docker Desktop y el launcher instala Admira IA en contenedor.",
     button: "Descargar para Windows"
   },
   {
     id: "linux",
     label: "Linux / VPS",
-    badge: "Bundle seguro",
+    badge: "Bundle Docker para Linux",
     formats: [".tar.gz"],
-    description: "Para VPS o Linux local. Incluye launcher y scripts de instalacion.",
+    allowUniversalFallback: true,
+    description: "Para Linux local o VPS avanzado. Incluye launcher Docker, scripts de instalacion y apertura del dashboard.",
     button: "Descargar para Linux"
   }
 ];
@@ -171,33 +174,70 @@ function assetScore(assetName, filename, platform) {
   if (platform.id === "windows" && !/windows|win/.test(haystack)) return -1;
   if (platform.id === "linux" && !/linux|vps/.test(haystack)) return -1;
   const formatIndex = platform.formats.findIndex((format) => haystack.includes(format));
-  if (formatIndex < 0) return 1;
-  return 100 - formatIndex;
+  if (formatIndex < 0) return -1;
+  let score = 100 - formatIndex;
+  if (haystack.includes("docker")) score += 12;
+  if (haystack.includes("launcher")) score += 10;
+  if (haystack.includes("installer")) score += 4;
+  if (haystack.includes("source")) score -= 80;
+  if (haystack.includes("pkg") || haystack.includes("msi")) score -= 20;
+  return score;
+}
+
+function universalInstallerAsset(assets = {}) {
+  const ranked = Object.entries(assets)
+    .map(([assetName, asset]) => {
+      const filename = String(asset?.filename || assetName);
+      const haystack = `${assetName} ${filename}`.toLowerCase();
+      let score = 0;
+      if (haystack.includes("metaadsagent-source.zip")) score += 80;
+      if (haystack.includes("source.zip")) score += 60;
+      if (haystack.endsWith(".zip")) score += 25;
+      if (/mac|darwin|osx|windows|win|linux|vps/.test(haystack)) score -= 30;
+      return {
+        asset_name: assetName,
+        filename,
+        content_type: String(asset?.content_type || "application/octet-stream"),
+        score
+      };
+    })
+    .filter((item) => item.score > 0)
+    .sort((left, right) => right.score - left.score);
+  return ranked[0] || null;
 }
 
 export function platformCards(release = {}) {
   const assets = release.assets || {};
+  const universal = universalInstallerAsset(assets);
   return PLATFORM_DEFINITIONS.map((platform) => {
     const ranked = Object.entries(assets)
       .map(([assetName, asset]) => ({
         asset_name: assetName,
         filename: String(asset?.filename || assetName),
         content_type: String(asset?.content_type || "application/octet-stream"),
+        blob_path: String(asset?.blob_path || ""),
         score: assetScore(assetName, asset?.filename || assetName, platform)
       }))
       .filter((item) => item.score >= 0)
       .sort((left, right) => right.score - left.score);
-    const chosen = ranked[0] || null;
+    const chosen = ranked[0] || (platform.allowUniversalFallback ? universal : null) || null;
+    const isUniversal = Boolean(chosen && !ranked[0] && platform.allowUniversalFallback && universal);
     return {
       id: platform.id,
       label: platform.label,
       badge: platform.badge,
-      description: platform.description,
-      button: platform.button,
+      description: isUniversal
+        ? `${platform.description} Si el instalador especifico aun no esta publicado, este paquete estable universal trae los launchers necesarios.`
+        : (!chosen && !platform.allowUniversalFallback
+            ? `${platform.description} Este boton se activa cuando el instalador oficial de ${platform.label} esta publicado.`
+            : platform.description),
+      button: isUniversal ? `${platform.button}` : platform.button,
       available: Boolean(chosen),
       asset_name: chosen?.asset_name || "",
       filename: chosen?.filename || "",
-      content_type: chosen?.content_type || ""
+      content_type: chosen?.content_type || "",
+      blob_path: chosen?.blob_path || "",
+      universal_fallback: isUniversal
     };
   });
 }

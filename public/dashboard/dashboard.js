@@ -1,0 +1,2238 @@
+let state=null;
+let chatHistory=[];
+let chatHydrated=false;
+let onboardingFlowStep=0;
+let onboardingFlowTouched=false;
+let businessContextQuestionIndex=0;
+let destinationAutoDiscoveryKey='';
+let updateCheckStarted=false;
+let updateInfo=null;
+let updateAutoTimer=null;
+const fmtMoney=n=>'$'+Number(n||0).toLocaleString(undefined,{maximumFractionDigits:2});
+const fmtPct=n=>Number(n||0).toFixed(2)+'%';
+const qs=s=>document.querySelector(s);
+const urlParams=new URLSearchParams(window.location.search);
+function isLocalWorkbenchHost(host){
+ return host==='127.0.0.1'||host==='localhost'||host==='0.0.0.0'||host.startsWith('192.168.')||host.startsWith('10.')||/^172\.(1[6-9]|2\d|3[0-1])\./.test(host);
+}
+function readUiWorkbenchPreview(){
+ const forced=urlParams.get('ui_preview');
+ if(forced==='1')return true;
+ if(forced==='0'||urlParams.get('full_setup')==='1')return false;
+ const saved=localStorage.getItem('dashboardUiPreview');
+ if(saved==='1')return true;
+ return false;
+}
+let lang=localStorage.getItem('dashboardLang')||'es';
+let dashboardView=localStorage.getItem('dashboardView')||'control';
+function normalizeDashboardTheme(value){
+ if(value==='light')return 'aurora';
+ if(value==='dark')return 'sapphire';
+ return value==='sapphire'||value==='ember'?value:'aurora';
+}
+let dashboardTheme=normalizeDashboardTheme(localStorage.getItem('dashboardTheme')||'aurora');
+let uiWorkbenchPreview=readUiWorkbenchPreview();
+const copy={
+ en:{
+	  brand_subtitle:'Self-hosted local/VPS operator for Meta Ads',zone_brief:'Profile and daily read',zone_work:'Campaign workspace',zone_actions:'Approvals and activity',control_center:'Control Center',control_subtitle:'Daily decisions, risk signals, and ad account health in one place.',safe_mode:'Safe mode active',ask_agent:'Ask agent',ask_manager:'Ask manager',chat_fab:'Talk to agent',chat_title:'Admira IA Manager',chat_subtitle:'Ask for catchups, actions, or explanations.',new_chat:'New chat',quick_status:'Where are we?',quick_budget:'Review budget',quick_fatigue:'Check fatigue',send:'Send',usage_guide:'Guide',tab_overview:'Overview',tab_setup:'Setup',tab_creator:'Create campaign',tab_audiences:'Audiences',tab_creatives:'Creatives',tab_reports:'Reports',updated:'Updated',new_brief:'New',daily_brief:'Daily Brief',run:'Refresh',fatigue_monitor:'Fatigue Monitor',setup_status:'Setup Status',setup_form_title:'Buyer setup fields',setup_form_body:'Save the few account details the assistant needs. No technical file editing here.',license_panel_title:'License unlock',license_panel_body:'Activate the license before live setup. If cloud validation is configured, this device checks your seller domain and caches a safe unlock.',license_active:'Active',license_missing:'Missing',license_invalid:'Needs attention',license_cloud:'Cloud validation',license_local:'Local license',license_activate:'Activate license',license_key:'License key',buyer_email:'Buyer email',ad_account_id:'Ad account',page_id:'Facebook page',instagram_actor_id:'Instagram profile',default_adset_id:'Advanced field',landing_url:'Website link',save_setup:'Save',refresh:'Refresh',campaign_creator:'Create a campaign',creator_kicker:'New campaign',creator_title:'Create a campaign',creator_body:'Tell the agent what you sell, who should see it, and how much you can spend. It will organize the campaign and show it to you before anything can spend money.',creator_chat_cta:'Create by talking to the agent',paused_draft_title:'You decide before money is spent',paused_draft_body:'The agent prepares the campaign and asks for your approval. If you choose to leave it active, it can start spending only after you approve it.',creator_manual_title:'I prefer to enter the details myself',creator_manual_help:'Optional: the agent can ask you these questions in chat.',creator_basic:'What will you advertise?',campaign_name_simple:'Name for this campaign',campaign_name_example:'Example: June promotion',campaign_goal_simple:'What should people do?',goal_purchases:'Buy',goal_contacts:'Leave their details',goal_action:'Take an action on your website',landing_url_simple:'Page people will visit',landing_url_example:'https://your-page.com',primary_text_simple:'Message people will read',primary_text_example:'Example: Discover how this offer can help you today.',headline_simple:'Short title',headline_example:'Example: See the offer',image_simple:'Image already prepared, if you have one',image_path_example:'Optional: image file path',creator_people_budget:'Who will see it and how much can it spend?',daily_budget_simple:'Maximum to spend each day',total_budget_simple:'Maximum to spend in total',locations_simple:'Where those people live',locations_example:'Example: Colombia, Mexico, or Miami',interests_simple:'Things they may be interested in',interests_example:'Example: online stores, beauty, education',age_min_simple:'Youngest age',age_max_simple:'Oldest age',creator_decision:'How should it be prepared?',creative_variations_simple:'How many ideas to compare?',compare_options_simple:'Compare those ideas?',compare_yes:'Yes, compare them',compare_no:'No, use one idea',after_approval_simple:'After you approve it',active_after_approval:'Start showing the ads and spending the chosen budget',ready_not_spending:'Leave it ready without spending',confirm_active_spend:'Only if I choose to turn it on: I understand that after approving, this campaign may start spending my chosen budget.',creator_meta_optional:'Only if you already know this Meta detail',pixel_optional:'Meta tracking number (Pixel ID), optional',creator_review_notice:'Nothing will be created in your Meta account until you review and approve this request.',audience_builder:'Audience Builder',what_sell:'What do you sell?',who_buys:'Who buys today?',audience_product_example:'Example: an online course or beauty product',audience_buyer_example:'Example: people who want to sell more',audience_locations_example:'Example: Colombia or Mexico',audience_interests_example:'Example: beauty, education, local stores',audience_data_example:'Example: people who messaged on Instagram or buyers',age_range:'Age range',budget_level:'Budget level',budget_small:'Small',budget_medium:'Medium',budget_large:'Large',data_sources:'Data sources',consent_upload:'I have consent to use customer emails/phones if I upload them later.',notes:'Notes',optional:'Optional',build_audience:'Build Audience Strategy',lookalike_status:'Lookalike status',recommended_audiences:'Recommended audiences',next_steps:'Next steps',name:'Name',objective:'Objective',daily_budget:'Daily Budget',total_budget:'Total Budget',locations:'Locations',interests:'Interests',age_min:'Age Min',age_max:'Age Max',creative_variations:'Creative Variations',ab_test:'A/B Test',enabled:'Enabled',disabled:'Disabled',stage_campaign:'Send for my approval',creative_refresh:'Creative Refresh',generate_drafts:'Generate Drafts',upload_payloads:'Upload Payloads',campaign_comparison:'Campaign Comparison',export_csv:'Export CSV',campaign:'Campaign',status:'Status',budget_optimizer:'Budget Optimizer',now:'Now',rec:'Rec',pending_approvals:'Pending Approvals',action_log:'Action Log',
+  targeting_picker_title:'Choose the audience with Meta options',targeting_picker_body:'Search locations and interests from Meta, or let the agent suggest the safest audience.',targeting_agent_cta:'Ask the agent',targeting_broad_title:'Broad audience',targeting_broad_body:'Best default: age, location, creative and Meta learning.',targeting_guided_title:'Guided interests',targeting_guided_body:'Use Meta interests as hints when the niche is clear.',targeting_warm_title:'Retargeting / lookalike',targeting_warm_body:'Only when pixel, page, Instagram or customer data is ready.',targeting_search:'Search Meta',targeting_manual_fallback:'If Meta search is not available',targeting_no_results:'No Meta options found. Try another word.',targeting_need_query:'Write what you want to search first.',
+  spend:'Spend',revenue:'Revenue',conversions:'Conversions',active_budget:'Active Budget',active_daily_budget:'Active daily budget',roas:'ROAS',cpa:'CPA',ctr:'CTR',cpc:'CPC',frequency:'Frequency',mode:'Mode',ok:'OK',warnings:'Warnings',blocked:'Blocked',live_ready:'Live Ready',
+  spend_tip:'How much money has been spent on ads in this period.',revenue_tip:'How much sales value the ads are estimated to have produced.',conversions_tip:'How many desired actions happened, such as purchases, leads, or signups.',active_budget_tip:'The total daily budget still running across active campaigns.',active_daily_budget_tip:'The total daily ad budget currently running across active campaigns.',daily_budget_tip:'How much the campaign is allowed to spend per day.',roas_tip:'Return on ad spend. If ROAS is 3x, every $1 in ads brought about $3 back.',cpa_tip:'Cost per acquisition. This is roughly what you paid to get one conversion.',ctr_tip:'Click-through rate. The percent of people who saw the ad and clicked it.',cpc_tip:'Cost per click. The average amount paid for one click.',frequency_tip:'How many times the average person has seen the ad. High frequency can mean people are getting tired of it.',mode_tip:'The current control level. Supervised means real data is read, but changes wait for approval; autopilot can act inside your rules.',ok_tip:'Items already configured correctly.',warnings_tip:'Items that are not blocking the demo, but should be reviewed before going live.',blocked_tip:'Items that must be fixed before the full live workflow can run.',live_ready_tip:'Whether the install has the key pieces needed before live Meta Ads actions are allowed.',
+  no_fatigue:'No fatigue triggers right now.',no_pending:'No pending approvals.',no_actions:'No actions logged yet.',no_creatives:'No creative refresh drafts yet.',no_uploads:'No upload payloads staged yet.',request:'Request',apply:'Apply',approve:'Approve',stage_v1_upload:'Stage v1 Upload',missing:'Missing',variants:'variants',increase_budget:'Increase budget',adjust_budget:'Adjust budget',refresh_creative:'Refresh creative',pause:'Pause',resume:'Resume',details:'Details',
+  q_track:'Am I on track?',q_running:"What's running?",q_performance:"How's performance?",q_winners:"Who's winning or losing?",q_fatigue:'Any fatigue?',
+	  live_ready_yes:'Yes',live_ready_no:'No',check:'Check',draft_where_are_we:'Give me a business catch-up: where are we today, what should I watch, and what would you do next?',draft_catchup:'Explain today’s daily brief like my Meta Ads manager. What matters most?',draft_fatigue:'Review fatigue risk. Which ads need new creative and why?',draft_budget:'Review the budget optimizer. Which recommendations are safe and which need caution?',draft_setup:'Review setup status. What blocks us from going live safely?',draft_audience:'Help me choose targeting. Ask me only what is missing, then recommend broad, interest, retargeting, and lookalike options safely.',chat_welcome:'Hi, I’m your Meta Ads manager. Ask me for a catch-up, a decision, or help taking an action.',chat_summary:'Here is the catch-up: account ROAS is {roas}x, CPA is {cpa}, active budget is {budget}, and {pending} approval(s) are pending. The safest next step is to review budget recommendations and fatigue before going live.',chat_budget:'Budget view: compare current vs suggested budgets. For winning campaigns, scale carefully; for weak campaigns, fix creative or pause before adding spend.',chat_fatigue:'Fatigue view: watch frequency, CTR drops, and rising CPC. If fatigue is present, generate creative refresh drafts before increasing budget.',chat_setup:'Setup view: check blocked items first. Live actions stay protected until credentials, destination IDs, and the live-action switch are ready.',chat_action_hint:'I can open the right workflow from here. For live account changes, the approval queue and dashboard password still protect the account.',toast_resume:'Resume staged for approval',toast_action:'Action complete',toast_budget:'Budget action recorded',toast_daily:'Daily agent report generated',toast_export:'CSV exported: ',toast_approval:'Approval executed',toast_refresh:'Creative refresh draft generated',toast_upload:'Upload payload staged',toast_audience:'Audience strategy generated',toast_setup_saved:'Setup fields saved',toast_license:'License checked',toast_details:'Campaign details visible on this card.',prompt_budget:'New daily budget',unlock_title:'Unlock dashboard',unlock_body:'Enter the password for this dashboard to continue.',unlock_create_title:'Create your password',unlock_create_body:'This is your private password for this dashboard on this computer or server. You choose it now; we do not send one to you.',dashboard_password:'Dashboard password',dashboard_password_confirm:'Repeat password',remember_device:'Remember this device',unlock_button:'Unlock dashboard',unlock_create_button:'Save my password',unlock_needed:'Enter the password for this dashboard to continue.',unlock_create_needed:'Create a password to protect this dashboard before continuing.',unlock_failed:'That password did not unlock the dashboard. Try again.',dashboard_password_short:'Use at least 8 characters.',dashboard_password_mismatch:'Passwords do not match.',copy_command:'Copy',copied:'Copied'
+ },
+ es:{
+	  brand_subtitle:'Operador local/VPS para Meta Ads',zone_brief:'Perfil y lectura',zone_work:'Área de campañas',zone_actions:'Aprobaciones y actividad',control_center:'Centro de control',control_subtitle:'Decisiones diarias, señales de riesgo y salud de la cuenta en un solo lugar.',safe_mode:'Modo seguro activo',ask_agent:'Preguntar',ask_manager:'Hablar con el agente',chat_fab:'Hablar con el agente',chat_title:'Manager de Admira IA',chat_subtitle:'Pide resumen, decisiones o acciones.',new_chat:'Nuevo chat',quick_status:'¿Dónde estamos?',quick_budget:'Revisar presupuesto',quick_fatigue:'Ver cansancio',send:'Enviar',usage_guide:'Guía',tab_overview:'Resumen',tab_setup:'Configuración',tab_creator:'Crear campaña',tab_audiences:'Audiencias',tab_creatives:'Creativos',tab_reports:'Reportes',updated:'Actualizado',new_brief:'Nuevo',daily_brief:'Resumen diario',run:'Actualizar',fatigue_monitor:'Cansancio de anuncios',setup_status:'Configuración y seguridad',setup_form_title:'Datos importantes guardados',setup_form_body:'Aquí puedes cambiar licencia, cuenta, página y web. Normalmente esto ya queda listo en la configuración inicial. Si no sabes qué poner, pregúntale al agente.',license_panel_title:'Activación de licencia',license_panel_body:'Activa el código de compra para usar funciones reales. Este equipo confirma tu licencia con nuestro servidor y guarda permiso temporal para no pedirlo todo el tiempo.',license_active:'Activa',license_missing:'Falta',license_invalid:'Revisar',license_cloud:'Confirmada online',license_local:'Licencia local',license_activate:'Activar licencia',license_key:'Licencia',buyer_email:'Email del comprador',ad_account_id:'Cuenta publicitaria',page_id:'Página de Facebook',instagram_actor_id:'Perfil de Instagram',default_adset_id:'Campo avanzado',landing_url:'Link de tu web',save_setup:'Guardar',refresh:'Actualizar',campaign_creator:'Crear una campaña',creator_kicker:'Nueva campaña',creator_title:'Crea una campaña',creator_body:'Cuéntale al agente qué vendes, quién debe verlo y cuánto puedes gastar. Él organizará la campaña y te la mostrará antes de que pueda gastar dinero.',creator_chat_cta:'Crear hablando con el agente',paused_draft_title:'Tú decides antes de gastar dinero',paused_draft_body:'El agente prepara la campaña y te pide aprobación. Si decides dejarla activa, solo podrá empezar a gastar después de que la apruebes.',creator_manual_title:'Prefiero escribir los datos yo',creator_manual_help:'Opcional: el agente puede preguntarte todo esto en el chat.',creator_basic:'Qué vas a anunciar',campaign_name_simple:'Nombre para esta campaña',campaign_name_example:'Ej: Promo de junio',campaign_goal_simple:'Qué quieres que haga la persona',goal_purchases:'Comprar',goal_contacts:'Dejar sus datos',goal_action:'Hacer una acción en tu página',landing_url_simple:'Página que visitarán',landing_url_example:'https://tu-pagina.com',primary_text_simple:'Mensaje que leerán',primary_text_example:'Ej: Descubre cómo esta oferta puede ayudarte hoy.',headline_simple:'Título corto',headline_example:'Ej: Mira la oferta',image_simple:'Imagen ya preparada, si tienes una',image_path_example:'Opcional: ruta del archivo de imagen',creator_people_budget:'Quién lo verá y cuánto puede gastar',daily_budget_simple:'Máximo que puede gastar al día',total_budget_simple:'Máximo que puede gastar en total',locations_simple:'Dónde viven esas personas',locations_example:'Ej: Colombia, México o Miami',interests_simple:'Qué cosas podrían interesarles',interests_example:'Ej: tiendas online, belleza, educación',age_min_simple:'Edad más joven',age_max_simple:'Edad mayor',creator_decision:'Cómo quieres dejarla preparada',creative_variations_simple:'Cuántas ideas quieres comparar',compare_options_simple:'Comparar esas ideas',compare_yes:'Sí, compararlas',compare_no:'No, usar una sola idea',after_approval_simple:'Después de que la apruebes',active_after_approval:'Empezar a mostrar anuncios y gastar el presupuesto elegido',ready_not_spending:'Dejarla lista sin gastar',confirm_active_spend:'Marcar solo si elegiste empezar a mostrar anuncios: entiendo que, después de aprobar, esta campaña podrá gastar el presupuesto que elegí.',creator_meta_optional:'Solo si ya conoces este dato de Meta',pixel_optional:'Número de seguimiento de Meta (Pixel ID), opcional',creator_review_notice:'Nada se creará en tu cuenta de Meta hasta que revises y apruebes esta solicitud.',audience_builder:'Elegir público',what_sell:'¿Qué vendes?',who_buys:'¿Quién compra hoy?',audience_product_example:'Ej: un curso o un producto de belleza',audience_buyer_example:'Ej: personas que quieren vender más',audience_locations_example:'Ej: Colombia o México',audience_interests_example:'Ej: belleza, educación o negocios locales',audience_data_example:'Ej: personas que escribieron por Instagram o compradores',age_range:'Edad aproximada',budget_level:'Tamaño del presupuesto',budget_small:'Pequeño',budget_medium:'Mediano',budget_large:'Grande',data_sources:'Datos que ya tienes',consent_upload:'Tengo permiso para usar emails/teléfonos de clientes si los subo después.',notes:'Notas',optional:'Opcional',build_audience:'Crear recomendación de público',lookalike_status:'Público parecido',recommended_audiences:'A quién mostrar anuncios',next_steps:'Siguientes pasos',name:'Nombre',objective:'Objetivo',daily_budget:'Presupuesto diario',total_budget:'Presupuesto total',locations:'Países/ubicaciones',interests:'Intereses',age_min:'Edad mínima',age_max:'Edad máxima',creative_variations:'Opciones de anuncios',ab_test:'Comparar ideas',enabled:'Activada',disabled:'Desactivada',stage_campaign:'Enviar para mi aprobación',creative_refresh:'Crear ideas nuevas',generate_drafts:'Crear ideas',upload_payloads:'Anuncios listos para revisar',campaign_comparison:'Comparación de campañas',export_csv:'Descargar reporte',campaign:'Campaña',status:'Estado',budget_optimizer:'Qué hacer con el presupuesto',now:'Actual',rec:'Sugerido',pending_approvals:'Decisiones por aprobar',action_log:'Lo que hizo el agente',
+  targeting_picker_title:'Elige público con opciones de Meta',targeting_picker_body:'Busca países, ciudades o intereses reales de Meta. Si no sabes qué elegir, pídeselo al agente.',targeting_agent_cta:'Preguntar al agente',targeting_broad_title:'Público amplio',targeting_broad_body:'Buen punto de partida: país, edad y buenos anuncios. Meta aprende con señales.',targeting_guided_title:'Intereses simples',targeting_guided_body:'Úsalos como pistas cuando sabes qué temas le importan a tu cliente.',targeting_warm_title:'Personas que ya te conocen / parecidos',targeting_warm_body:'Solo cuando ya tienes visitas, Instagram activo o clientes con permiso.',targeting_search:'Buscar en Meta',targeting_manual_fallback:'Solo si el buscador no funciona',targeting_no_results:'No encontré opciones en Meta. Prueba otra palabra.',targeting_need_query:'Escribe primero qué quieres buscar.',
+  spend:'Gasto',revenue:'Ingresos',conversions:'Conversiones',active_budget:'Presupuesto activo',active_daily_budget:'Presupuesto diario activo',roas:'ROAS',cpa:'CPA',ctr:'CTR',cpc:'CPC',frequency:'Frecuencia',mode:'Modo',ok:'Listo',warnings:'Revisar',blocked:'Falta arreglar',live_ready:'Meta listo?',
+  spend_tip:'Dinero que ya se gastó en anuncios.',revenue_tip:'Ventas o valor que los anuncios parecen haber producido.',conversions_tip:'Acciones importantes: compras, formularios, registros u otro objetivo.',active_budget_tip:'Dinero máximo por día que sigue encendido en campañas activas.',active_daily_budget_tip:'Dinero máximo por día que puede gastarse ahora.',daily_budget_tip:'Máximo que una campaña puede gastar por día.',roas_tip:'Cuánto vuelve por cada $1 gastado. ROAS 3x significa que $1 trajo aprox. $3.',cpa_tip:'Cuánto cuesta conseguir una compra, lead o acción importante.',ctr_tip:'De cada 100 personas que ven el anuncio, cuántas hacen clic.',cpc_tip:'Cuánto pagas por cada clic.',frequency_tip:'Cuántas veces ve una persona el mismo anuncio. Si sube mucho, puede cansarse.',mode_tip:'Con supervisión: tú apruebas. Piloto automático: el agente puede actuar solo dentro de tus reglas.',ok_tip:'Esto ya está bien.',warnings_tip:'No es urgente, pero conviene revisarlo.',blocked_tip:'Esto falta antes de usar todo el producto.',live_ready_tip:'Dice si ya puedes permitir acciones reales en Meta Ads.',
+  no_fatigue:'No hay señales de cansancio de anuncios por ahora.',no_pending:'No hay aprobaciones pendientes.',no_actions:'Todavía no hay acciones registradas.',no_creatives:'Todavía no hay ideas de anuncios.',no_uploads:'Todavía no hay imágenes preparadas para publicar.',request:'Solicitar',apply:'Aplicar',approve:'Aprobar',stage_v1_upload:'Preparar para publicar',missing:'Falta',variants:'opciones',increase_budget:'Subir presupuesto',adjust_budget:'Ajustar presupuesto',refresh_creative:'Probar imagen nueva',pause:'Pausar',resume:'Reactivar',details:'Detalles',
+  q_track:'¿Voy bien?',q_running:'¿Qué está corriendo?',q_performance:'¿Cómo va el rendimiento?',q_winners:'¿Qué gana y qué pierde?',q_fatigue:'¿Se está cansando algún anuncio?',
+	  live_ready_yes:'Sí',live_ready_no:'No',check:'Revisar',draft_where_are_we:'Dame un resumen del negocio: dónde estamos hoy, qué debo vigilar y qué harías después.',draft_catchup:'Explícame el resumen diario como mi manager de Meta Ads. ¿Qué es lo más importante?',draft_fatigue:'Revisa el riesgo de cansancio del anuncio. ¿Qué anuncios necesitan una imagen o texto nuevo y por qué?',draft_budget:'Revisa el presupuesto. ¿Qué recomendaciones son seguras y cuáles requieren cuidado?',draft_setup:'Revisa el estado de configuración. ¿Qué nos falta para activar piloto automático con seguridad?',draft_audience:'Ayúdame a elegir a quién mostrar anuncios. Pregúntame solo lo que falte y dime si conviene llegar a personas nuevas, personas que ya me conocen o personas parecidas a mis clientes.',chat_welcome:'Hola, soy tu manager de Meta Ads. Pídeme un resumen, una decisión o ayuda para ejecutar una acción.',chat_summary:'Resumen: por cada $1 invertido regresan {roas}; conseguir una compra cuesta {cpa}; el presupuesto activo es {budget} y hay {pending} decisión(es) pendientes. El siguiente paso más seguro es revisar presupuesto y cansancio antes de aumentar gasto.',chat_budget:'Presupuesto: compara el presupuesto actual contra el sugerido. En campañas ganadoras, aumenta con cuidado; en campañas débiles, prueba otra imagen o texto o pausa antes de invertir más.',chat_fatigue:'Cansancio del anuncio: revisa si muchas personas ven el mismo anuncio, si bajan los clics o si cada clic cuesta más. Si pasa, crea nuevas imágenes o textos antes de subir presupuesto.',chat_setup:'Configuración: resuelve primero lo que falta. Las acciones reales requieren una aprobación exacta o piloto automático activo dentro de tus reglas.',chat_action_hint:'Puedo abrir el paso correcto desde aquí. Para cambios reales, tus decisiones y la contraseña del dashboard protegen la cuenta.',toast_resume:'Reactivación enviada a aprobación',toast_action:'Acción completada',toast_budget:'Acción de presupuesto registrada',toast_daily:'Resumen diario generado',toast_export:'Reporte descargado: ',toast_approval:'Aprobación ejecutada',toast_refresh:'Ideas de anuncio creadas',toast_upload:'Imagen preparada para revisar',toast_audience:'Recomendación de público creada',toast_setup_saved:'Configuración guardada',toast_license:'Licencia revisada',toast_details:'Los detalles clave están visibles en esta tarjeta.',prompt_budget:'Nuevo presupuesto diario',unlock_title:'Desbloquear dashboard',unlock_body:'Escribe la contraseña de este dashboard para continuar.',unlock_create_title:'Crea tu contraseña',unlock_create_body:'Esta será tu contraseña privada para proteger este dashboard en este equipo o servidor. La eliges tú ahora; nosotros no te enviamos una.',dashboard_password:'Contraseña del dashboard',dashboard_password_confirm:'Repetir contraseña',remember_device:'Recordar este dispositivo',unlock_button:'Desbloquear dashboard',unlock_create_button:'Guardar mi contraseña',unlock_needed:'Escribe la contraseña de este dashboard para continuar.',unlock_create_needed:'Crea una contraseña para proteger este dashboard antes de seguir.',unlock_failed:'Esa contraseña no desbloqueó el dashboard. Intenta de nuevo.',dashboard_password_short:'Usa al menos 8 caracteres.',dashboard_password_mismatch:'Las contraseñas no coinciden.',copy_command:'Copiar',copied:'Copiado'
+ }
+};
+const labelKeys={Spend:'spend',Revenue:'revenue',Conversions:'conversions','Active Budget':'active_budget',ROAS:'roas',CPA:'cpa',CTR:'ctr',CPC:'cpc',Frequency:'frequency',frequency:'frequency',conversions:'conversions','Active daily budget':'active_daily_budget','active daily budget':'active_daily_budget','daily budget':'daily_budget',Mode:'mode',OK:'ok',Warnings:'warnings',Blocked:'blocked','Live Ready':'live_ready'};
+const questionKeys={'Am I on track?':'q_track',"What's running?":'q_running',"How's performance?":'q_performance',"Who's winning/losing?":'q_winners',"Who's winning or losing?":'q_winners','Any fatigue?':'q_fatigue'};
+const esText={
+ Files:'Instalación',Runtime:'Funcionamiento',Security:'Protección','Meta Live Requirements':'Conexión con Meta','Creative Generation':'Imágenes de anuncios','Agent Chat':'Chat con el agente',Telegram:'Telegram','Upload Readiness':'Publicación de anuncios',Scheduler:'Lectura diaria automática',
+ '.env config':'Llaves locales guardadas','ad-config.json':'Datos de anuncios guardados','Metrics cache':'Datos del dashboard','Dashboard script':'Pantalla del dashboard','Daily agent script':'Agente diario','Agent mode':'Nivel de control','Primary connector':'Conexión principal','social-cli installed':'Conexión con Meta instalada','social-cli onboarding':'Conexión con Meta iniciada','Latest daily report':'Última lectura diaria','Latest action log':'Última acción registrada','Dashboard bind host':'Dónde se abre el dashboard','Dashboard write token':'Contraseña del dashboard','Dashboard password':'Contraseña del dashboard','Token required for writes':'Contraseña requerida para acciones','Password required for actions':'Contraseña requerida para acciones','License key':'Licencia','Public dashboard opt-in':'Acceso público permitido','Live-action kill switch':'Permiso de piloto automático','.env permissions':'Protección de llaves','Dashboard data permissions':'Protección de datos del dashboard','Output permissions':'Protección de archivos creados','Logs permissions':'Protección de registros','Meta ad account':'Cuenta publicitaria de Meta','Direct Graph token':'Clave de acceso de Meta','Meta token':'Clave de acceso de Meta','Page ID':'Página de Facebook','Landing page URL':'Web de destino','Creative refresh enabled':'Ideas nuevas de anuncios activas','Image generation path':'Ruta de imágenes','Codex/Image login':'Codex/Image para creativos','Codex CLI':'Codex para creativos','Codex creative bridge (optional local-agent access)':'Codex creativo opcional','Brand guide files':'Memoria de marca','Agent chat provider':'Motor del chat','Agent base installed':'Base del agente instalada','Agent ChatGPT/Codex login':'ChatGPT/Codex conectado','OpenAI-compatible model':'Modelo externo compatible','Agent chat model':'Modelo del chat','MiniMax fallback':'Plan B del chat','MiniMax API key':'Clave de MiniMax','Agent profile files':'Personalidad del agente','Telegram agent access':'Chat por Telegram','Telegram bot':'Bot de Telegram','Allowed Telegram chat':'Tu chat privado de Telegram','Upload staging index':'Anuncios preparados','Latest upload payload':'Última publicación preparada','Cron setup script':'Lectura diaria automática','VPS systemd setup script':'Servicio en servidor','Logs directory':'Registros del sistema',
+ 'No daily report yet.':'Todavía no hay lectura diaria.','No actions logged yet.':'Todavía no hay acciones registradas.','Run social setup or social onboard, then social auth login.':'Falta terminar la conexión con Meta. Sigue el paso de Meta en la configuración inicial.','Recommended: social setup':'Recomendado: seguir el paso de conexión con Meta','configured':'configurado','Configured inside agent':'Listo dentro del agente','No usado; el chat usa una API compatible OpenAI.':'No usado; el chat usa el modelo externo configurado.','Agent base not installed':'Falta la base del agente','Agent selected model':'Modelo elegido del agente','Optional fallback not configured':'Plan B opcional no configurado','Optional unless AGENT_CHAT_PROVIDER is minimax/openai_compatible/openai.':'Opcional si usas ChatGPT/Codex.','Missing AGENT_CHAT_API_KEY, AGENT_CHAT_BASE_URL, or AGENT_CHAT_MODEL':'Falta clave, URL o nombre del modelo externo.','Missing DASHBOARD_TOKEN':'Falta contraseña del dashboard','Missing DASHBOARD_PASSWORD':'Falta contraseña del dashboard','License key missing':'Falta la licencia','Invalid license format':'La licencia no se ve correcta','License checksum mismatch':'La licencia no pasó validación','License active':'Licencia activa','Cloud unlock active':'Licencia confirmada online','Cloud license active':'Licencia confirmada online','Offline license active; no license server configured':'Licencia local activa','Cloud unlock expired; grace period active':'Permiso guardado temporalmente activo','Could not validate the license online. Check internet access or contact support.':'No pudimos confirmar tu licencia. Revisa internet o contacta soporte.','License server unavailable; using the saved unlock on this device':'No pudimos contactar el servidor; usando permiso guardado en este equipo','Demo/internal license':'Licencia de prueba','Missing META_AD_ACCOUNT_ID':'Falta elegir cuenta publicitaria','Not configured; paste your Meta key in onboarding.':'Falta pegar tu clave de Meta en la configuración inicial.','Not configured; optional unless using graph_api connector.':'No configurado; normalmente puedes seguir.','Missing creative.destination.page_id':'Falta elegir página de Facebook','Missing creative.destination.url':'Falta guardar el link de tu web','Falta conectar ChatGPT/Codex para imágenes':'Falta conectar el generador de imágenes','Missing MINIMAX_API_KEY; chat will use local fallback replies.':'Plan B de chat no configurado. El agente sigue siendo el principal.','Set MINIMAX_API_KEY in .env for real agent conversation.':'Solo necesario si cambias el chat a MiniMax.','No creative drafts yet.':'Todavía no hay ideas de anuncios.','No upload payloads staged yet.':'Todavía no hay anuncios preparados para publicar.','None':'Ninguno','logs directory not created yet':'Todavía no hay carpeta de registros'
+};
+function t(key){return (copy[lang]&&copy[lang][key])||copy.en[key]||key}
+function uiLang(){
+ const selected=qs('#language-select')?.value;
+ if(selected==='es'||selected==='en')return selected;
+ const stored=localStorage.getItem('dashboardLang');
+ if(stored==='es'||stored==='en')return stored;
+ return lang==='en'?'en':'es';
+}
+function isEs(){return uiLang()==='es'}
+function localText(value){if(lang!=='es')return value;let text=String(value??'');return esText[text]||text.replace(/^Missing: /,'Falta: ').replace('blocked / missing','bloqueado / faltan').replace('ready_for_approval','listo para aprobación').replace('dry-run','con supervisión').replace('True','Sí').replace('False','No')}
+function actionName(value){const raw=String(value||'').replaceAll('_',' ');if(lang!=='es')return raw;return raw.replace('budget change','cambio de presupuesto').replace('resume campaign','reactivar campaña').replace('create campaign','crear campaña').replace('creative upload','subida creativa').replace('daily agent run','ejecución diaria del agente').replace('creative refresh','renovación creativa').replace('creative upload execute','ejecución de subida creativa').replace('creative upload stage','preparación de subida creativa')}
+function actionDetail(a){const p=a.payload||{};const result=p.result||p.social_cli_result||{};const requested=p.name||p.campaign_name||p.campaign_id||p.path||'';const connector=p.connector||result.connector||(result.command?'social-cli':'local');const mode=p.mode||result.mode||state?.config?.mode||'';const executed=(p.executed!==undefined?p.executed:result.executed);const response=result.stderr||result.stdout||p.response_summary||'';const rows=[];if(requested)rows.push(`<strong>${lang==='es'?'Pedido':'Requested'}:</strong> ${requested}`);rows.push(`<strong>${lang==='es'?'Conector':'Connector'}:</strong> ${connector}`);if(mode)rows.push(`<strong>${lang==='es'?'Modo':'Mode'}:</strong> ${mode}`);if(executed!==undefined)rows.push(`<strong>${lang==='es'?'Ejecutado':'Executed'}:</strong> ${executed? (lang==='es'?'sí':'yes') : (lang==='es'?'no':'no')}`);if(response)rows.push(`<strong>${lang==='es'?'Respuesta':'Response'}:</strong> ${String(response).slice(0,180)}`);return rows.length?`<div class="action-detail">${rows.join('<br>')}</div>`:''}
+function keyFor(label){return labelKeys[label]||label}
+function tip(label){const key=keyFor(label);return `<span class="tip" tabindex="0" data-tip="${t(key+'_tip')}">${t(key)} <span class="help-dot">?</span></span>`}
+function kpi(label,value){return `<div class="kpi aurora-card"><span class="starfield" aria-hidden="true"></span><div class="v">${value}</div><div class="l">${tip(label)}</div></div>`}
+function metric(label,value){return `<div class="metric"><b>${value}</b><span>${tip(label)}</span></div>`}
+function explainTerms(text){return String(text||'').replace(/\b(ROAS|CPA|CTR|CPC|Frequency|frequency|conversions|Conversions|Active daily budget|active daily budget|daily budget)\b/g,match=>tip(match))}
+function briefAnswer(text){
+ if(lang!=='es')return text;
+ let answer=String(text||'')
+  .replace(/^Spend:\s*/,'Gasto: ')
+  .replace(/^Revenue:\s*/,'Ingresos: ')
+  .replace(/^(\d+) active campaigns\.?$/,'$1 campañas activas.')
+  .replace(/^(\d+) fatigue flag\(s\)\.?$/,'$1 señales de cansancio del anuncio.')
+  .replace(/^Active daily budget is /,'El presupuesto diario activo es ')
+  .replace('; account ROAS is ','; el ROAS de la cuenta es ')
+  .replace(' with CPA ',' con CPA ')
+  .replace(/^(\d+) active campaigns, (\d+) paused or staged\.$/,'$1 campañas activas, $2 pausadas o preparadas.')
+  .replace(/^7-day view shows /,'Vista de 7 días: ')
+  .replace(' spend, ',' de gasto, ')
+  .replace(' revenue, ',' de ingresos, ')
+  .replace(' conversions, and ',' conversiones y ')
+  .replace(/^Top winner: /,'Mejor campaña: ')
+  .replace(' at ',' con ')
+  .replace('No material fatigue triggers right now.','No hay señales importantes de cansancio por ahora.')
+  .replace('No clear winner yet.','Todavía no hay una campaña claramente ganadora.');
+ if(state?.metrics?.source==='demo'){
+  answer=answer.replaceAll('Q2 Conversion Campaign','Campaña de ventas Q2')
+   .replaceAll('Brand Awareness Campaign','Campaña para dar a conocer la marca')
+   .replaceAll('Retargeting - Warm Leads','Personas que ya mostraron interés')
+   .replaceAll('Prospecting - Broad Testing','Prueba con personas nuevas');
+ }
+ return answer;
+}
+function recommendationText(text){
+ if(lang!=='es')return text;
+ const map={
+  'High performance detected - increasing budget':'Buen rendimiento: conviene aumentar el presupuesto con cuidado.',
+  'Good performance - maintaining current budget':'Buen rendimiento: conviene mantener el presupuesto actual.',
+  'Average performance - slight budget reduction':'Rendimiento medio: conviene bajar un poco el presupuesto.',
+  'Low performance - reducing budget significantly':'Rendimiento bajo: conviene reducir el presupuesto.',
+  'Even distribution maintains stable performance':'Mantener este presupuesto ayuda a conservar estabilidad.'
+ };
+ return map[String(text||'')]||String(text||'')
+  .replace('Highly efficient conversions - increasing budget aggressively','Compras a buen costo: conviene aumentar el presupuesto con cuidado.')
+  .replace('Efficient conversions - increasing budget moderately','Compras a buen costo: conviene aumentar un poco el presupuesto.')
+  .replace('Break-even efficiency - maintaining budget','Resultados estables: conviene mantener el presupuesto.')
+  .replace('Inefficient conversions - decreasing budget','Compras costosas: conviene bajar el presupuesto.');
+}
+function fatigueText(text){
+ if(lang!=='es')return text;
+ return String(text||'')
+  .replace(/^frequency ([\d.]+)$/,'Una persona lo ve $1 veces')
+  .replace(/^CTR ([\d.]+)% down$/,'Los clics bajaron $1%')
+  .replace(/^CPC ([\d.]+)% up$/,'Cada clic cuesta $1% más');
+}
+function demoCampaignName(name){
+ if(lang!=='es'||state?.metrics?.source!=='demo')return name;
+ const map={'Q2 Conversion Campaign':'Campaña de ventas Q2','Brand Awareness Campaign':'Campaña para dar a conocer la marca','Retargeting - Warm Leads':'Personas que ya mostraron interés','Prospecting - Broad Testing':'Prueba con personas nuevas'};
+ return map[name]||name;
+}
+function briefQuestion(q){return t(questionKeys[q]||q)}
+function modeText(value){if(value==='dry-run')return lang==='es'?'supervisado':'supervised';if(value==='live')return lang==='es'?'piloto':'autopilot';return value}
+function statusText(value){const map={active:lang==='es'?'activa':'active',paused:lang==='es'?'pausada':'paused',winning:lang==='es'?'ganadora':'winning',losing:lang==='es'?'perdedora':'losing',fatigue:lang==='es'?'cansancio':'fatigue',neutral:lang==='es'?'neutral':'neutral',blocked:lang==='es'?'bloqueado':'blocked',warn:lang==='es'?'alerta':'warn',ok:lang==='es'?'ok':'ok'};return map[value]||value}
+function applyTranslations(){
+ document.documentElement.lang=lang;
+ qs('#language-select').value=lang;
+ document.querySelectorAll('[data-i18n]').forEach(el=>{el.textContent=t(el.dataset.i18n)});
+ document.querySelectorAll('[data-i18n-placeholder]').forEach(el=>{el.placeholder=t(el.dataset.i18nPlaceholder)});
+ qs('#top-roas').innerHTML=tip('ROAS'); qs('#top-cpa').innerHTML=tip('CPA'); qs('#top-mode').innerHTML=tip('Mode');
+ qs('#th-spend').innerHTML=tip('Spend'); qs('#th-roas').innerHTML=tip('ROAS'); qs('#th-cpa').innerHTML=tip('CPA'); qs('#th-ctr').innerHTML=tip('CTR');
+ applyDashboardTheme();
+ syncDashboardView();
+ syncPanels();
+}
+function viewLabels(){return lang==='es'?{control:'Control',timeline:'En el tiempo',analytics:'Vista total',idle:'Producto',aurora:'Aurora',sapphire:'Sapphire',ember:'Ember'}:{control:'Control',timeline:'Timeline',analytics:'Total view',idle:'Showcase',aurora:'Aurora',sapphire:'Sapphire',ember:'Ember'}}
+function applyDashboardTheme(){
+ dashboardTheme=normalizeDashboardTheme(dashboardTheme);
+ document.body.classList.toggle('theme-aurora',dashboardTheme==='aurora');
+ document.body.classList.toggle('theme-sapphire',dashboardTheme==='sapphire');
+ document.body.classList.toggle('theme-ember',dashboardTheme==='ember');
+ document.body.classList.toggle('theme-light',dashboardTheme==='aurora');
+ document.body.classList.toggle('theme-dark',dashboardTheme==='sapphire'||dashboardTheme==='ember');
+ const labels=viewLabels();
+ document.querySelectorAll('.theme-chip').forEach(btn=>{const theme=normalizeDashboardTheme(btn.dataset.theme);btn.textContent=labels[theme]||theme;btn.classList.toggle('active',theme===dashboardTheme);btn.setAttribute('aria-pressed',theme===dashboardTheme?'true':'false')});
+ const group=qs('#theme-toggle');if(group)group.setAttribute('aria-label',lang==='es'?'Temas del dashboard':'Dashboard themes');
+}
+function setDashboardTheme(theme){dashboardTheme=normalizeDashboardTheme(theme);localStorage.setItem('dashboardTheme',dashboardTheme);applyDashboardTheme()}
+function toggleDashboardTheme(){setDashboardTheme(dashboardTheme==='aurora'?'sapphire':dashboardTheme==='sapphire'?'ember':'aurora')}
+function syncDashboardView(){
+ const labels=viewLabels();
+ document.querySelectorAll('.view-chip').forEach(btn=>{const view=btn.dataset.view;btn.textContent=labels[view]||view;btn.classList.toggle('active',view===dashboardView);btn.setAttribute('aria-pressed',view===dashboardView?'true':'false')});
+ ['control','timeline','analytics','idle'].forEach(view=>{const el=qs(`#view-${view}`);if(el)el.classList.toggle('hidden',view!==dashboardView)})
+}
+function setDashboardView(view){dashboardView=view;localStorage.setItem('dashboardView',view);syncDashboardView();renderOverviewViews()}
+function positionFloatingTip(target){
+ const box=qs('#floating-tip'); if(!box||!target)return;
+ box.textContent=target.dataset.tip||''; box.classList.add('show');
+ const rect=target.getBoundingClientRect(); const tipRect=box.getBoundingClientRect(); const gap=10; const margin=12;
+ let left=rect.left+(rect.width-tipRect.width)/2;
+ left=Math.max(margin,Math.min(left,window.innerWidth-tipRect.width-margin));
+ let top=rect.top-tipRect.height-gap;
+ if(top<margin)top=rect.bottom+gap;
+ if(top+tipRect.height>window.innerHeight-margin)top=Math.max(margin,window.innerHeight-tipRect.height-margin);
+ box.style.left=`${left}px`; box.style.top=`${top}px`;
+}
+function hideFloatingTip(){const box=qs('#floating-tip');if(box)box.classList.remove('show')}
+document.addEventListener('pointerover',e=>{const target=e.target.closest?.('.tip');if(target)positionFloatingTip(target)})
+document.addEventListener('pointerout',e=>{const target=e.target.closest?.('.tip');if(target&&!target.contains(e.relatedTarget))hideFloatingTip()})
+document.addEventListener('focusin',e=>{const target=e.target.closest?.('.tip');if(target)positionFloatingTip(target)})
+document.addEventListener('focusout',e=>{if(e.target.closest?.('.tip'))hideFloatingTip()})
+document.addEventListener('scroll',hideFloatingTip,true)
+window.addEventListener('resize',()=>{hideFloatingTip();syncPanels()})
+function toast(msg){const t=qs('#toast');t.textContent=msg;t.style.display='block';setTimeout(()=>t.style.display='none',2600)}
+function fillTemplate(text){const s=state?.metrics?.summary||{};return String(text).replace('{roas}',Number(s.overall_roas||0).toFixed(2)).replace('{cpa}',fmtMoney(s.overall_cpa)).replace('{budget}',fmtMoney(s.active_budget)).replace('{pending}',state?.pending?.length||0)}
+function escapeHtml(value){return String(value??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]))}
+function isMobilePanelLayout(){return window.matchMedia('(max-width: 780px)').matches}
+function panelStorageKey(side){const desktopKey=`dashboardPanel:${side}`;return isMobilePanelLayout()?`dashboardPanelMobile:${side}`:desktopKey}
+function panelOpen(side){return localStorage.getItem(panelStorageKey(side))==='open'}
+let dailyBriefReadTimer=null;
+function dailyBriefStamp(){return String(state?.brief?.generated_at||state?.metrics?.timestamp||'')}
+function hasUnreadDailyBrief(){const stamp=dailyBriefStamp();return Boolean(stamp&&state?.brief?.questions?.length&&localStorage.getItem('dashboardDailyBriefReadStamp')!==stamp)}
+function syncDailyBriefUnread(){
+ const unread=hasUnreadDailyBrief();
+ const btn=qs('#toggle-left-panel');if(!btn)return;
+ btn.classList.toggle('has-new-brief',unread);
+ btn.setAttribute('data-unread',unread?'true':'false');
+ const badge=qs('#daily-brief-badge');if(badge){badge.textContent=t('new_brief');badge.setAttribute('aria-hidden',unread?'false':'true')}
+}
+function markDailyBriefRead(){const stamp=dailyBriefStamp();if(stamp)localStorage.setItem('dashboardDailyBriefReadStamp',stamp);syncDailyBriefUnread()}
+function scheduleVisibleBriefRead(){
+ clearTimeout(dailyBriefReadTimer);
+ if(!panelOpen('left')||!hasUnreadDailyBrief())return;
+ const stamp=dailyBriefStamp();
+ dailyBriefReadTimer=setTimeout(()=>{if(panelOpen('left')&&dailyBriefStamp()===stamp)markDailyBriefRead()},2200);
+}
+function panelTitle(side,open){
+ if(side==='left')return open?(lang==='es'?'Ocultar perfil y lectura':'Hide profile and daily read'):(lang==='es'?'Mostrar perfil y lectura':'Show profile and daily read');
+ return open?(lang==='es'?'Ocultar aprobaciones y actividad':'Hide approvals and activity'):(lang==='es'?'Mostrar aprobaciones y actividad':'Show approvals and activity')
+}
+function syncPanels(){
+ const left=panelOpen('left'),right=panelOpen('right');
+ document.body.classList.toggle('left-panel-open',left);
+ document.body.classList.toggle('right-panel-open',right);
+ [['left',left],['right',right]].forEach(([side,open])=>{
+  const btn=qs(`#toggle-${side}-panel`);if(!btn)return;
+  const title=panelTitle(side,open);
+  btn.classList.toggle('active',open);btn.setAttribute('aria-expanded',open?'true':'false');btn.setAttribute('aria-label',title);btn.title=title;
+ })
+ syncDailyBriefUnread();
+ scheduleVisibleBriefRead();
+}
+function togglePanel(side){const open=panelOpen(side);localStorage.setItem(panelStorageKey(side),open?'closed':'open');syncPanels();if(side==='left')markDailyBriefRead()}
+function inlineMarkdown(value){return escapeHtml(value).replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')}
+function formatChatContent(text){
+ const raw=fillTemplate(text).replace(/\r\n/g,'\n').trim();
+ if(!raw)return '';
+ const blocks=[]; let list=[];
+ const flushList=()=>{if(list.length){blocks.push(`<ul>${list.map(item=>`<li>${inlineMarkdown(item)}</li>`).join('')}</ul>`);list=[]}};
+ raw.split(/\n+/).forEach(line=>{
+  const trimmed=line.trim();
+  if(!trimmed)return flushList();
+  const bullet=trimmed.match(/^[-*]\s+(.+)$/);
+  const numbered=trimmed.match(/^\d+[.)]\s+(.+)$/);
+  if(bullet||numbered){list.push((bullet||numbered)[1]);return}
+  flushList();
+  blocks.push(`<p>${inlineMarkdown(trimmed)}</p>`);
+ });
+ flushList();
+ return blocks.join('');
+}
+function setMessageContent(node,text){const content=fillTemplate(text);node.classList.remove('thinking');node.innerHTML=formatChatContent(content);node.dataset.rawContent=content;return content}
+function addMessage(role,text,store=true){const log=qs('#chat-log');const node=document.createElement('div');node.className=`msg ${role}`;const content=setMessageContent(node,text);log.appendChild(node);log.scrollTop=log.scrollHeight;if(store)chatHistory.push({role,content});return node}
+function chatApprovalItems(result){
+ const routed=result?.routed_action||{};const items=[];
+ if(Array.isArray(result?.approval_choices))items.push(...result.approval_choices);
+ if(Array.isArray(routed?.approval_choices))items.push(...routed.approval_choices);
+ const candidate=routed?.result;
+ if(candidate&&candidate.id&&candidate.status==='pending')items.push(candidate);
+ const seen=new Set();
+ return items.filter(item=>{const id=item&&item.id;if(!id||seen.has(id))return false;seen.add(id);return true}).slice(0,4);
+}
+function approvalItemName(item){return escapeHtml(item.name||item.payload?.name||item.payload?.campaign_name||item.type||'Decisión pendiente')}
+function appendChatApprovalActions(node,result){
+ const items=chatApprovalItems(result);if(!items.length)return;
+ const wrap=document.createElement('div');wrap.className='msg-actions approval-chat-actions';
+ wrap.innerHTML=items.map(item=>{const active=item.requires_active_confirmation||item.final_status==='ACTIVE'||item.payload?.final_status==='ACTIVE';const approveLabel=active?(lang==='es'?'Sí, crear y dejar activo':'Yes, create and leave active'):(lang==='es'?'Aprobar':'Approve');return `<div class="msg-approval-card"><b>${approvalItemName(item)}</b><span>${escapeHtml(item.type||'approval')} · ${escapeHtml(item.id)}</span><div class="msg-approval-buttons"><button class="btn primary" type="button" data-action-code="chatApproveDecision('${escapeHtml(item.id)}')">${approveLabel}</button><button class="btn danger" type="button" data-action-code="chatRejectDecision('${escapeHtml(item.id)}')">${lang==='es'?'No aprobar':'Reject'}</button></div></div>`}).join('');
+ node.appendChild(wrap);qs('#chat-log').scrollTop=qs('#chat-log').scrollHeight;
+}
+async function chatApproveDecision(id){const attempted=await approvePending(id);const done=Array.isArray(attempted)&&attempted[0]?.status==='approved';addMessage('agent',done?(lang==='es'?'Listo. Aprobé y ejecuté esa decisión.':'Done. I approved and executed that decision.'):(lang==='es'?'Intenté aprobarla, pero quedó pendiente para reintentar. Revisa el detalle en Aprobaciones.':'I tried to approve it, but it remains pending for retry. Check the detail in Approvals.'))}
+async function chatRejectDecision(id){await api('/api/reject',{method:'POST',body:JSON.stringify({approval_id:id,reason:'Rejected from chat button'})});toast(lang==='es'?'Decisión rechazada':'Decision rejected');await load();addMessage('agent',lang==='es'?'Listo. Rechacé esa decisión y no se ejecutará.':'Done. I rejected that decision and it will not execute.')}
+function hydrateChatHistory(force=false){
+ if(chatHydrated&&!force)return;
+ const log=qs('#chat-log');if(!log)return;
+ const history=Array.isArray(state?.chat_history)?state.chat_history:[];
+ log.innerHTML='';chatHistory=[];
+ history.slice(-40).forEach(item=>addMessage(item.role==='agent'?'agent':'user',item.content,false));
+ chatHistory=history.slice(-40).map(item=>({role:item.role==='agent'?'agent':'user',content:item.content}));
+ chatHydrated=true;
+}
+function streamMessageContent(node,text){
+ const content=fillTemplate(text);
+ node.dataset.rawContent='';
+ node.classList.remove('thinking');
+ node.classList.add('streaming');
+ const parts=content.match(/\S+\s*/g)||[''];
+ let index=0;
+ return new Promise(resolve=>{
+  const tick=()=>{
+   index+=1;
+   const partial=parts.slice(0,index).join('');
+   node.dataset.rawContent=partial;
+   node.innerHTML=formatChatContent(partial);
+   qs('#chat-log').scrollTop=qs('#chat-log').scrollHeight;
+   if(index<parts.length){setTimeout(tick,18)}else{node.classList.remove('streaming');resolve(content)}
+  };
+  tick();
+ });
+}
+function openChat(draft=''){hydrateChatHistory();document.body.classList.add('chat-workspace-open');const panel=qs('#chat-panel');panel.classList.add('open');if(!qs('#chat-log').children.length)addMessage('agent',t('chat_welcome'));if(draft)qs('#chat-input').value=draft;resizeChatInput();qs('#chat-input').focus()}
+function closeChat(){qs('#chat-panel').classList.remove('open');document.body.classList.remove('chat-workspace-open')}
+function resizeChatInput(){const input=qs('#chat-input');if(!input)return;input.style.height='auto';const max=150;const next=Math.min(input.scrollHeight,max);input.style.height=`${next}px`;input.style.overflowY=input.scrollHeight>max?'auto':'hidden'}
+function resizeAgentBarInput(){const input=qs('#agent-bar-input');if(!input)return;input.style.height='auto';const max=92;const next=Math.min(input.scrollHeight,max);input.style.height=`${next}px`;input.style.overflowY=input.scrollHeight>max?'auto':'hidden'}
+async function sendChatMessage(text,{workspace=false,memoryWizard=null}={}){
+ if(!text)return;
+ if(workspace)document.body.classList.add('chat-workspace-open');
+ openChat();
+ addMessage('user',text);
+ const pending=addMessage('agent',lang==='es'?'Pensando...':'Thinking...',false);pending.classList.add('thinking');
+ try{const chatPayload={message:text,history:chatHistory,metrics:state.metrics,recommendations:state.recommendations,fatigue:state.fatigue,pending:state.pending,language:lang};if(memoryWizard)chatPayload.memory_wizard=memoryWizard;const res=await api('/api/chat',{method:'POST',body:JSON.stringify(chatPayload)});const reply=res.result.reply||agentReply(text);const rendered=await streamMessageContent(pending,reply);chatHistory.push({role:'agent',content:rendered});appendChatApprovalActions(pending,res.result);if(res.result.routed_action){await load();const action=res.result.routed_action;if(action.type==='creative_memory_wizard_complete'){toast(lang==='es'?'Información del anuncio actualizada':'Creative memory updated')}}}catch(err){const raw=String(err&&err.message||err||'');const needsPassword=raw.includes('dashboard password')||raw.includes('password')||raw.includes('401');const fallback=needsPassword?(lang==='es'?'Necesito la contraseña del dashboard para hablar con el agente real y ejecutar acciones protegidas. Desbloquea el dashboard y vuelve a enviar el mensaje.':'I need the dashboard password to talk to the real agent and run protected actions. Unlock the dashboard and send the message again.'):agentReply(text);const rendered=await streamMessageContent(pending,fallback);chatHistory.push({role:'agent',content:rendered})}
+}
+async function newChatConversation(){
+ await api('/api/chat/reset',{method:'POST',body:JSON.stringify({})});
+ chatHistory=[];chatHydrated=true;qs('#chat-log').innerHTML='';addMessage('agent',t('chat_welcome'));
+ toast(lang==='es'?'Conversación nueva lista':'New conversation ready');
+}
+function agentReply(text){const msg=String(text||'').toLowerCase();if(msg.includes('presupuesto')||msg.includes('budget'))return t('chat_budget');if(msg.includes('fatiga')||msg.includes('creative')||msg.includes('creativo'))return t('chat_fatigue');if(msg.includes('config')||msg.includes('setup')||msg.includes('live'))return t('chat_setup');if(msg.includes('resumen')||msg.includes('catch')||msg.includes('dónde')||msg.includes('where'))return t('chat_summary');return `${t('chat_summary')}\n\n${t('chat_action_hint')}`}
+function dataSourceText(m){const source=String(m?.source||'');if(source==='meta_graph')return lang==='es'?'Datos reales de Meta':'Real Meta data';if(source==='demo')return lang==='es'?'Datos de ejemplo, no reales':'Demo data, not real';if(source==='missing')return lang==='es'?'Sin datos reales de Meta':'No real Meta data yet';return lang==='es'?'Datos guardados sin confirmar':'Saved unverified data'}
+function chatArg(value){return JSON.stringify(String(value||'')).replaceAll('"','&quot;')}
+function splitActionStatements(code){
+ const out=[];let current='',quote='',depth=0,escaped=false;
+ for(const ch of String(code||'')){
+  if(quote){current+=ch;if(escaped){escaped=false;continue}if(ch==='\\'){escaped=true;continue}if(ch===quote)quote='';continue}
+  if(ch==="'"||ch==='"'||ch==='`'){quote=ch;current+=ch;continue}
+  if(ch==='('||ch==='['||ch==='{')depth+=1;
+  if(ch===')'||ch===']'||ch==='}')depth=Math.max(0,depth-1);
+  if(ch===';'&&depth===0){if(current.trim())out.push(current.trim());current='';continue}
+  current+=ch;
+ }
+ if(current.trim())out.push(current.trim());
+ return out;
+}
+function splitActionArgs(text){
+ const out=[];let current='',quote='',depth=0,escaped=false;
+ for(const ch of String(text||'')){
+  if(quote){current+=ch;if(escaped){escaped=false;continue}if(ch==='\\'){escaped=true;continue}if(ch===quote)quote='';continue}
+  if(ch==="'"||ch==='"'||ch==='`'){quote=ch;current+=ch;continue}
+  if(ch==='('||ch==='['||ch==='{')depth+=1;
+  if(ch===')'||ch===']'||ch==='}')depth=Math.max(0,depth-1);
+  if(ch===','&&depth===0){out.push(current.trim());current='';continue}
+  current+=ch;
+ }
+ if(current.trim())out.push(current.trim());
+ return out;
+}
+function unquoteActionValue(expr){
+ const raw=String(expr||'').trim();
+ if((raw.startsWith("'")&&raw.endsWith("'"))||(raw.startsWith('"')&&raw.endsWith('"'))||(raw.startsWith('`')&&raw.endsWith('`'))){
+  try{return JSON.parse(raw[0]==="'"?`"${raw.slice(1,-1).replace(/\\/g,'\\\\').replace(/"/g,'\\"')}"`:raw)}
+  catch(_){return raw.slice(1,-1)}
+ }
+ return raw;
+}
+function evalActionExpression(expr,event,source){
+ const raw=String(expr||'').trim();
+ if(raw==='event')return event;
+ if(raw==='true')return true;
+ if(raw==='false')return false;
+ if(raw==='null')return null;
+ if(raw==='undefined')return undefined;
+ if(raw==='lang')return lang;
+ if(raw==='window.pendingLicenseActivationPayload||{}')return window.pendingLicenseActivationPayload||{};
+ if(raw==="qs('#onboarding-flow')?.classList.contains('open')")return Boolean(qs('#onboarding-flow')?.classList.contains('open'));
+ if(/^[-+]?\d+(\.\d+)?$/.test(raw))return Number(raw);
+ let m=raw.match(/^t\((['"])(.*?)\1\)$/);if(m)return t(m[2]);
+ if(raw==='businessProfileChatPrompt()')return businessProfileChatPrompt();
+ m=raw.match(/^isEs\(\)\?(['"`])([\s\S]*)\1:(['"`])([\s\S]*)\3$/);if(m)return isEs()?m[2]:m[4];
+ m=raw.match(/^lang===['"]es['"]\?(['"`])([\s\S]*)\1:(['"`])([\s\S]*)\3$/);if(m)return lang==='es'?m[2]:m[4];
+ if((raw.startsWith("'")&&raw.endsWith("'"))||(raw.startsWith('"')&&raw.endsWith('"'))||(raw.startsWith('`')&&raw.endsWith('`')))return unquoteActionValue(raw);
+ if(raw.startsWith('[')||raw.startsWith('{')){try{return JSON.parse(raw)}catch(_){}}
+ return raw;
+}
+function allowedActionCall(name){
+ const actions={
+  openUsageGuide,togglePanel,openChat,runAgent,setDashboardView,setDashboardTheme,refreshInsights,load,setTargetingMode,searchTargeting,
+  generateRefresh,exportCsv,closeBrandMemory,newChatConversation,closeChat,chatApproveDecision,chatRejectDecision,removeTargetingItem,
+  addTargetingItem,startCreativeMemoryWizard,refreshForProduct,startAdBriefForProduct,chatForProduct,refreshForAdBrief,chatForAdBrief,
+  openBrandMemory,clearCreativeStorage,stageUpload,downloadCreativeAsset,confirmClearCreativeStorage,approvePending,resetOnboarding,
+  copyCommand,copyVisibleChatGptCode,skipWebsiteScan,setBusinessContextQuestionIndex,setMetaGuideSlide,skipOnboarding,closeUsageGuide,finishDashboardIntroTour,
+  previousDashboardIntroTour,nextDashboardIntroTour,setMode,activateLicense,openMetaSettingsGuide,testTelegram,applyRec,resumeOnboarding,
+  completeOnboarding,connectMetaStarted,showMetaTokenBox,saveMetaToken,discoverMetaAssets,pollChatGptConnection,reopenChatGptAuthUrl,
+  goToMetaTokenStep,refreshSocialAccounts,selectTelegramChat,selectSocialAccount,selectMetaDestination,resolveDecisionConfirm,
+  finishOnboardingConfirmed,confirmBusinessReplacement,confirmMigrationRestore,confirmUpdateRollback,rollbackUpdateSnapshot,
+  applyDashboardUpdate,submitBudgetDialog,submitBrandGuideInit,saveOnboardingSetupConfig,saveTelegramConfig,saveGeneralMemory,
+  saveProductMemory,saveAdBriefMemory,activateLicenseFromForm,setDashboardPasswordFromOnboarding,saveBusinessLinks,
+  saveBusinessContextQuestion,saveGuardrails,saveProfitabilityRules,saveSetupConfig,sendChatGptTerminalInput,restoreMigrationBackup,
+  budgetPrompt,campaignAction,detectTelegramChats,setLocalNetworkAccess,showDetails,selectAgentModelRoute,saveChatGptModel,
+  connectChatGpt,toggleChatGptDeviceAuthHelp,downloadMigrationBackup,refreshCloudAccess,loadUpdateSnapshots,showUpdateDetails,
+  renderOnboardingFlow
+ };
+ return actions[name]||null;
+}
+function actionStatementName(statement){
+ const code=String(statement||'').trim();
+ if(code==='onboardingFlowTouched=true'||code==='pendingMigrationFile=null')return code;
+ if(code.startsWith('onboardingFlowStep='))return 'onboardingFlowStep';
+ let m=code.match(/^qs\((['"])(.*?)\1\)\.value=(['"])([\s\S]*)\3$/);if(m)return 'setFieldValue';
+ m=code.match(/^qs\((['"])(.*?)\1\)\.click\(\)$/);if(m)return 'clickElement';
+ if(code==='setTimeout(scheduleMetaTokenAutoSave,0)')return 'scheduleMetaTokenAutoSave';
+ m=code.match(/^([A-Za-z_$][\w$]*)\(([\s\S]*)\)$/);return m?m[1]:'unknown';
+}
+function sequenceAllowed(names){
+ const same=(a,b)=>a.length===b.length&&a.every((item,index)=>item===b[index]);
+ return [
+  ['closeConfirm','openChat'],
+  ['pendingMigrationFile=null','closeConfirm'],
+  ['closeConfirm','activateLicense'],
+  ['resolveDecisionConfirm','openChat'],
+  ['onboardingFlowTouched=true','onboardingFlowStep','renderOnboardingFlow']
+ ].some(seq=>same(names,seq));
+}
+function runActionStatement(statement,event,source){
+ const code=String(statement||'').trim();
+ if(!code)return;
+ if(code==='onboardingFlowTouched=true'){onboardingFlowTouched=true;return}
+ if(code==='pendingMigrationFile=null'){pendingMigrationFile=null;return}
+ if(code==='onboardingFlowStep=Math.max(0,onboardingFlowStep-1)'){onboardingFlowStep=Math.max(0,onboardingFlowStep-1);return}
+ if(code==='onboardingFlowStep=Math.min(onboardingSteps().length-1,onboardingFlowStep+1)'){onboardingFlowStep=Math.min(onboardingSteps().length-1,onboardingFlowStep+1);return}
+ let m=code.match(/^onboardingFlowStep=Math\.min\((\d+),onboardingFlowStep\+1\)$/);if(m){onboardingFlowStep=Math.min(Number(m[1]),onboardingFlowStep+1);return}
+ m=code.match(/^qs\((['"])(.*?)\1\)\.value=(['"])([\s\S]*)\3$/);if(m){const el=qs(m[2]);if(el)el.value=m[4];return}
+ m=code.match(/^qs\((['"])(.*?)\1\)\.click\(\)$/);if(m){qs(m[2])?.click();return}
+ if(code==='setTimeout(scheduleMetaTokenAutoSave,0)'){setTimeout(scheduleMetaTokenAutoSave,0);return}
+ m=code.match(/^([A-Za-z_$][\w$]*)\(([\s\S]*)\)$/);
+ if(!m){console.warn('Blocked unsupported dashboard action',code);return}
+ const fn=allowedActionCall(m[1]);
+ if(!fn){console.warn('Blocked unknown dashboard action',m[1]);return}
+ const args=splitActionArgs(m[2]).map(arg=>evalActionExpression(arg,event,source));
+ return fn(...args);
+}
+function runActionCode(code,event,source){
+ const statements=splitActionStatements(code);
+ if(statements.length>1&&!sequenceAllowed(statements.map(actionStatementName))){
+  console.warn('Blocked unsupported dashboard action sequence',code);
+  return Promise.resolve();
+ }
+ return statements.reduce((chain,statement)=>chain.then(()=>runActionStatement(statement,event,source)),Promise.resolve());
+}
+function allowedStyleValue(value){return /^[-+.,%#()\w\s]+$/.test(String(value||''))&&String(value||'').length<120}
+function applyDataStyles(root=document){
+ const scope=root.nodeType===1?root:document;
+ const nodes=[];
+ if(scope.matches?.('[data-style-code]'))nodes.push(scope);
+ scope.querySelectorAll?.('[data-style-code]').forEach(el=>nodes.push(el));
+ nodes.forEach(el=>{
+  String(el.dataset.styleCode||'').split(';').map(x=>x.trim()).filter(Boolean).forEach(rule=>{
+   const index=rule.indexOf(':');if(index<1)return;
+   const prop=rule.slice(0,index).trim();const value=rule.slice(index+1).trim();
+   if(!/^(background|display|height|left|top|width|margin|margin-top|font-size)$/i.test(prop))return;
+   if(!allowedStyleValue(value))return;
+   el.style.setProperty(prop,value);
+  });
+ });
+}
+function installDelegatedActions(){
+ document.addEventListener('click',event=>{
+  const target=event.target.closest?.('[data-action-code]');
+  if(!target)return;
+  event.preventDefault();
+  runActionCode(target.dataset.actionCode,event,target).catch(err=>{console.error(err);toast(err.message||String(err))});
+ });
+ document.addEventListener('submit',event=>{
+  const target=event.target.closest?.('[data-submit-code]');
+  if(!target)return;
+  event.preventDefault();
+  runActionCode(target.dataset.submitCode,event,target).catch(err=>{console.error(err);toast(err.message||String(err))});
+ });
+ document.addEventListener('change',event=>{
+  const target=event.target.closest?.('[data-change-code]');
+  if(!target)return;
+  runActionCode(target.dataset.changeCode,event,target).catch(err=>{console.error(err);toast(err.message||String(err))});
+ });
+ document.addEventListener('input',event=>{
+  const target=event.target.closest?.('[data-input-code]');
+  if(!target)return;
+  runActionCode(target.dataset.inputCode,event,target).catch(err=>console.error(err));
+ });
+ document.addEventListener('paste',event=>{
+  const target=event.target.closest?.('[data-paste-code]');
+  if(!target)return;
+  runActionCode(target.dataset.pasteCode,event,target).catch(err=>console.error(err));
+ });
+ const observer=new MutationObserver(records=>records.forEach(record=>record.addedNodes.forEach(node=>applyDataStyles(node))));
+ observer.observe(document.body,{childList:true,subtree:true});
+ applyDataStyles(document);
+}
+let targetingSelections={location:[],interest:[]};
+let targetingSearchResults={location:[],interest:[]};
+function targetingDom(kind){return {query:qs(`#targeting-${kind}-query`),results:qs(`#targeting-${kind}-results`),selected:qs(`#targeting-${kind}-selected`),hidden:qs(`#campaign-targeting-${kind==='location'?'locations':'interests'}-json`)}}
+function targetingMetaLine(item){if(item.kind==='interest'){const path=Array.isArray(item.path)&&item.path.length?` · ${item.path.join(' › ')}`:'';const size=item.audience_size?` · ${Number(item.audience_size).toLocaleString()}`:'';return `${path}${size}`.replace(/^ · /,'')}return [item.type,item.country_code].filter(Boolean).join(' · ')}
+function syncTargetingHidden(kind){const dom=targetingDom(kind);if(dom.hidden)dom.hidden.value=JSON.stringify(targetingSelections[kind]||[])}
+function renderSelectedTargeting(kind){const dom=targetingDom(kind);if(!dom.selected)return;const items=targetingSelections[kind]||[];dom.selected.innerHTML=items.map((item,index)=>`<span class="targeting-chip">${escapeHtml(item.label||item.name||item.key)} <button type="button" aria-label="${lang==='es'?'Quitar':'Remove'}" data-action-code="removeTargetingItem('${kind}',${index})">×</button></span>`).join('');syncTargetingHidden(kind)}
+function addTargetingItem(kind,index){const item=(targetingSearchResults[kind]||[])[index];if(!item)return;const key=item.id||item.key||item.name;if(!(targetingSelections[kind]||[]).some(existing=>(existing.id||existing.key||existing.name)===key)){targetingSelections[kind].push(item)}renderSelectedTargeting(kind)}
+function removeTargetingItem(kind,index){targetingSelections[kind].splice(index,1);renderSelectedTargeting(kind)}
+function setTargetingMode(mode){document.querySelectorAll('.targeting-mode-card').forEach(btn=>btn.classList.remove('active'));const cards=[...document.querySelectorAll('.targeting-mode-card')];if(mode==='guided'&&cards[1])cards[1].classList.add('active');else if(mode==='warm'&&cards[2])cards[2].classList.add('active');else if(cards[0])cards[0].classList.add('active')}
+async function searchTargeting(kind){
+ const dom=targetingDom(kind);const q=(dom.query?.value||'').trim();
+ if(!q){if(dom.results)dom.results.innerHTML=`<div class="targeting-empty">${t('targeting_need_query')}</div>`;return}
+ if(dom.results)dom.results.innerHTML=`<div class="targeting-empty">${lang==='es'?'Buscando opciones reales de Meta...':'Searching real Meta options...'}</div>`;
+ try{
+  const res=await api('/api/targeting/search',{method:'POST',body:JSON.stringify({kind,q,limit:8})});
+  const result=res.result||{};const items=result.items||[];targetingSearchResults[kind]=items;
+  if(!result.ok){dom.results.innerHTML=`<div class="targeting-error">${escapeHtml(result.message||'Meta search unavailable')}</div>`;return}
+  if(!items.length){dom.results.innerHTML=`<div class="targeting-empty">${t('targeting_no_results')}</div>`;return}
+  dom.results.innerHTML=items.map((item,index)=>`<button class="targeting-result" type="button" data-action-code="addTargetingItem('${kind}',${index})"><span><b>${escapeHtml(item.label||item.name)}</b><span>${escapeHtml(targetingMetaLine(item))}</span></span><strong>+</strong></button>`).join('');
+ }catch(err){if(dom.results)dom.results.innerHTML=`<div class="targeting-error">${escapeHtml(err.message||String(err))}</div>`}
+}
+function clamp(n,min,max){return Math.max(min,Math.min(max,n))}
+function dayLabels(){return lang==='es'?['Lun','Mar','Mié','Jue','Vie','Sáb','Dom']:['Mon','Tue','Wed','Thu','Fri','Sat','Sun']}
+function campaignInitials(name){return String(name||'AD').split(/\s+/).filter(Boolean).slice(0,2).map(x=>x[0]).join('').toUpperCase()||'AD'}
+function aggregateTrend(campaigns){
+ const rows=(campaigns||[]).filter(c=>Array.isArray(c.trend)&&c.trend.length);
+ if(!rows.length)return [12,18,14,22,28,24,31];
+ const len=Math.max(...rows.map(c=>c.trend.length));
+ return Array.from({length:Math.min(7,len)},(_,i)=>rows.reduce((sum,c)=>sum+Number(c.trend[i%c.trend.length]||0),0));
+}
+function miniBars(values,cls=''){
+ const max=Math.max(...values,1);
+ return `<div class="mini-bars ${cls}">${values.map(v=>`<i data-style-code="height:${clamp((Number(v||0)/max)*64,10,70)}px"></i>`).join('')}</div>`;
+}
+function renderOverviewViews(){
+ syncDashboardView();
+ if(!state||!state.metrics)return;
+ renderTimelineView();
+ renderAnalyticsView();
+ renderIdleView();
+}
+function renderTimelineView(){
+ const box=qs('#view-timeline');if(!box)return;
+ const campaigns=state.metrics?.campaigns||[];
+ const days=dayLabels();
+ const rows=campaigns.length?campaigns.map((c,i)=>{
+  const left=clamp((i%4)*5,0,22);
+  const width=c.status==='paused'?34:clamp(42+Number(c.roas||1)*6,42,82);
+  const health=String(c.health||'neutral');
+  const label=c.status==='active'?(lang==='es'?'Activa':'Active'):statusText(c.status||health);
+  const draft=lang==='es'?`Muéstrame qué pasó estos días con ${c.name} y dime qué harías ahora.`:`Give me a timeline read for ${c.name}. What happened this week and what would you move now?`;
+  const returnLabel=lang==='es'?`Vuelve ${Number(c.roas||0).toFixed(2)}x por cada $1`:`ROAS ${Number(c.roas||0).toFixed(2)}x`;
+  return `<div class="timeline-row"><div><div class="timeline-name">${escapeHtml(demoCampaignName(c.name))}</div><div class="timeline-status">${label} · ${returnLabel}</div></div><div class="timeline-track"><button class="timeline-bar ${escapeHtml(health)}" data-style-code="left:${left}%;width:${width}%" data-action-code="openChat(${chatArg(draft)})"><span>${campaignInitials(demoCampaignName(c.name))}</span><span>${label}</span></button></div></div>`;
+ }).join(''):`<p class="notice">${lang==='es'?'Cuando tengas anuncios activos, los verás aquí como una línea de tiempo visual.':'When ads are active, you will see them here as a visual timeline.'}</p>`;
+ box.innerHTML=`<section class="timeline-shell"><div class="timeline-head"><div><h3>${lang==='es'?'Anuncios en el tiempo':'Active ads timeline'}</h3><p>${lang==='es'?'Una vista rápida para entender qué está corriendo, qué está pausado y dónde conviene preguntarle al agente.':'A fast view of what is running, what is paused, and where to ask the manager.'}</p></div><button class="btn ask-btn" data-action-code="openChat(${chatArg(lang==='es'?'Mira todos mis anuncios en el tiempo y dime cuál necesita atención hoy.':'Read the full timeline and tell me which campaign needs attention today.')})">${t('ask_agent')}</button></div><div class="timeline-scale"><span></span>${days.map(d=>`<span>${d}</span>`).join('')}</div>${rows}</section>`;
+}
+function renderAnalyticsView(){
+ const box=qs('#view-analytics');if(!box)return;
+ const m=state.metrics||{},s=m.summary||{},campaigns=m.campaigns||[];
+ const total=Math.max(Number(s.total_spend||0)+Number(s.total_revenue||0)+Number(s.total_conversions||0),1);
+ const trends=aggregateTrend(campaigns);
+ const top=[...campaigns].sort((a,b)=>Number(b.roas||0)-Number(a.roas||0)).slice(0,6);
+ const winner=top[0];
+ const days=dayLabels();
+ box.innerHTML=`<section class="analytics-grid"><div class="analytics-hero analytics-card"><div class="analytics-head"><div><h3>${lang==='es'?'Vista general':'Total overview'}</h3><p>${lang==='es'?'Lectura visual de inversión, resultados y movimiento de los últimos días.':'Visual read of spend, results, and recent movement.'}</p></div><span class="badge winning">+ ${Number(s.overall_roas||0).toFixed(2)}x</span></div><div class="analytics-legend"><div class="legend-row"><span class="legend-dot" data-style-code="background:#b9a8ff"></span><span>${t('spend')}</span><b>${fmtMoney(s.total_spend)}</b></div><div class="legend-track"><i class="legend-fill" data-style-code="display:block;width:${clamp(Number(s.total_spend||0)/total*100,8,100)}%"></i></div><div class="legend-row"><span class="legend-dot" data-style-code="background:#ffd55d"></span><span>${t('revenue')}</span><b>${fmtMoney(s.total_revenue)}</b></div><div class="legend-track"><i class="legend-fill" data-style-code="display:block;width:${clamp(Number(s.total_revenue||0)/total*100,8,100)}%"></i></div><div class="legend-row"><span class="legend-dot" data-style-code="background:#7fded5"></span><span>${t('conversions')}</span><b>${Number(s.total_conversions||0).toLocaleString()}</b></div><div class="legend-track"><i class="legend-fill" data-style-code="display:block;width:${clamp(Number(s.total_conversions||0)/total*100,8,100)}%"></i></div></div></div><div class="analytics-card"><div class="analytics-head"><div><h3>${lang==='es'?'Semana':'Week'}</h3><p>${lang==='es'?'Pulso diario de actividad.':'Daily activity pulse.'}</p></div></div><div class="calendar-mini">${days.map((d,i)=>{const v=Number(trends[i]||0),h=clamp(v/Math.max(...trends,1),.18,1);return `<div class="calendar-day"><span>${d}</span><div class="day-stack"><i class="day-seg a" data-style-code="height:${20*h}px"></i><i class="day-seg b" data-style-code="height:${34*h}px"></i><i class="day-seg c" data-style-code="height:${24*h}px"></i></div></div>`}).join('')}</div></div></section><section class="analytics-cards"><div class="analytics-card"><h4>${lang==='es'?'Señales del negocio':'Market signal'}</h4><strong>${fmtMoney(s.total_spend)}</strong><p class="notice">${lang==='es'?'Inversión leída por el agente para decidir con menos estrés.':'Spend read by the agent for calmer decisions.'}</p>${miniBars(trends)}</div><div class="analytics-card"><h4>${lang==='es'?'Resultados':'Efficiency'}</h4><strong>${Number(s.overall_roas||0).toFixed(2)}x</strong><p class="notice">${lang==='es'?'Resultado general con alertas de costo por compra y cansancio de anuncios.':'Global ROAS with CPA and fatigue alerts.'}</p>${spark(trends)}</div><div class="analytics-card"><h4>${lang==='es'?'Mejores campañas':'Top campaigns'}</h4><strong>${campaigns.length}</strong><p class="notice">${winner?`${escapeHtml(demoCampaignName(winner.name))} · ${Number(winner.roas||0).toFixed(2)}x`:lang==='es'?'Aún no hay campañas.':'No campaigns yet.'}</p><div class="avatar-row">${top.map(c=>`<span class="avatar-chip" title="${escapeHtml(demoCampaignName(c.name))}">${campaignInitials(demoCampaignName(c.name))}</span>`).join('')}</div></div></section>`;
+}
+function renderIdleView(){
+ const box=qs('#view-idle');if(!box)return;
+ const m=state.metrics||{},s=m.summary||{},p=state.business_profile||{};
+ const offer=p.main_offer||p.offer||p.detected_title||(lang==='es'?'tu producto':'your product');
+ const draft=lang==='es'?'Quiero crear una imagen showcase de mi producto para el modo idle. Usa mis guías de marca, pregúntame por la imagen de referencia si hace falta y prepara prompts consistentes.':'I want to create a product showcase image for idle mode. Use my brand guides, ask for the reference image if needed, and prepare consistent prompts.';
+ box.innerHTML=`<section class="idle-hero"><div class="idle-grid"><div class="idle-copy"><div class="idle-head"><div><h3>${lang==='es'?'Hola, este es el pulso de ':'Hello, this is the pulse for '}<span>${escapeHtml(offer)}</span></h3><p>${lang==='es'?'Una vista tranquila para dejar abierta en pantalla: el agente sigue leyendo datos, cuidando señales y esperando que le hables como a un manager.':'A calm view to leave open: the agent keeps reading data, watching signals, and waiting for you to talk to it like a manager.'}</p></div></div><div class="showcase-actions"><button class="btn primary" data-action-code="openChat(${chatArg(draft)})">${lang==='es'?'Crear imagen del producto con Codex':'Create showcase with Codex'}</button><button class="btn ask-btn" data-action-code="openChat(${chatArg(lang==='es'?'Dime qué debería vigilar hoy en esta cuenta y qué harías tú ahora.':'Tell me what I should watch today in this account and what you would do now.')})">${t('ask_manager')}</button></div></div><div class="idle-product-stage"><div class="product-orb"></div><div class="idle-floating one"><b>${Number(s.overall_roas||0).toFixed(2)}x</b><span>${lang==='es'?'VUELVE / $1':'ROAS'}</span></div><div class="idle-floating two"><b>${fmtMoney(s.overall_cpa)}</b><span>${lang==='es'?'COSTO / COMPRA':'CPA'}</span></div><div class="idle-floating three"><b>${Number(s.total_conversions||0).toLocaleString()}</b><span>${t('conversions')}</span></div></div></div></section>`;
+}
+let unlockResolver=null;
+let unlockMode='unlock';
+function clearStoredDashboardSecrets(){localStorage.removeItem('dashboardPassword');localStorage.removeItem('dashboardToken');localStorage.removeItem('dashboardSession');sessionStorage.removeItem('dashboardSession')}
+function dashboardPassword(){return localStorage.getItem('dashboardSession')||sessionStorage.getItem('dashboardSession')||localStorage.getItem('dashboardToken')||localStorage.getItem('dashboardPassword')||''}
+function storeDashboardSession(result={},remember=true){const token=result.session_token||'';localStorage.removeItem('dashboardPassword');localStorage.removeItem('dashboardToken');localStorage.removeItem('dashboardSession');sessionStorage.removeItem('dashboardSession');if(token){(remember?localStorage:sessionStorage).setItem('dashboardSession',token);return token}return ''}
+async function unlockWithPassword(value,remember=true){const res=await fetch('/api/unlock',{method:'POST',headers:{'Content-Type':'application/json','X-Dashboard-Token':value},body:JSON.stringify({remember_device:remember})});if(!res.ok)throw new Error(await responseErrorMessage(res));const data=await res.json();return storeDashboardSession(data.result||data,remember)||value}
+function dashboardPasswordIsSet(){return !state||!state.config||state.config.dashboard_password_set!==false}
+function setUnlockError(message=''){const err=qs('#unlock-error');if(err){err.textContent=message;err.classList.toggle('show',Boolean(message))}}
+function syncUnlockMode(mode=''){unlockMode=mode||(dashboardPasswordIsSet()?'unlock':'create');const create=unlockMode==='create';const title=qs('#unlock-title'),body=qs('#unlock-body'),button=qs('#unlock-submit'),label=qs('#unlock-password-label'),confirmLabel=qs('#unlock-confirm-label'),input=qs('#unlock-password'),confirmInput=qs('#unlock-confirm-password'),confirmWrap=qs('#unlock-confirm-wrap');if(title){title.dataset.i18n=create?'unlock_create_title':'unlock_title';title.textContent=t(title.dataset.i18n)}if(body){body.dataset.i18n=create?'unlock_create_body':'unlock_body';body.textContent=t(body.dataset.i18n)}if(button){button.dataset.i18n=create?'unlock_create_button':'unlock_button';button.textContent=t(button.dataset.i18n)}if(label){label.dataset.i18n='dashboard_password';label.textContent=t('dashboard_password')}if(confirmLabel){confirmLabel.dataset.i18n='dashboard_password_confirm';confirmLabel.textContent=t('dashboard_password_confirm')}if(input){input.autocomplete=create?'new-password':'current-password';input.placeholder=create?(lang==='es'?'Crea una contraseña segura':'Create a secure password'):''}if(confirmInput){confirmInput.classList.toggle('hidden',!create);confirmInput.disabled=!create;confirmInput.placeholder=create?(lang==='es'?'Escríbela otra vez':'Type it again'):'';confirmInput.value=''}if(confirmWrap)confirmWrap.classList.toggle('hidden',!create)}
+function showUnlock(message='',mode=''){const overlay=qs('#unlock-overlay');syncUnlockMode(mode);setUnlockError(message);overlay.classList.add('open');setTimeout(()=>qs('#unlock-password')?.focus(),30);return new Promise(resolve=>{unlockResolver=resolve})}
+function hideUnlock(){qs('#unlock-overlay')?.classList.remove('open');setUnlockError('')}
+async function requestUnlock(message=''){const mode=dashboardPasswordIsSet()?'unlock':'create';return showUnlock(message||t(mode==='create'?'unlock_create_needed':'unlock_needed'),mode)}
+async function responseErrorMessage(res){const text=await res.text();try{const data=JSON.parse(text);return data.error||data.detail||text}catch{return text}}
+async function api(path,opts={}){const headers={'Content-Type':'application/json',...(opts.headers||{})};const password=dashboardPassword();if(password)headers['X-Dashboard-Token']=password;let res=await fetch(path,{...opts,headers});if(res.status===401){clearStoredDashboardSecrets();const entered=await requestUnlock();if(entered){headers['X-Dashboard-Token']=entered;res=await fetch(path,{...opts,headers});if(res.status===401){clearStoredDashboardSecrets();await requestUnlock(t('unlock_failed'));throw new Error(t('unlock_failed'))}}}if(!res.ok)throw new Error(await responseErrorMessage(res));return res.json()}
+async function load(){state=await api('/api/dashboard');render();if(!uiWorkbenchPreview&&state.config.dashboard_password_required&&!state.config.dashboard_password_set)showUnlock(t('unlock_create_needed'),'create');else if(!uiWorkbenchPreview&&state.config.dashboard_password_required&&state.config.dashboard_password_set&&!dashboardPassword()&&state.onboarding&&state.onboarding.completed)showUnlock(t('unlock_needed'),'unlock');checkForUpdates(false);startUpdateAutoCheck();setTimeout(startDashboardIntroTourIfPending,350)}
+function decisionEvidenceMarkup(card){
+ if(!card)return '';
+ const ask=lang==='es'?`Explícame esta decisión sobre ${card.campaign_name||'mi campaña'} en palabras simples. Señal: ${card.signal||''}. Recomendación: ${card.recommendation||''}`:`Explain this decision about ${card.campaign_name||'my campaign'} in simple words. Signal: ${card.signal||''}. Recommendation: ${card.recommendation||''}`;
+ return `<div class="brief-q decision-card"><b>${escapeHtml(card.title|| (lang==='es'?'Decisión con evidencia':'Decision with evidence'))}: ${escapeHtml(demoCampaignName(card.campaign_name||''))}</b><p>${escapeHtml(card.diagnosis||'')}</p><p><strong>${lang==='es'?'Señal':'Signal'}:</strong> ${escapeHtml(card.signal||'')}</p><p><strong>${lang==='es'?'Sugerencia':'Suggestion'}:</strong> ${escapeHtml(card.recommendation||'')}</p><p><strong>${lang==='es'?'Riesgo':'Risk'}:</strong> ${escapeHtml(card.risk||'')}</p><button class="btn ask-btn" data-action-code="openChat(${chatArg(ask)})">${t('ask_agent')}</button></div>`;
+}
+function decisionCardsMarkup(){
+ const cards=state.decision_memory?.cards||[];
+ if(!cards.length)return '';
+ return `<div class="decision-memory-stack"><div class="next-step"><div><b>${lang==='es'?'Decisiones con evidencia':'Evidence-backed decisions'}</b><p>${lang==='es'?'El agente guarda por qué recomendó algo y lo revisa después de 24h, 3 días y 7 días.':'The agent saves why it recommended something and checks it again after 24h, 3 days, and 7 days.'}</p></div></div>${cards.slice(0,3).map(decisionEvidenceMarkup).join('')}</div>`;
+}
+function actionLabelText(text){
+ if(lang!=='es')return text;
+ return String(text||'')
+  .replace(/^Paused (\d+) clear bleeder\(s\) under autopilot rules\.$/,'Pausé $1 gasto malo claro bajo tus reglas de piloto automático.')
+  .replace(/^Prepared (\d+) creative refresh draft\(s\)\.$/,'Preparé $1 idea(s) nueva(s) para anuncios.')
+  .replace(/^(\d+) pause decision\(s\) need buyer approval\.$/,'$1 pausa(s) necesitan tu aprobación.')
+  .replace(/^(\d+) budget move\(s\) need buyer approval\.$/,'$1 cambio(s) de presupuesto necesitan tu aprobación.')
+  .replace(/^(\d+) smaller budget move\(s\) are worth reviewing\.$/,'$1 movimiento(s) pequeños de presupuesto valen la pena revisar.')
+  .replace(/^(\d+) fatigue signal\(s\) should feed the next creative test\.$/,'$1 señal(es) de cansancio deberían alimentar la próxima prueba creativa.')
+  .replace('No strong action signal yet. Keep watching pacing, CPA, ROAS, CTR, and frequency.','Todavía no hay una señal fuerte para tocar Meta. Sigo vigilando ritmo de gasto, CPA, ROAS, clics y frecuencia.');
+}
+function actionSummaryMarkup(){
+ const summary=state.brief?.action_summary||{};
+ const buckets=[
+  ['already_done',lang==='es'?'Ya hice':'Already done'],
+  ['waiting_for_approval',lang==='es'?'Necesita tu luz verde':'Waiting for approval'],
+  ['recommended_next',lang==='es'?'Siguiente movimiento':'Next move'],
+  ['watching',lang==='es'?'Estoy vigilando':'Watching']
+ ];
+ const html=buckets.map(([key,title])=>{
+  const items=summary[key]||[];if(!items.length)return '';
+  return `<div class="brief-q action-bucket"><b>${title}</b>${items.map(item=>`<p>${escapeHtml(actionLabelText(item.label||''))}</p>`).join('')}</div>`;
+ }).join('');
+ return html?`<div class="decision-memory-stack action-summary-stack">${html}</div>`:'';
+}
+function render(){
+ applyTranslations();
+ hydrateChatHistory();
+ renderUpdateBanner(updateInfo);
+ renderDeferredOnboardingBanner();
+ const m=state.metrics, s=m.summary;
+ qs('#s-roas').textContent=Number(s.overall_roas||0).toFixed(2)+'x'; qs('#s-cpa').textContent=fmtMoney(s.overall_cpa); qs('#s-mode').textContent=modeText(state.config.mode); qs('#s-updated').textContent=new Date(m.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+ qs('#data-source-signal').textContent=dataSourceText(m);
+ const refreshBtn=qs('#real-data-refresh');if(refreshBtn){refreshBtn.classList.toggle('hidden',m.source==='meta_graph');refreshBtn.textContent=lang==='es'?'Actualizar datos reales':'Refresh real data'}
+ qs('#kpis').innerHTML=[['Spend',fmtMoney(s.total_spend)],['Revenue',fmtMoney(s.total_revenue)],['Conversions',Number(s.total_conversions||0).toLocaleString()],['Active Budget',fmtMoney(s.active_budget)]].map(x=>kpi(x[0],x[1])).join('');
+ renderBusinessProfilePanel();
+ qs('#brief').innerHTML=state.brief.questions.map(q=>`<div class="brief-q"><b>${briefQuestion(q.question)}</b><p>${explainTerms(briefAnswer(q.answer))}</p></div>`).join('')+actionSummaryMarkup()+decisionCardsMarkup();
+ qs('#fatigue').innerHTML=state.fatigue.length?state.fatigue.map(f=>`<div class="fatigue"><b>${escapeHtml(demoCampaignName(f.campaign_name))}</b><div>${escapeHtml(f.reasons.map(fatigueText).join(' / '))}</div></div>`).join(''):`<p class="notice">${t('no_fatigue')}</p>`;
+ qs('#campaigns').innerHTML=m.campaigns.map(card).join('');
+ renderOverviewViews();
+ qs('#recs').innerHTML=state.recommendations.map(r=>{const draft=lang==='es'?`Revisa esta recomendación de presupuesto para ${r.campaign_name}: actual ${fmtMoney(r.current_budget)}, sugerido ${fmtMoney(r.recommended_budget)}. ¿La aplicarías o esperarías?`:`Review this budget recommendation for ${r.campaign_name}: current ${fmtMoney(r.current_budget)}, suggested ${fmtMoney(r.recommended_budget)}. Would you apply it or wait?`;return `<tr><td>${escapeHtml(demoCampaignName(r.campaign_name))}<br><span class="notice">${escapeHtml(recommendationText(r.reason))}</span></td><td>${fmtMoney(r.current_budget)}</td><td>${fmtMoney(r.recommended_budget)}</td><td><button class="btn" data-action-code="applyRec('${r.campaign_id}',${r.recommended_budget})">${r.requires_approval?t('request'):t('apply')}</button><button class="btn ask-btn" data-style-code="margin-top:6px" data-action-code="openChat(${JSON.stringify(draft).replaceAll('"','&quot;')})">${t('ask_agent')}</button></td></tr>`}).join('');
+ qs('#recs-mobile').innerHTML=state.recommendations.map(r=>{const draft=lang==='es'?`Revisa esta recomendación de presupuesto para ${r.campaign_name}: actual ${fmtMoney(r.current_budget)}, sugerido ${fmtMoney(r.recommended_budget)}. ¿La aplicarías o esperarías?`:`Review this budget recommendation for ${r.campaign_name}: current ${fmtMoney(r.current_budget)}, suggested ${fmtMoney(r.recommended_budget)}. Would you apply it or wait?`;return `<div class="rec-card"><h3>${escapeHtml(demoCampaignName(r.campaign_name))}</h3><p class="notice">${escapeHtml(recommendationText(r.reason))}</p><div class="rec-values"><div><b>${fmtMoney(r.current_budget)}</b><span>${t('now')}</span></div><div><b>${fmtMoney(r.recommended_budget)}</b><span>${t('rec')}</span></div></div><button class="btn primary" data-action-code="applyRec('${r.campaign_id}',${r.recommended_budget})">${r.requires_approval?t('request'):t('apply')}</button><button class="btn ask-btn" data-style-code="margin-top:7px" data-action-code="openChat(${JSON.stringify(draft).replaceAll('"','&quot;')})">${t('ask_agent')}</button></div>`}).join('');
+ qs('#pending').innerHTML=state.pending.length?`<div class="approval-stack">${state.pending.map(approvalCard).join('')}</div>`:`<p class="notice">${t('no_pending')}</p>`;
+ qs('#actions').innerHTML=state.actions.length?state.actions.map(a=>`<div class="log-item"><b>${actionName(a.type)}</b> - ${statusText(a.status)}<br>${new Date(a.created_at).toLocaleString()}${actionDetail(a)}</div>`).join(''):`<p class="notice">${t('no_actions')}</p>`;
+ qs('#report-rows').innerHTML=m.campaigns.map(c=>`<tr><td>${escapeHtml(demoCampaignName(c.name))}</td><td>${fmtMoney(c.spend)}</td><td>${Number(c.roas).toFixed(2)}x</td><td>${fmtMoney(c.cpa)}</td><td>${fmtPct(c.ctr)}</td><td>${statusText(c.health)}</td></tr>`).join('');
+ renderCreativeStudio();
+ renderSetup();
+ renderAudience();
+ renderOnboardingFlow();
+}
+let brandEditorMode='general';
+let brandEditorProductId='';
+let brandAdBriefProductGuide='';
+function brandProductById(id){return (state.brand_guides?.products||[]).find(product=>product.id===id)}
+function brandAdBriefById(id){return (state.brand_guides?.ad_briefs||[]).find(brief=>brief.id===id)}
+function openBrandMemory(mode='general',itemId=''){
+ brandEditorMode=mode;brandEditorProductId=itemId||'';
+ qs('#brand-memory-overlay')?.classList.add('open');
+ renderBrandMemoryModal();
+}
+function closeBrandMemory(){qs('#brand-memory-overlay')?.classList.remove('open')}
+function memoryField(name,label,value='',placeholder='',wide=false,area=false){
+ const classes=`brand-field${wide?' wide':''}`;
+ const content=area?`<textarea name="${name}" placeholder="${escapeHtml(placeholder)}">${escapeHtml(value)}</textarea>`:`<input name="${name}" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}">`;
+ return `<label class="${classes}"><span>${escapeHtml(label)}</span>${content}</label>`;
+}
+function memorySelect(name,label,value='',options=[]){
+ return `<label class="brand-field"><span>${escapeHtml(label)}</span><select name="${name}"><option value="">${lang==='es'?'Sin producto fijo':'No fixed product'}</option>${options.map(option=>`<option value="${escapeHtml(option.value)}" ${option.value===value?'selected':''}>${escapeHtml(option.label)}</option>`).join('')}</select></label>`;
+}
+function memoryWizardCta(kind,itemId=''){
+ const labels={
+  general:[lang==='es'?'Contarle cómo es mi marca':'Tell the agent about my brand',lang==='es'?'Te hará preguntas fáciles y lo recordará cuando cree anuncios.':'It asks simple questions and saves your answers for future ads.'],
+  product:[lang==='es'?'Contarle qué vendo':'Tell it about my product',lang==='es'?'Te pregunta sobre tu producto, sin hacerte llenar casillas.':'Explain it in chat instead of filling every field.'],
+  ad_brief:[lang==='es'?'Hablar y crear mi anuncio':'Create the idea with the agent',lang==='es'?'Dile qué quieres mostrar. El agente hará preguntas fáciles y preparará tu idea.':'It asks what you want to advertise and prepares a clear idea for your images and text.']
+ };
+ const copy=labels[kind]||labels.general;
+ return `<div class="memory-wizard-cta"><div><b>${copy[0]}</b><p>${copy[1]}</p></div><button class="btn primary ask-btn" type="button" data-action-code="startCreativeMemoryWizard(${chatArg(kind)},${chatArg(itemId)},${chatArg(lang)})">${lang==='es'?'Empezar a hablar':'Answer in chat'}</button></div>`;
+}
+function startCreativeMemoryWizard(kind,itemId='',draftLang=''){
+ const productGuide=kind==='ad_brief'?brandAdBriefProductGuide:'';
+ closeBrandMemory();
+ const es=(draftLang||uiLang())==='es';
+ const labels={
+  general:es?'Quiero contarte cómo es mi marca. Hazme preguntas fáciles, una a la vez, y recuerda mis respuestas para los anuncios.':'I want to complete my general brand memory with you. Ask simple questions and save it at the end.',
+  product:es?'Quiero contarte qué vendo. Hazme preguntas fáciles, una a la vez, y recuerda mis respuestas para los anuncios.':'I want to create a product or offer sheet with you. Ask simple questions and save it at the end.',
+  ad_brief:es?'Quiero preparar una idea para un anuncio contigo. Pregúntame qué vendo, qué oferta quiero mostrar, a quién quiero llegar y qué imágenes o textos quiero preparar. Al final guarda la idea.':'I want to prepare an ad idea with you. Ask what I sell, what offer I want to show, who I want to reach, and what images or text I want prepared. Save the idea at the end.'
+ };
+ sendChatMessage(labels[kind]||labels.general,{workspace:true,memoryWizard:{mode:'start',kind,id:itemId||'',product_guide:productGuide}});
+}
+function generalMemoryForm(fields){
+ return `<div class="brand-editor-intro"><h3>${lang==='es'?'Cómo es tu marca':'Your brand foundation'}</h3><p>${lang==='es'?'Cuéntale al agente cómo quieres que se vean y suenen tus anuncios.':'The manager learns this once and respects it across every product creative.'}</p>${memoryWizardCta('general')}</div><form class="brand-editor-form" data-submit-code="saveGeneralMemory(event)"><section class="brand-form-section"><h4>${lang==='es'?'Sobre tu negocio':'Business'}</h4><div class="brand-form-grid">${memoryField('brand_name',lang==='es'?'Nombre de tu marca':'Brand name',fields.brand_name,'Miro Ads')}${memoryField('offer',lang==='es'?'Qué vendes':'What you sell',fields.offer,'Cursos, productos o servicios')}${memoryField('promise',lang==='es'?'Qué ayudas a conseguir':'Main promise',fields.promise,'El cambio que busca tu comprador',true,true)}${memoryField('ideal_customer',lang==='es'?'A quién quieres ayudar':'Ideal customer',fields.ideal_customer,'Quién compraría tu producto',true,true)}</div></section><section class="brand-form-section"><h4>${lang==='es'?'Cómo deben verse tus anuncios':'Visual style'}</h4><div class="brand-form-grid">${memoryField('colors',lang==='es'?'Colores que usas':'Core colors',fields.colors,'Rosa suave, blanco, turquesa')}${memoryField('visual_style',lang==='es'?'Cómo quieres que se vean':'How it should look',fields.visual_style,'Limpio, sencillo, con el producto visible',true,true)}${memoryField('references',lang==='es'?'Ejemplos que te gustan':'Visual references',fields.references,'Marcas, fotos o estilos que te gustan',true,true)}</div></section><section class="brand-form-section"><h4>${lang==='es'?'Cómo debe hablar':'Voice and boundaries'}</h4><div class="brand-form-grid">${memoryField('tone',lang==='es'?'Cómo quieres que suene':'How it should sound',fields.tone,'Cercano, seguro y simple',true,true)}${memoryField('show_always',lang==='es'?'Qué siempre debe mostrar':'Always show',fields.show_always,'Producto, beneficio claro, personas reales',true,true)}${memoryField('avoid_always',lang==='es'?'Qué nunca debe mostrar ni decir':'Always avoid',fields.avoid_always,'Promesas que no puedes probar o demasiado texto',true,true)}</div></section><div class="brand-form-save"><button class="btn primary" type="submit">${lang==='es'?'Guardar mi marca':'Save brand memory'}</button></div></form>`;
+}
+function productMemoryForm(fields,product){
+ const hidden=product?`<input type="hidden" name="id" value="${escapeHtml(product.id)}">`:'';
+ return `<div class="brand-editor-intro"><h3>${product?(lang==='es'?'Datos de tu producto':'Product details'):(lang==='es'?'Nuevo producto o promoción':'New product or offer')}</h3><p>${lang==='es'?'El agente usa esto para crear anuncios sobre lo que de verdad vendes.':'The manager uses these details so images and text match the right product.'}</p>${memoryWizardCta('product',product?.id||'')}${product?`<div class="brand-editor-actions"><button class="btn primary" type="button" data-action-code="refreshForProduct(${chatArg(product.id)})">${lang==='es'?'Crear ideas de anuncios':'Create ad ideas'}</button><button class="btn" type="button" data-action-code="startAdBriefForProduct(${chatArg(product.id)})">${lang==='es'?'Crear un anuncio para este producto':'Create an ad for this product'}</button><button class="btn" type="button" data-action-code="chatForProduct(${chatArg(product.id)},${chatArg(lang)})">${lang==='es'?'Hablar con el agente':'Talk with the agent'}</button></div>`:''}</div><form class="brand-editor-form" data-submit-code="saveProductMemory(event)">${hidden}<section class="brand-form-section"><h4>${lang==='es'?'Lo que vendes':'Offer'}</h4><div class="brand-form-grid">${memoryField('name',lang==='es'?'Nombre del producto':'Product name',fields.name,'Curso de anuncios para tiendas')}${memoryField('url',lang==='es'?'Página donde pueden comprar':'Sales page',fields.url,'https://...')}${memoryField('price',lang==='es'?'Precio':'Price or range',fields.price,'USD $49')}${memoryField('includes',lang==='es'?'Qué recibe la persona':'What is included',fields.includes,'Describe lo que recibe',true,true)}</div></section><section class="brand-form-section"><h4>${lang==='es'?'Quién lo compra':'Buyer and transformation'}</h4><div class="brand-form-grid">${memoryField('audience',lang==='es'?'Para quién es':'Who it is for',fields.audience,'A quién quieres atraer',true,true)}${memoryField('pain',lang==='es'?'Qué problema tiene':'Pain they feel',fields.pain,'Qué le preocupa hoy',true,true)}${memoryField('desire',lang==='es'?'Qué quiere conseguir':'Desired outcome',fields.desire,'Qué desea conseguir',true,true)}${memoryField('objections',lang==='es'?'Qué duda puede tener':'Buying objections',fields.objections,'Precio, confianza, tiempo...',true,true)}</div></section><section class="brand-form-section"><h4>${lang==='es'?'Ideas para mostrarlo':'Angles and creative rules'}</h4><div class="brand-form-grid">${memoryField('angle_pain',lang==='es'?'Mostrar su problema':'Pain angle',fields.angle_pain,'Cómo mostrar el problema',true,true)}${memoryField('angle_desire',lang==='es'?'Mostrar el resultado':'Desire angle',fields.angle_desire,'Cómo mostrar el resultado',true,true)}${memoryField('angle_trust',lang==='es'?'Dar confianza':'Trust angle',fields.angle_trust,'Reseñas, datos reales o tranquilidad',true,true)}${memoryField('show',lang==='es'?'Qué debe mostrar':'Show',fields.show,'Producto, personas, detalle visual',true,true)}${memoryField('avoid',lang==='es'?'Qué no debe aparecer':'Do not show',fields.avoid,'Lo que dañaría la marca',true,true)}${memoryField('strong_phrases',lang==='es'?'Frases que puede usar':'Approved phrases',fields.strong_phrases,'Mensajes que sí puedes prometer',true,true)}</div></section><div class="brand-form-save"><button class="btn primary" type="submit">${lang==='es'?'Guardar producto':'Save product details'}</button></div></form>`;
+}
+function adBriefMemoryForm(fields,brief){
+ const products=state.brand_guides?.products||[];
+ const productValue=fields.product_guide||brandAdBriefProductGuide||'';
+ const productOptions=products.map(product=>({value:product.guide,label:product.name}));
+ const hidden=brief?`<input type="hidden" name="id" value="${escapeHtml(brief.id)}">`:'';
+ const manualForm=`<form class="brand-editor-form" data-submit-code="saveAdBriefMemory(event)">${hidden}<section class="brand-form-section"><h4>${lang==='es'?'Lo básico':'The basics'}</h4><div class="brand-form-grid">${memoryField('name',lang==='es'?'Nombre de esta idea':'Idea name',fields.name,'Promo de junio')}${memorySelect('product_guide',lang==='es'?'Qué vendes':'Product/offer',productValue,productOptions)}${memoryField('adset_name',lang==='es'?'Quién debe ver el anuncio':'Audience',fields.adset_name,'Mujeres de 25 a 44 años en Colombia')}${memoryField('objective',lang==='es'?'Qué quieres que hagan':'Goal',fields.objective,'Comprar, escribirte, reservar...')}${memoryField('promotion',lang==='es'?'Qué quieres mostrarles':'Promotion or specific idea',fields.promotion,'2x1, lanzamiento, bono, temporada...',true,true)}${memoryField('audience_slice',lang==='es'?'Qué les importa o preocupa':'Audience needs',fields.audience_slice,'Qué buscan o qué les preocupa',true,true)}</div></section><section class="brand-form-section"><h4>${lang==='es'?'Lo que puede cambiar':'Options to try'}</h4><div class="brand-form-grid">${memoryField('base_ad',lang==='es'?'Qué ya te funcionó':'What already works',fields.base_ad,'Imagen, frase, testimonio u oferta...',true,true)}${memoryField('locked_elements',lang==='es'?'Qué no debe cambiar':'Do not change',fields.locked_elements,'Precio, oferta, producto o frase...',true,true)}${memoryField('variation_window',lang==='es'?'Quieres una idea o varias opciones':'Creative options',fields.variation_window,'Ej: una idea, o tres opciones cambiando colores',true,true)}${memoryField('variation_axes',lang==='es'?'Qué se puede cambiar':'What can vary',fields.variation_axes,'Colores, fondo, foto o título',true,true)}${memoryField('variation_count',lang==='es'?'Cuántas opciones preparar':'Number of options',fields.variation_count,'1')}${memoryField('creative_hypothesis',lang==='es'?'Qué quieres comparar':'What to compare',fields.creative_hypothesis,'Ej: si una foto clara recibe más clics',true,true)}${memoryField('agent_notes',lang==='es'?'Algo más que deba saber':'Manager notes',fields.agent_notes,'Cualquier detalle importante',true,true)}</div></section><details class="brand-advanced"><summary>${lang==='es'?'Solo si ya tienes anuncios en Meta':'Only if you already have Meta ads'}</summary><section class="brand-form-section"><div class="brand-form-grid">${memoryField('campaign_name',lang==='es'?'Nombre de la campaña anterior':'Campaign',fields.campaign_name,'Opcional')}${memoryField('base_ad_name',lang==='es'?'Nombre del anuncio que quieres mejorar':'Base ad',fields.base_ad_name,'Opcional')}${memoryField('base_ad_id',lang==='es'?'Número del anuncio, si lo conoces':'Base ad ID',fields.base_ad_id,'Opcional')}</div></section></details><div class="brand-form-save"><button class="btn primary" type="submit">${lang==='es'?'Guardar esta idea':'Save ad idea'}</button></div></form>`;
+ return `<div class="brand-editor-intro"><h3>${brief?(lang==='es'?'Tu idea de anuncio':'Ad idea'):(lang==='es'?'Crear un anuncio':'New ad idea')}</h3><p>${lang==='es'?'Puedes explicárselo al agente hablando, como se lo contarías a una persona. Él organizará la información por ti.':'Describe what you want to advertise, who you want to reach, and which images or text you want prepared.'}</p>${memoryWizardCta('ad_brief',brief?.id||'')}${brief?`<div class="brand-editor-actions"><button class="btn primary" type="button" data-action-code="refreshForAdBrief(${chatArg(brief.id)})">${lang==='es'?'Crear imágenes y textos':'Create images and text'}</button><button class="btn" type="button" data-action-code="chatForAdBrief(${chatArg(brief.id)},${chatArg(lang)})">${lang==='es'?'Pedir cambios al agente':'Ask the agent for changes'}</button></div>`:''}</div><details class="memory-manual-entry" ${brief?'open':''}><summary><span>${lang==='es'?'Prefiero escribir los detalles yo':'I prefer to enter details myself'}<small class="memory-manual-help">${lang==='es'?'Opcional: el agente puede preguntarte todo en el chat.':'Optional: the agent can ask you everything in chat.'}</small></span></summary>${manualForm}</details>`;
+}
+function advancedMemoryFields(mode,fields){
+ if(mode==='general')return `<details class="brand-advanced"><summary>${lang==='es'?'Más detalles, si los quieres agregar':'Optional brand details'}</summary><section class="brand-form-section"><div class="brand-form-grid">${memoryField('category',lang==='es'?'Tipo de negocio':'Category',fields.category,'Belleza, educación, servicios...')}${memoryField('market',lang==='es'?'País o ciudad principal':'Main market',fields.market,'México, Colombia...')}${memoryField('website',lang==='es'?'Página web':'Website',fields.website,'https://...')}${memoryField('personality',lang==='es'?'Cómo se siente tu marca':'Personality',fields.personality,'Elegante, práctica, atrevida...',true,true)}${memoryField('avoid_colors',lang==='es'?'Colores que no quieres':'Colors to avoid',fields.avoid_colors,'')}${memoryField('typography',lang==='es'?'Tipo de letras que te gusta':'Typography style',fields.typography,'')}${memoryField('energy',lang==='es'?'Sensación que debe dar':'Energy level',fields.energy,'Tranquila, alegre, fuerte...')}${memoryField('sales_energy',lang==='es'?'Qué tan directa debe vender':'Sales intensity',fields.sales_energy,'Directa sin promesas falsas',true,true)}${memoryField('words_use',lang==='es'?'Palabras que sí usa tu marca':'Words to use',fields.words_use,'',true,true)}${memoryField('words_avoid',lang==='es'?'Palabras que no quieres usar':'Words to avoid',fields.words_avoid,'',true,true)}${memoryField('authority',lang==='es'?'Pruebas que puedes mostrar':'Allowed proof',fields.authority,'Reseñas o cifras reales...',true,true)}</div></section></details>`;
+ return `<details class="brand-advanced"><summary>${lang==='es'?'Más detalles, si los quieres agregar':'Optional product details'}</summary><section class="brand-form-section"><div class="brand-form-grid">${memoryField('not_for',lang==='es'?'Para quién no es':'Who it is not for',fields.not_for,'',true,true)}${memoryField('before_buying',lang==='es'?'Qué piensa antes de comprar':'Before buying thought',fields.before_buying,'',true,true)}${memoryField('after_buying',lang==='es'?'Cómo quiere sentirse después':'After buying feeling',fields.after_buying,'',true,true)}${memoryField('angle_urgency',lang==='es'?'Cómo mostrar que es el momento':'Urgency angle',fields.angle_urgency,'',true,true)}${memoryField('angle_education',lang==='es'?'Qué necesita entender primero':'Educational angle',fields.angle_education,'',true,true)}${memoryField('avoid_phrases',lang==='es'?'Frases que no debe usar':'Phrases to avoid',fields.avoid_phrases,'',true,true)}</div></section></details>`;
+}
+function renderBrandMemoryModal(){
+ const overlay=qs('#brand-memory-overlay');if(!overlay?.classList.contains('open'))return;
+ const memory=state.brand_guides||{};const products=memory.products||[];const adBriefs=memory.ad_briefs||[];
+ qs('#brand-memory-kicker').textContent=lang==='es'?'El agente recuerda esto':'Manager memory';
+ qs('#brand-memory-title').textContent=lang==='es'?'Tu marca, lo que vendes y tus anuncios':'Brand, products, and ads';
+ qs('#brand-memory-subtitle').textContent=lang==='es'?'Cuéntale estas cosas al agente para que cree imágenes y textos que sí se parezcan a tu negocio.':'Save how your brand looks, what you sell, and which ad you want to prepare. This helps the agent create relevant images and text.';
+ const activeGeneral=brandEditorMode==='general';const activeProduct=brandEditorMode==='product';const activeAdBrief=brandEditorMode==='ad_brief';
+ qs('#brand-memory-nav').innerHTML=`<span class="brand-nav-label">${lang==='es'?'Tu marca':'Base'}</span><button class="brand-nav-item ${activeGeneral?'active':''}" type="button" data-action-code="openBrandMemory('general')"><span><b>${lang==='es'?'Cómo se ve mi marca':'General brand'}</b><small>${memory.general?.saved?(lang==='es'?'Guardado':'Saved'):(lang==='es'?'Completar':'Complete')}</small></span><span class="brand-ready ${memory.general?.saved?'':'draft'}">${memory.general?.saved?'OK':'...'}</span></button><span class="brand-nav-label">${lang==='es'?'Productos':'Products'}</span>${products.map(product=>`<button class="brand-nav-item ${activeProduct&&brandEditorProductId===product.id?'active':''}" type="button" data-action-code="openBrandMemory('product',${chatArg(product.id)})"><span><b>${escapeHtml(product.name)}</b><small>${product.ready?(lang==='es'?'Listo':'Ready'):(lang==='es'?'Falta detalle':'Needs details')}</small></span><span class="brand-ready ${product.ready?'':'draft'}">${product.ready?'OK':'...'}</span></button>`).join('')}<button class="btn brand-new-product" type="button" data-action-code="openBrandMemory('product','')">${lang==='es'?'+ Producto':'+ New product'}</button><span class="brand-nav-label">${lang==='es'?'Anuncios':'Ad ideas'}</span>${adBriefs.map(brief=>`<button class="brand-nav-item ${activeAdBrief&&brandEditorProductId===brief.id?'active':''}" type="button" data-action-code="openBrandMemory('ad_brief',${chatArg(brief.id)})"><span><b>${escapeHtml(brief.name)}</b><small>${escapeHtml(brief.adset_name||brief.campaign_name||brief.base_ad_name||(lang==='es'?'Idea guardada':'Saved idea'))}</small></span><span class="brand-ready ${brief.ready?'':'draft'}">${brief.ready?'OK':'...'}</span></button>`).join('')}<button class="btn brand-new-product" type="button" data-action-code="openBrandMemory('ad_brief','')">${lang==='es'?'+ Anuncio':'+ Ad idea'}</button>`;
+ const selected=brandProductById(brandEditorProductId);
+ const selectedBrief=brandAdBriefById(brandEditorProductId);
+ const fields=activeGeneral?(memory.general?.fields||{}):(activeProduct?(selected?.fields||{}):(selectedBrief?.fields||{}));
+ qs('#brand-memory-editor').innerHTML=activeGeneral?generalMemoryForm(fields):(activeProduct?productMemoryForm(fields,selected):adBriefMemoryForm(fields,selectedBrief));
+ if(!activeAdBrief)qs('#brand-memory-editor .brand-form-save')?.insertAdjacentHTML('beforebegin',advancedMemoryFields(activeGeneral?'general':'product',fields));
+}
+function renderBrandGuides(){
+ const box=qs('#brand-guides-panel');if(!box)return;
+ const memory=state.brand_guides||{};const products=memory.products||[];const adBriefs=memory.ad_briefs||[];
+ const status=memory.general?.saved?(lang==='es'?'Marca guardada':'Brand saved'):(lang==='es'?'Completa tu marca':'Complete your brand');
+ box.innerHTML=`<div class="brand-vault-strip"><div class="brand-vault-summary"><span class="brand-vault-mark">AI</span><div><b>${lang==='es'?'Lo que el agente recuerda':'Ad creative memory'}</b><p>${escapeHtml(status)} · ${lang==='es'?`${products.length} producto${products.length===1?'':'s'} · ${adBriefs.length} idea${adBriefs.length===1?'':'s'} de anuncio`:`${products.length} product${products.length===1?'':'s'} · ${adBriefs.length} ad idea${adBriefs.length===1?'':'s'}`}</p>${(products.length||adBriefs.length)?`<div class="brand-vault-pills">${products.slice(0,2).map(product=>`<span class="brand-vault-pill ${product.ready?'ready':''}">${escapeHtml(product.name)}</span>`).join('')}${adBriefs.slice(0,2).map(brief=>`<span class="brand-vault-pill ${brief.ready?'ready':''}">${escapeHtml(brief.name)}</span>`).join('')}</div>`:''}</div></div><div class="brand-vault-actions"><button class="btn primary" type="button" data-action-code="openBrandMemory('ad_brief','')">${lang==='es'?'Nueva idea':'New idea'}</button><button class="btn" type="button" data-action-code="openBrandMemory('general')">${lang==='es'?'Mi marca':'Memory'}</button><button class="btn" type="button" data-action-code="openBrandMemory('product','')">${lang==='es'?'+ Producto':'+ Product'}</button></div></div>`;
+ renderBrandMemoryModal();
+}
+async function saveGeneralMemory(event){
+ event.preventDefault();
+ const res=await api('/api/brand-guides/general',{method:'POST',body:JSON.stringify(Object.fromEntries(new FormData(event.target).entries()))});
+ state.brand_guides=res.result;toast(lang==='es'?'Memoria de marca guardada':'Brand memory saved');renderCreativeStudio();
+}
+async function saveProductMemory(event){
+ event.preventDefault();
+ const res=await api('/api/brand-guides/product',{method:'POST',body:JSON.stringify(Object.fromEntries(new FormData(event.target).entries()))});
+ state.brand_guides=res.result.library;brandEditorMode='product';brandEditorProductId=res.result.product_id;
+ toast(lang==='es'?'Ficha del producto guardada':'Product sheet saved');renderCreativeStudio();
+}
+async function saveAdBriefMemory(event){
+ event.preventDefault();
+ const res=await api('/api/ad-briefs',{method:'POST',body:JSON.stringify(Object.fromEntries(new FormData(event.target).entries()))});
+ state.brand_guides=res.result.library;brandEditorMode='ad_brief';brandEditorProductId=res.result.ad_brief_id;brandAdBriefProductGuide='';
+ toast(lang==='es'?'Idea de anuncio guardada':'Ad idea saved');renderCreativeStudio();
+}
+function startAdBriefForProduct(productId){
+ const product=brandProductById(productId);brandAdBriefProductGuide=product?.guide||'';openBrandMemory('ad_brief','');
+}
+function chatForProduct(productId,draftLang=''){
+ const product=brandProductById(productId);if(!product)return;
+ closeBrandMemory();
+ const es=(draftLang||uiLang())==='es';
+ openChat(es?`Quiero preparar anuncios para ${product.name}. Usa los datos guardados de este producto y pregúntame solo lo que falte antes de proponer imágenes y textos.`:`I want to prepare ads for ${product.name}. Use this product's saved details and ask only for anything missing before proposing images and text.`);
+}
+function chatForAdBrief(briefId,draftLang=''){
+ const brief=brandAdBriefById(briefId);if(!brief)return;
+ closeBrandMemory();
+ const es=(draftLang||uiLang())==='es';
+ openChat(es?`Quiero trabajar en la idea de anuncio ${brief.name}. Usa lo que ya guardé y ayúdame a preparar imágenes y textos. Si falta algo, pregúntame una sola cosa a la vez.`:`I want to work on the ${brief.name} ad idea. Use what I already saved and help me prepare images and text. Ask one question at a time if anything is missing.`);
+}
+async function refreshForProduct(productId){
+ const product=brandProductById(productId);if(!product)return;
+ closeBrandMemory();await generateRefresh('',product.guide);
+}
+async function refreshForAdBrief(briefId){
+ const brief=brandAdBriefById(briefId);if(!brief)return;
+ closeBrandMemory();await generateRefresh('','',brief.guide);
+}
+const creativePreviewUrls=new Map();
+function creativeStatus(value){
+ const labels={dry_run:lang==='es'?'Ideas listas':'Ideas ready',needs_codex_image:lang==='es'?'Listo para Codex/Image':'Ready for Codex/Image',images_ready:lang==='es'?'Imágenes listas':'Images ready',partially_generated:lang==='es'?'Revisar imágenes':'Review images',generation_failed:lang==='es'?'Falló la imagen':'Image failed'};
+ return labels[value]||statusText(value);
+}
+function creativeMissingText(value){
+ const raw=String(value||'');
+ if(lang!=='es')return raw;
+ if(raw.includes('generated image asset'))return 'Falta generar la imagen final';
+ if(raw.includes('default_adset_id'))return 'Falta elegir dónde irá este anuncio';
+ if(raw.includes('page_id'))return 'Falta página de Facebook';
+ if(raw.includes('META_AD_ACCOUNT_ID'))return 'Falta cuenta publicitaria';
+ return raw;
+}
+function demoCreativeText(value){
+ if(lang!=='es'||state?.metrics?.source!=='demo')return String(value||'');
+ return String(value||'').replaceAll('Brand Awareness Campaign','Campaña para dar a conocer la marca')
+  .replaceAll('Q2 Conversion Campaign','Campaña de ventas Q2')
+  .replaceAll('Premium product or service','este producto');
+}
+function creativeStorageNote(asset){
+ if(!asset)return '';
+ if(asset.saved_for_ad)return `<span class="creative-retention-note saved">${lang==='es'?'Guardada por usarse en anuncio':'Saved because it is used in an ad'}</span>`;
+ return `<span class="creative-retention-note">${lang==='es'?'Guardada localmente. Puedes descargarla o limpiar borradores.':'Saved locally. You can download it or clear drafts.'}</span>`;
+}
+function creativeStorageReminderMarkup(policy){
+ const p=policy||{};const cleaned=p.cleanup?.deleted||0;
+ return `<div class="creative-retention-card"><span class="creative-retention-icon">↓</span><div><b>${lang==='es'?'Tus imágenes quedan guardadas aquí':'Your images stay saved here'}</b><p>${lang==='es'?`Como un droplet pequeño ya trae espacio suficiente para empezar, no borro tus creativos automáticamente. Descarga las piezas importantes y, si algún día necesitas liberar espacio, limpia solo los borradores. Las imágenes ya elegidas para anuncios se conservan.`:`A small droplet has enough storage to get started, so drafts are not deleted automatically. Download important files, and if you ever need space, clear only draft images. Images chosen for ads are preserved.`}</p><div class="creative-retention-tags"><span>${lang==='es'?`${p.temporary_image_count||0} borradores guardados`:`${p.temporary_image_count||0} saved drafts`}</span><span>${lang==='es'?`${p.saved_ad_image_count||0} piezas de anuncio protegidas`:`${p.saved_ad_image_count||0} protected ad assets`}</span>${cleaned?`<span>${lang==='es'?`${cleaned} borradores limpiados`:`${cleaned} drafts cleared`}</span>`:''}</div><div class="creative-retention-actions"><button class="btn" type="button" data-action-code="clearCreativeStorage()">${lang==='es'?'Limpiar borradores':'Clear drafts'}</button></div></div></div>`;
+}
+function creativeVariantMarkup(batch,variant){
+ const copy=variant.copy||{};const asset=(variant.assets||[])[0];const prompts=(variant.image_prompts||[]).map(p=>p.aspect_ratio).join(' / ');
+ const frame=asset?`<div class="creative-frame"><div class="creative-frame-loading">${lang==='es'?'Cargando vista previa...':'Loading preview...'}</div><img data-preview-url="${escapeHtml(asset.preview_url)}" alt="${escapeHtml(demoCreativeText(copy.headline)||'Creative preview')}" hidden><span class="creative-asset-state">${lang==='es'?'Imagen lista':'Image ready'}</span></div>`:`<div class="creative-frame"><div class="creative-concept-board"><span class="creative-angle">${escapeHtml(demoCreativeText(copy.angle)||'idea')}</span><b>${escapeHtml(demoCreativeText(copy.headline)||'Nueva idea')}</b><div class="creative-ratios">${(variant.image_prompts||[]).map(p=>`<span>${escapeHtml(p.aspect_ratio)}</span>`).join('')}</div></div><span class="creative-asset-state">${variant.generation_errors?.length?(lang==='es'?'No generada':'Not generated'):(lang==='es'?'Idea':'Idea')}</span></div>`;
+ const studio=state.config?.creative_studio||{};const canRender=Boolean(studio.image_generation_ready);const productGuide=batch.brand_memory?.product?.guide||'';const adBrief=batch.brand_memory?.ad_brief?.guide||'';
+ const codexPrompt=lang==='es'?`Genera una imagen final para Meta Ads usando Codex/Image a partir de esta idea: ${copy.headline||variant.variant_id}. Producto o campaña: ${batch.campaign.name}. Usa la guía de marca y, si falta algo, pregúntame una sola cosa antes de generar.`:`Generate a final Meta Ads image using Codex/Image from this idea: ${copy.headline||variant.variant_id}. Product or campaign: ${batch.campaign.name}. Use the brand guide and ask one question before generating if anything is missing.`;
+ const primary=asset?`<button class="btn primary" data-action-code="stageUpload(${chatArg(batch.manifest_path)},${chatArg(variant.variant_id)},${JSON.stringify((variant.assets||[]).map(a=>a.aspect_ratio))})">${lang==='es'?'Preparar para publicar':'Prepare to publish'}</button>`:(studio.image_generation_provider==='codex_image')?`<button class="btn primary" data-action-code="openChat(${chatArg(codexPrompt)})">${lang==='es'?'Crear con Codex':'Create with Codex'}</button>`:canRender?`<button class="btn primary" data-action-code="generateRefresh(${chatArg(batch.campaign.id)},${chatArg(productGuide)},${chatArg(adBrief)})">${lang==='es'?'Crear imagen final':'Create final image'}</button>`:`<button class="btn" data-action-code="openChat(${chatArg(lang==='es'?`Convierte la idea ${copy.headline||variant.variant_id} de ${batch.campaign.name} en una imagen final para anuncios. Dime qué necesitas para generarla.`:`Turn the ${copy.headline||variant.variant_id} idea from ${batch.campaign.name} into a final ad image. Tell me what you need to generate it.`)})">${lang==='es'?'Crear imagen':'Create image'}</button>`;
+ const download=asset?`<button class="btn" data-action-code="downloadCreativeAsset(${chatArg(asset.preview_url)},${chatArg(asset.filename||'creative.png')})">${lang==='es'?'Descargar':'Download'}</button>`:'';
+ return `<article class="creative-variant">${frame}<div class="creative-variant-body"><span class="creative-angle">${escapeHtml(demoCreativeText(copy.angle)||variant.variant_id)}</span><h4>${escapeHtml(demoCreativeText(copy.headline)||variant.variant_id)}</h4>${asset?creativeStorageNote(asset):''}<p class="creative-copy">${escapeHtml(demoCreativeText(copy.primary_text)||'')}</p><p class="creative-cta">${escapeHtml(demoCreativeText(copy.cta)||'')} ${prompts?` · ${escapeHtml(prompts)}`:''}</p><div class="creative-actions">${primary}${download}<button class="btn ask-btn" data-action-code="openChat(${chatArg(lang==='es'?`Revisa la idea ${copy.headline||variant.variant_id} para ${batch.campaign.name}. ¿La probarías y qué cambiarías?`:`Review the ${copy.headline||variant.variant_id} idea for ${batch.campaign.name}. Would you test it and what would you change?`)})">${lang==='es'?'Preguntar':'Ask'}</button></div></div></article>`;
+}
+function renderCreativeStudio(){
+ renderBrandGuides();
+ const studio=state.config.creative_studio||{};const batches=state.creative_refreshes||[];const uploads=state.creative_uploads||[];
+ const variants=batches.reduce((count,batch)=>count+(batch.variants||[]).length,0);const imageCount=batches.reduce((count,batch)=>count+(batch.variants||[]).reduce((subtotal,variant)=>subtotal+(variant.assets||[]).length,0),0);
+ qs('#creative-studio-kicker').textContent=lang==='es'?'Ideas para anuncios':'Ad ideas';
+ qs('#creative-studio-title').textContent=lang==='es'?'Crea tus anuncios':'Create your ads';
+ qs('#creative-studio-description').textContent=lang==='es'?'Cuéntale al agente qué quieres vender y cómo quieres mostrarlo. Te ayudará a preparar imágenes y textos para tus anuncios.':'Tell the agent what you want to sell and how you want to show it. It will help prepare images and text for your ads.';
+ qs('#creative-agent-cta').textContent=lang==='es'?'Crear con el agente':'Create with the agent';
+ qs('#creative-refresh-cta').textContent=lang==='es'?'Mejorar un anuncio actual':'Improve an existing ad';
+ qs('#creative-library-kicker').textContent=lang==='es'?'Ideas creadas':'Agent ideas';
+ qs('#creative-library-title').textContent=lang==='es'?'Creativos para revisar':'Images and text to review';
+ qs('#creative-upload-kicker').textContent=lang==='es'?'Antes de publicar':'Ready for Meta';
+ qs('#creative-upload-title').textContent=lang==='es'?'Anuncios que puedes aprobar':'Ads you can approve';
+ const renderer=studio.image_generation_provider==='codex_image'?(lang==='es'?'Codex/Image conectado para crear imágenes':'Codex/Image connected for image generation'):(studio.image_generation_ready?(lang==='es'?'Puede crear imágenes':'Image generator active'):(lang==='es'?'Conecta ChatGPT/Codex para crear imágenes reales':'Connect ChatGPT/Codex to generate real images'));
+ qs('#creative-studio-pulse').innerHTML=`<div class="creative-pulse-stat"><b>${variants}</b><span>${lang==='es'?'Ideas':'Ideas'}</span></div><div class="creative-pulse-stat"><b>${imageCount}</b><span>${lang==='es'?'Imágenes listas':'Final images'}</span></div><div class="creative-pulse-stat"><b>${uploads.length}</b><span>${lang==='es'?'Por aprobar':'Staged uploads'}</span></div><p class="notice">${escapeHtml(renderer)}</p>${creativeStorageReminderMarkup(studio.asset_policy)}`;
+ qs('#creative-list').innerHTML=batches.length?batches.map(batch=>`<section class="creative-batch"><div class="creative-batch-head"><div><h4>${escapeHtml(demoCreativeText(batch.campaign?.name||'Campaña'))}${batch.brand_memory?.product?.name?`<span class="creative-batch-product">${escapeHtml(batch.brand_memory.product.name)}</span>`:''}${batch.brand_memory?.ad_brief?.name?`<span class="creative-batch-product">${escapeHtml(batch.brand_memory.ad_brief.name)}</span>`:''}</h4><p class="creative-batch-meta">${creativeStatus(batch.status)} · ${new Date(batch.created_at).toLocaleString()}</p></div><span class="badge ${batch.has_generated_images?'ok':'warn'}">${batch.has_generated_images?(lang==='es'?'Vista previa':'Preview'):(lang==='es'?'Sin imagen':'No image')}</span></div><div class="creative-variants">${(batch.variants||[]).map(variant=>creativeVariantMarkup(batch,variant)).join('')}</div></section>`).join(''):`<div class="creative-empty"><div><h3>${lang==='es'?'Todavía no has creado ideas de anuncios':'No ad ideas yet'}</h3><p>${lang==='es'?'Habla con el agente sobre lo que quieres anunciar. Preparará ideas de imágenes y textos para que elijas la que más te guste.':'Talk to the agent about what you want to advertise. It will prepare image and text ideas for you to choose from.'}</p><button class="btn primary" data-action-code="openBrandMemory('ad_brief','')">${lang==='es'?'Crear una idea de anuncio':'Create an ad idea'}</button></div></div>`;
+ qs('#upload-list').innerHTML=uploads.length?`<div class="creative-upload-grid">${uploads.map(upload=>`<article class="creative-upload-card"><h4>${escapeHtml(demoCreativeText(upload.campaign?.name||'Campaña'))} · ${escapeHtml(upload.variant_id||'')}</h4><span class="badge ${upload.status==='ready_for_approval'?'ok':'warn'}">${upload.status==='ready_for_approval'?(lang==='es'?'Espera tu aprobación':'In approval'):(lang==='es'?'Falta completar':'Needs work')}</span><p>${upload.status==='ready_for_approval'?(lang==='es'?'Revisa esta imagen. Solo se creará el anuncio en Meta cuando lo apruebes.':'This proposal waits for your confirmation before creating the Meta ad.'):(lang==='es'?'Completa lo que falta antes de enviarla a Meta.':'Complete missing items before sending it to Meta.')}</p>${upload.missing_requirements?.length?`<div class="creative-blockers">${upload.missing_requirements.map(item=>`· ${escapeHtml(creativeMissingText(item))}`).join('<br>')}</div>`:''}</article>`).join('')}</div>`:`<p class="notice">${lang==='es'?'Cuando prepares una imagen para publicar, aparecerá aquí para que la apruebes.':'Once you choose a finished image, preparation for approval will appear here.'}</p>`;
+ hydrateCreativePreviews();
+}
+async function hydrateCreativePreviews(){
+ const images=[...document.querySelectorAll('#creative-list img[data-preview-url]')];
+ for(const image of images){
+  const path=image.dataset.previewUrl;if(!path)continue;
+  try{
+   if(!creativePreviewUrls.has(path)){const response=await fetchProtectedFile(path);creativePreviewUrls.set(path,URL.createObjectURL(await response.blob()))}
+   image.src=creativePreviewUrls.get(path);image.hidden=false;image.previousElementSibling?.remove();
+  }catch(err){const loading=image.previousElementSibling;if(loading)loading.textContent=lang==='es'?'Vista previa protegida':'Protected preview'}
+ }
+}
+async function downloadCreativeAsset(path,filename){
+ try{
+  const response=await fetchProtectedFile(path);
+  const blob=await response.blob();
+  const url=URL.createObjectURL(blob);
+  const link=document.createElement('a');
+  link.href=url;link.download=filename||'meta-ads-creative.png';
+  document.body.appendChild(link);link.click();link.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+  toast(lang==='es'?'Imagen descargada. Guárdala si quieres conservarla.':'Image downloaded. Keep it if you want to save it.');
+ }catch(err){toast(lang==='es'?'No pude descargar esa imagen.':'Could not download that image.')}
+}
+function clearCreativeStorage(){
+ const p=state.config?.creative_studio?.asset_policy||{};const count=p.temporary_image_count||0;
+ const box=qs('#confirm-overlay');
+ box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'Limpiar borradores creativos':'Clear creative drafts'}</h2><p>${lang==='es'?`Esto borrará ${count} imagen${count===1?'':'es'} generada${count===1?'':'s'} que todavía no elegiste para anuncios. No borra piezas ya preparadas para publicar ni anuncios activos en Meta.`:`This deletes ${count} generated draft image${count===1?'':'s'} that you have not chosen for ads yet. It does not delete images prepared for publishing or active Meta ads.`}</p><div class="confirm-actions"><button class="btn" type="button" data-action-code="closeConfirm()">${lang==='es'?'Cancelar':'Cancel'}</button><button class="btn primary" type="button" data-action-code="confirmClearCreativeStorage()">${lang==='es'?'Limpiar borradores':'Clear drafts'}</button></div></div>`;
+ box.classList.add('open');
+}
+async function confirmClearCreativeStorage(){
+ try{
+  closeConfirm();
+  const res=await api('/api/creative-storage/clear',{method:'POST',body:'{}'});
+  toast(lang==='es'?`${res.result?.deleted||0} borrador${res.result?.deleted===1?'':'es'} limpiado${res.result?.deleted===1?'':'s'}`:`${res.result?.deleted||0} draft image${res.result?.deleted===1?'':'s'} cleared`);
+  await load();
+ }catch(err){toast(lang==='es'?'No pude limpiar esos borradores.':'Could not clear those drafts.')}
+}
+function approvalNote(p){
+ if(p.type==='create_campaign'&&p.payload?.final_status==='ACTIVE')return lang==='es'?'Si apruebas, la campaña se encenderá y podrá empezar a gastar el presupuesto que elegiste.':'If you approve, the campaign will turn on and may start spending the budget you chose.';
+ if(p.type==='create_campaign'||p.type==='creative_upload')return lang==='es'?'Si apruebas, quedará lista pero apagada. No mostrará anuncios ni gastará dinero hasta que decidas encenderla.':'If you approve, it will be ready but turned off. It will not show ads or spend money until you turn it on.';
+ if(p.type==='pause_campaign')return lang==='es'?'Esto apagará una campaña que ya está mostrando anuncios. Revisa bien antes de aprobar.':'This will turn off a campaign that is already showing ads. Check carefully before approving.';
+ return '';
+}
+function guardrailText(reason){
+ const es={supervised_mode:'Estás en Con supervisión, así que el agente prepara la acción y espera tu sí.',budget_over_autopilot_limit:'El cambio de presupuesto supera tus reglas de piloto automático.',resume_requires_approval:'Reactivar campañas siempre pide aprobación.',new_campaign_requires_approval:'Las campañas nuevas siempre pasan por aprobación.',new_campaigns_always_require_approval:'Las campañas nuevas siempre pasan por aprobación.',creative_requires_approval:'Los anuncios o creativos nuevos siempre pasan por aprobación.',pause_spend_over_limit:'La campaña ya gastó más de tu límite para pausar sin pedir permiso.'};
+ const en={supervised_mode:'You are in Supervised mode, so the agent prepares the action and waits for your yes.',budget_over_autopilot_limit:'The budget change is above your autopilot rules.',resume_requires_approval:'Resuming campaigns always asks for approval.',new_campaign_requires_approval:'New campaigns always go through approval.',new_campaigns_always_require_approval:'New campaigns always go through approval.',creative_requires_approval:'New ads or creatives always go through approval.',pause_spend_over_limit:'The campaign already spent more than your no-approval pause limit.'};
+ return (lang==='es'?es:en)[reason]||String(reason||'');
+}
+function approvalMeta(p){
+ const payload=p.payload||{};const requested=payload.requested||{};const type=p.type||'';
+ const name=payload.name||payload.campaign_name||requested.campaign||payload.campaign_id||payload.upload_id||type;
+ const created=new Date(p.created_at||Date.now()).toLocaleString();
+ const base={name,created,severity:'medium',riskLabel:lang==='es'?'Revisar':'Review',title:actionName(type),requested:lang==='es'?'El agente preparó una acción para revisar.':'The agent prepared an action for review.',reason:guardrailText(payload.guardrail_reason)||approvalNote(p)||'',outcome:approvalNote(p)||'',risk:lang==='es'?'Revisa que esta acción tenga sentido antes de aprobar.':'Check that this action makes sense before approving.',facts:[]};
+ if(type==='budget_change'){
+  const current=payload.current_budget??payload.current??payload.recommended_budget;const next=payload.new_budget??payload.recommended_budget;const change=payload.change_pct;
+  base.title=lang==='es'?'Cambiar presupuesto':'Change budget';
+  base.requested=lang==='es'?`Ajustar el presupuesto diario de ${name}.`:`Adjust daily budget for ${name}.`;
+  base.reason=base.reason|| (lang==='es'?'El cambio necesita tu aprobación por tus reglas.':'Your rules require approval for this change.');
+  base.outcome=lang==='es'?`Pasará de ${fmtMoney(current)} a ${fmtMoney(next)} por día.`:`It will move from ${fmtMoney(current)} to ${fmtMoney(next)} per day.`;
+  base.risk=lang==='es'?'Subir presupuesto puede acelerar gasto; bajarlo puede frenar aprendizaje o ventas.':'Increasing budget can accelerate spend; lowering it can slow learning or sales.';
+  base.facts=[['Actual',fmtMoney(current)],['Nuevo',fmtMoney(next)]];
+  if(change!==undefined)base.facts.push([lang==='es'?'Cambio':'Change',`${change}%`]);
+ }else if(type==='pause_campaign'){
+  base.title=lang==='es'?'Pausar campaña':'Pause campaign';base.severity='high';base.riskLabel=lang==='es'?'Alto':'High';
+  base.requested=lang==='es'?`Pausar ${name}.`:`Pause ${name}.`;
+  base.outcome=lang==='es'?'La campaña dejará de mostrar anuncios.':'The campaign will stop showing ads.';
+  base.risk=lang==='es'?'Puede cortar gasto débil, pero también puede detener ventas si la lectura está incompleta.':'It can stop weak spend, but it can also stop sales if the read is incomplete.';
+  base.facts=[[lang==='es'?'Gasto':'Spend',fmtMoney(payload.spend||0)]];
+ }else if(type==='resume_campaign'){
+  base.title=lang==='es'?'Reactivar campaña':'Resume campaign';base.severity='medium';base.riskLabel=lang==='es'?'Medio':'Medium';
+  base.requested=lang==='es'?`Reactivar ${name}.`:`Resume ${name}.`;
+  base.outcome=lang==='es'?'La campaña podrá volver a mostrar anuncios y gastar presupuesto.':'The campaign may show ads and spend budget again.';
+  base.risk=lang==='es'?'Reactivar puede volver a gastar; confirma que el problema anterior ya fue corregido.':'Resuming can spend again; confirm the previous issue is fixed.';
+ }else if(type==='create_campaign'){
+  const active=payload.final_status==='ACTIVE';
+  base.title=active?(lang==='es'?'Crear campaña activa':'Create active campaign'):(lang==='es'?'Crear campaña lista':'Create ready campaign');
+  base.severity=active?'high':'medium';base.riskLabel=active?(lang==='es'?'Puede gastar':'Can spend'):(lang==='es'?'Preparada':'Prepared');
+  base.requested=lang==='es'?`Crear ${name}.`:`Create ${name}.`;
+  base.outcome=active?(lang==='es'?'Al aprobar, quedará activa y podrá empezar a gastar el presupuesto elegido.':'If approved, it will be active and may start spending the selected budget.'):(lang==='es'?'Al aprobar, se crea lista pero apagada. No gastará hasta que la enciendas.':'If approved, it is created ready but off. It will not spend until turned on.');
+  base.risk=active?(lang==='es'?'Es una luz verde real para inversión. Revisa presupuesto, destino, imagen y mensaje.':'This is a real green light for spend. Review budget, destination, image, and message.'):(lang==='es'?'Riesgo bajo de gasto inmediato, pero revisa que la estructura esté correcta.':'Low immediate spend risk, but check that the structure is right.');
+  base.facts=[[lang==='es'?'Presupuesto':'Budget',fmtMoney(requested.daily_budget||0)],[lang==='es'?'Estado final':'Final status',active?'ACTIVE':'PAUSED']];
+ }else if(type==='creative_upload'){
+  base.title=lang==='es'?'Publicar creativo':'Publish creative';base.severity='medium';base.riskLabel=lang==='es'?'Creativo':'Creative';
+  base.requested=lang==='es'?`Preparar el anuncio ${payload.variant_id||''} para ${name}.`:`Prepare ad ${payload.variant_id||''} for ${name}.`;
+  base.outcome=lang==='es'?'Creará o preparará piezas en Meta solo después de tu aprobación.':'It will create or prepare Meta assets only after approval.';
+  base.risk=lang==='es'?'Revisa que imagen, texto, destino y página sean correctos antes de aprobar.':'Review image, text, destination, and Page before approving.';
+  base.facts=[[lang==='es'?'Variante':'Variant',payload.variant_id||'-']];
+ }
+ return base;
+}
+function approvalAskDraft(p,meta){
+ const safeName=meta.name||actionName(p.type);
+ if(lang==='es')return `Explícame esta aprobación antes de que decida: ${meta.title} para ${safeName}. Quiero entender qué pidió el agente, por qué lo sugiere, qué riesgo tiene, qué pasa si apruebo y si tú lo aprobarías ahora o esperarías.`;
+ return `Explain this approval before I decide: ${meta.title} for ${safeName}. I want to understand what the agent requested, why, the risk, what happens if I approve, and whether you would approve now or wait.`;
+}
+function approvalCard(p){
+ const meta=approvalMeta(p);const riskClass=meta.severity||'medium';const facts=meta.facts||[];
+ return `<article class="approval-card ${riskClass}"><div class="approval-top"><div class="approval-icon">AI</div><div class="approval-title"><b>${escapeHtml(meta.title)}</b><span>${escapeHtml(meta.name)} · ${escapeHtml(meta.created)}</span></div><span class="approval-risk ${riskClass}">${escapeHtml(meta.riskLabel)}</span></div><div class="approval-section"><b>${lang==='es'?'Qué pidió el agente':'What the agent requested'}</b><p>${escapeHtml(meta.requested)}</p></div><div class="approval-section"><b>${lang==='es'?'Por qué está esperando tu sí':'Why it is waiting for your yes'}</b><p>${escapeHtml(meta.reason|| (lang==='es'?'Tus reglas piden aprobación para esta acción.':'Your rules require approval for this action.'))}</p></div><div class="approval-section"><b>${lang==='es'?'Qué pasa si apruebas':'What happens if you approve'}</b><p>${escapeHtml(meta.outcome)}</p></div><div class="approval-section"><b>${lang==='es'?'Riesgo a revisar':'Risk to review'}</b><p>${escapeHtml(meta.risk)}</p></div>${facts.length?`<div class="approval-facts">${facts.map(([label,value])=>`<div class="approval-fact"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join('')}</div>`:''}<div class="approval-actions"><button class="btn ask-btn" data-action-code="openChat(${chatArg(approvalAskDraft(p,meta))})">${lang==='es'?'Preguntar antes':'Ask first'}</button><button class="btn primary" data-action-code="approvePending(${chatArg(p.id)})">${t('approve')}</button></div></article>`;
+}
+function statusLabel(s){return s==='ok'?t('ok'):s==='blocked'?t('blocked'):t('check')}
+function setupItem(key){for(const sec of state.setup.sections){const found=sec.items.find(i=>i.key===key);if(found)return found}return {status:'blocked',detail:''}}
+function stepCopy(key){
+	 const en={
+	  title:'Initial setup',subtitle:'Connect the essentials. The deep business questions happen later through the agent.',progress:'ready',done:'Done',next:'Next',review:'Review',
+	  helper:'Help',
+	  website:['Paste your website and social media','If anything is missing, paste your website or socials. The agent uses them to build a first business map.',''],
+	  context:['Business interview','The agent asks this later through Telegram, one question at a time.',''],
+	  strategy:['First plan','The agent prepares this after the interview.',''],
+	  license:['Add your license','Paste the one code you received from us.',''],
+	  chatgpt:['Connect ChatGPT','Choose ChatGPT/Codex or an API model like MiniMax M3.',''],
+	  telegram:['Finish with Telegram','Recommended: talk to the manager from your phone. After this, the agent can ask the business questions there.',''],
+	  meta:['Connect my Facebook account','Secure step: use your own Facebook/Meta connection and access key.',''],
+	  account:['Pick one account','Choose the ad account this tool should help with.',''],
+	  destination:['Pick where ads go','Add the Facebook Page, Instagram, and website.',''],
+	  insights:['Read real results','I check your real numbers and do not change anything yet.',''],
+	  dryrun:['Review with supervision','The agent prepares suggestions and waits for your yes.',''],
+	  approval:['Approve one change','Check one suggested change before anything real happens.',''],
+	  live:['Keep supervision on','Best for the first run. You can turn autopilot on later.',''],
+	  smoke:['Tiny live test later','Use this only when you are ready for a very small real change.',''],
+	  password:['Create your password','Choose a password only you know.',''],
+	  guide:['Quick guide','Read the short cards before entering the dashboard.','']
+	 };
+	 const es={
+	  title:'Configuración inicial',subtitle:'Conecta lo esencial. La entrevista profunda la hace el agente después.',progress:'listo',done:'Listo',next:'Siguiente',review:'Revisar',
+	  helper:'Ayuda',
+	  website:['Pega tu web y redes','Si falta algo, pega tu web o redes. El agente las usa para crear un primer mapa del negocio.',''],
+	  context:['Entrevista del negocio','El agente la hace después por Telegram, una pregunta a la vez.',''],
+	  strategy:['Primer plan','El agente lo prepara después de la entrevista.',''],
+	  license:['Pega tu licencia','Pega el único código que recibiste de nosotros.',''],
+	  chatgpt:['Conecta ChatGPT','Elige ChatGPT/Codex o un modelo API como MiniMax M3.',''],
+	  telegram:['Termina con Telegram','Recomendado: habla con el manager desde tu celular. Después de esto, el agente puede hacerte la entrevista del negocio allí.',''],
+	  meta:['Conectar mi cuenta de Facebook','Paso seguro: usa tu propia conexión de Facebook/Meta y tu propia clave.',''],
+	  account:['Elige una cuenta','Escoge la cuenta de anuncios que quieres usar.',''],
+	  destination:['Elige dónde van los anuncios','Agrega la página de Facebook, Instagram y la web.',''],
+	  insights:['Lee datos reales','Miro tus números reales y todavía no cambio nada.',''],
+	  dryrun:['Revisar con supervisión','El agente prepara sugerencias y espera tu sí.',''],
+	  approval:['Aprueba un cambio','Revisa un cambio sugerido antes de que pase algo real.',''],
+	  live:['Deja la supervisión activa','Mejor para la primera vez. Luego puedes activar piloto automático.',''],
+	  smoke:['Prueba pequeña después','Úsalo solo cuando quieras hacer un cambio real muy pequeño.',''],
+	  password:['Crea tu contraseña','Elige una contraseña que solo tú conozcas.',''],
+	  guide:['Guía rápida','Lee las tarjetas cortas antes de entrar al dashboard.','']
+	 };
+ return (lang==='es'?es:en)[key];
+}
+function copyCommand(value){navigator.clipboard?.writeText(value).then(()=>toast(t('copied'))).catch(()=>toast(value))}
+function copyVisibleChatGptCode(event){
+ const code=event?.target?.closest?.('.chatgpt-device-code')?.querySelector('strong')?.textContent?.trim()||qs('#chatgpt-connect-result .chatgpt-device-code strong')?.textContent?.trim()||'';
+ if(!code)return toast(lang==='es'?'No encontré el código visible.':'I could not find the visible code.');
+ navigator.clipboard?.writeText(code).then(()=>toast(lang==='es'?`Código copiado: ${code}`:`Code copied: ${code}`)).catch(()=>toast(code));
+}
+function onboardingSteps(){
+ const setup=state.setup, summary=setup.summary;
+ const profile=state.business_profile||{};
+ const websiteOk=Boolean(profile.website_url||(profile.social_links&&profile.social_links.length)||profile.telegram_onboarding_requested_at||profile.website_skipped);
+ const licenseOk=Boolean(summary.license_ready);
+ const passwordOk=Boolean(state.config.dashboard_password_set);
+ const model=state.config.agent_model||{};
+ const brain=model.brain_provider||'openai_codex';
+ const apiBrainOk=['openai_api','minimax','custom_api'].includes(brain)&&model.api_key_set&&Boolean(model.base_url)&&Boolean(model.model);
+ const chatgptOk=(setupItem('hermes_runtime').status==='ok'&&setupItem('hermes_auth').status==='ok')||apiBrainOk;
+ const telegram=state.config.telegram_agent||{};
+ const telegramOk=Boolean(telegram.enabled&&telegram.bot_configured&&telegram.chat_id);
+ const tokenOk=setupItem('access_token').status==='ok';
+ const accountOk=setupItem('ad_account').status==='ok';
+ const destinationOk=['page_id','landing_url'].every(k=>setupItem(k).status==='ok');
+ const destinationStatus=destinationOk?'ok':(accountOk?'warn':'blocked');
+ const socialOk=setupItem('social_cli').status==='ok';
+ const dryrunOk=setupItem('daily_report').status==='ok';
+ const approvalOk=state.pending.length>0||state.actions.some(a=>String(a.status)==='pending_approval'||String(a.status)==='completed');
+ const insightsOk=state.metrics?.source==='meta_graph'||state.actions.some(a=>a.type==='live_insights_pull'||a.type==='daily_agent_run')||dryrunOk;
+ const steps=[];
+ if(!passwordOk)steps.push({id:'password',status:'blocked'});
+ if(!licenseOk)steps.push({id:'license',status:'blocked'});
+ steps.push(
+	  {id:'meta',status:tokenOk?'ok':(socialOk?'warn':'blocked')},
+	  {id:'account',status:accountOk?'ok':'blocked'},
+	  {id:'destination',status:destinationStatus},
+	  {id:'chatgpt',status:chatgptOk?'ok':'warn'},
+	  {id:'website',status:websiteOk?'ok':'warn'},
+	  {id:'telegram',status:telegramOk?'ok':'warn'}
+	 );
+ return steps;
+	}
+function renderOnboarding(){
+ const doneState=state.onboarding||{};
+ if(doneState.completed){
+  const when=doneState.completed_at?new Date(doneState.completed_at).toLocaleString():'';
+  const pendingState=Boolean(doneState.deferred||doneState.skipped||doneState.requires_repair);
+  if(pendingState){
+   const reasons=(doneState.deferred_reasons||doneState.repair_reasons||[]).filter(Boolean);
+   const reasonLabels={licencia:lang==='es'?'licencia':'license',conexion_facebook:lang==='es'?'Facebook':'Facebook',conexion_meta:lang==='es'?'Facebook':'Facebook',cuenta_publicitaria:lang==='es'?'cuenta publicitaria':'ad account',cerebro_agente:lang==='es'?'ChatGPT':'ChatGPT',telegram:'Telegram',destinos:lang==='es'?'página y web':'Page and website',datos_reales:lang==='es'?'datos reales de Meta':'real Meta data',perfil_negocio:lang==='es'?'perfil del negocio':'business profile',entrevista_negocio:lang==='es'?'entrevista del negocio':'business interview',branding_creativos:lang==='es'?'marca y creativos':'brand and creatives',campanas_anuncios:lang==='es'?'campañas previas':'past campaigns'};
+   const summary=reasons.length?reasons.slice(0,4).map(r=>reasonLabels[r]||r).join(', '):(lang==='es'?'datos reales de Meta':'real Meta data');
+   qs('#onboarding-wizard').innerHTML=`<div class="onboarding"><div class="next-step pending-setup"><div><b>${lang==='es'?'Configuración inicial pendiente':'Initial setup still pending'}</b><p>${lang==='es'?`Entraste al dashboard para completar luego. Falta: ${summary}. Hasta terminar esto, el dashboard quedará sin datos reales y el agente no analizará campañas.`:`You opened the dashboard before finishing setup. Still missing: ${summary}. Until this is finished, the dashboard stays without real data and the agent will not analyze campaigns.`}${when?` ${when}`:''}</p></div><button class="btn primary" data-action-code="resumeOnboarding()">${lang==='es'?'Completar ahora':'Finish now'}</button></div></div>`;
+   return;
+  }
+  qs('#onboarding-wizard').innerHTML=`<div class="onboarding"><div class="next-step"><div><b>${lang==='es'?'Configuración inicial terminada':'Initial setup complete'}</b><p>${lang==='es'?'La guía inicial ya fue completada en este equipo. Puedes volver a abrirla cuando necesites cambiar algo.':'The initial guide has already been completed on this device. You can open it again whenever you need to change something.'}${when?` ${when}`:''}</p></div><button class="btn" data-action-code="resetOnboarding()">${lang==='es'?'Revisar configuración inicial':'Run initial setup again'}</button></div></div>`;
+  return;
+ }
+ const labels=stepCopy('title'); const sub=stepCopy('subtitle'); const progress=stepCopy('progress');
+ const steps=onboardingSteps(); const done=steps.filter(s=>s.status==='ok').length;
+ const labelFor=s=>s.status==='ok'?stepCopy('done'):(s.status==='blocked'?stepCopy('next'):stepCopy('review'));
+ const next=steps.find(s=>s.status!=='ok')||steps[steps.length-1]; const nextCopy=stepCopy(next.id);
+ qs('#onboarding-wizard').innerHTML=`<div class="onboarding"><div class="onboarding-head"><div><h3>${labels}</h3><p>${sub}</p></div><div class="progress"><b>${done}/${steps.length}</b><span>${progress}</span></div></div><div class="next-step"><div><b>${lang==='es'?'Siguiente':'Next'}: ${nextCopy[0]}</b><p>${nextCopy[1]}</p></div>${nextCopy[2]?`<button class="btn copy-btn" data-action-code="copyCommand(${JSON.stringify(nextCopy[2]).replaceAll('"','&quot;')})">${t('copy_command')}</button>`:''}</div><div class="step-list">${steps.map((s,i)=>{const c=stepCopy(s.id);return `<div class="setup-step ${s.status}"><div class="step-num">${i+1}</div><div class="step-main"><b>${c[0]}</b><p>${c[1]}</p>${c[2]?`<details class="helper-command"><summary>${stepCopy('helper')}</summary><span class="step-command">${c[2]}</span></details>`:''}</div><div class="step-badge">${labelFor(s)}</div></div>`}).join('')}</div><div class="mode-actions" data-style-code="margin-top:10px"><button class="btn ask-btn" data-action-code="openChat(lang==='es'?'Revisa mi configuración. Explícame el siguiente paso con palabras muy simples.':'Review my setup. Explain the next step in very simple words.')">${t('ask_agent')}</button><button class="btn primary" data-action-code="completeOnboarding()">${lang==='es'?'Terminar configuración':'Finish setup'}</button></div></div>`;
+}
+function onboardingFormFor(stepId){
+	 const v=state.config.setup_values||{};
+ if(stepId==='website')return websiteScanGuide();
+ if(stepId==='context')return businessContextGuide();
+ if(stepId==='strategy')return initialStrategyGuide();
+	 if(stepId==='license')return `<form class="onboarding-mini two" data-submit-code="activateLicenseFromForm(event)"><label>${t('license_key')}<input name="license_key" placeholder="MAO-..." autocomplete="off"></label><label>${t('buyer_email')}<input name="license_buyer_email" value="${escapeHtml(v.license_buyer_email||'')}" placeholder="buyer@email.com" autocomplete="email"></label><div class="onboarding-step-actions"><button class="btn primary" type="submit">${t('license_activate')}</button></div></form>`;
+ if(stepId==='chatgpt')return chatGptConnectMarkup(true);
+ if(stepId==='telegram')return telegramOnboardingGuide();
+ if(stepId==='meta')return metaConnectionGuide();
+ if(stepId==='account')return accountPickerGuide();
+ if(stepId==='destination')return destinationPickerGuide();
+ if(stepId==='password')return `<form class="unlock-form" data-submit-code="setDashboardPasswordFromOnboarding(event)"><label>${t('dashboard_password')}<input id="new-dashboard-password" type="password" autocomplete="new-password" minlength="8" placeholder="${lang==='es'?'Crea una contraseña segura':'Create a secure password'}"></label><label>${lang==='es'?'Repetir contraseña':'Repeat password'}<input id="confirm-dashboard-password" type="password" autocomplete="new-password" minlength="8" placeholder="${lang==='es'?'Escríbela otra vez':'Type it again'}"></label><label><input id="new-dashboard-remember" type="checkbox" checked> ${t('remember_device')}</label><div class="unlock-error" id="dashboard-password-error"></div><button class="btn primary" type="submit">${lang==='es'?'Guardar mi contraseña':'Save my password'}</button></form>`;
+	 return passiveStepGuide(stepId);
+	}
+function websiteScanGuide(){
+ const p=state.business_profile||{};
+ const v=state.config.setup_values||{};
+ const meta=p.meta_assets||{};
+ const website=p.website_url||v.landing_url||'';
+ const socialLinks=[...(p.social_links||[])].filter(Boolean);
+ const links=[website,...socialLinks].filter(Boolean).filter((item,index,arr)=>arr.indexOf(item)===index).join('\n');
+ const pageId=v.page_id||meta.page_id||'';
+ const pageName=meta.page_name||'';
+ const igId=v.instagram_actor_id||meta.instagram_actor_id||'';
+ const igName=meta.instagram_username||'';
+ const foundCards=[
+  {ok:Boolean(pageId),label:lang==='es'?'Página de Facebook':'Facebook Page',value:pageName||pageId,optional:false},
+  {ok:Boolean(igId),label:'Instagram',value:igName||igId,optional:true},
+  {ok:Boolean(website),label:lang==='es'?'Web':'Website',value:website,optional:false}
+ ];
+ const statusCards=foundCards.map(item=>`<div class="asset-status ${item.ok?'ok':(item.optional?'optional':'missing')}"><span>${item.ok?'✓':(item.optional?'~':'!')}</span><b>${escapeHtml(item.label)}</b><p>${escapeHtml(item.ok?item.value:(item.optional?(lang==='es'?'Opcional si no usas Instagram.':'Optional if you do not use Instagram.'):(lang==='es'?'Falta agregarlo.':'Still needed.')))}</p></div>`).join('');
+ const missingText=!website
+  ? (lang==='es'?'Pega abajo el link de tu web, tienda o página donde quieres enviar visitas.':'Paste below your website, store, or landing page link.')
+  : (!igId?(lang==='es'?'Ya tengo tu web. Si también tienes Instagram conectado, puedes pegarlo; si no, sigue.':'I already have your website. If you also have Instagram, paste it; otherwise continue.'):(lang==='es'?'Ya tengo lo importante. Puedes agregar más links si ayudan.':'I have the important pieces. You can add more links if useful.'));
+ return `<div class="setup-guide private-connection business-start-shell"><section class="guide-hero business-hero compact-business-scan"><div class="guide-main"><span class="guide-eyebrow">${lang==='es'?'Primer mapa del negocio':'First business map'}</span><h3>${lang==='es'?'Completa lo que falte':'Complete what is missing'}</h3><p>${lang==='es'?'Primero uso lo que Meta ya encontró. Si pegas tu web o redes públicas, el agente las lee y prepara una idea inicial de productos, servicios, nicho y público para arrancar mejor en Telegram.':'First I use what Meta already found. If you paste your website or public socials, the agent reads them and prepares an initial idea of products, services, niche, and audience before Telegram.'}</p><div class="asset-status-grid">${statusCards}</div><form class="onboarding-mini business-start-form" data-submit-code="saveBusinessLinks(event)"><label>${lang==='es'?'Web o redes que falten':'Website or socials that are missing'}<textarea name="links" rows="5" placeholder="${lang==='es'?'Pega un link por línea. Ej:\\nhttps://tumarca.com\\nhttps://instagram.com/tumarca':'Paste one link per line. Ex:\\nhttps://yourbrand.com\\nhttps://instagram.com/yourbrand'}">${escapeHtml(links)}</textarea></label><p class="notice">${escapeHtml(missingText)}</p><div class="onboarding-step-actions"><button class="btn primary" type="submit">${lang==='es'?'Guardar y estudiar links':'Save and study links'}</button><button class="btn" type="button" data-action-code="skipWebsiteScan()">${lang==='es'?'Seguir sin más links':'Continue without more links'}</button></div></form></div><aside class="guide-checklist"><b>${lang==='es'?'Qué usa el agente':'What the agent uses'}</b><ol><li>${lang==='es'?'Los datos seguros que Meta permite leer de tu página.':'Safe data Meta allows from your Page.'}</li><li>${lang==='es'?'Tu web y redes públicas, si las pegas aquí.':'Your public website and socials, if you paste them here.'}</li><li>${lang==='es'?'Después Telegram confirma lo importante contigo, una pregunta a la vez.':'Then Telegram confirms the important parts with you, one question at a time.'}</li></ol></aside></section><div id="business-scan-results" class="setup-guide">${businessProfileCard()}</div></div>`;
+}
+function businessQuestionValue(key,p){
+ if(key==='main_offer')return p.main_offer||p.offer||'';
+ if(key==='ideal_customer')return p.ideal_customer||p.audience||'';
+ if(key==='sales_channel')return p.sales_channel||p.channel||'';
+ if(key==='current_ads')return p.current_ads||p.ad_results||'';
+ if(key==='what_to_improve')return p.what_to_improve||'';
+ if(key==='success_goal')return p.success_goal||'';
+ if(key==='budget_comfort')return p.budget_comfort||'';
+ if(key==='brand_tone')return p.brand_tone||'';
+ return p[key]||'';
+}
+function businessContextQuestions(){
+ const p=state.business_profile||{};
+ const custom=Array.isArray(p.onboarding_questions)&&p.onboarding_questions.length?p.onboarding_questions:[];
+ if(custom.length){
+  return custom.slice(0,6).map((q)=>({key:q.key,label:q.label,help:q.help,placeholder:q.placeholder||'',value:businessQuestionValue(q.key,p)}));
+ }
+ const hasWebsite=Boolean(p.website_url);
+ const stageSuggestion=p.current_stage|| (hasWebsite?(lang==='es'?'Tengo una web lista y quiero un plan claro.':'I have a website ready and want a clear plan.'):'');
+ const improvementSuggestion=p.what_to_improve|| (lang==='es'?'Entender qué hacer primero y no adivinar.':'Know what to do first without guessing.');
+ return [
+  {key:'main_offer',label:lang==='es'?'¿Qué vendes?':'What do you sell?',help:lang==='es'?'Una frase corta.':'One short sentence.',placeholder:lang==='es'?'Ej: un curso, una tienda, un servicio...':'Ex: a course, a store, a service...',value:businessQuestionValue('main_offer',p)},
+  {key:'ideal_customer',label:lang==='es'?'¿Quién compra?':'Who buys?',help:lang==='es'?'La persona que más quieres atraer.':'The person you most want to attract.',placeholder:lang==='es'?'Ej: mamás, dueños de negocio, parejas...':'Ex: moms, business owners, couples...',value:businessQuestionValue('ideal_customer',p)},
+  {key:'sales_channel',label:lang==='es'?'¿Dónde vendes?':'Where do you sell?',help:lang==='es'?'Web, WhatsApp, Instagram, tienda física o llamada.':'Website, WhatsApp, Instagram, store, or call.',placeholder:lang==='es'?'Ej: WhatsApp y mi web.':'Ex: WhatsApp and my website.',value:businessQuestionValue('sales_channel',p)},
+  {key:'current_stage',label:lang==='es'?'¿En qué punto estás?':'Where are you now?',help:lang==='es'?'Empiezas, ya vendes o ya tienes anuncios.':'Starting, already selling, or already running ads.',placeholder:lang==='es'?'Ej: Ya vendo, pero cada compra me cuesta más.':'Ex: I already sell, but each purchase costs more.',value:stageSuggestion},
+  {key:'what_to_improve',label:lang==='es'?'¿Qué quieres mejorar?':'What do you want to improve?',help:lang==='es'?'Qué te gustaría arreglar primero.':'What you want to fix first.',placeholder:lang==='es'?'Ej: bajar el costo de cada compra, entender anuncios, vender más.':'Ex: lower the cost per purchase, understand ads, sell more.',value:improvementSuggestion},
+  {key:'success_goal',label:lang==='es'?'¿Cómo se ve una victoria?':'What is a win?',help:lang==='es'?'Algo claro para los próximos 30 días.':'Something clear for the next 30 days.',placeholder:lang==='es'?'Ej: vender 20 más, bajar costo, tener más leads.':'Ex: sell 20 more, lower cost, get more leads.',value:businessQuestionValue('success_goal',p)}
+ ];
+}
+function businessContextGuide(){
+ const p=state.business_profile||{};
+ const questions=businessContextQuestions();
+ businessContextQuestionIndex=Math.max(0,Math.min(businessContextQuestionIndex,questions.length-1));
+ const q=questions[businessContextQuestionIndex];
+ const sourceNote=p.agent_scan_status==='agent_enriched'
+  ? (lang==='es'?'Leí tu web y dejé una sugerencia.':'I read your site and made a suggestion.')
+  : (p.website_url?(lang==='es'?'Tomé tu web como guía. Puedes cambiar todo.':'I used your website as a guide. You can change anything.'):(lang==='es'?'Sin web no pasa nada. Te haré preguntas cortas.':'No website is fine. I will ask short questions.'));
+ const isLast=businessContextQuestionIndex>=questions.length-1;
+ const progress=`${businessContextQuestionIndex+1}/${questions.length}`;
+ const draft=lang==='es'?`Ayúdame a responder esta pregunta con palabras simples: "${q.label}". Lo que tengo ahora es: "${q.value||'vacío'}". Si falta algo, hazme una sola pregunta.`:`Help me answer this question in simple words: "${q.label}". Current answer: "${q.value||'empty'}". If something is missing, ask one question.`;
+ return `<div class="setup-guide private-connection business-question-shell"><section class="guide-hero business-hero compact-business-context"><div class="guide-main"><span class="guide-eyebrow">${lang==='es'?'Preguntas del negocio':'Business questions'}</span><h3>${lang==='es'?'Una pregunta a la vez':'One question at a time'}</h3><p>${sourceNote}</p></div><div class="business-question-progress"><b>${progress}</b><span>${lang==='es'?'pregunta':'question'}</span></div></section><form class="business-question-card" data-submit-code="saveBusinessContextQuestion(event)"><input type="hidden" name="field" value="${escapeHtml(q.key)}"><div class="business-question-label"><span>${progress}</span><h3>${escapeHtml(q.label)}</h3><p>${escapeHtml(q.help)}</p></div><textarea name="answer" rows="6" placeholder="${escapeHtml(q.placeholder)}">${escapeHtml(q.value||'')}</textarea><div class="business-question-actions"><button class="btn" type="button" data-action-code="setBusinessContextQuestionIndex(${businessContextQuestionIndex-1})" ${businessContextQuestionIndex===0?'disabled':''}>${lang==='es'?'Atrás':'Back'}</button><button class="btn ask-btn" type="button" data-action-code="openChat(${chatArg(draft)})">${lang==='es'?'Ayudarme':'Help me'}</button><button class="btn primary" type="submit">${isLast?(lang==='es'?'Guardar y crear plan':'Save and build plan'):(lang==='es'?'Guardar y seguir':'Save and continue')}</button></div></form>${businessProfileCard()}</div>`;
+}
+function initialStrategyGuide(){
+ const p=state.business_profile||{};
+ const plan=(p.initial_plan&&p.initial_plan.length?p.initial_plan:[
+  lang==='es'?'Conectar mi cuenta de Facebook.':'Connect my Facebook account.',
+  lang==='es'?'Hablar con el agente.':'Talk to the agent.',
+  lang==='es'?'Empezar con supervisión.':'Start with supervision.'
+  ]);
+  const angles=p.suggested_angles||[];
+ return `<div class="setup-guide private-connection"><section class="guide-hero business-hero"><div class="guide-main"><span class="guide-eyebrow">${lang==='es'?'Primer plan':'First plan'}</span><h3>${lang==='es'?'Esto entendí':'This is what I understood'}</h3><p>${escapeHtml(p.positioning||p.detected_title||p.offer|| (lang==='es'?'Todavía falta más contexto.':'We still need more context.'))}</p><div class="business-summary-grid"><div><b>${lang==='es'?'Tipo':'Type'}</b><span>${escapeHtml(p.business_type||'-')}</span></div><div><b>${lang==='es'?'Oferta':'Offer'}</b><span>${escapeHtml(p.main_offer||p.offer||'-')}</span></div><div><b>${lang==='es'?'Cliente':'Customer'}</b><span>${escapeHtml(p.ideal_customer||p.audience||'-')}</span></div></div></div><aside class="guide-checklist"><b>${lang==='es'?'Plan inicial':'Initial plan'}</b><ol>${plan.map(item=>`<li>${escapeHtml(item)}</li>`).join('')}</ol></aside></section>${angles.length?`<div class="guide-panel"><b>${lang==='es'?'Ideas iniciales':'Initial ideas'}</b><ol>${angles.map(item=>`<li>${escapeHtml(item)}</li>`).join('')}</ol></div>`:''}<div class="onboarding-step-actions"><button class="btn" type="button" data-action-code="onboardingFlowStep=Math.max(0,onboardingFlowStep-1);renderOnboardingFlow()">${lang==='es'?'Editar':'Edit'}</button><button class="btn primary" type="button" data-action-code="onboardingFlowTouched=true;onboardingFlowStep=Math.min(onboardingSteps().length-1,onboardingFlowStep+1);renderOnboardingFlow()">${lang==='es'?'Seguir':'Continue'}</button><button class="btn ask-btn" type="button" data-action-code="openChat('${lang==='es'?'Revisa esta información de mi negocio y dime qué estrategia inicial prepararías para Meta Ads.':'Review this business profile and tell me what initial Meta Ads strategy you would prepare.'}')">${t('ask_agent')}</button></div></div>`;
+}
+function businessProfileCard(){
+ const p=state.business_profile||{};
+ const links=[p.website_url,...(p.social_links||[])].filter(Boolean).filter((item,index,arr)=>arr.indexOf(item)===index);
+ if(!links.length&&!p.business_type&&!p.telegram_onboarding_requested_at)return '';
+ const scan=p.agent_scan_status==='agent_enriched'
+  ? (lang==='es'?'El agente ya hizo una primera lectura de esos links.':'The agent already made a first read of those links.')
+  : (p.agent_scan_status==='agent_not_connected'||p.agent_scan_status==='agent_scan_unavailable'
+   ? (lang==='es'?'Guardé los links. Cuando el agente esté conectado, los usará como contexto.':'I saved the links. When the agent is connected, it will use them as context.')
+   : (lang==='es'?'Queda guardado para la entrevista por Telegram.':'Saved for the Telegram interview.'));
+ return `<div class="guide-card"><b>${lang==='es'?'Contexto inicial guardado':'Initial context saved'}</b><p>${escapeHtml(p.business_type||links[0]||'')}${links.length?` · ${links.length} ${lang==='es'?'link(s)':'link(s)'}`:''}${p.scan_error?` · ${lang==='es'?'No pude leer toda la web, pero guardé el link y puedes seguir.':'I could not read the full site, but saved the link and you can continue.'}`:''}</p>${p.main_offer||p.offer?`<p>${lang==='es'?'Oferta detectada':'Detected offer'}: ${escapeHtml(p.main_offer||p.offer)}</p>`:''}<p class="notice">${escapeHtml(scan)}</p></div>`;
+}
+function businessSnapshotData(){
+ const p=state.business_profile||{};
+ const s=state.business_snapshot||state.brief?.business_context||{};
+ return {
+  ready:Boolean(s.ready||p.business_type||p.main_offer||p.offer||p.ideal_customer||p.audience||p.website_url),
+  business_type:s.business_type||p.business_type||p.business_short||'',
+  main_offer:s.main_offer||p.main_offer||p.offer||p.detected_title||'',
+  ideal_customer:s.ideal_customer||p.ideal_customer||p.audience||'',
+  current_stage:s.current_stage||p.current_stage||'',
+  what_to_improve:s.what_to_improve||p.what_to_improve||'',
+  success_goal:s.success_goal||p.success_goal||'',
+  sales_channel:s.sales_channel||p.sales_channel||p.channel||'',
+  brand_tone:s.brand_tone||p.brand_tone||'',
+  website_url:s.website_url||p.website_url||'',
+  next_step:s.next_step||'',
+  audience_hint:s.audience_hint||'',
+  creative_hint:s.creative_hint||'',
+  campaign_hint:s.campaign_hint||'',
+  summary:s.summary||''
+ };
+}
+function businessProfileFallbacks(d){
+ const es=lang==='es';
+ return {
+  title:d.business_type||d.main_offer||(es?'Negocio por definir':'Business to define'),
+  summary:d.summary||[d.main_offer,d.ideal_customer,d.current_stage].filter(Boolean).join(' · ')||(es?'Cuéntame qué vendes y a quién ayudas.':'Tell me what you sell and who you help.'),
+  offer:d.main_offer||(es?'Falta decir qué vendes':'Need what you sell'),
+  customer:d.ideal_customer||(es?'Falta decir quién compra':'Need who buys'),
+  stage:d.current_stage||(es?'Falta decir en qué punto estás':'Need current stage'),
+  improve:d.what_to_improve||(es?'Falta elegir qué mejorar primero':'Need first improvement target'),
+  next:d.next_step||(es?'Completar oferta, cliente y objetivo.':'Complete offer, customer, and goal.'),
+  audience:d.audience_hint||(es?'Empezar amplio y ajustar con datos reales.':'Start broad and refine with real data.'),
+  creative:d.creative_hint||(es?'Imagen clara, beneficio directo y poco texto.':'Clear image, direct benefit, little text.'),
+  campaign:d.campaign_hint||(es?'Campaña simple, visible y fácil de medir.':'Simple, visible, easy-to-measure campaign.')
+ };
+}
+function businessProfileChatPrompt(){
+ const d=businessSnapshotData();
+ if(!d.ready)return lang==='es'?'Quiero contarte mi negocio para que personalices el dashboard. Hazme preguntas fáciles, una por una.':'I want to tell you about my business so you can personalize the dashboard. Ask me simple questions one at a time.';
+ const c=businessProfileFallbacks(d);
+ return lang==='es'?`Revisa mi perfil de negocio y dime qué harías hoy. Negocio: ${c.title}. Oferta: ${c.offer}. Cliente: ${c.customer}. Quiero mejorar: ${c.improve}. Dime el siguiente paso, una audiencia inicial y una idea de creativo.`:`Review my business profile and tell me what you would do today. Business: ${c.title}. Offer: ${c.offer}. Customer: ${c.customer}. I want to improve: ${c.improve}. Give me the next step, an initial audience, and one creative idea.`;
+}
+function businessMini(label,value){return `<div class="business-profile-mini"><span>${escapeHtml(label)}</span><b>${escapeHtml(value)}</b></div>`}
+function renderBusinessProfilePanel(){
+ const title=qs('#business-profile-title');if(title)title.textContent=lang==='es'?'Perfil del negocio':'Business profile';
+ const box=qs('#business-profile-panel');if(!box)return;
+ const d=businessSnapshotData();
+ if(!d.ready){
+  box.innerHTML=`<div class="business-profile-empty"><p>${lang==='es'?'Todavía no sé suficiente del negocio. Cuéntame qué vendes para que el brief, los creativos y las audiencias tengan contexto real.':'I do not know enough about the business yet. Tell me what you sell so the brief, creatives, and audiences have real context.'}</p><button class="btn primary ask-btn" data-action-code="openChat(${chatArg(businessProfileChatPrompt())})">${lang==='es'?'Contarle al agente':'Tell the agent'}</button></div>`;
+  return;
+ }
+ const c=businessProfileFallbacks(d);
+ const pills=[
+  d.website_url?[lang==='es'?'Web':'Website',d.website_url]:null,
+  d.sales_channel?[lang==='es'?'Venta':'Sales',d.sales_channel]:null,
+  d.success_goal?[lang==='es'?'Meta':'Goal',d.success_goal]:null,
+  d.brand_tone?[lang==='es'?'Tono':'Tone',d.brand_tone]:null
+ ].filter(Boolean);
+ box.innerHTML=`<div class="business-profile-panel"><div class="business-profile-hero"><h3>${escapeHtml(c.title)}</h3><p>${escapeHtml(c.summary)}</p>${pills.length?`<div class="business-profile-pills">${pills.map(([label,value])=>`<span class="business-profile-pill">${escapeHtml(label)}: ${escapeHtml(value)}</span>`).join('')}</div>`:''}</div><div class="business-profile-grid">${businessMini(lang==='es'?'Oferta':'Offer',c.offer)}${businessMini(lang==='es'?'Cliente':'Customer',c.customer)}${businessMini(lang==='es'?'Siguiente paso':'Next step',c.next)}${businessMini(lang==='es'?'Creativo':'Creative',c.creative)}</div><div class="business-profile-grid">${businessMini(lang==='es'?'Audiencia':'Audience',c.audience)}${businessMini(lang==='es'?'Campaña':'Campaign',c.campaign)}</div><div class="business-profile-actions"><button class="btn primary ask-btn" data-action-code="openChat(${chatArg(businessProfileChatPrompt())})">${lang==='es'?'Preguntar qué haría':'Ask what to do'}</button><button class="btn" data-action-code="openChat(${chatArg(lang==='es'?'Quiero corregir o completar mi perfil de negocio. Hazme una pregunta simple a la vez.':'I want to correct or complete my business profile. Ask me one simple question at a time.')})">${lang==='es'?'Ajustar perfil':'Adjust profile'}</button></div></div>`;
+}
+function passiveStepGuide(stepId){
+ const es={
+  insights:['Leer sin tocar','El agente lee datos reales y no cambia anuncios.','Cuando conectes Meta, este paso se valida con datos reales.'],
+  dryrun:['Revisar con ayuda','El resumen diario usa datos reales y prepara ideas sin tocar dinero.','Puedes actualizarlo desde Lectura diaria o desde el chat.'],
+  approval:['Pedir tu sí','Los cambios importantes esperan tu aprobación.','Revisa Aprobaciones para ver las solicitudes pendientes.'],
+  live:['Con supervisión','El agente lee datos reales y prepara acciones. Los cambios importantes esperan tu sí.','Entra al dashboard y deja la supervisión activa.'],
+  smoke:['Prueba pequeña','Solo cuando quieras probar un cambio real muy pequeño.','No hace falta para entrar al dashboard.']
+ };
+ const en={
+  insights:['Read only','The agent reads real data and does not change ads.','Once Meta is connected, this step checks real results.'],
+  dryrun:['Review with help','The daily brief uses real data and prepares ideas without spending money.','You can refresh it from Daily Brief or ask chat.'],
+  approval:['Ask for your yes','Important changes wait for your approval.','Check Approvals for pending requests.'],
+  live:['Supervised mode','The agent reads real data and prepares actions. Important changes wait for your yes.','Enter the dashboard and keep supervision on.'],
+  smoke:['Tiny test','Only when you want to try a very small real change.','You do not need this to enter the dashboard.']
+ };
+ if(stepId==='guide')return usageCheatSheetMarkup(true);
+ const copy=(lang==='es'?es:en)[stepId]||[stepCopy(stepId)[0],stepCopy(stepId)[1],lang==='es'?'Usa Siguiente cuando estes listo.':'Use Next when you are ready.'];
+ return `<div class="passive-guide"><div class="passive-card"><span class="passive-state">${lang==='es'?'Paso de revisión':'Review step'}</span><b>${copy[0]}</b><p>${copy[1]}</p></div><div class="passive-side"><b>${lang==='es'?'Qué hacer ahora':'What to do now'}</b><p>${copy[2]}</p></div></div>`;
+}
+let metaGuideSlide=0;
+function metaTokenSlides(){
+ const es=[
+  {title:'Entra a Meta Developers',shot:'Paso 1',image:'tutorial-meta/paso-01-meta-developers.png',body:'Abre Meta for Developers. Si ya tienes sesión iniciada, toca Mis aplicaciones.',items:['Esto te lleva al lugar donde se crean las apps de Meta.','No necesitas escribir nada todavía.'],actions:[{label:'Abrir Meta Developers',href:'https://developers.facebook.com/apps/',primary:true}]},
+  {title:'Toca Crear app',shot:'Paso 2',image:'tutorial-meta/paso-02-crear-app.png',body:'En la lista de apps, toca Create App o Crear app.',items:['Si ya tienes una app preparada para este negocio, puedes abrir esa app.','Para compradores nuevos, lo normal es crear una nueva.']},
+  {title:'Pon nombre y correo',shot:'Paso 3',image:'tutorial-meta/paso-03-detalles-app.png',body:'Escribe un nombre fácil de reconocer y confirma tu correo.',items:['Ejemplo: Agente Automatizador de Ads.','Usa un correo que revises.','Luego toca Next o Siguiente.']},
+  {title:'Marca Marketing API',shot:'Paso 4',image:'tutorial-meta/paso-04-casos-uso.png',body:'En casos de uso, marca Create & manage ads with Marketing API.',items:['Este permiso permite que Admira lea y gestione anuncios.','Si Meta muestra Meta Ads Manager como segundo caso, déjalo como aparece en tu pantalla.','Luego continúa.']},
+  {title:'Elige tu negocio',shot:'Paso 5',image:'tutorial-meta/paso-05-negocio.png',body:'Selecciona el negocio o Business Portfolio dueño de tu cuenta publicitaria.',items:['Debe ser el negocio correcto, no uno de prueba.','Si ves varios, elige donde vive tu cuenta de anuncios real.','Luego toca Next.']},
+  {title:'Revisa requisitos',shot:'Paso 6',image:'tutorial-meta/paso-06-requisitos.png',body:'Si Meta dice que no hay requisitos pendientes, solo toca Next.',items:['No cambies nada aquí si todo aparece limpio.','Si Meta muestra un requisito, léelo antes de continuar.']},
+  {title:'Crea la app',shot:'Paso 7',image:'tutorial-meta/paso-07-crear-app-final.png',body:'En la pantalla de resumen, revisa que Marketing API y tu negocio estén bien. Luego toca Create app.',items:['No cambies los casos de uso en esta pantalla.','Este botón termina la creación de la app.']},
+  {title:'Abre configuración básica',shot:'Paso 8',image:'tutorial-meta/paso-08-dashboard-basic.png',body:'Cuando entres al dashboard de la app, ve al menú izquierdo y abre App settings > Basic.',items:['Esta pantalla confirma que la app quedó creada.','Desde aquí seguimos hacia el negocio y el Usuario del sistema.']},
+  {title:'Falta tu captura: Usuario del sistema',shot:'Pendiente',body:'Ahora falta la parte final en Meta Business: crear el Usuario del sistema que tendrá la clave estable.',items:['Entra a Configuración del negocio.','Busca Usuarios del sistema.','Crea uno nuevo con un nombre simple, por ejemplo Admira IA.'],actions:[{label:'Abrir Meta Business',href:'/api/social/login',primary:true,code:"connectMetaStarted('stable')"}]},
+  {title:'Falta tu captura: acceso a activos',shot:'Pendiente',body:'Selecciona ese Usuario del sistema y dale acceso a la app, cuenta publicitaria, página de Facebook e Instagram si aplica.',items:['La cuenta publicitaria debe tener permiso suficiente para anuncios.','La página es necesaria para crear anuncios.','El Pixel/Instagram solo si los usarás.']},
+  {title:'Falta tu captura: generar clave',shot:'Pendiente',body:'Genera el token para ese Usuario del sistema, elige tu app y marca los permisos necesarios.',items:['ads_read','ads_management','pages_show_list y pages_read_engagement','business_management si Meta lo pide para tus activos.']},
+  {title:'Pega la clave aquí',shot:'Final',body:'Copia la clave completa que Meta te muestra. Pégala aquí y Admira buscará tus cuentas automáticamente.',items:['La clave queda guardada solo en esta instalación.','Nosotros no la vemos.','Si Meta no muestra cuentas, normalmente falta asignar activos al Usuario del sistema.']}
+ ];
+ const en=[
+  {title:'Open Meta Developers',shot:'Step 1',image:'tutorial-meta/paso-01-meta-developers.png',body:'Open Meta for Developers. If you are already signed in, click My Apps.',items:['This is where Meta apps are created.','You do not need to type anything yet.'],actions:[{label:'Open Meta Developers',href:'https://developers.facebook.com/apps/',primary:true}]},
+  {title:'Click Create App',shot:'Step 2',image:'tutorial-meta/paso-02-crear-app.png',body:'In the app list, click Create App.',items:['If you already have an app prepared for this business, you can open it.','For new buyers, creating a new one is usually cleaner.']},
+  {title:'Add name and email',shot:'Step 3',image:'tutorial-meta/paso-03-detalles-app.png',body:'Write an easy app name and confirm your email.',items:['Example: Ads Automation Agent.','Use an email you check.','Then click Next.']},
+  {title:'Choose Marketing API',shot:'Step 4',image:'tutorial-meta/paso-04-casos-uso.png',body:'In use cases, select Create & manage ads with Marketing API.',items:['This lets Admira read and manage ads.','If Meta shows Meta Ads Manager as a second use case, leave it as shown.','Then continue.']},
+  {title:'Choose your business',shot:'Step 5',image:'tutorial-meta/paso-05-negocio.png',body:'Select the Business Portfolio that owns your ad account.',items:['Choose the real business, not a test one.','If you see several, choose the one with your real ad account.','Then click Next.']},
+  {title:'Review requirements',shot:'Step 6',image:'tutorial-meta/paso-06-requisitos.png',body:'If Meta says there are no pending requirements, just click Next.',items:['Do not change anything here if the screen is clean.','If Meta shows a requirement, read it before continuing.']},
+  {title:'Create the app',shot:'Step 7',image:'tutorial-meta/paso-07-crear-app-final.png',body:'On the summary screen, confirm Marketing API and the business are correct. Then click Create app.',items:['Do not change the use cases here.','This button finishes app creation.']},
+  {title:'Open Basic settings',shot:'Step 8',image:'tutorial-meta/paso-08-dashboard-basic.png',body:'Inside the app dashboard, open App settings > Basic from the left menu.',items:['This confirms the app was created.','From here, continue to the business and System User.']},
+  {title:'Screenshot missing: System User',shot:'Pending',body:'The final Meta Business part is still missing: create the System User that will own the stable key.',items:['Open Business Settings.','Find System Users.','Create one with a simple name, like Admira IA.'],actions:[{label:'Open Meta Business',href:'/api/social/login',primary:true,code:"connectMetaStarted('stable')"}]},
+  {title:'Screenshot missing: asset access',shot:'Pending',body:'Select the System User and give access to the app, ad account, Facebook Page, and Instagram if needed.',items:['The ad account needs enough ad permissions.','The Page is needed to create ads.','Pixel/Instagram only if you use them.']},
+  {title:'Screenshot missing: generate key',shot:'Pending',body:'Generate the token for that System User, choose your app, and select the needed permissions.',items:['ads_read','ads_management','pages_show_list and pages_read_engagement','business_management if Meta asks for your assets.']},
+  {title:'Paste the key here',shot:'Final',body:'Copy the full key Meta shows you. Paste it here and Admira will find your accounts automatically.',items:['The key stays only in this install.','We do not see it.','If Meta returns no accounts, the System User usually needs asset access.']}
+ ];
+ return lang==='es'?es:en;
+}
+function renderMetaTokenSlide(){
+ const slides=metaTokenSlides();const total=slides.length;metaGuideSlide=Math.max(0,Math.min(metaGuideSlide,total-1));const s=slides[metaGuideSlide];
+ const isLast=metaGuideSlide===total-1;
+ const nextAction=isLast?"showMetaTokenBox('stable')":`setMetaGuideSlide(${metaGuideSlide+1})`;
+ const imageMarkup=s.image?`<img src="/assets/${encodeURIComponent(s.image)}" alt="${escapeHtml(s.title)}" loading="lazy">`:`<div><span>${escapeHtml(s.shot)}</span><p>${lang==='es'?'Aquí irá la captura real de este paso.':'The real screenshot for this step will go here.'}</p></div>`;
+ const slideActions=(s.actions||[]).map(action=>`<a class="btn ${action.primary?'primary':''}" href="${escapeHtml(action.href)}" target="_blank" rel="noopener" ${action.code?`data-action-code="${escapeHtml(action.code)}"`:''}>${escapeHtml(action.label)}</a>`).join('');
+ return `<div class="meta-token-slider"><div class="meta-slide-copy"><span class="meta-slide-count">${lang==='es'?'Paso':'Step'} ${metaGuideSlide+1}/${total}</span><h4>${escapeHtml(s.title)}</h4><p>${escapeHtml(s.body)}</p><ul>${s.items.map(item=>`<li>${escapeHtml(item)}</li>`).join('')}</ul>${slideActions?`<div class="meta-slide-actions">${slideActions}</div>`:''}<div class="meta-slider-controls"><button class="btn" type="button" data-action-code="setMetaGuideSlide(${metaGuideSlide-1})" ${metaGuideSlide===0?'disabled':''}>${lang==='es'?'Anterior':'Back'}</button><button class="btn ${isLast?'primary':''}" type="button" data-action-code="${nextAction}">${isLast?(lang==='es'?'Pegar clave':'Paste key'):(lang==='es'?'Siguiente':'Next')}</button><div class="meta-slider-dots">${slides.map((_,i)=>`<button class="${i===metaGuideSlide?'active':''}" type="button" aria-label="${lang==='es'?'Ver paso':'View step'} ${i+1}" data-action-code="setMetaGuideSlide(${i})"></button>`).join('')}</div></div></div><div class="meta-slide-shot ${s.image?'':'missing'}">${imageMarkup}</div></div>`;
+}
+function setMetaGuideSlide(index){metaGuideSlide=Math.max(0,Math.min(Number(index)||0,metaTokenSlides().length-1));const box=qs('#meta-token-slider');if(box)box.innerHTML=renderMetaTokenSlide()}
+function metaConnectionGuide(){
+ const v=state.config.setup_values||{};
+ const tokenLabel=lang==='es'?'Clave de Facebook/Meta':'Facebook/Meta key';
+ const tokenPlaceholder=lang==='es'?'Pega aquí la clave completa que Meta te mostró':'Paste the full key Meta showed you';
+ const tokenNotice=lang==='es'?'Se guarda automáticamente al pegarla. Nosotros no recibimos esta clave; queda local en esta instalación. Puedes cambiarla después desde Configuración.':'It saves automatically when pasted. We do not receive this key; it stays local to this install. You can change it later from Setup.';
+ if(lang==='es')return `<div class="setup-guide private-connection meta-token-walkthrough"><section class="guide-hero"><div class="guide-main"><span class="guide-eyebrow">Paso seguro</span><h3>Conectar mi cuenta de Facebook</h3><p>En este paso vas a crear una app en Meta. Esa app sirve como puente privado entre tu cuenta de Facebook/Meta y tu agente de IA. Es personal para tu negocio, queda bajo tu control y es más segura que conectar tu cuenta a una plataforma externa.</p><div class="guide-actions"><button class="btn" type="button" data-action-code="showMetaTokenBox('stable')">Ya tengo la clave</button></div></div><aside class="guide-checklist"><b>Lo que necesitas</b><ol><li>Ser administrador del negocio en Meta.</li><li>Una cuenta publicitaria real.</li><li>La página de Facebook de tu negocio.</li><li>Una app de Meta conectada al negocio.</li></ol></aside></section><div id="meta-token-slider">${renderMetaTokenSlide()}</div><div id="meta-token-box" class="token-box"><label>${tokenLabel}<textarea id="meta-token-input" data-input-code="scheduleMetaTokenAutoSave()" data-paste-code="setTimeout(scheduleMetaTokenAutoSave,0)" placeholder="${tokenPlaceholder}"></textarea></label><button class="btn" type="button" data-action-code="saveMetaToken()">Reintentar guardar</button><p class="notice">${tokenNotice}</p></div><div id="social-account-results" class="setup-guide"></div><div class="guide-panel"><b>Por qué esto es más seguro</b><p>La conexión queda entre tu cuenta de Meta y tu instalación local. Si algún día quieres cortar acceso, eliminas esa clave desde Meta y listo.</p></div></div>`;
+ return `<div class="setup-guide private-connection meta-token-walkthrough"><section class="guide-hero"><div class="guide-main"><span class="guide-eyebrow">Secure step</span><h3>Connect my Facebook account</h3><p>In this step you will create a Meta app. That app works as a private bridge between your Facebook/Meta account and your AI agent. It is personal to your business, stays under your control, and is safer than connecting your account to an external platform.</p><div class="guide-actions"><button class="btn" type="button" data-action-code="showMetaTokenBox('stable')">I have the key</button></div></div><aside class="guide-checklist"><b>What you need</b><ol><li>Admin access to the Meta business.</li><li>A real ad account.</li><li>Your business Facebook Page.</li><li>A Meta app connected to the business.</li></ol></aside></section><div id="meta-token-slider">${renderMetaTokenSlide()}</div><div id="meta-token-box" class="token-box"><label>${tokenLabel}<textarea id="meta-token-input" data-input-code="scheduleMetaTokenAutoSave()" data-paste-code="setTimeout(scheduleMetaTokenAutoSave,0)" placeholder="${tokenPlaceholder}"></textarea></label><button class="btn" type="button" data-action-code="saveMetaToken()">Retry save</button><p class="notice">${tokenNotice}</p></div><div id="social-account-results" class="setup-guide"></div><div class="guide-panel"><b>Why this is safer</b><p>The connection stays between your Meta account and your local install. If you ever want to cut access, revoke that key from Meta.</p></div></div>`;
+}
+function accountPickerGuide(){
+ const v=state.config.setup_values||{};
+ if(lang==='es')return `<div class="setup-guide private-connection"><section class="guide-hero"><div class="guide-main"><span class="guide-eyebrow">Cuenta publicitaria</span><h3>Elige una cuenta y seguimos solos</h3><p>Despues de tocar <strong>Usar esta cuenta</strong>, la guia guarda la cuenta y avanza al siguiente paso automaticamente.</p><div class="guide-actions"><button class="btn primary" type="button" data-action-code="refreshSocialAccounts()">Buscar mis cuentas</button><button class="btn" type="button" data-action-code="openChat('Ayudame a elegir la cuenta publicitaria correcta con palabras simples.')">${t('ask_agent')}</button></div></div><aside class="guide-checklist"><b>Que debes elegir</b><ol><li>La cuenta donde estan tus campanas reales.</li><li>La cuenta donde tienes permiso para administrar anuncios.</li><li>Si solo aparece una, normalmente esa es la correcta.</li></ol></aside></section><div id="social-account-results" class="setup-guide"></div><details class="fallback-details"><summary>Solo si no aparecen tus cuentas</summary><form class="manual-account onboarding-mini" data-submit-code="saveOnboardingSetupConfig(event)"><b>Pegar ID manualmente</b><p>Usa esto solo si el buscador de cuentas no funciona. Se ve asi: <strong>act_123456789</strong>.</p><label>${t('ad_account_id')}<input name="ad_account_id" value="${escapeHtml(v.ad_account_id||'')}" placeholder="act_123456789"></label><button class="btn primary" type="submit">${t('save_setup')}</button></form></details></div>`;
+ return `<div class="setup-guide private-connection"><section class="guide-hero"><div class="guide-main"><span class="guide-eyebrow">Ad account</span><h3>Choose one account and we continue automatically</h3><p>After you click <strong>Use this account</strong>, the guide saves the account and moves to the next step by itself.</p><div class="guide-actions"><button class="btn primary" type="button" data-action-code="refreshSocialAccounts()">Find my accounts</button><button class="btn" type="button" data-action-code="openChat('Help me choose the right ad account in simple words.')">${t('ask_agent')}</button></div></div><aside class="guide-checklist"><b>What to choose</b><ol><li>The account with your real campaigns.</li><li>The account where you can manage ads.</li><li>If only one appears, it is usually the right one.</li></ol></aside></section><div id="social-account-results" class="setup-guide"></div><details class="fallback-details"><summary>Only if your accounts do not appear</summary><form class="manual-account onboarding-mini" data-submit-code="saveOnboardingSetupConfig(event)"><b>Paste ID manually</b><p>Use this only if account search does not work. It looks like <strong>act_123456789</strong>.</p><label>${t('ad_account_id')}<input name="ad_account_id" value="${escapeHtml(v.ad_account_id||'')}" placeholder="act_123456789"></label><button class="btn primary" type="submit">${t('save_setup')}</button></form></details></div>`;
+}
+function destinationPickerGuide(){
+ const v=state.config.setup_values||{};
+ const current=[v.page_id?`${lang==='es'?'Pagina':'Page'}: ${escapeHtml(v.page_id)}`:'',v.instagram_actor_id?`Instagram: ${escapeHtml(v.instagram_actor_id)}`:'',v.landing_url?`${lang==='es'?'Web':'Website'}: ${escapeHtml(v.landing_url)}`:''].filter(Boolean).join(' · ');
+ if(lang==='es')return `<div class="setup-guide private-connection"><section class="guide-hero"><div class="guide-main"><span class="guide-eyebrow">Destino de anuncios</span><h3>Busquemos tus páginas automáticamente</h3><p>Con la clave de Meta que ya pegaste, el dashboard intenta traer tus páginas de Facebook, el Instagram conectado y la web. Normalmente solo eliges la página correcta y seguimos.</p><div class="guide-actions"><button class="btn primary" type="button" data-action-code="discoverMetaAssets('${escapeHtml(v.ad_account_id||'')}')">Buscar páginas e Instagram</button><button class="btn" type="button" data-action-code="openChat('Ayúdame a escoger la página de Facebook correcta para mis anuncios.')">${t('ask_agent')}</button></div>${current?`<p class="notice">Guardado ahora: ${current}</p>`:''}</div><aside class="guide-checklist"><b>Qué estamos buscando</b><ol><li>Tu página de Facebook para publicar los anuncios.</li><li>Tu Instagram conectado, si existe.</li><li>El link de tu web para enviar visitas.</li></ol></aside></section><div id="destination-discovery-results" class="setup-guide"></div><details class="fallback-details"><summary>Solo si no aparece tu página</summary><form class="manual-account onboarding-mini two" data-submit-code="saveOnboardingSetupConfig(event)"><b>Escribir datos manualmente</b><p>Usa esto solo si Meta no devuelve tus páginas. El agente también puede ayudarte por chat a encontrarlas.</p><label>${t('page_id')}<input name="page_id" value="${escapeHtml(v.page_id||'')}" placeholder="123456789"></label><label>${t('instagram_actor_id')}<input name="instagram_actor_id" value="${escapeHtml(v.instagram_actor_id||'')}" placeholder="opcional"></label><label>${t('landing_url')}<input name="landing_url" value="${escapeHtml(v.landing_url||'')}" placeholder="https://..."></label><button class="btn primary" type="submit">${t('save_setup')}</button></form></details></div>`;
+ return `<div class="setup-guide private-connection"><section class="guide-hero"><div class="guide-main"><span class="guide-eyebrow">Ad destination</span><h3>Let's find your pages automatically</h3><p>Using the token you already pasted, the dashboard tries to load your Facebook Pages, connected Instagram, and website. Usually you only choose the correct Page and continue.</p><div class="guide-actions"><button class="btn primary" type="button" data-action-code="discoverMetaAssets('${escapeHtml(v.ad_account_id||'')}')">Find Pages and Instagram</button><button class="btn" type="button" data-action-code="openChat('Help me choose the right Facebook Page for my ads.')">${t('ask_agent')}</button></div>${current?`<p class="notice">Saved now: ${current}</p>`:''}</div><aside class="guide-checklist"><b>What we are finding</b><ol><li>Your Facebook Page for publishing ads.</li><li>Your connected Instagram, if one exists.</li><li>Your website or landing page link.</li></ol></aside></section><div id="destination-discovery-results" class="setup-guide"></div><details class="fallback-details"><summary>Only if your Page does not appear</summary><form class="manual-account onboarding-mini two" data-submit-code="saveOnboardingSetupConfig(event)"><b>Paste details manually</b><p>Use this only if Meta does not return your pages. The agent can also help you find them by chat.</p><label>${t('page_id')}<input name="page_id" value="${escapeHtml(v.page_id||'')}" placeholder="123456789"></label><label>${t('instagram_actor_id')}<input name="instagram_actor_id" value="${escapeHtml(v.instagram_actor_id||'')}" placeholder="optional"></label><label>${t('landing_url')}<input name="landing_url" value="${escapeHtml(v.landing_url||'')}" placeholder="https://..."></label><button class="btn primary" type="submit">${t('save_setup')}</button></form></details></div>`;
+}
+function firstActionableOnboardingIndex(steps){
+ const next=steps.findIndex(s=>s.status!=='ok');
+ return next>=0?next:Math.max(0,steps.length-1);
+}
+function advanceOnboardingAfterLoad(){
+ const steps=onboardingSteps();
+ const next=firstActionableOnboardingIndex(steps);
+ if(next>onboardingFlowStep)onboardingFlowStep=next;
+ renderOnboardingFlow();
+}
+function renderOnboardingFlow(){
+ const flow=qs('#onboarding-flow');if(!flow)return;
+ if(uiWorkbenchPreview){flow.classList.remove('open');flow.innerHTML='';return}
+ const doneState=state.onboarding||{};
+ if(doneState.completed&&!doneState.requires_repair){flow.classList.remove('open');return}
+ const steps=onboardingSteps();if(onboardingFlowStep>=steps.length)onboardingFlowStep=steps.length-1;
+ if(!onboardingFlowTouched&&(steps[onboardingFlowStep]||{}).status==='ok')onboardingFlowStep=firstActionableOnboardingIndex(steps);
+ const step=steps[onboardingFlowStep]||steps[0];const copyStep=stepCopy(step.id);const doneCount=steps.filter(s=>s.status==='ok').length;
+ const isLast=onboardingFlowStep===steps.length-1;
+ const canGoNext=!isLast&&step.status!=='blocked';
+ const nextButton=canGoNext?`<button class="btn" data-action-code="onboardingFlowTouched=true;onboardingFlowStep=Math.min(${steps.length-1},onboardingFlowStep+1);renderOnboardingFlow()">${lang==='es'?'Siguiente':'Next'}</button>`:'';
+ const finishButton=isLast?`<button class="btn primary" data-action-code="completeOnboarding()">${lang==='es'?'Terminar y abrir dashboard':'Finish and open dashboard'}</button>`:'';
+ const skipButton=`<button class="btn" data-action-code="skipOnboarding()">${lang==='es'?'Saltar y completar luego':'Skip and finish later'}</button>`;
+ const repairNotice=doneState.requires_repair?`<div class="guide-card"><b>${lang==='es'?'Reconectemos tus datos reales':'Reconnect your real data'}</b><p>${lang==='es'?'Tu configuración anterior quedó incompleta o perdió la conexión con Meta. Completa los pasos que falten para que el dashboard no use información de demostración.':'Your previous setup is incomplete or lost its Meta connection. Complete the missing steps so the dashboard does not use demonstration information.'}</p></div>`:'';
+ const securityNotice=`<div class="onboarding-security-note"><div><b>${lang==='es'?'Instalación privada y segura':'Private and secure install'}</b><p>${lang==='es'?'Recuerda: nada de lo que coloques aquí lo podemos ver nosotros. Esta instalación vive en tu propio entorno y solo entra tu dispositivo autorizado. Es más privada que entregar tus credenciales a un SaaS. Si tienes dudas, contáctanos.':'Remember: we cannot see anything you enter here. This install lives in your own environment and only your authorized device can enter. It is more private than handing credentials to a SaaS. Contact us if you have questions.'}</p></div></div>`;
+ flow.classList.add('open');
+ flow.innerHTML=`<div class="onboarding-shell"><aside class="onboarding-side"><h1>Admira IA</h1><p>${lang==='es'?'Conecta lo esencial. Después hablarás con el agente por Telegram para contarle tu negocio con calma.':'Connect the essentials. Then you talk with the agent through Telegram so it can learn the business calmly.'}</p><div class="onboarding-progress">${steps.map((s,i)=>`<span class="${i<=onboardingFlowStep?'done':''}"></span>`).join('')}</div><p>${doneCount}/${steps.length} ${stepCopy('progress')}</p></aside><main class="onboarding-card">${securityNotice}${repairNotice}<h2>${copyStep[0]}</h2><p>${copyStep[1]}</p>${onboardingFormFor(step.id)}<div class="onboarding-step-actions"><button class="btn" ${onboardingFlowStep===0?'disabled':''} data-action-code="onboardingFlowTouched=true;onboardingFlowStep=Math.max(0,onboardingFlowStep-1);renderOnboardingFlow()">${lang==='es'?'Atrás':'Back'}</button>${nextButton}${skipButton}${finishButton}</div></main></div>`;
+ maybeAutoDiscoverDestination(step.id);
+}
+function maybeAutoDiscoverDestination(stepId){
+ if(stepId!=='destination')return;
+ const v=state.config.setup_values||{};const account=v.ad_account_id||'';
+ if(!account||v.page_id)return;
+ const key=`${account}:${v.page_id||''}:${v.landing_url||''}`;
+ if(destinationAutoDiscoveryKey===key)return;
+ destinationAutoDiscoveryKey=key;
+ setTimeout(()=>discoverMetaAssets(account),60);
+}
+function usageCheatSheetMarkup(onboarding=false){const cards=lang==='es'?[
+ ['Habla primero','Usa el chat como si hablaras con un manager: "qué hacemos hoy", "revisa presupuesto", "prepara una campaña para mi oferta".'],
+ ['El dashboard es control','Mira números, aprobaciones y actividad cuando quieras verificar qué vio el agente y qué dejó preparado.'],
+ ['Pide una cosa concreta','Mientras más simple la petición, mejor responde: producto, país, presupuesto y objetivo. Si falta algo, el agente debe preguntarte.'],
+ ['Crear en pausa es borrador seguro','Cuando algo nuevo nace en pausa, todavía no empezó a gastar ni aprender. Es distinto a prender, pausar y reactivar campañas vivas muchas veces.'],
+ ['Supervisión antes de piloto automático','Primero deja que lea datos reales, recomiende y prepare. Activa piloto automático solo cuando entiendas qué puede hacer solo.'],
+ ['Aprueba con calma','El chat puede preparar acciones, pero las decisiones riesgosas se confirman desde aprobaciones. Esa pausa es parte de la seguridad.'],
+ ['Vuelve a esta guía','Si te pierdes, abre Configuración > Guía y pídele al agente un resumen en palabras simples.']
+]:[
+ ['Talk first','Use chat like a manager: "what should we do today", "review budget", "prepare a campaign for my offer".'],
+ ['Dashboard is control','Use the dashboard to verify numbers, approvals, and activity when you want to see what the agent saw and prepared.'],
+ ['Ask one concrete thing','Simple requests work best: product, country, budget, and goal. If something is missing, the agent should ask.'],
+ ['Paused creation is a safe draft','When something new starts paused, it has not spent or learned yet. That is different from repeatedly pausing and resuming live campaigns.'],
+ ['Supervised before autopilot','Let it read real data, recommend, and prepare first. Enable autopilot only when you understand what it can do by itself.'],
+ ['Approve calmly','Chat can prepare actions, but risky decisions are confirmed in approvals. That pause is part of the safety.'],
+ ['Return to this guide','If you feel lost, open Setup > Guide and ask the agent for a plain-language catch-up.']
+];return `<div class="${onboarding?'setup-guide':'guide-panel'}" id="${onboarding?'':'usage-guide-card'}"><div class="next-step"><div><b>${lang==='es'?'Guía rápida de uso':'Quick usage guide'}</b><p>${lang==='es'?'La filosofía: conversa con el agente y usa el dashboard para confirmar, aprobar y revisar.':'The philosophy: talk with the agent and use the dashboard to confirm, approve, and review.'}</p></div><button class="btn ask-btn" data-action-code="openChat(lang==='es'?'Explícame cómo usar este producto con palabras muy simples.':'Explain how to use this product in very simple words.')">${t('ask_agent')}</button></div><div class="trust-grid">${cards.map(c=>`<div class="trust-card"><b>${c[0]}</b><p>${c[1]}</p></div>`).join('')}</div></div>`}
+function renderUsageCheatsheet(){const box=qs('#usage-cheatsheet');if(box)box.innerHTML=''}
+function closeUsageGuide(){const box=qs('#guide-overlay');if(!box)return;box.classList.remove('open','product-tour');box.innerHTML=''}
+function openUsageGuide(){
+ const box=qs('#guide-overlay');if(!box)return;
+ box.classList.remove('product-tour');
+ box.innerHTML=`<div class="guide-modal-card"><div class="next-step"><div><h2>${lang==='es'?'Guía rápida':'Quick guide'}</h2><p>${lang==='es'?'Tarjetas cortas para recordar cómo usar el producto sin llenar la pantalla principal.':'Short cards to remember how to use the product without filling the main screen.'}</p></div><button class="btn" type="button" data-action-code="closeUsageGuide()">${lang==='es'?'Cerrar':'Close'}</button></div>${usageCheatSheetMarkup(false)}</div>`;
+ box.classList.add('open')
+}
+let dashboardIntroTourIndex=0;
+let dashboardIntroTourRetry=0;
+function dashboardIntroTourSteps(){
+ return lang==='es'?[
+  {selectors:['#theme-toggle'],title:'Elige el estilo que más te guste',body:'Este es el primer ajuste. Aurora es claro y suave, Sapphire es oscuro elegante y Ember es oscuro intenso. Cambia el tema cuando quieras.'},
+  {selectors:['.agent-chat-bar'],title:'Habla con tu manager',body:'Esta barra es la forma principal de usar el producto. Escribe como si hablaras con una persona: “qué hago hoy”, “crea una campaña”, “revisa mis creativos”.'},
+  {selectors:['.view-switcher'],title:'Cambia la forma de ver tus anuncios',body:'Control muestra lo importante del día. Timeline muestra anuncios activos. Vista total enseña métricas generales. Showcase es una vista más visual.'},
+  {selectors:['#toggle-left-panel','.brief-zone .zone-label'],title:'Lectura diaria',body:'Aquí vive el resumen de la mañana. Si está cerrado, toca el encabezado para abrirlo y ver qué está vigilando el agente.'},
+  {selectors:['#toggle-right-panel','.rail .zone-label'],title:'Aprobaciones y actividad',body:'Los cambios delicados aparecen aquí antes de ejecutarse. Es tu zona de seguridad para aprobar, rechazar y revisar qué se hizo.'},
+  {selectors:['nav.tabs','.tabs'],title:'Menú principal',body:'Desde aquí entras a configuración, creador, audiencias, creativos y reportes. No necesitas usar todo: el chat también puede llevarte.'},
+  {selectors:['.header-guide-btn'],title:'Guía rápida siempre disponible',body:'Si te pierdes, toca este botón. Abre tarjetas simples para recordar cómo usar el producto sin ruido.'}
+ ]:[
+  {selectors:['#theme-toggle'],title:'Choose your favorite style',body:'Start here. Aurora is soft and light, Sapphire is elegant dark, and Ember is intense dark. You can change it anytime.'},
+  {selectors:['.agent-chat-bar'],title:'Talk to your manager',body:'This bar is the main way to use the product. Write naturally: “what should I do today”, “create a campaign”, “review my creatives”.'},
+  {selectors:['.view-switcher'],title:'Switch ad views',body:'Control shows today’s essentials. Timeline shows active ads. Overview shows broader metrics. Showcase is more visual.'},
+  {selectors:['#toggle-left-panel','.brief-zone .zone-label'],title:'Daily reading',body:'This is the morning summary. If it is closed, tap the header to open what the agent is watching.'},
+  {selectors:['#toggle-right-panel','.rail .zone-label'],title:'Approvals and activity',body:'Sensitive actions appear here before execution. This is your safety area to approve, reject, and review what happened.'},
+  {selectors:['nav.tabs','.tabs'],title:'Main menu',body:'Go to setup, creator, audiences, creatives, and reports from here. You do not need to use everything: chat can guide you too.'},
+  {selectors:['.header-guide-btn'],title:'Quick guide anytime',body:'If you feel lost, tap this button. It opens simple reminder cards without cluttering the dashboard.'}
+ ];
+}
+function dashboardIntroBlocked(){
+ const unlock=qs('#unlock-overlay')?.classList.contains('open');
+ const onboarding=qs('#onboarding-flow')?.classList.contains('open');
+ const confirm=qs('#confirm-overlay')?.classList.contains('open');
+ return uiWorkbenchPreview||unlock||onboarding||confirm||!(state?.onboarding?.completed);
+}
+function startDashboardIntroTourIfPending(){
+ if(localStorage.getItem('dashboardIntroTourPending')!=='1')return;
+ if(dashboardIntroBlocked()){
+  dashboardIntroTourRetry+=1;
+  if(dashboardIntroTourRetry<8)setTimeout(startDashboardIntroTourIfPending,700);
+  return;
+ }
+ dashboardIntroTourRetry=0;
+ localStorage.removeItem('dashboardIntroTourPending');
+ startDashboardIntroTour(true);
+}
+function startDashboardIntroTour(force=false){
+ if(!force&&localStorage.getItem('dashboardIntroTourDone')==='1')return;
+ const box=qs('#guide-overlay');if(!box)return;
+ dashboardIntroTourIndex=0;
+ box.classList.add('open','product-tour');
+ renderDashboardIntroTour();
+}
+function finishDashboardIntroTour(){
+ const box=qs('#guide-overlay');if(box){box.classList.remove('open','product-tour');box.innerHTML=''}
+ localStorage.setItem('dashboardIntroTourDone','1');
+}
+function nextDashboardIntroTour(){dashboardIntroTourIndex+=1;renderDashboardIntroTour()}
+function previousDashboardIntroTour(){dashboardIntroTourIndex=Math.max(0,dashboardIntroTourIndex-1);renderDashboardIntroTour()}
+function findTourTarget(step){
+ for(const selector of step.selectors||[]){const target=qs(selector);if(target&&target.getBoundingClientRect().width>0&&target.getBoundingClientRect().height>0)return target}
+ return null;
+}
+function clampTourPosition(value,min,max){return Math.max(min,Math.min(value,max))}
+function renderDashboardIntroTour(){
+ const steps=dashboardIntroTourSteps();
+ if(dashboardIntroTourIndex>=steps.length){finishDashboardIntroTour();return}
+ const step=steps[dashboardIntroTourIndex];
+ const target=findTourTarget(step);
+ if(!target){dashboardIntroTourIndex+=1;renderDashboardIntroTour();return}
+ target.scrollIntoView({block:'center',inline:'center',behavior:'smooth'});
+ setTimeout(()=>renderDashboardIntroTourAtTarget(target,step,steps.length),170);
+}
+function renderDashboardIntroTourAtTarget(target,step,total){
+ const box=qs('#guide-overlay');if(!box||!box.classList.contains('product-tour'))return;
+ const rect=target.getBoundingClientRect();
+ const pad=7;
+ const spot={left:Math.max(8,rect.left-pad),top:Math.max(8,rect.top-pad),width:Math.min(window.innerWidth-16,rect.width+(pad*2)),height:Math.min(window.innerHeight-16,rect.height+(pad*2))};
+ const cardWidth=Math.min(360,window.innerWidth-28);
+ const cardHeight=210;
+ const below=spot.top+spot.height+14;
+ const above=spot.top-cardHeight-14;
+ const top=below+cardHeight<window.innerHeight-12?below:Math.max(12,above);
+ const left=clampTourPosition(spot.left+spot.width/2-cardWidth/2,14,window.innerWidth-cardWidth-14);
+ const isLast=dashboardIntroTourIndex>=total-1;
+ const count=lang==='es'?`Paso ${dashboardIntroTourIndex+1}/${total}`:`Step ${dashboardIntroTourIndex+1}/${total}`;
+ const back=lang==='es'?'Atrás':'Back';
+ const next=isLast?(lang==='es'?'Terminar':'Finish'):(lang==='es'?'Siguiente':'Next');
+ const skip=lang==='es'?'Omitir':'Skip';
+ box.innerHTML=`<div class="tour-spot" data-style-code="left:${spot.left}px;top:${spot.top}px;width:${spot.width}px;height:${spot.height}px"></div><article class="tour-card" data-style-code="left:${left}px;top:${top}px"><span class="tour-step-count">${count}</span><h2>${escapeHtml(step.title)}</h2><p>${escapeHtml(step.body)}</p><div class="tour-actions"><button class="btn tour-skip" type="button" data-action-code="finishDashboardIntroTour()">${skip}</button><button class="btn" type="button" ${dashboardIntroTourIndex===0?'disabled':''} data-action-code="previousDashboardIntroTour()">${back}</button><button class="btn primary" type="button" data-action-code="${isLast?'finishDashboardIntroTour()':'nextDashboardIntroTour()'}">${next}</button></div></article>`;
+}
+function scrollToUsageGuide(){openUsageGuide()}
+function renderModeControl(){const live=state.config.mode==='live'&&state.config.live_actions_enabled;const title=lang==='es'?'Nivel de control':'Control level';const detail=live?(lang==='es'?'Piloto automático activo: el agente puede ejecutar cambios reales cuando estén dentro de tus reglas. Lo que supere tus límites pasa a aprobación.':'Autopilot is active: the agent can execute real changes when they fit your rules. Anything over your limits goes to approval.'):(lang==='es'?'Con supervisión activa: el agente lee datos reales, explica y prepara acciones. Solo ejecuta el cambio exacto que tú apruebes.':'Supervised mode is active: the agent reads real data, explains, and prepares actions. It only executes the exact change you approve.');qs('#mode-control').innerHTML=`<div class="mode-panel"><div><h3>${title}: ${live?(lang==='es'?'Piloto automático':'Autopilot'):(lang==='es'?'Con supervisión':'Supervised')}</h3><p>${detail}</p></div><div class="mode-actions"><button class="btn ${!live?'active':''}" data-action-code="setMode('dry-run')">${lang==='es'?'Con supervisión':'Supervised'}</button><button class="btn ${live?'active':''}" data-action-code="setMode('live')">${lang==='es'?'Piloto automático':'Autopilot'}</button></div></div>`}
+function renderGuardrails(){
+ const g=state.config.guardrails||{};
+ const r=state.config.profitability_rules||state.decision_memory?.profitability_rules||{};
+ qs('#guardrails-panel').innerHTML=`<div class="settings-stack"><form class="onboarding-mini two" data-submit-code="saveGuardrails(event)"><label>${lang==='es'?'Cuánto puede hacer solo':'How much can it do alone?'}<select name="autonomy_mode"><option value="supervised" ${g.autonomy_mode!=='autopilot'?'selected':''}>${lang==='es'?'Con supervisión: preguntarme primero':'Supervised: ask me first'}</option><option value="autopilot" ${g.autonomy_mode==='autopilot'?'selected':''}>${lang==='es'?'Piloto automático: actuar dentro de mis reglas':'Autopilot: act inside my rules'}</option></select></label><label>${lang==='es'?'Preguntar si el presupuesto cambia más de %':'Ask if budget changes over %'}<input name="approval_required_over_pct" type="number" min="1" step="1" value="${g.approval_required_over_pct||20}"></label><label>${lang==='es'?'Piloto: cambio máximo en %':'Autopilot: max change %'}<input name="auto_budget_change_pct" type="number" min="1" step="1" value="${g.auto_budget_change_pct||10}"></label><label>${lang==='es'?'Piloto: cambio máximo en dinero':'Autopilot: max change amount'}<input name="auto_budget_change_amount" type="number" min="1" step="1" value="${g.auto_budget_change_amount||25}"></label><label>${lang==='es'?'Puede pausar solo si gastó menos de':'Can pause alone only if spend is under'}<input name="auto_pause_max_spend" type="number" min="0" step="1" value="${g.auto_pause_max_spend||100}"></label><label><input type="checkbox" name="require_approval_for_resume" ${g.require_approval_for_resume!==false?'checked':''}> ${lang==='es'?'Para reactivar, siempre preguntarme':'Resume always needs approval'}</label><label><input type="checkbox" name="require_approval_for_new_campaigns" ${g.require_approval_for_new_campaigns!==false?'checked':''}> ${lang==='es'?'Campañas nuevas siempre preguntan primero':'New campaigns always need approval'}</label><label><input type="checkbox" name="require_approval_for_creatives" ${g.require_approval_for_creatives!==false?'checked':''}> ${lang==='es'?'Anuncios nuevos siempre preguntan primero':'New creatives/ads always need approval'}</label><button class="btn primary" type="submit">${lang==='es'?'Guardar reglas':'Save rules'}</button><p class="notice">${lang==='es'?'Estas reglas separan mirar datos reales de tocar dinero real. Chat y Telegram solo aprueban una decisión exacta elegida por ti.':'These rules separate reading real data from touching real money. Chat and Telegram approve only an exact decision chosen by you.'}</p></form><form class="onboarding-mini two profitability-rules" data-submit-code="saveProfitabilityRules(event)"><div class="wide"><h3>${lang==='es'?'Reglas de rentabilidad':'Profitability rules'}</h3><p class="notice">${lang==='es'?'Estas son las líneas que el agente usa para explicar por qué recomienda subir, bajar, pausar o crear variantes. Así no decide por “intuición”; decide contra tus reglas.':'These are the lines the agent uses to explain why it recommends scaling, cutting, pausing, or refreshing creatives.'}</p></div><label>${lang==='es'?'CPA objetivo':'Target CPA'}<input name="target_cpa" type="number" min="0" step="1" value="${r.target_cpa||50}"></label><label>${lang==='es'?'ROAS mínimo sano':'Healthy ROAS floor'}<input name="target_roas" type="number" min="0" step=".1" value="${r.target_roas||2.5}"></label><label>${lang==='es'?'Gasto mínimo antes de juzgar':'Min spend before judging'}<input name="min_spend_before_judging" type="number" min="0" step="1" value="${r.min_spend_before_judging||50}"></label><label>${lang==='es'?'Compras mínimas antes de escalar':'Min purchases before scaling'}<input name="min_conversions_before_scaling" type="number" min="0" step="1" value="${r.min_conversions_before_scaling||3}"></label><label>${lang==='es'?'Frecuencia máxima antes de refrescar':'Max frequency before refresh'}<input name="max_frequency_before_refresh" type="number" min="0" step=".1" value="${r.max_frequency_before_refresh||3}"></label><label>${lang==='es'?'CTR mínimo %':'Minimum CTR %'}<input name="min_ctr_pct" type="number" min="0" step=".1" value="${r.min_ctr_pct||0.8}"></label><label class="wide">${lang==='es'?'Notas para el agente':'Notes for the agent'}<textarea name="notes" rows="3" placeholder="${lang==='es'?'Ej: prefiero proteger margen antes que vender más volumen.':'Ex: protect margin before chasing volume.'}">${escapeHtml(r.notes||'')}</textarea></label><button class="btn primary" type="submit">${lang==='es'?'Guardar rentabilidad':'Save profitability rules'}</button></form></div>`;
+}
+function licenseLabel(status){
+ if(status.status==='grace')return lang==='es'?'En periodo de gracia':'Grace period';
+ if(status.status==='cloud_server_missing'||status.status==='missing_unlock'||status.status==='expired')return lang==='es'?'No se pudo validar con el servidor':'Could not validate with server';
+ if(status.valid)return t('license_active');
+ if(status.status==='missing')return t('license_missing');
+ return t('license_invalid');
+}
+function licenseDetail(status){
+ const detail=localText(status.detail||'');
+ const mode=status.cloud_required?t('license_cloud'):t('license_local');
+ const plan=status.plan==='agency'?(lang==='es'?'Extendida':'Extended'):(lang==='es'?'Individual':'Individual');
+ const expires=status.expires_at?` · ${lang==='es'?'vence':'expires'} ${new Date(status.expires_at).toLocaleDateString()}`:'';
+ return `${plan} · ${mode} · ${detail}${expires}`;
+}
+function renderLicensePanel(){
+ const status=state.config.license_status||{};const valid=Boolean(status.valid);
+ const ent=state.license_entitlements||state.config.license_entitlements||{};
+ const workspace=state.active_workspace||{};
+ const binding=state.business_binding||{};
+ const planName=ent.is_agency?(lang==='es'?'Extendida':'Extended'):(lang==='es'?'Individual':'Individual');
+ const activeName=workspace.name||[binding.ad_account_id,binding.page_id].filter(Boolean).join(' · ')||(lang==='es'?'Aún sin negocio activo':'No active business yet');
+ const individualCopy=lang==='es'?'Tu licencia Individual cuida un solo negocio activo. Si cambias de negocio, empezamos limpio para evitar mezclar datos.':'Your Individual license protects one active business. If you switch business, we start clean to avoid mixing data.';
+ const extendedCopy=lang==='es'?'Tu licencia tiene más capacidad, pero esta pantalla mantiene la configuración simple: un negocio activo por instalación.':'Your license has extra capacity, but this screen keeps setup simple: one active business per install.';
+ qs('#license-panel').innerHTML=`<div class="mode-panel license-status-card"><div><h3>${t('license_panel_title')}: ${licenseLabel(status)}</h3><p>${ent.is_agency?extendedCopy:individualCopy}</p><p class="notice">${licenseDetail(status)}</p></div><div class="mode-actions"><button class="btn ${valid?'':'primary'}" data-action-code="activateLicense()">${t('license_activate')}</button></div></div><div class="trust-grid license-limits-grid"><div class="trust-card"><b>${lang==='es'?'Plan':'Plan'}</b><p>${planName}</p></div><div class="trust-card"><b>${lang==='es'?'Equipos permitidos':'Allowed devices'}</b><p>${ent.max_devices||1}</p></div><div class="trust-card"><b>${lang==='es'?'Negocio activo':'Active business'}</b><p>${escapeHtml(activeName)}</p></div><div class="trust-card"><b>${lang==='es'?'Uso':'Use'}</b><p>${lang==='es'?'Un negocio activo':'One active business'}</p></div></div>`;
+}
+function openMetaSettingsGuide(action='token'){
+ const box=qs('#meta-settings-guide');if(!box)return;
+ box.classList.remove('hidden');
+ if(action==='token')setTimeout(()=>showMetaTokenBox('stable'),20);
+ if(action==='accounts')setTimeout(()=>refreshSocialAccounts(),40);
+ if(action==='assets')setTimeout(()=>discoverMetaAssets((state.config.setup_values||{}).ad_account_id||''),40);
+ box.scrollIntoView({behavior:'smooth',block:'start'});
+}
+function renderMetaConnectionPanel(){
+ const box=qs('#meta-connection-panel');if(!box)return;
+ const v=state.config.setup_values||{};
+ const tokenSet=Boolean(v.meta_access_token_set||v.meta_access_token_saved_at);
+ const account=v.ad_account_id||'';
+ const page=v.page_id||'';
+ const instagram=v.instagram_actor_id||'';
+ const savedAt=v.meta_access_token_saved_at?new Date(v.meta_access_token_saved_at).toLocaleString():'';
+ const statusTitle=tokenSet?(lang==='es'?'Facebook conectado':'Facebook connected'):(lang==='es'?'Falta conectar Facebook':'Facebook needs connection');
+ const statusBody=tokenSet?(lang==='es'?'Ya hay una clave de Meta guardada en esta instalación. Puedes cambiarla, buscar otra cuenta o volver a traer página e Instagram.':'A Meta key is already saved in this install. You can replace it, find another account, or refresh Page and Instagram.'):(lang==='es'?'Pega la clave estable de tu propio Meta Business para que el dashboard pueda buscar tus cuentas reales.':'Paste the stable key from your own Meta Business so the dashboard can find your real accounts.');
+ const onboardingOpen=qs('#onboarding-flow')?.classList.contains('open');
+ const guide=onboardingOpen?'':`<div id="meta-settings-guide" class="meta-settings-guide ${tokenSet?'hidden':''}">${metaConnectionGuide()}</div>`;
+ box.innerHTML=`<div class="next-step meta-connection-card"><div><b>${lang==='es'?'Conexión Facebook / Meta':'Facebook / Meta connection'}</b><p>${statusBody}</p>${savedAt?`<p class="notice">${lang==='es'?'Guardada':'Saved'}: ${escapeHtml(savedAt)}</p>`:''}</div><div class="mode-actions"><button class="btn ${tokenSet?'':'primary'}" type="button" data-action-code="openMetaSettingsGuide('token')">${tokenSet?(lang==='es'?'Cambiar clave de Facebook':'Change Facebook key'):(lang==='es'?'Conectar Facebook':'Connect Facebook')}</button><button class="btn" type="button" data-action-code="openMetaSettingsGuide('accounts')">${lang==='es'?'Buscar/cambiar cuenta publicitaria':'Find/change ad account'}</button><button class="btn" type="button" ${account?'':'disabled'} data-action-code="openMetaSettingsGuide('assets')">${lang==='es'?'Buscar página e Instagram':'Find Page and Instagram'}</button></div></div><div class="trust-grid license-limits-grid"><div class="trust-card"><b>${lang==='es'?'Estado':'Status'}</b><p>${statusTitle}</p></div><div class="trust-card"><b>${lang==='es'?'Cuenta publicitaria':'Ad account'}</b><p>${escapeHtml(account||'-')}</p></div><div class="trust-card"><b>${lang==='es'?'Página':'Page'}</b><p>${escapeHtml(page||'-')}</p></div><div class="trust-card"><b>Instagram</b><p>${escapeHtml(instagram||'-')}</p></div></div>${guide}`;
+}
+function renderSetupConfig(){
+ const v=state.config.setup_values||{};
+ const licensePlaceholder=v.license_key_set?(lang==='es'?'Licencia ya guardada. Pega una nueva solo si quieres cambiarla.':'License already saved. Paste a new one only to replace it.'):'MAO-...';
+ qs('#setup-config').innerHTML=`<div class="next-step"><div><b>${t('setup_form_title')}</b><p>${t('setup_form_body')}</p></div><button class="btn ask-btn" type="button" data-action-code="openChat(lang==='es'?'Ayúdame a revisar estos datos de configuración y dime si falta algo importante.':'Help me review these setup details and tell me if anything important is missing.')">${t('ask_agent')}</button></div><form id="setup-config-form" class="form-grid">
+  <div class="field"><label>${t('license_key')}</label><span class="field-help">${lang==='es'?'El código que recibiste al comprar.':'The code you received after purchase.'}</span><input name="license_key" value="" placeholder="${escapeHtml(licensePlaceholder)}"></div>
+  <div class="field"><label>${t('buyer_email')}</label><span class="field-help">${lang==='es'?'El email usado para la compra o soporte.':'Email used for purchase or support.'}</span><input name="license_buyer_email" value="${escapeHtml(v.license_buyer_email||'')}" placeholder="buyer@email.com"></div>
+  <div class="field wide"><label>${t('ad_account_id')}</label><span class="field-help">${lang==='es'?'La cuenta de Meta Ads que este agente va a cuidar.':'The Meta Ads account this agent will manage.'}</span><input name="ad_account_id" value="${escapeHtml(v.ad_account_id||'')}" placeholder="act_123456789"></div>
+  <div class="field"><label>${t('page_id')}</label><span class="field-help">${lang==='es'?'La página desde donde salen tus anuncios.':'The Page your ads publish from.'}</span><input name="page_id" value="${escapeHtml(v.page_id||'')}"></div>
+  <div class="field"><label>${t('instagram_actor_id')}</label><span class="field-help">${lang==='es'?'Solo si tu Instagram está conectado a la página.':'Only if Instagram is connected to the Page.'}</span><input name="instagram_actor_id" value="${escapeHtml(v.instagram_actor_id||'')}" placeholder="${lang==='es'?'opcional':'optional'}"></div>
+  <div class="field"><label>${t('landing_url')}</label><span class="field-help">${lang==='es'?'La web a la que llegarán las personas.':'The website people will visit.'}</span><input name="landing_url" value="${escapeHtml(v.landing_url||'')}" placeholder="https://..."></div>
+  <div class="field wide"><button class="btn primary" type="submit">${t('save_setup')}</button></div>
+ </form>`;
+ qs('#setup-config-form').addEventListener('submit',saveSetupConfig);
+}
+function chatGptConnectMarkup(onboarding=false){
+ const runtime=setupItem('hermes_runtime');
+ const auth=setupItem('hermes_auth');
+ const codex=setupItem('codex_cli');
+ const model=state.config.agent_model||{};
+ const brain=model.brain_provider||'openai_codex';
+ const apiBrain=['openai_api','minimax','custom_api'].includes(brain);
+ const apiReady=apiBrain&&model.api_key_set&&Boolean(model.base_url)&&Boolean(model.model);
+ const chatgptReady=runtime.status==='ok'&&auth.status==='ok'&&brain==='openai_codex';
+ const ready=chatgptReady||apiReady;
+ const hermesMissing=runtime.status==='blocked';
+ const title=ready?(lang==='es'?'Modelo del agente conectado':'Agent model connected'):(lang==='es'?'Conecta el cerebro del agente':'Connect the agent brain');
+ const body=ready?(apiReady?(lang==='es'?`El manager ya puede pensar con ${model.model||'el modelo configurado'} sin perder memoria, herramientas ni aprobaciones.`:`The manager can now think with ${model.model||'the configured model'} while keeping memory, tools, and approvals.`):(lang==='es'?'El manager ya puede conversar usando tu sesion de ChatGPT/Codex. El chat, Telegram y las herramientas quedan sobre esta conexión.':'The manager can now talk through your ChatGPT/Codex session. Chat, Telegram, and agent tools use this connection.')):(onboarding?(lang==='es'?'Elige qué modelo usará el agente. Toca una opción y solo verás lo necesario.':'Choose which model the agent will use. Click an option and only the needed steps will open.'):(lang==='es'?'Elige cómo pensará el manager: OpenAI, tu suscripción de ChatGPT, MiniMax M3 u otra API compatible.':'Choose how the manager thinks: OpenAI, your ChatGPT subscription, MiniMax M3, or another compatible API.'));
+ const badge=ready?(lang==='es'?'Listo':'Ready'):(hermesMissing?(lang==='es'?'Falta base del agente':'Agent base missing'):(lang==='es'?'Falta conectar':'Needs connection'));
+ const detail=[runtime.detail,auth.detail,codex.detail].filter(Boolean).map(localText).join(' · ');
+ const draft=lang==='es'?'Ayúdame a elegir el cerebro del agente. Explícame en palabras simples si me conviene ChatGPT/Codex, MiniMax M3 u otra API.':'Help me choose the agent brain. Explain simply whether ChatGPT/Codex, MiniMax M3, or another API is better for me.';
+ const savedBase=model.base_url||'';
+ const selectedRoute=brain==='openai_codex'?'chatgpt_subscription':(brain==='minimax'||savedBase.includes('minimax')?'minimax_m3':(brain==='openai_api'||savedBase.includes('api.openai.com')?'openai_api':'custom_api'));
+ const base=model.base_url||(selectedRoute==='openai_api'?'https://api.openai.com/v1':(selectedRoute==='custom_api'?'':'https://api.minimax.io/v1'));
+ const modelName=model.model||(selectedRoute==='openai_api'?'gpt-4.1-mini':(selectedRoute==='custom_api'?'':'MiniMax-M3'));
+ const codexModel=model.hermes_model||'';
+ const api=model.api||'openai-chat-completions';
+ const keyPlaceholder=model.api_key_set?(lang==='es'?'Clave guardada. Pega otra solo si quieres cambiarla.':'Key saved. Paste another only to replace it.'):(lang==='es'?'Pega la clave API del proveedor':'Paste the provider API key');
+ const routeCopy={
+  openai_api:{icon:'OA',title:lang==='es'?'OpenAI API':'OpenAI API',desc:lang==='es'?'Si tienes una clave API de OpenAI.':'If you have an OpenAI API key.',panel:lang==='es'?'Pega tu clave API de OpenAI. El agente seguirá usando su memoria, herramientas y aprobaciones.':'Paste your OpenAI API key. The agent still keeps its memory, tools, and approvals.'},
+  chatgpt_subscription:{icon:'CG',title:lang==='es'?'ChatGPT suscripción':'ChatGPT subscription',desc:lang==='es'?'Login OAuth con ChatGPT/Codex.':'OAuth login with ChatGPT/Codex.',panel:lang==='es'?'Primero, en ChatGPT abre Ajustes > Seguridad y activa el login por código para Codex. Después toca Conectar ahora; en PC/Mac abriré la terminal y en DigitalOcean mostraré aquí el enlace seguro.':'First, in ChatGPT open Settings > Security and enable device-code login for Codex. Then click Connect now; on PC/Mac I open the terminal and on DigitalOcean I show the secure link here.'},
+  minimax_m3:{icon:'M3',title:'MiniMax M3',desc:lang==='es'?'Con clave de MiniMax.':'With a MiniMax key.',panel:lang==='es'?'Pega tu clave de MiniMax. Ya dejé URL y modelo listos para M3. El agente seguirá usando su memoria y herramientas.':'Paste your MiniMax key. URL and model are already set for M3. The agent still keeps memory and tools.'},
+  custom_api:{icon:'{}',title:lang==='es'?'Otra API compatible':'Other compatible API',desc:lang==='es'?'Para proveedores tipo OpenAI.':'For OpenAI-style providers.',panel:lang==='es'?'Pega la URL, el nombre del modelo y la clave del proveedor. El agente la usará como cerebro.':'Paste the provider URL, model name, and key. The agent will use it as its brain.'}
+ };
+ const routeButton=kind=>`<button class="agent-model-option ${selectedRoute===kind?'active':''}" type="button" data-agent-route="${kind}" aria-expanded="${selectedRoute===kind?'true':'false'}" data-action-code="selectAgentModelRoute('${kind}')"><span class="route-icon">${routeCopy[kind].icon}</span><span><b>${routeCopy[kind].title}</b><p>${routeCopy[kind].desc}</p></span></button>`;
+ const apiPanelTitle=selectedRoute==='chatgpt_subscription'?routeCopy.minimax_m3.title:routeCopy[selectedRoute].title;
+ const apiPanelHelp=selectedRoute==='chatgpt_subscription'?routeCopy.minimax_m3.panel:routeCopy[selectedRoute].panel;
+ const providerValue=brain;
+ const codexModelOptions=[['',lang==='es'?'Recomendado automático':'Automatic recommended'],['gpt-5.5','gpt-5.5'],['gpt-5.4','gpt-5.4'],['gpt-5.4-mini','gpt-5.4-mini']].map(([value,label])=>`<option value="${escapeHtml(value)}" ${codexModel===value?'selected':''}>${escapeHtml(label)}</option>`).join('');
+ const chatgptActions=chatgptReady
+  ? `<button class="btn primary" type="button" data-action-code="saveChatGptModel(event)">${lang==='es'?'Guardar modelo':'Save model'}</button><button class="btn" type="button" data-action-code="pollChatGptConnection()">${lang==='es'?'Revisar conexión':'Recheck connection'}</button>`
+  : `<button class="btn primary" type="button" data-action-code="connectChatGpt(event)">${lang==='es'?'Ya lo hice, conectar a ChatGPT ahora':'I did it, connect to ChatGPT now'}</button>`;
+ return `<section class="chatgpt-connect-card ${ready?'ready':''}"><div class="chatgpt-connect-head"><div><h3>${title}</h3><p>${body}</p></div><span class="badge ${ready?'ok':'warn'}">${badge}</span></div><div class="agent-model-picker" role="tablist" aria-label="${lang==='es'?'Opciones de modelo del agente':'Agent model options'}">${routeButton('openai_api')}${routeButton('chatgpt_subscription')}${routeButton('minimax_m3')}${routeButton('custom_api')}</div><form id="agent-model-form" class="model-provider-form" data-submit-code="saveSetupConfig(event)">
+ <input type="hidden" name="agent_chat_provider" value="${escapeHtml(providerValue)}">
+ <input type="hidden" name="agent_chat_api" value="${escapeHtml(api)}">
+ <div class="agent-route-panels">
+  <div class="agent-route-panel ${selectedRoute==='chatgpt_subscription'?'active':''}" data-agent-route-panel="chatgpt_subscription"><h4>${routeCopy.chatgpt_subscription.title}</h4><p>${routeCopy.chatgpt_subscription.panel}</p><div class="chatgpt-preflight"><b>${chatgptReady?(lang==='es'?'Ya conectado':'Already connected'):(lang==='es'?'Antes de conectar':'Before connecting')}</b><ol><li>${lang==='es'?'Elige abajo el modelo. Si no sabes, deja Recomendado.':'Choose the model below. If unsure, leave Recommended.'}</li>${chatgptReady?'':`<li>${lang==='es'?'Abre ChatGPT en otra pestaña.':'Open ChatGPT in another tab.'}</li><li>${lang==='es'?'Entra a Ajustes > Seguridad.':'Go to Settings > Security.'}</li><li>${lang==='es'?'Activa “Enable device code authorization for Codex”.':'Turn on “Enable device code authorization for Codex”.'}</li>`}</ol></div><div class="form-grid codex-model-choice"><div class="field wide"><label>${lang==='es'?'Modelo para ChatGPT/Codex':'ChatGPT/Codex model'}</label><span class="field-help">${lang==='es'?'Usa Recomendado automático salvo que soporte te indique otro modelo.':'Use Automatic recommended unless support gives you another model.'}</span><select name="hermes_model">${codexModelOptions}</select></div></div><div class="agent-route-actions">${chatgptActions}<button class="btn ask-btn" type="button" data-action-code="openChat(${JSON.stringify(draft).replaceAll('"','&quot;')})">${t('ask_agent')}</button></div><div id="chatgpt-connect-result" class="chatgpt-connect-result hidden"></div></div>
+  <div class="agent-route-panel ${selectedRoute!=='chatgpt_subscription'?'active':''}" data-agent-route-panel="api"><h4 id="agent-api-route-title">${apiPanelTitle}</h4><p id="agent-api-route-help">${apiPanelHelp}</p><div class="form-grid">
+   <div class="field"><label>${lang==='es'?'Modelo':'Model'}</label><input name="agent_chat_model" value="${escapeHtml(modelName)}" placeholder="${lang==='es'?'Nombre del modelo':'Model name'}"></div>
+   <div class="field"><label>${lang==='es'?'URL compatible OpenAI':'OpenAI-compatible URL'}</label><span class="field-help">${lang==='es'?'Debe usar https://. Solo se permite http:// para modelos locales como 127.0.0.1.':'Must use https://. http:// is allowed only for local models such as 127.0.0.1.'}</span><input name="agent_chat_base_url" value="${escapeHtml(base)}" placeholder="https://api.ejemplo.com/v1"></div>
+   <div class="field wide"><label>${lang==='es'?'Clave API del modelo':'Model API key'}</label><span class="field-help">${lang==='es'?'Se guarda dentro de este PC/VPS. No aparece de vuelta en el dashboard.':'Stored on this PC/VPS. It is never shown back in the dashboard.'}</span><input type="password" name="agent_chat_api_key" value="" placeholder="${escapeHtml(keyPlaceholder)}"></div>
+   <div class="field wide"><button class="btn primary" type="submit">${lang==='es'?'Guardar modelo del agente':'Save agent model'}</button></div>
+  </div></div>
+ </div>
+ </form><details class="helper-command"><summary>${lang==='es'?'Ver diagnóstico para soporte':'Show support diagnostics'}</summary><span class="step-command">${escapeHtml(detail||'-')}</span></details><div class="chatgpt-foot"><div></div><div class="mode-actions"><button class="btn" type="button" data-action-code="load()">${lang==='es'?'Ya lo hice, revisar conexión':'I did it, recheck'}</button></div></div></section>`;
+}
+function renderChatGptPanel(){
+ qs('#chatgpt-panel').innerHTML=chatGptConnectMarkup(false);
+}
+function telegramOnboardingGuide(){
+ const v=state.config.telegram_agent||{};
+ const ready=Boolean(v.enabled&&v.bot_configured&&v.chat_id);
+ const checked=v.enabled||!v.bot_configured?'checked':'';
+ const result=ready
+  ? `<div class="guide-card"><b>${lang==='es'?'Telegram listo':'Telegram ready'}</b><p>${lang==='es'?'Ya puedes hablar con el manager desde tu celular. También podrá mostrarte aprobaciones con botones seguros.':'You can now talk with the manager from your phone. It can also show approval buttons safely.'}</p><button class="btn" type="button" data-action-code="testTelegram()">${lang==='es'?'Enviar prueba':'Send test'}</button></div>`
+  : `<div class="guide-card"><b>${lang==='es'?'Después de pegar la clave':'After pasting the key'}</b><p>${lang==='es'?'Escríbele “hola” a tu bot en Telegram, vuelve aquí y toca Detectar mi chat. Yo guardaré solo ese chat como autorizado.':'Send “hello” to your bot in Telegram, come back here, and click Detect my chat. I will save only that chat as authorized.'}</p></div>`;
+ if(lang==='es')return `<div class="setup-guide private-connection telegram-onboarding"><section class="guide-hero"><div class="guide-main"><span class="guide-eyebrow">Celular</span><h3>Habla con tu manager por Telegram</h3><p>Recomendado: podrás escribirle al agente desde tu celular, enviar imágenes y aprobar decisiones exactas con botones. Esto se configura una sola vez y luego queda funcionando.</p><div class="guide-actions"><a class="btn primary" href="https://telegram.org/dl" target="_blank" rel="noopener noreferrer">Descargar Telegram</a><a class="btn" href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer">Abrir BotFather</a><button class="btn" type="button" data-action-code="copyCommand('/newbot')">Copiar /newbot</button></div></div><aside class="guide-checklist"><b>Pasos simples</b><ol><li>Instala Telegram en tu celular. Si puedes, instala Telegram en tu PC para copiar y pegar más fácil.</li><li>En Telegram busca <b>BotFather</b>, entra al chat oficial y escribe <b>/newbot</b>.</li><li>Escribe cualquier nombre para tu bot, por ejemplo <b>Manager de anuncios</b>.</li><li>Escribe un usuario parecido, pero terminado en <b>bot</b>, por ejemplo <b>manageranuncios_bot</b>.</li><li>BotFather te enviará una clave larga. Cópiala y pégala aquí.</li><li>Escríbele <b>hola</b> a tu bot y toca <b>Detectar mi chat</b>.</li></ol></aside></section><div class="guide-card"><b>Qué puedo automatizar</b><p>No puedo crear el bot por ti porque Telegram solo entrega la clave dentro del chat oficial BotFather. Sí puedo abrir BotFather, copiarte el comando, validar la clave, detectar tu chat y dejarlo listo para siempre.</p></div><form class="onboarding-mini two" data-submit-code="saveTelegramConfig(event)"><label class="wide">Clave larga que te dio BotFather<span class="field-help">Pégala completa. Suele verse como números, dos puntos y muchas letras. Queda guardada solo en este PC/VPS.</span><input type="password" name="bot_token" value="" placeholder="${v.bot_configured?'Bot guardado. Pega otra clave solo si quieres cambiarlo.':'Pega aquí la clave larga de BotFather'}"></label><label>Idioma del manager<select name="language"><option value="es" ${v.language!=='en'?'selected':''}>Español</option><option value="en" ${v.language==='en'?'selected':''}>English</option></select></label><label><input type="checkbox" name="enabled" ${checked}> Activar Telegram</label><div class="field wide onboarding-step-actions"><button class="btn primary" type="submit">Guardar bot</button><button class="btn" type="button" data-action-code="detectTelegramChats()">Detectar mi chat</button><button class="btn" type="button" data-action-code="testTelegram()">Enviar prueba</button></div></form><div id="telegram-results" class="setup-guide">${result}</div><details class="fallback-details"><summary>Lo puedo hacer después</summary><p class="notice">Puedes seguir ahora y volver a este paso desde Configuración. Para usar Telegram, el dashboard debe estar encendido en tu PC/VPS.</p></details></div>`;
+ return `<div class="setup-guide private-connection telegram-onboarding"><section class="guide-hero"><div class="guide-main"><span class="guide-eyebrow">Phone</span><h3>Talk to your manager through Telegram</h3><p>Recommended: you can message the agent from your phone, send images, and approve exact decisions with buttons. You do this once and it keeps working.</p><div class="guide-actions"><a class="btn primary" href="https://telegram.org/dl" target="_blank" rel="noopener noreferrer">Download Telegram</a><a class="btn" href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer">Open BotFather</a><button class="btn" type="button" data-action-code="copyCommand('/newbot')">Copy /newbot</button></div></div><aside class="guide-checklist"><b>Simple steps</b><ol><li>Install Telegram on your phone. If possible, also install Telegram on your PC so copying the long key is easier.</li><li>In Telegram search for <b>BotFather</b>, open the official chat, and send <b>/newbot</b>.</li><li>Enter any bot name, for example <b>Ads Manager</b>.</li><li>Enter a similar username, but it must end in <b>bot</b>, for example <b>adsmanager_bot</b>.</li><li>BotFather will send a long key. Copy it and paste it here.</li><li>Send <b>hello</b> to your bot, then click <b>Detect my chat</b>.</li></ol></aside></section><div class="guide-card"><b>What I can automate</b><p>I cannot create the bot for you because Telegram gives the key only inside the official BotFather chat. I can open BotFather, copy the command, validate the key, detect your chat, and keep it ready after that.</p></div><form class="onboarding-mini two" data-submit-code="saveTelegramConfig(event)"><label class="wide">Long key from BotFather<span class="field-help">Paste it complete. It usually looks like numbers, a colon, and many letters. It stays saved only on this PC/VPS.</span><input type="password" name="bot_token" value="" placeholder="${v.bot_configured?'Bot saved. Paste another key only to replace it.':'Paste the long BotFather key here'}"></label><label>Manager language<select name="language"><option value="es" ${v.language!=='en'?'selected':''}>Español</option><option value="en" ${v.language==='en'?'selected':''}>English</option></select></label><label><input type="checkbox" name="enabled" ${checked}> Enable Telegram</label><div class="field wide onboarding-step-actions"><button class="btn primary" type="submit">Save bot</button><button class="btn" type="button" data-action-code="detectTelegramChats()">Detect my chat</button><button class="btn" type="button" data-action-code="testTelegram()">Send test</button></div></form><div id="telegram-results" class="setup-guide">${result}</div><details class="fallback-details"><summary>I can do this later</summary><p class="notice">You can continue now and come back from Setup. To use Telegram, the dashboard must be running on your PC/VPS.</p></details></div>`;
+}
+let chatGptConnectPollTimer=null;
+let chatGptAuthWindow=null;
+let chatGptAuthOpenedUrl='';
+function prepareChatGptAuthWindow(){
+ try{
+  chatGptAuthWindow=window.open('about:blank','admiro_chatgpt_login');
+  if(!chatGptAuthWindow)return false;
+  chatGptAuthWindow.document.write(`<!doctype html><html><head><title>Admira IA</title><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/assets/dashboard/login-wait.css?v=1"></head><body><div class="card"><div class="dot"></div><h1>${lang==='es'?'Preparando login':'Preparing login'}</h1><p>${lang==='es'?'Estoy buscando el enlace seguro de ChatGPT/Codex. Esta pestaña se abrirá sola cuando esté listo.':'I am finding the secure ChatGPT/Codex link. This tab will open automatically when it is ready.'}</p></div></body></html>`);
+  chatGptAuthWindow.document.close();
+  return true;
+ }catch(_err){
+  chatGptAuthWindow=null;
+  return false;
+ }
+}
+function maybeOpenChatGptAuthUrl(url){
+ const raw=String(url||'').trim();
+ if(!raw||raw===chatGptAuthOpenedUrl)return false;
+ let parsed;
+ try{parsed=new URL(raw)}catch(_err){return false}
+ if(!['https:','http:'].includes(parsed.protocol))return false;
+ if(parsed.protocol==='http:'&&!['127.0.0.1','localhost','::1'].includes(parsed.hostname))return false;
+ chatGptAuthOpenedUrl=raw;
+ try{
+  if(chatGptAuthWindow&&!chatGptAuthWindow.closed){
+   try{chatGptAuthWindow.opener=null}catch(_err){}
+   chatGptAuthWindow.location.href=raw;
+   return true;
+  }
+ }catch(_err){}
+ return false;
+}
+function reopenChatGptAuthUrl(){
+ const raw=String(chatGptAuthOpenedUrl||'').trim();
+ if(!raw)return false;
+ window.open(raw,'admiro_chatgpt_login');
+ return true;
+}
+function scheduleChatGptConnectPoll(result){
+ const r=result?.result||result||{};
+ const status=String(r.status||'');
+ const shouldPoll=Boolean(r.running)||['browser_login_started','browser_login_waiting','needs_login'].includes(status);
+ if(chatGptConnectPollTimer)clearTimeout(chatGptConnectPollTimer);
+ if(!shouldPoll)return;
+ chatGptConnectPollTimer=setTimeout(()=>pollChatGptConnection(),2400);
+}
+function agentModelFormPayload(){
+ const form=qs('#agent-model-form');
+ return form?Object.fromEntries(new FormData(form).entries()):{};
+}
+function advanceOnboardingAfterChatGptConnected(){
+ const flow=qs('#onboarding-flow');
+ if(!flow?.classList.contains('open'))return;
+ const steps=onboardingSteps();
+ const idx=steps.findIndex(s=>s.id==='chatgpt');
+ if(idx<0||onboardingFlowStep!==idx)return;
+ onboardingFlowTouched=true;
+ onboardingFlowStep=Math.min(steps.length-1,idx+1);
+ renderOnboardingFlow();
+}
+async function pollChatGptConnection(){
+ try{
+  const res=await api('/api/agent-model/connect-status',{method:'POST',body:'{}'});
+  renderChatGptConnectResult(res);
+  if((res.result?.status||res.status)==='completed'){await load();advanceOnboardingAfterChatGptConnected()}
+ }catch(_err){
+  if(chatGptConnectPollTimer)clearTimeout(chatGptConnectPollTimer);
+ }
+}
+async function sendChatGptTerminalInput(event){
+ event.preventDefault();
+ const form=event.target;
+ const input=(new FormData(form).get('input')||'').toString();
+ if(!input.trim())return;
+ const btn=form.querySelector('button');if(btn)btn.disabled=true;
+ try{
+  const res=await api('/api/agent-model/connect-input',{method:'POST',body:JSON.stringify({input})});
+  form.reset();
+  renderChatGptConnectResult(res);
+ }finally{
+  if(btn)btn.disabled=false;
+ }
+}
+function chatGptDeviceAuthHelpMarkup(){
+ return `<div id="chatgpt-device-auth-help" class="guide-card chatgpt-settings-help hidden"><b>${lang==='es'?'Si ChatGPT te mostró un error en rojo':'If ChatGPT showed a red error'}</b><p>${lang==='es'?'No pasa nada. Falta activar un permiso de seguridad de ChatGPT para usar Codex con códigos.':'No problem. A ChatGPT security permission must be enabled before Codex can use device codes.'}</p><ol><li>${lang==='es'?'Abre chatgpt.com con la misma cuenta.':'Open chatgpt.com with the same account.'}</li><li>${lang==='es'?'Entra a Configuración.':'Open Settings.'}</li><li>${lang==='es'?'Entra a Seguridad.':'Open Security.'}</li><li>${lang==='es'?'Activa la última opción: “Activar autorización con códigos de dispositivo para Codex”.':'Turn on the last option: “Enable device code authorization for Codex”.'}</li><li>${lang==='es'?'Cierra la pestaña de login de ChatGPT/Codex donde viste el error.':'Close the ChatGPT/Codex login tab where you saw the error.'}</li><li>${lang==='es'?'Vuelve aquí y abre el login otra vez.':'Come back here and open the login again.'}</li></ol><button class="btn primary chatgpt-retry-login" type="button" data-action-code="reopenChatGptAuthUrl()">${lang==='es'?'Ya lo activé, abrir login de nuevo':'I enabled it, open login again'}</button></div>`;
+}
+function toggleChatGptDeviceAuthHelp(){
+ const box=qs('#chatgpt-device-auth-help');
+ if(!box)return;
+ box.classList.toggle('hidden');
+ box.scrollIntoView({behavior:'smooth',block:'center'});
+}
+function renderChatGptConnectResult(response){
+ const box=qs('#chatgpt-connect-result');if(!box)return;
+ const r=response.result||response||{};
+ const status=String(r.status||'');
+ const urls=Array.isArray(r.urls)?r.urls:[];
+ if(urls.length)maybeOpenChatGptAuthUrl(urls[0]);
+ const output=String(r.output||'').trim();
+ const running=Boolean(r.running);
+ const titles={
+  terminal_opened:lang==='es'?'Terminal abierta':'Terminal opened',
+  completed:lang==='es'?'Conexión revisada':'Connection checked',
+  browser_login_started:lang==='es'?'Login abierto en el servidor':'Server login started',
+  browser_login_waiting:lang==='es'?'El agente está esperando':'Agent is waiting',
+  needs_login:lang==='es'?'Termina el login':'Finish login',
+  needs_terminal:lang==='es'?'Necesita una terminal':'Terminal needed',
+ not_installed:lang==='es'?'Falta la base del agente':'Agent base is missing'
+ };
+ const fallbackTitle=lang==='es'?'No pude conectar automáticamente':'Could not connect automatically';
+ const title=escapeHtml(r.title||titles[status]||fallbackTitle);
+ const detail=escapeHtml(r.detail||'');
+ const autoNote=String(r.auto_note||'').trim();
+ const phaseNote=autoNote?`<div class="notice">${escapeHtml(autoNote)}</div>`:'';
+ const deviceAuthHelp=r.phase==='device_auth_settings'?`<div class="guide-card chatgpt-settings-help"><b>${lang==='es'?'Haz esto en ChatGPT':'Do this in ChatGPT'}</b><ol><li>${lang==='es'?'Abre ChatGPT con la misma cuenta que usarás aquí.':'Open ChatGPT with the same account you will use here.'}</li><li>${lang==='es'?'Ve a Ajustes > Seguridad.':'Go to Settings > Security.'}</li><li>${lang==='es'?'Activa “Enable device code authorization for Codex”.':'Turn on “Enable device code authorization for Codex”.'}</li><li>${lang==='es'?'Cierra la pestaña de login de ChatGPT/Codex donde viste el error.':'Close the ChatGPT/Codex login tab where you saw the error.'}</li><li>${lang==='es'?'Vuelve aquí y abre el login otra vez.':'Come back here and open the login again.'}</li></ol><button class="btn primary chatgpt-retry-login" type="button" data-action-code="reopenChatGptAuthUrl()">${lang==='es'?'Ya lo activé, abrir login de nuevo':'I enabled it, open login again'}</button></div>`:'';
+ const loginCode=String(r.login_code||(Array.isArray(r.login_codes)&&r.login_codes.length?r.login_codes[0]:'')||'').trim();
+ const codeBlock=loginCode?`<div class="chatgpt-device-code" role="status" aria-live="polite"><div><span>${lang==='es'?'Código para OpenAI':'Code for OpenAI'}</span><strong>${escapeHtml(loginCode)}</strong><small>${lang==='es'?'Pégalo en la pestaña de OpenAI/Codex que se abrió. Si ChatGPT muestra un error en rojo, toca el botón de ayuda.':'Paste it in the OpenAI/Codex tab that opened. If ChatGPT shows a red error, click the help button.'}</small></div><div class="chatgpt-device-actions"><button class="btn primary" type="button" data-action-code="copyVisibleChatGptCode(event)">${lang==='es'?'Copiar código':'Copy code'}</button><button class="btn" type="button" data-action-code="toggleChatGptDeviceAuthHelp()">${lang==='es'?'Haz clic aquí si te apareció un error':'Click here if you saw an error'}</button></div></div>${chatGptDeviceAuthHelpMarkup()}`:'';
+ const links=urls.length?`<div class="onboarding-step-actions">${urls.map(url=>`<a class="btn primary" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${lang==='es'?'Abrir login':'Open login'}</a>`).join('')}</div>`:'';
+ const inputBox=running&&r.needs_input?`<form class="onboarding-mini chatgpt-inline-input" data-submit-code="sendChatGptTerminalInput(event)"><label>${lang==='es'?'Responder al agente':'Reply to agent'}<input name="input" autocomplete="off" placeholder="${lang==='es'?'Ej: número de OpenAI Codex o Enter':'Ex: OpenAI Codex number or Enter'}"></label><button class="btn primary" type="submit">${lang==='es'?'Enviar':'Send'}</button></form>`:'';
+ const command='';
+ const outputBlock=output?`<details class="helper-command"><summary>${lang==='es'?'Ver diagnóstico técnico':'Show technical diagnostic'}</summary><pre class="chatgpt-terminal-output">${escapeHtml(output)}</pre></details>`:'';
+ const review=status==='terminal_opened'||status==='completed'||status==='needs_login'||status==='browser_login_started'||status==='browser_login_waiting'?`<button class="btn" type="button" data-action-code="pollChatGptConnection()">${lang==='es'?'Revisar conexión':'Recheck connection'}</button>`:'';
+ box.classList.toggle('has-device-code',Boolean(loginCode));
+ box.innerHTML=`<b>${title}</b><p>${detail}</p>${phaseNote}${deviceAuthHelp}${codeBlock}${links}${outputBlock}${inputBox}${command}${review?`<div class="onboarding-step-actions">${review}</div>`:''}`;
+ box.classList.remove('hidden');
+ if(loginCode)setTimeout(()=>box.querySelector('.chatgpt-device-code')?.scrollIntoView({behavior:'smooth',block:'center'}),80);
+ scheduleChatGptConnectPoll(r);
+}
+async function saveChatGptModel(event){
+ const btn=event?.currentTarget||event?.target;
+ const box=qs('#chatgpt-connect-result');
+ if(btn)btn.disabled=true;
+ try{
+  await api('/api/setup-config',{method:'POST',body:JSON.stringify(agentModelFormPayload())});
+  if(box){box.classList.remove('hidden');box.innerHTML=`<b>${lang==='es'?'Modelo guardado':'Model saved'}</b><p>${lang==='es'?'La conexión de ChatGPT/Codex sigue lista. No abrí otro login.':'ChatGPT/Codex remains connected. I did not open another login.'}</p>`}
+  toast(lang==='es'?'Modelo guardado.':'Model saved.');
+  await load();
+ }catch(err){
+  if(box){box.classList.remove('hidden');box.innerHTML=`<b>${lang==='es'?'No pude guardar el modelo':'Could not save model'}</b><p>${escapeHtml(err.message||String(err))}</p>`}
+ }finally{
+  if(btn)btn.disabled=false;
+ }
+}
+async function connectChatGpt(event){
+ const btn=event?.currentTarget||event?.target;
+ const box=qs('#chatgpt-connect-result');
+ if(btn)btn.disabled=true;
+ const popupReady=prepareChatGptAuthWindow();
+ if(box){box.classList.remove('hidden');box.innerHTML=`<b>${lang==='es'?'Conectando...':'Connecting...'}</b><p>${popupReady?(lang==='es'?'Abrí una pestaña de espera. Cuando aparezca el login seguro, la llevaré ahí automáticamente.':'I opened a waiting tab. When the secure login appears, I will send it there automatically.'):(lang==='es'?'Si el navegador bloqueó la pestaña, te mostraré un botón para abrir el login.':'If the browser blocked the tab, I will show a button to open the login.')}</p>`}
+ try{
+  const res=await api('/api/agent-model/connect',{method:'POST',body:JSON.stringify(agentModelFormPayload())});
+  renderChatGptConnectResult(res);
+  const status=res.result?.status||res.status;
+  const urls=res.result?.urls||res.urls||[];
+  if((status==='completed'||status==='terminal_opened'||status==='needs_terminal'||status==='not_installed')&&!urls.length&&chatGptAuthWindow&&!chatGptAuthOpenedUrl){
+   try{chatGptAuthWindow.close()}catch(_err){}
+   chatGptAuthWindow=null;
+  }
+  if(status==='terminal_opened')toast(lang==='es'?'Abrí la terminal para conectar ChatGPT/Codex.':'Opened the terminal to connect ChatGPT/Codex.');
+  else if(status==='completed'){toast(lang==='es'?'Agente conectado correctamente.':'Agent connected successfully.');await load();advanceOnboardingAfterChatGptConnected()}
+  else if(String(status).startsWith('browser_login'))toast(lang==='es'?'Login del agente abierto aquí.':'Agent login opened here.');
+ }catch(err){
+  if(box){box.classList.remove('hidden');box.innerHTML=`<b>${lang==='es'?'No pude abrirlo todavía':'Could not open it yet'}</b><p>${escapeHtml(err.message||String(err))}</p>`}
+ }finally{
+  if(btn)btn.disabled=false;
+ }
+}
+function applyAgentModelPreset(kind){
+ const form=qs('#agent-model-form');if(!form)return;
+ const fields=form.elements;
+ const route=kind==='hermes'?'chatgpt_subscription':(kind==='custom'?'custom_api':kind);
+ if(fields.agent_chat_api)fields.agent_chat_api.value='openai-chat-completions';
+ if(route==='chatgpt_subscription'){fields.agent_chat_provider.value='openai_codex';return}
+ if(route==='openai_api'){
+  fields.agent_chat_provider.value='openai_api';
+  fields.agent_chat_base_url.value='https://api.openai.com/v1';
+  if(!fields.agent_chat_model.value||fields.agent_chat_model.value.includes('MiniMax'))fields.agent_chat_model.value='gpt-4.1-mini';
+  return;
+ }
+ if(route==='minimax_m3'){
+  fields.agent_chat_provider.value='minimax';
+  fields.agent_chat_base_url.value='https://api.minimax.io/v1';
+  fields.agent_chat_model.value='MiniMax-M3';
+  return;
+ }
+ if(route==='custom_api'){
+  fields.agent_chat_provider.value='custom_api';
+  if(fields.agent_chat_base_url.value.includes('api.minimax.io')||fields.agent_chat_base_url.value.includes('api.openai.com'))fields.agent_chat_base_url.value='';
+  if(fields.agent_chat_model.value.includes('MiniMax')||fields.agent_chat_model.value.includes('gpt-'))fields.agent_chat_model.value='';
+ }
+}
+function selectAgentModelRoute(kind){
+ const route=kind==='hermes'?'chatgpt_subscription':(kind==='custom'?'custom_api':kind);
+ applyAgentModelPreset(route);
+ document.querySelectorAll('[data-agent-route]').forEach(btn=>{
+  const active=btn.dataset.agentRoute===route;
+  btn.classList.toggle('active',active);
+  btn.setAttribute('aria-expanded',active?'true':'false');
+ });
+ document.querySelectorAll('[data-agent-route-panel]').forEach(panel=>{
+  const panelRoute=panel.dataset.agentRoutePanel;
+  panel.classList.toggle('active',panelRoute===route||(panelRoute==='api'&&route!=='chatgpt_subscription'));
+ });
+ const copy={
+  openai_api:{title:lang==='es'?'OpenAI API':'OpenAI API',help:lang==='es'?'Pega tu clave API de OpenAI. El agente la usará como cerebro sin perder memoria, herramientas ni aprobaciones.':'Paste your OpenAI API key. The agent will use it as its brain while keeping memory, tools, and approvals.'},
+  minimax_m3:{title:'MiniMax M3',help:lang==='es'?'Pega tu clave de MiniMax. Ya dejé URL y modelo listos para M3. El agente seguirá usando su memoria y herramientas.':'Paste your MiniMax key. URL and model are already set for M3. The agent still keeps memory and tools.'},
+  custom_api:{title:lang==='es'?'Otra API compatible':'Other compatible API',help:lang==='es'?'Pega la URL, el nombre del modelo y la clave del proveedor. El agente la usará como cerebro.':'Paste the provider URL, model name, and key. The agent will use it as its brain.'}
+ };
+ if(copy[route]){
+  const title=qs('#agent-api-route-title');const help=qs('#agent-api-route-help');
+  if(title)title.textContent=copy[route].title;
+  if(help)help.textContent=copy[route].help;
+ }
+}
+function renderTelegramPanel(){
+ const v=state.config.telegram_agent||{};
+ const ready=v.enabled&&v.bot_configured&&v.chat_id;
+ qs('#telegram-panel').innerHTML=`<div class="next-step"><div><b>${lang==='es'?'Hablar por Telegram':'Talk through Telegram'}</b><p>${lang==='es'?'Opcional recomendado: conecta un bot privado para conversar con el manager desde tu celular y aprobar decisiones exactas con botones seguros.':'Recommended optional step: connect a private bot to talk with the manager from your phone and approve exact decisions with safe buttons.'}</p></div><span class="badge ${ready?'ok':'warn'}">${ready?(lang==='es'?'Listo':'Ready'):(lang==='es'?'Opcional':'Optional')}</span></div><div class="setup-guide private-connection"><div class="guide-actions"><a class="btn primary" href="https://telegram.org/dl" target="_blank" rel="noopener noreferrer">${lang==='es'?'Descargar Telegram':'Download Telegram'}</a><a class="btn" href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer">${lang==='es'?'Abrir BotFather':'Open BotFather'}</a><button class="btn" type="button" data-action-code="copyCommand('/newbot')">${lang==='es'?'Copiar /newbot':'Copy /newbot'}</button></div><div class="guide-card"><b>${lang==='es'?'Cómo crear el bot':'How to create the bot'}</b><ol><li>${lang==='es'?'Instala Telegram en tu celular. Si puedes, también en tu PC para copiar más fácil.':'Install Telegram on your phone. If possible, also install it on your PC so copying is easier.'}</li><li>${lang==='es'?'Busca BotFather, entra al chat oficial y escribe /newbot.':'Search for BotFather, open the official chat, and send /newbot.'}</li><li>${lang==='es'?'Pon cualquier nombre. Luego pon un usuario parecido que termine en bot.':'Enter any name. Then enter a similar username that ends in bot.'}</li><li>${lang==='es'?'Copia la clave larga que te entrega BotFather y pégala abajo.':'Copy the long key BotFather gives you and paste it below.'}</li><li>${lang==='es'?'Escríbele hola a tu bot y toca Detectar mi chat. Esto se hace una sola vez.':'Send hello to your bot and click Detect my chat. You only do this once.'}</li></ol></div></div><form id="telegram-config-form" class="form-grid">
+ <div class="field wide"><label>${lang==='es'?'Clave larga que te dio BotFather':'Long key from BotFather'}</label><span class="field-help">${lang==='es'?'Pégala completa. Queda guardada solo en este PC/VPS.':'Paste it complete. It stays saved only on this PC/VPS.'}</span><input type="password" name="bot_token" value="" placeholder="${v.bot_configured?(lang==='es'?'Bot guardado. Pega otro solo si quieres cambiarlo.':'Bot saved. Paste another only to replace it.'):'123456:ABC...'}"></div>
+ <div class="field"><label>${lang==='es'?'Tu chat privado':'Your private chat'}</label><span class="field-help">${lang==='es'?'Solo este chat podrá hablar con el agente.':'Only this chat can talk to the agent.'}</span><input name="chat_id" value="${escapeHtml(v.chat_id||'')}" placeholder="${lang==='es'?'Detectar después de escribirle al bot':'Detect after messaging the bot'}"></div>
+ <div class="field"><label>${lang==='es'?'Idioma del manager':'Manager language'}</label><select name="language"><option value="es" ${v.language!=='en'?'selected':''}>Español</option><option value="en" ${v.language==='en'?'selected':''}>English</option></select></div>
+ <label class="field wide"><input type="checkbox" name="enabled" ${v.enabled?'checked':''}> ${lang==='es'?'Activar conversación por Telegram':'Enable Telegram conversation'}</label>
+ <div class="field wide onboarding-step-actions"><button class="btn primary" type="submit">${lang==='es'?'Guardar Telegram':'Save Telegram'}</button><button class="btn" type="button" data-action-code="detectTelegramChats()">${lang==='es'?'Detectar mi chat':'Detect my chat'}</button><button class="btn" type="button" data-action-code="testTelegram()">${lang==='es'?'Enviar prueba':'Send test'}</button></div>
+ </form><div id="telegram-results"></div><p class="notice">${lang==='es'?'No puedo crear el bot por ti porque Telegram entrega la clave dentro de BotFather. Sí puedo guardar la clave, detectar tu chat y dejar el manager listo para responder desde Telegram.':'I cannot create the bot for you because Telegram gives the key inside BotFather. I can save the key, detect your chat, and keep the manager ready to reply through Telegram.'}</p>`;
+ qs('#telegram-config-form').addEventListener('submit',saveTelegramConfig);
+}
+function renderMigrationPanel(){
+ qs('#migration-panel').innerHTML=`<div class="next-step"><div><b>${lang==='es'?'Cambiar de equipo sin perder memoria':'Move device without losing memory'}</b><p>${lang==='es'?'Crea una copia segura de esta instalación o trae una copia anterior. Incluye chat, marca, productos, configuración y memoria del dashboard.':'Create a safe copy of this install or bring back an earlier one. It includes chat, brand, products, setup, and dashboard memory.'}</p></div><div class="mode-actions"><button class="btn primary" type="button" data-action-code="downloadMigrationBackup()">${lang==='es'?'Crear copia segura':'Create safe copy'}</button><button class="btn" type="button" data-action-code="qs('#migration-restore-file').click()">${lang==='es'?'Traer copia anterior':'Restore backup'}</button><input id="migration-restore-file" class="hidden" type="file" accept=".tar.gz,.tgz,.zip,application/gzip,application/zip" data-change-code="restoreMigrationBackup(event)"></div></div><div id="migration-result"></div><p class="notice">${lang==='es'?'Esa copia puede incluir claves privadas. Guárdala como guardarías una llave de tu negocio.':'The backup may contain private keys. Store it like a key to your business.'}</p>`;
+}
+function renderLocalNetworkPanel(){
+ const box=qs('#local-network-panel');if(!box)return;
+ const net=state.local_network_access||{};
+ if(net.install_environment==='cloud'){box.innerHTML='';return}
+ const enabled=Boolean(net.enabled);
+ const active=Boolean(net.active);
+ const url=net.lan_url||'';
+ const status=enabled?(active?(lang==='es'?'Activo':'Active'):(lang==='es'?'Reiniciando':'Restarting')):(lang==='es'?'Apagado':'Off');
+ const body=lang==='es'
+  ? 'Actívalo solo cuando quieras abrir este dashboard desde tu teléfono. El teléfono debe estar conectado al mismo Wi‑Fi o red local, y seguirá pidiendo tu contraseña.'
+  : 'Turn this on only when you want to open this dashboard from your phone. The phone must be on the same Wi‑Fi or local network, and your password is still required.';
+ const linkBlock=enabled?`<div class="guide-card"><b>${lang==='es'?'Enlace para tu teléfono':'Phone link'}</b><p>${url?escapeHtml(url):(lang==='es'?'No pude detectar el IP automáticamente. Usa el IP local de este computador con el puerto '+escapeHtml(String(net.port||7871))+'.':'I could not detect the IP automatically. Use this computer local IP with port '+escapeHtml(String(net.port||7871))+'.')}</p><div class="onboarding-step-actions">${url?`<button class="btn primary" type="button" data-action-code="copyCommand(${JSON.stringify(url).replaceAll('"','&quot;')})">${lang==='es'?'Copiar enlace':'Copy link'}</button>`:''}<button class="btn ask-btn" type="button" data-action-code="openChat(${chatArg(lang==='es'?'Quiero abrir el dashboard desde mi teléfono. Explícame los pasos simples y qué revisar si no carga.':'I want to open the dashboard from my phone. Explain the simple steps and what to check if it does not load.')})">${t('ask_agent')}</button></div></div>`:'';
+ const restartNote=net.restart_needed?`<p class="notice">${lang==='es'?'Estoy aplicando el cambio. Si la página se desconecta unos segundos, vuelve a abrir el enlace cuando termine.':'Applying the change. If the page disconnects for a few seconds, reopen the link when it finishes.'}</p>`:'';
+ box.innerHTML=`<section class="chatgpt-connect-card local-network-card ${enabled?'ready':''}"><div class="chatgpt-connect-head"><div><h3>${lang==='es'?'Ver desde mi teléfono':'View from my phone'}</h3><p>${body}</p></div><span class="badge ${enabled?'ok':'warn'}">${status}</span></div><div class="model-route-grid"><div class="model-route-card"><span>1</span><b>${lang==='es'?'Mismo Wi‑Fi':'Same Wi‑Fi'}</b><p>${lang==='es'?'Tu teléfono y este computador deben estar en la misma red.':'Your phone and this computer must be on the same network.'}</p></div><div class="model-route-card"><span>2</span><b>${lang==='es'?'Con contraseña':'Password protected'}</b><p>${lang==='es'?'Aunque alguien vea el enlace, necesita la contraseña del dashboard para acciones y datos protegidos.':'Even if someone sees the link, the dashboard password is required for protected data and actions.'}</p></div></div>${linkBlock}${restartNote}<div class="mode-actions"><button class="btn ${enabled?'':'primary'}" type="button" data-action-code="setLocalNetworkAccess(true)">${lang==='es'?'Activar para teléfono':'Turn on phone access'}</button><button class="btn ${enabled?'primary':''}" type="button" data-action-code="setLocalNetworkAccess(false)">${lang==='es'?'Apagar acceso por Wi‑Fi':'Turn off Wi‑Fi access'}</button></div></section>`;
+}
+function renderCloudAccessPanel(){
+ qs('#cloud-access-panel').innerHTML=`<div class="next-step"><div><b>${lang==='es'?'Mantener acceso cuando estás en la nube':'Keep cloud dashboard access'}</b><p>${lang==='es'?'Si este dashboard ya abrió desde tu red actual, este botón autoriza esta red en DigitalOcean. Úsalo cuando cambies de Wi-Fi antes de cerrar la página.':'If this dashboard already opened from your current network, this button authorizes this network in DigitalOcean. Use it when you change Wi-Fi before closing the page.'}</p></div><div class="mode-actions"><button class="btn" type="button" data-action-code="refreshCloudAccess()">${lang==='es'?'Permitir esta red':'Allow this network'}</button></div></div><div id="cloud-access-result"></div><p class="notice">${lang==='es'?'Si el dashboard no carga porque tu IP ya cambió, este botón no puede ayudarte todavía. Recupera entrada desde el portal de DigitalOcean, SSH o la consola web; después vuelve aquí para dejar la nueva red guardada.':'If the dashboard does not load because your IP already changed, this button cannot help yet. Recover access from the DigitalOcean portal, SSH, or web console; then return here to save the new network.'}</p>`;
+}
+function renderUpdateRollbackPanel(){
+ qs('#update-rollback-panel').innerHTML=`<div class="next-step"><div><b>${lang==='es'?'Volver a una versión anterior':'Restore previous update'}</b><p>${lang==='es'?'Antes de instalar una actualización oficial, guardo una copia de seguridad. Conservo las últimas 3 por si necesitas volver a algo que ya funcionaba.':'Before installing an official update, I save a backup. The last 3 are kept so you can return to something that was working.'}</p></div><div class="mode-actions"><button class="btn" type="button" data-action-code="loadUpdateSnapshots(true)">${lang==='es'?'Ver copias guardadas':'View saved copies'}</button></div></div><div id="update-snapshot-list"></div>`;
+ loadUpdateSnapshots(false);
+}
+function updateCardsMarkup(info){
+ const cards=(info?.improvements||[]).map(item=>`<div class="update-card"><span>${escapeHtml(item.impact||'Optimización')}</span><b>${escapeHtml(item.title||'Mejora incluida')}</b><p>${escapeHtml(item.body||'Actualización publicada desde el canal oficial.')}</p></div>`).join('');
+ return `<div class="update-cards">${cards}</div>`;
+}
+function updateWarningsMarkup(info){
+ const warnings=info?.warnings||[];if(!warnings.length)return '';
+ return `<div class="update-cards">${warnings.map(item=>`<div class="update-card"><span>${lang==='es'?'Atención':'Warning'}</span><b>${escapeHtml(localText(item.title||''))}</b><p>${escapeHtml(localText(item.body||''))}</p></div>`).join('')}</div>`;
+}
+function renderUpdateBanner(info){
+ const box=qs('#update-banner');if(!box)return;
+ if(!info||!info.available){box.classList.add('hidden');box.innerHTML='';return}
+ box.classList.remove('hidden');
+ box.innerHTML=`<div><b>${lang==='es'?'Update disponible':'Update available'}: ${escapeHtml(info.latest_version||'')}</b><p>${lang==='es'?'Instalo desde aquí con copia de seguridad automática.':'Install from here with an automatic backup.'}</p></div><button class="btn primary" type="button" data-action-code="showUpdateDetails()" aria-label="${lang==='es'?'Ver mejoras e instalar':'View improvements and install'}">${lang==='es'?'Actualizar':'Update'}</button>`;
+}
+function renderDeferredOnboardingBanner(){
+ const box=qs('#deferred-onboarding-banner');if(!box)return;
+ const onboarding=state.onboarding||{};
+ const deferred=Boolean(onboarding.deferred||onboarding.skipped||onboarding.requires_repair);
+ if(!deferred){box.classList.add('hidden');box.innerHTML='';return}
+ const reasons=(onboarding.deferred_reasons||onboarding.repair_reasons||[]).filter(Boolean);
+ const labelMap={
+  licencia:lang==='es'?'licencia':'license',
+  conexion_facebook:lang==='es'?'Facebook':'Facebook',
+  cuenta_publicitaria:lang==='es'?'cuenta publicitaria':'ad account',
+  cerebro_agente:lang==='es'?'ChatGPT':'ChatGPT',
+  telegram:'Telegram',
+  entrevista_negocio:lang==='es'?'entrevista del negocio':'business interview',
+  branding_creativos:lang==='es'?'marca y creativos':'brand and creatives',
+  campanas_anuncios:lang==='es'?'campañas previas':'past campaigns',
+  conexion_meta:lang==='es'?'Facebook':'Facebook',
+  destinos:lang==='es'?'página y web':'Page and website',
+  datos_reales:lang==='es'?'datos reales':'real data',
+  perfil_negocio:lang==='es'?'perfil del negocio':'business profile'
+ };
+ const summary=reasons.length?reasons.slice(0,3).map(reason=>labelMap[reason]||reason).join(', '):(lang==='es'?'algunos pasos':'some steps');
+ box.classList.remove('hidden');
+ box.innerHTML=`<div class="deferred-onboarding-copy"><span class="pulse-dot"></span><div><b>${lang==='es'?'Completa la configuración para ver datos reales':'Finish setup to see real data'}</b><p>${lang==='es'?`Falta revisar: ${summary}. Mientras falte esto, puedes ver el dashboard con ejemplos, pero el agente no analizará campañas reales.`:`Still to review: ${summary}. Until this is done, the dashboard can show examples, but the agent will not analyze real campaigns.`}</p></div></div><button class="btn primary" type="button" data-action-code="resumeOnboarding()">${lang==='es'?'Completar ahora':'Finish now'}</button>`;
+}
+function showUpdateDetails(){
+ if(!updateInfo)return;
+ const box=qs('#confirm-overlay');box.innerHTML=`<div class="confirm-card guide-modal-card"><div class="next-step"><div><h2>${lang==='es'?'Actualización oficial':'Official update'}</h2><p>${lang==='es'?'Versión':'Version'}: ${escapeHtml(updateInfo.current_version||'')} → ${escapeHtml(updateInfo.latest_version||'')}</p></div><button class="btn" type="button" data-action-code="closeConfirm()">${lang==='es'?'Cerrar':'Close'}</button></div>${updateWarningsMarkup(updateInfo)}${updateCardsMarkup(updateInfo)}<p class="notice">${lang==='es'?'Antes de cambiar archivos crearé una copia de seguridad. Si algo falla, podrás volver desde Configuración. Meta seguirá ejecutando lo que ya esté activo fuera del dashboard.':'Before changing files I will create a backup. If something fails, you can return from Setup. Meta will keep running anything already active outside the dashboard.'}</p><div class="confirm-actions"><button class="btn" type="button" data-action-code="closeConfirm()">${lang==='es'?'Ahora no':'Not now'}</button><button class="btn primary" type="button" data-action-code="applyDashboardUpdate()">${lang==='es'?'Crear copia e instalar':'Backup and install'}</button></div></div>`;box.classList.add('open');
+}
+function startUpdateAutoCheck(){
+ if(updateAutoTimer)return;
+ updateAutoTimer=setInterval(()=>checkForUpdates(true,{silent:true}),15*60*1000);
+}
+async function checkForUpdates(force=false,options={}){
+ if(updateCheckStarted&&!force)return;
+ if(!dashboardPassword())return;
+ updateCheckStarted=true;
+ const silent=Boolean(options.silent);
+ try{const res=await api('/api/update/check',{method:'POST',body:'{}'});updateInfo=res.result||null;renderUpdateBanner(updateInfo);if(force&&!silent)toast(updateInfo?.available?(lang==='es'?'Actualización disponible':'Update available'):(lang==='es'?'Ya tienes la versión más reciente':'You already have the latest version'))}catch(err){if(force&&!silent)toast(lang==='es'?'No pude revisar actualizaciones':'Could not check for updates')}
+}
+async function applyDashboardUpdate(){
+ const box=qs('#confirm-overlay');box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'Instalando actualización':'Installing update'}</h2><p>${lang==='es'?'Estoy descargando el paquete oficial y conservando tus datos locales. El dashboard se reiniciará al terminar.':'Downloading the official package and keeping local data. The dashboard will restart when finished.'}</p></div>`;box.classList.add('open');
+ try{const res=await api('/api/update/apply',{method:'POST',body:'{}'});box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'Actualización instalada':'Update installed'}</h2><p>${escapeHtml(res.result?.message||'')}</p><p class="notice">${lang==='es'?'Copia guardada':'Saved backup'}: ${escapeHtml(res.result?.snapshot?.id||'')}</p><p class="notice">${lang==='es'?'Si la página tarda unos segundos, espera y recarga.':'If the page takes a few seconds, wait and refresh.'}</p></div>`;toast(lang==='es'?'Actualización instalada':'Update installed')}catch(err){box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'No pude actualizar':'Could not update'}</h2><p>${escapeHtml(err.message||String(err))}</p><p class="notice">${lang==='es'?'Si la copia se creó, estará disponible en Configuración para restaurar.':'If a backup was created, it will be available in Setup to restore.'}</p><div class="confirm-actions"><button class="btn primary" type="button" data-action-code="closeConfirm()">${lang==='es'?'Cerrar':'Close'}</button></div></div>`}
+}
+function setupSimpleText(item){
+ const es={
+  license_key:['Licencia','Pega y activa el código que recibiste al comprar.'],
+  ad_account:['Cuenta publicitaria','Elige la cuenta de Meta Ads que quieres que el agente cuide.'],
+  access_token:['Clave de Meta','Pega la clave de acceso que creaste siguiendo tus imágenes de guía.'],
+  page_id:['Página de Facebook','Elige la página desde donde saldrán tus anuncios.'],
+  landing_url:['Link de tu web','Guarda la página a la que llegarán las personas.'],
+  dashboard_token:['Contraseña del dashboard','Crea una contraseña para proteger acciones importantes.'],
+  hermes_runtime:['Chat con agente','Falta conectar la base del agente para usar tu sesión de ChatGPT/Codex.'],
+  hermes_auth:['ChatGPT/Codex','Conecta el agente con tu cuenta de ChatGPT/Codex.'],
+  openai_compatible_model:['Modelo del agente','Si usas MiniMax M3 u otra API, falta guardar URL, modelo y clave.'],
+  social_cli:['Conexión con Meta','Falta la pieza local que ayuda a leer datos de Meta.'],
+  daily_report:['Lectura diaria','Todavía no hay resumen diario. Puedes tocar Actualizar o pedírselo al agente.'],
+  gemini_key:['Crear imágenes','Opcional: falta conectar la clave para generar imágenes reales.'],
+  telegram_bot:['Telegram','Opcional: falta la clave del bot si quieres hablar desde Telegram.'],
+  telegram_chat:['Telegram','Opcional: falta elegir tu chat privado.'],
+  creative_index:['Ideas de anuncios','Todavía no hay ideas de anuncios creadas.'],
+  latest_upload:['Publicar anuncios','Todavía no hay anuncios preparados para revisar.'],
+ };
+ const en={
+  license_key:['License','Paste and activate the code you received after purchase.'],
+  ad_account:['Ad account','Choose the Meta Ads account this agent should manage.'],
+  access_token:['Meta key','Paste the access key you created with your screenshots.'],
+  page_id:['Facebook Page','Choose the Page your ads will publish from.'],
+  landing_url:['Website link','Save the page people will visit.'],
+  dashboard_token:['Dashboard password','Create a password to protect important actions.'],
+  hermes_runtime:['Agent chat','Connect the agent base so chat can use your ChatGPT/Codex session.'],
+  hermes_auth:['ChatGPT/Codex','Connect the agent with your ChatGPT/Codex account.'],
+  openai_compatible_model:['Agent model','If you use MiniMax M3 or another API, save URL, model, and key.'],
+  social_cli:['Meta connection','The local helper for reading Meta data is missing.'],
+  daily_report:['Daily reading','No daily brief exists yet. Click Refresh or ask the agent.'],
+  gemini_key:['Create images','Optional: connect the key for real image generation.'],
+  telegram_bot:['Telegram','Optional: add the bot key if you want to chat from Telegram.'],
+  telegram_chat:['Telegram','Optional: choose your private chat.'],
+  creative_index:['Ad ideas','No ad ideas have been created yet.'],
+  latest_upload:['Publish ads','No ads are prepared for review yet.'],
+ };
+ const dict=lang==='es'?es:en;const found=dict[item.key];
+ if(found)return {title:found[0],body:found[1]};
+ return {title:localText(item.label),body:localText(item.action||item.detail||'')};
+}
+function renderSetupBeginnerSummary(setup){
+ const all=setup.sections.flatMap(sec=>sec.items||[]);
+ const blocked=all.filter(i=>i.status==='blocked');
+ const warnings=all.filter(i=>i.status==='warn');
+ const list=(blocked.length?blocked:warnings).slice(0,4);
+ const good=!blocked.length&&!warnings.length;
+ const title=good?(lang==='es'?'Todo lo importante se ve listo':'The important pieces look ready'):(blocked.length?(lang==='es'?'Lo que falta primero':'Fix these first'):(lang==='es'?'Cosas para revisar':'Things to review'));
+ const body=good?(lang==='es'?'Tu configuración principal está en verde. Si algo te confunde, pregúntale al agente antes de activar piloto automático.':'Your main setup is green. If anything feels unclear, ask the agent before enabling autopilot.'):(lang==='es'?'No necesitas entender cada detalle técnico. Empieza por estas tarjetas y el agente puede explicarte una por una.':'You do not need to understand every technical detail. Start with these cards and the agent can explain them one by one.');
+ return `<div class="guide-panel setup-simple-panel"><div class="next-step"><div><b>${title}</b><p>${body}</p></div><button class="btn ask-btn" type="button" data-action-code="openChat(lang==='es'?'Explícame qué falta en mi configuración con palabras muy simples y dime qué hago primero.':'Explain what is missing in my setup in very simple words and tell me what to do first.')">${t('ask_agent')}</button></div>${list.length?`<div class="trust-grid">${list.map(item=>{const copy=setupSimpleText(item);return `<div class="trust-card"><b>${statusLabel(item.status)} · ${escapeHtml(copy.title)}</b><p>${escapeHtml(copy.body)}</p></div>`}).join('')}</div>`:''}</div>`;
+}
+function renderSetupTechnicalDetails(setup){
+ return `<details class="fallback-details setup-technical-details"><summary>${lang==='es'?'Revisión técnica para soporte':'Technical review for support'}</summary>${setup.sections.map(sec=>`<div class="section"><div class="head"><b>${localText(sec.title)}</b></div><div class="body">${sec.items.map(i=>`<div class="log-item"><b>${statusLabel(i.status)} - ${localText(i.label)}</b><br>${localText(i.detail||'')}${i.action?`<br><span class="notice">${localText(i.action)}</span>`:''}</div>`).join('')}</div></div>`).join('')}</details>`;
+}
+function renderSetup(){const setup=state.setup;const counts=setup.summary.counts;renderModeControl();renderGuardrails();renderOnboarding();renderLicensePanel();renderMetaConnectionPanel();renderSetupConfig();renderChatGptPanel();renderTelegramPanel();renderLocalNetworkPanel();renderMigrationPanel();renderUpdateRollbackPanel();renderCloudAccessPanel();qs('#setup-summary').innerHTML=`<div class="kpis">${kpi(t('ok'),counts.ok||0)}${kpi(t('warnings'),counts.warn||0)}${kpi(t('blocked'),counts.blocked||0)}${kpi(t('live_ready'),setup.summary.live_ads_ready?t('live_ready_yes'):t('live_ready_no'))}</div>`;qs('#setup-sections').innerHTML=renderSetupBeginnerSummary(setup)+renderSetupTechnicalDetails(setup)}
+function audienceText(value){
+ const raw=String(value||'');if(lang!=='es')return raw;
+ const exact={
+  'Broad / Advantage+ prospecting':'Llegar a personas nuevas',
+  'Prospección amplia / Advantage+':'Llegar a personas nuevas',
+  'Interest testing':'Personas con intereses relacionados',
+  'Prueba por intereses':'Personas con intereses relacionados',
+  'Warm retargeting':'Personas que ya te conocen',
+  'Retargeting tibio':'Personas que ya te conocen',
+  'Lookalike from seed audience':'Personas parecidas a tus mejores clientes',
+  'Lookalike desde audiencia semilla':'Personas parecidas a tus mejores clientes',
+  'Use after the seed source is clean and large enough.':'Úsalo cuando ya tengas suficientes visitas o compradores reales.',
+  'Úsalo cuando la audiencia semilla esté limpia y tenga suficiente tamaño.':'Úsalo cuando ya tengas suficientes visitas o compradores reales.',
+  'Las audiencias tibias suelen convertir mejor, pero se fatigan rápido si son pequeñas.':'Las personas que ya te conocen suelen comprar más fácilmente, pero el mismo anuncio puede cansarlas si son pocas.',
+  'Lanza primero amplia + una prueba de intereses.':'Empieza llegando a personas nuevas y prueba un grupo con intereses.',
+  'Separa retargeting si ya existe tráfico tibio.':'Si ya tienes visitas o mensajes, prepara un grupo aparte para esas personas.',
+  'Crea lookalike solo cuando la data semilla y el consentimiento estén claros.':'Prueba personas parecidas solo cuando tengas suficientes datos y permiso para usarlos.',
+ };
+ if(exact[raw])return exact[raw];
+ if(raw.startsWith('Meta usually finds buyers faster'))return 'Empieza sin poner demasiados filtros. Las imágenes, textos y resultados ayudarán al agente a encontrar compradores.';
+ if(raw.startsWith('Start with interests that describe'))return 'Prueba temas que ya le interesan a tu comprador, sin limitar demasiado el alcance.';
+ if(raw.startsWith('Lookalikes can scale what already works'))return 'Las personas parecidas pueden ampliar lo que ya funciona, siempre que los datos de partida sean buenos.';
+ return raw;
+}
+function audienceTargetingText(targeting){
+ if(lang!=='es')return JSON.stringify(targeting||{});
+ const value=targeting||{}, parts=[];
+ if(value.locations?.length)parts.push(`Lugar: ${value.locations.join(', ')}`);
+ if(value.age)parts.push(`Edad: ${value.age}`);
+ if(value.interests?.length)parts.push(`Intereses: ${value.interests.join(', ')}`);
+ if(value.sources?.length)parts.push(`Ya te conocen por: ${value.sources.map(source=>source==='Pixel / IG engagement / leads'?'visitas web, Instagram o formularios':source).join(', ')}`);
+ if(value.window)parts.push('Probar durante: 7, 14 y 30 días');
+ if(value.exclusions)parts.push('Evitar mostrarlo a compradores recientes, si puedes identificarlos');
+ if(value.seed)parts.push('Basado en: visitantes, compradores o personas que interactuaron');
+ if(value.sizes)parts.push('Probar cercanía: 1%, 2% y 5%');
+ return parts.join(' · ')||'El agente ajustará este público con lo que le cuentes.';
+}
+function renderAudience(){
+ const r=state.audience_strategy||{};const box=qs('#audience-result');if(!box)return;
+ if(!r.strategies){box.innerHTML=`<p class="notice">${lang==='es'?'Completa estas preguntas para que el agente te sugiera a qué personas mostrar tus anuncios. El agente no sube listas de clientes todavía; solo te dirá si valdría la pena después.':'Fill the form to create a clear targeting recommendation. The agent does not upload customer lists yet; it only checks whether that would make sense later.'}</p>`;return}
+ const ready=r.lookalike_readiness?.ready;
+ box.innerHTML=`<div class="trust-grid"><div class="trust-card"><b>${t('lookalike_status')}</b><p>${ready?(lang==='es'?'Ya tienes información suficiente para probar con personas parecidas a tus clientes o visitantes.':'You have enough information to test with people similar to your customers or visitors.'):(lang==='es'?'Todavía no conviene. Primero reúne visitas, interacciones o una lista de clientes que te dio permiso.':'Not yet. First gather visits, interactions, or a customer list with permission.')}</p></div><div class="trust-card"><b>${lang==='es'?'Qué falta':'What is missing'}</b><p>${escapeHtml((r.blockers&&r.blockers.length?r.blockers.map(audienceText):[lang==='es'?'Nada importante por resolver.':'Nothing important to resolve.']).join(' '))}</p></div><div class="trust-card"><b>${lang==='es'?'Producto':'Product'}</b><p>${escapeHtml(r.product||'')}</p></div></div><h3 data-style-code="font-size:13px;margin:8px 0">${t('recommended_audiences')}</h3>${r.strategies.map(s=>`<div class="rec-card"><h3>${escapeHtml(audienceText(s.name))}</h3><p class="notice">${escapeHtml(audienceText(s.use_when))}</p><div class="action-detail"><strong>${lang==='es'?'Por qué':'Why'}:</strong> ${escapeHtml(audienceText(s.why))}<br><strong>${lang==='es'?'Personas que verá':'People it reaches'}:</strong> ${escapeHtml(audienceTargetingText(s.targeting))}</div></div>`).join('')}<h3 data-style-code="font-size:13px;margin:8px 0">${t('next_steps')}</h3>${(r.next_steps||[]).map(step=>`<div class="log-item">${escapeHtml(audienceText(step))}</div>`).join('')}`;
+}
+function spark(vals){const w=220,h=46,max=Math.max(...vals,1),min=Math.min(...vals,0),range=max-min||1;const pts=vals.map((v,i)=>`${i*(w/(vals.length-1))},${h-((v-min)/range*h*.78+5)}`).join(' ');return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><polyline points="${pts}" fill="none" stroke="#7c5cff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><line x1="0" y1="${h-4}" x2="${w}" y2="${h-4}" stroke="#2a2a30"/></svg>`}
+function campaignButtons(c){
+ if(c.status==='paused')return `<button class="btn primary" data-action-code="campaignAction('resume','${c.id}')">${t('resume')}</button><button class="btn" data-action-code="budgetPrompt('${c.id}',${c.daily_budget})">${t('adjust_budget')}</button><button class="btn" data-action-code="showDetails('${c.id}')">${t('details')}</button>`;
+ if(c.health==='winning')return `<button class="btn primary" data-action-code="budgetPrompt('${c.id}',${Math.round(Number(c.daily_budget||0)*1.15)})">${t('increase_budget')}</button><button class="btn" data-action-code="showDetails('${c.id}')">${t('details')}</button><button class="btn" data-action-code="budgetPrompt('${c.id}',${c.daily_budget})">${t('adjust_budget')}</button>`;
+ if(c.health==='fatigue')return `<button class="btn primary" data-action-code="generateRefresh('${c.id}')">${t('refresh_creative')}</button><button class="btn" data-action-code="budgetPrompt('${c.id}',${c.daily_budget})">${t('adjust_budget')}</button><button class="btn danger" data-action-code="campaignAction('pause','${c.id}')">${t('pause')}</button>`;
+ if(c.health==='losing')return `<button class="btn danger" data-action-code="campaignAction('pause','${c.id}')">${t('pause')}</button><button class="btn primary" data-action-code="generateRefresh('${c.id}')">${t('refresh_creative')}</button><button class="btn" data-action-code="budgetPrompt('${c.id}',${c.daily_budget})">${t('adjust_budget')}</button>`;
+ return `<button class="btn" data-action-code="budgetPrompt('${c.id}',${c.daily_budget})">${t('adjust_budget')}</button><button class="btn" data-action-code="generateRefresh('${c.id}')">${t('refresh_creative')}</button><button class="btn danger" data-action-code="campaignAction('pause','${c.id}')">${t('pause')}</button>`;
+}
+function card(c){const draft=lang==='es'?`Analiza la campaña ${c.name}. Está como ${statusText(c.health)} con ROAS ${Number(c.roas).toFixed(2)}x y CPA ${fmtMoney(c.cpa)}. ¿Qué harías como manager?`:`Analyze campaign ${c.name}. It is ${statusText(c.health)} with ROAS ${Number(c.roas).toFixed(2)}x and CPA ${fmtMoney(c.cpa)}. What would you do as manager?`;return `<article class="card aurora-card" data-health="${c.health}"><span class="starfield" aria-hidden="true"></span><div class="top"><h3>${escapeHtml(demoCampaignName(c.name))}</h3><span class="badge ${c.health}">${statusText(c.health)}</span></div><div class="metrics">${metric('Spend',fmtMoney(c.spend))}${metric('ROAS',Number(c.roas).toFixed(2)+'x')}${metric('CPA',fmtMoney(c.cpa))}${metric('CTR',fmtPct(c.ctr))}</div>${spark(c.trend)}<div class="actions">${campaignButtons(c)}<button class="btn ask-btn" data-action-code="openChat(${JSON.stringify(draft).replaceAll('"','&quot;')})">${t('ask_agent')}</button></div></article>`}
+async function campaignAction(action,campaign_id){const res=await api('/api/action',{method:'POST',body:JSON.stringify({action,campaign_id})});const staged=res.result?.status==='pending';toast(staged?(lang==='es'?'Decisión enviada a aprobación':'Decision sent for approval'):(action==='resume'?t('toast_resume'):t('toast_action')));await load()}
+async function applyRec(campaign_id,new_budget){const res=await api('/api/action',{method:'POST',body:JSON.stringify({action:'apply_recommendation',campaign_id,new_budget})});toast(res.result?.status==='pending'?(lang==='es'?'Cambio enviado a aprobación':'Change sent for approval'):t('toast_budget'));await load()}
+function budgetDialog(campaign_id,current){
+ const campaign=(state.metrics?.campaigns||[]).find(c=>c.id===campaign_id)||{};
+ const safeCurrent=Number(current||campaign.daily_budget||0)||0;
+ const suggestions=[safeCurrent,Math.round(safeCurrent*1.1),Math.round(safeCurrent*1.2)].filter((v,i,a)=>v>0&&a.indexOf(v)===i);
+ const agentDraft=lang==='es'?`Revisa el presupuesto de ${campaign.name||'esta campaña'}. Está con presupuesto diario ${fmtMoney(safeCurrent)}, ROAS ${Number(campaign.roas||0).toFixed(2)}x y CPA ${fmtMoney(campaign.cpa)}. Dime cuánto pondrías y por qué antes de tocar nada.`:`Review the budget for ${campaign.name||'this campaign'}. Daily budget is ${fmtMoney(safeCurrent)}, ROAS ${Number(campaign.roas||0).toFixed(2)}x and CPA ${fmtMoney(campaign.cpa)}. Tell me what you would set and why before touching anything.`;
+ const box=qs('#confirm-overlay');
+ box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'Ajustar presupuesto con calma':'Adjust budget calmly'}</h2><p>${lang==='es'?'Elige el nuevo máximo diario. Si no estás seguro, pregúntale al manager primero y vuelve a esta decisión después.':'Choose the new daily maximum. If you are not sure, ask the manager first and come back to this decision.'}</p><form class="unlock-form" data-submit-code="submitBudgetDialog(event,${chatArg(campaign_id)})"><label>${lang==='es'?'Nuevo presupuesto diario':'New daily budget'}<input id="budget-dialog-value" type="number" min="1" step="1" value="${safeCurrent}" inputmode="decimal"></label>${suggestions.length?`<div class="mode-actions">${suggestions.map(v=>`<button class="btn" type="button" data-action-code="qs('#budget-dialog-value').value='${v}'">${fmtMoney(v)}</button>`).join('')}</div>`:''}<p class="notice">${lang==='es'?'Si supera tus reglas, quedará en aprobación antes de tocar Meta Ads.':'If it exceeds your rules, it will go to approval before touching Meta Ads.'}</p><div class="confirm-actions"><button class="btn" type="button" data-action-code="closeConfirm()">${lang==='es'?'Cancelar':'Cancel'}</button><button class="btn ask-btn" type="button" data-action-code="closeConfirm();openChat(${chatArg(agentDraft)})">${lang==='es'?'Preguntar al manager':'Ask manager'}</button><button class="btn primary" type="submit">${lang==='es'?'Enviar cambio':'Send change'}</button></div></form></div>`;
+ box.classList.add('open');
+ setTimeout(()=>qs('#budget-dialog-value')?.focus(),30);
+}
+async function submitBudgetDialog(event,campaign_id){event.preventDefault();const val=Number(qs('#budget-dialog-value')?.value||0);if(!val||val<1){toast(lang==='es'?'Escribe un presupuesto mayor a cero.':'Enter a budget greater than zero.');return}closeConfirm();const res=await api('/api/action',{method:'POST',body:JSON.stringify({action:'adjust_budget',campaign_id,new_budget:val})});toast(res.result?.status==='pending'?(lang==='es'?'Cambio enviado a aprobación':'Change sent for approval'):t('toast_budget'));await load()}
+async function budgetPrompt(campaign_id,current){budgetDialog(campaign_id,current)}
+async function runAgent(){await api('/api/action',{method:'POST',body:JSON.stringify({action:'run_agent'})});toast(t('toast_daily'));await load()}
+async function refreshInsights(){const res=await api('/api/action',{method:'POST',body:JSON.stringify({action:'refresh_insights'})});if(res.result&&res.result.ok){toast(lang==='es'?'Datos reales actualizados desde Meta.':'Real Meta data refreshed.')}else{toast(lang==='es'?'No pude leer datos reales todavía. Revisa tu clave de Meta y la cuenta elegida.':'Could not read real data yet. Check your Meta key and chosen account.')}await load();return res}
+async function exportCsv(){const r=await api('/api/export');toast(t('toast_export')+r.path)}
+async function approvePending(id){const item=(state.pending||[]).find(p=>p.id===id);if(item&&item.type==='create_campaign'&&item.payload?.final_status==='ACTIVE'){const ok=await showDecisionConfirm({title:lang==='es'?'Esta campaña puede empezar a gastar':'This campaign can start spending',body:lang==='es'?'Al aprobar, se creará o encenderá como ACTIVA y podrá usar el presupuesto elegido. Revisa esto como si le dieras luz verde a un manager humano.':'When approved, it will be created or turned on as ACTIVE and may use the selected budget. Review this like giving a human manager the green light.',items:[item.payload?.name||item.payload?.campaign_name||item.type,lang==='es'?'La aprobación debe salir de un botón exacto o de una frase exacta; el agente no puede decidir solo.':'Approval must come from an exact button or exact phrase; the agent cannot decide alone.'],confirmLabel:lang==='es'?'Sí, aprobar activa':'Yes, approve active',agentDraft:lang==='es'?`Explícame esta aprobación de campaña activa antes de que yo decida. ¿Qué riesgo tiene y qué debería revisar?`:`Explain this active campaign approval before I decide. What is the risk and what should I review?`});if(!ok)return []}const res=await api('/api/approve',{method:'POST',body:JSON.stringify({approval_id:id})});const attempted=(res.result||[])[0]||{};toast(attempted.status==='approved'?t('toast_approval'):(lang==='es'?'No se pudo ejecutar. La decisión sigue pendiente para reintentar.':'Execution failed. The decision remains pending so you can retry.'));await load();return res.result||[]}
+async function setMode(mode){if(mode==='live'){const ok=await showDecisionConfirm({title:lang==='es'?'Activar piloto automático':'Turn on autopilot',body:lang==='es'?'El agente podrá ejecutar acciones reales solo cuando entren dentro de tus reglas. Lo que se salga de los límites seguirá pidiendo aprobación.':'The agent can execute real actions only when they fit your rules. Anything outside the limits will still ask for approval.',items:[lang==='es'?'Leer datos reales no cambia nada en Meta.':'Reading real data does not change Meta.',lang==='es'?'Piloto automático sí puede tocar campañas dentro de tus reglas.':'Autopilot can touch campaigns inside your rules.'],confirmLabel:lang==='es'?'Activar piloto':'Turn on autopilot',agentDraft:lang==='es'?'Antes de activar piloto automático, revisa mis reglas y dime si están prudentes para mi cuenta.':'Before turning on autopilot, review my rules and tell me if they are prudent for my account.'});if(!ok)return}await api('/api/mode',{method:'POST',body:JSON.stringify({mode,live_actions_enabled:mode==='live'})});toast(mode==='live'?(lang==='es'?'Piloto automático activado':'Autopilot enabled'):(lang==='es'?'Modo con supervisión activado':'Supervised mode enabled'));await load()}
+async function setLocalNetworkAccess(enabled){
+ const box=qs('#local-network-panel');
+ if(box)box.insertAdjacentHTML('afterbegin',`<div class="guide-card"><p>${enabled?(lang==='es'?'Preparando enlace para tu teléfono...':'Preparing phone link...'):(lang==='es'?'Apagando acceso por Wi‑Fi...':'Turning off Wi‑Fi access...')}</p></div>`);
+ const res=await api('/api/local-network-access',{method:'POST',body:JSON.stringify({enabled})});
+ const result=res.result||res;
+ if(result.restarting){
+  toast(enabled?(lang==='es'?'Activando acceso por Wi‑Fi. El dashboard se reiniciará.':'Turning on Wi‑Fi access. The dashboard will restart.'):(lang==='es'?'Apagando acceso por Wi‑Fi. El dashboard se reiniciará.':'Turning off Wi‑Fi access. The dashboard will restart.'));
+  setTimeout(()=>window.location.reload(),2200);
+  return;
+ }
+ toast(enabled?(lang==='es'?'Acceso para teléfono activado.':'Phone access enabled.'):(lang==='es'?'Acceso por Wi‑Fi apagado.':'Wi‑Fi access turned off.'));
+ await load();
+}
+async function saveGuardrails(e){e.preventDefault();const form=e.target;const data=Object.fromEntries(new FormData(form).entries());data.require_approval_for_resume=form.require_approval_for_resume.checked;data.require_approval_for_new_campaigns=form.require_approval_for_new_campaigns.checked;data.require_approval_for_creatives=form.require_approval_for_creatives.checked;await api('/api/guardrails',{method:'POST',body:JSON.stringify(data)});toast(lang==='es'?'Reglas guardadas':'Rules saved');await load()}
+async function saveProfitabilityRules(e){e.preventDefault();const form=e.target;const data=Object.fromEntries(new FormData(form).entries());await api('/api/profitability-rules',{method:'POST',body:JSON.stringify(data)});toast(lang==='es'?'Reglas de rentabilidad guardadas':'Profitability rules saved');await load()}
+async function saveTelegramConfig(e){e.preventDefault();const form=e.target;const data=Object.fromEntries(new FormData(form).entries());data.enabled=form.enabled.checked;const fromOnboarding=qs('#onboarding-flow')?.classList.contains('open');await api('/api/telegram/config',{method:'POST',body:JSON.stringify(data)});toast(lang==='es'?'Telegram guardado':'Telegram saved');await load();if(fromOnboarding)await maybeFinishTelegramOnboarding()}
+async function fetchProtectedFile(path,opts={}){
+ const headers={...(opts.headers||{})};const password=dashboardPassword();if(password)headers['X-Dashboard-Token']=password;
+ let res=await fetch(path,{...opts,headers});
+ if(res.status===401){clearStoredDashboardSecrets();const entered=await requestUnlock();if(entered){headers['X-Dashboard-Token']=entered;res=await fetch(path,{...opts,headers})}}
+ if(!res.ok)throw new Error(await responseErrorMessage(res));
+ return res;
+}
+async function downloadMigrationBackup(){
+ const box=qs('#migration-result');if(box)box.innerHTML=`<div class="guide-card"><p>${lang==='es'?'Preparando respaldo seguro...':'Preparing secure backup...'}</p></div>`;
+ try{
+  const res=await fetchProtectedFile('/api/migration/export',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  const blob=await res.blob();const disposition=res.headers.get('Content-Disposition')||'';const match=disposition.match(/filename="([^"]+)"/);const filename=match?match[1]:'meta-ads-agent-respaldo.tar.gz';
+  const url=URL.createObjectURL(blob);const link=document.createElement('a');link.href=url;link.download=filename;document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+  if(box)box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'Respaldo creado':'Backup created'}</b><p>${lang==='es'?'Se descargó el archivo. Guárdalo en un lugar privado.':'The file downloaded. Store it somewhere private.'}</p></div>`;
+ }catch(err){if(box)box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'No pude crear el respaldo':'Could not create backup'}</b><p>${escapeHtml(err.message||String(err))}</p></div>`}
+}
+let pendingMigrationFile=null;
+function restoreMigrationBackup(event){
+ const file=event.target.files&&event.target.files[0];event.target.value='';
+ if(!file)return;pendingMigrationFile=file;
+ const box=qs('#confirm-overlay');box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'Restaurar respaldo':'Restore backup'}</h2><p>${lang==='es'?'Voy a reemplazar la memoria local de este dashboard por el respaldo seleccionado. Haré una copia interna de lo actual antes de restaurar.':'I will replace this dashboard local memory with the selected backup. I will make an internal copy of the current state before restoring.'}</p><p class="notice">${escapeHtml(file.name)} · ${Math.round(file.size/1024)} KB</p><div class="confirm-actions"><button class="btn" type="button" data-action-code="pendingMigrationFile=null;closeConfirm()">${lang==='es'?'Cancelar':'Cancel'}</button><button class="btn primary" type="button" data-action-code="confirmMigrationRestore()">${lang==='es'?'Restaurar':'Restore'}</button></div></div>`;box.classList.add('open');
+}
+function arrayBufferToBase64(buffer){let binary='';const bytes=new Uint8Array(buffer);const chunk=0x8000;for(let i=0;i<bytes.length;i+=chunk){binary+=String.fromCharCode.apply(null,bytes.subarray(i,i+chunk))}return btoa(binary)}
+async function confirmMigrationRestore(){
+ const file=pendingMigrationFile;pendingMigrationFile=null;closeConfirm();if(!file)return;
+ const box=qs('#migration-result');if(box)box.innerHTML=`<div class="guide-card"><p>${lang==='es'?'Restaurando respaldo...':'Restoring backup...'}</p></div>`;
+ try{
+  const content_base64=arrayBufferToBase64(await file.arrayBuffer());
+  const res=await api('/api/migration/import',{method:'POST',body:JSON.stringify({filename:file.name,content_base64})});
+  const restored=(res.result?.restored||[]).join(', ');
+  if(box)box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'Respaldo restaurado':'Backup restored'}</b><p>${escapeHtml(res.result?.message||'')}</p><p class="notice">${escapeHtml(restored)}</p></div>`;
+  toast(lang==='es'?'Respaldo restaurado':'Backup restored');await load();
+ }catch(err){if(box)box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'No pude restaurar':'Could not restore'}</b><p>${escapeHtml(err.message||String(err))}</p></div>`}
+}
+async function refreshCloudAccess(){
+ const box=qs('#cloud-access-result');if(box)box.innerHTML=`<div class="guide-card"><p>${lang==='es'?'Permitiendo que abras tu dashboard desde esta red...':'Allowing dashboard access from this network...'}</p></div>`;
+ try{
+  const res=await api('/api/cloud-access/refresh',{method:'POST',body:'{}'});
+  if(box)box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'Esta red ya puede entrar':'This network can now enter'}</b><p>${lang==='es'?'Ya puedes abrir el dashboard desde este lugar.':'You can now open the dashboard from this location.'}</p></div>`;
+  toast(lang==='es'?'Acceso listo para esta red':'Access ready for this network');
+ }catch(err){if(box)box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'No pude actualizar el acceso':'Could not refresh access'}</b><p>${escapeHtml(err.message||String(err))}</p></div>`}
+}
+function updateSnapshotMarkup(items){
+ if(!items||!items.length)return `<div class="guide-card"><p class="notice">${lang==='es'?'Todavía no hay copias guardadas. Se crearán automáticamente antes de la próxima actualización oficial.':'No saved copies yet. They will be created automatically before the next official update.'}</p></div>`;
+ return `<div class="update-cards">${items.map(item=>`<div class="update-card"><span>${escapeHtml(item.channel||'stable')}</span><b>${escapeHtml(item.version||'')}</b><p>${escapeHtml(new Date(item.created_at||Date.now()).toLocaleString())}</p><button class="btn" type="button" data-action-code="confirmUpdateRollback('${escapeHtml(item.id||'')}')">${lang==='es'?'Volver a esta versión':'Restore this version'}</button></div>`).join('')}</div>`;
+}
+async function loadUpdateSnapshots(force=false){
+ const box=qs('#update-snapshot-list');if(!box)return;
+ if(force)box.innerHTML=`<div class="guide-card"><p>${lang==='es'?'Buscando copias guardadas...':'Looking for saved copies...'}</p></div>`;
+ try{const res=await api('/api/update/snapshots');box.innerHTML=updateSnapshotMarkup(res.result||[])}catch(err){if(force)box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'No pude leer las copias':'Could not read saved copies'}</b><p>${escapeHtml(err.message||String(err))}</p></div>`}
+}
+function confirmUpdateRollback(snapshotId){
+ if(!snapshotId)return;
+ const box=qs('#confirm-overlay');box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'Volver a una versión anterior':'Restore previous version'}</h2><p>${lang==='es'?'Voy a devolver el dashboard a esta copia guardada. Esto no deshace cambios que Meta ya haya realizado en campañas activas.':'I will return the dashboard to this saved copy. This does not undo changes Meta already made to active campaigns.'}</p><p class="notice">${escapeHtml(snapshotId)}</p><div class="confirm-actions"><button class="btn" type="button" data-action-code="closeConfirm()">${lang==='es'?'Cancelar':'Cancel'}</button><button class="btn primary" type="button" data-action-code="rollbackUpdateSnapshot('${escapeHtml(snapshotId)}')">${lang==='es'?'Volver ahora':'Restore now'}</button></div></div>`;box.classList.add('open');
+}
+async function rollbackUpdateSnapshot(snapshotId){
+ const box=qs('#confirm-overlay');box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'Volviendo a la versión elegida':'Restoring'}</h2><p>${lang==='es'?'Estoy usando la copia guardada y conservando una copia de lo que tienes ahora.':'Restoring the saved copy and keeping a copy of what you have now.'}</p></div>`;box.classList.add('open');
+ try{const res=await api('/api/update/rollback',{method:'POST',body:JSON.stringify({snapshot_id:snapshotId})});box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'Versión lista':'Version restored'}</h2><p>${escapeHtml(res.result?.message||'')}</p><p class="notice">${lang==='es'?'Copia de lo anterior':'Backup of previous state'}: ${escapeHtml(res.result?.rescue_snapshot_id||'')}</p></div>`;toast(lang==='es'?'Ya estás usando la versión anterior':'Previous version restored')}catch(err){box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'No pude volver a esa versión':'Could not restore'}</h2><p>${escapeHtml(err.message||String(err))}</p><div class="confirm-actions"><button class="btn primary" type="button" data-action-code="closeConfirm()">${lang==='es'?'Cerrar':'Close'}</button></div></div>`}
+}
+async function finishOnboardingAndStartTour(reason='manual'){
+ try{
+  await api('/api/onboarding/complete',{method:'POST',body:JSON.stringify({})});
+  localStorage.setItem('dashboardIntroTourPending','1');
+  localStorage.removeItem('dashboardIntroTourDone');
+  toast(reason==='telegram'?(lang==='es'?'Telegram listo. Te muestro el dashboard.':'Telegram ready. Showing the dashboard.'):(lang==='es'?'Configuración inicial terminada. Te muestro el dashboard.':'Initial setup complete. Showing the dashboard.'));
+  await load();
+  setTimeout(startDashboardIntroTourIfPending,500);
+  return true;
+ }catch(err){
+  toast(err.message||String(err));
+  await load();
+  return false;
+ }
+}
+async function maybeFinishTelegramOnboarding(){
+ const telegram=state.config?.telegram_agent||{};
+ if(telegram.enabled&&telegram.bot_configured&&telegram.chat_id){
+  return finishOnboardingAndStartTour('telegram');
+ }
+ return false;
+}
+async function detectTelegramChats(){const res=await api('/api/telegram/detect',{method:'POST',body:'{}'});const rows=res.result||[];const box=qs('#telegram-results');if(!rows.length){box.innerHTML=`<p class="notice">${lang==='es'?'No encontré mensajes. Escríbele primero a tu bot en Telegram y vuelve a intentar.':'I found no messages. Message your bot in Telegram first, then try again.'}</p>`;return}box.innerHTML=rows.map(c=>`<div class="log-item"><b>${escapeHtml(c.label)} ${escapeHtml(c.username||'')}</b><br><button class="btn primary" type="button" data-action-code="selectTelegramChat('${escapeHtml(c.id)}',qs('#onboarding-flow')?.classList.contains('open'))">${lang==='es'?'Usar este chat':'Use this chat'}</button></div>`).join('')}
+async function selectTelegramChat(id,fromOnboarding=false){await api('/api/telegram/config',{method:'POST',body:JSON.stringify(fromOnboarding?{chat_id:id,enabled:'true'}:{chat_id:id})});toast(lang==='es'?'Chat de Telegram guardado':'Telegram chat saved');await load();if(fromOnboarding){const finished=await maybeFinishTelegramOnboarding();if(finished)return;const steps=onboardingSteps();const idx=steps.findIndex(s=>s.id==='telegram');onboardingFlowTouched=true;onboardingFlowStep=Math.min(steps.length-1,(idx>=0?idx:onboardingFlowStep)+1);renderOnboardingFlow()}}
+async function testTelegram(){await api('/api/telegram/test',{method:'POST',body:'{}'});toast(lang==='es'?'Mensaje enviado a Telegram':'Test message sent to Telegram')}
+function showDetails(campaign_id){const c=state.metrics.campaigns.find(item=>item.id===campaign_id);if(c)toast(lang==='es'?`${t('details')}: ${demoCampaignName(c.name)} · vuelve ${Number(c.roas).toFixed(2)}x por cada $1 · cada compra cuesta ${fmtMoney(c.cpa)}`:`${t('details')}: ${c.name} · ROAS ${Number(c.roas).toFixed(2)}x · CPA ${fmtMoney(c.cpa)}`);else toast(t('toast_details'))}
+function initBrandGuides(){
+ const suggested=state.business_profile?.main_offer||state.business_profile?.offer||'';
+ const draft=lang==='es'?'Ayúdame a definir mi producto principal y mi guía de marca para crear anuncios consistentes. Hazme preguntas fáciles, una por una.':'Help me define my main product and brand guide for consistent ads. Ask simple questions one at a time.';
+ const box=qs('#confirm-overlay');box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'Crear memoria de marca':'Create brand memory'}</h2><p>${lang==='es'?'Escribe el producto u oferta principal. Si no sabes cómo resumirlo, háblalo con el agente y él te guía.':'Enter the main product or offer. If you are not sure how to summarize it, talk to the agent and it will guide you.'}</p><form class="unlock-form" data-submit-code="submitBrandGuideInit(event)"><label>${lang==='es'?'Producto u oferta principal':'Main product or offer'}<input id="brand-guide-init-name" value="${escapeHtml(suggested)}" placeholder="${lang==='es'?'Ej: curso de uñas, ecommerce de ropa, clínica dental':'Ex: nail course, clothing store, dental clinic'}"></label><div class="confirm-actions"><button class="btn" type="button" data-action-code="closeConfirm()">${lang==='es'?'Cancelar':'Cancel'}</button><button class="btn ask-btn" type="button" data-action-code="closeConfirm();openChat(${chatArg(draft)})">${lang==='es'?'Hablarlo con el agente':'Talk with agent'}</button><button class="btn primary" type="submit">${lang==='es'?'Crear memoria':'Create memory'}</button></div></form></div>`;box.classList.add('open');setTimeout(()=>qs('#brand-guide-init-name')?.focus(),30)
+}
+async function submitBrandGuideInit(event){event.preventDefault();const name=(qs('#brand-guide-init-name')?.value||'').trim();if(!name){toast(lang==='es'?'Escribe el nombre de tu producto u oferta.':'Enter your product or offer name.');return}closeConfirm();await api('/api/brand-guides/init',{method:'POST',body:JSON.stringify({product_name:name})});toast(lang==='es'?'Guías de marca creadas.':'Brand guides created.');await load()}
+async function generateRefresh(campaign_id='',product_guide='',ad_brief=''){
+ const products=state.brand_guides?.products||[];const adBriefs=state.brand_guides?.ad_briefs||[];
+ if(!campaign_id&&!product_guide&&!ad_brief&&adBriefs.length===1)ad_brief=adBriefs[0].guide;
+ if(!campaign_id&&!product_guide&&!ad_brief&&adBriefs.length>1){openBrandMemory('ad_brief',adBriefs[0].id);toast(lang==='es'?'Elige la idea de anuncio que quieres trabajar':'Choose the ad idea to work on');return}
+ if(!campaign_id&&!product_guide&&products.length===1)product_guide=products[0].guide;
+ if(!campaign_id&&!product_guide&&products.length>1){openBrandMemory('product',products[0].id);toast(lang==='es'?'Elige el producto para crear propuestas coherentes':'Choose a product for consistent proposals');return}
+ const payload={};if(campaign_id)payload.campaign_id=campaign_id;if(product_guide)payload.product_guide=product_guide;if(ad_brief)payload.ad_brief=ad_brief;
+ await api('/api/creative-refresh',{method:'POST',body:JSON.stringify(payload)});toast(t('toast_refresh'));await load();
+}
+async function stageUpload(manifest_path,variant_id,ratios=['1:1']){await api('/api/stage-upload',{method:'POST',body:JSON.stringify({manifest_path,variant_id,ratios:ratios.length?ratios:['1:1']})});toast(lang==='es'?'Imagen lista para que la apruebes. También quedó guardada como pieza de anuncio.':'Image sent for approval. It was also saved as an ad asset.');await load()}
+async function buildAudienceStrategy(payload){const res=await api('/api/audience-strategy',{method:'POST',body:JSON.stringify({...payload,language:lang})});state.audience_strategy=res.result;renderAudience();toast(t('toast_audience'))}
+let pendingBusinessReplacement=null;
+function needsBusinessReplacement(err){return String(err?.message||err||'').includes('CONFIRM_BUSINESS_REPLACE')}
+function showBusinessReplacementConfirm(payload){
+ pendingBusinessReplacement=payload;
+ const box=qs('#confirm-overlay');box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'Cambiar de negocio':'Change business'}</h2><p>${lang==='es'?'Tu licencia Individual cuida un solo negocio activo. Si cambias de negocio, empezamos limpio para evitar mezclar datos.':'Your Individual license protects one active business. If you switch business, we start clean to avoid mixing data.'}</p><p class="notice">${lang==='es'?'Esto borra memoria del agente, métricas guardadas, chat, actividad, guías creativas e imágenes de trabajo del negocio anterior. No borra tu licencia, email, contraseña ni este equipo.':'This removes agent memory, saved metrics, chat, activity, creative guides, and working images for the previous business. It does not remove your license, email, password, or this device.'}</p><div class="confirm-actions"><button class="btn" type="button" data-action-code="pendingBusinessReplacement=null;closeConfirm()">${lang==='es'?'Cancelar':'Cancel'}</button><button class="btn primary" type="button" data-action-code="confirmBusinessReplacement()">${lang==='es'?'Cambiar y empezar limpio':'Change and start clean'}</button></div></div>`;box.classList.add('open')
+}
+async function confirmBusinessReplacement(){const payload={...(pendingBusinessReplacement||{}),confirm_replace_business:true};pendingBusinessReplacement=null;closeConfirm();await api('/api/setup-config',{method:'POST',body:JSON.stringify(payload)});toast(lang==='es'?'Nuevo negocio guardado. Empezamos con memoria limpia.':'New business saved. Starting with clean memory.');await load()}
+async function saveSetupPayload(payload,advance=false){try{await api('/api/setup-config',{method:'POST',body:JSON.stringify(payload)});toast(t('toast_setup_saved'));await load();if(advance)advanceOnboardingAfterLoad()}catch(err){if(needsBusinessReplacement(err)){showBusinessReplacementConfirm(payload);return}throw err}}
+async function saveSetupConfig(e){e.preventDefault();await saveSetupPayload(Object.fromEntries(new FormData(e.target).entries()))}
+async function saveOnboardingSetupConfig(e){e.preventDefault();await saveSetupPayload(Object.fromEntries(new FormData(e.target).entries()),true)}
+async function createAgencySpace(e){e.preventDefault();toast(lang==='es'?'Esta opción no está disponible en esta edición.':'This option is not available in this edition.')}
+async function switchAgencySpace(id){await api('/api/agency/spaces/switch',{method:'POST',body:JSON.stringify({space_id:id})});toast(lang==='es'?'Cliente activo cambiado.':'Active client changed.');await load()}
+async function saveBusinessLinks(e){
+ e.preventDefault();
+ const payload=Object.fromEntries(new FormData(e.target).entries());
+ const box=qs('#business-scan-results');
+ if(box)box.innerHTML=`<div class="guide-card"><p>${lang==='es'?'Guardando links para que el agente los revise...':'Saving links for the agent to review...'}</p></div>`;
+ try{
+  const res=await api('/api/business-profile/links',{method:'POST',body:JSON.stringify(payload)});
+  toast(lang==='es'?'Listo. El agente usará esto para entrevistarte por Telegram.':'Ready. The agent will use this when interviewing you through Telegram.');
+  await load();
+  const steps=onboardingSteps();
+  const idx=steps.findIndex(s=>s.id==='telegram');
+  onboardingFlowTouched=true;
+  onboardingFlowStep=idx>=0?idx:onboardingFlowStep;
+  renderOnboardingFlow();
+  return res;
+ }catch(err){
+  if(box)box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'No pude guardar esos links':'I could not save those links'}</b><p>${escapeHtml(err.message||String(err))}</p></div>`;
+  throw err;
+ }
+}
+async function startBusinessInterview(e){
+ e.preventDefault();
+ const payload=Object.fromEntries(new FormData(e.target).entries());
+ payload.language=lang;
+ const business=String(payload.business_type||'').trim();
+ if(!business){toast(lang==='es'?'Escribe tu negocio en pocas palabras.':'Write your business in a few words.');return}
+ const box=qs('#business-scan-results');
+ if(box)box.innerHTML=`<div class="guide-card"><p>${lang==='es'?'Preparando preguntas...':'Preparing questions...'}</p></div>`;
+ try{
+  const res=await api('/api/business-profile/questions',{method:'POST',body:JSON.stringify(payload)});
+  toast(lang==='es'?'Listo. Ahora vamos pregunta por pregunta.':'Ready. Now we go one question at a time.');
+  await load();
+  businessContextQuestionIndex=0;
+  const steps=onboardingSteps();
+  const idx=steps.findIndex(s=>s.id==='context');
+  onboardingFlowTouched=true;
+  onboardingFlowStep=idx>=0?idx:onboardingFlowStep;
+  renderOnboardingFlow();
+  return res;
+ }catch(err){
+  if(box)box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'No pude preparar las preguntas':'Could not prepare the questions'}</b><p>${escapeHtml(err.message||String(err))}</p></div>`;
+  throw err;
+ }
+}
+async function scanBusinessWebsite(e){e.preventDefault();const payload=Object.fromEntries(new FormData(e.target).entries());const box=qs('#business-scan-results');if(box)box.innerHTML=`<div class="guide-card"><p>${lang==='es'?'Leyendo tu web y preparando respuestas sugeridas...':'Reading your website and preparing suggested answers...'}</p></div>`;try{const res=await api('/api/business-profile/scan',{method:'POST',body:JSON.stringify(payload)});toast(lang==='es'?'Web analizada. Ahora revisamos una respuesta a la vez.':'Website scanned. Now we review one answer at a time.');await load();businessContextQuestionIndex=0;const steps=onboardingSteps();const idx=steps.findIndex(s=>s.id==='context');onboardingFlowTouched=true;onboardingFlowStep=idx>=0?idx:onboardingFlowStep;renderOnboardingFlow();return res}catch(err){if(box)box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'No pude leer la web todavía':'I could not read the website yet'}</b><p>${escapeHtml(err.message||String(err))}</p></div>`;throw err}}
+async function skipWebsiteScan(){await api('/api/business-profile/links',{method:'POST',body:JSON.stringify({website_skipped:true})});toast(lang==='es'?'Perfecto. El agente te preguntará lo necesario después.':'Perfect. The agent will ask what it needs later.');await load();const steps=onboardingSteps();const idx=steps.findIndex(s=>s.id==='telegram');onboardingFlowTouched=true;onboardingFlowStep=idx>=0?idx:onboardingFlowStep;renderOnboardingFlow()}
+function setBusinessContextQuestionIndex(index){const questions=businessContextQuestions();businessContextQuestionIndex=Math.max(0,Math.min(Number(index)||0,questions.length-1));renderOnboardingFlow()}
+async function saveBusinessContextQuestion(e){e.preventDefault();const form=e.target;const field=String(new FormData(form).get('field')||'').trim();const answer=String(new FormData(form).get('answer')||'').trim();if(!field||!answer){toast(lang==='es'?'Escribe una respuesta corta para seguir.':'Write a short answer to continue.');return}const questions=businessContextQuestions();const idx=Math.max(0,questions.findIndex(q=>q.key===field));const isLast=idx>=questions.length-1;const payload={[field]:answer};if(isLast)payload.context_complete=true;await api('/api/business-profile',{method:'POST',body:JSON.stringify(payload)});await load();if(isLast){toast(lang==='es'?'Contexto listo. Te muestro el primer plan.':'Context ready. Showing the first plan.');const steps=onboardingSteps();const strategyIndex=steps.findIndex(s=>s.id==='strategy');onboardingFlowTouched=true;onboardingFlowStep=strategyIndex>=0?strategyIndex:onboardingFlowStep}else{toast(lang==='es'?'Respuesta guardada. Vamos con la siguiente.':'Answer saved. On to the next one.');businessContextQuestionIndex=Math.min(idx+1,questions.length-1)}renderOnboardingFlow()}
+async function saveBusinessContext(e){e.preventDefault();const payload=Object.fromEntries(new FormData(e.target).entries());payload.context_complete=true;await api('/api/business-profile',{method:'POST',body:JSON.stringify(payload)});toast(lang==='es'?'Contexto guardado. Te muestro el primer plan.':'Context saved. Showing the first plan.');await load();const steps=onboardingSteps();const idx=steps.findIndex(s=>s.id==='strategy');onboardingFlowTouched=true;onboardingFlowStep=idx>=0?idx:onboardingFlowStep;renderOnboardingFlow()}
+function showMetaTokenBox(kind='stable'){metaTokenKind=['stable','quick'].includes(kind)?kind:(metaTokenKind||'stable');const box=qs('#meta-token-box');if(box)box.classList.add('open')}
+function goToMetaTokenStep(reason='',output=''){const steps=onboardingSteps();const idx=steps.findIndex(s=>s.id==='meta');onboardingFlowTouched=true;onboardingFlowStep=idx>=0?idx:1;renderOnboardingFlow();setTimeout(()=>{showMetaTokenBox();const box=qs('#social-account-results');if(box&&reason==='expired'){box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'Pega una clave nueva':'Paste a new key'}</b><p>${lang==='es'?'Meta rechazó la clave anterior porque venció o ya no sirve. Pega aquí la clave nueva; el dashboard la guarda automáticamente y después vuelve a buscar tus cuentas.':'Meta rejected the previous key because it expired or is no longer valid. Paste the new key here; the dashboard saves it automatically and then finds your accounts again.'}</p><p class="notice">${lang==='es'?'Cuando pegas una clave válida, queda guardada localmente en este computador o VPS. No se guarda en cookies del navegador.':'When you paste a valid key, it is stored locally on this computer or VPS. It is not stored in browser cookies.'}</p>${output?`<details class="helper-command"><summary>${lang==='es'?'Detalles técnicos':'Technical details'}</summary><span class="step-command">${escapeHtml(String(output).slice(0,900))}</span></details>`:''}</div>`}},0)}
+function connectMetaStarted(kind='stable'){showMetaTokenBox(kind);toast(lang==='es'?'Meta Business se abrirá en otra pestaña. Sigue la guía y pega aquí tu clave estable.':'Meta Business will open in another tab. Follow the guide and paste your stable key here.')}
+let metaTokenAutoSaveTimer=null;
+let metaTokenSaving=false;
+let lastMetaTokenSaved='';
+let metaTokenKind='unknown';
+function renderTokenSavedState(kind=metaTokenKind){const tokenBox=qs('#meta-token-box');if(tokenBox){const quick=kind==='quick';const detail=lang==='es'?(quick?'Clave rápida guardada. Te avisaré si toca renovarla aproximadamente cada 60 días. Más adelante puedes cambiar a clave estable desde Configuración.':'Clave estable guardada. Esta es la conexión recomendada para trabajar todos los días.'):(quick?'Quick key saved. I will remind you if it needs renewal about every 60 days. You can switch to a stable key later from Setup.':'Stable key saved. This is the recommended connection for daily use.');tokenBox.innerHTML=`<div class="guide-card"><b>${lang==='es'?'Clave de Meta guardada':'Meta key saved'}</b><p>${escapeHtml(detail)}</p><p>${lang==='es'?'Ahora buscaré tus cuentas publicitarias.':'I will now find your ad accounts.'}</p><button class="btn" type="button" data-action-code="goToMetaTokenStep()">${lang==='es'?'Cambiar clave de Meta':'Change Meta key'}</button></div>`;tokenBox.classList.add('open')}}
+function scheduleMetaTokenAutoSave(){clearTimeout(metaTokenAutoSaveTimer);const token=(qs('#meta-token-input')?.value||'').trim();if(token.length<20||token===lastMetaTokenSaved)return;metaTokenAutoSaveTimer=setTimeout(()=>saveMetaToken({auto:true}),500)}
+async function saveMetaToken(options={}){const auto=Boolean(options.auto);const input=qs('#meta-token-input');const token=(input?.value||'').trim();const box=qs('#social-account-results');if(!token){if(!auto)toast(lang==='es'?'Pega primero la clave de Meta.':'Paste the Meta key first.');return}if(token.length<20){if(!auto)toast(lang==='es'?'Esa clave se ve muy corta. Revisa que la pegaste completa.':'That key looks too short. Check that you pasted the full value.');return}if(metaTokenSaving||token===lastMetaTokenSaved)return;metaTokenSaving=true;lastMetaTokenSaved=token;if(box)box.innerHTML=`<div class="guide-card"><p>${lang==='es'?'Guardando conexión local...':'Saving local connection...'}</p></div>`;try{const res=await api('/api/social/token',{method:'POST',body:JSON.stringify({token,token_kind:metaTokenKind})});const result=res.result||res;if(result.token_kind)metaTokenKind=result.token_kind;if(result.saved){toast(lang==='es'?'Clave de Meta guardada localmente. Buscando cuentas...':'Meta key saved locally. Finding accounts...');renderTokenSavedState(result.token_kind||metaTokenKind);await refreshSocialAccounts()}else{lastMetaTokenSaved='';renderSocialAccountResults({...result,accounts:[]})}}finally{metaTokenSaving=false}}
+function renderSocialAccountResults(res){
+ const box=qs('#social-account-results');if(!box)return;
+ if(res.accounts&&res.accounts.length){
+  box.innerHTML=res.accounts.map(a=>`<div class="guide-card"><b>${escapeHtml(a.name||a.id)}</b><p>${escapeHtml(a.id)}${a.currency?` · ${escapeHtml(a.currency)}`:''}</p><button class="btn primary" type="button" data-action-code="selectSocialAccount('${escapeHtml(a.id)}')">${lang==='es'?'Usar esta cuenta y seguir':'Use this account and continue'}</button></div>`).join('');
+  return;
+ }
+ const output=String(res.output||'').slice(0,900);
+ const expired=Boolean(res.needs_login||res.token_expired||/expired|OAuthException|Code:\\s*190|auth login/i.test(output));
+ if(expired){
+  goToMetaTokenStep('expired',output);
+  return;
+ }
+ const loginHint=res.message||(lang==='es'?'No pude traer cuentas todavía. La clave quedó guardada; revisa permisos de anuncios o intenta crear una clave nueva.':'I could not fetch accounts yet. The key was saved; check ad permissions or try creating a new key.');
+ const detail=res.graph_checked?(lang==='es'?'Probé también con Meta Graph directo.':'I also checked directly with Meta Graph.'):'';
+ box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'No encontré cuentas publicitarias':'No ad accounts found'}</b><p>${escapeHtml(loginHint)}</p>${detail?`<p class="notice">${detail}</p>`:''}<div class="onboarding-step-actions"><button class="btn primary" type="button" data-action-code="goToMetaTokenStep()">${lang==='es'?'Pegar otra clave':'Paste another key'}</button><button class="btn" type="button" data-action-code="refreshSocialAccounts()">${lang==='es'?'Buscar otra vez':'Search again'}</button></div>${output?`<details class="helper-command"><summary>${lang==='es'?'Detalles técnicos':'Technical details'}</summary><span class="step-command">${escapeHtml(output)}</span></details>`:''}</div>`;
+}
+async function refreshSocialAccounts(){const box=qs('#social-account-results');if(box)box.innerHTML=`<div class="guide-card"><p>${lang==='es'?'Buscando cuentas...':'Finding accounts...'}</p></div>`;const res=await api('/api/social/accounts');renderSocialAccountResults(res)}
+function discoveryResultsBox(){return qs('#destination-discovery-results')||qs('#social-account-results')}
+function encodePageChoice(page){return encodeURIComponent(JSON.stringify(page||{}))}
+function renderPageChoice(page){
+ const ig=page.instagram||{};const website=page.website||page.link||'';const encoded=encodePageChoice(page);
+ return `<div class="guide-card"><b>${escapeHtml(page.name||page.id)}</b><p>${escapeHtml(page.id)}${ig.id?` · Instagram: ${escapeHtml(ig.username||ig.name||ig.id)}`:''}${website?` · ${escapeHtml(website)}`:''}</p><button class="btn primary" type="button" data-action-code="selectMetaDestination('${encoded}')">${lang==='es'?'Usar esta página':'Use this Page'}</button></div>`;
+}
+async function selectMetaDestination(encoded){
+ const page=JSON.parse(decodeURIComponent(encoded));const ig=page.instagram||{};const website=page.website||page.link||'';
+ const payload={page_id:page.id||'',instagram_actor_id:ig.id||'',landing_url:website||''};
+ try{await api('/api/setup-config',{method:'POST',body:JSON.stringify(payload)});toast(lang==='es'?'Página guardada. Sigamos.':'Page saved. Let us continue.');await load();advanceOnboardingAfterLoad()}catch(err){if(needsBusinessReplacement(err)){showBusinessReplacementConfirm(payload);return}throw err}
+}
+function renderDiscoveredAssets(res){
+ const box=discoveryResultsBox();if(!box)return;
+ const result=res.result||res;const s=result.suggested||{};const pages=result.pages||[];const urls=result.urls||[];
+ const pageCards=pages.length?`<div class="guide-panel"><b>${lang==='es'?'Páginas encontradas':'Pages found'}</b><p>${lang==='es'?'Elige la página que quieres usar para tus anuncios. Si tiene Instagram conectado, también lo guardo.':'Choose the Page you want to use for your ads. If it has connected Instagram, I save it too.'}</p></div>${pages.map(renderPageChoice).join('')}`:'';
+ if(result.ok&&(result.saved||pages.length)){
+  const rows=[];
+  if(s.page_id)rows.push(`<div class="guide-card"><b>${lang==='es'?'Página encontrada':'Page found'}</b><p>${escapeHtml(s.page_name||s.page_id)} · ${escapeHtml(s.page_id)}</p></div>`);
+  if(s.instagram_actor_id)rows.push(`<div class="guide-card"><b>Instagram</b><p>${escapeHtml(s.instagram_username||s.instagram_actor_id)} · ${escapeHtml(s.instagram_actor_id)}</p></div>`);
+  if(s.landing_url)rows.push(`<div class="guide-card"><b>${lang==='es'?'Web encontrada':'Website found'}</b><p>${escapeHtml(s.landing_url)}</p></div>`);
+  box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'Encontré datos conectados':'I found connected assets'}</b><p>${lang==='es'?'Usé tu clave de Meta guardada para buscar páginas, Instagram y web. Si la página sugerida no es la correcta, elige otra de la lista.':'I used your saved Meta key to find Pages, Instagram, and website. If the suggested Page is not right, choose another one from the list.'}</p></div>${rows.join('')}${pageCards}`;
+  return;
+ }
+ box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'No pude encontrar todo automáticamente':'I could not find everything automatically'}</b><p>${lang==='es'?'Tu clave de Meta puede no tener permiso para ver páginas, o tu página e Instagram pueden no estar conectados. Puedes seguir y escribir esos datos en el siguiente paso.':'Your Meta key may not be allowed to see Pages, or your Page and Instagram may not be connected. You can continue and enter those details in the next step.'}</p><p class="notice">${pages.length?`${pages.length} page(s)`:''}${urls.length?` · ${urls.length} URL(s)`:''}</p></div>`;
+}
+async function discoverMetaAssets(id){const box=discoveryResultsBox();if(box)box.innerHTML=`<div class="guide-card"><p>${lang==='es'?'Buscando página, Instagram y web conectados...':'Finding connected Page, Instagram, and website...'}</p></div>`;const res=await api('/api/social/discover-assets',{method:'POST',body:JSON.stringify({ad_account_id:id})});renderDiscoveredAssets(res);return res}
+async function selectSocialAccount(id){try{await api('/api/social/default-account',{method:'POST',body:JSON.stringify({ad_account_id:id})})}catch(err){if(needsBusinessReplacement(err)){showBusinessReplacementConfirm({ad_account_id:id});return}throw err}const input=qs('input[name="ad_account_id"]');if(input)input.value=id;toast(lang==='es'?'Cuenta guardada. Buscando perfiles conectados...':'Account saved. Finding connected assets...');const discovered=await discoverMetaAssets(id);try{await api('/api/action',{method:'POST',body:JSON.stringify({action:'refresh_insights'})})}catch(err){}await load();const steps=onboardingSteps();const destinationIndex=steps.findIndex(s=>s.id==='destination');if(destinationIndex>=0){onboardingFlowTouched=true;onboardingFlowStep=destinationIndex;renderOnboardingFlow();renderDiscoveredAssets(discovered)}else advanceOnboardingAfterLoad()}
+async function unlockFromOnboarding(e){e.preventDefault();const input=qs('#onboarding-password');const err=qs('#onboarding-unlock-error');const value=(input?.value||'').trim();const remember=Boolean(qs('#onboarding-remember')?.checked);if(!value)return;if(err){err.textContent='';err.classList.remove('show')}try{await unlockWithPassword(value,remember)}catch(ex){if(err){err.textContent=t('unlock_failed');err.classList.add('show')}return}toast(lang==='es'?'Dashboard desbloqueado':'Dashboard unlocked');onboardingFlowStep=Math.max(onboardingFlowStep,1);await load()}
+async function setDashboardPasswordFromOnboarding(e){e.preventDefault();const password=(qs('#new-dashboard-password')?.value||'').trim();const confirm=(qs('#confirm-dashboard-password')?.value||'').trim();const remember=Boolean(qs('#new-dashboard-remember')?.checked);const err=qs('#dashboard-password-error');if(err){err.textContent='';err.classList.remove('show')}if(password.length<8){if(err){err.textContent=lang==='es'?'Usa al menos 8 caracteres.':'Use at least 8 characters.';err.classList.add('show')}return}if(password!==confirm){if(err){err.textContent=lang==='es'?'Las contraseñas no coinciden.':'Passwords do not match.';err.classList.add('show')}return}const res=await fetch('/api/dashboard-password',{method:'POST',headers:{'Content-Type':'application/json','X-Dashboard-Token':dashboardPassword()},body:JSON.stringify({password,confirm_password:confirm,remember_device:remember})});if(!res.ok){if(err){err.textContent=await responseErrorMessage(res);err.classList.add('show')}return}const data=await res.json();storeDashboardSession(data.result||data,remember);toast(lang==='es'?'Contraseña guardada. Sigamos con el siguiente paso.':'Password saved. Let us continue with the next step.');await load();onboardingFlowTouched=true;advanceOnboardingAfterLoad()}
+async function activateLicenseFromForm(e){
+ e.preventDefault();
+ const payload=Object.fromEntries(new FormData(e.target).entries());
+ await activateLicense(false,payload);
+}
+async function activateLicense(transferDevice=false,extraPayload={}){
+ const payload={...(extraPayload||{}),transfer_device:transferDevice};
+ const res=await api('/api/license/activate',{method:'POST',body:JSON.stringify(payload)});
+ const result=res.result||{};
+ toast(`${t('toast_license')}: ${localText(result.detail||result.status||'')}`);
+ await load();
+ if(result&&result.valid){advanceOnboardingAfterLoad();return}
+ if(result.status==='device_limit'&&result.transfer_available&&!transferDevice)showLicenseTransferConfirm(extraPayload)
+}
+function showLicenseTransferConfirm(extraPayload={}){const box=qs('#confirm-overlay');window.pendingLicenseActivationPayload=extraPayload||{};box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'Usar licencia en este equipo':'Use license on this device'}</h2><p>${lang==='es'?'Esta licencia Individual ya esta activa en otro equipo. Si continuas, este equipo quedara como el equipo activo para nuevas validaciones y el anterior perdera acceso cuando vuelva a validar la licencia online.':'This Individual license is already active on another device. If you continue, this device becomes the active device for new validations and the previous one loses access when it validates online again.'}</p><p class="notice">${lang==='es'?'Si estas cambiando de PC o reinstalando el producto, esta es la opcion correcta.':'If you are changing PC or reinstalling the product, this is the right option.'}</p><div class="confirm-actions"><button class="btn" type="button" data-action-code="closeConfirm()">${lang==='es'?'Cancelar':'Cancel'}</button><button class="btn primary" type="button" data-action-code="closeConfirm();activateLicense(true,window.pendingLicenseActivationPayload||{})">${lang==='es'?'Transferir a este equipo':'Transfer to this device'}</button></div></div>`;box.classList.add('open')}
+let decisionConfirmResolver=null;
+function resolveDecisionConfirm(value){const resolver=decisionConfirmResolver;decisionConfirmResolver=null;qs('#confirm-overlay')?.classList.remove('open');if(resolver)resolver(Boolean(value))}
+function closeConfirm(){resolveDecisionConfirm(false)}
+function showDecisionConfirm(options={}){
+ const box=qs('#confirm-overlay');
+ const items=(options.items||[]).filter(Boolean);
+ const agentDraft=String(options.agentDraft||'');
+ return new Promise(resolve=>{
+  decisionConfirmResolver=resolve;
+  box.innerHTML=`<div class="confirm-card"><h2>${escapeHtml(options.title||'')}</h2><p>${escapeHtml(options.body||'')}</p>${items.length?`<ul>${items.map(item=>`<li>${escapeHtml(item)}</li>`).join('')}</ul>`:''}<div class="confirm-actions"><button class="btn" type="button" data-action-code="resolveDecisionConfirm(false)">${escapeHtml(options.cancelLabel||(lang==='es'?'Cancelar':'Cancel'))}</button>${agentDraft?`<button class="btn ask-btn" type="button" data-action-code="resolveDecisionConfirm(false);openChat(${chatArg(agentDraft)})">${lang==='es'?'Preguntar al manager':'Ask manager'}</button>`:''}<button class="btn primary" type="button" data-action-code="resolveDecisionConfirm(true)">${escapeHtml(options.confirmLabel||t('approve'))}</button></div></div>`;
+  box.classList.add('open');
+ });
+}
+function showOnboardingCompleteConfirm(){const box=qs('#confirm-overlay');box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'Terminar configuración inicial':'Finish initial setup'}</h2><p>${lang==='es'?'La guía inicial dejará de aparecer automáticamente en este equipo. Esto no bloquea nada: podrás cambiar todo después desde Configuración.':'The initial guide will stop opening automatically on this device. This does not lock anything: you can change everything later from Setup.'}</p><ul><li>${lang==='es'?'Cuenta publicitaria':'Ad account'}</li><li>${lang==='es'?'Página de Facebook, Instagram y web':'Facebook Page, Instagram, and website'}</li><li>${lang==='es'?'Contraseña del dashboard':'Dashboard password'}</li><li>${lang==='es'?'Reglas de supervisión y piloto automático':'Supervision and autopilot rules'}</li></ul><div class="confirm-actions"><button class="btn" type="button" data-action-code="closeConfirm()">${lang==='es'?'Seguir revisando':'Keep reviewing'}</button><button class="btn primary" type="button" data-action-code="finishOnboardingConfirmed()">${lang==='es'?'Terminar y abrir dashboard':'Finish and open dashboard'}</button></div></div>`;box.classList.add('open')}
+async function finishOnboardingConfirmed(){closeConfirm();await finishOnboardingAndStartTour('manual')}
+async function completeOnboarding(){if(!state.config.dashboard_password_set){toast(lang==='es'?'Primero crea tu contraseña del dashboard.':'Create your dashboard password first.');const steps=onboardingSteps();const passwordIndex=steps.findIndex(s=>s.id==='password');onboardingFlowStep=passwordIndex>=0?passwordIndex:onboardingFlowStep;renderOnboardingFlow();return}showOnboardingCompleteConfirm()}
+async function skipOnboarding(){const ok=await showDecisionConfirm({title:lang==='es'?'Completar después':'Finish later',body:lang==='es'?'Abriré el dashboard ahora. Arriba verás un aviso brillante para volver y terminar lo pendiente cuando quieras.':'I will open the dashboard now. A glowing notice at the top will bring you back to finish the pending parts later.',confirmLabel:lang==='es'?'Abrir dashboard':'Open dashboard'});if(!ok)return;await api('/api/onboarding/skip',{method:'POST',body:JSON.stringify({})});toast(lang==='es'?'Puedes completar la configuración después.':'You can finish setup later.');await load()}
+async function resumeOnboarding(){await api('/api/onboarding/reset',{method:'POST',body:JSON.stringify({})});toast(lang==='es'?'Sigamos con lo pendiente.':'Let us finish the pending setup.');await load()}
+async function resetOnboarding(){const ok=await showDecisionConfirm({title:lang==='es'?'Revisar configuración inicial':'Run initial setup again',body:lang==='es'?'La guía inicial volverá a aparecer para revisar conexión, cuenta, página y reglas. No borra tus datos por sí sola.':'The initial guide will appear again to review connection, account, Page, and rules. It does not delete your data by itself.',confirmLabel:lang==='es'?'Abrir guía inicial':'Open initial guide',agentDraft:lang==='es'?'Ayúdame a revisar si necesito repetir la configuración inicial o solo cambiar una parte.':'Help me decide whether I should rerun initial setup or only change one setup area.'});if(!ok)return;await api('/api/onboarding/reset',{method:'POST',body:JSON.stringify({})});toast(lang==='es'?'Guía inicial abierta':'Initial guide opened');await load()}
+qs('#unlock-form').addEventListener('submit',async e=>{e.preventDefault();const value=qs('#unlock-password').value.trim();const remember=Boolean(qs('#remember-device')?.checked);if(!value)return;setUnlockError('');if(unlockMode==='create'){const confirm=(qs('#unlock-confirm-password')?.value||'').trim();if(value.length<8){setUnlockError(t('dashboard_password_short'));return}if(value!==confirm){setUnlockError(t('dashboard_password_mismatch'));return}const res=await fetch('/api/dashboard-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:value,confirm_password:confirm,remember_device:remember})});if(!res.ok){setUnlockError(await responseErrorMessage(res));return}const data=await res.json();const session=storeDashboardSession(data.result||data,remember);hideUnlock();if(unlockResolver){unlockResolver(session);unlockResolver=null}qs('#unlock-password').value='';qs('#unlock-confirm-password').value='';toast(lang==='es'?'Contraseña creada. Seguimos con la configuración.':'Password created. Continuing setup.');await load();return}try{const session=await unlockWithPassword(value,remember);hideUnlock();if(unlockResolver){unlockResolver(session);unlockResolver=null}qs('#unlock-password').value=''}catch(err){setUnlockError(t('unlock_failed'))}})
+qs('#language-select').addEventListener('change',e=>{lang=e.target.value;localStorage.setItem('dashboardLang',lang);render()})
+qs('#chat-input').addEventListener('input',resizeChatInput)
+qs('#agent-bar-input').addEventListener('input',resizeAgentBarInput)
+qs('#chat-input').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();const form=qs('#chat-form');if(form.requestSubmit){form.requestSubmit()}else{form.dispatchEvent(new Event('submit',{cancelable:true,bubbles:true}))}}})
+qs('#agent-bar-input').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();const form=qs('#agent-chat-bar');if(form.requestSubmit){form.requestSubmit()}else{form.dispatchEvent(new Event('submit',{cancelable:true,bubbles:true}))}}})
+qs('#chat-form').addEventListener('submit',async e=>{e.preventDefault();const input=qs('#chat-input');const text=input.value.trim();if(!text)return;input.value='';resizeChatInput();await sendChatMessage(text)})
+qs('#agent-chat-bar').addEventListener('submit',async e=>{e.preventDefault();const input=qs('#agent-bar-input');const text=input.value.trim();if(!text){input.focus();return}input.value='';resizeAgentBarInput();await sendChatMessage(text,{workspace:true})})
+document.querySelectorAll('.tab').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(b=>b.classList.remove('active'));btn.classList.add('active');['overview','setup','creator','audiences','creatives','reports'].forEach(t=>qs('#tab-'+t).classList.toggle('hidden',t!==btn.dataset.tab))}))
+qs('#campaign-form').addEventListener('submit',async e=>{e.preventDefault();syncTargetingHidden('location');syncTargetingHidden('interest');const payload=Object.fromEntries(new FormData(e.target).entries());await api('/api/campaigns',{method:'POST',body:JSON.stringify(payload)});toast(lang==='es'?'Campaña enviada para tu aprobación':'Campaign sent for your approval');await load()})
+qs('#audience-form').addEventListener('submit',async e=>{e.preventDefault();const payload=Object.fromEntries(new FormData(e.target).entries());payload.consent=e.target.elements.consent.checked?'yes':'no';await buildAudienceStrategy(payload)})
+installDelegatedActions();
+applyDashboardTheme();
+syncDashboardView();
+syncPanels();
+load();

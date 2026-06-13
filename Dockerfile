@@ -6,12 +6,13 @@ ENV PYTHONUNBUFFERED=1 \
     ALLOW_PUBLIC_DASHBOARD=true \
     AGENT_CHAT_PROVIDER=hermes \
     HERMES_CLI=hermes \
-    HERMES_ENABLED_TOOLSETS=memory,skills,session_search,vision,image_gen,file \
-    HERMES_DISABLED_TOOLSETS=terminal,code_execution \
+    HERMES_ENABLED_TOOLSETS=memory,skills,session_search,vision,file \
+    HERMES_DISABLED_TOOLSETS=terminal,code_execution,image_gen \
     HERMES_USE_PYTHON_LIBRARY=true \
     HERMES_REQUIRE_CODEX_AUTH=true \
-    CODEX_CREATIVE_ENABLED=false \
-    CODEX_CLI=codex
+    CODEX_CREATIVE_ENABLED=true \
+    CODEX_CLI=codex \
+    CODEX_HOME=/app/runtime/codex
 
 WORKDIR /app
 

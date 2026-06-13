@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Hermes Agent bridge for dashboard and Telegram conversations."""
 import contextlib
+import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -23,6 +25,7 @@ ALLOWED_IMAGE_DIRS = (ROOT_DIR / "output", ROOT_DIR / "dashboard" / "data" / "up
 MEMORY_TEXT_LIMIT = 8000
 MEMORY_ITEM_LIMIT = 8
 BLOCKED_MEMORY_TOKENS = {".env", "license_unlock.json"}
+PROFILE_FILES = ("SOUL.md", "USER.md", "AGENTS.md", "TOOLS.md", "SKILLS.md")
 
 
 def split_csv(value):
@@ -87,6 +90,51 @@ def write_workspace_file(relative_path, content):
     else:
         target.write_text(str(content or ""), encoding="utf-8")
     return str(target.relative_to(HERMES_WORKSPACE_DIR))
+
+
+def read_agent_profile_file(name):
+    path = ROOT_DIR / "agent" / name
+    return read_text(path, MEMORY_TEXT_LIMIT)
+
+
+def combined_agent_rules():
+    sections = []
+    for name in PROFILE_FILES:
+        content = read_agent_profile_file(name)
+        if content:
+            sections.append(f"\n\n# Product Agent File: {name}\n\n{content.strip()}")
+    sections.append(
+        """
+
+# Runtime Workspace Contract
+
+Hermes is the agentic runtime and conversation owner. The product backend is only the transport, safety, and execution layer.
+
+For each turn, read the buyer message normally. If you need live account context, use the local files in this workspace:
+
+- `CURRENT_CONTEXT.json`: current dashboard/account snapshot for this turn.
+- `data/business_profile.json`: business memory.
+- `data/audience_strategy.json`: audience strategy.
+- `data/business_binding.json`: selected Meta account/page binding.
+- `memory/Agent onboarding plan.md`: current onboarding phase.
+- `memory/Ads campaign onboarding.md`: prior ads/campaign context.
+- `memory/profitability_rules.json`, `memory/decision_memory.json`, `memory/learning_log.md`: decision memory.
+- `brand_guides/`: brand, product, ad brief, and creative reference memory.
+
+Do not expect the backend to paste the whole conversation history into the prompt. Continue from the Hermes session memory. If the buyer's short answer is still ambiguous, ask one clear follow-up.
+"""
+    )
+    return "\n".join(sections).strip() + "\n"
+
+
+def write_agent_profile_workspace_files():
+    written = []
+    written.append(write_workspace_file("AGENTS.md", combined_agent_rules()))
+    for name in PROFILE_FILES:
+        content = read_agent_profile_file(name)
+        if content:
+            written.append(write_workspace_file(name, content))
+    return written
 
 
 def copy_workspace_file(source_path, relative_dir):
@@ -163,7 +211,7 @@ def prepare_hermes_workspace(payload):
     if HERMES_WORKSPACE_DIR.exists():
         shutil.rmtree(HERMES_WORKSPACE_DIR)
     HERMES_WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
-    written = []
+    written = write_agent_profile_workspace_files()
     written.append(
         write_workspace_file(
             "README.md",
@@ -172,8 +220,25 @@ def prepare_hermes_workspace(payload):
 This folder is the only workspace Hermes should read for this product turn.
 It contains curated business memory, brand guides, recent activity, and uploaded reference images.
 
+Hermes owns the conversation and should use its own session memory. The backend does not paste the whole chat history into the prompt.
+
 Do not request files outside this workspace. If something is missing, ask the buyer or request a backend tool.
 """,
+        )
+    )
+    written.append(
+        write_workspace_file(
+            "CURRENT_CONTEXT.json",
+            scrub_memory(
+                redact_payload(
+                    {
+                        "channel": payload.get("channel") or "dashboard",
+                        "language": payload.get("language") or "",
+                        "account_context": payload.get("account_context") or {},
+                        "image_paths": safe_image_paths(payload),
+                    }
+                )
+            ),
         )
     )
     written.append(write_workspace_file("data/business_profile.json", memory["business_profile"]))
@@ -182,7 +247,6 @@ Do not request files outside this workspace. If something is missing, ask the bu
     written.append(write_workspace_file("memory/Ads campaign onboarding.md", memory.get("ads_onboarding", "")))
     written.append(write_workspace_file("data/audience_strategy.json", memory["audience_strategy"]))
     written.append(write_workspace_file("data/business_binding.json", memory["business_binding"]))
-    written.append(write_workspace_file("memory/recent_chat.json", memory["recent_history"]["chat"]))
     written.append(write_workspace_file("memory/recent_actions.json", memory["recent_history"]["actions"]))
     written.append(write_workspace_file("memory/creative_refreshes.json", memory["recent_history"]["creative_refreshes"]))
     written.append(write_workspace_file("memory/profitability_rules.json", memory["profitability_memory"].get("profitability_rules", {})))
@@ -205,6 +269,46 @@ Do not request files outside this workspace. If something is missing, ask the bu
         "image_paths": workspace_images,
         "memory": memory,
     }
+
+
+def hermes_session_name(payload):
+    if not payload.get("channel"):
+        return ""
+    channel = str(payload.get("channel") or "").strip().lower()
+    if channel == "telegram":
+        raw_key = str(payload.get("session_key") or "default")
+        digest = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()[:12]
+        return f"meta-ads-agent-telegram-{digest}"
+    if channel == "dashboard":
+        return "meta-ads-agent-dashboard"
+    return ""
+
+
+def hermes_session_source(payload):
+    channel = str(payload.get("channel") or "").strip().lower()
+    if channel == "telegram":
+        return "meta-ads-agent-telegram"
+    if channel == "dashboard":
+        return "meta-ads-agent-dashboard"
+    return "meta-ads-agent"
+
+
+def hermes_user_query(payload, workspace_info):
+    message = str(payload.get("message") or "").strip()
+    if not message:
+        return ""
+    channel = str(payload.get("channel") or "dashboard").strip().lower()
+    if channel in {"telegram", "dashboard"}:
+        return (
+            f"{message}\n\n"
+            "Nota de sistema del producto: el contexto actual de la cuenta está en `CURRENT_CONTEXT.json`. "
+            "Usa ese archivo y tu memoria de sesión solo si hace falta para responder o preparar una acción."
+        )
+    return (
+        f"{message}\n\n"
+        "Nota de sistema del producto: usa solo los archivos de este workspace y las reglas de `AGENTS.md`. "
+        "No necesitas historial acumulado para esta tarea puntual."
+    )
 
 
 def hermes_environment(config):
@@ -334,7 +438,6 @@ def hermes_prompt(config, payload, workspace_info=None):
     language = payload.get("language", "")
     context = payload.get("account_context") or {}
     workspace_info = workspace_info or prepare_hermes_workspace(payload)
-    memory = workspace_info.get("memory") or business_memory_context()
     images = workspace_info.get("image_paths") or []
     image_note = ""
     if images:
@@ -342,7 +445,7 @@ def hermes_prompt(config, payload, workspace_info=None):
             "\n\nUploaded reference images:\n"
             + "\n".join(f"- {path}" for path in images)
             + "\nThe first image is attached to Hermes directly when the CLI supports it. Use vision to understand the image. "
-            + "If you request `codex_creative_plan`, include a concise visual summary in the request arguments; do not rely on Codex reading arbitrary local files."
+            + "If you request `codex_creative_plan` or `codex_image_generate`, include a concise visual summary in the request arguments; do not rely on Codex reading arbitrary local files."
         )
     system_prompt = build_system_prompt(config, language)
     return (
@@ -351,19 +454,11 @@ def hermes_prompt(config, payload, workspace_info=None):
         + str(workspace_info.get("path", ""))
         + "\n\nHermes workspace files:\n"
         + "\n".join(f"- {path}" for path in workspace_info.get("files", []))
-        + "\n\nRead business files only inside this workspace. Do not read arbitrary local files. If a needed file is missing, ask the buyer or request a backend tool."
+        + "\n\nRead product rules from AGENTS.md/SOUL.md and business files only inside this workspace. Do not read arbitrary local files. If a needed file is missing, ask the buyer or request a backend tool."
         + "\n\nCurrent account context JSON:\n"
         + json.dumps(context, ensure_ascii=False)
-        + "\n\nCurated local business memory JSON:\n"
-        + json.dumps(memory, ensure_ascii=False)
-        + "\n\nOnboarding interview instructions, if pending:\n"
-        + str(memory.get("onboarding_questions") or "")[:4000]
-        + "\n\nAgent onboarding phase plan:\n"
-        + str(memory.get("onboarding_plan") or "")[:4000]
-        + "\n\nAds campaign onboarding memory:\n"
-        + str(memory.get("ads_onboarding") or "")[:3000]
         + image_note
-        + "\n\nReturn normal helpful text for explanations. If the user asks for a product action, return this JSON contract only:\n"
+        + "\n\nDo not expect full conversation history here. Hermes session memory owns continuity. Return normal helpful text for explanations. If the user asks for a product action, return this JSON contract only:\n"
         + '{"assistant_message":"short user-facing reply","tool_request":{"tool":"tool_name","arguments":{}}}\n'
         + "Approvals are allowed only when the buyer asks to approve or reject one exact pending approval ID already present in context. Use `approval_decision` with that exact ID. If ambiguous, ask which decision or show choices; never invent approval IDs.\n\n"
         + f"User message:\n{str(payload.get('message') or '')[:5000]}"
@@ -421,42 +516,99 @@ def library_chat(config, payload):
 
 def cli_chat(config, payload):
     workspace_info = prepare_hermes_workspace(payload)
-    prompt = hermes_prompt(config, payload, workspace_info)
+    query = hermes_user_query(payload, workspace_info)
     images = workspace_info.get("image_paths") or []
     brain = hermes_brain_settings(config)
-    command = [
-        getattr(config, "hermes_cli", "hermes") or "hermes",
-        "chat",
-        "--quiet",
-        "--source",
-        "meta-ads-agent",
-        "--max-turns",
-        str(max(1, int(getattr(config, "hermes_max_iterations", 12) or 12))),
-        "-q",
-        prompt,
-    ]
-    if brain.get("provider"):
-        command.extend(["--provider", brain["provider"]])
-    if brain.get("model"):
-        command.extend(["--model", brain["model"]])
-    enabled = ",".join(split_csv(getattr(config, "hermes_enabled_toolsets", "")))
-    if enabled:
-        command.extend(["--toolsets", enabled])
-    if images:
-        command.extend(["--image", images[0]])
-    completed = subprocess.run(
-        command,
-        cwd=workspace_info["path"],
-        env=hermes_environment(config),
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=max(30, int(getattr(config, "hermes_response_timeout_seconds", getattr(config, "hermes_timeout_seconds", 300)) or 300)),
-        check=False,
-    )
+    hermes_cli = getattr(config, "hermes_cli", "hermes") or "hermes"
+    source = hermes_session_source(payload)
+    session_name = hermes_session_name(payload)
+
+    def build_command(use_continue):
+        command = [
+            hermes_cli,
+            "chat",
+            "--quiet",
+            "--source",
+            source,
+            "--max-turns",
+            str(max(1, int(getattr(config, "hermes_max_iterations", 12) or 12))),
+            "-q",
+            query,
+        ]
+        if use_continue and session_name:
+            command.extend(["--continue", session_name])
+        if brain.get("provider"):
+            command.extend(["--provider", brain["provider"]])
+        if brain.get("model"):
+            command.extend(["--model", brain["model"]])
+        enabled = ",".join(split_csv(getattr(config, "hermes_enabled_toolsets", "")))
+        if enabled:
+            command.extend(["--toolsets", enabled])
+        if images:
+            command.extend(["--image", images[0]])
+        return command
+
+    def run_command(command):
+        return subprocess.run(
+            command,
+            cwd=workspace_info["path"],
+            env=hermes_environment(config),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=max(30, int(getattr(config, "hermes_response_timeout_seconds", getattr(config, "hermes_timeout_seconds", 300)) or 300)),
+            check=False,
+        )
+
+    command = build_command(use_continue=bool(session_name))
+    completed = run_command(command)
+    if completed.returncode != 0 and session_name and "No session found matching" in ((completed.stderr or "") + (completed.stdout or "")):
+        completed = run_command(build_command(use_continue=False))
+        if completed.returncode == 0:
+            name_latest_session(config, source, session_name)
     if completed.returncode != 0:
         raise RuntimeError((completed.stderr or completed.stdout or "Hermes command failed").strip()[:1000])
     return (completed.stdout or "").strip()
+
+
+def name_latest_session(config, source, title):
+    if not title:
+        return False
+    hermes_cli = getattr(config, "hermes_cli", "hermes") or "hermes"
+    env = hermes_environment(config)
+    try:
+        listed = subprocess.run(
+            [hermes_cli, "sessions", "list", "--source", source, "--limit", "1"],
+            cwd=str(ROOT_DIR),
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=20,
+            check=False,
+        )
+    except Exception:
+        return False
+    if listed.returncode != 0:
+        return False
+    match = re.search(r"\b(\d{8}_\d{6}_[0-9a-f]+)\b", listed.stdout or "")
+    if not match:
+        return False
+    session_id = match.group(1)
+    try:
+        renamed = subprocess.run(
+            [hermes_cli, "sessions", "rename", session_id, title],
+            cwd=str(ROOT_DIR),
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=20,
+            check=False,
+        )
+    except Exception:
+        return False
+    return renamed.returncode == 0
 
 
 def chat(config, payload):
@@ -485,6 +637,8 @@ def chat(config, payload):
                 }
         images = safe_image_paths(payload)
         if images:
+            reply = cli_chat(config, payload)
+        elif hermes_session_name(payload):
             reply = cli_chat(config, payload)
         elif getattr(config, "hermes_use_python_library", True):
             try:

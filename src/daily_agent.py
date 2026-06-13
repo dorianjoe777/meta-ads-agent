@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Daily runner and approval executor for the self-hosted Meta Ads Agent."""
+"""Daily runner and approval executor for Admira IA."""
 import argparse
 import json
 import sys
@@ -754,7 +754,7 @@ def run_daily():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     report_path = OUTPUT_DIR / f"daily_brief_{datetime.now().strftime('%Y-%m-%d')}.json"
     write_json(report_path, report)
-    notification = send_notification(config, "Meta Ads Agent Daily Brief", brief["message"])
+    notification = send_notification(config, "Admira IA - Resumen diario", brief["message"])
     log_action("daily_agent_run", {"report_path": str(report_path), "notification": notification}, "completed")
     return report_path, report
 
@@ -764,7 +764,7 @@ def list_pending():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Self-hosted Meta Ads Agent daily runner")
+    parser = argparse.ArgumentParser(description="Admira IA daily runner")
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("daily", help="Run the daily agent loop")
     sub.add_parser("pending", help="List pending approvals")

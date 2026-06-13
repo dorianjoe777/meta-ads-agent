@@ -10,4 +10,4 @@ La relacion correcta es:
 
 1. La memoria de rentabilidad decide que necesita el negocio.
 2. Espia Creativo encuentra y transforma ideas cuando el problema es de creatividad.
-3. Hermes/agent ejecuta o prepara la accion segun el nivel de control del comprador.
+3. El agente ejecuta o prepara la accion segun el nivel de control del comprador.

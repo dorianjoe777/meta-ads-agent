@@ -1,4 +1,5 @@
 import { verifyReleaseGrant } from "../../lib/license.js";
+import { get } from "@vercel/blob";
 
 function hostnameAllowed(hostname) {
   const host = String(hostname || "").toLowerCase();
@@ -53,6 +54,25 @@ export default async function handler(request, response) {
     const grant = verifyReleaseGrant(request.query?.token);
     if (!grant) {
       return response.status(403).json({ ok: false, error: "invalid_or_expired" });
+    }
+    if (grant.blob_path) {
+      const blob = await get(String(grant.blob_path), { access: "private" });
+      if (!blob || blob.statusCode !== 200 || !blob.stream) {
+        return response.status(404).json({ ok: false, error: "blob_not_found" });
+      }
+      const contentLength = Number(blob.size || blob.contentLength || 0);
+      if (contentLength && contentLength > maxReleaseBytes()) {
+        return response.status(413).json({ ok: false, error: "release_too_large" });
+      }
+      const arrayBuffer = await new Response(blob.stream).arrayBuffer();
+      if (arrayBuffer.byteLength > maxReleaseBytes()) {
+        return response.status(413).json({ ok: false, error: "release_too_large" });
+      }
+      response.setHeader("Content-Type", grant.content_type || blob.contentType || "application/octet-stream");
+      response.setHeader("Content-Disposition", `attachment; filename="${String(grant.filename || grant.asset_name || "release.bin").replace(/"/g, "")}"`);
+      response.setHeader("Content-Length", String(arrayBuffer.byteLength));
+      response.setHeader("Cache-Control", "private, no-store");
+      return response.status(200).send(Buffer.from(arrayBuffer));
     }
     const source = new URL(String(grant.source_url || ""));
     if (source.protocol !== "https:" || !hostnameAllowed(source.hostname)) {

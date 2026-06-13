@@ -16,7 +16,7 @@ const approvedPayload = {
     product: {
       id: 123456,
       ucode: "product-ucode",
-      name: "Admiro AI"
+      name: "Admira IA"
     },
     buyer: {
       email: "Buyer@Example.com",

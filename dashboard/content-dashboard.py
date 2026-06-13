@@ -2,6 +2,7 @@
 """Small content review dashboard for generated social assets."""
 import json
 import sys
+from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -13,29 +14,41 @@ from keyframe_planner import plan_keyframes
 
 
 PORT = 7872
+ROOT_DIR = Path(__file__).resolve().parent.parent
+
+
+def safe_asset_path(value):
+    candidate = Path(str(value or "")).resolve()
+    try:
+        candidate.relative_to(ROOT_DIR)
+    except ValueError as exc:
+        raise FileNotFoundError("Asset not found") from exc
+    if not candidate.exists() or not candidate.is_file():
+        raise FileNotFoundError("Asset not found")
+    return candidate
 
 
 def page():
     items = list_items()["items"]
     cards = []
     for item in items:
-        comments = "".join(f"<li>{c.get('comment')}</li>" for c in item.get("comments", []))
+        comments = "".join(f"<li>{escape(str(c.get('comment') or ''))}</li>" for c in item.get("comments", []))
         asset = item.get("asset_path", "")
         preview = (
-            f'<img src="/asset?path={asset}" alt="{item["id"]} preview">'
+            f'<img src="/asset?path={escape(str(asset), quote=True)}" alt="{escape(str(item.get("id") or ""), quote=True)} preview">'
             if item.get("type") == "image"
-            else f'<video src="/asset?path={asset}" controls muted playsinline preload="metadata"></video>'
+            else f'<video src="/asset?path={escape(str(asset), quote=True)}" controls muted playsinline preload="metadata"></video>'
         )
         asset_label = "Final MP4" if item.get("type") == "motion" else "Final image"
         cards.append(f"""
         <article class="card">
-          <div class="meta"><b>{asset_label}</b><span>{item.get("status")}</span></div>
+          <div class="meta"><b>{asset_label}</b><span>{escape(str(item.get("status") or ""))}</span></div>
           {preview}
-          <h2>{item.get("copy", {}).get("headline")}</h2>
-          <p>{item.get("copy", {}).get("caption")}</p>
-          <form method="post" action="/approve"><input type="hidden" name="id" value="{item.get("id")}"><button>Approve</button></form>
+          <h2>{escape(str(item.get("copy", {}).get("headline") or ""))}</h2>
+          <p>{escape(str(item.get("copy", {}).get("caption") or ""))}</p>
+          <form method="post" action="/approve"><input type="hidden" name="id" value="{escape(str(item.get("id") or ""), quote=True)}"><button>Approve</button></form>
           <form method="post" action="/comment">
-            <input type="hidden" name="id" value="{item.get("id")}">
+            <input type="hidden" name="id" value="{escape(str(item.get("id") or ""), quote=True)}">
             <textarea name="comment" placeholder="Leave change notes"></textarea>
             <button type="submit">Request changes</button>
           </form>
@@ -81,9 +94,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == "/asset":
-            path = Path(parse_qs(parsed.query).get("path", [""])[0]).resolve()
-            root = Path(__file__).resolve().parent.parent
-            if not str(path).startswith(str(root)) or not path.exists():
+            try:
+                path = safe_asset_path(parse_qs(parsed.query).get("path", [""])[0])
+            except FileNotFoundError:
                 self.send_error(404)
                 return
             data = path.read_bytes()

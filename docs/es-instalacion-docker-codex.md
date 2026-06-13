@@ -70,7 +70,7 @@ CODEX_CREATIVE_ENABLED=false
 CODEX_CLI=codex
 ```
 
-Codex viene instalado pero su puente creativo queda apagado por defecto: es un agente local con acceso adicional al entorno. Si el dueño decide activarlo, se usa para producir estrategia y prompts visuales dentro de una ejecucion aislada; la imagen final la produce el proveedor creativo configurado en el producto.
+Codex viene instalado como la ruta principal para creativos. Cuando el comprador conecta ChatGPT/Codex, el agente puede pedirle a Codex que cree imagenes finales, guardarlas dentro del dashboard y enviarlas como vista previa protegida.
 
 Para activar la funcion opcional, cambia `CODEX_CREATIVE_ENABLED=true` y configura la autenticacion de Codex segun la cuenta del comprador. Evita guardar credenciales de OpenAI en archivos de marca o prompts. Si se usa una variable en `.env`, pertenece solo a la instalacion local/VPS del comprador:
 
@@ -84,18 +84,18 @@ Importante: esa clave queda en la instalacion local/VPS del comprador. No se inc
 
 ## Conectar ChatGPT al agente
 
-Despues de instalar, el onboarding inicial muestra el paso `Conectar ChatGPT al agente` antes de conectar Meta. Si el comprador lo salta o necesita revisarlo despues, puede volver desde `Configuracion > Conectar ChatGPT al agente`.
+Despues de instalar, el onboarding inicial empieza por conectar Facebook/Meta, luego conecta ChatGPT/Codex y despues Telegram. Si el comprador salta un paso o necesita revisarlo despues, puede volver desde `Configuracion`.
 
 La tarjeta te guia con palabras simples:
 
 1. Tocar `Conectar ahora` en el dashboard.
 2. Si estas en PC/Mac y se abre una terminal, seguir esa ventana.
-3. Si estas en DigitalOcean/VPS, el dashboard muestra la pantalla de Hermes dentro del navegador.
+3. Si estas en DigitalOcean/VPS, el dashboard muestra el login seguro dentro del navegador.
 4. Abrir el enlace de ChatGPT que aparezca, iniciar sesion con la cuenta ChatGPT del comprador y volver al dashboard.
-5. Si Hermes pide elegir proveedor/modelo, responder en la caja del dashboard.
+5. Si el agente pide elegir proveedor/modelo, responder en la caja del dashboard.
 6. Tocar `Revisar conexion`.
 
-En DigitalOcean no hace falta abrir un navegador dentro del servidor ni entrar por SSH para este paso. El dashboard corre Hermes dentro del Droplet usando el modo sin navegador:
+En DigitalOcean no hace falta abrir un navegador dentro del servidor ni entrar por SSH para este paso. El dashboard corre la conexion del agente dentro del Droplet usando el modo sin navegador:
 
 ```bash
 hermes model --no-browser

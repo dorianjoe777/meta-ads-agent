@@ -4,13 +4,15 @@ import { readReleases, writeReleases } from "../../lib/store.js";
 function normalizeAsset(body = {}) {
   const assetName = String(body.asset_name || "").trim();
   const sourceUrl = String(body.source_url || "").trim();
-  if (!assetName || !sourceUrl) {
+  const blobPath = String(body.blob_path || "").trim();
+  if (!assetName || (!sourceUrl && !blobPath)) {
     return null;
   }
   return {
     asset_name: assetName,
     filename: String(body.filename || assetName).trim(),
     content_type: String(body.content_type || "application/octet-stream").trim(),
+    blob_path: blobPath,
     source_url: sourceUrl
   };
 }

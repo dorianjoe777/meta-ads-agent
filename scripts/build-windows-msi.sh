@@ -9,7 +9,7 @@ STAGING_DIR="$BUILD_DIR/MetaAdsAgent"
 WXS_BUILD="$BUILD_DIR/MetaAdsAgentInstaller.generated.wxs"
 MSI_PATH="$RELEASE_DIR/MetaAdsAgent-$VERSION-windows.msi"
 SOURCE_ZIP="$RELEASE_DIR/MetaAdsAgent-$VERSION-windows-msi-source.zip"
-MANUFACTURER="${WINDOWS_MSI_MANUFACTURER:-Admiro AI}"
+MANUFACTURER="${WINDOWS_MSI_MANUFACTURER:-Admira IA}"
 UPGRADE_CODE="${WINDOWS_MSI_UPGRADE_CODE:-7B24A49C-5E95-4C16-9C32-86E58A90B2D7}"
 
 MSI_VERSION="$(python3 - "$VERSION" <<'PY'
@@ -166,7 +166,7 @@ out.write_text(f'''<?xml version="1.0" encoding="UTF-8"?>
       <Component Id="Shortcuts" Guid="*">
         <Shortcut Id="DesktopShortcut" Directory="DesktopFolder" Name="Meta Ads Agent" Target="[INSTALLFOLDER]Instalar en Windows.bat" WorkingDirectory="INSTALLFOLDER" />
         <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="Meta Ads Agent" Target="[INSTALLFOLDER]Instalar en Windows.bat" WorkingDirectory="INSTALLFOLDER" />
-        <RegistryValue Root="HKCU" Key="Software\\Admiro AI\\Meta Ads Agent" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+        <RegistryValue Root="HKCU" Key="Software\\Admira IA\\Meta Ads Agent" Name="installed" Type="integer" Value="1" KeyPath="yes" />
       </Component>
     </DirectoryRef>
     <Feature Id="MainFeature" Title="Meta Ads Agent" Level="1">

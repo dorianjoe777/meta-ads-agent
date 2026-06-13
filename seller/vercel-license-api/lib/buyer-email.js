@@ -1,7 +1,7 @@
 import nodemailer from "nodemailer";
 
 const DEFAULT_ACCESS_URL = "https://admiroia.uboost.lat/access";
-const DEFAULT_FROM = "Admiro AI <no-reply@admiroia.uboost.lat>";
+const DEFAULT_FROM = "Admira IA <no-reply@admiroia.uboost.lat>";
 const DEFAULT_SMTP_HOST = "mail.spacemail.com";
 const DEFAULT_SMTP_PORT = 465;
 
@@ -48,7 +48,7 @@ function numberOption(value, fallback) {
 
 export function renderBuyerLicenseEmail(record, options = {}) {
   const accessUrl = String(options.accessUrl || buyerAccessUrl());
-  const productName = String(options.productName || process.env.BUYER_EMAIL_PRODUCT_NAME || "Admiro AI");
+  const productName = String(options.productName || process.env.BUYER_EMAIL_PRODUCT_NAME || "Admira IA");
   const greetingName = buyerFirstName(record);
   const greeting = greetingName ? `Hola ${greetingName},` : "Hola,";
   const subject = String(options.subject || `Tu acceso a ${productName} esta listo`);

@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
 """Brand guide files and Codex CLI prompt bridge for creative strategy."""
+import hashlib
+import json
+import os
 import re
+import shutil
 import subprocess
 import tempfile
+import time
+import uuid
+from math import gcd
 from pathlib import Path
 
 from local_store import read_json
@@ -14,6 +21,7 @@ PRODUCT_DIR = BRAND_DIR / "products"
 AD_BRIEF_DIR = BRAND_DIR / "ad_briefs"
 GENERAL_GUIDE = BRAND_DIR / "general_branding.md"
 CREATIVE_REFERENCES_FILE = BRAND_DIR / "creative_references.md"
+CODEX_GENERATED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 GENERAL_EXAMPLE = BRAND_DIR / "general_branding.example.md"
 PRODUCT_EXAMPLE = PRODUCT_DIR / "product.example.md"
 AD_BRIEF_EXAMPLE = AD_BRIEF_DIR / "ad_brief.example.md"
@@ -617,6 +625,8 @@ def resolve_product_guide(product_guide=""):
             path for path in PRODUCT_DIR.glob("*.md") if path.name != "product.example.md"
         ) if PRODUCT_DIR.exists() else []
         return available[0] if len(available) == 1 else None
+    if "/" not in raw and "\\" not in raw and not raw.endswith(".md"):
+        raw = f"brand_guides/products/{product_slug(raw)}.md"
     candidate = Path(raw)
     if not candidate.is_absolute():
         candidate = ROOT_DIR / candidate
@@ -635,6 +645,8 @@ def resolve_ad_brief(ad_brief=""):
     raw = str(ad_brief or "").strip()
     if not raw:
         return None
+    if "/" not in raw and "\\" not in raw and not raw.endswith(".md"):
+        raw = f"brand_guides/ad_briefs/{product_slug(raw)}.md"
     candidate = Path(raw)
     if not candidate.is_absolute():
         candidate = ROOT_DIR / candidate
@@ -696,9 +708,276 @@ Devuelve:
 """
 
 
-def call_codex_cli(prompt, timeout=120):
+FIXED_IMAGE_ROUTES = [
+    {
+        "axis": "marca-consistente-oferta-clara",
+        "composition": "Producto u oferta al centro, beneficio principal arriba, llamada a la accion abajo.",
+        "experiment": "Mantener identidad visual estricta y probar solo el mensaje principal.",
+    },
+    {
+        "axis": "problema-beneficio-directo",
+        "composition": "Antes/despues simple: dolor visible a la izquierda, resultado deseado a la derecha.",
+        "experiment": "Cambiar el angulo de dolor sin mover colores, tipografia ni promesa.",
+    },
+    {
+        "axis": "prueba-confianza",
+        "composition": "Elemento de confianza o evidencia cerca del producto, fondo limpio y texto corto.",
+        "experiment": "Subir credibilidad sin agregar ruido visual.",
+    },
+]
+
+FREE_IMAGE_ROUTES = [
+    {
+        "axis": "editorial-premium",
+        "composition": "Layout editorial con mucho aire, producto grande, titulares tipo revista y bloques asimetricos.",
+        "experiment": "Sentir marca premium sin perder claridad de venta.",
+    },
+    {
+        "axis": "ugc-polaroid",
+        "composition": "Collage tipo contenido organico: foto principal, sticker corto, nota manuscrita y prueba social.",
+        "experiment": "Ver si una pieza menos producida genera mas confianza.",
+    },
+    {
+        "axis": "comparacion-brutal",
+        "composition": "Comparacion visual fuerte entre caos actual y solucion, con contraste de color marcado.",
+        "experiment": "Atacar dolor de forma directa y facil de entender.",
+    },
+    {
+        "axis": "objeto-hero-3d",
+        "composition": "Objeto o pack 3D flotando, sombras suaves, fondo de marca y etiquetas de beneficio.",
+        "experiment": "Convertir la oferta en algo tangible y memorable.",
+    },
+    {
+        "axis": "timeline-transformacion",
+        "composition": "Secuencia de 3 pasos de izquierda a derecha: problema, accion, resultado.",
+        "experiment": "Explicar la transformacion en segundos.",
+    },
+    {
+        "axis": "pantalla-producto-real",
+        "composition": "Mockup de pantalla o producto en uso con tarjetas metricas alrededor.",
+        "experiment": "Mostrar uso concreto y bajar incertidumbre.",
+    },
+    {
+        "axis": "minimalismo-agresivo",
+        "composition": "Fondo casi vacio, una frase grande, producto pequeno pero con alto contraste.",
+        "experiment": "Probar si un mensaje muy directo detiene el scroll.",
+    },
+    {
+        "axis": "escena-aspiracional",
+        "composition": "Escena de vida deseada o resultado emocional, producto integrado sin parecer stock.",
+        "experiment": "Vender deseo antes que caracteristicas.",
+    },
+    {
+        "axis": "mapa-de-decision",
+        "composition": "Diagrama visual simple con flechas, checkpoints y una decision clara.",
+        "experiment": "Convertir una oferta compleja en una decision facil.",
+    },
+    {
+        "axis": "pack-promocional",
+        "composition": "Oferta como paquete: bonus, precio, urgencia y CTA con jerarquia muy clara.",
+        "experiment": "Empujar accion cuando hay promo concreta.",
+    },
+    {
+        "axis": "mito-vs-realidad",
+        "composition": "Dos tarjetas enfrentadas: creencia equivocada versus verdad util de la oferta.",
+        "experiment": "Educar y vender en una misma imagen.",
+    },
+    {
+        "axis": "anuncio-conversacional",
+        "composition": "Burbuja de chat o pregunta del cliente con respuesta corta y visual de solucion.",
+        "experiment": "Hacer que el anuncio se sienta como una conversacion real.",
+    },
+]
+
+
+def _bounded_variation_count(value):
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        count = 3
+    return max(1, min(count, 12))
+
+
+def _seeded_routes(routes, count, seed):
+    if count <= 0:
+        return []
+    if count >= len(routes):
+        return list(routes)
+    digest = hashlib.sha256(str(seed or uuid.uuid4().hex).encode("utf-8")).hexdigest()
+    start = int(digest[:8], 16) % len(routes)
+    step = (int(digest[8:12], 16) % (len(routes) - 1)) + 1
+    while len(routes) > 1 and gcd(step, len(routes)) != 1:
+        step += 1
+    selected = []
+    seen = set()
+    index = start
+    while len(selected) < count:
+        route = routes[index % len(routes)]
+        if route["axis"] not in seen:
+            selected.append(route)
+            seen.add(route["axis"])
+        index += step
+    return selected
+
+
+def _text_excerpt(text, limit=6000):
+    text = str(text or "").strip()
+    return text[:limit]
+
+
+def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", mode="fixed", variations=3, seed=None):
+    """Build an image-prompt package for Codex/Image using brand, product and ad brief memory."""
+    selected_mode = str(mode or "fixed").strip().lower()
+    if selected_mode not in {"fixed", "free"}:
+        raise ValueError("El modo debe ser fixed o free.")
+    count = _bounded_variation_count(variations)
+    general = read_text(GENERAL_GUIDE)
+    ad_path = resolve_ad_brief(ad_brief)
+    ad_text = read_text(ad_path) if ad_path else ""
+    if not product_guide and ad_text:
+        product_guide = ad_brief_fields(ad_text).get("product_guide", "")
+    product_path = resolve_product_guide(product_guide)
+    product_text = read_text(product_path) if product_path else ""
+    references = read_text(CREATIVE_REFERENCES_FILE)
+    used_seed = seed or uuid.uuid4().hex
+    routes = list(FIXED_IMAGE_ROUTES[:count]) if selected_mode == "fixed" else _seeded_routes(FREE_IMAGE_ROUTES, count, used_seed)
+    request_text = str(request or "").strip()
+    prompt_context = "\n".join(
+        part
+        for part in [
+            f"Pedido puntual del comprador: {request_text}" if request_text else "",
+            f"Producto/oferta: {_text_excerpt(product_text, 1200)}" if product_text else "",
+            f"Brief del anuncio: {_text_excerpt(ad_text, 1200)}" if ad_text else "",
+            f"Reglas generales de marca: {_text_excerpt(general, 1200)}" if general else "",
+            f"Referencias aprobadas: {_text_excerpt(references, 900)}" if references else "",
+        ]
+        if part
+    )
+    brand_lock = (
+        "Usa el pedido puntual del comprador como fuente principal. Respeta colores, tipografias, "
+        "personalidad, promesa, oferta, publico, elementos bloqueados, referencias aprobadas y cosas prohibidas "
+        "cuando existan. Si falta una regla de marca, usa un estilo publicitario neutral y profesional; no crees "
+        "placeholders ni imagenes sobre datos faltantes."
+    )
+    mode_instruction = (
+        "MODO FIJO: mantente cerca de la guia. Las variaciones deben sentirse de la misma familia visual; "
+        "solo cambia angulo, jerarquia o una pequena composicion para aprender sin romper marca."
+        if selected_mode == "fixed"
+        else
+        "MODO LIBRE: actua como un agente director creativo. Genera rutas visuales muy diferentes entre si. "
+        "Nunca repitas la misma estructura, fondo, metafora, jerarquia, tratamiento de CTA ni tipo de escena. "
+        "La variedad es obligatoria, pero conserva colores, tipografias, promesa, publico, oferta y reglas de marca."
+    )
+    visible_offer_rule = (
+        "Si el comprador o brief menciona una oferta, descuento, 2x1, precio, fecha limite o CTA, "
+        "debe aparecer como texto visible, grande y facil de leer dentro del anuncio. Usa poco texto, "
+        "pero no escondas la promocion principal."
+    )
+    prompts = []
+    for idx, route in enumerate(routes, start=1):
+        prompts.append(
+            {
+                "variant_id": f"{selected_mode}_{idx:02d}",
+                "design_axis": route["axis"],
+                "composition": route["composition"],
+                "experiment": route["experiment"],
+                "brand_lock": brand_lock,
+                "image_prompt": (
+                    f"Crear imagen para Meta Ads en formato 4:5. Ruta creativa: {route['axis']}. "
+                    f"Composicion: {route['composition']} Objetivo del experimento: {route['experiment']} "
+                    f"Contexto que debe aparecer en el anuncio: {prompt_context or request_text or 'producto u oferta descrita por el comprador'}. "
+                    f"{brand_lock} {visible_offer_rule} Texto dentro de la imagen: corto, grande y legible. "
+                    "Debe verse como anuncio profesional, claro en menos de 2 segundos, sin claims irreales. "
+                    "No escribas 'faltan datos', 'datos clave' ni mensajes de configuracion dentro de la imagen."
+                ),
+                "negative_prompt": (
+                    "Evitar texto pequeno, exceso de elementos, estilo generico de banco de imagenes, "
+                    "promesas imposibles, logos inventados, datos falsos, ruido visual y cualquier cosa "
+                    "contraria a las reglas de marca."
+                ),
+            }
+        )
+    variation_ledger = [
+        {
+            "variant_id": item["variant_id"],
+            "design_axis": item["design_axis"],
+            "composition": item["composition"],
+        }
+        for item in prompts
+    ]
+    codex_prompt = f"""Actua como prompt engineer senior para ChatGPT Image / Image 2 y Meta Ads.
+
+Tu tarea es convertir memoria de marca, producto y brief en prompts finales de imagen.
+
+{mode_instruction}
+
+Reglas no negociables:
+- Usa solo el contexto incluido abajo.
+- No leas archivos, credenciales, tokens ni configuracion local.
+- No ejecutes comandos.
+- Mantener colores, tipografias y elementos importantes de marca.
+- En modo libre, revisa el ledger y reemplaza cualquier idea que se parezca demasiado a otra.
+- Devuelve JSON valido con: variant_id, design_axis, final_image_prompt, aspect_ratios, on_image_text, why_this_is_different, safety_notes.
+
+## Guia general de marca
+
+{_text_excerpt(general)}
+
+## Guia de producto
+
+{_text_excerpt(product_text)}
+
+## Brief publicitario
+
+{_text_excerpt(ad_text)}
+
+## Referencias creativas aprobadas
+
+{_text_excerpt(references, 3000)}
+
+## Pedido puntual
+
+{request}
+
+## Modo
+
+{selected_mode}
+
+## Ledger de variacion obligatorio
+
+{json.dumps(variation_ledger, ensure_ascii=False, indent=2)}
+"""
+    return {
+        "mode": selected_mode,
+        "seed": used_seed,
+        "variation_count": count,
+        "general_guide": str(GENERAL_GUIDE),
+        "product_guide": product_reference(product_path) if product_path else "",
+        "ad_brief": product_reference(ad_path) if ad_path else "",
+        "request": str(request or "").strip(),
+        "brand_lock": brand_lock,
+        "mode_instruction": mode_instruction,
+        "variation_ledger": variation_ledger,
+        "prompts": prompts,
+        "codex_prompt": codex_prompt,
+    }
+
+
+def codex_cli_error_message(stderr, stdout=""):
+    combined = f"{stderr or ''}\n{stdout or ''}".lower()
+    if "401 unauthorized" in combined or "missing bearer" in combined or "not logged" in combined:
+        return "Codex CLI no esta autenticado en este PC/VPS. Conecta Codex CLI en este entorno o usa el cerebro de Hermes/API para preparar creativos."
+    if "model is not supported" in combined or "modelo" in combined and "no esta disponible" in combined:
+        return "El modelo configurado para Codex no esta disponible para esta cuenta. Define CODEX_CREATIVE_MODEL con un modelo compatible o deja que soporte lo ajuste."
+    if "timed out" in combined or "timeout" in combined:
+        return "Codex CLI tardo demasiado en responder. Intenta de nuevo o usa menos variaciones."
+    return ""
+
+
+def call_codex_cli(prompt, timeout=120, model=None):
     config = load_config()
     executable = getattr(config, "codex_cli", "codex")
+    selected_model = str(model or getattr(config, "codex_creative_model", "") or "").strip()
     with tempfile.TemporaryDirectory(prefix="meta-ads-codex-") as isolated_dir:
         command = [
             executable, "exec",
@@ -708,18 +987,190 @@ def call_codex_cli(prompt, timeout=120):
             "--ignore-rules",
             "--skip-git-repo-check",
             "-C", isolated_dir,
-            prompt,
         ]
+        if selected_model:
+            command.extend(["-m", selected_model])
+        command.append(prompt)
         try:
             completed = subprocess.run(command, cwd=isolated_dir, capture_output=True, text=True, timeout=timeout, check=False)
         except FileNotFoundError:
             return {"ok": False, "error": "Codex CLI no esta instalado o no esta en PATH.", "command": [executable, "exec", "[isolated request]"]}
         except subprocess.TimeoutExpired:
             return {"ok": False, "error": "Codex CLI tardo demasiado en responder.", "command": [executable, "exec", "[isolated request]"]}
+    error = "" if completed.returncode == 0 else codex_cli_error_message(completed.stderr, completed.stdout)
     return {
         "ok": completed.returncode == 0,
         "returncode": completed.returncode,
         "stdout": completed.stdout[-6000:],
         "stderr": completed.stderr[-2000:],
+        "error": error,
         "command": [executable, "exec", "[isolated request]"],
     }
+
+
+def codex_cli_auth_status(timeout=15):
+    """Return whether the local Codex CLI is authenticated with ChatGPT/Codex."""
+    config = load_config()
+    executable = getattr(config, "codex_cli", "codex")
+    command = [executable, "login", "status"]
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
+    except FileNotFoundError:
+        return {"ok": False, "error": "Codex CLI no esta instalado o no esta en PATH.", "command": command}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "Codex CLI tardo demasiado en confirmar la sesion.", "command": command}
+    combined = f"{completed.stdout}\n{completed.stderr}".lower()
+    ok = completed.returncode == 0 and "logged in" in combined and "not logged" not in combined
+    return {
+        "ok": ok,
+        "returncode": completed.returncode,
+        "stdout": completed.stdout[-2000:],
+        "stderr": completed.stderr[-2000:],
+        "error": "" if ok else codex_cli_error_message(completed.stderr, completed.stdout) or "Codex CLI aun no esta conectado con ChatGPT/Codex en este equipo.",
+        "command": command,
+    }
+
+
+def codex_generated_images_root():
+    codex_home = os.environ.get("CODEX_HOME")
+    root = Path(codex_home).expanduser() if codex_home else Path.home() / ".codex"
+    return root / "generated_images"
+
+
+def generated_image_index(root=None):
+    root = Path(root or codex_generated_images_root())
+    if not root.exists():
+        return {}
+    index = {}
+    for path in root.rglob("*"):
+        if path.is_file() and path.suffix.lower() in CODEX_GENERATED_IMAGE_EXTENSIONS:
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            index[str(path.resolve())] = stat.st_mtime
+    return index
+
+
+def newest_generated_image(before=None, started_at=0, root=None):
+    before = before or {}
+    candidates = []
+    for path_text, mtime in generated_image_index(root).items():
+        if path_text not in before or mtime >= started_at - 2:
+            candidates.append((mtime, Path(path_text)))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1]
+
+
+def safe_codex_asset_name(value):
+    slug = "".join(ch.lower() if ch.isalnum() else "-" for ch in str(value or "creative"))
+    slug = "-".join(part for part in slug.split("-") if part)
+    return (slug or "creative")[:80]
+
+
+def codex_image_generation_prompt(prompt):
+    return f"""$imagegen
+
+Genera una imagen real para usar como creativo de Meta Ads.
+
+Reglas:
+- Usa la herramienta de imagen disponible en Codex/ChatGPT.
+- Crea una imagen raster real, preferiblemente PNG. No crees SVG.
+- No respondas solo con ideas ni solo con un prompt: la salida principal debe ser la imagen.
+- No ejecutes comandos de terminal ni intentes copiar archivos; el producto copiara automaticamente la imagen generada por Codex.
+- Texto dentro de la imagen: corto, grande y legible.
+- Debe verse como anuncio profesional, claro en menos de 2 segundos y sin promesas falsas.
+- Usa el pedido del comprador como fuente principal. Si faltan reglas de marca, usa un estilo neutral y profesional.
+- No generes placeholders ni imagenes sobre "faltan datos", "datos clave", configuracion, dashboard o errores.
+
+Pedido del comprador:
+{str(prompt or '').strip()}
+"""
+
+
+def call_codex_image_cli(prompt, timeout=360, model=None, output_root=None, output_name="creative"):
+    """Generate a real image through the buyer's authenticated Codex/Image session."""
+    request = str(prompt or "").strip()
+    if not request:
+        return {"ok": False, "error": "Necesito una descripcion del creativo antes de generar la imagen."}
+    config = load_config()
+    executable = getattr(config, "codex_cli", "codex")
+    selected_model = str(model or getattr(config, "codex_creative_model", "") or getattr(config, "hermes_model", "") or "").strip()
+    auth = codex_cli_auth_status()
+    if not auth.get("ok"):
+        return {
+            "ok": False,
+            "error": "Codex/Image todavia no esta conectado en este PC/VPS. Conecta ChatGPT/Codex y vuelve a intentar.",
+            "auth": auth,
+            "command": [executable, "login", "status"],
+        }
+    before = generated_image_index()
+    started_at = time.time()
+    with tempfile.TemporaryDirectory(prefix="meta-ads-codex-image-") as isolated_dir:
+        isolated = Path(isolated_dir)
+        last_message = isolated / "last-message.txt"
+        command = [
+            executable,
+            "exec",
+            "--sandbox",
+            "workspace-write",
+            "--skip-git-repo-check",
+            "-C",
+            str(isolated),
+            "--output-last-message",
+            str(last_message),
+        ]
+        if selected_model:
+            command.extend(["-m", selected_model])
+        command.append(codex_image_generation_prompt(request))
+        try:
+            completed = subprocess.run(command, cwd=isolated, capture_output=True, text=True, timeout=timeout, check=False)
+        except FileNotFoundError:
+            return {"ok": False, "error": "Codex CLI no esta instalado o no esta en PATH.", "command": [executable, "exec", "[image request]"]}
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": "Codex/Image tardo demasiado en generar la imagen. Intenta otra vez con una solicitud mas corta.", "command": [executable, "exec", "[image request]"]}
+        last_text = read_text(last_message)
+    generated = newest_generated_image(before=before, started_at=started_at)
+    error = "" if completed.returncode == 0 else codex_cli_error_message(completed.stderr, completed.stdout)
+    if not generated:
+        return {
+            "ok": False,
+            "returncode": completed.returncode,
+            "stdout": completed.stdout[-6000:],
+            "stderr": completed.stderr[-3000:],
+            "last_message": last_text[-3000:],
+            "error": error or "Codex respondio, pero no encontre una imagen generada. Intenta pedir una imagen final, no solo ideas.",
+            "command": [executable, "exec", "[image request]"],
+            "model": selected_model,
+        }
+    root = Path(output_root or (ROOT_DIR / "output" / "creatives"))
+    batch_id = f"codex-{datetime_like_slug()}"
+    target_dir = root / batch_id
+    target_dir.mkdir(parents=True, exist_ok=True)
+    suffix = generated.suffix.lower() if generated.suffix.lower() in CODEX_GENERATED_IMAGE_EXTENSIONS else ".png"
+    target = target_dir / f"{safe_codex_asset_name(output_name)}{suffix}"
+    counter = 2
+    while target.exists():
+        target = target_dir / f"{safe_codex_asset_name(output_name)}-{counter}{suffix}"
+        counter += 1
+    shutil.copy2(generated, target)
+    relative = target.resolve().relative_to(root.resolve())
+    return {
+        "ok": True,
+        "returncode": completed.returncode,
+        "stdout": completed.stdout[-6000:],
+        "stderr": completed.stderr[-3000:],
+        "last_message": last_text[-3000:],
+        "warning": error,
+        "image_path": str(target),
+        "source_image_path": str(generated),
+        "asset_id": str(relative),
+        "preview_url": f"/api/creative-asset?id={str(relative)}",
+        "command": [executable, "exec", "[image request]"],
+        "model": selected_model,
+    }
+
+
+def datetime_like_slug():
+    return time.strftime("%Y%m%d-%H%M%S")

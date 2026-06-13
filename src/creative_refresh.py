@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Creative refresh planning and optional Nano Banana image generation."""
+"""Creative refresh planning for Codex/Image ad creative workflows."""
 import base64
 import copy
 import json
@@ -360,8 +360,8 @@ def build_creative_plan(campaign, ad_config=None, variants_per_campaign=None, pr
         "id": f"creative_{campaign.get('id', 'campaign')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
         "created_at": now_iso(),
         "status": "draft",
-        "provider": config.creative_provider,
-        "image_mode": config.creative_image_mode,
+        "provider": "codex-image",
+        "image_mode": "codex-image",
         "brand_memory": memory,
         "campaign": {
             "id": campaign.get("id"),
@@ -381,7 +381,7 @@ def build_creative_plan(campaign, ad_config=None, variants_per_campaign=None, pr
 
 def call_nano_banana(prompt, aspect_ratio, config):
     if not config.gemini_api_key:
-        return {"ok": False, "error": "GEMINI_API_KEY is not configured"}
+        return {"ok": False, "error": "Legacy image provider is disabled. Use Codex/Image from the agent."}
     model = config.nano_banana_model
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     payload = {
@@ -442,23 +442,13 @@ def generate_creative_refresh(campaign, generate_images=False, product_guide="",
     refresh_dir = OUTPUT_DIR / plan["id"]
     refresh_dir.mkdir(parents=True, exist_ok=True)
     if generate_images and config.creative_live:
-        generated_count = 0
-        error_count = 0
         for variant in plan["variants"]:
             for prompt in variant["image_prompts"]:
-                result = call_nano_banana(prompt["prompt"], prompt["aspect_ratio"], config)
-                if result.get("ok"):
-                    variant["assets"].append(save_generated_asset(refresh_dir, plan["id"], variant["variant_id"], prompt["aspect_ratio"], result))
-                    generated_count += 1
-                else:
-                    variant["assets"].append({"aspect_ratio": prompt["aspect_ratio"], "error": result.get("error", "generation failed")})
-                    error_count += 1
-        if generated_count and error_count:
-            plan["status"] = "partially_generated"
-        elif generated_count:
-            plan["status"] = "images_ready"
-        else:
-            plan["status"] = "generation_failed"
+                variant["assets"].append({
+                    "aspect_ratio": prompt["aspect_ratio"],
+                    "error": "Las imagenes finales ahora se crean con Codex/Image desde el chat o la accion codex_image_generate.",
+                })
+        plan["status"] = "needs_codex_image"
     else:
         plan["status"] = "dry_run"
     manifest_path = refresh_dir / "manifest.json"

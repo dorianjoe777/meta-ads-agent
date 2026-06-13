@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Telegram entry point for the Meta Ads manager agent.
+"""Telegram entry point for the Admira IA manager agent.
 
 Uses long polling so a local/VPS buyer does not need a public webhook URL.
 Messages are answered by Hermes and product tools continue to run through the
@@ -8,9 +8,11 @@ same backend guardrails used by the dashboard.
 import argparse
 import importlib.util
 import json
+import mimetypes
 import os
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -19,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 
 from agent_chat import chat as agent_chat
+from agent_chat import clean_reply
 from local_store import read_json, utc_iso, write_json as write_json_file
 from product_config import ROOT_DIR, env_bool, env_int, load_config
 from security import redact_payload
@@ -30,6 +33,7 @@ OFFSET_FILE = DATA_DIR / "telegram_offset.json"
 APPROVAL_CONTEXT_FILE = DATA_DIR / "telegram_approval_context.json"
 UPLOAD_DIR = ROOT_DIR / "output" / "telegram_uploads"
 DASHBOARD_PATH = ROOT_DIR / "dashboard" / "monitoring-dashboard.py"
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 MAX_HISTORY_ITEMS = 20
 MAX_MESSAGE_LENGTH = 4000
 _DASHBOARD = None
@@ -79,8 +83,76 @@ def bot_request(config, method, payload=None, timeout=40):
     return body.get("result")
 
 
+def bot_multipart_request(config, method, fields, file_field, file_path, timeout=120):
+    if not config.telegram_bot_token:
+        raise ValueError("Falta configurar el bot de Telegram.")
+    path = Path(file_path)
+    if not path.exists() or not path.is_file():
+        raise ValueError("No encontré el archivo para enviar por Telegram.")
+    boundary = f"----admiro-telegram-{int(time.time() * 1000)}"
+    body = bytearray()
+    for key, value in (fields or {}).items():
+        body.extend(f"--{boundary}\r\n".encode("utf-8"))
+        body.extend(f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode("utf-8"))
+        body.extend(str(value or "").encode("utf-8"))
+        body.extend(b"\r\n")
+    mime_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+    body.extend(f"--{boundary}\r\n".encode("utf-8"))
+    body.extend(
+        f'Content-Disposition: form-data; name="{file_field}"; filename="{path.name}"\r\n'
+        f"Content-Type: {mime_type}\r\n\r\n".encode("utf-8")
+    )
+    body.extend(path.read_bytes())
+    body.extend(f"\r\n--{boundary}--\r\n".encode("utf-8"))
+    request = urllib.request.Request(
+        f"https://api.telegram.org/bot{config.telegram_bot_token}/{method}",
+        data=bytes(body),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if not payload.get("ok"):
+        raise ValueError("Telegram no aceptó el archivo.")
+    return payload.get("result")
+
+
+def send_chat_action(config, chat_id, action="typing"):
+    try:
+        return bot_request(config, "sendChatAction", {"chat_id": chat_id, "action": action}, timeout=8)
+    except Exception:
+        return None
+
+
+class TypingIndicator:
+    def __init__(self, config, chat_id, enabled=True):
+        self.config = config
+        self.chat_id = chat_id
+        self.enabled = enabled
+        self.stop_event = threading.Event()
+        self.thread = None
+
+    def __enter__(self):
+        if not self.enabled:
+            return self
+        send_chat_action(self.config, self.chat_id)
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+        self.thread.start()
+        return self
+
+    def __exit__(self, *_exc):
+        if self.thread:
+            self.stop_event.set()
+            self.thread.join(timeout=1)
+
+    def _loop(self):
+        while not self.stop_event.wait(4):
+            send_chat_action(self.config, self.chat_id)
+
+
 def message_text(text):
-    cleaned = re.sub(r"\*\*(.*?)\*\*", r"\1", str(text or ""), flags=re.DOTALL)
+    cleaned = clean_reply(text)
+    cleaned = re.sub(r"\*\*(.*?)\*\*", r"\1", str(cleaned or ""), flags=re.DOTALL)
     cleaned = re.sub(r"^#{1,4}\s*", "", cleaned, flags=re.MULTILINE)
     return cleaned.strip()
 
@@ -98,6 +170,45 @@ def send_message_with_keyboard(config, chat_id, text, keyboard):
     clean = message_text(text) or "Revisa esta decision."
     payload = {"chat_id": chat_id, "text": clean[:MAX_MESSAGE_LENGTH], "reply_markup": json.dumps({"inline_keyboard": keyboard})}
     return bot_request(config, "sendMessage", payload)
+
+
+def send_photo(config, chat_id, image_path, caption=""):
+    fields = {"chat_id": chat_id}
+    clean_caption = message_text(caption)
+    if clean_caption:
+        fields["caption"] = clean_caption[:1000]
+    return bot_multipart_request(config, "sendPhoto", fields, "photo", image_path)
+
+
+def tool_generated_image_path(tool_result):
+    if not isinstance(tool_result, dict) or tool_result.get("type") != "codex_image_generate":
+        return ""
+    result = tool_result.get("result") or {}
+    if not isinstance(result, dict) or not result.get("ok"):
+        return ""
+    raw_path = result.get("image_path")
+    if not raw_path:
+        return ""
+    try:
+        path = Path(str(raw_path)).expanduser().resolve()
+        path.relative_to((ROOT_DIR / "output").resolve())
+    except (OSError, RuntimeError, ValueError):
+        return ""
+    if path.suffix.lower() not in IMAGE_EXTENSIONS or not path.exists() or not path.is_file():
+        return ""
+    return str(path)
+
+
+def send_tool_artifacts(config, chat_id, tool_result):
+    image_path = tool_generated_image_path(tool_result)
+    if not image_path:
+        return []
+    caption = "Imagen generada con Codex/Image. Quedó guardada también en Creativos."
+    try:
+        return [send_photo(config, chat_id, image_path, caption)]
+    except Exception as exc:
+        send_message(config, chat_id, f"La imagen quedó generada, pero no pude adjuntarla aquí. Revisa Creativos. Detalle: {exc}")
+        return []
 
 
 def is_allowed_chat(config, chat_id):
@@ -119,7 +230,7 @@ def append_turn(chat_id, user_message, reply):
     history.extend(
         [
             {"role": "user", "content": str(user_message)[:5000], "created_at": utc_iso()},
-            {"role": "agent", "content": str(reply)[:5000], "created_at": utc_iso()},
+            {"role": "agent", "content": clean_reply(reply)[:5000], "created_at": utc_iso()},
         ]
     )
     histories[str(chat_id)] = history[-MAX_HISTORY_ITEMS:]
@@ -144,7 +255,7 @@ def reset_polling_state():
 
 def help_message():
     return (
-        "Soy tu manager IA de Meta Ads.\n\n"
+        "Soy Admira IA, tu manager IA de Meta Ads.\n\n"
         "Puedes escribirme como a una persona:\n"
         "- Que debo vigilar hoy?\n"
         "- Prepara una campana para mi producto.\n"
@@ -362,7 +473,7 @@ def agent_payload(message, chat_id, language, image_paths=None):
     return {
         "message": message,
         "language": language,
-        "history": load_history(chat_id),
+        "session_key": f"telegram:{chat_id}",
         "image_paths": image_paths or [],
         "metrics": state.get("metrics", {}),
         "recommendations": state.get("recommendations", []),
@@ -399,7 +510,8 @@ def handle_text(config, chat_id, text, send=True, image_paths=None, reply_approv
             return approval_reply
         else:
             payload = agent_payload(stripped, chat_id, settings["language"], image_paths=image_paths)
-            result = agent_chat(config, payload)
+            with TypingIndicator(config, chat_id, enabled=send):
+                result = agent_chat(config, payload)
             tool_result = None
             if result.get("fallback") and config.agent_chat_provider == "hermes":
                 reply = result.get("reply") or "Todavia falta conectar el cerebro del agente. Abre Configuracion > Conectar ChatGPT o modelo API. En VPS/DigitalOcean el dashboard te mostrara el login desde el navegador."
@@ -412,6 +524,8 @@ def handle_text(config, chat_id, text, send=True, image_paths=None, reply_approv
             dashboard.log_action("telegram_agent_message", {"chat_id": str(chat_id)[-4:], "tool": (tool_result or {}).get("type") if tool_result else "", "message_length": len(stripped)}, "completed")
     if send:
         send_message(config, chat_id, reply)
+        if "tool_result" in locals() and tool_result:
+            send_tool_artifacts(config, chat_id, tool_result)
         result_payload = (tool_result or {}).get("result") if "tool_result" in locals() and tool_result else None
         approval_id = result_payload.get("id") if isinstance(result_payload, dict) else ""
         if approval_id:
@@ -551,7 +665,7 @@ def run(stop_event=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Telegram access for Meta Ads Agent")
+    parser = argparse.ArgumentParser(description="Telegram access for Admira IA")
     parser.add_argument("--once", action="store_true", help="Read available Telegram messages once, then exit.")
     parser.add_argument("--test-message", action="store_true", help="Send a setup confirmation to the configured Telegram chat.")
     args = parser.parse_args()

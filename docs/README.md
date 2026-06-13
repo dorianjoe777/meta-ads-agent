@@ -175,7 +175,7 @@ output/creatives/                     Creative refresh manifests and generated i
 
 ## Creative Refresh
 
-The creative refresh engine can generate copy variants and Nano Banana image prompts for fatigued or losing campaigns.
+The creative refresh engine can generate copy variants and Codex/Image prompts for fatigued or losing campaigns.
 
 Start with a supervised creative run:
 
@@ -183,7 +183,7 @@ Start with a supervised creative run:
 python3 src/daily_agent.py creative-refresh
 ```
 
-See [creative-refresh.md](creative-refresh.md) for setup and Nano Banana live mode.
+See [creative-refresh.md](creative-refresh.md) for setup and Codex/Image generation.
 
 For the Codex creative strategy layer, see [es-codex-creativos.md](es-codex-creativos.md).
 
