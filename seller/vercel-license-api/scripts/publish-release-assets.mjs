@@ -42,19 +42,19 @@ const ASSETS = [
 
 const improvements = [
   {
-    title: "Instaladores Docker listos",
-    body: "Mac, Windows y Linux descargan launchers que preparan Admira IA dentro de Docker.",
-    impact: "Instalacion"
+    title: "Guia de Meta con capturas reales",
+    body: "El paso de conectar Facebook ahora empieza en Meta Business y muestra el camino completo con capturas definitivas.",
+    impact: "Onboarding"
   },
   {
-    title: "Primera apertura mas limpia",
-    body: "El launcher abre Docker, levanta el contenedor y abre el dashboard sin pedir pasos tecnicos.",
-    impact: "Experiencia"
+    title: "Carrusel automatico por paso",
+    body: "Cuando un paso tiene varias pantallas, Admira las rota automaticamente para que el comprador no se pierda.",
+    impact: "Claridad"
   },
   {
-    title: "Marca Admira IA corregida",
-    body: "La interfaz y el agente usan el nombre correcto del producto.",
-    impact: "Producto"
+    title: "Pegado de clave mas claro",
+    body: "El campo final para pegar la clave de Meta queda mas estable, legible y evita confusiones al guardar.",
+    impact: "Meta"
   }
 ];
 
