@@ -3402,6 +3402,8 @@ class IntegrationTestSuite:
         self.assert_true("Abrir System users" in html and "Clave de Facebook/Meta" in html, "Spanish setup explains buyer-owned Meta connection plainly")
         self.assert_true("Empieza en Meta Business" in html and "Marca permisos de la clave" in html and "Pega la clave en Admira" in html, "Meta onboarding uses the definitive guided Business/System User token slider")
         self.assert_true("tutorial-meta/meta-business-01-open-apps-menu.png" in html and "tutorial-meta/meta-business-32-token-saved.png" in html, "Meta onboarding slider includes the final buyer screenshot walkthrough assets")
+        self.assert_true("onboarding-shell-wide" in html and "minmax(620px,1.54fr)" in html and "min(66vh,650px)" in html, "Meta walkthrough uses a wider desktop layout with substantially larger screenshots")
+        self.assert_true("openMetaScreenshot" in html and "meta-shot-button" in html and "meta-lightbox-card" in html and "Clic para ampliar" in html, "Meta tutorial screenshots open in a large in-app lightbox")
         self.assert_true("Falta tu captura" not in html, "Meta onboarding no longer shows missing screenshot placeholders")
         self.assert_true("Empezar más rápido" not in html and "renovar la clave cada 60 días" not in html and "showMetaTokenBox('quick')" not in html, "Meta onboarding no longer presents Graph API Explorer as a buyer-facing path")
         self.assert_true("showMetaTokenBox('stable')" in html and "token_kind:metaTokenKind" in html, "Token box opens as the stable path while the backend still records token kind")
