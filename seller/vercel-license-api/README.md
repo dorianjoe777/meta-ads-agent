@@ -125,7 +125,7 @@ Download portal:
 ./scripts/package-release.sh
 
 cd seller/vercel-license-api
-npm run publish:release-assets -- v1.0.9
+npm run publish:release-assets -- v1.0.10
 ```
 
 - The current buyer-facing local assets are `MetaAdsAgent-vX.Y.Z-mac.dmg`, `MetaAdsAgent-vX.Y.Z-windows.exe`, and `MetaAdsAgent-vX.Y.Z-linux.tar.gz`. The source ZIP remains available for cloud installs and support, but it is not the normal Mac/Windows download button.
