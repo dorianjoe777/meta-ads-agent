@@ -904,6 +904,7 @@ export default async function handler(request, response) {
     let cloudRecoveryToken = '';
     let cloudRecoveryRetryTimer = null;
     let cloudStateVersion = 0;
+    let cloudPollFailures = 0;
 
     function setStatus(message, isError = false){
       statusBox.textContent = message || '';
@@ -993,6 +994,7 @@ export default async function handler(request, response) {
         clearInterval(cloudProgressTimer);
         cloudProgressTimer = null;
       }
+      cloudPollFailures = 0;
     }
     async function pollCloudProgress(expectedVersion = cloudStateVersion){
       if(!portalToken) return;
@@ -1000,6 +1002,7 @@ export default async function handler(request, response) {
       const recoveryToken = cloudRecoveryToken || (tokenInput ? tokenInput.value.trim() : '');
       const data = await postJson('/api/portal/cloud/digitalocean', { portal_token: portalToken, action: 'status', digitalocean_token: recoveryToken });
       if(expectedVersion !== cloudStateVersion) return data;
+      cloudPollFailures = 0;
       if(!data.valid) throw new Error(data.detail || 'No pude revisar la instalacion.');
       if(data.cleared_deleted_cloud){
         stopCloudProgressPolling();
@@ -1040,6 +1043,23 @@ export default async function handler(request, response) {
       }
       return data;
     }
+    function handleCloudProgressError(error, expectedVersion = cloudStateVersion){
+      if(expectedVersion !== cloudStateVersion) return;
+      cloudPollFailures += 1;
+      const message = cloudPollFailures > 1
+        ? 'Sigo intentando leer el avance. Si DigitalOcean ya termino, lo detectare automaticamente en la siguiente revision.'
+        : 'Estoy revisando el avance otra vez...';
+      setStatus(message);
+      if(cloudResult.classList.contains('active') && cloudPollFailures > 2){
+        const note = '<div class="cloud-safe-note"><strong>Sigo revisando.</strong> La instalacion puede terminar aunque una revision falle. No necesitas refrescar; esta pagina vuelve a consultar sola.</div>';
+        if(!cloudResult.innerHTML.includes('La instalacion puede terminar aunque una revision falle')){
+          cloudResult.insertAdjacentHTML('beforeend', note);
+        }
+      }
+      window.setTimeout(() => {
+        pollCloudProgress(expectedVersion).catch((retryError) => handleCloudProgressError(retryError, expectedVersion));
+      }, Math.min(12000, 2500 + cloudPollFailures * 1500));
+    }
     function scheduleCloudTokenRecovery(){
       const tokenInput = document.getElementById('digitalOceanToken');
       const value = tokenInput ? tokenInput.value.trim() : '';
@@ -1054,10 +1074,11 @@ export default async function handler(request, response) {
       stopCloudCreatePreview();
       stopCloudProgressPolling();
       const expectedVersion = ++cloudStateVersion;
-      pollCloudProgress(expectedVersion).catch(() => {});
+      cloudPollFailures = 0;
+      pollCloudProgress(expectedVersion).catch((error) => handleCloudProgressError(error, expectedVersion));
       cloudProgressTimer = setInterval(() => {
-        pollCloudProgress(expectedVersion).catch(() => {});
-      }, 10000);
+        pollCloudProgress(expectedVersion).catch((error) => handleCloudProgressError(error, expectedVersion));
+      }, 5000);
     }
     function renderCloudCreatePreview(progress = 8){
       const progressData = { status:'creating_request', stage:'creando_servidor', progress };

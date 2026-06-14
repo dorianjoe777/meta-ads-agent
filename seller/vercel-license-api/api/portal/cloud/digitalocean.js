@@ -689,6 +689,7 @@ function statusUrlFor(cloud = {}) {
 function estimatedCloudStatus(cloud = {}) {
   const elapsed = minutesSince(cloud.created_at || cloud.install_started_at);
   const missingIp = Boolean(cloud.droplet_id && !cloud.dashboard_url && !cloud.cloud_open_url);
+  const savedReady = cloud.install_status === "ready";
   const takingLonger = cloud.install_status !== "ready" && elapsed >= 15;
   const progress = Math.max(
     Number(cloud.install_progress || 0),
@@ -716,6 +717,31 @@ function estimatedCloudStatus(cloud = {}) {
       droplet_name: cloud.droplet_name || "",
       can_attach_ip: Boolean(cloud.cloud_access_secret),
       ssh_command: "",
+      created_at: cloud.created_at || ""
+    };
+  }
+  if (savedReady) {
+    return {
+      valid: true,
+      status: "ready",
+      ready: true,
+      taking_longer: false,
+      progress: 100,
+      stage: "dashboard_ready",
+      detail: "Tu dashboard ya esta listo.",
+      dashboard_url: cloud.dashboard_url || "",
+      dashboard_http_url: cloud.dashboard_http_url || "",
+      dashboard_https_url: cloud.dashboard_https_url || "",
+      cloud_open_url: cloud.cloud_open_url || "",
+      cloud_hostname: cloud.cloud_hostname || "",
+      dns_status: cloud.dns_status || "",
+      dns_provider: cloud.dns_provider || "",
+      droplet_id: cloud.droplet_id || "",
+      droplet_name: cloud.droplet_name || "",
+      can_attach_ip: Boolean(cloud.cloud_access_secret),
+      direct_open_only: Boolean(cloud.dashboard_url && !cloud.cloud_open_url),
+      droplet_ip: cloud.droplet_ip || String(cloud.dashboard_http_url || cloud.dashboard_url || "").replace(/^https?:\/\//, "").split(":")[0],
+      ssh_command: (cloud.droplet_ip || cloud.dashboard_http_url || cloud.dashboard_url) ? `ssh root@${cloud.droplet_ip || String(cloud.dashboard_http_url || cloud.dashboard_url || "").replace(/^https?:\/\//, "").split(":")[0]}` : "",
       created_at: cloud.created_at || ""
     };
   }
@@ -831,6 +857,9 @@ async function cloudInstallStatus(record, response, options = {}) {
     return options.returnPayload ? payload : json(response, 200, payload);
   }
   const estimated = estimatedCloudStatus(cloud);
+  if (estimated.ready) {
+    return options.returnPayload ? estimated : json(response, 200, estimated);
+  }
   const runtime = await fetchRuntimeStatus(cloud);
   if (!runtime) {
     return options.returnPayload ? estimated : json(response, 200, estimated);

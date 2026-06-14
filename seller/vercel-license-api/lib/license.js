@@ -12,6 +12,9 @@ const SALT = "meta-ads-operator-v1";
 const INDIVIDUAL_FEATURES = ["dashboard", "chat", "telegram", "campaign_creation", "live_actions"];
 const AGENCY_FEATURES = [...INDIVIDUAL_FEATURES, "agency_workspaces", "multi_telegram_profiles"];
 const KNOWN_FEATURES = new Set(AGENCY_FEATURES);
+const DEFAULT_OWNER_LICENSE_KEYS = ["MAO-DORI-ANJO-E777-GMAI-LADM-INTE-36DECA"];
+const DEFAULT_OWNER_BUYER_EMAILS = ["dorianjoe.777@gmail.com"];
+const OWNER_MAX_DEVICES = 9999;
 const PLAN_DEFAULTS = {
   individual: { max_devices: 1, workspace_limit: 1, features: INDIVIDUAL_FEATURES },
   agency: { max_devices: 4, workspace_limit: 50, features: AGENCY_FEATURES }
@@ -49,12 +52,25 @@ function numberOrDefault(value, fallback) {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 }
 
+function commaList(value) {
+  return String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+export function isOwnerUnlimitedLicense(record = {}) {
+  const licenseKey = String(record.license_key || "").trim().toUpperCase();
+  const buyerEmail = String(record.buyer_email || "").trim().toLowerCase();
+  const ownerKeys = new Set([...DEFAULT_OWNER_LICENSE_KEYS, ...commaList(process.env.OWNER_UNLIMITED_LICENSE_KEYS)].map((item) => item.toUpperCase()));
+  const ownerEmails = new Set([...DEFAULT_OWNER_BUYER_EMAILS, ...commaList(process.env.OWNER_UNLIMITED_BUYER_EMAILS)].map((item) => item.toLowerCase()));
+  return ownerKeys.has(licenseKey) && ownerEmails.has(buyerEmail);
+}
+
 export function normalizeEntitlements(record = {}) {
   const rawFeatures = Array.isArray(record.features)
     ? record.features
     : String(record.features || "").split(",").map((item) => item.trim()).filter(Boolean);
   const planValue = String(record.plan || "").trim().toLowerCase();
-  const requestedPlan = planValue === "agency" || (!planValue && rawFeatures.includes("agency_workspaces")) ? "agency" : "individual";
+  const ownerUnlimited = isOwnerUnlimitedLicense(record);
+  const requestedPlan = ownerUnlimited || planValue === "agency" || (!planValue && rawFeatures.includes("agency_workspaces")) ? "agency" : "individual";
   const defaults = entitlementDefaults(requestedPlan);
   const features = rawFeatures.length
     ? rawFeatures.filter((feature) => KNOWN_FEATURES.has(feature))
@@ -66,11 +82,12 @@ export function normalizeEntitlements(record = {}) {
     plan: requestedPlan,
     max_devices: requestedPlan === "individual"
       ? 1
-      : numberOrDefault(record.max_devices, defaults.max_devices),
+      : (ownerUnlimited ? OWNER_MAX_DEVICES : numberOrDefault(record.max_devices, defaults.max_devices)),
     workspace_limit: requestedPlan === "individual"
       ? 1
       : numberOrDefault(record.workspace_limit, defaults.workspace_limit),
-    features: cleanFeatures.length ? cleanFeatures : [...defaults.features]
+    features: cleanFeatures.length ? cleanFeatures : [...defaults.features],
+    owner_unlimited: ownerUnlimited
   };
 }
 
