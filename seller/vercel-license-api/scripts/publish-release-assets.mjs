@@ -47,8 +47,8 @@ const improvements = [
     impact: "Onboarding"
   },
   {
-    title: "Carrusel automatico por paso",
-    body: "Cuando un paso tiene varias pantallas, Admira las rota automaticamente para que el comprador no se pierda.",
+    title: "Capturas mas grandes y ampliables",
+    body: "Las capturas del tutorial de Meta ahora se ven grandes dentro del onboarding y se pueden ampliar con un clic.",
     impact: "Claridad"
   },
   {
