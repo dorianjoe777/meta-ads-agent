@@ -42,19 +42,19 @@ const ASSETS = [
 
 const improvements = [
   {
-    title: "Guia de Meta con capturas reales",
-    body: "El paso de conectar Facebook ahora empieza en Meta Business y muestra el camino completo con capturas definitivas.",
+    title: "Onboarding de Meta mas claro",
+    body: "Quitamos el titulo repetido y dejamos una guia mas limpia para crear la app privada en Meta.",
     impact: "Onboarding"
   },
   {
-    title: "Capturas mas grandes y ampliables",
-    body: "Las capturas del tutorial de Meta ahora se ven grandes dentro del onboarding y se pueden ampliar con un clic.",
-    impact: "Claridad"
+    title: "Pegar clave sin perderse",
+    body: "El boton final lleva directo al campo correcto, lo enfoca y lo resalta para que el comprador sepa donde continuar.",
+    impact: "Meta"
   },
   {
-    title: "Pegado de clave mas claro",
-    body: "El campo final para pegar la clave de Meta queda mas estable, legible y evita confusiones al guardar.",
-    impact: "Meta"
+    title: "Tutorial mas guiado",
+    body: "Las capturas grandes y ampliables se mantienen, con pasos mas faciles de seguir durante la conexion de Facebook.",
+    impact: "Claridad"
   }
 ];
 
