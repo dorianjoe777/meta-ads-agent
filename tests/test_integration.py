@@ -3404,6 +3404,7 @@ class IntegrationTestSuite:
         self.assert_true("tutorial-meta/meta-business-01-open-apps-menu.png" in html and "tutorial-meta/meta-business-32-token-saved.png" in html, "Meta onboarding slider includes the final buyer screenshot walkthrough assets")
         self.assert_true("onboarding-shell-wide" in html and "minmax(620px,1.54fr)" in html and "min(66vh,650px)" in html, "Meta walkthrough uses a wider desktop layout with substantially larger screenshots")
         self.assert_true("openMetaScreenshot" in html and "meta-shot-button" in html and "meta-lightbox-card" in html and "Clic para ampliar" in html, "Meta tutorial screenshots open in a large in-app lightbox")
+        self.assert_true("closeConfirm,skipOnboarding" in html and 'data-action-code="closeConfirm()"' in html, "Expanded Meta screenshots can be closed through the delegated safe action system")
         self.assert_true("Falta tu captura" not in html, "Meta onboarding no longer shows missing screenshot placeholders")
         self.assert_true("Empezar más rápido" not in html and "renovar la clave cada 60 días" not in html and "showMetaTokenBox('quick')" not in html, "Meta onboarding no longer presents Graph API Explorer as a buyer-facing path")
         self.assert_true("showMetaTokenBox('stable')" in html and "token_kind:metaTokenKind" in html, "Token box opens as the stable path while the backend still records token kind")
