@@ -42,19 +42,19 @@ const ASSETS = [
 
 const improvements = [
   {
-    title: "Onboarding de Meta mas claro",
-    body: "Quitamos el titulo repetido y dejamos una guia mas limpia para crear la app privada en Meta.",
+    title: "Codigo de ChatGPT mas confiable",
+    body: "El boton de copiar ahora toma exactamente el ultimo codigo grande visible en pantalla para evitar pegar codigos viejos.",
+    impact: "ChatGPT"
+  },
+  {
+    title: "Telegram mas facil de terminar",
+    body: "Al pegar la clave de BotFather, el campo se convierte en clave guardada y muestra el siguiente paso para enviar hola y detectar el chat.",
+    impact: "Telegram"
+  },
+  {
+    title: "Video de Telegram compatible",
+    body: "El tutorial de creacion del bot ahora se sirve como MP4 con respaldo MOV para que cargue mejor en navegador, Docker y VPS.",
     impact: "Onboarding"
-  },
-  {
-    title: "Pegar clave sin perderse",
-    body: "El boton final lleva directo al campo correcto, lo enfoca y lo resalta para que el comprador sepa donde continuar.",
-    impact: "Meta"
-  },
-  {
-    title: "Tutorial mas guiado",
-    body: "Las capturas grandes y ampliables se mantienen, con pasos mas faciles de seguir durante la conexion de Facebook.",
-    impact: "Claridad"
   }
 ];
 
