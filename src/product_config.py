@@ -97,6 +97,34 @@ def normalize_agent_brain_provider(value, legacy_chat_provider="hermes", base_ur
     return "openai_codex"
 
 
+def normalize_daily_time(value, default="08:00"):
+    raw = str(value or "").strip()
+    if not raw:
+        return default
+    if ":" in raw:
+        hour_raw, minute_raw = raw.split(":", 1)
+    else:
+        hour_raw, minute_raw = raw, "00"
+    try:
+        hour = int(hour_raw)
+        minute = int(minute_raw)
+    except (TypeError, ValueError):
+        return default
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return default
+    return f"{hour:02d}:{minute:02d}"
+
+
+def normalize_local_path(value, default):
+    raw = str(value or "").strip()
+    if not raw:
+        raw = str(default)
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = ROOT_DIR / path
+    return str(path)
+
+
 @dataclass
 class AgentConfig:
     mode: str
@@ -133,6 +161,7 @@ class AgentConfig:
     meta_access_token: str
     meta_graph_api_version: str
     notify_channel: str
+    daily_brief_time: str
     telegram_bot_token: str
     telegram_chat_id: str
     creative_refresh_enabled: bool
@@ -227,6 +256,7 @@ def load_config():
         meta_access_token_saved_at=os.environ.get("META_ACCESS_TOKEN_SAVED_AT", ""),
         meta_graph_api_version=os.environ.get("META_GRAPH_API_VERSION", "v24.0"),
         notify_channel=os.environ.get("META_NOTIFY_CHANNEL", "dashboard").strip().lower(),
+        daily_brief_time=normalize_daily_time(env_first("DAILY_BRIEF_TIME", "META_DAILY_BRIEF_TIME", default="08:00")),
         telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
         telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),
         creative_refresh_enabled=env_bool("CREATIVE_REFRESH_ENABLED", True),
@@ -250,7 +280,7 @@ def load_config():
         dashboard_password_hash=os.environ.get("DASHBOARD_PASSWORD_HASH", ""),
         license_public_key=os.environ.get("LICENSE_PUBLIC_KEY", ""),
         hermes_cli=os.environ.get("HERMES_CLI", "hermes"),
-        hermes_home=os.environ.get("HERMES_HOME", ""),
+        hermes_home=normalize_local_path(os.environ.get("HERMES_HOME", ""), ROOT_DIR / "dashboard" / "data" / "hermes-home"),
         hermes_model=os.environ.get("HERMES_MODEL", ""),
         hermes_timeout_seconds=env_int("HERMES_TIMEOUT_SECONDS", 300),
         hermes_status_timeout_seconds=env_int("HERMES_STATUS_TIMEOUT_SECONDS", 20),

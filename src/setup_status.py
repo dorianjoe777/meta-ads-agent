@@ -15,7 +15,7 @@ from license import license_status as current_license_status
 from meta_upload import UPLOAD_INDEX_FILE, recent_uploads
 from product_config import ENV_FILE, ROOT_DIR, load_config
 from security import is_public_bind, permission_detail
-from telegram_agent import telegram_settings
+from hermes_gateway import telegram_settings
 
 
 DATA_DIR = ROOT_DIR / "dashboard" / "data"
@@ -222,7 +222,8 @@ def agent_chat_section(config, agent_profile):
 
 def telegram_access_section(telegram):
     return [
-        item("telegram_enabled", "Telegram agent access", "ok" if telegram["enabled"] else "warn", "Enabled" if telegram["enabled"] else "Optional; not enabled", "Enable it in Configuracion when the buyer wants to talk from Telegram."),
+        item("telegram_enabled", "Telegram directo por Hermes", "ok" if telegram["enabled"] else "warn", "Enabled" if telegram["enabled"] else "Optional; not enabled", "Enable it in Configuracion when the buyer wants to talk from Telegram."),
+        item("telegram_mode", "Modo Telegram", "ok" if telegram.get("mode") == "hermes_gateway" else "warn", telegram.get("mode") or "hermes_gateway", "Usa hermes_gateway para que Telegram sea Hermes directo."),
         item("telegram_bot", "Telegram bot", "ok" if telegram["bot_configured"] else "warn", "configured" if telegram["bot_configured"] else "Not configured", "Create a private bot with @BotFather and save its token in Configuracion."),
         item("telegram_chat", "Allowed Telegram chat", "ok" if telegram["chat_id"] else "warn", "configured" if telegram["chat_id"] else "Not configured", "Send a message to the bot, then select your private chat in Configuracion."),
     ]

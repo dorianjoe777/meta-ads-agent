@@ -27,6 +27,9 @@ from product_config import AgentConfig
 from agent_chat import account_context, parse_skill_response
 import agent_chat
 import hermes_bridge
+import hermes_gateway
+import admira_mcp_server
+import admira_tool_bridge
 import decision_memory
 import graph_executor
 import meta_upload
@@ -393,6 +396,7 @@ class IntegrationTestSuite:
             meta_access_token="",
             meta_graph_api_version="v20.0",
             notify_channel="dashboard",
+            daily_brief_time="08:00",
             telegram_bot_token="",
             telegram_chat_id="",
             creative_refresh_enabled=True,
@@ -484,6 +488,7 @@ class IntegrationTestSuite:
             meta_access_token="",
             meta_graph_api_version="v20.0",
             notify_channel="dashboard",
+            daily_brief_time="08:00",
             telegram_bot_token="",
             telegram_chat_id="",
             creative_refresh_enabled=True,
@@ -919,6 +924,40 @@ class IntegrationTestSuite:
         self.assert_true(result["provider"] == "hermes", "Hermes bridge responds")
         self.assert_true(result.get("fallback") is True, "Missing Hermes runtime is a fallback state")
         self.assert_true("cerebro del agente" in result["reply"].lower() and "chatgpt" in result["reply"].lower(), "Fallback explains ChatGPT/Codex setup without exposing technical commands")
+
+    def test_hermes_model_usage_limit_keeps_connection_state_clear(self):
+        """Test ChatGPT/Codex usage limits are not reported as missing setup."""
+        print("\nTesting Hermes Model Usage Limit Messaging...")
+
+        class FakeConfig:
+            agent_chat_provider = "hermes"
+            agent_brain_provider = "openai_codex"
+            hermes_require_codex_auth = True
+            hermes_use_python_library = False
+            hermes_cli = "hermes"
+            hermes_model = ""
+            hermes_timeout_seconds = 1
+            hermes_max_iterations = 1
+            hermes_enabled_toolsets = ""
+            hermes_disabled_toolsets = "terminal"
+            hermes_home = ""
+
+        original_ready = hermes_bridge.hermes_brain_ready
+        original_cli = hermes_bridge.cli_chat
+        try:
+            hermes_bridge.hermes_brain_ready = lambda _config: (True, "Provider: OpenAI Codex; OpenAI Codex ✓ logged in")
+
+            def raise_limit(_config, _payload):
+                raise RuntimeError("429 usage limit reached. Try again in 4 hours.")
+
+            hermes_bridge.cli_chat = raise_limit
+            result = hermes_bridge.chat(FakeConfig(), {"message": "Hola", "language": "es", "channel": "telegram", "session_key": "telegram:123"})
+            self.assert_true(result.get("error_type") == "model_usage_limit", "Hermes classifies model usage limits separately")
+            self.assert_true("sí está conectado" in result["reply"] and "límite temporal" in result["reply"], "Buyer message explains connected-but-limited state")
+            self.assert_true("falta conectar" not in result["reply"].lower() and "4 hours" in result.get("retry_after_hint", ""), "Usage limit reply does not ask to reconnect")
+        finally:
+            hermes_bridge.hermes_brain_ready = original_ready
+            hermes_bridge.cli_chat = original_cli
 
     def test_dashboard_chatgpt_connect_action_opens_terminal(self):
         """Test the dashboard ChatGPT/Codex connection endpoint prefers an automatic terminal action."""
@@ -1370,6 +1409,395 @@ class IntegrationTestSuite:
             self.assert_true(any(command[:3] == ["hermes", "sessions", "rename"] for command in calls), "Fresh Hermes session is named for the next turn")
         finally:
             hermes_bridge.subprocess.run = original_run
+
+    def test_telegram_defaults_to_direct_hermes_gateway(self):
+        """Test buyer Telegram defaults to Hermes Gateway, not the legacy polling bot."""
+        print("\nTesting Direct Hermes Telegram Gateway Default...")
+
+        dashboard = load_dashboard_module()
+        original_env = {key: os.environ.get(key) for key in ["TELEGRAM_AGENT_MODE", "TELEGRAM_AGENT_ENABLED"]}
+        original_load = dashboard.load_config
+        original_start_gateway = dashboard.start_hermes_gateway
+        original_globals = (dashboard.TELEGRAM_THREAD, dashboard.TELEGRAM_STOP, dashboard.TELEGRAM_FINGERPRINT)
+
+        class FakeConfig:
+            telegram_bot_token = "123456:fake-token"
+            telegram_chat_id = "12345"
+            hermes_home = str(ROOT_DIR / "output" / "test-hermes-home")
+            hermes_cli = "hermes"
+            hermes_model = ""
+
+        try:
+            os.environ.pop("TELEGRAM_AGENT_MODE", None)
+            os.environ["TELEGRAM_AGENT_ENABLED"] = "true"
+            dashboard.load_config = lambda: FakeConfig()
+            dashboard.start_hermes_gateway = lambda config: {"started": True, "mode": "hermes_gateway", "direct_hermes": True}
+            status = hermes_gateway.telegram_settings(FakeConfig())
+            result = dashboard.ensure_telegram_listener()
+
+            self.assert_true(status["mode"] == "hermes_gateway", "Telegram defaults to Hermes Gateway mode")
+            self.assert_true(result["started"] and result["mode"] == "hermes_gateway", "Dashboard starts Hermes Gateway for Telegram by default")
+            self.assert_true(dashboard.TELEGRAM_THREAD is None and dashboard.TELEGRAM_FINGERPRINT is None, "Default Telegram path does not start the legacy polling thread")
+        finally:
+            for key, value in original_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            dashboard.load_config = original_load
+            dashboard.start_hermes_gateway = original_start_gateway
+            dashboard.TELEGRAM_THREAD, dashboard.TELEGRAM_STOP, dashboard.TELEGRAM_FINGERPRINT = original_globals
+            shutil.rmtree(ROOT_DIR / "output" / "test-hermes-home", ignore_errors=True)
+
+    def test_hermes_gateway_uses_isolated_home_and_daily_cron_prompt(self):
+        """Test Hermes Gateway writes isolated product config and daily brief prompt."""
+        print("\nTesting Hermes Gateway Isolation And Daily Brief...")
+
+        test_dir = ROOT_DIR / "output" / "test-hermes-gateway"
+        workspace = test_dir / "workspace"
+        home = test_dir / "hermes-home"
+        original_prepare = hermes_gateway.prepare_hermes_workspace
+        original_env = {key: os.environ.get(key) for key in ["TELEGRAM_AGENT_MODE", "TELEGRAM_AGENT_ENABLED", "TELEGRAM_LANGUAGE"]}
+
+        class FakeConfig:
+            telegram_bot_token = "123456:fake-token"
+            telegram_chat_id = "12345"
+            hermes_home = str(home)
+            hermes_cli = "hermes"
+            hermes_model = "auto"
+            daily_brief_time = "08:00"
+
+        try:
+            shutil.rmtree(test_dir, ignore_errors=True)
+            workspace.mkdir(parents=True, exist_ok=True)
+            os.environ.pop("TELEGRAM_AGENT_MODE", None)
+            os.environ["TELEGRAM_AGENT_ENABLED"] = "true"
+            os.environ["TELEGRAM_LANGUAGE"] = "es"
+            hermes_gateway.prepare_hermes_workspace = lambda payload: {"path": str(workspace)}
+
+            files = hermes_gateway.write_gateway_files(FakeConfig())
+            config_yaml = Path(files["config"]).read_text(encoding="utf-8")
+            env_text = Path(files["env"]).read_text(encoding="utf-8")
+            prompt = hermes_gateway.daily_brief_prompt()
+
+            self.assert_true(str(home) == files["hermes_home"] and ".hermes" not in files["hermes_home"], "Hermes Gateway uses an isolated product HERMES_HOME")
+            self.assert_true("TELEGRAM_BOT_TOKEN=123456:fake-token" in env_text and "TELEGRAM_ALLOWED_USERS=12345" in env_text, "Hermes Gateway stores Telegram credentials only in the isolated Hermes env")
+            self.assert_true("platform_toolsets:" in config_yaml and "telegram:" in config_yaml and "hermes-telegram" in config_yaml, "Hermes Gateway config enables native Telegram toolsets")
+            self.assert_true("mcp_servers:" in config_yaml and "admira:" in config_yaml and "admira_mcp_server.py" in config_yaml, "Hermes Gateway registers the Admira MCP product-tool bridge")
+            self.assert_true("    - admira" in config_yaml, "Hermes Gateway explicitly enables Admira MCP tools for Telegram")
+            self.assert_true("disabled_toolsets:" in config_yaml and "code_execution" in config_yaml and str(workspace) in config_yaml, "Hermes Gateway config keeps Telegram in the curated workspace")
+            self.assert_true("¿Tienes alguna pregunta?" in prompt and "No uses datos demo" in prompt, "Daily brief prompt ends with the buyer question and blocks demo data")
+        finally:
+            hermes_gateway.prepare_hermes_workspace = original_prepare
+            for key, value in original_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            shutil.rmtree(test_dir, ignore_errors=True)
+
+    def test_hermes_product_skills_are_copied_to_workspace(self):
+        """Test Hermes receives focused product skills plus MCP tool instructions."""
+        print("\nTesting Hermes Product Skills Workspace...")
+
+        test_dir = ROOT_DIR / "output" / "test-hermes-product-skills"
+        original_workspace = hermes_bridge.HERMES_WORKSPACE_DIR
+        try:
+            shutil.rmtree(test_dir, ignore_errors=True)
+            hermes_bridge.HERMES_WORKSPACE_DIR = test_dir / "workspace"
+            workspace = hermes_bridge.prepare_hermes_workspace({"channel": "telegram", "language": "es", "account_context": {}})
+            workspace_path = Path(workspace["path"])
+            creative_skill = workspace_path / "skills" / "creative-codex-image" / "SKILL.md"
+            approvals_skill = workspace_path / "skills" / "telegram-approvals" / "SKILL.md"
+            agents_text = (workspace_path / "AGENTS.md").read_text(encoding="utf-8")
+
+            self.assert_true(creative_skill.exists() and approvals_skill.exists(), "Focused product skill files are copied into the Hermes workspace")
+            self.assert_true("mcp_admira_codex_image_generate" in creative_skill.read_text(encoding="utf-8"), "Creative skill points Hermes to the Codex/Image MCP tool")
+            self.assert_true("mcp_admira_approve_action" in approvals_skill.read_text(encoding="utf-8"), "Approval skill points Hermes to exact approval MCP tools")
+            self.assert_true("Native Product Tools" in agents_text and "mcp_admira_stage_campaign" in agents_text, "Combined Hermes rules document the MCP product bridge")
+            self.assert_true((workspace_path / "skills" / "README.md").exists(), "Hermes workspace includes a product skill index")
+        finally:
+            hermes_bridge.HERMES_WORKSPACE_DIR = original_workspace
+            shutil.rmtree(test_dir, ignore_errors=True)
+
+    def test_admira_tool_bridge_maps_mcp_tools_to_dashboard_actions(self):
+        """Test MCP-facing tools call the existing protected dashboard action layer."""
+        print("\nTesting Admira MCP Tool Bridge...")
+
+        calls = []
+
+        class FakeDashboard:
+            PENDING_FILE = "pending.json"
+
+            def dashboard_payload(self):
+                return {
+                    "metrics": {
+                        "source": "meta_graph",
+                        "summary": {"overall_roas": 3.2, "overall_cpa": 12},
+                        "campaigns": [{"id": "camp_live", "name": "Campaña real", "roas": 3.2, "cpa": 12}],
+                    },
+                    "recommendations": [],
+                    "fatigue": [],
+                    "pending": [{"id": "approval_1", "status": "pending"}],
+                    "audience_strategy": {},
+                    "business_profile": {},
+                    "brand_guides": {},
+                    "agent_onboarding_phase": {},
+                }
+
+            def read_json(self, path, default):
+                return [{"id": "approval_1", "status": "pending"}, {"id": "old", "status": "approved"}]
+
+            def execute_agent_tool(self, tool_request, payload):
+                calls.append((tool_request, payload))
+                return {"type": tool_request["tool"], "executed": False, "staged": True, "reply": "Preparado."}
+
+        original_loader = admira_tool_bridge.load_dashboard
+        try:
+            admira_tool_bridge.load_dashboard = lambda: FakeDashboard()
+            context = admira_tool_bridge.call_tool("mcp_admira_get_real_meta_context", {})
+            image = admira_tool_bridge.call_tool("codex_image_generate", {"request": "haz una imagen"})
+            approval = admira_tool_bridge.call_tool("mcp_admira_approve_action", {"approval_id": "approval_1"})
+            pending = admira_tool_bridge.call_tool("list_pending_approvals", {})
+            unknown = admira_tool_bridge.call_tool("delete_everything", {})
+
+            self.assert_true(context["ok"] and context["metrics_source"]["is_real_meta_data"], "Tool bridge returns safe real Meta context")
+            self.assert_true(image["product_tool"] == "codex_image_generate" and calls[-2][0]["tool"] == "codex_image_generate", "Tool bridge maps Codex/Image MCP calls to dashboard action handlers")
+            self.assert_true(approval["product_tool"] == "approval_decision" and calls[-1][0]["arguments"]["decision"] == "approve", "Tool bridge converts approval MCP calls to exact approval decisions")
+            self.assert_true(len(pending["pending"]) == 1 and pending["pending"][0]["id"] == "approval_1", "Tool bridge lists only pending approvals")
+            self.assert_true(unknown["blocked"] and unknown["reason"] == "unsupported_tool", "Tool bridge rejects unknown tools")
+        finally:
+            admira_tool_bridge.load_dashboard = original_loader
+
+    def test_admira_mcp_server_lists_and_calls_product_tools(self):
+        """Test minimal MCP server exposes the Admira product tools in Hermes-compatible shape."""
+        print("\nTesting Admira MCP Server...")
+
+        captured = []
+        original_write = admira_mcp_server.write_message
+        original_call = admira_mcp_server.call_tool
+        try:
+            admira_mcp_server.write_message = lambda payload: captured.append(payload)
+            admira_mcp_server.call_tool = lambda name, arguments: {"ok": True, "tool": name, "arguments": arguments}
+
+            admira_mcp_server.handle_request({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+            admira_mcp_server.handle_request({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
+            admira_mcp_server.handle_request({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "codex_image_generate", "arguments": {"request": "imagen"}}})
+
+            tool_names = [tool["name"] for tool in captured[1]["result"]["tools"]]
+            call_text = captured[2]["result"]["content"][0]["text"]
+            self.assert_true(captured[0]["result"]["serverInfo"]["name"] == "admira", "MCP server initializes as Admira")
+            self.assert_true("codex_image_generate" in tool_names and "stage_campaign" in tool_names and "approve_action" in tool_names, "MCP server lists product tools for Hermes")
+            self.assert_true('"tool": "admira_codex_image_generate"' in call_text and '"request": "imagen"' in call_text, "MCP server calls the product bridge with Admira-prefixed tool names")
+        finally:
+            admira_mcp_server.write_message = original_write
+            admira_mcp_server.call_tool = original_call
+
+    def test_hermes_gateway_redacts_token_and_handles_start_failure(self):
+        """Test gateway startup never leaks Telegram token and failures stay recoverable."""
+        print("\nTesting Hermes Gateway Token Redaction And Failure Handling...")
+
+        test_dir = ROOT_DIR / "output" / "test-hermes-gateway-failure"
+        workspace = test_dir / "workspace"
+        home = test_dir / "hermes-home"
+        token = "123456:secret-token\nMALICIOUS=1"
+        original_prepare = hermes_gateway.prepare_hermes_workspace
+        original_which = hermes_gateway.shutil.which
+        original_popen = hermes_gateway.subprocess.Popen
+        original_env = {key: os.environ.get(key) for key in ["TELEGRAM_AGENT_MODE", "TELEGRAM_AGENT_ENABLED", "TELEGRAM_LANGUAGE"]}
+
+        class FakeConfig:
+            telegram_bot_token = token
+            telegram_chat_id = "12345"
+            hermes_home = str(home)
+            hermes_cli = "hermes"
+            hermes_model = "auto"
+            daily_brief_time = "08:00"
+            agent_chat_provider = "hermes"
+            agent_brain_provider = "openai_codex"
+            agent_chat_base_url = "https://api.openai.com/v1"
+            agent_chat_api_key = ""
+            agent_chat_model = "auto"
+
+        class FakeProcess:
+            pid = 4321
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                return None
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                return None
+
+        try:
+            hermes_gateway.stop_gateway()
+            shutil.rmtree(test_dir, ignore_errors=True)
+            workspace.mkdir(parents=True, exist_ok=True)
+            os.environ.pop("TELEGRAM_AGENT_MODE", None)
+            os.environ["TELEGRAM_AGENT_ENABLED"] = "true"
+            os.environ["TELEGRAM_LANGUAGE"] = "es"
+            hermes_gateway.prepare_hermes_workspace = lambda payload: {"path": str(workspace)}
+            hermes_gateway.shutil.which = lambda command: "/usr/local/bin/hermes" if command == "hermes" else command
+            hermes_gateway.subprocess.Popen = lambda *args, **kwargs: FakeProcess()
+
+            started = hermes_gateway.start_gateway(FakeConfig())
+            status = hermes_gateway.gateway_status(FakeConfig())
+            env_text = Path(started["env"]).read_text(encoding="utf-8")
+            serialized_status = json.dumps(status, ensure_ascii=False)
+
+            self.assert_true(started["started"] is True, "Hermes Gateway can start through the configured isolated runtime")
+            self.assert_true("MALICIOUS=1" not in env_text and "\nMALICIOUS" not in env_text, "Telegram token is sanitized before writing the isolated Hermes env")
+            self.assert_true("secret-token" not in serialized_status and "123456:" not in serialized_status, "Gateway status never exposes the Telegram bot token")
+
+            hermes_gateway.stop_gateway()
+            hermes_gateway.subprocess.Popen = lambda *args, **kwargs: (_ for _ in ()).throw(OSError("boom"))
+            failed = hermes_gateway.start_gateway(FakeConfig())
+            self.assert_true(failed["started"] is False and "No pude iniciar Hermes Gateway" in failed["detail"], "Hermes Gateway startup failures return a recoverable status")
+            self.assert_true("secret-token" not in json.dumps(failed, ensure_ascii=False), "Startup failure payload does not expose the Telegram bot token")
+        finally:
+            hermes_gateway.stop_gateway()
+            hermes_gateway.prepare_hermes_workspace = original_prepare
+            hermes_gateway.shutil.which = original_which
+            hermes_gateway.subprocess.Popen = original_popen
+            for key, value in original_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            shutil.rmtree(test_dir, ignore_errors=True)
+
+    def test_hermes_gateway_incomplete_config_stops_existing_process(self):
+        """Test incomplete Telegram configuration stops any previous Hermes Gateway process."""
+        print("\nTesting Hermes Gateway Stop On Incomplete Config...")
+
+        original_env = {key: os.environ.get(key) for key in ["TELEGRAM_AGENT_MODE", "TELEGRAM_AGENT_ENABLED"]}
+        terminated = {"called": False}
+
+        class FakeConfig:
+            telegram_bot_token = ""
+            telegram_chat_id = ""
+            hermes_home = str(ROOT_DIR / "output" / "test-hermes-stop")
+            hermes_cli = "hermes"
+            hermes_model = ""
+
+        class FakeProcess:
+            pid = 9876
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                terminated["called"] = True
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                return None
+
+        old_process = hermes_gateway._GATEWAY_PROCESS
+        old_fingerprint = hermes_gateway._GATEWAY_FINGERPRINT
+        try:
+            os.environ.pop("TELEGRAM_AGENT_MODE", None)
+            os.environ["TELEGRAM_AGENT_ENABLED"] = "true"
+            hermes_gateway._GATEWAY_PROCESS = FakeProcess()
+            hermes_gateway._GATEWAY_FINGERPRINT = "old"
+
+            result = hermes_gateway.start_gateway(FakeConfig())
+
+            self.assert_true(result["started"] is False and "Telegram no está completo" in result["detail"], "Incomplete Telegram setup returns a clear not-ready state")
+            self.assert_true(terminated["called"], "Incomplete Telegram setup stops an existing Hermes Gateway process")
+            self.assert_true(hermes_gateway._GATEWAY_PROCESS is None and hermes_gateway._GATEWAY_FINGERPRINT is None, "Gateway globals are cleared after stopping an incomplete setup")
+        finally:
+            hermes_gateway._GATEWAY_PROCESS = old_process
+            hermes_gateway._GATEWAY_FINGERPRINT = old_fingerprint
+            for key, value in original_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_hermes_daily_brief_cron_edge_cases(self):
+        """Test daily brief cron handles duplicate, invalid time, and Hermes failures."""
+        print("\nTesting Hermes Daily Brief Cron Edge Cases...")
+
+        test_dir = ROOT_DIR / "output" / "test-hermes-cron"
+        workspace = test_dir / "workspace"
+        home = test_dir / "hermes-home"
+        original_prepare = hermes_gateway.prepare_hermes_workspace
+        original_which = hermes_gateway.shutil.which
+        original_run = hermes_gateway.subprocess.run
+        original_env = {key: os.environ.get(key) for key in ["TELEGRAM_AGENT_MODE", "TELEGRAM_AGENT_ENABLED", "TELEGRAM_LANGUAGE"]}
+
+        class FakeConfig:
+            telegram_bot_token = "123456:fake-token"
+            telegram_chat_id = "12345"
+            hermes_home = str(home)
+            hermes_cli = "hermes"
+            hermes_model = "auto"
+            daily_brief_time = "bad-time"
+            agent_chat_provider = "hermes"
+            agent_brain_provider = "openai_codex"
+            agent_chat_base_url = "https://api.openai.com/v1"
+            agent_chat_api_key = ""
+            agent_chat_model = "auto"
+
+        class Completed:
+            def __init__(self, returncode=0, stdout="", stderr=""):
+                self.returncode = returncode
+                self.stdout = stdout
+                self.stderr = stderr
+
+        try:
+            shutil.rmtree(test_dir, ignore_errors=True)
+            workspace.mkdir(parents=True, exist_ok=True)
+            os.environ.pop("TELEGRAM_AGENT_MODE", None)
+            os.environ["TELEGRAM_AGENT_ENABLED"] = "true"
+            os.environ["TELEGRAM_LANGUAGE"] = "es"
+            hermes_gateway.prepare_hermes_workspace = lambda payload: {"path": str(workspace)}
+            hermes_gateway.shutil.which = lambda command: "/usr/local/bin/hermes" if command == "hermes" else command
+
+            duplicate_calls = []
+            def fake_duplicate_run(command, **kwargs):
+                duplicate_calls.append(command)
+                return Completed(stdout="Admira IA - lectura diaria")
+
+            hermes_gateway.subprocess.run = fake_duplicate_run
+            duplicate = hermes_gateway.ensure_daily_brief_cron(FakeConfig())
+            self.assert_true(duplicate["configured"] and duplicate["exists"], "Existing Hermes daily brief cron is not duplicated")
+            self.assert_true(not any(command[:3] == ["/usr/local/bin/hermes", "cron", "create"] for command in duplicate_calls), "Duplicate daily brief check does not create another cron")
+
+            create_calls = []
+            def fake_create_run(command, **kwargs):
+                create_calls.append(command)
+                if command[:3] == ["/usr/local/bin/hermes", "cron", "list"]:
+                    return Completed(stdout="")
+                return Completed(stdout="created")
+
+            hermes_gateway.subprocess.run = fake_create_run
+            created = hermes_gateway.ensure_daily_brief_cron(FakeConfig())
+            create_command = [command for command in create_calls if command[:3] == ["/usr/local/bin/hermes", "cron", "create"]][0]
+            self.assert_true(created["configured"] and created["schedule"] == "0 8 * * *", "Invalid daily brief time falls back to 08:00")
+            self.assert_true("telegram:12345" in create_command and "¿Tienes alguna pregunta?" in create_command[-1], "Hermes cron delivers the daily brief to Telegram with the required closing question")
+
+            hermes_gateway.subprocess.run = lambda *args, **kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired(args[0], 20))
+            failed = hermes_gateway.ensure_daily_brief_cron(FakeConfig())
+            self.assert_true(failed["configured"] is False and "No pude revisar" in failed["detail"], "Hermes cron list timeout becomes a recoverable status")
+        finally:
+            hermes_gateway.prepare_hermes_workspace = original_prepare
+            hermes_gateway.shutil.which = original_which
+            hermes_gateway.subprocess.run = original_run
+            for key, value in original_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            shutil.rmtree(test_dir, ignore_errors=True)
 
     def test_hermes_business_memory_workspace_is_curated_and_redacted(self):
         """Test Hermes receives approved business files inside its workspace without leaking secrets."""
@@ -3062,6 +3490,8 @@ class IntegrationTestSuite:
             callback = telegram_agent.handle_update(FakeConfig(), {"callback_query": {"id": "cb_1", "data": "approve:approval_test", "message": {"chat": {"id": "12345"}}}})
             telegram_agent.agent_chat = lambda config, payload: {"reply": "", "tool_request": None}
             empty_reply = telegram_agent.handle_text(FakeConfig(), "12345", "hola", send=False)
+            telegram_agent.agent_chat = lambda config, payload: {"fallback": True, "error_type": "model_usage_limit", "reply": "Tu ChatGPT/Codex sí está conectado, pero el modelo alcanzó su límite temporal de uso. Intenta de nuevo más tarde."}
+            limited_reply = telegram_agent.handle_text(FakeConfig(), "12345", "hola otra vez", send=False)
             noisy_reply = "⚠ tirith security scanner enabled but not available\n  ┊ review diff\na/data/business_profile.json → b/data/business_profile.json\n@@ -1 +1 @@\n- old\n+ new\nGracias, sigo con una pregunta."
             telegram_agent.append_turn("12345", "respuesta corta", noisy_reply)
             stored_history = json.loads(history_path.read_text(encoding="utf-8"))
@@ -3080,6 +3510,7 @@ class IntegrationTestSuite:
             self.assert_true("preparada para aprobación" in reply, "Telegram can stage manager actions through backend tools")
             self.assert_true(any(item == ("typing", "typing") for item in sent), "Telegram shows typing while Hermes prepares a reply")
             self.assert_true("No pude responder" not in empty_reply and "dashboard" in empty_reply.lower(), "Telegram empty agent replies become buyer-actionable recovery text")
+            self.assert_true("límite temporal" in limited_reply and "falta conectar" not in limited_reply.lower(), "Telegram preserves model-limit guidance instead of showing setup fallback")
             self.assert_true("tirith" not in json.dumps(stored_history).lower() and "business_profile" not in json.dumps(stored_history), "Telegram history stores cleaned agent replies")
             self.assert_true("Aprobacion ejecutada" in approved_text, "Telegram text can approve the single exact pending decision")
             self.assert_true(received_payloads[0]["business_profile"]["main_offer"] == "Curso Test", "Telegram gives Hermes the selected client's business profile")
@@ -3340,7 +3771,7 @@ class IntegrationTestSuite:
         self.assert_true("/api/reject" in html and "msg-approval-card" in html, "Chat approval decisions include a reject path and compact action cards")
         self.assert_true("onboarding-flow" in html, "Dedicated onboarding flow exists")
         self.assert_true("onboarding-security-note" in html and "nada de lo que coloques aquí lo podemos ver nosotros" in html and "más privada que entregar tus credenciales a un SaaS" in html, "Onboarding shows a persistent local/private install reassurance")
-        self.assert_true("websiteScanGuide" in html and "/api/business-profile/links" in html and "saveBusinessLinks" in html and "Primer mapa del negocio" in html and "asset-status-grid" in html and "Qué vendes, en pocas palabras" not in html, "Onboarding collects website/social links, shows what is missing, and hands the deep interview to the agent")
+        self.assert_true("websiteScanGuide" in html and "/api/business-profile/links" in html and "saveBusinessLinks" in html and "Primer mapa del negocio" in html and "asset-status-grid" in html and "Qué vendes, en pocas palabras" not in html, "Business links remain available for the agent-led interview without becoming a long first-run setup form")
         self.assert_true("Onboarding questions.md" in dashboard_source and "write_onboarding_questions_memory" in dashboard_source and "pregunta lo minimo necesario" in dashboard_source, "Business discovery is stored as agent memory for Telegram/chat instead of a long setup form")
         self.assert_true("businessContextGuide" in html and "businessContextQuestions" in html and "saveBusinessContextQuestion" in html, "Buyer context editor remains available outside the required onboarding path")
         self.assert_true("requires_repair" in html and "Reconectemos tus datos reales" in html, "Legacy completed setup reopens guidance when real Meta data is missing")
@@ -3355,6 +3786,7 @@ class IntegrationTestSuite:
         self.assert_true("connectChatGpt(event)" in html and "saveChatGptModel(event)" in html and "/api/agent-model/connect" in html and "Ya lo hice, conectar a ChatGPT ahora" in html, "ChatGPT/Codex connection saves model choice before connecting and uses a buyer-friendly CTA")
         self.assert_true("Copiar comando" not in html and ".agent-model-option .route-icon" in html and ".agent-route-panel.active" in html, "ChatGPT/Codex setup hides command-copy UI and keeps route choices readable")
         self.assert_true("Copiar paso" not in html and "Copy step" not in html, "ChatGPT/Codex connection no longer presents copy-only wording")
+        self.assert_true("Abrir configuración de ChatGPT" in html and "chatgpt-settings-link" in html and "chatgpt-settings-actions" in html, "ChatGPT/Codex setup gives buyers a direct button to the ChatGPT security settings")
         self.assert_true("Modelo para ChatGPT/Codex" in html and "<select name=\"hermes_model\">" in html and "agentModelFormPayload()" in html, "ChatGPT/Codex setup exposes and submits a clear model selector")
         self.assert_true("agent_chat_base_url" in html and "agent_chat_api_key" in html and "custom_api" in html, "OpenAI-compatible brain settings are exposed without showing saved keys")
         self.assert_true("DigitalOcean mostraré aquí el enlace" in html and "Ver diagnóstico para soporte" in html, "Hermes/ChatGPT setup has a browser-based VPS path with diagnostics folded")
@@ -3362,7 +3794,7 @@ class IntegrationTestSuite:
         self.assert_true("/api/agent-model/connect-status" in html and "/api/agent-model/connect-input" in html and "sendChatGptTerminalInput" in html, "VPS Hermes bridge can poll and send guided terminal responses")
         self.assert_true("chatgpt-settings-help" in html and "device_auth_settings" in html, "ChatGPT/Codex setup shows a clear recovery card when device-code auth is disabled")
         self.assert_true("Ver diagnóstico técnico" in html and "prepareChatGptAuthWindow" in html and "maybeOpenChatGptAuthUrl" in html, "ChatGPT/Codex browserless UI folds support detail and opens the OAuth login in the buyer browser")
-        self.assert_true("chatgpt-device-code" in html and "Copiar código" in html and "login_code" in html and "copyVisibleChatGptCode(event)" in html and "font-size:clamp(30px" in html and "word-break:break-all" in html and "scrollIntoView({behavior:'smooth',block:'center'})" in html, "OpenAI terminal login code is shown as a large copyable buyer-facing card that copies the visible code and cannot clip longer codes")
+        self.assert_true("chatgpt-device-code" in html and "Copiar código" in html and "login_code" in html and "copyVisibleChatGptCode(event)" in html and "replace(/\\s+/g,'')" in html and "font-size:clamp(30px" in html and "word-break:break-all" in html and "scrollIntoView({behavior:'smooth',block:'center'})" in html, "OpenAI terminal login code is shown as a large copyable buyer-facing card that copies the visible code and cannot clip longer codes")
         self.assert_true("advanceOnboardingAfterChatGptConnected" in html and "onboardingFlowStep=Math.min(steps.length-1,idx+1)" in html, "ChatGPT/Codex connection advances onboarding automatically after success")
         self.assert_true("Haz clic aquí si te apareció un error" in html and "toggleChatGptDeviceAuthHelp" in html and "Activar autorización con códigos de dispositivo para Codex" in html, "OpenAI code card includes a manual buyer help button for browser-side Codex device-code errors")
         self.assert_true("Cierra la pestaña de login de ChatGPT/Codex" in html and "Ya lo activé, abrir login de nuevo" in html and "reopenChatGptAuthUrl" in html and "chatgpt-retry-login" in html, "Device-code help tells buyers to close the failed login tab and reopen it from a large CTA")
@@ -3373,13 +3805,18 @@ class IntegrationTestSuite:
         self.assert_true("hermes_status_timeout_seconds" in hermes_bridge_source and "hermes_response_timeout_seconds" in hermes_bridge_source, "Hermes status checks and real response timeouts stay separate")
         self.assert_true("{id:'chatgpt',status:chatgptOk?'ok':'warn'}" in html and "chatGptConnectMarkup(true)" in html, "Initial onboarding includes ChatGPT/Codex before the Telegram manager channel")
         self.assert_true("{id:'telegram',status:telegramOk?'ok':'warn'}" in html and "telegramOnboardingGuide()" in html, "Initial onboarding ends with Telegram as the manager channel")
-        self.assert_true("Habla con tu manager por Telegram" in html and "Descargar Telegram" in html and "Abrir BotFather" in html and "Copiar /newbot" in html and "Detectar mi chat" in html, "Telegram onboarding explains download, BotFather, command copy, chat detection, and phone-first manager access")
-        self.assert_true("usuario parecido, pero terminado en <b>bot</b>" in html and "Esto se configura una sola vez" in html and "No puedo crear el bot por ti" in html, "Telegram onboarding explains the BotFather username rule, one-time setup, and automation limits")
+        self.assert_true("{id:'website',status:websiteOk?'ok':'warn'}" not in html, "Initial onboarding no longer adds a separate website/social links step before Telegram")
+        self.assert_true("Habla con tu manager por Telegram" in html and "Descargar Telegram" in html and "Abrir BotFather" in html and "Copiar /newbot" in html and "Ya envié hola, detectar mi chat" in html, "Telegram onboarding explains download, BotFather, command copy, chat detection, and phone-first manager access")
+        self.assert_true("crear-bot-telegram.mov" in html and "telegram-setup-video" in html and "telegram-video-card" in html, "Telegram onboarding includes the large buyer video guide")
+        self.assert_true("data-input-code=\"autoSaveTelegramToken(event)\"" in html and "telegram-token-zone" in html and "Clave guardada" in html, "Telegram bot token is saved automatically after paste with a clear glowing token area")
+        self.assert_true("Elige un usuario que termine en <b>bot</b>" in html and "Esto se configura una sola vez" in html and "No puedo crear el bot por ti" in html, "Telegram onboarding explains the BotFather username rule, one-time setup, and automation limits")
+        self.assert_true("Enviar prueba" not in html and "Send test" not in html, "Telegram buyer UI avoids the confusing manual test button")
         self.assert_true("finishOnboardingAndStartTour('telegram')" in html and "maybeFinishTelegramOnboarding" in html, "Choosing the Telegram chat can complete onboarding and open the dashboard tour")
         self.assert_true("dashboardIntroTourPending" in html and "startDashboardIntroTourIfPending" in html, "Completed onboarding queues the first dashboard tour")
         self.assert_true("Elige el estilo que más te guste" in html and "#theme-toggle" in html and ".tour-spot" in html, "The post-onboarding tour starts with theme selection coach marks")
         self.assert_true("{id:'meta',status:tokenOk?'ok':(socialOk?'warn':'blocked')}" in html and "{id:'account',status:accountOk?'ok':'blocked'}" in html and "{id:'destination',status:destinationStatus}" in html, "Initial onboarding starts with the buyer Facebook/Meta connection")
-        self.assert_true("{id:'meta',status:tokenOk?'ok':(socialOk?'warn':'blocked')},\n\t  {id:'account',status:accountOk?'ok':'blocked'},\n\t  {id:'destination',status:destinationStatus},\n\t  {id:'chatgpt',status:chatgptOk?'ok':'warn'},\n\t  {id:'website',status:websiteOk?'ok':'warn'},\n\t  {id:'telegram',status:telegramOk?'ok':'warn'}" in html, "Initial onboarding goes Facebook, account, destination, ChatGPT, links, and finishes with Telegram")
+        self.assert_true("{id:'meta',status:tokenOk?'ok':(socialOk?'warn':'blocked')},\n\t  {id:'account',status:accountOk?'ok':'blocked'},\n\t  {id:'destination',status:destinationStatus},\n\t  {id:'chatgpt',status:chatgptOk?'ok':'warn'},\n\t  {id:'telegram',status:telegramOk?'ok':'warn'}" in html, "Initial onboarding goes Facebook, account, destination, ChatGPT, and finishes with Telegram")
+        self.assert_true("found-choice-card" in html and "account-choice-grid" in html and "destination-choice-grid" in html and "Usar esta cuenta y seguir" in html and "Usar esta página" in html, "Meta account and Page discovery results are shown as prominent glowing choices")
         self.assert_true("Elige qué modelo usará el agente" in html and "apiBrainOk" in html, "Onboarding positions model setup as part of installation and accepts API brain readiness")
         self.assert_true("license-panel" in html, "License activation panel exists")
         self.assert_true("/api/license/activate" in html, "License activation endpoint is wired in UI")
@@ -3388,9 +3825,11 @@ class IntegrationTestSuite:
         self.assert_true("Revisar configuración inicial" in html, "Completed setup can reopen the initial guide")
         self.assert_true("dashboard password" in html.lower() or "contraseña del dashboard" in html.lower(), "Buyer password wording exists")
         self.assert_true("Escribe la contraseña de este dashboard para continuar." in html and "Si borraste cookies" not in html, "Unlock copy stays simple for buyers")
-        self.assert_true("unlock_create_title" in html and "Crea tu contraseña" in html, "First-run unlock modal can ask buyers to create a password")
-        self.assert_true("unlockMode==='create'" in html and "/api/dashboard-password" in html, "First-run password creation is wired through the dashboard password endpoint")
-        self.assert_true("!state.config.dashboard_password_set)showUnlock(t('unlock_create_needed'),'create')" in html, "Clean installs proactively ask buyers to create a dashboard password")
+        self.assert_true("unlock_create_title" in html and "Crea tu contraseña" in html, "Fallback unlock copy can still ask buyers to create a password if a protected route needs it")
+        self.assert_true("unlockMode==='create'" in html and "/api/dashboard-password" in html, "Password creation remains wired through the dashboard password endpoint")
+        self.assert_true("if(!passwordOk)steps.push({id:'password',status:'blocked'})" in html, "Clean installs start password creation as the first onboarding step")
+        self.assert_true("!state.config.dashboard_password_set)hideUnlock()" in html and "showUnlock(t('unlock_create_needed'),'create')" not in html, "Clean installs do not show a competing create-password popup")
+        self.assert_true("needsFirstPassword" in html and "!needsFirstPassword" in html, "Missing password keeps the styled onboarding visible even if prior setup state was completed")
         self.assert_true("localStorage.setItem('dashboardPassword'" not in html and "localStorage.setItem(\"dashboardPassword\"" not in html, "Dashboard never stores the real buyer password in browser storage")
         self.assert_true("dashboardSession" in html and "remember_device" in html and "/api/unlock" in html, "Remember this device stores an opaque dashboard session instead of the password")
         self.assert_true("Contraseña guardada. Sigamos con el siguiente paso." in html and "advanceOnboardingAfterLoad()" in html, "Password creation advances to the next missing onboarding step")
@@ -3424,7 +3863,7 @@ class IntegrationTestSuite:
         self.assert_true("Buscando página, Instagram y web conectados" in html, "Discovery copy is buyer-friendly")
         self.assert_true("destinationPickerGuide" in html, "Destination step uses automatic Page picker")
         self.assert_true("Buscar páginas e Instagram" in html, "Destination step can search Pages and Instagram")
-        self.assert_true("Páginas encontradas" in html, "Discovered Pages are shown as choices")
+        self.assert_true("Encontré tu página" in html and "destination-choice-grid" in html and "found-choice-card" in html, "Discovered Pages are shown as prominent choices")
         self.assert_true("Usar esta página" in html, "Buyer can select a discovered Page")
         self.assert_true("Solo si no aparece tu página" in html, "Manual Page entry is hidden as fallback")
         self.assert_true("selectMetaDestination" in html, "Selected Page is saved without manual ID paste")
@@ -3456,7 +3895,7 @@ class IntegrationTestSuite:
         self.assert_true("audienceTargetingText" in html and "Llegar a personas nuevas" in html, "Audience cards replace raw targeting structures with plain-language display")
         self.assert_true("Online course for small business owners" not in html and "data-i18n-placeholder=\"audience_product_example\"" in html, "Audience form uses examples instead of fake prefilled buyer information")
         self.assert_true("telegram-panel" in html and "Hablar por Telegram" in html, "Configuration includes optional Telegram manager access")
-        self.assert_true("/api/telegram/config" in html and "/api/telegram/detect" in html and "/api/telegram/test" in html, "Telegram setup actions are wired in UI")
+        self.assert_true("/api/telegram/config" in html and "/api/telegram/detect" in html and "autoSaveTelegramToken" in html, "Telegram setup actions are wired around autosave and chat detection")
         self.assert_true("aprobar decisiones exactas con botones seguros" in html, "Telegram UI accurately explains button approvals")
         self.assert_true("brand-guides-panel" in html and "/api/brand-guides/general" in html and "/api/brand-guides/product" in html and "/api/ad-briefs" in html, "Brand, product, and ad brief memory editing is wired in UI")
         self.assert_true("brand-memory-overlay" in html and "Lo que el agente recuerda" in html and "Crea tus anuncios" in html, "Creative memory is presented as a simple ad-ideas library")
@@ -4330,6 +4769,7 @@ class IntegrationTestSuite:
             self.test_hermes_empty_library_reply_falls_back_to_cli,
             self.test_hermes_creative_image_request_routes_to_codex_tool,
             self.test_hermes_missing_runtime_gives_chatgpt_setup_guidance,
+            self.test_hermes_model_usage_limit_keeps_connection_state_clear,
             self.test_dashboard_chatgpt_connect_action_opens_terminal,
             self.test_dashboard_chatgpt_connect_action_uses_vps_browserless_bridge,
             self.test_dashboard_hermes_browserless_auto_selects_codex,
@@ -4337,6 +4777,14 @@ class IntegrationTestSuite:
             self.test_hermes_attaches_safe_uploaded_images,
             self.test_hermes_telegram_uses_persistent_session_not_prompt_history,
             self.test_hermes_telegram_creates_missing_persistent_session,
+            self.test_telegram_defaults_to_direct_hermes_gateway,
+            self.test_hermes_gateway_uses_isolated_home_and_daily_cron_prompt,
+            self.test_hermes_product_skills_are_copied_to_workspace,
+            self.test_admira_tool_bridge_maps_mcp_tools_to_dashboard_actions,
+            self.test_admira_mcp_server_lists_and_calls_product_tools,
+            self.test_hermes_gateway_redacts_token_and_handles_start_failure,
+            self.test_hermes_gateway_incomplete_config_stops_existing_process,
+            self.test_hermes_daily_brief_cron_edge_cases,
             self.test_hermes_business_memory_workspace_is_curated_and_redacted,
             self.test_decision_memory_profitability_rules_and_hermes_context,
             self.test_chat_approval_decision_tool,

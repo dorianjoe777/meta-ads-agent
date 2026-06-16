@@ -16,6 +16,7 @@ services:
       CODEX_HOME: /app/runtime/codex
       HERMES_DISABLED_TOOLSETS: terminal,code_execution,image_gen
       HERMES_HOME: /app/runtime/hermes
+      TELEGRAM_AGENT_MODE: hermes_gateway
     volumes:
       - meta_ads_config:/app/runtime
       - meta_ads_data:/app/dashboard/data

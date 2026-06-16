@@ -22,7 +22,7 @@ RUN apt-get update \
     && ln -sf /usr/bin/python3 /usr/local/bin/python3
 
 RUN npm install -g @openai/codex
-RUN python3 -m pip install --break-system-packages --no-cache-dir "git+https://github.com/NousResearch/hermes-agent.git"
+RUN python3 -m pip install --break-system-packages --no-cache-dir "mcp>=1.0.0" "git+https://github.com/NousResearch/hermes-agent.git"
 
 COPY . .
 RUN chmod +x scripts/*.sh \

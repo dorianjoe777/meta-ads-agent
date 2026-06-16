@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Telegram entry point for the Admira IA manager agent.
+"""Legacy Telegram polling support for Admira IA.
 
-Uses long polling so a local/VPS buyer does not need a public webhook URL.
-Messages are answered by Hermes and product tools continue to run through the
-same backend guardrails used by the dashboard.
+Buyer conversations should use Hermes Gateway directly. This module remains for
+chat detection/setup helpers and old installs with TELEGRAM_AGENT_MODE=legacy.
 """
 import argparse
 import importlib.util
@@ -513,9 +512,9 @@ def handle_text(config, chat_id, text, send=True, image_paths=None, reply_approv
             with TypingIndicator(config, chat_id, enabled=send):
                 result = agent_chat(config, payload)
             tool_result = None
-            if result.get("fallback") and config.agent_chat_provider == "hermes":
-                reply = result.get("reply") or "Todavia falta conectar el cerebro del agente. Abre Configuracion > Conectar ChatGPT o modelo API. En VPS/DigitalOcean el dashboard te mostrara el login desde el navegador."
-            elif result.get("fallback") and not config.agent_chat_api_key:
+            if result.get("fallback") and getattr(config, "agent_chat_provider", "hermes") == "hermes":
+                reply = result.get("reply") or agent_recovery_reply(config, result)
+            elif result.get("fallback") and not getattr(config, "agent_chat_api_key", ""):
                 reply = "Todavia falta conectar el motor del agente."
             else:
                 tool_result = dashboard.execute_agent_tool(result.get("tool_request"), payload)

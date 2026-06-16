@@ -19,6 +19,7 @@ from security import redact_payload
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT_DIR / "dashboard" / "data"
 BRAND_GUIDES_DIR = ROOT_DIR / "brand_guides"
+AGENT_SKILLS_DIR = ROOT_DIR / "agent" / "skills"
 HERMES_WORKSPACE_DIR = DATA_DIR / "hermes-workspace" / "current"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 ALLOWED_IMAGE_DIRS = (ROOT_DIR / "output", ROOT_DIR / "dashboard" / "data" / "uploads")
@@ -26,6 +27,30 @@ MEMORY_TEXT_LIMIT = 8000
 MEMORY_ITEM_LIMIT = 8
 BLOCKED_MEMORY_TOKENS = {".env", "license_unlock.json"}
 PROFILE_FILES = ("SOUL.md", "USER.md", "AGENTS.md", "TOOLS.md", "SKILLS.md")
+SKILL_FILE_NAME = "SKILL.md"
+MODEL_USAGE_LIMIT_PATTERNS = (
+    r"\b429\b",
+    r"too many requests",
+    r"rate limit",
+    r"usage limit",
+    r"usage cap",
+    r"usage exhausted",
+    r"message limit",
+    r"limit reached",
+    r"reached (?:your|the) limit",
+    r"reached (?:your|the) .* cap",
+    r"hit (?:your|the) .* limit",
+    r"maximum usage",
+    r"cap reached",
+    r"quota exceeded",
+    r"insufficient quota",
+    r"temporarily unavailable due to limits",
+    r"limite de uso",
+    r"límite de uso",
+    r"limite temporal",
+    r"límite temporal",
+    r"cuota excedida",
+)
 
 
 def split_csv(value):
@@ -120,20 +145,78 @@ For each turn, read the buyer message normally. If you need live account context
 - `memory/Ads campaign onboarding.md`: prior ads/campaign context.
 - `memory/profitability_rules.json`, `memory/decision_memory.json`, `memory/learning_log.md`: decision memory.
 - `brand_guides/`: brand, product, ad brief, and creative reference memory.
+- `skills/`: focused product skills. Read the relevant skill before taking product actions.
 
 Do not expect the backend to paste the whole conversation history into the prompt. Continue from the Hermes session memory. If the buyer's short answer is still ambiguous, ask one clear follow-up.
+
+# Native Product Tools
+
+The product exposes protected backend actions through Hermes MCP. Tool names appear with the `mcp_admira_` prefix inside Hermes, for example `mcp_admira_codex_image_generate`.
+
+Use these MCP tools for real product actions instead of inventing results, running arbitrary shell commands, or using Hermes internal image generation:
+
+- `mcp_admira_get_real_meta_context`
+- `mcp_admira_run_daily_brief`
+- `mcp_admira_codex_image_generate`
+- `mcp_admira_codex_creative_plan`
+- `mcp_admira_stage_campaign`
+- `mcp_admira_stage_budget_change`
+- `mcp_admira_pause_campaign`
+- `mcp_admira_resume_campaign`
+- `mcp_admira_list_pending_approvals`
+- `mcp_admira_approve_action`
+- `mcp_admira_reject_action`
+- `mcp_admira_save_business_memory`
+- `mcp_admira_save_brand_memory`
+- `mcp_admira_save_product_memory`
+- `mcp_admira_save_ad_brief`
+- `mcp_admira_save_creative_references`
+
+If the MCP tool is unavailable, say the action cannot be executed yet and explain what must be connected. Do not fall back to fake campaign data or uncontrolled terminal commands.
 """
     )
     return "\n".join(sections).strip() + "\n"
 
 
+def write_product_skill_workspace_files():
+    written = []
+    if not AGENT_SKILLS_DIR.exists():
+        return written
+    skill_names = []
+    for skill_dir in sorted(path for path in AGENT_SKILLS_DIR.iterdir() if path.is_dir()):
+        source = skill_dir / SKILL_FILE_NAME
+        if not source.exists():
+            continue
+        content = read_text(source, MEMORY_TEXT_LIMIT)
+        if not content:
+            continue
+        target = f"skills/{skill_dir.name}/{SKILL_FILE_NAME}"
+        written.append(write_workspace_file(target, content))
+        skill_names.append(skill_dir.name)
+    if skill_names:
+        written.append(
+            write_workspace_file(
+                "skills/README.md",
+                "# Admira IA Product Skills\n\n"
+                "Use the most relevant skill before taking product actions.\n\n"
+                + "\n".join(f"- `{name}/SKILL.md`" for name in skill_names)
+                + "\n",
+            )
+        )
+    return written
+
+
 def write_agent_profile_workspace_files():
     written = []
-    written.append(write_workspace_file("AGENTS.md", combined_agent_rules()))
     for name in PROFILE_FILES:
         content = read_agent_profile_file(name)
         if content:
-            written.append(write_workspace_file(name, content))
+            if name == "AGENTS.md":
+                written.append(write_workspace_file("profile/AGENTS.source.md", content))
+            else:
+                written.append(write_workspace_file(name, content))
+    written.append(write_workspace_file("AGENTS.md", combined_agent_rules()))
+    written.extend(write_product_skill_workspace_files())
     return written
 
 
@@ -223,6 +306,9 @@ It contains curated business memory, brand guides, recent activity, and uploaded
 Hermes owns the conversation and should use its own session memory. The backend does not paste the whole chat history into the prompt.
 
 Do not request files outside this workspace. If something is missing, ask the buyer or request a backend tool.
+
+Product actions are exposed as Hermes MCP tools with names starting with `mcp_admira_`.
+Read `skills/README.md` and the relevant `skills/*/SKILL.md` file before acting.
 """,
         )
     )
@@ -405,6 +491,46 @@ def setup_reply(language="es"):
         "The agent brain is not connected yet. Open Setup > Connect ChatGPT or API model for guided steps. "
         "On desktop it can open a terminal; on VPS/DigitalOcean the dashboard shows the login in the browser."
     )
+
+
+def model_usage_limit_error(error_text):
+    text = str(error_text or "").lower()
+    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in MODEL_USAGE_LIMIT_PATTERNS)
+
+
+def model_usage_limit_retry_hint(error_text):
+    text = re.sub(r"\s+", " ", str(error_text or "")).strip()
+    patterns = (
+        r"(?:try again|retry|available|reset(?:s)?|limit reset(?:s)?)(?:\s+\w+){0,4}\s+(?:in|at|after|on|until)\s+([^.;\n]{2,90})",
+        r"(?:intenta|vuelve a intentar|reintenta|reinicia|disponible)(?:\s+\w+){0,5}\s+(?:en|a las|despues de|después de|hasta)\s+([^.;\n]{2,90})",
+        r"(?:after|in)\s+(\d+\s*(?:seconds?|minutes?|hours?|segundos?|minutos?|horas?))",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            hint = match.group(1).strip(" .,:;")
+            if hint:
+                return hint[:90]
+    return ""
+
+
+def model_usage_limit_reply(language="es", error_text=""):
+    hint = model_usage_limit_retry_hint(error_text)
+    if language == "en":
+        base = (
+            "ChatGPT/Codex is connected, but the model hit a temporary usage limit. "
+            "I will not invent an answer or execute actions while the brain cannot respond."
+        )
+        if hint:
+            return f"{base} Try again after: {hint}."
+        return f"{base} Try again later; the provider did not send me an exact reset time."
+    base = (
+        "Tu ChatGPT/Codex sí está conectado, pero el modelo alcanzó su límite temporal de uso. "
+        "No voy a inventar una respuesta ni ejecutar acciones mientras el cerebro no pueda responder."
+    )
+    if hint:
+        return f"{base} Intenta de nuevo después de: {hint}."
+    return f"{base} Intenta de nuevo más tarde; el proveedor no me dio una hora exacta de reinicio."
 
 
 def hermes_codex_ready(config):
@@ -663,4 +789,15 @@ def chat(config, payload):
     except FileNotFoundError as exc:
         return {"ok": False, "provider": "hermes", "fallback": True, "reply": setup_reply(language), "error": f"Hermes CLI is not installed: {exc}"}
     except Exception as exc:
-        return {"ok": False, "provider": "hermes", "fallback": True, "reply": setup_reply(language), "error": str(exc)}
+        error_text = str(exc)
+        if model_usage_limit_error(error_text):
+            return {
+                "ok": False,
+                "provider": "hermes",
+                "fallback": True,
+                "error_type": "model_usage_limit",
+                "retry_after_hint": model_usage_limit_retry_hint(error_text),
+                "reply": model_usage_limit_reply(language, error_text),
+                "error": error_text,
+            }
+        return {"ok": False, "provider": "hermes", "fallback": True, "reply": setup_reply(language), "error": error_text}

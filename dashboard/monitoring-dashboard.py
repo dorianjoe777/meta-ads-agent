@@ -73,6 +73,8 @@ from decision_memory import (
 )
 from graph_executor import execute_upload_payload
 from hermes_bridge import hermes_codex_ready, hermes_environment, safe_image_paths
+from hermes_gateway import ensure_daily_brief_cron, gateway_status as hermes_gateway_status, start_gateway as start_hermes_gateway
+from hermes_gateway import telegram_settings
 from license import activate_license, default_device_id, license_status, mark_license_install_state, normalize_license_entitlements, validate_license_key
 from local_store import now_iso, read_json, write_json, write_private_json
 from meta_upload import recent_uploads, stage_upload
@@ -82,9 +84,6 @@ from setup_status import build_setup_status
 from social_flow_client import SocialFlowClient
 from telegram_agent import bot_request as telegram_bot_request
 from telegram_agent import reset_polling_state as reset_telegram_polling_state
-from telegram_agent import run as run_telegram_listener
-from telegram_agent import send_message as send_telegram_message
-from telegram_agent import telegram_settings
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -1383,25 +1382,19 @@ def save_telegram_config(payload):
         reset_telegram_polling_state()
     config = load_config()
     status = telegram_settings(config)
-    status["listener_started"] = ensure_telegram_listener()
+    gateway = ensure_telegram_listener()
+    status["listener_started"] = bool(gateway.get("started") if isinstance(gateway, dict) else gateway)
+    status["gateway"] = gateway if isinstance(gateway, dict) else {}
     if status.get("enabled") and status.get("bot_configured") and status.get("chat_id"):
         profile = read_json(BUSINESS_PROFILE_FILE, {})
         if isinstance(profile, dict) and not profile.get("telegram_onboarding_message_sent_at"):
-            try:
-                write_onboarding_questions_memory(profile, "pending")
-                send_telegram_message(
-                    config,
-                    status["chat_id"],
-                    "Listo, ya puedo hablar contigo por Telegram.\n\n"
-                    "Cuando quieras, respóndeme: quiero completar mi negocio.\n"
-                    "Te haré preguntas fáciles, una por una: primero tu negocio, luego el estilo de tus creativos y después tus campañas.",
-                )
-                profile["telegram_onboarding_message_sent_at"] = now_iso()
-                write_json(BUSINESS_PROFILE_FILE, profile)
-                status["onboarding_message_sent"] = True
-            except Exception as exc:
-                status["onboarding_message_error"] = str(exc)[:220]
-    log_action("telegram_config_save", {"enabled": status["enabled"], "bot_configured": status["bot_configured"], "chat_id_set": bool(status["chat_id"])}, "completed")
+            write_onboarding_questions_memory(profile, "pending")
+            profile["telegram_onboarding_message_sent_at"] = now_iso()
+            profile["telegram_onboarding_channel"] = "hermes_gateway"
+            write_json(BUSINESS_PROFILE_FILE, profile)
+            status["onboarding_message_ready"] = True
+        status["daily_brief_cron"] = ensure_daily_brief_cron(config)
+    log_action("telegram_config_save", {"enabled": status["enabled"], "mode": status.get("mode"), "bot_configured": status["bot_configured"], "chat_id_set": bool(status["chat_id"])}, "completed")
     return status
 
 
@@ -1409,6 +1402,13 @@ def ensure_telegram_listener():
     global TELEGRAM_THREAD, TELEGRAM_STOP, TELEGRAM_FINGERPRINT
     config = load_config()
     status = telegram_settings(config)
+    if status.get("mode") != "legacy":
+        if TELEGRAM_STOP:
+            TELEGRAM_STOP.set()
+        TELEGRAM_THREAD = None
+        TELEGRAM_STOP = None
+        TELEGRAM_FINGERPRINT = None
+        return start_hermes_gateway(config)
     fingerprint = (config.telegram_bot_token, status["chat_id"], status["enabled"], status["language"])
     if not (status["enabled"] and status["bot_configured"] and status["chat_id"]):
         if TELEGRAM_STOP:
@@ -1420,10 +1420,11 @@ def ensure_telegram_listener():
     if TELEGRAM_STOP:
         TELEGRAM_STOP.set()
     TELEGRAM_STOP = threading.Event()
+    from telegram_agent import run as run_telegram_listener
     TELEGRAM_THREAD = threading.Thread(target=run_telegram_listener, args=(TELEGRAM_STOP,), name="telegram-agent", daemon=True)
     TELEGRAM_THREAD.start()
     TELEGRAM_FINGERPRINT = fingerprint
-    return True
+    return {"started": True, "mode": "legacy"}
 
 
 def detect_telegram_chats():
@@ -1447,9 +1448,9 @@ def test_telegram_connection():
     status = telegram_settings(config)
     if not status["bot_configured"] or not status["chat_id"]:
         raise ValueError("Guarda el bot y el chat antes de enviar la prueba.")
-    send_telegram_message(config, status["chat_id"], "Conexion lista. Ya puedes hablar con tu manager IA desde Telegram.")
-    log_action("telegram_test_message", {"chat_id_set": True}, "completed")
-    return {"sent": True}
+    gateway = ensure_telegram_listener()
+    log_action("telegram_gateway_check", {"chat_id_set": True, "mode": status.get("mode")}, "completed")
+    return {"ready": bool(gateway.get("started") if isinstance(gateway, dict) else gateway), "gateway": gateway if isinstance(gateway, dict) else {}}
 
 
 def activate_license_now(payload=None):
@@ -6411,6 +6412,7 @@ def dashboard_payload():
             "mode": config.mode,
             "notify_channel": config.notify_channel,
             "telegram_agent": telegram_settings(config),
+            "daily_brief": {"mode": "hermes_cron", **hermes_gateway_status(config)},
             "dashboard_token_required": config.dashboard_token_required,
             "dashboard_token_set": dashboard_password_configured(config),
             "dashboard_password_required": config.dashboard_token_required,

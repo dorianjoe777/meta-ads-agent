@@ -39,12 +39,13 @@ defaults = {
     "LICENSE_REQUIRED_FOR_LIVE": "true",
     "LICENSE_PUBLIC_KEY": "",
     "TELEGRAM_AGENT_ENABLED": "false",
+    "TELEGRAM_AGENT_MODE": "hermes_gateway",
     "TELEGRAM_LANGUAGE": "es",
     "TELEGRAM_POLL_TIMEOUT": "25",
     "AGENT_PROFILE_DIR": "agent",
     "AGENT_CHAT_PROVIDER": "hermes",
     "HERMES_CLI": "hermes",
-    "HERMES_HOME": "",
+    "HERMES_HOME": "dashboard/data/hermes-home",
     "HERMES_MODEL": "",
     "HERMES_STATUS_TIMEOUT_SECONDS": "20",
     "HERMES_RESPONSE_TIMEOUT_SECONDS": "300",
@@ -105,8 +106,13 @@ if command -v hermes >/dev/null 2>&1; then
 else
   echo "Hermes Agent was not found."
   echo "Attempting to install Hermes Agent so the manager can use ChatGPT/Codex OAuth through Hermes."
-  python3 -m pip install --user "git+https://github.com/NousResearch/hermes-agent.git" || echo "Hermes install failed. Install it manually, then run: hermes model"
+  python3 -m pip install --user "mcp>=1.0.0" "git+https://github.com/NousResearch/hermes-agent.git" || echo "Hermes install failed. Install it manually, then run: hermes model"
 fi
+
+python3 - <<'PY' || python3 -m pip install --user "mcp>=1.0.0" || echo "MCP package install failed. Hermes Telegram tools may need: python3 -m pip install --user mcp"
+import importlib.util
+raise SystemExit(0 if importlib.util.find_spec("mcp") else 1)
+PY
 
 python3 -m py_compile src/daily_agent.py dashboard/monitoring-dashboard.py
 

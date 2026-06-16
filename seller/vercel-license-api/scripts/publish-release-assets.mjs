@@ -68,7 +68,7 @@ const current = releases.channels[channel] || { assets: {} };
 current.version = version;
 current.published_at = new Date().toISOString();
 current.improvements = improvements;
-current.assets ||= {};
+current.assets = {};
 
 for (const asset of ASSETS) {
   const localPath = resolve(releaseDir, asset.filename);

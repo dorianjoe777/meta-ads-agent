@@ -41,9 +41,11 @@ defaults = {
     "CODEX_CLI": "codex",
     "CODEX_HOME": "/app/runtime/codex",
     "HERMES_HOME": "/app/runtime/hermes",
+    "TELEGRAM_AGENT_MODE": "hermes_gateway",
     "HERMES_STATUS_TIMEOUT_SECONDS": "20",
     "HERMES_RESPONSE_TIMEOUT_SECONDS": "300",
     "HERMES_TIMEOUT_SECONDS": "300",
+    "DAILY_BRIEF_TIME": "08:00",
     "HERMES_ENABLED_TOOLSETS": "memory,skills,session_search,vision,file,web,browser",
     "HERMES_DISABLED_TOOLSETS": "terminal,code_execution,image_gen",
 }

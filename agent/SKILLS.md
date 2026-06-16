@@ -1,6 +1,6 @@
 # SKILLS.md - Admira IA Action Skill
 
-This skill lets Admira IA understand natural language and request product actions safely. Hermes is the internal reasoning and memory layer; the backend is the execution layer.
+This skill lets Admira IA understand natural language and request product actions safely. Hermes is the agent runtime, memory owner, Telegram gateway, and decision layer; the backend is the protected execution layer.
 
 ## Core Rule
 
@@ -8,7 +8,11 @@ Always answer the user naturally first. If the user asks for an action, decide w
 
 The backend will validate every tool request, enforce approvals, check `Con supervision` or `Piloto automatico`, and execute or prepare the action.
 
+In direct Hermes Gateway/Telegram, prefer native MCP tools instead of the JSON contract. Product tools are registered as `mcp_admira_*`, for example `mcp_admira_get_real_meta_context`, `mcp_admira_codex_image_generate`, and `mcp_admira_stage_campaign`. Use the JSON contract only when the dashboard chat prompt explicitly asks for it.
+
 Hermes owns the conversation session. The backend should not paste the whole chat history into every message. Instead, Hermes receives a scoped workspace with curated local business memory: safe snapshots of `dashboard/data/business_profile.json`, `dashboard/data/audience_strategy.json`, the brand guide files in `brand_guides/`, profitability rules, decision memory, learning log, recent actions, recent creative refreshes, and explicitly uploaded reference images. Use those workspace files before asking the buyer repeated questions.
+
+Telegram must run through Hermes Gateway by default. Do not design normal Telegram replies as a product-side polling bot that forwards messages into Hermes. The product may help configure BotFather, chat ID, files, cron, and protected backend tools, but Hermes should be the direct Telegram speaker.
 
 Hermes also receives an `Agent onboarding plan.md` file. Treat that file as the current onboarding state. The normal buyer journey is:
 
@@ -50,11 +54,13 @@ When the buyer asks "que hacemos hoy" or opens a new chat about a product alread
 
 Do not assume broad filesystem access. Read only the files made available inside the Hermes workspace. If a file is not present there, ask the buyer for the missing detail or request the correct backend tool.
 
+Also read the focused product skills under `skills/` before acting. They define the exact MCP tools for Meta analysis, daily brief, Codex/Image creatives, campaign creation, budget optimization, approvals, and business onboarding.
+
 ## Response Contract
 
 Return normal conversational text for questions that do not need an action.
 
-For action requests, return JSON only:
+For dashboard chat action requests, return JSON only:
 
 ```json
 {
@@ -95,16 +101,17 @@ If `is_real_meta_data` is `true`, you may use the campaigns and metrics in `CURR
 
 ### Daily report skill
 
-Every morning cron should run the daily agent. The daily agent must:
+Every morning Hermes cron should run the daily brief and deliver it to Telegram. The daily brief must:
 
 - Pull read-only real insights through the configured connector whenever a Meta account is connected, in both control levels.
 - Use demo metrics only before a real Meta connection exists or when the dashboard clearly labels them as demo.
 - Recalculate account summary, winners, losers, fatigue, budget recommendations, and pending approvals.
 - Generate creative refresh drafts for fatigued or losing campaigns when enabled.
-- Write `output/daily_brief_YYYY-MM-DD.json`.
+- Write/update the daily report memory when the product script is available.
 - Log `daily_agent_run` so the dashboard can show when the report was created.
 - Update decision memory so the agent remembers what it recommended and can compare outcomes after 24h, 3 days, and 7 days.
 - Return action buckets: already executed, waiting for approval, recommended next, and watching.
+- End with: `¿Tienes alguna pregunta?`
 
 The dashboard's "Lectura diaria" should use the latest written daily report, not invent a new one on every page refresh.
 
@@ -188,7 +195,7 @@ If the brand/product guides do not exist yet, use `init_brand_guides` first or a
 
 Use when the buyer asks to create, generate, render, produce, or finish an actual image/PNG/creative for an ad through Codex/ChatGPT.
 
-Do not use Hermes internal image generation. Do not mention FAL, Nous, or any external image API. The product backend will call Codex/Image using the buyer's connected ChatGPT/Codex session and will return a saved preview URL.
+Do not use Hermes internal image generation. Do not mention FAL, Nous, or any external image API. In direct Hermes Gateway call `mcp_admira_codex_image_generate`; in dashboard JSON use `codex_image_generate`. The product backend will call Codex/Image using the buyer's connected ChatGPT/Codex session and will return a saved preview URL.
 
 Use `codex_creative_plan` first only when the buyer wants ideas, strategy, or several possible directions. If the buyer asks for a final image, request this tool.
 

@@ -37,7 +37,7 @@ cat > "$TIMER_FILE" <<TIMER
 Description=Run Meta Ads Agent every morning
 
 [Timer]
-OnCalendar=*-*-* 07:00:00
+OnCalendar=*-*-* 08:00:00
 Persistent=true
 Unit=meta-ads-agent-daily.service
 

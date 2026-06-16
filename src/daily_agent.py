@@ -618,6 +618,166 @@ def build_action_summary(recommendations, auto_paused, proposed_pauses, fatigue,
     }
 
 
+def is_real_meta_metrics(metrics):
+    return str((metrics or {}).get("source") or "").strip().lower() == "meta_graph"
+
+
+def recent_daily_reports(limit=6):
+    reports = []
+    if not OUTPUT_DIR.exists():
+        return reports
+    for path in sorted(OUTPUT_DIR.glob("daily_brief_*.json"), reverse=True):
+        payload = read_json(path, {})
+        brief = payload.get("brief", {}) if isinstance(payload, dict) else {}
+        snapshot = brief.get("metrics_snapshot") if isinstance(brief, dict) else {}
+        summary = (snapshot or {}).get("summary") or brief.get("summary") or {}
+        if not isinstance(summary, dict) or not summary:
+            continue
+        reports.append({
+            "path": str(path),
+            "generated_at": brief.get("generated_at", ""),
+            "source": (snapshot or {}).get("source", ""),
+            "summary": summary,
+        })
+        if len(reports) >= limit:
+            break
+    return reports
+
+
+def metric_number(summary, key):
+    try:
+        return float((summary or {}).get(key) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def format_metric_value(key, value):
+    if key in {"total_spend", "total_revenue", "overall_cpa", "active_budget"}:
+        return f"${money(value):,.2f}"
+    if key == "overall_roas":
+        return f"{float(value or 0):.2f}x"
+    if key == "overall_ctr":
+        return f"{float(value or 0):.2f}%"
+    return f"{int(float(value or 0)):,}"
+
+
+def metric_delta_sentence(summary, previous, key, label):
+    current = metric_number(summary, key)
+    old = metric_number(previous, key)
+    if old <= 0:
+        return ""
+    delta = pct_change(current, old)
+    if abs(delta) < 5:
+        return f"{label} se mantuvo parecido: {format_metric_value(key, current)}."
+    direction = "subió" if delta > 0 else "bajó"
+    return f"{label} {direction} {abs(delta):.0f}%: de {format_metric_value(key, old)} a {format_metric_value(key, current)}."
+
+
+def build_trend_context(metrics, recent_reports=None):
+    summary = metrics.get("summary", {})
+    reports = recent_reports if recent_reports is not None else recent_daily_reports()
+    previous = (reports[0].get("summary") if reports else {}) or {}
+    observations = []
+    if not is_real_meta_metrics(metrics):
+        observations.append("Aún no tengo una lectura real de Meta para comparar fluctuaciones.")
+        return {"days_compared": 0, "previous_summary": previous, "observations": observations}
+    if not previous:
+        observations.append("Hoy queda como primer punto de comparación; desde mañana podré decirte qué cambió.")
+        return {"days_compared": 1, "previous_summary": previous, "observations": observations}
+    roas_sentence = metric_delta_sentence(summary, previous, "overall_roas", "El retorno")
+    cpa_sentence = metric_delta_sentence(summary, previous, "overall_cpa", "El costo por compra/resultado")
+    spend_sentence = metric_delta_sentence(summary, previous, "total_spend", "El gasto")
+    conversions_sentence = metric_delta_sentence(summary, previous, "total_conversions", "Las conversiones")
+    for sentence in (roas_sentence, cpa_sentence, spend_sentence, conversions_sentence):
+        if sentence:
+            observations.append(sentence)
+    if not observations:
+        observations.append("Los números se movieron poco frente a la lectura anterior; hoy conviene mirar señales de fatiga y presupuesto antes de tocar algo.")
+    roas_current = metric_number(summary, "overall_roas")
+    roas_previous = metric_number(previous, "overall_roas")
+    cpa_current = metric_number(summary, "overall_cpa")
+    cpa_previous = metric_number(previous, "overall_cpa")
+    if roas_previous and cpa_previous:
+        if roas_current < roas_previous and cpa_current > cpa_previous:
+            observations.append("La eficiencia viene más débil: conviene reducir desperdicio o refrescar creativos antes de subir presupuesto.")
+        elif roas_current > roas_previous and cpa_current < cpa_previous:
+            observations.append("La eficiencia viene mejorando: las campañas sanas se pueden cuidar o escalar con calma.")
+    return {"days_compared": min(len(reports) + 1, 7), "previous_summary": previous, "observations": observations[:4]}
+
+
+def top_campaign_line(prefix, campaign, metric_key, metric_label):
+    if not campaign:
+        return ""
+    return f"{prefix}: {campaign.get('name')} ({format_metric_value(metric_key, campaign.get(metric_key, 0))} {metric_label})."
+
+
+def build_manager_message(metrics, winners, losers, fatigue, proposed_pauses, action_summary, trend_context):
+    if not is_real_meta_metrics(metrics):
+        return (
+            "Buenos días. Todavía no tengo datos reales de Meta suficientes para hacer una lectura responsable.\n\n"
+            "Lo importante hoy es esto:\n"
+            "Primero necesitamos actualizar la conexión con Meta.\n"
+            "Cuando entren datos reales, compararé gasto, retorno, costo por resultado y señales de fatiga.\n"
+            "Puedo ayudarte a terminar esa conexión desde Configuración.\n\n"
+            "¿Tienes alguna pregunta?"
+        )
+
+    lines = ["Buenos días. Ya revisé tu cuenta.", "", "Lo importante hoy es esto:"]
+    decisions = []
+    if proposed_pauses:
+        first = proposed_pauses[0]
+        decisions.append(f"{first.get('name', 'Una campaña')} está consumiendo sin suficiente resultado; puedo dejar la pausa lista para aprobación.")
+    elif losers:
+        decisions.append(f"{losers[0].get('name')} está consumiendo sin suficiente resultado.")
+    if winners:
+        decisions.append(f"{winners[0].get('name')} todavía se ve sana.")
+    if fatigue:
+        decisions.append(f"Hay una señal de fatiga en creativos: {fatigue[0].get('campaign_name')}.")
+    waiting = action_summary.get("waiting_for_approval") or []
+    next_moves = action_summary.get("recommended_next") or []
+    if waiting:
+        decisions.append("Hay cambios preparados que necesitan tu aprobación antes de tocar dinero real.")
+    elif next_moves:
+        decisions.append(next_moves[0].get("label", "Tengo un siguiente movimiento recomendado para revisar."))
+    if not decisions:
+        decisions.append("No veo una señal fuerte para tocar presupuesto hoy.")
+        decisions.append("Conviene observar un poco más antes de hacer cambios grandes.")
+    lines.extend(decisions[:4])
+
+    observations = [item for item in (trend_context or {}).get("observations", []) if item]
+    if observations:
+        lines.extend(["", "Contexto de los últimos días:"])
+        lines.extend(observations[:3])
+
+    lines.extend(["", "Puedo preparar los cambios para aprobación.", "", "¿Tienes alguna pregunta?"])
+    return "\n".join(lines)
+
+
+def metrics_snapshot(metrics):
+    return {
+        "source": metrics.get("source", ""),
+        "source_label": metrics.get("source_label", ""),
+        "timestamp": metrics.get("timestamp", ""),
+        "summary": metrics.get("summary", {}),
+        "campaigns": [
+            {
+                "id": campaign.get("id"),
+                "name": campaign.get("name"),
+                "status": campaign.get("status"),
+                "spend": campaign.get("spend", 0),
+                "revenue": campaign.get("revenue", 0),
+                "conversions": campaign.get("conversions", 0),
+                "roas": campaign.get("roas", 0),
+                "cpa": campaign.get("cpa", 0),
+                "ctr": campaign.get("ctr", 0),
+                "frequency": campaign.get("frequency", 0),
+                "health": campaign.get("health", ""),
+            }
+            for campaign in metrics.get("campaigns", [])[:50]
+        ],
+    }
+
+
 def build_brief(metrics, recommendations, auto_paused, fatigue, proposed_pauses=None, creative_refreshes=None):
     summary = metrics.get("summary", {})
     campaigns = metrics.get("campaigns", [])
@@ -626,38 +786,43 @@ def build_brief(metrics, recommendations, auto_paused, fatigue, proposed_pauses=
     losers = sorted([c for c in campaigns if c.get("health") == "losing"], key=lambda c: c.get("roas", 0))
     approval_count = len(read_json(PENDING_FILE, []))
     action_summary = build_action_summary(recommendations, auto_paused, proposed_pauses, fatigue, creative_refreshes)
+    trend_context = build_trend_context(metrics)
+    message = build_manager_message(metrics, winners, losers, fatigue, proposed_pauses, action_summary, trend_context)
     lines = [
-        f"Spend: ${summary.get('total_spend', 0):,.2f}",
-        f"Revenue: ${summary.get('total_revenue', 0):,.2f}",
-        f"ROAS: {summary.get('overall_roas', 0):.2f}x",
-        f"CPA: ${summary.get('overall_cpa', 0):,.2f}",
-        f"Active campaigns: {summary.get('active_campaigns', 0)}",
-        f"Auto-paused: {len(auto_paused)}",
-        f"Pauses awaiting approval: {len(proposed_pauses)}",
-        f"Fatigue flags: {len(fatigue)}",
-        f"Pending approvals: {approval_count}",
+        f"Gasto: {format_metric_value('total_spend', summary.get('total_spend', 0))}",
+        f"Ingresos: {format_metric_value('total_revenue', summary.get('total_revenue', 0))}",
+        f"Retorno: {format_metric_value('overall_roas', summary.get('overall_roas', 0))}",
+        f"Costo por resultado: {format_metric_value('overall_cpa', summary.get('overall_cpa', 0))}",
+        f"Campañas activas: {summary.get('active_campaigns', 0)}",
+        f"Pausas automáticas: {len(auto_paused)}",
+        f"Pausas por aprobar: {len(proposed_pauses)}",
+        f"Señales de fatiga: {len(fatigue)}",
+        f"Decisiones pendientes: {approval_count}",
     ]
     if winners:
-        lines.append(f"Top winner: {winners[0]['name']} ({winners[0]['roas']:.2f}x ROAS)")
+        lines.append(f"Campaña más sana: {winners[0]['name']} ({winners[0]['roas']:.2f}x retorno)")
     if losers:
-        lines.append(f"Top loser: {losers[0]['name']} ({losers[0]['roas']:.2f}x ROAS)")
+        lines.append(f"Campaña a revisar: {losers[0]['name']} ({losers[0]['roas']:.2f}x retorno)")
     if action_summary["already_done"]:
-        lines.append(f"Already done: {action_summary['already_done'][0]['label']}")
+        lines.append(f"Hecho: {action_summary['already_done'][0]['label']}")
     if action_summary["waiting_for_approval"]:
-        lines.append(f"Waiting approval: {len(action_summary['waiting_for_approval'])} action bucket(s)")
+        lines.append(f"Esperando aprobación: {len(action_summary['waiting_for_approval'])} grupo(s) de acciones")
     if action_summary["recommended_next"]:
-        lines.append(f"Next move: {action_summary['recommended_next'][0]['label']}")
+        lines.append(f"Siguiente movimiento: {action_summary['recommended_next'][0]['label']}")
     return {
         "generated_at": now_iso(),
         "summary": summary,
         "five_questions": {
             "am_i_on_track": lines[0],
-            "whats_running": f"{summary.get('active_campaigns', 0)} active campaigns",
-            "hows_performance": f"{summary.get('overall_roas', 0):.2f}x ROAS, ${summary.get('overall_cpa', 0):,.2f} CPA",
-            "winning_losing": lines[-1] if winners or losers else "No clear winner or loser yet.",
-            "fatigue": f"{len(fatigue)} fatigue flag(s)",
+            "whats_running": f"{summary.get('active_campaigns', 0)} campañas activas",
+            "hows_performance": f"{summary.get('overall_roas', 0):.2f}x retorno, {format_metric_value('overall_cpa', summary.get('overall_cpa', 0))} costo por resultado",
+            "winning_losing": lines[-1] if winners or losers else "Todavía no hay ganadora o perdedora clara.",
+            "fatigue": f"{len(fatigue)} señal(es) de fatiga",
         },
-        "message": "\n".join(lines),
+        "message": message,
+        "technical_lines": lines,
+        "trend_context": trend_context,
+        "metrics_snapshot": metrics_snapshot(metrics),
         "winners": winners[:5],
         "losers": losers[:5],
         "auto_paused": auto_paused,

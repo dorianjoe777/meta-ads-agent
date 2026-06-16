@@ -15,8 +15,9 @@ The agent now uses Hermes as the main reasoning/runtime layer. The product still
 2. `src/agent_runtime.py` loads the profile files and builds one combined system prompt.
 3. `src/agent_chat.py` sends the profile and account context through `src/hermes_bridge.py`.
 4. Hermes runs the conversation using the buyer's configured brain model. The buyer-facing default is `OpenAI Codex` through Hermes, which uses the buyer's ChatGPT/Codex OAuth session. Advanced installs can set `AGENT_BRAIN_PROVIDER=minimax`, `openai_api`, or `custom_api` to use MiniMax M3, OpenAI API, OpenRouter, Groq, Together, LM Studio, or another OpenAI-compatible `/chat/completions` URL inside Hermes.
-5. If Hermes returns a tool request, the dashboard executes it through `execute_agent_tool()` and the normal approval queue.
-6. The backend returns the final manager reply to the chat bubble or Telegram.
+5. In dashboard chat, if Hermes returns a tool request, the dashboard executes it through `execute_agent_tool()` and the normal approval queue.
+6. In Telegram, Hermes Gateway talks directly to the buyer and calls product tools through the local `admira` MCP server. Hermes still cannot bypass backend approvals, license checks, live-action rules, or logs.
+7. The backend returns the final manager reply to the chat bubble when the dashboard channel is used.
 
 Hermes receives the profile and account summary as context, but the backend still owns permissions. The agent cannot bypass dashboard authorization, Con supervision/Piloto automatico rules, approvals, license checks, or the live-action switch.
 
@@ -24,7 +25,20 @@ There is no buyer runtime that bypasses Hermes. Model choices change the convers
 
 ## Telegram Channel
 
-`src/telegram_agent.py` exposes the same manager through a private Telegram bot using long polling, so local/VPS installs do not need a public webhook. It keeps a small Telegram-specific conversation history, accepts creative images into local storage, restricts access to the selected private chat ID, and sends tool requests through the same backend guardrails. Exact pending actions can be approved or rejected through Telegram buttons, a reply to the decision card, an explicit approval ID, or the single pending decision shortcut. If the action can leave ads active, Telegram still requires the exact active-spend confirmation phrase.
+Telegram is a native Hermes Gateway channel, not a separate product bot that calls Hermes as a subroutine.
+
+The dashboard only helps the buyer save the BotFather token, detect the private chat, create an isolated `HERMES_HOME`, write the Admira IA profile/config, and start `hermes gateway run`. After that, normal Telegram messages are handled directly by Hermes. This is required so Hermes owns conversation memory, slash commands such as `/model`, attachments, clarification loops, and long-running replies.
+
+`src/telegram_agent.py` is legacy/setup support only. It may still be used to detect a private chat during onboarding or by old installs with `TELEGRAM_AGENT_MODE=legacy`, but it must not be the default buyer conversation path.
+
+Each buyer install uses its own Hermes home:
+
+```text
+Local/native: dashboard/data/hermes-home
+Docker/VPS:   /app/runtime/hermes
+```
+
+This prevents Admira IA from reading or modifying the buyer's personal `~/.hermes` sessions, crons, model settings, or unrelated Telegram gateways.
 
 ## Agent-Led Onboarding
 
@@ -37,7 +51,7 @@ The first-run UI onboarding stays short. It connects the operational essentials 
 5. website/social links for a quick scan
 6. Telegram
 
-After Telegram is ready, the deeper onboarding happens conversationally. The buyer should not fill a long form before using the product. Hermes reads `dashboard/data/Agent onboarding plan.md` and moves through these phases:
+After Telegram is ready, the deeper onboarding happens conversationally inside Hermes Gateway. The buyer should not fill a long form before using the product. Hermes reads `dashboard/data/Agent onboarding plan.md` and moves through these phases:
 
 1. `business_discovery`: understand offer, products/services, customer, stage, struggle, and goals.
 2. `branding_creatives_creation`: research visual references, propose palettes/fonts/feelings/style, decide what is brand-wide vs product-specific, and save approved references.
@@ -58,6 +72,35 @@ brand_guides/ad_briefs/*.md
 ```
 
 The website/social links are context for the agent and optional scanner, not the whole onboarding. Hermes can strengthen discovery with browser retrieval when available, especially for product catalogs, visual references, and competitor/ad-design research.
+
+## Product Tools Through MCP
+
+Direct Telegram conversations use Hermes' native MCP client. The product writes this server into the isolated `HERMES_HOME/config.yaml`:
+
+```yaml
+mcp_servers:
+  admira:
+    command: "python3"
+    args:
+      - "src/admira_mcp_server.py"
+```
+
+Hermes registers these tools with the `mcp_admira_` prefix. Important examples:
+
+```text
+mcp_admira_get_real_meta_context
+mcp_admira_run_daily_brief
+mcp_admira_codex_image_generate
+mcp_admira_stage_campaign
+mcp_admira_stage_budget_change
+mcp_admira_list_pending_approvals
+mcp_admira_approve_action
+mcp_admira_reject_action
+```
+
+The MCP server does not execute risky logic by itself. It calls `src/admira_tool_bridge.py`, which loads the existing dashboard action layer and routes through `execute_agent_tool()`. That means one safety path is shared by dashboard chat, Telegram, approvals, Codex/Image, campaign staging, budget changes, and memory saves.
+
+Product skills live in `agent/skills/*/SKILL.md` and are copied into the Hermes workspace under `skills/`. They tell Hermes when to call each MCP tool. These skills are versioned with the product instead of being generated ad hoc during a chat.
 
 ## Model Options
 
@@ -107,27 +150,35 @@ Legacy installs that still contain `AGENT_CHAT_PROVIDER=minimax` or `AGENT_CHAT_
 
 Hermes is configured for the agent-centered creative workflow, but not with broad machine control by default.
 
-Default enabled toolsets:
+Legacy prototypes used this broader list:
 
 ```text
 memory,skills,session_search,vision,image_gen,file,web,browser
 ```
 
-These allow Hermes to remember useful context, use the agent profile, read the curated Hermes workspace, inspect uploaded product/reference images, and prepare image-generation direction. Uploaded Telegram images are saved under `output/telegram_uploads/`, copied into the Hermes workspace, and passed to Hermes with the CLI image attachment path.
+Release builds disable Hermes internal final image generation. The active Hermes Gateway toolset is:
+
+```text
+memory,skills,session_search,vision,file,web,browser,admira
+```
+
+These allow Hermes to remember useful context, use the agent profile, read the curated Hermes workspace, inspect uploaded product/reference images, browse public pages, and call protected Admira tools. Uploaded Telegram images are saved under `output/telegram_uploads/`, copied into the Hermes workspace, and passed to Hermes with the CLI image attachment path.
 
 Default disabled/sensitive capability posture:
 
 ```text
-terminal,code_execution
+terminal,code_execution,image_gen
 ```
 
-Codex creative planning still runs through the product backend and guardrails. If Hermes sees an uploaded image and asks for `codex_creative_plan` or `codex_image_generate`, it should include a visual summary in the request so Codex receives the useful creative context without needing arbitrary filesystem access.
+Codex creative planning still runs through the product backend and guardrails. If Hermes sees an uploaded image and asks for `mcp_admira_codex_creative_plan` or `mcp_admira_codex_image_generate`, it should include a visual summary in the request so Codex receives the useful creative context without needing arbitrary filesystem access.
 
 Final image generation in v1 uses the backend `codex_image_generate` tool, which calls Codex CLI with the buyer's authenticated ChatGPT/Codex session and saves the raster image in `output/creatives/`. Other image providers are legacy/disabled unless we intentionally add a new adapter later.
 
 ## Curated Business Memory
 
-Skills are not enough by themselves because the agent also needs the buyer's actual business information. Instead of enabling general file browsing, the backend injects a curated business memory packet into Hermes on each chat turn.
+Skills are not enough by themselves because the agent also needs the buyer's actual business information.
+
+In dashboard chat, the backend prepares a curated business memory packet for each request. In Telegram, Hermes Gateway is the conversation owner: it keeps the Hermes session, reads the curated workspace files directly, and calls `mcp_admira_*` tools when it needs fresh data or a protected product action. We do not keep appending the entire Telegram history into each prompt.
 
 Included memory:
 
@@ -153,3 +204,26 @@ explicit uploaded image paths from allowed upload folders
 At runtime, those files are copied into `dashboard/data/hermes-workspace/current/`, and Hermes runs from that folder with the file tool enabled. This gives Hermes real file-reading ability while keeping secrets, install files, `.env`, logs, and arbitrary local files outside its intended workspace.
 
 The profitability and decision memory is structured on purpose. The agent should remember what it recommended, what the buyer approved, what was executed, and what should be checked again after 24h, 3 days, and 7 days. MemPalace can be added later as an optional retrieval backend, but the release default stays local, lightweight, and auditable.
+
+## Daily Brief
+
+The buyer-facing daily brief must be a Hermes cron job delivered to Telegram, not a dashboard-side scheduler pretending to be the agent.
+
+Default:
+
+```bash
+hermes cron create \
+  --name "Admira IA - lectura diaria" \
+  --deliver telegram:<buyer_chat_id> \
+  --workdir dashboard/data/hermes-workspace/current \
+  "0 8 * * *" \
+  "<brief prompt>"
+```
+
+The brief should use real Meta data and recent memory when available, mention fluctuations over the last few days, name decisions waiting for approval, and end with:
+
+```text
+¿Tienes alguna pregunta?
+```
+
+If no real Meta data exists, Hermes must say that clearly and must not use demo campaigns or fake ROAS/CPA/CTR.
