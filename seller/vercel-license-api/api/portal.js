@@ -905,6 +905,7 @@ export default async function handler(request, response) {
     let cloudRecoveryRetryTimer = null;
     let cloudStateVersion = 0;
     let cloudPollFailures = 0;
+    let cloudDisplayedProgress = 0;
 
     function setStatus(message, isError = false){
       statusBox.textContent = message || '';
@@ -931,6 +932,7 @@ export default async function handler(request, response) {
         method:'POST',
         headers:{'Content-Type':'application/json'},
         credentials:'same-origin',
+        cache:'no-store',
         body:JSON.stringify(body)
       });
       const data = await response.json().catch(() => ({}));
@@ -979,7 +981,9 @@ export default async function handler(request, response) {
     function cloudProgressMarkup(data){
       const isReady = Boolean(data.ready || data.status === 'ready');
       const rawProgress = clampProgress(data.progress || (isReady ? 100 : 18));
-      const progress = isReady ? rawProgress : Math.min(98, rawProgress);
+      const nextProgress = isReady ? 100 : Math.min(98, rawProgress);
+      cloudDisplayedProgress = Math.max(cloudDisplayedProgress, nextProgress);
+      const progress = isReady ? 100 : cloudDisplayedProgress;
       return '<div class="cloud-progress" style="--progress:'+progress+'%"><span></span></div>' +
         '<div class="cloud-progress-meta"><span>'+escapeHtml(cloudStageLabel(data))+'</span><span>'+progress+'%</span></div>';
     }
@@ -989,11 +993,12 @@ export default async function handler(request, response) {
         cloudCreatePreviewTimer = null;
       }
     }
-    function stopCloudProgressPolling(){
+    function stopCloudProgressPolling(invalidate = false){
       if(cloudProgressTimer){
         clearInterval(cloudProgressTimer);
         cloudProgressTimer = null;
       }
+      if(invalidate) cloudStateVersion += 1;
       cloudPollFailures = 0;
     }
     async function pollCloudProgress(expectedVersion = cloudStateVersion){
@@ -1038,7 +1043,8 @@ export default async function handler(request, response) {
         }
       });
       if(data.ready || data.status === 'ready'){
-        stopCloudProgressPolling();
+        stopCloudProgressPolling(true);
+        cloudDisplayedProgress = 100;
         setStatus('Listo. Ya puedes acceder a tu dashboard.');
       }
       return data;
@@ -1073,6 +1079,7 @@ export default async function handler(request, response) {
     function startCloudProgressPolling(){
       stopCloudCreatePreview();
       stopCloudProgressPolling();
+      cloudDisplayedProgress = 0;
       const expectedVersion = ++cloudStateVersion;
       cloudPollFailures = 0;
       pollCloudProgress(expectedVersion).catch((error) => handleCloudProgressError(error, expectedVersion));
@@ -1313,9 +1320,10 @@ export default async function handler(request, response) {
     }
     async function resetCloudInstall(){
       if(!portalToken) return;
-      const expectedVersion = ++cloudStateVersion;
       stopCloudCreatePreview();
-      stopCloudProgressPolling();
+      stopCloudProgressPolling(true);
+      cloudDisplayedProgress = 0;
+      const expectedVersion = cloudStateVersion;
       setStatus('Limpiando el servidor anterior del portal...');
       try{
         const data = await postJson('/api/portal/cloud/digitalocean', { portal_token: portalToken, action: 'reset_cloud_install' });
@@ -1466,7 +1474,8 @@ export default async function handler(request, response) {
     });
     logoutButton.addEventListener('click', async () => {
       stopCloudCreatePreview();
-      stopCloudProgressPolling();
+      stopCloudProgressPolling(true);
+      cloudDisplayedProgress = 0;
       await fetch('/api/portal/session', { method:'DELETE', credentials:'same-origin' }).catch(() => {});
       portalToken = '';
       cloudRecoveryToken = '';
