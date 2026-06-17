@@ -42,18 +42,18 @@ const ASSETS = [
 
 const improvements = [
   {
-    title: "Codigo de ChatGPT mas confiable",
-    body: "El boton de copiar ahora toma exactamente el ultimo codigo grande visible en pantalla para evitar pegar codigos viejos.",
+    title: "Codigo de ChatGPT corregido",
+    body: "El boton de copiar ahora queda amarrado al codigo grande que aparece en pantalla, evitando pegar codigos viejos.",
     impact: "ChatGPT"
   },
   {
-    title: "Telegram mas facil de terminar",
-    body: "Al pegar la clave de BotFather, el campo se convierte en clave guardada y muestra el siguiente paso para enviar hola y detectar el chat.",
+    title: "Telegram con deteccion clara",
+    body: "Al guardar la clave de BotFather, aparece un boton grande para detectar el chat, elegir el usuario correcto y terminar el onboarding.",
     impact: "Telegram"
   },
   {
-    title: "Video de Telegram compatible",
-    body: "El tutorial de creacion del bot ahora se sirve como MP4 con respaldo MOV para que cargue mejor en navegador, Docker y VPS.",
+    title: "Onboarding mas guiado",
+    body: "El paso final de Telegram baja automaticamente hacia el siguiente boton importante para que el comprador no se pierda.",
     impact: "Onboarding"
   }
 ];

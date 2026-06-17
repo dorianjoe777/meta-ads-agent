@@ -942,10 +942,17 @@ function stepCopy(key){
  return (lang==='es'?es:en)[key];
 }
 function copyCommand(value){navigator.clipboard?.writeText(value).then(()=>toast(t('copied'))).catch(()=>toast(value))}
-function copyVisibleChatGptCode(){
- const visibleCodes=Array.from(document.querySelectorAll('#chatgpt-connect-result .chatgpt-device-code strong'));
- const visible=visibleCodes[visibleCodes.length-1]||null;
- const code=(visible?.textContent||'').replace(/\s+/g,'').trim();
+function normalizeChatGptCode(value){return String(value||'').replace(/\s+/g,'').trim()}
+function copyVisibleChatGptCode(event){
+ const source=event?.currentTarget||event?.target?.closest?.('[data-chatgpt-code]')||null;
+ const card=source?.closest?.('.chatgpt-device-code')||null;
+ let code=normalizeChatGptCode(source?.dataset?.chatgptCode||card?.dataset?.visibleCode||'');
+ if(!code)code=normalizeChatGptCode(card?.querySelector?.('strong')?.textContent||'');
+ if(!code){
+  const visibleCodes=Array.from(document.querySelectorAll('#chatgpt-connect-result .chatgpt-device-code strong')).filter(el=>el.offsetParent!==null);
+  const visible=visibleCodes[visibleCodes.length-1]||null;
+  code=normalizeChatGptCode(visible?.textContent||'');
+ }
  if(!code)return toast(lang==='es'?'No encontré el código visible.':'I could not find the visible code.');
  navigator.clipboard?.writeText(code).then(()=>toast(lang==='es'?`Código copiado: ${code}`:`Code copied: ${code}`)).catch(()=>toast(code));
 }
@@ -1544,7 +1551,7 @@ function telegramVideoMarkup(){
  return `<div class="telegram-video-card"><div class="telegram-video-copy"><span class="guide-eyebrow">${lang==='es'?'Video corto':'Short video'}</span><b>${lang==='es'?'Mira cómo se crea el bot':'Watch how to create the bot'}</b><p>${lang==='es'?'Dale play y sigue el ejemplo. El video muestra BotFather, /newbot y dónde copiar la clave larga.':'Press play and follow the example. The video shows BotFather, /newbot, and where to copy the long key.'}</p></div><div class="telegram-video-frame"><video class="telegram-setup-video" controls playsinline preload="metadata"><source src="${TELEGRAM_GUIDE_VIDEO}" type="video/mp4"><source src="${TELEGRAM_GUIDE_VIDEO_FALLBACK}" type="video/quicktime"></video></div></div>`;
 }
 function telegramTokenSavedInline(){
- return `<div class="telegram-token-saved-inline" data-telegram-saved-card><b>${lang==='es'?'Clave guardada':'Key saved'}</b><p>${lang==='es'?'Ahora abre el bot que creaste en Telegram, envíale "hola" y toca el botón grande para detectar tu chat.':'Now open the bot you created in Telegram, send "hello", and tap the big button to detect your chat.'}</p></div>`;
+ return `<div class="telegram-token-saved-inline" data-telegram-saved-card><div><b>${lang==='es'?'Clave guardada':'Key saved'}</b><p>${lang==='es'?'Ahora abre el bot que creaste en Telegram, envíale "hola" y toca el botón grande para detectar tu chat.':'Now open the bot you created in Telegram, send "hello", and tap the big button to detect your chat.'}</p></div><button class="btn primary telegram-detect-button" type="button" data-action-code="detectTelegramChats()">${lang==='es'?'Ya envié hola, detectar mi chat':'I sent hello, detect my chat'}</button></div>`;
 }
 function telegramStatusMarkup(value={}){
  const v=value||{};
@@ -1567,6 +1574,7 @@ function setTelegramTokenZone(input,stateName,message=''){
  const help=zone.querySelector('[data-telegram-token-help]');
  if(help&&message)help.textContent=message;
  if(stateName==='saved'&&!zone.querySelector('[data-telegram-saved-card]'))zone.insertAdjacentHTML('beforeend',telegramTokenSavedInline());
+ if(stateName==='saved')setTimeout(()=>zone.querySelector('.telegram-detect-button')?.scrollIntoView({behavior:'smooth',block:'center'}),80);
 }
 async function autoSaveTelegramToken(event){
  const input=event?.target;const form=input?.closest?.('form');if(!input||!form)return;
@@ -1722,7 +1730,7 @@ function renderChatGptConnectResult(response){
  const phaseNote=autoNote?`<div class="notice">${escapeHtml(autoNote)}</div>`:'';
  const deviceAuthHelp=r.phase==='device_auth_settings'?`<div class="guide-card chatgpt-settings-help"><b>${lang==='es'?'Haz esto en ChatGPT':'Do this in ChatGPT'}</b><ol><li>${lang==='es'?'Abre ChatGPT con la misma cuenta que usarás aquí.':'Open ChatGPT with the same account you will use here.'}</li><li>${lang==='es'?'Ve a Ajustes > Seguridad.':'Go to Settings > Security.'}</li><li>${lang==='es'?'Activa “Enable device code authorization for Codex”.':'Turn on “Enable device code authorization for Codex”.'}</li><li>${lang==='es'?'Cierra la pestaña de login de ChatGPT/Codex donde viste el error.':'Close the ChatGPT/Codex login tab where you saw the error.'}</li><li>${lang==='es'?'Vuelve aquí y abre el login otra vez.':'Come back here and open the login again.'}</li></ol><div class="chatgpt-settings-actions"><a class="btn" href="https://chatgpt.com/#settings/Security" target="_blank" rel="noopener noreferrer">${lang==='es'?'Abrir configuración de ChatGPT':'Open ChatGPT settings'}</a><button class="btn primary chatgpt-retry-login" type="button" data-action-code="reopenChatGptAuthUrl()">${lang==='es'?'Ya lo activé, abrir login de nuevo':'I enabled it, open login again'}</button></div></div>`:'';
  const loginCode=String(r.login_code||(Array.isArray(r.login_codes)&&r.login_codes.length?r.login_codes[0]:'')||'').trim();
- const codeBlock=loginCode?`<div class="chatgpt-device-code" role="status" aria-live="polite"><div><span>${lang==='es'?'Código para OpenAI':'Code for OpenAI'}</span><strong>${escapeHtml(loginCode)}</strong><small>${lang==='es'?'Pégalo en la pestaña de OpenAI/Codex que se abrió. Si ChatGPT muestra un error en rojo, toca el botón de ayuda.':'Paste it in the OpenAI/Codex tab that opened. If ChatGPT shows a red error, click the help button.'}</small></div><div class="chatgpt-device-actions"><button class="btn primary" type="button" data-action-code="copyVisibleChatGptCode()">${lang==='es'?'Copiar código':'Copy code'}</button><button class="btn" type="button" data-action-code="toggleChatGptDeviceAuthHelp()">${lang==='es'?'Haz clic aquí si te apareció un error':'Click here if you saw an error'}</button></div></div>${chatGptDeviceAuthHelpMarkup()}`:'';
+ const codeBlock=loginCode?`<div class="chatgpt-device-code" data-visible-code="${escapeHtml(loginCode)}" role="status" aria-live="polite"><div><span>${lang==='es'?'Código para OpenAI':'Code for OpenAI'}</span><strong>${escapeHtml(loginCode)}</strong><small>${lang==='es'?'Pégalo en la pestaña de OpenAI/Codex que se abrió. Si ChatGPT muestra un error en rojo, toca el botón de ayuda.':'Paste it in the OpenAI/Codex tab that opened. If ChatGPT shows a red error, click the help button.'}</small></div><div class="chatgpt-device-actions"><button class="btn primary" type="button" data-chatgpt-code="${escapeHtml(loginCode)}" data-action-code="copyVisibleChatGptCode(event)">${lang==='es'?'Copiar código':'Copy code'}</button><button class="btn" type="button" data-action-code="toggleChatGptDeviceAuthHelp()">${lang==='es'?'Haz clic aquí si te apareció un error':'Click here if you saw an error'}</button></div></div>${chatGptDeviceAuthHelpMarkup()}`:'';
  const links=urls.length?`<div class="onboarding-step-actions">${urls.map(url=>`<a class="btn primary" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${lang==='es'?'Abrir login':'Open login'}</a>`).join('')}</div>`:'';
  const inputBox=running&&r.needs_input?`<form class="onboarding-mini chatgpt-inline-input" data-submit-code="sendChatGptTerminalInput(event)"><label>${lang==='es'?'Responder al agente':'Reply to agent'}<input name="input" autocomplete="off" placeholder="${lang==='es'?'Ej: número de OpenAI Codex o Enter':'Ex: OpenAI Codex number or Enter'}"></label><button class="btn primary" type="submit">${lang==='es'?'Enviar':'Send'}</button></form>`:'';
  const command='';
