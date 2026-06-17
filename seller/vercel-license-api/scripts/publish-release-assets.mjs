@@ -42,19 +42,19 @@ const ASSETS = [
 
 const improvements = [
   {
-    title: "Actualizaciones mas limpias",
-    body: "Despues de instalar una actualizacion, el aviso desaparece correctamente y el dashboard reconoce la version instalada.",
-    impact: "Update"
+    title: "Agente por Telegram mas coherente",
+    body: "El agente ya no trata la entrevista del negocio, marca o campanas previas como bloqueos de configuracion.",
+    impact: "Telegram"
   },
   {
-    title: "Onboarding sin ruido extra",
-    body: "La configuracion inicial ya no bloquea el dashboard por preguntas que ahora se resuelven hablando con el agente por Telegram.",
-    impact: "Onboarding"
+    title: "Modelo recomendado mas claro",
+    body: "La conexion del cerebro del agente usa gpt-5.5 como opcion principal, evitando la opcion automatica que podia no aparecer.",
+    impact: "Agente"
   },
   {
-    title: "Tour inicial mas claro",
-    body: "El primer recorrido permite probar estilos visuales sin desenfocar los botones que el comprador debe tocar.",
-    impact: "Experiencia"
+    title: "Datos reales sin avisos falsos",
+    body: "Si faltan datos reales, el producto ahora apunta solo a la conexion tecnica que falta, no a preguntas que el agente puede hacer despues.",
+    impact: "Datos"
   }
 ];
 

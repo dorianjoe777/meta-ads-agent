@@ -11,7 +11,7 @@ from pathlib import Path
 
 from hermes_bridge import hermes_environment, prepare_hermes_workspace
 from local_store import now_iso
-from product_config import ROOT_DIR, env_bool, env_int
+from product_config import ROOT_DIR, env_bool, env_int, normalize_hermes_model
 
 
 DATA_DIR = ROOT_DIR / "dashboard" / "data"
@@ -77,13 +77,20 @@ def gateway_prompt(language="es"):
             "You are Admira IA, the buyer's private Meta Ads manager. You are running directly inside Hermes Telegram Gateway. "
             "Use Hermes memory and workspace files before asking repeated questions. Do not cite ROAS, CPA, CTR, winners, losers, "
             "or campaign names unless CURRENT_CONTEXT.json confirms real Meta data. Protected Meta actions must be prepared for approval; "
-            "never claim execution unless a product tool result confirms it."
+            "never claim execution unless a product tool result confirms it. Business interview, brand, creatives, and previous campaign "
+            "questions are handled by this Telegram conversation and are not dashboard setup blockers. Never tell the buyer setup is incomplete "
+            "for those reasons; only say setup is missing when license, Meta connection, ad account, destination, real Meta data, ChatGPT/Codex, "
+            "or Telegram itself is actually missing in CURRENT_CONTEXT.json or a product tool result."
         )
     return (
         "Eres Admira IA, el manager privado de Meta Ads del comprador. Estás hablando directamente desde Hermes Telegram Gateway. "
         "Usa tu memoria de Hermes y los archivos de este workspace antes de repetir preguntas. No cites ROAS, CPA, CTR, ganadoras, "
         "perdedoras ni campañas si CURRENT_CONTEXT.json no confirma datos reales de Meta. Las acciones protegidas de Meta se preparan "
-        "para aprobación; nunca digas que ejecutaste algo si una herramienta del producto no lo confirmó."
+        "para aprobación; nunca digas que ejecutaste algo si una herramienta del producto no lo confirmó. La entrevista del negocio, marca, "
+        "creativos y campañas previas se completan conversando por Telegram y no bloquean la configuración inicial del dashboard. No le digas "
+        "al comprador que falta completar configuración por esas razones; solo menciona que falta configurar algo si CURRENT_CONTEXT.json o una "
+        "herramienta del producto confirma que falta licencia, conexión de Meta, cuenta publicitaria, destino, datos reales de Meta, ChatGPT/Codex "
+        "o Telegram."
     )
 
 
@@ -113,7 +120,7 @@ def write_gateway_files(config):
     config_yaml = [
         "model:",
         "  provider: openai-codex",
-        f"  default: {_quote_yaml(getattr(config, 'hermes_model', '') or 'auto')}",
+        f"  default: {_quote_yaml(normalize_hermes_model(getattr(config, 'hermes_model', '')))}",
         "agent:",
         "  max_turns: 60",
         "  gateway_timeout: 1800",

@@ -23,7 +23,7 @@ from pause_logic import PauseManager, AdPerformance
 from auto_warmup import AutoWarmupManager
 from license import activate_license, format_license, license_status, normalize_license_entitlements, validate_license_key
 from security import dashboard_token_valid, hash_dashboard_password, redact_payload
-from product_config import AgentConfig
+from product_config import AgentConfig, normalize_hermes_model
 from agent_chat import account_context, parse_skill_response
 import agent_chat
 import hermes_bridge
@@ -963,6 +963,10 @@ class IntegrationTestSuite:
         """Test the dashboard ChatGPT/Codex connection endpoint prefers an automatic terminal action."""
         print("\nTesting Dashboard ChatGPT/Codex Connect Action...")
 
+        self.assert_true(normalize_hermes_model("") == "gpt-5.5", "Empty Hermes model uses gpt-5.5")
+        self.assert_true(normalize_hermes_model("auto") == "gpt-5.5", "Legacy auto Hermes model uses gpt-5.5")
+        self.assert_true(normalize_hermes_model("recommended") == "gpt-5.5", "Legacy recommended Hermes model uses gpt-5.5")
+
         dashboard = load_dashboard_module()
         captured = {}
         original_update = dashboard.update_env_values
@@ -978,6 +982,7 @@ class IntegrationTestSuite:
             self.assert_true(result["status"] == "terminal_opened", "Connect action opens the terminal when the environment allows it")
             self.assert_true(captured.get("AGENT_CHAT_PROVIDER") == "hermes", "Connect action selects Hermes as the agent provider")
             self.assert_true(captured.get("HERMES_REQUIRE_CODEX_AUTH") == "true", "Connect action keeps Codex auth required by default")
+            self.assert_true(captured.get("HERMES_MODEL") == "gpt-5.5", "ChatGPT/Codex connection pins gpt-5.5 by default instead of an unavailable auto option")
         finally:
             dashboard.update_env_values = original_update
             dashboard.launch_hermes_terminal = original_launch
@@ -1486,6 +1491,8 @@ class IntegrationTestSuite:
             self.assert_true("mcp_servers:" in config_yaml and "admira:" in config_yaml and "admira_mcp_server.py" in config_yaml, "Hermes Gateway registers the Admira MCP product-tool bridge")
             self.assert_true("    - admira" in config_yaml, "Hermes Gateway explicitly enables Admira MCP tools for Telegram")
             self.assert_true("disabled_toolsets:" in config_yaml and "code_execution" in config_yaml and str(workspace) in config_yaml, "Hermes Gateway config keeps Telegram in the curated workspace")
+            self.assert_true('default: "gpt-5.5"' in config_yaml and 'default: "auto"' not in config_yaml, "Hermes Gateway normalizes legacy auto model to gpt-5.5")
+            self.assert_true("entrevista del negocio" in config_yaml and "no bloquean la configuración inicial" in config_yaml, "Hermes Gateway tells Telegram that agent interviews are not dashboard blockers")
             self.assert_true("¿Tienes alguna pregunta?" in prompt and "No uses datos demo" in prompt, "Daily brief prompt ends with the buyer question and blocks demo data")
         finally:
             hermes_gateway.prepare_hermes_workspace = original_prepare
@@ -3787,7 +3794,7 @@ class IntegrationTestSuite:
         self.assert_true("Copiar comando" not in html and ".agent-model-option .route-icon" in html and ".agent-route-panel.active" in html, "ChatGPT/Codex setup hides command-copy UI and keeps route choices readable")
         self.assert_true("Copiar paso" not in html and "Copy step" not in html, "ChatGPT/Codex connection no longer presents copy-only wording")
         self.assert_true("Abrir configuración de ChatGPT" in html and "chatgpt-settings-link" in html and "chatgpt-settings-actions" in html, "ChatGPT/Codex setup gives buyers a direct button to the ChatGPT security settings")
-        self.assert_true("Modelo para ChatGPT/Codex" in html and "<select name=\"hermes_model\">" in html and "agentModelFormPayload()" in html, "ChatGPT/Codex setup exposes and submits a clear model selector")
+        self.assert_true("Modelo para ChatGPT/Codex" in html and "<select name=\"hermes_model\">" in html and "gpt-5.5" in html and "Recomendado automático" not in html and "agentModelFormPayload()" in html, "ChatGPT/Codex setup exposes gpt-5.5 as the clear default model selector")
         self.assert_true("agent_chat_base_url" in html and "agent_chat_api_key" in html and "custom_api" in html, "OpenAI-compatible brain settings are exposed without showing saved keys")
         self.assert_true("DigitalOcean mostraré aquí el enlace" in html and "Ver diagnóstico para soporte" in html, "Hermes/ChatGPT setup has a browser-based VPS path with diagnostics folded")
         self.assert_true("Ajustes > Seguridad" in html and "Enable device code authorization for Codex" in html and "chatgpt-preflight" in html and ".chatgpt-preflight ol" in html, "ChatGPT/Codex setup tells buyers to enable device-code authorization before login without overlapping the model field")
@@ -3881,6 +3888,8 @@ class IntegrationTestSuite:
         self.assert_true("deferred-onboarding-banner" in html and "Completa la configuración para ver datos reales" in html, "Skipped setup creates a visible reminder instead of trapping the buyer")
         self.assert_true("Configuración inicial pendiente" in html and "el agente no analizará campañas reales" in html, "Deferred onboarding is not described as fully finished")
         self.assert_true("agentInterviewReasons" in html and "El agente seguirá con la entrevista del negocio por Telegram" in html, "Business, brand, and campaign interview work is handled by the agent instead of blocking dashboard setup")
+        filtered = dashboard.onboarding_health({"completed": True, "skipped": True, "deferred": True, "deferred_reasons": ["entrevista_negocio", "branding_creativos", "campanas_anuncios"]}, type("Cfg", (), {})(), {"source": "demo"}, {"valid": True}, {"page_id": "1", "url": "https://example.com"}, {})
+        self.assert_true(filtered.get("deferred") is False and not filtered.get("deferred_reasons"), "Agent interview items do not block dashboard/Telegram real-data readiness")
         self.assert_true("Datos de ejemplo, no reales" in html, "Demo metrics are labeled as not real in the UI")
         self.assert_true("Con supervisión" in html, "Buyer-facing supervised control wording exists")
         self.assert_true("Piloto automático" in html, "Buyer-facing autopilot wording exists")
@@ -4558,6 +4567,7 @@ class IntegrationTestSuite:
         self.assert_true("https://admiroia.uboost.lat" in env_example, "Buyer release uses deployed license server")
         self.assert_true("LICENSE_PUBLIC_KEY=" in env_example, "Buyer release includes only license verification key")
         self.assert_true("AGENT_CHAT_BASE_URL=https://api.minimax.io/v1" in env_example and "AGENT_CHAT_MODEL=MiniMax-M3" in env_example and "AGENT_CHAT_PROVIDER=hermes" in env_example and "AGENT_BRAIN_PROVIDER=openai_codex" in env_example, "Buyer release documents Hermes runtime plus MiniMax M3/OpenAI-compatible brain support")
+        self.assert_true("HERMES_MODEL=gpt-5.5" in env_example, "Buyer release defaults ChatGPT/Codex to gpt-5.5 instead of auto")
         product_version = (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()
         self.assert_true(f"META_ADS_AGENT_VERSION={product_version}" in env_example, "Buyer release exposes the installed product version")
         bootstrap_config = (ROOT_DIR / "installer" / "release-bootstrap.env").read_text(encoding="utf-8")

@@ -78,7 +78,7 @@ from hermes_gateway import telegram_settings
 from license import activate_license, default_device_id, license_status, mark_license_install_state, normalize_license_entitlements, validate_license_key
 from local_store import now_iso, read_json, write_json, write_private_json
 from meta_upload import recent_uploads, stage_upload
-from product_config import ENV_FILE, env_bool, load_config
+from product_config import ENV_FILE, env_bool, load_config, normalize_hermes_model
 from security import dashboard_password_configured, dashboard_token_valid, hash_dashboard_password, is_local_host, is_public_bind, redact_payload
 from setup_status import build_setup_status
 from social_flow_client import SocialFlowClient
@@ -152,6 +152,8 @@ HERMES_LOGIN_STATE = {
     "fd": None,
     "command": "",
 }
+AGENT_INTERVIEW_DEFERRED_REASONS = {"entrevista_negocio", "branding_creativos", "campanas_anuncios", "perfil_negocio"}
+DASHBOARD_SETUP_DEFERRED_REASONS = {"licencia", "conexion_facebook", "cuenta_publicitaria", "cerebro_agente", "telegram", "conexion_meta", "destinos", "datos_reales"}
 CHAT_HISTORY_LIMIT = 40
 CREATIVE_MEMORY_WIZARD_FILE = DATA_DIR / "creative_memory_wizard.json"
 BUSINESS_DATA_FILES = [
@@ -2501,7 +2503,7 @@ def hermes_login_prompt_state(output, state=None):
             "login_code": "",
         }
     if hermes_model_prompt_visible(cleaned):
-        preferred_model = str(state.get("preferred_model") or "").strip()
+        preferred_model = normalize_hermes_model(state.get("preferred_model"))
         chosen = bool(preferred_model and hermes_model_choice(cleaned, preferred_model))
         return {
             "phase": "model_selection",
@@ -2544,7 +2546,7 @@ def maybe_auto_drive_hermes_browserless(session_id, master_fd):
             else:
                 payload = ""
         elif not model_sent and hermes_model_prompt_visible(output):
-            preferred_model = str(HERMES_LOGIN_STATE.get("preferred_model") or "").strip()
+            preferred_model = normalize_hermes_model(HERMES_LOGIN_STATE.get("preferred_model"))
             model_choice = hermes_model_choice(output, preferred_model)
             HERMES_LOGIN_STATE["auto_model_sent"] = True
             HERMES_LOGIN_STATE["phase"] = "model_selection"
@@ -2855,7 +2857,7 @@ def start_hermes_browserless_login(config):
                     "auto_provider_sent": False,
                     "auto_codex_subprovider_sent": False,
                     "auto_model_sent": False,
-                    "preferred_model": str(getattr(config, "hermes_model", "") or "").strip(),
+                    "preferred_model": normalize_hermes_model(getattr(config, "hermes_model", "")),
                     "started_at": now_iso(),
                     "updated_at": now_iso(),
                     "proc": proc,
@@ -2867,7 +2869,7 @@ def start_hermes_browserless_login(config):
         return hermes_connect_response(
             "browser_login_started",
             "Conecta ChatGPT desde este navegador",
-            f"Abrí la sesión segura dentro de este servidor. Voy a elegir OpenAI Codex y {('el modelo ' + config.hermes_model) if config.hermes_model else 'el modelo recomendado'} automáticamente. Si aparece un enlace, ábrelo aquí.",
+            f"Abrí la sesión segura dentro de este servidor. Voy a elegir OpenAI Codex y el modelo {normalize_hermes_model(config.hermes_model)} automáticamente. Si aparece un enlace, ábrelo aquí.",
             mode="browserless_started",
             command=hermes_browserless_shell_command(config),
             running=True,
@@ -2953,8 +2955,7 @@ def probe_hermes_model_login(config):
 def connect_agent_model(payload=None):
     payload = payload or {}
     env_updates = {"AGENT_CHAT_PROVIDER": "hermes", "AGENT_BRAIN_PROVIDER": "openai_codex", "HERMES_REQUIRE_CODEX_AUTH": "true"}
-    if "hermes_model" in payload:
-        env_updates["HERMES_MODEL"] = str(payload.get("hermes_model") or "").strip()
+    env_updates["HERMES_MODEL"] = normalize_hermes_model(payload.get("hermes_model") if "hermes_model" in payload else "")
     update_env_values(env_updates)
     config = load_config()
     ready, auth_detail = hermes_codex_ready(config)
@@ -3015,7 +3016,7 @@ def save_setup_config(payload):
         if api_key:
             env_updates["AGENT_CHAT_API_KEY"] = api_key
     if "hermes_model" in payload:
-        hermes_model = str(payload.get("hermes_model") or "").strip()
+        hermes_model = normalize_hermes_model(payload.get("hermes_model"))
         env_updates["HERMES_MODEL"] = hermes_model
     if env_updates:
         update_env_values(env_updates)
@@ -4248,6 +4249,10 @@ def load_onboarding_state():
     return state
 
 
+def dashboard_setup_deferred_reasons(reasons):
+    return [reason for reason in (reasons or []) if reason in DASHBOARD_SETUP_DEFERRED_REASONS and reason not in AGENT_INTERVIEW_DEFERRED_REASONS]
+
+
 def complete_onboarding():
     config = load_config()
     if not dashboard_password_configured(config):
@@ -4361,8 +4366,7 @@ def reset_onboarding():
 def onboarding_health(state, config, metrics, current_license_status, destination, business_profile):
     """Guide a completed legacy install back through setup if its real connection is gone."""
     result = dict(state)
-    dashboard_setup_only = {"licencia", "conexion_facebook", "cuenta_publicitaria", "cerebro_agente", "telegram", "conexion_meta", "destinos", "datos_reales"}
-    result["deferred_reasons"] = [reason for reason in result.get("deferred_reasons", []) if reason in dashboard_setup_only]
+    result["deferred_reasons"] = dashboard_setup_deferred_reasons(result.get("deferred_reasons", []))
     if result.get("deferred") and not result["deferred_reasons"]:
         result["deferred"] = False
     result["requires_repair"] = False

@@ -7,6 +7,14 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT_DIR / ".env"
+DEFAULT_HERMES_CODEX_MODEL = "gpt-5.5"
+
+
+def normalize_hermes_model(value):
+    model = str(value or "").strip()
+    if not model or model.lower() in {"auto", "recommended", "recomendado", "default"}:
+        return DEFAULT_HERMES_CODEX_MODEL
+    return model
 
 
 def load_dotenv(path=ENV_FILE):
@@ -186,7 +194,7 @@ class AgentConfig:
     license_public_key: str = ""
     hermes_cli: str = "hermes"
     hermes_home: str = ""
-    hermes_model: str = ""
+    hermes_model: str = DEFAULT_HERMES_CODEX_MODEL
     hermes_timeout_seconds: int = 300
     hermes_status_timeout_seconds: int = 20
     hermes_response_timeout_seconds: int = 300
@@ -281,7 +289,7 @@ def load_config():
         license_public_key=os.environ.get("LICENSE_PUBLIC_KEY", ""),
         hermes_cli=os.environ.get("HERMES_CLI", "hermes"),
         hermes_home=normalize_local_path(os.environ.get("HERMES_HOME", ""), ROOT_DIR / "dashboard" / "data" / "hermes-home"),
-        hermes_model=os.environ.get("HERMES_MODEL", ""),
+        hermes_model=normalize_hermes_model(os.environ.get("HERMES_MODEL", "")),
         hermes_timeout_seconds=env_int("HERMES_TIMEOUT_SECONDS", 300),
         hermes_status_timeout_seconds=env_int("HERMES_STATUS_TIMEOUT_SECONDS", 20),
         hermes_response_timeout_seconds=env_int("HERMES_RESPONSE_TIMEOUT_SECONDS", env_int("HERMES_TIMEOUT_SECONDS", 300)),

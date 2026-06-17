@@ -13,6 +13,7 @@ from pathlib import Path
 from agent_runtime import build_system_prompt
 from decision_memory import decision_memory_payload, format_learning_log
 from local_store import read_json
+from product_config import normalize_hermes_model
 from security import redact_payload
 
 
@@ -134,6 +135,8 @@ def combined_agent_rules():
 # Runtime Workspace Contract
 
 Hermes is the agentic runtime and conversation owner. The product backend is only the transport, safety, and execution layer.
+
+Business interview, brand, creative direction, and previous campaign questions are handled by the agent conversation. They are not dashboard setup blockers. Do not tell the buyer "Completa la configuración para ver datos reales" or similar because those interview items are pending. Only describe setup as missing when the current context or a product tool confirms a real technical requirement is missing: license, Meta connection, ad account, destination, real Meta data, ChatGPT/Codex, or Telegram.
 
 For each turn, read the buyer message normally. If you need live account context, use the local files in this workspace:
 
@@ -429,7 +432,7 @@ def hermes_brain_settings(config):
         return {
             "brain": "openai_codex",
             "provider": "openai-codex",
-            "model": str(getattr(config, "hermes_model", "") or "").strip(),
+            "model": normalize_hermes_model(getattr(config, "hermes_model", "")),
             "base_url": "",
             "api_key": "",
             "requires_codex_auth": True,
