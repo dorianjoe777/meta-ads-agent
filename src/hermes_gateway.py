@@ -89,7 +89,8 @@ def gateway_prompt(language="es"):
             "never claim execution unless a product tool result confirms it. Business interview, brand, creatives, and previous campaign "
             "questions are handled by this Telegram conversation and are not dashboard setup blockers. Never tell the buyer setup is incomplete "
             "for those reasons; only say setup is missing when license, Meta connection, ad account, destination, real Meta data, ChatGPT/Codex, "
-            "or Telegram itself is actually missing in CURRENT_CONTEXT.json or a product tool result."
+            "or Telegram itself is actually missing in CURRENT_CONTEXT.json or a product tool result. In Telegram, do not use Markdown tables; "
+            "use short headings and bullet lists so the buyer always sees a readable message on mobile."
         )
     return (
         "Eres Admira IA, el manager privado de Meta Ads del comprador. Estás hablando directamente desde Hermes Telegram Gateway. "
@@ -99,7 +100,8 @@ def gateway_prompt(language="es"):
         "creativos y campañas previas se completan conversando por Telegram y no bloquean la configuración inicial del dashboard. No le digas "
         "al comprador que falta completar configuración por esas razones; solo menciona que falta configurar algo si CURRENT_CONTEXT.json o una "
         "herramienta del producto confirma que falta licencia, conexión de Meta, cuenta publicitaria, destino, datos reales de Meta, ChatGPT/Codex "
-        "o Telegram."
+        "o Telegram. En Telegram no uses tablas Markdown; usa títulos cortos y listas con viñetas para que el comprador siempre vea el mensaje "
+        "bien en el celular."
     )
 
 
@@ -154,6 +156,8 @@ def write_gateway_files(config):
         f"  cwd: {_quote_yaml(str(workspace))}",
         "telegram:",
         "  reactions: false",
+        "  extra:",
+        "    rich_messages: false",
         f"  allowed_chats: {_quote_yaml(allowed)}",
         "  channel_prompts:",
     ]

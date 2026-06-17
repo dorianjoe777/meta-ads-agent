@@ -43,19 +43,19 @@ const ASSETS = [
 
 const improvements = [
   {
-    title: "Telegram mas resistente a actualizaciones",
-    body: "Evita errores internos cuando una instalacion queda con archivos mezclados despues de actualizar.",
+    title: "Telegram sin burbujas vacias",
+    body: "Corrige respuestas que a veces se veian vacias cuando el manager enviaba analisis largos.",
     impact: "Telegram"
   },
   {
-    title: "Modelo del agente estable",
-    body: "Mantiene el modelo recomendado como valor por defecto incluso en instalaciones antiguas.",
-    impact: "Agente"
+    title: "Mejor lectura de mensajes con fotos",
+    body: "Hace mas estable la conversacion cuando envias imagenes y texto en el mismo mensaje.",
+    impact: "Telegram"
   },
   {
-    title: "Lectura real sin ruido tecnico",
-    body: "Si algo falla al revisar Meta, el mensaje evita mostrar errores tecnicos al comprador.",
-    impact: "Datos"
+    title: "Respuestas mas claras en el celular",
+    body: "El manager ahora prioriza listas y secciones faciles de leer en Telegram.",
+    impact: "Agente"
   }
 ];
 
