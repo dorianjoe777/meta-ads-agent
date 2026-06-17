@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { put } from "@vercel/blob";
@@ -66,6 +67,11 @@ const releases = await readReleases();
 releases.channels ||= {};
 const current = releases.channels[channel] || { assets: {} };
 current.version = version;
+current.asset_name = "MetaAdsAgent-source.zip";
+current.github_repo = process.env.META_ADS_GITHUB_REPO || current.github_repo || "dorianjoe777/meta-ads-agent";
+current.github_release_tag = version;
+delete current.github_asset_id;
+delete current.github_asset_api_url;
 current.published_at = new Date().toISOString();
 current.improvements = improvements;
 current.assets = {};
@@ -78,6 +84,7 @@ for (const asset of ASSETS) {
   }
   const blobPath = `releases/${channel}/${version}/${asset.filename}`;
   const body = await readFile(localPath);
+  const sha256 = createHash("sha256").update(body).digest("hex");
   await put(blobPath, body, {
     access: "private",
     contentType: asset.content_type,
@@ -87,9 +94,14 @@ for (const asset of ASSETS) {
   current.assets[asset.asset_name] = {
     ...asset,
     blob_path: blobPath,
-    source_url: ""
+    source_url: "",
+    sha256
   };
   console.log(`Published ${asset.filename} -> ${blobPath}`);
+}
+
+if (current.assets["MetaAdsAgent-source.zip"]?.sha256) {
+  current.sha256 = current.assets["MetaAdsAgent-source.zip"].sha256;
 }
 
 releases.channels[channel] = current;
