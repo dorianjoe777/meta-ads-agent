@@ -106,12 +106,13 @@ if command -v hermes >/dev/null 2>&1; then
 else
   echo "Hermes Agent was not found."
   echo "Attempting to install Hermes Agent so the manager can use ChatGPT/Codex OAuth through Hermes."
-  python3 -m pip install --user "mcp>=1.0.0" "git+https://github.com/NousResearch/hermes-agent.git" || echo "Hermes install failed. Install it manually, then run: hermes model"
+  python3 -m pip install --user "mcp>=1.0.0" "python-telegram-bot>=21,<22" "git+https://github.com/NousResearch/hermes-agent.git" || echo "Hermes install failed. Install it manually, then run: hermes model"
 fi
 
-python3 - <<'PY' || python3 -m pip install --user "mcp>=1.0.0" || echo "MCP package install failed. Hermes Telegram tools may need: python3 -m pip install --user mcp"
+python3 - <<'PY' || python3 -m pip install --user "mcp>=1.0.0" "python-telegram-bot>=21,<22" || echo "MCP/Telegram package install failed. Hermes Telegram tools may need: python3 -m pip install --user mcp python-telegram-bot"
 import importlib.util
-raise SystemExit(0 if importlib.util.find_spec("mcp") else 1)
+required = ("mcp", "telegram")
+raise SystemExit(0 if all(importlib.util.find_spec(name) for name in required) else 1)
 PY
 
 python3 -m py_compile src/daily_agent.py dashboard/monitoring-dashboard.py
