@@ -4527,6 +4527,8 @@ class IntegrationTestSuite:
         dashboard_css_source = (ROOT_DIR / "public" / "dashboard" / "dashboard.css").read_text(encoding="utf-8")
         dashboard_js_source = (ROOT_DIR / "public" / "dashboard" / "dashboard.js").read_text(encoding="utf-8")
         dashboard_source = dashboard_server_source + "\n" + dashboard_css_source + "\n" + dashboard_js_source
+        hermes_gateway_source = (ROOT_DIR / "src" / "hermes_gateway.py").read_text(encoding="utf-8")
+        hermes_bridge_source = (ROOT_DIR / "src" / "hermes_bridge.py").read_text(encoding="utf-8")
         content_dashboard_source = (ROOT_DIR / "dashboard" / "content-dashboard.py").read_text(encoding="utf-8")
         dockerignore = (ROOT_DIR / ".dockerignore").read_text(encoding="utf-8")
         docker_entrypoint = (ROOT_DIR / "scripts" / "docker-entrypoint.sh").read_text(encoding="utf-8")
@@ -4568,6 +4570,7 @@ class IntegrationTestSuite:
         self.assert_true("LICENSE_PUBLIC_KEY=" in env_example, "Buyer release includes only license verification key")
         self.assert_true("AGENT_CHAT_BASE_URL=https://api.minimax.io/v1" in env_example and "AGENT_CHAT_MODEL=MiniMax-M3" in env_example and "AGENT_CHAT_PROVIDER=hermes" in env_example and "AGENT_BRAIN_PROVIDER=openai_codex" in env_example, "Buyer release documents Hermes runtime plus MiniMax M3/OpenAI-compatible brain support")
         self.assert_true("HERMES_MODEL=gpt-5.5" in env_example, "Buyer release defaults ChatGPT/Codex to gpt-5.5 instead of auto")
+        self.assert_true("except ImportError" in hermes_gateway_source and "gpt-5.5" in hermes_gateway_source and "except ImportError" in hermes_bridge_source and "gpt-5.5" in hermes_bridge_source and "except ImportError" in dashboard_server_source and "gpt-5.5" in dashboard_server_source, "Hermes and dashboard tolerate mixed-version installs when model normalization is missing")
         product_version = (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()
         self.assert_true(f"META_ADS_AGENT_VERSION={product_version}" in env_example, "Buyer release exposes the installed product version")
         bootstrap_config = (ROOT_DIR / "installer" / "release-bootstrap.env").read_text(encoding="utf-8")

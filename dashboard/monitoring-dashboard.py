@@ -78,12 +78,21 @@ from hermes_gateway import telegram_settings
 from license import activate_license, default_device_id, license_status, mark_license_install_state, normalize_license_entitlements, validate_license_key
 from local_store import now_iso, read_json, write_json, write_private_json
 from meta_upload import recent_uploads, stage_upload
-from product_config import ENV_FILE, env_bool, load_config, normalize_hermes_model
+from product_config import ENV_FILE, env_bool, load_config
 from security import dashboard_password_configured, dashboard_token_valid, hash_dashboard_password, is_local_host, is_public_bind, redact_payload
 from setup_status import build_setup_status
 from social_flow_client import SocialFlowClient
 from telegram_agent import bot_request as telegram_bot_request
 from telegram_agent import reset_polling_state as reset_telegram_polling_state
+
+try:
+    from product_config import normalize_hermes_model
+except ImportError:
+    def normalize_hermes_model(value):
+        model = str(value or "").strip()
+        if not model or model.lower() in {"auto", "recommended", "recomendado", "default"}:
+            return "gpt-5.5"
+        return model
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent

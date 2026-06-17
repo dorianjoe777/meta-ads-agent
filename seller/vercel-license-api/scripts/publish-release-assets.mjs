@@ -43,18 +43,18 @@ const ASSETS = [
 
 const improvements = [
   {
-    title: "Agente por Telegram mas coherente",
-    body: "El agente ya no trata la entrevista del negocio, marca o campanas previas como bloqueos de configuracion.",
+    title: "Telegram mas resistente a actualizaciones",
+    body: "Evita errores internos cuando una instalacion queda con archivos mezclados despues de actualizar.",
     impact: "Telegram"
   },
   {
-    title: "Modelo recomendado mas claro",
-    body: "La conexion del cerebro del agente usa gpt-5.5 como opcion principal, evitando la opcion automatica que podia no aparecer.",
+    title: "Modelo del agente estable",
+    body: "Mantiene el modelo recomendado como valor por defecto incluso en instalaciones antiguas.",
     impact: "Agente"
   },
   {
-    title: "Datos reales sin avisos falsos",
-    body: "Si faltan datos reales, el producto ahora apunta solo a la conexion tecnica que falta, no a preguntas que el agente puede hacer despues.",
+    title: "Lectura real sin ruido tecnico",
+    body: "Si algo falla al revisar Meta, el mensaje evita mostrar errores tecnicos al comprador.",
     impact: "Datos"
   }
 ];

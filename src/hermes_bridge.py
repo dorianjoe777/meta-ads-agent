@@ -13,8 +13,16 @@ from pathlib import Path
 from agent_runtime import build_system_prompt
 from decision_memory import decision_memory_payload, format_learning_log
 from local_store import read_json
-from product_config import normalize_hermes_model
 from security import redact_payload
+
+try:
+    from product_config import normalize_hermes_model
+except ImportError:
+    def normalize_hermes_model(value):
+        model = str(value or "").strip()
+        if not model or model.lower() in {"auto", "recommended", "recomendado", "default"}:
+            return "gpt-5.5"
+        return model
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent

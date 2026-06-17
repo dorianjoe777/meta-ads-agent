@@ -11,7 +11,16 @@ from pathlib import Path
 
 from hermes_bridge import hermes_environment, prepare_hermes_workspace
 from local_store import now_iso
-from product_config import ROOT_DIR, env_bool, env_int, normalize_hermes_model
+from product_config import ROOT_DIR, env_bool, env_int
+
+try:
+    from product_config import normalize_hermes_model
+except ImportError:
+    def normalize_hermes_model(value):
+        model = str(value or "").strip()
+        if not model or model.lower() in {"auto", "recommended", "recomendado", "default"}:
+            return "gpt-5.5"
+        return model
 
 
 DATA_DIR = ROOT_DIR / "dashboard" / "data"
