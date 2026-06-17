@@ -8,6 +8,7 @@ let destinationAutoDiscoveryKey='';
 let updateCheckStarted=false;
 let updateInfo=null;
 let updateAutoTimer=null;
+const UPDATE_INSTALLED_ACK_KEY='dashboardUpdateInstalledVersion';
 const fmtMoney=n=>'$'+Number(n||0).toLocaleString(undefined,{maximumFractionDigits:2});
 const fmtPct=n=>Number(n||0).toFixed(2)+'%';
 const qs=s=>document.querySelector(s);
@@ -990,10 +991,12 @@ function renderOnboarding(){
  const doneState=state.onboarding||{};
  if(doneState.completed){
   const when=doneState.completed_at?new Date(doneState.completed_at).toLocaleString():'';
-  const pendingState=Boolean(doneState.deferred||doneState.skipped||doneState.requires_repair);
-  if(pendingState){
-   const reasons=(doneState.deferred_reasons||doneState.repair_reasons||[]).filter(Boolean);
-   const reasonLabels={licencia:lang==='es'?'licencia':'license',conexion_facebook:lang==='es'?'Facebook':'Facebook',conexion_meta:lang==='es'?'Facebook':'Facebook',cuenta_publicitaria:lang==='es'?'cuenta publicitaria':'ad account',cerebro_agente:lang==='es'?'ChatGPT':'ChatGPT',telegram:'Telegram',destinos:lang==='es'?'página y web':'Page and website',datos_reales:lang==='es'?'datos reales de Meta':'real Meta data',perfil_negocio:lang==='es'?'perfil del negocio':'business profile',entrevista_negocio:lang==='es'?'entrevista del negocio':'business interview',branding_creativos:lang==='es'?'marca y creativos':'brand and creatives',campanas_anuncios:lang==='es'?'campañas previas':'past campaigns'};
+	  const pendingState=Boolean(doneState.deferred||doneState.skipped||doneState.requires_repair);
+	  if(pendingState){
+	   const agentInterviewReasons=new Set(['entrevista_negocio','branding_creativos','campanas_anuncios','perfil_negocio']);
+	   const reasons=(doneState.deferred_reasons||doneState.repair_reasons||[]).filter(reason=>reason&&!agentInterviewReasons.has(reason));
+	   if(!reasons.length){qs('#onboarding-wizard').innerHTML=`<div class="onboarding"><div class="next-step"><div><b>${lang==='es'?'Configuración inicial terminada':'Initial setup complete'}</b><p>${lang==='es'?'La guía inicial ya fue completada. El agente seguirá con la entrevista del negocio por Telegram.':'The initial guide is complete. The agent will continue the business interview through Telegram.'}${when?` ${when}`:''}</p></div><button class="btn" data-action-code="resetOnboarding()">${lang==='es'?'Revisar configuración inicial':'Run initial setup again'}</button></div></div>`;return}
+	   const reasonLabels={licencia:lang==='es'?'licencia':'license',conexion_facebook:lang==='es'?'Facebook':'Facebook',conexion_meta:lang==='es'?'Facebook':'Facebook',cuenta_publicitaria:lang==='es'?'cuenta publicitaria':'ad account',cerebro_agente:lang==='es'?'ChatGPT':'ChatGPT',telegram:'Telegram',destinos:lang==='es'?'página y web':'Page and website',datos_reales:lang==='es'?'datos reales de Meta':'real Meta data'};
    const summary=reasons.length?reasons.slice(0,4).map(r=>reasonLabels[r]||r).join(', '):(lang==='es'?'datos reales de Meta':'real Meta data');
    qs('#onboarding-wizard').innerHTML=`<div class="onboarding"><div class="next-step pending-setup"><div><b>${lang==='es'?'Configuración inicial pendiente':'Initial setup still pending'}</b><p>${lang==='es'?`Entraste al dashboard para completar luego. Falta: ${summary}. Hasta terminar esto, el dashboard quedará sin datos reales y el agente no analizará campañas.`:`You opened the dashboard before finishing setup. Still missing: ${summary}. Until this is finished, the dashboard stays without real data and the agent will not analyze campaigns.`}${when?` ${when}`:''}</p></div><button class="btn primary" data-action-code="resumeOnboarding()">${lang==='es'?'Completar ahora':'Finish now'}</button></div></div>`;
    return;
@@ -1330,10 +1333,10 @@ function usageCheatSheetMarkup(onboarding=false){const cards=lang==='es'?[
  ['Return to this guide','If you feel lost, open Setup > Guide and ask the agent for a plain-language catch-up.']
 ];return `<div class="${onboarding?'setup-guide':'guide-panel'}" id="${onboarding?'':'usage-guide-card'}"><div class="next-step"><div><b>${lang==='es'?'Guía rápida de uso':'Quick usage guide'}</b><p>${lang==='es'?'La filosofía: conversa con el agente y usa el dashboard para confirmar, aprobar y revisar.':'The philosophy: talk with the agent and use the dashboard to confirm, approve, and review.'}</p></div><button class="btn ask-btn" data-action-code="openChat(lang==='es'?'Explícame cómo usar este producto con palabras muy simples.':'Explain how to use this product in very simple words.')">${t('ask_agent')}</button></div><div class="trust-grid">${cards.map(c=>`<div class="trust-card"><b>${c[0]}</b><p>${c[1]}</p></div>`).join('')}</div></div>`}
 function renderUsageCheatsheet(){const box=qs('#usage-cheatsheet');if(box)box.innerHTML=''}
-function closeUsageGuide(){const box=qs('#guide-overlay');if(!box)return;box.classList.remove('open','product-tour');box.innerHTML=''}
+function closeUsageGuide(){const box=qs('#guide-overlay');if(!box)return;box.classList.remove('open','product-tour','theme-choice');box.innerHTML=''}
 function openUsageGuide(){
  const box=qs('#guide-overlay');if(!box)return;
- box.classList.remove('product-tour');
+ box.classList.remove('product-tour','theme-choice');
  box.innerHTML=`<div class="guide-modal-card"><div class="next-step"><div><h2>${lang==='es'?'Guía rápida':'Quick guide'}</h2><p>${lang==='es'?'Tarjetas cortas para recordar cómo usar el producto sin llenar la pantalla principal.':'Short cards to remember how to use the product without filling the main screen.'}</p></div><button class="btn" type="button" data-action-code="closeUsageGuide()">${lang==='es'?'Cerrar':'Close'}</button></div>${usageCheatSheetMarkup(false)}</div>`;
  box.classList.add('open')
 }
@@ -1341,7 +1344,7 @@ let dashboardIntroTourIndex=0;
 let dashboardIntroTourRetry=0;
 function dashboardIntroTourSteps(){
  return lang==='es'?[
-  {selectors:['#theme-toggle'],title:'Elige el estilo que más te guste',body:'Este es el primer ajuste. Aurora es claro y suave, Sapphire es oscuro elegante y Ember es oscuro intenso. Cambia el tema cuando quieras.'},
+  {selectors:['#theme-toggle'],title:'Elige el estilo que más te guste',body:'Prueba Aurora, Sapphire y Ember ahora mismo. Elige el que más cómodo se sienta para trabajar; después seguimos con el resto del tour.'},
   {selectors:['.agent-chat-bar'],title:'Habla con tu manager',body:'Esta barra es la forma principal de usar el producto. Escribe como si hablaras con una persona: “qué hago hoy”, “crea una campaña”, “revisa mis creativos”.'},
   {selectors:['.view-switcher'],title:'Cambia la forma de ver tus anuncios',body:'Control muestra lo importante del día. Timeline muestra anuncios activos. Vista total enseña métricas generales. Showcase es una vista más visual.'},
   {selectors:['#toggle-left-panel','.brief-zone .zone-label'],title:'Lectura diaria',body:'Aquí vive el resumen de la mañana. Si está cerrado, toca el encabezado para abrirlo y ver qué está vigilando el agente.'},
@@ -1349,7 +1352,7 @@ function dashboardIntroTourSteps(){
   {selectors:['nav.tabs','.tabs'],title:'Menú principal',body:'Desde aquí entras a configuración, creador, audiencias, creativos y reportes. No necesitas usar todo: el chat también puede llevarte.'},
   {selectors:['.header-guide-btn'],title:'Guía rápida siempre disponible',body:'Si te pierdes, toca este botón. Abre tarjetas simples para recordar cómo usar el producto sin ruido.'}
  ]:[
-  {selectors:['#theme-toggle'],title:'Choose your favorite style',body:'Start here. Aurora is soft and light, Sapphire is elegant dark, and Ember is intense dark. You can change it anytime.'},
+  {selectors:['#theme-toggle'],title:'Choose your favorite style',body:'Try Aurora, Sapphire, and Ember now. Pick the one that feels best to work in; then we continue the tour.'},
   {selectors:['.agent-chat-bar'],title:'Talk to your manager',body:'This bar is the main way to use the product. Write naturally: “what should I do today”, “create a campaign”, “review my creatives”.'},
   {selectors:['.view-switcher'],title:'Switch ad views',body:'Control shows today’s essentials. Timeline shows active ads. Overview shows broader metrics. Showcase is more visual.'},
   {selectors:['#toggle-left-panel','.brief-zone .zone-label'],title:'Daily reading',body:'This is the morning summary. If it is closed, tap the header to open what the agent is watching.'},
@@ -1383,7 +1386,7 @@ function startDashboardIntroTour(force=false){
  renderDashboardIntroTour();
 }
 function finishDashboardIntroTour(){
- const box=qs('#guide-overlay');if(box){box.classList.remove('open','product-tour');box.innerHTML=''}
+ const box=qs('#guide-overlay');if(box){box.classList.remove('open','product-tour','theme-choice');box.innerHTML=''}
  localStorage.setItem('dashboardIntroTourDone','1');
 }
 function nextDashboardIntroTour(){dashboardIntroTourIndex+=1;renderDashboardIntroTour()}
@@ -1404,6 +1407,7 @@ function renderDashboardIntroTour(){
 }
 function renderDashboardIntroTourAtTarget(target,step,total){
  const box=qs('#guide-overlay');if(!box||!box.classList.contains('product-tour'))return;
+ box.classList.toggle('theme-choice',dashboardIntroTourIndex===0);
  const rect=target.getBoundingClientRect();
  const pad=7;
  const spot={left:Math.max(8,rect.left-pad),top:Math.max(8,rect.top-pad),width:Math.min(window.innerWidth-16,rect.width+(pad*2)),height:Math.min(window.innerHeight-16,rect.height+(pad*2))};
@@ -1874,6 +1878,8 @@ function updateWarningsMarkup(info){
 }
 function renderUpdateBanner(info){
  const box=qs('#update-banner');if(!box)return;
+ const latest=String(info?.latest_version||'').trim();
+ if(info?.available&&latest&&localStorage.getItem(UPDATE_INSTALLED_ACK_KEY)===latest){info={...info,available:false,current_version:latest};updateInfo=info}
  if(!info||!info.available){box.classList.add('hidden');box.innerHTML='';return}
  box.classList.remove('hidden');
  box.innerHTML=`<div><b>${lang==='es'?'Update disponible':'Update available'}: ${escapeHtml(info.latest_version||'')}</b><p>${lang==='es'?'Instalo desde aquí con copia de seguridad automática.':'Install from here with an automatic backup.'}</p></div><button class="btn primary" type="button" data-action-code="showUpdateDetails()" aria-label="${lang==='es'?'Ver mejoras e instalar':'View improvements and install'}">${lang==='es'?'Actualizar':'Update'}</button>`;
@@ -1883,16 +1889,15 @@ function renderDeferredOnboardingBanner(){
  const onboarding=state.onboarding||{};
  const deferred=Boolean(onboarding.deferred||onboarding.skipped||onboarding.requires_repair);
  if(!deferred){box.classList.add('hidden');box.innerHTML='';return}
- const reasons=(onboarding.deferred_reasons||onboarding.repair_reasons||[]).filter(Boolean);
+ const agentInterviewReasons=new Set(['entrevista_negocio','branding_creativos','campanas_anuncios','perfil_negocio']);
+ const reasons=(onboarding.deferred_reasons||onboarding.repair_reasons||[]).filter(reason=>reason&&!agentInterviewReasons.has(reason));
+ if(!reasons.length){box.classList.add('hidden');box.innerHTML='';return}
  const labelMap={
   licencia:lang==='es'?'licencia':'license',
   conexion_facebook:lang==='es'?'Facebook':'Facebook',
   cuenta_publicitaria:lang==='es'?'cuenta publicitaria':'ad account',
   cerebro_agente:lang==='es'?'ChatGPT':'ChatGPT',
   telegram:'Telegram',
-  entrevista_negocio:lang==='es'?'entrevista del negocio':'business interview',
-  branding_creativos:lang==='es'?'marca y creativos':'brand and creatives',
-  campanas_anuncios:lang==='es'?'campañas previas':'past campaigns',
   conexion_meta:lang==='es'?'Facebook':'Facebook',
   destinos:lang==='es'?'página y web':'Page and website',
   datos_reales:lang==='es'?'datos reales':'real data',
@@ -1919,7 +1924,7 @@ async function checkForUpdates(force=false,options={}){
 }
 async function applyDashboardUpdate(){
  const box=qs('#confirm-overlay');box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'Instalando actualización':'Installing update'}</h2><p>${lang==='es'?'Estoy descargando el paquete oficial y conservando tus datos locales. El dashboard se reiniciará al terminar.':'Downloading the official package and keeping local data. The dashboard will restart when finished.'}</p></div>`;box.classList.add('open');
- try{const res=await api('/api/update/apply',{method:'POST',body:'{}'});box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'Actualización instalada':'Update installed'}</h2><p>${escapeHtml(res.result?.message||'')}</p><p class="notice">${lang==='es'?'Copia guardada':'Saved backup'}: ${escapeHtml(res.result?.snapshot?.id||'')}</p><p class="notice">${lang==='es'?'Si la página tarda unos segundos, espera y recarga.':'If the page takes a few seconds, wait and refresh.'}</p></div>`;toast(lang==='es'?'Actualización instalada':'Update installed')}catch(err){box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'No pude actualizar':'Could not update'}</h2><p>${escapeHtml(err.message||String(err))}</p><p class="notice">${lang==='es'?'Si la copia se creó, estará disponible en Configuración para restaurar.':'If a backup was created, it will be available in Setup to restore.'}</p><div class="confirm-actions"><button class="btn primary" type="button" data-action-code="closeConfirm()">${lang==='es'?'Cerrar':'Close'}</button></div></div>`}
+ try{const res=await api('/api/update/apply',{method:'POST',body:'{}'});const installedVersion=String(res.result?.latest_version||updateInfo?.latest_version||'').trim();if(installedVersion){localStorage.setItem(UPDATE_INSTALLED_ACK_KEY,installedVersion);updateInfo={...(res.result||updateInfo||{}),available:false,current_version:installedVersion,latest_version:installedVersion};renderUpdateBanner(updateInfo)}box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'Actualización instalada':'Update installed'}</h2><p>${escapeHtml(res.result?.message||'')}</p><p class="notice">${lang==='es'?'Copia guardada':'Saved backup'}: ${escapeHtml(res.result?.snapshot?.id||'')}</p><p class="notice">${lang==='es'?'Si la página tarda unos segundos, espera y recarga.':'If the page takes a few seconds, wait and refresh.'}</p></div>`;toast(lang==='es'?'Actualización instalada':'Update installed')}catch(err){box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'No pude actualizar':'Could not update'}</h2><p>${escapeHtml(err.message||String(err))}</p><p class="notice">${lang==='es'?'Si la copia se creó, estará disponible en Configuración para restaurar.':'If a backup was created, it will be available in Setup to restore.'}</p><div class="confirm-actions"><button class="btn primary" type="button" data-action-code="closeConfirm()">${lang==='es'?'Cerrar':'Close'}</button></div></div>`}
 }
 function setupSimpleText(item){
  const es={

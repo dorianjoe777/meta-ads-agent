@@ -42,19 +42,19 @@ const ASSETS = [
 
 const improvements = [
   {
-    title: "Telegram responde en instalaciones cloud",
-    body: "Se corrigio una dependencia del adaptador de Telegram para que el agente pueda escuchar y responder desde DigitalOcean/Docker.",
-    impact: "Telegram"
+    title: "Actualizaciones mas limpias",
+    body: "Despues de instalar una actualizacion, el aviso desaparece correctamente y el dashboard reconoce la version instalada.",
+    impact: "Update"
   },
   {
-    title: "Instaladores mas confiables",
-    body: "Docker y la instalacion local ahora incluyen automaticamente el paquete necesario para el canal de Telegram del agente.",
-    impact: "Instalacion"
+    title: "Onboarding sin ruido extra",
+    body: "La configuracion inicial ya no bloquea el dashboard por preguntas que ahora se resuelven hablando con el agente por Telegram.",
+    impact: "Onboarding"
   },
   {
-    title: "Revision de release reforzada",
-    body: "Se agrego una prueba para bloquear futuras publicaciones si falta soporte Telegram en los instaladores.",
-    impact: "Calidad"
+    title: "Tour inicial mas claro",
+    body: "El primer recorrido permite probar estilos visuales sin desenfocar los botones que el comprador debe tocar.",
+    impact: "Experiencia"
   }
 ];
 

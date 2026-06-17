@@ -673,11 +673,11 @@ def read_key_value_file(path):
 
 
 def current_product_version():
+    if VERSION_FILE.exists():
+        return VERSION_FILE.read_text(encoding="utf-8").strip() or "v1"
     env_value = os.environ.get("META_ADS_AGENT_VERSION", "").strip()
     if env_value:
         return env_value
-    if VERSION_FILE.exists():
-        return VERSION_FILE.read_text(encoding="utf-8").strip() or "v1"
     return "v1"
 
 
@@ -988,7 +988,10 @@ def apply_official_update():
                     raise ValueError("La actualizacion contiene rutas no seguras.")
             archive.extractall(unpack_dir)
         safe_copytree_contents(unpack_dir, ROOT_DIR)
-        VERSION_FILE.write_text(str(release["latest_version"]).strip() + "\n", encoding="utf-8")
+        installed_version = str(release["latest_version"]).strip()
+        VERSION_FILE.write_text(installed_version + "\n", encoding="utf-8")
+        update_env_values({"META_ADS_AGENT_VERSION": installed_version})
+        os.environ["META_ADS_AGENT_VERSION"] = installed_version
         try:
             for script in (ROOT_DIR / "scripts").glob("*.sh"):
                 script.chmod(0o755)
@@ -4270,12 +4273,11 @@ def complete_onboarding():
     metrics = load_metrics()
     if not insights_refresh.get("ok") and metrics.get("source") != "meta_graph":
         raise ValueError("Todavía no pude leer datos reales de Meta. Cambia tu clave o revisa sus permisos y vuelve a intentar.")
-    deferred_reasons = agent_onboarding_deferred_reasons(business_profile)
     state = {
         "completed": True,
         "skipped": False,
-        "deferred": bool(deferred_reasons),
-        "deferred_reasons": deferred_reasons,
+        "deferred": False,
+        "deferred_reasons": [],
         "completed_at": now_iso(),
         "completed_by": "dashboard",
         "setup_snapshot": setup.get("summary", {}),
@@ -4323,9 +4325,6 @@ def skip_onboarding():
         missing.append("cerebro_agente")
     if not telegram_settings(config).get("chat_id"):
         missing.append("telegram")
-    for reason in agent_onboarding_deferred_reasons(business_profile):
-        if reason not in missing:
-            missing.append(reason)
     state = {
         "completed": True,
         "skipped": True,
@@ -4362,6 +4361,10 @@ def reset_onboarding():
 def onboarding_health(state, config, metrics, current_license_status, destination, business_profile):
     """Guide a completed legacy install back through setup if its real connection is gone."""
     result = dict(state)
+    dashboard_setup_only = {"licencia", "conexion_facebook", "cuenta_publicitaria", "cerebro_agente", "telegram", "conexion_meta", "destinos", "datos_reales"}
+    result["deferred_reasons"] = [reason for reason in result.get("deferred_reasons", []) if reason in dashboard_setup_only]
+    if result.get("deferred") and not result["deferred_reasons"]:
+        result["deferred"] = False
     result["requires_repair"] = False
     result["repair_reasons"] = []
     result.setdefault("deferred", bool(result.get("skipped")))
@@ -4375,7 +4378,6 @@ def onboarding_health(state, config, metrics, current_license_status, destinatio
         (bool(config.meta_access_token), "conexion_meta"),
         (bool(config.ad_account_id), "cuenta_publicitaria"),
         (bool(destination.get("page_id")) and bool(destination.get("url")), "destinos"),
-        (bool(business_profile.get("website_url")), "perfil_negocio"),
         (metrics.get("source") == "meta_graph", "datos_reales"),
     ]
     result["repair_reasons"] = [reason for ready, reason in checks if not ready]
