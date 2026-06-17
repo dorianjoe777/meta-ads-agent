@@ -42,19 +42,19 @@ const ASSETS = [
 
 const improvements = [
   {
-    title: "Codigo de ChatGPT corregido",
-    body: "El boton de copiar ahora queda amarrado al codigo grande que aparece en pantalla, evitando pegar codigos viejos.",
-    impact: "ChatGPT"
-  },
-  {
-    title: "Telegram con deteccion clara",
-    body: "Al guardar la clave de BotFather, aparece un boton grande para detectar el chat, elegir el usuario correcto y terminar el onboarding.",
+    title: "Telegram responde en instalaciones cloud",
+    body: "Se corrigio una dependencia del adaptador de Telegram para que el agente pueda escuchar y responder desde DigitalOcean/Docker.",
     impact: "Telegram"
   },
   {
-    title: "Onboarding mas guiado",
-    body: "El paso final de Telegram baja automaticamente hacia el siguiente boton importante para que el comprador no se pierda.",
-    impact: "Onboarding"
+    title: "Instaladores mas confiables",
+    body: "Docker y la instalacion local ahora incluyen automaticamente el paquete necesario para el canal de Telegram del agente.",
+    impact: "Instalacion"
+  },
+  {
+    title: "Revision de release reforzada",
+    body: "Se agrego una prueba para bloquear futuras publicaciones si falta soporte Telegram en los instaladores.",
+    impact: "Calidad"
   }
 ];
 
