@@ -43,19 +43,19 @@ const ASSETS = [
 
 const improvements = [
   {
-    title: "Selector de temas mas claro",
-    body: "El selector Aurora, Sapphire y Ember ahora vive junto al menu superior para no competir con los controles del dashboard.",
-    impact: "Interfaz"
-  },
-  {
-    title: "Tour inicial mejor guiado",
-    body: "El primer paso del tour apunta al nuevo selector de tema para que el comprador elija su estilo antes de explorar el resto.",
+    title: "Inicio mas limpio",
+    body: "Las instalaciones nuevas ya no muestran una ventana duplicada para crear contraseña. Todo empieza dentro del onboarding guiado.",
     impact: "Onboarding"
   },
   {
-    title: "Creativos con memoria de marca",
-    body: "Se refuerza la memoria visual de marca, productos, logo y reglas creativas para preparar anuncios mas consistentes.",
-    impact: "Creativos"
+    title: "Menos confusion al entrar",
+    body: "Si el navegador guardo una sesion vieja, Admira IA la limpia cuando detecta que todavia no existe una contraseña real.",
+    impact: "Experiencia"
+  },
+  {
+    title: "Version instalada al dia",
+    body: "El instalador y el dashboard reportan la misma version para que las actualizaciones oficiales se oculten cuando ya estan instaladas.",
+    impact: "Actualizaciones"
   }
 ];
 
