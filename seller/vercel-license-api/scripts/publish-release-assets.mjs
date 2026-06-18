@@ -43,19 +43,19 @@ const ASSETS = [
 
 const improvements = [
   {
-    title: "Telegram sin burbujas vacias",
-    body: "Corrige respuestas que a veces se veian vacias cuando el manager enviaba analisis largos.",
-    impact: "Telegram"
+    title: "Selector de temas mas claro",
+    body: "El selector Aurora, Sapphire y Ember ahora vive junto al menu superior para no competir con los controles del dashboard.",
+    impact: "Interfaz"
   },
   {
-    title: "Mejor lectura de mensajes con fotos",
-    body: "Hace mas estable la conversacion cuando envias imagenes y texto en el mismo mensaje.",
-    impact: "Telegram"
+    title: "Tour inicial mejor guiado",
+    body: "El primer paso del tour apunta al nuevo selector de tema para que el comprador elija su estilo antes de explorar el resto.",
+    impact: "Onboarding"
   },
   {
-    title: "Respuestas mas claras en el celular",
-    body: "El manager ahora prioriza listas y secciones faciles de leer en Telegram.",
-    impact: "Agente"
+    title: "Creativos con memoria de marca",
+    body: "Se refuerza la memoria visual de marca, productos, logo y reglas creativas para preparar anuncios mas consistentes.",
+    impact: "Creativos"
   }
 ];
 
