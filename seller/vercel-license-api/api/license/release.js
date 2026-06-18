@@ -113,7 +113,11 @@ export default async function handler(request, response) {
       expires_at: grant.expires_at,
       download_url: `${baseUrl(request)}/api/download/release?token=${encodeURIComponent(grant.token)}`
     });
-  } catch {
+  } catch (error) {
+    console.error("license release failed", {
+      name: error?.name || "Error",
+      message: error?.message || "unknown_error"
+    });
     return response.status(500).json({ valid: false, status: "server_error", detail: "No se pudo preparar tu descarga. Contacta soporte." });
   }
 }
