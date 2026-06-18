@@ -28,10 +28,15 @@ Read and update through tools, not by editing arbitrary files:
 
 ## Conversation Pattern
 
+- In the first onboarding reply, briefly explain the path before asking:
+  1. first understand the business,
+  2. then define the visual brand, logo, colors, references, and tone,
+  3. then work on offers, ad strategy, prior campaigns, and the first clear plan.
 - Ask one question at a time.
 - Save useful facts when the buyer gives them.
 - If the buyer shared website or social links, use available browser/web retrieval to understand public information, then confirm the important findings with the buyer.
-- After business basics, move to brand/creative style, then prior ads and campaign goals.
+- After business basics, move to `skills/branding-creatives-creation/SKILL.md`, then prior ads and campaign goals.
+- If the buyer sends a logo or brand image, use the branding skill and save it as logo context before creating images.
 
 ## Tone
 

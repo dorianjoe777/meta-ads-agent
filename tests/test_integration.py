@@ -1494,6 +1494,7 @@ class IntegrationTestSuite:
             self.assert_true("disabled_toolsets:" in config_yaml and "code_execution" in config_yaml and str(workspace) in config_yaml, "Hermes Gateway config keeps Telegram in the curated workspace")
             self.assert_true('default: "gpt-5.5"' in config_yaml and 'default: "auto"' not in config_yaml, "Hermes Gateway normalizes legacy auto model to gpt-5.5")
             self.assert_true("entrevista del negocio" in config_yaml and "no bloquean la configuración inicial" in config_yaml, "Hermes Gateway tells Telegram that agent interviews are not dashboard blockers")
+            self.assert_true("primero entenderemos el negocio" in config_yaml and "marca visual" in config_yaml and "ofertas, briefs, estrategia y campañas" in config_yaml, "Hermes Gateway introduction explains the three-step onboarding journey")
             self.assert_true("no uses tablas Markdown" in config_yaml, "Hermes Gateway prompt keeps Telegram replies in mobile-safe bullet formatting")
             self.assert_true("¿Tienes alguna pregunta?" in prompt and "No uses datos demo" in prompt, "Daily brief prompt ends with the buyer question and blocks demo data")
         finally:
@@ -1517,11 +1518,13 @@ class IntegrationTestSuite:
             workspace = hermes_bridge.prepare_hermes_workspace({"channel": "telegram", "language": "es", "account_context": {}})
             workspace_path = Path(workspace["path"])
             creative_skill = workspace_path / "skills" / "creative-codex-image" / "SKILL.md"
+            branding_skill = workspace_path / "skills" / "branding-creatives-creation" / "SKILL.md"
             approvals_skill = workspace_path / "skills" / "telegram-approvals" / "SKILL.md"
             agents_text = (workspace_path / "AGENTS.md").read_text(encoding="utf-8")
 
-            self.assert_true(creative_skill.exists() and approvals_skill.exists(), "Focused product skill files are copied into the Hermes workspace")
+            self.assert_true(creative_skill.exists() and branding_skill.exists() and approvals_skill.exists(), "Focused product skill files are copied into the Hermes workspace")
             self.assert_true("mcp_admira_codex_image_generate" in creative_skill.read_text(encoding="utf-8"), "Creative skill points Hermes to the Codex/Image MCP tool")
+            self.assert_true("logo" in branding_skill.read_text(encoding="utf-8").lower() and "mcp_admira_save_brand_memory" in branding_skill.read_text(encoding="utf-8"), "Branding skill teaches Hermes to save logo-aware creative memory")
             self.assert_true("mcp_admira_approve_action" in approvals_skill.read_text(encoding="utf-8"), "Approval skill points Hermes to exact approval MCP tools")
             self.assert_true("Native Product Tools" in agents_text and "mcp_admira_stage_campaign" in agents_text, "Combined Hermes rules document the MCP product bridge")
             self.assert_true((workspace_path / "skills" / "README.md").exists(), "Hermes workspace includes a product skill index")
@@ -2374,7 +2377,9 @@ class IntegrationTestSuite:
         references_before = references_path.read_bytes() if references_path.exists() else None
         product_before = product_path.read_bytes() if product_path.exists() else None
         ad_brief_before = ad_brief_path.read_bytes() if ad_brief_path.exists() else None
+        created_logo_path = None
         try:
+            dashboard = load_dashboard_module()
             blank_fields = codex_brand_guides.general_fields("- Promesa principal:\n- Cliente ideal: Compradora real")
             self.assert_true(blank_fields["promise"] == "" and blank_fields["ideal_customer"] == "Compradora real", "Blank Markdown fields never absorb the following brand field")
             library = codex_brand_guides.save_general_guide(
@@ -2384,6 +2389,8 @@ class IntegrationTestSuite:
                     "visual_style": "fondos marfil con acentos coral y fotografia limpia",
                     "tone": "cercano, decidido y facil de entender",
                     "avoid_always": "promesas medicas",
+                    "logo_path": "brand_guides/assets/luz-clara-logo.png",
+                    "logo_notes": "Logo circular coral con letras blancas, usarlo pequeno sobre fondo claro.",
                 }
             )
             result = codex_brand_guides.save_product_guide(
@@ -2433,11 +2440,23 @@ class IntegrationTestSuite:
                 }
             )
             codex_prompt = build_codex_creative_prompt(result["guide"], "Crea un concepto para la siguiente campaña.")
+            image_package = build_codex_image_prompt_package(result["guide"], "Genera imagen con el logo visible.", mode="fixed", variations=1)
+            logo_upload = dashboard.save_brand_logo_asset(
+                {
+                    "filename": "luz-clara-logo.png",
+                    "content_type": "image/png",
+                    "data_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+                    "logo_notes": "Logo minimo de prueba para anuncios.",
+                }
+            )
+            created_logo_path = codex_brand_guides.ROOT_DIR / logo_upload["logo_path"]
             prompt = plan["variants"][0]["image_prompts"][0]["prompt"]
             ad_prompt = ad_plan["variants"][0]["image_prompts"][0]["prompt"]
             self.assert_true(library["general"]["saved"] is True and product_path.exists(), "Brand and product memory are saved as local Markdown guides")
+            self.assert_true(library["general"]["fields"]["logo_path"] == "brand_guides/assets/luz-clara-logo.png", "Brand logo path is stored as part of general brand memory")
             self.assert_true("product.example.md" not in [item["guide"] for item in result["library"]["products"]], "Product template is not presented as buyer memory")
             self.assert_true(plan["brand_memory"]["product"]["name"] == "Memoria Prueba Integracion", "Creative plan records which product memory it used")
+            self.assert_true(plan["brand_memory"]["brand"]["logo_path"] == "brand_guides/assets/luz-clara-logo.png", "Creative memory exposes the saved logo to creative planning")
             self.assert_true("Memoria Prueba Integracion" in plan["variants"][0]["copy"]["headline"], "Product memory informs generated ad copy")
             self.assert_true("piel luminosa sin complicaciones" in plan["variants"][0]["copy"]["primary_text"], "Desired result from product memory informs the copy")
             self.assert_true("fondos marfil" in prompt and "mujeres que buscan" in prompt and "resultados milagrosos" in prompt, "Brand style, audience, and exclusions inform image prompts")
@@ -2447,8 +2466,13 @@ class IntegrationTestSuite:
             self.assert_true("Bono de Buen Fin" in ad_prompt and "paleta de colores" in ad_prompt, "Ad brief promotion and creative window inform image prompts")
             self.assert_true("colores" in ad_plan["variants"][0]["copy"]["headline"].lower(), "Ad brief variation axes become concrete ad variants")
             self.assert_true(references["creative_references"] == "brand_guides/creative_references.md" and "Referencia ecommerce" in codex_prompt, "Approved creative references are saved and included in Codex creative prompts")
+            self.assert_true("Logo circular coral" in codex_prompt and "No hay logo guardado" not in codex_prompt, "Codex creative prompts include saved logo context")
+            self.assert_true("Logo circular coral" in image_package["prompts"][0]["image_prompt"] and "no inventes otro logo" in image_package["brand_lock"].lower(), "Codex/Image prompt package preserves logo rules")
+            self.assert_true(logo_upload["saved"] is True and logo_upload["library"]["general"]["fields"]["logo_notes"] == "Logo minimo de prueba para anuncios.", "Dashboard logo upload stores the logo as brand memory")
             self.assert_true("Mantener producto grande" in codex_prompt and "Agregar sello de oferta" in codex_prompt, "Appending creative references preserves prior approved direction instead of replacing it")
         finally:
+            if created_logo_path:
+                created_logo_path.unlink(missing_ok=True)
             if general_before is None:
                 general_path.unlink(missing_ok=True)
             else:
@@ -2570,10 +2594,13 @@ class IntegrationTestSuite:
             final_phase = dashboard.agent_onboarding_phase()
             plan_text = dashboard.AGENT_ONBOARDING_PLAN_FILE.read_text(encoding="utf-8")
             skill_text = (ROOT_DIR / "agent" / "SKILLS.md").read_text(encoding="utf-8")
+            branding_skill_text = (ROOT_DIR / "agent" / "skills" / "branding-creatives-creation" / "SKILL.md").read_text(encoding="utf-8")
             self.assert_true(business["executed"] is True and phase_after_business["phase"] == "branding_creatives_creation", "Business context tool moves onboarding to branding creatives phase")
             self.assert_true(refs["executed"] is True and phase_after_branding["phase"] == "ads_campaign_onboarding", "Brand and creative reference tools move onboarding to campaign history phase")
             self.assert_true(ads["executed"] is True and brief["executed"] is True and final_phase["phase"] == "continuous_ads_manager", "Campaign onboarding and ad brief tools finish the chat onboarding phase")
             self.assert_true("branding creatives creation" in skill_text and "save_creative_references" in skill_text, "Branding creatives creation skill is documented for Hermes")
+            self.assert_true("mcp_admira_save_product_memory" in branding_skill_text and "logo" in branding_skill_text.lower(), "Focused branding skill covers product memory and logo context")
+            self.assert_true("Primer mensaje del onboarding" in plan_text and "entender tu negocio" in plan_text and "marca, logo, colores" in plan_text and "ofertas especificas" in plan_text, "Agent onboarding plan tells Hermes to introduce business, branding, then ads strategy")
             self.assert_true("continuous_ads_manager" in plan_text and "save_ads_onboarding" in plan_text, "Agent onboarding plan records the continuous manager phase")
         finally:
             for path, content in backups.items():
@@ -3703,7 +3730,7 @@ class IntegrationTestSuite:
         html = dashboard.HTML + "\n" + dashboard_static
         dashboard_source = Path(dashboard.__file__).read_text(encoding="utf-8")
         post_routes = set(dashboard.DashboardHandler.POST_JSON_ROUTES) | set(dashboard.DashboardHandler.POST_SPECIAL_ROUTES)
-        get_routes = set(dashboard.DashboardHandler.GET_JSON_ROUTES) | dashboard.DashboardHandler.HTML_PATHS | {"/api/social/login", "/api/creative-asset"}
+        get_routes = set(dashboard.DashboardHandler.GET_JSON_ROUTES) | dashboard.DashboardHandler.HTML_PATHS | {"/api/social/login", "/api/creative-asset", "/api/brand-asset"}
         self.assert_true(dashboard.DashboardHandler.PROTECTED_POST_PATHS <= post_routes, "Protected dashboard POST routes have handlers")
         self.assert_true(dashboard.DashboardHandler.PROTECTED_GET_PATHS <= get_routes, "Protected dashboard GET routes have handlers")
         self.assert_true("unlock-overlay" in html, "Unlock overlay exists")
@@ -3726,6 +3753,8 @@ class IntegrationTestSuite:
         self.assert_true("theme-aurora" in html and "theme-sapphire" in html and "setDashboardTheme('sapphire')" in html, "Dashboard exposes named Aurora and Sapphire themes")
         self.assert_true("theme-ember" in html and "setDashboardTheme('ember')" in html and "dashboardTheme==='ember'" in html, "Dashboard exposes the Ember theme as a persistent third option")
         self.assert_true(".theme-switcher" in html and ".theme-chip" in html, "Theme picker is a compact named-theme switcher")
+        self.assert_true('class="header-theme-slot"><div class="theme-switcher" id="theme-toggle"' in html and 'class="dashboard-toolbar"><div class="theme-switcher"' not in html, "Theme picker sits beside the top menu instead of competing with control toolbar actions")
+        self.assert_true(".header-theme-slot" in html and "grid-template-columns:minmax(178px,220px) minmax(300px,1fr) auto auto minmax(220px,360px)" in html, "Header reserves a dedicated theme slot next to the main menu")
         self.assert_true(".onboarding-flow{--surface:#171520" in html and ".onboarding-flow .onboarding-card" in html, "Onboarding uses a dedicated dark buyer setup theme")
         self.assert_true("view-timeline" in html and "view-analytics" in html and "view-idle" in html, "Overview exposes timeline, total overview, and showcase views")
         self.assert_true("renderTimelineView" in html and "renderAnalyticsView" in html and "renderIdleView" in html, "Alternate dashboard views render from live dashboard state")
@@ -3822,7 +3851,7 @@ class IntegrationTestSuite:
         self.assert_true("Enviar prueba" not in html and "Send test" not in html, "Telegram buyer UI avoids the confusing manual test button")
         self.assert_true("finishOnboardingAndStartTour('telegram')" in html and "maybeFinishTelegramOnboarding" in html, "Choosing the Telegram chat can complete onboarding and open the dashboard tour")
         self.assert_true("dashboardIntroTourPending" in html and "startDashboardIntroTourIfPending" in html, "Completed onboarding queues the first dashboard tour")
-        self.assert_true("Elige el estilo que más te guste" in html and "Prueba Aurora, Sapphire y Ember" in html and "#theme-toggle" in html and ".tour-spot" in html and "theme-choice" in html, "The post-onboarding tour starts with an interactive theme selection coach mark")
+        self.assert_true("Elige el estilo que más te guste" in html and "Arriba, junto al menú" in html and "#theme-toggle" in html and ".tour-spot" in html and "theme-choice" in html, "The post-onboarding tour starts with an interactive theme selection coach mark at the header theme picker")
         self.assert_true(".guide-overlay.product-tour" in html and "backdrop-filter:none" in html and "rgba(3,4,7,var(--tour-dim))" in html, "The dashboard tour spotlights targets without blurring the buttons buyers need to click")
         self.assert_true("{id:'meta',status:tokenOk?'ok':(socialOk?'warn':'blocked')}" in html and "{id:'account',status:accountOk?'ok':'blocked'}" in html and "{id:'destination',status:destinationStatus}" in html, "Initial onboarding starts with the buyer Facebook/Meta connection")
         self.assert_true("{id:'meta',status:tokenOk?'ok':(socialOk?'warn':'blocked')},\n\t  {id:'account',status:accountOk?'ok':'blocked'},\n\t  {id:'destination',status:destinationStatus},\n\t  {id:'chatgpt',status:chatgptOk?'ok':'warn'},\n\t  {id:'telegram',status:telegramOk?'ok':'warn'}" in html, "Initial onboarding goes Facebook, account, destination, ChatGPT, and finishes with Telegram")
@@ -3911,6 +3940,8 @@ class IntegrationTestSuite:
         self.assert_true("/api/telegram/config" in html and "/api/telegram/detect" in html and "autoSaveTelegramToken" in html, "Telegram setup actions are wired around autosave and chat detection")
         self.assert_true("aprobar decisiones exactas con botones seguros" in html, "Telegram UI accurately explains button approvals")
         self.assert_true("brand-guides-panel" in html and "/api/brand-guides/general" in html and "/api/brand-guides/product" in html and "/api/ad-briefs" in html, "Brand, product, and ad brief memory editing is wired in UI")
+        self.assert_true("/api/brand-guides/logo" in html and "/api/brand-asset" in html and "uploadBrandLogo" in html, "Brand logo upload and protected preview are wired in UI")
+        self.assert_true("Subir logo" in html and "Logo para tus anuncios" in html, "Creatives memory gives buyers a clear place to upload their logo")
         self.assert_true("brand-memory-overlay" in html and "Lo que el agente recuerda" in html and "Crea tus anuncios" in html, "Creative memory is presented as a simple ad-ideas library")
         self.assert_true("saveGeneralMemory" in html and "saveProductMemory" in html and "refreshForProduct" in html, "Creative memory can be saved and used to generate for a selected product")
         self.assert_true("saveAdBriefMemory" in html and "refreshForAdBrief" in html and "Qué se puede cambiar" in html and "Cuántas opciones preparar" in html, "Ad ideas can define optional variations in beginner-friendly language")

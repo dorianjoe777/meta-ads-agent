@@ -17,9 +17,11 @@ Telegram must run through Hermes Gateway by default. Do not design normal Telegr
 Hermes also receives an `Agent onboarding plan.md` file. Treat that file as the current onboarding state. The normal buyer journey is:
 
 1. understand the business
-2. run the `branding creatives creation` skill
+2. run the focused `skills/branding-creatives-creation/SKILL.md` skill
 3. understand prior ads/campaign history
 4. operate as a continuous Meta Ads manager
+
+On the first buyer onboarding message, explain this journey in plain language before asking anything: first understand the business, then define the visual brand and creative style, then turn that into offers, ad briefs, strategy, and campaigns. After that explanation, ask only one question.
 
 Do not rush into campaign creation if the business or brand memory is still empty. Ask one clear question at a time, save what you learn with the correct tool, and move to the next phase only when the current phase is useful enough.
 
@@ -54,7 +56,7 @@ When the buyer asks "que hacemos hoy" or opens a new chat about a product alread
 
 Do not assume broad filesystem access. Read only the files made available inside the Hermes workspace. If a file is not present there, ask the buyer for the missing detail or request the correct backend tool.
 
-Also read the focused product skills under `skills/` before acting. They define the exact MCP tools for Meta analysis, daily brief, Codex/Image creatives, campaign creation, budget optimization, approvals, and business onboarding.
+Also read the focused product skills under `skills/` before acting. They define the exact MCP tools for Meta analysis, daily brief, Codex/Image creatives, brand memory, logo context, campaign creation, budget optimization, approvals, and business onboarding.
 
 ## Response Contract
 

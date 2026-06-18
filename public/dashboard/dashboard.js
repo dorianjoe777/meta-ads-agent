@@ -374,7 +374,7 @@ function allowedActionCall(name){
   goToMetaTokenStep,refreshSocialAccounts,selectTelegramChat,autoSaveTelegramToken,autoSaveTelegramSetting,selectSocialAccount,selectMetaDestination,resolveDecisionConfirm,
   finishOnboardingConfirmed,confirmBusinessReplacement,confirmMigrationRestore,confirmUpdateRollback,rollbackUpdateSnapshot,
   applyDashboardUpdate,submitBudgetDialog,submitBrandGuideInit,saveOnboardingSetupConfig,saveTelegramConfig,saveGeneralMemory,
-  saveProductMemory,saveAdBriefMemory,activateLicenseFromForm,setDashboardPasswordFromOnboarding,saveBusinessLinks,
+  saveProductMemory,saveAdBriefMemory,uploadBrandLogo,activateLicenseFromForm,setDashboardPasswordFromOnboarding,saveBusinessLinks,
   saveBusinessContextQuestion,saveGuardrails,saveProfitabilityRules,saveSetupConfig,sendChatGptTerminalInput,restoreMigrationBackup,
   budgetPrompt,campaignAction,detectTelegramChats,setLocalNetworkAccess,showDetails,selectAgentModelRoute,saveChatGptModel,
   connectChatGpt,toggleChatGptDeviceAuthHelp,downloadMigrationBackup,refreshCloudAccess,loadUpdateSnapshots,showUpdateDetails,
@@ -662,8 +662,47 @@ function startCreativeMemoryWizard(kind,itemId='',draftLang=''){
  };
  sendChatMessage(labels[kind]||labels.general,{workspace:true,memoryWizard:{mode:'start',kind,id:itemId||'',product_guide:productGuide}});
 }
+const brandLogoPreviewUrls=new Map();
+function brandLogoMarkup(fields){
+ const logoPath=String(fields.logo_path||'').trim();
+ const logoUrl=logoPath?`/api/brand-asset?id=${encodeURIComponent(logoPath)}`:'';
+ const status=logoPath?(lang==='es'?'Logo guardado':'Logo saved'):(lang==='es'?'Sin logo todavía':'No logo yet');
+ const preview=logoUrl?`<img alt="${lang==='es'?'Logo guardado':'Saved logo'}" data-brand-logo-url="${escapeHtml(logoUrl)}" hidden>`:`<span>${lang==='es'?'Logo':'Logo'}</span>`;
+ return `<section class="brand-logo-card ${logoPath?'ready':''}"><div class="brand-logo-preview">${preview}</div><div class="brand-logo-copy"><span>${escapeHtml(status)}</span><h4>${lang==='es'?'Logo para tus anuncios':'Logo for your ads'}</h4><p>${lang==='es'?'Sube tu logo una vez. El agente lo usará como referencia cuando cree imágenes para que no invente una marca distinta.':'Upload the logo once. The manager uses it as visual context when creating ad images.'}</p><div class="brand-logo-actions"><label class="btn primary brand-logo-upload">${lang==='es'?'Subir logo':'Upload logo'}<input class="hidden" type="file" accept="image/png,image/jpeg,image/webp" data-change-code="uploadBrandLogo(event)"></label>${logoPath?`<span class="brand-logo-path">${escapeHtml(logoPath)}</span>`:''}</div></div><label class="brand-field wide brand-logo-notes"><span>${lang==='es'?'Notas del logo':'Logo notes'}</span><textarea name="logo_notes" placeholder="${lang==='es'?'Ej: logo circular azul, siempre sobre fondo claro':'Example: blue circular logo, always on light background'}">${escapeHtml(fields.logo_notes||'')}</textarea></label></section>`;
+}
+async function hydrateBrandLogoPreviews(){
+ const images=[...document.querySelectorAll('img[data-brand-logo-url]')];
+ for(const image of images){
+  const path=image.dataset.brandLogoUrl;if(!path)continue;
+  try{
+   if(!brandLogoPreviewUrls.has(path)){const response=await fetchProtectedFile(path);brandLogoPreviewUrls.set(path,URL.createObjectURL(await response.blob()))}
+   image.src=brandLogoPreviewUrls.get(path);image.hidden=false;
+  }catch(err){image.hidden=true}
+ }
+}
+function readFileAsDataUrl(file){
+ return new Promise((resolve,reject)=>{
+  const reader=new FileReader();
+  reader.onload=()=>resolve(reader.result);
+  reader.onerror=()=>reject(reader.error||new Error('file_read_failed'));
+  reader.readAsDataURL(file);
+ });
+}
+async function uploadBrandLogo(event){
+ const input=event.target;const file=input.files?.[0];if(!file)return;
+ input.value='';
+ if(!/^image\/(png|jpe?g|webp)$/i.test(file.type||'')){toast(lang==='es'?'Sube un logo PNG, JPG o WebP.':'Upload a PNG, JPG, or WebP logo.');return}
+ if(file.size>1024*1024){toast(lang==='es'?'Usa un logo menor a 1 MB.':'Use a logo smaller than 1 MB.');return}
+ const notes=qs('#brand-memory-editor textarea[name="logo_notes"]')?.value||'';
+ const dataUrl=await readFileAsDataUrl(file);
+ const res=await api('/api/brand-guides/logo',{method:'POST',body:JSON.stringify({filename:file.name,content_type:file.type,data_url:dataUrl,logo_notes:notes})});
+ state.brand_guides=res.result.library||state.brand_guides;
+ brandEditorMode='general';
+ toast(lang==='es'?'Logo guardado para tus creativos':'Logo saved for your creatives');
+ renderCreativeStudio();
+}
 function generalMemoryForm(fields){
- return `<div class="brand-editor-intro"><h3>${lang==='es'?'Cómo es tu marca':'Your brand foundation'}</h3><p>${lang==='es'?'Cuéntale al agente cómo quieres que se vean y suenen tus anuncios.':'The manager learns this once and respects it across every product creative.'}</p>${memoryWizardCta('general')}</div><form class="brand-editor-form" data-submit-code="saveGeneralMemory(event)"><section class="brand-form-section"><h4>${lang==='es'?'Sobre tu negocio':'Business'}</h4><div class="brand-form-grid">${memoryField('brand_name',lang==='es'?'Nombre de tu marca':'Brand name',fields.brand_name,'Miro Ads')}${memoryField('offer',lang==='es'?'Qué vendes':'What you sell',fields.offer,'Cursos, productos o servicios')}${memoryField('promise',lang==='es'?'Qué ayudas a conseguir':'Main promise',fields.promise,'El cambio que busca tu comprador',true,true)}${memoryField('ideal_customer',lang==='es'?'A quién quieres ayudar':'Ideal customer',fields.ideal_customer,'Quién compraría tu producto',true,true)}</div></section><section class="brand-form-section"><h4>${lang==='es'?'Cómo deben verse tus anuncios':'Visual style'}</h4><div class="brand-form-grid">${memoryField('colors',lang==='es'?'Colores que usas':'Core colors',fields.colors,'Rosa suave, blanco, turquesa')}${memoryField('visual_style',lang==='es'?'Cómo quieres que se vean':'How it should look',fields.visual_style,'Limpio, sencillo, con el producto visible',true,true)}${memoryField('references',lang==='es'?'Ejemplos que te gustan':'Visual references',fields.references,'Marcas, fotos o estilos que te gustan',true,true)}</div></section><section class="brand-form-section"><h4>${lang==='es'?'Cómo debe hablar':'Voice and boundaries'}</h4><div class="brand-form-grid">${memoryField('tone',lang==='es'?'Cómo quieres que suene':'How it should sound',fields.tone,'Cercano, seguro y simple',true,true)}${memoryField('show_always',lang==='es'?'Qué siempre debe mostrar':'Always show',fields.show_always,'Producto, beneficio claro, personas reales',true,true)}${memoryField('avoid_always',lang==='es'?'Qué nunca debe mostrar ni decir':'Always avoid',fields.avoid_always,'Promesas que no puedes probar o demasiado texto',true,true)}</div></section><div class="brand-form-save"><button class="btn primary" type="submit">${lang==='es'?'Guardar mi marca':'Save brand memory'}</button></div></form>`;
+ return `<div class="brand-editor-intro"><h3>${lang==='es'?'Cómo es tu marca':'Your brand foundation'}</h3><p>${lang==='es'?'Cuéntale al agente cómo quieres que se vean y suenen tus anuncios.':'The manager learns this once and respects it across every product creative.'}</p>${memoryWizardCta('general')}</div><form class="brand-editor-form" data-submit-code="saveGeneralMemory(event)">${brandLogoMarkup(fields)}<section class="brand-form-section"><h4>${lang==='es'?'Sobre tu negocio':'Business'}</h4><div class="brand-form-grid">${memoryField('brand_name',lang==='es'?'Nombre de tu marca':'Brand name',fields.brand_name,'Miro Ads')}${memoryField('offer',lang==='es'?'Qué vendes':'What you sell',fields.offer,'Cursos, productos o servicios')}${memoryField('promise',lang==='es'?'Qué ayudas a conseguir':'Main promise',fields.promise,'El cambio que busca tu comprador',true,true)}${memoryField('ideal_customer',lang==='es'?'A quién quieres ayudar':'Ideal customer',fields.ideal_customer,'Quién compraría tu producto',true,true)}</div></section><section class="brand-form-section"><h4>${lang==='es'?'Cómo deben verse tus anuncios':'Visual style'}</h4><div class="brand-form-grid">${memoryField('colors',lang==='es'?'Colores que usas':'Core colors',fields.colors,'Rosa suave, blanco, turquesa')}${memoryField('visual_style',lang==='es'?'Cómo quieres que se vean':'How it should look',fields.visual_style,'Limpio, sencillo, con el producto visible',true,true)}${memoryField('references',lang==='es'?'Ejemplos que te gustan':'Visual references',fields.references,'Marcas, fotos o estilos que te gustan',true,true)}</div></section><section class="brand-form-section"><h4>${lang==='es'?'Cómo debe hablar':'Voice and boundaries'}</h4><div class="brand-form-grid">${memoryField('tone',lang==='es'?'Cómo quieres que suene':'How it should sound',fields.tone,'Cercano, seguro y simple',true,true)}${memoryField('show_always',lang==='es'?'Qué siempre debe mostrar':'Always show',fields.show_always,'Producto, beneficio claro, personas reales',true,true)}${memoryField('avoid_always',lang==='es'?'Qué nunca debe mostrar ni decir':'Always avoid',fields.avoid_always,'Promesas que no puedes probar o demasiado texto',true,true)}</div></section><div class="brand-form-save"><button class="btn primary" type="submit">${lang==='es'?'Guardar mi marca':'Save brand memory'}</button></div></form>`;
 }
 function productMemoryForm(fields,product){
  const hidden=product?`<input type="hidden" name="id" value="${escapeHtml(product.id)}">`:'';
@@ -694,6 +733,7 @@ function renderBrandMemoryModal(){
  const fields=activeGeneral?(memory.general?.fields||{}):(activeProduct?(selected?.fields||{}):(selectedBrief?.fields||{}));
  qs('#brand-memory-editor').innerHTML=activeGeneral?generalMemoryForm(fields):(activeProduct?productMemoryForm(fields,selected):adBriefMemoryForm(fields,selectedBrief));
  if(!activeAdBrief)qs('#brand-memory-editor .brand-form-save')?.insertAdjacentHTML('beforebegin',advancedMemoryFields(activeGeneral?'general':'product',fields));
+ if(activeGeneral)hydrateBrandLogoPreviews();
 }
 function renderBrandGuides(){
  const box=qs('#brand-guides-panel');if(!box)return;
@@ -1344,7 +1384,7 @@ let dashboardIntroTourIndex=0;
 let dashboardIntroTourRetry=0;
 function dashboardIntroTourSteps(){
  return lang==='es'?[
-  {selectors:['#theme-toggle'],title:'Elige el estilo que más te guste',body:'Prueba Aurora, Sapphire y Ember ahora mismo. Elige el que más cómodo se sienta para trabajar; después seguimos con el resto del tour.'},
+  {selectors:['#theme-toggle'],title:'Elige el estilo que más te guste',body:'Arriba, junto al menú, prueba Aurora, Sapphire y Ember ahora mismo. Elige el que más cómodo se sienta para trabajar; después seguimos con el resto del tour.'},
   {selectors:['.agent-chat-bar'],title:'Habla con tu manager',body:'Esta barra es la forma principal de usar el producto. Escribe como si hablaras con una persona: “qué hago hoy”, “crea una campaña”, “revisa mis creativos”.'},
   {selectors:['.view-switcher'],title:'Cambia la forma de ver tus anuncios',body:'Control muestra lo importante del día. Timeline muestra anuncios activos. Vista total enseña métricas generales. Showcase es una vista más visual.'},
   {selectors:['#toggle-left-panel','.brief-zone .zone-label'],title:'Lectura diaria',body:'Aquí vive el resumen de la mañana. Si está cerrado, toca el encabezado para abrirlo y ver qué está vigilando el agente.'},
@@ -1352,7 +1392,7 @@ function dashboardIntroTourSteps(){
   {selectors:['nav.tabs','.tabs'],title:'Menú principal',body:'Desde aquí entras a configuración, creador, audiencias, creativos y reportes. No necesitas usar todo: el chat también puede llevarte.'},
   {selectors:['.header-guide-btn'],title:'Guía rápida siempre disponible',body:'Si te pierdes, toca este botón. Abre tarjetas simples para recordar cómo usar el producto sin ruido.'}
  ]:[
-  {selectors:['#theme-toggle'],title:'Choose your favorite style',body:'Try Aurora, Sapphire, and Ember now. Pick the one that feels best to work in; then we continue the tour.'},
+  {selectors:['#theme-toggle'],title:'Choose your favorite style',body:'At the top, beside the menu, try Aurora, Sapphire, and Ember now. Pick the one that feels best to work in; then we continue the tour.'},
   {selectors:['.agent-chat-bar'],title:'Talk to your manager',body:'This bar is the main way to use the product. Write naturally: “what should I do today”, “create a campaign”, “review my creatives”.'},
   {selectors:['.view-switcher'],title:'Switch ad views',body:'Control shows today’s essentials. Timeline shows active ads. Overview shows broader metrics. Showcase is more visual.'},
   {selectors:['#toggle-left-panel','.brief-zone .zone-label'],title:'Daily reading',body:'This is the morning summary. If it is closed, tap the header to open what the agent is watching.'},

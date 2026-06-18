@@ -10,6 +10,8 @@ Usa este archivo como la base visual y verbal de todos los creativos.
 - Que vende:
 - Promesa principal:
 - Cliente ideal:
+- Logo de marca:
+- Notas del logo:
 - Personalidad:
 
 ## Estilo visual
@@ -33,6 +35,7 @@ Usa este archivo como la base visual y verbal de todos los creativos.
 
 - Mostrar siempre:
 - Evitar siempre:
+- Logo: si hay logo guardado, usarlo como referencia visual de marca. No inventar otro logo.
 - Formatos principales: 1:1, 4:5, 9:16
 - Texto dentro de imagen: poco, grande y legible
 

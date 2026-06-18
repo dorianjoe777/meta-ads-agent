@@ -46,12 +46,15 @@ from audience_builder import build_audience_strategy
 from budget_optimizer import BudgetOptimizer, OptimizationStrategy, PerformanceMetrics
 from campaign_creator import CampaignCreator
 from codex_brand_guides import (
+    BRAND_ASSET_DIR,
+    BRAND_LOGO_EXTENSIONS,
     build_codex_image_prompt_package,
     call_codex_image_cli,
     call_codex_cli,
     codex_cli_auth_status,
     ensure_brand_guides,
     guide_library,
+    product_reference,
     save_creative_references,
     save_ad_brief,
     save_general_guide,
@@ -134,6 +137,7 @@ CURRENT_DASHBOARD_BIND_PORT = 0
 CREATIVE_ASSET_ROOT = OUTPUT_DIR / "creatives"
 CREATIVE_ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 PUBLIC_ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".svg", ".css", ".js", ".mp4", ".mov"}
+MAX_BRAND_LOGO_BYTES = 1 * 1024 * 1024
 PORT = 7871
 TARGET_CPA = 50.0
 TELEGRAM_THREAD = None
@@ -3652,7 +3656,7 @@ def agent_onboarding_phase(profile=None):
         next_step = "Entrevistar al cliente sobre negocio, oferta, cliente ideal, etapa actual, problemas y meta de 30 dias."
     elif branding != "completed":
         phase = "branding_creatives_creation"
-        next_step = "Usar el skill branding creatives creation para definir estilo visual, referencias, paletas, fuentes y reglas de creativos."
+        next_step = "Usar el skill branding creatives creation para definir marca, logo, productos, referencias, paletas, fuentes y reglas de creativos."
     elif campaigns != "completed":
         phase = "ads_campaign_onboarding"
         next_step = "Entender que ha promovido antes, resultados, aprendizajes, restricciones y primera estrategia de campanas."
@@ -3691,6 +3695,16 @@ Estado actual: {phase["phase"]}.
 
 Siguiente movimiento: {phase["next_step"]}
 
+## Primer mensaje del onboarding
+
+Antes de hacer la primera pregunta, explica el camino con palabras simples:
+
+1. Primero voy a entender tu negocio: que vendes, a quien le vendes, en que etapa estas y que quieres mejorar.
+2. Despues vamos a definir tu parte visual: marca, logo, colores, referencias, estilo y tono.
+3. Luego aterrizamos anuncios: ofertas especificas, campanas anteriores, estrategia, briefs y proximos pasos.
+
+Despues de explicar esto, haz una sola pregunta clara. La mejor primera pregunta es: "Que vendes exactamente y cual es tu oferta principal hoy?"
+
 ## Fases
 
 1. business_discovery
@@ -3699,10 +3713,11 @@ Siguiente movimiento: {phase["next_step"]}
    - Guardar lo aprendido con `save_business_context`.
 
 2. branding_creatives_creation
-   - Usar el skill `branding creatives creation`.
+   - Usar el skill `skills/branding-creatives-creation/SKILL.md`.
    - Buscar referencias visuales de anuncios del nicho con las herramientas web/browser disponibles.
-   - Proponer estilos, paletas, fuentes, sensaciones y reglas visuales.
+   - Proponer estilos, paletas, fuentes, sensaciones, uso de logo y reglas visuales.
    - Distinguir que es continuo para toda la marca y que cambia por producto, servicio o campana.
+   - Si el cliente envia un logo, guardarlo en la guia general como Logo de marca y Notas del logo.
    - Si el cliente aprueba referencias encontradas, generadas o ambas, guardarlas con `save_creative_references`.
    - Guardar la guia general con `save_brand_guide` y fichas por producto con `save_product_guide`.
 
@@ -3755,6 +3770,14 @@ Si el cliente pide revisar su negocio desde cero, vuelve a preguntar una cosa a 
 Estado: todavia no preguntado al cliente.
 
 Cuando el cliente escriba por Telegram o por el chat del dashboard, empieza una entrevista corta y amable para entender su negocio antes de recomendar anuncios.
+
+Primer mensaje obligatorio:
+- Explica brevemente que el proceso tiene 3 partes:
+  1. entender el negocio,
+  2. definir la marca visual/branding,
+  3. convertir eso en ofertas, estrategia y anuncios.
+- Despues de explicarlo, haz solo una pregunta.
+- Primera pregunta recomendada: "Que vendes exactamente y cual es tu oferta principal hoy?"
 
 Instrucciones para el agente:
 - Habla en espanol latino natural, como manager calido y directo.
@@ -4099,6 +4122,7 @@ def codex_image_generate(payload):
             "product_guide": prompt_package["product_guide"],
             "ad_brief": prompt_package["ad_brief"],
             "selected_prompt": selected_prompt,
+            "logo_context": prompt_package.get("logo_context", ""),
         }
         if result.get("asset_id"):
             result["preview_url"] = f"/api/creative-asset?id={urllib.parse.quote(str(result['asset_id']))}"
@@ -4130,6 +4154,107 @@ def creative_asset_path(asset_id):
         raise ValueError("No encontré esa imagen creativa.") from exc
     if not candidate.exists() or not candidate.is_file():
         raise ValueError("No encontré esa imagen creativa.")
+    return candidate
+
+
+def brand_logo_extension(filename="", content_type=""):
+    ext = Path(str(filename or "")).suffix.lower()
+    if ext not in BRAND_LOGO_EXTENSIONS:
+        ext = {
+            "image/png": ".png",
+            "image/jpeg": ".jpg",
+            "image/jpg": ".jpg",
+            "image/webp": ".webp",
+        }.get(str(content_type or "").split(";")[0].strip().lower(), "")
+    if ext not in BRAND_LOGO_EXTENSIONS:
+        raise ValueError("Sube tu logo en PNG, JPG o WebP.")
+    return ext
+
+
+def brand_logo_bytes_look_valid(raw, ext):
+    if not raw:
+        return False
+    if ext == ".png":
+        return raw.startswith(b"\x89PNG\r\n\x1a\n")
+    if ext in {".jpg", ".jpeg"}:
+        return raw.startswith(b"\xff\xd8")
+    if ext == ".webp":
+        return raw.startswith(b"RIFF") and raw[8:12] == b"WEBP"
+    return False
+
+
+def store_brand_logo_bytes(raw, ext, original_name="logo"):
+    if len(raw) > MAX_BRAND_LOGO_BYTES:
+        raise ValueError("Ese logo pesa demasiado. Usa una imagen menor a 1 MB.")
+    if not brand_logo_bytes_look_valid(raw, ext):
+        raise ValueError("No pude confirmar que ese archivo sea una imagen válida.")
+    BRAND_ASSET_DIR.mkdir(parents=True, exist_ok=True)
+    slug = re.sub(r"[^a-z0-9]+", "-", Path(str(original_name or "logo")).stem.lower()).strip("-") or "logo"
+    digest = hashlib.sha256(raw).hexdigest()[:10]
+    target = BRAND_ASSET_DIR / f"{slug[:34]}-{digest}{ext}"
+    target.write_bytes(raw)
+    return product_reference(target)
+
+
+def copy_brand_logo_from_path(source_path, logo_notes=""):
+    source = Path(str(source_path or "")).expanduser()
+    if not source.exists() or not source.is_file():
+        raise ValueError("No encontré la imagen del logo.")
+    ext = brand_logo_extension(source.name, mimetypes.guess_type(source.name)[0] or "")
+    raw = source.read_bytes()
+    relative = store_brand_logo_bytes(raw, ext, source.name)
+    return {
+        "logo_path": relative,
+        "logo_notes": str(logo_notes or "").strip() or "Logo enviado por el comprador en el chat.",
+    }
+
+
+def save_brand_logo_asset(payload):
+    data_url = str((payload or {}).get("data_url") or "").strip()
+    if not data_url or "," not in data_url:
+        raise ValueError("Sube una imagen de logo.")
+    header, encoded = data_url.split(",", 1)
+    content_type = str((payload or {}).get("content_type") or "")
+    if "image/" in header and not content_type:
+        content_type = header.split(";", 1)[0].removeprefix("data:")
+    ext = brand_logo_extension((payload or {}).get("filename") or "logo", content_type)
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except Exception as exc:
+        raise ValueError("No pude leer esa imagen de logo.") from exc
+    relative = store_brand_logo_bytes(raw, ext, (payload or {}).get("filename") or "logo")
+    existing = (guide_library().get("general", {}) or {}).get("fields", {}) or {}
+    update = dict(existing)
+    update["logo_path"] = relative
+    if (payload or {}).get("logo_notes"):
+        update["logo_notes"] = str((payload or {}).get("logo_notes") or "").strip()
+    elif not update.get("logo_notes"):
+        update["logo_notes"] = "Logo oficial subido por el comprador. Usarlo como referencia visual de marca."
+    if not update.get("brand_name") and not update.get("offer"):
+        update["brand_name"] = "Marca principal"
+    library = save_general_brand_memory(update)
+    return {
+        "saved": True,
+        "logo_path": relative,
+        "preview_url": f"/api/brand-asset?id={urllib.parse.quote(relative)}",
+        "library": library,
+    }
+
+
+def brand_asset_path(asset_id):
+    relative = Path(urllib.parse.unquote(str(asset_id or "").strip()))
+    if not str(relative) or relative.is_absolute() or relative.suffix.lower() not in BRAND_LOGO_EXTENSIONS:
+        raise ValueError("No encontré ese logo.")
+    if relative.parts[:2] == ("brand_guides", "assets"):
+        candidate = (ROOT_DIR / relative).resolve()
+    else:
+        candidate = (BRAND_ASSET_DIR / relative).resolve()
+    try:
+        candidate.relative_to(BRAND_ASSET_DIR.resolve())
+    except ValueError as exc:
+        raise ValueError("No encontré ese logo.") from exc
+    if not candidate.exists() or not candidate.is_file():
+        raise ValueError("No encontré ese logo.")
     return candidate
 
 
@@ -6128,6 +6253,15 @@ def handle_save_business_context_tool(arguments, chat_payload, tool):
 
 
 def handle_save_brand_guide_tool(arguments, chat_payload, tool):
+    image_paths = safe_image_paths(chat_payload)
+    logo_signal = "logo" in json.dumps(arguments or {}, ensure_ascii=False).lower() or "logo" in str((chat_payload or {}).get("message", "")).lower()
+    if image_paths and logo_signal and not arguments.get("logo_path"):
+        arguments = dict(arguments)
+        try:
+            logo = copy_brand_logo_from_path(image_paths[0], arguments.get("logo_notes") or "")
+            arguments.update(logo)
+        except ValueError:
+            arguments.setdefault("logo_notes", "El comprador envio una imagen como referencia de logo, pero no pude guardarla como archivo de logo.")
     if not arguments.get("brand_name") and not arguments.get("offer"):
         return agent_action_result(
             tool,
@@ -6515,6 +6649,7 @@ HTML = r"""<!DOCTYPE html>
 <button class="tab" data-tab="creatives" data-i18n="tab_creatives">Creatives</button>
 <button class="tab" data-tab="reports" data-i18n="tab_reports">Reports</button>
 </nav>
+<div class="header-theme-slot"><div class="theme-switcher" id="theme-toggle" role="group" aria-label="Temas del dashboard"><button class="theme-chip active" type="button" data-theme="aurora" data-action-code="setDashboardTheme('aurora')">Aurora</button><button class="theme-chip" type="button" data-theme="sapphire" data-action-code="setDashboardTheme('sapphire')">Sapphire</button><button class="theme-chip" type="button" data-theme="ember" data-action-code="setDashboardTheme('ember')">Ember</button></div></div>
 <button class="header-guide-btn" type="button" data-action-code="openUsageGuide()" aria-label="Guía rápida" title="Guía rápida">?</button>
 <div class="status">
 <select class="lang-select" id="language-select" aria-label="Language"><option value="es">ES</option><option value="en">EN</option></select>
@@ -6536,7 +6671,7 @@ HTML = r"""<!DOCTYPE html>
 <section class="col work-zone">
 <div class="zone-label" data-i18n="zone_work">Campaign workspace</div>
 <div id="tab-overview">
-<div class="page-title"><div><h2 data-i18n="control_center">Control Center</h2><p data-i18n="control_subtitle">Daily decisions, risk signals, and ad account health in one place.</p></div><div class="dashboard-toolbar"><div class="view-switcher" role="group" aria-label="Vistas del dashboard"><button class="view-chip active" type="button" data-view="control" data-action-code="setDashboardView('control')">Control</button><button class="view-chip" type="button" data-view="timeline" data-action-code="setDashboardView('timeline')">Timeline</button><button class="view-chip" type="button" data-view="analytics" data-action-code="setDashboardView('analytics')">Overview</button><button class="view-chip" type="button" data-view="idle" data-action-code="setDashboardView('idle')">Showcase</button></div><div class="theme-switcher" id="theme-toggle" role="group" aria-label="Temas del dashboard"><button class="theme-chip active" type="button" data-theme="aurora" data-action-code="setDashboardTheme('aurora')">Aurora</button><button class="theme-chip" type="button" data-theme="sapphire" data-action-code="setDashboardTheme('sapphire')">Sapphire</button><button class="theme-chip" type="button" data-theme="ember" data-action-code="setDashboardTheme('ember')">Ember</button></div><button class="btn ask-btn" data-action-code="openChat(t('draft_where_are_we'))" data-i18n="ask_manager">Ask manager</button><button class="btn primary hidden" id="real-data-refresh" data-action-code="refreshInsights()">Actualizar datos reales</button><div class="signal" id="data-source-signal">--</div><div class="signal" data-i18n="safe_mode">Safe mode active</div></div></div>
+<div class="page-title"><div><h2 data-i18n="control_center">Control Center</h2><p data-i18n="control_subtitle">Daily decisions, risk signals, and ad account health in one place.</p></div><div class="dashboard-toolbar"><div class="view-switcher" role="group" aria-label="Vistas del dashboard"><button class="view-chip active" type="button" data-view="control" data-action-code="setDashboardView('control')">Control</button><button class="view-chip" type="button" data-view="timeline" data-action-code="setDashboardView('timeline')">Timeline</button><button class="view-chip" type="button" data-view="analytics" data-action-code="setDashboardView('analytics')">Overview</button><button class="view-chip" type="button" data-view="idle" data-action-code="setDashboardView('idle')">Showcase</button></div><button class="btn ask-btn" data-action-code="openChat(t('draft_where_are_we'))" data-i18n="ask_manager">Ask manager</button><button class="btn primary hidden" id="real-data-refresh" data-action-code="refreshInsights()">Actualizar datos reales</button><div class="signal" id="data-source-signal">--</div><div class="signal" data-i18n="safe_mode">Safe mode active</div></div></div>
 <div class="dashboard-view" id="view-control">
 <div class="kpis" id="kpis"></div>
 <div class="campaign-grid" id="campaigns"></div>
@@ -6675,8 +6810,8 @@ HTML = r"""<!DOCTYPE html>
 
 class DashboardHandler(BaseHTTPRequestHandler):
     HTML_PATHS = {"/", "/dashboard"}
-    PROTECTED_GET_PATHS = {"/api/dashboard", "/api/export", "/api/report", "/api/setup", "/api/social/auth-status", "/api/social/accounts", "/api/update/snapshots", "/api/creative-asset"}
-    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/agent-model/connect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/product", "/api/ad-briefs", "/api/codex/creative-plan", "/api/codex/image-generate", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/complete", "/api/onboarding/skip", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/local-network-access", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
+    PROTECTED_GET_PATHS = {"/api/dashboard", "/api/export", "/api/report", "/api/setup", "/api/social/auth-status", "/api/social/accounts", "/api/update/snapshots", "/api/creative-asset", "/api/brand-asset"}
+    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/agent-model/connect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/logo", "/api/brand-guides/product", "/api/ad-briefs", "/api/codex/creative-plan", "/api/codex/image-generate", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/complete", "/api/onboarding/skip", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/local-network-access", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
     ONBOARDING_OPEN_GETS = {"/api/dashboard", "/api/setup"}
     ONBOARDING_OPEN_POSTS = {"/api/dashboard-password", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/license/activate"}
     GET_JSON_ROUTES = {
@@ -6706,6 +6841,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         "/api/business-profile/links": save_business_links_for_agent,
         "/api/brand-guides/init": initialize_brand_guides,
         "/api/brand-guides/general": save_general_brand_memory,
+        "/api/brand-guides/logo": save_brand_logo_asset,
         "/api/brand-guides/product": save_product_brand_memory,
         "/api/ad-briefs": save_ad_brief_memory,
         "/api/codex/creative-plan": codex_creative_plan,
@@ -6985,6 +7121,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             asset_id = (parse_qs(parsed.query).get("id") or [""])[0]
             try:
                 self.send_preview_image(creative_asset_path(asset_id))
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, 404)
+        elif parsed.path == "/api/brand-asset":
+            asset_id = (parse_qs(parsed.query).get("id") or [""])[0]
+            try:
+                self.send_preview_image(brand_asset_path(asset_id))
             except ValueError as exc:
                 self.send_json({"error": str(exc)}, 404)
         elif parsed.path.startswith("/assets/"):

@@ -19,9 +19,11 @@ from product_config import ROOT_DIR, load_config
 BRAND_DIR = ROOT_DIR / "brand_guides"
 PRODUCT_DIR = BRAND_DIR / "products"
 AD_BRIEF_DIR = BRAND_DIR / "ad_briefs"
+BRAND_ASSET_DIR = BRAND_DIR / "assets"
 GENERAL_GUIDE = BRAND_DIR / "general_branding.md"
 CREATIVE_REFERENCES_FILE = BRAND_DIR / "creative_references.md"
 CODEX_GENERATED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+BRAND_LOGO_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 GENERAL_EXAMPLE = BRAND_DIR / "general_branding.example.md"
 PRODUCT_EXAMPLE = PRODUCT_DIR / "product.example.md"
 AD_BRIEF_EXAMPLE = AD_BRIEF_DIR / "ad_brief.example.md"
@@ -35,6 +37,8 @@ GENERAL_FIELD_LABELS = {
     "offer": "Que vende",
     "promise": "Promesa principal",
     "ideal_customer": "Cliente ideal",
+    "logo_path": "Logo de marca",
+    "logo_notes": "Notas del logo",
     "personality": "Personalidad",
     "colors": "Colores principales",
     "avoid_colors": "Colores que evitar",
@@ -149,6 +153,21 @@ def product_reference(path):
     return str(path.resolve().relative_to(ROOT_DIR.resolve()))
 
 
+def brand_logo_context(fields):
+    """Return a compact, prompt-safe description of the saved brand logo."""
+    path = clean_field((fields or {}).get("logo_path", ""))
+    notes = clean_field((fields or {}).get("logo_notes", ""))
+    if not path and not notes:
+        return ""
+    parts = []
+    if path:
+        parts.append(f"Logo guardado: {path}")
+    if notes:
+        parts.append(f"Notas del logo: {notes}")
+    parts.append("Usar ese logo como referencia de marca. No inventar un logo diferente.")
+    return " / ".join(parts)
+
+
 def default_general_guide():
     profile = read_json(BUSINESS_PROFILE_FILE, {})
     base = read_text(GENERAL_EXAMPLE)
@@ -164,6 +183,8 @@ def default_general_guide():
 - Que vende: {profile.get('main_offer') or profile.get('offer') or ''}
 - Promesa principal: {profile.get('positioning') or ''}
 - Cliente ideal: {profile.get('ideal_customer') or profile.get('audience') or ''}
+- Logo de marca:
+- Notas del logo:
 
 ## Contexto actual
 
@@ -189,6 +210,7 @@ def default_general_guide():
 
 - Mostrar siempre: la oferta, el beneficio y una razon clara para prestar atencion.
 - Evitar siempre: claims irreales, saturacion de texto, imagenes genericas sin producto.
+- Logo: si hay logo guardado, usarlo como referencia visual de marca. No inventar otro logo.
 - Formatos principales: 1:1, 4:5, 9:16
 - Texto dentro de imagen: poco, grande y legible.
 
@@ -339,6 +361,8 @@ Usa este archivo como la base visual y verbal de todos los creativos.
 - Que vende: {fields.get('offer', '')}
 - Promesa principal: {fields.get('promise', '')}
 - Cliente ideal: {fields.get('ideal_customer', '')}
+- Logo de marca: {fields.get('logo_path', '')}
+- Notas del logo: {fields.get('logo_notes', '')}
 - Personalidad: {fields.get('personality', '')}
 
 ## Estilo visual
@@ -362,6 +386,7 @@ Usa este archivo como la base visual y verbal de todos los creativos.
 
 - Mostrar siempre: {fields.get('show_always', '')}
 - Evitar siempre: {fields.get('avoid_always', '')}
+- Logo: si hay logo guardado, usarlo como referencia visual de marca. No inventar otro logo; si el pedido pide incluirlo, integrarlo limpio y legible.
 - Formatos principales: 1:1, 4:5, 9:16
 - Texto dentro de imagen: poco, grande y legible
 
@@ -583,6 +608,8 @@ def creative_memory(product_guide="", ad_brief=""):
         "offer": product.get("name") or general.get("offer", ""),
         "voice": general.get("tone", ""),
         "visual_style": general.get("visual_style", ""),
+        "logo_path": general.get("logo_path", ""),
+        "logo_notes": general.get("logo_notes", ""),
         "avoid": [item.strip() for item in ",".join([general.get("avoid_always", ""), product.get("avoid", "")]).split(",") if item.strip()],
         "pain": product.get("pain", ""),
         "desire": product.get("desire", ""),
@@ -663,6 +690,7 @@ def resolve_ad_brief(ad_brief=""):
 
 def build_codex_creative_prompt(product_guide="", request="", ad_brief=""):
     general = read_text(GENERAL_GUIDE)
+    logo_context = brand_logo_context(general_fields(general))
     ad_path = resolve_ad_brief(ad_brief)
     ad_text = read_text(ad_path) if ad_path else ""
     if not product_guide and ad_text:
@@ -682,6 +710,10 @@ Usa estas guias para crear prompts de imagen consistentes y una mini estrategia 
 ## Guia general
 
 {general}
+
+## Logo de marca
+
+{logo_context or 'No hay logo guardado todavia.'}
 
 ## Guia del producto
 
@@ -832,6 +864,8 @@ def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", 
         raise ValueError("El modo debe ser fixed o free.")
     count = _bounded_variation_count(variations)
     general = read_text(GENERAL_GUIDE)
+    general_data = general_fields(general)
+    logo_context = brand_logo_context(general_data)
     ad_path = resolve_ad_brief(ad_brief)
     ad_text = read_text(ad_path) if ad_path else ""
     if not product_guide and ad_text:
@@ -849,6 +883,7 @@ def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", 
             f"Producto/oferta: {_text_excerpt(product_text, 1200)}" if product_text else "",
             f"Brief del anuncio: {_text_excerpt(ad_text, 1200)}" if ad_text else "",
             f"Reglas generales de marca: {_text_excerpt(general, 1200)}" if general else "",
+            f"Logo de marca: {logo_context}" if logo_context else "",
             f"Referencias aprobadas: {_text_excerpt(references, 900)}" if references else "",
         ]
         if part
@@ -856,7 +891,8 @@ def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", 
     brand_lock = (
         "Usa el pedido puntual del comprador como fuente principal. Respeta colores, tipografias, "
         "personalidad, promesa, oferta, publico, elementos bloqueados, referencias aprobadas y cosas prohibidas "
-        "cuando existan. Si falta una regla de marca, usa un estilo publicitario neutral y profesional; no crees "
+        "cuando existan. Si existe Logo de marca, usalo como referencia visual y no inventes otro logo. "
+        "Si falta una regla de marca, usa un estilo publicitario neutral y profesional; no crees "
         "placeholders ni imagenes sobre datos faltantes."
     )
     mode_instruction = (
@@ -916,12 +952,17 @@ Reglas no negociables:
 - No leas archivos, credenciales, tokens ni configuracion local.
 - No ejecutes comandos.
 - Mantener colores, tipografias y elementos importantes de marca.
+- Si hay logo guardado, mantenerlo como referencia visual. No inventar otro logo ni reemplazar sus rasgos.
 - En modo libre, revisa el ledger y reemplaza cualquier idea que se parezca demasiado a otra.
 - Devuelve JSON valido con: variant_id, design_axis, final_image_prompt, aspect_ratios, on_image_text, why_this_is_different, safety_notes.
 
 ## Guia general de marca
 
 {_text_excerpt(general)}
+
+## Logo de marca
+
+{logo_context or 'Sin logo guardado.'}
 
 ## Guia de producto
 
@@ -957,6 +998,7 @@ Reglas no negociables:
         "request": str(request or "").strip(),
         "brand_lock": brand_lock,
         "mode_instruction": mode_instruction,
+        "logo_context": logo_context,
         "variation_ledger": variation_ledger,
         "prompts": prompts,
         "codex_prompt": codex_prompt,

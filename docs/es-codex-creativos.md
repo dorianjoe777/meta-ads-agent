@@ -12,6 +12,8 @@ El producto incluye la estructura de memoria. Cuando guardas tu marca, un produc
 
 ```text
 brand_guides/
+  assets/
+    logo-o-referencias-de-marca.png
   general_branding.md
   products/
     nombre-del-producto.md
@@ -52,6 +54,8 @@ Si Codex CLI responde que el modelo por defecto no esta disponible para tu cuent
 - Que vende.
 - Promesa principal.
 - Cliente ideal.
+- Logo de marca.
+- Notas del logo: como debe aparecer, donde se ve mejor y que no debe inventarse.
 - Colores.
 - Tono.
 - Estilo visual.
@@ -60,6 +64,8 @@ Si Codex CLI responde que el modelo por defecto no esta disponible para tu cuent
 - Reglas para imagenes.
 
 Esta guia evita que cada creativo se vea como si fuera de una marca diferente.
+
+Si subes el logo desde `Creativos > Mi marca`, Admira IA lo guarda localmente en `brand_guides/assets/` y lo usa como contexto cuando pide imagenes con ChatGPT/Codex. El agente no debe inventar otro logo.
 
 ## Guia por producto
 
