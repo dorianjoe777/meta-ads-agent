@@ -1376,6 +1376,35 @@ def save_profitability_rule_settings(payload):
     return {"saved": True, "rules": rules}
 
 
+def telegram_welcome_text(language="es"):
+    if str(language or "es").lower().startswith("en"):
+        return (
+            "Hello, I am connected now.\n\n"
+            "You can talk to me here as your Meta Ads manager. "
+            "I will first understand your business, then your visual brand, and then your ads strategy.\n\n"
+            "Reply here when you are ready and I will continue one question at a time."
+        )
+    return (
+        "Hola, ya quedé conectado.\n\n"
+        "Puedes hablarme por aquí como tu manager de Meta Ads. "
+        "Primero voy a entender tu negocio, después tu marca visual y luego tu estrategia de anuncios.\n\n"
+        "Respóndeme aquí cuando estés listo y seguimos una pregunta a la vez."
+    )
+
+
+def send_telegram_welcome_message(config, chat_id, language="es"):
+    chat = str(chat_id or "").strip()
+    if not (config.telegram_bot_token and chat):
+        return {"sent": False, "error": "telegram_not_ready"}
+    try:
+        telegram_bot_request(config, "sendMessage", {"chat_id": chat, "text": telegram_welcome_text(language)}, timeout=10)
+        log_action("telegram_welcome_send", {"chat_id_set": True}, "completed")
+        return {"sent": True}
+    except Exception as exc:
+        log_action("telegram_welcome_send", {"chat_id_set": True, "error": str(exc)}, "failed")
+        return {"sent": False, "error": str(exc)}
+
+
 def save_telegram_config(payload):
     old_config = load_config()
     limits = license_entitlements()
@@ -1403,6 +1432,11 @@ def save_telegram_config(payload):
     gateway = ensure_telegram_listener()
     status["listener_started"] = bool(gateway.get("started") if isinstance(gateway, dict) else gateway)
     status["gateway"] = gateway if isinstance(gateway, dict) else {}
+    if str(payload.get("send_welcome") or "").strip().lower() in {"1", "true", "yes", "on"} and status.get("chat_id"):
+        welcome = send_telegram_welcome_message(config, status.get("chat_id"), status.get("language") or values.get("TELEGRAM_LANGUAGE") or "es")
+        status["welcome_sent"] = bool(welcome.get("sent"))
+        if welcome.get("error"):
+            status["welcome_error"] = welcome.get("error")
     if status.get("enabled") and status.get("bot_configured") and status.get("chat_id"):
         profile = read_json(BUSINESS_PROFILE_FILE, {})
         if isinstance(profile, dict) and not profile.get("telegram_onboarding_message_sent_at"):

@@ -43,19 +43,19 @@ const ASSETS = [
 
 const improvements = [
   {
-    title: "Inicio mas limpio",
-    body: "Las instalaciones nuevas ya no muestran una ventana duplicada para crear contraseña. Todo empieza dentro del onboarding guiado.",
+    title: "Codigo de ChatGPT mas confiable",
+    body: "El boton de copiar ahora toma exactamente el codigo visible en pantalla, evitando pegar codigos anteriores por accidente.",
     impact: "Onboarding"
   },
   {
-    title: "Menos confusion al entrar",
-    body: "Si el navegador guardo una sesion vieja, Admira IA la limpia cuando detecta que todavia no existe una contraseña real.",
-    impact: "Experiencia"
+    title: "Telegram arranca solo",
+    body: "Despues de detectar tu chat, Admira IA envia el primer mensaje automaticamente para que la conversacion empiece sin pasos extra.",
+    impact: "Telegram"
   },
   {
-    title: "Version instalada al dia",
-    body: "El instalador y el dashboard reportan la misma version para que las actualizaciones oficiales se oculten cuando ya estan instaladas.",
-    impact: "Actualizaciones"
+    title: "Instrucciones de ChatGPT mas claras",
+    body: "El paso de conectar ChatGPT explica mejor donde activar la autorizacion por codigo para Codex y que boton tocar despues.",
+    impact: "Claridad"
   }
 ];
 

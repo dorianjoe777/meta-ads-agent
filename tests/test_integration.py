@@ -3673,6 +3673,7 @@ class IntegrationTestSuite:
         original_ensure = dashboard.ensure_telegram_listener
         original_entitlements = dashboard.license_entitlements
         original_registry = dashboard.agency_registry
+        original_telegram_request = dashboard.telegram_bot_request
 
         class FakeConfig:
             def __init__(self, bot, chat):
@@ -3680,6 +3681,7 @@ class IntegrationTestSuite:
                 self.telegram_chat_id = chat
 
         calls = []
+        sent_messages = []
         configs = [FakeConfig("old-bot", "old-chat"), FakeConfig("new-bot", "new-chat")]
         try:
             offset_path.write_text(json.dumps({"offset": 999}), encoding="utf-8")
@@ -3688,6 +3690,7 @@ class IntegrationTestSuite:
             dashboard.load_config = lambda: configs.pop(0) if configs else FakeConfig("new-bot", "new-chat")
             dashboard.telegram_settings = lambda config: {"enabled": True, "language": "es", "poll_timeout": 25, "bot_configured": bool(config.telegram_bot_token), "chat_id": config.telegram_chat_id}
             dashboard.ensure_telegram_listener = lambda: True
+            dashboard.telegram_bot_request = lambda config, method, payload, timeout=10: sent_messages.append((config.telegram_bot_token, method, payload)) or {"ok": True}
             dashboard.license_entitlements = lambda: {
                 "plan": "individual",
                 "is_agency": False,
@@ -3695,8 +3698,10 @@ class IntegrationTestSuite:
                 "can_use_multi_telegram_profiles": False,
             }
             dashboard.agency_registry = lambda: {"active_id": "", "spaces": []}
-            status = dashboard.save_telegram_config({"enabled": "true", "bot_token": "new-bot", "chat_id": "new-chat", "language": "es"})
+            status = dashboard.save_telegram_config({"enabled": "true", "bot_token": "new-bot", "chat_id": "new-chat", "language": "es", "send_welcome": "true"})
             self.assert_true(status["listener_started"] is True, "Telegram listener restarts after connection save")
+            self.assert_true(status["welcome_sent"] is True and sent_messages and sent_messages[0][1] == "sendMessage", "Selecting a detected Telegram chat sends the first welcome message automatically")
+            self.assert_true("Primero voy a entender tu negocio" in sent_messages[0][2]["text"], "Telegram welcome starts the buyer interview in clear Spanish")
             self.assert_true(not offset_path.exists() and not context_path.exists(), "Telegram bot/chat change clears stale polling offset and approval context")
             self.assert_true(calls and calls[0]["TELEGRAM_BOT_TOKEN"] == "new-bot" and calls[0]["TELEGRAM_CHAT_ID"] == "new-chat", "Telegram config saves the new bot and chat")
         finally:
@@ -3706,6 +3711,7 @@ class IntegrationTestSuite:
             dashboard.ensure_telegram_listener = original_ensure
             dashboard.license_entitlements = original_entitlements
             dashboard.agency_registry = original_registry
+            dashboard.telegram_bot_request = original_telegram_request
             if before_offset is None:
                 if offset_path.exists():
                     offset_path.unlink()
@@ -3828,11 +3834,12 @@ class IntegrationTestSuite:
         self.assert_true("Modelo para ChatGPT/Codex" in html and "<select name=\"hermes_model\">" in html and "gpt-5.5" in html and "Recomendado automático" not in html and "agentModelFormPayload()" in html, "ChatGPT/Codex setup exposes gpt-5.5 as the clear default model selector")
         self.assert_true("agent_chat_base_url" in html and "agent_chat_api_key" in html and "custom_api" in html, "OpenAI-compatible brain settings are exposed without showing saved keys")
         self.assert_true("DigitalOcean mostraré aquí el enlace" in html and "Ver diagnóstico para soporte" in html, "Hermes/ChatGPT setup has a browser-based VPS path with diagnostics folded")
-        self.assert_true("Ajustes > Seguridad" in html and "Enable device code authorization for Codex" in html and "chatgpt-preflight" in html and ".chatgpt-preflight ol" in html, "ChatGPT/Codex setup tells buyers to enable device-code authorization before login without overlapping the model field")
+        self.assert_true("Toca el botón de abajo para abrir la configuración de tu cuenta ChatGPT." in html and "Activar autorización con códigos de dispositivo para Codex" in html and "Vuelve aquí y toca el botón “Ya lo hice, conectar a ChatGPT ahora”" in html and "chatgpt-preflight" in html and ".chatgpt-preflight ol" in html, "ChatGPT/Codex setup tells buyers to enable device-code authorization before login without overlapping the model field")
         self.assert_true("/api/agent-model/connect-status" in html and "/api/agent-model/connect-input" in html and "sendChatGptTerminalInput" in html, "VPS Hermes bridge can poll and send guided terminal responses")
         self.assert_true("chatgpt-settings-help" in html and "device_auth_settings" in html, "ChatGPT/Codex setup shows a clear recovery card when device-code auth is disabled")
         self.assert_true("Ver diagnóstico técnico" in html and "prepareChatGptAuthWindow" in html and "maybeOpenChatGptAuthUrl" in html, "ChatGPT/Codex browserless UI folds support detail and opens the OAuth login in the buyer browser")
-        self.assert_true("chatgpt-device-code" in html and "Copiar código" in html and "login_code" in html and "data-chatgpt-code" in html and "data-visible-code" in html and "copyVisibleChatGptCode(event)" in html and "normalizeChatGptCode" in html and "font-size:clamp(30px" in html and "word-break:break-all" in html and "scrollIntoView({behavior:'smooth',block:'center'})" in html, "OpenAI terminal login code is shown as a large copyable buyer-facing card and the copy button is bound to the exact displayed code")
+        self.assert_true("chatgpt-device-code" in html and "Copiar código" in html and "login_code" in html and "data-chatgpt-visible-code" in html and "copyVisibleChatGptCode(source)" in html and "normalizeChatGptCode" in html and "font-size:clamp(30px" in html and "word-break:break-all" in html and "scrollIntoView({behavior:'smooth',block:'center'})" in html, "OpenAI terminal login code is shown as a large copyable buyer-facing card and the copy button is bound to the exact displayed code")
+        self.assert_true("data-chatgpt-code" not in html and "data-visible-code" not in html and "dataset?.chatgptCode" not in html and "dataset?.visibleCode" not in html, "Copying the OpenAI code no longer reads stale dataset values and copies only the displayed code text")
         self.assert_true("advanceOnboardingAfterChatGptConnected" in html and "onboardingFlowStep=Math.min(steps.length-1,idx+1)" in html, "ChatGPT/Codex connection advances onboarding automatically after success")
         self.assert_true("Haz clic aquí si te apareció un error" in html and "toggleChatGptDeviceAuthHelp" in html and "Activar autorización con códigos de dispositivo para Codex" in html, "OpenAI code card includes a manual buyer help button for browser-side Codex device-code errors")
         self.assert_true("Cierra la pestaña de login de ChatGPT/Codex" in html and "Ya lo activé, abrir login de nuevo" in html and "reopenChatGptAuthUrl" in html and "chatgpt-retry-login" in html, "Device-code help tells buyers to close the failed login tab and reopen it from a large CTA")
@@ -3846,7 +3853,7 @@ class IntegrationTestSuite:
         self.assert_true("{id:'website',status:websiteOk?'ok':'warn'}" not in html, "Initial onboarding no longer adds a separate website/social links step before Telegram")
         self.assert_true("Habla con tu manager por Telegram" in html and "Descargar Telegram" in html and "Abrir BotFather" in html and "Copiar /newbot" in html and "Ya envié hola, detectar mi chat" in html, "Telegram onboarding explains download, BotFather, command copy, chat detection, and phone-first manager access")
         self.assert_true("crear-bot-telegram.mp4" in html and "crear-bot-telegram.mov" in html and "telegram-setup-video" in html and "telegram-video-card" in html, "Telegram onboarding includes the large buyer video guide with MP4 and MOV fallback")
-        self.assert_true("data-input-code=\"autoSaveTelegramToken(event)\"" in html and "telegram-token-zone" in html and "telegram-token-saved-inline" in html and "Clave guardada" in html and "Ahora abre el bot que creaste" in html and "telegram-detect-button" in html and "detectTelegramChats()" in html, "Telegram bot token is saved automatically after paste with a clear saved state and a large chat detection CTA")
+        self.assert_true("data-input-code=\"autoSaveTelegramToken(event)\"" in html and "telegram-token-zone" in html and "telegram-token-saved-inline" in html and "Clave guardada" in html and "Ahora abre el bot que creaste" in html and "telegram-detect-button" in html and "detectTelegramChats()" in html and "send_welcome:'true'" in html and "Usar este chat y enviarme el primer mensaje" in html, "Telegram bot token is saved automatically after paste with a clear saved state, chat detection, and automatic first message")
         self.assert_true("Elige un usuario que termine en <b>bot</b>" in html and "Esto se configura una sola vez" in html and "No puedo crear el bot por ti" in html, "Telegram onboarding explains the BotFather username rule, one-time setup, and automation limits")
         self.assert_true("Enviar prueba" not in html and "Send test" not in html, "Telegram buyer UI avoids the confusing manual test button")
         self.assert_true("finishOnboardingAndStartTour('telegram')" in html and "maybeFinishTelegramOnboarding" in html, "Choosing the Telegram chat can complete onboarding and open the dashboard tour")
