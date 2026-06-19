@@ -1613,6 +1613,7 @@ class IntegrationTestSuite:
         workspace = test_dir / "workspace"
         home = test_dir / "hermes-home"
         token = "123456:secret-token\nMALICIOUS=1"
+        popen_calls = []
         original_prepare = hermes_gateway.prepare_hermes_workspace
         original_which = hermes_gateway.shutil.which
         original_popen = hermes_gateway.subprocess.Popen
@@ -1646,6 +1647,10 @@ class IntegrationTestSuite:
             def kill(self):
                 return None
 
+        def fake_popen(*args, **kwargs):
+            popen_calls.append((args, kwargs))
+            return FakeProcess()
+
         try:
             hermes_gateway.stop_gateway()
             shutil.rmtree(test_dir, ignore_errors=True)
@@ -1655,14 +1660,18 @@ class IntegrationTestSuite:
             os.environ["TELEGRAM_LANGUAGE"] = "es"
             hermes_gateway.prepare_hermes_workspace = lambda payload: {"path": str(workspace)}
             hermes_gateway.shutil.which = lambda command: "/usr/local/bin/hermes" if command == "hermes" else command
-            hermes_gateway.subprocess.Popen = lambda *args, **kwargs: FakeProcess()
+            hermes_gateway.subprocess.Popen = fake_popen
 
             started = hermes_gateway.start_gateway(FakeConfig())
             status = hermes_gateway.gateway_status(FakeConfig())
             env_text = Path(started["env"]).read_text(encoding="utf-8")
             serialized_status = json.dumps(status, ensure_ascii=False)
+            start_command = " ".join(popen_calls[0][0][0])
+            start_kwargs = popen_calls[0][1]
 
             self.assert_true(started["started"] is True, "Hermes Gateway can start through the configured isolated runtime")
+            self.assert_true("--replace" in start_command and "admira_hermes_gateway_supervisor" in start_command and "while :" in start_command, "Hermes Gateway starts under a restart supervisor and replaces stale gateway instances")
+            self.assert_true(start_kwargs.get("start_new_session") is True, "Hermes Gateway supervisor runs in its own process group for clean update replacement")
             self.assert_true("MALICIOUS=1" not in env_text and "\nMALICIOUS" not in env_text, "Telegram token is sanitized before writing the isolated Hermes env")
             self.assert_true("secret-token" not in serialized_status and "123456:" not in serialized_status, "Gateway status never exposes the Telegram bot token")
 

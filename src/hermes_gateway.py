@@ -3,7 +3,9 @@
 import json
 import os
 import hashlib
+import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -30,6 +32,7 @@ DAILY_BRIEF_PROMPT_FILE = DATA_DIR / "hermes_daily_brief_prompt.md"
 
 _GATEWAY_PROCESS = None
 _GATEWAY_FINGERPRINT = None
+_GATEWAY_PROCESS_KIND = "admira_hermes_gateway_supervisor"
 
 
 def telegram_settings(config):
@@ -197,14 +200,145 @@ def gateway_status(config):
     return payload
 
 
+def _pid_cmdline(pid):
+    try:
+        pid_int = int(pid)
+    except (TypeError, ValueError):
+        return ""
+    if pid_int <= 0:
+        return ""
+    proc_cmdline = Path(f"/proc/{pid_int}/cmdline")
+    try:
+        if proc_cmdline.exists():
+            raw = proc_cmdline.read_bytes()
+            return raw.replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid_int), "-o", "command="],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+            check=False,
+        )
+        return (result.stdout or "").strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def _looks_like_gateway_process(command):
+    text = str(command or "")
+    return _GATEWAY_PROCESS_KIND in text or "hermes gateway run" in text
+
+
+def _pid_is_running(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (TypeError, ValueError, ProcessLookupError):
+        return False
+    except PermissionError:
+        return True
+
+
+def _terminate_pid_group(pid):
+    try:
+        pid_int = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid_int <= 0:
+        return False
+    terminated = False
+    try:
+        if hasattr(os, "killpg"):
+            try:
+                os.killpg(pid_int, signal.SIGTERM)
+            except OSError:
+                os.kill(pid_int, signal.SIGTERM)
+            terminated = True
+        else:
+            os.kill(pid_int, signal.SIGTERM)
+            terminated = True
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    deadline = time.time() + 4
+    while time.time() < deadline:
+        if not _pid_is_running(pid_int):
+            return True
+        time.sleep(0.1)
+    try:
+        if hasattr(os, "killpg"):
+            try:
+                os.killpg(pid_int, signal.SIGKILL)
+            except OSError:
+                os.kill(pid_int, signal.SIGKILL)
+        else:
+            os.kill(pid_int, signal.SIGKILL)
+        terminated = True
+    except ProcessLookupError:
+        return True
+    except OSError:
+        pass
+    return terminated
+
+
+def _terminate_process(process):
+    if not process:
+        return
+    pid = getattr(process, "pid", None)
+    terminated_by_group = bool(pid and _terminate_pid_group(pid))
+    try:
+        process.terminate()
+        process.wait(timeout=1 if terminated_by_group else 6)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    except (OSError, AttributeError):
+        if terminated_by_group:
+            return
+    if terminated_by_group:
+        return
+    try:
+        process.kill()
+    except (OSError, AttributeError):
+        return
+    try:
+        process.wait(timeout=1)
+    except Exception:
+        pass
+
+
+def _terminate_stale_gateway_from_state(skip_pid=None):
+    if not GATEWAY_STATE_FILE.exists():
+        return
+    try:
+        state = json.loads(GATEWAY_STATE_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return
+    pid = state.get("pid")
+    try:
+        pid_int = int(pid)
+        skip_int = int(skip_pid) if skip_pid else None
+    except (TypeError, ValueError):
+        return
+    if skip_int and pid_int == skip_int:
+        return
+    command = _pid_cmdline(pid_int)
+    if command and not _looks_like_gateway_process(command):
+        return
+    if command:
+        _terminate_pid_group(pid_int)
+
+
 def stop_gateway():
     global _GATEWAY_PROCESS, _GATEWAY_FINGERPRINT
     if _GATEWAY_PROCESS and _GATEWAY_PROCESS.poll() is None:
-        _GATEWAY_PROCESS.terminate()
-        try:
-            _GATEWAY_PROCESS.wait(timeout=6)
-        except subprocess.TimeoutExpired:
-            _GATEWAY_PROCESS.kill()
+        _terminate_process(_GATEWAY_PROCESS)
+    _terminate_stale_gateway_from_state(getattr(_GATEWAY_PROCESS, "pid", None))
     _GATEWAY_PROCESS = None
     _GATEWAY_FINGERPRINT = None
 
@@ -234,13 +368,25 @@ def start_gateway(config):
         with log_path.open("a", encoding="utf-8") as log_file:
             log_file.write(f"\n[{now_iso()}] Starting Hermes Gateway for Admira IA\n")
             log_file.flush()
+            supervisor_script = "\n".join(
+                [
+                    f"# {_GATEWAY_PROCESS_KIND}",
+                    "while :; do",
+                    f"  {shlex.quote(hermes_cli)} gateway run --replace --accept-hooks",
+                    "  code=$?",
+                    "  echo \"[$(date -Is)] Hermes Gateway exited with code ${code}; restarting in 3s\"",
+                    "  sleep 3",
+                    "done",
+                ]
+            )
             _GATEWAY_PROCESS = subprocess.Popen(
-                [hermes_cli, "gateway", "run", "--accept-hooks"],
+                ["/bin/sh", "-c", supervisor_script],
                 cwd=files["workspace"],
                 env=env,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 text=True,
+                start_new_session=True,
             )
     except (OSError, ValueError) as exc:
         state = {"started_at": now_iso(), "mode": "hermes_gateway", "error": str(exc), **files}
@@ -250,7 +396,7 @@ def start_gateway(config):
         _GATEWAY_FINGERPRINT = None
         return {"started": False, "mode": "hermes_gateway", "detail": "No pude iniciar Hermes Gateway.", "error": str(exc), "log": str(log_path), **files}
     _GATEWAY_FINGERPRINT = fingerprint
-    state = {"started_at": now_iso(), "pid": _GATEWAY_PROCESS.pid, "mode": "hermes_gateway", **files}
+    state = {"started_at": now_iso(), "pid": _GATEWAY_PROCESS.pid, "process_kind": _GATEWAY_PROCESS_KIND, "mode": "hermes_gateway", **files}
     GATEWAY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     GATEWAY_STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     time.sleep(0.3)
