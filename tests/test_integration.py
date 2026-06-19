@@ -4408,7 +4408,7 @@ class IntegrationTestSuite:
                     os.environ[key] = value
 
     def test_update_snapshot_retention_and_restore(self):
-        """Test official update snapshots preserve local state and keep last three restore points."""
+        """Test official update snapshots restore code without duplicating buyer runtime data."""
         print("\nTesting Update Snapshots And Rollback...")
 
         dashboard = load_dashboard_module()
@@ -4442,6 +4442,7 @@ class IntegrationTestSuite:
             (root / "ad-config.json").write_text('{"url":"old"}\n', encoding="utf-8")
             (root / "VERSION").write_text("v1.0.0\n", encoding="utf-8")
             (root / "dashboard" / "data" / "chat_history.json").write_text('{"turns":["old"]}\n', encoding="utf-8")
+            (root / "output" / "generated.png").write_text("large-runtime-output\n", encoding="utf-8")
             try:
                 dashboard.ROOT_DIR = root
                 dashboard.DATA_DIR = root / "dashboard" / "data"
@@ -4452,15 +4453,21 @@ class IntegrationTestSuite:
                 dashboard.METRICS_FILE = dashboard.DATA_DIR / "metrics.json"
                 dashboard.threading.Timer = NoopTimer
                 first = dashboard.create_update_snapshot(release={"channel": "stable", "latest_version": "v1.0.2"})
+                payload = dashboard.UPDATE_SNAPSHOTS_DIR / first["id"] / dashboard.UPDATE_SNAPSHOT_ROOT_NAME
+                self.assert_true((payload / "VERSION").exists(), "Snapshot keeps code/version files needed for rollback")
+                self.assert_true(not (payload / ".env").exists(), "Snapshot does not duplicate local secrets")
+                self.assert_true(not (payload / "ad-config.json").exists(), "Snapshot does not duplicate buyer ad config")
+                self.assert_true(not (payload / "dashboard" / "data").exists(), "Snapshot does not duplicate runtime dashboard data")
+                self.assert_true(not (payload / "output").exists(), "Snapshot does not duplicate generated output")
                 (root / ".env").write_text("DASHBOARD_PASSWORD=new\n", encoding="utf-8")
                 (root / "ad-config.json").write_text('{"url":"new"}\n', encoding="utf-8")
                 (root / "VERSION").write_text("v9.9.9\n", encoding="utf-8")
                 (root / "dashboard" / "data" / "chat_history.json").write_text('{"turns":["new"]}\n', encoding="utf-8")
                 result = dashboard.restore_update_snapshot({"snapshot_id": first["id"]})
                 self.assert_true((root / "VERSION").read_text(encoding="utf-8").strip() == "v1.0.0", "Rollback restores previous VERSION")
-                self.assert_true("DASHBOARD_PASSWORD=old" in (root / ".env").read_text(encoding="utf-8"), "Rollback restores local .env")
-                self.assert_true('"old"' in (root / "dashboard" / "data" / "chat_history.json").read_text(encoding="utf-8"), "Rollback restores dashboard local memory")
-                self.assert_true((dashboard.UPDATE_SNAPSHOTS_DIR / first["id"]).exists(), "Rollback preserves snapshot storage while restoring dashboard data")
+                self.assert_true("DASHBOARD_PASSWORD=new" in (root / ".env").read_text(encoding="utf-8"), "Rollback preserves current local .env")
+                self.assert_true('"new"' in (root / "dashboard" / "data" / "chat_history.json").read_text(encoding="utf-8"), "Rollback preserves current dashboard local memory")
+                self.assert_true((dashboard.UPDATE_SNAPSHOTS_DIR / first["id"]).exists(), "Rollback preserves snapshot storage while restoring code")
                 self.assert_true(result.get("rescue_snapshot_id"), "Rollback creates a rescue snapshot before restoring")
                 for index in range(4):
                     (root / "VERSION").write_text(f"v1.0.{index + 1}\n", encoding="utf-8")

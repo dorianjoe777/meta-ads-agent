@@ -458,17 +458,13 @@ def safe_snapshot_id(value):
 
 def is_skipped_snapshot_path(relative, source):
     parts = set(relative.parts)
-    if source.name in {".git", "node_modules", "__pycache__", ".pytest_cache", ".DS_Store"}:
+    if source.name in {".git", "node_modules", "__pycache__", ".pytest_cache", ".DS_Store", ".env", "ad-config.json"}:
         return True
-    if source.name.endswith((".pyc", ".log")):
+    if source.name.endswith((".pyc", ".log", ".zip", ".tar.gz", ".dmg", ".exe", ".pkg", ".msi")):
         return True
-    if relative.parts and relative.parts[0] in {"release", "node_modules", ".git"}:
+    if relative.parts and relative.parts[0] in {"release", "node_modules", ".git", "logs", "output", "dist", "build"}:
         return True
-    if relative.parts[:3] == ("dashboard", "data", "update-snapshots"):
-        return True
-    if relative.parts[:3] == ("dashboard", "data", "import-backups"):
-        return True
-    if relative.parts == ("dashboard", "data", "dashboard.html"):
+    if relative.parts[:2] == ("dashboard", "data"):
         return True
     return "__pycache__" in parts or "node_modules" in parts
 
