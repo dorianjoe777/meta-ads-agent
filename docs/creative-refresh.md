@@ -82,7 +82,7 @@ The output manifest includes:
 
 ## Final Codex/Image Generation
 
-Final images use the buyer's ChatGPT/Codex connection through Codex CLI. Connect it in onboarding or in `Configuracion`, then ask the agent to create the final image from a saved creative brief.
+Final images use the buyer's ChatGPT/Codex connection through Hermes' OpenAI Codex image provider. Connect ChatGPT/Codex once in onboarding or in `Configuracion`, then ask the agent to create the final image from a saved creative brief.
 
 Generated image files are saved next to the manifest under:
 

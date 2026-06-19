@@ -2135,46 +2135,38 @@ class IntegrationTestSuite:
         print("\nTesting Codex Image CLI Bridge...")
 
         test_root = Path(tempfile.mkdtemp(prefix="codex_image_bridge_"))
-        generated_root = test_root / "codex_home" / "generated_images"
+        generated_root = test_root / "hermes_home" / "cache" / "images"
         output_root = test_root / "creatives"
         generated_file = generated_root / "run-001" / "image.png"
         captured = {}
-        original_run = codex_brand_guides.subprocess.run
+        original_bridge = codex_brand_guides.run_hermes_image_bridge
         original_load_config = codex_brand_guides.load_config
-        original_generated_root = codex_brand_guides.codex_generated_images_root
         try:
-            codex_brand_guides.load_config = lambda: type("Cfg", (), {"codex_cli": "codex", "codex_creative_model": "gpt-5.5", "hermes_model": ""})()
-            codex_brand_guides.codex_generated_images_root = lambda: generated_root
+            codex_brand_guides.load_config = lambda: type("Cfg", (), {"codex_cli": "codex", "codex_creative_model": "gpt-5.5", "hermes_model": "", "hermes_cli": "hermes", "hermes_home": str(test_root / "hermes_home")})()
 
-            def fake_run(command, **kwargs):
-                if command[:3] == ["codex", "login", "status"]:
-                    return type("Result", (), {"returncode": 0, "stdout": "Logged in using ChatGPT", "stderr": ""})()
-                captured["command"] = command
+            def fake_bridge(payload, **kwargs):
+                captured["payload"] = payload
                 generated_file.parent.mkdir(parents=True, exist_ok=True)
                 generated_file.write_bytes(b"fake png")
-                last_message = Path(command[command.index("--output-last-message") + 1])
-                last_message.write_text("Imagen generada.", encoding="utf-8")
-                return type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+                return {"success": True, "image": str(generated_file), "model": "gpt-image-2-medium", "provider": "openai-codex", "returncode": 0}
 
-            codex_brand_guides.subprocess.run = fake_run
+            codex_brand_guides.run_hermes_image_bridge = fake_bridge
             result = codex_brand_guides.call_codex_image_cli("Genera un anuncio 4:5", output_root=output_root, output_name="anuncio-prueba")
-            command = captured["command"]
             self.assert_true(result["ok"] is True and Path(result["image_path"]).exists(), "Codex/Image bridge copies the generated image into creative assets")
             self.assert_true(result["asset_id"].startswith("codex-") and result["preview_url"].startswith("/api/creative-asset?id="), "Codex/Image bridge returns protected preview metadata")
-            self.assert_true("--sandbox" in command and "workspace-write" in command, "Codex/Image bridge uses a workspace sandbox")
-            self.assert_true("--ephemeral" not in command and "--ignore-user-config" not in command, "Codex/Image bridge keeps the buyer's authenticated Codex session")
-            self.assert_true("$imagegen" in command[-1] and "No crees SVG" in command[-1], "Codex/Image prompt requires a real raster image")
+            self.assert_true(result.get("backend") == "hermes-openai-codex" and result.get("provider") == "openai-codex", "Codex/Image bridge uses Hermes OpenAI-Codex provider")
+            self.assert_true(captured["payload"]["aspect_ratio"] == "portrait", "Codex/Image bridge infers vertical Meta creative aspect ratio")
+            self.assert_true("Genera un anuncio" in captured["payload"]["prompt"], "Codex/Image bridge sends the buyer prompt to Hermes")
 
-            def fake_unauth_run(command, **kwargs):
-                return type("Result", (), {"returncode": 1, "stdout": "", "stderr": "Not logged in"})()
+            def fake_unauth_bridge(payload, **kwargs):
+                return {"success": False, "error": "No Codex/ChatGPT OAuth credentials available.", "error_type": "auth_required"}
 
-            codex_brand_guides.subprocess.run = fake_unauth_run
+            codex_brand_guides.run_hermes_image_bridge = fake_unauth_bridge
             unauth = codex_brand_guides.call_codex_image_cli("Genera un anuncio", output_root=output_root)
-            self.assert_true(unauth["ok"] is False and "Codex/Image" in unauth["error"], "Missing Codex auth gives a buyer-friendly image error")
+            self.assert_true(unauth["ok"] is False and "ChatGPT/Codex" in unauth["error"], "Missing Hermes image auth gives a buyer-friendly image error")
         finally:
-            codex_brand_guides.subprocess.run = original_run
+            codex_brand_guides.run_hermes_image_bridge = original_bridge
             codex_brand_guides.load_config = original_load_config
-            codex_brand_guides.codex_generated_images_root = original_generated_root
             shutil.rmtree(test_root, ignore_errors=True)
 
     def test_agent_codex_image_creative_request_result(self):

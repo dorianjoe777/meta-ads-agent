@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -1073,6 +1074,160 @@ def codex_cli_auth_status(timeout=15):
     }
 
 
+def hermes_python_executable(config):
+    """Return the Python interpreter that can import Hermes internals."""
+    hermes_cli = shutil.which(getattr(config, "hermes_cli", "hermes") or "hermes")
+    candidates = []
+    if hermes_cli:
+        path = Path(hermes_cli)
+        candidates.append(path.with_name("python"))
+        wrapper = read_text(path)
+        match = re.search(r'exec\s+"([^"]*/hermes)"', wrapper)
+        if match:
+            hermes_bin = Path(match.group(1))
+            candidates.append(hermes_bin.with_name("python"))
+    candidates.append(Path(sys.executable))
+    for candidate in candidates:
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return sys.executable
+
+
+def hermes_image_environment(config, image_model=""):
+    try:
+        from hermes_bridge import hermes_environment
+
+        env = hermes_environment(config)
+    except Exception:
+        env = os.environ.copy()
+        hermes_home = getattr(config, "hermes_home", "") or ""
+        if hermes_home:
+            env["HERMES_HOME"] = str(Path(hermes_home).expanduser())
+    model = str(image_model or os.environ.get("OPENAI_IMAGE_MODEL") or "").strip()
+    if model.startswith("gpt-image-2"):
+        env["OPENAI_IMAGE_MODEL"] = model
+    return env
+
+
+def infer_image_aspect_ratio(prompt):
+    text = str(prompt or "").lower()
+    if any(token in text for token in ["1:1", "1080x1080", "1024x1024", "square", "cuadrado"]):
+        return "square"
+    if any(token in text for token in ["4:5", "9:16", "1080x1350", "1080x1920", "portrait", "vertical", "reel", "story", "historia"]):
+        return "portrait"
+    if any(token in text for token in ["16:9", "1536x1024", "landscape", "horizontal"]):
+        return "landscape"
+    return "square"
+
+
+HERMES_IMAGE_BRIDGE_SCRIPT = r"""
+import json
+import sys
+
+
+def respond(payload):
+    print(json.dumps(payload, ensure_ascii=False))
+
+
+try:
+    payload = json.loads(sys.stdin.read() or "{}")
+    from hermes_cli.plugins import _ensure_plugins_discovered
+
+    _ensure_plugins_discovered(force=True)
+    from agent.image_gen_registry import get_provider, list_providers
+
+    provider = get_provider("openai-codex")
+    if provider is None:
+        respond({
+            "success": False,
+            "error": "Hermes no registró el generador de imágenes openai-codex.",
+            "error_type": "provider_not_registered",
+            "providers": [getattr(item, "name", "") for item in list_providers()],
+        })
+        raise SystemExit(0)
+
+    mode = payload.get("mode") or "generate"
+    if mode == "status":
+        available = bool(provider.is_available())
+        respond({
+            "success": available,
+            "provider": getattr(provider, "name", "openai-codex"),
+            "display_name": getattr(provider, "display_name", "OpenAI Codex"),
+            "error": "" if available else "La sesión de ChatGPT/Codex no está disponible para imágenes en Hermes.",
+            "error_type": "" if available else "auth_required",
+        })
+        raise SystemExit(0)
+
+    result = provider.generate(
+        prompt=payload.get("prompt") or "",
+        aspect_ratio=payload.get("aspect_ratio") or "square",
+    )
+    respond(result if isinstance(result, dict) else {
+        "success": False,
+        "error": "Hermes devolvió una respuesta inesperada al generar la imagen.",
+        "error_type": "provider_contract",
+    })
+except Exception as exc:
+    respond({
+        "success": False,
+        "error": str(exc),
+        "error_type": type(exc).__name__,
+    })
+"""
+
+
+def run_hermes_image_bridge(payload, timeout=360, config=None, image_model=""):
+    config = config or load_config()
+    python = hermes_python_executable(config)
+    env = hermes_image_environment(config, image_model=image_model)
+    command = [python, "-c", HERMES_IMAGE_BRIDGE_SCRIPT]
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(ROOT_DIR),
+            env=env,
+            input=json.dumps(payload, ensure_ascii=False),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except FileNotFoundError:
+        return {"success": False, "error": "No encontré el entorno Python de Hermes para generar imágenes.", "error_type": "missing_hermes_python", "command": [python, "-c", "[hermes image bridge]"]}
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "ChatGPT/Codex tardó demasiado generando la imagen. Intenta con una solicitud más corta.", "error_type": "timeout", "command": [python, "-c", "[hermes image bridge]"]}
+    stdout = (completed.stdout or "").strip()
+    last_line = next((line for line in reversed(stdout.splitlines()) if line.strip().startswith("{")), "")
+    try:
+        result = json.loads(last_line) if last_line else {}
+    except json.JSONDecodeError:
+        result = {}
+    if not isinstance(result, dict) or not result:
+        result = {
+            "success": False,
+            "error": "Hermes no devolvió una respuesta legible para la imagen.",
+            "error_type": "invalid_response",
+        }
+    result.setdefault("returncode", completed.returncode)
+    result.setdefault("stdout", completed.stdout[-6000:])
+    result.setdefault("stderr", completed.stderr[-3000:])
+    result.setdefault("command", [python, "-c", "[hermes image bridge]"])
+    return result
+
+
+def hermes_codex_image_status(timeout=10, config=None):
+    config = config or load_config()
+    result = run_hermes_image_bridge({"mode": "status"}, timeout=timeout, config=config)
+    ok = bool(result.get("success"))
+    return {
+        "ok": ok,
+        "detail": "ChatGPT/Codex listo para imágenes" if ok else (result.get("error") or "ChatGPT/Codex no está listo para imágenes"),
+        "error_type": result.get("error_type", ""),
+        "provider": result.get("provider", "openai-codex"),
+        "raw": result,
+    }
+
+
 def codex_generated_images_root():
     codex_home = os.environ.get("CODEX_HOME")
     root = Path(codex_home).expanduser() if codex_home else Path.home() / ".codex"
@@ -1111,6 +1266,33 @@ def safe_codex_asset_name(value):
     return (slug or "creative")[:80]
 
 
+def publish_generated_image(generated, output_root=None, output_name="creative", batch_prefix="codex"):
+    generated = Path(generated).expanduser().resolve()
+    if not generated.exists() or not generated.is_file():
+        return {"ok": False, "error": "La imagen generada no quedó disponible para guardarla en Creativos."}
+    if generated.suffix.lower() not in CODEX_GENERATED_IMAGE_EXTENSIONS:
+        return {"ok": False, "error": "La herramienta generó un archivo, pero no parece ser una imagen compatible."}
+    root = Path(output_root or (ROOT_DIR / "output" / "creatives"))
+    batch_id = f"{batch_prefix}-{datetime_like_slug()}"
+    target_dir = root / batch_id
+    target_dir.mkdir(parents=True, exist_ok=True)
+    suffix = generated.suffix.lower()
+    target = target_dir / f"{safe_codex_asset_name(output_name)}{suffix}"
+    counter = 2
+    while target.exists():
+        target = target_dir / f"{safe_codex_asset_name(output_name)}-{counter}{suffix}"
+        counter += 1
+    shutil.copy2(generated, target)
+    relative = target.resolve().relative_to(root.resolve())
+    return {
+        "ok": True,
+        "image_path": str(target),
+        "source_image_path": str(generated),
+        "asset_id": str(relative),
+        "preview_url": f"/api/creative-asset?id={str(relative)}",
+    }
+
+
 def codex_image_generation_prompt(prompt):
     return f"""$imagegen
 
@@ -1131,8 +1313,8 @@ Pedido del comprador:
 """
 
 
-def call_codex_image_cli(prompt, timeout=360, model=None, output_root=None, output_name="creative"):
-    """Generate a real image through the buyer's authenticated Codex/Image session."""
+def call_codex_image_cli_direct(prompt, timeout=360, model=None, output_root=None, output_name="creative"):
+    """Legacy fallback: generate a real image through a direct Codex CLI session."""
     request = str(prompt or "").strip()
     if not request:
         return {"ok": False, "error": "Necesito una descripcion del creativo antes de generar la imagen."}
@@ -1186,18 +1368,9 @@ def call_codex_image_cli(prompt, timeout=360, model=None, output_root=None, outp
             "command": [executable, "exec", "[image request]"],
             "model": selected_model,
         }
-    root = Path(output_root or (ROOT_DIR / "output" / "creatives"))
-    batch_id = f"codex-{datetime_like_slug()}"
-    target_dir = root / batch_id
-    target_dir.mkdir(parents=True, exist_ok=True)
-    suffix = generated.suffix.lower() if generated.suffix.lower() in CODEX_GENERATED_IMAGE_EXTENSIONS else ".png"
-    target = target_dir / f"{safe_codex_asset_name(output_name)}{suffix}"
-    counter = 2
-    while target.exists():
-        target = target_dir / f"{safe_codex_asset_name(output_name)}-{counter}{suffix}"
-        counter += 1
-    shutil.copy2(generated, target)
-    relative = target.resolve().relative_to(root.resolve())
+    published = publish_generated_image(generated, output_root=output_root, output_name=output_name, batch_prefix="codex")
+    if not published.get("ok"):
+        return published
     return {
         "ok": True,
         "returncode": completed.returncode,
@@ -1205,13 +1378,77 @@ def call_codex_image_cli(prompt, timeout=360, model=None, output_root=None, outp
         "stderr": completed.stderr[-3000:],
         "last_message": last_text[-3000:],
         "warning": error,
-        "image_path": str(target),
-        "source_image_path": str(generated),
-        "asset_id": str(relative),
-        "preview_url": f"/api/creative-asset?id={str(relative)}",
+        **published,
         "command": [executable, "exec", "[image request]"],
         "model": selected_model,
+        "backend": "codex-cli-direct",
     }
+
+
+def call_codex_image_cli(prompt, timeout=360, model=None, output_root=None, output_name="creative"):
+    """Generate a real image through Hermes' ChatGPT/Codex image provider."""
+    request = str(prompt or "").strip()
+    if not request:
+        return {"ok": False, "error": "Necesito una descripcion del creativo antes de generar la imagen."}
+    config = load_config()
+    image_model = str(model or "").strip() if str(model or "").strip().startswith("gpt-image-2") else ""
+    bridge = run_hermes_image_bridge(
+        {
+            "mode": "generate",
+            "prompt": request,
+            "aspect_ratio": infer_image_aspect_ratio(request),
+        },
+        timeout=timeout,
+        config=config,
+        image_model=image_model,
+    )
+    if bridge.get("success") and bridge.get("image"):
+        published = publish_generated_image(bridge["image"], output_root=output_root, output_name=output_name, batch_prefix="codex")
+        if not published.get("ok"):
+            return {**published, "bridge": bridge, "backend": "hermes-openai-codex"}
+        return {
+            "ok": True,
+            **published,
+            "returncode": bridge.get("returncode", 0),
+            "stdout": bridge.get("stdout", "")[-6000:],
+            "stderr": bridge.get("stderr", "")[-3000:],
+            "last_message": "",
+            "warning": "",
+            "command": bridge.get("command", ["hermes", "image_generate"]),
+            "model": bridge.get("model", "gpt-image-2-medium"),
+            "provider": bridge.get("provider", "openai-codex"),
+            "backend": "hermes-openai-codex",
+        }
+    error_type = str(bridge.get("error_type") or "").lower()
+    raw_error = bridge.get("error") or "No pude usar la herramienta de imagen de ChatGPT/Codex."
+    if error_type in {"modulenotfounderror", "provider_not_registered", "missing_dependency"}:
+        fallback = call_codex_image_cli_direct(prompt, timeout=timeout, model=model, output_root=output_root, output_name=output_name)
+        fallback.setdefault("bridge_warning", raw_error)
+        return fallback
+    return {
+        "ok": False,
+        "error": image_generation_error_message(raw_error, error_type),
+        "error_type": error_type,
+        "bridge": bridge,
+        "command": bridge.get("command", ["hermes", "image_generate"]),
+        "backend": "hermes-openai-codex",
+    }
+
+
+def image_generation_error_message(error, error_type=""):
+    text = str(error or "").strip()
+    lowered = text.lower()
+    if any(token in lowered for token in ["usage limit", "rate limit", "429", "message limit", "limit reached", "quota"]):
+        return (
+            "ChatGPT/Codex está conectado, pero la cuenta alcanzó un límite temporal para generar imágenes. "
+            "Intenta más tarde o baja la cantidad de solicitudes."
+        )
+    if "auth" in str(error_type).lower() or "oauth" in lowered or "credentials" in lowered:
+        return (
+            "ChatGPT/Codex está conectado para conversar, pero la herramienta de imagen no encontró esa sesión en este entorno. "
+            "Vuelve a revisar la conexión de ChatGPT/Codex desde Configuración y prueba de nuevo."
+        )
+    return f"No pude generar la imagen con la conexión ChatGPT/Codex actual: {text}"
 
 
 def datetime_like_slug():

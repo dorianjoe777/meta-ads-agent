@@ -99,11 +99,11 @@ En `Creativos`, toca `Crear guias base`. Esto crea:
 - `brand_guides/general_branding.md`
 - Un archivo en `brand_guides/products/` para tu producto principal.
 
-Estas guias ayudan al agente a pedirle a Codex planes creativos, prompts de imagen y conceptos visuales consistentes. Si Codex CLI esta instalado y configurado, el agente puede apoyarse en Codex para pensar mejor los creativos y preparar prompts para el proveedor de imagen configurado. Codex no genera por si mismo una imagen dentro de este flujo v1.
+Estas guias ayudan al agente a preparar conceptos visuales consistentes. Cuando pides una imagen final, el agente usa la misma conexion ChatGPT/Codex que configuraste para hablar con el manager; no necesitas contratar otra API de imagenes.
 
 Ver: `docs/es-codex-creativos.md`.
 
-Si usas Docker, Codex CLI ya viene instalado dentro del contenedor, pero el puente queda apagado por defecto porque Codex es un agente local. Activalo solo si quieres esa funcion avanzada, comprendes su acceso local y configuras tu propia autenticacion.
+Si usas Docker, la conexion ChatGPT/Codex queda dentro del contenedor y se mantiene para chat e imagenes. Si cambias de equipo o reinstalas, vuelve a conectar ChatGPT/Codex desde el onboarding o desde `Configuracion`.
 
 Ver tambien: `docs/es-instaladores-doble-clic.md`.
 

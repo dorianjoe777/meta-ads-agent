@@ -6,7 +6,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from codex_brand_guides import codex_cli_auth_status
+from codex_brand_guides import hermes_codex_image_status
 from creative_refresh import INDEX_FILE as CREATIVE_INDEX_FILE
 from creative_refresh import load_ad_config, read_json
 from agent_runtime import load_agent_profile
@@ -182,13 +182,13 @@ def meta_section(config, destination):
 
 
 def creative_section(config, codex_path):
-    codex_status = codex_cli_auth_status(timeout=2) if codex_path else {"ok": False, "error": f"{config.codex_cli} not found"}
-    codex_ready = bool(codex_status.get("ok"))
+    image_status = hermes_codex_image_status(timeout=5, config=config)
+    image_ready = bool(image_status.get("ok"))
     return [
         item("creative_enabled", "Creative refresh enabled", "ok" if config.creative_refresh_enabled else "warn", str(config.creative_refresh_enabled)),
-        item("creative_mode", "Image generation path", "ok", "Codex/Image via ChatGPT/Codex", "Final ad images are generated through Codex CLI, not a separate image API."),
-        item("codex_cli", "Codex CLI", "ok" if codex_path else "blocked", codex_path or f"{config.codex_cli} not found", "Install Codex CLI to create final ad images."),
-        item("codex_image_auth", "Codex/Image login", "ok" if codex_ready else "blocked", "connected" if codex_ready else (codex_status.get("error") or "Connect ChatGPT/Codex"), "Connect ChatGPT/Codex before asking for final ad images."),
+        item("creative_mode", "Image generation path", "ok", "ChatGPT/Codex por Hermes", "Las imagenes finales usan la misma conexion ChatGPT/Codex del agente, sin otra API de imagenes."),
+        item("codex_cli", "Codex CLI", "ok" if codex_path else "warn", codex_path or f"{config.codex_cli} not found", "Solo se usa como respaldo en instalaciones antiguas; la ruta principal es Hermes + ChatGPT/Codex."),
+        item("codex_image_auth", "Imagenes con ChatGPT/Codex", "ok" if image_ready else "blocked", "connected" if image_ready else (image_status.get("detail") or "Conecta ChatGPT/Codex"), "Conecta ChatGPT/Codex antes de pedir imagenes finales."),
         item("codex_creative", "Codex creative bridge", "ok" if config.codex_creative_enabled else "warn", str(config.codex_creative_enabled), "Keep enabled so the agent can request Codex/Image creative generation."),
         item("brand_guides", "Brand guide files", "ok" if (ROOT_DIR / "brand_guides" / "general_branding.md").exists() else "warn", str(ROOT_DIR / "brand_guides" / "general_branding.md"), "Create base guides from Creativos."),
         item("creative_index", "Creative drafts", "ok" if CREATIVE_INDEX_FILE.exists() else "warn", str(CREATIVE_INDEX_FILE) if CREATIVE_INDEX_FILE.exists() else "No creative drafts yet.", "Run python3 src/daily_agent.py creative-refresh --all"),
