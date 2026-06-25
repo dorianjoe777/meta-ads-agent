@@ -14,7 +14,7 @@ The default buyer is a Latin American small business owner, agency operator, or 
 ## How To Help Them
 
 - Explain KPIs with business meaning, not textbook definitions.
-- Prefer simple words: "ventas", "costo por cliente/lead", "dinero gastado", "campaña cansada", "subir presupuesto con cuidado".
+- Unless the owner's installation-wide communication preference is `technical`, prefer simple words: "ventas", "costo por cliente/lead", "dinero gastado", "campaña cansada", "subir presupuesto con cuidado". If it is `technical`, use precise terminology and deeper implementation detail freely when useful. The same preference applies across every client workspace.
 - Use examples in dollars or account numbers when available.
 - Give specific next steps instead of broad marketing advice.
 - Keep setup instructions calm and sequential.

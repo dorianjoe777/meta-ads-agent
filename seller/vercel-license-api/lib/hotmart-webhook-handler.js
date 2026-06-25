@@ -12,11 +12,12 @@ import {
 } from "./hotmart-webhook.js";
 import { readRegistry, writeLicense, writeRegistry } from "./store.js";
 
-function safeError(response, status, error, detail = "") {
+function safeError(response, status, error, detail = "", extra = {}) {
   return response.status(status).json({
     ok: false,
     error,
-    ...(detail ? { detail } : {})
+    ...(detail ? { detail } : {}),
+    ...extra
   });
 }
 
@@ -75,84 +76,113 @@ function licenseForApprovedPurchase({ existing, summary }) {
   record.features = entitlements.features;
   record.hotmart = metadataFor(summary, record.hotmart);
   record.hotmart_transaction = summary.transaction;
+  record.buyer_email_delivery ||= {
+    status: record.last_buyer_email?.sent_at ? "sent" : "pending",
+    updated_at: new Date().toISOString()
+  };
   return record;
 }
 
-export async function handleHotmartWebhook(request, response) {
-  response.setHeader("Cache-Control", "no-store");
+export function createHotmartWebhookHandler(overrides = {}) {
+  const services = {
+    readRegistry,
+    writeLicense,
+    writeRegistry,
+    sendBuyerLicenseEmail,
+    shouldSendBuyerEmail: shouldSendHotmartBuyerEmail,
+    ...overrides
+  };
 
-  if (request.method !== "POST") {
-    return safeError(response, 405, "method_not_allowed");
-  }
-  if (!hotmartTokenAllowed(request.headers)) {
-    return safeError(response, 401, "unauthorized");
-  }
+  return async function hotmartWebhookHandler(request, response) {
+    response.setHeader("Cache-Control", "no-store");
 
-  const payload = parseHotmartPayload(request.body);
-  if (!payload) {
-    return safeError(response, 400, "invalid_payload");
-  }
-
-  const summary = hotmartSummary(payload);
-  if (!hotmartProductAllowed(summary)) {
-    return response.status(200).json({ ok: true, ignored: true, reason: "product_mismatch" });
-  }
-
-  const registry = await readRegistry();
-  const existing = summary.transaction ? findByHotmartTransaction(registry, summary.transaction) : null;
-
-  if (isHotmartPurchaseRevoked(summary)) {
-    if (!existing) {
-      return response.status(200).json({ ok: true, ignored: true, reason: "no_matching_license" });
+    if (request.method !== "POST") {
+      return safeError(response, 405, "method_not_allowed");
     }
-    existing.status = "revoked";
-    existing.hotmart = metadataFor(summary, existing.hotmart);
-    await Promise.all([writeRegistry(registry), writeLicense(existing)]);
-    return response.status(200).json({ ok: true, processed: true, action: "license_revoked" });
-  }
+    if (!hotmartTokenAllowed(request.headers)) {
+      return safeError(response, 401, "unauthorized");
+    }
 
-  if (!isHotmartPurchaseApproved(summary)) {
-    return response.status(200).json({ ok: true, ignored: true, reason: "not_approved_purchase", status: summary.status, event: summary.event });
-  }
-  if (!summary.buyer_email || !summary.buyer_email.includes("@")) {
-    return safeError(response, 400, "buyer_email_required");
-  }
-  if (!summary.transaction) {
-    return safeError(response, 400, "transaction_required");
-  }
+    const payload = parseHotmartPayload(request.body);
+    if (!payload) {
+      return safeError(response, 400, "invalid_payload");
+    }
 
-  const record = licenseForApprovedPurchase({ existing, summary });
-  if (!existing) {
-    registry.licenses ||= [];
-    registry.licenses.push(record);
-  }
-  await Promise.all([writeRegistry(registry), writeLicense(record)]);
+    const summary = hotmartSummary(payload);
+    if (!hotmartProductAllowed(summary)) {
+      return response.status(200).json({ ok: true, ignored: true, reason: "product_mismatch" });
+    }
 
-  const shouldEmail = shouldSendHotmartBuyerEmail() && !record.last_buyer_email?.sent_at;
-  if (!shouldEmail) {
-    return response.status(200).json({
-      ok: true,
-      processed: true,
-      action: existing ? "license_existing" : "license_created",
-      buyer_email: "skipped"
-    });
-  }
+    try {
+      const registry = await services.readRegistry();
+      const existing = summary.transaction ? findByHotmartTransaction(registry, summary.transaction) : null;
 
-  try {
-    const delivery = await sendBuyerLicenseEmail(record);
-    record.last_buyer_email = delivery;
-    record.hotmart = {
-      ...record.hotmart,
-      buyer_email_sent_at: delivery.sent_at
-    };
-    await Promise.all([writeRegistry(registry), writeLicense(record)]);
-    return response.status(200).json({
-      ok: true,
-      processed: true,
-      action: existing ? "license_existing_email_sent" : "license_created_email_sent",
-      buyer_email: { ok: true, provider: delivery.provider, id: delivery.id }
-    });
-  } catch (error) {
-    return safeError(response, 502, "buyer_email_send_failed", error.message);
-  }
+      if (isHotmartPurchaseRevoked(summary)) {
+        if (!existing) {
+          return response.status(200).json({ ok: true, ignored: true, reason: "no_matching_license" });
+        }
+        existing.status = "revoked";
+        existing.hotmart = metadataFor(summary, existing.hotmart);
+        await Promise.all([services.writeRegistry(registry), services.writeLicense(existing)]);
+        return response.status(200).json({ ok: true, processed: true, action: "license_revoked" });
+      }
+
+      if (!isHotmartPurchaseApproved(summary)) {
+        return response.status(200).json({ ok: true, ignored: true, reason: "not_approved_purchase", status: summary.status, event: summary.event });
+      }
+      if (!summary.buyer_email || !summary.buyer_email.includes("@")) {
+        return safeError(response, 400, "buyer_email_required");
+      }
+      if (!summary.transaction) {
+        return safeError(response, 400, "transaction_required");
+      }
+
+      const record = licenseForApprovedPurchase({ existing, summary });
+      if (!existing) {
+        registry.licenses ||= [];
+        registry.licenses.push(record);
+      }
+      await Promise.all([services.writeRegistry(registry), services.writeLicense(record)]);
+
+      const shouldEmail = services.shouldSendBuyerEmail() && !record.last_buyer_email?.sent_at;
+      if (!shouldEmail) {
+        return response.status(200).json({
+          ok: true,
+          processed: true,
+          action: existing ? "license_existing" : "license_created",
+          buyer_email: "pending"
+        });
+      }
+
+      try {
+        const delivery = await services.sendBuyerLicenseEmail(record);
+        record.last_buyer_email = delivery;
+        record.buyer_email_delivery = { status: "sent", updated_at: delivery.sent_at };
+        record.hotmart = {
+          ...record.hotmart,
+          buyer_email_sent_at: delivery.sent_at
+        };
+        await Promise.all([services.writeRegistry(registry), services.writeLicense(record)]);
+        return response.status(200).json({
+          ok: true,
+          processed: true,
+          action: existing ? "license_existing_email_sent" : "license_created_email_sent",
+          buyer_email: { ok: true, provider: delivery.provider, id: delivery.id }
+        });
+      } catch {
+        record.buyer_email_delivery = {
+          status: "failed",
+          updated_at: new Date().toISOString()
+        };
+        await Promise.all([services.writeRegistry(registry), services.writeLicense(record)]).catch(() => {});
+        response.setHeader("Retry-After", "30");
+        return safeError(response, 502, "buyer_email_send_failed", "", { retryable: true });
+      }
+    } catch {
+      response.setHeader("Retry-After", "5");
+      return safeError(response, 503, "license_store_unavailable", "", { retryable: true });
+    }
+  };
 }
+
+export const handleHotmartWebhook = createHotmartWebhookHandler();

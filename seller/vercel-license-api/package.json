@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "publish:release-assets": "node scripts/publish-release-assets.mjs",
+    "provision:upstash": "node scripts/provision-upstash.mjs",
+    "migrate:upstash": "node scripts/migrate-blob-to-upstash.mjs",
     "test": "node --test tests/*.test.js"
   },
   "dependencies": {

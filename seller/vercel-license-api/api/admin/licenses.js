@@ -15,17 +15,23 @@ export default async function handler(request, response) {
   const registry = await readRegistry();
   if (request.method === "GET") {
     const current = await Promise.all(registry.licenses.map(async (record) => (await readLicense(record.license_key)) || record));
+    const deliveryFilter = String(requestUrl.searchParams.get("delivery") || "").trim().toLowerCase();
+    const summaries = current.map(({ license_key, buyer_email, plan = "individual", status, max_devices = 1, workspace_limit = 1, devices = [], created_at, hotmart_transaction = "", buyer_email_delivery = {}, last_buyer_email = {} }) => ({
+      license_key,
+      buyer_email,
+      plan,
+      status,
+      max_devices,
+      workspace_limit,
+      devices: devices.length,
+      created_at,
+      hotmart_transaction,
+      buyer_email_status: last_buyer_email.sent_at ? "sent" : (buyer_email_delivery.status || "pending")
+    }));
     return response.status(200).json({
-      licenses: current.map(({ license_key, buyer_email, plan = "individual", status, max_devices = 1, workspace_limit = 1, devices = [], created_at }) => ({
-        license_key,
-        buyer_email,
-        plan,
-        status,
-        max_devices,
-        workspace_limit,
-        devices: devices.length,
-        created_at
-      }))
+      licenses: deliveryFilter
+        ? summaries.filter((record) => record.buyer_email_status === deliveryFilter)
+        : summaries
     });
   }
   if (request.method !== "POST") {
@@ -46,6 +52,9 @@ export default async function handler(request, response) {
   });
   const licenseKey = body.license_key || formatLicense(`${email}${Date.now()}`);
   const existing = registry.licenses.find((item) => item.license_key === licenseKey);
+  if (body.action === "mark_email_sent" && !existing) {
+    return response.status(404).json({ ok: false, error: "license_not_found" });
+  }
   const record = existing || {
     license_key: licenseKey,
     buyer_email: email,
@@ -56,6 +65,7 @@ export default async function handler(request, response) {
     workspace_limit: entitlements.workspace_limit,
     features: entitlements.features,
     devices: [],
+    buyer_email_delivery: { status: "pending", updated_at: new Date().toISOString() },
     created_at: new Date().toISOString()
   };
   if (existing && body.plan) {
@@ -69,6 +79,16 @@ export default async function handler(request, response) {
   if (!existing) registry.licenses.push(record);
   await Promise.all([writeRegistry(registry), writeLicense(record)]);
 
+  if (body.action === "mark_email_sent") {
+    const sentAt = new Date().toISOString();
+    const provider = String(body.provider || "external").trim().slice(0, 80) || "external";
+    const id = String(body.delivery_id || "").trim().slice(0, 200);
+    record.last_buyer_email = { provider, id, sent_at: sentAt };
+    record.buyer_email_delivery = { status: "sent", updated_at: sentAt };
+    await Promise.all([writeRegistry(registry), writeLicense(record)]);
+    return response.status(200).json({ ok: true, license: record, buyer_email: { ok: true, provider, id, sent_at: sentAt } });
+  }
+
   const wantsBuyerEmail = body.send_buyer_email === true
     || body.email_buyer === true
     || body.action === "send_email"
@@ -80,13 +100,15 @@ export default async function handler(request, response) {
   try {
     const delivery = await sendBuyerLicenseEmail(record);
     record.last_buyer_email = delivery;
+    record.buyer_email_delivery = { status: "sent", updated_at: delivery.sent_at };
     await writeLicense(record);
     return response.status(200).json({ ok: true, license: record, buyer_email: { ok: true, ...delivery } });
-  } catch (error) {
+  } catch {
+    record.buyer_email_delivery = { status: "failed", updated_at: new Date().toISOString() };
+    await writeLicense(record).catch(() => {});
     return response.status(502).json({
       ok: false,
       error: "buyer_email_send_failed",
-      detail: error.message,
       license: record
     });
   }

@@ -5,18 +5,33 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from budget_optimizer import BudgetOptimizer, OptimizationStrategy, PerformanceMetrics
 from creative_refresh import campaigns_needing_refresh, generate_creative_refresh, mark_asset_files_retained, recent_creative_refreshes
 from decision_memory import load_profitability_rules, recommendation_decision_evidence, record_daily_decision_memory
+from experiment_scheduler import experiment_review_payload
 from graph_executor import execute_upload_payload
 from license import license_status
 from local_store import now_iso, read_json, write_json
+from meta_insights import aggregate_campaigns as aggregate_meta_campaigns, collect_meta_snapshot, save_meta_snapshot
 from meta_upload import recent_uploads, stage_upload
+from optimization_engine import (
+    anomaly_diagnostics,
+    calibrate_conversion_lag,
+    funnel_diagnostics,
+    load_optimization_state,
+    portfolio_recommendations,
+    reconcile_business_outcomes,
+    record_performance_snapshot,
+    record_optimization_action,
+    record_shadow_outcomes,
+)
 from product_config import ROOT_DIR, load_config
 from security import redact_payload
+from shopify_connector import sync_shopify
 from setup_status import build_setup_status
 from social_flow_client import SocialFlowClient, config_snapshot, send_notification
 
@@ -41,16 +56,25 @@ def pct_change(current, previous):
     return ((current - previous) / previous) * 100
 
 
+def local_review_time(value):
+    try:
+        review_at = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+        timezone_name = str(getattr(load_config(), "daily_brief_timezone", "UTC") or "UTC")
+        return review_at.astimezone(ZoneInfo(timezone_name)).strftime("%Y-%m-%d %H:%M %Z")
+    except (TypeError, ValueError, ZoneInfoNotFoundError):
+        return str(value or "")
+
+
 def load_metrics():
     metrics = read_json(METRICS_FILE, {"timestamp": now_iso(), "campaigns": []})
-    metrics["campaigns"] = [enrich_campaign(c) for c in metrics.get("campaigns", [])]
+    metrics["campaigns"] = [enrich_campaign({**c, "data_source": c.get("data_source") or metrics.get("source", "")}) for c in metrics.get("campaigns", [])]
     metrics["summary"] = build_summary(metrics["campaigns"])
     return metrics
 
 
 def save_metrics(metrics):
     metrics["timestamp"] = now_iso()
-    metrics["campaigns"] = [enrich_campaign(c) for c in metrics.get("campaigns", [])]
+    metrics["campaigns"] = [enrich_campaign({**c, "data_source": c.get("data_source") or metrics.get("source", "")}) for c in metrics.get("campaigns", [])]
     metrics["summary"] = build_summary(metrics["campaigns"])
     write_json(METRICS_FILE, metrics)
 
@@ -70,9 +94,12 @@ def enrich_campaign(campaign):
     campaign.setdefault("target_id", campaign.get("adset_id", campaign.get("id")))
     campaign.setdefault("frequency", 1.0)
     campaign["ctr"] = (clicks / impressions * 100) if impressions else float(campaign.get("ctr", 0))
-    campaign["cpa"] = (spend / conversions) if conversions else float(campaign.get("cpa", 0) or 9999)
+    # Unknown is not poor performance. Keep zero-conversion CPA at 0 and let the
+    # evidence gate decide when spend/runtime are mature enough to judge.
+    campaign["cpa"] = (spend / conversions) if conversions else 0.0
     campaign["cpc"] = (spend / clicks) if clicks else float(campaign.get("cpc", 0))
     campaign["roas"] = (revenue / spend) if spend else float(campaign.get("roas", 0))
+    campaign.setdefault("previous_cpa", campaign["cpa"])
     campaign.setdefault("previous_ctr", campaign["ctr"] * 1.05)
     campaign.setdefault("previous_cpc", campaign["cpc"] * 0.92 if campaign["cpc"] else 0)
     campaign["health"] = classify_campaign(campaign)
@@ -81,15 +108,20 @@ def enrich_campaign(campaign):
 
 def classify_campaign(campaign):
     config = load_config()
+    rules = load_profitability_rules()
     ctr_drop = pct_change(campaign.get("ctr"), campaign.get("previous_ctr"))
     cpc_rise = pct_change(campaign.get("cpc"), campaign.get("previous_cpc"))
-    if campaign.get("status") == "paused":
+    cpa_rise = pct_change(campaign.get("cpa"), campaign.get("previous_cpa"))
+    if str(campaign.get("status") or "").lower() == "paused":
         return "paused"
-    if campaign.get("frequency", 0) > 3 or ctr_drop <= -20 or cpc_rise >= 30:
+    deterioration = ctr_drop <= -20 or cpc_rise >= 30 or cpa_rise >= 25
+    frequency_with_deterioration = campaign.get("frequency", 0) > 3 and (ctr_drop <= -10 or cpc_rise >= 15 or cpa_rise >= 15)
+    if deterioration or frequency_with_deterioration:
         return "fatigue"
-    if campaign.get("roas", 0) >= 3 and campaign.get("cpa", 9999) <= config.target_cpa:
+    decision = portfolio_recommendations([campaign], rules)[0]
+    if decision.get("decision") == "scale":
         return "winning"
-    if campaign.get("roas", 0) < 1.2 or campaign.get("cpa", 0) > config.target_cpa * config.high_cpa_multiplier:
+    if decision.get("decision") in {"reduce", "pause_candidate"}:
         return "losing"
     return "neutral"
 
@@ -118,35 +150,35 @@ def build_summary(campaigns):
 def calculate_recommendations(campaigns):
     config = load_config()
     rules = load_profitability_rules()
-    optimizer = BudgetOptimizer()
+    state = load_optimization_state()
     recommendations = []
-    for campaign in campaigns:
-        metrics = PerformanceMetrics(
-            spend=float(campaign.get("spend", 0)),
-            impressions=int(campaign.get("impressions", 0)),
-            clicks=int(campaign.get("clicks", 0)),
-            conversions=int(campaign.get("conversions", 0)),
-            revenue=float(campaign.get("revenue", 0)),
-            cost_per_result=float(campaign.get("cpa", 0)),
-            roas=float(campaign.get("roas", 0)),
-        )
-        current = float(campaign.get("daily_budget", 100))
-        rec = optimizer.calculate_optimal_budget(metrics, current, OptimizationStrategy.PERFORMANCE_BASED)
-        change = rec.recommended_budget - current
-        change_pct = (change / current * 100) if current else 100
+    campaigns_by_id = {str(c.get("id") or c.get("campaign_id")): c for c in campaigns}
+    for decision in portfolio_recommendations(campaigns, rules, state):
+        campaign = campaigns_by_id.get(str(decision.get("campaign_id")), {})
+        current = float(decision.get("current_budget", 0))
+        change_pct = float(decision.get("change_pct", 0))
         recommendation = {
-            "id": f"budget_{campaign.get('id')}",
+            "id": f"budget_{decision.get('campaign_id')}",
             "type": "budget_change",
-            "campaign_id": campaign.get("id"),
-            "target_type": campaign.get("target_type", "adset"),
-            "target_id": campaign.get("target_id", campaign.get("id")),
-            "campaign_name": campaign.get("name"),
+            "campaign_id": decision.get("campaign_id"),
+            "target_type": decision.get("target_type", "campaign"),
+            "target_id": decision.get("target_id"),
+            "campaign_name": decision.get("campaign_name"),
             "current_budget": money(current),
-            "recommended_budget": money(rec.recommended_budget),
+            "recommended_budget": money(decision.get("recommended_budget")),
             "change_pct": round(change_pct, 1),
-            "requires_approval": abs(change_pct) > config.approval_required_over_pct,
-            "reason": rec.reasoning,
+            "proposal_only": decision.get("shadow_mode", True) and decision.get("action") != "observe",
+            "requires_approval": decision.get("action") != "observe" and not decision.get("shadow_mode", True) and (
+                config.autonomy_mode == "supervised" or abs(change_pct) > config.approval_required_over_pct
+            ),
+            "reason": decision.get("reason"),
             "health": campaign.get("health"),
+            "decision": decision.get("decision"),
+            "action": decision.get("action"),
+            "objective": decision.get("objective"),
+            "evidence_gate": decision.get("evidence_gate"),
+            "mutation_allowed": decision.get("mutation_allowed", False),
+            "shadow_mode": decision.get("shadow_mode", True),
         }
         recommendation["decision_evidence"] = recommendation_decision_evidence(campaign, recommendation, rules)
         recommendations.append(recommendation)
@@ -158,13 +190,17 @@ def fatigue_items(campaigns):
     for campaign in campaigns:
         ctr_drop = pct_change(campaign.get("ctr"), campaign.get("previous_ctr"))
         cpc_rise = pct_change(campaign.get("cpc"), campaign.get("previous_cpc"))
+        cpa_rise = pct_change(campaign.get("cpa"), campaign.get("previous_cpa"))
         reasons = []
-        if campaign.get("frequency", 0) > 3:
+        deterioration = ctr_drop <= -20 or cpc_rise >= 30 or cpa_rise >= 25
+        if campaign.get("frequency", 0) > 3 and deterioration:
             reasons.append(f"frequency {campaign.get('frequency'):.1f}")
         if ctr_drop <= -20:
             reasons.append(f"CTR {abs(ctr_drop):.0f}% down")
         if cpc_rise >= 30:
             reasons.append(f"CPC {cpc_rise:.0f}% up")
+        if cpa_rise >= 25:
+            reasons.append(f"CPA {cpa_rise:.0f}% up")
         if reasons:
             items.append({"campaign_id": campaign.get("id"), "campaign_name": campaign.get("name"), "reasons": reasons})
     return items
@@ -471,6 +507,25 @@ def pull_live_metrics(metrics, client):
             save_metrics(metrics)
         log_action("live_insights_pull", {"result": result, "normalized_campaigns": len(metrics.get("campaigns", []))}, "completed")
     else:
+        config = load_config()
+        if config.meta_access_token and config.ad_account_id:
+            snapshot = collect_meta_snapshot(
+                config.ad_account_id,
+                config.meta_access_token,
+                config.meta_graph_api_version or "v24.0",
+                date_preset="last_30d",
+            )
+            campaigns = aggregate_meta_campaigns(snapshot)
+            if campaigns:
+                metrics = {
+                    "timestamp": now_iso(), "source": "meta_graph", "source_label": "Meta Ads real data",
+                    "account_id": config.ad_account_id, "date_preset": "last_30d", "campaigns": campaigns,
+                    "data_quality": snapshot.get("data_quality"),
+                }
+                save_metrics(metrics)
+                save_meta_snapshot(snapshot)
+                log_action("live_insights_pull", {"source": "meta_graph_fallback", "normalized_campaigns": len(campaigns), "data_quality": snapshot.get("data_quality")}, "completed")
+                return metrics
         log_action("live_insights_pull", {"result": result}, "failed" if result.get("returncode") not in {0, None} else "no_json")
     return metrics
 
@@ -711,7 +766,7 @@ def top_campaign_line(prefix, campaign, metric_key, metric_label):
     return f"{prefix}: {campaign.get('name')} ({format_metric_value(metric_key, campaign.get(metric_key, 0))} {metric_label})."
 
 
-def build_manager_message(metrics, winners, losers, fatigue, proposed_pauses, action_summary, trend_context):
+def build_manager_message(metrics, winners, losers, fatigue, proposed_pauses, action_summary, trend_context, experiment_reviews=None):
     if not is_real_meta_metrics(metrics):
         return (
             "Buenos días. Todavía no tengo datos reales de Meta suficientes para hacer una lectura responsable.\n\n"
@@ -724,6 +779,17 @@ def build_manager_message(metrics, winners, losers, fatigue, proposed_pauses, ac
 
     lines = ["Buenos días. Ya revisé tu cuenta.", "", "Lo importante hoy es esto:"]
     decisions = []
+    experiment_reviews = experiment_reviews or {}
+    experiments = experiment_reviews.get("experiments") or []
+    decision_ready = next((item for item in experiments if item.get("status") == "decision_ready"), None)
+    watching_experiment = next((item for item in experiments if item.get("next_review_at")), None)
+    if decision_ready:
+        decisions.append(f"El test {decision_ready.get('name')} ya tiene una decisión para revisar: {decision_ready.get('summary')}")
+    elif watching_experiment:
+        decisions.append(
+            f"El test {watching_experiment.get('name')} sigue en observación. "
+            f"Próxima revisión: {local_review_time(watching_experiment.get('next_review_at'))}."
+        )
     if proposed_pauses:
         first = proposed_pauses[0]
         decisions.append(f"{first.get('name', 'Una campaña')} está consumiendo sin suficiente resultado; puedo dejar la pausa lista para aprobación.")
@@ -778,16 +844,38 @@ def metrics_snapshot(metrics):
     }
 
 
-def build_brief(metrics, recommendations, auto_paused, fatigue, proposed_pauses=None, creative_refreshes=None):
+def build_brief(metrics, recommendations, auto_paused, fatigue, proposed_pauses=None, creative_refreshes=None, experiment_reviews=None, optimization=None):
     summary = metrics.get("summary", {})
     campaigns = metrics.get("campaigns", [])
     proposed_pauses = proposed_pauses or []
+    experiment_reviews = experiment_reviews or {"active_count": 0, "decision_ready_count": 0, "experiments": []}
+    optimization = optimization or {}
     winners = sorted([c for c in campaigns if c.get("health") == "winning"], key=lambda c: c.get("roas", 0), reverse=True)
     losers = sorted([c for c in campaigns if c.get("health") == "losing"], key=lambda c: c.get("roas", 0))
     approval_count = len(read_json(PENDING_FILE, []))
     action_summary = build_action_summary(recommendations, auto_paused, proposed_pauses, fatigue, creative_refreshes)
     trend_context = build_trend_context(metrics)
-    message = build_manager_message(metrics, winners, losers, fatigue, proposed_pauses, action_summary, trend_context)
+    message = build_manager_message(metrics, winners, losers, fatigue, proposed_pauses, action_summary, trend_context, experiment_reviews)
+    reconciliation = optimization.get("reconciliation") or {}
+    unlock = optimization.get("unlock") or {}
+    optimization_notes = []
+    if optimization.get("mode") == "shadow":
+        optimization_notes.append(
+            f"El optimizador sigue en modo observación: {unlock.get('elapsed_days', 0)}/{unlock.get('minimum_days', 14)} días y "
+            f"{unlock.get('matured_outcomes', 0)}/{unlock.get('minimum_matured_outcomes', 10)} decisiones maduras. No tocará presupuesto solo."
+        )
+    if reconciliation.get("status") == "investigate":
+        optimization_notes.append(
+            f"Shopify y Meta no coinciden todavía (ventas {reconciliation.get('conversion_gap_pct')}%, ingresos {reconciliation.get('revenue_gap_pct')}%); "
+            "conviene revisar atribución, Pixel/CAPI y retrasos antes de decidir."
+        )
+    elif reconciliation.get("status") == "aligned":
+        optimization_notes.append("Shopify está conectado como verdad del negocio y la conciliación no muestra una diferencia material.")
+    if optimization.get("anomalies"):
+        labels = ", ".join(item.get("label", item.get("metric", "")) for item in optimization["anomalies"][:3])
+        optimization_notes.append(f"Detecté un cambio fuera de lo normal en: {labels}. Lo trato como diagnóstico, no como permiso para actuar.")
+    if optimization_notes:
+        message += "\n\nControl de optimización:\n" + "\n".join(optimization_notes)
     lines = [
         f"Gasto: {format_metric_value('total_spend', summary.get('total_spend', 0))}",
         f"Ingresos: {format_metric_value('total_revenue', summary.get('total_revenue', 0))}",
@@ -798,7 +886,18 @@ def build_brief(metrics, recommendations, auto_paused, fatigue, proposed_pauses=
         f"Pausas por aprobar: {len(proposed_pauses)}",
         f"Señales de fatiga: {len(fatigue)}",
         f"Decisiones pendientes: {approval_count}",
+        f"Tests creativos en seguimiento: {experiment_reviews.get('active_count', 0)}",
     ]
+    if optimization.get("mode"):
+        lines.append(f"Modo del optimizador: {optimization.get('mode')}")
+    if reconciliation.get("status"):
+        lines.append(f"Conciliación Shopify/Meta: {reconciliation.get('status')}")
+    if optimization.get("anomalies"):
+        lines.append(f"Anomalías para investigar: {len(optimization.get('anomalies', []))}")
+    if experiment_reviews.get("decision_ready_count"):
+        lines.append(f"Tests con decisión lista: {experiment_reviews.get('decision_ready_count')}")
+    elif experiment_reviews.get("next_review_at"):
+        lines.append(f"Próxima revisión de creativos: {local_review_time(experiment_reviews.get('next_review_at'))}")
     if winners:
         lines.append(f"Campaña más sana: {winners[0]['name']} ({winners[0]['roas']:.2f}x retorno)")
     if losers:
@@ -809,6 +908,14 @@ def build_brief(metrics, recommendations, auto_paused, fatigue, proposed_pauses=
         lines.append(f"Esperando aprobación: {len(action_summary['waiting_for_approval'])} grupo(s) de acciones")
     if action_summary["recommended_next"]:
         lines.append(f"Siguiente movimiento: {action_summary['recommended_next'][0]['label']}")
+    if winners:
+        winner_loser_answer = f"La más sana es {winners[0]['name']}."
+        if losers:
+            winner_loser_answer += f" La que necesita revisión es {losers[0]['name']}."
+    elif losers:
+        winner_loser_answer = f"La que necesita revisión es {losers[0]['name']}."
+    else:
+        winner_loser_answer = "Todavía no hay ganadora o perdedora clara."
     return {
         "generated_at": now_iso(),
         "summary": summary,
@@ -816,7 +923,7 @@ def build_brief(metrics, recommendations, auto_paused, fatigue, proposed_pauses=
             "am_i_on_track": lines[0],
             "whats_running": f"{summary.get('active_campaigns', 0)} campañas activas",
             "hows_performance": f"{summary.get('overall_roas', 0):.2f}x retorno, {format_metric_value('overall_cpa', summary.get('overall_cpa', 0))} costo por resultado",
-            "winning_losing": lines[-1] if winners or losers else "Todavía no hay ganadora o perdedora clara.",
+            "winning_losing": winner_loser_answer,
             "fatigue": f"{len(fatigue)} señal(es) de fatiga",
         },
         "message": message,
@@ -830,25 +937,35 @@ def build_brief(metrics, recommendations, auto_paused, fatigue, proposed_pauses=
         "fatigue": fatigue,
         "recommendations": recommendations,
         "action_summary": action_summary,
+        "experiment_reviews": experiment_reviews,
+        "optimization": optimization,
     }
 
 
 def run_daily():
     config = load_config()
     client = SocialFlowClient(config)
+    if getattr(config, "shopify_shop_domain", "") and getattr(config, "shopify_admin_token", ""):
+        shopify_result = sync_shopify(config.shopify_shop_domain, config.shopify_admin_token, getattr(config, "shopify_api_version", "2026-04"))
+        log_action(
+            "shopify_sync",
+            {key: value for key, value in shopify_result.items() if key != "outcomes"},
+            "completed" if shopify_result.get("ok") else "blocked",
+        )
     metrics = load_metrics()
     if config.ad_account_id or config.meta_access_token:
         metrics = pull_live_metrics(metrics, client)
 
+    lag_calibration = calibrate_conversion_lag()
+
     recommendations = calculate_recommendations(metrics.get("campaigns", []))
+    recommendations_by_campaign = {str(item.get("campaign_id")): item for item in recommendations}
     auto_paused = []
     proposed_pauses = []
     if config.auto_pause_enabled:
         for campaign in metrics.get("campaigns", []):
-            should_pause = campaign.get("status") == "active" and (
-                campaign.get("cpa", 0) > config.target_cpa * config.high_cpa_multiplier
-                or (campaign.get("spend", 0) > config.zero_conversion_spend and campaign.get("conversions", 0) == 0)
-            )
+            recommendation = recommendations_by_campaign.get(str(campaign.get("id") or campaign.get("campaign_id")), {})
+            should_pause = str(campaign.get("status") or "").lower() == "active" and recommendation.get("decision") == "pause_candidate"
             if not should_pause:
                 continue
             item = {
@@ -858,26 +975,33 @@ def run_daily():
                 "target_id": campaign.get("target_id", campaign.get("id")),
                 "name": campaign.get("name"),
                 "spend": campaign.get("spend", 0),
-                "reason": "high CPA or spend with zero conversions",
+                "reason": recommendation.get("reason") or "mature evidence requires a pause review",
+                "evidence_gate": recommendation.get("evidence_gate"),
+                "shadow_mode": recommendation.get("shadow_mode", True),
             }
             may_execute = (
                 config.autonomy_mode == "autopilot"
                 and config.live
                 and config.live_actions_enabled
                 and float(campaign.get("spend", 0) or 0) <= config.auto_pause_max_spend
+                and recommendation.get("mutation_allowed")
             )
             if may_execute and config.license_required_for_live and not license_status(config).get("valid"):
                 may_execute = False
                 item["guardrail_reason"] = "license_required_for_live"
             if not may_execute:
-                item.setdefault("guardrail_reason", "supervised_or_outside_autopilot_rules")
-                if add_pending("pause_campaign", item):
+                item.setdefault("guardrail_reason", "shadow_mode" if recommendation.get("shadow_mode", True) else "supervised_or_outside_autopilot_rules")
+                if recommendation.get("shadow_mode", True):
+                    proposed_pauses.append(item)
+                    log_action("shadow_pause_proposal", item, "observing")
+                elif add_pending("pause_campaign", item):
                     proposed_pauses.append(item)
                 continue
             result = client.pause(item["target_type"], item["target_id"])
             item["result"] = result
             if result.get("executed") and result.get("returncode") == 0:
                 campaign["status"] = "paused"
+                record_optimization_action(campaign.get("id") or campaign.get("campaign_id"))
                 auto_paused.append(item)
                 log_action("auto_pause", item, "completed")
             else:
@@ -897,7 +1021,7 @@ def run_daily():
             log_action("creative_refresh", {"items": creative_refreshes}, "generated")
 
     for rec in recommendations:
-        if rec.get("requires_approval"):
+        if rec.get("requires_approval") and not rec.get("shadow_mode") and rec.get("action") in {"increase_budget", "decrease_budget"}:
             rec["approval_id"] = f"approval_budget_{rec['campaign_id']}"
             add_pending("budget_change", rec)
 
@@ -909,7 +1033,20 @@ def run_daily():
         auto_paused=auto_paused,
         creative_refreshes=creative_refreshes,
     )
-    brief = build_brief(metrics, recommendations, auto_paused, fatigue, proposed_pauses, creative_refreshes)
+    record_performance_snapshot(metrics)
+    shadow = record_shadow_outcomes(metrics, recommendations)
+    optimization = {
+        "mode": shadow.get("state", {}).get("mode", "shadow"),
+        "unlock": shadow.get("unlock", {}),
+        "reconciliation": reconcile_business_outcomes(metrics),
+        "anomalies": anomaly_diagnostics(metrics),
+        "funnel": funnel_diagnostics(),
+        "data_quality": metrics.get("data_quality", {}),
+        "conversion_lag_calibration": lag_calibration,
+        "recent_shadow_outcomes": shadow.get("recent", [])[:5],
+    }
+    experiment_reviews = experiment_review_payload(metrics)
+    brief = build_brief(metrics, recommendations, auto_paused, fatigue, proposed_pauses, creative_refreshes, experiment_reviews, optimization)
     brief["creative_refreshes"] = creative_refreshes
     brief["decision_memory"] = {
         "recent_decisions": decision_memory.get("decisions", [])[:6],

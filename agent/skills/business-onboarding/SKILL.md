@@ -35,8 +35,9 @@ Read and update through tools, not by editing arbitrary files:
 - Ask one question at a time.
 - Save useful facts when the buyer gives them.
 - If the buyer shared website or social links, use available browser/web retrieval to understand public information, then confirm the important findings with the buyer.
-- After business basics, move to `skills/branding-creatives-creation/SKILL.md`, then prior ads and campaign goals.
+- After business basics, move to `skills/branding-creatives-creation/SKILL.md`, then prior ads and campaign goals. “Business basics complete” only means you know enough to start branding; it does not authorize creative planning or image generation yet.
 - If the buyer sends a logo or brand image, use the branding skill and save it as logo context before creating images.
+- If the buyer asks for creatives before brand memory is ready, do not call `mcp_admira_codex_creative_plan` or `mcp_admira_codex_image_generate`. Briefly say you need to lock the brand first, then ask the next missing branding question: logo, colors, visual references/uploads, real photos/assets, tone, or style.
 
 ## Tone
 

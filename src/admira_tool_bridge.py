@@ -20,6 +20,11 @@ from security import redact_payload  # noqa: E402
 
 TOOL_MAP = {
     "admira_run_daily_brief": "run_daily_check",
+    "admira_schedule_experiment_review": "schedule_experiment_review",
+    "admira_list_experiment_reviews": "list_experiment_reviews",
+    "admira_run_due_experiment_reviews": "run_due_experiment_reviews",
+    "admira_save_optimization_research": "save_optimization_research",
+    "admira_list_optimization_research": "list_optimization_research",
     "admira_codex_image_generate": "codex_image_generate",
     "admira_codex_creative_plan": "codex_creative_plan",
     "admira_stage_campaign": "create_campaign_stack",
@@ -90,6 +95,11 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
 
     dashboard = load_dashboard()
     payload = chat_payload(channel, language)
+    reference_paths = args.get("reference_image_paths") or args.get("image_paths") or []
+    if isinstance(reference_paths, str):
+        reference_paths = [reference_paths]
+    if isinstance(reference_paths, list):
+        payload["image_paths"] = reference_paths[:4]
 
     if tool == "admira_get_real_meta_context":
         dashboard_data = dashboard.dashboard_payload()

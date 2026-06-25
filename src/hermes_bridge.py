@@ -11,8 +11,12 @@ import subprocess
 from pathlib import Path
 
 from agent_runtime import build_system_prompt
+from communication_style import communication_style_from_environment, communication_style_instruction
 from decision_memory import decision_memory_payload, format_learning_log
+from experiment_scheduler import experiment_review_payload
 from local_store import read_json
+from optimization_engine import load_optimization_state
+from optimization_research import load_research
 from security import redact_payload
 
 try:
@@ -31,7 +35,11 @@ BRAND_GUIDES_DIR = ROOT_DIR / "brand_guides"
 AGENT_SKILLS_DIR = ROOT_DIR / "agent" / "skills"
 HERMES_WORKSPACE_DIR = DATA_DIR / "hermes-workspace" / "current"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
-ALLOWED_IMAGE_DIRS = (ROOT_DIR / "output", ROOT_DIR / "dashboard" / "data" / "uploads")
+ALLOWED_IMAGE_DIRS = (
+    ROOT_DIR / "output",
+    ROOT_DIR / "dashboard" / "data" / "uploads",
+    HERMES_WORKSPACE_DIR / "uploads",
+)
 MEMORY_TEXT_LIMIT = 8000
 MEMORY_ITEM_LIMIT = 8
 BLOCKED_MEMORY_TOKENS = {".env", "license_unlock.json"}
@@ -155,6 +163,7 @@ For each turn, read the buyer message normally. If you need live account context
 - `memory/Agent onboarding plan.md`: current onboarding phase.
 - `memory/Ads campaign onboarding.md`: prior ads/campaign context.
 - `memory/profitability_rules.json`, `memory/decision_memory.json`, `memory/learning_log.md`: decision memory.
+- `memory/creative_experiments.json`: adaptive creative-test checkpoints, evidence, provisional leaders, and next review dates.
 - `brand_guides/`: brand, product, ad brief, and creative reference memory.
 - `skills/`: focused product skills. Read the relevant skill before taking product actions.
 
@@ -168,6 +177,9 @@ Use these MCP tools for real product actions instead of inventing results, runni
 
 - `mcp_admira_get_real_meta_context`
 - `mcp_admira_run_daily_brief`
+- `mcp_admira_schedule_experiment_review`
+- `mcp_admira_list_experiment_reviews`
+- `mcp_admira_run_due_experiment_reviews`
 - `mcp_admira_codex_image_generate`
 - `mcp_admira_codex_creative_plan`
 - `mcp_admira_stage_campaign`
@@ -184,7 +196,15 @@ Use these MCP tools for real product actions instead of inventing results, runni
 - `mcp_admira_save_creative_references`
 
 If the MCP tool is unavailable, say the action cannot be executed yet and explain what must be connected. Do not fall back to fake campaign data or uncontrolled terminal commands.
+
+Never call `mcp_admira_codex_creative_plan` as a replacement for the branding interview. Before using it for ads, the workspace must have brand name/offer, colors, visual style, tone, logo decision, reference decision, real-asset decision, product/offer, and test budget. If any of those are missing, ask the exact next branding question instead and save the answer with the memory tools.
 """
+    )
+    style = communication_style_from_environment()
+    sections.append(
+        "\n\n# Buyer Communication Preference\n\n"
+        + communication_style_instruction(style, "en")
+        + "\nTreat this explicit preference as overriding the default buyer-profile wording level, but never as overriding product safety rules."
     )
     return "\n".join(sections).strip() + "\n"
 
@@ -296,6 +316,10 @@ def business_memory_context():
             "creative_refreshes": scrub_memory(redact_payload(read_json(ROOT_DIR / "output" / "creatives" / "index.json", [])[-MEMORY_ITEM_LIMIT:])),
         },
         "profitability_memory": scrub_memory(redact_payload(decision_memory_payload())),
+        "creative_experiments": scrub_memory(redact_payload(experiment_review_payload())),
+        "optimization_state": scrub_memory(redact_payload(load_optimization_state())),
+        "business_outcomes": scrub_memory(redact_payload(read_json(DATA_DIR / "business_outcomes.json", {}))),
+        "optimization_research": scrub_memory(redact_payload(load_research())),
     }
     return memory
 
@@ -348,6 +372,10 @@ Read `skills/README.md` and the relevant `skills/*/SKILL.md` file before acting.
     written.append(write_workspace_file("memory/creative_refreshes.json", memory["recent_history"]["creative_refreshes"]))
     written.append(write_workspace_file("memory/profitability_rules.json", memory["profitability_memory"].get("profitability_rules", {})))
     written.append(write_workspace_file("memory/decision_memory.json", memory["profitability_memory"]))
+    written.append(write_workspace_file("memory/creative_experiments.json", memory["creative_experiments"]))
+    written.append(write_workspace_file("memory/optimization_state.json", memory["optimization_state"]))
+    written.append(write_workspace_file("memory/business_outcomes.json", memory["business_outcomes"]))
+    written.append(write_workspace_file("memory/optimization_research.json", memory["optimization_research"]))
     written.append(write_workspace_file("memory/learning_log.md", format_learning_log()))
     written.append(write_workspace_file("brand_guides/general_branding.md", memory["brand_guides"]["general_branding"]))
     written.append(write_workspace_file("brand_guides/creative_references.md", memory.get("creative_references", "")))
@@ -410,6 +438,11 @@ def hermes_user_query(payload, workspace_info):
 
 def hermes_environment(config):
     env = os.environ.copy()
+    timezone_name = str(getattr(config, "daily_brief_timezone", "UTC") or "UTC")
+    # Hermes' scheduler resolves wall-clock time from HERMES_TIMEZONE. TZ is
+    # also set for child processes and third-party tools launched by Hermes.
+    env["HERMES_TIMEZONE"] = timezone_name
+    env["TZ"] = timezone_name
     hermes_home = getattr(config, "hermes_home", "") or ""
     if hermes_home:
         env["HERMES_HOME"] = str(Path(hermes_home).expanduser())

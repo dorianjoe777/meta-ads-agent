@@ -46,6 +46,7 @@ defaults = {
     "HERMES_RESPONSE_TIMEOUT_SECONDS": "300",
     "HERMES_TIMEOUT_SECONDS": "300",
     "DAILY_BRIEF_TIME": "08:00",
+    "DAILY_BRIEF_TIMEZONE": "UTC",
     "HERMES_ENABLED_TOOLSETS": "memory,skills,session_search,vision,file,web,browser",
     "HERMES_DISABLED_TOOLSETS": "terminal,code_execution,image_gen",
 }

@@ -17,9 +17,13 @@ Collect:
 - objective
 - target audience/location
 - daily budget
+- target CPA/CPL when known
 - landing URL
-- creative image or creative direction
+- saved creative test brief with distinct hypotheses, formats, and variation count
+- approved creative assets or a production plan
 - final status: paused draft or active after approval
+
+Do not reduce the creative strategy to one image. Check that the proposed concurrent creative count fits the budget; keep additional concepts in a backlog rather than starving every test.
 
 ## Tool
 

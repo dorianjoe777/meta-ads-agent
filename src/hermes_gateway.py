@@ -3,6 +3,7 @@
 import json
 import os
 import hashlib
+import re
 import shlex
 import shutil
 import signal
@@ -11,6 +12,7 @@ import sys
 import time
 from pathlib import Path
 
+from communication_style import communication_preference, communication_style_from_environment, communication_style_instruction
 from hermes_bridge import hermes_environment, prepare_hermes_workspace
 from local_store import now_iso
 from product_config import ROOT_DIR, env_bool, env_int
@@ -29,6 +31,7 @@ DATA_DIR = ROOT_DIR / "dashboard" / "data"
 LOGS_DIR = ROOT_DIR / "logs"
 GATEWAY_STATE_FILE = DATA_DIR / "hermes_gateway_state.json"
 DAILY_BRIEF_PROMPT_FILE = DATA_DIR / "hermes_daily_brief_prompt.md"
+RESEARCH_PROMPT_FILE = DATA_DIR / "hermes_optimization_research_prompt.md"
 
 _GATEWAY_PROCESS = None
 _GATEWAY_FINGERPRINT = None
@@ -57,13 +60,15 @@ def hermes_home(config):
 
 
 def gateway_workspace(config):
+    language = os.environ.get("TELEGRAM_LANGUAGE", "es")
     workspace_info = prepare_hermes_workspace(
         {
             "channel": "telegram",
-            "language": os.environ.get("TELEGRAM_LANGUAGE", "es"),
+            "language": language,
             "account_context": {
                 "note": "Native Hermes Gateway workspace for Admira IA Telegram conversations.",
                 "metrics_source": "read CURRENT_CONTEXT.json only if present and real.",
+                "communication_preference": communication_preference(communication_style_from_environment(), language),
             },
         }
     )
@@ -80,10 +85,13 @@ def _env_value(value):
 
 def _gateway_fingerprint(config, status, files):
     token_hash = hashlib.sha256(str(config.telegram_bot_token or "").encode("utf-8")).hexdigest()[:16]
-    return f"{token_hash}:{status['chat_id']}:{files['hermes_home']}"
+    timezone_name = str(getattr(config, "daily_brief_timezone", "UTC") or "UTC")
+    communication_style = communication_style_from_environment()
+    return f"{token_hash}:{status['chat_id']}:{files['hermes_home']}:{timezone_name}:{communication_style}"
 
 
-def gateway_prompt(language="es"):
+def gateway_prompt(language="es", communication_style="simple"):
+    style_instruction = communication_style_instruction(communication_style, language)
     if str(language or "es").lower().startswith("en"):
         return (
             "You are Admira IA, the buyer's private Meta Ads manager. You are running directly inside Hermes Telegram Gateway. "
@@ -95,7 +103,13 @@ def gateway_prompt(language="es"):
             "or Telegram itself is actually missing in CURRENT_CONTEXT.json or a product tool result. In Telegram, do not use Markdown tables; "
             "use short headings and bullet lists so the buyer always sees a readable message on mobile. On the first onboarding message, explain "
             "the journey before asking: first understand the business, then define visual brand and creative style, then turn that into offers, "
-            "ad briefs, strategy, and campaigns. After that, ask one clear question."
+            "ad briefs, strategy, and campaigns. Before using Codex creative planning or creative production, explicitly ask about colors, design references/uploads, official logo usage, "
+            "real photos/assets, and test budget. If any brand item is missing, ask that question instead of calling Codex. Recommend a multi-format portfolio and several meaningful hypotheses sized to the budget; Image 2 "
+            "is only one production tool, never the strategy. Do not generate a final ad until the brand and test brief are ready. After a real multi-creative launch, "
+            "schedule adaptive experiment reviews with real Meta IDs, budget, and target CPA; never call an early signal a winner. After that, ask one clear question."
+            " For optimization, distinguish sales, leads, and messages; treat zero-conversion CPA as unknown until runtime, spend, attribution lag, learning status, freshness, and edit cooldown are mature. "
+            "Use Shopify aggregates as business truth when connected. Respect optimizer shadow mode and account/test-budget caps. Official research outranks community anecdotes; research may propose controlled tests but never spend actions."
+            f" {style_instruction}"
         )
     return (
         "Eres Admira IA, el manager privado de Meta Ads del comprador. Estás hablando directamente desde Hermes Telegram Gateway. "
@@ -108,7 +122,14 @@ def gateway_prompt(language="es"):
         "o Telegram. En Telegram no uses tablas Markdown; usa títulos cortos y listas con viñetas para que el comprador siempre vea el mensaje "
         "bien en el celular. En el primer mensaje del onboarding, explica el camino antes de preguntar: primero entenderemos el negocio, "
         "después definiremos la marca visual y el estilo creativo, y luego convertiremos eso en ofertas, briefs, estrategia y campañas. "
-        "Después de explicar eso, haz una sola pregunta clara."
+        "Antes de usar Codex para planear o producir creativos, pregunta de forma explícita por colores, referencias o diseños para subir, uso del logo oficial, fotos/activos reales "
+        "y presupuesto de prueba. Si falta cualquier pieza de marca, pregunta eso en vez de llamar Codex. Recomienda un portafolio de varios formatos e hipótesis realmente distintas que quepan en ese presupuesto; Image 2 "
+        "es solo una herramienta de producción, nunca la estrategia. No generes un anuncio final hasta completar la marca y el brief de prueba. "
+        "Después de lanzar una prueba real con varios creativos, programa revisiones adaptativas con IDs reales de Meta, presupuesto y CPA objetivo; "
+        "nunca llames ganador a una señal temprana. Después de explicar eso, haz una sola pregunta clara."
+        " Para optimizar, distingue ventas, leads y mensajes; un CPA con cero conversiones es desconocido hasta madurar tiempo, gasto, atribución, aprendizaje, frescura y cooldown de cambios. "
+        "Usa agregados de Shopify como verdad del negocio cuando estén conectados. Respeta el modo observación del optimizador y los topes/reserva de tests. La guía oficial tiene prioridad; una anécdota comunitaria solo puede proponer un test controlado, nunca una acción de gasto."
+        f" {style_instruction}"
     )
 
 
@@ -116,26 +137,30 @@ def write_gateway_files(config):
     home = hermes_home(config)
     workspace = gateway_workspace(config)
     status = telegram_settings(config)
+    timezone_name = str(getattr(config, "daily_brief_timezone", "UTC") or "UTC")
     env_path = home / ".env"
     env_lines = []
     if env_path.exists():
         for line in env_path.read_text(encoding="utf-8").splitlines():
             key = line.split("=", 1)[0].strip() if "=" in line else ""
-            if key not in {"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS", "TELEGRAM_HOME_CHANNEL"}:
+            if key not in {"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS", "TELEGRAM_HOME_CHANNEL", "HERMES_TIMEZONE"}:
                 env_lines.append(line)
     if config.telegram_bot_token:
         env_lines.append(f"TELEGRAM_BOT_TOKEN={_env_value(config.telegram_bot_token)}")
     if status["chat_id"]:
         env_lines.append(f"TELEGRAM_ALLOWED_USERS={_env_value(status['chat_id'])}")
         env_lines.append(f"TELEGRAM_HOME_CHANNEL={_env_value(status['chat_id'])}")
+    env_lines.append(f"HERMES_TIMEZONE={_env_value(timezone_name)}")
     env_path.write_text("\n".join(env_lines).rstrip() + "\n", encoding="utf-8")
     env_path.chmod(0o600)
 
     allowed = status["chat_id"]
-    prompt = gateway_prompt(status["language"])
+    communication_style = communication_style_from_environment()
+    prompt = gateway_prompt(status["language"], communication_style)
     toolsets = ["hermes-telegram", "memory", "skills", "session_search", "vision", "file", "web", "browser", "admira"]
     mcp_server_path = ROOT_DIR / "src" / "admira_mcp_server.py"
     config_yaml = [
+        f"timezone: {_quote_yaml(timezone_name)}",
         "model:",
         "  provider: openai-codex",
         f"  default: {_quote_yaml(normalize_hermes_model(getattr(config, 'hermes_model', '')))}",
@@ -416,11 +441,210 @@ Incluye contexto de los últimos días y fluctuaciones importantes. Responde cor
 2. qué campaña o creativo necesita atención
 3. qué se ve sano
 4. qué prepararías para aprobación
+5. qué test creativo sigue esperando evidencia, cuál es su líder provisional si existe y cuándo será la próxima revisión
+6. calidad y frescura de datos, conciliación Shopify/Meta, bloqueos por aprendizaje/cooldown, anomalías y progreso del modo observación
+
+No declares una ganadora si el seguimiento dice que la evidencia todavía es insuficiente.
+No conviertas cero conversiones en un CPA artificial. No recomiendes cambios por datos del día incompleto, aprendizaje, atribución inmadura, datos viejos o cooldown activo.
 
 Termina exactamente con: ¿Tienes alguna pregunta?
 
 Si todavía no hay Datos reales de Meta, dilo claramente y explica qué falta conectar. No uses datos demo.
 """
+
+
+def optimization_research_prompt():
+    return """Haz la revisión semanal de estrategias actuales para Meta Ads.
+
+1. Busca primero documentación oficial de Meta sobre entrega, aprendizaje, medición, Conversions API, presupuesto y creativos.
+2. Después revisa fuentes expertas recientes y discusiones actuales de Reddit/foros para detectar problemas o tácticas que valga la pena probar.
+3. No conviertas una opinión comunitaria en regla. Registra contradicciones y exige corroboración.
+4. Por cada hallazgo útil llama `mcp_admira_save_optimization_research` con URL HTTPS, título, source_type, fecha publicada/observada, claim, counterevidence y testable_hypothesis.
+5. Ningún hallazgo puede ejecutar cambios de gasto. Solo puede proponer un experimento que respete presupuesto, evidencia madura y aprobaciones.
+6. Descarta fuentes expiradas, contenido sin fecha útil y afirmaciones que prometen resultados garantizados.
+
+Al terminar, resume máximo tres hipótesis nuevas y di claramente qué proviene de Meta y qué es anecdótico. Sin tablas Markdown.
+"""
+
+
+def ensure_weekly_research_cron(config):
+    status = telegram_settings(config)
+    if not (status["enabled"] and status["bot_configured"] and status["chat_id"]):
+        return {"configured": False, "detail": "Telegram no está completo todavía."}
+    hermes_cli = shutil.which(getattr(config, "hermes_cli", "hermes") or "hermes")
+    if not hermes_cli:
+        return {"configured": False, "detail": "Hermes no está instalado."}
+    files = write_gateway_files(config)
+    prompt = optimization_research_prompt()
+    RESEARCH_PROMPT_FILE.write_text(prompt, encoding="utf-8")
+    env = hermes_environment(config)
+    env["HERMES_HOME"] = files["hermes_home"]
+    timezone_name = str(getattr(config, "daily_brief_timezone", "UTC") or "UTC")
+    env["HERMES_TIMEZONE"] = timezone_name
+    env["TZ"] = timezone_name
+    name = "Admira IA - investigación semanal"
+    schedule = "0 3 * * 0"
+    try:
+        listed = subprocess.run([hermes_cli, "cron", "list"], cwd=files["workspace"], env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"configured": False, "detail": "No pude revisar la investigación semanal.", "error": str(exc), **files}
+    output = (listed.stdout or "") + (listed.stderr or "")
+    existing = _cron_job(output, name)
+    delivery = f"telegram:{status['chat_id']}"
+    command = None
+    if existing and (existing.get("schedule") != schedule or existing.get("deliver") != delivery):
+        command = [hermes_cli, "cron", "edit", existing["id"], "--schedule", schedule, "--prompt", prompt, "--deliver", delivery, "--workdir", files["workspace"]]
+    elif not existing and name not in output:
+        command = [hermes_cli, "cron", "create", "--name", name, "--deliver", delivery, "--workdir", files["workspace"], schedule, prompt]
+    if command:
+        try:
+            result = subprocess.run(command, cwd=files["workspace"], env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {"configured": False, "detail": "No pude programar la investigación semanal.", "error": str(exc), **files}
+        return {"configured": result.returncode == 0, "name": name, "schedule": schedule, "timezone": timezone_name, "stdout": (result.stdout or "")[-500:], "stderr": (result.stderr or "")[-500:], **files}
+    return {"configured": True, "exists": True, "name": name, "job_id": (existing or {}).get("id", ""), "schedule": schedule, "timezone": timezone_name, **files}
+
+
+def _cron_job(output, name):
+    ansi = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+    lines = ansi.sub("", str(output or "")).splitlines()
+    current = None
+    jobs = []
+    for line in lines:
+        job_match = re.match(r"^\s*([0-9a-fA-F]{8,})\s+\[(active|paused)\]\s*$", line)
+        if job_match:
+            current = {"id": job_match.group(1), "status": job_match.group(2), "name": "", "schedule": "", "deliver": ""}
+            jobs.append(current)
+            continue
+        if current is None:
+            continue
+        field_match = re.match(r"^\s*(Name|Schedule|Deliver):\s*(.*?)\s*$", line)
+        if field_match:
+            current[field_match.group(1).lower()] = field_match.group(2)
+    return next((job for job in jobs if job.get("name") == name), None)
+
+
+def _daily_brief_job(output, name):
+    return _cron_job(output, name)
+
+
+def experiment_review_prompt(experiment):
+    experiment_id = str((experiment or {}).get("id") or "").strip()
+    return f"""Revisa el experimento creativo `{experiment_id}` en Admira IA.
+
+1. Llama `mcp_admira_run_due_experiment_reviews` con `experiment_id: {experiment_id}`.
+2. Usa únicamente la evidencia real devuelta por la herramienta.
+3. Si falta evidencia, explica en palabras simples qué falta y menciona la próxima fecha de revisión.
+4. Si hay líder, llámala provisional y explica la evidencia. Propón pausar, refrescar o escalar solo cuando la herramienta lo recomiende.
+5. Nunca ejecutes cambios protegidos sin la aprobación normal del comprador.
+
+Responde en español, corto y sin tablas Markdown.
+"""
+
+
+def experiment_review_cron_name(experiment):
+    experiment_id = re.sub(r"[^a-zA-Z0-9_-]+", "-", str((experiment or {}).get("id") or "experiment"))[:42]
+    due = re.sub(r"[^0-9]+", "", str((experiment or {}).get("next_review_at") or ""))[:14]
+    return f"Admira IA - experimento {experiment_id} - {due or 'review'}"
+
+
+def ensure_experiment_review_cron(config, experiment):
+    next_review_at = str((experiment or {}).get("next_review_at") or "").strip()
+    if not next_review_at or (experiment or {}).get("status") in {"completed", "cancelled", "decision_ready"}:
+        return {"configured": False, "needed": False, "detail": "El experimento no tiene otra revisión pendiente."}
+    status = telegram_settings(config)
+    if not (status["enabled"] and status["bot_configured"] and status["chat_id"]):
+        return {"configured": False, "needed": True, "detail": "Telegram no está completo todavía."}
+    hermes_cli = shutil.which(getattr(config, "hermes_cli", "hermes") or "hermes")
+    if not hermes_cli:
+        return {"configured": False, "needed": True, "detail": "Hermes no está instalado."}
+    files = write_gateway_files(config)
+    env = hermes_environment(config)
+    env["HERMES_HOME"] = files["hermes_home"]
+    timezone_name = str(getattr(config, "daily_brief_timezone", "UTC") or "UTC")
+    env["HERMES_TIMEZONE"] = timezone_name
+    env["TZ"] = timezone_name
+    name = experiment_review_cron_name(experiment)
+    schedule = next_review_at
+    try:
+        list_result = subprocess.run(
+            [hermes_cli, "cron", "list"],
+            cwd=files["workspace"],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"configured": False, "needed": True, "detail": "No pude revisar los seguimientos de Hermes.", "error": str(exc), **files}
+    list_output = (list_result.stdout or "") + (list_result.stderr or "")
+    existing = _cron_job(list_output, name)
+    if existing or name in list_output:
+        return {
+            "configured": True,
+            "needed": True,
+            "exists": True,
+            "name": name,
+            "job_id": (existing or {}).get("id", ""),
+            "schedule": schedule,
+            "next_review_at": next_review_at,
+            "timezone": timezone_name,
+            **files,
+        }
+    try:
+        result = subprocess.run(
+            [
+                hermes_cli,
+                "cron",
+                "create",
+                "--name",
+                name,
+                "--deliver",
+                f"telegram:{status['chat_id']}",
+                "--repeat",
+                "1",
+                "--workdir",
+                files["workspace"],
+                schedule,
+                experiment_review_prompt(experiment),
+            ],
+            cwd=files["workspace"],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"configured": False, "needed": True, "detail": "No pude programar la revisión del experimento.", "error": str(exc), "name": name, **files}
+    return {
+        "configured": result.returncode == 0,
+        "needed": True,
+        "exists": False,
+        "name": name,
+        "schedule": schedule,
+        "next_review_at": next_review_at,
+        "timezone": timezone_name,
+        "stdout": (result.stdout or "")[-500:],
+        "stderr": (result.stderr or "")[-500:],
+        **files,
+    }
+
+
+def ensure_experiment_review_crons(config):
+    try:
+        from experiment_scheduler import load_experiments
+        experiments = load_experiments().get("experiments", [])
+    except (ImportError, OSError, ValueError):
+        experiments = []
+    results = []
+    for experiment in experiments:
+        if experiment.get("next_review_at") and experiment.get("status") not in {"completed", "cancelled", "decision_ready"}:
+            results.append(ensure_experiment_review_cron(config, experiment))
+    return {"count": len(results), "configured": len([item for item in results if item.get("configured")]), "items": results}
 
 
 def ensure_daily_brief_cron(config):
@@ -434,18 +658,65 @@ def ensure_daily_brief_cron(config):
     DAILY_BRIEF_PROMPT_FILE.write_text(daily_brief_prompt(), encoding="utf-8")
     env = hermes_environment(config)
     env["HERMES_HOME"] = files["hermes_home"]
+    timezone_name = str(getattr(config, "daily_brief_timezone", "UTC") or "UTC")
+    env["HERMES_TIMEZONE"] = timezone_name
+    env["TZ"] = timezone_name
     name = "Admira IA - lectura diaria"
-    try:
-        list_result = subprocess.run([hermes_cli, "cron", "list"], cwd=files["workspace"], env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return {"configured": False, "detail": "No pude revisar los horarios de Hermes.", "error": str(exc), **files}
-    if name in ((list_result.stdout or "") + (list_result.stderr or "")):
-        return {"configured": True, "exists": True, "name": name, **files}
     try:
         hour, minute = str(getattr(config, "daily_brief_time", "08:00") or "08:00").split(":", 1)
         schedule = f"{int(minute)} {int(hour)} * * *"
     except (TypeError, ValueError):
         schedule = "0 8 * * *"
+    try:
+        list_result = subprocess.run([hermes_cli, "cron", "list"], cwd=files["workspace"], env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"configured": False, "detail": "No pude revisar los horarios de Hermes.", "error": str(exc), **files}
+    list_output = (list_result.stdout or "") + (list_result.stderr or "")
+    existing = _daily_brief_job(list_output, name)
+    if existing:
+        desired_delivery = f"telegram:{status['chat_id']}"
+        if existing.get("schedule") == schedule and existing.get("deliver") == desired_delivery:
+            return {"configured": True, "exists": True, "name": name, "job_id": existing["id"], "schedule": schedule, "timezone": timezone_name, **files}
+        try:
+            edit_result = subprocess.run(
+                [
+                    hermes_cli,
+                    "cron",
+                    "edit",
+                    existing["id"],
+                    "--schedule",
+                    schedule,
+                    "--prompt",
+                    DAILY_BRIEF_PROMPT_FILE.read_text(encoding="utf-8"),
+                    "--deliver",
+                    desired_delivery,
+                    "--workdir",
+                    files["workspace"],
+                ],
+                cwd=files["workspace"],
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {"configured": False, "detail": "No pude actualizar la hora de la lectura diaria.", "error": str(exc), "name": name, "schedule": schedule, "timezone": timezone_name, **files}
+        return {
+            "configured": edit_result.returncode == 0,
+            "exists": True,
+            "updated": edit_result.returncode == 0,
+            "name": name,
+            "job_id": existing["id"],
+            "schedule": schedule,
+            "timezone": timezone_name,
+            "stdout": (edit_result.stdout or "")[-500:],
+            "stderr": (edit_result.stderr or "")[-500:],
+            **files,
+        }
+    if name in list_output:
+        return {"configured": True, "exists": True, "name": name, "schedule": schedule, "timezone": timezone_name, **files}
     try:
         result = subprocess.run(
             [
@@ -476,6 +747,7 @@ def ensure_daily_brief_cron(config):
         "exists": False,
         "name": name,
         "schedule": schedule,
+        "timezone": timezone_name,
         "stdout": (result.stdout or "")[-500:],
         "stderr": (result.stderr or "")[-500:],
         **files,

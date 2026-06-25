@@ -6,6 +6,7 @@ import urllib.error
 import urllib.request
 
 from agent_runtime import build_system_prompt
+from communication_style import communication_preference, communication_style_from_environment
 from hermes_bridge import chat as hermes_chat
 
 
@@ -71,7 +72,10 @@ def account_context(payload):
     business_profile = payload.get("business_profile", {})
     brand_guides = payload.get("brand_guides", {})
     agent_onboarding_phase = payload.get("agent_onboarding_phase", {})
+    optimization = payload.get("optimization", {})
+    communication = communication_preference(communication_style_from_environment(), payload.get("language") or "es")
     return {
+        "communication_preference": communication,
         "agent_onboarding_phase": agent_onboarding_phase if isinstance(agent_onboarding_phase, dict) else {},
         "business_profile": business_profile if isinstance(business_profile, dict) else {},
         "metrics_source": source_context,
@@ -101,6 +105,7 @@ def account_context(payload):
             "creative_references_exists": bool(brand_guides.get("creative_references_exists")),
             "creative_references": brand_guides.get("creative_references", ""),
         } if isinstance(brand_guides, dict) else {},
+        "optimization": optimization if isinstance(optimization, dict) else {},
     }
 
 
@@ -150,6 +155,7 @@ def openai_compatible_chat(config, payload):
     system_prompt = build_system_prompt(config, language)
     if language:
         system_prompt += f"\n\nRequested dashboard language: {language}"
+    system_prompt += f"\n\n{context['communication_preference']['instruction']}"
     messages = [
         {
             "role": "system",

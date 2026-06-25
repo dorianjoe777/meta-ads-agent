@@ -1,109 +1,102 @@
-import { del, get, list, put } from "@vercel/blob";
-import { createHash } from "node:crypto";
+import * as blob from "./blob-store.js";
+import * as upstash from "./upstash-store.js";
 
-const REGISTRY_PATH = "licenses/registry.json";
-const RELEASES_PATH = "releases/registry.json";
-
-function recordPath(licenseKey) {
-  const id = createHash("sha256").update(String(licenseKey || "")).digest("hex");
-  return `licenses/by-key/${id}.json`;
+function upstashConfigured() {
+  return Boolean(process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN);
 }
 
-function licenseId(licenseKey) {
-  return createHash("sha256").update(String(licenseKey || "")).digest("hex");
+function selectedBackend() {
+  const requested = String(process.env.LICENSE_STORE_BACKEND || "auto").trim().toLowerCase();
+  if (["blob", "upstash", "dual"].includes(requested)) return requested;
+  return upstashConfigured() ? "upstash" : "blob";
 }
 
-function devicePrefix(licenseKey) {
-  return `licenses/devices/${licenseId(licenseKey)}/`;
-}
-
-function devicePath(licenseKey, deviceId) {
-  const id = createHash("sha256").update(String(deviceId || "")).digest("hex");
-  return `${devicePrefix(licenseKey)}${id}.json`;
-}
-
-async function readJson(pathname, fallback) {
-  const result = await get(pathname, { access: "private" });
-  if (!result || result.statusCode !== 200) {
-    return fallback;
-  }
-  const text = await new Response(result.stream).text();
+async function dualRead(upstashRead, blobRead, usable) {
   try {
-    return JSON.parse(text);
+    const primary = await upstashRead();
+    if (usable(primary)) return primary;
   } catch {
-    return fallback;
+    // During migration, Blob remains a read fallback. Never leak dependency details.
   }
+  return blobRead();
+}
+
+async function dualWrite(upstashWrite, blobWrite) {
+  await upstashWrite();
+  await blobWrite().catch(() => {});
 }
 
 export async function readRegistry() {
-  return readJson(REGISTRY_PATH, { licenses: [] });
+  const backend = selectedBackend();
+  if (backend === "blob") return blob.readRegistry();
+  if (backend === "upstash") return upstash.readRegistry();
+  return dualRead(upstash.readRegistry, blob.readRegistry, (value) => Array.isArray(value?.licenses) && value.licenses.length > 0);
 }
 
 export async function writeRegistry(registry) {
-  await put(REGISTRY_PATH, JSON.stringify(registry, null, 2), {
-    access: "private",
-    contentType: "application/json",
-    allowOverwrite: true,
-    cacheControlMaxAge: 60
-  });
+  const backend = selectedBackend();
+  if (backend === "blob") return blob.writeRegistry(registry);
+  if (backend === "upstash") return upstash.writeRegistry(registry);
+  return dualWrite(() => upstash.writeRegistry(registry), () => blob.writeRegistry(registry));
 }
 
 export async function readReleases() {
-  return readJson(RELEASES_PATH, { channels: {} });
+  const backend = selectedBackend();
+  if (backend === "blob") return blob.readReleases();
+  if (backend === "upstash") return upstash.readReleases();
+  return dualRead(upstash.readReleases, blob.readReleases, (value) => value?.channels && Object.keys(value.channels).length > 0);
 }
 
 export async function writeReleases(registry) {
-  await put(RELEASES_PATH, JSON.stringify(registry, null, 2), {
-    access: "private",
-    contentType: "application/json",
-    allowOverwrite: true,
-    cacheControlMaxAge: 60
-  });
+  const backend = selectedBackend();
+  if (backend === "blob") return blob.writeReleases(registry);
+  if (backend === "upstash") return upstash.writeReleases(registry);
+  return dualWrite(() => upstash.writeReleases(registry), () => blob.writeReleases(registry));
 }
 
 export async function readLicense(licenseKey) {
-  const direct = await readJson(recordPath(licenseKey), null);
-  if (direct) {
-    return direct;
-  }
-  const registry = await readRegistry();
-  return registry.licenses.find((item) => item.license_key === licenseKey) || null;
+  const backend = selectedBackend();
+  if (backend === "blob") return blob.readLicense(licenseKey);
+  if (backend === "upstash") return upstash.readLicense(licenseKey);
+  return dualRead(() => upstash.readLicense(licenseKey), () => blob.readLicense(licenseKey), Boolean);
 }
 
 export async function writeLicense(record) {
-  await put(recordPath(record.license_key), JSON.stringify(record, null, 2), {
-    access: "private",
-    contentType: "application/json",
-    allowOverwrite: true,
-    cacheControlMaxAge: 60
-  });
+  const backend = selectedBackend();
+  if (backend === "blob") return blob.writeLicense(record);
+  if (backend === "upstash") return upstash.writeLicense(record);
+  return dualWrite(() => upstash.writeLicense(record), () => blob.writeLicense(record));
 }
 
 export async function deviceRegistrations(licenseKey) {
-  const result = await list({ prefix: devicePrefix(licenseKey), limit: 1000 });
-  return result.blobs || [];
+  const backend = selectedBackend();
+  if (backend === "blob") return blob.deviceRegistrations(licenseKey);
+  if (backend === "upstash") return upstash.deviceRegistrations(licenseKey);
+  return dualRead(() => upstash.deviceRegistrations(licenseKey), () => blob.deviceRegistrations(licenseKey), (value) => Array.isArray(value) && value.length > 0);
 }
 
 export async function registerDevice(licenseKey, deviceId) {
-  const pathname = devicePath(licenseKey, deviceId);
-  await put(pathname, JSON.stringify({ registered_at: new Date().toISOString() }), {
-    access: "private",
-    contentType: "application/json",
-    allowOverwrite: true,
-    cacheControlMaxAge: 60
-  });
+  const backend = selectedBackend();
+  if (backend === "blob") return blob.registerDevice(licenseKey, deviceId);
+  if (backend === "upstash") return upstash.registerDevice(licenseKey, deviceId);
+  let pathname = "";
+  await dualWrite(async () => { pathname = await upstash.registerDevice(licenseKey, deviceId); }, () => blob.registerDevice(licenseKey, deviceId));
   return pathname;
 }
 
 export async function resetDeviceRegistrations(licenseKey) {
-  const registrations = await deviceRegistrations(licenseKey);
-  if (!registrations.length) {
-    return 0;
-  }
-  await del(registrations.map((blob) => blob.pathname));
-  return registrations.length;
+  const backend = selectedBackend();
+  if (backend === "blob") return blob.resetDeviceRegistrations(licenseKey);
+  if (backend === "upstash") return upstash.resetDeviceRegistrations(licenseKey);
+  let count = 0;
+  await dualWrite(async () => { count = await upstash.resetDeviceRegistrations(licenseKey); }, () => blob.resetDeviceRegistrations(licenseKey));
+  return count;
 }
 
 export function isRegisteredDevice(blobs, licenseKey, deviceId) {
-  return blobs.some((blob) => blob.pathname === devicePath(licenseKey, deviceId));
+  return selectedBackend() === "blob" ? blob.isRegisteredDevice(blobs, licenseKey, deviceId) : upstash.isRegisteredDevice(blobs, licenseKey, deviceId);
+}
+
+export function storeBackendStatus() {
+  return { backend: selectedBackend(), upstash_configured: upstashConfigured(), blob_configured: Boolean(process.env.BLOB_READ_WRITE_TOKEN) };
 }

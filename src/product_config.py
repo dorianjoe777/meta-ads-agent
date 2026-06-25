@@ -3,6 +3,9 @@
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from communication_style import communication_style_from_environment
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -123,6 +126,15 @@ def normalize_daily_time(value, default="08:00"):
     return f"{hour:02d}:{minute:02d}"
 
 
+def normalize_timezone(value, default="UTC"):
+    raw = str(value or "").strip() or str(default or "UTC").strip() or "UTC"
+    try:
+        ZoneInfo(raw)
+    except (ZoneInfoNotFoundError, ValueError):
+        return str(default or "UTC").strip() or "UTC"
+    return raw
+
+
 def normalize_local_path(value, default):
     raw = str(value or "").strip()
     if not raw:
@@ -170,6 +182,7 @@ class AgentConfig:
     meta_graph_api_version: str
     notify_channel: str
     daily_brief_time: str
+    daily_brief_timezone: str
     telegram_bot_token: str
     telegram_chat_id: str
     creative_refresh_enabled: bool
@@ -205,6 +218,10 @@ class AgentConfig:
     hermes_require_codex_auth: bool = True
     meta_access_token_kind: str = ""
     meta_access_token_saved_at: str = ""
+    shopify_shop_domain: str = ""
+    shopify_admin_token: str = ""
+    shopify_api_version: str = "2026-04"
+    communication_style: str = "simple"
 
     @property
     def live(self):
@@ -265,6 +282,7 @@ def load_config():
         meta_graph_api_version=os.environ.get("META_GRAPH_API_VERSION", "v24.0"),
         notify_channel=os.environ.get("META_NOTIFY_CHANNEL", "dashboard").strip().lower(),
         daily_brief_time=normalize_daily_time(env_first("DAILY_BRIEF_TIME", "META_DAILY_BRIEF_TIME", default="08:00")),
+        daily_brief_timezone=normalize_timezone(env_first("DAILY_BRIEF_TIMEZONE", "TZ", default="UTC")),
         telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
         telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),
         creative_refresh_enabled=env_bool("CREATIVE_REFRESH_ENABLED", True),
@@ -298,4 +316,8 @@ def load_config():
         hermes_disabled_toolsets=os.environ.get("HERMES_DISABLED_TOOLSETS", "terminal,code_execution,image_gen"),
         hermes_use_python_library=env_bool("HERMES_USE_PYTHON_LIBRARY", True),
         hermes_require_codex_auth=env_bool("HERMES_REQUIRE_CODEX_AUTH", True),
+        shopify_shop_domain=os.environ.get("SHOPIFY_SHOP_DOMAIN", "").strip().lower(),
+        shopify_admin_token=os.environ.get("SHOPIFY_ADMIN_API_TOKEN", ""),
+        shopify_api_version=os.environ.get("SHOPIFY_API_VERSION", "2026-04"),
+        communication_style=communication_style_from_environment(),
     )

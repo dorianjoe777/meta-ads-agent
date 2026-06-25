@@ -4,7 +4,8 @@ Seller-only Vercel API for `admiroia.uboost.lat`.
 
 Required environment variables:
 
-- `BLOB_READ_WRITE_TOKEN`
+- `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` store license, registry, and device state in Upstash Redis.
+- `LICENSE_STORE_BACKEND=upstash` selects Upstash in production. `auto` uses Upstash when configured and otherwise falls back to Blob; `dual` reads from Upstash first and Blob second while writing to both for a temporary migration window.
 - `LICENSE_PRIVATE_KEY_B64`
 - `LICENSE_ADMIN_KEY`
 - `LICENSE_UNLOCK_HOURS=168`
@@ -15,6 +16,7 @@ Required environment variables:
 
 Optional environment variables:
 
+- `BLOB_READ_WRITE_TOKEN` supports legacy Vercel Blob license records and release assets. It is not required when license state is in Upstash and installers are served from GitHub Releases.
 - `RELEASE_SOURCE_ALLOWLIST=downloads.example.com,cdn.example.com`
 - `BUYER_ACCESS_URL=https://admiroia.uboost.lat/access` is the buyer portal link included in purchase emails.
 - `BUYER_EMAIL_PROVIDER=resend` sends buyer emails through Resend. This is the default.
@@ -23,7 +25,7 @@ Optional environment variables:
 - `BUYER_EMAIL_REPLY_TO=support@admiroia.uboost.lat` is optional.
 - `BUYER_EMAIL_PRODUCT_NAME="Admira IA"` is optional email copy branding.
 - `BUYER_EMAIL_AUTO_SEND=true` sends the buyer access email automatically for every newly created license. Leave unset/false if the checkout webhook will pass `send_buyer_email: true` explicitly.
-- `HOTMART_SEND_BUYER_EMAIL=true` sends the license/access email when Hotmart confirms an approved purchase. Set to `false` only for dry runs.
+- `HOTMART_SEND_BUYER_EMAIL=false` keeps purchase processing and email delivery separate. This is the recommended production setting while the buyer-email workflow is being built. Set it to `true` only to let this webhook send immediately.
 - `BUYER_EMAIL_PROVIDER=smtp`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, and `SMTP_PASS` remain supported as an optional Spacemail SMTP fallback.
 - `HOTMART_PRODUCT_ID` or `HOTMART_PRODUCT_IDS=123,456` restricts processing to specific Hotmart product IDs.
 - `HOTMART_PRODUCT_UCODE` or `HOTMART_PRODUCT_UCODES=...` restricts processing to specific Hotmart product UCODEs.
@@ -37,6 +39,24 @@ Optional environment variables:
 - `VERCEL_DNS_TOKEN` and `VERCEL_DNS_DOMAIN=uboost.lat` let the portal create those DNS records automatically while Vercel keeps hosting the access portal.
 - `VERCEL_DNS_TEAM_ID` or `VERCEL_DNS_TEAM_SLUG` is optional when the domain belongs to a Vercel team.
 - `DNS_PROVIDER=cloudflare`, `CLOUDFLARE_ZONE_ID`, `CLOUDFLARE_API_TOKEN`, and `CLOUDFLARE_DNS_PROXIED=false` remain available if the DNS zone later moves to Cloudflare.
+
+License store migration:
+
+```bash
+# Management credentials are used only to provision the database locally.
+UPSTASH_ACCOUNT_EMAIL=you@example.com \
+UPSTASH_MANAGEMENT_API_KEY=... \
+npm run provision:upstash
+
+# Load the generated .env.upstash.local and the existing Blob token, then copy
+# and verify all licenses, device registrations, registries, and release state.
+npm run migrate:upstash
+```
+
+- `.env.upstash.local` contains only database-scoped runtime credentials and must remain uncommitted.
+- The migration writes the license registry last and verifies the copied counts and every license before succeeding.
+- Do not delete the old Blob license records until Upstash has run successfully in production through a rollback window.
+- If Vercel has suspended Blob before migration can read it, seed verified license records from a trusted local/admin source and register the current GitHub Release in Upstash; never cut over to an empty registry.
 
 Routes:
 
@@ -107,9 +127,28 @@ https://admiroia.uboost.lat/api/webhooks/hotmart
 
 - Configure Hotmart to send purchase events, especially `PURCHASE_APPROVED`.
 - The endpoint validates `X-HOTMART-HOTTOK` against `HOTMART_HOTTOK`.
-- On `PURCHASE_APPROVED` / `APPROVED`, it creates or reuses one license for the Hotmart transaction and sends the buyer access email.
+- On `PURCHASE_APPROVED` / `APPROVED`, it creates an active license directly in Upstash and marks its buyer-email delivery as `pending`.
 - Hotmart retries are idempotent by `purchase.transaction`, so the same sale will not create duplicate licenses.
 - On refunded, chargeback, canceled/cancelled, or blocked notifications, a matching license is marked `revoked`.
+- Concurrent purchases are indexed independently in Redis, so a stale registry write cannot hide another buyer's license.
+- Keep `HOTMART_SEND_BUYER_EMAIL=false` to build the email workflow independently. A protected server-side email worker can list pending deliveries with `GET /api/admin/licenses?delivery=pending` and `Authorization: Bearer $LICENSE_ADMIN_KEY`; each result includes the buyer email, license key, plan, Hotmart transaction, and delivery status.
+- After an external workflow sends a license, use the protected admin API to send/record delivery rather than exposing `LICENSE_ADMIN_KEY` in a browser or client-side automation.
+
+```bash
+curl -X POST "https://admiroia.uboost.lat/api/admin/licenses" \
+  -H "Authorization: Bearer $LICENSE_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "buyer_email": "buyer@example.com",
+    "license_key": "MAO-...",
+    "action": "mark_email_sent",
+    "provider": "your-email-workflow",
+    "delivery_id": "optional-provider-id"
+  }'
+```
+
+- Configure `HOTMART_PRODUCT_ID(S)` or `HOTMART_PRODUCT_UCODE(S)` before using the same Hotmart account for unrelated products, so only Admira purchases issue licenses.
+- Temporary Upstash failures return `503 license_store_unavailable` with `retryable: true`, allowing Hotmart to retry without losing the purchase.
 
 Download portal:
 

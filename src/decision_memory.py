@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from local_store import now_iso, read_json, write_json
+from optimization_engine import campaign_objective
 from product_config import ROOT_DIR, load_config
 from security import redact_payload
 
@@ -46,12 +47,15 @@ def default_profitability_rules():
     config = load_config()
     return {
         "target_cpa": money(getattr(config, "target_cpa", 50) or 50),
+        "target_cpl": money(getattr(config, "target_cpa", 50) or 50),
+        "target_cost_per_conversation": money(getattr(config, "target_cpa", 50) or 50),
         "target_roas": 2.5,
         "min_spend_before_judging": money(getattr(config, "zero_conversion_spend", 50) or 50),
         "min_conversions_before_scaling": 3,
         "max_frequency_before_refresh": 3.0,
         "min_ctr_pct": 0.8,
         "max_cpa_multiplier": float(getattr(config, "high_cpa_multiplier", 3) or 3),
+        "contribution_margin_pct": 0.0,
         "follow_up_windows_hours": [24, 72, 168],
         "notes": "Estas reglas ayudan al agente a explicar, decidir y revisar resultados sin inventar criterios.",
     }
@@ -66,12 +70,15 @@ def load_profitability_rules():
                 continue
             rules[key] = value
     rules["target_cpa"] = money(rules.get("target_cpa"))
+    rules["target_cpl"] = money(rules.get("target_cpl"))
+    rules["target_cost_per_conversation"] = money(rules.get("target_cost_per_conversation"))
     rules["target_roas"] = float(rules.get("target_roas") or 0)
     rules["min_spend_before_judging"] = money(rules.get("min_spend_before_judging"))
     rules["min_conversions_before_scaling"] = int(float(rules.get("min_conversions_before_scaling") or 0))
     rules["max_frequency_before_refresh"] = float(rules.get("max_frequency_before_refresh") or 0)
     rules["min_ctr_pct"] = float(rules.get("min_ctr_pct") or 0)
     rules["max_cpa_multiplier"] = float(rules.get("max_cpa_multiplier") or 0)
+    rules["contribution_margin_pct"] = max(0, min(100, float(rules.get("contribution_margin_pct") or 0)))
     windows = rules.get("follow_up_windows_hours")
     if not isinstance(windows, list) or not windows:
         windows = [24, 72, 168]
@@ -83,12 +90,15 @@ def save_profitability_rules(payload):
     current = load_profitability_rules()
     numeric = {
         "target_cpa",
+        "target_cpl",
+        "target_cost_per_conversation",
         "target_roas",
         "min_spend_before_judging",
         "min_conversions_before_scaling",
         "max_frequency_before_refresh",
         "min_ctr_pct",
         "max_cpa_multiplier",
+        "contribution_margin_pct",
     }
     next_rules = dict(current)
     for key in numeric:
@@ -144,12 +154,13 @@ def evidence_for_campaign(campaign, action, rules=None):
     target_cpa = float(rules.get("target_cpa") or 0)
     target_roas = float(rules.get("target_roas") or 0)
     max_cpa = target_cpa * float(rules.get("max_cpa_multiplier") or 3)
+    objective = campaign_objective(campaign)
     signals = []
-    if snap["roas"] >= target_roas and snap["cpa"] <= target_cpa:
+    if objective == "sales" and snap["conversions"] > 0 and snap["roas"] >= target_roas and snap["cpa"] <= target_cpa:
         signals.append("gana dinero frente a tus reglas")
-    if snap["roas"] < 1.2:
+    if objective == "sales" and snap["revenue"] > 0 and snap["roas"] < 1.2:
         signals.append("ROAS bajo")
-    if target_cpa and snap["cpa"] > max_cpa:
+    if target_cpa and snap["conversions"] > 0 and snap["cpa"] > max_cpa:
         signals.append("CPA demasiado alto")
     if snap["spend"] >= float(rules.get("min_spend_before_judging") or 0) and snap["conversions"] == 0:
         signals.append("gastó sin compras")

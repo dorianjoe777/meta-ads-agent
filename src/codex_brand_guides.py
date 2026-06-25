@@ -40,6 +40,7 @@ GENERAL_FIELD_LABELS = {
     "ideal_customer": "Cliente ideal",
     "logo_path": "Logo de marca",
     "logo_notes": "Notas del logo",
+    "logo_usage": "Uso del logo",
     "personality": "Personalidad",
     "colors": "Colores principales",
     "avoid_colors": "Colores que evitar",
@@ -47,6 +48,7 @@ GENERAL_FIELD_LABELS = {
     "visual_style": "Texturas, fondos o recursos visuales",
     "energy": "Nivel de energia",
     "references": "Referencias visuales",
+    "asset_notes": "Fotos o activos reales disponibles",
     "tone": "Como debe sonar",
     "words_use": "Palabras que si usamos",
     "words_avoid": "Palabras que evitamos",
@@ -94,7 +96,11 @@ AD_BRIEF_FIELD_LABELS = {
     "variation_window": "Ventana creativa para variaciones",
     "variation_axes": "Que puede variar",
     "variation_count": "Cantidad de variaciones",
+    "concurrent_variations": "Creativos simultaneos",
+    "formats": "Formatos creativos",
+    "required_assets": "Activos necesarios",
     "creative_hypothesis": "Hipotesis creativa",
+    "success_signal": "Senal de exito",
     "agent_notes": "Notas para el agente",
 }
 
@@ -158,15 +164,140 @@ def brand_logo_context(fields):
     """Return a compact, prompt-safe description of the saved brand logo."""
     path = clean_field((fields or {}).get("logo_path", ""))
     notes = clean_field((fields or {}).get("logo_notes", ""))
-    if not path and not notes:
+    usage = clean_field((fields or {}).get("logo_usage", ""))
+    if not path and not notes and not usage:
         return ""
     parts = []
     if path:
         parts.append(f"Logo guardado: {path}")
     if notes:
         parts.append(f"Notas del logo: {notes}")
-    parts.append("Usar ese logo como referencia de marca. No inventar un logo diferente.")
+    if usage:
+        parts.append(f"Uso aprobado: {usage}")
+    parts.append(
+        "Usar ese logo como referencia de marca. Si el brief pide mostrarlo y el archivo oficial está adjunto, "
+        "reproducir ese mismo logo exactamente y de forma pixel-faithful (fiel píxel por píxel); "
+        "no inventar, redibujar ni reinterpretar uno diferente."
+    )
     return " / ".join(parts)
+
+
+def official_logo_prompt_lock(position="top-right"):
+    """Prompt contract for using an attached official logo as a locked visual asset."""
+    normalized_position = str(position or "top-right").strip().lower()
+    if normalized_position not in {"top-left", "top-right", "bottom-left", "bottom-right", "center", "top-center", "bottom-center"}:
+        normalized_position = "top-right"
+    return (
+        "LOGO OFICIAL PROTEGIDO: una de las imágenes adjuntas es el archivo oficial del comprador. "
+        "Trátalo como un activo plano bloqueado que debe aparecer una sola vez en el diseño, "
+        f"preferiblemente en {normalized_position}. Reprodúcelo exactamente como está en el archivo adjunto, "
+        "con reproducción pixel-faithful (fiel píxel por píxel). "
+        "No lo redibujes, regeneres, interpretes, simplifiques, estilices, limpies, retoques, recolorees, recortes, "
+        "estires, gires ni reemplaces. Conserva sin cambios su texto y ortografía, letras, símbolos, ilustración, "
+        "geometría, proporciones, espaciado, colores, bordes, textura y distribución interna. "
+        "No crees una versión parecida ni un segundo logo. Integra el archivo oficial con espacio limpio y legibilidad."
+    )
+
+
+def official_brand_logo_path(fields=None):
+    """Resolve only the official logo stored inside the product brand-assets folder."""
+    fields = fields or (general_fields(read_text(GENERAL_GUIDE)) if GENERAL_GUIDE.exists() else {})
+    raw = clean_field(fields.get("logo_path", ""))
+    if not raw:
+        return None
+    candidate = Path(raw).expanduser()
+    if not candidate.is_absolute():
+        candidate = ROOT_DIR / candidate
+    try:
+        candidate = candidate.resolve()
+        candidate.relative_to(BRAND_ASSET_DIR.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if candidate.suffix.lower() not in BRAND_LOGO_EXTENSIONS or not candidate.is_file():
+        return None
+    return candidate
+
+
+def safe_creative_reference_paths(paths):
+    """Allow only buyer uploads, generated creative assets, and saved brand assets."""
+    allowed_roots = (
+        BRAND_ASSET_DIR,
+        ROOT_DIR / "output",
+        ROOT_DIR / "dashboard" / "data" / "uploads",
+        ROOT_DIR / "dashboard" / "data" / "hermes-workspace" / "current" / "uploads",
+    )
+    safe = []
+    for raw in paths or []:
+        try:
+            path = Path(str(raw)).expanduser().resolve()
+        except (OSError, RuntimeError):
+            continue
+        if path.suffix.lower() not in CODEX_GENERATED_IMAGE_EXTENSIONS or not path.is_file():
+            continue
+        if any(_path_is_within(path, root) for root in allowed_roots):
+            safe.append(path)
+    return safe[:4]
+
+
+def _path_is_within(path, root):
+    try:
+        path.relative_to(Path(root).resolve())
+        return True
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def composite_official_logo(image_path, logo_path, position="top-right", background="auto"):
+    """Place the exact saved logo onto a generated image after model generation."""
+    try:
+        from PIL import Image, ImageDraw, ImageStat
+    except ImportError:
+        return {"applied": False, "error": "Pillow no está disponible para aplicar el logo oficial."}
+    image_path = Path(image_path).resolve()
+    logo_path = Path(logo_path).resolve()
+    if not image_path.is_file() or not logo_path.is_file():
+        return {"applied": False, "error": "No encontré la imagen o el logo oficial para componer."}
+    normalized_position = str(position or "top-right").strip().lower()
+    if normalized_position not in {"top-left", "top-right", "bottom-left", "bottom-right"}:
+        normalized_position = "top-right"
+    try:
+        canvas = Image.open(image_path).convert("RGBA")
+        logo = Image.open(logo_path).convert("RGBA")
+        alpha = logo.getchannel("A")
+        bbox = alpha.getbbox()
+        if bbox:
+            logo = logo.crop(bbox)
+            alpha = logo.getchannel("A")
+        max_width = max(80, int(canvas.width * 0.20))
+        max_height = max(40, int(canvas.height * 0.105))
+        scale = min(max_width / max(logo.width, 1), max_height / max(logo.height, 1), 1.0)
+        size = (max(1, int(logo.width * scale)), max(1, int(logo.height * scale)))
+        logo = logo.resize(size, Image.Resampling.LANCZOS)
+        alpha = logo.getchannel("A")
+        margin = max(18, int(min(canvas.size) * 0.035))
+        padding = max(10, int(min(canvas.size) * 0.012))
+        left = margin if normalized_position.endswith("left") else canvas.width - margin - logo.width
+        top = margin if normalized_position.startswith("top") else canvas.height - margin - logo.height
+        if str(background or "auto").lower() != "none":
+            luminance = ImageStat.Stat(logo.convert("L"), mask=alpha).mean[0]
+            plate = (8, 10, 14, 205) if luminance >= 145 else (255, 255, 255, 225)
+            draw = ImageDraw.Draw(canvas, "RGBA")
+            draw.rounded_rectangle(
+                (left - padding, top - padding, left + logo.width + padding, top + logo.height + padding),
+                radius=max(8, padding),
+                fill=plate,
+            )
+        canvas.alpha_composite(logo, (left, top))
+        output = canvas if image_path.suffix.lower() in {".png", ".webp"} else canvas.convert("RGB")
+        output.save(image_path)
+    except Exception as exc:
+        return {"applied": False, "error": str(exc)}
+    return {
+        "applied": True,
+        "logo_path": str(logo_path),
+        "position": normalized_position,
+        "background": str(background or "auto").lower(),
+    }
 
 
 def default_general_guide():
@@ -186,6 +317,7 @@ def default_general_guide():
 - Cliente ideal: {profile.get('ideal_customer') or profile.get('audience') or ''}
 - Logo de marca:
 - Notas del logo:
+- Uso del logo:
 
 ## Contexto actual
 
@@ -199,6 +331,7 @@ def default_general_guide():
 - Texturas, fondos o recursos visuales:
 - Nivel de energia: medio-alto
 - Referencias visuales:
+- Fotos o activos reales disponibles:
 
 ## Tono de comunicacion
 
@@ -364,6 +497,7 @@ Usa este archivo como la base visual y verbal de todos los creativos.
 - Cliente ideal: {fields.get('ideal_customer', '')}
 - Logo de marca: {fields.get('logo_path', '')}
 - Notas del logo: {fields.get('logo_notes', '')}
+- Uso del logo: {fields.get('logo_usage', '')}
 - Personalidad: {fields.get('personality', '')}
 
 ## Estilo visual
@@ -374,6 +508,7 @@ Usa este archivo como la base visual y verbal de todos los creativos.
 - Texturas, fondos o recursos visuales: {fields.get('visual_style', '')}
 - Nivel de energia: {fields.get('energy', '')}
 - Referencias visuales: {fields.get('references', '')}
+- Fotos o activos reales disponibles: {fields.get('asset_notes', '')}
 
 ## Tono de comunicacion
 
@@ -467,7 +602,11 @@ Usa este archivo para crear anuncios concretos, promociones puntuales y variacio
 - Ventana creativa para variaciones: {fields.get('variation_window', '')}
 - Que puede variar: {fields.get('variation_axes', '')}
 - Cantidad de variaciones: {fields.get('variation_count', '')}
+- Creativos simultaneos: {fields.get('concurrent_variations', '')}
+- Formatos creativos: {fields.get('formats', '')}
+- Activos necesarios: {fields.get('required_assets', '')}
 - Hipotesis creativa: {fields.get('creative_hypothesis', '')}
+- Senal de exito: {fields.get('success_signal', '')}
 - Notas para el agente: {fields.get('agent_notes', '')}
 
 ## Regla central
@@ -611,6 +750,8 @@ def creative_memory(product_guide="", ad_brief=""):
         "visual_style": general.get("visual_style", ""),
         "logo_path": general.get("logo_path", ""),
         "logo_notes": general.get("logo_notes", ""),
+        "logo_usage": general.get("logo_usage", ""),
+        "asset_notes": general.get("asset_notes", ""),
         "avoid": [item.strip() for item in ",".join([general.get("avoid_always", ""), product.get("avoid", "")]).split(",") if item.strip()],
         "pain": product.get("pain", ""),
         "desire": product.get("desire", ""),
@@ -623,7 +764,11 @@ def creative_memory(product_guide="", ad_brief=""):
         "variation_window": ad_fields.get("variation_window", ""),
         "variation_axes": ad_fields.get("variation_axes", ""),
         "variation_count": ad_fields.get("variation_count", ""),
+        "concurrent_variations": ad_fields.get("concurrent_variations", ""),
+        "formats": ad_fields.get("formats", ""),
+        "required_assets": ad_fields.get("required_assets", ""),
         "creative_hypothesis": ad_fields.get("creative_hypothesis", ""),
+        "success_signal": ad_fields.get("success_signal", ""),
         "creative_references": read_text(CREATIVE_REFERENCES_FILE),
     }
     return {
@@ -892,7 +1037,10 @@ def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", 
     brand_lock = (
         "Usa el pedido puntual del comprador como fuente principal. Respeta colores, tipografias, "
         "personalidad, promesa, oferta, publico, elementos bloqueados, referencias aprobadas y cosas prohibidas "
-        "cuando existan. Si existe Logo de marca, usalo como referencia visual y no inventes otro logo. "
+        "cuando existan. Si existe Logo de marca, úsalo como referencia visual y no inventes otro logo. "
+        "Si el archivo oficial está adjunto y el brief pide mostrarlo, trátalo como un activo bloqueado: "
+        "reprodúcelo exactamente y de forma pixel-faithful (fiel píxel por píxel), sin cambiar texto, símbolos, "
+        "geometría, proporciones, colores ni distribución interna. "
         "Si falta una regla de marca, usa un estilo publicitario neutral y profesional; no crees "
         "placeholders ni imagenes sobre datos faltantes."
     )
@@ -953,7 +1101,7 @@ Reglas no negociables:
 - No leas archivos, credenciales, tokens ni configuracion local.
 - No ejecutes comandos.
 - Mantener colores, tipografias y elementos importantes de marca.
-- Si hay logo guardado, mantenerlo como referencia visual. No inventar otro logo ni reemplazar sus rasgos.
+- Si hay logo guardado y su archivo oficial está adjunto para aparecer, reproducirlo exactamente como un activo bloqueado y de forma pixel-faithful (fiel píxel por píxel). No inventar otro logo ni cambiar texto, símbolos, geometría, proporciones, colores o distribución interna.
 - En modo libre, revisa el ledger y reemplaza cualquier idea que se parezca demasiado a otra.
 - Devuelve JSON valido con: variant_id, design_axis, final_image_prompt, aspect_ratios, on_image_text, why_this_is_different, safety_notes.
 
@@ -1017,10 +1165,25 @@ def codex_cli_error_message(stderr, stdout=""):
     return ""
 
 
+def codex_cli_environment(config):
+    env = os.environ.copy()
+    hermes_home = str(getattr(config, "hermes_home", "") or "").strip()
+    if hermes_home:
+        resolved = str(Path(hermes_home).expanduser())
+        env["HERMES_HOME"] = resolved
+        # Hermes stores the buyer's ChatGPT/Codex OAuth in HERMES_HOME. The
+        # standalone Codex CLI looks at CODEX_HOME, so creative planning must
+        # point Codex at the same authenticated home instead of the container's
+        # empty default Codex directory.
+        env["CODEX_HOME"] = resolved
+    return env
+
+
 def call_codex_cli(prompt, timeout=120, model=None):
     config = load_config()
     executable = getattr(config, "codex_cli", "codex")
     selected_model = str(model or getattr(config, "codex_creative_model", "") or "").strip()
+    env = codex_cli_environment(config)
     with tempfile.TemporaryDirectory(prefix="meta-ads-codex-") as isolated_dir:
         command = [
             executable, "exec",
@@ -1035,7 +1198,7 @@ def call_codex_cli(prompt, timeout=120, model=None):
             command.extend(["-m", selected_model])
         command.append(prompt)
         try:
-            completed = subprocess.run(command, cwd=isolated_dir, capture_output=True, text=True, timeout=timeout, check=False)
+            completed = subprocess.run(command, cwd=isolated_dir, env=env, capture_output=True, text=True, timeout=timeout, check=False)
         except FileNotFoundError:
             return {"ok": False, "error": "Codex CLI no esta instalado o no esta en PATH.", "command": [executable, "exec", "[isolated request]"]}
         except subprocess.TimeoutExpired:
@@ -1293,7 +1456,13 @@ def publish_generated_image(generated, output_root=None, output_name="creative",
     }
 
 
-def codex_image_generation_prompt(prompt):
+def codex_image_generation_prompt(prompt, has_references=False):
+    reference_rules = (
+        "- Usa las imágenes adjuntas como referencias visuales reales. Conserva fielmente el producto, persona, empaque o diseño que muestran.\n"
+        "- Si el pedido identifica una imagen adjunta como logo oficial y pide mostrarla, sigue su contrato de logo protegido: intégrala exactamente como un activo bloqueado, con reproducción pixel-faithful (fiel píxel por píxel), sin redibujarla ni cambiar texto, símbolos, geometría, proporciones, colores o distribución interna.\n"
+        "- Si el pedido indica que el logo se aplicará después, no dibujes ningún logo en la imagen base y deja la zona solicitada limpia.\n"
+        if has_references else ""
+    )
     return f"""$imagegen
 
 Genera una imagen real para usar como creativo de Meta Ads.
@@ -1307,13 +1476,14 @@ Reglas:
 - Debe verse como anuncio profesional, claro en menos de 2 segundos y sin promesas falsas.
 - Usa el pedido del comprador como fuente principal. Si faltan reglas de marca, usa un estilo neutral y profesional.
 - No generes placeholders ni imagenes sobre "faltan datos", "datos clave", configuracion, dashboard o errores.
+{reference_rules}- Para personas, productos, lugares, comida, interiores u otras escenas reales, usa acabado fotorealista salvo que el pedido apruebe explícitamente una ilustración.
 
 Pedido del comprador:
 {str(prompt or '').strip()}
 """
 
 
-def call_codex_image_cli_direct(prompt, timeout=360, model=None, output_root=None, output_name="creative"):
+def call_codex_image_cli_direct(prompt, timeout=360, model=None, output_root=None, output_name="creative", reference_image_paths=None):
     """Legacy fallback: generate a real image through a direct Codex CLI session."""
     request = str(prompt or "").strip()
     if not request:
@@ -1331,6 +1501,7 @@ def call_codex_image_cli_direct(prompt, timeout=360, model=None, output_root=Non
         }
     before = generated_image_index()
     started_at = time.time()
+    safe_references = safe_creative_reference_paths(reference_image_paths)
     with tempfile.TemporaryDirectory(prefix="meta-ads-codex-image-") as isolated_dir:
         isolated = Path(isolated_dir)
         last_message = isolated / "last-message.txt"
@@ -1347,7 +1518,11 @@ def call_codex_image_cli_direct(prompt, timeout=360, model=None, output_root=Non
         ]
         if selected_model:
             command.extend(["-m", selected_model])
-        command.append(codex_image_generation_prompt(request))
+        for index, reference in enumerate(safe_references, start=1):
+            attached = isolated / f"reference-{index}{reference.suffix.lower()}"
+            shutil.copy2(reference, attached)
+            command.extend(["--image", str(attached)])
+        command.append(codex_image_generation_prompt(request, has_references=bool(safe_references)))
         try:
             completed = subprocess.run(command, cwd=isolated, capture_output=True, text=True, timeout=timeout, check=False)
         except FileNotFoundError:
@@ -1385,11 +1560,21 @@ def call_codex_image_cli_direct(prompt, timeout=360, model=None, output_root=Non
     }
 
 
-def call_codex_image_cli(prompt, timeout=360, model=None, output_root=None, output_name="creative"):
+def call_codex_image_cli(prompt, timeout=360, model=None, output_root=None, output_name="creative", reference_image_paths=None):
     """Generate a real image through Hermes' ChatGPT/Codex image provider."""
     request = str(prompt or "").strip()
     if not request:
         return {"ok": False, "error": "Necesito una descripcion del creativo antes de generar la imagen."}
+    safe_references = safe_creative_reference_paths(reference_image_paths)
+    if safe_references:
+        return call_codex_image_cli_direct(
+            prompt,
+            timeout=timeout,
+            model=model,
+            output_root=output_root,
+            output_name=output_name,
+            reference_image_paths=safe_references,
+        )
     config = load_config()
     image_model = str(model or "").strip() if str(model or "").strip().startswith("gpt-image-2") else ""
     bridge = run_hermes_image_bridge(

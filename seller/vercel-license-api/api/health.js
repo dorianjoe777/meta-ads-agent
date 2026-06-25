@@ -1,3 +1,5 @@
+import { storeBackendStatus } from "../lib/store.js";
+
 export default function handler(_request, response) {
-  response.status(200).json({ ok: true, service: "miro-ai-license-api" });
+  response.status(200).json({ ok: true, service: "miro-ai-license-api", store: storeBackendStatus() });
 }

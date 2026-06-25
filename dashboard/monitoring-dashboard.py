@@ -45,15 +45,19 @@ from agent_chat import chat as agent_chat
 from audience_builder import build_audience_strategy
 from budget_optimizer import BudgetOptimizer, OptimizationStrategy, PerformanceMetrics
 from campaign_creator import CampaignCreator
+from communication_style import communication_preference, communication_style_from_environment, communication_style_is_configured, normalize_communication_style
 from codex_brand_guides import (
     BRAND_ASSET_DIR,
     BRAND_LOGO_EXTENSIONS,
     build_codex_image_prompt_package,
     call_codex_image_cli,
     call_codex_cli,
+    composite_official_logo,
     codex_cli_auth_status,
     ensure_brand_guides,
     guide_library,
+    official_logo_prompt_lock,
+    official_brand_logo_path,
     product_reference,
     save_creative_references,
     save_ad_brief,
@@ -74,15 +78,42 @@ from decision_memory import (
     recommendation_decision_evidence,
     save_profitability_rules as persist_profitability_rules,
 )
+from experiment_scheduler import (
+    experiment_review_payload,
+    normalize_insight_rows as normalize_experiment_insights,
+    run_due_reviews as run_due_experiment_reviews,
+    schedule_experiment,
+)
 from graph_executor import execute_upload_payload
 from hermes_bridge import hermes_codex_ready, hermes_environment, safe_image_paths
-from hermes_gateway import ensure_daily_brief_cron, gateway_status as hermes_gateway_status, start_gateway as start_hermes_gateway
+from hermes_gateway import (
+    ensure_daily_brief_cron,
+    ensure_experiment_review_cron,
+    ensure_experiment_review_crons,
+    ensure_weekly_research_cron,
+    gateway_status as hermes_gateway_status,
+    start_gateway as start_hermes_gateway,
+)
 from hermes_gateway import telegram_settings
 from license import activate_license, default_device_id, license_status, mark_license_install_state, normalize_license_entitlements, validate_license_key
 from local_store import now_iso, read_json, write_json, write_private_json
+from meta_insights import aggregate_campaigns as aggregate_meta_campaigns, collect_meta_snapshot, save_meta_snapshot
 from meta_upload import recent_uploads, stage_upload
-from product_config import ENV_FILE, env_bool, load_config
+from optimization_engine import (
+    anomaly_diagnostics,
+    funnel_diagnostics,
+    confirm_and_unlock as confirm_optimization_unlock,
+    load_optimization_state,
+    portfolio_recommendations,
+    reconcile_business_outcomes,
+    record_optimization_action,
+    save_optimization_state,
+    unlock_status as optimization_unlock_status,
+)
+from optimization_research import RESEARCH_FILE, load_research, save_research_item, seed_current_research
+from product_config import ENV_FILE, env_bool, load_config, normalize_daily_time, normalize_timezone
 from security import dashboard_password_configured, dashboard_token_valid, hash_dashboard_password, is_local_host, is_public_bind, redact_payload
+from shopify_connector import normalize_shop_domain, shopify_status, sync_shopify, test_connection as test_shopify_connection
 from setup_status import build_setup_status
 from social_flow_client import SocialFlowClient
 from telegram_agent import bot_request as telegram_bot_request
@@ -115,6 +146,7 @@ ONBOARDING_QUESTIONS_FILE = DATA_DIR / "Onboarding questions.md"
 AGENT_ONBOARDING_PLAN_FILE = DATA_DIR / "Agent onboarding plan.md"
 ADS_ONBOARDING_FILE = DATA_DIR / "Ads campaign onboarding.md"
 INDIVIDUAL_BINDING_FILE = DATA_DIR / "individual_business_binding.json"
+MANAGED_AD_ACCOUNTS_FILE = DATA_DIR / "managed_ad_accounts.json"
 AGENCY_SPACES_FILE = DATA_DIR / "agency_spaces.json"
 AGENCY_SPACES_DIR = DATA_DIR / "agency_spaces"
 AD_CONFIG_FILE = ROOT_DIR / "ad-config.json"
@@ -132,6 +164,7 @@ MIGRATION_POST_LIMIT_BYTES = 140 * 1024 * 1024
 MAX_MIGRATION_ARCHIVE_BYTES = 100 * 1024 * 1024
 MAX_UPDATE_ARCHIVE_BYTES = 220 * 1024 * 1024
 MAX_UPDATE_UNPACKED_BYTES = 300 * 1024 * 1024
+MAX_MANAGED_META_AD_ACCOUNTS = 5
 CURRENT_DASHBOARD_BIND_HOST = ""
 CURRENT_DASHBOARD_BIND_PORT = 0
 CREATIVE_ASSET_ROOT = OUTPUT_DIR / "creatives"
@@ -178,7 +211,14 @@ BUSINESS_DATA_FILES = [
     "onboarding_state.json",
     "chat_history.json",
     "creative_memory_wizard.json",
+    "creative_experiments.json",
+    "optimization_state.json",
+    "performance_history.json",
+    "business_outcomes.json",
+    "shopify_sync_state.json",
+    "optimization_research.json",
     "business_profile.json",
+    "managed_ad_accounts.json",
     "Onboarding questions.md",
     "Agent onboarding plan.md",
     "Ads campaign onboarding.md",
@@ -195,6 +235,9 @@ BUSINESS_ENV_KEYS = [
     "TELEGRAM_BOT_TOKEN",
     "TELEGRAM_CHAT_ID",
     "TELEGRAM_LANGUAGE",
+    "SHOPIFY_SHOP_DOMAIN",
+    "SHOPIFY_ADMIN_API_TOKEN",
+    "SHOPIFY_API_VERSION",
 ]
 BUSINESS_OUTPUT_DIRS = [
     OUTPUT_DIR / "creatives",
@@ -1048,6 +1091,230 @@ def license_entitlements():
     return normalize_license_entitlements(status)
 
 
+def clean_ad_account_id(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    return raw if raw.startswith("act_") else f"act_{raw}"
+
+
+def business_manager_info_from(value):
+    if not isinstance(value, dict):
+        return {"id": "", "name": ""}
+    business = value.get("business") if isinstance(value.get("business"), dict) else {}
+    business_manager = value.get("business_manager") if isinstance(value.get("business_manager"), dict) else {}
+    business_id = str(
+        value.get("business_id")
+        or value.get("business_manager_id")
+        or business.get("id")
+        or business_manager.get("id")
+        or ""
+    ).strip()
+    business_name = str(
+        value.get("business_name")
+        or value.get("business_manager_name")
+        or business.get("name")
+        or business_manager.get("name")
+        or ""
+    ).strip()
+    return {"id": business_id, "name": business_name}
+
+
+def managed_account_from(value):
+    if not isinstance(value, dict):
+        value = {"id": value}
+    account_id = clean_ad_account_id(value.get("id") or value.get("ad_account_id") or value.get("account_id") or value.get("accountId"))
+    if not account_id:
+        return {}
+    business = business_manager_info_from(value)
+    return {
+        "id": account_id,
+        "name": str(value.get("name") or value.get("account_name") or value.get("business_name") or account_id).strip(),
+        "currency": str(value.get("currency") or "").strip(),
+        "status": str(value.get("account_status", value.get("status", ""))).strip(),
+        "business_id": business["id"],
+        "business_name": business["name"],
+    }
+
+
+def current_configured_ad_account_id():
+    config = load_config()
+    ad_config = read_json(AD_CONFIG_FILE, {})
+    stored_ad_account_id = str(ad_config.get("account", {}).get("id", "")).strip()
+    if stored_ad_account_id in EXAMPLE_AD_ACCOUNT_IDS:
+        stored_ad_account_id = ""
+    return clean_ad_account_id(config.ad_account_id or stored_ad_account_id)
+
+
+def normalize_managed_accounts_state(state=None, seed=True):
+    raw = state if isinstance(state, dict) else read_json(MANAGED_AD_ACCOUNTS_FILE, {})
+    if not isinstance(raw, dict):
+        raw = {}
+    business = business_manager_info_from(raw.get("business_manager") if isinstance(raw.get("business_manager"), dict) else raw)
+    active_id = clean_ad_account_id(raw.get("active_ad_account_id") or raw.get("active_account_id") or "")
+    seen = set()
+    accounts = []
+    for item in raw.get("accounts") or []:
+        account = managed_account_from(item)
+        if not account or account["id"] in seen:
+            continue
+        if not business["id"] and account.get("business_id"):
+            business = {"id": account.get("business_id", ""), "name": account.get("business_name", "")}
+        if business["id"] and not account.get("business_id"):
+            account["business_id"] = business["id"]
+            account["business_name"] = business["name"]
+        seen.add(account["id"])
+        accounts.append(account)
+    should_seed_current = seed and (INDIVIDUAL_BINDING_FILE.exists() or load_onboarding_state().get("completed") or bool(raw.get("accounts")))
+    if should_seed_current and not accounts:
+        seeded_id = current_configured_ad_account_id()
+        binding = read_json(INDIVIDUAL_BINDING_FILE, {})
+        binding_business = business_manager_info_from(binding)
+        if not business["id"] and binding_business["id"]:
+            business = binding_business
+        if seeded_id:
+            accounts.append({
+                "id": seeded_id,
+                "name": seeded_id,
+                "currency": "",
+                "status": "",
+                "business_id": business["id"],
+                "business_name": business["name"],
+            })
+            active_id = active_id or seeded_id
+    if active_id and all(account["id"] != active_id for account in accounts):
+        active_id = accounts[0]["id"] if accounts else ""
+    if not active_id and accounts:
+        active_id = accounts[0]["id"]
+    return {
+        "business_manager": business,
+        "active_ad_account_id": active_id,
+        "accounts": accounts[:MAX_MANAGED_META_AD_ACCOUNTS],
+        "max_accounts": MAX_MANAGED_META_AD_ACCOUNTS,
+    }
+
+
+def write_managed_accounts_state(state):
+    normalized = normalize_managed_accounts_state(state, seed=False)
+    normalized["updated_at"] = now_iso()
+    write_json(MANAGED_AD_ACCOUNTS_FILE, normalized)
+    return normalize_managed_accounts_state(normalized, seed=False)
+
+
+def managed_ad_accounts_payload():
+    state = normalize_managed_accounts_state()
+    used = len(state["accounts"])
+    return {
+        **state,
+        "used": used,
+        "remaining": max(0, MAX_MANAGED_META_AD_ACCOUNTS - used),
+        "limit_note": "Máximo 5 cuentas publicitarias, todas bajo el mismo Business Manager.",
+    }
+
+
+def managed_account_context(account_id):
+    account_id = clean_ad_account_id(account_id)
+    if not account_id:
+        return {}
+    for account in normalize_managed_accounts_state().get("accounts", []):
+        if account.get("id") == account_id:
+            return account
+    return {"id": account_id, "name": account_id}
+
+
+def managed_metric_accounts():
+    state = normalize_managed_accounts_state()
+    accounts = [account for account in state.get("accounts", []) if account.get("id")]
+    if accounts:
+        return accounts
+    active = current_configured_ad_account_id()
+    return [{"id": active, "name": active}] if active else []
+
+
+def managed_account_limit_status(account, state=None):
+    account = managed_account_from(account)
+    state = normalize_managed_accounts_state(state, seed=False) if state is not None else normalize_managed_accounts_state()
+    if not account:
+        return {"can_select": False, "reason": "missing_account"}
+    accounts = state.get("accounts") or []
+    managed_ids = {item.get("id") for item in accounts}
+    if account["id"] in managed_ids:
+        return {"can_select": True, "reason": "already_managed"}
+    if len(accounts) >= MAX_MANAGED_META_AD_ACCOUNTS:
+        return {"can_select": False, "reason": "max_accounts"}
+    business = state.get("business_manager") or {}
+    if business.get("id"):
+        if not account.get("business_id"):
+            return {"can_select": False, "reason": "business_manager_unknown"}
+        if account.get("business_id") != business.get("id"):
+            return {"can_select": False, "reason": "business_manager_mismatch"}
+    elif accounts:
+        return {"can_select": False, "reason": "business_manager_unknown"}
+    return {"can_select": True, "reason": "same_business_manager"}
+
+
+def annotate_accounts_with_management(accounts):
+    state = normalize_managed_accounts_state()
+    managed_ids = {item.get("id") for item in state.get("accounts", [])}
+    active_id = state.get("active_ad_account_id", "")
+    annotated = []
+    for raw in accounts or []:
+        account = managed_account_from(raw)
+        if not account:
+            continue
+        status = managed_account_limit_status(account, state)
+        annotated.append({
+            **raw,
+            **account,
+            "managed": account["id"] in managed_ids,
+            "active": account["id"] == active_id,
+            **status,
+        })
+    return annotated
+
+
+def prepare_managed_ad_account_update(account, replace_business=False):
+    account = managed_account_from(account)
+    if not account:
+        raise ValueError("Missing ad account")
+    state = normalize_managed_accounts_state(seed=not replace_business)
+    if replace_business:
+        state = {"business_manager": {"id": account.get("business_id", ""), "name": account.get("business_name", "")}, "active_ad_account_id": "", "accounts": [], "max_accounts": MAX_MANAGED_META_AD_ACCOUNTS}
+    accounts = state.get("accounts") or []
+    business = state.get("business_manager") or {"id": "", "name": ""}
+    existing_index = next((idx for idx, item in enumerate(accounts) if item.get("id") == account["id"]), -1)
+    if existing_index < 0:
+        status = managed_account_limit_status(account, state)
+        if not status["can_select"]:
+            if status["reason"] == "max_accounts":
+                raise ValueError("MAX_META_ACCOUNTS: Esta instalación puede manejar máximo 5 cuentas publicitarias al mismo tiempo.")
+            if status["reason"] == "business_manager_mismatch":
+                raise ValueError("CONFIRM_BUSINESS_REPLACE: Esa cuenta pertenece a otro Business Manager. Para cambiar de negocio hay que empezar limpio y quitar las cuentas anteriores.")
+            raise ValueError("CONFIRM_BUSINESS_REPLACE: No pude confirmar que esa cuenta pertenece al mismo Business Manager. Para evitar mezclar negocios, confirma el cambio y empezamos limpio.")
+        account["added_at"] = now_iso()
+        accounts.append(account)
+    else:
+        account["added_at"] = accounts[existing_index].get("added_at") or now_iso()
+        account["updated_at"] = now_iso()
+        accounts[existing_index] = {**accounts[existing_index], **{key: value for key, value in account.items() if value or key in {"id", "name"}}}
+    if not business.get("id") and account.get("business_id"):
+        business = {"id": account.get("business_id", ""), "name": account.get("business_name", "")}
+    for item in accounts:
+        if business.get("id") and not item.get("business_id"):
+            item["business_id"] = business.get("id", "")
+            item["business_name"] = business.get("name", "")
+    return {
+        "business_manager": business,
+        "active_ad_account_id": account["id"],
+        "accounts": accounts,
+        "max_accounts": MAX_MANAGED_META_AD_ACCOUNTS,
+    }
+
+
+def upsert_managed_ad_account(account, replace_business=False):
+    return write_managed_accounts_state(prepare_managed_ad_account_update(account, replace_business=replace_business))
+
+
 def business_identity(payload=None):
     config = load_config()
     ad_config = read_json(AD_CONFIG_FILE, {})
@@ -1056,18 +1323,35 @@ def business_identity(payload=None):
     stored_ad_account_id = str(ad_config.get("account", {}).get("id", "")).strip()
     if stored_ad_account_id in EXAMPLE_AD_ACCOUNT_IDS:
         stored_ad_account_id = ""
+    managed = normalize_managed_accounts_state()
+    business = business_manager_info_from(incoming) if incoming else {"id": "", "name": ""}
+    if not business["id"]:
+        business = managed.get("business_manager") or {"id": "", "name": ""}
     return {
-        "ad_account_id": str(incoming.get("ad_account_id") or config.ad_account_id or stored_ad_account_id).strip(),
+        "ad_account_id": clean_ad_account_id(incoming.get("ad_account_id") or config.ad_account_id or stored_ad_account_id),
         "page_id": str(incoming.get("page_id") or destination.get("page_id", "")).strip(),
         "instagram_actor_id": str(incoming.get("instagram_actor_id") or destination.get("instagram_actor_id", "")).strip(),
+        "business_manager_id": business["id"],
+        "business_manager_name": business["name"],
     }
 
 
 def changed_business_fields(payload):
     current = business_identity()
+    incoming_identity = business_identity(payload)
+    incoming_has_business_manager = bool(payload.get("business_manager_id") or payload.get("business_id"))
+    same_business_manager = bool(
+        incoming_has_business_manager
+        and
+        incoming_identity.get("business_manager_id")
+        and current.get("business_manager_id")
+        and incoming_identity.get("business_manager_id") == current.get("business_manager_id")
+    )
     changes = {}
     for key in ["ad_account_id", "page_id", "instagram_actor_id"]:
-        incoming = str(payload.get(key) or "").strip() if key in payload else ""
+        incoming = clean_ad_account_id(payload.get(key)) if key == "ad_account_id" and key in payload else (str(payload.get(key) or "").strip() if key in payload else "")
+        if same_business_manager:
+            continue
         if incoming and current.get(key) and incoming != current[key]:
             changes[key] = {"from": current[key], "to": incoming}
     return changes
@@ -1130,6 +1414,10 @@ def enforce_individual_business_change(payload):
     if not changes:
         return False
     if not bool(payload.get("confirm_replace_business")):
+        current_business = business_identity()
+        incoming_business = business_identity(payload)
+        if incoming_business.get("business_manager_id") and current_business.get("business_manager_id") and incoming_business.get("business_manager_id") != current_business.get("business_manager_id"):
+            raise ValueError("CONFIRM_BUSINESS_REPLACE: Esa cuenta pertenece a otro Business Manager. Para cambiar de negocio hay que empezar limpio y quitar las cuentas anteriores.")
         raise ValueError("CONFIRM_BUSINESS_REPLACE: Tu licencia Individual administra un solo negocio. Si cambias la cuenta o página, se borrará la memoria anterior del dashboard y del agente.")
     clear_business_memory()
     clear_business_brand_guides()
@@ -1205,6 +1493,9 @@ def snapshot_workspace(space_id):
         "TELEGRAM_BOT_TOKEN": config.telegram_bot_token,
         "TELEGRAM_CHAT_ID": config.telegram_chat_id,
         "TELEGRAM_LANGUAGE": telegram_settings(config)["language"],
+        "SHOPIFY_SHOP_DOMAIN": getattr(config, "shopify_shop_domain", ""),
+        "SHOPIFY_ADMIN_API_TOKEN": getattr(config, "shopify_admin_token", ""),
+        "SHOPIFY_API_VERSION": getattr(config, "shopify_api_version", "2026-04"),
     }
     write_private_json(target / "workspace_config.json", {"env": env_values, "ad_config": read_json(AD_CONFIG_FILE, {})})
 
@@ -1233,6 +1524,9 @@ def restore_workspace(space_id):
         "TELEGRAM_BOT_TOKEN": "",
         "TELEGRAM_CHAT_ID": "",
         "TELEGRAM_LANGUAGE": "es",
+        "SHOPIFY_SHOP_DOMAIN": "",
+        "SHOPIFY_ADMIN_API_TOKEN": "",
+        "SHOPIFY_API_VERSION": "2026-04",
         **stored.get("env", {}),
     })
     write_json(AD_CONFIG_FILE, stored.get("ad_config") or {"account": {}, "creative": {"destination": {}}})
@@ -1275,9 +1569,12 @@ def workspace_usage_payload():
 def business_binding_payload():
     binding = read_json(INDIVIDUAL_BINDING_FILE, {})
     identity = business_identity()
+    managed = managed_ad_accounts_payload()
     return {
         **identity,
         **binding,
+        "managed_ad_accounts": managed,
+        "business_manager": managed.get("business_manager", {}),
         "locked": not license_entitlements().get("is_agency") and bool(binding or load_onboarding_state().get("completed")),
     }
 
@@ -1366,10 +1663,108 @@ def save_guardrails(payload):
     return {"saved": True, "values": values}
 
 
+def save_daily_brief_schedule(payload):
+    raw_time = str(payload.get("time") or "").strip()
+    normalized_time = normalize_daily_time(raw_time, default="")
+    if not normalized_time or normalized_time != raw_time:
+        raise ValueError("Elige una hora válida para la lectura diaria.")
+    raw_timezone = str(payload.get("timezone") or "").strip()
+    normalized_timezone = normalize_timezone(raw_timezone, default="")
+    if not normalized_timezone or normalized_timezone != raw_timezone:
+        raise ValueError("No pude reconocer la zona horaria de este dispositivo.")
+
+    update_env_values({
+        "DAILY_BRIEF_TIME": normalized_time,
+        "DAILY_BRIEF_TIMEZONE": normalized_timezone,
+    })
+    ad_config = read_json(AD_CONFIG_FILE, {})
+    ad_config.setdefault("reporting", {})["timezone"] = normalized_timezone
+    write_json(AD_CONFIG_FILE, ad_config)
+
+    config = load_config()
+    gateway = start_hermes_gateway(config)
+    cron = ensure_daily_brief_cron(config)
+    experiment_crons = ensure_experiment_review_crons(config)
+    research_cron = ensure_weekly_research_cron(config)
+    log_action(
+        "daily_brief_schedule_update",
+        {"time": normalized_time, "timezone": normalized_timezone, "cron_configured": bool(cron.get("configured"))},
+        "completed" if cron.get("configured") else "blocked",
+    )
+    return {
+        "saved": True,
+        "time": normalized_time,
+        "timezone": normalized_timezone,
+        "gateway": gateway,
+        "cron": cron,
+        "experiment_crons": experiment_crons,
+        "research_cron": research_cron,
+    }
+
+
 def save_profitability_rule_settings(payload):
     rules = persist_profitability_rules(payload)
     log_action("profitability_rules_update", rules, "completed")
     return {"saved": True, "rules": rules}
+
+
+def save_optimization_settings(payload):
+    state = save_optimization_state(payload)
+    log_action("optimization_settings_update", {key: value for key, value in state.items() if key not in {"last_actions", "proposal_outcomes"}}, "completed")
+    return {"saved": True, "state": state, "unlock": optimization_unlock_status(state)}
+
+
+def unlock_optimization(payload):
+    result = confirm_optimization_unlock(bool(payload.get("confirm")))
+    log_action("optimization_mode_update", {"mode": result["state"].get("mode"), "buyer_confirmed": bool(payload.get("confirm"))}, "completed")
+    return result
+
+
+def save_shopify_config(payload):
+    config = load_config()
+    disconnect = str(payload.get("disconnect") or "").lower() in {"1", "true", "yes", "on"}
+    if disconnect:
+        update_env_values({"SHOPIFY_SHOP_DOMAIN": "", "SHOPIFY_ADMIN_API_TOKEN": "", "SHOPIFY_API_VERSION": "2026-04"})
+        log_action("shopify_disconnect", {}, "completed")
+        return {"saved": True, "status": shopify_status(load_config())}
+    domain = normalize_shop_domain(payload.get("shop_domain") or getattr(config, "shopify_shop_domain", ""))
+    token = str(payload.get("admin_token") or "").strip()
+    if token and len(token) < 20:
+        raise ValueError("The Shopify Admin API token is too short.")
+    if not token:
+        token = getattr(config, "shopify_admin_token", "")
+    if not token:
+        raise ValueError("Paste a read-only Shopify Admin API token with read_orders scope.")
+    api_version = str(payload.get("api_version") or getattr(config, "shopify_api_version", "2026-04")).strip()
+    if not re.fullmatch(r"20\d{2}-(01|04|07|10)", api_version):
+        api_version = "2026-04"
+    update_env_values({"SHOPIFY_SHOP_DOMAIN": domain, "SHOPIFY_ADMIN_API_TOKEN": token, "SHOPIFY_API_VERSION": api_version})
+    log_action("shopify_config_update", {"shop_domain": domain, "token_set": True, "api_version": api_version}, "completed")
+    return {"saved": True, "status": shopify_status(load_config())}
+
+
+def test_shopify_settings(_payload=None):
+    config = load_config()
+    if not getattr(config, "shopify_shop_domain", "") or not getattr(config, "shopify_admin_token", ""):
+        raise ValueError("Connect Shopify first.")
+    result = test_shopify_connection(config.shopify_shop_domain, config.shopify_admin_token, config.shopify_api_version)
+    if not result.get("ok"):
+        raise ValueError((result.get("error") or {}).get("message") or "Shopify connection failed.")
+    log_action("shopify_connection_test", {"shop_domain": config.shopify_shop_domain, "ok": True}, "completed")
+    return result
+
+
+def sync_shopify_outcomes(_payload=None):
+    config = load_config()
+    if not getattr(config, "shopify_shop_domain", "") or not getattr(config, "shopify_admin_token", ""):
+        raise ValueError("Connect Shopify first.")
+    result = sync_shopify(config.shopify_shop_domain, config.shopify_admin_token, config.shopify_api_version)
+    if not result.get("ok"):
+        log_action("shopify_sync", {"shop_domain": config.shopify_shop_domain, "error": result.get("error")}, "blocked")
+        raise ValueError((result.get("error") or {}).get("message") or "Shopify sync failed.")
+    safe_result = {key: value for key, value in result.items() if key != "outcomes"}
+    log_action("shopify_sync", safe_result, "completed")
+    return safe_result
 
 
 def telegram_welcome_text(language="es"):
@@ -1442,6 +1837,8 @@ def save_telegram_config(payload):
             write_json(BUSINESS_PROFILE_FILE, profile)
             status["onboarding_message_ready"] = True
         status["daily_brief_cron"] = ensure_daily_brief_cron(config)
+        status["experiment_review_crons"] = ensure_experiment_review_crons(config)
+        status["research_cron"] = ensure_weekly_research_cron(config)
     log_action("telegram_config_save", {"enabled": status["enabled"], "mode": status.get("mode"), "bot_configured": status["bot_configured"], "chat_id_set": bool(status["chat_id"])}, "completed")
     return status
 
@@ -1814,7 +2211,7 @@ def normalize_insights_rows(rows, account_id=""):
     }
 
 
-def fetch_real_metrics(account_id=""):
+def fetch_real_metrics(account_id="", persist_snapshot=True):
     config = load_config()
     account_id = str(account_id or config.ad_account_id or "").strip()
     if account_id and not account_id.startswith("act_"):
@@ -1823,20 +2220,76 @@ def fetch_real_metrics(account_id=""):
         return {"ok": False, "reason": "missing_account", "message": "Missing Meta ad account."}
     if not config.meta_access_token:
         return {"ok": False, "reason": "missing_token", "message": "Missing Meta access token."}
-    result = graph_get(
-        f"/{account_id}/insights",
-        {
-            "level": "campaign",
-            "date_preset": "last_7d",
-            "fields": "campaign_id,campaign_name,spend,impressions,clicks,ctr,cpc,frequency,actions,action_values",
-            "limit": 100,
-        },
+    snapshot = collect_meta_snapshot(
+        account_id,
+        config.meta_access_token,
+        config.meta_graph_api_version or "v24.0",
+        date_preset="last_30d",
     )
-    if not result.get("ok"):
-        return {"ok": False, "reason": "graph_error", "message": graph_error_message(result), "raw": result.get("error")}
-    rows = (result.get("data") or {}).get("data") or []
-    metrics = normalize_insights_rows(rows, account_id)
-    return {"ok": True, "metrics": metrics, "rows": len(rows), "account_id": account_id}
+    campaigns = aggregate_meta_campaigns(snapshot)
+    if not campaigns and snapshot.get("data_quality", {}).get("unavailable"):
+        first_error = snapshot["data_quality"]["unavailable"][0].get("reason") or {}
+        return {"ok": False, "reason": "graph_error", "message": str(first_error.get("message") or "Meta Graph request failed"), "raw": first_error}
+    account = managed_account_context(account_id)
+    for campaign in campaigns:
+        campaign["account_id"] = account_id
+        campaign["ad_account_id"] = account_id
+        campaign["account_name"] = account.get("name") or account_id
+        if account.get("business_id"):
+            campaign["business_manager_id"] = account.get("business_id")
+            campaign["business_manager_name"] = account.get("business_name", "")
+    metrics = {
+        "timestamp": now_iso(),
+        "source": "meta_graph",
+        "source_label": "Meta Ads real data",
+        "account_id": account_id,
+        "date_preset": "last_30d",
+        "campaigns": campaigns,
+        "summary": {},
+        "data_quality": snapshot.get("data_quality"),
+    }
+    if persist_snapshot:
+        save_meta_snapshot(snapshot)
+    return {"ok": True, "metrics": metrics, "rows": len(campaigns), "account_id": account_id, "data_quality": snapshot.get("data_quality")}
+
+
+def refresh_managed_real_metrics(reason="manual"):
+    accounts = managed_metric_accounts()
+    if len(accounts) <= 1:
+        return refresh_real_metrics(accounts[0]["id"] if accounts else "", reason=reason)
+    campaigns = []
+    account_results = []
+    errors = []
+    for account in accounts:
+        account_id = account.get("id")
+        result = fetch_real_metrics(account_id, persist_snapshot=False)
+        if result.get("ok"):
+            rows = result.get("rows", 0)
+            account_results.append({"id": account_id, "name": account.get("name") or account_id, "rows": rows})
+            campaigns.extend(result.get("metrics", {}).get("campaigns", []))
+        else:
+            errors.append({"id": account_id, "name": account.get("name") or account_id, "reason": result.get("reason"), "message": result.get("message")})
+    if campaigns or account_results:
+        managed = normalize_managed_accounts_state()
+        metrics = {
+            "timestamp": now_iso(),
+            "source": "meta_graph",
+            "source_label": "Meta Ads real data · multiple accounts",
+            "account_id": managed.get("active_ad_account_id") or (accounts[0].get("id") if accounts else ""),
+            "date_preset": "last_30d",
+            "business_manager": managed.get("business_manager", {}),
+            "accounts": account_results,
+            "campaigns": campaigns,
+            "summary": {},
+            "data_quality": {"complete": not errors, "unavailable": errors, "source": "meta_graph_read_only_multi_account"},
+        }
+        save_metrics(metrics)
+        status = "completed" if not errors else "partial"
+        log_action("live_insights_pull", {"account_ids": [item.get("id") for item in accounts], "rows": len(campaigns), "errors": len(errors), "reason": reason}, status)
+        return {"ok": True, "saved": True, "source": "meta_graph", "rows": len(campaigns), "accounts": account_results, "errors": errors, "account_id": metrics["account_id"]}
+    message = errors[0]["message"] if errors else "Missing Meta ad account."
+    log_action("live_insights_pull", {"account_ids": [item.get("id") for item in accounts], "reason": reason, "errors": errors}, "blocked")
+    return {"ok": False, "saved": False, "reason": errors[0]["reason"] if errors else "missing_account", "message": message, "errors": errors}
 
 
 def refresh_real_metrics(account_id="", reason="manual"):
@@ -2068,17 +2521,23 @@ def normalize_social_accounts(payload):
     for row in rows:
         if not isinstance(row, dict):
             continue
-        raw_id = str(row.get("account_id") or row.get("id") or row.get("accountId") or "").strip()
-        if not raw_id:
+        account = managed_account_from(row)
+        if not account:
             continue
-        account_id = raw_id if raw_id.startswith("act_") else f"act_{raw_id}"
-        accounts.append({
-            "id": account_id,
-            "name": row.get("name") or row.get("account_name") or row.get("business_name") or account_id,
-            "currency": row.get("currency", ""),
-            "status": row.get("account_status", row.get("status", "")),
-        })
+        accounts.append(account)
     return accounts
+
+
+def merge_account_metadata(accounts, richer_accounts):
+    richer_by_id = {account.get("id"): account for account in richer_accounts or [] if account.get("id")}
+    merged = []
+    for account in accounts or []:
+        richer = richer_by_id.get(account.get("id"), {})
+        merged.append({
+            **account,
+            **{key: value for key, value in richer.items() if value and not account.get(key)}
+        })
+    return merged
 
 
 def normalize_graph_account_rows(rows):
@@ -2099,17 +2558,20 @@ def graph_business_account_rows(rows):
     for business in rows or []:
         if not isinstance(business, dict):
             continue
+        business_info = {"business_id": business.get("id", ""), "business_name": business.get("name", "")}
         for edge in ("owned_ad_accounts", "client_ad_accounts"):
             nested = business.get(edge) or {}
             if isinstance(nested, dict):
-                found.extend(nested.get("data") or [])
+                for account in nested.get("data") or []:
+                    if isinstance(account, dict):
+                        found.append({**account, **business_info, "account_source": edge})
     return found
 
 
 def graph_marketing_accounts():
     direct = graph_get(
         "/me/adaccounts",
-        {"fields": "id,account_id,name,currency,account_status,business{name}", "limit": 100},
+        {"fields": "id,account_id,name,currency,account_status,business{id,name}", "limit": 100},
     )
     if direct.get("ok"):
         accounts = normalize_graph_account_rows((direct.get("data") or {}).get("data") or [])
@@ -2166,14 +2628,21 @@ def social_marketing_accounts():
     cli_accounts_found = bool(accounts)
     graph_result = graph_marketing_accounts()
     graph_accounts = graph_result.get("accounts") or []
-    if not accounts and graph_accounts:
+    if accounts and graph_accounts:
+        accounts = merge_account_metadata(accounts, graph_accounts)
+    elif not accounts and graph_accounts:
         accounts = graph_accounts
+    accounts = annotate_accounts_with_management(accounts)
+    managed = managed_ad_accounts_payload()
     friendly_message = social_accounts_friendly_message(result, graph_result) if not accounts else ""
     graph_error_lower = str(graph_result.get("graph_error") or "").lower()
     graph_expired = "expired" in graph_error_lower or "oauthexception" in graph_error_lower or "code: 190" in graph_error_lower or "validating access token" in graph_error_lower
     return {
         **result,
         "accounts": accounts,
+        "managed_ad_accounts": managed,
+        "business_manager": managed.get("business_manager", {}),
+        "max_managed_accounts": MAX_MANAGED_META_AD_ACCOUNTS,
         "ok": bool(accounts) or bool(result.get("ok")) or bool(graph_result.get("ok")),
         "source": "social_cli" if cli_accounts_found else ("graph_api" if graph_accounts else "social_cli"),
         "graph_checked": bool(graph_result.get("graph_checked")),
@@ -2184,20 +2653,57 @@ def social_marketing_accounts():
     }
 
 
+def discover_account_metadata(account_id):
+    account_id = clean_ad_account_id(account_id)
+    if not account_id:
+        return {}
+    try:
+        result = social_command(["marketing", "accounts", "--json"], timeout=20)
+        cli_accounts = normalize_social_accounts(extract_json_payload(result.get("output", "")))
+    except Exception:
+        cli_accounts = []
+    try:
+        graph_accounts = graph_marketing_accounts().get("accounts") or []
+    except Exception:
+        graph_accounts = []
+    accounts = merge_account_metadata(cli_accounts, graph_accounts) if cli_accounts else graph_accounts
+    return next((account for account in accounts if account.get("id") == account_id), {"id": account_id})
+
+
 def social_set_default_account(payload):
     account_id = str(payload.get("ad_account_id") or "").strip()
     if not account_id:
         raise ValueError("Missing ad account")
-    if not account_id.startswith("act_"):
-        account_id = f"act_{account_id}"
-    replace_payload = {"ad_account_id": account_id, "confirm_replace_business": payload.get("confirm_replace_business")}
+    account_id = clean_ad_account_id(account_id)
+    account = {
+        **discover_account_metadata(account_id),
+        **{key: value for key, value in {
+            "id": account_id,
+            "name": payload.get("name"),
+            "currency": payload.get("currency"),
+            "status": payload.get("status"),
+            "business_id": payload.get("business_id") or payload.get("business_manager_id"),
+            "business_name": payload.get("business_name") or payload.get("business_manager_name"),
+        }.items() if value}
+    }
+    business = business_manager_info_from(account)
+    replace_payload = {
+        "ad_account_id": account_id,
+        "business_manager_id": business["id"],
+        "business_manager_name": business["name"],
+        "account_name": account.get("name", ""),
+        "account_currency": account.get("currency", ""),
+        "account_status": account.get("status", ""),
+        "confirm_replace_business": payload.get("confirm_replace_business"),
+    }
     replaced = enforce_individual_business_change(replace_payload)
     saved = save_setup_config({**replace_payload, "_skip_business_enforcement": True})
     saved["business_replaced"] = replaced
+    saved["managed_ad_accounts"] = managed_ad_accounts_payload()
     result = social_command(["marketing", "set-default-account", account_id], timeout=20)
     if not result.get("ok"):
-        return {**result, "ok": True, "local_saved": True, "social_cli_default_set": False, "warning": "social_cli_default_failed_but_account_saved_locally", "saved": saved, "ad_account_id": account_id}
-    return {**result, "local_saved": True, "social_cli_default_set": True, "saved": saved, "ad_account_id": account_id}
+        return {**result, "ok": True, "local_saved": True, "social_cli_default_set": False, "warning": "social_cli_default_failed_but_account_saved_locally", "saved": saved, "ad_account_id": account_id, "managed_ad_accounts": saved["managed_ad_accounts"]}
+    return {**result, "local_saved": True, "social_cli_default_set": True, "saved": saved, "ad_account_id": account_id, "managed_ad_accounts": saved["managed_ad_accounts"]}
 
 
 def set_dashboard_password(payload):
@@ -3024,6 +3530,20 @@ def connect_agent_model(payload=None):
 
 def save_setup_config(payload):
     replaced = False if payload.get("_skip_business_enforcement") else enforce_individual_business_change(payload)
+    managed_state = None
+    cleaned_ad_account_id = clean_ad_account_id(payload.get("ad_account_id")) if "ad_account_id" in payload else ""
+    if cleaned_ad_account_id:
+        managed_state = prepare_managed_ad_account_update(
+            {
+                "id": cleaned_ad_account_id,
+                "name": payload.get("account_name") or cleaned_ad_account_id,
+                "currency": payload.get("account_currency", ""),
+                "status": payload.get("account_status", ""),
+                "business_id": payload.get("business_id") or payload.get("business_manager_id"),
+                "business_name": payload.get("business_name") or payload.get("business_manager_name"),
+            },
+            replace_business=replaced,
+        )
     env_updates = {}
     text_fields = {
         "license_key": "LICENSE_KEY",
@@ -3033,7 +3553,7 @@ def save_setup_config(payload):
     for field, env_key in text_fields.items():
         if field not in payload:
             continue
-        value = str(payload.get(field) or "").strip()
+        value = cleaned_ad_account_id if field == "ad_account_id" else str(payload.get(field) or "").strip()
         if field == "license_key" and not value:
             continue
         env_updates[env_key] = value
@@ -3069,8 +3589,12 @@ def save_setup_config(payload):
     ad_config.setdefault("creative", {})
     ad_config["creative"].setdefault("destination", {})
     destination = ad_config["creative"]["destination"]
-    if "ad_account_id" in payload and str(payload.get("ad_account_id") or "").strip():
-        ad_config["account"]["id"] = str(payload.get("ad_account_id")).strip()
+    if cleaned_ad_account_id:
+        ad_config["account"]["id"] = cleaned_ad_account_id
+        if payload.get("business_manager_id") or payload.get("business_id"):
+            ad_config["account"]["business_manager_id"] = str(payload.get("business_manager_id") or payload.get("business_id") or "").strip()
+        if payload.get("business_manager_name") or payload.get("business_name"):
+            ad_config["account"]["business_manager_name"] = str(payload.get("business_manager_name") or payload.get("business_name") or "").strip()
     for field, key in {
         "page_id": "page_id",
         "instagram_actor_id": "instagram_actor_id",
@@ -3080,6 +3604,8 @@ def save_setup_config(payload):
         if field in payload:
             destination[key] = str(payload.get(field) or "").strip()
     write_json(AD_CONFIG_FILE, ad_config)
+    if managed_state:
+        managed_state = write_managed_accounts_state(managed_state)
     if str(payload.get("page_id") or "").strip() and not payload.get("_skip_meta_profile_sync"):
         page = read_meta_page_profile(payload.get("page_id"))
         suggested = {
@@ -3090,8 +3616,8 @@ def save_setup_config(payload):
             "landing_url": destination.get("url", "") or page.get("website", ""),
         }
         sync_business_profile_from_meta_assets(page, suggested, [suggested["landing_url"]] if suggested.get("landing_url") else [])
-    log_action("setup_config_save", {"updated": sorted(list(env_updates.keys()) + ["ad-config.json"]), "business_replaced": replaced}, "completed")
-    return {"saved": True, "business_replaced": replaced, "env_updated": sorted(env_updates.keys()), "ad_config": ad_config}
+    log_action("setup_config_save", {"updated": sorted(list(env_updates.keys()) + ["ad-config.json"] + (["managed_ad_accounts.json"] if managed_state else [])), "business_replaced": replaced}, "completed")
+    return {"saved": True, "business_replaced": replaced, "env_updated": sorted(env_updates.keys()), "ad_config": ad_config, "managed_ad_accounts": managed_ad_accounts_payload()}
 
 
 class WebsiteSummaryParser(HTMLParser):
@@ -3643,21 +4169,103 @@ def onboarding_interview_status(profile=None):
     return "empty"
 
 
-def branding_creatives_status():
+def branding_creative_readiness(require_product=True):
     library = guide_library()
     general = (library.get("general") or {}).get("fields") or {}
-    has_product = bool(library.get("product_count"))
-    visual_fields = [
-        general.get("colors"),
-        general.get("typography"),
-        general.get("visual_style"),
-        general.get("references"),
-        library.get("creative_references_text"),
+    missing = []
+    requirements = [
+        ("brand_core", bool(library.get("general_exists") and (general.get("brand_name") or general.get("offer"))), "¿Cómo se llama la marca y qué vende exactamente?"),
+        ("colors", bool(general.get("colors")), "¿Qué colores exactos debemos respetar, o quieres que te proponga una paleta?"),
+        ("visual_style", bool(general.get("visual_style")), "¿Cómo deben verse los anuncios: fondos, composición, energía y estilo fotográfico?"),
+        ("tone", bool(general.get("tone") or general.get("personality")), "¿Cómo debe sonar la marca: cercana, experta, directa, divertida u otra combinación?"),
+        (
+            "logo_decision",
+            bool(general.get("logo_path") or general.get("logo_notes") or general.get("logo_usage")),
+            "¿Tienes un logo oficial para subir, quieres crear uno después o prefieres trabajar sin logo?",
+        ),
+        (
+            "reference_decision",
+            bool(general.get("references") or library.get("creative_references_exists")),
+            "¿Tienes algún diseño, anuncio o marca de referencia que te guste? Puedes subirlo; si no tienes, dímelo y busco direcciones contigo.",
+        ),
+        (
+            "real_asset_decision",
+            bool(general.get("asset_notes")),
+            "¿Tienes fotos reales del producto, fundador, clientes, local o empaque para usar, o debemos generar las imágenes?",
+        ),
     ]
-    ready = bool(library.get("general_exists") and has_product and any(str(item or "").strip() for item in visual_fields))
-    if ready:
+    if general.get("logo_path"):
+        requirements.append(("logo_usage", bool(general.get("logo_usage")), "¿El logo oficial debe aparecer siempre, a veces o nunca en los anuncios, y en qué posición prefieres verlo?"))
+    if require_product:
+        product_ready = any(bool(item.get("ready")) for item in library.get("products") or [])
+        requirements.append(("product_guide", product_ready, "¿Cuál es el producto u oferta principal, para quién es y qué problema resuelve?"))
+    for key, ready, question in requirements:
+        if not ready:
+            missing.append({"key": key, "question": question})
+    return {
+        "ready": not missing,
+        "missing": missing,
+        "next_question": missing[0]["question"] if missing else "",
+        "general": general,
+        "library": library,
+    }
+
+
+def creative_strategy_readiness(require_brief=False, purpose="ad_creative"):
+    purpose = str(purpose or "ad_creative").strip().lower()
+    is_ad = purpose not in {"logo", "brand_exploration", "moodboard"}
+    branding = branding_creative_readiness(require_product=is_ad)
+    missing = list(branding["missing"])
+    profile = read_json(BUSINESS_PROFILE_FILE, {})
+    if not isinstance(profile, dict):
+        profile = {}
+    if is_ad and not str(profile.get("budget_comfort") or "").strip():
+        missing.append({"key": "test_budget", "question": "¿Qué presupuesto diario o mensual quieres usar para probar anuncios?"})
+    library = branding["library"]
+    if is_ad and require_brief:
+        briefs = library.get("ad_briefs") or []
+        brief_fields = (briefs[-1].get("fields") or {}) if briefs else {}
+        if not briefs:
+            missing.append({"key": "ad_brief", "question": "Antes de generar, ¿qué oferta, audiencia y acción debe probar este primer grupo de creativos?"})
+        else:
+            if not str(brief_fields.get("variation_count") or "").strip():
+                missing.append({"key": "variation_count", "question": "¿Cuántos creativos quieres producir y cuántos probar al mismo tiempo con ese presupuesto?"})
+            if not str(brief_fields.get("concurrent_variations") or "").strip():
+                missing.append({"key": "concurrent_variations", "question": "Con ese presupuesto, ¿cuántos creativos vamos a probar simultáneamente y cuáles quedarán en backlog?"})
+            if not str(brief_fields.get("formats") or "").strip():
+                missing.append({"key": "creative_formats", "question": "¿Qué mezcla vamos a probar: UGC, foto real, demostración, prueba, diseño estático, carrusel o video?"})
+            if not str(brief_fields.get("variation_axes") or "").strip():
+                missing.append({"key": "variation_axes", "question": "¿Qué perspectivas distintas vamos a probar: dolor, deseo, prueba, demostración, objeción u oferta?"})
+            if not str(brief_fields.get("creative_hypothesis") or "").strip():
+                missing.append({"key": "creative_hypothesis", "question": "¿Qué queremos aprender con estas variaciones para reconocer al ganador?"})
+    return {
+        "ready": not missing,
+        "purpose": purpose,
+        "missing": missing,
+        "next_question": missing[0]["question"] if missing else "",
+        "budget": str(profile.get("budget_comfort") or "").strip(),
+        "branding": branding,
+    }
+
+
+def creative_not_ready_result(reason, readiness):
+    missing = readiness.get("missing") or []
+    return {
+        "ok": False,
+        "blocked": True,
+        "reason": reason,
+        "error": readiness.get("next_question") or "Antes de crear creativos, falta completar la estrategia de marca.",
+        "readiness": readiness,
+        "missing": [item.get("key") for item in missing if isinstance(item, dict)],
+    }
+
+
+def branding_creatives_status():
+    readiness = branding_creative_readiness()
+    library = readiness["library"]
+    if readiness["ready"]:
         return "completed"
-    if library.get("general_exists") or has_product or library.get("creative_references_exists"):
+    if library.get("general_exists") or library.get("product_count") or library.get("creative_references_exists"):
         return "in_progress"
     return "pending"
 
@@ -3666,7 +4274,8 @@ def ads_campaign_onboarding_status(profile=None):
     profile = profile if isinstance(profile, dict) else read_json(BUSINESS_PROFILE_FILE, {})
     if not isinstance(profile, dict):
         profile = {}
-    if profile.get("ads_onboarding_completed_at"):
+    completion_fields = ["campaign_goal", "budget_comfort", "first_strategy"]
+    if profile.get("ads_onboarding_completed_at") and all(str(profile.get(key) or "").strip() for key in completion_fields):
         return "completed"
     fields = ["promoted_before", "previous_ads_results", "current_campaign_context", "campaign_goal", "campaign_constraints"]
     if any(str(profile.get(key) or "").strip() for key in fields) or ADS_ONBOARDING_FILE.exists():
@@ -3681,12 +4290,13 @@ def agent_onboarding_phase(profile=None):
     business = onboarding_interview_status(profile)
     branding = branding_creatives_status()
     campaigns = ads_campaign_onboarding_status(profile)
+    creative_readiness = creative_strategy_readiness(require_brief=False)
     if business != "completed":
         phase = "business_discovery"
         next_step = "Entrevistar al cliente sobre negocio, oferta, cliente ideal, etapa actual, problemas y meta de 30 dias."
     elif branding != "completed":
         phase = "branding_creatives_creation"
-        next_step = "Usar el skill branding creatives creation para definir marca, logo, productos, referencias, paletas, fuentes y reglas de creativos."
+        next_step = creative_readiness.get("next_question") or "Usar el skill branding creatives creation para definir marca, logo, productos, referencias, paletas, fuentes y reglas de creativos."
     elif campaigns != "completed":
         phase = "ads_campaign_onboarding"
         next_step = "Entender que ha promovido antes, resultados, aprendizajes, restricciones y primera estrategia de campanas."
@@ -3699,6 +4309,12 @@ def agent_onboarding_phase(profile=None):
         "branding": branding,
         "campaigns": campaigns,
         "next_step": next_step,
+        "creative_readiness": {
+            "ready": creative_readiness.get("ready", False),
+            "missing": creative_readiness.get("missing", []),
+            "next_question": creative_readiness.get("next_question", ""),
+            "budget": creative_readiness.get("budget", ""),
+        },
     }
 
 
@@ -3745,14 +4361,20 @@ Despues de explicar esto, haz una sola pregunta clara. La mejor primera pregunta
 2. branding_creatives_creation
    - Usar el skill `skills/branding-creatives-creation/SKILL.md`.
    - Buscar referencias visuales de anuncios del nicho con las herramientas web/browser disponibles.
-   - Proponer estilos, paletas, fuentes, sensaciones, uso de logo y reglas visuales.
+   - No generar anuncios todavía. Completar colores, estilo visual, tono, decisión de logo, decisión de referencias y decisión sobre fotos/activos reales.
+   - Preguntar activamente si el cliente quiere subir un logo, diseño de referencia, foto de producto, fundador, cliente, local o empaque.
+   - Proponer estilos, paletas, fuentes, sensaciones, uso de logo y reglas visuales solo después de escuchar esas respuestas.
    - Distinguir que es continuo para toda la marca y que cambia por producto, servicio o campana.
    - Si el cliente envia un logo, guardarlo en la guia general como Logo de marca y Notas del logo.
    - Si el cliente aprueba referencias encontradas, generadas o ambas, guardarlas con `save_creative_references`.
    - Guardar la guia general con `save_brand_guide` y fichas por producto con `save_product_guide`.
 
 3. ads_campaign_onboarding
-   - Entender que anuncio antes, que resultados tuvo, que cree que fallo, que quiere mantener, presupuesto, paises, ofertas y restricciones.
+   - Entender que anuncio antes, que resultados tuvo, que cree que fallo, que quiere mantener, presupuesto, CPA/CPL objetivo cuando exista, paises, ofertas y restricciones.
+   - Preguntar el presupuesto antes de proponer cuantos creativos probar simultaneamente.
+   - Preparar un portafolio de hipotesis y formatos: UGC, fotos reales, demostracion, prueba, estaticos, carrusel o movimiento segun la oferta. Image 2 es una herramienta, no la estrategia.
+   - Recomendar varias perspectivas creativas y guardar extras en backlog si el presupuesto no permite probarlas todas a la vez.
+   - Recordar el bonus incluido para crear videos UGC con ElevenLabs y preguntar si el cliente ya tiene cuenta.
    - Guardar contexto con `save_ads_onboarding`.
    - Crear briefs por promocion, campana, conjunto o anuncio con `save_ad_brief`.
 
@@ -3766,6 +4388,13 @@ Despues de explicar esto, haz una sola pregunta clara. La mejor primera pregunta
 - Negocio: {phase["business"]}
 - Branding/creativos: {phase["branding"]}
 - Campanas/anuncios previos: {phase["campaigns"]}
+
+## Preparacion creativa actual
+
+- Lista para estrategia: {"si" if phase["creative_readiness"]["ready"] else "no"}
+- Presupuesto de prueba guardado: {phase["creative_readiness"]["budget"] or "pendiente"}
+- Pendientes: {", ".join(item.get("key", "") for item in phase["creative_readiness"]["missing"]) or "ninguno"}
+- Proxima pregunta exacta: {phase["creative_readiness"]["next_question"] or "ninguna"}
 """
     AGENT_ONBOARDING_PLAN_FILE.parent.mkdir(parents=True, exist_ok=True)
     AGENT_ONBOARDING_PLAN_FILE.write_text(body, encoding="utf-8")
@@ -3987,7 +4616,8 @@ def save_ads_campaign_onboarding(payload):
         if value:
             profile[key] = value[:1600]
             changed[key] = profile[key]
-    if payload.get("ads_onboarding_complete") or payload.get("completed"):
+    completion_ready = all(str(profile.get(key) or "").strip() for key in ["campaign_goal", "budget_comfort", "first_strategy"])
+    if (payload.get("ads_onboarding_complete") or payload.get("completed")) and completion_ready:
         profile["ads_onboarding_completed_at"] = now_iso()
     profile["updated_at"] = now_iso()
     write_json(BUSINESS_PROFILE_FILE, profile)
@@ -4068,13 +4698,24 @@ def save_creative_references_memory(payload):
 
 
 def codex_creative_plan(payload):
-    config = load_config()
+    payload = payload or {}
     product_guide = str(payload.get("product_guide") or "").strip()
     request = str(payload.get("request") or "").strip()
     mode = str(payload.get("mode") or payload.get("image_mode") or "fixed").strip().lower()
     variations = payload.get("variations") or payload.get("variation_count") or 3
     if not request:
         request = "Crear una estrategia visual y prompts de imagen para Meta Ads usando las guias de marca."
+    purpose = str(payload.get("purpose") or "ad_creative").strip().lower()
+    readiness = creative_strategy_readiness(require_brief=False, purpose=purpose)
+    if not readiness["ready"]:
+        result = creative_not_ready_result("creative_strategy_not_ready", readiness)
+        log_action(
+            "codex_creative_plan",
+            {"product_guide": product_guide, "mode": mode, "variations": variations, "ok": False, "reason": result["reason"], "missing": result["missing"]},
+            "blocked",
+        )
+        return result
+    config = load_config()
     if not getattr(config, "codex_creative_enabled", False):
         result = {
             "ok": False,
@@ -4118,6 +4759,16 @@ def codex_image_generate(payload):
     request = str(payload.get("request") or payload.get("image_prompt") or payload.get("prompt") or "").strip()
     if not request:
         request = "Crear una imagen final para Meta Ads usando las guias de marca disponibles."
+    purpose = str(payload.get("purpose") or "ad_creative").strip().lower()
+    readiness = creative_strategy_readiness(require_brief=True, purpose=purpose)
+    if not readiness["ready"]:
+        result = creative_not_ready_result("creative_production_not_ready", readiness)
+        log_action(
+            "codex_image_generate",
+            {"product_guide": product_guide, "ad_brief": ad_brief, "mode": mode, "ok": False, "reason": result["reason"], "missing": result["missing"]},
+            "blocked",
+        )
+        return result
     try:
         prompt_package = build_codex_image_prompt_package(
             product_guide=product_guide,
@@ -4138,12 +4789,61 @@ def codex_image_generate(payload):
         )
         if payload.get("reference_image_summary"):
             image_prompt += f"\nReferencia visual descrita por el agente: {payload.get('reference_image_summary')}\n"
+        reference_paths = safe_image_paths({"image_paths": payload.get("reference_image_paths") or []})
+        official_logo = official_brand_logo_path()
+        brand_fields = (guide_library().get("general") or {}).get("fields") or {}
+        include_logo_value = payload.get("include_logo")
+        if include_logo_value is None:
+            request_lower = request.lower()
+            logo_usage = str(brand_fields.get("logo_usage") or "").lower()
+            include_logo = bool(
+                official_logo
+                and (
+                    "siempre" in logo_usage
+                    or "always" in logo_usage
+                    or ("logo" in request_lower and "sin logo" not in request_lower and "no logo" not in request_lower)
+                )
+            )
+        else:
+            include_logo = str(include_logo_value).strip().lower() in {"1", "true", "yes", "si", "sí", "on"}
+        logo_position = str(payload.get("logo_position") or "top-right").strip().lower()
+        logo_background = str(payload.get("logo_background") or "auto").strip().lower()
+        logo_render_mode = str(payload.get("logo_render_mode") or "protected_context").strip().lower()
+        if logo_render_mode in {"context", "direct", "model"}:
+            logo_render_mode = "protected_context"
+        elif logo_render_mode in {"composite", "overlay", "post_process"}:
+            logo_render_mode = "exact_composite"
+        if logo_render_mode not in {"protected_context", "exact_composite"}:
+            raise ValueError("logo_render_mode debe ser protected_context o exact_composite.")
+        if include_logo and not official_logo:
+            raise ValueError("El brief pide usar el logo, pero todavía no hay un archivo oficial guardado. Pide al comprador que lo suba; no generes uno parecido.")
+        if include_logo and official_logo:
+            if str(official_logo) not in reference_paths:
+                reference_paths = [*reference_paths, str(official_logo)]
+            if logo_render_mode == "protected_context":
+                image_prompt += f"\n{official_logo_prompt_lock(logo_position)}\n"
+            else:
+                image_prompt += (
+                    "\nMODO DE RESPALDO CON COMPOSICIÓN EXACTA: el logo oficial está adjunto solo como contexto de marca. "
+                    f"No dibujes, imites ni incluyas ningún logo en la imagen base. Deja una zona limpia en {logo_position} "
+                    "para que el producto aplique después el archivo oficial exacto.\n"
+                )
         result = call_codex_image_cli(
             image_prompt,
             model=load_config().codex_creative_model,
             output_root=CREATIVE_ASSET_ROOT,
             output_name=payload.get("output_name") or selected_prompt.get("variant_id") or "meta-ad-creative",
+            reference_image_paths=reference_paths,
         )
+        if result.get("ok") and include_logo and official_logo and logo_render_mode == "exact_composite" and result.get("image_path"):
+            result["official_logo"] = composite_official_logo(
+                result["image_path"],
+                official_logo,
+                position=logo_position,
+                background=logo_background,
+            )
+            if not result["official_logo"].get("applied"):
+                result["warning"] = result["official_logo"].get("error") or "No pude aplicar el logo oficial exacto."
         result["prompt_package"] = {
             "mode": prompt_package["mode"],
             "seed": prompt_package["seed"],
@@ -4153,6 +4853,10 @@ def codex_image_generate(payload):
             "ad_brief": prompt_package["ad_brief"],
             "selected_prompt": selected_prompt,
             "logo_context": prompt_package.get("logo_context", ""),
+            "reference_image_count": len(reference_paths),
+            "include_logo": bool(include_logo and official_logo),
+            "logo_render_mode": logo_render_mode if include_logo and official_logo else "none",
+            "logo_protection": "exact_prompt_lock" if include_logo and official_logo and logo_render_mode == "protected_context" else ("deterministic_composite" if include_logo and official_logo else "none"),
         }
         if result.get("asset_id"):
             result["preview_url"] = f"/api/creative-asset?id={urllib.parse.quote(str(result['asset_id']))}"
@@ -4409,6 +5113,7 @@ def load_onboarding_state():
     state.setdefault("deferred_reasons", [])
     state.setdefault("completed_at", "")
     state.setdefault("completed_by", "")
+    state.setdefault("communication_style", "")
     state.setdefault("setup_snapshot", {})
     return state
 
@@ -4417,7 +5122,37 @@ def dashboard_setup_deferred_reasons(reasons):
     return [reason for reason in (reasons or []) if reason in DASHBOARD_SETUP_DEFERRED_REASONS and reason not in AGENT_INTERVIEW_DEFERRED_REASONS]
 
 
-def complete_onboarding():
+def save_communication_style(payload):
+    raw_style = str((payload or {}).get("communication_style") or "").strip().lower()
+    style = normalize_communication_style(raw_style, default="")
+    if not style:
+        raise ValueError("Elige si prefieres palabras simples o explicaciones técnicas.")
+    update_env_values({"AGENT_COMMUNICATION_STYLE": style})
+    if ONBOARDING_FILE.exists():
+        state = load_onboarding_state()
+        state["communication_style"] = style
+        write_json(ONBOARDING_FILE, state)
+    config = load_config()
+    gateway = start_hermes_gateway(config)
+    log_action("communication_style_update", {"communication_style": style}, "completed")
+    return {
+        "saved": True,
+        "communication_preference": {
+            **communication_preference(style, (payload or {}).get("language") or "es"),
+            "configured": True,
+        },
+        "gateway": gateway,
+    }
+
+
+def complete_onboarding(payload=None):
+    payload = payload or {}
+    requested_style = str(payload.get("communication_style") or "").strip().lower()
+    communication_style = normalize_communication_style(requested_style, default="") if requested_style else communication_style_from_environment(default="")
+    if not communication_style:
+        raise ValueError("Elige si prefieres que el agente use palabras simples o explicaciones técnicas.")
+    if requested_style:
+        update_env_values({"AGENT_COMMUNICATION_STYLE": communication_style})
     config = load_config()
     if not dashboard_password_configured(config):
         raise ValueError("Create a dashboard password before finishing onboarding")
@@ -4438,7 +5173,7 @@ def complete_onboarding():
     if not business_profile.get("website_url") and not business_profile.get("social_links"):
         write_onboarding_questions_memory(business_profile, "pending")
     setup = build_setup_status()
-    insights_refresh = refresh_real_metrics(reason="onboarding_complete") if config.ad_account_id and config.meta_access_token else {"ok": False, "saved": False, "reason": "missing_account_or_token"}
+    insights_refresh = refresh_managed_real_metrics(reason="onboarding_complete") if config.ad_account_id and config.meta_access_token else {"ok": False, "saved": False, "reason": "missing_account_or_token"}
     metrics = load_metrics()
     if not insights_refresh.get("ok") and metrics.get("source") != "meta_graph":
         raise ValueError("Todavía no pude leer datos reales de Meta. Cambia tu clave o revisa sus permisos y vuelve a intentar.")
@@ -4449,6 +5184,7 @@ def complete_onboarding():
         "deferred_reasons": [],
         "completed_at": now_iso(),
         "completed_by": "dashboard",
+        "communication_style": communication_style,
         "setup_snapshot": setup.get("summary", {}),
         "first_insights_refresh": redact_payload(insights_refresh),
         "business_profile_snapshot": redact_payload(business_profile),
@@ -4470,6 +5206,9 @@ def complete_onboarding():
     else:
         save_individual_binding()
     mark_license_install_state(config, "onboarding_completed")
+    gateway = start_hermes_gateway(config)
+    state["communication_gateway_updated"] = bool(gateway.get("started")) if isinstance(gateway, dict) else bool(gateway)
+    write_json(ONBOARDING_FILE, state)
     log_action("onboarding_complete", {"setup_summary": state["setup_snapshot"], "first_insights_refresh": state["first_insights_refresh"]}, "completed")
     return state
 
@@ -4481,6 +5220,8 @@ def skip_onboarding():
     business_profile = read_json(BUSINESS_PROFILE_FILE, {})
     if not isinstance(business_profile, dict):
         business_profile = {}
+    communication_style = communication_style_from_environment()
+    update_env_values({"AGENT_COMMUNICATION_STYLE": communication_style})
     if not ONBOARDING_QUESTIONS_FILE.exists():
         write_onboarding_questions_memory(business_profile, "pending")
     missing = []
@@ -4501,10 +5242,12 @@ def skip_onboarding():
         "deferred_reasons": missing,
         "completed_at": now_iso(),
         "completed_by": "skip_and_complete_later",
+        "communication_style": communication_style,
         "setup_snapshot": build_setup_status().get("summary", {}),
         "business_profile_snapshot": redact_payload(business_profile),
     }
     write_json(ONBOARDING_FILE, state)
+    start_hermes_gateway(config)
     log_action("onboarding_skip", {"deferred_reasons": missing}, "completed")
     return state
 
@@ -4519,6 +5262,7 @@ def reset_onboarding():
         "deferred_reasons": [],
         "completed_at": "",
         "completed_by": "",
+        "communication_style": communication_style_from_environment(default=""),
         "setup_snapshot": {},
         "reset_at": now_iso(),
     }
@@ -4674,9 +5418,10 @@ def enrich_campaign(campaign):
     campaign.setdefault("daily_budget", 100)
     campaign.setdefault("frequency", 1.0)
     campaign["ctr"] = (clicks / impressions * 100) if impressions else float(campaign.get("ctr", 0))
-    campaign["cpa"] = (spend / conversions) if conversions else float(campaign.get("cpa", 0) or 9999)
+    campaign["cpa"] = (spend / conversions) if conversions else 0.0
     campaign["cpc"] = (spend / clicks) if clicks else float(campaign.get("cpc", 0))
     campaign["roas"] = (revenue / spend) if spend else float(campaign.get("roas", 0))
+    campaign.setdefault("previous_cpa", campaign["cpa"])
     campaign.setdefault("previous_ctr", campaign["ctr"] * 1.05)
     campaign.setdefault("previous_cpc", campaign["cpc"] * 0.92 if campaign["cpc"] else 0)
     campaign.setdefault("trend", [round(campaign["roas"] * v, 2) for v in [0.82, 0.88, 0.93, 0.96, 1.0, 1.03, 1.0]])
@@ -4686,15 +5431,19 @@ def enrich_campaign(campaign):
 
 
 def classify_campaign(campaign):
-    if campaign.get("status") == "paused":
+    if str(campaign.get("status") or "").lower() == "paused":
         return "paused"
     ctr_drop = pct_change(campaign.get("ctr"), campaign.get("previous_ctr"))
     cpc_rise = pct_change(campaign.get("cpc"), campaign.get("previous_cpc"))
-    if campaign.get("frequency", 0) > 3.0 or ctr_drop <= -20 or cpc_rise >= 30:
+    cpa_rise = pct_change(campaign.get("cpa"), campaign.get("previous_cpa"))
+    deterioration = ctr_drop <= -20 or cpc_rise >= 30 or cpa_rise >= 25
+    frequency_with_deterioration = campaign.get("frequency", 0) > 3 and (ctr_drop <= -10 or cpc_rise >= 15 or cpa_rise >= 15)
+    if deterioration or frequency_with_deterioration:
         return "fatigue"
-    if campaign.get("roas", 0) >= 3 and campaign.get("cpa", 9999) <= TARGET_CPA:
+    decision = portfolio_recommendations([campaign], load_profitability_rules())[0]
+    if decision.get("decision") == "scale":
         return "winning"
-    if campaign.get("roas", 0) < 1.2 or campaign.get("cpa", 0) > TARGET_CPA * 3:
+    if decision.get("decision") in {"reduce", "pause_candidate"}:
         return "losing"
     return "neutral"
 
@@ -4710,7 +5459,7 @@ def load_metrics():
         metrics = empty_meta_metrics("missing")
     metrics.setdefault("source", "cached")
     metrics.setdefault("source_label", "Cached dashboard data")
-    metrics["campaigns"] = [enrich_campaign(c) for c in metrics.get("campaigns", [])]
+    metrics["campaigns"] = [enrich_campaign({**c, "data_source": c.get("data_source") or metrics.get("source", "")}) for c in metrics.get("campaigns", [])]
     metrics["summary"] = build_summary(metrics["campaigns"])
     return metrics
 
@@ -4719,7 +5468,7 @@ def save_metrics(metrics):
     metrics["timestamp"] = now_iso()
     metrics.setdefault("source", "manual")
     metrics.setdefault("source_label", "Dashboard data")
-    metrics["campaigns"] = [enrich_campaign(c) for c in metrics.get("campaigns", [])]
+    metrics["campaigns"] = [enrich_campaign({**c, "data_source": c.get("data_source") or metrics.get("source", "")}) for c in metrics.get("campaigns", [])]
     metrics["summary"] = build_summary(metrics["campaigns"])
     write_json(METRICS_FILE, metrics)
 
@@ -4746,36 +5495,38 @@ def build_summary(campaigns):
 
 
 def calculate_recommendations(campaigns):
-    optimizer = BudgetOptimizer()
     rules = load_profitability_rules()
     config = load_config()
+    state = load_optimization_state()
     recommendations = []
-    for campaign in campaigns:
-        metrics = PerformanceMetrics(
-            spend=float(campaign.get("spend", 0)),
-            impressions=int(campaign.get("impressions", 0)),
-            clicks=int(campaign.get("clicks", 0)),
-            conversions=int(campaign.get("conversions", 0)),
-            revenue=float(campaign.get("revenue", 0)),
-            cost_per_result=float(campaign.get("cpa", 0)),
-            roas=float(campaign.get("roas", 0)),
-        )
-        current_budget = float(campaign.get("daily_budget", 100))
-        rec = optimizer.calculate_optimal_budget(metrics, current_budget, OptimizationStrategy.PERFORMANCE_BASED)
-        change = rec.recommended_budget - current_budget
-        change_pct = (change / current_budget * 100) if current_budget else 0
+    campaigns_by_id = {str(c.get("id") or c.get("campaign_id")): c for c in campaigns}
+    for decision in portfolio_recommendations(campaigns, rules, state):
+        campaign = campaigns_by_id.get(str(decision.get("campaign_id")), {})
+        current_budget = float(decision.get("current_budget", 0))
+        recommended_budget = float(decision.get("recommended_budget", current_budget))
+        change = recommended_budget - current_budget
+        change_pct = float(decision.get("change_pct", 0))
         recommendation = {
-            "campaign_id": campaign.get("id"),
-            "campaign_name": campaign.get("name"),
+            "campaign_id": decision.get("campaign_id"),
+            "campaign_name": decision.get("campaign_name"),
             "current_budget": money(current_budget),
-            "recommended_budget": money(rec.recommended_budget),
+            "recommended_budget": money(recommended_budget),
             "change": money(change),
             "change_pct": round(change_pct, 1),
-            "confidence": round(float(rec.confidence), 1),
-            "reason": rec.reasoning,
-            "requires_approval": abs(change_pct) > float(config.approval_required_over_pct or 20),
+            "confidence": 90 if decision.get("ready") else 0,
+            "reason": decision.get("reason"),
+            "proposal_only": decision.get("shadow_mode", True) and decision.get("action") != "observe",
+            "requires_approval": decision.get("action") != "observe" and not decision.get("shadow_mode", True) and (
+                config.autonomy_mode == "supervised" or abs(change_pct) > float(config.approval_required_over_pct or 20)
+            ),
             "roas": round(campaign.get("roas", 0), 2),
             "health": campaign.get("health"),
+            "decision": decision.get("decision"),
+            "action": decision.get("action"),
+            "objective": decision.get("objective"),
+            "evidence_gate": decision.get("evidence_gate"),
+            "mutation_allowed": decision.get("mutation_allowed", False),
+            "shadow_mode": decision.get("shadow_mode", True),
         }
         recommendation["decision_evidence"] = recommendation_decision_evidence(campaign, recommendation, rules)
         recommendations.append(recommendation)
@@ -4787,13 +5538,17 @@ def fatigue_items(campaigns):
     for campaign in campaigns:
         ctr_drop = pct_change(campaign.get("ctr"), campaign.get("previous_ctr"))
         cpc_rise = pct_change(campaign.get("cpc"), campaign.get("previous_cpc"))
+        cpa_rise = pct_change(campaign.get("cpa"), campaign.get("previous_cpa"))
         reasons = []
-        if campaign.get("frequency", 0) > 3:
+        deterioration = ctr_drop <= -20 or cpc_rise >= 30 or cpa_rise >= 25
+        if campaign.get("frequency", 0) > 3 and deterioration:
             reasons.append(f"frequency {campaign.get('frequency'):.1f}")
         if ctr_drop <= -20:
             reasons.append(f"CTR {abs(ctr_drop):.0f}% down")
         if cpc_rise >= 30:
             reasons.append(f"CPC {cpc_rise:.0f}% up")
+        if cpa_rise >= 25:
+            reasons.append(f"CPA {cpa_rise:.0f}% up")
         if reasons:
             items.append(
                 {
@@ -4886,6 +5641,15 @@ def build_daily_brief(metrics, recommendations, business_profile=None):
     fatigue = fatigue_items(campaigns)
     projected_spend = summary.get("active_budget", 0)
     action_summary = build_action_summary(recommendations, [], [], fatigue)
+    optimization_state = load_optimization_state()
+    optimization = {
+        "mode": optimization_state.get("mode", "shadow"),
+        "unlock": optimization_unlock_status(optimization_state),
+        "reconciliation": reconcile_business_outcomes(metrics),
+        "anomalies": anomaly_diagnostics(metrics),
+        "funnel": funnel_diagnostics(),
+        "data_quality": metrics.get("data_quality", {}),
+    }
     business_prefix = f"{business_context.get('summary')} · {business_context.get('next_step')} · " if business_context.get("ready") else ""
     return {
         "generated_at": now_iso(),
@@ -4916,6 +5680,7 @@ def build_daily_brief(metrics, recommendations, business_profile=None):
         "losers": [{"name": c["name"], "roas": round(c["roas"], 2), "cpa": money(c["cpa"])} for c in losers[:4]],
         "pending_actions": [r for r in recommendations if r["requires_approval"]],
         "action_summary": action_summary,
+        "optimization": optimization,
     }
 
 
@@ -4957,6 +5722,7 @@ def scheduled_brief_or_live(metrics, recommendations, business_profile=None):
         "losers": [{"name": c.get("name"), "roas": round(c.get("roas", 0), 2), "cpa": money(c.get("cpa", 0))} for c in brief.get("losers", [])[:4]],
         "pending_actions": [r for r in brief.get("recommendations", []) if r.get("requires_approval")],
         "action_summary": brief.get("action_summary") or fallback.get("action_summary"),
+        "optimization": brief.get("optimization") or fallback.get("optimization"),
     }
 
 
@@ -4982,6 +5748,14 @@ def campaign_by_id(metrics, campaign_id):
         if campaign.get("id") == campaign_id:
             return campaign
     return None
+
+
+def assert_campaign_uses_active_account(config, campaign):
+    campaign_account = clean_ad_account_id(campaign.get("ad_account_id") or campaign.get("account_id") or "")
+    active_account = clean_ad_account_id(getattr(config, "ad_account_id", "") or "")
+    if campaign_account and active_account and campaign_account != active_account:
+        account_name = campaign.get("account_name") or campaign_account
+        raise ValueError(f"Esa campaña pertenece a {account_name}. Primero cambia la cuenta activa a {campaign_account} en Configuración para evitar tocar la cuenta equivocada.")
 
 
 def should_stage_action(config, action_type, payload):
@@ -5030,12 +5804,14 @@ def apply_action(payload):
     config = load_config()
     action = payload.get("action")
     if action == "refresh_insights":
-        return refresh_real_metrics(reason="dashboard_action")
+        return refresh_managed_real_metrics(reason="dashboard_action")
     metrics = load_metrics()
     campaign_id = payload.get("campaign_id")
     campaign = campaign_by_id(metrics, campaign_id)
     if action in {"pause", "resume", "adjust_budget", "apply_recommendation"} and not campaign:
         raise ValueError("Campaign not found")
+    if action in {"pause", "resume", "adjust_budget", "apply_recommendation"}:
+        assert_campaign_uses_active_account(config, campaign)
 
     if action == "pause":
         action_payload = {"campaign_id": campaign_id, "name": campaign.get("name"), "spend": campaign.get("spend", 0)}
@@ -5045,6 +5821,7 @@ def apply_action(payload):
             return add_pending("pause_campaign", action_payload)
         execute_autopilot_action(config, "pause_campaign", campaign, action_payload)
         campaign["status"] = "paused"
+        record_optimization_action(campaign_id)
         save_metrics(metrics)
         return log_action("pause_campaign", action_payload, "completed")
 
@@ -5056,6 +5833,7 @@ def apply_action(payload):
             return add_pending("resume_campaign", action_payload)
         execute_autopilot_action(config, "resume_campaign", campaign, action_payload)
         campaign["status"] = "active"
+        record_optimization_action(campaign_id)
         save_metrics(metrics)
         return log_action("resume_campaign", action_payload, "completed")
 
@@ -5070,6 +5848,7 @@ def apply_action(payload):
             return add_pending("budget_change", action_payload)
         execute_autopilot_action(config, "budget_change", campaign, action_payload)
         campaign["daily_budget"] = money(new_budget)
+        record_optimization_action(campaign_id)
         save_metrics(metrics)
         return log_action("budget_change", action_payload, "completed")
 
@@ -5160,11 +5939,22 @@ def create_audience_strategy(payload, language="es"):
 def run_daily_agent():
     config = load_config()
     if config.ad_account_id and config.meta_access_token:
-        refresh_real_metrics(reason="daily_agent_before_brief")
+        refresh_managed_real_metrics(reason="daily_agent_before_brief")
     report_path, report = run_scheduled_daily()
     actions = read_json(ACTIONS_FILE, [])
     action = actions[0] if actions else log_action("daily_agent_run", {"report_path": str(report_path)}, "completed")
     return action, report
+
+
+def live_experiment_insight_rows():
+    """Read ad-level insights for experiment comparisons without mutating Meta."""
+    config = load_config()
+    if not (config.ad_account_id or config.meta_access_token):
+        return []
+    result = SocialFlowClient(config).insights("last_7d", "ad")
+    if not result.get("data"):
+        return []
+    return normalize_experiment_insights(result.get("data"), "ad")
 
 
 def export_csv():
@@ -5263,18 +6053,39 @@ CREATIVE_MEMORY_WIZARD_SPECS = {
             },
             {
                 "key": "tone",
+                "required": True,
                 "es": "¿Cómo debe sonar la marca? Por ejemplo: cercana, experta, elegante, directa, divertida.",
                 "en": "How should the brand sound? For example: warm, expert, elegant, direct, playful.",
             },
             {
                 "key": "colors",
+                "required": True,
                 "es": "¿Qué colores o sensación visual debe respetar el agente al crear anuncios?",
                 "en": "What colors or visual feeling should the agent respect when creating ads?",
             },
             {
                 "key": "visual_style",
+                "required": True,
                 "es": "¿Cómo deben verse los anuncios? Puedes contarme sobre colores, fondos, fotos o ejemplos que te gustan.",
                 "en": "How should the creatives look? Think backgrounds, photos, style, composition, or references.",
+            },
+            {
+                "key": "logo_usage",
+                "required": True,
+                "es": "¿Tienes un logo oficial para subir, quieres crear uno después o prefieres trabajar sin logo? Si existe, dime si debe aparecer siempre, a veces o nunca.",
+                "en": "Do you have an official logo to upload, want to create one later, or prefer no logo? If it exists, should it appear always, sometimes, or never?",
+            },
+            {
+                "key": "references",
+                "required": True,
+                "es": "¿Tienes un diseño, anuncio o marca de referencia que te guste? Puedes subirlo. Si no tienes, responde: no tengo referencia.",
+                "en": "Do you have a design, ad, or brand reference you like? You can upload it. If not, say: I have no reference.",
+            },
+            {
+                "key": "asset_notes",
+                "required": True,
+                "es": "¿Tienes fotos reales del producto, fundador, clientes, local o empaque, o debemos generar las imágenes?",
+                "en": "Do you have real product, founder, customer, location, or packaging photos, or should the images be generated?",
             },
             {
                 "key": "avoid_always",
@@ -5409,13 +6220,37 @@ CREATIVE_MEMORY_WIZARD_SPECS = {
             },
             {
                 "key": "variation_count",
+                "required": True,
                 "es": "¿Cuántas imágenes o textos quieres que prepare? Puedes pedir solo uno.",
                 "en": "How many images or texts would you like prepared? You can request just one.",
             },
             {
+                "key": "concurrent_variations",
+                "required": True,
+                "es": "Con tu presupuesto, ¿cuántos de esos creativos probaremos al mismo tiempo y cuántos quedarán para después?",
+                "en": "With your budget, how many of those creatives will run at the same time and how many stay in the backlog?",
+            },
+            {
+                "key": "formats",
+                "required": True,
+                "es": "¿Qué formatos vamos a probar? Por ejemplo: UGC, foto real, demostración, prueba, estático, carrusel o video.",
+                "en": "Which formats will we test? For example: UGC, real photo, demonstration, proof, static, carousel, or video.",
+            },
+            {
+                "key": "required_assets",
+                "es": "¿Qué fotos, videos, logos, testimonios o productos necesitamos para producirlos?",
+                "en": "Which photos, videos, logos, testimonials, or products are needed to produce them?",
+            },
+            {
                 "key": "creative_hypothesis",
+                "required": True,
                 "es": "Si vas a comparar opciones, ¿qué te gustaría descubrir? Si no, di \"saltar\".",
                 "en": "If you will compare options, what would you like to learn? Otherwise, say \"skip\".",
+            },
+            {
+                "key": "success_signal",
+                "es": "¿Qué señal dirá que una idea merece seguir: CTR, costo por lead, compras u otra métrica?",
+                "en": "Which signal will tell us an idea deserves more spend: CTR, cost per lead, purchases, or another metric?",
             },
         ],
     },
@@ -5920,6 +6755,7 @@ def run_daily_check_action(payload, action_type="run_daily_check"):
         True,
         chat_reply(payload, "Listo. Ejecuté la revisión diaria y actualicé resumen, recomendaciones y aprobaciones.", "Done. I ran the daily check and refreshed the brief, recommendations, and approvals."),
         action_id=action.get("id"),
+        brief=redact_payload((report or {}).get("brief", {})),
     )
 
 
@@ -6175,6 +7011,120 @@ def handle_run_daily_check_tool(arguments, chat_payload, tool):
     return run_daily_check_action(chat_payload, tool)
 
 
+def handle_schedule_experiment_review_tool(arguments, chat_payload, tool):
+    try:
+        experiment = schedule_experiment(
+            arguments,
+            insight_rows=live_experiment_insight_rows(),
+            campaign_metrics=load_metrics(),
+        )
+        cron = ensure_experiment_review_cron(load_config(), experiment)
+    except ValueError as exc:
+        return agent_action_result(
+            tool,
+            False,
+            chat_reply(chat_payload, f"No puedo programar el seguimiento todavía: {exc}", f"I cannot schedule the follow-up yet: {exc}"),
+            blocked=True,
+            reason="missing_experiment_detail",
+        )
+    if not cron.get("configured"):
+        return agent_action_result(
+            tool,
+            False,
+            chat_reply(
+                chat_payload,
+                f"Guardé el seguimiento de {experiment.get('name')}, pero no pude crear el recordatorio en Hermes: {cron.get('detail') or 'revisa Telegram y Hermes'}. Cuando la conexión esté lista lo volveré a programar.",
+                f"I saved the follow-up for {experiment.get('name')}, but I could not create the Hermes reminder: {cron.get('detail') or 'check Telegram and Hermes'}. I will reconcile it when the connection is ready.",
+            ),
+            blocked=True,
+            reason="experiment_cron_unavailable",
+            experiment=experiment,
+            cron=cron,
+        )
+    return agent_action_result(
+        tool,
+        True,
+        chat_reply(
+            chat_payload,
+            f"Programé el seguimiento de {experiment.get('name')}. Primero revisaré entrega y después esperaré evidencia suficiente según el presupuesto; no declararé ganador antes de tiempo.",
+            f"I scheduled the follow-up for {experiment.get('name')}. I will check delivery first, then wait for enough budget-adjusted evidence before declaring a winner.",
+        ),
+        experiment=experiment,
+        cron=cron,
+    )
+
+
+def handle_list_experiment_reviews_tool(arguments, chat_payload, tool):
+    reviews = experiment_review_payload(load_metrics())
+    return agent_action_result(
+        tool,
+        False,
+        chat_reply(
+            chat_payload,
+            f"Hay {reviews.get('active_count', 0)} experimento(s) en seguimiento y {reviews.get('decision_ready_count', 0)} con decisión lista.",
+            f"There are {reviews.get('active_count', 0)} experiment(s) under review and {reviews.get('decision_ready_count', 0)} with a decision ready.",
+        ),
+        reviews=reviews,
+    )
+
+
+def handle_run_due_experiment_reviews_tool(arguments, chat_payload, tool):
+    result = run_due_experiment_reviews(
+        insight_rows=live_experiment_insight_rows(),
+        campaign_metrics=load_metrics(),
+        experiment_id=str(arguments.get("experiment_id") or "").strip(),
+    )
+    cron_results = []
+    config = load_config()
+    for experiment in result.get("experiments", []):
+        if any(item.get("experiment_id") == experiment.get("id") for item in result.get("reviews", [])):
+            cron_results.append(ensure_experiment_review_cron(config, experiment))
+    if not result.get("reviewed_count"):
+        reply = chat_reply(
+            chat_payload,
+            "No había una revisión vencida. Mantengo la próxima fecha programada y no sacaré conclusiones antes de tiempo.",
+            "No review was due. I am keeping the next scheduled checkpoint and will not draw conclusions early.",
+        )
+    else:
+        first = result["reviews"][0]
+        reply = first.get("summary") or chat_reply(chat_payload, "Revisión completada.", "Review completed.")
+        failed_cron = next((item for item in cron_results if item.get("needed") and not item.get("configured")), None)
+        if failed_cron:
+            reply += chat_reply(
+                chat_payload,
+                f" No pude dejar la próxima revisión en Hermes: {failed_cron.get('detail') or 'revisa la conexión de Telegram'}.",
+                f" I could not schedule the next Hermes review: {failed_cron.get('detail') or 'check the Telegram connection'}.",
+            )
+    return agent_action_result(tool, True, reply, result=result, cron=cron_results)
+
+
+def handle_save_optimization_research_tool(arguments, chat_payload, tool):
+    try:
+        item = save_research_item(arguments)
+    except ValueError as exc:
+        return agent_action_result(tool, False, str(exc), blocked=True, reason="invalid_research_item")
+    return agent_action_result(
+        tool,
+        True,
+        chat_reply(
+            chat_payload,
+            "Guardé la fuente como hipótesis de prueba. No puede ejecutar cambios de gasto por sí sola.",
+            "I saved the source as a test hypothesis. It cannot trigger spend changes by itself.",
+        ),
+        item=item,
+    )
+
+
+def handle_list_optimization_research_tool(arguments, chat_payload, tool):
+    research = load_research(include_expired=bool(arguments.get("include_expired")))
+    return agent_action_result(
+        tool,
+        False,
+        chat_reply(chat_payload, f"Hay {len(research.get('items', []))} fuente(s) de optimización vigentes.", f"There are {len(research.get('items', []))} active optimization source(s)."),
+        research=research,
+    )
+
+
 def handle_export_report_tool(arguments, chat_payload, tool):
     return export_report_action(chat_payload, tool)
 
@@ -6345,7 +7295,7 @@ def handle_save_creative_references_tool(arguments, chat_payload, tool):
 
 
 def handle_save_ads_onboarding_tool(arguments, chat_payload, tool):
-    if not any(arguments.get(key) for key in ["promoted_before", "previous_ads_results", "campaign_goal", "first_strategy", "current_campaign_context"]):
+    if not any(arguments.get(key) for key in ["promoted_before", "previous_ads_results", "campaign_goal", "first_strategy", "current_campaign_context", "budget_comfort", "countries", "offers_to_promote", "campaign_constraints"]):
         return agent_action_result(
             tool,
             False,
@@ -6390,6 +7340,17 @@ def handle_save_ad_brief_tool(arguments, chat_payload, tool):
 
 
 def handle_codex_creative_plan_tool(arguments, chat_payload, tool):
+    purpose = str((arguments or {}).get("purpose") or "ad_creative").strip().lower()
+    readiness = creative_strategy_readiness(require_brief=False, purpose=purpose)
+    if not readiness["ready"]:
+        return agent_action_result(
+            tool,
+            False,
+            readiness["next_question"],
+            blocked=True,
+            reason="creative_strategy_not_ready",
+            result={"readiness": readiness},
+        )
     image_paths = safe_image_paths(chat_payload)
     if image_paths:
         arguments = dict(arguments)
@@ -6414,9 +7375,21 @@ def handle_codex_creative_plan_tool(arguments, chat_payload, tool):
 
 
 def handle_codex_image_generate_tool(arguments, chat_payload, tool):
+    purpose = str((arguments or {}).get("purpose") or "ad_creative").strip().lower()
+    readiness = creative_strategy_readiness(require_brief=True, purpose=purpose)
+    if not readiness["ready"]:
+        return agent_action_result(
+            tool,
+            False,
+            readiness["next_question"],
+            blocked=True,
+            reason="creative_production_not_ready",
+            result={"readiness": readiness},
+        )
     image_paths = safe_image_paths(chat_payload)
     if image_paths:
         arguments = dict(arguments)
+        arguments["reference_image_paths"] = image_paths
         arguments["reference_image_summary"] = (
             str(arguments.get("reference_image_summary") or "").strip()
             or "El comprador adjunto una imagen de referencia. Usa lo que el agente entendio visualmente como guia; no dependas de que Codex lea archivos locales."
@@ -6484,6 +7457,11 @@ AGENT_TOOL_HANDLERS = {
     "approval_decision": handle_agent_approval_tool,
     "review_live_readiness": handle_review_live_readiness_tool,
     "run_daily_check": handle_run_daily_check_tool,
+    "schedule_experiment_review": handle_schedule_experiment_review_tool,
+    "list_experiment_reviews": handle_list_experiment_reviews_tool,
+    "run_due_experiment_reviews": handle_run_due_experiment_reviews_tool,
+    "save_optimization_research": handle_save_optimization_research_tool,
+    "list_optimization_research": handle_list_optimization_research_tool,
     "export_report": handle_export_report_tool,
     "create_campaign_stack": handle_create_campaign_stack_tool,
     "build_audience_strategy": handle_build_audience_strategy_tool,
@@ -6548,7 +7526,11 @@ def dashboard_payload():
     recommendations = calculate_recommendations(metrics.get("campaigns", []))
     fatigue = fatigue_items(metrics.get("campaigns", []))
     decisions = decision_memory_payload(metrics, recommendations, fatigue)
+    experiment_reviews = experiment_review_payload(metrics)
     config = load_config()
+    optimization_state = load_optimization_state()
+    if not RESEARCH_FILE.exists():
+        seed_current_research()
     setup = build_setup_status()
     current_license_status = license_status(config)
     ad_config = read_json(AD_CONFIG_FILE, {})
@@ -6557,6 +7539,7 @@ def dashboard_payload():
     onboarding = onboarding_health(load_onboarding_state(), config, metrics, current_license_status, destination, business_profile)
     entitlements = license_entitlements()
     business_spaces = agency_spaces_payload()
+    managed_accounts = managed_ad_accounts_payload()
     business_snapshot = business_context_snapshot(business_profile)
     codex_image_status = codex_cli_auth_status(timeout=2)
     codex_image_ready = bool(codex_image_status.get("ok"))
@@ -6566,6 +7549,14 @@ def dashboard_payload():
         "brief": scheduled_brief_or_live(metrics, recommendations, business_profile),
         "fatigue": fatigue,
         "decision_memory": decisions,
+        "experiment_reviews": experiment_reviews,
+        "optimization": {
+            "state": optimization_state,
+            "unlock": optimization_unlock_status(optimization_state),
+            "shopify": shopify_status(config),
+            "business_outcomes": read_json(DATA_DIR / "business_outcomes.json", {}),
+            "research": load_research(),
+        },
         "actions": read_json(ACTIONS_FILE, [])[:20],
         "pending": read_json(PENDING_FILE, [])[:20],
         "created_campaigns": read_json(CREATED_FILE, [])[:10],
@@ -6585,13 +7576,23 @@ def dashboard_payload():
         "business_spaces": business_spaces,
         "active_workspace": active_workspace_payload(),
         "workspace_usage": workspace_usage_payload(),
+        "managed_ad_accounts": managed_accounts,
         "business_binding": business_binding_payload(),
         "local_network_access": dashboard_network_access_payload(),
         "config": {
             "mode": config.mode,
+            "communication_preference": {
+                **communication_preference(config.communication_style, telegram_settings(config).get("language") or "es"),
+                "configured": communication_style_is_configured(),
+            },
             "notify_channel": config.notify_channel,
             "telegram_agent": telegram_settings(config),
-            "daily_brief": {"mode": "hermes_cron", **hermes_gateway_status(config)},
+            "daily_brief": {
+                "mode": "hermes_cron",
+                "time": config.daily_brief_time,
+                "timezone": config.daily_brief_timezone,
+                **hermes_gateway_status(config),
+            },
             "dashboard_token_required": config.dashboard_token_required,
             "dashboard_token_set": dashboard_password_configured(config),
             "dashboard_password_required": config.dashboard_token_required,
@@ -6639,6 +7640,7 @@ def dashboard_payload():
                 "license_required_for_live": config.license_required_for_live,
                 "meta_access_token_set": bool(config.meta_access_token),
                 "ad_account_id": config.ad_account_id or ("" if str(ad_config.get("account", {}).get("id", "")).strip() in EXAMPLE_AD_ACCOUNT_IDS else ad_config.get("account", {}).get("id", "")),
+                "managed_ad_accounts": managed_accounts,
                 "meta_access_token_kind": config.meta_access_token_kind,
                 "meta_access_token_saved_at": config.meta_access_token_saved_at,
                 "page_id": destination.get("page_id", ""),
@@ -6693,7 +7695,7 @@ HTML = r"""<!DOCTYPE html>
 <section class="deferred-onboarding-banner hidden" id="deferred-onboarding-banner"></section>
 <main>
 <aside class="col brief-zone">
-<button class="zone-label" id="toggle-left-panel" type="button" data-action-code="togglePanel('left')"><span data-i18n="zone_brief">Daily intelligence</span><small class="zone-badge" id="daily-brief-badge" data-i18n="new_brief">New</small><i class="panel-caret" aria-hidden="true"></i></button>
+<div class="brief-zone-heading"><button class="zone-label" id="toggle-left-panel" type="button" data-action-code="togglePanel('left')"><span data-i18n="zone_brief">Daily intelligence</span><small class="zone-badge" id="daily-brief-badge" data-i18n="new_brief">New</small><i class="panel-caret" aria-hidden="true"></i></button><button class="brief-schedule-button" id="daily-brief-schedule-button" type="button" data-action-code="openDailyBriefSchedule()" aria-label="Cambiar hora de la lectura diaria" title="Cambiar hora de la lectura diaria"><span aria-hidden="true">☀</span><strong id="daily-brief-schedule-label">Brief 08:00</strong></button></div>
 <section class="section"><div class="head"><span>01</span><b id="business-profile-title">Perfil del negocio</b><button class="btn ask-btn" data-action-code="openChat(businessProfileChatPrompt())" data-i18n="ask_agent">Ask agent</button></div><div class="body" id="business-profile-panel"></div></section>
 <section class="section"><div class="head"><span>02</span><b data-i18n="daily_brief">Daily Brief</b><button class="btn ask-btn" data-action-code="openChat(t('draft_catchup'))" data-i18n="ask_agent">Ask agent</button><button class="btn" data-action-code="runAgent()" data-i18n="run">Run</button></div><div class="body" id="brief"></div></section>
 <section class="section"><div class="head"><span>03</span><b data-i18n="fatigue_monitor">Fatigue Monitor</b><button class="btn ask-btn" data-action-code="openChat(t('draft_fatigue'))" data-i18n="ask_agent">Ask agent</button></div><div class="body" id="fatigue"></div></section>
@@ -6711,7 +7713,7 @@ HTML = r"""<!DOCTYPE html>
 <div class="dashboard-view hidden" id="view-idle"></div>
 </div>
 <div id="tab-setup" class="hidden">
-<section class="section"><div class="head"><span>03</span><b data-i18n="setup_status">Setup Status</b><button class="btn ask-btn" data-action-code="openChat(t('draft_setup'))" data-i18n="ask_agent">Ask agent</button><button class="btn" data-action-code="load()" data-i18n="refresh">Refresh</button></div><div class="body"><div id="mode-control"></div><div id="guardrails-panel"></div><div id="onboarding-wizard"></div><div id="license-panel"></div><div id="meta-connection-panel"></div><div id="setup-config"></div><div id="chatgpt-panel"></div><div id="telegram-panel"></div><div id="local-network-panel"></div><div id="migration-panel"></div><div id="update-rollback-panel"></div><div id="cloud-access-panel"></div><div id="setup-summary"></div><div id="setup-sections"></div></div></section>
+<section class="section"><div class="head"><span>03</span><b data-i18n="setup_status">Setup Status</b><button class="btn ask-btn" data-action-code="openChat(t('draft_setup'))" data-i18n="ask_agent">Ask agent</button><button class="btn" data-action-code="load()" data-i18n="refresh">Refresh</button></div><div class="body"><div id="mode-control"></div><div id="guardrails-panel"></div><div id="onboarding-wizard"></div><div id="license-panel"></div><div id="meta-connection-panel"></div><div id="setup-config"></div><div id="chatgpt-panel"></div><div id="telegram-panel"></div><div id="communication-style-panel"></div><div id="local-network-panel"></div><div id="migration-panel"></div><div id="update-rollback-panel"></div><div id="cloud-access-panel"></div><div id="setup-summary"></div><div id="setup-sections"></div></div></section>
 </div>
 <div id="tab-creator" class="hidden">
 <section class="section"><div class="head"><span>04</span><b data-i18n="campaign_creator">Campaign Creator</b></div><div class="body">
@@ -6841,7 +7843,7 @@ HTML = r"""<!DOCTYPE html>
 class DashboardHandler(BaseHTTPRequestHandler):
     HTML_PATHS = {"/", "/dashboard"}
     PROTECTED_GET_PATHS = {"/api/dashboard", "/api/export", "/api/report", "/api/setup", "/api/social/auth-status", "/api/social/accounts", "/api/update/snapshots", "/api/creative-asset", "/api/brand-asset"}
-    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/agent-model/connect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/logo", "/api/brand-guides/product", "/api/ad-briefs", "/api/codex/creative-plan", "/api/codex/image-generate", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/complete", "/api/onboarding/skip", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/local-network-access", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
+    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/agent-model/connect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/logo", "/api/brand-guides/product", "/api/ad-briefs", "/api/codex/creative-plan", "/api/codex/image-generate", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/optimization/settings", "/api/optimization/unlock", "/api/shopify/config", "/api/shopify/test", "/api/shopify/sync", "/api/daily-brief/schedule", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/communication-style", "/api/onboarding/complete", "/api/onboarding/skip", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/local-network-access", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
     ONBOARDING_OPEN_GETS = {"/api/dashboard", "/api/setup"}
     ONBOARDING_OPEN_POSTS = {"/api/dashboard-password", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/license/activate"}
     GET_JSON_ROUTES = {
@@ -6878,7 +7880,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         "/api/codex/image-generate": codex_image_generate,
         "/api/setup-config": save_setup_config,
         "/api/guardrails": save_guardrails,
+        "/api/daily-brief/schedule": save_daily_brief_schedule,
         "/api/profitability-rules": save_profitability_rule_settings,
+        "/api/optimization/settings": save_optimization_settings,
+        "/api/optimization/unlock": unlock_optimization,
+        "/api/shopify/config": save_shopify_config,
+        "/api/shopify/test": test_shopify_settings,
+        "/api/shopify/sync": sync_shopify_outcomes,
         "/api/migration/import": restore_migration_archive,
         "/api/update/check": lambda _payload: request_update_release(),
         "/api/update/apply": lambda _payload: apply_official_update(),
@@ -6890,7 +7898,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         "/api/telegram/detect": lambda _payload: detect_telegram_chats(),
         "/api/telegram/test": lambda _payload: test_telegram_connection(),
         "/api/license/activate": activate_license_now,
-        "/api/onboarding/complete": lambda _payload: complete_onboarding(),
+        "/api/onboarding/communication-style": save_communication_style,
+        "/api/onboarding/complete": complete_onboarding,
         "/api/onboarding/skip": lambda _payload: skip_onboarding(),
         "/api/onboarding/reset": lambda _payload: reset_onboarding(),
         "/api/reject": lambda payload: reject_pending(payload.get("approval_id"), payload.get("reason") or "Rejected from dashboard"),

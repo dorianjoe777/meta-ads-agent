@@ -222,14 +222,14 @@ def should_refresh(campaign, ad_config=None):
     if campaign.get("health") in health_in:
         return True
     frequency_over = float(refresh.get("frequency_over", 3.0))
-    roas_below = float(refresh.get("roas_below", 1.2))
     ctr_drop_pct_over = float(refresh.get("ctr_drop_pct_over", 20))
     ctr_drop = pct_change(campaign.get("ctr"), campaign.get("previous_ctr"))
-    return (
-        float(campaign.get("frequency", 0)) > frequency_over
-        or float(campaign.get("roas", 0)) < roas_below
-        or ctr_drop <= -abs(ctr_drop_pct_over)
-    )
+    cpc_rise = pct_change(campaign.get("cpc"), campaign.get("previous_cpc"))
+    cpa_rise = pct_change(campaign.get("cpa"), campaign.get("previous_cpa"))
+    deterioration = ctr_drop <= -abs(ctr_drop_pct_over) or cpc_rise >= 30 or cpa_rise >= 25
+    # Frequency is context, not a verdict. A high value with stable cost and
+    # attention does not justify creating or replacing ads by itself.
+    return deterioration or (float(campaign.get("frequency", 0)) > frequency_over and deterioration)
 
 
 def campaigns_needing_refresh(campaigns, ad_config=None):

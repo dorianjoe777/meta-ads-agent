@@ -191,6 +191,11 @@ dashboard/data/audience_strategy.json
 dashboard/data/individual_business_binding.json
 dashboard/data/profitability_rules.json
 dashboard/data/decision_memory.json
+dashboard/data/creative_experiments.json
+dashboard/data/optimization_state.json
+dashboard/data/performance_history.json
+dashboard/data/business_outcomes.json
+dashboard/data/optimization_research.json
 output/learning-log.md
 brand_guides/general_branding.md
 brand_guides/creative_references.md
@@ -227,3 +232,17 @@ The brief should use real Meta data and recent memory when available, mention fl
 ```
 
 If no real Meta data exists, Hermes must say that clearly and must not use demo campaigns or fake ROAS/CPA/CTR.
+
+## Evidence-gated optimization
+
+The optimizer is a state machine, not one weighted score. It identifies the campaign objective first, then requires fresh, mature evidence. It holds changes during Meta learning/preparing, incomplete attribution, stale reads, partial-day data, and the cooldown after a significant edit. Zero conversions leaves CPA unknown; it never substitutes an extreme sentinel value.
+
+New installs begin in `shadow` mode. Recommendations are evaluated after they mature, but they cannot mutate Meta. Unlock requires all three conditions: 14 elapsed days, 10 matured outcomes, and explicit buyer confirmation. Existing live-action, license, approval, account-cap, and test-reserve controls still apply after unlock.
+
+When Shopify is connected, the read-only connector queries only order timing and financial totals with `read_orders`. Local persistence contains daily gross/net/refund/order aggregates and SHA-256 deduplication keys—never customer names, emails, addresses, or raw order IDs. Shopify is the business-outcome truth; Meta remains attribution evidence, so differences trigger a measurement investigation rather than an automatic spend change.
+
+Meta collection stores daily campaign, ad-set, and ad history plus separate placement/device, age/gender, and country views when the API permits them. Unsupported views are recorded as data-quality gaps. Funnel, anomaly, fatigue, and experiment diagnostics are recommendations only.
+
+## Curated optimization research
+
+Hermes schedules a weekly Sunday 03:00 research job in the buyer's timezone. It searches official Meta guidance first, then recent expert/community discussion. Every saved item includes URL, source type, observed/published date, credibility, counterevidence, expiry, and a testable hypothesis. Official sources have highest trust. Reddit/forum findings are anecdotal unless corroborated, expire quickly, and can only propose controlled experiments; they cannot trigger spend mutations.

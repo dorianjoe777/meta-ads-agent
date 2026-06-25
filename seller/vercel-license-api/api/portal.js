@@ -387,6 +387,29 @@ export default async function handler(request, response) {
       font-size:13px;
     }
     .cloud-reset-button:hover{background:rgba(239,93,102,.08)}
+    .cloud-delete-button{
+      width:100%;
+      min-height:50px;
+      border:0;
+      border-radius:15px;
+      background:linear-gradient(135deg,#ef5d66,#c43d4c);
+      color:#fff;
+      box-shadow:0 18px 38px rgba(196,61,76,.2);
+      font-size:14px;
+      font-weight:950;
+    }
+    .cloud-delete-button:hover{filter:brightness(.98)}
+    .cloud-danger-zone{
+      margin-top:12px;
+      border:1px solid rgba(239,93,102,.16);
+      border-radius:16px;
+      padding:12px;
+      background:rgba(239,93,102,.055);
+    }
+    .cloud-danger-zone strong{
+      color:#7f313a;
+      font-size:13px;
+    }
     .cloud-reset-note{
       margin:6px 0 0;
       color:#6b7284;
@@ -906,6 +929,8 @@ export default async function handler(request, response) {
     let cloudStateVersion = 0;
     let cloudPollFailures = 0;
     let cloudDisplayedProgress = 0;
+    let cloudResetInProgress = false;
+    let cloudDeleteInProgress = false;
 
     function setStatus(message, isError = false){
       statusBox.textContent = message || '';
@@ -1002,7 +1027,7 @@ export default async function handler(request, response) {
       cloudPollFailures = 0;
     }
     async function pollCloudProgress(expectedVersion = cloudStateVersion){
-      if(!portalToken) return;
+      if(!portalToken || cloudResetInProgress || cloudDeleteInProgress) return;
       const tokenInput = document.getElementById('digitalOceanToken');
       const recoveryToken = cloudRecoveryToken || (tokenInput ? tokenInput.value.trim() : '');
       const data = await postJson('/api/portal/cloud/digitalocean', { portal_token: portalToken, action: 'status', digitalocean_token: recoveryToken });
@@ -1077,6 +1102,7 @@ export default async function handler(request, response) {
       }, 650);
     }
     function startCloudProgressPolling(){
+      if(cloudResetInProgress || cloudDeleteInProgress) return;
       stopCloudCreatePreview();
       stopCloudProgressPolling();
       cloudDisplayedProgress = 0;
@@ -1141,7 +1167,8 @@ export default async function handler(request, response) {
       const local = state.local || {};
       const cloudInstallation = data.cloud_installation || {};
       const openUrl = safeHttpUrl(cloudInstallation.cloud_open_url || cloudInstallation.dashboard_url || '');
-      if(cloud.installed || cloudInstallation.droplet_id || cloudInstallation.provider){
+      const hasCloudRecord = Boolean(cloud.installed || cloudInstallation.droplet_id || cloudInstallation.provider || cloudInstallation.cloud_open_url || cloudInstallation.dashboard_url || cloudInstallation.firewall_id);
+      if(hasCloudRecord){
         const ready = Boolean(openUrl && (cloud.dashboard_available || cloud.status === 'ready' || cloudInstallation.ready));
         const failed = Boolean(cloud.status === 'failed' || cloudInstallation.status === 'failed' || cloudInstallation.install_status === 'failed' || cloudInstallation.failed);
         const takingLonger = Boolean(cloud.taking_longer || cloud.status === 'taking_longer' || cloudInstallation.taking_longer);
@@ -1157,16 +1184,17 @@ export default async function handler(request, response) {
             '<div class="state-card">' +
               '<span class="state-pill '+(ready?'':(failed?'empty':'pending'))+'">'+(ready?'Instalacion cloud lista':(failed?'Necesita empezar de nuevo':(waitingForIp?'Conectando servidor':(takingLonger?'Revisando instalacion':'Instalacion en progreso'))))+'</span>' +
               '<strong>'+(ready?'Accede a tu dashboard':(failed?'Borra el Droplet y crea otro':(waitingForIp?'Esperando conexion automatica':(takingLonger?'Todavia no esta listo':'Preparando tu dashboard'))))+'</strong>' +
-              '<p>'+(ready?'Tu dashboard ya puede abrirse.':(failed?'El portal no puede reparar un Droplet cuyo instalador ya se detuvo. Borralo en DigitalOcean para evitar cobros duplicados y vuelve a crear uno.':(waitingForIp?'El Droplet va a avisar su IP al portal. Pega el IPv4 solo si esto no avanza despues de varios minutos.':(takingLonger?'Si sigue asi, abre la consola del Droplet y revisa el log de instalacion.':'Normalmente tarda 5 a 10 minutos. Estoy verificando automaticamente.'))))+'</p>' +
+              '<p>'+(ready?'Tu dashboard ya puede abrirse.':(failed?'Puedes borrar el Droplet desde aqui o marcarlo como borrado si ya lo eliminaste manualmente.':(waitingForIp?'El Droplet va a avisar su IP al portal. Pega el IPv4 solo si esto no avanza despues de varios minutos.':(takingLonger?'Si sigue asi, abre la consola del Droplet y revisa el log de instalacion.':'Normalmente tarda 5 a 10 minutos. Estoy verificando automaticamente.'))))+'</p>' +
               cloudProgressMarkup(progressData) +
-              '<div class="state-actions">'+((ready || directOnly) && openUrl?'<a class="cloud-open-button" href="'+escapeHtml(openUrl)+'" target="_blank" rel="noreferrer" aria-label="Abrir mi dashboard">'+(directOnly?'Probar enlace directo':'Acceder a mi dashboard')+'</a>':(failed?'<span class="cloud-open-button pending" aria-disabled="true">Instalacion detenida</span>':(waitingForIp?recoverWaitingForIpMarkup(cloudInstallation):'<span class="cloud-open-button pending" aria-disabled="true">Dashboard preparando...</span>')))+refreshCloudAccessMarkup()+resetCloudInstallMarkup()+'</div>' +
+              '<div class="state-actions">'+((ready || directOnly) && openUrl?'<a class="cloud-open-button" href="'+escapeHtml(openUrl)+'" target="_blank" rel="noreferrer" aria-label="Abrir mi dashboard">'+(directOnly?'Probar enlace directo':'Acceder a mi dashboard')+'</a>':(failed?'<span class="cloud-open-button pending" aria-disabled="true">Instalacion detenida</span>':(waitingForIp?recoverWaitingForIpMarkup(cloudInstallation):'<span class="cloud-open-button pending" aria-disabled="true">Dashboard preparando...</span>')))+refreshCloudAccessMarkup()+'</div>' +
             '</div>' +
             '<div class="state-card">' +
               '<span class="state-pill empty">Datos guardados en tu licencia</span>' +
               '<strong>'+escapeHtml(cloudInstallation.droplet_name || 'Servidor DigitalOcean')+'</strong>' +
               '<p>Creado: '+escapeHtml((cloudInstallation.created_at || '').slice(0,10) || 'reciente')+'</p>' +
-              '<p class="cloud-reset-note">Si ya borraste este servidor en DigitalOcean, usa el boton de empezar de nuevo. El portal no puede borrar ni cobrar Droplets por ti.</p>' +
+              '<p class="cloud-reset-note">Si quieres reinstalar, primero elimina este servidor real o marca que ya lo borraste manualmente.</p>' +
               '<p class="cloud-direct">Enlace del dashboard: '+escapeHtml(cloudInstallation.dashboard_url || 'preparando IP')+(cloudInstallation.dashboard_http_url && cloudInstallation.dashboard_http_url !== cloudInstallation.dashboard_url?'<br>Respaldo por IP: '+escapeHtml(cloudInstallation.dashboard_http_url):'')+'</p>' +
+              (hasCloudRecord ? cloudManagementMarkup() : resetCloudInstallMarkup()) +
             '</div>' +
           '</div>';
         installState.classList.add('active');
@@ -1227,11 +1255,11 @@ export default async function handler(request, response) {
       const keeper = dropletIp ? '<div class="keeper-box"><strong>Protector automatico de acceso</strong><p>Incluido en el servidor cloud: cuando abres el boton de dashboard, el Droplet prepara tu red antes de cargar. No necesitas correr comandos para esto.</p><span class="cloud-direct" data-helper-endpoints="/api/portal/cloud/access-keeper /api/portal/cloud/access-keeper-ps">El helper local por hora queda disponible solo como respaldo avanzado.</span></div>' : '';
       cloudResult.innerHTML =
         '<strong>'+title+'</strong>' +
-        '<p>'+(ready?'Ya puedes entrar. Usa siempre este boton para preparar tu red antes de abrir el dashboard.':(failed?'El instalador de ese Droplet se detuvo. Borralo en DigitalOcean y usa “Ya borre este servidor. Crear uno nuevo” para empezar limpio.':(waitingForIp?'Puedes dejar esta pagina abierta. El Droplet reporta su IP automaticamente; usa el campo manual solo si se queda detenido.':(takingLonger?'El servidor existe, pero todavia no pude confirmar que el dashboard este listo. Sigo revisando automaticamente.':'Espera 5 a 10 minutos. Puedes dejar esta pagina abierta; reviso el avance automaticamente.'))))+'</p>' +
+        '<p>'+(ready?'Ya puedes entrar. Usa siempre este boton para preparar tu red antes de abrir el dashboard.':(failed?'El instalador de ese Droplet se detuvo. Puedes borrarlo desde aqui o marcarlo como borrado si ya lo eliminaste manualmente.':(waitingForIp?'Puedes dejar esta pagina abierta. El Droplet reporta su IP automaticamente; usa el campo manual solo si se queda detenido.':(takingLonger?'El servidor existe, pero todavia no pude confirmar que el dashboard este listo. Sigo revisando automaticamente.':'Espera 5 a 10 minutos. Puedes dejar esta pagina abierta; reviso el avance automaticamente.'))))+'</p>' +
         cloudProgressMarkup(data) +
         openButton +
         refreshCloudAccessMarkup() +
-        resetCloudInstallMarkup() +
+        cloudManagementMarkup() +
         '<div class="cloud-safe-note">El boton prepara tu red automaticamente antes de abrir el dashboard. Si tu internet cambia de IP, no tienes que saberlo ni hacer nada especial.</div>' +
         delayNote +
         direct +
@@ -1265,8 +1293,17 @@ export default async function handler(request, response) {
     }
     function resetCloudInstallMarkup(){
       return '<div class="cloud-ip-form">' +
-        '<button class="cloud-reset-button" type="button" onclick="resetCloudInstall()">Ya borre este servidor. Crear uno nuevo</button>' +
+        '<button class="cloud-reset-button" type="button" data-cloud-action="reset-install">Ya lo borre manualmente. Crear uno nuevo</button>' +
         '<p class="cloud-reset-note">Esto solo limpia la memoria del portal. Antes de usarlo, borra el Droplet viejo en DigitalOcean para evitar cobros duplicados.</p>' +
+      '</div>';
+    }
+    function cloudManagementMarkup(){
+      return '<div class="cloud-ip-form cloud-danger-zone">' +
+        '<strong>Reinstalar o borrar servidor</strong>' +
+        '<button class="cloud-delete-button" type="button" data-cloud-action="delete-droplet">Borrar servidor en DigitalOcean ahora</button>' +
+        '<p class="cloud-reset-note">Esto llama a DigitalOcean, apaga el Droplet real y luego limpia el portal para que puedas crear uno nuevo. Si el token guardado vencio, pega tu token abajo y vuelve a tocar el boton.</p>' +
+        '<button class="cloud-reset-button" type="button" data-cloud-action="reset-install">Ya lo borre manualmente. Crear uno nuevo</button>' +
+        '<p class="cloud-reset-note">Usa esta segunda opcion solo si ya lo eliminaste dentro de DigitalOcean y aqui sigue apareciendo.</p>' +
       '</div>';
     }
     function focusDigitalOceanToken(){
@@ -1318,8 +1355,13 @@ export default async function handler(request, response) {
         setStatus(error.message || 'No pude actualizar el acceso de esta red.', true);
       }
     }
-    async function resetCloudInstall(){
-      if(!portalToken) return;
+    async function resetCloudInstall(button){
+      if(!portalToken || cloudResetInProgress) return;
+      const confirmed = window.confirm('Confirma que ya borraste el Droplet anterior en DigitalOcean. El portal solo olvidara ese servidor y te dejara crear uno nuevo.');
+      if(!confirmed) return;
+      cloudResetInProgress = true;
+      const originalLabel = button ? button.textContent : '';
+      if(button){button.disabled = true;button.textContent = 'Preparando reinstalacion...';}
       stopCloudCreatePreview();
       stopCloudProgressPolling(true);
       cloudDisplayedProgress = 0;
@@ -1345,6 +1387,52 @@ export default async function handler(request, response) {
         if(expectedVersion === cloudStateVersion){
           setStatus(error.message || 'No pude limpiar esa instalacion.', true);
         }
+      }finally{
+        cloudResetInProgress = false;
+        if(button && button.isConnected){button.disabled = false;button.textContent = originalLabel;}
+      }
+    }
+    async function deleteCloudDroplet(button){
+      if(!portalToken || cloudDeleteInProgress) return;
+      const confirmed = window.confirm('Voy a borrar el Droplet real en DigitalOcean y limpiar el portal. Esto apaga ese servidor. ¿Continuar?');
+      if(!confirmed) return;
+      cloudDeleteInProgress = true;
+      const originalLabel = button ? button.textContent : '';
+      if(button){button.disabled = true;button.textContent = 'Borrando servidor...';}
+      stopCloudCreatePreview();
+      stopCloudProgressPolling(true);
+      cloudDisplayedProgress = 0;
+      const expectedVersion = cloudStateVersion;
+      setStatus('Borrando el Droplet en DigitalOcean...');
+      try{
+        const typedToken = document.getElementById('digitalOceanToken')?.value.trim() || '';
+        const data = await postJson('/api/portal/cloud/digitalocean', {
+          portal_token: portalToken,
+          action: 'delete_cloud_install',
+          digitalocean_token: typedToken
+        });
+        if(expectedVersion !== cloudStateVersion) return;
+        if(!data.valid){
+          if(data.status === 'digitalocean_token_required') focusDigitalOceanToken();
+          setStatus(data.detail || 'No pude borrar ese servidor.', true);
+          return;
+        }
+        cloudResult.classList.remove('active');
+        cloudResult.innerHTML = '';
+        renderInstallState(data);
+        cloudInstall.classList.add('active');
+        cloudToggle.textContent = 'Ocultar instalacion cloud';
+        const tokenInput = document.getElementById('digitalOceanToken');
+        if(tokenInput) tokenInput.focus();
+        cloudInstall.scrollIntoView({behavior:'smooth', block:'start'});
+        setStatus(data.detail || 'Servidor borrado. Ahora puedes crear uno nuevo.');
+      }catch(error){
+        if(expectedVersion === cloudStateVersion){
+          setStatus(error.message || 'No pude borrar ese servidor.', true);
+        }
+      }finally{
+        cloudDeleteInProgress = false;
+        if(button && button.isConnected){button.disabled = false;button.textContent = originalLabel;}
       }
     }
     function renderPortalData(data){
@@ -1426,6 +1514,15 @@ export default async function handler(request, response) {
       }else{
         cloudToggle.textContent = 'Instalar en DigitalOcean';
       }
+    });
+    document.addEventListener('click', (event) => {
+      const deleteButton = event.target.closest('button[data-cloud-action="delete-droplet"]');
+      if(deleteButton){
+        deleteCloudDroplet(deleteButton);
+        return;
+      }
+      const button = event.target.closest('button[data-cloud-action="reset-install"]');
+      if(button) resetCloudInstall(button);
     });
     document.getElementById('digitalOceanToken').addEventListener('input', scheduleCloudTokenRecovery);
     cloudForm.addEventListener('submit', async (event) => {

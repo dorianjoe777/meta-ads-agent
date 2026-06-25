@@ -5,7 +5,8 @@ import {
   hotmartTokenAllowed,
   isHotmartPurchaseApproved,
   isHotmartPurchaseRevoked,
-  parseHotmartPayload
+  parseHotmartPayload,
+  shouldSendHotmartBuyerEmail
 } from "../lib/hotmart-webhook.js";
 
 const approvedPayload = {
@@ -68,4 +69,17 @@ test("classifies approved and revoked purchase notifications", () => {
     })),
     true
   );
+});
+
+test("keeps Hotmart license creation decoupled from buyer email by default", () => {
+  const previous = process.env.HOTMART_SEND_BUYER_EMAIL;
+  delete process.env.HOTMART_SEND_BUYER_EMAIL;
+  try {
+    assert.equal(shouldSendHotmartBuyerEmail(), false);
+    process.env.HOTMART_SEND_BUYER_EMAIL = "true";
+    assert.equal(shouldSendHotmartBuyerEmail(), true);
+  } finally {
+    if (previous === undefined) delete process.env.HOTMART_SEND_BUYER_EMAIL;
+    else process.env.HOTMART_SEND_BUYER_EMAIL = previous;
+  }
 });

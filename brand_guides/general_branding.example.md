@@ -12,6 +12,7 @@ Usa este archivo como la base visual y verbal de todos los creativos.
 - Cliente ideal:
 - Logo de marca:
 - Notas del logo:
+- Uso del logo: siempre / a veces / nunca
 - Personalidad:
 
 ## Estilo visual
@@ -22,6 +23,7 @@ Usa este archivo como la base visual y verbal de todos los creativos.
 - Texturas, fondos o recursos visuales:
 - Nivel de energia: bajo / medio / alto
 - Referencias visuales:
+- Fotos o activos reales disponibles: producto / fundador / clientes / local / ninguna
 
 ## Tono de comunicacion
 

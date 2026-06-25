@@ -365,6 +365,17 @@ function digitalOceanErrorDetail(error) {
   return "No pude crear el servidor en DigitalOcean. Revisa el token o intenta otra vez.";
 }
 
+function digitalOceanDeleteErrorDetail(error) {
+  const status = String(error?.doStatus || "");
+  if (status.includes("unauthorized") || error?.statusCode === 401 || error?.statusCode === 403) {
+    return "DigitalOcean no acepto ese token. Pega un token activo con permiso para borrar Droplets.";
+  }
+  if (digitalOceanResourceMissing(error)) {
+    return "Ese Droplet ya no existe en DigitalOcean. Limpie el portal para que puedas crear uno nuevo.";
+  }
+  return "No pude borrar el Droplet en DigitalOcean. Revisa el token o intenta otra vez.";
+}
+
 function digitalOceanResourceMissing(error) {
   const status = String(error?.doStatus || "").toLowerCase();
   return error?.statusCode === 404 || status.includes("not_found") || status.includes("not found");
@@ -421,6 +432,73 @@ async function clearIfDigitalOceanDropletMissing(record = {}, digitalOceanToken 
   }
 }
 
+export async function deleteDigitalOceanCloudInstall(record = {}, digitalOceanToken = "", dependencies = {}) {
+  const requestDigitalOcean = dependencies.doRequest || doRequest;
+  const clearInstallation = dependencies.clearCloudInstallation || clearCloudInstallation;
+  const cloud = record.cloud_installation || null;
+  const provider = String(cloud?.provider || "digitalocean").trim().toLowerCase();
+  const dropletId = String(cloud?.droplet_id || "").trim();
+  const firewallId = String(cloud?.firewall_id || "").trim();
+  if (!cloud || !dropletId) {
+    return clearInstallation(record, "buyer_delete_requested_no_saved_droplet");
+  }
+  if (provider && provider !== "digitalocean") {
+    const error = new Error("cloud_provider_not_supported");
+    error.friendlyDetail = "Este boton solo puede borrar servidores creados en DigitalOcean.";
+    throw error;
+  }
+  if (!/^\d+$/.test(dropletId)) {
+    const error = new Error("invalid_droplet_id");
+    error.friendlyDetail = "No pude confirmar el ID del Droplet guardado. Borralo en DigitalOcean y marca que ya lo borraste manualmente.";
+    throw error;
+  }
+  if (!validateDigitalOceanToken(digitalOceanToken)) {
+    const error = new Error("digitalocean_token_required");
+    error.friendlyDetail = "Pega tu token de DigitalOcean para borrar este servidor.";
+    throw error;
+  }
+  let dropletDeleted = false;
+  let dropletWasMissing = false;
+  let firewallDeleted = false;
+  let firewallWarning = "";
+  try {
+    await requestDigitalOcean(digitalOceanToken, `/droplets/${encodeURIComponent(dropletId)}`, { method: "DELETE" });
+    dropletDeleted = true;
+  } catch (error) {
+    if (!digitalOceanResourceMissing(error)) {
+      error.friendlyDetail = digitalOceanDeleteErrorDetail(error);
+      throw error;
+    }
+    dropletWasMissing = true;
+  }
+  if (firewallId && /^[A-Za-z0-9-]{6,128}$/.test(firewallId)) {
+    try {
+      await requestDigitalOcean(digitalOceanToken, `/firewalls/${encodeURIComponent(firewallId)}`, { method: "DELETE" });
+      firewallDeleted = true;
+    } catch (error) {
+      if (!digitalOceanResourceMissing(error)) {
+        firewallWarning = "Borre el Droplet, pero no pude limpiar el firewall asociado. No deberia generar cobro, pero puedes revisarlo en DigitalOcean.";
+      }
+    }
+  }
+  const cleared = await clearInstallation(
+    record,
+    dropletWasMissing ? "buyer_delete_requested_droplet_already_missing" : "buyer_deleted_droplet_from_portal"
+  );
+  return {
+    ...cleared,
+    status: "cloud_deleted",
+    deleted_cloud: true,
+    droplet_deleted: dropletDeleted,
+    droplet_was_missing: dropletWasMissing,
+    firewall_deleted: firewallDeleted,
+    firewall_warning: firewallWarning,
+    detail: firewallWarning || (dropletWasMissing
+      ? "Ese Droplet ya no existia en DigitalOcean. Limpie el portal para que puedas crear uno nuevo."
+      : "Listo. Borre el Droplet en DigitalOcean y limpie el portal para que puedas crear uno nuevo.")
+  };
+}
+
 async function refreshFirewallForCurrentIp(record = {}, digitalOceanToken = "", request = null) {
   const cloud = record.cloud_installation || null;
   if (!cloud?.firewall_id || !cloud?.droplet_id) {
@@ -468,7 +546,7 @@ async function refreshFirewallForCurrentIp(record = {}, digitalOceanToken = "", 
     access_refreshed_ip: clientIp,
     install_progress: Math.max(Number(cloud.install_progress || 0), 38)
   };
-  await writeLicense({ ...record, cloud_installation: updatedCloud }).catch(() => {});
+  await writeCloudInstallationIfCurrent(record, updatedCloud).catch(() => false);
   return {
     cloud: updatedCloud,
     clientIp,
@@ -481,6 +559,22 @@ function minutesSince(value) {
   const timestamp = Date.parse(String(value || ""));
   if (!Number.isFinite(timestamp)) return 0;
   return Math.max(0, Math.floor((Date.now() - timestamp) / 60000));
+}
+
+export async function writeCloudInstallationIfCurrent(record = {}, updatedCloud = {}, recordUpdates = {}, dependencies = {}) {
+  const readCurrent = dependencies.readLicense || readLicense;
+  const writeCurrent = dependencies.writeLicense || writeLicense;
+  const current = await readCurrent(record.license_key);
+  const expectedCloud = record.cloud_installation || {};
+  const currentCloud = current?.cloud_installation || {};
+  const expectedDroplet = String(expectedCloud.droplet_id || "");
+  const currentDroplet = String(currentCloud.droplet_id || "");
+  if (!current || !expectedDroplet || currentDroplet !== expectedDroplet) return false;
+  const expectedSecret = parseCloudAccessSecret(expectedCloud);
+  const currentSecret = parseCloudAccessSecret(currentCloud);
+  if (expectedSecret && currentSecret !== expectedSecret) return false;
+  await writeCurrent({ ...current, ...recordUpdates, cloud_installation: updatedCloud });
+  return true;
 }
 
 function sleep(ms) {
@@ -597,7 +691,7 @@ async function refreshCloudIpFromDigitalOcean(record, digitalOceanToken = "") {
     install_progress: Math.max(Number(cloud.install_progress || 0), 38),
     ip_discovered_at: new Date().toISOString()
   };
-  await writeLicense({ ...record, cloud_installation: updatedCloud }).catch(() => {});
+  await writeCloudInstallationIfCurrent(record, updatedCloud).catch(() => false);
   return updatedCloud;
 }
 
@@ -636,27 +730,28 @@ async function runtimeReport(body = {}, response) {
   const ready = body.ready === true || String(body.ready || "").toLowerCase() === "true";
   const progress = ready ? 100 : Math.min(98, cleanProgress(body.progress, Math.max(Number(cloud.install_progress || 0), 38)));
   const installStatus = ready ? "ready" : (String(body.install_status || body.status || cloud.install_status || "installing").trim() || "installing");
-  await writeLicense({
-    ...record,
-    cloud_installation: {
-      ...cloud,
-      ...urls,
-      cloud_hostname: cloudHostname,
-      dns_status: dns.status,
-      dns_provider: dns.provider || cloud.dns_provider || cloudDnsProvider() || "",
-      dns_record_id: dns.record_id || cloud.dns_record_id || "",
-      dns_error: dns.status === "failed" ? dns.detail || "No pude crear el DNS cloud." : "",
-      cloud_access_secret: expectedSecret,
-      access_gate_port: accessGatePort,
-      dashboard_port: dashboardPort,
-      droplet_ip: ip,
-      runtime_stage: String(body.stage || ""),
-      runtime_reported_at: new Date().toISOString(),
-      install_status: installStatus,
-      install_progress: progress,
-      ...(ready ? { install_completed_at: new Date().toISOString() } : {})
-    }
-  }).catch(() => {});
+  const updatedCloud = {
+    ...cloud,
+    ...urls,
+    cloud_hostname: cloudHostname,
+    dns_status: dns.status,
+    dns_provider: dns.provider || cloud.dns_provider || cloudDnsProvider() || "",
+    dns_record_id: dns.record_id || cloud.dns_record_id || "",
+    dns_error: dns.status === "failed" ? dns.detail || "No pude crear el DNS cloud." : "",
+    cloud_access_secret: expectedSecret,
+    access_gate_port: accessGatePort,
+    dashboard_port: dashboardPort,
+    droplet_ip: ip,
+    runtime_stage: String(body.stage || ""),
+    runtime_reported_at: new Date().toISOString(),
+    install_status: installStatus,
+    install_progress: progress,
+    ...(ready ? { install_completed_at: new Date().toISOString() } : {})
+  };
+  const saved = await writeCloudInstallationIfCurrent(record, updatedCloud).catch(() => false);
+  if (!saved) {
+    return friendlyFailure(response, "cloud_install_reset", "Este servidor ya fue retirado del portal.");
+  }
   return json(response, 200, {
     valid: true,
     status: installStatus,
@@ -890,15 +985,12 @@ async function cloudInstallStatus(record, response, options = {}) {
     checked_at: runtime.checked_at || new Date().toISOString()
   };
   if (ready && cloud.install_status !== "ready") {
-    await writeLicense({
-      ...record,
-      cloud_installation: {
-        ...cloud,
-        install_status: "ready",
-        install_progress: 100,
-        install_completed_at: new Date().toISOString()
-      }
-    }).catch(() => {});
+    await writeCloudInstallationIfCurrent(record, {
+      ...cloud,
+      install_status: "ready",
+      install_progress: 100,
+      install_completed_at: new Date().toISOString()
+    }).catch(() => false);
   }
   return options.returnPayload ? payload : json(response, 200, payload);
 }
@@ -948,6 +1040,16 @@ export default async function handler(request, response) {
       const cleared = await clearCloudInstallation(record, "buyer_confirmed_deleted_droplet");
       return json(response, 200, { ...cleared, status: "cloud_reset" });
     }
+    if (action === "delete_cloud_install") {
+      const resolvedDigitalOceanToken = resolveDigitalOceanToken(record, rawDigitalOceanToken);
+      try {
+        const deleted = await deleteDigitalOceanCloudInstall(record, resolvedDigitalOceanToken.token);
+        return json(response, 200, deleted);
+      } catch (error) {
+        const status = error.message === "digitalocean_token_required" ? "digitalocean_token_required" : "delete_cloud_failed";
+        return friendlyFailure(response, status, error.friendlyDetail || digitalOceanDeleteErrorDetail(error));
+      }
+    }
     if (action === "refresh_access") {
       const resolvedDigitalOceanToken = resolveDigitalOceanToken(record, rawDigitalOceanToken);
       if (!validateDigitalOceanToken(resolvedDigitalOceanToken.token)) {
@@ -957,7 +1059,8 @@ export default async function handler(request, response) {
         const refreshed = await refreshFirewallForCurrentIp(record, resolvedDigitalOceanToken.token, request);
         const statusPayload = await cloudInstallStatus({ ...record, cloud_installation: refreshed.cloud }, response, { returnPayload: true });
         if (validateDigitalOceanToken(rawDigitalOceanToken)) {
-          await writeLicense(withSavedDigitalOceanToken({ ...record, cloud_installation: refreshed.cloud }, rawDigitalOceanToken)).catch(() => {});
+          const tokenRecord = withSavedDigitalOceanToken(record, rawDigitalOceanToken);
+          await writeCloudInstallationIfCurrent(record, refreshed.cloud, { portal_vault: tokenRecord.portal_vault }).catch(() => false);
         }
         return json(response, 200, {
           ...statusPayload,
@@ -991,22 +1094,19 @@ export default async function handler(request, response) {
         dnsActive: dns.status === "active"
       });
       if (!accessSecret) {
-        await writeLicense({
-          ...record,
-          cloud_installation: {
-            ...cloud,
-            ...urls,
-            cloud_hostname: cloudHostname,
-            dns_status: dns.status,
-            dns_provider: dns.provider || cloud.dns_provider || cloudDnsProvider() || "",
-            dns_record_id: dns.record_id || cloud.dns_record_id || "",
-            dns_error: dns.status === "failed" ? dns.detail || "No pude crear el DNS cloud." : "",
-            droplet_ip: ip,
-            install_status: "installing",
-            install_progress: Math.max(Number(cloud.install_progress || 0), 38),
-            attached_ip_at: new Date().toISOString()
-          }
-        }).catch(() => {});
+        await writeCloudInstallationIfCurrent(record, {
+          ...cloud,
+          ...urls,
+          cloud_hostname: cloudHostname,
+          dns_status: dns.status,
+          dns_provider: dns.provider || cloud.dns_provider || cloudDnsProvider() || "",
+          dns_record_id: dns.record_id || cloud.dns_record_id || "",
+          dns_error: dns.status === "failed" ? dns.detail || "No pude crear el DNS cloud." : "",
+          droplet_ip: ip,
+          install_status: "installing",
+          install_progress: Math.max(Number(cloud.install_progress || 0), 38),
+          attached_ip_at: new Date().toISOString()
+        }).catch(() => false);
         return json(response, 200, {
           valid: true,
           status: "installing",
@@ -1043,7 +1143,9 @@ export default async function handler(request, response) {
         install_progress: Math.max(Number(cloud.install_progress || 0), 38),
         attached_ip_at: new Date().toISOString()
       };
-      await writeLicense({ ...withSavedDigitalOceanToken(record, rawDigitalOceanToken), cloud_installation: updatedCloud }).catch(() => {});
+      const tokenRecord = withSavedDigitalOceanToken(record, rawDigitalOceanToken);
+      const tokenUpdates = tokenRecord.portal_vault ? { portal_vault: tokenRecord.portal_vault } : {};
+      await writeCloudInstallationIfCurrent(record, updatedCloud, tokenUpdates).catch(() => false);
       return json(response, 200, {
         ...estimatedCloudStatus(updatedCloud),
         valid: true,

@@ -20,6 +20,11 @@ La memoria guarda ese criterio y lo vuelve parte del siguiente analisis.
 
 - `dashboard/data/profitability_rules.json`: reglas de rentabilidad del negocio.
 - `dashboard/data/decision_memory.json`: recomendaciones, evidencia, aprobaciones, ejecuciones y revisiones futuras.
+- `dashboard/data/creative_experiments.json`: pruebas creativas activas, umbrales de evidencia, líder provisional y próxima revisión adaptativa.
+- `dashboard/data/optimization_state.json`: modo observación/desbloqueado, cooldown, retraso de atribución, tope de cuenta, reserva de tests y resultados maduros.
+- `dashboard/data/performance_history.json`: historia diaria de Meta por campaña, conjunto, anuncio y desgloses disponibles.
+- `dashboard/data/business_outcomes.json`: agregados diarios de Shopify, sin datos personales ni IDs crudos de pedido.
+- `dashboard/data/optimization_research.json`: guía oficial e hipótesis expertas/comunitarias con credibilidad y vencimiento.
 - `output/learning-log.md`: aprendizaje humano-legible de lo que mejoro, empeoro o quedo igual.
 - `brand_guides/`: contexto de marca, productos, ofertas e ideas de anuncios.
 
@@ -27,6 +32,10 @@ Hermes recibe copias curadas dentro de su workspace local:
 
 - `memory/profitability_rules.json`
 - `memory/decision_memory.json`
+- `memory/creative_experiments.json`
+- `memory/optimization_state.json`
+- `memory/business_outcomes.json`
+- `memory/optimization_research.json`
 - `memory/learning_log.md`
 - `brand_guides/general_branding.md`
 - `brand_guides/products/*.md`
@@ -75,3 +84,15 @@ No prometemos magia. Construimos disciplina operativa:
 La historia de venta correcta:
 
 > El agente te vuelve mas presente, mas rapido y menos impulsivo con tus anuncios. Eso aumenta las probabilidades de mejorar resultados porque cada decision sale con evidencia, seguimiento y memoria.
+
+## Reglas nuevas de seguridad y medición
+
+- Cero conversiones significa CPA desconocido, no CPA 9999.
+- Ventas usan CPA, ROAS, margen y Shopify; leads usan CPL; mensajes usan costo por conversación.
+- No se toca una campaña durante aprendizaje, datos incompletos, atribución inmadura, datos viejos o cooldown después de un cambio.
+- Frecuencia alta sola no demuestra fatiga. Debe existir deterioro relativo de CPA, CTR o CPC y contexto de entrega.
+- El optimizador empieza observando. Solo puede desbloquearse después de 14 días, 10 resultados maduros y confirmación expresa del comprador.
+- Se reserva parte del presupuesto para tests creativos y se respeta el tope total de la cuenta.
+- Una líder por CTR no se declara ganadora de ventas. Las decisiones creativas exigen suficiente entrega, confianza y mejora material.
+- Shopify es la verdad del negocio cuando está conectado. Una diferencia con Meta se investiga como atribución, Pixel/CAPI, deduplicación o retraso.
+- La investigación de foros y Reddit solo crea hipótesis; nunca ejecuta cambios de gasto.

@@ -26,7 +26,11 @@ Duplica o crea este brief desde la pantalla de Creativos para una promocion, cam
 - Ventana creativa para variaciones:
 - Que puede variar:
 - Cantidad de variaciones:
+- Creativos simultaneos:
+- Formatos creativos:
+- Activos necesarios:
 - Hipotesis creativa:
+- Senal de exito:
 - Notas para el agente:
 
 ## Regla central
