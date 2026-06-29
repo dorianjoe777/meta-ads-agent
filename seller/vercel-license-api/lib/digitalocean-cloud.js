@@ -456,7 +456,7 @@ set -euo pipefail
 set -a
 . /root/.meta-ads-agent/digitalocean-strict-access.env
 set +a
-exec /opt/meta-ads-agent/scripts/digitalocean-refresh-firewall.sh "$@"
+exec /usr/bin/env bash /opt/meta-ads-agent/scripts/digitalocean-refresh-firewall.sh "$@"
 SH
 chmod 0700 /usr/local/bin/meta-ads-refresh-access
 install_cloud_access_gate() {
@@ -581,6 +581,31 @@ def docker_logs_tail():
     except Exception:
         return ""
 
+def ensure_refresh_helper_permissions():
+    for path in [REFRESH_COMMAND, "/opt/meta-ads-agent/scripts/digitalocean-refresh-firewall.sh"]:
+        try:
+            if path and os.path.isfile(path):
+                current = os.stat(path).st_mode
+                if not current & 0o111:
+                    os.chmod(path, current | 0o700)
+        except Exception as exc:
+            print(f"access helper permission repair skipped for {path}: {exc}", flush=True)
+
+def run_refresh_access(client_ip):
+    command = [REFRESH_COMMAND, "--ip", client_ip, "--quiet"]
+    ensure_refresh_helper_permissions()
+    try:
+        result = subprocess.run(command, check=False, timeout=75, capture_output=True, text=True)
+    except PermissionError:
+        result = subprocess.run(["/usr/bin/env", "bash", *command], check=False, timeout=75, capture_output=True, text=True)
+    if result.returncode == 126:
+        ensure_refresh_helper_permissions()
+        result = subprocess.run(["/usr/bin/env", "bash", *command], check=False, timeout=75, capture_output=True, text=True)
+    if result.returncode != 0:
+        print((result.stdout or "")[-1200:], flush=True)
+        print((result.stderr or "")[-1200:], flush=True)
+        raise subprocess.CalledProcessError(result.returncode, command, output=result.stdout, stderr=result.stderr)
+
 def status_payload():
     ready = dashboard_ready()
     log_tail = install_log_tail()
@@ -651,7 +676,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_text(400, "<h1>No pude detectar tu red</h1><p>Intenta otra vez desde una conexion IPv4.</p>")
             return
         try:
-            subprocess.run([REFRESH_COMMAND, "--ip", client_ip, "--quiet"], check=True, timeout=75)
+            run_refresh_access(client_ip)
             save_state({"last_ip": client_ip, "last_success_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
         except Exception as exc:
             self.send_text(

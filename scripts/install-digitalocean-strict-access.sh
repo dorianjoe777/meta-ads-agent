@@ -71,7 +71,7 @@ set -euo pipefail
 set -a
 . "$CONFIG_FILE"
 set +a
-exec "$ROOT_DIR/scripts/digitalocean-refresh-firewall.sh" "\$@"
+exec /usr/bin/env bash "$ROOT_DIR/scripts/digitalocean-refresh-firewall.sh" "\$@"
 SH
 chmod 700 "$WRAPPER"
 
