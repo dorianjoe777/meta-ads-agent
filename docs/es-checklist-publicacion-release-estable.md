@@ -11,8 +11,31 @@ Antes de asegurar que una correccion ya esta disponible para compradores, verifi
 3. Asset estable de GitHub reemplazado.
 4. Servidor de licencias apuntando al asset nuevo.
 5. Descarga real verificada desde el asset publicado.
+6. Si existen instalaciones anteriores, el dashboard debe poder ver una version `stable` mas nueva que su version instalada para mostrar la notificacion de actualizar.
 
 Si falta una de esas capas, un VPS fresco puede seguir instalando codigo viejo aunque la rama este actualizada.
+
+### Regla anti-confusion para sesiones futuras de Codex
+
+No decir simplemente "lo pushee a GitHub" como si eso significara que los compradores ya tienen actualizacion. Para este producto hay tres estados distintos:
+
+- **GitHub pusheado:** el codigo esta en la rama, pero todavia no hay garantia de instalacion nueva ni notificacion en dashboard.
+- **Release estable publicada:** `VERSION` fue subido, el ZIP estable fue reconstruido, GitHub Release tiene el asset correcto, y el registry del servidor de licencias apunta al asset nuevo. Esto permite instalaciones nuevas y notificaciones de update.
+- **Servidor especifico hotpatcheado:** ese VPS puntual ya tiene el fix aplicado directamente. Si tambien se le sube la version actual, ese VPS no deberia mostrar una notificacion porque ya esta en la version nueva. Esto no contradice el sistema de updates; significa que ese servidor fue actualizado manualmente antes de usar el boton.
+
+Para cualquier bug menor pedido por el usuario, el resultado por defecto debe ser **release estable publicada**, no solo commit/push. Solo saltar esto si el usuario pide explicitamente un hotfix local sin release.
+
+Cuando se hotpatchee un servidor existente y tambien se publique release estable, explicarlo asi:
+
+```text
+Publique vX.Y.Z para que otros installs vean update. Este VPS puntual ya fue actualizado directamente a vX.Y.Z, por eso no vera la notificacion: ya no esta por debajo de la version estable.
+```
+
+No usar frases ambiguas como "no afecta servidores ya instalados" si el dashboard tiene updater. La frase correcta es:
+
+```text
+Los servidores instalados en versiones anteriores veran la actualizacion si su version local es menor que la version estable publicada. El servidor que hotpatchee manualmente no la vera porque ya quedo en esa version.
+```
 
 ## Caso que origino esta nota
 
@@ -144,6 +167,15 @@ con `license_key`, `buyer_email`, `device_id`, `channel=stable` y `asset_name=Me
 
 ## 6. Version nueva o mismo canal
 
+Para que el dashboard muestre una notificacion simple de actualizar, la version publicada en el registry estable debe ser mayor que la version local del comprador. Por eso, ante cualquier fix buyer-visible, especialmente onboarding, conexion de agente, licencia, actualizador, Telegram, Meta o DigitalOcean:
+
+1. Subir `VERSION` y `META_ADS_AGENT_VERSION` en `.env.example`.
+2. Publicar el nuevo ZIP estable.
+3. Actualizar `channels.stable.version` en el registry del servidor de licencias.
+4. Verificar que `POST /api/license/release` devuelve esa version nueva.
+
+No basta con reemplazar un asset manteniendo el mismo numero de version si se espera que instalaciones ya existentes vean una notificacion. Mantener el mismo numero solo sirve para instalaciones nuevas o para descargas manuales; no para avisar a dashboards que ya tienen esa version.
+
 No crear una version nueva solo con `MetaAdsAgent-source.zip` si el portal necesita descubrir instaladores Mac/Windows/Linux por tag. Si se publica una version nueva, subir tambien los assets de plataforma:
 
 - Mac `.dmg` o `.pkg`
@@ -163,9 +195,16 @@ Solo afirmar "ya esta disponible para instalaciones nuevas" cuando se haya verif
 - GitHub release asset tiene digest nuevo.
 - El registry del servidor de licencias apunta al asset ID nuevo.
 - Una descarga real del asset contiene el cambio.
+- `POST /api/license/release` devuelve una version mayor que la version anterior instalada, si se espera que el dashboard muestre notificacion.
 
 Si solo se hizo `git push`, decir claramente:
 
 ```text
 Esta en GitHub, pero todavia falta reconstruir/publicar el asset estable que descarga DigitalOcean.
+```
+
+Si se publico release estable y ademas se actualizo manualmente el VPS del usuario, decir claramente:
+
+```text
+Otros installs antiguos deberian ver la notificacion de actualizar. Este VPS especifico no la vera porque ya lo subi manualmente a esa misma version.
 ```
