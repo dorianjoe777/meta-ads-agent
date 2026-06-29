@@ -5360,10 +5360,8 @@ def complete_onboarding(payload=None):
     payload = payload or {}
     requested_style = str(payload.get("communication_style") or "").strip().lower()
     requested_experience = str(payload.get("ad_experience_level") or payload.get("ads_experience_level") or "").strip().lower()
-    communication_style = normalize_communication_style(requested_style, default="") if requested_style else communication_style_from_environment(default="")
+    communication_style = normalize_communication_style(requested_style, default="simple") if requested_style else communication_style_from_environment(default="simple")
     ad_experience = normalize_ad_experience_level(requested_experience, default="") if requested_experience else ad_experience_from_environment(default="")
-    if not communication_style:
-        raise ValueError("Elige si prefieres que el agente use palabras simples o explicaciones técnicas.")
     if requested_experience and not ad_experience:
         raise ValueError("Elige si la experiencia en anuncios es principiante, intermedia o avanzada.")
     updates = {}

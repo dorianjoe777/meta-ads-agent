@@ -1045,8 +1045,6 @@ function onboardingSteps(){
  const chatgptOk=(setupItem('hermes_runtime').status==='ok'&&setupItem('hermes_auth').status==='ok')||apiBrainOk;
  const telegram=state.config.telegram_agent||{};
 	 const telegramOk=Boolean(telegram.enabled&&telegram.bot_configured&&telegram.chat_id);
-	 const communicationStyle=String(state.config?.communication_preference?.style||'').toLowerCase();
-	 const communicationOk=Boolean(state.config?.communication_preference?.configured)&&['simple','technical'].includes(communicationStyle);
  const tokenOk=setupItem('access_token').status==='ok';
  const accountOk=setupItem('ad_account').status==='ok';
  const destinationOk=['page_id','landing_url'].every(k=>setupItem(k).status==='ok');
@@ -1063,8 +1061,7 @@ function onboardingSteps(){
 	  {id:'account',status:accountOk?'ok':'blocked'},
 	  {id:'destination',status:destinationStatus},
 	  {id:'chatgpt',status:chatgptOk?'ok':'warn'},
-	  {id:'telegram',status:telegramOk?'ok':'warn'},
-	  {id:'communication',status:communicationOk?'ok':'warn'}
+	  {id:'telegram',status:telegramOk?'ok':'warn'}
 	 );
  return steps;
 	}
@@ -1099,7 +1096,6 @@ function onboardingFormFor(stepId){
 	 if(stepId==='license')return `<form class="onboarding-mini two" data-submit-code="activateLicenseFromForm(event)"><label>${t('license_key')}<input name="license_key" placeholder="MAO-..." autocomplete="off"></label><label>${t('buyer_email')}<input name="license_buyer_email" value="${escapeHtml(v.license_buyer_email||'')}" placeholder="buyer@email.com" autocomplete="email"></label><div class="onboarding-step-actions"><button class="btn primary" type="submit">${t('license_activate')}</button></div></form>`;
 	 if(stepId==='chatgpt')return chatGptConnectMarkup(true);
 	 if(stepId==='telegram')return telegramOnboardingGuide();
-	 if(stepId==='communication')return communicationStyleGuide(true);
  if(stepId==='meta')return metaConnectionGuide();
  if(stepId==='account')return accountPickerGuide();
  if(stepId==='destination')return destinationPickerGuide();
@@ -1747,11 +1743,11 @@ function communicationStyleGuide(onboarding=false){
  const effectiveStyle=saved||(onboarding?'simple':'');
  const simpleChecked=effectiveStyle==='simple'?'checked':'';
  const technicalChecked=saved==='technical'?'checked':'';
- const submitCode=onboarding?'saveCommunicationStyle(event,true)':'saveCommunicationStyle(event,false)';
+ const submitCode='saveCommunicationStyle(event,false)';
  const title=lang==='es'?'Último detalle: ¿simple o técnico?':'Last detail: simple or technical?';
  const body=lang==='es'?'Elige cómo quieres que el agente te explique las cosas. Puedes cambiarlo después.':'Choose how the agent should explain things. You can change this later.';
  const note=onboarding?'':`<p class="notice">${lang==='es'?'Es una preferencia global para chat y Telegram.':'This is a global preference for chat and Telegram.'}</p>`;
- return `<form class="communication-style-form" data-submit-code="${submitCode}"><fieldset><legend>${title}</legend><p>${body}</p><div class="communication-style-grid"><label class="communication-style-option"><input type="radio" name="communication_style" value="simple" required ${simpleChecked}><span><b>${lang==='es'?'Palabras simples':'Simple words'}</b><small>${lang==='es'?'Directo, claro y sin jerga.':'Direct, clear, no jargon.'}</small><em>${lang==='es'?'Recomendado':'Recommended'}</em></span></label><label class="communication-style-option"><input type="radio" name="communication_style" value="technical" required ${technicalChecked}><span><b>${lang==='es'?'Explicaciones técnicas':'Technical explanations'}</b><small>${lang==='es'?'Más detalle cuando ayude a decidir.':'More detail when it helps decisions.'}</small><em>${lang==='es'?'Para usuarios con experiencia':'For experienced users'}</em></span></label></div>${note}<div class="onboarding-step-actions"><button class="btn primary" type="submit">${onboarding?(lang==='es'?'Guardar y abrir dashboard':'Save and open dashboard'):(lang==='es'?'Guardar forma de hablar':'Save communication style')}</button></div></fieldset></form>`;
+ return `<form class="communication-style-form" data-submit-code="${submitCode}"><fieldset><legend>${title}</legend><p>${body}</p><div class="communication-style-grid"><label class="communication-style-option"><input type="radio" name="communication_style" value="simple" required ${simpleChecked}><span><b>${lang==='es'?'Palabras simples':'Simple words'}</b><small>${lang==='es'?'Directo, claro y sin jerga.':'Direct, clear, no jargon.'}</small><em>${lang==='es'?'Recomendado':'Recommended'}</em></span></label><label class="communication-style-option"><input type="radio" name="communication_style" value="technical" required ${technicalChecked}><span><b>${lang==='es'?'Explicaciones técnicas':'Technical explanations'}</b><small>${lang==='es'?'Más detalle cuando ayude a decidir.':'More detail when it helps decisions.'}</small><em>${lang==='es'?'Para usuarios con experiencia':'For experienced users'}</em></span></label></div>${note}<div class="onboarding-step-actions"><button class="btn primary" type="submit">${lang==='es'?'Guardar forma de hablar':'Save communication style'}</button></div></fieldset></form>`;
 }
 async function saveCommunicationStyle(event,finish=false){
  event.preventDefault();
@@ -2340,8 +2336,8 @@ async function finishOnboardingAndStartTour(reason='manual',communicationStyle='
 async function maybeFinishTelegramOnboarding(){
  const telegram=state.config?.telegram_agent||{};
  if(telegram.enabled&&telegram.bot_configured&&telegram.chat_id){
-  const steps=onboardingSteps();const communicationIndex=steps.findIndex(step=>step.id==='communication');
-  setOnboardingFlowStep(communicationIndex>=0?communicationIndex:Math.min(steps.length-1,onboardingFlowStep+1));
+  const steps=onboardingSteps();
+  setOnboardingFlowStep(Math.min(steps.length-1,onboardingFlowStep+1));
  }
  return false;
 }
