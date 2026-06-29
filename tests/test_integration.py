@@ -999,7 +999,15 @@ class IntegrationTestSuite:
             result = hermes_bridge.chat(FakeConfig(), {"message": "Hola", "language": "es", "channel": "telegram", "session_key": "telegram:123"})
             self.assert_true(result.get("error_type") == "model_usage_limit", "Hermes classifies model usage limits separately")
             self.assert_true("sí está conectado" in result["reply"] and "límite temporal" in result["reply"], "Buyer message explains connected-but-limited state")
-            self.assert_true("falta conectar" not in result["reply"].lower() and "4 hours" in result.get("retry_after_hint", ""), "Usage limit reply does not ask to reconnect")
+            self.assert_true("falta conectar" not in result["reply"].lower() and "4 hours" in result.get("retry_after_hint", "") and "4 horas" in result["reply"], "Usage limit reply does not ask to reconnect and localizes retry timing")
+
+            def raise_rate_limited(_config, _payload):
+                raise RuntimeError("The model provider is rate-limiting requests. Please wait a moment and try again.")
+
+            hermes_bridge.cli_chat = raise_rate_limited
+            limited = hermes_bridge.chat(FakeConfig(), {"message": "Hola", "language": "es", "channel": "telegram", "session_key": "telegram:123"})
+            self.assert_true(limited.get("error_type") == "model_usage_limit" and "rate-limiting" not in limited["reply"].lower(), "English provider rate-limit text is converted to a Spanish buyer message")
+            self.assert_true("Puedes intentar de nuevo en un momento" in limited["reply"], "Provider retry hint is included in Spanish when available")
         finally:
             hermes_bridge.hermes_brain_ready = original_ready
             hermes_bridge.cli_chat = original_cli
@@ -2574,6 +2582,14 @@ class IntegrationTestSuite:
             codex_brand_guides.run_hermes_image_bridge = fake_unauth_bridge
             unauth = codex_brand_guides.call_codex_image_cli("Genera un anuncio", output_root=output_root)
             self.assert_true(unauth["ok"] is False and "ChatGPT/Codex" in unauth["error"], "Missing Hermes image auth gives a buyer-friendly image error")
+
+            def fake_rate_limit_bridge(payload, **kwargs):
+                return {"success": False, "error": "The model provider is rate-limiting requests. Please wait a moment and try again.", "error_type": "rate_limit"}
+
+            codex_brand_guides.run_hermes_image_bridge = fake_rate_limit_bridge
+            limited = codex_brand_guides.call_codex_image_cli("Genera un anuncio", output_root=output_root)
+            self.assert_true(limited["ok"] is False and "rate-limiting" not in limited["error"].lower(), "Image rate-limit provider text is hidden from buyers")
+            self.assert_true("Puedes intentar de nuevo en un momento" in limited["error"], "Image rate-limit retry hint is included in Spanish when available")
         finally:
             codex_brand_guides.run_hermes_image_bridge = original_bridge
             codex_brand_guides.load_config = original_load_config

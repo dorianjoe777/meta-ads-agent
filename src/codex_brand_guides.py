@@ -1620,14 +1620,55 @@ def call_codex_image_cli(prompt, timeout=360, model=None, output_root=None, outp
     }
 
 
+def image_rate_limit_retry_hint(error):
+    text = re.sub(r"\s+", " ", str(error or "")).strip()
+    patterns = (
+        r"(?:try again|retry|available|reset(?:s)?|limit reset(?:s)?)(?:\s+\w+){0,4}\s+(?:in|at|after|on|until)\s+([^.;\n]{2,90})",
+        r"(?:please\s+)?wait\s+(?:for\s+)?([^.;\n]{2,60}?)(?:\s+and\s+try\s+again|$)",
+        r"(?:intenta|vuelve a intentar|reintenta|reinicia|disponible)(?:\s+\w+){0,5}\s+(?:en|a las|despues de|después de|hasta)\s+([^.;\n]{2,90})",
+        r"(?:after|in)\s+(\d+\s*(?:seconds?|minutes?|hours?|segundos?|minutos?|horas?))",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            hint = match.group(1).strip(" .,:;")
+            if hint:
+                return hint[:90]
+    return ""
+
+
+def image_localized_retry_hint(hint):
+    value = str(hint or "").strip(" .,:;").lower()
+    if not value:
+        return ""
+    replacements = [
+        (r"\ban hour\b", "1 hora"),
+        (r"\ba minute\b", "1 minuto"),
+        (r"\ba second\b", "1 segundo"),
+        (r"\ba moment\b", "un momento"),
+        (r"\bfew moments\b", "unos momentos"),
+        (r"\bseconds?\b", "segundos"),
+        (r"\bminutes?\b", "minutos"),
+        (r"\bhours?\b", "horas"),
+        (r"\bdays?\b", "días"),
+    ]
+    for pattern, replacement in replacements:
+        value = re.sub(pattern, replacement, value, flags=re.IGNORECASE)
+    return value.strip(" .,:;")
+
+
 def image_generation_error_message(error, error_type=""):
     text = str(error or "").strip()
     lowered = text.lower()
-    if any(token in lowered for token in ["usage limit", "rate limit", "429", "message limit", "limit reached", "quota"]):
-        return (
+    if any(token in lowered for token in ["usage limit", "rate limit", "rate-limiting", "rate limited", "429", "message limit", "limit reached", "quota"]):
+        hint = image_localized_retry_hint(image_rate_limit_retry_hint(text))
+        message = (
             "ChatGPT/Codex está conectado, pero la cuenta alcanzó un límite temporal para generar imágenes. "
-            "Intenta más tarde o baja la cantidad de solicitudes."
+            "No voy a inventar ni forzar otra generación mientras el proveedor limite solicitudes."
         )
+        if hint:
+            return f"{message} Puedes intentar de nuevo en {hint}."
+        return f"{message} Intenta de nuevo más tarde; el proveedor no me dio una hora exacta de reinicio."
     if "auth" in str(error_type).lower() or "oauth" in lowered or "credentials" in lowered:
         return (
             "ChatGPT/Codex está conectado para conversar, pero la herramienta de imagen no encontró esa sesión en este entorno. "

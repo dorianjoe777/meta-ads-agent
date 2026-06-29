@@ -49,6 +49,8 @@ MODEL_USAGE_LIMIT_PATTERNS = (
     r"\b429\b",
     r"too many requests",
     r"rate limit",
+    r"rate-limiting",
+    r"rate limited",
     r"usage limit",
     r"usage cap",
     r"usage exhausted",
@@ -563,6 +565,7 @@ def model_usage_limit_retry_hint(error_text):
     text = re.sub(r"\s+", " ", str(error_text or "")).strip()
     patterns = (
         r"(?:try again|retry|available|reset(?:s)?|limit reset(?:s)?)(?:\s+\w+){0,4}\s+(?:in|at|after|on|until)\s+([^.;\n]{2,90})",
+        r"(?:please\s+)?wait\s+(?:for\s+)?([^.;\n]{2,60}?)(?:\s+and\s+try\s+again|$)",
         r"(?:intenta|vuelve a intentar|reintenta|reinicia|disponible)(?:\s+\w+){0,5}\s+(?:en|a las|despues de|después de|hasta)\s+([^.;\n]{2,90})",
         r"(?:after|in)\s+(\d+\s*(?:seconds?|minutes?|hours?|segundos?|minutos?|horas?))",
     )
@@ -575,6 +578,30 @@ def model_usage_limit_retry_hint(error_text):
     return ""
 
 
+def localized_retry_hint(hint, language="es"):
+    value = str(hint or "").strip(" .,:;")
+    if not value:
+        return ""
+    if str(language or "es").lower().startswith("en"):
+        return value
+    lowered = value.lower()
+    replacements = [
+        (r"\ban hour\b", "1 hora"),
+        (r"\ba minute\b", "1 minuto"),
+        (r"\ba second\b", "1 segundo"),
+        (r"\ba moment\b", "un momento"),
+        (r"\bfew moments\b", "unos momentos"),
+        (r"\bseconds?\b", "segundos"),
+        (r"\bminutes?\b", "minutos"),
+        (r"\bhours?\b", "horas"),
+        (r"\bdays?\b", "días"),
+    ]
+    translated = lowered
+    for pattern, replacement in replacements:
+        translated = re.sub(pattern, replacement, translated, flags=re.IGNORECASE)
+    return translated.strip(" .,:;")
+
+
 def model_usage_limit_reply(language="es", error_text=""):
     hint = model_usage_limit_retry_hint(error_text)
     if language == "en":
@@ -583,14 +610,14 @@ def model_usage_limit_reply(language="es", error_text=""):
             "I will not invent an answer or execute actions while the brain cannot respond."
         )
         if hint:
-            return f"{base} Try again after: {hint}."
+            return f"{base} Try again after: {localized_retry_hint(hint, 'en')}."
         return f"{base} Try again later; the provider did not send me an exact reset time."
     base = (
         "Tu ChatGPT/Codex sí está conectado, pero el modelo alcanzó su límite temporal de uso. "
         "No voy a inventar una respuesta ni ejecutar acciones mientras el cerebro no pueda responder."
     )
     if hint:
-        return f"{base} Intenta de nuevo después de: {hint}."
+        return f"{base} Puedes intentar de nuevo en {localized_retry_hint(hint, 'es')}."
     return f"{base} Intenta de nuevo más tarde; el proveedor no me dio una hora exacta de reinicio."
 
 
