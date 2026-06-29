@@ -10,6 +10,7 @@ let updateCheckStarted=false;
 let updateInfo=null;
 let updateAutoTimer=null;
 const UPDATE_INSTALLED_ACK_KEY='dashboardUpdateInstalledVersion';
+const ONBOARDING_STEP_KEY='dashboardOnboardingStepId';
 const fmtMoney=n=>'$'+Number(n||0).toLocaleString(undefined,{maximumFractionDigits:2});
 const fmtPct=n=>Number(n||0).toFixed(2)+'%';
 const qs=s=>document.querySelector(s);
@@ -355,6 +356,9 @@ function evalActionExpression(expr,event,source){
  if(raw==='lang')return lang;
  if(raw==='window.pendingLicenseActivationPayload||{}')return window.pendingLicenseActivationPayload||{};
  if(raw==="qs('#onboarding-flow')?.classList.contains('open')")return Boolean(qs('#onboarding-flow')?.classList.contains('open'));
+ if(raw==='onboardingFlowStep')return onboardingFlowStep;
+ let stepDelta=raw.match(/^onboardingFlowStep([+-])(\d+)$/);
+ if(stepDelta)return onboardingFlowStep+(stepDelta[1]==='-'?-1:1)*Number(stepDelta[2]);
  if(/^[-+]?\d+(\.\d+)?$/.test(raw))return Number(raw);
  let m=raw.match(/^t\((['"])(.*?)\1\)$/);if(m)return t(m[2]);
  if(raw==='businessProfileChatPrompt()')return businessProfileChatPrompt();
@@ -380,7 +384,7 @@ function allowedActionCall(name){
   saveBusinessContextQuestion,saveGuardrails,saveProfitabilityRules,saveOptimizationSettings,saveShopifyConfig,testShopifyConnection,syncShopifyOutcomes,unlockOptimization,saveSetupConfig,sendChatGptTerminalInput,restoreMigrationBackup,
   budgetPrompt,campaignAction,detectTelegramChats,setLocalNetworkAccess,showDetails,selectAgentModelRoute,saveChatGptModel,
   connectChatGpt,toggleChatGptDeviceAuthHelp,downloadMigrationBackup,refreshCloudAccess,loadUpdateSnapshots,showUpdateDetails,
-  openDailyBriefSchedule,closeDailyBriefSchedule,saveDailyBriefSchedule,renderOnboardingFlow
+  openDailyBriefSchedule,closeDailyBriefSchedule,saveDailyBriefSchedule,renderOnboardingFlow,setOnboardingFlowStep
  };
  return actions[name]||null;
 }
@@ -561,7 +565,7 @@ function setUnlockError(message=''){const err=qs('#unlock-error');if(err){err.te
 function syncUnlockMode(mode=''){unlockMode=mode||(dashboardPasswordIsSet()?'unlock':'create');const create=unlockMode==='create';const title=qs('#unlock-title'),body=qs('#unlock-body'),button=qs('#unlock-submit'),label=qs('#unlock-password-label'),confirmLabel=qs('#unlock-confirm-label'),input=qs('#unlock-password'),confirmInput=qs('#unlock-confirm-password'),confirmWrap=qs('#unlock-confirm-wrap');if(title){title.dataset.i18n=create?'unlock_create_title':'unlock_title';title.textContent=t(title.dataset.i18n)}if(body){body.dataset.i18n=create?'unlock_create_body':'unlock_body';body.textContent=t(body.dataset.i18n)}if(button){button.dataset.i18n=create?'unlock_create_button':'unlock_button';button.textContent=t(button.dataset.i18n)}if(label){label.dataset.i18n='dashboard_password';label.textContent=t('dashboard_password')}if(confirmLabel){confirmLabel.dataset.i18n='dashboard_password_confirm';confirmLabel.textContent=t('dashboard_password_confirm')}if(input){input.autocomplete=create?'new-password':'current-password';input.placeholder=create?(lang==='es'?'Crea una contraseña segura':'Create a secure password'):''}if(confirmInput){confirmInput.classList.toggle('hidden',!create);confirmInput.disabled=!create;confirmInput.placeholder=create?(lang==='es'?'Escríbela otra vez':'Type it again'):'';confirmInput.value=''}if(confirmWrap)confirmWrap.classList.toggle('hidden',!create)}
 function showUnlock(message='',mode=''){const overlay=qs('#unlock-overlay');syncUnlockMode(mode);setUnlockError(message);overlay.classList.add('open');setTimeout(()=>qs('#unlock-password')?.focus(),30);return new Promise(resolve=>{unlockResolver=resolve})}
 function hideUnlock(){qs('#unlock-overlay')?.classList.remove('open');setUnlockError('')}
-function openOnboardingPasswordStep(){const steps=onboardingSteps();const idx=steps.findIndex(s=>s.id==='password');if(idx>=0){onboardingFlowTouched=true;onboardingFlowStep=idx;renderOnboardingFlow();setTimeout(()=>qs('#new-dashboard-password')?.focus(),60)}}
+function openOnboardingPasswordStep(){const steps=onboardingSteps();const idx=steps.findIndex(s=>s.id==='password');if(idx>=0){setOnboardingFlowStep(idx);setTimeout(()=>qs('#new-dashboard-password')?.focus(),60)}}
 async function requestUnlock(message=''){if(!dashboardPasswordIsSet()){hideUnlock();openOnboardingPasswordStep();return ''}return showUnlock(message||t('unlock_needed'),'unlock')}
 async function responseErrorMessage(res){const text=await res.text();try{const data=JSON.parse(text);return data.error||data.detail||text}catch{return text}}
 async function api(path,opts={}){const headers={'Content-Type':'application/json',...(opts.headers||{})};const password=dashboardPassword();if(password)headers['X-Dashboard-Token']=password;let res=await fetch(path,{...opts,headers});if(res.status===401){clearStoredDashboardSecrets();const entered=await requestUnlock();if(entered){headers['X-Dashboard-Token']=entered;res=await fetch(path,{...opts,headers});if(res.status===401){clearStoredDashboardSecrets();await requestUnlock(t('unlock_failed'));throw new Error(t('unlock_failed'))}}}if(!res.ok)throw new Error(await responseErrorMessage(res));return res.json()}
@@ -1174,7 +1178,7 @@ function initialStrategyGuide(){
   lang==='es'?'Empezar con supervisión.':'Start with supervision.'
   ]);
   const angles=p.suggested_angles||[];
- return `<div class="setup-guide private-connection"><section class="guide-hero business-hero"><div class="guide-main"><span class="guide-eyebrow">${lang==='es'?'Primer plan':'First plan'}</span><h3>${lang==='es'?'Esto entendí':'This is what I understood'}</h3><p>${escapeHtml(p.positioning||p.detected_title||p.offer|| (lang==='es'?'Todavía falta más contexto.':'We still need more context.'))}</p><div class="business-summary-grid"><div><b>${lang==='es'?'Tipo':'Type'}</b><span>${escapeHtml(p.business_type||'-')}</span></div><div><b>${lang==='es'?'Oferta':'Offer'}</b><span>${escapeHtml(p.main_offer||p.offer||'-')}</span></div><div><b>${lang==='es'?'Cliente':'Customer'}</b><span>${escapeHtml(p.ideal_customer||p.audience||'-')}</span></div></div></div><aside class="guide-checklist"><b>${lang==='es'?'Plan inicial':'Initial plan'}</b><ol>${plan.map(item=>`<li>${escapeHtml(item)}</li>`).join('')}</ol></aside></section>${angles.length?`<div class="guide-panel"><b>${lang==='es'?'Ideas iniciales':'Initial ideas'}</b><ol>${angles.map(item=>`<li>${escapeHtml(item)}</li>`).join('')}</ol></div>`:''}<div class="onboarding-step-actions"><button class="btn" type="button" data-action-code="onboardingFlowStep=Math.max(0,onboardingFlowStep-1);renderOnboardingFlow()">${lang==='es'?'Editar':'Edit'}</button><button class="btn primary" type="button" data-action-code="onboardingFlowTouched=true;onboardingFlowStep=Math.min(onboardingSteps().length-1,onboardingFlowStep+1);renderOnboardingFlow()">${lang==='es'?'Seguir':'Continue'}</button><button class="btn ask-btn" type="button" data-action-code="openChat('${lang==='es'?'Revisa esta información de mi negocio y dime qué estrategia inicial prepararías para Meta Ads.':'Review this business profile and tell me what initial Meta Ads strategy you would prepare.'}')">${t('ask_agent')}</button></div></div>`;
+ return `<div class="setup-guide private-connection"><section class="guide-hero business-hero"><div class="guide-main"><span class="guide-eyebrow">${lang==='es'?'Primer plan':'First plan'}</span><h3>${lang==='es'?'Esto entendí':'This is what I understood'}</h3><p>${escapeHtml(p.positioning||p.detected_title||p.offer|| (lang==='es'?'Todavía falta más contexto.':'We still need more context.'))}</p><div class="business-summary-grid"><div><b>${lang==='es'?'Tipo':'Type'}</b><span>${escapeHtml(p.business_type||'-')}</span></div><div><b>${lang==='es'?'Oferta':'Offer'}</b><span>${escapeHtml(p.main_offer||p.offer||'-')}</span></div><div><b>${lang==='es'?'Cliente':'Customer'}</b><span>${escapeHtml(p.ideal_customer||p.audience||'-')}</span></div></div></div><aside class="guide-checklist"><b>${lang==='es'?'Plan inicial':'Initial plan'}</b><ol>${plan.map(item=>`<li>${escapeHtml(item)}</li>`).join('')}</ol></aside></section>${angles.length?`<div class="guide-panel"><b>${lang==='es'?'Ideas iniciales':'Initial ideas'}</b><ol>${angles.map(item=>`<li>${escapeHtml(item)}</li>`).join('')}</ol></div>`:''}<div class="onboarding-step-actions"><button class="btn" type="button" data-action-code="setOnboardingFlowStep(onboardingFlowStep-1)">${lang==='es'?'Editar':'Edit'}</button><button class="btn primary" type="button" data-action-code="setOnboardingFlowStep(onboardingFlowStep+1)">${lang==='es'?'Seguir':'Continue'}</button><button class="btn ask-btn" type="button" data-action-code="openChat('${lang==='es'?'Revisa esta información de mi negocio y dime qué estrategia inicial prepararías para Meta Ads.':'Review this business profile and tell me what initial Meta Ads strategy you would prepare.'}')">${t('ask_agent')}</button></div></div>`;
 }
 function businessProfileCard(){
  const p=state.business_profile||{};
@@ -1356,10 +1360,36 @@ function firstActionableOnboardingIndex(steps){
  const next=steps.findIndex(s=>s.status!=='ok');
  return next>=0?next:Math.max(0,steps.length-1);
 }
+function rememberOnboardingStep(stepId){
+ if(!stepId)return;
+ try{localStorage.setItem(ONBOARDING_STEP_KEY,stepId)}catch(_err){}
+}
+function clearRememberedOnboardingStep(){
+ try{localStorage.removeItem(ONBOARDING_STEP_KEY)}catch(_err){}
+}
+function restoreOnboardingStepIndex(steps){
+ let saved='';
+ try{saved=localStorage.getItem(ONBOARDING_STEP_KEY)||''}catch(_err){}
+ if(!saved)return false;
+ const idx=steps.findIndex(s=>s.id===saved);
+ if(idx<0||steps[idx].status==='ok')return false;
+ onboardingFlowStep=idx;
+ onboardingFlowTouched=true;
+ return true;
+}
+function setOnboardingFlowStep(index){
+ const steps=onboardingSteps();
+ const max=Math.max(0,steps.length-1);
+ onboardingFlowTouched=true;
+ onboardingFlowStep=Math.max(0,Math.min(max,Number(index)||0));
+ rememberOnboardingStep((steps[onboardingFlowStep]||{}).id);
+ renderOnboardingFlow();
+}
 function advanceOnboardingAfterLoad(){
  const steps=onboardingSteps();
  const next=firstActionableOnboardingIndex(steps);
  if(next>onboardingFlowStep)onboardingFlowStep=next;
+ rememberOnboardingStep((steps[onboardingFlowStep]||{}).id);
  renderOnboardingFlow();
 }
 function renderOnboardingFlow(){
@@ -1367,20 +1397,22 @@ function renderOnboardingFlow(){
  if(uiWorkbenchPreview){flow.classList.remove('open');flow.innerHTML='';return}
  const doneState=state.onboarding||{};
  const needsFirstPassword=Boolean(state.config.dashboard_password_required&&!state.config.dashboard_password_set);
- if(doneState.completed&&!doneState.requires_repair&&!needsFirstPassword){flow.classList.remove('open');return}
+ if(doneState.completed&&!doneState.requires_repair&&!needsFirstPassword){clearRememberedOnboardingStep();flow.classList.remove('open');return}
  const steps=onboardingSteps();if(onboardingFlowStep>=steps.length)onboardingFlowStep=steps.length-1;
+ if(!onboardingFlowTouched)restoreOnboardingStepIndex(steps);
  if(!onboardingFlowTouched&&(steps[onboardingFlowStep]||{}).status==='ok')onboardingFlowStep=firstActionableOnboardingIndex(steps);
  const step=steps[onboardingFlowStep]||steps[0];const copyStep=stepCopy(step.id);const doneCount=steps.filter(s=>s.status==='ok').length;
+ rememberOnboardingStep(step.id);
  const isLast=onboardingFlowStep===steps.length-1;
  const canGoNext=!isLast&&step.status!=='blocked';
- const nextButton=canGoNext?`<button class="btn" data-action-code="onboardingFlowTouched=true;onboardingFlowStep=Math.min(${steps.length-1},onboardingFlowStep+1);renderOnboardingFlow()">${lang==='es'?'Siguiente':'Next'}</button>`:'';
+ const nextButton=canGoNext?`<button class="btn" data-action-code="setOnboardingFlowStep(onboardingFlowStep+1)">${lang==='es'?'Siguiente':'Next'}</button>`:'';
 	 const finishButton=isLast&&step.id!=='communication'?`<button class="btn primary" data-action-code="completeOnboarding()">${lang==='es'?'Terminar y abrir dashboard':'Finish and open dashboard'}</button>`:'';
  const skipButton=`<button class="btn" data-action-code="skipOnboarding()">${lang==='es'?'Saltar y completar luego':'Skip and finish later'}</button>`;
  const repairNotice=doneState.requires_repair?`<div class="guide-card"><b>${lang==='es'?'Reconectemos tus datos reales':'Reconnect your real data'}</b><p>${lang==='es'?'Tu configuración anterior quedó incompleta o perdió la conexión con Meta. Completa los pasos que falten para que el dashboard no use información de demostración.':'Your previous setup is incomplete or lost its Meta connection. Complete the missing steps so the dashboard does not use demonstration information.'}</p></div>`:'';
  const securityNotice=`<div class="onboarding-security-note"><div><b>${lang==='es'?'Instalación privada y segura':'Private and secure install'}</b><p>${lang==='es'?'Recuerda: nada de lo que coloques aquí lo podemos ver nosotros. Esta instalación vive en tu propio entorno y solo entra tu dispositivo autorizado. Es más privada que entregar tus credenciales a un SaaS. Si tienes dudas, contáctanos.':'Remember: we cannot see anything you enter here. This install lives in your own environment and only your authorized device can enter. It is more private than handing credentials to a SaaS. Contact us if you have questions.'}</p></div></div>`;
  flow.classList.add('open');
  const metaWide=step.id==='meta';
- flow.innerHTML=`<div class="onboarding-shell ${metaWide?'onboarding-shell-wide':''}"><aside class="onboarding-side"><h1>Admira IA</h1><p>${lang==='es'?'Conecta lo esencial. Después hablarás con el agente por Telegram para contarle tu negocio con calma.':'Connect the essentials. Then you talk with the agent through Telegram so it can learn the business calmly.'}</p><div class="onboarding-progress">${steps.map((s,i)=>`<span class="${i<=onboardingFlowStep?'done':''}"></span>`).join('')}</div><p>${doneCount}/${steps.length} ${stepCopy('progress')}</p></aside><main class="onboarding-card ${metaWide?'onboarding-card-wide':''}">${securityNotice}${repairNotice}<h2>${copyStep[0]}</h2><p>${copyStep[1]}</p>${onboardingFormFor(step.id)}<div class="onboarding-step-actions"><button class="btn" ${onboardingFlowStep===0?'disabled':''} data-action-code="onboardingFlowTouched=true;onboardingFlowStep=Math.max(0,onboardingFlowStep-1);renderOnboardingFlow()">${lang==='es'?'Atrás':'Back'}</button>${nextButton}${skipButton}${finishButton}</div></main></div>`;
+ flow.innerHTML=`<div class="onboarding-shell ${metaWide?'onboarding-shell-wide':''}"><aside class="onboarding-side"><h1>Admira IA</h1><p>${lang==='es'?'Conecta lo esencial. Después hablarás con el agente por Telegram para contarle tu negocio con calma.':'Connect the essentials. Then you talk with the agent through Telegram so it can learn the business calmly.'}</p><div class="onboarding-progress">${steps.map((s,i)=>`<span class="${i<=onboardingFlowStep?'done':''}"></span>`).join('')}</div><p>${doneCount}/${steps.length} ${stepCopy('progress')}</p></aside><main class="onboarding-card ${metaWide?'onboarding-card-wide':''}">${securityNotice}${repairNotice}<h2>${copyStep[0]}</h2><p>${copyStep[1]}</p>${onboardingFormFor(step.id)}<div class="onboarding-step-actions"><button class="btn" ${onboardingFlowStep===0?'disabled':''} data-action-code="setOnboardingFlowStep(onboardingFlowStep-1)">${lang==='es'?'Atrás':'Back'}</button>${nextButton}${skipButton}${finishButton}</div></main></div>`;
  maybeAutoDiscoverDestination(step.id);
  maybeStartMetaFrameCycle(step.id);
 }
@@ -1803,12 +1835,12 @@ function advanceOnboardingAfterChatGptConnected(){
  const steps=onboardingSteps();
  const idx=steps.findIndex(s=>s.id==='chatgpt');
  if(idx<0||onboardingFlowStep!==idx)return;
- onboardingFlowTouched=true;
- onboardingFlowStep=Math.min(steps.length-1,idx+1);
- renderOnboardingFlow();
+ setOnboardingFlowStep(Math.min(steps.length-1,idx+1));
 }
 async function pollChatGptConnection(){
  try{
+  rememberOnboardingStep('chatgpt');
+  const steps=onboardingSteps();const idx=steps.findIndex(s=>s.id==='chatgpt');if(idx>=0){onboardingFlowTouched=true;onboardingFlowStep=idx}
   const res=await api('/api/agent-model/connect-status',{method:'POST',body:'{}'});
   renderChatGptConnectResult(res);
   if((res.result?.status||res.status)==='completed'){await load();advanceOnboardingAfterChatGptConnected()}
@@ -1907,6 +1939,8 @@ async function connectChatGpt(event){
  const btn=event?.currentTarget||event?.target;
  const box=qs('#chatgpt-connect-result');
  if(btn)btn.disabled=true;
+ rememberOnboardingStep('chatgpt');
+ const steps=onboardingSteps();const idx=steps.findIndex(s=>s.id==='chatgpt');if(idx>=0){onboardingFlowTouched=true;onboardingFlowStep=idx}
  const popupReady=prepareChatGptAuthWindow();
  if(box){box.classList.remove('hidden');box.innerHTML=`<b>${lang==='es'?'Conectando...':'Connecting...'}</b><p>${popupReady?(lang==='es'?'Abrí una pestaña de espera. Cuando aparezca el login seguro, la llevaré ahí automáticamente.':'I opened a waiting tab. When the secure login appears, I will send it there automatically.'):(lang==='es'?'Si el navegador bloqueó la pestaña, te mostraré un botón para abrir el login.':'If the browser blocked the tab, I will show a button to open the login.')}</p>`}
  try{
