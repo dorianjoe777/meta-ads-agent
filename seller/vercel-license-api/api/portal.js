@@ -1161,6 +1161,10 @@ export default async function handler(request, response) {
         status.textContent = 'Lo usamos para crear el servidor, instalar el producto y configurar el acceso seguro. En DigitalOcean crea un token sin fecha de vencimiento, o con una duracion larga, para que el servidor pueda recuperar acceso si tu IP cambia.';
       }
     }
+    function cloudOpenButtonMarkup(openUrl, directOnly){
+      const label = directOnly ? 'Probar enlace directo' : 'Acceder a mi dashboard';
+      return '<button class="cloud-open-button" type="button" data-cloud-open-url="'+escapeHtml(openUrl)+'" aria-label="Abrir mi dashboard">'+label+'</button>';
+    }
     function renderInstallState(data){
       const state = data.install_state || {};
       const cloud = state.cloud || {};
@@ -1186,7 +1190,7 @@ export default async function handler(request, response) {
               '<strong>'+(ready?'Accede a tu dashboard':(failed?'Borra el Droplet y crea otro':(waitingForIp?'Esperando conexion automatica':(takingLonger?'Todavia no esta listo':'Preparando tu dashboard'))))+'</strong>' +
               '<p>'+(ready?'Tu dashboard ya puede abrirse.':(failed?'Puedes borrar el Droplet desde aqui o marcarlo como borrado si ya lo eliminaste manualmente.':(waitingForIp?'El Droplet va a avisar su IP al portal. Pega el IPv4 solo si esto no avanza despues de varios minutos.':(takingLonger?'Si sigue asi, abre la consola del Droplet y revisa el log de instalacion.':'Normalmente tarda 5 a 10 minutos. Estoy verificando automaticamente.'))))+'</p>' +
               cloudProgressMarkup(progressData) +
-              '<div class="state-actions">'+((ready || directOnly) && openUrl?'<a class="cloud-open-button" href="'+escapeHtml(openUrl)+'" target="_blank" rel="noreferrer" aria-label="Abrir mi dashboard">'+(directOnly?'Probar enlace directo':'Acceder a mi dashboard')+'</a>':(failed?'<span class="cloud-open-button pending" aria-disabled="true">Instalacion detenida</span>':(waitingForIp?recoverWaitingForIpMarkup(cloudInstallation):'<span class="cloud-open-button pending" aria-disabled="true">Dashboard preparando...</span>')))+refreshCloudAccessMarkup()+'</div>' +
+              '<div class="state-actions">'+((ready || directOnly) && openUrl?cloudOpenButtonMarkup(openUrl, directOnly):(failed?'<span class="cloud-open-button pending" aria-disabled="true">Instalacion detenida</span>':(waitingForIp?recoverWaitingForIpMarkup(cloudInstallation):'<span class="cloud-open-button pending" aria-disabled="true">Dashboard preparando...</span>')))+refreshCloudAccessMarkup()+'</div>' +
             '</div>' +
             '<div class="state-card">' +
               '<span class="state-pill empty">Datos guardados en tu licencia</span>' +
@@ -1245,7 +1249,7 @@ export default async function handler(request, response) {
       const directOnly = Boolean(openUrl && !data.cloud_open_url && (data.attached_ip_at || data.direct_open_only || data.stage === 'ip_guardada_sin_gate'));
       const title = ready ? 'Tu servidor cloud ya esta listo.' : (failed ? 'Esta instalacion se detuvo.' : (waitingForIp ? 'DigitalOcean creo el servidor. Estoy conectando el IP.' : (takingLonger ? 'La instalacion esta tardando mas de lo normal.' : 'Instalando tu servidor cloud.')));
       const openButton = (ready || directOnly) && openUrl
-        ? '<a class="cloud-open-button" href="'+escapeHtml(openUrl)+'" target="_blank" rel="noreferrer" aria-label="Abrir mi dashboard">'+(directOnly?'Probar enlace directo':'Acceder a mi dashboard')+'</a>'
+        ? cloudOpenButtonMarkup(openUrl, directOnly)
         : (failed ? '<span class="cloud-open-button pending" aria-disabled="true">Instalacion detenida</span>' : (waitingForIp ? recoverWaitingForIpMarkup(data) : '<span class="cloud-open-button pending" aria-disabled="true">'+(openUrl?'Dashboard preparando...':'DigitalOcean esta asignando la IP...')+'</span>'));
       const direct = data.dashboard_url
         ? '<p class="cloud-direct">Enlace del dashboard: '+escapeHtml(data.dashboard_url)+(data.dashboard_http_url && data.dashboard_http_url !== data.dashboard_url?'<br>Respaldo por IP: '+escapeHtml(data.dashboard_http_url):'')+(data.cloud_open_url?'<br>Si tu internet cambia de IP, usa siempre el boton de arriba.':'<br>Este enlace directo puede depender de que tu IP actual siga permitida en el firewall.')+'</p>'
@@ -1353,6 +1357,59 @@ export default async function handler(request, response) {
         setStatus(data.detail || 'Acceso actualizado. Intenta abrir o conectar por SSH otra vez.');
       }catch(error){
         setStatus(error.message || 'No pude actualizar el acceso de esta red.', true);
+      }
+    }
+    async function openCloudDashboard(button){
+      if(!portalToken || !button) return;
+      const originalLabel = button.textContent;
+      const fallbackUrl = safeHttpUrl(button.dataset.cloudOpenUrl || '');
+      let pendingWindow = null;
+      try{
+        pendingWindow = window.open('about:blank', '_blank');
+        if(pendingWindow){
+          pendingWindow.opener = null;
+          pendingWindow.document.write('<p style="font-family:system-ui;padding:24px">Preparando acceso seguro...</p>');
+        }
+      }catch{}
+      button.disabled = true;
+      button.textContent = 'Preparando acceso...';
+      setStatus('Actualizando acceso de esta red antes de abrir...');
+      try{
+        const typedToken = document.getElementById('digitalOceanToken')?.value.trim() || '';
+        const data = await postJson('/api/portal/cloud/digitalocean', {
+          portal_token: portalToken,
+          action: 'refresh_access',
+          digitalocean_token: typedToken
+        });
+        if(!data.valid){
+          if(pendingWindow) pendingWindow.close();
+          if(data.status === 'digitalocean_token_required') focusDigitalOceanToken();
+          setStatus(data.detail || 'No pude actualizar el acceso. Pega tu token de DigitalOcean y vuelve a intentar.', true);
+          return;
+        }
+        renderCloudResult(data);
+        renderInstallState({ cloud_installation: data, install_state: { cloud: { installed:true, status:data.status || 'ready', dashboard_available:Boolean(data.ready || data.dashboard_url), progress:data.progress || 100 }, local: {} } });
+        const directUrl = safeHttpUrl(data.dashboard_url || data.dashboard_https_url || data.dashboard_http_url || fallbackUrl || data.cloud_open_url || '');
+        if(!directUrl){
+          if(pendingWindow) pendingWindow.close();
+          setStatus('Acceso actualizado, pero todavia no tengo enlace de dashboard. Espera unos segundos y vuelve a intentar.', true);
+          return;
+        }
+        setStatus(data.detail || 'Acceso actualizado. Abriendo dashboard...');
+        if(pendingWindow){
+          pendingWindow.location.href = directUrl;
+        }else{
+          window.open(directUrl, '_blank', 'noreferrer');
+        }
+        startCloudProgressPolling();
+      }catch(error){
+        if(pendingWindow) pendingWindow.close();
+        setStatus(error.message || 'No pude preparar el acceso de esta red.', true);
+      }finally{
+        if(button.isConnected){
+          button.disabled = false;
+          button.textContent = originalLabel;
+        }
       }
     }
     async function resetCloudInstall(button){
@@ -1516,6 +1573,11 @@ export default async function handler(request, response) {
       }
     });
     document.addEventListener('click', (event) => {
+      const openButton = event.target.closest('button[data-cloud-open-url]');
+      if(openButton){
+        openCloudDashboard(openButton);
+        return;
+      }
       const deleteButton = event.target.closest('button[data-cloud-action="delete-droplet"]');
       if(deleteButton){
         deleteCloudDroplet(deleteButton);
