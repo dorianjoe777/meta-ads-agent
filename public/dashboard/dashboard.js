@@ -1747,9 +1747,10 @@ function communicationStyleGuide(onboarding=false){
  const simpleChecked=saved==='simple'?'checked':'';
  const technicalChecked=saved==='technical'?'checked':'';
  const submitCode=onboarding?'saveCommunicationStyle(event,true)':'saveCommunicationStyle(event,false)';
- const title=lang==='es'?'¿Cómo quieres que te hable el agente?':'How should the agent talk to you?';
- const body=lang==='es'?'Esta preferencia global se aplica al chat, Telegram y las explicaciones del manager en todos tus negocios o clientes.':'This global preference applies to chat, Telegram, and manager explanations across every business or client.';
- return `<form class="communication-style-form" data-submit-code="${submitCode}"><fieldset><legend>${title}</legend><p>${body}</p><div class="communication-style-grid"><label class="communication-style-option"><input type="radio" name="communication_style" value="simple" required ${simpleChecked}><span><b>${lang==='es'?'Palabras simples':'Simple words'}</b><small>${lang==='es'?'Primero la decisión y el impacto en tu negocio. Evita jerga y explica cualquier término técnico con palabras fáciles.':'Decision and business impact first. Avoid jargon and explain technical terms in everyday language.'}</small><em>${lang==='es'?'Recomendado si quieres respuestas rápidas y fáciles de entender.':'Recommended for quick, easy-to-understand answers.'}</em></span></label><label class="communication-style-option"><input type="radio" name="communication_style" value="technical" required ${technicalChecked}><span><b>${lang==='es'?'Explicaciones técnicas':'Technical explanations'}</b><small>${lang==='es'?'Puede usar terminología precisa, supuestos, mecanismos y detalles de implementación cuando ayuden.':'May use precise terminology, assumptions, mechanisms, and implementation detail when useful.'}</small><em>${lang==='es'?'Para usuarios que prefieren profundidad sin simplificación automática.':'For users who prefer depth without automatic simplification.'}</em></span></label></div><p class="notice">${lang==='es'?'Esto solo cambia cómo explica. Las reglas de seguridad y las aprobaciones siguen iguales.':'This only changes how it explains. Safety and approval rules stay the same.'}</p><div class="onboarding-step-actions"><button class="btn primary" type="submit">${onboarding?(lang==='es'?'Guardar y abrir dashboard':'Save and open dashboard'):(lang==='es'?'Guardar forma de hablar':'Save communication style')}</button></div></fieldset></form>`;
+ const title=lang==='es'?'Último detalle: ¿simple o técnico?':'Last detail: simple or technical?';
+ const body=lang==='es'?'Elige cómo quieres que el agente te explique las cosas. Puedes cambiarlo después.':'Choose how the agent should explain things. You can change this later.';
+ const note=onboarding?'':`<p class="notice">${lang==='es'?'Es una preferencia global para chat y Telegram.':'This is a global preference for chat and Telegram.'}</p>`;
+ return `<form class="communication-style-form" data-submit-code="${submitCode}"><fieldset><legend>${title}</legend><p>${body}</p><div class="communication-style-grid"><label class="communication-style-option"><input type="radio" name="communication_style" value="simple" required ${simpleChecked}><span><b>${lang==='es'?'Palabras simples':'Simple words'}</b><small>${lang==='es'?'Directo, claro y sin jerga.':'Direct, clear, no jargon.'}</small><em>${lang==='es'?'Recomendado':'Recommended'}</em></span></label><label class="communication-style-option"><input type="radio" name="communication_style" value="technical" required ${technicalChecked}><span><b>${lang==='es'?'Explicaciones técnicas':'Technical explanations'}</b><small>${lang==='es'?'Más detalle cuando ayude a decidir.':'More detail when it helps decisions.'}</small><em>${lang==='es'?'Para usuarios con experiencia':'For experienced users'}</em></span></label></div>${note}<div class="onboarding-step-actions"><button class="btn primary" type="submit">${onboarding?(lang==='es'?'Guardar y abrir dashboard':'Save and open dashboard'):(lang==='es'?'Guardar forma de hablar':'Save communication style')}</button></div></fieldset></form>`;
 }
 async function saveCommunicationStyle(event,finish=false){
  event.preventDefault();
@@ -2339,7 +2340,7 @@ async function maybeFinishTelegramOnboarding(){
  const telegram=state.config?.telegram_agent||{};
  if(telegram.enabled&&telegram.bot_configured&&telegram.chat_id){
   const steps=onboardingSteps();const communicationIndex=steps.findIndex(step=>step.id==='communication');
-  onboardingFlowTouched=true;onboardingFlowStep=communicationIndex>=0?communicationIndex:Math.min(steps.length-1,onboardingFlowStep+1);renderOnboardingFlow();
+  setOnboardingFlowStep(communicationIndex>=0?communicationIndex:Math.min(steps.length-1,onboardingFlowStep+1));
  }
  return false;
 }
@@ -2348,7 +2349,15 @@ async function detectTelegramChats(){
  const res=await api('/api/telegram/detect',{method:'POST',body:'{}'});const rows=res.result||[];
  if(!box)return;
  if(!rows.length){box.innerHTML=`<div class="telegram-next-action"><div class="telegram-orb">AI</div><div><b>${lang==='es'?'Todavía no veo tu mensaje':'I do not see your message yet'}</b><p>${lang==='es'?'Abre Telegram, entra al bot que creaste, envíale "hola" y vuelve a tocar detectar.':'Open Telegram, enter the bot you created, send "hello", and tap detect again.'}</p></div><button class="btn primary telegram-detect-button" type="button" data-action-code="detectTelegramChats()">${lang==='es'?'Ya envié hola, intentar otra vez':'I sent hello, try again'}</button></div>`;return}
- box.innerHTML=`<div class="telegram-chat-choices"><div class="telegram-chat-choice-head"><b>${lang==='es'?'Encontré estos chats':'I found these chats'}</b><p>${lang==='es'?'Elige el tuyo. Solo ese chat quedará autorizado y te enviaré el primer mensaje automáticamente.':'Choose yours. Only that chat will be authorized and I will send the first message automatically.'}</p></div>${rows.map(c=>`<div class="telegram-chat-choice"><div><span>${lang==='es'?'Chat detectado':'Detected chat'}</span><b>${escapeHtml(c.label)} ${escapeHtml(c.username||'')}</b><p>ID ${escapeHtml(c.id)}</p></div><button class="btn primary" type="button" data-action-code="selectTelegramChat('${escapeHtml(c.id)}',qs('#onboarding-flow')?.classList.contains('open'))">${lang==='es'?'Usar este chat y enviarme el primer mensaje':'Use this chat and send me the first message'}</button></div>`).join('')}</div>`;
+ const chat=rows[rows.length-1]||rows[0]||{};
+ const chatId=String(chat.id||'').trim();
+ if(!chatId){box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'No pude leer el chat':'Could not read the chat'}</b><p>${lang==='es'?'Vuelve a enviar "hola" al bot e intenta otra vez.':'Send "hello" to the bot again and try once more.'}</p></div>`;return}
+ box.innerHTML=`<div class="telegram-next-action ready"><div class="telegram-orb">✓</div><div><b>${lang==='es'?'Detecté tu chat':'I found your chat'}</b><p>${lang==='es'?'Lo estoy conectando y te enviaré el primer mensaje.':'I am connecting it and sending the first message.'}</p></div></div>`;
+ try{
+  await selectTelegramChat(chatId,qs('#onboarding-flow')?.classList.contains('open'));
+ }catch(err){
+  box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'No pude guardar el chat':'Could not save the chat'}</b><p>${escapeHtml(err.message||String(err))}</p><button class="btn primary telegram-detect-button" type="button" data-action-code="detectTelegramChats()">${lang==='es'?'Intentar otra vez':'Try again'}</button></div>`;
+ }
 }
 async function selectTelegramChat(id,fromOnboarding=false){
  const payload=fromOnboarding?{chat_id:id,enabled:'true',send_welcome:'true'}:{chat_id:id,send_welcome:'true'};
