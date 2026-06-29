@@ -8458,6 +8458,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return not dashboard_password_configured(config)
 
     def auth_required_for_post(self, path):
+        if path == "/api/dashboard-password" and not dashboard_password_configured(load_config()):
+            return False
         return path in self.PROTECTED_POST_PATHS and not self.onboarding_open_without_password(path)
 
     def auth_required_for_get(self, path):

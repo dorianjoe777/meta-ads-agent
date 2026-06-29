@@ -554,6 +554,8 @@ class IntegrationTestSuite:
             self.assert_true(not handler.auth_required_for_get("/api/dashboard"), "Initial setup dashboard can load before a password exists")
             self.assert_true(handler.auth_required_for_post("/api/social/token"), "Meta token save is protected during onboarding")
             self.assert_true(handler.auth_required_for_get("/api/social/accounts"), "Meta account discovery is protected before a password exists")
+            dashboard.load_onboarding_state = lambda: {"completed": True}
+            self.assert_true(not handler.auth_required_for_post("/api/dashboard-password"), "Password recovery stays open if a completed install has lost its dashboard password")
             dashboard.load_config = lambda: WithPassword()
             self.assert_true(handler.auth_required_for_post("/api/agent-model/connect"), "ChatGPT/Codex login is protected once a dashboard password exists")
             self.assert_true(handler.auth_required_for_post("/api/dashboard-password"), "Changing password requires auth after a password exists")
