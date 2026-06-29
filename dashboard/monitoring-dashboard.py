@@ -2960,9 +2960,12 @@ def extract_login_codes_from_text(value):
 
 def hermes_provider_prompt_visible(output):
     lower = clean_terminal_text(output).lower()
-    return "select provider" in lower and (
+    provider_prompt = "select provider" in lower or "select openai provider" in lower
+    return provider_prompt and (
         "select by number" in lower
         or "enter to confirm" in lower
+        or "enter/space select" in lower
+        or "navigate" in lower
         or "choice [default" in lower
         or "choice:" in lower
     )
@@ -2997,6 +3000,44 @@ def hermes_choice_number_for_label(output, labels):
     return ""
 
 
+def hermes_arrow_menu_payload_for_label(output, labels):
+    cleaned = clean_terminal_text(output)
+    lower = cleaned.lower()
+    provider_prompt = "select provider" in lower or "select openai provider" in lower
+    if not provider_prompt or not ("navigate" in lower or "enter/space select" in lower):
+        return ""
+    wanted = [str(label or "").lower() for label in labels if str(label or "").strip()]
+    if not wanted:
+        return ""
+    menu_lines = []
+    for line in cleaned.splitlines():
+        menu_text = line.strip()
+        menu_lower = menu_text.lower()
+        if not menu_text:
+            continue
+        if "(●)" in menu_text or "(○)" in menu_text or menu_text.startswith("→"):
+            menu_lines.append((menu_text, menu_lower))
+    if not menu_lines:
+        return ""
+    current_index = next((index for index, (line, _lower) in enumerate(menu_lines) if "→" in line), 0)
+    target_index = next(
+        (
+            index
+            for index, (_line, menu_lower) in enumerate(menu_lines)
+            if any(label in menu_lower for label in wanted)
+        ),
+        -1,
+    )
+    if target_index < 0:
+        return ""
+    delta = target_index - current_index
+    if delta > 0:
+        return ("\x1b[B" * delta) + "\n"
+    if delta < 0:
+        return ("\x1b[A" * abs(delta)) + "\n"
+    return "\n"
+
+
 def hermes_model_choice(output, preferred_model=""):
     preferred = str(preferred_model or "").strip()
     if preferred and hermes_model_prompt_visible(output):
@@ -3007,11 +3048,19 @@ def hermes_model_choice(output, preferred_model=""):
 
 
 def hermes_codex_provider_choice(output):
+    arrow_payload = hermes_arrow_menu_payload_for_label(output, ["openai ▸", "openai (codex cli", "openai"])
+    if arrow_payload:
+        return arrow_payload
+    parsed = hermes_choice_number_for_label(output, ["openai ▸", "openai (codex cli", "openai"])
+    if parsed:
+        return f"{parsed}\n"
     parsed = hermes_choice_number_for_label(output, ["openai codex", "chatgpt/codex", "chatgpt codex"])
     if parsed:
-        return parsed
+        return f"{parsed}\n"
     if hermes_provider_prompt_visible(output):
-        return str(os.environ.get("HERMES_CODEX_PROVIDER_CHOICE") or "6").strip() or "6"
+        explicit_choice = str(os.environ.get("HERMES_CODEX_PROVIDER_CHOICE") or "").strip()
+        if explicit_choice:
+            return f"{explicit_choice}\n"
     return ""
 
 
@@ -3112,14 +3161,14 @@ def maybe_auto_drive_hermes_browserless(session_id, master_fd):
             HERMES_LOGIN_STATE["auto_codex_subprovider_sent"] = True
             HERMES_LOGIN_STATE["phase"] = "codex_subprovider_selection"
             HERMES_LOGIN_STATE["auto_note"] = "Estoy confirmando OpenAI Codex automáticamente."
-            payload = "1\n"
+            payload = hermes_arrow_menu_payload_for_label(output, ["openai codex", "chatgpt/codex", "chatgpt codex"]) or "1\n"
         elif not provider_sent:
-            provider_choice = hermes_codex_provider_choice(output)
-            if provider_choice:
+            provider_payload = hermes_codex_provider_choice(output)
+            if provider_payload:
                 HERMES_LOGIN_STATE["auto_provider_sent"] = True
                 HERMES_LOGIN_STATE["phase"] = "provider_selection"
                 HERMES_LOGIN_STATE["auto_note"] = "Estoy eligiendo OpenAI Codex automáticamente."
-                payload = f"{provider_choice}\n"
+                payload = provider_payload
             else:
                 payload = ""
         elif not model_sent and hermes_model_prompt_visible(output):

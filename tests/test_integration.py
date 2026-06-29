@@ -1096,6 +1096,70 @@ class IntegrationTestSuite:
             self.assert_true(selected_provider is True and writes[-1] == (99, b"6\n"), "Browserless Hermes selects OpenAI Codex automatically")
             self.assert_true(prompt["needs_input"] is False and "OpenAI Codex" in prompt["detail"], "Provider prompt is explained without asking the buyer for terminal input")
 
+            shifted_numbered_provider_output = (
+                "Select provider:\n"
+                "Select by number, Enter to confirm.\n"
+                "(●)  1. Nous Portal\n"
+                "(○)  6. Anthropic (Claude models via API key or Claude Code)\n"
+                "(○)  7. OpenAI ▸ (Codex CLI or direct OpenAI API)\n"
+                "Choice [default 1]:\n"
+            )
+            with dashboard.HERMES_LOGIN_LOCK:
+                dashboard.HERMES_LOGIN_STATE.update({
+                    "id": "auto-test",
+                    "output": shifted_numbered_provider_output,
+                    "auto_provider_sent": False,
+                    "auto_codex_subprovider_sent": False,
+                    "auto_model_sent": False,
+                    "auto_note": "",
+                })
+            selected_shifted_provider = dashboard.maybe_auto_drive_hermes_browserless("auto-test", 99)
+            self.assert_true(selected_shifted_provider is True and writes[-1] == (99, b"7\n"), "Browserless Hermes parses shifted numbered provider menus instead of hardcoding option 6")
+
+            partial_provider_output = (
+                "Select provider:\n"
+                "Select by number, Enter to confirm.\n"
+                "(●)  1. Nous Portal\n"
+                "(○)  2. OpenRouter\n"
+                "Choice [default 1]:\n"
+            )
+            writes_before_partial = len(writes)
+            with dashboard.HERMES_LOGIN_LOCK:
+                dashboard.HERMES_LOGIN_STATE.update({
+                    "id": "auto-test",
+                    "output": partial_provider_output,
+                    "auto_provider_sent": False,
+                    "auto_codex_subprovider_sent": False,
+                    "auto_model_sent": False,
+                    "auto_note": "",
+                })
+            selected_partial_provider = dashboard.maybe_auto_drive_hermes_browserless("auto-test", 99)
+            self.assert_true(selected_partial_provider is False and len(writes) == writes_before_partial, "Browserless Hermes waits for OpenAI to appear instead of guessing an old provider number")
+
+            tui_provider_output = (
+                "Select provider:\n"
+                "  ↑↓ navigate  ENTER/SPACE select  ESC cancel\n"
+                " → (●) Nous Portal\n"
+                "   (○) OpenRouter\n"
+                "   (○) Mixture of Agents\n"
+                "   (○) NovitaAI\n"
+                "   (○) LM Studio\n"
+                "   (○) Anthropic\n"
+                "   (○) OpenAI ▸ (Codex CLI or direct OpenAI API)\n"
+                "   (○) Qwen Cloud / DashScope\n"
+            )
+            with dashboard.HERMES_LOGIN_LOCK:
+                dashboard.HERMES_LOGIN_STATE.update({
+                    "id": "auto-test",
+                    "output": tui_provider_output,
+                    "auto_provider_sent": False,
+                    "auto_codex_subprovider_sent": False,
+                    "auto_model_sent": False,
+                    "auto_note": "",
+                })
+            selected_tui_provider = dashboard.maybe_auto_drive_hermes_browserless("auto-test", 99)
+            self.assert_true(selected_tui_provider is True and writes[-1] == (99, (b"\x1b[B" * 6) + b"\n"), "Browserless Hermes navigates the new arrow-key provider menu to OpenAI")
+
             codex_subprovider_output = (
                 "Select provider:\n"
                 "(●)  1. OpenAI Codex\n"
@@ -1115,6 +1179,24 @@ class IntegrationTestSuite:
             prompt = dashboard.hermes_login_prompt_state(codex_subprovider_output, dashboard.HERMES_LOGIN_STATE)
             self.assert_true(selected_subprovider is True and writes[-1] == (99, b"1\n"), "Browserless Hermes explicitly confirms OpenAI Codex in the OpenAI submenu")
             self.assert_true(prompt["needs_input"] is False and "OpenAI Codex" in prompt["detail"], "OpenAI submenu is handled without buyer terminal input")
+
+            tui_subprovider_output = (
+                "Select OpenAI provider:\n"
+                "  ↑↓ navigate  ENTER/SPACE select  ESC cancel\n"
+                " → (●) OpenAI Codex\n"
+                "   (○) OpenAI API\n"
+            )
+            with dashboard.HERMES_LOGIN_LOCK:
+                dashboard.HERMES_LOGIN_STATE.update({
+                    "id": "auto-test",
+                    "output": tui_subprovider_output,
+                    "auto_provider_sent": True,
+                    "auto_codex_subprovider_sent": False,
+                    "auto_model_sent": False,
+                    "auto_note": "",
+                })
+            selected_tui_subprovider = dashboard.maybe_auto_drive_hermes_browserless("auto-test", 99)
+            self.assert_true(selected_tui_subprovider is True and writes[-1] == (99, b"\n"), "Browserless Hermes confirms the default OpenAI Codex option in the arrow-key submenu")
 
             class RunningProc:
                 def poll(self):
