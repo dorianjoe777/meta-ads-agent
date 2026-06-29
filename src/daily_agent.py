@@ -33,6 +33,8 @@ from product_config import ROOT_DIR, load_config
 from security import redact_payload
 from shopify_connector import sync_shopify
 from setup_status import build_setup_status
+from adset_controls import apply_placement_targeting
+from expert_campaign import creative_source_available, normalize_budget_plan, normalize_status_plan
 from social_flow_client import SocialFlowClient, config_snapshot, send_notification
 
 
@@ -275,10 +277,14 @@ def campaign_objective_for_social(objective):
 
 def targeting_for_social(targeting):
     targeting = targeting or {}
+    if isinstance(targeting.get("geo_locations"), dict):
+        geo_locations = targeting["geo_locations"]
+    else:
+        geo_locations = None
     age_range = targeting.get("age_range") or {}
     countries = [str(item).upper() for item in targeting.get("locations", ["US"]) if item]
     meta_targeting = targeting.get("meta_targeting") or {}
-    geo_locations = {"countries": countries or ["US"]}
+    geo_locations = geo_locations or {"countries": countries or ["US"]}
     selected_locations = meta_targeting.get("locations") if isinstance(meta_targeting, dict) else []
     if isinstance(selected_locations, list) and selected_locations:
         geo_locations = {}
@@ -315,7 +321,24 @@ def targeting_for_social(targeting):
                 interests.append({"id": interest_id, "name": name})
         if interests:
             spec["interests"] = interests
-    return spec
+    for key in ("publisher_platforms", "facebook_positions", "instagram_positions", "messenger_positions", "audience_network_positions", "threads_positions"):
+        if targeting.get(key):
+            spec[key] = targeting.get(key)
+    for key in (
+        "custom_audiences",
+        "excluded_custom_audiences",
+        "excluded_interests",
+        "exclusions",
+        "flexible_spec",
+        "device_platforms",
+        "user_os",
+        "user_device",
+        "wireless_carrier",
+        "genders",
+    ):
+        if targeting.get(key):
+            spec[key] = targeting.get(key)
+    return apply_placement_targeting(spec, targeting.get("placements") or targeting.get("placement_preset"))
 
 
 def execute_campaign_creation(path, client, approved=False):
@@ -328,18 +351,22 @@ def execute_campaign_creation(path, client, approved=False):
     final_status = str(ad_plan.get("final_status") or "PAUSED").upper()
     if final_status not in {"PAUSED", "ACTIVE"}:
         final_status = "PAUSED"
+    active_confirmed = bool(ad_plan.get("active_spend_confirmed"))
+    status_plan = campaign.get("status_plan") or normalize_status_plan({}, final_status, active_confirmed)
+    if not active_confirmed:
+        status_plan = {key: ("PAUSED" if str(value).upper() == "ACTIVE" else value) for key, value in status_plan.items()}
     missing = []
     if not client.config.ad_account_id:
         missing.append("META_AD_ACCOUNT_ID")
     if not destination.get("page_id"):
         missing.append("Facebook Page ID")
-    if not (ad_plan.get("landing_url") or destination.get("url")):
+    if not (ad_plan.get("landing_url") or destination.get("url") or ad_plan.get("object_story_spec")):
         missing.append("landing URL")
-    if not ad_plan.get("creative_image_path"):
-        missing.append("creative image path")
-    elif not Path(ad_plan.get("creative_image_path")).exists():
+    if not creative_source_available(ad_plan):
+        missing.append("creative image path, image hash, image URL, video URL, or object_story_spec")
+    elif ad_plan.get("creative_image_path") and not Path(ad_plan.get("creative_image_path")).exists():
         missing.append(f"creative image file missing: {ad_plan.get('creative_image_path')}")
-    if final_status == "ACTIVE" and not ad_plan.get("active_spend_confirmed"):
+    if final_status == "ACTIVE" and not active_confirmed:
         missing.append("active spend confirmation")
     if missing:
         return {"ok": False, "mode": client.config.mode, "executed": False, "blocked": True, "missing_requirements": missing, "path": path}
@@ -354,44 +381,65 @@ def execute_campaign_creation(path, client, approved=False):
                 "ad_sets": [adset.get("name") for adset in campaign.get("ad_sets", [])],
                 "final_status": final_status,
                 "will_create_ad": True,
+                "status_plan": status_plan,
             },
         }
+    budget_plan = campaign.get("budget_plan") or normalize_budget_plan({}, float(campaign.get("budget", {}).get("daily", 0) or 0))
     campaign_result = client.create_campaign(
         client.config.ad_account_id,
         campaign.get("name", "New Campaign"),
         campaign_objective_for_social(campaign.get("objective")),
         int(float(campaign.get("budget", {}).get("daily", 0) or 0) * 100),
-        "PAUSED",
+        status_plan.get("campaign", "PAUSED"),
         approved=approved,
     )
     campaign_id = social_id_from_result(campaign_result)
-    steps = [{"step": "create_campaign_paused", "ok": bool(campaign_id), "campaign_id": campaign_id, "result": campaign_result}]
+    steps = [{"step": "create_campaign", "ok": bool(campaign_id), "campaign_id": campaign_id, "status": status_plan.get("campaign", "PAUSED"), "result": campaign_result}]
     if not campaign_id:
         return {"ok": False, "mode": client.config.mode, "executed": True, "failed_step": "create_campaign", "steps": steps}
     adset_ids = []
     for adset in campaign.get("ad_sets", []):
-        daily_budget = int(float(adset.get("budget", 0) or campaign.get("budget", {}).get("daily", 0) or 0) * 100)
-        result = client.create_adset(campaign_id, adset.get("name", "Ad Set"), targeting_for_social(adset.get("targeting")), daily_budget, "PAUSED", approved=approved)
+        daily_budget = int(float(adset.get("budget", 0) or budget_plan.get("adset_daily") or campaign.get("budget", {}).get("daily", 0) or 0) * 100)
+        lifetime_budget = int(float(adset.get("lifetime_budget", 0) or budget_plan.get("adset_lifetime") or 0) * 100)
+        adset_targeting = dict(adset.get("targeting") or {})
+        if adset.get("placements") is not None and not adset_targeting.get("placements"):
+            adset_targeting["placements"] = adset.get("placements")
+        result = client.create_adset(
+            campaign_id,
+            adset.get("name", "Ad Set"),
+            targeting_for_social(adset_targeting),
+            daily_budget,
+            status_plan.get("adset", adset.get("status", "PAUSED")),
+            adset.get("optimization_goal") or "LINK_CLICKS",
+            promoted_object=adset.get("promoted_object") or {},
+            billing_event=adset.get("billing_event") or "IMPRESSIONS",
+            bidding=adset.get("bidding") or {},
+            lifetime_budget_cents=lifetime_budget,
+            start_time=adset.get("start_time") or "",
+            end_time=adset.get("end_time") or "",
+            approved=approved,
+        )
         adset_id = social_id_from_result(result)
         adset_ids.append(adset_id)
-        steps.append({"step": "create_adset_paused", "ok": bool(adset_id), "adset_id": adset_id, "result": result})
+        steps.append({"step": "create_adset", "ok": bool(adset_id), "adset_id": adset_id, "status": status_plan.get("adset", "PAUSED"), "result": result})
         if not adset_id:
             return {"ok": False, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "failed_step": "create_adset", "steps": steps}
     target_adset_id = adset_ids[0] if adset_ids else ""
-    upload_result = client.upload_image(client.config.ad_account_id, ad_plan.get("creative_image_path"), approved=approved)
-    image_hash = None
-    try:
-        body = json.loads(upload_result.get("stdout") or "{}")
-        if isinstance(body, dict):
-            image_hash = body.get("hash")
-            images = body.get("images", {})
-            if not image_hash and isinstance(images, dict) and images:
-                image_hash = next(iter(images.values())).get("hash")
-    except json.JSONDecodeError:
-        pass
-    steps.append({"step": "upload_image", "ok": bool(image_hash), "image_hash": image_hash, "result": upload_result})
-    if not image_hash:
-        return {"ok": False, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "failed_step": "upload_image", "steps": steps}
+    image_hash = ad_plan.get("image_hash") or ""
+    if ad_plan.get("creative_image_path"):
+        upload_result = client.upload_image(client.config.ad_account_id, ad_plan.get("creative_image_path"), approved=approved)
+        try:
+            body = json.loads(upload_result.get("stdout") or "{}")
+            if isinstance(body, dict):
+                image_hash = body.get("hash")
+                images = body.get("images", {})
+                if not image_hash and isinstance(images, dict) and images:
+                    image_hash = next(iter(images.values())).get("hash")
+        except json.JSONDecodeError:
+            pass
+        steps.append({"step": "upload_image", "ok": bool(image_hash), "image_hash": image_hash, "result": upload_result})
+        if not image_hash:
+            return {"ok": False, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "failed_step": "upload_image", "steps": steps}
 
     creative_result = client.create_creative(
         client.config.ad_account_id,
@@ -403,6 +451,10 @@ def execute_campaign_creation(path, client, approved=False):
         image_hash,
         ad_plan.get("cta", "LEARN_MORE"),
         destination.get("instagram_actor_id", ""),
+        object_story_spec=ad_plan.get("object_story_spec") or {},
+        image_url=ad_plan.get("image_url") or "",
+        video_url=ad_plan.get("video_url") or "",
+        cta_link=ad_plan.get("cta_link") or "",
         approved=approved,
     )
     creative_id = social_id_from_result(creative_result)
@@ -410,10 +462,10 @@ def execute_campaign_creation(path, client, approved=False):
     if not creative_id:
         return {"ok": False, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "failed_step": "create_creative", "steps": steps}
 
-    ad_result = client.create_ad(target_adset_id, f"{campaign.get('name', 'New Campaign')} - Ad", creative_id, final_status, approved=approved)
+    ad_result = client.create_ad(target_adset_id, f"{campaign.get('name', 'New Campaign')} - Ad", creative_id, status_plan.get("ad", final_status), approved=approved)
     ad_id = social_id_from_result(ad_result)
-    steps.append({"step": "create_ad", "ok": bool(ad_id), "ad_id": ad_id, "final_status": final_status, "result": ad_result})
-    final = {"ok": bool(ad_id), "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "creative_id": creative_id, "ad_id": ad_id, "final_status": final_status, "steps": steps}
+    steps.append({"step": "create_ad", "ok": bool(ad_id), "ad_id": ad_id, "final_status": status_plan.get("ad", final_status), "result": ad_result})
+    final = {"ok": bool(ad_id), "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "creative_id": creative_id, "ad_id": ad_id, "final_status": status_plan.get("ad", final_status), "status_plan": status_plan, "steps": steps}
     if final["ok"]:
         mark_asset_files_retained(
             [ad_plan.get("creative_image_path")],

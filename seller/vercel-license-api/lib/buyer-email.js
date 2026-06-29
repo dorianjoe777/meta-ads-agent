@@ -21,7 +21,18 @@ function buyerFirstName(record = {}) {
 }
 
 function planLabel(plan = "individual") {
-  return plan === "agency" ? "Agency" : "Individual";
+  return plan === "agency" ? "Agencia" : "Individual";
+}
+
+function roleLabel(record = {}) {
+  const role = String(record.role || "").trim().toLowerCase();
+  if (role === "owner") return "Owner";
+  return "";
+}
+
+function accessLabel(record = {}) {
+  if (roleLabel(record) === "Owner") return "Comercial ilimitado";
+  return planLabel(record.plan);
 }
 
 export function buyerAccessUrl() {
@@ -51,24 +62,36 @@ export function renderBuyerLicenseEmail(record, options = {}) {
   const productName = String(options.productName || process.env.BUYER_EMAIL_PRODUCT_NAME || "Admira IA");
   const greetingName = buyerFirstName(record);
   const greeting = greetingName ? `Hola ${greetingName},` : "Hola,";
-  const subject = String(options.subject || `Tu acceso a ${productName} esta listo`);
-  const plan = planLabel(record.plan);
+  const subject = String(options.subject || `Tu acceso a ${productName} está listo`);
+  const plan = accessLabel(record);
+  const role = roleLabel(record);
   const licenseKey = String(record.license_key || "").trim().toUpperCase();
   const buyerEmail = String(record.buyer_email || "").trim().toLowerCase();
   const preheader = `Tu licencia ${plan} y el acceso privado para instalar ${productName}.`;
+  const roleLines = role ? [`Rol: ${role}`, "Tipo de acceso: Comercial ilimitado"] : [];
+  const roleHtml = role ? `
+                  <tr>
+                    <td style="padding:18px 20px;border-top:1px solid #e7e9e1;">
+                      <div style="font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#6b705f;">Rol</div>
+                      <div style="font-size:16px;line-height:1.5;color:#1b1d18;">${escapeHtml(role)}</div>
+                    </td>
+                  </tr>` : "";
 
   const text = [
     greeting,
     "",
-    `Gracias por comprar ${productName}. Tu acceso ya esta listo.`,
+    `Gracias por comprar ${productName}. Tu acceso ya está listo.`,
     "",
     `Email de compra: ${buyerEmail}`,
     `Clave de acceso / licencia: ${licenseKey}`,
     `Plan: ${plan}`,
+    ...roleLines,
     "",
-    `Entra aqui para descargar o instalar en la nube: ${accessUrl}`,
+    `Entra aquí para descargar o instalar en la nube: ${accessUrl}`,
     "",
-    "Usa exactamente el email de compra y esta clave de acceso. Si instalas en la nube, el portal te guiara paso a paso.",
+    "Usa exactamente el email de compra y esta clave de acceso. Si instalas en la nube, el portal te guiará paso a paso.",
+    "",
+    "Como parte de tu compra, tienes derecho a una sesión gratuita de instalación. Si prefieres evitar cualquier problema técnico, en hasta 20 minutos dejamos todo instalado contigo. Una vez instalado, queda configurado de forma permanente.",
     "",
     "Si necesitas ayuda, responde a este correo."
   ].join("\n");
@@ -89,13 +112,13 @@ export function renderBuyerLicenseEmail(record, options = {}) {
             <tr>
               <td style="background:#11130f;color:#f8f7ef;padding:28px 30px;">
                 <div style="font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#b9c3ad;">${escapeHtml(productName)}</div>
-                <h1 style="margin:10px 0 0;font-size:28px;line-height:1.15;font-weight:700;">Tu acceso esta listo</h1>
+                <h1 style="margin:10px 0 0;font-size:28px;line-height:1.15;font-weight:700;">Tu acceso está listo</h1>
               </td>
             </tr>
             <tr>
               <td style="padding:30px;">
                 <p style="margin:0 0 16px;font-size:16px;line-height:1.6;">${escapeHtml(greeting)}</p>
-                <p style="margin:0 0 20px;font-size:16px;line-height:1.6;">Gracias por comprar ${escapeHtml(productName)}. Guarda esta informacion: la vas a usar para entrar al area privada, descargar el producto o instalarlo en la nube.</p>
+                <p style="margin:0 0 20px;font-size:16px;line-height:1.6;">Gracias por comprar ${escapeHtml(productName)}. Guarda esta información: la vas a usar para entrar al área privada, descargar el producto o instalarlo en la nube.</p>
                 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #dfe2d8;border-radius:12px;background:#fbfcf8;margin:22px 0;">
                   <tr>
                     <td style="padding:18px 20px;border-bottom:1px solid #e7e9e1;">
@@ -114,11 +137,12 @@ export function renderBuyerLicenseEmail(record, options = {}) {
                       <div style="font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#6b705f;">Plan</div>
                       <div style="font-size:16px;line-height:1.5;color:#1b1d18;">${escapeHtml(plan)}</div>
                     </td>
-                  </tr>
+                  </tr>${roleHtml}
                 </table>
-                <p style="margin:0 0 24px;font-size:15px;line-height:1.6;color:#34372e;">Entra con el mismo email y la clave de acceso. Desde ahi puedes descargar el launcher o usar la instalacion cloud guiada.</p>
-                <a href="${escapeHtml(accessUrl)}" style="display:inline-block;background:#11130f;color:#ffffff;text-decoration:none;border-radius:10px;padding:14px 20px;font-size:15px;font-weight:700;">Entrar al area de acceso</a>
-                <p style="margin:24px 0 0;font-size:13px;line-height:1.6;color:#6b705f;">Si el boton no abre, pega este link en tu navegador:<br><a href="${escapeHtml(accessUrl)}" style="color:#2f5e3b;">${escapeHtml(accessUrl)}</a></p>
+                <p style="margin:0 0 24px;font-size:15px;line-height:1.6;color:#34372e;">Entra con el mismo email y la clave de acceso. Desde ahí puedes descargar el launcher o usar la instalación cloud guiada.</p>
+                <p style="margin:0 0 24px;font-size:15px;line-height:1.6;color:#34372e;">Como parte de tu compra, tienes derecho a una sesión gratuita de instalación. Si prefieres evitar cualquier problema técnico, en hasta 20 minutos dejamos todo instalado contigo. Una vez instalado, queda configurado de forma permanente.</p>
+                <a href="${escapeHtml(accessUrl)}" style="display:inline-block;background:#11130f;color:#ffffff;text-decoration:none;border-radius:10px;padding:14px 20px;font-size:15px;font-weight:700;">Entrar al área de acceso</a>
+                <p style="margin:24px 0 0;font-size:13px;line-height:1.6;color:#6b705f;">Si el botón no abre, pega este link en tu navegador:<br><a href="${escapeHtml(accessUrl)}" style="color:#2f5e3b;">${escapeHtml(accessUrl)}</a></p>
               </td>
             </tr>
           </table>

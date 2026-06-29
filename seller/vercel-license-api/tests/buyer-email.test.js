@@ -14,11 +14,32 @@ test("renders buyer license email with license and access link", () => {
     accessUrl: "https://admiroia.uboost.lat/access"
   });
 
-  assert.equal(rendered.subject, "Tu acceso a Admira IA esta listo");
+  assert.equal(rendered.subject, "Tu acceso a Admira IA está listo");
   assert.match(rendered.text, /MAO-TEST-BUYR-LICN-ABC123/);
   assert.match(rendered.text, /buyer@example\.com/);
   assert.match(rendered.text, /https:\/\/admiroia\.uboost\.lat\/access/);
-  assert.match(rendered.html, /Entrar al area de acceso/);
+  assert.match(rendered.html, /Entrar al área de acceso/);
+  assert.match(rendered.text, /Tu acceso ya está listo/);
+  assert.match(rendered.text, /sesión gratuita de instalación/);
+  assert.match(rendered.text, /en hasta 20 minutos dejamos todo instalado contigo/);
+  assert.match(rendered.text, /queda configurado de forma permanente/);
+  assert.match(rendered.html, /sesión gratuita de instalación/);
+});
+
+test("renders owner commercial access details in Spanish", () => {
+  const rendered = renderBuyerLicenseEmail({
+    ...license,
+    buyer_email: "dorianjoe.777@gmail.com",
+    buyer_name: "Dorian",
+    role: "owner",
+    plan: "agency"
+  });
+
+  assert.match(rendered.text, /Email de compra: dorianjoe\.777@gmail\.com/);
+  assert.match(rendered.text, /Plan: Comercial ilimitado/);
+  assert.match(rendered.text, /Rol: Owner/);
+  assert.match(rendered.html, /Comercial ilimitado/);
+  assert.match(rendered.html, /<div style="font-size:16px;line-height:1\.5;color:#1b1d18;">Owner<\/div>/);
 });
 
 test("sends buyer license email through Resend payload", async () => {

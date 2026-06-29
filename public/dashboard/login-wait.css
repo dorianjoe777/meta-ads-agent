@@ -25,6 +25,21 @@ p{
  line-height:1.45;
  margin:0;
 }
+.btn{
+ display:inline-flex;
+ align-items:center;
+ justify-content:center;
+ min-height:42px;
+ margin-top:16px;
+ border:1px solid rgba(255,255,255,.2);
+ border-radius:10px;
+ background:#f2f2ee;
+ color:#101113;
+ padding:0 16px;
+ font-size:14px;
+ font-weight:800;
+ text-decoration:none;
+}
 .dot{
  width:10px;
  height:10px;
@@ -33,6 +48,11 @@ p{
  box-shadow:0 0 22px #27c7a7;
  margin-bottom:14px;
  animation:pulse 1.2s ease-in-out infinite;
+}
+body.error .dot{
+ background:#ff6b8b;
+ box-shadow:0 0 22px #ff6b8b;
+ animation:none;
 }
 @keyframes pulse{
  0%,100%{transform:scale(.85);opacity:.55}

@@ -1732,12 +1732,30 @@ async function saveCommunicationStyle(event,finish=false){
 let chatGptConnectPollTimer=null;
 let chatGptAuthWindow=null;
 let chatGptAuthOpenedUrl='';
+function chatGptAuthWaitingHtml(title,body,kind='waiting'){
+ const safeKind=String(kind||'waiting').replace(/[^a-z0-9_-]/gi,'')||'waiting';
+ const action=safeKind==='error'?`<a class="btn" href="/dashboard">${lang==='es'?'Volver al dashboard':'Return to dashboard'}</a>`:'';
+ return `<!doctype html><html><head><title>Admira IA</title><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/assets/dashboard/login-wait.css?v=1"></head><body class="${safeKind}"><div class="card"><div class="dot"></div><h1>${escapeHtml(title)}</h1><p>${escapeHtml(body)}</p>${action}</div></body></html>`;
+}
+function updateChatGptAuthWindow(title,body,kind='waiting'){
+ try{
+  if(!chatGptAuthWindow||chatGptAuthWindow.closed||chatGptAuthOpenedUrl)return false;
+  chatGptAuthWindow.document.open();
+  chatGptAuthWindow.document.write(chatGptAuthWaitingHtml(title,body,kind));
+  chatGptAuthWindow.document.close();
+  return true;
+ }catch(_err){return false}
+}
 function prepareChatGptAuthWindow(){
  try{
+  chatGptAuthOpenedUrl='';
   chatGptAuthWindow=window.open('about:blank','admiro_chatgpt_login');
   if(!chatGptAuthWindow)return false;
-  chatGptAuthWindow.document.write(`<!doctype html><html><head><title>Admira IA</title><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/assets/dashboard/login-wait.css?v=1"></head><body><div class="card"><div class="dot"></div><h1>${lang==='es'?'Preparando login':'Preparing login'}</h1><p>${lang==='es'?'Estoy buscando el enlace seguro de ChatGPT/Codex. Esta pestaña se abrirá sola cuando esté listo.':'I am finding the secure ChatGPT/Codex link. This tab will open automatically when it is ready.'}</p></div></body></html>`);
-  chatGptAuthWindow.document.close();
+  updateChatGptAuthWindow(
+   lang==='es'?'Preparando login':'Preparing login',
+   lang==='es'?'Estoy buscando el enlace seguro de ChatGPT/Codex. Esta pestaña se abrirá sola cuando esté listo.':'I am finding the secure ChatGPT/Codex link. This tab will open automatically when it is ready.',
+   'waiting'
+  );
   return true;
  }catch(_err){
   chatGptAuthWindow=null;
@@ -1796,6 +1814,11 @@ async function pollChatGptConnection(){
   if((res.result?.status||res.status)==='completed'){await load();advanceOnboardingAfterChatGptConnected()}
  }catch(_err){
   if(chatGptConnectPollTimer)clearTimeout(chatGptConnectPollTimer);
+  updateChatGptAuthWindow(
+   lang==='es'?'No pude revisar el login':'Could not check login',
+   lang==='es'?'Vuelve al dashboard, revisa si la sesión sigue desbloqueada y toca Conectar otra vez.':'Return to the dashboard, check that it is still unlocked, and click Connect again.',
+   'error'
+  );
  }
 }
 async function sendChatGptTerminalInput(event){
@@ -1829,6 +1852,14 @@ function renderChatGptConnectResult(response){
  if(urls.length)maybeOpenChatGptAuthUrl(urls[0]);
  const output=String(r.output||'').trim();
  const running=Boolean(r.running);
+ if(!urls.length&&chatGptAuthWindow&&!chatGptAuthOpenedUrl){
+  const fatal=['needs_terminal','not_installed'].includes(status)||(!running&&status&&!['terminal_opened','completed','browser_login_started','browser_login_waiting','needs_login'].includes(status));
+  updateChatGptAuthWindow(
+   r.title||(fatal?(lang==='es'?'No pude abrir el login':'Could not open login'):(lang==='es'?'Preparando login':'Preparing login')),
+   r.detail||(fatal?(lang==='es'?'Vuelve al dashboard para ver el diagnóstico y reintentar.':'Return to the dashboard to see the diagnostic and retry.'):(lang==='es'?'Sigo esperando el enlace seguro de ChatGPT/Codex.':'Still waiting for the secure ChatGPT/Codex link.')),
+   fatal?'error':'waiting'
+  );
+ }
  const titles={
   terminal_opened:lang==='es'?'Terminal abierta':'Terminal opened',
   completed:lang==='es'?'Conexión revisada':'Connection checked',
@@ -1892,6 +1923,13 @@ async function connectChatGpt(event){
   else if(String(status).startsWith('browser_login'))toast(lang==='es'?'Login del agente abierto aquí.':'Agent login opened here.');
  }catch(err){
   if(box){box.classList.remove('hidden');box.innerHTML=`<b>${lang==='es'?'No pude abrirlo todavía':'Could not open it yet'}</b><p>${escapeHtml(err.message||String(err))}</p>`}
+  updateChatGptAuthWindow(
+   lang==='es'?'No pude abrir el login':'Could not open login',
+   err.message||String(err)||(
+    lang==='es'?'Vuelve al dashboard, desbloquéalo si hace falta y toca Conectar otra vez.':'Return to the dashboard, unlock it if needed, and click Connect again.'
+   ),
+   'error'
+  );
  }finally{
   if(btn)btn.disabled=false;
  }

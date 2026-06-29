@@ -12,7 +12,13 @@ import sys
 import time
 from pathlib import Path
 
-from communication_style import communication_preference, communication_style_from_environment, communication_style_instruction
+from communication_style import (
+    ad_experience_from_environment,
+    ad_experience_instruction,
+    communication_preference,
+    communication_style_from_environment,
+    communication_style_instruction,
+)
 from hermes_bridge import hermes_environment, prepare_hermes_workspace
 from local_store import now_iso
 from product_config import ROOT_DIR, env_bool, env_int
@@ -68,7 +74,11 @@ def gateway_workspace(config):
             "account_context": {
                 "note": "Native Hermes Gateway workspace for Admira IA Telegram conversations.",
                 "metrics_source": "read CURRENT_CONTEXT.json only if present and real.",
-                "communication_preference": communication_preference(communication_style_from_environment(), language),
+                "communication_preference": communication_preference(
+                    communication_style_from_environment(),
+                    language,
+                    ad_experience_level=ad_experience_from_environment(),
+                ),
             },
         }
     )
@@ -87,11 +97,13 @@ def _gateway_fingerprint(config, status, files):
     token_hash = hashlib.sha256(str(config.telegram_bot_token or "").encode("utf-8")).hexdigest()[:16]
     timezone_name = str(getattr(config, "daily_brief_timezone", "UTC") or "UTC")
     communication_style = communication_style_from_environment()
-    return f"{token_hash}:{status['chat_id']}:{files['hermes_home']}:{timezone_name}:{communication_style}"
+    ad_experience = ad_experience_from_environment()
+    return f"{token_hash}:{status['chat_id']}:{files['hermes_home']}:{timezone_name}:{communication_style}:{ad_experience}"
 
 
-def gateway_prompt(language="es", communication_style="simple"):
+def gateway_prompt(language="es", communication_style="simple", ad_experience_level=""):
     style_instruction = communication_style_instruction(communication_style, language)
+    experience_instruction = ad_experience_instruction(ad_experience_level, language)
     if str(language or "es").lower().startswith("en"):
         return (
             "You are Admira IA, the buyer's private Meta Ads manager. You are running directly inside Hermes Telegram Gateway. "
@@ -103,13 +115,15 @@ def gateway_prompt(language="es", communication_style="simple"):
             "or Telegram itself is actually missing in CURRENT_CONTEXT.json or a product tool result. In Telegram, do not use Markdown tables; "
             "use short headings and bullet lists so the buyer always sees a readable message on mobile. On the first onboarding message, explain "
             "the journey before asking: first understand the business, then define visual brand and creative style, then turn that into offers, "
-            "ad briefs, strategy, and campaigns. Before using Codex creative planning or creative production, explicitly ask about colors, design references/uploads, official logo usage, "
+            "ad briefs, strategy, and campaigns. Also ask whether the buyer has experience creating/managing ads and whether they want deep technical details; "
+            "save that operator preference with `mcp_admira_save_agent_preferences` when the tool is available. Before using Codex creative planning or creative production, explicitly ask about colors, design references/uploads, official logo usage, "
             "real photos/assets, and test budget. If any brand item is missing, ask that question instead of calling Codex. Recommend a multi-format portfolio and several meaningful hypotheses sized to the budget; Image 2 "
             "is only one production tool, never the strategy. Do not generate a final ad until the brand and test brief are ready. After a real multi-creative launch, "
             "schedule adaptive experiment reviews with real Meta IDs, budget, and target CPA; never call an early signal a winner. After that, ask one clear question."
             " For optimization, distinguish sales, leads, and messages; treat zero-conversion CPA as unknown until runtime, spend, attribution lag, learning status, freshness, and edit cooldown are mature. "
             "Use Shopify aggregates as business truth when connected. Respect optimizer shadow mode and account/test-budget caps. Official research outranks community anecdotes; research may propose controlled tests but never spend actions."
-            f" {style_instruction}"
+            " Be globally proactive as an expert ad configurator across measurement, event setup, budgets, schedules, placements, audiences, creative format, diagnostics, and approval flow; do not limit that posture to placements."
+            f" {style_instruction} {experience_instruction}"
         )
     return (
         "Eres Admira IA, el manager privado de Meta Ads del comprador. Estás hablando directamente desde Hermes Telegram Gateway. "
@@ -122,6 +136,7 @@ def gateway_prompt(language="es", communication_style="simple"):
         "o Telegram. En Telegram no uses tablas Markdown; usa títulos cortos y listas con viñetas para que el comprador siempre vea el mensaje "
         "bien en el celular. En el primer mensaje del onboarding, explica el camino antes de preguntar: primero entenderemos el negocio, "
         "después definiremos la marca visual y el estilo creativo, y luego convertiremos eso en ofertas, briefs, estrategia y campañas. "
+        "También pregunta si el comprador tiene experiencia creando/gestionando anuncios y si quiere detalles técnicos profundos; guarda esa preferencia de operador con `mcp_admira_save_agent_preferences` cuando la herramienta esté disponible. "
         "Antes de usar Codex para planear o producir creativos, pregunta de forma explícita por colores, referencias o diseños para subir, uso del logo oficial, fotos/activos reales "
         "y presupuesto de prueba. Si falta cualquier pieza de marca, pregunta eso en vez de llamar Codex. Recomienda un portafolio de varios formatos e hipótesis realmente distintas que quepan en ese presupuesto; Image 2 "
         "es solo una herramienta de producción, nunca la estrategia. No generes un anuncio final hasta completar la marca y el brief de prueba. "
@@ -129,7 +144,8 @@ def gateway_prompt(language="es", communication_style="simple"):
         "nunca llames ganador a una señal temprana. Después de explicar eso, haz una sola pregunta clara."
         " Para optimizar, distingue ventas, leads y mensajes; un CPA con cero conversiones es desconocido hasta madurar tiempo, gasto, atribución, aprendizaje, frescura y cooldown de cambios. "
         "Usa agregados de Shopify como verdad del negocio cuando estén conectados. Respeta el modo observación del optimizador y los topes/reserva de tests. La guía oficial tiene prioridad; una anécdota comunitaria solo puede proponer un test controlado, nunca una acción de gasto."
-        f" {style_instruction}"
+        " Sé proactivo globalmente como configurador experto de anuncios en medición, evento correcto, presupuesto, calendario, ubicaciones, audiencias, formato creativo, diagnósticos y aprobaciones; no limites esa postura a placements."
+        f" {style_instruction} {experience_instruction}"
     )
 
 
@@ -156,7 +172,8 @@ def write_gateway_files(config):
 
     allowed = status["chat_id"]
     communication_style = communication_style_from_environment()
-    prompt = gateway_prompt(status["language"], communication_style)
+    ad_experience = ad_experience_from_environment()
+    prompt = gateway_prompt(status["language"], communication_style, ad_experience)
     toolsets = ["hermes-telegram", "memory", "skills", "session_search", "vision", "file", "web", "browser", "admira"]
     mcp_server_path = ROOT_DIR / "src" / "admira_mcp_server.py"
     config_yaml = [

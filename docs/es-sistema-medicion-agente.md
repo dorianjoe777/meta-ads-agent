@@ -77,6 +77,34 @@ Debe responder:
 - Por que.
 - Que espera mejorar.
 - Que necesita confirmar antes de actuar.
+- Si la campaña depende de conversiones, que evento está enseñando a Meta y si la señal es suficientemente confiable.
+
+Para campañas de ventas, leads, mensajes o acciones en web, una recomendación estratégica completa debe revisar:
+
+- evento de optimización correcto;
+- Pixel/Dataset correcto;
+- Conversions API y deduplicación;
+- Event Match Quality;
+- AEM/elegibilidad del evento;
+- prioridad o elegibilidad del evento;
+- volumen suficiente de eventos para que Meta aprenda.
+
+Si el agente propone enviar señales verificadas, eventos CRM/offline, CAPI, Business Messaging CAPI de WhatsApp/Messenger, audiencias personalizadas o identificadores de clientes hasheados a Meta, debe avisar antes de activar el envío:
+
+- el comprador debería actualizar su política/aviso de privacidad;
+- debe tener consentimiento o base legal adecuada para su país/negocio;
+- el hash protege el dato crudo, pero no elimina la obligación de privacidad;
+- esto también aplica a campañas solo de mensajes si se capturan teléfonos/contactos, `ctwa_clid` u otros identificadores y luego se envían resultados de conversación a Meta.
+
+Cuando exista modo de señales verificadas, el agente debe operar con una regla "automatico primero": organizar, mapear, deduplicar y puntuar leads/mensajes/reservas/compras antes de molestar al comprador. La pregunta diaria no debe pedir clasificar todo uno por uno salvo bajo volumen; debe pedir solo excepciones y resultados importantes:
+
+- personas falsas, confundidas, no interesadas o fuera de audiencia;
+- personas que reservaron, asistieron, compraron o fueron de alto valor;
+- leads de días anteriores que avanzaron hoy.
+
+Para volumen medio/alto, debe preferir excepciones y resultados importantes, no revision manual de cada lead. Si el negocio tiene encargado de ventas, recepcionista, CRM, agenda, hoja de calculo o bandeja de mensajes organizada, el agente debe pedir los eventos importantes enriquecidos por persona cuando sea posible: nombre/contacto, telefono/email hasheable o ID de contacto, ID de reserva/orden/CRM, valor, fecha, campaña/anuncio si se conoce y nota de calidad. Los totales agregados sirven como respaldo, pero tienen menor confianza si no se pueden cruzar con personas/eventos reales.
+
+Si algo de esto está débil o desconocido, el agente debe decirlo antes de recomendar subir presupuesto, cambiar audiencia o declarar que un creativo es malo.
 
 Ejemplo de tono esperado:
 

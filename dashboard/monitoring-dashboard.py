@@ -45,7 +45,16 @@ from agent_chat import chat as agent_chat
 from audience_builder import build_audience_strategy
 from budget_optimizer import BudgetOptimizer, OptimizationStrategy, PerformanceMetrics
 from campaign_creator import CampaignCreator
-from communication_style import communication_preference, communication_style_from_environment, communication_style_is_configured, normalize_communication_style
+from communication_style import (
+    ad_experience_from_environment,
+    ad_experience_instruction,
+    ad_experience_is_configured,
+    communication_preference,
+    communication_style_from_environment,
+    communication_style_is_configured,
+    normalize_ad_experience_level,
+    normalize_communication_style,
+)
 from codex_brand_guides import (
     BRAND_ASSET_DIR,
     BRAND_LOGO_EXTENSIONS,
@@ -115,9 +124,27 @@ from product_config import ENV_FILE, env_bool, load_config, normalize_daily_time
 from security import dashboard_password_configured, dashboard_token_valid, hash_dashboard_password, is_local_host, is_public_bind, redact_payload
 from shopify_connector import normalize_shop_domain, shopify_status, sync_shopify, test_connection as test_shopify_connection
 from setup_status import build_setup_status
+from adset_controls import normalize_placement_config, placement_config_summary
+from expert_campaign import (
+    campaign_preview,
+    creative_format_review,
+    merge_expert_targeting,
+    normalize_bidding,
+    normalize_billing_event,
+    normalize_budget_plan,
+    normalize_creative_controls,
+    normalize_schedule,
+    normalize_status_plan,
+    requires_active_confirmation,
+)
+from signal_quality import apply_signal_quality_to_adset, review_signal_quality, signal_quality_reply
 from social_flow_client import SocialFlowClient
 from telegram_agent import bot_request as telegram_bot_request
 from telegram_agent import reset_polling_state as reset_telegram_polling_state
+from verified_signal_ledger import feedback_prompt as verified_signal_feedback_prompt
+from verified_signal_ledger import ledger_summary as verified_signal_ledger_summary
+from verified_signal_ledger import record_signal as record_verified_signal
+from verified_signal_ledger import record_signal_batch as record_verified_signal_batch
 
 try:
     from product_config import normalize_hermes_model
@@ -142,6 +169,7 @@ ONBOARDING_FILE = DATA_DIR / "onboarding_state.json"
 CHAT_HISTORY_FILE = DATA_DIR / "chat_history.json"
 DASHBOARD_SESSIONS_FILE = DATA_DIR / "dashboard_sessions.json"
 BUSINESS_PROFILE_FILE = DATA_DIR / "business_profile.json"
+VERIFIED_SIGNAL_LEDGER_FILE = DATA_DIR / "verified_signal_ledger.json"
 ONBOARDING_QUESTIONS_FILE = DATA_DIR / "Onboarding questions.md"
 AGENT_ONBOARDING_PLAN_FILE = DATA_DIR / "Agent onboarding plan.md"
 ADS_ONBOARDING_FILE = DATA_DIR / "Ads campaign onboarding.md"
@@ -4349,7 +4377,17 @@ Antes de hacer la primera pregunta, explica el camino con palabras simples:
 2. Despues vamos a definir tu parte visual: marca, logo, colores, referencias, estilo y tono.
 3. Luego aterrizamos anuncios: ofertas especificas, campanas anteriores, estrategia, briefs y proximos pasos.
 
-Despues de explicar esto, haz una sola pregunta clara. La mejor primera pregunta es: "Que vendes exactamente y cual es tu oferta principal hoy?"
+Despues de explicar esto, pregunta tambien la preferencia global del operador: "Tienes experiencia creando o gestionando anuncios? Quieres que te explique cosas tecnicas con detalle, o prefieres que yo tome las decisiones de mejores practicas y te lo explique en palabras simples? Esto lo puedes cambiar cuando quieras."
+
+Cuando responda, guarda esa preferencia con `save_agent_preferences` / `mcp_admira_save_agent_preferences` usando:
+- `ad_experience_level`: `beginner`, `intermediate` o `advanced`.
+- `communication_style`: `simple` o `technical`.
+
+Despues de esa preferencia, haz una sola pregunta clara de negocio. La mejor primera pregunta es: "Que vendes exactamente y cual es tu oferta principal hoy?"
+
+## Postura experta global
+
+El agente no debe ser pasivo ni limitar su criterio experto a placements. Debe proponer mejoras de alto impacto en todo lo que pueda afectar aprendizaje o gasto: evento de optimizacion, Pixel/Dataset, CAPI/EMQ/AEM como diagnostico, presupuesto, calendario, audiencias, exclusiones, placements, formato creativo, preflight, aprobaciones y revisiones futuras. Si el comprador pidio palabras simples, explica el impacto en negocio y evita tecnicismos; si pidio detalle tecnico, puede profundizar.
 
 ## Fases
 
@@ -4435,13 +4473,16 @@ Primer mensaje obligatorio:
   1. entender el negocio,
   2. definir la marca visual/branding,
   3. convertir eso en ofertas, estrategia y anuncios.
-- Despues de explicarlo, haz solo una pregunta.
-- Primera pregunta recomendada: "Que vendes exactamente y cual es tu oferta principal hoy?"
+- Despues de explicarlo, pregunta si tiene experiencia creando/gestionando anuncios y si quiere detalles tecnicos profundos o palabras simples.
+- Guarda esa preferencia global con `save_agent_preferences` / `mcp_admira_save_agent_preferences`.
+- Despues haz solo una pregunta de negocio.
+- Primera pregunta de negocio recomendada: "Que vendes exactamente y cual es tu oferta principal hoy?"
 
 Instrucciones para el agente:
 - Habla en espanol latino natural, como manager calido y directo.
 - Haz una sola pregunta a la vez.
 - No hagas una lista enorme de preguntas en un solo mensaje.
+- Actua como experto proactivo en todo lo que impacte el resultado: medicion, evento correcto, presupuesto, calendario, audiencias, exclusiones, ubicaciones, formato creativo, diagnosticos, aprobaciones y seguimiento. No esperes a que el cliente sepa pedir esas configuraciones.
 - Usa los links guardados como contexto, pero deja que el cliente corrija todo.
 - Documenta lo aprendido en el perfil del negocio y en las guias de marca/producto/brief cuando corresponda.
 - Si falta informacion, pregunta lo minimo necesario para poder actuar.
@@ -5114,6 +5155,7 @@ def load_onboarding_state():
     state.setdefault("completed_at", "")
     state.setdefault("completed_by", "")
     state.setdefault("communication_style", "")
+    state.setdefault("ad_experience_level", "")
     state.setdefault("setup_snapshot", {})
     return state
 
@@ -5122,37 +5164,73 @@ def dashboard_setup_deferred_reasons(reasons):
     return [reason for reason in (reasons or []) if reason in DASHBOARD_SETUP_DEFERRED_REASONS and reason not in AGENT_INTERVIEW_DEFERRED_REASONS]
 
 
-def save_communication_style(payload):
-    raw_style = str((payload or {}).get("communication_style") or "").strip().lower()
-    style = normalize_communication_style(raw_style, default="")
-    if not style:
+def save_agent_preferences(payload):
+    payload = payload or {}
+    raw_style = str(payload.get("communication_style") or "").strip().lower()
+    raw_experience = str(payload.get("ad_experience_level") or payload.get("ads_experience_level") or payload.get("ads_experience") or "").strip().lower()
+    style = normalize_communication_style(raw_style, default="") if raw_style else communication_style_from_environment(default="")
+    ad_experience = normalize_ad_experience_level(raw_experience, default="") if raw_experience else ad_experience_from_environment(default="")
+    if raw_style and not style:
         raise ValueError("Elige si prefieres palabras simples o explicaciones técnicas.")
-    update_env_values({"AGENT_COMMUNICATION_STYLE": style})
+    if raw_experience and not ad_experience:
+        raise ValueError("Elige si la experiencia en anuncios es principiante, intermedia o avanzada.")
+    if not style and not ad_experience:
+        raise ValueError("Elige al menos una preferencia del agente.")
+    updates = {}
+    if style:
+        updates["AGENT_COMMUNICATION_STYLE"] = style
+    if ad_experience:
+        updates["AGENT_AD_EXPERIENCE_LEVEL"] = ad_experience
+    update_env_values(updates)
     if ONBOARDING_FILE.exists():
         state = load_onboarding_state()
-        state["communication_style"] = style
+        if style:
+            state["communication_style"] = style
+        if ad_experience:
+            state["ad_experience_level"] = ad_experience
         write_json(ONBOARDING_FILE, state)
     config = load_config()
     gateway = start_hermes_gateway(config)
-    log_action("communication_style_update", {"communication_style": style}, "completed")
+    log_action("agent_preferences_update", {"communication_style": style, "ad_experience_level": ad_experience}, "completed")
     return {
         "saved": True,
+        "ad_experience_level": ad_experience,
+        "ad_experience_instruction": ad_experience_instruction(ad_experience, (payload or {}).get("language") or "es"),
         "communication_preference": {
-            **communication_preference(style, (payload or {}).get("language") or "es"),
-            "configured": True,
+            **communication_preference(style, (payload or {}).get("language") or "es", ad_experience_level=ad_experience),
+            "configured": communication_style_is_configured(),
+            "ad_experience_configured": ad_experience_is_configured(),
         },
         "gateway": gateway,
     }
 
 
+def save_communication_style(payload):
+    raw_style = str((payload or {}).get("communication_style") or "").strip().lower()
+    if not normalize_communication_style(raw_style, default=""):
+        raise ValueError("Elige si prefieres palabras simples o explicaciones técnicas.")
+    result = save_agent_preferences(payload)
+    log_action("communication_style_update", {"communication_style": result.get("communication_preference", {}).get("style")}, "completed")
+    return result
+
+
 def complete_onboarding(payload=None):
     payload = payload or {}
     requested_style = str(payload.get("communication_style") or "").strip().lower()
+    requested_experience = str(payload.get("ad_experience_level") or payload.get("ads_experience_level") or "").strip().lower()
     communication_style = normalize_communication_style(requested_style, default="") if requested_style else communication_style_from_environment(default="")
+    ad_experience = normalize_ad_experience_level(requested_experience, default="") if requested_experience else ad_experience_from_environment(default="")
     if not communication_style:
         raise ValueError("Elige si prefieres que el agente use palabras simples o explicaciones técnicas.")
+    if requested_experience and not ad_experience:
+        raise ValueError("Elige si la experiencia en anuncios es principiante, intermedia o avanzada.")
+    updates = {}
     if requested_style:
-        update_env_values({"AGENT_COMMUNICATION_STYLE": communication_style})
+        updates["AGENT_COMMUNICATION_STYLE"] = communication_style
+    if requested_experience and ad_experience:
+        updates["AGENT_AD_EXPERIENCE_LEVEL"] = ad_experience
+    if updates:
+        update_env_values(updates)
     config = load_config()
     if not dashboard_password_configured(config):
         raise ValueError("Create a dashboard password before finishing onboarding")
@@ -5185,6 +5263,7 @@ def complete_onboarding(payload=None):
         "completed_at": now_iso(),
         "completed_by": "dashboard",
         "communication_style": communication_style,
+        "ad_experience_level": ad_experience,
         "setup_snapshot": setup.get("summary", {}),
         "first_insights_refresh": redact_payload(insights_refresh),
         "business_profile_snapshot": redact_payload(business_profile),
@@ -5221,7 +5300,11 @@ def skip_onboarding():
     if not isinstance(business_profile, dict):
         business_profile = {}
     communication_style = communication_style_from_environment()
-    update_env_values({"AGENT_COMMUNICATION_STYLE": communication_style})
+    ad_experience = ad_experience_from_environment(default="")
+    updates = {"AGENT_COMMUNICATION_STYLE": communication_style}
+    if ad_experience:
+        updates["AGENT_AD_EXPERIENCE_LEVEL"] = ad_experience
+    update_env_values(updates)
     if not ONBOARDING_QUESTIONS_FILE.exists():
         write_onboarding_questions_memory(business_profile, "pending")
     missing = []
@@ -5243,6 +5326,7 @@ def skip_onboarding():
         "completed_at": now_iso(),
         "completed_by": "skip_and_complete_later",
         "communication_style": communication_style,
+        "ad_experience_level": ad_experience,
         "setup_snapshot": build_setup_status().get("summary", {}),
         "business_profile_snapshot": redact_payload(business_profile),
     }
@@ -5263,6 +5347,7 @@ def reset_onboarding():
         "completed_at": "",
         "completed_by": "",
         "communication_style": communication_style_from_environment(default=""),
+        "ad_experience_level": ad_experience_from_environment(default=""),
         "setup_snapshot": {},
         "reset_at": now_iso(),
     }
@@ -5863,8 +5948,10 @@ def create_campaign(payload):
     if final_status not in {"PAUSED", "ACTIVE"}:
         final_status = "ACTIVE"
     active_confirmed = str(payload.get("active_spend_confirmed") or "").strip().lower() in {"1", "true", "yes", "on", "si", "sí"}
-    if final_status == "ACTIVE" and not active_confirmed:
+    if requires_active_confirmation(payload, final_status) and not active_confirmed:
         raise ValueError("Para dejar anuncios activos debes marcar: Sí, crear y dejar activo.")
+    budget_plan = normalize_budget_plan(payload, float(payload.get("daily_budget", 50) or 50))
+    status_plan = normalize_status_plan(payload, final_status, active_confirmed)
     creator = CampaignCreator()
     selected_interests = parse_targeting_items(payload.get("targeting_interests_json") or payload.get("targeting_interests"), "interest")
     selected_locations = parse_targeting_items(payload.get("targeting_locations_json") or payload.get("targeting_locations"), "location")
@@ -5878,19 +5965,45 @@ def create_campaign(payload):
         age_max=int(payload.get("age_max", 65)),
         interests=interests,
     )
+    audience = merge_expert_targeting(audience, payload)
     if selected_locations or selected_interests:
         audience["meta_targeting"] = {
             "locations": selected_locations,
             "interests": selected_interests,
         }
+    signal_review = review_signal_quality(payload, metrics=load_metrics(), language=chat_lang(payload))
+    placement_config = normalize_placement_config(payload.get("placements") or payload.get("placement_preset") or payload.get("manual_placements"))
+    schedule = normalize_schedule(payload)
+    bidding = normalize_bidding(payload)
+    creative_controls = normalize_creative_controls(payload)
+    ad_set = creator.create_ad_set_config(
+        f"{payload.get('name', 'New Campaign')} - Core",
+        audience,
+        budget_plan["adset_daily"],
+    )
+    if budget_plan.get("adset_lifetime"):
+        ad_set["lifetime_budget"] = budget_plan["adset_lifetime"]
+    ad_set["placements"] = placement_config
+    ad_set["billing_event"] = normalize_billing_event(payload.get("billing_event"))
+    if bidding:
+        ad_set["bidding"] = bidding
+    if schedule.get("start_time"):
+        ad_set["start_time"] = schedule["start_time"]
+    if schedule.get("end_time"):
+        ad_set["end_time"] = schedule["end_time"]
+    ad_set["status"] = status_plan["adset"]
+    ad_set = apply_signal_quality_to_adset(ad_set, signal_review)
     campaign = creator.create_campaign_config(
         name=payload.get("name", "New Campaign"),
         objective=payload.get("objective", "PURCHASES"),
-        budget_daily=float(payload.get("daily_budget", 50)),
-        budget_total=float(payload.get("total_budget", 1500)),
+        budget_daily=budget_plan["campaign_daily"],
+        budget_total=budget_plan["total_budget"],
         pixel_id=payload.get("pixel_id") or None,
-        ad_sets=[creator.create_ad_set_config(f"{payload.get('name', 'New Campaign')} - Core", audience, float(payload.get("total_budget", 1500)) / 3)],
+        ad_sets=[ad_set],
     )
+    campaign["status"] = status_plan["campaign"]
+    campaign["status_plan"] = status_plan
+    campaign["budget_plan"] = budget_plan
     campaign["id"] = creator.generate_campaign_id(campaign)
     campaign["ab_test"] = {
         "enabled": bool(payload.get("ab_test")),
@@ -5902,9 +6015,17 @@ def create_campaign(payload):
         "creative_image_path": str(payload.get("creative_image_path") or "").strip(),
         "landing_url": str(payload.get("landing_url") or "").strip(),
         "cta": str(payload.get("cta") or "LEARN_MORE").strip().upper(),
+        "cta_link": creative_controls["cta_link"],
+        "image_hash": creative_controls["image_hash"],
+        "image_url": creative_controls["image_url"],
+        "video_url": creative_controls["video_url"],
+        "object_story_spec": creative_controls["object_story_spec"],
+        "creative_format": creative_controls["format"],
         "final_status": final_status,
         "active_spend_confirmed": active_confirmed,
     }
+    campaign["creative_format_review"] = creative_format_review(campaign["ad"], placement_config)
+    campaign["signal_quality_review"] = signal_review
     out_path = OUTPUT_DIR / f"{campaign['id']}.json"
     creator.save_campaign(campaign, str(out_path))
     created = read_json(CREATED_FILE, [])
@@ -5919,12 +6040,38 @@ def create_campaign(payload):
         "requested": {
             "campaign": campaign["name"],
             "daily_budget": campaign["budget"]["daily"],
+            "budget_plan": budget_plan,
+            "status_plan": status_plan,
             "objective": campaign["objective"],
             "ad_sets": [adset.get("name") for adset in campaign.get("ad_sets", [])],
             "creative_image_path": campaign["ad"]["creative_image_path"],
+            "creative_controls": {
+                "has_object_story_spec": bool(campaign["ad"].get("object_story_spec")),
+                "has_image_hash": bool(campaign["ad"].get("image_hash")),
+                "has_image_url": bool(campaign["ad"].get("image_url")),
+                "has_video_url": bool(campaign["ad"].get("video_url")),
+                "cta_link": campaign["ad"].get("cta_link"),
+                "format_review": campaign.get("creative_format_review"),
+            },
             "targeting": targeting_summary(audience),
+            "placements": placement_config_summary(placement_config),
+            "adset_controls": {
+                "optimization_goal": ad_set.get("optimization_goal"),
+                "billing_event": ad_set.get("billing_event"),
+                "promoted_object": ad_set.get("promoted_object"),
+                "bidding": ad_set.get("bidding", {}),
+                "schedule": schedule,
+            },
+            "signal_quality": {
+                "status": signal_review.get("status"),
+                "recommended_event": signal_review.get("recommended_event"),
+                "safe_to_launch_active": signal_review.get("safe_to_launch_active"),
+                "checks": signal_review.get("checks", []),
+            },
         },
         "guardrail_reason": "new_campaigns_always_require_approval",
+        "dry_run_preview": campaign_preview(campaign),
+        "signal_quality_review": signal_review,
     }
     return add_pending("create_campaign", pending_payload)
 
@@ -7125,13 +7272,128 @@ def handle_list_optimization_research_tool(arguments, chat_payload, tool):
     )
 
 
+def handle_review_signal_quality_tool(arguments, chat_payload, tool):
+    review = review_signal_quality(arguments or {}, metrics=load_metrics(), language=chat_lang(chat_payload))
+    return agent_action_result(
+        tool,
+        False,
+        signal_quality_reply(review, chat_lang(chat_payload)),
+        result=review,
+    )
+
+
+def summarize_cli_result(result, max_items=8):
+    result = result or {}
+    parsed = None
+    try:
+        parsed = json.loads(result.get("stdout") or "")
+    except (TypeError, json.JSONDecodeError):
+        parsed = None
+    if isinstance(parsed, dict):
+        data = parsed.get("data", parsed)
+        if isinstance(data, list):
+            data = data[:max_items]
+        parsed = data
+    elif isinstance(parsed, list):
+        parsed = parsed[:max_items]
+    return {
+        "ok": bool(result.get("executed")) and int(result.get("returncode") or 0) == 0 and not result.get("stderr"),
+        "executed": bool(result.get("executed")),
+        "returncode": result.get("returncode"),
+        "stderr": str(result.get("stderr") or "")[:500],
+        "data": redact_payload(parsed) if parsed is not None else None,
+    }
+
+
+def campaign_preflight(arguments, chat_payload):
+    arguments = arguments or {}
+    config = load_config()
+    client = SocialFlowClient(config)
+    account_id = config.ad_account_id or str(arguments.get("ad_account_id") or "").strip()
+    signal = review_signal_quality(arguments, metrics=load_metrics(), language=chat_lang(chat_payload))
+    placement_config = normalize_placement_config(arguments.get("placements") or arguments.get("placement_preset") or arguments.get("manual_placements"))
+    creative_controls = normalize_creative_controls(arguments)
+    budget_plan = normalize_budget_plan(arguments, float(arguments.get("daily_budget", 50) or 50))
+    final_status = str(arguments.get("final_status") or "PAUSED").upper()
+    active_confirmed = str(arguments.get("active_spend_confirmed") or "").strip().lower() in {"1", "true", "yes", "on", "si", "sí"}
+    status_plan = normalize_status_plan(arguments, final_status, active_confirmed)
+    preflight = {
+        "ok": True,
+        "account_id": account_id,
+        "checks": {
+            "account_status": summarize_cli_result(client.marketing_status()),
+            "rate_limits": summarize_cli_result(client.rate_limits()),
+            "policy_preflight": summarize_cli_result(client.policy_preflight(arguments.get("intent") or arguments.get("objective") or "create Meta ad")),
+        },
+        "dry_run_preview": {
+            "budget_plan": budget_plan,
+            "status_plan": status_plan,
+            "placements": placement_config_summary(placement_config),
+            "creative_controls": {
+                "has_object_story_spec": bool(creative_controls.get("object_story_spec")),
+                "has_image_hash": bool(creative_controls.get("image_hash")),
+                "has_image_url": bool(creative_controls.get("image_url")),
+                "has_video_url": bool(creative_controls.get("video_url")),
+                "cta_link": creative_controls.get("cta_link"),
+                "format": creative_controls.get("format"),
+            },
+            "signal_quality": {
+                "status": signal.get("status"),
+                "recommended_event": signal.get("recommended_event"),
+                "safe_to_launch_active": signal.get("safe_to_launch_active"),
+                "questions": signal.get("questions", []),
+            },
+        },
+    }
+    if account_id:
+        preflight["checks"]["custom_audiences"] = summarize_cli_result(client.custom_audiences(account_id, limit=25))
+        preflight["checks"]["existing_creatives"] = summarize_cli_result(client.creatives(account_id, limit=25))
+        if arguments.get("include_recent_insights"):
+            preflight["checks"]["recent_insights_by_placement_device"] = summarize_cli_result(
+                client.insights(
+                    "last_7d",
+                    "ad",
+                    fields="spend,impressions,clicks,actions,action_values",
+                    breakdowns="publisher_platform,platform_position,impression_device",
+                    limit=250,
+                    timeout=90,
+                )
+            )
+        else:
+            metrics = load_metrics()
+            preflight["checks"]["recent_insights_by_placement_device"] = {
+                "ok": bool((metrics.get("breakdowns") or {}).get("placement_device")),
+                "source": metrics.get("source") or "metrics_cache",
+                "data": ((metrics.get("breakdowns") or {}).get("placement_device") or [])[:8],
+                "skipped_live_read": True,
+            }
+    preflight["ok"] = all(
+        check.get("ok") or check.get("skipped_live_read")
+        for check in preflight.get("checks", {}).values()
+        if isinstance(check, dict)
+    )
+    return preflight
+
+
+def handle_preflight_campaign_tool(arguments, chat_payload, tool):
+    preflight = campaign_preflight(arguments, chat_payload)
+    return agent_action_result(
+        tool,
+        False,
+        chat_reply(chat_payload, "Hice la revisión previa de cuenta, señal, presupuesto, placements y creatividad.", "I ran the preflight review for account, signal, budget, placements, and creative setup."),
+        result=preflight,
+    )
+
+
 def handle_export_report_tool(arguments, chat_payload, tool):
     return export_report_action(chat_payload, tool)
 
 
 def handle_create_campaign_stack_tool(arguments, chat_payload, tool):
-    required = ["name", "daily_budget", "landing_url", "creative_image_path"]
+    required = ["name", "daily_budget", "landing_url"]
     missing = [key for key in required if not arguments.get(key)]
+    if not any(arguments.get(key) for key in ["creative_image_path", "image_hash", "image_url", "video_url", "object_story_spec", "object_story_spec_json"]):
+        missing.append("creative_image_path_or_url_or_story_spec")
     final_status = str(arguments.get("final_status") or "ACTIVE").upper()
     if final_status == "ACTIVE" and not arguments.get("active_spend_confirmed"):
         missing.append("active_spend_confirmed")
@@ -7207,6 +7469,85 @@ def handle_init_brand_guides_tool(arguments, chat_payload, tool):
         ),
         result=result,
     )
+
+
+def handle_save_agent_preferences_tool(arguments, chat_payload, tool):
+    payload = dict(arguments or {})
+    payload.setdefault("language", chat_lang(chat_payload))
+    result = save_agent_preferences(payload)
+    ad_level = result.get("ad_experience_level") or ""
+    style = result.get("communication_preference", {}).get("style") or ""
+    if chat_lang(chat_payload) == "es":
+        message = "Listo. Guardé cómo quieres que trabaje contigo"
+        if ad_level or style:
+            details = []
+            if ad_level:
+                details.append(f"experiencia en anuncios: {ad_level}")
+            if style:
+                details.append(f"detalle: {style}")
+            message += " (" + ", ".join(details) + ")"
+        message += ". Lo usaré en todos los negocios y canales."
+    else:
+        message = "Done. I saved how you want me to work with you"
+        if ad_level or style:
+            details = []
+            if ad_level:
+                details.append(f"ads experience: {ad_level}")
+            if style:
+                details.append(f"detail: {style}")
+            message += " (" + ", ".join(details) + ")"
+        message += ". I will use it across every business and channel."
+    return agent_action_result(tool, True, message, result=result)
+
+
+def handle_record_verified_signal_tool(arguments, chat_payload, tool):
+    payload = dict(arguments or {})
+    if isinstance(payload.get("items"), list):
+        result = record_verified_signal_batch(payload.get("items"), VERIFIED_SIGNAL_LEDGER_FILE)
+    else:
+        result = record_verified_signal(payload, VERIFIED_SIGNAL_LEDGER_FILE)
+    summary = result.get("summary") or {}
+    privacy_needed = int(summary.get("privacy_confirmation_needed") or 0)
+    if chat_lang(chat_payload) == "es":
+        message = "Listo. Guardé la señal verificada en el registro local."
+        if privacy_needed:
+            message += " Antes de enviar señales o identificadores a Meta, confirma que el negocio actualizó su aviso/política de privacidad y tiene consentimiento o base legal."
+        message += f" Total registrado: {summary.get('total_events', 0)}."
+    else:
+        message = "Done. I saved the verified signal in the local ledger."
+        if privacy_needed:
+            message += " Before sending signals or identifiers to Meta, confirm the business has updated its privacy notice/policy and has consent or legal basis."
+        message += f" Total recorded: {summary.get('total_events', 0)}."
+    log_action(
+        "verified_signal_record",
+        {
+            "count": result.get("count", 1),
+            "deduped": result.get("deduped", False),
+            "stage": (result.get("record") or {}).get("stage"),
+            "privacy_confirmation_needed": privacy_needed,
+        },
+        "completed",
+    )
+    return agent_action_result(tool, True, message, result=result)
+
+
+def handle_get_verified_signal_summary_tool(arguments, chat_payload, tool):
+    result = verified_signal_ledger_summary(VERIFIED_SIGNAL_LEDGER_FILE)
+    return agent_action_result(
+        tool,
+        True,
+        chat_reply(
+            chat_payload,
+            f"El registro tiene {result.get('total_events', 0)} señales. Hay {result.get('open_followups', 0)} seguimientos abiertos.",
+            f"The ledger has {result.get('total_events', 0)} signals. There are {result.get('open_followups', 0)} open follow-ups.",
+        ),
+        result=result,
+    )
+
+
+def handle_verified_signal_feedback_prompt_tool(arguments, chat_payload, tool):
+    result = verified_signal_feedback_prompt(VERIFIED_SIGNAL_LEDGER_FILE, chat_lang(chat_payload))
+    return agent_action_result(tool, True, result.get("message", ""), result=result)
 
 
 def handle_save_business_context_tool(arguments, chat_payload, tool):
@@ -7462,10 +7803,16 @@ AGENT_TOOL_HANDLERS = {
     "run_due_experiment_reviews": handle_run_due_experiment_reviews_tool,
     "save_optimization_research": handle_save_optimization_research_tool,
     "list_optimization_research": handle_list_optimization_research_tool,
+    "review_signal_quality": handle_review_signal_quality_tool,
+    "preflight_campaign": handle_preflight_campaign_tool,
     "export_report": handle_export_report_tool,
     "create_campaign_stack": handle_create_campaign_stack_tool,
     "build_audience_strategy": handle_build_audience_strategy_tool,
     "init_brand_guides": handle_init_brand_guides_tool,
+    "save_agent_preferences": handle_save_agent_preferences_tool,
+    "record_verified_signal": handle_record_verified_signal_tool,
+    "get_verified_signal_summary": handle_get_verified_signal_summary_tool,
+    "verified_signal_feedback_prompt": handle_verified_signal_feedback_prompt_tool,
     "save_business_context": handle_save_business_context_tool,
     "save_brand_guide": handle_save_brand_guide_tool,
     "save_product_guide": handle_save_product_guide_tool,
@@ -7567,6 +7914,7 @@ def dashboard_payload():
         "chat_history": load_chat_history(),
         "business_profile": business_profile,
         "business_snapshot": business_snapshot,
+        "verified_signals": verified_signal_ledger_summary(VERIFIED_SIGNAL_LEDGER_FILE),
         "onboarding_questions": {
             "status": onboarding_interview_status(business_profile),
             "file_exists": ONBOARDING_QUESTIONS_FILE.exists(),
@@ -7582,8 +7930,13 @@ def dashboard_payload():
         "config": {
             "mode": config.mode,
             "communication_preference": {
-                **communication_preference(config.communication_style, telegram_settings(config).get("language") or "es"),
+                **communication_preference(
+                    config.communication_style,
+                    telegram_settings(config).get("language") or "es",
+                    ad_experience_level=config.ad_experience_level,
+                ),
                 "configured": communication_style_is_configured(),
+                "ad_experience_configured": ad_experience_is_configured(),
             },
             "notify_channel": config.notify_channel,
             "telegram_agent": telegram_settings(config),
@@ -7845,7 +8198,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
     PROTECTED_GET_PATHS = {"/api/dashboard", "/api/export", "/api/report", "/api/setup", "/api/social/auth-status", "/api/social/accounts", "/api/update/snapshots", "/api/creative-asset", "/api/brand-asset"}
     PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/agent-model/connect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/logo", "/api/brand-guides/product", "/api/ad-briefs", "/api/codex/creative-plan", "/api/codex/image-generate", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/optimization/settings", "/api/optimization/unlock", "/api/shopify/config", "/api/shopify/test", "/api/shopify/sync", "/api/daily-brief/schedule", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/communication-style", "/api/onboarding/complete", "/api/onboarding/skip", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/local-network-access", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
     ONBOARDING_OPEN_GETS = {"/api/dashboard", "/api/setup"}
-    ONBOARDING_OPEN_POSTS = {"/api/dashboard-password", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/license/activate"}
+    ONBOARDING_OPEN_POSTS = {"/api/dashboard-password", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/license/activate", "/api/agent-model/connect", "/api/agent-model/connect-status", "/api/agent-model/connect-input"}
     GET_JSON_ROUTES = {
         "/api/dashboard": dashboard_payload,
         "/api/export": export_csv,
@@ -7898,10 +8251,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
         "/api/telegram/detect": lambda _payload: detect_telegram_chats(),
         "/api/telegram/test": lambda _payload: test_telegram_connection(),
         "/api/license/activate": activate_license_now,
+        "/api/onboarding/agent-preferences": save_agent_preferences,
         "/api/onboarding/communication-style": save_communication_style,
         "/api/onboarding/complete": complete_onboarding,
         "/api/onboarding/skip": lambda _payload: skip_onboarding(),
         "/api/onboarding/reset": lambda _payload: reset_onboarding(),
+        "/api/verified-signals/record": lambda payload: record_verified_signal(payload, VERIFIED_SIGNAL_LEDGER_FILE),
+        "/api/verified-signals/batch": lambda payload: record_verified_signal_batch(payload.get("items") if isinstance(payload, dict) else [], VERIFIED_SIGNAL_LEDGER_FILE),
+        "/api/verified-signals/summary": lambda _payload: verified_signal_ledger_summary(VERIFIED_SIGNAL_LEDGER_FILE),
+        "/api/verified-signals/feedback-prompt": lambda payload: verified_signal_feedback_prompt(VERIFIED_SIGNAL_LEDGER_FILE, (payload or {}).get("language") or "es"),
         "/api/reject": lambda payload: reject_pending(payload.get("approval_id"), payload.get("reason") or "Rejected from dashboard"),
         "/api/mode": set_mode,
         "/api/chat/reset": lambda _payload: reset_chat_history(),

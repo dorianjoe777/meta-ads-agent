@@ -15,6 +15,7 @@ const KNOWN_FEATURES = new Set(AGENCY_FEATURES);
 const DEFAULT_OWNER_LICENSE_KEYS = ["MAO-DORI-ANJO-E777-GMAI-LADM-INTE-36DECA"];
 const DEFAULT_OWNER_BUYER_EMAILS = ["dorianjoe.777@gmail.com"];
 const OWNER_MAX_DEVICES = 9999;
+const OWNER_WORKSPACE_LIMIT = 9999;
 const PLAN_DEFAULTS = {
   individual: { max_devices: 1, workspace_limit: 1, features: INDIVIDUAL_FEATURES },
   agency: { max_devices: 4, workspace_limit: 50, features: AGENCY_FEATURES }
@@ -56,12 +57,32 @@ function commaList(value) {
   return String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
 }
 
+function ownerBuyerEmails() {
+  return new Set([...DEFAULT_OWNER_BUYER_EMAILS, ...commaList(process.env.OWNER_UNLIMITED_BUYER_EMAILS)].map((item) => item.toLowerCase()));
+}
+
+function ownerLicenseKeys() {
+  return new Set([...DEFAULT_OWNER_LICENSE_KEYS, ...commaList(process.env.OWNER_UNLIMITED_LICENSE_KEYS)].map((item) => item.toUpperCase()));
+}
+
+export function ownerEmailAllowed(email = "") {
+  return ownerBuyerEmails().has(String(email || "").trim().toLowerCase());
+}
+
+export function ownerLicenseKeyForEmail(email = "") {
+  const buyerEmail = String(email || "").trim().toLowerCase();
+  const defaultIndex = DEFAULT_OWNER_BUYER_EMAILS.indexOf(buyerEmail);
+  if (defaultIndex >= 0 && DEFAULT_OWNER_LICENSE_KEYS[defaultIndex]) {
+    return DEFAULT_OWNER_LICENSE_KEYS[defaultIndex];
+  }
+  return formatLicense(`owner:${buyerEmail}`);
+}
+
 export function isOwnerUnlimitedLicense(record = {}) {
   const licenseKey = String(record.license_key || "").trim().toUpperCase();
   const buyerEmail = String(record.buyer_email || "").trim().toLowerCase();
-  const ownerKeys = new Set([...DEFAULT_OWNER_LICENSE_KEYS, ...commaList(process.env.OWNER_UNLIMITED_LICENSE_KEYS)].map((item) => item.toUpperCase()));
-  const ownerEmails = new Set([...DEFAULT_OWNER_BUYER_EMAILS, ...commaList(process.env.OWNER_UNLIMITED_BUYER_EMAILS)].map((item) => item.toLowerCase()));
-  return ownerKeys.has(licenseKey) && ownerEmails.has(buyerEmail);
+  const role = String(record.role || "").trim().toLowerCase();
+  return ownerBuyerEmails().has(buyerEmail) && (role === "owner" || ownerLicenseKeys().has(licenseKey));
 }
 
 export function normalizeEntitlements(record = {}) {
@@ -85,7 +106,7 @@ export function normalizeEntitlements(record = {}) {
       : (ownerUnlimited ? OWNER_MAX_DEVICES : numberOrDefault(record.max_devices, defaults.max_devices)),
     workspace_limit: requestedPlan === "individual"
       ? 1
-      : numberOrDefault(record.workspace_limit, defaults.workspace_limit),
+      : (ownerUnlimited ? OWNER_WORKSPACE_LIMIT : numberOrDefault(record.workspace_limit, defaults.workspace_limit)),
     features: cleanFeatures.length ? cleanFeatures : [...defaults.features],
     owner_unlimited: ownerUnlimited
   };

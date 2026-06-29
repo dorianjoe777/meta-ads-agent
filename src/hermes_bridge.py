@@ -11,7 +11,7 @@ import subprocess
 from pathlib import Path
 
 from agent_runtime import build_system_prompt
-from communication_style import communication_style_from_environment, communication_style_instruction
+from communication_style import ad_experience_from_environment, ad_experience_instruction, communication_style_from_environment, communication_style_instruction
 from decision_memory import decision_memory_payload, format_learning_log
 from experiment_scheduler import experiment_review_payload
 from local_store import read_json
@@ -40,7 +40,7 @@ ALLOWED_IMAGE_DIRS = (
     ROOT_DIR / "dashboard" / "data" / "uploads",
     HERMES_WORKSPACE_DIR / "uploads",
 )
-MEMORY_TEXT_LIMIT = 8000
+MEMORY_TEXT_LIMIT = 14000
 MEMORY_ITEM_LIMIT = 8
 BLOCKED_MEMORY_TOKENS = {".env", "license_unlock.json"}
 PROFILE_FILES = ("SOUL.md", "USER.md", "AGENTS.md", "TOOLS.md", "SKILLS.md")
@@ -180,6 +180,8 @@ Use these MCP tools for real product actions instead of inventing results, runni
 - `mcp_admira_schedule_experiment_review`
 - `mcp_admira_list_experiment_reviews`
 - `mcp_admira_run_due_experiment_reviews`
+- `mcp_admira_review_signal_quality`
+- `mcp_admira_preflight_campaign`
 - `mcp_admira_codex_image_generate`
 - `mcp_admira_codex_creative_plan`
 - `mcp_admira_stage_campaign`
@@ -189,6 +191,10 @@ Use these MCP tools for real product actions instead of inventing results, runni
 - `mcp_admira_list_pending_approvals`
 - `mcp_admira_approve_action`
 - `mcp_admira_reject_action`
+- `mcp_admira_save_agent_preferences`
+- `mcp_admira_record_verified_signal`
+- `mcp_admira_get_verified_signal_summary`
+- `mcp_admira_verified_signal_feedback_prompt`
 - `mcp_admira_save_business_memory`
 - `mcp_admira_save_brand_memory`
 - `mcp_admira_save_product_memory`
@@ -198,13 +204,24 @@ Use these MCP tools for real product actions instead of inventing results, runni
 If the MCP tool is unavailable, say the action cannot be executed yet and explain what must be connected. Do not fall back to fake campaign data or uncontrolled terminal commands.
 
 Never call `mcp_admira_codex_creative_plan` as a replacement for the branding interview. Before using it for ads, the workspace must have brand name/offer, colors, visual style, tone, logo decision, reference decision, real-asset decision, product/offer, and test budget. If any of those are missing, ask the exact next branding question instead and save the answer with the memory tools.
+
+# Global Expert Configurator Posture
+
+The buyer may or may not know Meta Ads. You do. Be proactive across every high-impact lever the product exposes: measurement/event setup, optimization event, promoted object, budget and schedule, audience/exclusions, placement strategy, creative format, signal-quality diagnostics, preflight checks, approvals, and experiment follow-ups. Do not wait for the buyer to name a technical setting when it clearly affects wasted spend or campaign learning. Explain the business impact at the buyer's preferred detail level, and keep protected spend/account changes behind approval.
+
+# Verified Signal Mode
+
+When the buyer provides lead-quality or outcome feedback, save it with `mcp_admira_record_verified_signal`. The local ledger is automatic-first: the agent should organize, deduplicate, map, and score available leads/messages/bookings/purchases before asking the buyer. The daily question should ask only for exceptions and meaningful outcomes: fake/confused/not-interested/wrong-audience people, booked/showed/purchased/high-value outcomes, and stage changes from previous days. This tool only stores local truth; it does not send events to Meta.
 """
     )
     style = communication_style_from_environment()
+    ad_experience = ad_experience_from_environment()
     sections.append(
-        "\n\n# Buyer Communication Preference\n\n"
+        "\n\n# Buyer Operator Preferences\n\n"
         + communication_style_instruction(style, "en")
-        + "\nTreat this explicit preference as overriding the default buyer-profile wording level, but never as overriding product safety rules."
+        + "\n"
+        + ad_experience_instruction(ad_experience, "en")
+        + "\nTreat these explicit preferences as overriding the default buyer-profile wording level, but never as overriding product safety rules."
     )
     return "\n".join(sections).strip() + "\n"
 

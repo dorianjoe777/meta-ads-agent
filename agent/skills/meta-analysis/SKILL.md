@@ -21,6 +21,9 @@ Use this skill when the buyer asks what is happening in the Meta Ads account, as
 - Treat Shopify aggregates as business truth when connected and Meta as attribution evidence. A mismatch is a tracking/attribution investigation, not permission to change spend.
 - Diagnose fatigue from relative CPA deterioration plus CTR, frequency, reach/delivery, and creative age. Frequency alone is not a verdict.
 - Use `mcp_admira_list_optimization_research` only for relevant hypotheses. Official guidance has priority; community claims are anecdotal and can only justify a controlled experiment.
+- For conversion, lead, message, or website-action campaigns, call `mcp_admira_review_signal_quality` when the buyer asks why delivery is poor, why Meta is finding the wrong people, why conversions are not attributed, or whether the event setup is ready.
+- Treat signal quality as a first-class diagnosis before blaming audience or creative: correct optimization event, Pixel/Dataset, Conversions API, Event Match Quality, AEM/event eligibility, event prioritization, and enough conversion volume.
+- If a signal issue is outside Admira's direct control, explain the exact Events Manager/server/ecommerce setup step. Do not pretend the agent fixed CAPI, EMQ, AEM, or event priority unless a product tool confirms it.
 
 ## Tone
 

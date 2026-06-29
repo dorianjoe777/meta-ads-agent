@@ -194,6 +194,40 @@ def fetch_campaign_statuses(account_id, token, version="v24.0"):
     return result
 
 
+def fetch_adset_statuses(account_id, token, version="v24.0"):
+    account = str(account_id or "").strip()
+    if account and not account.startswith("act_"):
+        account = f"act_{account}"
+    result = graph_rows(
+        f"/{account}/adsets",
+        {"fields": "id,name,campaign_id,status,effective_status,optimization_goal,billing_event,promoted_object,start_time,created_time,updated_time,daily_budget,lifetime_budget,budget_remaining", "limit": 500},
+        token,
+        version,
+    )
+    if not result.get("ok"):
+        return result
+    result["rows"] = [
+        {
+            "id": str(row.get("id") or ""),
+            "name": row.get("name") or "",
+            "campaign_id": str(row.get("campaign_id") or ""),
+            "status": str(row.get("status") or "").lower(),
+            "effective_status": str(row.get("effective_status") or "").lower(),
+            "optimization_goal": str(row.get("optimization_goal") or ""),
+            "billing_event": str(row.get("billing_event") or ""),
+            "promoted_object": row.get("promoted_object") if isinstance(row.get("promoted_object"), dict) else {},
+            "start_time": row.get("start_time") or "",
+            "created_time": row.get("created_time") or "",
+            "updated_time": row.get("updated_time") or "",
+            "daily_budget": round(number(row.get("daily_budget")) / 100, 2),
+            "lifetime_budget": round(number(row.get("lifetime_budget")) / 100, 2),
+            "budget_remaining": round(number(row.get("budget_remaining")) / 100, 2),
+        }
+        for row in result["rows"]
+    ]
+    return result
+
+
 def collect_meta_snapshot(account_id, token, version="v24.0", date_preset="last_30d"):
     levels = {}
     unavailable = []
@@ -218,6 +252,10 @@ def collect_meta_snapshot(account_id, token, version="v24.0", date_preset="last_
     if not statuses.get("ok"):
         unavailable.append({"view": "delivery_status", "reason": statuses.get("error")})
     status_by_id = {item["id"]: item for item in statuses.get("rows", [])}
+    adset_statuses = fetch_adset_statuses(account_id, token, version)
+    if not adset_statuses.get("ok"):
+        unavailable.append({"view": "adset_signal_status", "reason": adset_statuses.get("error")})
+    adset_status_by_id = {item["id"]: item for item in adset_statuses.get("rows", [])}
     return {
         "generated_at": now_iso(),
         "account_id": str(account_id or ""),
@@ -225,6 +263,7 @@ def collect_meta_snapshot(account_id, token, version="v24.0", date_preset="last_
         "levels": levels,
         "breakdowns": breakdowns,
         "campaign_statuses": status_by_id,
+        "adset_statuses": adset_status_by_id,
         "data_quality": {
             "complete": not unavailable,
             "unavailable": unavailable,
@@ -273,6 +312,7 @@ def save_meta_snapshot(snapshot, now=None):
         "levels": snapshot.get("levels"),
         "breakdowns": snapshot.get("breakdowns"),
         "campaign_statuses": snapshot.get("campaign_statuses"),
+        "adset_statuses": snapshot.get("adset_statuses"),
         "data_quality": snapshot.get("data_quality"),
     }
     history["days"] = [existing] + [day for day in history["days"] if day.get("date") != date_key]

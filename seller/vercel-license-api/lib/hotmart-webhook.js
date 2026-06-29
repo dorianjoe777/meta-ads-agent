@@ -104,5 +104,6 @@ export function planForHotmartPurchase(summary = {}) {
 }
 
 export function shouldSendHotmartBuyerEmail() {
-  return String(process.env.HOTMART_SEND_BUYER_EMAIL || "false").trim().toLowerCase() === "true";
+  const value = String(process.env.HOTMART_SEND_BUYER_EMAIL ?? "true").trim().toLowerCase();
+  return !["0", "false", "no", "off"].includes(value);
 }

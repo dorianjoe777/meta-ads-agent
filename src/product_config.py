@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from communication_style import communication_style_from_environment
+from communication_style import ad_experience_from_environment, communication_style_from_environment
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -222,6 +222,7 @@ class AgentConfig:
     shopify_admin_token: str = ""
     shopify_api_version: str = "2026-04"
     communication_style: str = "simple"
+    ad_experience_level: str = ""
 
     @property
     def live(self):
@@ -320,4 +321,5 @@ def load_config():
         shopify_admin_token=os.environ.get("SHOPIFY_ADMIN_API_TOKEN", ""),
         shopify_api_version=os.environ.get("SHOPIFY_API_VERSION", "2026-04"),
         communication_style=communication_style_from_environment(),
+        ad_experience_level=ad_experience_from_environment(),
     )

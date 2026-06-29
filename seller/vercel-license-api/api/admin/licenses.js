@@ -1,6 +1,12 @@
 import { sendBuyerLicenseEmail, shouldAutoSendBuyerEmail } from "../../lib/buyer-email.js";
 import { handleHotmartWebhook } from "../../lib/hotmart-webhook-handler.js";
 import { bearerAllowed, entitlementDefaults, formatLicense, normalizeEntitlements } from "../../lib/license.js";
+import {
+  isOwnerTestPurchaseEmailRequest,
+  markOwnerTestPurchaseEmailSent,
+  ownerTestLicenseKey,
+  ownerTestPurchaseEmailRecord
+} from "../../lib/owner-test-email-pipeline.js";
 import { readLicense, readRegistry, writeLicense, writeRegistry } from "../../lib/store.js";
 
 export default async function handler(request, response) {
@@ -42,33 +48,50 @@ export default async function handler(request, response) {
   if (!email.includes("@")) {
     return response.status(400).json({ ok: false, error: "buyer_email_required" });
   }
-  const plan = body.plan === "agency" ? "agency" : "individual";
+  const ownerTestPurchaseEmail = isOwnerTestPurchaseEmailRequest(body);
+  const plan = ownerTestPurchaseEmail || body.plan === "agency" ? "agency" : "individual";
   const defaults = entitlementDefaults(plan);
   const entitlements = normalizeEntitlements({
+    buyer_email: email,
+    role: ownerTestPurchaseEmail ? "owner" : body.role,
     plan,
     max_devices: body.max_devices || defaults.max_devices,
     workspace_limit: body.workspace_limit || defaults.workspace_limit,
     features: body.features || defaults.features
   });
-  const licenseKey = body.license_key || formatLicense(`${email}${Date.now()}`);
+  const licenseKey = body.license_key || (ownerTestPurchaseEmail ? ownerTestLicenseKey(email, body) : formatLicense(`${email}${Date.now()}`));
   const existing = registry.licenses.find((item) => item.license_key === licenseKey);
   if (body.action === "mark_email_sent" && !existing) {
     return response.status(404).json({ ok: false, error: "license_not_found" });
   }
-  const record = existing || {
-    license_key: licenseKey,
-    buyer_email: email,
-    buyer_name: String(body.buyer_name || ""),
-    plan: entitlements.plan,
-    status: "active",
-    max_devices: entitlements.max_devices,
-    workspace_limit: entitlements.workspace_limit,
-    features: entitlements.features,
-    devices: [],
-    buyer_email_delivery: { status: "pending", updated_at: new Date().toISOString() },
-    created_at: new Date().toISOString()
-  };
-  if (existing && body.plan) {
+  let record;
+  if (ownerTestPurchaseEmail) {
+    try {
+      record = ownerTestPurchaseEmailRecord({ email, buyerName: body.buyer_name, existing, body });
+    } catch (error) {
+      if (error?.code === "owner_email_not_allowed") {
+        return response.status(403).json({ ok: false, error: "owner_email_not_allowed" });
+      }
+      throw error;
+    }
+  } else {
+    record = existing || {
+      license_key: licenseKey,
+      buyer_email: email,
+      buyer_name: String(body.buyer_name || ""),
+      role: String(body.role || "").trim().toLowerCase() || undefined,
+      plan: entitlements.plan,
+      status: "active",
+      max_devices: entitlements.max_devices,
+      workspace_limit: entitlements.workspace_limit,
+      features: entitlements.features,
+      devices: [],
+      buyer_email_delivery: { status: "pending", updated_at: new Date().toISOString() },
+      created_at: new Date().toISOString()
+    };
+  }
+  if (existing && (body.plan || body.role || ownerTestPurchaseEmail)) {
+    if (body.role || ownerTestPurchaseEmail) record.role = ownerTestPurchaseEmail ? "owner" : String(body.role || "").trim().toLowerCase();
     record.plan = entitlements.plan;
     record.max_devices = entitlements.max_devices;
     record.workspace_limit = entitlements.workspace_limit;
@@ -92,6 +115,7 @@ export default async function handler(request, response) {
   const wantsBuyerEmail = body.send_buyer_email === true
     || body.email_buyer === true
     || body.action === "send_email"
+    || ownerTestPurchaseEmail
     || (!existing && shouldAutoSendBuyerEmail());
   if (!wantsBuyerEmail) {
     return response.status(200).json({ ok: true, license: record });
@@ -101,7 +125,8 @@ export default async function handler(request, response) {
     const delivery = await sendBuyerLicenseEmail(record);
     record.last_buyer_email = delivery;
     record.buyer_email_delivery = { status: "sent", updated_at: delivery.sent_at };
-    await writeLicense(record);
+    if (ownerTestPurchaseEmail) markOwnerTestPurchaseEmailSent(record, delivery);
+    await Promise.all([writeRegistry(registry), writeLicense(record)]);
     return response.status(200).json({ ok: true, license: record, buyer_email: { ok: true, ...delivery } });
   } catch {
     record.buyer_email_delivery = { status: "failed", updated_at: new Date().toISOString() };

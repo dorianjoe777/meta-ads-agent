@@ -71,10 +71,14 @@ test("classifies approved and revoked purchase notifications", () => {
   );
 });
 
-test("keeps Hotmart license creation decoupled from buyer email by default", () => {
+test("sends Hotmart buyer email by default unless explicitly disabled", () => {
   const previous = process.env.HOTMART_SEND_BUYER_EMAIL;
   delete process.env.HOTMART_SEND_BUYER_EMAIL;
   try {
+    assert.equal(shouldSendHotmartBuyerEmail(), true);
+    process.env.HOTMART_SEND_BUYER_EMAIL = "false";
+    assert.equal(shouldSendHotmartBuyerEmail(), false);
+    process.env.HOTMART_SEND_BUYER_EMAIL = "0";
     assert.equal(shouldSendHotmartBuyerEmail(), false);
     process.env.HOTMART_SEND_BUYER_EMAIL = "true";
     assert.equal(shouldSendHotmartBuyerEmail(), true);

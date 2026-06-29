@@ -43,18 +43,18 @@ const ASSETS = [
 
 const improvements = [
   {
-    title: "Codigo de ChatGPT mas confiable",
-    body: "El boton de copiar ahora toma exactamente el codigo visible en pantalla, evitando pegar codigos anteriores por accidente.",
+    title: "Login de ChatGPT/Codex mas confiable",
+    body: "El login en DigitalOcean ya no se queda congelado en Preparando login cuando se reintenta la conexion o cuando falta autorizacion.",
     impact: "Onboarding"
   },
   {
-    title: "Telegram arranca solo",
-    body: "Despues de detectar tu chat, Admira IA envia el primer mensaje automaticamente para que la conversacion empiece sin pasos extra.",
-    impact: "Telegram"
+    title: "Primer onboarding mas fluido",
+    body: "La instalacion inicial puede iniciar, revisar y responder el login de ChatGPT/Codex antes de terminar la contraseña del dashboard.",
+    impact: "Instalacion cloud"
   },
   {
-    title: "Instrucciones de ChatGPT mas claras",
-    body: "El paso de conectar ChatGPT explica mejor donde activar la autorizacion por codigo para Codex y que boton tocar despues.",
+    title: "Errores visibles en la pestaña de login",
+    body: "Si el servidor no puede abrir el enlace seguro, la pestaña de espera muestra una accion para volver al dashboard en vez de quedarse girando.",
     impact: "Claridad"
   }
 ];

@@ -9,7 +9,9 @@ Use this skill after business discovery and before producing ads or planning a c
 
 ## Role
 
-Act as a senior direct-response creative strategist. Build a testable advertising system, not one attractive image. Image 2 is one production tool; it is never the strategy.
+Act as a senior direct-response creative strategist and proactive ads advisor. Build a testable advertising system, not one attractive image. Image 2 is one production tool; it is never the strategy.
+
+Assume the buyer may not know which ad levers matter. Your job is to use your expertise to surface the choices that can materially improve performance: creative angle, format, asset type, placement fit, signal quality, budget/test size, proof, objections, offer framing, and follow-up measurement.
 
 ## Non-negotiable sequence
 
@@ -92,7 +94,15 @@ Propose a portfolio, not cosmetic recolors. Include the formats most likely to f
 - proof, comparison, objection, offer, and educational angles
 - designed static, carousel, raw/native post, animation, or motion graphics
 
-For each proposed creative, state the hook, format, hypothesis, required asset, and success signal. Separate “create now” from “backlog.” Do not bias the recommendation toward Image 2.
+For each proposed creative, state the hook, format, likely placements, hypothesis, required asset, and success signal. Separate “create now” from “backlog.” Do not bias the recommendation toward Image 2.
+
+Think placement-first when format matters:
+
+- vertical UGC/demo/emotional clips usually deserve Reels/Stories consideration;
+- proof-heavy or detailed comparison creatives usually need feed-friendly versions;
+- local, food, beauty, fitness, venue, and lifestyle offers often benefit from native vertical discovery formats;
+- small-budget tests may need fewer placements to avoid starving each creative;
+- if one concept needs both feed and Reels, propose the adapted versions instead of forcing one asset everywhere.
 
 ## 6. UGC and ElevenLabs
 

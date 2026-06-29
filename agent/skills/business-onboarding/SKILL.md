@@ -20,6 +20,7 @@ Read and update through tools, not by editing arbitrary files:
 
 ## Tools
 
+- `mcp_admira_save_agent_preferences`
 - `mcp_admira_save_business_memory`
 - `mcp_admira_save_brand_memory`
 - `mcp_admira_save_product_memory`
@@ -32,12 +33,14 @@ Read and update through tools, not by editing arbitrary files:
   1. first understand the business,
   2. then define the visual brand, logo, colors, references, and tone,
   3. then work on offers, ad strategy, prior campaigns, and the first clear plan.
+- Also ask the owner-level preference at the start: whether the buyer has experience creating/managing ads and whether they want deep technical detail or simple words. Save it with `mcp_admira_save_agent_preferences` as `ad_experience_level` (`beginner`, `intermediate`, `advanced`) and `communication_style` (`simple`, `technical`). This preference is global, not tied to a client business.
 - Ask one question at a time.
 - Save useful facts when the buyer gives them.
 - If the buyer shared website or social links, use available browser/web retrieval to understand public information, then confirm the important findings with the buyer.
 - After business basics, move to `skills/branding-creatives-creation/SKILL.md`, then prior ads and campaign goals. “Business basics complete” only means you know enough to start branding; it does not authorize creative planning or image generation yet.
 - If the buyer sends a logo or brand image, use the branding skill and save it as logo context before creating images.
 - If the buyer asks for creatives before brand memory is ready, do not call `mcp_admira_codex_creative_plan` or `mcp_admira_codex_image_generate`. Briefly say you need to lock the brand first, then ask the next missing branding question: logo, colors, visual references/uploads, real photos/assets, tone, or style.
+- Throughout onboarding, act as a proactive ads expert across all available levers, not just placements or images. Surface important decisions around measurement/event setup, budget, audience, exclusions, creative formats, preflight diagnostics, approvals, and follow-up checks when they materially affect results.
 
 ## Tone
 

@@ -25,7 +25,7 @@ Optional environment variables:
 - `BUYER_EMAIL_REPLY_TO=support@admiroia.uboost.lat` is optional.
 - `BUYER_EMAIL_PRODUCT_NAME="Admira IA"` is optional email copy branding.
 - `BUYER_EMAIL_AUTO_SEND=true` sends the buyer access email automatically for every newly created license. Leave unset/false if the checkout webhook will pass `send_buyer_email: true` explicitly.
-- `HOTMART_SEND_BUYER_EMAIL=false` keeps purchase processing and email delivery separate. This is the recommended production setting while the buyer-email workflow is being built. Set it to `true` only to let this webhook send immediately.
+- `HOTMART_SEND_BUYER_EMAIL=false` is an emergency pause switch for Hotmart-triggered buyer emails. By default, the webhook sends the transactional license/access email after the Upstash license write succeeds.
 - `BUYER_EMAIL_PROVIDER=smtp`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, and `SMTP_PASS` remain supported as an optional Spacemail SMTP fallback.
 - `HOTMART_PRODUCT_ID` or `HOTMART_PRODUCT_IDS=123,456` restricts processing to specific Hotmart product IDs.
 - `HOTMART_PRODUCT_UCODE` or `HOTMART_PRODUCT_UCODES=...` restricts processing to specific Hotmart product UCODEs.
@@ -117,6 +117,26 @@ curl -X POST "https://admiroia.uboost.lat/api/admin/licenses" \
 - Resend is the recommended production path for this project because delivery uses HTTPS from Vercel and gives clearer delivery logs.
 - If using the SMTP fallback on Vercel, use authenticated submission on port `465` or `587`, never port `25`, and the function waits for the send to finish before responding.
 
+Owner commercial purchase email test pipeline:
+
+- Protected by the same `Authorization: Bearer $LICENSE_ADMIN_KEY` admin auth.
+- Only the configured owner email is allowed by default: `dorianjoe.777@gmail.com`.
+- Creates or reuses the owner license `MAO-DORI-ANJO-E777-GMAI-LADM-INTE-36DECA`.
+- Stores `role: "owner"` and unlimited-style commercial entitlements in Upstash.
+- Sends the Spanish purchase/access email every time the action is called, so repeated email tests are allowed without creating duplicate licenses.
+
+```bash
+curl -X POST "https://admiroia.uboost.lat/api/admin/licenses" \
+  -H "Authorization: Bearer $LICENSE_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "action": "send_owner_test_purchase_email",
+    "buyer_email": "dorianjoe.777@gmail.com",
+    "buyer_name": "Dorian",
+    "role": "owner"
+  }'
+```
+
 Hotmart webhook:
 
 - Paste this URL into Hotmart's `URL para envio de dados` field:
@@ -127,12 +147,12 @@ https://admiroia.uboost.lat/api/webhooks/hotmart
 
 - Configure Hotmart to send purchase events, especially `PURCHASE_APPROVED`.
 - The endpoint validates `X-HOTMART-HOTTOK` against `HOTMART_HOTTOK`.
-- On `PURCHASE_APPROVED` / `APPROVED`, it creates an active license directly in Upstash and marks its buyer-email delivery as `pending`.
+- On `PURCHASE_APPROVED` / `APPROVED`, it creates or reuses an active license directly in Upstash using the purchaser email and Hotmart transaction, then sends the transactional license/access email through the configured buyer email provider.
 - Hotmart retries are idempotent by `purchase.transaction`, so the same sale will not create duplicate licenses.
 - On refunded, chargeback, canceled/cancelled, or blocked notifications, a matching license is marked `revoked`.
 - Concurrent purchases are indexed independently in Redis, so a stale registry write cannot hide another buyer's license.
-- Keep `HOTMART_SEND_BUYER_EMAIL=false` to build the email workflow independently. A protected server-side email worker can list pending deliveries with `GET /api/admin/licenses?delivery=pending` and `Authorization: Bearer $LICENSE_ADMIN_KEY`; each result includes the buyer email, license key, plan, Hotmart transaction, and delivery status.
-- After an external workflow sends a license, use the protected admin API to send/record delivery rather than exposing `LICENSE_ADMIN_KEY` in a browser or client-side automation.
+- If `HOTMART_SEND_BUYER_EMAIL=false` is set, the webhook still creates the Upstash license but leaves buyer email delivery pending. A protected server-side email worker can list pending deliveries with `GET /api/admin/licenses?delivery=pending` and `Authorization: Bearer $LICENSE_ADMIN_KEY`; each result includes the buyer email, license key, plan, Hotmart transaction, and delivery status.
+- After an external workflow sends a pending license email, use the protected admin API to send/record delivery rather than exposing `LICENSE_ADMIN_KEY` in a browser or client-side automation.
 
 ```bash
 curl -X POST "https://admiroia.uboost.lat/api/admin/licenses" \

@@ -6,7 +6,7 @@ import urllib.error
 import urllib.request
 
 from agent_runtime import build_system_prompt
-from communication_style import communication_preference, communication_style_from_environment
+from communication_style import ad_experience_from_environment, communication_preference, communication_style_from_environment
 from hermes_bridge import chat as hermes_chat
 
 
@@ -73,7 +73,12 @@ def account_context(payload):
     brand_guides = payload.get("brand_guides", {})
     agent_onboarding_phase = payload.get("agent_onboarding_phase", {})
     optimization = payload.get("optimization", {})
-    communication = communication_preference(communication_style_from_environment(), payload.get("language") or "es")
+    verified_signals = payload.get("verified_signals", {})
+    communication = communication_preference(
+        communication_style_from_environment(),
+        payload.get("language") or "es",
+        ad_experience_level=ad_experience_from_environment(),
+    )
     return {
         "communication_preference": communication,
         "agent_onboarding_phase": agent_onboarding_phase if isinstance(agent_onboarding_phase, dict) else {},
@@ -106,6 +111,7 @@ def account_context(payload):
             "creative_references": brand_guides.get("creative_references", ""),
         } if isinstance(brand_guides, dict) else {},
         "optimization": optimization if isinstance(optimization, dict) else {},
+        "verified_signals": verified_signals if isinstance(verified_signals, dict) else {},
     }
 
 

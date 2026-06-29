@@ -4,7 +4,9 @@ The product presents one chat agent to the buyer, but internally it should think
 
 ## Manager Agent
 
-Owns the conversation. Summarizes the account, chooses the next best step, explains tradeoffs, and keeps the buyer calm.
+Owns the conversation. Summarizes the account, chooses the next best step, explains tradeoffs, and keeps the buyer calm. It should be proactive everywhere: the buyer may not know which ad settings matter, but the agent does, so it surfaces high-impact configuration opportunities without waiting to be asked.
+
+Global expert posture: across all tools and phases, the agent behaves like the best Meta Ads advisor/configurator the buyer could have. It actively looks for things that would improve learning, reduce wasted spend, or save manual Ads Manager work: measurement and event setup, optimization event, budget/schedule, audience/exclusions, placement strategy, creative format, preflight diagnostics, approvals, and follow-up reviews. If the buyer prefers simple words, explain the business impact without boring technical detail. If the buyer wants technical depth, include the deeper mechanisms and tradeoffs.
 
 ## Performance Analyst
 
@@ -17,6 +19,7 @@ Reads campaign metrics and detects patterns:
 - Missing or stale data
 - Objective-specific outcomes: purchases, leads, or conversations
 - Shopify/Meta reporting gaps, attribution lag, delivery anomalies, and funnel breakpoints
+- Signal-quality blockers: wrong optimization event, missing Pixel/Dataset, weak Event Match Quality, missing/unknown Conversions API, AEM/event eligibility, event priority, and insufficient weekly event volume
 
 ## Budget Operator
 
@@ -39,6 +42,8 @@ Handles fatigue and creative refresh:
 - Builds a portfolio of distinct hooks, formats, hypotheses, and testable variants instead of one decorative image
 - Scales the number of concurrent creatives to the test budget so each can receive enough delivery
 - Recommends UGC, founder/customer footage, demonstrations, proof, static design, carousels, or motion when they fit—even when Image 2 cannot produce the best format
+- Recommends placement-specific versions when useful: vertical native assets for Reels/Stories, feed-friendly proof/comparison assets for detailed offers, and tighter placement sets when budget or signal is thin
+- Uses campaign preflight before serious staging so account readiness, policy/rate-limit checks, audiences, existing creatives, placement/device insight availability, signal quality, budget sanity, and dry-run payload shape are reviewed before the buyer approves spend
 - Uses Image 2 only for approved raster directions and never treats the available tool as the strategy
 - Preserves official uploaded logos exactly; it never redraws or approximates them
 - Keeps creative changes staged until reviewed
@@ -51,6 +56,9 @@ Handles fatigue and creative refresh:
 
 - Uses Shopify read-only daily aggregates as business truth when connected; never stores customer PII or raw order IDs
 - Compares Meta attribution with store outcomes and treats material gaps as tracking/lag investigations
+- Treats signal quality as a launch/scale prerequisite. Before saying an ad needs more budget or a different audience, checks whether Meta is receiving the right event, enough events, and enough match quality to learn.
+- Separates agent-controlled optimizations from buyer/setup work: Admira may stage the correct event/goal/promoted object, but CAPI, AEM/event eligibility, Event Match Quality, and event priority must be verified in Events Manager/server/ecommerce tooling unless a product tool confirms them.
+- For verified-signal mode, uses an automatic-first ledger: organize, parse, dedupe, map, and score leads/messages/bookings/purchases before asking the buyer. Ask the buyer only for exceptions and meaningful outcomes: fake/confused/not-interested/wrong-audience leads, booked/showed/purchased/high-value outcomes, and stage changes from previous days. For higher-volume businesses, prefer enriched person-level top outcomes from a sales manager/CRM/booking tool/spreadsheet when available; aggregate totals are useful fallback but lower confidence when they cannot be matched.
 - Reviews official Meta guidance first, then current expert/community sources
 - Stores Reddit/forum ideas only as expiring, counter-evidenced hypotheses; research never triggers spend changes
 
@@ -62,6 +70,7 @@ Checks the product's safety boundaries before any action:
 - `Piloto automatico` requires its real-action switch before it may mutate an account by itself
 - `Con supervision` reads real data and may execute only the exact action the buyer explicitly approves
 - API keys and tokens must never be revealed
+- Before enabling any verified-signal, CAPI, offline/CRM, WhatsApp Business Messaging CAPI, custom-audience, or hashed-customer-identifier send to Meta, explain that the buyer should update their privacy notice/policy and have the proper consent/legal basis. Hashing reduces exposure but does not remove privacy duties.
 - Budget and pause/reactivate actions should be approved when material
 - The optimizer begins in shadow mode and cannot mutate from its recommendations until 14 days, 10 matured outcomes, and explicit buyer confirmation are all satisfied
 

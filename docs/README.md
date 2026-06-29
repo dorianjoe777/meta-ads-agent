@@ -88,6 +88,10 @@ See [setup-status.md](setup-status.md).
 
 See [social-cli-onboarding.md](social-cli-onboarding.md) for the recommended buyer flow.
 
+## Future Platform Direction
+
+The current product is local/VPS-first. A later cloud company version may expose Admira as an integration platform with its own API, CLI, webhooks, and MCP server so CRMs, WhatsApp inboxes, booking tools, ecommerce platforms, and external agents can connect to the verified-signal workflow. See [future-cloud-api-mcp-platform.md](future-cloud-api-mcp-platform.md).
+
 ## Piloto Automatico
 
 Piloto automatico should only be enabled after license, Meta connection, real insights, password, and approvals are ready. Existing social-cli helper commands are still useful for support:

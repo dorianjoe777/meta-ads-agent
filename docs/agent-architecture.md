@@ -96,11 +96,18 @@ mcp_admira_stage_budget_change
 mcp_admira_list_pending_approvals
 mcp_admira_approve_action
 mcp_admira_reject_action
+mcp_admira_record_verified_signal
+mcp_admira_get_verified_signal_summary
+mcp_admira_verified_signal_feedback_prompt
 ```
 
 The MCP server does not execute risky logic by itself. It calls `src/admira_tool_bridge.py`, which loads the existing dashboard action layer and routes through `execute_agent_tool()`. That means one safety path is shared by dashboard chat, Telegram, approvals, Codex/Image, campaign staging, budget changes, and memory saves.
 
 Product skills live in `agent/skills/*/SKILL.md` and are copied into the Hermes workspace under `skills/`. They tell Hermes when to call each MCP tool. These skills are versioned with the product instead of being generated ad hoc during a chat.
+
+The verified-signal tools write to a private local ledger first. They organize human-confirmed lead quality and outcomes for reporting, decisions, and future Meta feedback flows; they do not send events to Meta by themselves.
+
+This local MCP bridge is not the same as a future public platform API. The later cloud product direction is documented in [future-cloud-api-mcp-platform.md](future-cloud-api-mcp-platform.md): a versioned API, CLI, webhooks, and official MCP server for CRMs, booking tools, ecommerce, WhatsApp inboxes, and external agents after Meta app approval and cloud tenancy/privacy controls are ready.
 
 ## Model Options
 

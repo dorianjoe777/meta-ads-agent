@@ -67,8 +67,8 @@ function licenseForApprovedPurchase({ existing, summary }) {
     created_at: new Date().toISOString()
   };
 
-  record.buyer_email = record.buyer_email || summary.buyer_email;
-  record.buyer_name = record.buyer_name || summary.buyer_name;
+  record.buyer_email = summary.buyer_email;
+  record.buyer_name = summary.buyer_name || record.buyer_name;
   record.plan = entitlements.plan;
   record.status = "active";
   record.max_devices = entitlements.max_devices;
@@ -144,8 +144,21 @@ export function createHotmartWebhookHandler(overrides = {}) {
       }
       await Promise.all([services.writeRegistry(registry), services.writeLicense(record)]);
 
-      const shouldEmail = services.shouldSendBuyerEmail() && !record.last_buyer_email?.sent_at;
-      if (!shouldEmail) {
+      if (record.last_buyer_email?.sent_at) {
+        return response.status(200).json({
+          ok: true,
+          processed: true,
+          action: existing ? "license_existing_email_already_sent" : "license_created_email_already_sent",
+          buyer_email: {
+            ok: true,
+            status: "already_sent",
+            provider: record.last_buyer_email.provider || "",
+            id: record.last_buyer_email.id || ""
+          }
+        });
+      }
+
+      if (!services.shouldSendBuyerEmail()) {
         return response.status(200).json({
           ok: true,
           processed: true,

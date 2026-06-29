@@ -37,7 +37,9 @@ import meta_upload
 import meta_insights
 import optimization_engine
 import optimization_research
+import signal_quality
 import shopify_connector
+import verified_signal_ledger
 from audience_builder import build_audience_strategy
 from codex_brand_guides import build_codex_creative_prompt, build_codex_image_prompt_package
 import codex_brand_guides
@@ -546,10 +548,14 @@ class IntegrationTestSuite:
             dashboard.load_onboarding_state = lambda: {"completed": False}
             dashboard.load_config = lambda: NoPassword()
             self.assert_true(not handler.auth_required_for_post("/api/dashboard-password"), "First password creation stays open before a password exists")
+            self.assert_true(not handler.auth_required_for_post("/api/agent-model/connect"), "First-run onboarding can start ChatGPT/Codex login before a dashboard password exists")
+            self.assert_true(not handler.auth_required_for_post("/api/agent-model/connect-status"), "First-run onboarding can poll ChatGPT/Codex login before a dashboard password exists")
+            self.assert_true(not handler.auth_required_for_post("/api/agent-model/connect-input"), "First-run onboarding can answer ChatGPT/Codex login prompts before a dashboard password exists")
             self.assert_true(not handler.auth_required_for_get("/api/dashboard"), "Initial setup dashboard can load before a password exists")
             self.assert_true(handler.auth_required_for_post("/api/social/token"), "Meta token save is protected during onboarding")
             self.assert_true(handler.auth_required_for_get("/api/social/accounts"), "Meta account discovery is protected before a password exists")
             dashboard.load_config = lambda: WithPassword()
+            self.assert_true(handler.auth_required_for_post("/api/agent-model/connect"), "ChatGPT/Codex login is protected once a dashboard password exists")
             self.assert_true(handler.auth_required_for_post("/api/dashboard-password"), "Changing password requires auth after a password exists")
             self.assert_true(handler.auth_required_for_get("/api/dashboard"), "Dashboard API is protected after password exists even before onboarding is complete")
             with tempfile.TemporaryDirectory() as tmpdir:
@@ -1471,7 +1477,7 @@ class IntegrationTestSuite:
         workspace = test_dir / "workspace"
         home = test_dir / "hermes-home"
         original_prepare = hermes_gateway.prepare_hermes_workspace
-        original_env = {key: os.environ.get(key) for key in ["TELEGRAM_AGENT_MODE", "TELEGRAM_AGENT_ENABLED", "TELEGRAM_LANGUAGE", "AGENT_COMMUNICATION_STYLE"]}
+        original_env = {key: os.environ.get(key) for key in ["TELEGRAM_AGENT_MODE", "TELEGRAM_AGENT_ENABLED", "TELEGRAM_LANGUAGE", "AGENT_COMMUNICATION_STYLE", "AGENT_AD_EXPERIENCE_LEVEL"]}
 
         class FakeConfig:
             telegram_bot_token = "123456:fake-token"
@@ -1488,6 +1494,7 @@ class IntegrationTestSuite:
             os.environ["TELEGRAM_AGENT_ENABLED"] = "true"
             os.environ["TELEGRAM_LANGUAGE"] = "es"
             os.environ["AGENT_COMMUNICATION_STYLE"] = "technical"
+            os.environ["AGENT_AD_EXPERIENCE_LEVEL"] = "advanced"
             hermes_gateway.prepare_hermes_workspace = lambda payload: {"path": str(workspace)}
 
             files = hermes_gateway.write_gateway_files(FakeConfig())
@@ -1505,6 +1512,8 @@ class IntegrationTestSuite:
             self.assert_true('default: "gpt-5.5"' in config_yaml and 'default: "auto"' not in config_yaml, "Hermes Gateway normalizes legacy auto model to gpt-5.5")
             self.assert_true("entrevista del negocio" in config_yaml and "no bloquean la configuración inicial" in config_yaml, "Hermes Gateway tells Telegram that agent interviews are not dashboard blockers")
             self.assert_true("primero entenderemos el negocio" in config_yaml and "marca visual" in config_yaml and "ofertas, briefs, estrategia y campañas" in config_yaml, "Hermes Gateway introduction explains the three-step onboarding journey")
+            self.assert_true("experiencia creando/gestionando anuncios" in config_yaml and "Experiencia en anuncios: avanzada" in config_yaml, "Hermes Gateway asks and applies the global ad-experience preference")
+            self.assert_true("Sé proactivo globalmente" in config_yaml and "evento correcto" in config_yaml, "Hermes Gateway applies the global expert configurator posture beyond placements")
             self.assert_true("no uses tablas Markdown" in config_yaml, "Hermes Gateway prompt keeps Telegram replies in mobile-safe bullet formatting")
             self.assert_true("Preferencia de comunicación: técnica" in config_yaml and "detalles de implementación" in config_yaml, "Hermes Gateway applies the global technical communication preference")
             self.assert_true("¿Tienes alguna pregunta?" in prompt and "No uses datos demo" in prompt, "Daily brief prompt ends with the buyer question and blocks demo data")
@@ -1530,18 +1539,22 @@ class IntegrationTestSuite:
             workspace_path = Path(workspace["path"])
             creative_skill = workspace_path / "skills" / "creative-codex-image" / "SKILL.md"
             branding_skill = workspace_path / "skills" / "branding-creatives-creation" / "SKILL.md"
+            campaign_skill = workspace_path / "skills" / "campaign-creation" / "SKILL.md"
             approvals_skill = workspace_path / "skills" / "telegram-approvals" / "SKILL.md"
             agents_text = (workspace_path / "AGENTS.md").read_text(encoding="utf-8")
 
-            self.assert_true(creative_skill.exists() and branding_skill.exists() and approvals_skill.exists(), "Focused product skill files are copied into the Hermes workspace")
+            self.assert_true(creative_skill.exists() and branding_skill.exists() and campaign_skill.exists() and approvals_skill.exists(), "Focused product skill files are copied into the Hermes workspace")
             self.assert_true("mcp_admira_codex_image_generate" in creative_skill.read_text(encoding="utf-8"), "Creative skill points Hermes to the Codex/Image MCP tool")
             self.assert_true("logo" in branding_skill.read_text(encoding="utf-8").lower() and "mcp_admira_save_brand_memory" in branding_skill.read_text(encoding="utf-8"), "Branding skill teaches Hermes to save logo-aware creative memory")
             branding_text = branding_skill.read_text(encoding="utf-8")
+            campaign_text = campaign_skill.read_text(encoding="utf-8")
             self.assert_true("Image 2 is one production tool; it is never the strategy" in branding_text and "test budget" in branding_text, "Branding skill separates creative strategy from the available image tool and asks budget first")
             self.assert_true("Meta Ad Library" in branding_text and "not private CPA, ROAS, or conversions" in branding_text, "Branding skill supports evidence-labeled competitor creative research without claiming public conversion data")
             self.assert_true("ElevenLabs" in branding_text and "photorealism" in branding_text and "reference_image_paths" in branding_text, "Branding skill covers UGC guidance, real-world photorealism, and uploaded references")
+            self.assert_true("likely placements" in branding_text and "vertical Reels version" in campaign_text and "Expert Configuration Posture" in campaign_text, "Skills teach proactive expert placement strategy instead of rigid placement defaults")
+            self.assert_true("mcp_admira_preflight_campaign" in campaign_text and "object_story_spec" in campaign_text and "custom_audiences" in campaign_text, "Campaign skill teaches preflight and expert campaign controls")
             self.assert_true("mcp_admira_approve_action" in approvals_skill.read_text(encoding="utf-8"), "Approval skill points Hermes to exact approval MCP tools")
-            self.assert_true("Native Product Tools" in agents_text and "mcp_admira_stage_campaign" in agents_text, "Combined Hermes rules document the MCP product bridge")
+            self.assert_true("Native Product Tools" in agents_text and "mcp_admira_stage_campaign" in agents_text and "mcp_admira_review_signal_quality" in agents_text and "mcp_admira_preflight_campaign" in agents_text, "Combined Hermes rules document the MCP product bridge and preflight review")
             self.assert_true((workspace_path / "skills" / "README.md").exists(), "Hermes workspace includes a product skill index")
         finally:
             hermes_bridge.HERMES_WORKSPACE_DIR = original_workspace
@@ -1584,13 +1597,19 @@ class IntegrationTestSuite:
             admira_tool_bridge.load_dashboard = lambda: FakeDashboard()
             context = admira_tool_bridge.call_tool("mcp_admira_get_real_meta_context", {})
             image = admira_tool_bridge.call_tool("codex_image_generate", {"request": "haz una imagen"})
+            review = admira_tool_bridge.call_tool("mcp_admira_review_signal_quality", {"objective": "PURCHASES", "pixel_id": "123"})
+            preflight = admira_tool_bridge.call_tool("mcp_admira_preflight_campaign", {"objective": "PURCHASES", "pixel_id": "123"})
             approval = admira_tool_bridge.call_tool("mcp_admira_approve_action", {"approval_id": "approval_1"})
             pending = admira_tool_bridge.call_tool("list_pending_approvals", {})
             unknown = admira_tool_bridge.call_tool("delete_everything", {})
 
             self.assert_true(context["ok"] and context["metrics_source"]["is_real_meta_data"], "Tool bridge returns safe real Meta context")
-            self.assert_true(image["product_tool"] == "codex_image_generate" and calls[-2][0]["tool"] == "codex_image_generate", "Tool bridge maps Codex/Image MCP calls to dashboard action handlers")
+            self.assert_true(image["product_tool"] == "codex_image_generate" and calls[-4][0]["tool"] == "codex_image_generate", "Tool bridge maps Codex/Image MCP calls to dashboard action handlers")
+            self.assert_true(review["product_tool"] == "review_signal_quality" and calls[-3][0]["tool"] == "review_signal_quality", "Tool bridge maps signal-quality MCP review to dashboard action handlers")
+            self.assert_true(preflight["product_tool"] == "preflight_campaign" and calls[-2][0]["tool"] == "preflight_campaign", "Tool bridge maps campaign preflight MCP review to dashboard action handlers")
             self.assert_true(approval["product_tool"] == "approval_decision" and calls[-1][0]["arguments"]["decision"] == "approve", "Tool bridge converts approval MCP calls to exact approval decisions")
+            verified = admira_tool_bridge.call_tool("mcp_admira_record_verified_signal", {"stage": "booked", "person_label": "Maria"})
+            self.assert_true(verified["product_tool"] == "record_verified_signal" and calls[-1][0]["tool"] == "record_verified_signal", "Tool bridge maps verified-signal MCP calls to dashboard action handlers")
             self.assert_true(len(pending["pending"]) == 1 and pending["pending"][0]["id"] == "approval_1", "Tool bridge lists only pending approvals")
             self.assert_true(unknown["blocked"] and unknown["reason"] == "unsupported_tool", "Tool bridge rejects unknown tools")
         finally:
@@ -1614,11 +1633,111 @@ class IntegrationTestSuite:
             tool_names = [tool["name"] for tool in captured[1]["result"]["tools"]]
             call_text = captured[2]["result"]["content"][0]["text"]
             self.assert_true(captured[0]["result"]["serverInfo"]["name"] == "admira", "MCP server initializes as Admira")
-            self.assert_true("codex_image_generate" in tool_names and "stage_campaign" in tool_names and "approve_action" in tool_names, "MCP server lists product tools for Hermes")
+            self.assert_true("codex_image_generate" in tool_names and "stage_campaign" in tool_names and "approve_action" in tool_names and "review_signal_quality" in tool_names and "preflight_campaign" in tool_names and "record_verified_signal" in tool_names, "MCP server lists product tools for Hermes")
             self.assert_true('"tool": "admira_codex_image_generate"' in call_text and '"request": "imagen"' in call_text, "MCP server calls the product bridge with Admira-prefixed tool names")
         finally:
             admira_mcp_server.write_message = original_write
             admira_mcp_server.call_tool = original_call
+
+    def test_verified_signal_ledger_records_private_deduped_outcomes(self):
+        """Test the local verified-signal ledger stores useful outcome truth without raw contact data."""
+        print("\nTesting Verified Signal Ledger...")
+
+        test_dir = Path(tempfile.mkdtemp(prefix="verified_signal_ledger_"))
+        ledger_path = test_dir / "verified_signal_ledger.json"
+        dashboard = load_dashboard_module()
+        original_ledger_file = dashboard.VERIFIED_SIGNAL_LEDGER_FILE
+        try:
+            first = verified_signal_ledger.record_signal(
+                {
+                    "source_system": "whatsapp",
+                    "stage": "qualified",
+                    "person_label": "Maria",
+                    "email": "Maria@example.com",
+                    "phone": "+57 300 123 4567",
+                    "ctwa_clid": "clid_123",
+                    "campaign_id": "camp_1",
+                    "ad_id": "ad_1",
+                    "notes": "real opportunity",
+                },
+                ledger_path,
+            )
+            duplicate = verified_signal_ledger.record_signal(
+                {
+                    "source_system": "whatsapp",
+                    "stage": "qualified",
+                    "person_label": "Maria",
+                    "email": "Maria@example.com",
+                    "phone": "+57 300 123 4567",
+                    "ctwa_clid": "clid_123",
+                    "campaign_id": "camp_1",
+                    "ad_id": "ad_1",
+                    "notes": "same lead confirmed again",
+                },
+                ledger_path,
+            )
+            booked = verified_signal_ledger.record_signal(
+                {
+                    "source_system": "whatsapp",
+                    "stage": "booked",
+                    "person_label": "Maria",
+                    "email": "Maria@example.com",
+                    "phone": "+57 300 123 4567",
+                    "ctwa_clid": "clid_123",
+                    "booking_id": "booking_777",
+                    "campaign_id": "camp_1",
+                    "ad_id": "ad_1",
+                    "privacy_confirmed": True,
+                },
+                ledger_path,
+            )
+            bad = verified_signal_ledger.record_signal(
+                {
+                    "source_system": "lead_ads",
+                    "stage": "wrong_audience",
+                    "person_label": "Lead equivocado",
+                    "phone": "+57 311 000 9999",
+                    "lead_id": "lead_999",
+                    "campaign_id": "camp_bad",
+                },
+                ledger_path,
+            )
+
+            summary = verified_signal_ledger.ledger_summary(ledger_path)
+            raw_text = ledger_path.read_text(encoding="utf-8")
+            mode = ledger_path.stat().st_mode & 0o777
+            self.assert_true(first["record"]["meta_event_name"] == "Lead" and first["record"]["match"]["match_score"] >= 0.65, "Qualified signal maps to a Meta-supported Lead event with match context")
+            self.assert_true(duplicate["deduped"] is True and duplicate["record"]["seen_count"] == 2, "Repeated same-stage signal is deduplicated instead of duplicated")
+            self.assert_true(booked["record"]["meta_event_name"] == "Schedule" and booked["record"]["meta_send_status"] == "ready", "Booked outcome maps to Schedule and becomes send-ready only after privacy confirmation")
+            self.assert_true(bad["record"]["meta_event_name"] == "" and bad["record"]["quality_score"] < 0, "Bad-fit outcomes stay internal and lower quality scoring")
+            self.assert_true(summary["total_events"] == 3 and summary["by_stage"]["qualified"] == 1 and summary["by_stage"]["booked"] == 1 and summary["by_stage"]["wrong_audience"] == 1, "Ledger summary counts deduped lifecycle outcomes by stage")
+            self.assert_true(summary["ready_to_send_to_meta"] == 1 and summary["privacy_confirmation_needed"] >= 2, "Ledger separates local truth from future Meta-send readiness")
+            self.assert_true("Maria@example.com" not in raw_text and "+57 300 123 4567" not in raw_text and "3001234567" not in raw_text, "Ledger does not store raw email or phone values")
+            self.assert_true(mode == 0o600, "Verified-signal ledger is written with private file permissions")
+
+            dashboard.VERIFIED_SIGNAL_LEDGER_FILE = ledger_path
+            saved = dashboard.execute_agent_tool(
+                {
+                    "tool": "record_verified_signal",
+                    "arguments": {
+                        "items": [
+                            {"source_system": "manual", "stage": "purchased", "person_label": "Carlos", "order_id": "order_1", "privacy_confirmed": True, "value": 120},
+                            {"source_system": "manual", "stage": "fake", "person_label": "Spam"},
+                        ]
+                    },
+                },
+                {"language": "es"},
+            )
+            listed = dashboard.execute_agent_tool({"tool": "get_verified_signal_summary", "arguments": {}}, {"language": "es"})
+            prompt = dashboard.execute_agent_tool({"tool": "verified_signal_feedback_prompt", "arguments": {}}, {"language": "es"})
+            payload = dashboard.dashboard_payload()
+            self.assert_true(saved["executed"] is True and saved["result"]["summary"]["total_events"] == 5, "Dashboard tool records verified-signal batches")
+            self.assert_true(listed["result"]["by_stage"]["purchased"] == 1 and listed["result"]["negative_events"] >= 2, "Dashboard tool reads verified-signal summary")
+            self.assert_true("marca solo excepciones" in prompt["reply"] and "lead de días anteriores" in prompt["reply"], "Daily feedback prompt asks only for exceptions and delayed important outcomes")
+            self.assert_true(payload["verified_signals"]["total_events"] == 5, "Dashboard payload exposes verified-signal summary to the agent context")
+        finally:
+            dashboard.VERIFIED_SIGNAL_LEDGER_FILE = original_ledger_file
+            shutil.rmtree(test_dir, ignore_errors=True)
 
     def test_hermes_gateway_redacts_token_and_handles_start_failure(self):
         """Test gateway startup never leaks Telegram token and failures stay recoverable."""
@@ -3365,6 +3484,87 @@ class IntegrationTestSuite:
         self.assert_true(campaign["revenue"] == 750.0, "Purchase values become revenue")
         self.assert_true(round(enriched["roas"], 2) == 7.46, "ROAS is calculated from real spend/revenue")
 
+    def test_signal_quality_review_event_setup(self):
+        """Test campaign signal review catches event mismatch and weak measurement setup."""
+        print("\nTesting Signal Quality Event Review...")
+
+        weak = signal_quality.review_signal_quality(
+            {
+                "objective": "PURCHASES",
+                "optimization_event": "Lead",
+                "weekly_event_volume": 8,
+                "capi_configured": "no",
+                "event_match_quality": 3,
+                "aem_configured": "unknown",
+                "event_prioritized": "no",
+            },
+            language="es",
+        )
+        weak_checks = {item["key"]: item for item in weak["checks"]}
+        self.assert_true(weak["status"] == "blocked", "Signal review blocks conversion launch when event setup is not aligned")
+        self.assert_true(weak["recommended_event"] == "InitiateCheckout", "Low purchase volume recommends a higher-volume sales event")
+        self.assert_true(weak_checks["correct_optimization_event"]["status"] == "blocked", "Wrong optimization event is treated as a blocker")
+        self.assert_true(weak_checks["pixel_or_dataset"]["status"] == "blocked", "Missing Pixel/Dataset blocks web conversion optimization")
+        self.assert_true(weak_checks["conversions_api"]["status"] == "warn" and weak_checks["event_match_quality"]["status"] == "warn", "CAPI and Event Match Quality are explicit warning checks")
+
+        ready = signal_quality.review_signal_quality(
+            {
+                "objective": "PURCHASES",
+                "optimization_event": "Purchase",
+                "weekly_event_volume": 65,
+                "pixel_id": "123",
+                "capi_configured": True,
+                "event_match_quality": 7,
+                "aem_configured": True,
+                "event_prioritized": True,
+            },
+            language="es",
+        )
+        self.assert_true(ready["status"] == "ready" and ready["safe_to_launch_active"], "Healthy purchase signal can be launch-ready")
+        self.assert_true(ready["campaign_patch"]["promoted_object"]["custom_event_type"] == "Purchase", "Signal review prepares the promoted_object event")
+
+    def test_meta_snapshot_collects_adset_signal_configuration(self):
+        """Test Meta snapshot reads ad set optimization event configuration for diagnostics."""
+        print("\nTesting Meta Ad Set Signal Snapshot...")
+
+        original_graph_rows = meta_insights.graph_rows
+
+        def fake_graph_rows(path, params, token, version, max_pages=5):
+            if path.endswith("/campaigns"):
+                return {"ok": True, "rows": [{"id": "camp_1", "name": "Campaign", "status": "ACTIVE", "effective_status": "ACTIVE", "objective": "OUTCOME_SALES"}]}
+            if path.endswith("/adsets"):
+                fields = params.get("fields", "")
+                return {
+                    "ok": True,
+                    "rows": [
+                        {
+                            "id": "adset_1",
+                            "name": "Ad Set",
+                            "campaign_id": "camp_1",
+                            "status": "ACTIVE",
+                            "effective_status": "ACTIVE",
+                            "optimization_goal": "CONVERSIONS",
+                            "billing_event": "IMPRESSIONS",
+                            "promoted_object": {"pixel_id": "123", "custom_event_type": "Purchase"},
+                            "daily_budget": "2500",
+                        }
+                    ],
+                    "requested_fields": fields,
+                }
+            if path.endswith("/insights"):
+                return {"ok": True, "rows": []}
+            return {"ok": False, "rows": [], "error": "unexpected path"}
+
+        try:
+            meta_insights.graph_rows = fake_graph_rows
+            snapshot = meta_insights.collect_meta_snapshot("act_123", "token")
+            adset = snapshot["adset_statuses"]["adset_1"]
+            self.assert_true(adset["optimization_goal"] == "CONVERSIONS", "Meta snapshot stores ad set optimization goal")
+            self.assert_true(adset["promoted_object"]["custom_event_type"] == "Purchase", "Meta snapshot stores promoted_object event")
+            self.assert_true(adset["daily_budget"] == 25.0, "Meta snapshot normalizes ad set budget from minor units")
+        finally:
+            meta_insights.graph_rows = original_graph_rows
+
     def test_supervised_daily_reads_real_data_and_stages_pause(self):
         """Test scheduled supervised reports read Meta without inventing executed pauses."""
         print("\nTesting Supervised Scheduled Daily Safety...")
@@ -3473,18 +3673,27 @@ class IntegrationTestSuite:
         self.assert_true(context["metrics_source"]["is_real_meta_data"] is False, "Agent context marks demo metrics as not real")
         self.assert_true(context["campaigns"] == [] and context["recommendations"] == [] and context["fatigue"] == [], "Agent context hides demo campaigns, recommendations and fatigue")
         previous_style = os.environ.get("AGENT_COMMUNICATION_STYLE")
+        previous_experience = os.environ.get("AGENT_AD_EXPERIENCE_LEVEL")
         try:
             os.environ["AGENT_COMMUNICATION_STYLE"] = "technical"
+            os.environ["AGENT_AD_EXPERIENCE_LEVEL"] = "advanced"
             technical_context = agent_chat.account_context({"language": "es"})
             self.assert_true(technical_context["communication_preference"]["style"] == "technical" and "terminología precisa" in technical_context["communication_preference"]["instruction"], "Agent context carries the global technical communication instruction")
+            self.assert_true(technical_context["communication_preference"]["ad_experience_level"] == "advanced" and "Experiencia en anuncios: avanzada" in technical_context["communication_preference"]["ad_experience_instruction"], "Agent context carries the global ads-experience instruction")
             os.environ["AGENT_COMMUNICATION_STYLE"] = "simple"
+            os.environ["AGENT_AD_EXPERIENCE_LEVEL"] = "beginner"
             simple_context = agent_chat.account_context({"language": "es"})
             self.assert_true(simple_context["communication_preference"]["style"] == "simple" and "evita jerga" in simple_context["communication_preference"]["instruction"], "Agent context carries the global simple-language instruction")
+            self.assert_true(simple_context["communication_preference"]["ad_experience_level"] == "beginner" and "no hagas que el comprador elija perillas técnicas" in simple_context["communication_preference"]["ad_experience_instruction"], "Agent context carries beginner ads-experience guidance")
         finally:
             if previous_style is None:
                 os.environ.pop("AGENT_COMMUNICATION_STYLE", None)
             else:
                 os.environ["AGENT_COMMUNICATION_STYLE"] = previous_style
+            if previous_experience is None:
+                os.environ.pop("AGENT_AD_EXPERIENCE_LEVEL", None)
+            else:
+                os.environ["AGENT_AD_EXPERIENCE_LEVEL"] = previous_experience
         fallback = agent_chat.fallback_reply("cual campaña va mejor", {"metrics": sample})
         self.assert_true("Retargeting - Warm Leads" not in fallback and "ROAS" not in fallback and "no tengo campañas reales" in fallback, "Fallback does not cite demo campaign performance")
         self.assert_true(agent_chat.reply_uses_unverified_performance("Empezaria con Retargeting - Warm Leads porque ROAS 8.0, CTR 4.79% y CPA 4.", sample), "Demo performance claims are blocked even if Hermes remembers them")
@@ -3587,6 +3796,89 @@ class IntegrationTestSuite:
         except ValueError as exc:
             self.assert_true("crear y dejar activo" in str(exc), "Active spend confirmation is required")
 
+    def test_signal_quality_tool_reviews_campaign_event_readiness(self):
+        """Test dashboard exposes a read-only signal-quality review tool to Hermes."""
+        print("\nTesting Dashboard Signal Quality Tool...")
+
+        dashboard = load_dashboard_module()
+        result = dashboard.execute_agent_tool(
+            {
+                "tool": "review_signal_quality",
+                "arguments": {
+                    "objective": "PURCHASES",
+                    "optimization_event": "Purchase",
+                    "pixel_id": "123",
+                    "weekly_event_volume": 12,
+                    "capi_configured": "unknown",
+                },
+            },
+            {"language": "es"},
+        )
+        self.assert_true(result["type"] == "review_signal_quality" and result["executed"] is False, "Signal review tool is read-only")
+        self.assert_true(result["result"]["recommended_event"] == "InitiateCheckout", "Signal review recommends a higher-volume event when purchase volume is thin")
+        self.assert_true("señal" in result["reply"].lower(), "Signal review tool returns a buyer-readable explanation")
+
+    def test_campaign_preflight_tool_exposes_expert_launch_checks(self):
+        """Test dashboard exposes read-only preflight checks before expert campaign staging."""
+        print("\nTesting Campaign Preflight Tool...")
+
+        dashboard = load_dashboard_module()
+
+        class FakeConfig:
+            ad_account_id = "act_999"
+            live = True
+            live_actions_enabled = True
+            mode = "live"
+
+        class FakeClient:
+            def __init__(self, config):
+                self.config = config
+
+            def marketing_status(self):
+                return {"executed": True, "returncode": 0, "stdout": json.dumps({"ok": True, "active_campaigns": 2}), "stderr": ""}
+
+            def rate_limits(self):
+                return {"executed": True, "returncode": 0, "stdout": json.dumps({"ok": True, "usage": 12}), "stderr": ""}
+
+            def policy_preflight(self, *args, **kwargs):
+                return {"executed": True, "returncode": 0, "stdout": json.dumps({"ok": True, "risk": "low"}), "stderr": ""}
+
+            def custom_audiences(self, *args, **kwargs):
+                return {"executed": True, "returncode": 0, "stdout": json.dumps({"data": [{"id": "ca_1", "name": "Compradores"}]}), "stderr": ""}
+
+            def creatives(self, *args, **kwargs):
+                return {"executed": True, "returncode": 0, "stdout": json.dumps({"data": [{"id": "cr_1", "name": "Creative"}]}), "stderr": ""}
+
+        original_config = dashboard.load_config
+        original_client = dashboard.SocialFlowClient
+        try:
+            dashboard.load_config = lambda: FakeConfig()
+            dashboard.SocialFlowClient = FakeClient
+            result = dashboard.execute_agent_tool(
+                {
+                    "tool": "preflight_campaign",
+                    "arguments": {
+                        "objective": "PURCHASES",
+                        "daily_budget": 40,
+                        "target_cpa": 20,
+                        "pixel_id": "123",
+                        "optimization_event": "Purchase",
+                        "image_url": "https://cdn.example/ad.jpg",
+                        "placements": {"automatic": False, "manual": ["INSTAGRAM_REELS", "INSTAGRAM_STORIES"]},
+                    },
+                },
+                {"language": "es"},
+            )
+            preflight = result["result"]
+            self.assert_true(result["type"] == "preflight_campaign" and result["executed"] is False, "Campaign preflight tool is read-only")
+            self.assert_true(preflight["checks"]["account_status"]["ok"] and preflight["checks"]["custom_audiences"]["data"][0]["id"] == "ca_1", "Campaign preflight checks account and audiences")
+            self.assert_true(preflight["dry_run_preview"]["budget_plan"]["expected_daily_events"] == 2, "Campaign preflight exposes budget sanity")
+            self.assert_true(preflight["dry_run_preview"]["placements"]["manual"] == ["INSTAGRAM_REELS", "INSTAGRAM_STORIES"], "Campaign preflight exposes placement strategy")
+            self.assert_true(preflight["dry_run_preview"]["creative_controls"]["has_image_url"], "Campaign preflight exposes creative media controls")
+        finally:
+            dashboard.load_config = original_config
+            dashboard.SocialFlowClient = original_client
+
     def test_campaign_creation_uses_meta_targeting_selection(self):
         """Test manual campaign creation stores Meta-selected targeting IDs instead of plain text only."""
         print("\nTesting Campaign Meta Targeting Selection...")
@@ -3608,7 +3900,25 @@ class IntegrationTestSuite:
                 "objective": "PURCHASES",
                 "daily_budget": 25,
                 "total_budget": 750,
+                "adset_daily_budget": 25,
+                "adset_lifetime_budget": 300,
+                "target_cpa": 20,
+                "concurrent_creatives": 3,
                 "final_status": "PAUSED",
+                "campaign_status": "PAUSED",
+                "adset_status": "PAUSED",
+                "ad_status": "PAUSED",
+                "billing_event": "IMPRESSIONS",
+                "bid_strategy": "LOWEST_COST_WITHOUT_CAP",
+                "start_time": "2026-07-01T09:00:00-05:00",
+                "end_time": "2026-07-15T23:59:00-05:00",
+                "creative_format": "static_feed",
+                "image_hash": "hash_existing",
+                "cta_link": "https://buyer.example/offer",
+                "custom_audiences_json": json.dumps([{"id": "ca_1", "name": "Compradores"}]),
+                "excluded_custom_audiences_json": json.dumps([{"id": "ca_2", "name": "Clientes recientes"}]),
+                "device_platforms": "mobile",
+                "user_os": "iOS,Android",
                 "targeting_locations_json": json.dumps([{"kind": "location", "key": "CO", "name": "Colombia", "type": "country", "country_code": "CO"}]),
                 "targeting_interests_json": json.dumps([{"kind": "interest", "id": "6001", "name": "Ecommerce"}]),
             }
@@ -3619,6 +3929,20 @@ class IntegrationTestSuite:
             self.assert_true(result["payload"]["requested"]["targeting"]["source"] == "meta_search", "Approval card marks targeting as Meta search")
             self.assert_true(targeting["meta_targeting"]["locations"][0]["key"] == "CO", "Campaign stores selected Meta location")
             self.assert_true(targeting["meta_targeting"]["interests"][0]["id"] == "6001", "Campaign stores selected Meta interest ID")
+            self.assert_true(campaign["signal_quality_review"]["status"] == "blocked", "Staged conversion campaign stores a signal-quality review")
+            self.assert_true(campaign["ad_sets"][0]["optimization_event"] == campaign["signal_quality_review"]["recommended_event"], "Signal review applies the recommended optimization event to the ad set draft")
+            self.assert_true(result["payload"]["requested"]["signal_quality"]["status"] == campaign["signal_quality_review"]["status"], "Approval card exposes signal-quality readiness")
+            self.assert_true(campaign["ad_sets"][0]["placements"]["manual"] == ["FACEBOOK_FEED", "FACEBOOK_STORIES", "INSTAGRAM_FEED", "INSTAGRAM_STORIES"], "Staged campaign defaults to feed/story placements on Facebook and Instagram")
+            self.assert_true(result["payload"]["requested"]["placements"]["mode"] == "manual", "Approval card exposes manual placement mode")
+            self.assert_true(campaign["budget_plan"]["adset_lifetime"] == 300 and campaign["budget_plan"]["per_variant_daily"] == 8.33, "Staged campaign stores expert budget allocation")
+            self.assert_true(campaign["status_plan"] == {"campaign": "PAUSED", "adset": "PAUSED", "ad": "PAUSED"}, "Staged campaign stores campaign/adset/ad status plan")
+            self.assert_true(campaign["ad_sets"][0]["billing_event"] == "IMPRESSIONS" and campaign["ad_sets"][0]["bidding"]["bid_strategy"] == "LOWEST_COST_WITHOUT_CAP", "Staged campaign stores billing and bidding controls")
+            self.assert_true(campaign["ad_sets"][0]["start_time"].startswith("2026-07-01") and campaign["ad_sets"][0]["end_time"].startswith("2026-07-15"), "Staged campaign stores ad set schedule controls")
+            self.assert_true(targeting["custom_audiences"][0]["id"] == "ca_1" and targeting["excluded_custom_audiences"][0]["id"] == "ca_2", "Campaign stores custom audience inclusion and exclusion")
+            self.assert_true(targeting["device_platforms"] == ["mobile"] and targeting["user_os"] == ["iOS", "Android"], "Campaign stores device/platform targeting fields")
+            self.assert_true(campaign["ad"]["image_hash"] == "hash_existing" and campaign["ad"]["cta_link"] == "https://buyer.example/offer", "Campaign stores creative image hash and CTA link override")
+            self.assert_true(result["payload"]["requested"]["adset_controls"]["schedule"]["start_time"].startswith("2026-07-01"), "Approval card exposes expert ad set controls")
+            self.assert_true(result["payload"]["dry_run_preview"]["creative"]["has_image_hash"], "Approval payload includes a dry-run preview of creative inputs")
         finally:
             for key, value in original.items():
                 setattr(dashboard, key, value)
@@ -3636,11 +3960,84 @@ class IntegrationTestSuite:
                     "locations": [{"key": "2420605", "name": "Bogotá", "type": "city", "country_code": "CO"}],
                     "interests": [{"id": "6001", "name": "Ecommerce"}],
                 },
+                "custom_audiences": [{"id": "ca_1", "name": "Compradores"}],
+                "excluded_custom_audiences": [{"id": "ca_2", "name": "Clientes recientes"}],
+                "device_platforms": ["mobile"],
+                "user_os": ["iOS", "Android"],
             }
         )
         self.assert_true(spec["geo_locations"]["cities"][0]["key"] == "2420605", "Social targeting sends selected city key")
         self.assert_true(spec["interests"][0] == {"id": "6001", "name": "Ecommerce"}, "Social targeting sends selected interest ID")
+        self.assert_true(spec["custom_audiences"][0]["id"] == "ca_1" and spec["excluded_custom_audiences"][0]["id"] == "ca_2", "Social targeting sends custom audiences and exclusions")
+        self.assert_true(spec["device_platforms"] == ["mobile"] and spec["user_os"] == ["iOS", "Android"], "Social targeting sends device and OS fields")
         self.assert_true(spec["age_min"] == 25 and spec["age_max"] == 44, "Social targeting preserves age range")
+        self.assert_true(spec["publisher_platforms"] == ["facebook", "instagram"], "Default campaign creation limits publisher platforms to Facebook and Instagram")
+        self.assert_true(spec["facebook_positions"] == ["feed", "story"] and spec["instagram_positions"] == ["stream", "story"], "Default campaign creation limits placements to feeds and stories")
+
+        automatic = daily_agent.targeting_for_social({"locations": ["US"], "placements": {"automatic": True}})
+        self.assert_true("publisher_platforms" not in automatic, "Automatic placements remain available when explicitly requested")
+
+    def test_social_flow_adset_sends_promoted_object(self):
+        """Test Social CLI ad set creation receives the selected optimization event object."""
+        print("\nTesting Social Ad Set Promoted Object...")
+
+        class FakeConfig:
+            social_cli = "social"
+            mode = "live"
+            live = True
+            live_actions_enabled = True
+
+        client = SocialFlowClient(FakeConfig())
+        captured = []
+        client.run = lambda args, **kwargs: captured.append((args, kwargs)) or {"executed": True, "stdout": json.dumps({"id": "adset_1"})}
+        client.create_adset(
+            "camp_1",
+            "Ad Set",
+            {"geo_locations": {"countries": ["MX"]}},
+            2500,
+            "PAUSED",
+            "CONVERSIONS",
+            promoted_object={"pixel_id": "123", "custom_event_type": "Purchase"},
+            billing_event="LINK_CLICKS",
+            bidding={"bid_strategy": "LOWEST_COST_WITHOUT_CAP"},
+            lifetime_budget_cents=30000,
+            start_time="2026-07-01T09:00:00-05:00",
+            end_time="2026-07-15T23:59:00-05:00",
+            approved=True,
+        )
+        args, kwargs = captured[0]
+        promoted = json.loads(args[args.index("--promoted-object") + 1])
+        self.assert_true(args[args.index("--optimization-goal") + 1] == "CONVERSIONS", "Social CLI receives the ad set optimization goal")
+        self.assert_true(promoted == {"pixel_id": "123", "custom_event_type": "Purchase"}, "Social CLI receives the promoted object for conversion optimization")
+        self.assert_true(args[args.index("--billing-event") + 1] == "LINK_CLICKS", "Social CLI receives the selected billing event")
+        self.assert_true(json.loads(args[args.index("--bidding") + 1])["bid_strategy"] == "LOWEST_COST_WITHOUT_CAP", "Social CLI receives the selected bidding controls")
+        self.assert_true(args[args.index("--lifetime-budget") + 1] == "30000" and args[args.index("--start-time") + 1].startswith("2026-07-01"), "Social CLI receives lifetime budget and schedule controls")
+        self.assert_true(kwargs["mutation"] is True and kwargs["approved"] is True, "Promoted-object ad set creation remains gated as an approved mutation")
+
+    def test_social_flow_creative_supports_full_story_and_media_urls(self):
+        """Test Social CLI creative creation can use full object_story_spec and media URL controls."""
+        print("\nTesting Social Creative Expert Controls...")
+
+        class FakeConfig:
+            social_cli = "social"
+            mode = "live"
+            live = True
+            live_actions_enabled = True
+
+        client = SocialFlowClient(FakeConfig())
+        captured = []
+        client.run = lambda args, **kwargs: captured.append((args, kwargs)) or {"executed": True, "stdout": json.dumps({"id": "creative_1"})}
+        spec = {"page_id": "111", "link_data": {"link": "https://buyer.example", "message": "Texto"}}
+        client.create_creative("act_999", "Creative", "111", "https://buyer.example", "Texto", "Titular", "", "SHOP_NOW", object_story_spec=spec, approved=True)
+        args, _ = captured[0]
+        self.assert_true("--object-story-spec" in args and json.loads(args[args.index("--object-story-spec") + 1]) == spec, "Creative creation supports full object_story_spec")
+        self.assert_true("--page-id" not in args and "--image-hash" not in args, "Full object_story_spec path does not mix simple creative fields")
+
+        captured.clear()
+        client.create_creative("act_999", "Creative URL", "111", "https://buyer.example", "Texto", "Titular", "", "SHOP_NOW", image_url="https://cdn.example/ad.jpg", video_url="https://cdn.example/ad.mp4", cta_link="https://buyer.example/buy", approved=True)
+        args, _ = captured[0]
+        self.assert_true(args[args.index("--image-url") + 1] == "https://cdn.example/ad.jpg" and args[args.index("--video-url") + 1] == "https://cdn.example/ad.mp4", "Creative creation supports image and video URLs")
+        self.assert_true(args[args.index("--cta-link") + 1] == "https://buyer.example/buy", "Creative creation supports CTA link override")
 
     def test_autopilot_action_updates_dashboard_only_after_meta_success(self):
         """Test autopilot UI/chat mutations are real connector actions, not local-only state."""
@@ -3762,7 +4159,16 @@ class IntegrationTestSuite:
                         "name": "Ready Stack",
                         "objective": "PURCHASES",
                         "budget": {"daily": 25, "total": 750},
-                        "ad_sets": [{"name": "Ready Stack - Core", "targeting": {"locations": ["MX"], "age_range": {"min": 18, "max": 65}}, "budget": 25}],
+                        "ad_sets": [
+                            {
+                                "name": "Ready Stack - Core",
+                                "targeting": {"locations": ["MX"], "age_range": {"min": 18, "max": 65}},
+                                "budget": 25,
+                                "optimization_goal": "CONVERSIONS",
+                                "promoted_object": {"pixel_id": "123", "custom_event_type": "Purchase"},
+                                "placements": {"automatic": False, "manual": ["FACEBOOK_FEED", "INSTAGRAM_STORIES"]},
+                            }
+                        ],
                         "ad": {
                             "primary_text": "Texto",
                             "headline": "Titular",
@@ -3779,6 +4185,12 @@ class IntegrationTestSuite:
             result = execute_campaign_creation(str(campaign_path), client, approved=True)
             self.assert_true(result["ok"], "Approved campaign stack executes while supervised")
             self.assert_true([call[0] for call in client.calls] == ["create_campaign", "create_adset", "upload_image", "create_creative", "create_ad"], "Campaign stack executes in correct order")
+            self.assert_true(client.calls[0][1][4] == "ACTIVE" and client.calls[1][1][4] == "ACTIVE", "Approved active campaign stack activates campaign and ad set, not only the ad")
+            adset_call = client.calls[1]
+            self.assert_true(adset_call[1][5] == "CONVERSIONS", "Campaign stack sends the signal-selected optimization goal to ad set creation")
+            self.assert_true(adset_call[2]["promoted_object"] == {"pixel_id": "123", "custom_event_type": "Purchase"}, "Campaign stack sends the signal-selected promoted object to ad set creation")
+            self.assert_true(adset_call[1][2]["publisher_platforms"] == ["facebook", "instagram"], "Campaign stack sends manual Facebook/Instagram placement platforms")
+            self.assert_true(adset_call[1][2]["facebook_positions"] == ["feed"] and adset_call[1][2]["instagram_positions"] == ["story"], "Campaign stack sends the selected feed/story placement positions")
             self.assert_true(client.calls[-1][1][-1] == "ACTIVE", "Final ad status is active when confirmed")
             self.assert_true(all(call[2].get("approved") is True for call in client.calls), "Full campaign execution is explicitly marked as approved")
         finally:
@@ -4202,7 +4614,8 @@ class IntegrationTestSuite:
         self.assert_true("Toca el botón de abajo para abrir la configuración de tu cuenta ChatGPT." in html and "Activar autorización con códigos de dispositivo para Codex" in html and "Vuelve aquí y toca el botón “Ya lo hice, conectar a ChatGPT ahora”" in html and "chatgpt-preflight" in html and ".chatgpt-preflight ol" in html, "ChatGPT/Codex setup tells buyers to enable device-code authorization before login without overlapping the model field")
         self.assert_true("/api/agent-model/connect-status" in html and "/api/agent-model/connect-input" in html and "sendChatGptTerminalInput" in html, "VPS Hermes bridge can poll and send guided terminal responses")
         self.assert_true("chatgpt-settings-help" in html and "device_auth_settings" in html, "ChatGPT/Codex setup shows a clear recovery card when device-code auth is disabled")
-        self.assert_true("Ver diagnóstico técnico" in html and "prepareChatGptAuthWindow" in html and "maybeOpenChatGptAuthUrl" in html, "ChatGPT/Codex browserless UI folds support detail and opens the OAuth login in the buyer browser")
+        self.assert_true("Ver diagnóstico técnico" in html and "prepareChatGptAuthWindow" in html and "maybeOpenChatGptAuthUrl" in html and "chatGptAuthOpenedUrl='';" in html, "ChatGPT/Codex browserless UI folds support detail and resets stale OAuth URLs before opening the buyer browser")
+        self.assert_true("updateChatGptAuthWindow" in html and "Could not open login" in html and "Return to dashboard" in html, "ChatGPT/Codex waiting tab shows an actionable failure instead of staying stuck on preparing login")
         self.assert_true("chatgpt-device-code" in html and "Cópialo manualmente exactamente como aparece" in html and "login_code" in html and "data-chatgpt-visible-code" in html and "font-size:clamp(30px" in html and "word-break:break-all" in html and "scrollIntoView({behavior:'smooth',block:'center'})" in html, "OpenAI terminal login code is shown as a large manually copyable buyer-facing card")
         self.assert_true("Copiar código" not in html and "copyVisibleChatGptCode" not in html and "normalizeChatGptCode" not in html and "data-chatgpt-code" not in html and "data-visible-code" not in html and "dataset?.chatgptCode" not in html and "dataset?.visibleCode" not in html, "OpenAI code copying has no stale clipboard button or alternate extraction path")
         self.assert_true("advanceOnboardingAfterChatGptConnected" in html and "onboardingFlowStep=Math.min(steps.length-1,idx+1)" in html, "ChatGPT/Codex connection advances onboarding automatically after success")
@@ -4224,6 +4637,7 @@ class IntegrationTestSuite:
         self.assert_true("maybeFinishTelegramOnboarding" in html and "communicationIndex" in html, "Choosing the Telegram chat advances to the final communication preference")
         self.assert_true("Palabras simples" in html and "Explicaciones técnicas" in html and "saveCommunicationStyle(event,true)" in html and "/api/onboarding/communication-style" in html, "Onboarding ends by asking for a global simple-or-technical communication preference")
         self.assert_true("AGENT_COMMUNICATION_STYLE" in dashboard_source and "communication_style_update" in dashboard_source, "Communication preference is persisted globally rather than per client workspace")
+        self.assert_true("AGENT_AD_EXPERIENCE_LEVEL" in dashboard_source and "save_agent_preferences" in dashboard_source, "Ads-experience preference is persisted globally rather than per client workspace")
         self.assert_true("dashboardIntroTourPending" in html and "startDashboardIntroTourIfPending" in html, "Completed onboarding queues the first dashboard tour")
         self.assert_true("Elige el estilo que más te guste" in html and "Arriba, junto al menú" in html and "#theme-toggle" in html and ".tour-spot" in html and "theme-choice" in html, "The post-onboarding tour starts with an interactive theme selection coach mark at the header theme picker")
         self.assert_true("Elige la hora de tu lectura diaria" in html and "#daily-brief-schedule-button" in html and "zona horaria se detecta automáticamente" in html, "The first dashboard tour teaches buyers where to change the locally timed daily brief")
@@ -4646,7 +5060,7 @@ class IntegrationTestSuite:
         original_listener = dashboard.ensure_telegram_listener
         env_before = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
         ad_before = ad_path.read_text(encoding="utf-8") if ad_path.exists() else ""
-        env_backup = {key: os.environ.get(key) for key in ["META_AD_ACCOUNT_ID", "META_ACCESS_TOKEN", "TELEGRAM_AGENT_ENABLED", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "TELEGRAM_LANGUAGE", "AGENT_COMMUNICATION_STYLE"]}
+        env_backup = {key: os.environ.get(key) for key in ["META_AD_ACCOUNT_ID", "META_ACCESS_TOKEN", "TELEGRAM_AGENT_ENABLED", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "TELEGRAM_LANGUAGE", "AGENT_COMMUNICATION_STYLE", "AGENT_AD_EXPERIENCE_LEVEL"]}
         business_files_before = {
             name: (dashboard.DATA_DIR / name).read_bytes() if (dashboard.DATA_DIR / name).exists() else None
             for name in dashboard.BUSINESS_DATA_FILES
@@ -4787,7 +5201,7 @@ class IntegrationTestSuite:
         metrics_before = metrics_path.read_text(encoding="utf-8") if metrics_path.exists() else ""
         ad_before = ad_path.read_text(encoding="utf-8") if ad_path.exists() else ""
         business_before = business_path.read_text(encoding="utf-8") if business_path.exists() else ""
-        env_backup = {key: os.environ.get(key) for key in ["DASHBOARD_PASSWORD", "DASHBOARD_TOKEN", "META_ACCESS_TOKEN", "META_AD_ACCOUNT_ID", "AGENT_COMMUNICATION_STYLE"]}
+        env_backup = {key: os.environ.get(key) for key in ["DASHBOARD_PASSWORD", "DASHBOARD_TOKEN", "META_ACCESS_TOKEN", "META_AD_ACCOUNT_ID", "AGENT_COMMUNICATION_STYLE", "AGENT_AD_EXPERIENCE_LEVEL"]}
         try:
             dashboard.refresh_real_metrics = lambda *args, **kwargs: {"ok": True, "saved": True, "source": "meta_graph", "rows": 1}
             dashboard.license_status = lambda config: {"valid": True, "status": "active", "detail": "Cloud license active"}
@@ -4801,11 +5215,20 @@ class IntegrationTestSuite:
                 self.assert_true(False, "Invalid communication preference should be rejected")
             except ValueError:
                 self.assert_true(True, "Communication preference validates the supported global values")
-            completed = dashboard.complete_onboarding({"communication_style": "technical"})
+            try:
+                dashboard.save_agent_preferences({"ad_experience_level": "guru"})
+                self.assert_true(False, "Invalid ad experience preference should be rejected")
+            except ValueError:
+                self.assert_true(True, "Ad experience preference validates the supported global values")
+            preferences = dashboard.save_agent_preferences({"communication_style": "simple", "ad_experience_level": "intermediate"})
+            self.assert_true(preferences["saved"] is True and os.environ.get("AGENT_AD_EXPERIENCE_LEVEL") == "intermediate", "Agent preferences tool saves the global ads-experience preference")
+            completed = dashboard.complete_onboarding({"communication_style": "technical", "ad_experience_level": "advanced"})
             payload = dashboard.dashboard_payload()
             self.assert_true(completed["completed"] is True, "Onboarding completion returns completed state")
             self.assert_true(completed["communication_style"] == "technical" and os.environ.get("AGENT_COMMUNICATION_STYLE") == "technical", "Onboarding saves the operator communication preference globally")
+            self.assert_true(completed["ad_experience_level"] == "advanced" and os.environ.get("AGENT_AD_EXPERIENCE_LEVEL") == "advanced", "Onboarding saves the operator ads-experience preference globally")
             self.assert_true(payload["config"]["communication_preference"]["style"] == "technical", "Dashboard payload exposes the global communication preference")
+            self.assert_true(payload["config"]["communication_preference"]["ad_experience_level"] == "advanced", "Dashboard payload exposes the global ads-experience preference")
             self.assert_true(completed["first_insights_refresh"]["saved"] is True or "reason" in completed["first_insights_refresh"], "Onboarding records first insights refresh result")
             self.assert_true(payload["onboarding"]["completed"] is True, "Dashboard payload exposes completed onboarding")
             reset = dashboard.reset_onboarding()
@@ -4854,7 +5277,7 @@ class IntegrationTestSuite:
         ad_before = ad_path.read_text(encoding="utf-8") if ad_path.exists() else ""
         business_before = business_path.read_text(encoding="utf-8") if business_path.exists() else ""
         onboarding_before = onboarding_path.read_text(encoding="utf-8") if onboarding_path.exists() else ""
-        env_backup = {key: os.environ.get(key) for key in ["DASHBOARD_PASSWORD", "DASHBOARD_TOKEN", "META_ACCESS_TOKEN", "META_AD_ACCOUNT_ID", "AGENT_COMMUNICATION_STYLE"]}
+        env_backup = {key: os.environ.get(key) for key in ["DASHBOARD_PASSWORD", "DASHBOARD_TOKEN", "META_ACCESS_TOKEN", "META_AD_ACCOUNT_ID", "AGENT_COMMUNICATION_STYLE", "AGENT_AD_EXPERIENCE_LEVEL"]}
         try:
             dashboard.refresh_real_metrics = lambda *args, **kwargs: {"ok": False, "saved": False, "reason": "token_expired"}
             dashboard.license_status = lambda config: {"valid": True, "status": "active", "detail": "Cloud license active"}
@@ -5473,6 +5896,7 @@ class IntegrationTestSuite:
             self.test_hermes_product_skills_are_copied_to_workspace,
             self.test_admira_tool_bridge_maps_mcp_tools_to_dashboard_actions,
             self.test_admira_mcp_server_lists_and_calls_product_tools,
+            self.test_verified_signal_ledger_records_private_deduped_outcomes,
             self.test_hermes_gateway_redacts_token_and_handles_start_failure,
             self.test_hermes_gateway_incomplete_config_stops_existing_process,
             self.test_hermes_daily_brief_cron_edge_cases,

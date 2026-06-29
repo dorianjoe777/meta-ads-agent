@@ -82,6 +82,55 @@ test("approved Hotmart purchases create one pending license and retries are idem
   });
 });
 
+test("approved Hotmart purchases persist purchaser email and send the license email once", async () => {
+  await withHotmartToken(async () => {
+    const store = memoryStore();
+    const sentAt = "2026-06-27T12:00:00.000Z";
+    let sendCount = 0;
+    let capturedEmailRecord = null;
+    const handler = createHotmartWebhookHandler({
+      ...store,
+      shouldSendBuyerEmail: () => true,
+      sendBuyerLicenseEmail: async (record) => {
+        sendCount += 1;
+        capturedEmailRecord = { ...record };
+        return { provider: "resend", id: "email_123", sent_at: sentAt };
+      }
+    });
+
+    const first = mockResponse();
+    await handler(request(approvedPayload), first);
+    assert.equal(first.statusCode, 200);
+    assert.equal(first.body.action, "license_created_email_sent");
+    assert.deepEqual(first.body.buyer_email, { ok: true, provider: "resend", id: "email_123" });
+    assert.equal(sendCount, 1);
+
+    assert.equal(store.state.registry.licenses.length, 1);
+    const created = store.state.registry.licenses[0];
+    assert.equal(created.buyer_email, "buyer@example.com");
+    assert.equal(created.hotmart_transaction, "HP-TEST-TRANSACTION");
+    assert.equal(created.buyer_email_delivery.status, "sent");
+    assert.equal(created.buyer_email_delivery.updated_at, sentAt);
+    assert.equal(created.last_buyer_email.id, "email_123");
+    assert.equal(created.hotmart.buyer_email_sent_at, sentAt);
+    assert.equal(capturedEmailRecord.buyer_email, "buyer@example.com");
+    assert.equal(capturedEmailRecord.license_key, created.license_key);
+
+    const retry = mockResponse();
+    await handler(request({ ...approvedPayload, id: "event-approved-retry" }), retry);
+    assert.equal(retry.statusCode, 200);
+    assert.equal(retry.body.action, "license_existing_email_already_sent");
+    assert.deepEqual(retry.body.buyer_email, {
+      ok: true,
+      status: "already_sent",
+      provider: "resend",
+      id: "email_123"
+    });
+    assert.equal(sendCount, 1);
+    assert.equal(store.state.registry.licenses.length, 1);
+  });
+});
+
 test("refund notifications revoke the matching Hotmart license", async () => {
   await withHotmartToken(async () => {
     const store = memoryStore();
