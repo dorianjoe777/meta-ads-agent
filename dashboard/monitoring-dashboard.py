@@ -179,6 +179,7 @@ AGENCY_SPACES_FILE = DATA_DIR / "agency_spaces.json"
 AGENCY_SPACES_DIR = DATA_DIR / "agency_spaces"
 AD_CONFIG_FILE = ROOT_DIR / "ad-config.json"
 DASHBOARD_HTML_FILE = DATA_DIR / "dashboard.html"
+DASHBOARD_IDENTITY_FILE = DATA_DIR / "dashboard_identity.json"
 BRAND_GUIDES_DIR = ROOT_DIR / "brand_guides"
 BRAND_PRODUCTS_DIR = BRAND_GUIDES_DIR / "products"
 MIGRATION_ROOT_NAME = "MetaAdsAgent-migracion"
@@ -272,6 +273,7 @@ BUSINESS_OUTPUT_DIRS = [
     OUTPUT_DIR / "uploads",
     OUTPUT_DIR / "telegram_uploads",
 ]
+PRESERVED_UPDATE_PATHS = {".env", "ad-config.json", "dashboard/data", "logs", "output", "runtime"}
 
 def redact_error_text(value, limit=1200):
     text = str(value or "")
@@ -329,6 +331,35 @@ def remove_device_specific_unlocks(root):
 
 def dashboard_session_digest(token):
     return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+
+
+def valid_dashboard_password_hash(value):
+    return str(value or "").strip().startswith("pbkdf2_sha256$")
+
+
+def save_dashboard_identity_backup(password_hash):
+    password_hash = str(password_hash or "").strip()
+    if not valid_dashboard_password_hash(password_hash):
+        return False
+    existing = read_json(DASHBOARD_IDENTITY_FILE, {})
+    payload = {
+        "dashboard_password_hash": password_hash,
+        "updated_at": now_iso(),
+        "created_at": existing.get("created_at") or now_iso() if isinstance(existing, dict) else now_iso(),
+    }
+    write_private_json(DASHBOARD_IDENTITY_FILE, payload)
+    return True
+
+
+def ensure_dashboard_identity_backup(config=None):
+    config = config or load_config()
+    password_hash = str(getattr(config, "dashboard_password_hash", "") or "").strip()
+    if not valid_dashboard_password_hash(password_hash):
+        return False
+    existing = read_json(DASHBOARD_IDENTITY_FILE, {})
+    if isinstance(existing, dict) and existing.get("dashboard_password_hash") == password_hash:
+        return True
+    return save_dashboard_identity_backup(password_hash)
 
 
 def dashboard_session_store():
@@ -902,10 +933,9 @@ def request_update_release():
 
 def safe_copytree_contents(source, target, base=None):
     base = base or source
-    preserved = {".env", "ad-config.json", "dashboard/data", "logs", "output"}
     for item in source.iterdir():
         relative = item.relative_to(base).as_posix()
-        if relative in preserved or any(relative.startswith(prefix + "/") for prefix in preserved):
+        if relative in PRESERVED_UPDATE_PATHS or any(relative.startswith(prefix + "/") for prefix in PRESERVED_UPDATE_PATHS):
             continue
         destination = target / item.name
         if item.is_dir():
@@ -1032,7 +1062,8 @@ def set_local_network_access(payload):
 def run_update_health_checks():
     dashboard_file = ROOT_DIR / "dashboard" / "monitoring-dashboard.py"
     py_compile.compile(str(dashboard_file), doraise=True)
-    load_config()
+    config = load_config()
+    ensure_dashboard_identity_backup(config)
     required = [ROOT_DIR / ".env", ROOT_DIR / "ad-config.json", VERSION_FILE, dashboard_file]
     missing = [str(path.relative_to(ROOT_DIR)) for path in required if not path.exists()]
     if missing:
@@ -2741,7 +2772,9 @@ def set_dashboard_password(payload):
         raise ValueError("Dashboard password must have at least 8 characters")
     if confirm and confirm != password:
         raise ValueError("Dashboard password confirmation does not match")
-    update_env_values({"DASHBOARD_PASSWORD_HASH": hash_dashboard_password(password), "DASHBOARD_PASSWORD": "", "DASHBOARD_TOKEN": ""})
+    password_hash = hash_dashboard_password(password)
+    update_env_values({"DASHBOARD_PASSWORD_HASH": password_hash, "DASHBOARD_PASSWORD": "", "DASHBOARD_TOKEN": ""})
+    save_dashboard_identity_backup(password_hash)
     session = create_dashboard_session(remember=bool(payload.get("remember_device", True)))
     log_action("dashboard_password_set", {"status": "configured"}, "completed")
     return {"configured": True, **session}
@@ -7924,6 +7957,7 @@ def dashboard_payload():
     decisions = decision_memory_payload(metrics, recommendations, fatigue)
     experiment_reviews = experiment_review_payload(metrics)
     config = load_config()
+    ensure_dashboard_identity_backup(config)
     optimization_state = load_optimization_state()
     if not RESEARCH_FILE.exists():
         seed_current_research()

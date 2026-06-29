@@ -15,6 +15,42 @@ Antes de asegurar que una correccion ya esta disponible para compradores, verifi
 
 Si falta una de esas capas, un VPS fresco puede seguir instalando codigo viejo aunque la rama este actualizada.
 
+## Estado local sagrado: nunca se reemplaza con una release
+
+En una actualizacion, el codigo puede cambiar, pero el estado local del comprador no. Para futuras sesiones de Codex, estos datos se consideran sagrados:
+
+- contraseña/hash del dashboard;
+- sesiones locales del dashboard;
+- `.env` del comprador;
+- `ad-config.json`;
+- licencia, email de compra y device id;
+- onboarding completado;
+- perfil del negocio;
+- cuenta publicitaria y Business Manager elegidos;
+- Telegram, Meta token, Shopify y preferencias del agente;
+- `dashboard/data`;
+- `output`;
+- `logs`;
+- `runtime`;
+- guias de marca y productos guardados.
+
+Una release puede traer archivos nuevos, pero no debe reemplazar esos datos. Si una correccion requiere migrar alguno de esos datos, debe hacerse como migracion explicita, idempotente y con prueba dedicada. Nunca por copiar encima una carpeta del ZIP.
+
+Regla de oro:
+
+```text
+Update = cambia codigo + conserva identidad/configuracion/memoria local.
+Reset/onboarding nuevo = solo cuando el usuario lo pide explicitamente.
+```
+
+Antes de publicar, verificar que las pruebas de update cubren:
+
+- una release que contiene `.env` no puede sobreescribir el `.env` real;
+- una release que contiene `dashboard/data/onboarding_state.json` no puede borrar onboarding completado;
+- una release que contiene `dashboard/data/dashboard_identity.json` no puede reemplazar la identidad local;
+- una instalacion que pierde el hash de contraseña en `.env` puede recuperarlo desde `dashboard/data/dashboard_identity.json`;
+- una instalacion que ya completo onboarding no queda atrapada si necesita crear una nueva contraseña porque no hay ninguna configurada.
+
 ### Regla anti-confusion para sesiones futuras de Codex
 
 No decir simplemente "lo pushee a GitHub" como si eso significara que los compradores ya tienen actualizacion. Para este producto hay tres estados distintos:

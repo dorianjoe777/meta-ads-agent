@@ -24,6 +24,7 @@ from auto_warmup import AutoWarmupManager
 from license import activate_license, format_license, license_status, normalize_license_entitlements, validate_license_key
 from security import dashboard_token_valid, hash_dashboard_password, redact_payload
 from product_config import AgentConfig, normalize_hermes_model, normalize_timezone
+import product_config
 from agent_chat import account_context, parse_skill_response
 import agent_chat
 import hermes_bridge
@@ -531,8 +532,35 @@ class IntegrationTestSuite:
         original_load_config = dashboard.load_config
         original_onboarding = dashboard.load_onboarding_state
         original_sessions_file = dashboard.DASHBOARD_SESSIONS_FILE
+        original_product_env_file = product_config.ENV_FILE
+        original_product_identity_file = product_config.DASHBOARD_IDENTITY_FILE
         handler = object.__new__(dashboard.DashboardHandler)
         try:
+            with tempfile.TemporaryDirectory() as tmp_name:
+                temp_root = Path(tmp_name)
+                env_file = temp_root / ".env"
+                identity_file = temp_root / "dashboard" / "data" / "dashboard_identity.json"
+                identity_file.parent.mkdir(parents=True)
+                recovered_hash = hash_dashboard_password("secret-password")
+                env_file.write_text("REQUIRE_DASHBOARD_TOKEN=true\nDASHBOARD_PASSWORD_HASH=\nDASHBOARD_PASSWORD=\nDASHBOARD_TOKEN=\n", encoding="utf-8")
+                identity_file.write_text(json.dumps({"dashboard_password_hash": recovered_hash}), encoding="utf-8")
+                env_backup = {key: os.environ.get(key) for key in ["REQUIRE_DASHBOARD_TOKEN", "DASHBOARD_PASSWORD_HASH", "DASHBOARD_PASSWORD", "DASHBOARD_TOKEN"]}
+                try:
+                    for key in env_backup:
+                        os.environ.pop(key, None)
+                    product_config.ENV_FILE = env_file
+                    product_config.DASHBOARD_IDENTITY_FILE = identity_file
+                    recovered_config = product_config.load_config()
+                    self.assert_true(dashboard_token_valid(recovered_config, "secret-password"), "Dashboard password hash recovers from private identity backup if .env loses it")
+                finally:
+                    product_config.ENV_FILE = original_product_env_file
+                    product_config.DASHBOARD_IDENTITY_FILE = original_product_identity_file
+                    for key, value in env_backup.items():
+                        if value is None:
+                            os.environ.pop(key, None)
+                        else:
+                            os.environ[key] = value
+
             class NoPassword:
                 dashboard_token = ""
                 dashboard_password = ""
@@ -571,6 +599,8 @@ class IntegrationTestSuite:
             dashboard.load_config = original_load_config
             dashboard.load_onboarding_state = original_onboarding
             dashboard.DASHBOARD_SESSIONS_FILE = original_sessions_file
+            product_config.ENV_FILE = original_product_env_file
+            product_config.DASHBOARD_IDENTITY_FILE = original_product_identity_file
 
     def test_secret_redaction(self):
         """Test sensitive buyer fields are redacted from logs."""
@@ -5439,6 +5469,8 @@ class IntegrationTestSuite:
             (root / "VERSION").write_text("v1.0.0\n", encoding="utf-8")
             (root / "dashboard" / "data" / "chat_history.json").write_text('{"turns":["old"]}\n', encoding="utf-8")
             (root / "output" / "generated.png").write_text("large-runtime-output\n", encoding="utf-8")
+            (root / "dashboard" / "data" / "onboarding_state.json").write_text('{"completed":true,"source":"buyer"}\n', encoding="utf-8")
+            (root / "dashboard" / "data" / "dashboard_identity.json").write_text('{"dashboard_password_hash":"buyer-hash"}\n', encoding="utf-8")
             try:
                 dashboard.ROOT_DIR = root
                 dashboard.DATA_DIR = root / "dashboard" / "data"
@@ -5455,6 +5487,20 @@ class IntegrationTestSuite:
                 self.assert_true(not (payload / "ad-config.json").exists(), "Snapshot does not duplicate buyer ad config")
                 self.assert_true(not (payload / "dashboard" / "data").exists(), "Snapshot does not duplicate runtime dashboard data")
                 self.assert_true(not (payload / "output").exists(), "Snapshot does not duplicate generated output")
+                release_root = root / "release-unpack"
+                (release_root / "dashboard" / "data").mkdir(parents=True)
+                (release_root / "dashboard" / "monitoring-dashboard.py").write_text("print('new dashboard')\n", encoding="utf-8")
+                (release_root / ".env").write_text("DASHBOARD_PASSWORD_HASH=release-should-not-win\n", encoding="utf-8")
+                (release_root / "ad-config.json").write_text('{"url":"release-should-not-win"}\n', encoding="utf-8")
+                (release_root / "dashboard" / "data" / "onboarding_state.json").write_text('{"completed":false,"source":"release"}\n', encoding="utf-8")
+                (release_root / "dashboard" / "data" / "dashboard_identity.json").write_text('{"dashboard_password_hash":"release-hash"}\n', encoding="utf-8")
+                (release_root / "VERSION").write_text("v1.0.2\n", encoding="utf-8")
+                dashboard.safe_copytree_contents(release_root, root)
+                self.assert_true("DASHBOARD_PASSWORD=old" in (root / ".env").read_text(encoding="utf-8"), "Official update copy preserves buyer .env and dashboard password")
+                self.assert_true('"old"' in (root / "ad-config.json").read_text(encoding="utf-8"), "Official update copy preserves buyer ad-config")
+                self.assert_true('"source":"buyer"' in (root / "dashboard" / "data" / "onboarding_state.json").read_text(encoding="utf-8"), "Official update copy preserves completed onboarding state")
+                self.assert_true("buyer-hash" in (root / "dashboard" / "data" / "dashboard_identity.json").read_text(encoding="utf-8"), "Official update copy preserves dashboard identity backup")
+                self.assert_true((root / "VERSION").read_text(encoding="utf-8").strip() == "v1.0.2", "Official update copy can still update code/version files")
                 (root / ".env").write_text("DASHBOARD_PASSWORD=new\n", encoding="utf-8")
                 (root / "ad-config.json").write_text('{"url":"new"}\n', encoding="utf-8")
                 (root / "VERSION").write_text("v9.9.9\n", encoding="utf-8")

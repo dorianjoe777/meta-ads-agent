@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Configuration helpers for Admira IA."""
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +11,7 @@ from communication_style import ad_experience_from_environment, communication_st
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT_DIR / ".env"
+DASHBOARD_IDENTITY_FILE = ROOT_DIR / "dashboard" / "data" / "dashboard_identity.json"
 DEFAULT_HERMES_CODEX_MODEL = "gpt-5.5"
 
 
@@ -20,7 +22,8 @@ def normalize_hermes_model(value):
     return model
 
 
-def load_dotenv(path=ENV_FILE):
+def load_dotenv(path=None):
+    path = Path(path or ENV_FILE)
     if not path.exists():
         return
     with open(path, "r", encoding="utf-8") as handle:
@@ -32,6 +35,23 @@ def load_dotenv(path=ENV_FILE):
             key = key.strip()
             value = value.strip().strip('"').strip("'")
             os.environ[key] = value
+
+
+def recover_dashboard_identity_from_data(path=None):
+    if os.environ.get("DASHBOARD_PASSWORD_HASH") or os.environ.get("DASHBOARD_PASSWORD") or os.environ.get("DASHBOARD_TOKEN"):
+        return False
+    path = Path(path or DASHBOARD_IDENTITY_FILE)
+    if not path.exists():
+        return False
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    password_hash = str(payload.get("dashboard_password_hash") or "").strip()
+    if not password_hash.startswith("pbkdf2_sha256$"):
+        return False
+    os.environ["DASHBOARD_PASSWORD_HASH"] = password_hash
+    return True
 
 
 def env_bool(name, default=False):
@@ -235,6 +255,7 @@ class AgentConfig:
 
 def load_config():
     load_dotenv()
+    recover_dashboard_identity_from_data()
     mode = os.environ.get("META_ADS_AGENT_MODE", "dry-run").strip().lower()
     if mode not in {"dry-run", "live"}:
         mode = "dry-run"
