@@ -1744,7 +1744,8 @@ function telegramOnboardingGuide(){
 }
 function communicationStyleGuide(onboarding=false){
  const saved=state.config?.communication_preference?.configured?String(state.config?.communication_preference?.style||'').toLowerCase():'';
- const simpleChecked=saved==='simple'?'checked':'';
+ const effectiveStyle=saved||(onboarding?'simple':'');
+ const simpleChecked=effectiveStyle==='simple'?'checked':'';
  const technicalChecked=saved==='technical'?'checked':'';
  const submitCode=onboarding?'saveCommunicationStyle(event,true)':'saveCommunicationStyle(event,false)';
  const title=lang==='es'?'Último detalle: ¿simple o técnico?':'Last detail: simple or technical?';
