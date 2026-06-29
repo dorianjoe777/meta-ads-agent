@@ -3040,7 +3040,7 @@ class IntegrationTestSuite:
             self.assert_true("mcp_admira_save_product_memory" in branding_skill_text and "logo" in branding_skill_text.lower(), "Focused branding skill covers product memory and logo context")
             self.assert_true("Primer mensaje del onboarding" in plan_text and "entender tu negocio" in plan_text and "marca, logo, colores" in plan_text and "ofertas especificas" in plan_text, "Agent onboarding plan tells Hermes to introduce business, branding, then ads strategy")
             self.assert_true("continuous_ads_manager" in plan_text and "save_ads_onboarding" in plan_text, "Agent onboarding plan records the continuous manager phase")
-            self.assert_true("Presupuesto de prueba: 20 dolares diarios" in brief_text, "Ad brief persists test budget as a structured field for creative production readiness")
+            self.assert_true("Presupuesto: 20 dolares diarios" in brief_text and "Presupuesto de prueba: 20 dolares diarios" in brief_text, "Ad brief persists test budget as structured fields for creative production readiness")
         finally:
             for path, content in backups.items():
                 if content is None:
@@ -3130,13 +3130,13 @@ class IntegrationTestSuite:
                 "concurrent_variations": "3 simultáneos y 2 en backlog",
                 "formats": "UGC, foto real y estático",
                 "creative_hypothesis": "descubrir qué ángulo produce leads de mejor calidad",
-                "test_budget": "US$3/día",
+                "budget": "US$3/día",
             }
             dashboard.guide_library = lambda: library(full_general, [{"id": "brief-listo", "fields": brief_fields, "ready": True}])
             dashboard.read_json = lambda path, default=None: ({} if path == dashboard.BUSINESS_PROFILE_FILE else original_read_json(path, default))
             dashboard.load_config = lambda: type("Cfg", (), {"codex_creative_model": "gpt-5.5"})()
             readiness_with_brief_budget = dashboard.creative_strategy_readiness(require_brief=True, purpose="ad_creative")
-            self.assert_true(readiness_with_brief_budget["ready"] is True and readiness_with_brief_budget["budget"] == "US$3/día", "Creative readiness accepts a test budget saved in the ad brief")
+            self.assert_true(readiness_with_brief_budget["ready"] is True and readiness_with_brief_budget["budget"] == "US$3/día", "Creative readiness accepts a legacy budget saved in the ad brief")
 
             def fake_image(prompt, **kwargs):
                 captured["prompt"] = prompt

@@ -93,6 +93,7 @@ AD_BRIEF_FIELD_LABELS = {
     "audience_slice": "Segmento o lectura de audiencia",
     "base_ad": "Que ya funciona del anuncio",
     "locked_elements": "No cambiar",
+    "budget": "Presupuesto",
     "test_budget": "Presupuesto de prueba",
     "daily_budget": "Presupuesto diario",
     "monthly_budget": "Presupuesto mensual",
@@ -603,6 +604,7 @@ Usa este archivo para crear anuncios concretos, promociones puntuales y variacio
 
 ## Plan de prueba
 
+- Presupuesto: {fields.get('budget', '')}
 - Presupuesto de prueba: {fields.get('test_budget', '')}
 - Presupuesto diario: {fields.get('daily_budget', '')}
 - Presupuesto mensual: {fields.get('monthly_budget', '')}
