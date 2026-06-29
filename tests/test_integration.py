@@ -1674,7 +1674,7 @@ class IntegrationTestSuite:
             self.assert_true("logo" in branding_skill.read_text(encoding="utf-8").lower() and "mcp_admira_save_brand_memory" in branding_skill.read_text(encoding="utf-8"), "Branding skill teaches Hermes to save logo-aware creative memory")
             branding_text = branding_skill.read_text(encoding="utf-8")
             campaign_text = campaign_skill.read_text(encoding="utf-8")
-            self.assert_true("Image 2 is one production tool; it is never the strategy" in branding_text and "test budget" in branding_text, "Branding skill separates creative strategy from the available image tool and asks budget first")
+            self.assert_true("Image 2 is one production tool; it is never the strategy" in branding_text and "Budget informs testing and launch planning, but it does not block draft image generation" in branding_text, "Branding skill separates creative strategy from the available image tool without making budget block drafts")
             self.assert_true("Meta Ad Library" in branding_text and "not private CPA, ROAS, or conversions" in branding_text, "Branding skill supports evidence-labeled competitor creative research without claiming public conversion data")
             self.assert_true("ElevenLabs" in branding_text and "photorealism" in branding_text and "reference_image_paths" in branding_text, "Branding skill covers UGC guidance, real-world photorealism, and uploaded references")
             self.assert_true("likely placements" in branding_text and "vertical Reels version" in campaign_text and "Expert Configuration Posture" in campaign_text, "Skills teach proactive expert placement strategy instead of rigid placement defaults")
@@ -3115,7 +3115,7 @@ class IntegrationTestSuite:
             self.assert_true("marca" in blocked["reply"].lower() and "vende" in blocked["reply"].lower(), "Creative gate returns the exact next discovery question")
 
             dashboard.guide_library = lambda: library(full_general)
-            dashboard.read_json = lambda path, default=None: ({"budget_comfort": "USD 30 diarios"} if path == dashboard.BUSINESS_PROFILE_FILE else original_read_json(path, default))
+            dashboard.read_json = lambda path, default=None: ({} if path == dashboard.BUSINESS_PROFILE_FILE else original_read_json(path, default))
             no_brief = dashboard.execute_agent_tool(
                 {"tool": "codex_image_generate", "arguments": {"request": "Crea un anuncio final", "purpose": "ad_creative"}},
                 {"language": "es"},
@@ -3130,13 +3130,12 @@ class IntegrationTestSuite:
                 "concurrent_variations": "3 simultáneos y 2 en backlog",
                 "formats": "UGC, foto real y estático",
                 "creative_hypothesis": "descubrir qué ángulo produce leads de mejor calidad",
-                "budget": "US$3/día",
             }
             dashboard.guide_library = lambda: library(full_general, [{"id": "brief-listo", "fields": brief_fields, "ready": True}])
             dashboard.read_json = lambda path, default=None: ({} if path == dashboard.BUSINESS_PROFILE_FILE else original_read_json(path, default))
             dashboard.load_config = lambda: type("Cfg", (), {"codex_creative_model": "gpt-5.5"})()
-            readiness_with_brief_budget = dashboard.creative_strategy_readiness(require_brief=True, purpose="ad_creative")
-            self.assert_true(readiness_with_brief_budget["ready"] is True and readiness_with_brief_budget["budget"] == "US$3/día", "Creative readiness accepts a legacy budget saved in the ad brief")
+            readiness_without_budget = dashboard.creative_strategy_readiness(require_brief=True, purpose="ad_creative")
+            self.assert_true(readiness_without_budget["ready"] is True and readiness_without_budget["budget"] == "", "Creative readiness does not require budget to generate draft images when brand and brief are complete")
 
             def fake_image(prompt, **kwargs):
                 captured["prompt"] = prompt

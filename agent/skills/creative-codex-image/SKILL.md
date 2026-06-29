@@ -7,12 +7,12 @@ description: Produce approved raster ad creatives through Codex/Image using comp
 
 Use this skill when the buyer asks to produce approved raster ad images, variants, designs, static ad graphics, product showcases, or creative refreshes.
 
-Image 2 is a production capability, not the creative strategy. First read `memory/Agent onboarding plan.md` and `skills/branding-creatives-creation/SKILL.md`. If brand discovery, budget, references/assets, or the creative test brief is missing, ask the next discovery question instead of generating.
+Image 2 is a production capability, not the creative strategy. First read `memory/Agent onboarding plan.md` and `skills/branding-creatives-creation/SKILL.md`. If brand discovery, references/assets decisions, or the creative test brief is missing, ask the next discovery question instead of generating. Budget helps decide how many creatives to test or launch, but it does not block draft image generation.
 
 ## Required Tool Path
 
 - For final ad images, always call `mcp_admira_codex_image_generate`.
-- For creative concepts or prompt planning, call `mcp_admira_codex_creative_plan` only after the branding/product/budget readiness gate is complete.
+- For creative concepts or prompt planning, call `mcp_admira_codex_creative_plan` only after the branding/product readiness gate is complete.
 - If the readiness gate is missing anything, do not call either Codex tool. Ask the next missing discovery question and save the answer first.
 - Do not use Hermes internal image generation.
 - Do not mention FAL, Nous, or random image APIs.

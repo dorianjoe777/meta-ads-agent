@@ -4392,8 +4392,6 @@ def creative_strategy_readiness(require_brief=False, purpose="ad_creative", payl
     if not isinstance(profile, dict):
         profile = {}
     budget = creative_test_budget_value(profile, library, payload)
-    if is_ad and not budget:
-        missing.append({"key": "test_budget", "question": "¿Qué presupuesto diario o mensual quieres usar para probar anuncios?"})
     if is_ad and require_brief:
         briefs = library.get("ad_briefs") or []
         brief_fields = (briefs[-1].get("fields") or {}) if briefs else {}

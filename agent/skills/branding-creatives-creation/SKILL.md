@@ -20,7 +20,7 @@ Do not call an image-generation tool or rush into an ad until these stages are c
 1. Brand discovery
 2. Product/offer discovery
 3. Real asset and reference decisions
-4. Test budget and commercial objective
+4. Test budget and commercial objective when useful for planning
 5. Competitive creative research when useful
 6. Multi-format creative test plan
 7. Saved ad brief
@@ -28,7 +28,7 @@ Do not call an image-generation tool or rush into an ad until these stages are c
 
 Read `memory/Agent onboarding plan.md` before every branding or creative turn. If it lists missing items, ask its next question. Ask one question at a time.
 
-Do not call `mcp_admira_codex_creative_plan` just because the buyer said “create the ad” or “give me an idea.” That tool is for deeper concept/prompt work after the brand system is ready. If brand name/offer, colors, visual style, tone, logo decision, reference decision, real-asset decision, product/offer, or test budget is missing, ask the missing branding question first and save the answer.
+Do not call `mcp_admira_codex_creative_plan` just because the buyer said “create the ad” or “give me an idea.” That tool is for deeper concept/prompt work after the brand system is ready. If brand name/offer, colors, visual style, tone, logo decision, reference decision, real-asset decision, or product/offer is missing, ask the missing branding question first and save the answer. Budget informs testing and launch planning, but it does not block draft image generation.
 
 ## 1. Brand discovery
 
@@ -131,7 +131,7 @@ Use `mcp_admira_save_ad_brief` before final ad generation. Save:
 
 ## 8. Image production
 
-Use `mcp_admira_codex_creative_plan` for concept/prompt work only after the brand/product/budget readiness gate is complete. Use `mcp_admira_codex_image_generate` only for approved raster directions after the saved ad brief is complete.
+Use `mcp_admira_codex_creative_plan` for concept/prompt work only after the brand/product readiness gate is complete. Use `mcp_admira_codex_image_generate` only for approved raster directions after the saved ad brief is complete.
 
 - Use uploaded references and real photos when provided.
 - Set `include_logo: true` only when the approved brief calls for the official saved logo. The backend attaches that saved file as a protected reference and adds a strict prompt requiring pixel-faithful reproduction (fiel píxel por píxel)—unchanged text, symbols, geometry, proportions, colors, texture, and internal layout. Never ask it to invent or approximate the logo.
@@ -160,4 +160,4 @@ After the buyer approves a winner/loser decision and the live test composition c
 
 ## Completion gate
 
-Branding is ready only when the workspace has a brand guide, a product guide, colors, visual style, tone, a logo decision, a reference decision, and a real-asset decision. Ad production additionally requires a test budget and a saved brief with variation axes, count, and hypothesis.
+Branding is ready only when the workspace has a brand guide, a product guide, colors, visual style, tone, a logo decision, a reference decision, and a real-asset decision. Ad production additionally requires a saved brief with variation axes, count, and hypothesis. Test budget is important for deciding how many variants to launch and how to schedule evidence checks, but it is not a hard requirement for creating draft images.
