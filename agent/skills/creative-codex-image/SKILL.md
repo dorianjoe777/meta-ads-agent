@@ -39,6 +39,7 @@ For `mcp_admira_codex_image_generate`, include:
 - `request`: buyer's exact creative ask in Spanish.
 - `mode`: `fixed` when preserving brand strictly, `free` when the buyer asks for more creative variety.
 - `variations`: number of variants if requested.
+- `test_budget`: daily or monthly ad-test budget when the buyer already gave it.
 - `product_guide`: product or offer name/content when known.
 - `ad_brief`: campaign/ad brief when known.
 - `reference_image_summary`: only if the buyer uploaded a useful image.

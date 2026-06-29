@@ -121,6 +121,7 @@ Never imply that synthetic UGC is a real customer testimonial. Label reenactment
 Use `mcp_admira_save_ad_brief` before final ad generation. Save:
 
 - objective, audience slice, offer, and destination
+- `test_budget` with the daily or monthly ad-test budget, plus target CPA/CPL when known
 - locked brand/offer elements
 - variation count and concurrent-test count
 - genuinely different variation axes

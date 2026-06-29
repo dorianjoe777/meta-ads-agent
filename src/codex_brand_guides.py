@@ -93,6 +93,10 @@ AD_BRIEF_FIELD_LABELS = {
     "audience_slice": "Segmento o lectura de audiencia",
     "base_ad": "Que ya funciona del anuncio",
     "locked_elements": "No cambiar",
+    "test_budget": "Presupuesto de prueba",
+    "daily_budget": "Presupuesto diario",
+    "monthly_budget": "Presupuesto mensual",
+    "target_cpa_cpl": "CPA/CPL objetivo",
     "variation_window": "Ventana creativa para variaciones",
     "variation_axes": "Que puede variar",
     "variation_count": "Cantidad de variaciones",
@@ -597,6 +601,13 @@ Usa este archivo para crear anuncios concretos, promociones puntuales y variacio
 - Que ya funciona del anuncio: {fields.get('base_ad', '')}
 - No cambiar: {fields.get('locked_elements', '')}
 
+## Plan de prueba
+
+- Presupuesto de prueba: {fields.get('test_budget', '')}
+- Presupuesto diario: {fields.get('daily_budget', '')}
+- Presupuesto mensual: {fields.get('monthly_budget', '')}
+- CPA/CPL objetivo: {fields.get('target_cpa_cpl', '')}
+
 ## Variaciones
 
 - Ventana creativa para variaciones: {fields.get('variation_window', '')}
@@ -699,6 +710,19 @@ def save_product_guide(payload):
 
 
 def save_ad_brief(payload):
+    payload = dict(payload or {})
+    if not str(payload.get("test_budget") or "").strip():
+        for alias in ["budget", "budget_comfort", "ad_test_budget", "daily_test_budget", "test_daily_budget"]:
+            value = str(payload.get(alias) or "").strip()
+            if value:
+                payload["test_budget"] = value
+                break
+    if not str(payload.get("daily_budget") or "").strip():
+        for alias in ["adset_daily_budget", "campaign_daily_budget", "daily_test_budget", "test_daily_budget"]:
+            value = str(payload.get(alias) or "").strip()
+            if value:
+                payload["daily_budget"] = value
+                break
     existing_id = product_slug(payload.get("id")) if payload.get("id") else ""
     current_path = AD_BRIEF_DIR / f"{existing_id}.md" if existing_id else None
     existing = ad_brief_fields(read_text(current_path)) if current_path and current_path.exists() else {}

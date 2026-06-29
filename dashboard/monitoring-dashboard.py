@@ -4321,17 +4321,79 @@ def branding_creative_readiness(require_product=True):
     }
 
 
-def creative_strategy_readiness(require_brief=False, purpose="ad_creative"):
+CREATIVE_TEST_BUDGET_KEYS = (
+    "test_budget",
+    "budget_comfort",
+    "budget",
+    "ad_test_budget",
+    "daily_test_budget",
+    "test_daily_budget",
+    "daily_budget",
+    "adset_daily_budget",
+    "campaign_daily_budget",
+    "monthly_budget",
+)
+
+
+def budget_like_text(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if any(token in lowered for token in ["presupuesto", "budget", "usd", "us$", "$"]) and re.search(r"\d", text):
+        return text[:240]
+    if re.search(r"\d+(?:[.,]\d+)?\s*(?:d[oó]lares?|usd|us\$|\$)", lowered):
+        return text[:240]
+    if re.search(r"\d+(?:[.,]\d+)?\s*(?:/)?\s*(?:d[ií]a|diario|diarios|daily|mes|mensual|monthly|semana|week)", lowered):
+        return text[:240]
+    return ""
+
+
+def budget_from_mapping(mapping, scan_notes=False):
+    if not isinstance(mapping, dict):
+        return ""
+    for key in CREATIVE_TEST_BUDGET_KEYS:
+        value = str(mapping.get(key) or "").strip()
+        if value:
+            return value[:240]
+    if scan_notes:
+        for key, value in mapping.items():
+            if key in {"name", "campaign_name", "campaign_id", "adset_id", "base_ad_id"}:
+                continue
+            detected = budget_like_text(value)
+            if detected:
+                return detected
+    return ""
+
+
+def creative_test_budget_value(profile, library, payload=None):
+    budget = budget_from_mapping(payload)
+    if budget:
+        return budget
+    budget = budget_from_mapping(profile)
+    if budget:
+        return budget
+    briefs = (library or {}).get("ad_briefs") or []
+    if briefs:
+        brief_fields = (briefs[-1].get("fields") or {}) if isinstance(briefs[-1], dict) else {}
+        budget = budget_from_mapping(brief_fields, scan_notes=True)
+        if budget:
+            return budget
+    return ""
+
+
+def creative_strategy_readiness(require_brief=False, purpose="ad_creative", payload=None):
     purpose = str(purpose or "ad_creative").strip().lower()
     is_ad = purpose not in {"logo", "brand_exploration", "moodboard"}
     branding = branding_creative_readiness(require_product=is_ad)
     missing = list(branding["missing"])
+    library = branding["library"]
     profile = read_json(BUSINESS_PROFILE_FILE, {})
     if not isinstance(profile, dict):
         profile = {}
-    if is_ad and not str(profile.get("budget_comfort") or "").strip():
+    budget = creative_test_budget_value(profile, library, payload)
+    if is_ad and not budget:
         missing.append({"key": "test_budget", "question": "¿Qué presupuesto diario o mensual quieres usar para probar anuncios?"})
-    library = branding["library"]
     if is_ad and require_brief:
         briefs = library.get("ad_briefs") or []
         brief_fields = (briefs[-1].get("fields") or {}) if briefs else {}
@@ -4353,7 +4415,7 @@ def creative_strategy_readiness(require_brief=False, purpose="ad_creative"):
         "purpose": purpose,
         "missing": missing,
         "next_question": missing[0]["question"] if missing else "",
-        "budget": str(profile.get("budget_comfort") or "").strip(),
+        "budget": budget,
         "branding": branding,
     }
 
@@ -4829,7 +4891,7 @@ def codex_creative_plan(payload):
     if not request:
         request = "Crear una estrategia visual y prompts de imagen para Meta Ads usando las guias de marca."
     purpose = str(payload.get("purpose") or "ad_creative").strip().lower()
-    readiness = creative_strategy_readiness(require_brief=False, purpose=purpose)
+    readiness = creative_strategy_readiness(require_brief=False, purpose=purpose, payload=payload)
     if not readiness["ready"]:
         result = creative_not_ready_result("creative_strategy_not_ready", readiness)
         log_action(
@@ -4883,7 +4945,7 @@ def codex_image_generate(payload):
     if not request:
         request = "Crear una imagen final para Meta Ads usando las guias de marca disponibles."
     purpose = str(payload.get("purpose") or "ad_creative").strip().lower()
-    readiness = creative_strategy_readiness(require_brief=True, purpose=purpose)
+    readiness = creative_strategy_readiness(require_brief=True, purpose=purpose, payload=payload)
     if not readiness["ready"]:
         result = creative_not_ready_result("creative_production_not_ready", readiness)
         log_action(
@@ -7764,7 +7826,7 @@ def handle_save_ad_brief_tool(arguments, chat_payload, tool):
 
 def handle_codex_creative_plan_tool(arguments, chat_payload, tool):
     purpose = str((arguments or {}).get("purpose") or "ad_creative").strip().lower()
-    readiness = creative_strategy_readiness(require_brief=False, purpose=purpose)
+    readiness = creative_strategy_readiness(require_brief=False, purpose=purpose, payload=arguments)
     if not readiness["ready"]:
         return agent_action_result(
             tool,
@@ -7799,7 +7861,7 @@ def handle_codex_creative_plan_tool(arguments, chat_payload, tool):
 
 def handle_codex_image_generate_tool(arguments, chat_payload, tool):
     purpose = str((arguments or {}).get("purpose") or "ad_creative").strip().lower()
-    readiness = creative_strategy_readiness(require_brief=True, purpose=purpose)
+    readiness = creative_strategy_readiness(require_brief=True, purpose=purpose, payload=arguments)
     if not readiness["ready"]:
         return agent_action_result(
             tool,

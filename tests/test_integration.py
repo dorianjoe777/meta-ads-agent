@@ -2386,7 +2386,7 @@ class IntegrationTestSuite:
         calls = []
         try:
             dashboard.load_config = lambda: type("Cfg", (), {"codex_creative_enabled": True})()
-            dashboard.creative_strategy_readiness = lambda require_brief=False, purpose="ad_creative": {"ready": True, "missing": [], "next_question": "", "purpose": purpose}
+            dashboard.creative_strategy_readiness = lambda require_brief=False, purpose="ad_creative", payload=None: {"ready": True, "missing": [], "next_question": "", "purpose": purpose}
             dashboard.call_codex_cli = lambda prompt, **kwargs: calls.append(prompt) or {"ok": True}
             blocked = dashboard.codex_creative_plan({"product_guide": ".env", "request": "Prepara creativos"})
             self.assert_true(blocked["ok"] is False, "Backend Codex tool rejects escaped guide paths")
@@ -2611,7 +2611,7 @@ class IntegrationTestSuite:
         original_creative_readiness = dashboard.creative_strategy_readiness
         calls = []
         try:
-            dashboard.creative_strategy_readiness = lambda require_brief=False, purpose="ad_creative": {
+            dashboard.creative_strategy_readiness = lambda require_brief=False, purpose="ad_creative", payload=None: {
                 "ready": True,
                 "purpose": purpose,
                 "missing": [],
@@ -3017,6 +3017,7 @@ class IntegrationTestSuite:
                         "name": "Brief Fase Prueba",
                         "promotion": "evaluacion dental inicial",
                         "base_ad": "sonrisa natural con prueba social",
+                        "budget": "20 dolares diarios",
                         "variation_window": "probar colores y encuadre sin cambiar oferta",
                         "variation_axes": "dolor, deseo, prueba social y demostración",
                         "variation_count": "5",
@@ -3029,6 +3030,7 @@ class IntegrationTestSuite:
             )
             final_phase = dashboard.agent_onboarding_phase()
             plan_text = dashboard.AGENT_ONBOARDING_PLAN_FILE.read_text(encoding="utf-8")
+            brief_text = (codex_brand_guides.AD_BRIEF_DIR / "brief-fase-prueba.md").read_text(encoding="utf-8")
             skill_text = (ROOT_DIR / "agent" / "SKILLS.md").read_text(encoding="utf-8")
             branding_skill_text = (ROOT_DIR / "agent" / "skills" / "branding-creatives-creation" / "SKILL.md").read_text(encoding="utf-8")
             self.assert_true(business["executed"] is True and phase_after_business["phase"] == "branding_creatives_creation", "Business context tool moves onboarding to branding creatives phase")
@@ -3038,6 +3040,7 @@ class IntegrationTestSuite:
             self.assert_true("mcp_admira_save_product_memory" in branding_skill_text and "logo" in branding_skill_text.lower(), "Focused branding skill covers product memory and logo context")
             self.assert_true("Primer mensaje del onboarding" in plan_text and "entender tu negocio" in plan_text and "marca, logo, colores" in plan_text and "ofertas especificas" in plan_text, "Agent onboarding plan tells Hermes to introduce business, branding, then ads strategy")
             self.assert_true("continuous_ads_manager" in plan_text and "save_ads_onboarding" in plan_text, "Agent onboarding plan records the continuous manager phase")
+            self.assert_true("Presupuesto de prueba: 20 dolares diarios" in brief_text, "Ad brief persists test budget as a structured field for creative production readiness")
         finally:
             for path, content in backups.items():
                 if content is None:
@@ -3127,9 +3130,13 @@ class IntegrationTestSuite:
                 "concurrent_variations": "3 simultáneos y 2 en backlog",
                 "formats": "UGC, foto real y estático",
                 "creative_hypothesis": "descubrir qué ángulo produce leads de mejor calidad",
+                "test_budget": "US$3/día",
             }
             dashboard.guide_library = lambda: library(full_general, [{"id": "brief-listo", "fields": brief_fields, "ready": True}])
+            dashboard.read_json = lambda path, default=None: ({} if path == dashboard.BUSINESS_PROFILE_FILE else original_read_json(path, default))
             dashboard.load_config = lambda: type("Cfg", (), {"codex_creative_model": "gpt-5.5"})()
+            readiness_with_brief_budget = dashboard.creative_strategy_readiness(require_brief=True, purpose="ad_creative")
+            self.assert_true(readiness_with_brief_budget["ready"] is True and readiness_with_brief_budget["budget"] == "US$3/día", "Creative readiness accepts a test budget saved in the ad brief")
 
             def fake_image(prompt, **kwargs):
                 captured["prompt"] = prompt
