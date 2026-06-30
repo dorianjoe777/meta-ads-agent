@@ -47,7 +47,7 @@ Use `mcp_admira_save_brand_memory` to save stable answers. Do not settle for vag
 
 “I have no reference,” “I have no real photos,” and “I do not have a logo” are valid explicit decisions. Save them instead of repeatedly asking.
 
-If the buyer sends a logo, call `mcp_admira_save_brand_memory` while that image is attached, pass its safe workspace path in `reference_image_paths`, and clearly identify it as the official logo. Never recreate, reinterpret, trace, or replace an official logo.
+If the buyer sends a logo, call `mcp_admira_save_brand_memory` while that image is attached, pass its safe workspace path in `reference_image_paths`, and clearly identify it as the official logo. Future creatives should use that exact saved file by default unless the buyer explicitly asks for no logo. Never recreate, reinterpret, trace, or replace an official logo.
 
 If the buyer asks to create a new logo, treat it as `purpose: "logo"`, present options, and wait for explicit approval. Only after approval save that exact generated file as the official logo. Never silently replace an existing official logo.
 
@@ -136,7 +136,7 @@ Use `mcp_admira_save_ad_brief` before final ad generation. Save:
 Use `mcp_admira_codex_creative_plan` for concept/prompt work after the brand/product readiness gate is complete. Use `mcp_admira_codex_image_generate` for standalone draft assets when the buyer gave enough current context, or for approved launch-ready raster directions after the saved ad brief is complete.
 
 - Use uploaded references and real photos when provided.
-- Set `include_logo: true` only when the approved brief calls for the official saved logo. The backend attaches that saved file as a protected reference and adds a strict prompt requiring pixel-faithful reproduction (fiel píxel por píxel)—unchanged text, symbols, geometry, proportions, colors, texture, and internal layout. Never ask it to invent or approximate the logo.
+- Set `include_logo: true` when the approved brief calls for the official saved logo; if an official logo is saved, the backend will use it by default unless the buyer explicitly asks for no logo. The backend attaches that saved file as a protected reference and adds a strict prompt requiring pixel-level accurate reproduction and pixel-faithful reproduction (fiel píxel por píxel)—unchanged text, symbols, geometry, proportions, colors, texture, and internal layout. Never ask it to invent or approximate the logo.
 - Ask for the preferred logo position if it is not already saved.
 - Inspect the returned creative before approving it. If the official logo is visibly altered, call the tool again with `logo_render_mode: "exact_composite"`; this fallback generates a logo-free base and applies the saved logo file afterward. Do not manually recreate the mark.
 - For people, products, locations, food, interiors, or other real-world scenes, request photorealism unless the buyer explicitly approves illustration or stylization.

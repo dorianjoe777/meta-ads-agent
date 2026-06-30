@@ -291,9 +291,9 @@ def brand_logo_context(fields):
     if usage:
         parts.append(f"Uso aprobado: {usage}")
     parts.append(
-        "Usar ese logo como referencia de marca. Si el brief pide mostrarlo y el archivo oficial está adjunto, "
-        "reproducir ese mismo logo exactamente y de forma pixel-faithful (fiel píxel por píxel); "
-        "no inventar, redibujar ni reinterpretar uno diferente."
+        "Usar ese logo como referencia de marca. Si el archivo oficial está adjunto, ese archivo es la única "
+        "fuente de verdad del logo: reproducir ese mismo logo exactamente con pixel-level accurate reproduction, "
+        "de forma pixel-faithful (fiel píxel por píxel); no inventar, redibujar, aproximar ni reinterpretar uno diferente."
     )
     return " / ".join(parts)
 
@@ -305,9 +305,10 @@ def official_logo_prompt_lock(position="top-right"):
         normalized_position = "top-right"
     return (
         "LOGO OFICIAL PROTEGIDO: una de las imágenes adjuntas es el archivo oficial del comprador. "
+        "Ese archivo adjunto es la única fuente de verdad para el logo; no lo infieras desde el nombre de marca. "
         "Trátalo como un activo plano bloqueado que debe aparecer una sola vez en el diseño, "
         f"preferiblemente en {normalized_position}. Reprodúcelo exactamente como está en el archivo adjunto, "
-        "con reproducción pixel-faithful (fiel píxel por píxel). "
+        "con pixel-level accurate reproduction y reproducción pixel-faithful (fiel píxel por píxel). "
         "No lo redibujes, regeneres, interpretes, simplifiques, estilices, limpies, retoques, recolorees, recortes, "
         "estires, gires ni reemplaces. Conserva sin cambios su texto y ortografía, letras, símbolos, ilustración, "
         "geometría, proporciones, espaciado, colores, bordes, textura y distribución interna. "
@@ -1216,8 +1217,9 @@ def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", 
         "Usa el pedido puntual del comprador como fuente principal. Respeta colores, tipografias, "
         "personalidad, promesa, oferta, publico, elementos bloqueados, referencias aprobadas y cosas prohibidas "
         "cuando existan. Si existe Logo de marca, úsalo como referencia visual y no inventes otro logo. "
-        "Si el archivo oficial está adjunto y el brief pide mostrarlo, trátalo como un activo bloqueado: "
-        "reprodúcelo exactamente y de forma pixel-faithful (fiel píxel por píxel), sin cambiar texto, símbolos, "
+        "Si el archivo oficial está adjunto, trátalo como un activo bloqueado: "
+        "reprodúcelo exactamente con pixel-level accurate reproduction y de forma pixel-faithful "
+        "(fiel píxel por píxel), sin cambiar texto, símbolos, "
         "geometría, proporciones, colores ni distribución interna. "
         "Si falta una regla de marca, usa un estilo publicitario neutral y profesional; no crees "
         "placeholders ni imagenes sobre datos faltantes."
@@ -1279,7 +1281,7 @@ Reglas no negociables:
 - No leas archivos, credenciales, tokens ni configuracion local.
 - No ejecutes comandos.
 - Mantener colores, tipografias y elementos importantes de marca.
-- Si hay logo guardado y su archivo oficial está adjunto para aparecer, reproducirlo exactamente como un activo bloqueado y de forma pixel-faithful (fiel píxel por píxel). No inventar otro logo ni cambiar texto, símbolos, geometría, proporciones, colores o distribución interna.
+- Si hay logo guardado y su archivo oficial está adjunto para aparecer, reproducirlo exactamente como un activo bloqueado con pixel-level accurate reproduction y de forma pixel-faithful (fiel píxel por píxel). No inventar otro logo ni cambiar texto, símbolos, geometría, proporciones, colores o distribución interna.
 - En modo libre, revisa el ledger y reemplaza cualquier idea que se parezca demasiado a otra.
 - Devuelve JSON valido con: variant_id, design_axis, final_image_prompt, aspect_ratios, on_image_text, why_this_is_different, safety_notes.
 
@@ -1637,7 +1639,7 @@ def publish_generated_image(generated, output_root=None, output_name="creative",
 def codex_image_generation_prompt(prompt, has_references=False):
     reference_rules = (
         "- Usa las imágenes adjuntas como referencias visuales reales. Conserva fielmente el producto, persona, empaque o diseño que muestran.\n"
-        "- Si el pedido identifica una imagen adjunta como logo oficial y pide mostrarla, sigue su contrato de logo protegido: intégrala exactamente como un activo bloqueado, con reproducción pixel-faithful (fiel píxel por píxel), sin redibujarla ni cambiar texto, símbolos, geometría, proporciones, colores o distribución interna.\n"
+        "- Si el pedido identifica una imagen adjunta como logo oficial, esa imagen adjunta es la única fuente de verdad del logo. Sigue su contrato de logo protegido: intégrala exactamente como un activo bloqueado, con pixel-level accurate reproduction y reproducción pixel-faithful (fiel píxel por píxel), sin redibujarla, aproximarla ni cambiar texto, símbolos, geometría, proporciones, colores o distribución interna.\n"
         "- Si el pedido indica que el logo se aplicará después, no dibujes ningún logo en la imagen base y deja la zona solicitada limpia.\n"
         if has_references else ""
     )

@@ -2898,6 +2898,7 @@ class IntegrationTestSuite:
             self.assert_true("Logo circular coral" in codex_prompt and "No hay logo guardado" not in codex_prompt, "Codex creative prompts include saved logo context")
             self.assert_true("Logo circular coral" in image_package["prompts"][0]["image_prompt"] and "no inventes otro logo" in image_package["brand_lock"].lower(), "Codex/Image prompt package preserves logo rules")
             self.assert_true(logo_upload["saved"] is True and logo_upload["library"]["general"]["fields"]["logo_notes"] == "Logo minimo de prueba para anuncios.", "Dashboard logo upload stores the logo as brand memory")
+            self.assert_true("futuros creativos" in logo_upload["library"]["general"]["fields"]["logo_usage"], "Dashboard logo upload defaults future creatives to the saved official logo")
             self.assert_true("Mantener producto grande" in codex_prompt and "Agregar sello de oferta" in codex_prompt, "Appending creative references preserves prior approved direction instead of replacing it")
         finally:
             if created_logo_path:
@@ -3175,6 +3176,28 @@ class IntegrationTestSuite:
             self.assert_true(applied["applied"] is True and applied["position"] == "bottom-right", "Official logo compositor reports exact deterministic placement")
             self.assert_true(composited.getpixel((540, 690)) != (255, 255, 255), "Official logo pixels are applied to the generated creative instead of being redrawn by the model")
 
+            logo_general_default = {**full_general, "logo_path": str(logo), "logo_notes": "Logo oficial protegido", "logo_usage": ""}
+            dashboard.guide_library = lambda: library(logo_general_default, [{"id": "brief-listo", "fields": brief_fields, "ready": True}])
+            dashboard.official_brand_logo_path = lambda: logo
+            default_logo = dashboard.codex_image_generate(
+                {
+                    "request": "Crea un anuncio fotorealista para la marca con producto protagonista",
+                    "purpose": "ad_creative",
+                }
+            )
+            default_logo_refs = [str(path) for path in captured["kwargs"]["reference_image_paths"]]
+            self.assert_true(str(logo) in default_logo_refs and default_logo["prompt_package"]["include_logo"] is True, "Saved official logo is attached by default for future creatives")
+            self.assert_true("pixel-level accurate" in captured["prompt"], "Default official-logo prompt explicitly asks for pixel-level accurate reproduction")
+
+            no_logo = dashboard.codex_image_generate(
+                {
+                    "request": "Crea un anuncio fotorealista sin logo, solo producto protagonista",
+                    "purpose": "ad_creative",
+                }
+            )
+            no_logo_refs = [str(path) for path in captured["kwargs"]["reference_image_paths"]]
+            self.assert_true(str(logo) not in no_logo_refs and no_logo["prompt_package"]["include_logo"] is False, "Explicit no-logo requests do not attach the saved official logo")
+
             logo_general = {**full_general, "logo_path": str(logo), "logo_notes": "Logo oficial protegido", "logo_usage": "usar siempre"}
             dashboard.guide_library = lambda: library(logo_general, [{"id": "brief-listo", "fields": brief_fields, "ready": True}])
             dashboard.official_brand_logo_path = lambda: logo
@@ -3189,7 +3212,7 @@ class IntegrationTestSuite:
             protected_prompt = captured["prompt"]
             protected_refs = [str(path) for path in captured["kwargs"]["reference_image_paths"]]
             self.assert_true(str(logo) in protected_refs and "LOGO OFICIAL PROTEGIDO" in protected_prompt, "Saved official logo is attached to Image 2 as a protected context reference")
-            self.assert_true("Reprodúcelo exactamente" in protected_prompt and "pixel-faithful" in protected_prompt and "fiel píxel por píxel" in protected_prompt and "geometría" in protected_prompt, "Image prompt explicitly requires pixel-faithful logo reproduction and locks artwork, geometry, colors, and proportions")
+            self.assert_true("Reprodúcelo exactamente" in protected_prompt and "pixel-level accurate" in protected_prompt and "pixel-faithful" in protected_prompt and "fiel píxel por píxel" in protected_prompt and "geometría" in protected_prompt, "Image prompt explicitly requires pixel-level accurate logo reproduction and locks artwork, geometry, colors, and proportions")
             self.assert_true(protected["prompt_package"]["logo_render_mode"] == "protected_context" and "official_logo" not in protected, "Protected-context logo rendering is the default and does not add a duplicate post-process logo")
 
             fallback = dashboard.codex_image_generate(

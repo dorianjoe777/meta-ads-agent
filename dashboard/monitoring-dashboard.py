@@ -4299,6 +4299,36 @@ def truthy_payload_flag(value):
     return str(value or "").strip().lower() in {"1", "true", "yes", "si", "sí", "on", "required", "require"}
 
 
+def logo_text_disables_official_use(value):
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    conditional_allow = (
+        "hasta tener archivo oficial",
+        "hasta que tenga archivo oficial",
+        "cuando exista archivo oficial",
+        "until official",
+        "until the official",
+    )
+    if any(phrase in text for phrase in conditional_allow):
+        return False
+    opt_out_phrases = (
+        "sin logo",
+        "no logo",
+        "without logo",
+        "no incluir logo",
+        "no incluyas logo",
+        "no usar logo",
+        "no uses logo",
+        "no mostrar logo",
+        "no muestres logo",
+        "logo nunca",
+        "never use logo",
+        "never show logo",
+    )
+    return any(phrase in text for phrase in opt_out_phrases)
+
+
 def creative_image_requires_brief(payload=None, purpose="ad_creative"):
     payload = payload or {}
     purpose = str(purpose or "ad_creative").strip().lower()
@@ -4343,7 +4373,7 @@ def branding_creative_readiness(require_product=True, payload=None):
         ),
     ]
     if general.get("logo_path"):
-        requirements.append(("logo_usage", bool(general.get("logo_usage")), "¿El logo oficial debe aparecer siempre, a veces o nunca en los anuncios, y en qué posición prefieres verlo?"))
+        requirements.append(("logo_usage", bool(general.get("logo_usage") or general.get("logo_path")), "¿El logo oficial debe aparecer siempre, a veces o nunca en los anuncios, y en qué posición prefieres verlo?"))
     if require_product:
         product_ready = any(bool(item.get("ready")) for item in library.get("products") or []) or payload_has_product_context(payload)
         requirements.append(("product_guide", product_ready, "¿Cuál es el producto u oferta principal, para quién es y qué problema resuelve?"))
@@ -5043,11 +5073,8 @@ def codex_image_generate(payload):
             logo_usage = str(brand_fields.get("logo_usage") or "").lower()
             include_logo = bool(
                 official_logo
-                and (
-                    "siempre" in logo_usage
-                    or "always" in logo_usage
-                    or ("logo" in request_lower and "sin logo" not in request_lower and "no logo" not in request_lower)
-                )
+                and not logo_text_disables_official_use(request_lower)
+                and not logo_text_disables_official_use(logo_usage)
             )
         else:
             include_logo = str(include_logo_value).strip().lower() in {"1", "true", "yes", "si", "sí", "on"}
@@ -5187,6 +5214,7 @@ def copy_brand_logo_from_path(source_path, logo_notes=""):
     return {
         "logo_path": relative,
         "logo_notes": str(logo_notes or "").strip() or "Logo enviado por el comprador en el chat.",
+        "logo_usage": "Usar el logo oficial guardado en futuros creativos salvo que el comprador pida explícitamente sin logo.",
     }
 
 
@@ -5213,6 +5241,9 @@ def save_brand_logo_asset(payload):
         update["logo_notes"] = "Logo oficial subido por el comprador. Usarlo como referencia visual de marca."
     if not update.get("brand_name") and not update.get("offer"):
         update["brand_name"] = "Marca principal"
+    usage_lower = str(update.get("logo_usage") or "").strip().lower()
+    if not usage_lower or any(phrase in usage_lower for phrase in ["hasta tener archivo oficial", "until official", "no usar hasta"]):
+        update["logo_usage"] = "Usar el logo oficial guardado en futuros creativos salvo que el comprador pida explícitamente sin logo."
     library = save_general_brand_memory(update)
     return {
         "saved": True,

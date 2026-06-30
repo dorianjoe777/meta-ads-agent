@@ -46,11 +46,11 @@ For `mcp_admira_codex_image_generate`, include:
 - `reference_image_paths`: safe uploaded images that must guide the result.
 - `purpose`: use `standalone_creative` for asset-only/draft images, `ad_creative` for normal ad creative, and `logo` or `brand_exploration` only when that is truly the buyer's request.
 - `asset_only`: true when the buyer wants an image/creative to keep, review, or use later without launching or sizing a Meta test yet.
-- `include_logo`: true only when the saved official logo should appear.
+- `include_logo`: true when the saved official logo should appear. If an official logo is saved, future creatives should use that exact file by default unless the buyer explicitly asks for no logo.
 - `logo_position`: approved placement such as `top-right`, `top-left`, `bottom-right`, or `bottom-left`.
 - `logo_render_mode`: normally `protected_context`; use `exact_composite` only as a fallback if a generated result visibly alters the official mark.
 
-If an official logo is included, the backend attaches the saved file as a protected reference and adds a strict prompt requiring pixel-faithful reproduction (fiel píxel por píxel). The logo's wording, spelling, letterforms, symbols, artwork, geometry, proportions, spacing, colors, texture, borders, and internal layout must not change. Never replace it with a similar mark.
+If an official logo is included, the backend attaches the saved file as a protected reference and adds a strict prompt requiring pixel-level accurate reproduction and pixel-faithful reproduction (fiel píxel por píxel). The logo's wording, spelling, letterforms, symbols, artwork, geometry, proportions, spacing, colors, texture, borders, and internal layout must not change. Never replace it with a similar mark.
 
 Inspect the returned image. If the logo is visibly changed, regenerate with `logo_render_mode: "exact_composite"`. In that fallback the model creates a logo-free base and the backend applies the exact saved asset afterward.
 
