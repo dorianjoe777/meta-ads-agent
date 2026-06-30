@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import uuid
 from math import gcd
 from pathlib import Path
@@ -109,6 +110,75 @@ AD_BRIEF_FIELD_LABELS = {
     "agent_notes": "Notas para el agente",
 }
 
+PRODUCT_FIELD_ALIASES = {
+    "name": ("Nombre del producto", "Producto", "Oferta", "Product", "Product name", "product_name", "main_offer"),
+    "url": ("URL", "Website", "Landing", "Link del producto"),
+    "price": ("Precio", "Rango de precio", "Price"),
+    "includes": ("Incluye", "Inclusiones", "Inclusions"),
+    "audience": ("Audiencia", "Publico", "Público", "Cliente ideal", "Comprador ideal", "Buyer", "Target audience", "target_audience", "Para quién es"),
+    "pain": ("Problema", "Problema que resuelve", "Dolor", "Necesidad", "Pain", "Pain point", "problem_solved"),
+    "desire": ("Beneficio", "Beneficio principal", "Deseo", "Resultado deseado", "Resultado", "Value prop", "main_benefit"),
+    "objections": ("Objeciones", "Objeciones comunes", "Objections"),
+    "show": ("Mostrar visualmente", "Debe mostrar", "Must show"),
+    "avoid": ("Evitar", "No usar", "Must avoid"),
+}
+
+AD_BRIEF_FIELD_ALIASES = {
+    "name": ("Nombre", "Nombre del anuncio", "Brief", "Brief name", "brief_name", "Ad name", "ad_name", "Title"),
+    "product_guide": ("Producto", "Product", "product", "product_name", "Oferta", "Ficha producto"),
+    "campaign_name": ("Campaign", "campaign", "Nombre de campaña"),
+    "adset_name": ("Ad set", "Adset", "adset", "Conjunto"),
+    "base_ad_name": ("Base ad name", "Existing ad", "existing_ad", "Anuncio existente"),
+    "base_ad": ("base_ad", "Lo que funciona", "What works", "Preservar", "preserve"),
+    "objective": ("Objetivo", "Goal", "Meta"),
+    "promotion": ("Promoción", "Promo", "Offer", "Idea", "Oferta puntual"),
+    "audience_slice": ("Audiencia", "Segmento", "Audience", "Target audience", "target_audience"),
+    "budget": ("Budget", "Presupuesto total"),
+    "test_budget": ("Ad test budget", "ad_test_budget", "daily_test_budget", "test_daily_budget", "Presupuesto de test"),
+    "daily_budget": ("Daily budget", "adset_daily_budget", "campaign_daily_budget", "Presupuesto diario"),
+    "variation_window": ("Ventana", "Creative window", "variation_scope", "Qué podemos probar", "Que podemos probar"),
+    "variation_axes": ("Ejes de variación", "Ejes de variacion", "Axes", "creative_axes", "variation_angles", "Perspectivas", "Angles"),
+    "variation_count": ("Variantes", "Variations", "variants", "creative_count", "number_of_variations"),
+    "concurrent_variations": ("Simultaneas", "Simultáneas", "simultaneous_variations", "simultaneous_creatives", "concurrent_creatives"),
+    "formats": ("Formato", "Formatos", "Format", "creative_format", "creative_formats"),
+    "required_assets": ("Assets", "Activos", "Required assets"),
+    "creative_hypothesis": ("Hipótesis", "Hipotesis", "Hypothesis", "hypothesis", "test_hypothesis"),
+    "success_signal": ("Señal", "Senal", "Success metric", "success_metric"),
+}
+
+PRODUCT_PAYLOAD_ALIASES = {
+    "name": ("product_name", "product", "offer", "offer_name", "main_offer"),
+    "url": ("website", "website_url", "landing_url", "link"),
+    "price": ("price_range",),
+    "includes": ("inclusions", "included"),
+    "audience": ("target_audience", "buyer", "ideal_customer", "customer", "audience_slice"),
+    "pain": ("problem", "problem_solved", "pain_point", "need", "needs"),
+    "desire": ("benefit", "benefits", "main_benefit", "desired_outcome", "value_prop"),
+    "show": ("must_show", "visual_must_show"),
+    "avoid": ("must_avoid", "visual_must_avoid"),
+}
+
+AD_BRIEF_PAYLOAD_ALIASES = {
+    "name": ("brief_name", "ad_name", "title"),
+    "product_guide": ("product", "product_name", "offer", "main_offer"),
+    "campaign_name": ("campaign",),
+    "adset_name": ("adset", "ad_set", "ad_set_name"),
+    "base_ad_name": ("existing_ad", "base_ad_title", "base_ad_label"),
+    "base_ad": ("what_works", "preserve", "base_ad_notes", "winning_ad"),
+    "promotion": ("promo", "offer_details", "specific_offer"),
+    "audience_slice": ("audience", "target_audience", "segment"),
+    "test_budget": ("budget_comfort", "ad_test_budget", "daily_test_budget", "test_daily_budget"),
+    "daily_budget": ("adset_daily_budget", "campaign_daily_budget"),
+    "variation_window": ("variation_scope", "creative_window", "window"),
+    "variation_axes": ("creative_axes", "variation_angles", "axes", "perspectives", "angles"),
+    "variation_count": ("variations", "variants", "creative_count", "number_of_variations"),
+    "concurrent_variations": ("simultaneous_variations", "simultaneous_creatives", "concurrent_creatives", "simultaneas", "simultáneas"),
+    "formats": ("format", "creative_format", "creative_formats"),
+    "required_assets": ("assets", "required_images"),
+    "creative_hypothesis": ("hypothesis", "test_hypothesis"),
+    "success_signal": ("success_metric", "metric"),
+}
+
 
 def read_text(path, fallback=""):
     try:
@@ -131,11 +201,31 @@ def clean_field(value):
     return " / ".join(part.strip() for part in str(value or "").replace("\r", "").split("\n") if part.strip())[:MAX_GUIDE_FIELD_CHARS]
 
 
-def markdown_fields(content, labels):
+def normalized_label(value):
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = text.replace("_", " ").replace("-", " ")
+    text = re.sub(r"[*_`#>\[\](){}]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip().lower()
+    return text
+
+
+def markdown_fields(content, labels, aliases=None):
     values = {}
+    label_to_key = {}
     for key, label in labels.items():
-        match = re.search(rf"^(?:-[ \t]+|\d+\.[ \t]+)?{re.escape(label)}:[ \t]*(.*)$", content or "", flags=re.MULTILINE)
-        values[key] = match.group(1).strip() if match else ""
+        values[key] = ""
+        for option in (label, *((aliases or {}).get(key, ()))):
+            label_to_key[normalized_label(option)] = key
+    for raw_line in str(content or "").splitlines():
+        line = re.sub(r"^\s*(?:[-*+]\s+|\d+[.)][ \t]+)", "", raw_line).strip()
+        if ":" not in line:
+            continue
+        raw_label, raw_value = line.split(":", 1)
+        key = label_to_key.get(normalized_label(raw_label))
+        if not key:
+            continue
+        values[key] = raw_value.strip().strip("*_` ").strip()
     return values
 
 
@@ -144,14 +234,35 @@ def general_fields(content):
 
 
 def product_fields(content):
-    return markdown_fields(content, PRODUCT_FIELD_LABELS)
+    return markdown_fields(content, PRODUCT_FIELD_LABELS, PRODUCT_FIELD_ALIASES)
 
 
 def ad_brief_fields(content):
-    return markdown_fields(content, AD_BRIEF_FIELD_LABELS)
+    return markdown_fields(content, AD_BRIEF_FIELD_LABELS, AD_BRIEF_FIELD_ALIASES)
 
 
-def form_values(payload, labels, existing=None):
+def normalize_payload_aliases(payload, aliases):
+    values = dict(payload or {})
+    for canonical, alias_keys in aliases.items():
+        if str(values.get(canonical) or "").strip():
+            continue
+        for alias in alias_keys:
+            if str(values.get(alias) or "").strip():
+                values[canonical] = values.get(alias)
+                break
+    return values
+
+
+def normalize_product_payload(payload):
+    return normalize_payload_aliases(payload, PRODUCT_PAYLOAD_ALIASES)
+
+
+def normalize_ad_brief_payload(payload):
+    return normalize_payload_aliases(payload, AD_BRIEF_PAYLOAD_ALIASES)
+
+
+def form_values(payload, labels, existing=None, aliases=None):
+    payload = normalize_payload_aliases(payload or {}, aliases or {})
     values = dict(existing or {})
     for key in labels:
         if key in payload:
@@ -438,6 +549,7 @@ def guide_library():
     product_cards = []
     for path in products[:20]:
         fields = product_fields(read_text(path))
+        product_ready = bool(fields.get("name") and fields.get("audience") and (fields.get("pain") or fields.get("desire") or fields.get("includes") or fields.get("show")))
         product_cards.append(
             {
                 "id": path.stem,
@@ -445,7 +557,7 @@ def guide_library():
                 "name": fields.get("name") or path.stem.replace("-", " ").title(),
                 "saved": True,
                 "fields": fields,
-                "ready": bool(fields.get("name") and fields.get("pain") and fields.get("audience")),
+                "ready": product_ready,
             }
         )
     brief_cards = []
@@ -697,10 +809,11 @@ def save_general_guide(payload):
 
 
 def save_product_guide(payload):
+    payload = normalize_product_payload(payload)
     existing_id = product_slug(payload.get("id")) if payload.get("id") else ""
     current_path = PRODUCT_DIR / f"{existing_id}.md" if existing_id else None
     existing = product_fields(read_text(current_path)) if current_path and current_path.exists() else {}
-    fields = form_values(payload, PRODUCT_FIELD_LABELS, existing)
+    fields = form_values(payload, PRODUCT_FIELD_LABELS, existing, PRODUCT_PAYLOAD_ALIASES)
     if not fields.get("name"):
         raise ValueError("Escribe el nombre del producto u oferta.")
     product_id = existing_id or product_slug(fields["name"])
@@ -712,7 +825,7 @@ def save_product_guide(payload):
 
 
 def save_ad_brief(payload):
-    payload = dict(payload or {})
+    payload = normalize_ad_brief_payload(payload or {})
     if not str(payload.get("test_budget") or "").strip():
         for alias in ["budget", "budget_comfort", "ad_test_budget", "daily_test_budget", "test_daily_budget"]:
             value = str(payload.get(alias) or "").strip()
@@ -728,15 +841,20 @@ def save_ad_brief(payload):
     existing_id = product_slug(payload.get("id")) if payload.get("id") else ""
     current_path = AD_BRIEF_DIR / f"{existing_id}.md" if existing_id else None
     existing = ad_brief_fields(read_text(current_path)) if current_path and current_path.exists() else {}
-    fields = form_values(payload, AD_BRIEF_FIELD_LABELS, existing)
+    fields = form_values(payload, AD_BRIEF_FIELD_LABELS, existing, AD_BRIEF_PAYLOAD_ALIASES)
     product_guide = str(fields.get("product_guide") or "").strip()
     if product_guide:
-        fields["product_guide"] = product_reference(resolve_product_guide(product_guide))
+        try:
+            fields["product_guide"] = product_reference(resolve_product_guide(product_guide))
+        except ValueError:
+            if not inline_guide_text_allowed(product_guide):
+                raise
+            fields["product_guide"] = clean_field(product_guide)
     if not fields.get("name"):
-        fallback = fields.get("promotion") or fields.get("campaign_name") or fields.get("base_ad_name")
+        fallback = fields.get("promotion") or fields.get("campaign_name") or fields.get("base_ad_name") or fields.get("base_ad")
         fields["name"] = fallback or "Brief publicitario"
     if not fields.get("variation_window"):
-        raise ValueError("Escribe la ventana creativa: que puede probar el agente sin cambiar lo esencial.")
+        fields["variation_window"] = fields.get("variation_axes") or fields.get("creative_hypothesis") or "Probar variaciones claras sin cambiar la oferta, el beneficio principal ni el destino."
     ad_brief_id = existing_id or product_slug(fields["name"])
     if ad_brief_id == "ad-brief-example":
         raise ValueError("Elige otro nombre para el brief publicitario.")
@@ -816,6 +934,44 @@ def creative_memory(product_guide="", ad_brief=""):
     }
 
 
+def inline_guide_text_allowed(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return False
+    lowered = raw.lower()
+    if raw.startswith(".") or "/" in raw or "\\" in raw or ".." in raw:
+        return False
+    if any(token in lowered for token in [".env", "license_unlock", "secret", "token", "credential"]):
+        return False
+    if re.fullmatch(r"[\w.-]+\.[A-Za-z0-9]{1,8}", raw):
+        return False
+    return True
+
+
+def product_guide_context(product_guide=""):
+    raw = str(product_guide or "").strip()
+    try:
+        path = resolve_product_guide(raw)
+    except ValueError:
+        if inline_guide_text_allowed(raw):
+            return None, clean_field(raw)
+        raise
+    return path, read_text(path) if path else ""
+
+
+def ad_brief_context(ad_brief=""):
+    raw = str(ad_brief or "").strip()
+    if not raw:
+        return None, ""
+    try:
+        path = resolve_ad_brief(raw)
+    except ValueError:
+        if inline_guide_text_allowed(raw):
+            return None, clean_field(raw)
+        raise
+    return path, read_text(path) if path else ""
+
+
 def resolve_product_guide(product_guide=""):
     """Accept only local product Markdown guides; never let model text read arbitrary files."""
     raw = str(product_guide or "").strip()
@@ -863,12 +1019,10 @@ def resolve_ad_brief(ad_brief=""):
 def build_codex_creative_prompt(product_guide="", request="", ad_brief=""):
     general = read_text(GENERAL_GUIDE)
     logo_context = brand_logo_context(general_fields(general))
-    ad_path = resolve_ad_brief(ad_brief)
-    ad_text = read_text(ad_path) if ad_path else ""
-    if not product_guide and ad_text:
+    ad_path, ad_text = ad_brief_context(ad_brief)
+    if not product_guide and ad_path and ad_text:
         product_guide = ad_brief_fields(ad_text).get("product_guide", "")
-    product_path = resolve_product_guide(product_guide)
-    product = read_text(product_path) if product_path else ""
+    product_path, product = product_guide_context(product_guide)
     return f"""Actua como estratega creativo senior para Meta Ads.
 
 Reglas de seguridad obligatorias:
@@ -1038,12 +1192,10 @@ def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", 
     general = read_text(GENERAL_GUIDE)
     general_data = general_fields(general)
     logo_context = brand_logo_context(general_data)
-    ad_path = resolve_ad_brief(ad_brief)
-    ad_text = read_text(ad_path) if ad_path else ""
-    if not product_guide and ad_text:
+    ad_path, ad_text = ad_brief_context(ad_brief)
+    if not product_guide and ad_path and ad_text:
         product_guide = ad_brief_fields(ad_text).get("product_guide", "")
-    product_path = resolve_product_guide(product_guide)
-    product_text = read_text(product_path) if product_path else ""
+    product_path, product_text = product_guide_context(product_guide)
     references = read_text(CREATIVE_REFERENCES_FILE)
     used_seed = seed or uuid.uuid4().hex
     routes = list(FIXED_IMAGE_ROUTES[:count]) if selected_mode == "fixed" else _seeded_routes(FREE_IMAGE_ROUTES, count, used_seed)
@@ -1168,8 +1320,8 @@ Reglas no negociables:
         "seed": used_seed,
         "variation_count": count,
         "general_guide": str(GENERAL_GUIDE),
-        "product_guide": product_reference(product_path) if product_path else "",
-        "ad_brief": product_reference(ad_path) if ad_path else "",
+            "product_guide": product_reference(product_path) if product_path else "",
+            "ad_brief": product_reference(ad_path) if ad_path else "",
         "request": str(request or "").strip(),
         "brand_lock": brand_lock,
         "mode_instruction": mode_instruction,

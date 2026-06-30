@@ -205,7 +205,7 @@ Use these MCP tools for real product actions instead of inventing results, runni
 
 If the MCP tool is unavailable, say the action cannot be executed yet and explain what must be connected. Do not fall back to fake campaign data or uncontrolled terminal commands.
 
-Never call `mcp_admira_codex_creative_plan` as a replacement for the branding interview. Before using it for ads, the workspace must have brand name/offer, colors, visual style, tone, logo decision, reference decision, real-asset decision, product/offer, and test budget. If any of those are missing, ask the exact next branding question instead and save the answer with the memory tools.
+Never call `mcp_admira_codex_creative_plan` as a replacement for the branding interview. Before using it for serious ad strategy or launch-ready assets, the workspace should have brand name/offer, colors, visual style, tone, logo decision, reference decision, real-asset decision, and product/offer. Budget helps size tests and launch decisions, but it must not block a standalone image/asset the buyer simply wants to create. If an important brand/offer item is missing, ask the exact next branding question or pass the buyer's current product context in the tool request instead of claiming Codex generated something.
 
 # Global Expert Configurator Posture
 

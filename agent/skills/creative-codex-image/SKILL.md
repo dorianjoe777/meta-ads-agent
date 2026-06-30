@@ -1,19 +1,19 @@
 ---
 name: creative-codex-image
-description: Produce approved raster ad creatives through Codex/Image using completed brand strategy, safe uploaded references, photorealistic real-world imagery, and exact official-logo placement. Use only after creative readiness and an ad-test brief are complete.
+description: Produce standalone creative assets or approved raster ad creatives through Codex/Image using brand/product context, safe uploaded references, photorealistic real-world imagery, and exact official-logo placement. Use a full ad-test brief only for launch-ready/test-ready ads.
 ---
 
 # Creative Codex Image Skill
 
 Use this skill when the buyer asks to produce approved raster ad images, variants, designs, static ad graphics, product showcases, or creative refreshes.
 
-Image 2 is a production capability, not the creative strategy. First read `memory/Agent onboarding plan.md` and `skills/branding-creatives-creation/SKILL.md`. If brand discovery, references/assets decisions, or the creative test brief is missing, ask the next discovery question instead of generating. Budget helps decide how many creatives to test or launch, but it does not block draft image generation.
+Image 2 is a production capability, not the creative strategy. First read `memory/Agent onboarding plan.md` and `skills/branding-creatives-creation/SKILL.md`. If the buyer wants a launch-ready ad test, make sure brand discovery, references/assets decisions, and the creative test brief are complete. If the buyer only asks for a standalone image/asset/draft to keep or review, do not block on test budget or a complete ad brief; use the current product/offer context and mark the request as `asset_only: true` or `purpose: "standalone_creative"`.
 
 ## Required Tool Path
 
-- For final ad images, always call `mcp_admira_codex_image_generate`.
+- For actual image files, always call `mcp_admira_codex_image_generate`.
 - For creative concepts or prompt planning, call `mcp_admira_codex_creative_plan` only after the branding/product readiness gate is complete.
-- If the readiness gate is missing anything, do not call either Codex tool. Ask the next missing discovery question and save the answer first.
+- If a launch-ready/test-ready readiness gate is missing anything, ask the next missing discovery question and save the answer first. For standalone draft assets, pass the buyer's current product/offer context directly instead of claiming a missing internal ficha blocks simple image generation.
 - Do not use Hermes internal image generation.
 - Do not mention FAL, Nous, or random image APIs.
 
@@ -44,7 +44,8 @@ For `mcp_admira_codex_image_generate`, include:
 - `ad_brief`: campaign/ad brief when known.
 - `reference_image_summary`: only if the buyer uploaded a useful image.
 - `reference_image_paths`: safe uploaded images that must guide the result.
-- `purpose`: normally `ad_creative`; use `logo` or `brand_exploration` only when that is truly the buyer's request.
+- `purpose`: use `standalone_creative` for asset-only/draft images, `ad_creative` for normal ad creative, and `logo` or `brand_exploration` only when that is truly the buyer's request.
+- `asset_only`: true when the buyer wants an image/creative to keep, review, or use later without launching or sizing a Meta test yet.
 - `include_logo`: true only when the saved official logo should appear.
 - `logo_position`: approved placement such as `top-right`, `top-left`, `bottom-right`, or `bottom-left`.
 - `logo_render_mode`: normally `protected_context`; use `exact_composite` only as a fallback if a generated result visibly alters the official mark.

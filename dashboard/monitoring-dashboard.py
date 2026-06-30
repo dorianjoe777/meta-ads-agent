@@ -65,6 +65,8 @@ from codex_brand_guides import (
     codex_cli_auth_status,
     ensure_brand_guides,
     guide_library,
+    normalize_ad_brief_payload,
+    normalize_product_payload,
     official_logo_prompt_lock,
     official_brand_logo_path,
     product_reference,
@@ -4279,7 +4281,43 @@ def onboarding_interview_status(profile=None):
     return "empty"
 
 
-def branding_creative_readiness(require_product=True):
+def payload_has_product_context(payload):
+    payload = normalize_product_payload(payload or {})
+    for key in ("name", "product_name", "product", "offer", "main_offer", "audience", "pain", "desire"):
+        if str(payload.get(key) or "").strip():
+            return True
+    for key in ("product_guide", "promotion", "request", "image_prompt", "prompt"):
+        value = str(payload.get(key) or "").strip()
+        if len(value) >= 8 and not value.lower().strip().startswith((".env", "license_unlock")):
+            return True
+    return False
+
+
+def truthy_payload_flag(value):
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "si", "sí", "on", "required", "require"}
+
+
+def creative_image_requires_brief(payload=None, purpose="ad_creative"):
+    payload = payload or {}
+    purpose = str(purpose or "ad_creative").strip().lower()
+    if "require_brief" in payload:
+        return truthy_payload_flag(payload.get("require_brief"))
+    if any(truthy_payload_flag(payload.get(key)) for key in ("asset_only", "draft_only", "standalone_creative")):
+        return False
+    if purpose in {"logo", "brand_exploration", "moodboard", "creative_asset", "standalone_creative", "draft_creative", "asset_only"}:
+        return False
+    if purpose in {"launch_ad", "campaign_ad", "ad_test", "live_ad", "campaign_ready", "launch_ready"}:
+        return True
+    request = str(payload.get("request") or payload.get("image_prompt") or payload.get("prompt") or "").lower()
+    launch_words = ("lanzar", "activar", "publicar campaña", "subir a meta", "ready to launch", "launch campaign", "stage campaign")
+    if any(word in request for word in launch_words):
+        return True
+    return False
+
+
+def branding_creative_readiness(require_product=True, payload=None):
     library = guide_library()
     general = (library.get("general") or {}).get("fields") or {}
     missing = []
@@ -4307,7 +4345,7 @@ def branding_creative_readiness(require_product=True):
     if general.get("logo_path"):
         requirements.append(("logo_usage", bool(general.get("logo_usage")), "¿El logo oficial debe aparecer siempre, a veces o nunca en los anuncios, y en qué posición prefieres verlo?"))
     if require_product:
-        product_ready = any(bool(item.get("ready")) for item in library.get("products") or [])
+        product_ready = any(bool(item.get("ready")) for item in library.get("products") or []) or payload_has_product_context(payload)
         requirements.append(("product_guide", product_ready, "¿Cuál es el producto u oferta principal, para quién es y qué problema resuelve?"))
     for key, ready, question in requirements:
         if not ready:
@@ -4385,7 +4423,8 @@ def creative_test_budget_value(profile, library, payload=None):
 def creative_strategy_readiness(require_brief=False, purpose="ad_creative", payload=None):
     purpose = str(purpose or "ad_creative").strip().lower()
     is_ad = purpose not in {"logo", "brand_exploration", "moodboard"}
-    branding = branding_creative_readiness(require_product=is_ad)
+    payload = normalize_ad_brief_payload(payload or {})
+    branding = branding_creative_readiness(require_product=is_ad, payload=payload)
     missing = list(branding["missing"])
     library = branding["library"]
     profile = read_json(BUSINESS_PROFILE_FILE, {})
@@ -4394,8 +4433,30 @@ def creative_strategy_readiness(require_brief=False, purpose="ad_creative", payl
     budget = creative_test_budget_value(profile, library, payload)
     if is_ad and require_brief:
         briefs = library.get("ad_briefs") or []
-        brief_fields = (briefs[-1].get("fields") or {}) if briefs else {}
-        if not briefs:
+        brief_fields = dict((briefs[-1].get("fields") or {}) if briefs else {})
+        for key, value in payload.items():
+            if key in {
+                "name",
+                "product_guide",
+                "campaign_name",
+                "base_ad_name",
+                "base_ad",
+                "objective",
+                "promotion",
+                "audience_slice",
+                "variation_window",
+                "variation_axes",
+                "variation_count",
+                "concurrent_variations",
+                "formats",
+                "creative_hypothesis",
+            } and str(value or "").strip():
+                brief_fields[key] = str(value).strip()
+        has_brief_context = bool(
+            briefs
+            or any(str(brief_fields.get(key) or "").strip() for key in ("name", "promotion", "campaign_name", "base_ad_name", "base_ad", "variation_window", "variation_axes", "creative_hypothesis"))
+        )
+        if not has_brief_context:
             missing.append({"key": "ad_brief", "question": "Antes de generar, ¿qué oferta, audiencia y acción debe probar este primer grupo de creativos?"})
         else:
             if not str(brief_fields.get("variation_count") or "").strip():
@@ -4933,7 +4994,7 @@ def codex_creative_plan(payload):
 
 
 def codex_image_generate(payload):
-    """Generate a finished raster ad creative through the Codex/Image bridge."""
+    """Generate a raster creative through the Codex/Image bridge."""
     payload = payload or {}
     product_guide = str(payload.get("product_guide") or "").strip()
     ad_brief = str(payload.get("ad_brief") or "").strip()
@@ -4943,12 +5004,13 @@ def codex_image_generate(payload):
     if not request:
         request = "Crear una imagen final para Meta Ads usando las guias de marca disponibles."
     purpose = str(payload.get("purpose") or "ad_creative").strip().lower()
-    readiness = creative_strategy_readiness(require_brief=True, purpose=purpose, payload=payload)
+    require_brief = creative_image_requires_brief(payload, purpose)
+    readiness = creative_strategy_readiness(require_brief=require_brief, purpose=purpose, payload=payload)
     if not readiness["ready"]:
         result = creative_not_ready_result("creative_production_not_ready", readiness)
         log_action(
             "codex_image_generate",
-            {"product_guide": product_guide, "ad_brief": ad_brief, "mode": mode, "ok": False, "reason": result["reason"], "missing": result["missing"]},
+            {"product_guide": product_guide, "ad_brief": ad_brief, "mode": mode, "require_brief": require_brief, "ok": False, "reason": result["reason"], "missing": result["missing"]},
             "blocked",
         )
         return result
@@ -5040,6 +5102,7 @@ def codex_image_generate(payload):
             "include_logo": bool(include_logo and official_logo),
             "logo_render_mode": logo_render_mode if include_logo and official_logo else "none",
             "logo_protection": "exact_prompt_lock" if include_logo and official_logo and logo_render_mode == "protected_context" else ("deterministic_composite" if include_logo and official_logo else "none"),
+            "requires_full_ad_brief": require_brief,
         }
         if result.get("asset_id"):
             result["preview_url"] = f"/api/creative-asset?id={urllib.parse.quote(str(result['asset_id']))}"
@@ -5051,6 +5114,7 @@ def codex_image_generate(payload):
             "product_guide": product_guide,
             "ad_brief": ad_brief,
             "mode": mode,
+            "require_brief": require_brief,
             "ok": result.get("ok"),
             "asset_id": result.get("asset_id", ""),
             "error": result.get("error", ""),
@@ -7742,6 +7806,7 @@ def handle_save_brand_guide_tool(arguments, chat_payload, tool):
 
 
 def handle_save_product_guide_tool(arguments, chat_payload, tool):
+    arguments = normalize_product_payload(arguments or {})
     if not arguments.get("name"):
         return agent_action_result(
             tool,
@@ -7795,7 +7860,8 @@ def handle_save_ads_onboarding_tool(arguments, chat_payload, tool):
 
 
 def handle_save_ad_brief_tool(arguments, chat_payload, tool):
-    if not any(arguments.get(key) for key in ["name", "promotion", "campaign_name", "base_ad_name"]):
+    arguments = normalize_ad_brief_payload(arguments or {})
+    if not any(arguments.get(key) for key in ["name", "promotion", "campaign_name", "base_ad_name", "base_ad"]):
         return agent_action_result(
             tool,
             False,
@@ -7857,7 +7923,8 @@ def handle_codex_creative_plan_tool(arguments, chat_payload, tool):
 
 def handle_codex_image_generate_tool(arguments, chat_payload, tool):
     purpose = str((arguments or {}).get("purpose") or "ad_creative").strip().lower()
-    readiness = creative_strategy_readiness(require_brief=True, purpose=purpose, payload=arguments)
+    require_brief = creative_image_requires_brief(arguments, purpose)
+    readiness = creative_strategy_readiness(require_brief=require_brief, purpose=purpose, payload=arguments)
     if not readiness["ready"]:
         return agent_action_result(
             tool,

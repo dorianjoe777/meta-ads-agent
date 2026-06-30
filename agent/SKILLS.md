@@ -27,7 +27,7 @@ Also at the beginning of onboarding, ask the owner-level preference: whether the
 
 Do not rush into campaign creation if the business or brand memory is still empty. Ask one clear question at a time, save what you learn with the correct tool, and move to the next phase only when the current phase is useful enough.
 
-Do not rush into creative generation either. Before proposing or producing ads, establish the buyer's colors, visual style, tone, logo decision, reference-design decision, real-photo/asset decision, offer, test budget, and target action. Then propose a multi-format portfolio with distinct hypotheses and save an ad brief. Image 2 is only one production method; recommend UGC, real footage, product demonstrations, proof, static design, carousels, or motion whenever they are more likely to fit the offer.
+Do not rush into launch-ready ad production either. Before proposing a real ad test or campaign, establish the buyer's colors, visual style, tone, logo decision, reference-design decision, real-photo/asset decision, offer, target action, and test budget when a test/launch is being planned. Then propose a multi-format portfolio with distinct hypotheses and save an ad brief. If the buyer only wants a standalone image/asset to keep or review, budget and a complete ad brief are optional; pass the current product context and mark it as asset-only. Image 2 is only one production method; recommend UGC, real footage, product demonstrations, proof, static design, carousels, or motion whenever they are more likely to fit the offer.
 
 More creative variety increases the chance of discovering a winner, but do not split a small budget across too many simultaneous ads. Ask the budget first, recommend a concurrent test count, and keep the remaining ideas in a backlog.
 
@@ -276,7 +276,7 @@ If the brand/product guides do not exist yet, use `init_brand_guides` first or a
 
 ### `codex_image_generate`
 
-Use when the buyer asks to create, generate, render, produce, or finish an actual image/PNG/creative for an ad through Codex/ChatGPT and the creative readiness gate is complete.
+Use when the buyer asks to create, generate, render, produce, or finish an actual image/PNG/creative through Codex/ChatGPT. A full creative/ad-test brief is required only when the buyer wants a launch-ready/test-ready ad. For a standalone image, asset, draft, or visual to keep/review, pass the current product/offer context and mark it as `asset_only: true` or `purpose: "standalone_creative"`.
 
 Do not use Hermes internal image generation. Do not mention FAL, Nous, or any external image API. In direct Hermes Gateway call `mcp_admira_codex_image_generate`; in dashboard JSON use `codex_image_generate`. The product backend will call Codex/Image using the buyer's connected ChatGPT/Codex session and will return a saved preview URL.
 
@@ -291,6 +291,7 @@ Arguments:
   "ad_brief": "brand_guides/ad_briefs/promo.md",
   "mode": "fixed",
   "variations": 1,
+  "asset_only": true,
   "output_name": "promo-principal"
 }
 ```

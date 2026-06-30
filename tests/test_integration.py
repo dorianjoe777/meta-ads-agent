@@ -3118,11 +3118,23 @@ class IntegrationTestSuite:
 
             dashboard.guide_library = lambda: library(full_general)
             dashboard.read_json = lambda path, default=None: ({} if path == dashboard.BUSINESS_PROFILE_FILE else original_read_json(path, default))
-            no_brief = dashboard.execute_agent_tool(
-                {"tool": "codex_image_generate", "arguments": {"request": "Crea un anuncio final", "purpose": "ad_creative"}},
+            standalone_no_brief = dashboard.execute_agent_tool(
+                {
+                    "tool": "codex_image_generate",
+                    "arguments": {
+                        "request": "Crea una imagen suelta para revisar del proyecto de vivienda TRIVA, familiar y moderna.",
+                        "product_guide": "Proyecto de vivienda TRIVA para compradores en Medellín con financiación disponible.",
+                        "asset_only": True,
+                    },
+                },
                 {"language": "es"},
             )
-            self.assert_true(no_brief["blocked"] is True and no_brief["result"]["readiness"]["missing"][0]["key"] == "ad_brief", "Final image production requires a saved creative test brief")
+            self.assert_true(standalone_no_brief["executed"] is True and standalone_no_brief["result"]["prompt_package"]["requires_full_ad_brief"] is False, "Standalone creative images do not require a saved ad-test brief")
+            no_brief = dashboard.execute_agent_tool(
+                {"tool": "codex_image_generate", "arguments": {"request": "Crea un anuncio listo para lanzar", "purpose": "launch_ad", "require_brief": True}},
+                {"language": "es"},
+            )
+            self.assert_true(no_brief["blocked"] is True and no_brief["result"]["readiness"]["missing"][0]["key"] == "ad_brief", "Launch-ready image production still requires a saved creative test brief")
 
             brief_fields = {
                 "name": "Brief listo",
@@ -3200,6 +3212,92 @@ class IntegrationTestSuite:
             dashboard.load_config = original_load_config
             dashboard.official_brand_logo_path = original_official_logo
             shutil.rmtree(test_dir, ignore_errors=True)
+
+    def test_creative_memory_accepts_agent_aliases_for_product_and_brief(self):
+        """Test natural agent field names save structured creative readiness fields."""
+        print("\nTesting Creative Memory Agent Alias Compatibility...")
+
+        test_root = Path(tempfile.mkdtemp(prefix="creative_aliases_"))
+        brand_dir = test_root / "brand_guides"
+        product_dir = brand_dir / "products"
+        brief_dir = brand_dir / "ad_briefs"
+        data_dir = test_root / "dashboard" / "data"
+        original = {
+            "ROOT_DIR": codex_brand_guides.ROOT_DIR,
+            "BRAND_DIR": codex_brand_guides.BRAND_DIR,
+            "PRODUCT_DIR": codex_brand_guides.PRODUCT_DIR,
+            "AD_BRIEF_DIR": codex_brand_guides.AD_BRIEF_DIR,
+            "BRAND_ASSET_DIR": codex_brand_guides.BRAND_ASSET_DIR,
+            "GENERAL_GUIDE": codex_brand_guides.GENERAL_GUIDE,
+            "CREATIVE_REFERENCES_FILE": codex_brand_guides.CREATIVE_REFERENCES_FILE,
+            "BUSINESS_PROFILE_FILE": codex_brand_guides.BUSINESS_PROFILE_FILE,
+        }
+        try:
+            product_dir.mkdir(parents=True, exist_ok=True)
+            brief_dir.mkdir(parents=True, exist_ok=True)
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "business_profile.json").write_text("{}", encoding="utf-8")
+            codex_brand_guides.ROOT_DIR = test_root
+            codex_brand_guides.BRAND_DIR = brand_dir
+            codex_brand_guides.PRODUCT_DIR = product_dir
+            codex_brand_guides.AD_BRIEF_DIR = brief_dir
+            codex_brand_guides.BRAND_ASSET_DIR = brand_dir / "assets"
+            codex_brand_guides.GENERAL_GUIDE = brand_dir / "general_branding.md"
+            codex_brand_guides.CREATIVE_REFERENCES_FILE = brand_dir / "creative_references.md"
+            codex_brand_guides.BUSINESS_PROFILE_FILE = data_dir / "business_profile.json"
+            codex_brand_guides.save_general_guide(
+                {
+                    "brand_name": "Guerrero Inmobiliaria",
+                    "offer": "Proyectos de vivienda",
+                    "colors": "azul, rojo y blanco",
+                    "visual_style": "familiar, moderno y realista",
+                    "tone": "claro, cercano, confiable",
+                    "logo_notes": "logo oficial cargado",
+                    "references": "familias reales, vivienda moderna",
+                    "asset_notes": "renders y fotos realistas del proyecto",
+                }
+            )
+            product = codex_brand_guides.save_product_guide(
+                {
+                    "product_name": "TRIVA",
+                    "target_audience": "compradores de vivienda en Medellín",
+                    "problem": "dar el paso hacia vivienda propia con acompañamiento",
+                    "benefit": "financiación disponible en un proyecto moderno en Palmas de Medellín",
+                    "must_show": "personas o familias imaginando su nuevo hogar",
+                }
+            )
+            brief = codex_brand_guides.save_ad_brief(
+                {
+                    "brief_name": "TRIVA compradores vivienda",
+                    "product_name": "TRIVA",
+                    "campaign": "Proyecto TRIVA Palmas",
+                    "base_ad": "proyecto de vivienda para compradores con financiación disponible",
+                    "budget": "COP 40.000/día",
+                    "variants": 2,
+                    "simultáneas": 2,
+                    "creative_formats": "imagen estática realista para Meta Ads",
+                    "variation_axes": "ángulo familiar vs acompañamiento confiable",
+                    "hypothesis": "probar si el deseo familiar supera la confianza en el acompañamiento",
+                }
+            )
+            library = codex_brand_guides.guide_library()
+            product_card = next(item for item in library["products"] if item["id"] == "triva")
+            brief_card = next(item for item in library["ad_briefs"] if item["id"] == "triva-compradores-vivienda")
+            self.assert_true(product["guide"] == "brand_guides/products/triva.md" and product_card["ready"], "Product aliases save a ready product guide")
+            self.assert_true(product_card["fields"]["name"] == "TRIVA" and "Medellín" in product_card["fields"]["audience"], "Product parser reads aliased name and audience fields")
+            self.assert_true(brief["ad_brief"] == "brand_guides/ad_briefs/triva-compradores-vivienda.md", "Brief aliases save the expected ad brief file")
+            self.assert_true(brief_card["fields"]["campaign_name"] == "Proyecto TRIVA Palmas", "Brief parser maps campaign alias to campaign_name")
+            self.assert_true(brief_card["fields"]["variation_count"] == "2" and brief_card["fields"]["concurrent_variations"] == "2", "Brief parser maps variants and simultaneous creative aliases")
+            self.assert_true(brief_card["fields"]["formats"] == "imagen estática realista para Meta Ads", "Brief parser maps creative_formats to formats")
+            self.assert_true("acompañamiento" in brief_card["fields"]["variation_axes"] and brief_card["fields"]["creative_hypothesis"], "Brief parser keeps variation axes and hypothesis")
+
+            dashboard = load_dashboard_module()
+            readiness = dashboard.creative_strategy_readiness(require_brief=True, purpose="ad_creative")
+            self.assert_true(readiness["ready"] is True and readiness["budget"] == "COP 40.000/día", "Readiness recognizes saved aliased product and brief fields")
+        finally:
+            for key, value in original.items():
+                setattr(codex_brand_guides, key, value)
+            shutil.rmtree(test_root, ignore_errors=True)
 
     def test_audience_builder_readiness(self):
         """Test audience builder creates safe targeting strategy and lookalike readiness."""
@@ -6079,6 +6177,7 @@ class IntegrationTestSuite:
             self.test_brand_memory_documents_feed_creative_generation,
             self.test_agent_onboarding_phase_tools_create_durable_memory,
             self.test_creative_strategy_gate_and_exact_logo_pipeline,
+            self.test_creative_memory_accepts_agent_aliases_for_product_and_brief,
             self.test_audience_builder_readiness,
             self.test_chat_audience_tool,
             self.test_meta_targeting_search_normalizes_options,
