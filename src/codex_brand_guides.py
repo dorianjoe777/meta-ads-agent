@@ -442,14 +442,24 @@ def official_brand_logo_path(fields=None):
     return candidate
 
 
-def safe_creative_reference_paths(paths):
-    """Allow only buyer uploads, generated creative assets, and saved brand assets."""
-    allowed_roots = (
+def creative_reference_allowed_roots():
+    """Allow only buyer uploads, generated creative assets, saved brand assets, and Hermes image cache."""
+    roots = [
         BRAND_ASSET_DIR,
         ROOT_DIR / "output",
         ROOT_DIR / "dashboard" / "data" / "uploads",
         ROOT_DIR / "dashboard" / "data" / "hermes-workspace" / "current" / "uploads",
-    )
+        ROOT_DIR / "dashboard" / "data" / "hermes-home" / "cache" / "images",
+    ]
+    hermes_home = str(os.environ.get("HERMES_HOME") or "").strip()
+    if hermes_home:
+        roots.append(Path(hermes_home).expanduser() / "cache" / "images")
+    return roots
+
+
+def safe_creative_reference_paths(paths):
+    """Allow only buyer uploads, generated creative assets, saved brand assets, and Hermes image cache."""
+    allowed_roots = creative_reference_allowed_roots()
     safe = []
     for raw in paths or []:
         try:

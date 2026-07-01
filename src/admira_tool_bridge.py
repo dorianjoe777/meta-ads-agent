@@ -15,6 +15,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from agent_chat import account_context  # noqa: E402
+from hermes_bridge import safe_image_paths  # noqa: E402
 from security import redact_payload  # noqa: E402
 
 
@@ -133,10 +134,8 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
 
     dashboard = load_dashboard()
     payload = chat_payload(channel, language)
-    reference_paths = args.get("reference_image_paths") or args.get("image_paths") or []
-    if isinstance(reference_paths, str):
-        reference_paths = [reference_paths]
-    if isinstance(reference_paths, list):
+    reference_paths = safe_image_paths(args)
+    if reference_paths:
         payload["image_paths"] = reference_paths[:4]
 
     if tool == "admira_get_real_meta_context":

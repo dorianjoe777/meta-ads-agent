@@ -35,11 +35,26 @@ BRAND_GUIDES_DIR = ROOT_DIR / "brand_guides"
 AGENT_SKILLS_DIR = ROOT_DIR / "agent" / "skills"
 HERMES_WORKSPACE_DIR = DATA_DIR / "hermes-workspace" / "current"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
-ALLOWED_IMAGE_DIRS = (
+BASE_ALLOWED_IMAGE_DIRS = (
     ROOT_DIR / "output",
     ROOT_DIR / "dashboard" / "data" / "uploads",
-    HERMES_WORKSPACE_DIR / "uploads",
+    ROOT_DIR / "dashboard" / "data" / "hermes-home" / "cache" / "images",
 )
+IMAGE_PATH_TEXT_KEYS = {
+    "request",
+    "prompt",
+    "image_prompt",
+    "reference_image_summary",
+    "message",
+    "text",
+    "description",
+    "image_path",
+    "photo_path",
+    "asset_path",
+    "real_photo_path",
+    "reference_image_path",
+}
+EMBEDDED_IMAGE_PATH_RE = re.compile(r"(?P<path>(?:~|/|\.{1,2}/)?(?:[^\s\"'<>|]+/)+[^\s\"'<>|]+\.(?:jpe?g|png|webp|gif))", re.IGNORECASE)
 MEMORY_TEXT_LIMIT = 14000
 MEMORY_ITEM_LIMIT = 8
 BLOCKED_MEMORY_TOKENS = {".env", "license_unlock.json"}
@@ -76,17 +91,60 @@ def split_csv(value):
     return [item.strip() for item in str(value or "").split(",") if item.strip()]
 
 
+def allowed_image_dirs():
+    roots = [*BASE_ALLOWED_IMAGE_DIRS, HERMES_WORKSPACE_DIR / "uploads"]
+    hermes_home = str(os.environ.get("HERMES_HOME") or "").strip()
+    if hermes_home:
+        roots.append(Path(hermes_home).expanduser() / "cache" / "images")
+    return roots
+
+
+def embedded_image_paths_from_text(value):
+    paths = []
+    for match in EMBEDDED_IMAGE_PATH_RE.finditer(str(value or "")):
+        candidate = match.group("path").strip().rstrip(").,;:]}'\"")
+        if candidate:
+            paths.append(candidate)
+    return paths
+
+
+def image_path_candidates(value, scan_all_strings=False):
+    candidates = []
+    if isinstance(value, dict):
+        for key in ("image_paths", "reference_image_paths", "images", "files"):
+            candidates.extend(image_path_candidates(value.get(key), scan_all_strings=True))
+        for key, item in value.items():
+            lowered = str(key or "").strip().lower()
+            should_scan = scan_all_strings or lowered in IMAGE_PATH_TEXT_KEYS or "image" in lowered or "photo" in lowered
+            if should_scan:
+                candidates.extend(image_path_candidates(item, scan_all_strings=True))
+        return candidates
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            candidates.extend(image_path_candidates(item, scan_all_strings=scan_all_strings))
+        return candidates
+    if isinstance(value, str):
+        text = value.strip()
+        if text:
+            candidates.append(text)
+            candidates.extend(embedded_image_paths_from_text(text))
+    return candidates
+
+
 def safe_image_paths(payload):
     safe = []
-    for raw_path in payload.get("image_paths") or []:
+    seen = set()
+    for raw_path in image_path_candidates(payload):
         try:
             path = Path(str(raw_path)).expanduser().resolve()
         except (OSError, RuntimeError):
             continue
+        if str(path) in seen:
+            continue
         if path.suffix.lower() not in IMAGE_EXTENSIONS or not path.exists() or not path.is_file():
             continue
         allowed = False
-        for root in ALLOWED_IMAGE_DIRS:
+        for root in allowed_image_dirs():
             try:
                 path.relative_to(root.resolve())
                 allowed = True
@@ -94,6 +152,7 @@ def safe_image_paths(payload):
             except ValueError:
                 continue
         if allowed:
+            seen.add(str(path))
             safe.append(str(path))
     return safe[:4]
 

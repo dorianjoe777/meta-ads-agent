@@ -5144,7 +5144,7 @@ def codex_image_generate(payload):
         )
         if payload.get("reference_image_summary"):
             image_prompt += f"\nReferencia visual descrita por el agente: {payload.get('reference_image_summary')}\n"
-        reference_paths = safe_image_paths({"image_paths": payload.get("reference_image_paths") or []})
+        reference_paths = safe_image_paths(payload)
         official_logo = official_brand_logo_path()
         brand_fields = (guide_library().get("general") or {}).get("fields") or {}
         include_logo_value = payload.get("include_logo")
