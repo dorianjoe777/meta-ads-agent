@@ -1319,6 +1319,10 @@ export default async function handler(request, response) {
       startCloudProgressPolling();
       setStatus('Pega tu token de DigitalOcean y revisare el servidor automaticamente.');
     }
+    function shouldAskForFreshDigitalOceanToken(data){
+      const state = String(data && data.status || '');
+      return state === 'digitalocean_token_required' || state === 'refresh_access_failed' || state === 'delete_cloud_failed';
+    }
     async function attachDropletIp(event){
       event.preventDefault();
       const input = document.getElementById('dropletIpInput');
@@ -1348,6 +1352,7 @@ export default async function handler(request, response) {
           digitalocean_token: typedToken
         });
         if(!data.valid){
+          if(shouldAskForFreshDigitalOceanToken(data)) focusDigitalOceanToken();
           setStatus(data.detail || 'No pude actualizar el acceso. Pega tu token de DigitalOcean y vuelve a intentar.', true);
           return;
         }
@@ -1383,7 +1388,7 @@ export default async function handler(request, response) {
         });
         if(!data.valid){
           if(pendingWindow) pendingWindow.close();
-          if(data.status === 'digitalocean_token_required') focusDigitalOceanToken();
+          if(shouldAskForFreshDigitalOceanToken(data)) focusDigitalOceanToken();
           setStatus(data.detail || 'No pude actualizar el acceso. Pega tu token de DigitalOcean y vuelve a intentar.', true);
           return;
         }
@@ -1479,7 +1484,7 @@ export default async function handler(request, response) {
         });
         if(expectedVersion !== cloudStateVersion) return;
         if(!data.valid){
-          if(data.status === 'digitalocean_token_required') focusDigitalOceanToken();
+          if(shouldAskForFreshDigitalOceanToken(data)) focusDigitalOceanToken();
           setStatus(data.detail || 'No pude borrar ese servidor.', true);
           return;
         }
