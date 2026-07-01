@@ -1382,6 +1382,15 @@ export default async function handler(request, response) {
           digitalocean_token: typedToken
         });
         if(!data.valid){
+          if(fallbackUrl){
+            if(pendingWindow){
+              pendingWindow.location.href = fallbackUrl;
+            }else{
+              window.open(fallbackUrl, '_blank', 'noreferrer');
+            }
+            setStatus((data.detail || 'No pude actualizar el acceso desde el portal.') + ' Estoy intentando abrir con el acceso seguro del servidor.');
+            return;
+          }
           if(pendingWindow) pendingWindow.close();
           if(data.status === 'digitalocean_token_required') focusDigitalOceanToken();
           setStatus(data.detail || 'No pude actualizar el acceso. Pega tu token de DigitalOcean y vuelve a intentar.', true);
@@ -1389,7 +1398,7 @@ export default async function handler(request, response) {
         }
         renderCloudResult(data);
         renderInstallState({ cloud_installation: data, install_state: { cloud: { installed:true, status:data.status || 'ready', dashboard_available:Boolean(data.ready || data.dashboard_url), progress:data.progress || 100 }, local: {} } });
-        const directUrl = safeHttpUrl(data.dashboard_url || data.dashboard_https_url || data.dashboard_http_url || fallbackUrl || data.cloud_open_url || '');
+        const directUrl = safeHttpUrl(data.cloud_open_url || fallbackUrl || data.dashboard_url || data.dashboard_https_url || data.dashboard_http_url || '');
         if(!directUrl){
           if(pendingWindow) pendingWindow.close();
           setStatus('Acceso actualizado, pero todavia no tengo enlace de dashboard. Espera unos segundos y vuelve a intentar.', true);
@@ -1403,6 +1412,15 @@ export default async function handler(request, response) {
         }
         startCloudProgressPolling();
       }catch(error){
+        if(fallbackUrl){
+          if(pendingWindow){
+            pendingWindow.location.href = fallbackUrl;
+          }else{
+            window.open(fallbackUrl, '_blank', 'noreferrer');
+          }
+          setStatus((error.message || 'No pude preparar el acceso desde el portal.') + ' Estoy intentando abrir con el acceso seguro del servidor.');
+          return;
+        }
         if(pendingWindow) pendingWindow.close();
         setStatus(error.message || 'No pude preparar el acceso de esta red.', true);
       }finally{
