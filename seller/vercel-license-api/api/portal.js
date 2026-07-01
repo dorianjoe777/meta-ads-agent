@@ -650,6 +650,9 @@ export default async function handler(request, response) {
       padding-top:18px;
     }
     .cloud.active .cloud-form{display:block}
+    .cloud.recovery .cloud-intro,
+    .cloud.recovery .cloud-create-only,
+    .cloud.recovery .cloud-link-button{display:none}
     .cloud-grid{
       display:grid;
       grid-template-columns:repeat(2,minmax(0,1fr));
@@ -861,7 +864,7 @@ export default async function handler(request, response) {
               </div>
             </div>
             <div class="cloud-grid">
-              <div class="wide">
+              <div class="wide cloud-token-field">
                 <div class="cloud-field-head">
                   <label for="digitalOceanToken">Token de DigitalOcean</label>
                   <a class="cloud-token-cta" href="https://cloud.digitalocean.com/account/api/tokens" target="_blank" rel="noreferrer">Haz clic aqui para obtener el token</a>
@@ -869,7 +872,7 @@ export default async function handler(request, response) {
                 <input id="digitalOceanToken" type="password" autocomplete="off" placeholder="Pega aqui tu token de DigitalOcean" required />
                 <div class="helper" id="cloudTokenSavedStatus">Lo usamos para crear el servidor, instalar el producto y configurar el acceso seguro. En DigitalOcean crea un token sin fecha de vencimiento, o con una duracion larga, para que el servidor pueda recuperar acceso si tu IP cambia.</div>
               </div>
-              <div class="wide">
+              <div class="wide cloud-create-only">
                 <label for="sshPublicKey">Llave publica SSH</label>
                 <div class="cloud-safe-note">
                   <strong>Por que pedimos esto:</strong> la llave SSH hace que solo tu computador pueda entrar por la puerta tecnica del servidor. La parte privada queda guardada en tu PC y no se pega aqui. Aqui solo pegas la parte publica, que es segura de compartir y sirve para que DigitalOcean reconozca tu computador cuando intente acceder al servidor.
@@ -881,7 +884,7 @@ export default async function handler(request, response) {
                   <code>ssh-keygen -t ed25519 -C "admiro-ai" -f ~/.ssh/admiro_ai && cat ~/.ssh/admiro_ai.pub</code>
                 </div>
               </div>
-              <div>
+              <div class="cloud-create-only">
                 <label for="cloudRegion">Region</label>
                 <select id="cloudRegion">
                   <option value="nyc3">Nueva York</option>
@@ -890,7 +893,7 @@ export default async function handler(request, response) {
                   <option value="ams3">Amsterdam</option>
                 </select>
               </div>
-              <div>
+              <div class="cloud-create-only">
                 <label for="cloudSize">Tamano del servidor</label>
                 <select id="cloudSize">
                   <option value="s-1vcpu-1gb">Basico recomendado</option>
@@ -931,6 +934,7 @@ export default async function handler(request, response) {
     let cloudDisplayedProgress = 0;
     let cloudResetInProgress = false;
     let cloudDeleteInProgress = false;
+    let cloudHasExistingInstall = false;
 
     function setStatus(message, isError = false){
       statusBox.textContent = message || '';
@@ -945,6 +949,38 @@ export default async function handler(request, response) {
         if(url.protocol === 'http:' || url.protocol === 'https:') return url.href;
       } catch(_err) {}
       return '';
+    }
+    function showPendingWindowMessage(pendingWindow, title, detail){
+      if(!pendingWindow) return;
+      try{
+        pendingWindow.document.body.innerHTML = '<main style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:560px;margin:0 auto;padding:32px;line-height:1.45;color:#172036"><h1 style="font-size:22px;margin:0 0 10px">'+escapeHtml(title || 'No pude preparar el acceso')+'</h1><p style="margin:0 0 14px;color:#5e6477">'+escapeHtml(detail || 'Vuelve al portal, pega tu token actual de DigitalOcean y vuelve a intentar.')+'</p><p style="margin:0;color:#5e6477">Puedes cerrar esta pestaña cuando quieras.</p></main>';
+      }catch(_err){}
+    }
+    function setCloudFormMode(mode){
+      const recovery = mode === 'recovery';
+      cloudForm.dataset.mode = recovery ? 'recovery' : 'create';
+      cloudInstall.classList.toggle('recovery', recovery);
+      const title = cloudInstall.querySelector('.cloud-top h3');
+      const copy = cloudInstall.querySelector('.cloud-top p');
+      const button = document.getElementById('cloudButton');
+      const tokenInput = document.getElementById('digitalOceanToken');
+      const sshInput = document.getElementById('sshPublicKey');
+      const helper = document.getElementById('cloudTokenSavedStatus');
+      if(title) title.textContent = recovery ? 'Recuperar acceso cloud' : 'Instalar en la nube';
+      if(copy) copy.textContent = recovery
+        ? 'Tu servidor ya existe. Pega tu token actual de DigitalOcean solo para autorizar esta red y abrir el dashboard; no se creara otro Droplet.'
+        : 'Para dejar el manager encendido aunque tu PC este apagado. Recomendamos DigitalOcean porque es un servicio cloud confiable, estable y sencillo de pagar.';
+      if(button) button.textContent = recovery ? 'Actualizar acceso de esta red' : 'Crear mi servidor';
+      if(tokenInput) tokenInput.required = true;
+      if(sshInput) sshInput.required = !recovery;
+      if(helper) helper.textContent = recovery
+        ? 'Modo recuperacion: no crea servidores nuevos. Usa este token solo para actualizar el firewall del Droplet existente y guardar el token actual cifrado si funciona.'
+        : 'Lo usamos para crear el servidor, instalar el producto y configurar el acceso seguro. En DigitalOcean crea un token sin fecha de vencimiento, o con una duracion larga, para que el servidor pueda recuperar acceso si tu IP cambia.';
+      if(cloudInstall.classList.contains('active')) {
+        cloudToggle.textContent = recovery ? 'Ocultar recuperacion cloud' : 'Ocultar instalacion cloud';
+      } else {
+        cloudToggle.textContent = recovery ? 'Recuperar acceso cloud' : 'Instalar en DigitalOcean';
+      }
     }
     function buyerCopy(value){
       return String(value || '')
@@ -1172,6 +1208,8 @@ export default async function handler(request, response) {
       const cloudInstallation = data.cloud_installation || {};
       const openUrl = safeHttpUrl(cloudInstallation.cloud_open_url || cloudInstallation.dashboard_url || '');
       const hasCloudRecord = Boolean(cloud.installed || cloudInstallation.droplet_id || cloudInstallation.provider || cloudInstallation.cloud_open_url || cloudInstallation.dashboard_url || cloudInstallation.firewall_id);
+      cloudHasExistingInstall = hasCloudRecord;
+      setCloudFormMode(hasCloudRecord ? 'recovery' : 'create');
       if(hasCloudRecord){
         const ready = Boolean(openUrl && (cloud.dashboard_available || cloud.status === 'ready' || cloudInstallation.ready));
         const failed = Boolean(cloud.status === 'failed' || cloudInstallation.status === 'failed' || cloudInstallation.install_status === 'failed' || cloudInstallation.failed);
@@ -1311,13 +1349,14 @@ export default async function handler(request, response) {
       '</div>';
     }
     function focusDigitalOceanToken(){
+      setCloudFormMode(cloudHasExistingInstall ? 'recovery' : 'create');
       cloudInstall.classList.add('active');
-      cloudToggle.textContent = 'Ocultar instalacion cloud';
+      cloudToggle.textContent = cloudHasExistingInstall ? 'Ocultar recuperacion cloud' : 'Ocultar instalacion cloud';
       cloudInstall.scrollIntoView({behavior:'smooth', block:'start'});
       const tokenInput = document.getElementById('digitalOceanToken');
       if(tokenInput) tokenInput.focus();
       startCloudProgressPolling();
-      setStatus('Pega tu token de DigitalOcean y revisare el servidor automaticamente.');
+      setStatus(cloudHasExistingInstall ? 'Pega tu token actual de DigitalOcean para recuperar el acceso al servidor existente.' : 'Pega tu token de DigitalOcean y revisare el servidor automaticamente.');
     }
     function shouldAskForFreshDigitalOceanToken(data){
       const state = String(data && data.status || '');
@@ -1387,7 +1426,7 @@ export default async function handler(request, response) {
           digitalocean_token: typedToken
         });
         if(!data.valid){
-          if(pendingWindow) pendingWindow.close();
+          showPendingWindowMessage(pendingWindow, 'No pude preparar el acceso', data.detail || 'Vuelve al portal, pega tu token actual de DigitalOcean y vuelve a intentar.');
           if(shouldAskForFreshDigitalOceanToken(data)) focusDigitalOceanToken();
           setStatus(data.detail || 'No pude actualizar el acceso. Pega tu token de DigitalOcean y vuelve a intentar.', true);
           return;
@@ -1396,7 +1435,7 @@ export default async function handler(request, response) {
         renderInstallState({ cloud_installation: data, install_state: { cloud: { installed:true, status:data.status || 'ready', dashboard_available:Boolean(data.ready || data.dashboard_url), progress:data.progress || 100 }, local: {} } });
         const directUrl = safeHttpUrl(data.dashboard_url || data.dashboard_https_url || data.dashboard_http_url || data.cloud_open_url || fallbackUrl || '');
         if(!directUrl){
-          if(pendingWindow) pendingWindow.close();
+          showPendingWindowMessage(pendingWindow, 'Dashboard aun no disponible', 'Acceso actualizado, pero todavia no tengo enlace de dashboard. Vuelve al portal e intenta de nuevo en unos segundos.');
           setStatus('Acceso actualizado, pero todavia no tengo enlace de dashboard. Espera unos segundos y vuelve a intentar.', true);
           return;
         }
@@ -1580,10 +1619,10 @@ export default async function handler(request, response) {
     cloudToggle.addEventListener('click', () => {
       cloudInstall.classList.toggle('active');
       if(cloudInstall.classList.contains('active')){
-        cloudToggle.textContent = 'Ocultar instalacion cloud';
+        setCloudFormMode(cloudHasExistingInstall ? 'recovery' : 'create');
         document.getElementById('digitalOceanToken').focus();
       }else{
-        cloudToggle.textContent = 'Instalar en DigitalOcean';
+        setCloudFormMode(cloudHasExistingInstall ? 'recovery' : 'create');
       }
     });
     document.addEventListener('click', (event) => {
@@ -1606,6 +1645,33 @@ export default async function handler(request, response) {
       const button = document.getElementById('cloudButton');
       button.disabled = true;
       const original = button.textContent;
+      if(cloudForm.dataset.mode === 'recovery'){
+        button.textContent = 'Actualizando acceso...';
+        setStatus('Actualizando acceso del servidor existente...');
+        try{
+          const digitalOceanToken = document.getElementById('digitalOceanToken').value.trim();
+          cloudRecoveryToken = digitalOceanToken;
+          const data = await postJson('/api/portal/cloud/digitalocean', {
+            portal_token: portalToken,
+            action: 'refresh_access',
+            digitalocean_token: digitalOceanToken
+          });
+          if(!data.valid){
+            setStatus(data.detail || 'No pude actualizar el acceso. Revisa el token y vuelve a intentar.', true);
+            return;
+          }
+          renderCloudResult(data);
+          renderInstallState({ cloud_installation: data, install_state: { cloud: { installed:true, status:data.status || 'ready', dashboard_available:Boolean(data.ready || data.dashboard_url), progress:data.progress || 100 }, local: {} } });
+          startCloudProgressPolling();
+          setStatus(data.detail || 'Acceso actualizado. Ahora puedes abrir el dashboard.');
+        }catch(error){
+          setStatus(error.message || 'No pude actualizar el acceso de esta red.', true);
+        }finally{
+          button.textContent = original;
+          button.disabled = false;
+        }
+        return;
+      }
       button.textContent = 'Creando servidor...';
       const expectedVersion = ++cloudStateVersion;
       startCloudCreatePreview();
