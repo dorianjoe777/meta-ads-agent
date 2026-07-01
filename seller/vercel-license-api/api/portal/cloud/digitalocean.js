@@ -76,6 +76,8 @@ async function doRequest(token, path, { method = "GET", body = null } = {}) {
     const error = new Error(`${id}: ${message}`);
     error.statusCode = upstream.status;
     error.doStatus = String(id);
+    error.doMethod = method;
+    error.doPath = path;
     throw error;
   }
   return data;
@@ -356,7 +358,11 @@ function sourceZipAsset(release = {}) {
 
 function digitalOceanErrorDetail(error) {
   const status = String(error?.doStatus || "");
-  if (status.includes("unauthorized") || error?.statusCode === 401 || error?.statusCode === 403) {
+  const statusLower = status.toLowerCase();
+  if (statusLower.includes("forbidden") || error?.statusCode === 403) {
+    return "El token de DigitalOcean esta activo, pero no tiene permiso para modificar el firewall. Crea o pega un token con permiso de escritura para Firewalls y Droplets, y vuelve a abrir el dashboard.";
+  }
+  if (statusLower.includes("unauthorized") || error?.statusCode === 401) {
     return "DigitalOcean no acepto ese token. Revisa que este activo y tenga permisos para Droplets, Firewalls, Tags y SSH Keys.";
   }
   if (status.includes("unprocessable") || error?.statusCode === 422) {
@@ -367,7 +373,11 @@ function digitalOceanErrorDetail(error) {
 
 function digitalOceanDeleteErrorDetail(error) {
   const status = String(error?.doStatus || "");
-  if (status.includes("unauthorized") || error?.statusCode === 401 || error?.statusCode === 403) {
+  const statusLower = status.toLowerCase();
+  if (statusLower.includes("forbidden") || error?.statusCode === 403) {
+    return "El token de DigitalOcean esta activo, pero no tiene permiso para borrar este servidor. Pega un token con permiso de escritura para Droplets.";
+  }
+  if (statusLower.includes("unauthorized") || error?.statusCode === 401) {
     return "DigitalOcean no acepto ese token. Pega un token activo con permiso para borrar Droplets.";
   }
   if (digitalOceanResourceMissing(error)) {
