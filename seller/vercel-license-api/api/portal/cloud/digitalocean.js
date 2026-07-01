@@ -360,7 +360,7 @@ function digitalOceanErrorDetail(error) {
   const status = String(error?.doStatus || "");
   const statusLower = status.toLowerCase();
   if (statusLower.includes("forbidden") || error?.statusCode === 403) {
-    return "El token de DigitalOcean esta activo, pero DigitalOcean rechazo esta actualizacion. Revisa que el token incluya Firewalls: actualizar y Droplets: leer; los firewalls anexados a Droplets pueden necesitar ese permiso aunque el scope de firewall exista.";
+    return "DigitalOcean rechazo esta actualizacion. Lo mas comun es saldo vencido o cuenta en hold: paga cualquier balance pendiente en DigitalOcean y espera unos minutos. Si no hay saldo vencido, revisa que el token incluya Firewalls: actualizar y Droplets: leer.";
   }
   if (statusLower.includes("unauthorized") || error?.statusCode === 401) {
     return "DigitalOcean no acepto ese token. Revisa que este activo y tenga permisos para Droplets, Firewalls, Tags y SSH Keys.";
@@ -375,7 +375,7 @@ function digitalOceanDeleteErrorDetail(error) {
   const status = String(error?.doStatus || "");
   const statusLower = status.toLowerCase();
   if (statusLower.includes("forbidden") || error?.statusCode === 403) {
-    return "El token de DigitalOcean esta activo, pero no tiene permiso para borrar este servidor. Pega un token con permiso de escritura para Droplets.";
+    return "DigitalOcean rechazo borrar este servidor. Lo mas comun es saldo vencido o cuenta en hold: paga cualquier balance pendiente en DigitalOcean y espera unos minutos. Si no hay saldo vencido, pega un token con permiso para borrar Droplets.";
   }
   if (statusLower.includes("unauthorized") || error?.statusCode === 401) {
     return "DigitalOcean no acepto ese token. Pega un token activo con permiso para borrar Droplets.";
