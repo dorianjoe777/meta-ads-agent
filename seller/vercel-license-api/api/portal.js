@@ -1382,15 +1382,6 @@ export default async function handler(request, response) {
           digitalocean_token: typedToken
         });
         if(!data.valid){
-          if(fallbackUrl){
-            if(pendingWindow){
-              pendingWindow.location.href = fallbackUrl;
-            }else{
-              window.open(fallbackUrl, '_blank', 'noreferrer');
-            }
-            setStatus((data.detail || 'No pude actualizar el acceso desde el portal.') + ' Estoy intentando abrir con el acceso seguro del servidor.');
-            return;
-          }
           if(pendingWindow) pendingWindow.close();
           if(data.status === 'digitalocean_token_required') focusDigitalOceanToken();
           setStatus(data.detail || 'No pude actualizar el acceso. Pega tu token de DigitalOcean y vuelve a intentar.', true);
