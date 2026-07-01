@@ -960,7 +960,7 @@ def save_ad_brief(payload):
                 raise
             fields["product_guide"] = clean_field(product_guide)
     if not fields.get("name"):
-        fallback = fields.get("promotion") or fields.get("campaign_name") or fields.get("base_ad_name") or fields.get("base_ad")
+        fallback = fields.get("promotion") or fields.get("campaign_name") or fields.get("base_ad_name") or fields.get("base_ad") or fields.get("product_guide") or fields.get("creative_hypothesis")
         fields["name"] = fallback or "Brief publicitario"
     if not fields.get("variation_window"):
         fields["variation_window"] = fields.get("variation_axes") or fields.get("creative_hypothesis") or "Probar variaciones claras sin cambiar la oferta, el beneficio principal ni el destino."
@@ -1048,10 +1048,17 @@ def inline_guide_text_allowed(value):
     if not raw:
         return False
     lowered = raw.lower()
-    if raw.startswith(".") or "/" in raw or "\\" in raw or ".." in raw:
+    if raw.startswith((".", "/", "~")) or "\\" in raw or ".." in raw:
         return False
     if any(token in lowered for token in [".env", "license_unlock", "secret", "token", "credential"]):
         return False
+    if "/" in raw:
+        if not re.search(r"\s", raw):
+            return False
+        if re.search(r"(?:^|\s)(?:/|~/|\./|\.\./)", raw):
+            return False
+        if re.search(r"/[^\s/]+\.(?:md|json|env|txt|py|pem|key|csv|yaml|yml)\b", lowered):
+            return False
     if re.fullmatch(r"[\w.-]+\.[A-Za-z0-9]{1,8}", raw):
         return False
     return True

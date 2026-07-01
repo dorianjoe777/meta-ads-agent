@@ -3448,6 +3448,180 @@ class IntegrationTestSuite:
                 setattr(codex_brand_guides, key, value)
             shutil.rmtree(test_root, ignore_errors=True)
 
+    def test_mcp_wrapped_creative_memory_and_asset_only_context(self):
+        """Test Hermes/MCP wrapped args persist creative memory and direct context can generate assets."""
+        print("\nTesting MCP Wrapped Creative Memory And Asset-Only Context...")
+
+        test_root = Path(tempfile.mkdtemp(prefix="creative_wrapped_args_"))
+        brand_dir = test_root / "brand_guides"
+        product_dir = brand_dir / "products"
+        brief_dir = brand_dir / "ad_briefs"
+        data_dir = test_root / "dashboard" / "data"
+        creative_dir = test_root / "creatives"
+        dashboard = load_dashboard_module()
+        original_codex = {
+            "ROOT_DIR": codex_brand_guides.ROOT_DIR,
+            "BRAND_DIR": codex_brand_guides.BRAND_DIR,
+            "PRODUCT_DIR": codex_brand_guides.PRODUCT_DIR,
+            "AD_BRIEF_DIR": codex_brand_guides.AD_BRIEF_DIR,
+            "BRAND_ASSET_DIR": codex_brand_guides.BRAND_ASSET_DIR,
+            "GENERAL_GUIDE": codex_brand_guides.GENERAL_GUIDE,
+            "CREATIVE_REFERENCES_FILE": codex_brand_guides.CREATIVE_REFERENCES_FILE,
+            "BUSINESS_PROFILE_FILE": codex_brand_guides.BUSINESS_PROFILE_FILE,
+        }
+        original_dashboard = {
+            "BUSINESS_PROFILE_FILE": dashboard.BUSINESS_PROFILE_FILE,
+            "ONBOARDING_QUESTIONS_FILE": dashboard.ONBOARDING_QUESTIONS_FILE,
+            "AGENT_ONBOARDING_PLAN_FILE": dashboard.AGENT_ONBOARDING_PLAN_FILE,
+            "ADS_ONBOARDING_FILE": dashboard.ADS_ONBOARDING_FILE,
+            "BRAND_GUIDES_DIR": dashboard.BRAND_GUIDES_DIR,
+            "BRAND_PRODUCTS_DIR": dashboard.BRAND_PRODUCTS_DIR,
+            "CREATIVE_ASSET_ROOT": dashboard.CREATIVE_ASSET_ROOT,
+            "guide_library": dashboard.guide_library,
+            "call_codex_image_cli": dashboard.call_codex_image_cli,
+            "load_config": dashboard.load_config,
+        }
+        original_bridge_load = admira_tool_bridge.load_dashboard
+        captured = {}
+        try:
+            product_dir.mkdir(parents=True, exist_ok=True)
+            brief_dir.mkdir(parents=True, exist_ok=True)
+            data_dir.mkdir(parents=True, exist_ok=True)
+            creative_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "business_profile.json").write_text("{}", encoding="utf-8")
+            codex_brand_guides.ROOT_DIR = test_root
+            codex_brand_guides.BRAND_DIR = brand_dir
+            codex_brand_guides.PRODUCT_DIR = product_dir
+            codex_brand_guides.AD_BRIEF_DIR = brief_dir
+            codex_brand_guides.BRAND_ASSET_DIR = brand_dir / "assets"
+            codex_brand_guides.GENERAL_GUIDE = brand_dir / "general_branding.md"
+            codex_brand_guides.CREATIVE_REFERENCES_FILE = brand_dir / "creative_references.md"
+            codex_brand_guides.BUSINESS_PROFILE_FILE = data_dir / "business_profile.json"
+            dashboard.BUSINESS_PROFILE_FILE = data_dir / "business_profile.json"
+            dashboard.ONBOARDING_QUESTIONS_FILE = data_dir / "Onboarding questions.md"
+            dashboard.AGENT_ONBOARDING_PLAN_FILE = data_dir / "Agent onboarding plan.md"
+            dashboard.ADS_ONBOARDING_FILE = data_dir / "Ads campaign onboarding.md"
+            dashboard.BRAND_GUIDES_DIR = brand_dir
+            dashboard.BRAND_PRODUCTS_DIR = product_dir
+            dashboard.CREATIVE_ASSET_ROOT = creative_dir
+            dashboard.load_config = lambda: type("Cfg", (), {"codex_creative_model": "gpt-5.5", "codex_creative_enabled": True})()
+
+            def fake_image(prompt, **kwargs):
+                captured["prompt"] = prompt
+                captured["kwargs"] = kwargs
+                return {
+                    "ok": True,
+                    "image_path": str(creative_dir / "spa-medi-centro.png"),
+                    "asset_id": "spa-medi-centro.png",
+                }
+
+            dashboard.call_codex_image_cli = fake_image
+            admira_tool_bridge.load_dashboard = lambda: dashboard
+
+            brand = admira_tool_bridge.call_tool(
+                "mcp_admira_save_brand_memory",
+                {
+                    "arguments": json.dumps(
+                        {
+                            "business_name": "Spa MediCentro Juliana",
+                            "services": "faciales y masajes",
+                            "city": "Lima, Perú",
+                            "palette": "verde salvia, beige, blanco crema, dorado suave",
+                            "image_style": "elegante, limpio, relajante",
+                            "voice": "claro, cercano, confiable",
+                            "logo_request": "crear logo desde cero",
+                            "reference_decision": "sin referencias externas",
+                            "real_asset_decision": "Desde cero: no hay fotos reales; generar imágenes.",
+                        },
+                        ensure_ascii=False,
+                    )
+                },
+            )
+            product = admira_tool_bridge.call_tool(
+                "mcp_admira_save_product_memory",
+                {
+                    "kwargs": {
+                        "product_name": "Paquete facial + masaje 60 minutos por S/99",
+                        "target_audience": "personas en Lima que buscan relajación, cuidado facial y bienestar",
+                        "problem": "estrés, cansancio y deseo de cuidar la piel",
+                        "benefit": "sentirse renovada y reservar fácilmente por WhatsApp",
+                    }
+                },
+            )
+            brief = admira_tool_bridge.call_tool(
+                "mcp_admira_save_ad_brief",
+                {
+                    "payload": {
+                        "product_name": "Paquete facial + masaje 60 minutos por S/99",
+                        "creative_formats": "imagen estática realista para Meta Ads",
+                        "variants": 2,
+                        "hypothesis": "probar si relajación premium supera oferta directa",
+                    }
+                },
+            )
+            direct_wrapped = dashboard.execute_agent_tool(
+                json.dumps(
+                    {
+                        "tool": "save_product_guide",
+                        "arguments": {
+                            "kwargs": {
+                                "product_name": "Masaje relajante 30 minutos",
+                                "target_audience": "personas con cansancio acumulado",
+                                "benefit": "salir más livianas y relajadas",
+                            }
+                        },
+                    }
+                ),
+                {"language": "es"},
+            )
+            library = codex_brand_guides.guide_library()
+            spa_brief = next(item for item in library["ad_briefs"] if item["id"].startswith("paquete-facial"))
+            self.assert_true(brand["ok"] is True and brand["result"].get("reason") != "missing_brand_core", "MCP bridge accepts JSON-string wrapped brand memory")
+            self.assert_true(product["ok"] is True and product["result"].get("reason") != "missing_product_name", "MCP bridge accepts kwargs-wrapped product memory")
+            self.assert_true(brief["ok"] is True and brief["result"].get("reason") != "missing_ad_brief_core", "MCP bridge accepts payload-wrapped ad brief context")
+            self.assert_true(direct_wrapped["executed"] is True, "Dashboard execute_agent_tool accepts JSON-string tool calls with nested kwargs")
+            self.assert_true("S/99" in spa_brief["fields"]["product_guide"] and spa_brief["fields"]["variation_count"] == "2", "Ad brief keeps inline product offers with S/99 and variation aliases")
+            self.assert_true("Desde cero" in library["general"]["fields"]["asset_notes"], "Brand readiness stores the real-asset decision from direct MCP aliases")
+
+            dashboard.guide_library = lambda: {
+                "general_exists": False,
+                "creative_references_exists": False,
+                "product_count": 0,
+                "ad_brief_count": 0,
+                "general": {"saved": False, "fields": {}},
+                "products": [],
+                "ad_briefs": [],
+            }
+            direct_asset = dashboard.codex_image_generate(
+                {
+                    "purpose": "ad_creative",
+                    "asset_only": True,
+                    "request": "Crea una imagen final para promocionar la oferta en WhatsApp.",
+                    "business_name": "Spa MediCentro Juliana",
+                    "services": "faciales y masajes",
+                    "city": "Lima, Perú",
+                    "palette": "verde salvia, beige, blanco crema, dorado suave",
+                    "image_style": "elegante, limpio, relajante",
+                    "voice": "claro, cercano, confiable",
+                    "logo_request": "crear logo desde cero, no hay logo oficial todavía",
+                    "reference_decision": "sin referencias externas",
+                    "real_asset_decision": "Desde cero: no hay fotos reales; generar imágenes.",
+                    "product_name": "Paquete facial + masaje 60 minutos por S/99",
+                    "target_audience": "personas en Lima que buscan relajación, cuidado facial y bienestar",
+                    "problem": "estrés y cansancio",
+                    "benefit": "renovarse y reservar por WhatsApp",
+                }
+            )
+            self.assert_true(direct_asset["ok"] is True and direct_asset["prompt_package"]["requires_full_ad_brief"] is False, "Asset-only image generation can proceed from explicit chat context without saved product guide")
+            self.assert_true("Spa MediCentro Juliana" in captured["prompt"] and "S/99" in captured["prompt"] and "Desde cero" in captured["prompt"], "Explicit brand/product/asset context is included in the final Codex/Image prompt")
+        finally:
+            for key, value in original_codex.items():
+                setattr(codex_brand_guides, key, value)
+            for key, value in original_dashboard.items():
+                setattr(dashboard, key, value)
+            admira_tool_bridge.load_dashboard = original_bridge_load
+            shutil.rmtree(test_root, ignore_errors=True)
+
     def test_audience_builder_readiness(self):
         """Test audience builder creates safe targeting strategy and lookalike readiness."""
         print("\nTesting Audience Builder...")
@@ -6334,6 +6508,7 @@ class IntegrationTestSuite:
             self.test_agent_onboarding_phase_tools_create_durable_memory,
             self.test_creative_strategy_gate_and_exact_logo_pipeline,
             self.test_creative_memory_accepts_agent_aliases_for_product_and_brief,
+            self.test_mcp_wrapped_creative_memory_and_asset_only_context,
             self.test_audience_builder_readiness,
             self.test_chat_audience_tool,
             self.test_meta_targeting_search_normalizes_options,

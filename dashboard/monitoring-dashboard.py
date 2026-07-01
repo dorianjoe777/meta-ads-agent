@@ -4349,27 +4349,29 @@ def creative_image_requires_brief(payload=None, purpose="ad_creative"):
 
 
 def branding_creative_readiness(require_product=True, payload=None):
+    payload = payload or {}
+    brand_payload = normalize_general_payload(payload)
     library = guide_library()
     general = (library.get("general") or {}).get("fields") or {}
     missing = []
     requirements = [
-        ("brand_core", bool(library.get("general_exists") and (general.get("brand_name") or general.get("offer"))), "¿Cómo se llama la marca y qué vende exactamente?"),
-        ("colors", bool(general.get("colors")), "¿Qué colores exactos debemos respetar, o quieres que te proponga una paleta?"),
-        ("visual_style", bool(general.get("visual_style")), "¿Cómo deben verse los anuncios: fondos, composición, energía y estilo fotográfico?"),
-        ("tone", bool(general.get("tone") or general.get("personality")), "¿Cómo debe sonar la marca: cercana, experta, directa, divertida u otra combinación?"),
+        ("brand_core", bool((library.get("general_exists") and (general.get("brand_name") or general.get("offer"))) or brand_payload.get("brand_name") or brand_payload.get("offer")), "¿Cómo se llama la marca y qué vende exactamente?"),
+        ("colors", bool(general.get("colors") or brand_payload.get("colors")), "¿Qué colores exactos debemos respetar, o quieres que te proponga una paleta?"),
+        ("visual_style", bool(general.get("visual_style") or brand_payload.get("visual_style")), "¿Cómo deben verse los anuncios: fondos, composición, energía y estilo fotográfico?"),
+        ("tone", bool(general.get("tone") or general.get("personality") or brand_payload.get("tone")), "¿Cómo debe sonar la marca: cercana, experta, directa, divertida u otra combinación?"),
         (
             "logo_decision",
-            bool(general.get("logo_path") or general.get("logo_notes") or general.get("logo_usage")),
+            bool(general.get("logo_path") or general.get("logo_notes") or general.get("logo_usage") or brand_payload.get("logo_path") or brand_payload.get("logo_notes") or brand_payload.get("logo_usage")),
             "¿Tienes un logo oficial para subir, quieres crear uno después o prefieres trabajar sin logo?",
         ),
         (
             "reference_decision",
-            bool(general.get("references") or library.get("creative_references_exists")),
+            bool(general.get("references") or library.get("creative_references_exists") or brand_payload.get("references")),
             "¿Tienes algún diseño, anuncio o marca de referencia que te guste? Puedes subirlo; si no tienes, dímelo y busco direcciones contigo.",
         ),
         (
             "real_asset_decision",
-            bool(general.get("asset_notes")),
+            bool(general.get("asset_notes") or brand_payload.get("asset_notes")),
             "¿Tienes fotos reales del producto, fundador, clientes, local o empaque para usar, o debemos generar las imágenes?",
         ),
     ]
@@ -4520,6 +4522,71 @@ def creative_not_ready_result(reason, readiness):
         "readiness": readiness,
         "missing": [item.get("key") for item in missing if isinstance(item, dict)],
     }
+
+
+def compact_creative_context_value(value, limit=260):
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    if len(text) > limit:
+        return text[: limit - 1].rstrip() + "…"
+    return text
+
+
+def creative_direct_context(payload):
+    """Return prompt-safe context explicitly sent by Hermes when library files lag behind."""
+    payload = payload or {}
+    general = normalize_general_payload(payload)
+    product = normalize_product_payload(payload)
+    brief = normalize_ad_brief_payload(payload)
+    lines = []
+
+    def add(label, value):
+        text = compact_creative_context_value(value)
+        if text:
+            lines.append(f"- {label}: {text}")
+
+    add("Marca", general.get("brand_name"))
+    add("Qué vende", general.get("offer"))
+    add("Mercado/ubicación", general.get("market"))
+    add("Colores", general.get("colors"))
+    add("Estilo visual", general.get("visual_style"))
+    add("Tono", general.get("tone"))
+    add("Logo", general.get("logo_notes") or general.get("logo_usage") or general.get("logo_path"))
+    add("Referencias", general.get("references"))
+    add("Fotos/activos reales", general.get("asset_notes"))
+    add("Producto/oferta", product.get("name") or brief.get("product_guide"))
+    add("Precio", product.get("price"))
+    add("Público", product.get("audience") or brief.get("audience_slice"))
+    add("Problema", product.get("pain"))
+    add("Beneficio/deseo", product.get("desire"))
+    add("Debe mostrar", product.get("show") or brief.get("required_assets"))
+    add("Promoción", brief.get("promotion"))
+    add("Formatos", brief.get("formats"))
+    add("Ejes de variación", brief.get("variation_axes"))
+    add("Hipótesis creativa", brief.get("creative_hypothesis"))
+    if not lines:
+        return ""
+    return "Contexto explícito recibido en esta solicitud:\n" + "\n".join(lines)
+
+
+def direct_product_guide_text(payload):
+    payload = payload or {}
+    product = normalize_product_payload(payload)
+    brief = normalize_ad_brief_payload(payload)
+    parts = []
+
+    def add(label, value):
+        text = compact_creative_context_value(value)
+        if text:
+            parts.append(f"{label}: {text}")
+
+    add("Producto/oferta", product.get("name") or brief.get("product_guide"))
+    add("Precio", product.get("price"))
+    add("Público", product.get("audience") or brief.get("audience_slice"))
+    add("Problema", product.get("pain"))
+    add("Beneficio/deseo", product.get("desire"))
+    add("Debe mostrar", product.get("show") or brief.get("required_assets"))
+    add("Promoción", brief.get("promotion"))
+    return " / ".join(parts)
 
 
 def branding_creatives_status():
@@ -4974,12 +5041,18 @@ def save_creative_references_memory(payload):
 
 def codex_creative_plan(payload):
     payload = payload or {}
-    product_guide = str(payload.get("product_guide") or "").strip()
+    brief_payload = normalize_ad_brief_payload(payload)
+    product_guide = str(brief_payload.get("product_guide") or payload.get("product_guide") or "").strip()
+    if not product_guide:
+        product_guide = direct_product_guide_text(payload)
     request = str(payload.get("request") or "").strip()
     mode = str(payload.get("mode") or payload.get("image_mode") or "fixed").strip().lower()
-    variations = payload.get("variations") or payload.get("variation_count") or 3
+    variations = payload.get("variations") or brief_payload.get("variation_count") or 3
     if not request:
         request = "Crear una estrategia visual y prompts de imagen para Meta Ads usando las guias de marca."
+    context = creative_direct_context(payload)
+    if context and context not in request:
+        request = f"{request}\n\n{context}"
     purpose = str(payload.get("purpose") or "ad_creative").strip().lower()
     readiness = creative_strategy_readiness(require_brief=False, purpose=purpose, payload=payload)
     if not readiness["ready"]:
@@ -5027,13 +5100,19 @@ def codex_creative_plan(payload):
 def codex_image_generate(payload):
     """Generate a raster creative through the Codex/Image bridge."""
     payload = payload or {}
-    product_guide = str(payload.get("product_guide") or "").strip()
+    brief_payload = normalize_ad_brief_payload(payload)
+    product_guide = str(brief_payload.get("product_guide") or payload.get("product_guide") or "").strip()
+    if not product_guide:
+        product_guide = direct_product_guide_text(payload)
     ad_brief = str(payload.get("ad_brief") or "").strip()
     mode = str(payload.get("mode") or payload.get("image_mode") or "fixed").strip().lower()
-    variations = payload.get("variations") or payload.get("variation_count") or 1
+    variations = payload.get("variations") or brief_payload.get("variation_count") or 1
     request = str(payload.get("request") or payload.get("image_prompt") or payload.get("prompt") or "").strip()
     if not request:
         request = "Crear una imagen final para Meta Ads usando las guias de marca disponibles."
+    context = creative_direct_context(payload)
+    if context and context not in request:
+        request = f"{request}\n\n{context}"
     purpose = str(payload.get("purpose") or "ad_creative").strip().lower()
     require_brief = creative_image_requires_brief(payload, purpose)
     readiness = creative_strategy_readiness(require_brief=require_brief, purpose=purpose, payload=payload)
@@ -7899,7 +7978,7 @@ def handle_save_ads_onboarding_tool(arguments, chat_payload, tool):
 
 def handle_save_ad_brief_tool(arguments, chat_payload, tool):
     arguments = normalize_ad_brief_payload(arguments or {})
-    if not any(arguments.get(key) for key in ["name", "promotion", "campaign_name", "base_ad_name", "base_ad"]):
+    if not any(arguments.get(key) for key in ["name", "product_guide", "promotion", "campaign_name", "base_ad_name", "base_ad", "variation_axes", "creative_hypothesis", "formats"]):
         return agent_action_result(
             tool,
             False,
@@ -8074,13 +8153,50 @@ AGENT_TOOL_HANDLERS = {
 }
 
 
+AGENT_TOOL_ARGUMENT_WRAPPER_KEYS = {"arguments", "args", "kwargs", "payload", "fields", "data", "input"}
+
+
+def parse_agent_tool_argument_mapping(value):
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def normalize_agent_tool_arguments(arguments, depth=0):
+    values = parse_agent_tool_argument_mapping(arguments)
+    if not values or depth > 4:
+        return values
+    nested = {}
+    direct = {}
+    for key, value in values.items():
+        if key in AGENT_TOOL_ARGUMENT_WRAPPER_KEYS:
+            parsed = parse_agent_tool_argument_mapping(value)
+            if parsed:
+                nested.update(normalize_agent_tool_arguments(parsed, depth + 1))
+                continue
+        direct[key] = value
+    return {**nested, **direct}
+
+
 def execute_agent_tool(tool_request, chat_payload):
+    if isinstance(tool_request, str):
+        try:
+            tool_request = json.loads(tool_request)
+        except json.JSONDecodeError:
+            tool_request = {}
     if not isinstance(tool_request, dict):
         return None
     tool = str(tool_request.get("tool") or "").strip()
-    arguments = tool_request.get("arguments") or {}
-    if not isinstance(arguments, dict):
-        arguments = {}
+    arguments = normalize_agent_tool_arguments(tool_request.get("arguments") or {})
 
     handler = AGENT_TOOL_HANDLERS.get(tool)
     if handler:

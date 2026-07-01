@@ -47,6 +47,7 @@ TOOL_MAP = {
 }
 
 PUBLIC_TOOLS = sorted(["admira_get_real_meta_context", "admira_list_pending_approvals", *TOOL_MAP.keys()])
+ARGUMENT_WRAPPER_KEYS = {"arguments", "args", "kwargs", "payload", "fields", "data", "input"}
 
 
 def load_dashboard():
@@ -87,9 +88,40 @@ def normalize_tool_name(name):
     return tool
 
 
+def parse_argument_mapping(value):
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def normalize_tool_arguments(arguments, depth=0):
+    values = parse_argument_mapping(arguments)
+    if not values or depth > 4:
+        return values
+    nested = {}
+    direct = {}
+    for key, value in values.items():
+        if key in ARGUMENT_WRAPPER_KEYS:
+            parsed = parse_argument_mapping(value)
+            if parsed:
+                nested.update(normalize_tool_arguments(parsed, depth + 1))
+                continue
+        direct[key] = value
+    return {**nested, **direct}
+
+
 def call_tool(name, arguments=None, channel="telegram", language="es"):
     tool = normalize_tool_name(name)
-    args = arguments if isinstance(arguments, dict) else {}
+    args = normalize_tool_arguments(arguments)
     if tool not in PUBLIC_TOOLS:
         return {
             "ok": False,
