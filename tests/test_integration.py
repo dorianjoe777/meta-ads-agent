@@ -3268,17 +3268,32 @@ class IntegrationTestSuite:
             codex_brand_guides.GENERAL_GUIDE = brand_dir / "general_branding.md"
             codex_brand_guides.CREATIVE_REFERENCES_FILE = brand_dir / "creative_references.md"
             codex_brand_guides.BUSINESS_PROFILE_FILE = data_dir / "business_profile.json"
-            codex_brand_guides.save_general_guide(
+            brand = codex_brand_guides.save_general_guide(
                 {
-                    "brand_name": "Guerrero Inmobiliaria",
-                    "offer": "Proyectos de vivienda",
-                    "colors": "azul, rojo y blanco",
-                    "visual_style": "familiar, moderno y realista",
+                    "name": "Spa MediCentro Juliana",
+                    "what_sells": "faciales y masajes",
+                    "location": "Lima, Perú",
+                    "brand_colors": "verde salvia, beige, blanco crema, dorado suave",
+                    "style": "elegante, limpio, relajante",
                     "tone": "claro, cercano, confiable",
-                    "logo_notes": "logo oficial cargado",
-                    "references": "familias reales, vivienda moderna",
-                    "asset_notes": "renders y fotos realistas del proyecto",
+                    "logo_decision": "crear un logo desde cero",
+                    "reference_decision": "sin referencias externas por ahora",
+                    "real_assets": "no hay fotos reales, usar imágenes generadas",
                 }
+            )
+            brand_fields = brand["general"]["fields"]
+            raw_key_fields = codex_brand_guides.general_fields(
+                "\n".join(
+                    [
+                        "brand_name: Spa MediCentro Juliana",
+                        "colors: verde salvia, beige, blanco crema, dorado suave",
+                        "visual_style: ambiente de spa cálido, elegante y limpio",
+                        "tone: cercano y confiable",
+                        "logo_decision: crear uno desde cero",
+                        "reference_decision: sin referencias externas",
+                        "real_assets: no hay fotos reales",
+                    ]
+                )
             )
             product = codex_brand_guides.save_product_guide(
                 {
@@ -3306,6 +3321,11 @@ class IntegrationTestSuite:
             library = codex_brand_guides.guide_library()
             product_card = next(item for item in library["products"] if item["id"] == "triva")
             brief_card = next(item for item in library["ad_briefs"] if item["id"] == "triva-compradores-vivienda")
+            self.assert_true(brand_fields["brand_name"] == "Spa MediCentro Juliana" and "faciales" in brand_fields["offer"], "Brand aliases save natural onboarding fields as structured brand memory")
+            self.assert_true("verde salvia" in brand_fields["colors"] and brand_fields["visual_style"] == "elegante, limpio, relajante", "Brand aliases preserve colors and visual style")
+            self.assert_true("logo" in brand_fields["logo_notes"] and "imágenes generadas" in brand_fields["asset_notes"], "Brand aliases preserve logo and real-asset decisions")
+            self.assert_true(raw_key_fields["brand_name"] == "Spa MediCentro Juliana" and raw_key_fields["colors"].startswith("verde salvia"), "Brand parser reads raw key Markdown such as brand_name and colors")
+            self.assert_true(raw_key_fields["visual_style"].startswith("ambiente de spa") and raw_key_fields["logo_notes"].startswith("crear"), "Brand parser maps visual_style, logo_decision, references, and real_assets keys")
             self.assert_true(product["guide"] == "brand_guides/products/triva.md" and product_card["ready"], "Product aliases save a ready product guide")
             self.assert_true(product_card["fields"]["name"] == "TRIVA" and "Medellín" in product_card["fields"]["audience"], "Product parser reads aliased name and audience fields")
             self.assert_true(brief["ad_brief"] == "brand_guides/ad_briefs/triva-compradores-vivienda.md", "Brief aliases save the expected ad brief file")
@@ -3315,7 +3335,24 @@ class IntegrationTestSuite:
             self.assert_true("acompañamiento" in brief_card["fields"]["variation_axes"] and brief_card["fields"]["creative_hypothesis"], "Brief parser keeps variation axes and hypothesis")
 
             dashboard = load_dashboard_module()
+            dashboard_brand = dashboard.execute_agent_tool(
+                {
+                    "tool": "save_brand_guide",
+                    "arguments": {
+                        "business_name": "Spa MediCentro Juliana",
+                        "services": "faciales y masajes",
+                        "city": "Lima, Perú",
+                        "palette": "verde salvia, beige, blanco crema, dorado suave",
+                        "image_style": "elegante, limpio, relajante",
+                        "voice": "claro, cercano, confiable",
+                        "logo_request": "crear uno desde cero",
+                        "real_photos": "no hay, usar generadas",
+                    },
+                },
+                {"language": "es"},
+            )
             readiness = dashboard.creative_strategy_readiness(require_brief=True, purpose="ad_creative")
+            self.assert_true(dashboard_brand["executed"] is True and dashboard_brand.get("reason") != "missing_brand_core", "Dashboard brand save handler accepts natural aliases instead of blocking as missing_brand_core")
             self.assert_true(readiness["ready"] is True and readiness["budget"] == "COP 40.000/día", "Readiness recognizes saved aliased product and brief fields")
         finally:
             for key, value in original.items():

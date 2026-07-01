@@ -58,6 +58,83 @@ GENERAL_FIELD_LABELS = {
     "show_always": "Mostrar siempre",
     "avoid_always": "Evitar siempre",
 }
+GENERAL_FIELD_ALIASES = {
+    "brand_name": (
+        "Nombre",
+        "Marca",
+        "Brand",
+        "Brand name",
+        "brand_name",
+        "business_name",
+        "company_name",
+        "business",
+        "nombre_marca",
+        "name",
+    ),
+    "category": ("Rubro", "Tipo de negocio", "business_type", "business_category", "category"),
+    "market": ("Ubicacion", "Ubicación", "Pais", "País", "Ciudad", "Location", "market", "country", "city"),
+    "website": ("Website", "Sitio web", "Web", "website", "website_url", "url", "link"),
+    "offer": (
+        "Que vende",
+        "Qué vende",
+        "Oferta",
+        "Offer",
+        "main_offer",
+        "what_sells",
+        "what_it_sells",
+        "services",
+        "products",
+        "product",
+    ),
+    "promise": ("Promesa", "Beneficio", "Benefit", "main_benefit", "value_prop", "promise"),
+    "ideal_customer": (
+        "Audiencia",
+        "Publico",
+        "Público",
+        "Cliente",
+        "Cliente ideal",
+        "buyer",
+        "target_audience",
+        "ideal_customer",
+        "audience",
+    ),
+    "logo_path": ("Logo path", "logo_path", "official_logo", "official_logo_path"),
+    "logo_notes": ("logo_decision", "logo_notes", "logo_request", "logo_context"),
+    "logo_usage": ("Uso logo", "Uso del logo", "logo_usage", "logo_preference", "logo_use"),
+    "personality": ("Personalidad", "Personality", "brand_personality"),
+    "colors": ("Colores", "Colors", "brand_colors", "palette", "paleta", "color_palette"),
+    "avoid_colors": ("Colores a evitar", "avoid_colors", "colors_to_avoid"),
+    "typography": ("Tipografia", "Tipografía", "Typography", "font_style", "fonts"),
+    "visual_style": (
+        "Estilo",
+        "Estilo visual",
+        "Visual style",
+        "visual_style",
+        "image_style",
+        "look_and_feel",
+        "design_style",
+        "creative_style",
+    ),
+    "energy": ("Energia", "Energía", "energy"),
+    "references": ("Referencias", "References", "reference_decision", "visual_references", "creative_references"),
+    "asset_notes": (
+        "Fotos reales",
+        "Activos reales",
+        "Assets reales",
+        "real_assets",
+        "real_asset_decision",
+        "photos",
+        "real_photos",
+        "asset_decision",
+    ),
+    "tone": ("Tono", "Tone", "voice", "communication_tone"),
+    "words_use": ("Palabras a usar", "words_use", "allowed_words"),
+    "words_avoid": ("Palabras a evitar", "words_avoid", "avoid_words"),
+    "sales_energy": ("Agresividad comercial", "sales_energy", "sales_style"),
+    "authority": ("Autoridad", "Prueba", "Proof", "authority", "social_proof"),
+    "show_always": ("Mostrar siempre", "show_always", "must_show"),
+    "avoid_always": ("Evitar siempre", "avoid_always", "must_avoid"),
+}
 PRODUCT_FIELD_LABELS = {
     "name": "Nombre",
     "url": "Link",
@@ -158,6 +235,32 @@ PRODUCT_PAYLOAD_ALIASES = {
     "avoid": ("must_avoid", "visual_must_avoid"),
 }
 
+GENERAL_PAYLOAD_ALIASES = {
+    "brand_name": ("name", "brand", "business_name", "company_name", "business", "nombre_marca"),
+    "category": ("business_type", "business_category", "rubro"),
+    "market": ("location", "city", "country", "pais", "país", "ubicacion", "ubicación"),
+    "website": ("website_url", "url", "link"),
+    "offer": ("main_offer", "what_sells", "what_it_sells", "services", "products", "product"),
+    "promise": ("benefit", "main_benefit", "value_prop"),
+    "ideal_customer": ("audience", "target_audience", "buyer", "customer", "publico", "público"),
+    "logo_path": ("official_logo", "official_logo_path"),
+    "logo_notes": ("logo", "logo_decision", "logo_request", "logo_context"),
+    "logo_usage": ("logo_preference", "logo_use"),
+    "colors": ("brand_colors", "palette", "paleta", "color_palette"),
+    "avoid_colors": ("colors_to_avoid",),
+    "typography": ("font_style", "fonts"),
+    "visual_style": ("style", "image_style", "look_and_feel", "design_style", "creative_style"),
+    "references": ("reference_decision", "visual_references", "creative_references"),
+    "asset_notes": ("real_assets", "real_asset_decision", "photos", "real_photos", "asset_decision"),
+    "tone": ("voice", "communication_tone"),
+    "words_use": ("allowed_words",),
+    "words_avoid": ("avoid_words",),
+    "sales_energy": ("sales_style",),
+    "authority": ("proof", "social_proof"),
+    "show_always": ("must_show",),
+    "avoid_always": ("must_avoid",),
+}
+
 AD_BRIEF_PAYLOAD_ALIASES = {
     "name": ("brief_name", "ad_name", "title"),
     "product_guide": ("product", "product_name", "offer", "main_offer"),
@@ -230,7 +333,7 @@ def markdown_fields(content, labels, aliases=None):
 
 
 def general_fields(content):
-    return markdown_fields(content, GENERAL_FIELD_LABELS)
+    return markdown_fields(content, GENERAL_FIELD_LABELS, GENERAL_FIELD_ALIASES)
 
 
 def product_fields(content):
@@ -255,6 +358,10 @@ def normalize_payload_aliases(payload, aliases):
 
 def normalize_product_payload(payload):
     return normalize_payload_aliases(payload, PRODUCT_PAYLOAD_ALIASES)
+
+
+def normalize_general_payload(payload):
+    return normalize_payload_aliases(payload, GENERAL_PAYLOAD_ALIASES)
 
 
 def normalize_ad_brief_payload(payload):
@@ -801,8 +908,9 @@ def merge_creative_reference_fields(existing, fields):
 
 
 def save_general_guide(payload):
+    payload = normalize_general_payload(payload or {})
     current = general_fields(read_text(GENERAL_GUIDE, default_general_guide()))
-    fields = form_values(payload, GENERAL_FIELD_LABELS, current)
+    fields = form_values(payload, GENERAL_FIELD_LABELS, current, GENERAL_PAYLOAD_ALIASES)
     if not fields.get("brand_name") and not fields.get("offer"):
         raise ValueError("Escribe al menos el nombre de marca o lo que vende.")
     write_text(GENERAL_GUIDE, render_general_guide(fields))

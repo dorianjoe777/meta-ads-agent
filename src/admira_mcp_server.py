@@ -40,9 +40,9 @@ TOOL_DEFINITIONS = [
     ("get_verified_signal_summary", "Read the local verified-signal ledger summary: stages, open follow-ups, match/privacy readiness, and recent records."),
     ("verified_signal_feedback_prompt", "Generate the daily exception/outcome feedback prompt for verified-signal mode."),
     ("save_business_memory", "Save durable business context."),
-    ("save_brand_memory", "Save the general brand guide."),
-    ("save_product_memory", "Save a product or offer guide."),
-    ("save_ad_brief", "Save a campaign/ad creative brief."),
+    ("save_brand_memory", "Save the general brand guide. Accepts natural aliases such as name, business_name, brand_colors, style, logo_decision, reference_decision, and real_assets. Use this instead of writing brand_guides files manually."),
+    ("save_product_memory", "Save a product or offer guide. Accepts natural aliases such as product_name, target_audience, problem, benefit, and main_offer. Use this instead of writing brand_guides files manually."),
+    ("save_ad_brief", "Save a campaign/ad creative brief. Accepts natural aliases such as brief_name, product_name, budget, variants, creative_formats, and hypothesis. Use this instead of writing brand_guides files manually."),
     ("save_creative_references", "Save approved creative references."),
 ]
 

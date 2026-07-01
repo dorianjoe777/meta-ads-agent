@@ -18,6 +18,8 @@ Read and update through tools, not by editing arbitrary files:
 - `brand_guides/ad_briefs/*.md`
 - `brand_guides/creative_references.md`
 
+These files are backend-owned memory. Do not manually create or edit `brand_guides/*.md` or `/app/brand_guides/*.md` from the Hermes workspace. If a memory tool rejects a save, retry once with canonical field names instead of writing Markdown yourself.
+
 ## Tools
 
 - `mcp_admira_save_agent_preferences`
@@ -36,6 +38,7 @@ Read and update through tools, not by editing arbitrary files:
 - Also ask the owner-level preference at the start: whether the buyer has experience creating/managing ads and whether they want deep technical detail or simple words. Save it with `mcp_admira_save_agent_preferences` as `ad_experience_level` (`beginner`, `intermediate`, `advanced`) and `communication_style` (`simple`, `technical`). This preference is global, not tied to a client business.
 - Ask one question at a time.
 - Save useful facts when the buyer gives them.
+- Save brand facts through `mcp_admira_save_brand_memory`. It can receive either natural names or canonical fields like `brand_name`, `offer`, `colors`, `visual_style`, `tone`, `logo_notes`, `references`, and `asset_notes`.
 - If the buyer shared website or social links, use available browser/web retrieval to understand public information, then confirm the important findings with the buyer.
 - After business basics, move to `skills/branding-creatives-creation/SKILL.md`, then prior ads and campaign goals. “Business basics complete” only means you know enough to start branding; it does not authorize creative planning or image generation yet.
 - If the buyer sends a logo or brand image, use the branding skill and save it as logo context before creating images.

@@ -28,6 +28,8 @@ Read these workspace files when present:
 - `memory/Ads campaign onboarding.md`
 - uploaded images in `uploads/`
 
+Treat `brand_guides/` as read-only workspace context. Do not create or edit those Markdown files manually to unblock image production. If brand, product, or ad-brief readiness is incomplete, save the missing memory with `mcp_admira_save_brand_memory`, `mcp_admira_save_product_memory`, `mcp_admira_save_ad_brief`, or `mcp_admira_save_creative_references`, then call `mcp_admira_codex_image_generate` again.
+
 If an uploaded image is relevant, summarize what you see and include that summary in the tool arguments as `reference_image_summary`.
 
 Also pass its safe workspace path in `reference_image_paths`. Ask proactively whether the buyer has a real product, founder, customer, location, packaging, or design-reference image to upload.

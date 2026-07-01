@@ -66,6 +66,7 @@ from codex_brand_guides import (
     ensure_brand_guides,
     guide_library,
     normalize_ad_brief_payload,
+    normalize_general_payload,
     normalize_product_payload,
     official_logo_prompt_lock,
     official_brand_logo_path,
@@ -7809,8 +7810,14 @@ def handle_save_business_context_tool(arguments, chat_payload, tool):
 
 
 def handle_save_brand_guide_tool(arguments, chat_payload, tool):
+    raw_arguments = dict(arguments or {})
+    arguments = normalize_general_payload(raw_arguments)
     image_paths = safe_image_paths(chat_payload)
-    logo_signal = "logo" in json.dumps(arguments or {}, ensure_ascii=False).lower() or "logo" in str((chat_payload or {}).get("message", "")).lower()
+    logo_signal = (
+        "logo" in json.dumps(raw_arguments, ensure_ascii=False).lower()
+        or "logo" in json.dumps(arguments, ensure_ascii=False).lower()
+        or "logo" in str((chat_payload or {}).get("message", "")).lower()
+    )
     if image_paths and logo_signal and not arguments.get("logo_path"):
         arguments = dict(arguments)
         try:

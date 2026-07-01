@@ -274,6 +274,8 @@ Arguments:
 
 If the brand/product guides do not exist yet, use `init_brand_guides` first or ask for the product name.
 
+Do not manually create or edit `brand_guides/*.md`, `/app/brand_guides/*.md`, or workspace brand-guide files to unblock creative production. Those files are backend-owned memory snapshots. Save missing brand/product/brief data through the product tools; if a save rejects natural wording, retry once with canonical fields like `brand_name`, `offer`, `colors`, `visual_style`, `tone`, `logo_notes`, `references`, `asset_notes`, `name`, `product_guide`, `variation_count`, `concurrent_variations`, `formats`, and `creative_hypothesis`.
+
 ### `codex_image_generate`
 
 Use when the buyer asks to create, generate, render, produce, or finish an actual image/PNG/creative through Codex/ChatGPT. A full creative/ad-test brief is required only when the buyer wants a launch-ready/test-ready ad. For a standalone image, asset, draft, or visual to keep/review, pass the current product/offer context and mark it as `asset_only: true` or `purpose: "standalone_creative"`.
@@ -666,6 +668,7 @@ Use this when the buyer asks for new creatives, image concepts, marketing plans,
 
 - Read the general brand guide first: `brand_guides/general_branding.md`.
 - Read the product-specific guide in `brand_guides/products/` when the request mentions a product.
+- Treat `brand_guides/` as read-only context. Save changes through the brand/product/ad-brief tools; do not write Markdown files manually as a workaround.
 - If guides do not exist, ask the buyer to create them from the Creativos tab or help collect the missing brand/product details.
 - Use Codex CLI as a deeper creative planning layer only when the optional bridge has been explicitly enabled.
 - Ask Codex for concrete outputs: concepts, prompts, aspect-ratio variants, short ad copy, and what to avoid.
