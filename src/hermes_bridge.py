@@ -126,19 +126,30 @@ def scrub_memory(payload):
 
 
 def write_workspace_file(relative_path, content):
+    workspace_root = HERMES_WORKSPACE_DIR.resolve()
     target = (HERMES_WORKSPACE_DIR / relative_path).resolve()
-    target.relative_to(HERMES_WORKSPACE_DIR.resolve())
+    target.relative_to(workspace_root)
     target.parent.mkdir(parents=True, exist_ok=True)
     if isinstance(content, (dict, list)):
         target.write_text(json.dumps(content, ensure_ascii=False, indent=2), encoding="utf-8")
     else:
         target.write_text(str(content or ""), encoding="utf-8")
-    return str(target.relative_to(HERMES_WORKSPACE_DIR))
+    return str(target.relative_to(workspace_root))
 
 
 def read_agent_profile_file(name):
     path = ROOT_DIR / "agent" / name
     return read_text(path, MEMORY_TEXT_LIMIT)
+
+
+def memory_display_path(path):
+    path = Path(path)
+    for root in (ROOT_DIR, BRAND_GUIDES_DIR.parent):
+        try:
+            return str(path.relative_to(root))
+        except ValueError:
+            continue
+    return path.name
 
 
 def combined_agent_rules():
@@ -159,6 +170,7 @@ Business interview, brand, creative direction, and previous campaign questions a
 For each turn, read the buyer message normally. If you need live account context, use the local files in this workspace:
 
 - `CURRENT_CONTEXT.json`: current dashboard/account snapshot for this turn.
+- `memory/Conversation continuity.md` and `memory/continuity_status.json`: mandatory resume brief after history cleanup, gateway restart, update, or a fresh runtime session.
 - `data/business_profile.json`: business memory.
 - `data/audience_strategy.json`: audience strategy.
 - `data/business_binding.json`: selected Meta account/page binding.
@@ -169,7 +181,7 @@ For each turn, read the buyer message normally. If you need live account context
 - `brand_guides/`: brand, product, ad brief, and creative reference memory.
 - `skills/`: focused product skills. Read the relevant skill before taking product actions.
 
-Do not expect the backend to paste the whole conversation history into the prompt. Continue from the Hermes session memory. If the buyer's short answer is still ambiguous, ask one clear follow-up.
+Do not expect the backend to paste the whole conversation history into the prompt. Hermes session memory is useful, but it is cache; durable workspace files are the source of truth. At the start of a fresh/restarted Telegram session, after a history cleanup, or after an update/gateway restart, first read `memory/Conversation continuity.md` and `memory/continuity_status.json`. If `has_persistent_memory` is true, do not introduce yourself as first time, do not restart onboarding, and do not repeat the initial ads-experience/technical-style question unless the files prove it is still missing. Resume with a short "retomo donde quedamos" style message, mention one concrete remembered item, and continue from the next missing/actionable step. If needed, use session search to inspect previous Telegram sessions, but do not block the buyer when durable workspace memory is enough. If the buyer's short answer is still ambiguous, ask one clear follow-up.
 
 # Native Product Tools
 
@@ -323,11 +335,11 @@ def business_memory_context():
         "brand_guides": {
             "general_branding": read_text(files["general_branding"]),
             "products": [
-                {"path": str(path.relative_to(ROOT_DIR)), "content": read_text(path, 5000)}
+                {"path": memory_display_path(path), "content": read_text(path, 5000)}
                 for path in product_guides
             ],
             "ad_briefs": [
-                {"path": str(path.relative_to(ROOT_DIR)), "content": read_text(path, 5000)}
+                {"path": memory_display_path(path), "content": read_text(path, 5000)}
                 for path in ad_briefs
             ],
         },
@@ -345,8 +357,169 @@ def business_memory_context():
     return memory
 
 
+def has_meaningful_memory(value):
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (int, float, bool)):
+        return bool(value)
+    if isinstance(value, list):
+        return any(has_meaningful_memory(item) for item in value)
+    if isinstance(value, dict):
+        return any(has_meaningful_memory(item) for item in value.values())
+    return True
+
+
+def _text_excerpt(value, limit=900):
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _json_excerpt(value, limit=1600):
+    clean = scrub_memory(redact_payload(value))
+    try:
+        text = json.dumps(clean, ensure_ascii=False, indent=2)
+    except TypeError:
+        text = str(clean)
+    return _text_excerpt(text, limit)
+
+
+def conversation_continuity_status(memory):
+    brand = memory.get("brand_guides") or {}
+    recent = memory.get("recent_history") or {}
+    communication_style = communication_style_from_environment()
+    ad_experience = ad_experience_from_environment()
+    operator_preference_saved = bool(str(os.environ.get("AGENT_COMMUNICATION_STYLE") or "").strip()) or bool(ad_experience)
+    sources = {
+        "business_profile": has_meaningful_memory(memory.get("business_profile")),
+        "onboarding_questions": has_meaningful_memory(memory.get("onboarding_questions")),
+        "onboarding_plan": has_meaningful_memory(memory.get("onboarding_plan")),
+        "ads_campaign_onboarding": has_meaningful_memory(memory.get("ads_onboarding")),
+        "audience_strategy": has_meaningful_memory(memory.get("audience_strategy")),
+        "general_branding": has_meaningful_memory(brand.get("general_branding")),
+        "creative_references": has_meaningful_memory(memory.get("creative_references")),
+        "product_guides": has_meaningful_memory(brand.get("products")),
+        "ad_briefs": has_meaningful_memory(brand.get("ad_briefs")),
+        "recent_actions": has_meaningful_memory(recent.get("actions")),
+        "recent_creative_outputs": has_meaningful_memory(recent.get("creative_refreshes")),
+        "creative_experiments": has_meaningful_memory(memory.get("creative_experiments")),
+        "business_outcomes": has_meaningful_memory(memory.get("business_outcomes")),
+        "operator_preferences": operator_preference_saved,
+    }
+    resume_sources = {key: value for key, value in sources.items() if key != "operator_preferences"}
+    has_persistent_memory = any(resume_sources.values())
+    return {
+        "has_persistent_memory": has_persistent_memory,
+        "has_saved_operator_preferences": operator_preference_saved,
+        "resume_required": has_persistent_memory,
+        "session_history_is_cache": True,
+        "instructions": {
+            "on_history_cleanup_or_gateway_restart": "read durable workspace files before greeting; resume from saved business, brand, brief, actions, and experiment memory",
+            "if_has_persistent_memory": "do not restart onboarding, do not introduce yourself as first time, and do not repeat the ads-experience question unless it is genuinely missing after checking memory",
+            "if_no_persistent_memory": "a first onboarding greeting is acceptable",
+        },
+        "sources": sources,
+        "counts": {
+            "product_guides": len(brand.get("products") or []),
+            "ad_briefs": len(brand.get("ad_briefs") or []),
+            "recent_actions": len(recent.get("actions") or []),
+            "recent_creative_outputs": len(recent.get("creative_refreshes") or []),
+        },
+        "operator_preferences": {
+            "communication_style": communication_style,
+            "ad_experience_level": ad_experience,
+        },
+    }
+
+
+def build_conversation_continuity(memory, status=None):
+    status = status or conversation_continuity_status(memory)
+    brand = memory.get("brand_guides") or {}
+    recent = memory.get("recent_history") or {}
+    lines = [
+        "# Conversation continuity",
+        "",
+        "This file is the recovery brief for Telegram/Hermes history cleanup, gateway restarts, updates, or a brand-new runtime session.",
+        f"Persistent memory found: {'yes' if status.get('has_persistent_memory') else 'no'}",
+        "",
+    ]
+    if status.get("has_persistent_memory"):
+        lines.extend(
+            [
+                "## Resume behavior",
+                "",
+                "- Treat Telegram/Hermes session history as cache. These durable workspace files are the source of truth after cleanup or updates.",
+                "- Before sending a first message, read this file plus `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, and `brand_guides/`.",
+                "- Do not restart onboarding, do not introduce yourself as if this were the first conversation, and do not repeat the initial ads-experience/technical-style question if it is already configured or implied by saved memory.",
+                "- If the current Hermes session is empty but this file says memory exists, say briefly that you are resuming and continue from the next missing or active item.",
+                "- If needed, use session search to look for the previous Telegram session, but never block the buyer on that search when durable workspace memory is enough to continue.",
+                "",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "## First-run behavior",
+                "",
+                "- No durable business/brand/ad memory was found. A normal first onboarding greeting is acceptable.",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            "## Source checklist",
+            "",
+            *[f"- {name}: {'yes' if found else 'no'}" for name, found in (status.get("sources") or {}).items()],
+            "",
+        ]
+    )
+    if has_meaningful_memory(memory.get("business_profile")):
+        lines.extend(["## Known business profile", "", "```json", _json_excerpt(memory.get("business_profile"), 2200), "```", ""])
+    if has_meaningful_memory(memory.get("onboarding_plan")):
+        lines.extend(["## Last known onboarding plan", "", _text_excerpt(memory.get("onboarding_plan"), 1800), ""])
+    if has_meaningful_memory(memory.get("ads_onboarding")):
+        lines.extend(["## Ads/campaign onboarding memory", "", _text_excerpt(memory.get("ads_onboarding"), 1800), ""])
+    if has_meaningful_memory(brand.get("general_branding")):
+        lines.extend(["## Brand memory", "", _text_excerpt(brand.get("general_branding"), 1800), ""])
+    if has_meaningful_memory(memory.get("creative_references")):
+        lines.extend(["## Creative references", "", _text_excerpt(memory.get("creative_references"), 1200), ""])
+    products = brand.get("products") or []
+    if products:
+        lines.extend(["## Product guides", ""])
+        for product in products[:MEMORY_ITEM_LIMIT]:
+            lines.append(f"- `{product.get('path', 'product')}`: {_text_excerpt(product.get('content'), 700)}")
+        lines.append("")
+    ad_briefs = brand.get("ad_briefs") or []
+    if ad_briefs:
+        lines.extend(["## Ad briefs", ""])
+        for ad_brief in ad_briefs[:MEMORY_ITEM_LIMIT]:
+            lines.append(f"- `{ad_brief.get('path', 'ad_brief')}`: {_text_excerpt(ad_brief.get('content'), 700)}")
+        lines.append("")
+    if has_meaningful_memory(recent.get("actions")):
+        lines.extend(["## Recent protected actions", "", "```json", _json_excerpt(recent.get("actions"), 2200), "```", ""])
+    if has_meaningful_memory(recent.get("creative_refreshes")):
+        lines.extend(["## Recent creative outputs", "", "```json", _json_excerpt(recent.get("creative_refreshes"), 2200), "```", ""])
+    if has_meaningful_memory(memory.get("creative_experiments")):
+        lines.extend(["## Creative experiment checkpoints", "", "```json", _json_excerpt(memory.get("creative_experiments"), 2200), "```", ""])
+    lines.extend(
+        [
+            "## Safe next-message pattern",
+            "",
+            "When memory exists, start with something like: “Retomo donde quedamos: ya tengo [one concrete remembered item]. Lo siguiente es [next useful step].” Then ask only one clear question if needed.",
+            "",
+        ]
+    )
+    return "\n".join(lines).strip() + "\n"
+
+
 def prepare_hermes_workspace(payload):
     memory = business_memory_context()
+    continuity_status = conversation_continuity_status(memory)
     if HERMES_WORKSPACE_DIR.exists():
         shutil.rmtree(HERMES_WORKSPACE_DIR)
     HERMES_WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
@@ -360,6 +533,7 @@ This folder is the only workspace Hermes should read for this product turn.
 It contains curated business memory, brand guides, recent activity, and uploaded reference images.
 
 Hermes owns the conversation and should use its own session memory. The backend does not paste the whole chat history into the prompt.
+If session memory was cleaned, the gateway restarted, or an update created a fresh runtime session, read `memory/Conversation continuity.md` and resume from durable business/brand files before greeting.
 
 Do not request files outside this workspace. If something is missing, ask the buyer or request a backend tool.
 
@@ -384,6 +558,8 @@ Read `skills/README.md` and the relevant `skills/*/SKILL.md` file before acting.
         )
     )
     written.append(write_workspace_file("data/business_profile.json", memory["business_profile"]))
+    written.append(write_workspace_file("memory/continuity_status.json", continuity_status))
+    written.append(write_workspace_file("memory/Conversation continuity.md", build_conversation_continuity(memory, continuity_status)))
     written.append(write_workspace_file("memory/Onboarding questions.md", memory.get("onboarding_questions", "")))
     written.append(write_workspace_file("memory/Agent onboarding plan.md", memory.get("onboarding_plan", "")))
     written.append(write_workspace_file("memory/Ads campaign onboarding.md", memory.get("ads_onboarding", "")))
@@ -414,6 +590,7 @@ Read `skills/README.md` and the relevant `skills/*/SKILL.md` file before acting.
         "files": written,
         "image_paths": workspace_images,
         "memory": memory,
+        "continuity_status": continuity_status,
     }
 
 
@@ -671,10 +848,11 @@ def hermes_prompt(config, payload, workspace_info=None):
         + "\n\nHermes workspace files:\n"
         + "\n".join(f"- {path}" for path in workspace_info.get("files", []))
         + "\n\nRead product rules from AGENTS.md/SOUL.md and business files only inside this workspace. Do not read arbitrary local files. If a needed file is missing, ask the buyer or request a backend tool."
+        + "\n\nBefore treating this as a new conversation, read `memory/Conversation continuity.md` and `memory/continuity_status.json`. If persistent memory exists, resume from durable business/brand/ad memory instead of restarting onboarding or repeating first-time preference questions."
         + "\n\nCurrent account context JSON:\n"
         + json.dumps(context, ensure_ascii=False)
         + image_note
-        + "\n\nDo not expect full conversation history here. Hermes session memory owns continuity. Return normal helpful text for explanations. If the user asks for a product action, return this JSON contract only:\n"
+        + "\n\nDo not expect full conversation history here. Hermes session memory helps continuity, but durable workspace memory is the fallback after cleanup/update/restart. Return normal helpful text for explanations. If the user asks for a product action, return this JSON contract only:\n"
         + '{"assistant_message":"short user-facing reply","tool_request":{"tool":"tool_name","arguments":{}}}\n'
         + "Approvals are allowed only when the buyer asks to approve or reject one exact pending approval ID already present in context. Use `approval_decision` with that exact ID. If ambiguous, ask which decision or show choices; never invent approval IDs.\n\n"
         + f"User message:\n{str(payload.get('message') or '')[:5000]}"

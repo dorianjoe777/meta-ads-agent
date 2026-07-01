@@ -2262,6 +2262,95 @@ class IntegrationTestSuite:
         self.assert_true(".env" not in prompt and "MINIMAX_API_KEY" not in prompt, "Secrets and arbitrary local files are not included")
         self.assert_true("Uploaded reference images" not in prompt, "Unsafe non-upload image paths are not attached")
 
+    def test_hermes_continuity_recovers_after_history_cleanup(self):
+        """Test a fresh/restarted Hermes session resumes from durable workspace memory instead of restarting onboarding."""
+        print("\nTesting Hermes Continuity Recovery...")
+
+        test_dir = Path(tempfile.mkdtemp(prefix="hermes-continuity-"))
+        data_dir = test_dir / "dashboard-data"
+        brand_dir = test_dir / "brand-guides"
+        workspace_dir = test_dir / "workspace"
+        original = {
+            "DATA_DIR": hermes_bridge.DATA_DIR,
+            "BRAND_GUIDES_DIR": hermes_bridge.BRAND_GUIDES_DIR,
+            "HERMES_WORKSPACE_DIR": hermes_bridge.HERMES_WORKSPACE_DIR,
+            "AGENT_COMMUNICATION_STYLE": os.environ.get("AGENT_COMMUNICATION_STYLE"),
+            "AGENT_AD_EXPERIENCE_LEVEL": os.environ.get("AGENT_AD_EXPERIENCE_LEVEL"),
+        }
+        try:
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (brand_dir / "products").mkdir(parents=True, exist_ok=True)
+            (brand_dir / "ad_briefs").mkdir(parents=True, exist_ok=True)
+            os.environ["AGENT_COMMUNICATION_STYLE"] = "simple"
+            os.environ["AGENT_AD_EXPERIENCE_LEVEL"] = "intermediate"
+            hermes_bridge.DATA_DIR = data_dir
+            hermes_bridge.BRAND_GUIDES_DIR = brand_dir
+            hermes_bridge.HERMES_WORKSPACE_DIR = workspace_dir
+
+            (data_dir / "business_profile.json").write_text(
+                json.dumps(
+                    {
+                        "business_name": "Spa MediCentro Juliana",
+                        "location": "Lima, Perú",
+                        "offer": "facial + masaje de 60 minutos por S/99",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (data_dir / "Agent onboarding plan.md").write_text(
+                "Fase actual: producción creativa. Ya se habló del negocio, la oferta, colores y estilo. Siguiente paso: crear dos piezas visuales.",
+                encoding="utf-8",
+            )
+            (data_dir / "Ads campaign onboarding.md").write_text(
+                "Objetivo: mensajes por WhatsApp. Presupuesto: S/20/día. Formato inicial: estático 4:5 y posible historia vertical.",
+                encoding="utf-8",
+            )
+            (brand_dir / "general_branding.md").write_text(
+                "brand_name: Spa MediCentro Juliana\ncolors: verde salvia, beige, blanco crema, dorado suave\nvisual_style: elegante, limpio, relajante\ntone: cercano y premium",
+                encoding="utf-8",
+            )
+            (brand_dir / "products" / "facial-masaje-s99.md").write_text(
+                "name: Paquete facial + masaje S/99\naudience: mujeres y hombres en Lima que buscan relajación accesible\npain: estrés y cansancio\n",
+                encoding="utf-8",
+            )
+            (brand_dir / "ad_briefs" / "whatsapp-facial-masaje.md").write_text(
+                "name: Prueba WhatsApp facial masaje\nproduct_guide: facial-masaje-s99\nvariation_count: 2\ncreative_hypothesis: lujo accesible vs relajación rápida\n",
+                encoding="utf-8",
+            )
+
+            workspace = hermes_bridge.prepare_hermes_workspace({"channel": "telegram", "language": "es", "account_context": {}})
+            workspace_path = Path(workspace["path"])
+            status = json.loads((workspace_path / "memory" / "continuity_status.json").read_text(encoding="utf-8"))
+            continuity = (workspace_path / "memory" / "Conversation continuity.md").read_text(encoding="utf-8")
+            agents_text = (workspace_path / "AGENTS.md").read_text(encoding="utf-8")
+            gateway_prompt = hermes_gateway.gateway_prompt("es", "simple", "")
+            bridge_prompt = hermes_bridge.hermes_prompt(
+                type("FakeConfig", (), {"agent_profile_dir": "agent"})(),
+                {"message": "hola", "language": "es", "channel": "telegram", "account_context": {}},
+                workspace,
+            )
+            onboarding_skill = (ROOT_DIR / "agent" / "skills" / "business-onboarding" / "SKILL.md").read_text(encoding="utf-8")
+
+            self.assert_true(status["has_persistent_memory"] is True and status["resume_required"] is True, "Continuity status detects durable business memory after history cleanup")
+            self.assert_true(status["sources"]["business_profile"] and status["sources"]["general_branding"] and status["sources"]["ad_briefs"], "Continuity status names the saved business, brand, and ad brief sources")
+            self.assert_true("Spa MediCentro Juliana" in continuity and "S/99" in continuity and "Retomo donde quedamos" in continuity, "Continuity brief gives Hermes concrete remembered context and a resume pattern")
+            self.assert_true("history cleanup" in agents_text and "has_persistent_memory" in agents_text and "do not restart onboarding" in agents_text, "Combined Hermes rules force resume behavior after cleanup or restart")
+            self.assert_true("limpieza de historial" in gateway_prompt and "no te presentes como primera vez" in gateway_prompt and "Conversation continuity" in gateway_prompt, "Telegram gateway prompt blocks first-run greetings when durable memory exists")
+            self.assert_true("Before treating this as a new conversation" in bridge_prompt and "resume from durable business/brand/ad memory" in bridge_prompt, "Hermes bridge prompt also checks durable continuity before restarting onboarding")
+            self.assert_true("Do not rely on Telegram/Hermes session memory" in onboarding_skill and "resume from that memory" in onboarding_skill, "Business onboarding skill saves durable facts and resumes instead of repeating questions")
+        finally:
+            hermes_bridge.DATA_DIR = original["DATA_DIR"]
+            hermes_bridge.BRAND_GUIDES_DIR = original["BRAND_GUIDES_DIR"]
+            hermes_bridge.HERMES_WORKSPACE_DIR = original["HERMES_WORKSPACE_DIR"]
+            for key in ["AGENT_COMMUNICATION_STYLE", "AGENT_AD_EXPERIENCE_LEVEL"]:
+                value = original[key]
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            shutil.rmtree(test_dir, ignore_errors=True)
+
     def test_decision_memory_profitability_rules_and_hermes_context(self):
         """Test profitability rules and decision memory feed the agent context."""
         print("\nTesting Profitability Decision Memory...")
@@ -6232,6 +6321,7 @@ class IntegrationTestSuite:
             self.test_adaptive_creative_experiment_reviews_and_cron,
             self.test_evidence_gated_optimization_and_private_business_truth,
             self.test_hermes_business_memory_workspace_is_curated_and_redacted,
+            self.test_hermes_continuity_recovers_after_history_cleanup,
             self.test_decision_memory_profitability_rules_and_hermes_context,
             self.test_chat_approval_decision_tool,
             self.test_minimax_tool_request_executes_backend_tool,
