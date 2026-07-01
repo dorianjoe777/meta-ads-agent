@@ -360,7 +360,7 @@ function digitalOceanErrorDetail(error) {
   const status = String(error?.doStatus || "");
   const statusLower = status.toLowerCase();
   if (statusLower.includes("forbidden") || error?.statusCode === 403) {
-    return "El token de DigitalOcean esta activo, pero no tiene permiso para modificar el firewall. Crea o pega un token con permiso de escritura para Firewalls y Droplets, y vuelve a abrir el dashboard.";
+    return "El token de DigitalOcean esta activo, pero DigitalOcean rechazo esta actualizacion. Revisa que el token incluya Firewalls: actualizar y Droplets: leer; los firewalls anexados a Droplets pueden necesitar ese permiso aunque el scope de firewall exista.";
   }
   if (statusLower.includes("unauthorized") || error?.statusCode === 401) {
     return "DigitalOcean no acepto ese token. Revisa que este activo y tenga permisos para Droplets, Firewalls, Tags y SSH Keys.";
@@ -389,6 +389,50 @@ function digitalOceanDeleteErrorDetail(error) {
 function digitalOceanResourceMissing(error) {
   const status = String(error?.doStatus || "").toLowerCase();
   return error?.statusCode === 404 || status.includes("not_found") || status.includes("not found");
+}
+
+function firewallAddressRulesForPorts(firewall = {}, ports = []) {
+  const wanted = new Set(ports.map((port) => String(port)));
+  return (Array.isArray(firewall.inbound_rules) ? firewall.inbound_rules : []).filter((rule) => {
+    const addresses = rule?.sources?.addresses;
+    return String(rule?.protocol || "").toLowerCase() === "tcp"
+      && wanted.has(String(rule?.ports || ""))
+      && Array.isArray(addresses)
+      && addresses.length > 0;
+  });
+}
+
+function hasFirewallAddressRule(rules = [], port = "", cidr = "") {
+  return rules.some((rule) => String(rule?.ports || "") === String(port)
+    && String(rule?.protocol || "").toLowerCase() === "tcp"
+    && Array.isArray(rule?.sources?.addresses)
+    && rule.sources.addresses.includes(cidr));
+}
+
+async function refreshFirewallRulesOnly(digitalOceanToken, firewallId, firewall = {}, { dashboardPort = "7871", clientCidr = "" } = {}) {
+  const managedPorts = [dashboardPort, CLOUD_HTTPS_PORT];
+  const existingAddressRules = firewallAddressRulesForPorts(firewall, managedPorts);
+  const desiredRules = [
+    { protocol: "tcp", ports: dashboardPort, sources: { addresses: [clientCidr] } },
+    { protocol: "tcp", ports: CLOUD_HTTPS_PORT, sources: { addresses: [clientCidr] } }
+  ];
+  const rulesToAdd = desiredRules.filter((rule) => !hasFirewallAddressRule(existingAddressRules, rule.ports, clientCidr));
+  if (rulesToAdd.length) {
+    await doRequest(digitalOceanToken, `/firewalls/${encodeURIComponent(firewallId)}/rules`, {
+      method: "POST",
+      body: { inbound_rules: rulesToAdd, outbound_rules: [] }
+    }).catch((error) => {
+      if (error?.statusCode === 422 && /already|duplicate|exist/i.test(String(error?.message || ""))) return;
+      throw error;
+    });
+  }
+  const rulesToRemove = existingAddressRules.filter((rule) => !rule.sources.addresses.includes(clientCidr));
+  if (rulesToRemove.length) {
+    await doRequest(digitalOceanToken, `/firewalls/${encodeURIComponent(firewallId)}/rules`, {
+      method: "DELETE",
+      body: { inbound_rules: rulesToRemove, outbound_rules: [] }
+    }).catch(() => {});
+  }
 }
 
 async function clearCloudInstallation(record = {}, reason = "buyer_reset") {
@@ -538,16 +582,21 @@ async function refreshFirewallForCurrentIp(record = {}, digitalOceanToken = "", 
     { protocol: "tcp", ports: CLOUD_HTTPS_PORT, sources: { addresses: [clientCidr] } },
     { protocol: "tcp", ports: accessGatePort, sources: { addresses: ["0.0.0.0/0", "::/0"] } }
   ];
-  await doRequest(digitalOceanToken, `/firewalls/${cloud.firewall_id}`, {
-    method: "PUT",
-    body: {
-      name: firewall.name || cloud.firewall_name || `admiro-ai-${cloud.droplet_id}-strict`,
-      inbound_rules: inboundRules,
-      outbound_rules: outboundRules,
-      droplet_ids: [Number(cloud.droplet_id)].filter((id) => Number.isFinite(id)),
-      tags: firewall.tags || []
-    }
-  });
+  try {
+    await doRequest(digitalOceanToken, `/firewalls/${cloud.firewall_id}`, {
+      method: "PUT",
+      body: {
+        name: firewall.name || cloud.firewall_name || `admiro-ai-${cloud.droplet_id}-strict`,
+        inbound_rules: inboundRules,
+        outbound_rules: outboundRules,
+        droplet_ids: [Number(cloud.droplet_id)].filter((id) => Number.isFinite(id)),
+        tags: firewall.tags || []
+      }
+    });
+  } catch (error) {
+    if (error?.statusCode !== 403) throw error;
+    await refreshFirewallRulesOnly(digitalOceanToken, cloud.firewall_id, firewall, { dashboardPort, clientCidr });
+  }
   const updatedCloud = {
     ...cloud,
     dashboard_port: dashboardPort,

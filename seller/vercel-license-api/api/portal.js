@@ -1398,7 +1398,7 @@ export default async function handler(request, response) {
         }
         renderCloudResult(data);
         renderInstallState({ cloud_installation: data, install_state: { cloud: { installed:true, status:data.status || 'ready', dashboard_available:Boolean(data.ready || data.dashboard_url), progress:data.progress || 100 }, local: {} } });
-        const directUrl = safeHttpUrl(data.cloud_open_url || fallbackUrl || data.dashboard_url || data.dashboard_https_url || data.dashboard_http_url || '');
+        const directUrl = safeHttpUrl(data.dashboard_url || data.dashboard_https_url || data.dashboard_http_url || data.cloud_open_url || fallbackUrl || '');
         if(!directUrl){
           if(pendingWindow) pendingWindow.close();
           setStatus('Acceso actualizado, pero todavia no tengo enlace de dashboard. Espera unos segundos y vuelve a intentar.', true);

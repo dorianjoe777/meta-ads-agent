@@ -36,8 +36,8 @@ En palabras simples:
 
 Permisos recomendados para el token:
 
-- Droplets: crear y leer.
-- Firewalls: crear, leer y actualizar.
+- Droplets: crear, leer y borrar.
+- Firewalls: crear, leer, actualizar y borrar.
 - SSH Keys: crear y leer.
 - Tags: crear y leer.
 
