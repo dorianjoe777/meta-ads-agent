@@ -255,6 +255,12 @@ def strip_technical_preamble(text):
     for line in lines:
         normalized = line.strip()
         lowered = normalized.lower()
+        internal_runtime_notice = (
+            ("codex" in lowered and "caps context at" in lowered and "auto-compaction" in lowered)
+            or "compression.codex_gpt55_autoraise" in lowered
+        )
+        if internal_runtime_notice:
+            continue
         starts_noise = (
             "tirith security scanner" in lowered
             or lowered in {"┊ review diff", "review diff"}

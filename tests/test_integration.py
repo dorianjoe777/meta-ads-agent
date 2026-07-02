@@ -869,6 +869,9 @@ class IntegrationTestSuite:
             noisy = "⚠ tirith security scanner enabled but not available — command scanning will use pattern matching only\n  ┊ review diff\na/data/business_profile.json → b/data/business_profile.json\n@@ -1,3 +1,4 @@\n-  \"source\": \"links\"\n+  \"source\": \"dashboard_chat\"\nTenés razón. Sigo con una pregunta a la vez."
             clean = agent_chat.clean_reply(noisy)
             self.assert_true(clean.startswith("Tenés razón") and "business_profile" not in clean and "tirith" not in clean.lower(), "Technical Hermes/Codex diff output is stripped before reaching buyers")
+            compaction_notice = "ℹ Codex gpt-5.5 caps context at 272K, so auto-compaction was raised to 85% (from 50%) to use more of the window before summarizing.\n  Opt back out: hermes config set compression.codex_gpt55_autoraise false\nSeguimos con la guía de marca."
+            compaction_clean = agent_chat.clean_reply(compaction_notice)
+            self.assert_true(compaction_clean == "Seguimos con la guía de marca.", "Internal Codex context-compression notices are stripped before reaching buyers")
             agent_chat.hermes_chat = lambda config, payload: {"ok": True, "provider": "hermes", "reply": noisy}
             clean_result = agent_chat.chat(FakeConfig(), {"message": "Hola", "metrics": {}, "language": "es"})
             self.assert_true(clean_result["reply"].startswith("Tenés razón") and "tirith" not in clean_result["reply"].lower(), "Plain Hermes replies are cleaned before any channel sends them")
