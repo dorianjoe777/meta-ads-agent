@@ -3206,6 +3206,48 @@ class IntegrationTestSuite:
             self.assert_true(blocked["blocked"] is True and blocked["reason"] == "creative_production_not_ready", "Final image production is blocked before brand discovery")
             self.assert_true("marca" in blocked["reply"].lower() and "vende" in blocked["reply"].lower(), "Creative gate returns the exact next discovery question")
 
+            profile_only_capture = {}
+
+            def fake_profile_image(prompt, **kwargs):
+                profile_only_capture["prompt"] = prompt
+                profile_only_capture["kwargs"] = kwargs
+                return {"ok": True, "asset_id": "profile-only-real-photo.png"}
+
+            dashboard.call_codex_image_cli = fake_profile_image
+            dashboard.read_json = lambda path, default=None: (
+                {
+                    "main_offer": "facial + masaje 60 minutos por S/99",
+                    "ideal_customer": "personas en Lima que buscan relajación, cuidado facial y bienestar",
+                    "what_to_improve": "conseguir reservas por WhatsApp",
+                    "business_type": "spa",
+                }
+                if path == dashboard.BUSINESS_PROFILE_FILE
+                else original_read_json(path, default)
+            )
+            direct_from_profile = dashboard.execute_agent_tool(
+                {
+                    "tool": "codex_image_generate",
+                    "arguments": {
+                        "request": "Usa la foto real subida como fondo real del anuncio y conserva la recepción pixel por pixel.",
+                        "purpose": "ad_creative",
+                        "business_name": "Spa MediCentro Juliana",
+                        "services": "faciales y masajes",
+                        "palette": "verde salvia, beige, blanco crema, dorado suave",
+                        "image_style": "elegante, limpio, relajante",
+                        "voice": "claro, cercano, confiable",
+                        "logo_request": "crear logo desde cero, sin logo oficial todavía",
+                        "reference_decision": "usar la foto real subida como base",
+                        "real_asset_decision": "sí hay foto real del local y debe usarse como fondo",
+                        "use_reference_as_background": True,
+                    },
+                },
+                {"language": "es", "image_paths": [str(reference)]},
+            )
+            self.assert_true(direct_from_profile["executed"] is True and direct_from_profile["result"]["prompt_package"]["reference_image_count"] == 1, "Image generation proceeds from business profile product context when saved product guides are missing")
+            self.assert_true(direct_from_profile["result"]["prompt_package"]["reference_image_role"] == "real_photo_background", "Real uploaded photo is marked as the Image 2 background/base reference")
+            self.assert_true(str(reference) in [str(path) for path in profile_only_capture["kwargs"]["reference_image_paths"]], "Handler attaches the Telegram image before readiness/generation")
+            self.assert_true("MODO FOTO REAL COMO BASE" in profile_only_capture["prompt"] and "S/99" in profile_only_capture["prompt"], "Image 2 prompt includes both the real-photo lock and product context from business memory")
+
             dashboard.guide_library = lambda: library(full_general)
             dashboard.read_json = lambda path, default=None: ({} if path == dashboard.BUSINESS_PROFILE_FILE else original_read_json(path, default))
             standalone_no_brief = dashboard.execute_agent_tool(
@@ -5484,10 +5526,12 @@ class IntegrationTestSuite:
         ad_path = dashboard.AD_CONFIG_FILE
         onboarding_path = dashboard.ONBOARDING_FILE
         binding_path = dashboard.INDIVIDUAL_BINDING_FILE
+        managed_path = dashboard.MANAGED_AD_ACCOUNTS_FILE
         env_before = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
         ad_before = ad_path.read_text(encoding="utf-8") if ad_path.exists() else ""
         onboarding_before = onboarding_path.read_text(encoding="utf-8") if onboarding_path.exists() else ""
         binding_before = binding_path.read_bytes() if binding_path.exists() else None
+        managed_before = managed_path.read_bytes() if managed_path.exists() else None
         env_keys = ["LICENSE_KEY", "LICENSE_BUYER_EMAIL", "META_AD_ACCOUNT_ID"]
         env_backup = {key: os.environ.get(key) for key in env_keys}
         try:
@@ -5495,6 +5539,8 @@ class IntegrationTestSuite:
             dashboard.write_json(onboarding_path, {"completed": False})
             if binding_path.exists():
                 binding_path.unlink()
+            if managed_path.exists():
+                managed_path.unlink()
             result = dashboard.save_setup_config(
                 {
                     "license_key": "",
@@ -5537,6 +5583,11 @@ class IntegrationTestSuite:
                     binding_path.unlink()
             else:
                 binding_path.write_bytes(binding_before)
+            if managed_before is None:
+                if managed_path.exists():
+                    managed_path.unlink()
+            else:
+                managed_path.write_bytes(managed_before)
             for key, value in env_backup.items():
                 if value is None:
                     os.environ.pop(key, None)

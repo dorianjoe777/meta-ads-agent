@@ -4282,16 +4282,58 @@ def onboarding_interview_status(profile=None):
     return "empty"
 
 
+UNDEFINED_PRODUCT_CONTEXT_PHRASES = (
+    "oferta por definir",
+    "audiencia por definir",
+    "producto por definir",
+    "servicio por definir",
+    "negocio por definir",
+    "to be defined",
+    "tbd",
+)
+
+
+def meaningful_creative_context_text(value, min_len=3):
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    if len(text) < min_len:
+        return False
+    lowered = text.lower()
+    return not any(phrase in lowered for phrase in UNDEFINED_PRODUCT_CONTEXT_PHRASES)
+
+
 def payload_has_product_context(payload):
     payload = normalize_product_payload(payload or {})
     for key in ("name", "product_name", "product", "offer", "main_offer", "audience", "pain", "desire"):
-        if str(payload.get(key) or "").strip():
+        if meaningful_creative_context_text(payload.get(key)):
             return True
     for key in ("product_guide", "promotion", "request", "image_prompt", "prompt"):
         value = str(payload.get(key) or "").strip()
-        if len(value) >= 8 and not value.lower().strip().startswith((".env", "license_unlock")):
+        if (
+            len(value) >= 8
+            and not value.lower().strip().startswith((".env", "license_unlock"))
+            and meaningful_creative_context_text(value, min_len=8)
+        ):
             return True
     return False
+
+
+def business_profile_product_context(profile=None):
+    profile = profile if isinstance(profile, dict) else read_json(BUSINESS_PROFILE_FILE, {})
+    if not isinstance(profile, dict):
+        return ""
+    lines = []
+
+    def add(label, value):
+        text = compact_creative_context_value(value)
+        if meaningful_creative_context_text(text):
+            lines.append(f"{label}: {text}")
+
+    add("Producto/oferta", profile.get("main_offer") or profile.get("offer") or profile.get("products_services"))
+    add("Tipo de negocio", profile.get("business_type") or profile.get("business_short"))
+    add("Público", profile.get("ideal_customer") or profile.get("audience"))
+    add("Etapa", profile.get("current_stage"))
+    add("Meta/problema a mejorar", profile.get("what_to_improve") or profile.get("success_goal"))
+    return "; ".join(lines)
 
 
 def truthy_payload_flag(value):
@@ -4352,6 +4394,9 @@ def branding_creative_readiness(require_product=True, payload=None):
     payload = payload or {}
     brand_payload = normalize_general_payload(payload)
     library = guide_library()
+    profile = read_json(BUSINESS_PROFILE_FILE, {})
+    if not isinstance(profile, dict):
+        profile = {}
     general = (library.get("general") or {}).get("fields") or {}
     missing = []
     requirements = [
@@ -4378,7 +4423,11 @@ def branding_creative_readiness(require_product=True, payload=None):
     if general.get("logo_path"):
         requirements.append(("logo_usage", bool(general.get("logo_usage") or general.get("logo_path")), "¿El logo oficial debe aparecer siempre, a veces o nunca en los anuncios, y en qué posición prefieres verlo?"))
     if require_product:
-        product_ready = any(bool(item.get("ready")) for item in library.get("products") or []) or payload_has_product_context(payload)
+        product_ready = (
+            any(bool(item.get("ready")) for item in library.get("products") or [])
+            or payload_has_product_context(payload)
+            or payload_has_product_context(profile)
+        )
         requirements.append(("product_guide", product_ready, "¿Cuál es el producto u oferta principal, para quién es y qué problema resuelve?"))
     for key, ready, question in requirements:
         if not ready:
@@ -4586,7 +4635,7 @@ def direct_product_guide_text(payload):
     add("Beneficio/deseo", product.get("desire"))
     add("Debe mostrar", product.get("show") or brief.get("required_assets"))
     add("Promoción", brief.get("promotion"))
-    return " / ".join(parts)
+    return "; ".join(parts)
 
 
 REFERENCE_AS_BACKGROUND_FLAGS = (
@@ -5110,6 +5159,8 @@ def codex_creative_plan(payload):
     product_guide = str(brief_payload.get("product_guide") or payload.get("product_guide") or "").strip()
     if not product_guide:
         product_guide = direct_product_guide_text(payload)
+    if not product_guide:
+        product_guide = business_profile_product_context()
     request = str(payload.get("request") or "").strip()
     mode = str(payload.get("mode") or payload.get("image_mode") or "fixed").strip().lower()
     variations = payload.get("variations") or brief_payload.get("variation_count") or 3
@@ -5169,6 +5220,8 @@ def codex_image_generate(payload):
     product_guide = str(brief_payload.get("product_guide") or payload.get("product_guide") or "").strip()
     if not product_guide:
         product_guide = direct_product_guide_text(payload)
+    if not product_guide:
+        product_guide = business_profile_product_context()
     ad_brief = str(payload.get("ad_brief") or "").strip()
     mode = str(payload.get("mode") or payload.get("image_mode") or "fixed").strip().lower()
     variations = payload.get("variations") or brief_payload.get("variation_count") or 1
@@ -8108,25 +8161,13 @@ def handle_codex_creative_plan_tool(arguments, chat_payload, tool):
 
 
 def handle_codex_image_generate_tool(arguments, chat_payload, tool):
-    purpose = str((arguments or {}).get("purpose") or "ad_creative").strip().lower()
-    require_brief = creative_image_requires_brief(arguments, purpose)
-    readiness = creative_strategy_readiness(require_brief=require_brief, purpose=purpose, payload=arguments)
-    if not readiness["ready"]:
-        return agent_action_result(
-            tool,
-            False,
-            readiness["next_question"],
-            blocked=True,
-            reason="creative_production_not_ready",
-            result={"readiness": readiness},
-        )
     image_paths = safe_image_paths(chat_payload)
     if image_paths:
         arguments = dict(arguments)
         arguments["reference_image_paths"] = image_paths
         arguments["reference_image_summary"] = (
             str(arguments.get("reference_image_summary") or "").strip()
-            or "El comprador adjunto una imagen de referencia. Usa lo que el agente entendio visualmente como guia; no dependas de que Codex lea archivos locales."
+            or "El comprador adjunto una imagen de referencia. El backend debe pasarla como imagen de entrada a Image 2/Codex Image, no solo describirla en texto."
         )
     result = codex_image_generate(arguments)
     if result.get("ok"):
@@ -8146,6 +8187,7 @@ def handle_codex_image_generate_tool(arguments, chat_payload, tool):
             f"I could not generate the image with Codex/Image yet: {result.get('error') or 'check ChatGPT/Codex connection'}. No extra image API is required.",
         ),
         blocked=True,
+        reason=result.get("reason", "creative_production_not_ready") if result.get("blocked") else result.get("reason", "codex_image_generate_failed"),
         result=result,
     )
 
