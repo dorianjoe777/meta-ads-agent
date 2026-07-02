@@ -3674,12 +3674,82 @@ class IntegrationTestSuite:
             self.assert_true(result["ok"] is True and routed["executed"] is True, "MCP Codex/Image generation executes with direct creative context")
             self.assert_true(str(cached_photo.resolve()) in refs, "Hermes cached photo path embedded in prompt text is attached as a real reference image")
             self.assert_true(routed["result"]["prompt_package"]["reference_image_count"] == 1, "Prompt package reports the attached cached photo instead of reference_image_count zero")
+            self.assert_true(routed["result"]["prompt_package"]["reference_image_role"] == "real_photo_background", "Prompt package marks real uploaded photos as the background/base when requested")
+            self.assert_true("MODO FOTO REAL COMO BASE" in captured["prompt"] and "No reemplaces el local" in captured["prompt"], "Image 2 prompt requires using the attached real photo as the base, not just inspiration")
             self.assert_true("foto real" in captured["prompt"].lower() and "recepción" in captured["prompt"].lower(), "Prompt still explains the real-photo creative intent")
         finally:
             dashboard.call_codex_image_cli = original_call_image
             dashboard.load_config = original_load_config
             admira_tool_bridge.load_dashboard = original_bridge_load
             cached_photo.unlink(missing_ok=True)
+
+    def test_codex_image_uses_latest_workspace_upload_when_agent_mentions_uploaded_photo(self):
+        """Test Image 2 receives the latest uploaded image even when Hermes omits the path argument."""
+        print("\nTesting Codex/Image Latest Workspace Upload Fallback...")
+
+        dashboard = load_dashboard_module()
+        workspace_uploads = ROOT_DIR / "dashboard" / "data" / "hermes-workspace" / "current" / "uploads"
+        workspace_uploads.mkdir(parents=True, exist_ok=True)
+        workspace_photo = workspace_uploads / "recepcion-real-test.jpg"
+        workspace_photo.write_bytes(b"fake real reception jpg")
+        context_file = ROOT_DIR / "dashboard" / "data" / "hermes-workspace" / "current" / "CURRENT_CONTEXT.json"
+        context_file.parent.mkdir(parents=True, exist_ok=True)
+        original_context = context_file.read_bytes() if context_file.exists() else None
+        context_file.write_text(json.dumps({"image_paths": [str(workspace_photo)]}), encoding="utf-8")
+        original_bridge_load = admira_tool_bridge.load_dashboard
+        original_call_image = dashboard.call_codex_image_cli
+        original_load_config = dashboard.load_config
+        captured = {}
+        try:
+            dashboard.load_config = lambda: type("Cfg", (), {"codex_creative_model": "gpt-5.5", "codex_creative_enabled": True})()
+
+            def fake_image(prompt, **kwargs):
+                captured["prompt"] = prompt
+                captured["kwargs"] = kwargs
+                return {
+                    "ok": True,
+                    "image_path": str(ROOT_DIR / "output" / "test-latest-workspace-upload.png"),
+                    "asset_id": "test-latest-workspace-upload.png",
+                }
+
+            dashboard.call_codex_image_cli = fake_image
+            admira_tool_bridge.load_dashboard = lambda: dashboard
+            result = admira_tool_bridge.call_tool(
+                "mcp_admira_codex_image_generate",
+                {
+                    "request": "Usa la foto subida de la recepción como base visual real para generar el anuncio con Image 2.",
+                    "asset_only": True,
+                    "business_name": "LULIA MED SPA",
+                    "services": "faciales y masajes",
+                    "city": "Lima, Perú",
+                    "palette": "verde salvia, beige, blanco crema, dorado suave",
+                    "image_style": "fotorealista, elegante, cálido, profesional",
+                    "voice": "claro, cercano, confiable",
+                    "logo_request": "sin logo por ahora",
+                    "reference_decision": "usar la foto real subida como referencia principal",
+                    "real_asset_decision": "El cliente envió una foto real de su recepción.",
+                    "use_reference_as_background": True,
+                    "product_name": "Facial + masaje 60 min S/99",
+                    "target_audience": "personas en Lima que buscan relajación y cuidado facial",
+                    "benefit": "reserva por WhatsApp",
+                },
+            )
+            routed = result["result"]
+            refs = [str(path) for path in captured["kwargs"]["reference_image_paths"]]
+            self.assert_true(result["ok"] is True and routed["executed"] is True, "Image 2 request executes when the agent mentions an uploaded photo")
+            self.assert_true(str(workspace_photo.resolve()) in refs, "Bridge attaches the latest safe workspace upload when Hermes omits reference_image_paths")
+            self.assert_true(routed["result"]["prompt_package"]["reference_image_count"] == 1, "Prompt package reports the fallback uploaded photo as an Image 2 reference")
+            self.assert_true(routed["result"]["prompt_package"]["reference_image_role"] == "real_photo_background", "Explicit use_reference_as_background is preserved in prompt package metadata")
+            self.assert_true("MODO FOTO REAL COMO BASE" in captured["prompt"] and "Preserva el fondo" in captured["prompt"], "Image 2 receives strict pixel-faithful real-background instructions")
+        finally:
+            dashboard.call_codex_image_cli = original_call_image
+            dashboard.load_config = original_load_config
+            admira_tool_bridge.load_dashboard = original_bridge_load
+            workspace_photo.unlink(missing_ok=True)
+            if original_context is None:
+                context_file.unlink(missing_ok=True)
+            else:
+                context_file.write_bytes(original_context)
 
     def test_audience_builder_readiness(self):
         """Test audience builder creates safe targeting strategy and lookalike readiness."""
@@ -6569,6 +6639,7 @@ class IntegrationTestSuite:
             self.test_creative_memory_accepts_agent_aliases_for_product_and_brief,
             self.test_mcp_wrapped_creative_memory_and_asset_only_context,
             self.test_codex_image_attaches_hermes_cached_photo_paths_from_prompt_text,
+            self.test_codex_image_uses_latest_workspace_upload_when_agent_mentions_uploaded_photo,
             self.test_audience_builder_readiness,
             self.test_chat_audience_tool,
             self.test_meta_targeting_search_normalizes_options,

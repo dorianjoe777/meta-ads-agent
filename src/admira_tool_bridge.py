@@ -49,6 +49,26 @@ TOOL_MAP = {
 
 PUBLIC_TOOLS = sorted(["admira_get_real_meta_context", "admira_list_pending_approvals", *TOOL_MAP.keys()])
 ARGUMENT_WRAPPER_KEYS = {"arguments", "args", "kwargs", "payload", "fields", "data", "input"}
+CREATIVE_IMAGE_TOOLS = {"admira_codex_image_generate", "admira_codex_creative_plan"}
+WORKSPACE_IMAGE_TRIGGER_WORDS = (
+    "adjunta",
+    "adjunto",
+    "base visual",
+    "esta foto",
+    "esta imagen",
+    "foto",
+    "fondo",
+    "imagen",
+    "local",
+    "photo",
+    "recepcion",
+    "recepción",
+    "reference",
+    "referencia",
+    "subida",
+    "subido",
+    "uploaded",
+)
 
 
 def load_dashboard():
@@ -120,6 +140,38 @@ def normalize_tool_arguments(arguments, depth=0):
     return {**nested, **direct}
 
 
+def creative_args_mentions_uploaded_image(args):
+    if str((args or {}).get("use_last_uploaded_image") or "").strip().lower() in {"1", "true", "yes", "si", "sí", "on"}:
+        return True
+    try:
+        text = json.dumps(args or {}, ensure_ascii=False).lower()
+    except (TypeError, ValueError):
+        text = str(args or "").lower()
+    return any(word in text for word in WORKSPACE_IMAGE_TRIGGER_WORDS)
+
+
+def latest_workspace_image_paths(limit=4):
+    workspace = ROOT_DIR / "dashboard" / "data" / "hermes-workspace" / "current"
+    candidates = []
+    context_path = workspace / "CURRENT_CONTEXT.json"
+    try:
+        context = json.loads(context_path.read_text(encoding="utf-8")) if context_path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        context = {}
+    if isinstance(context, dict):
+        candidates.extend(context.get("image_paths") or [])
+    upload_dir = workspace / "uploads"
+    if upload_dir.exists():
+        try:
+            files = [path for path in upload_dir.iterdir() if path.is_file()]
+            files.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+        except OSError:
+            files = []
+        candidates.extend(str(path) for path in files)
+    safe = safe_image_paths({"image_paths": candidates})
+    return safe[:limit]
+
+
 def call_tool(name, arguments=None, channel="telegram", language="es"):
     tool = normalize_tool_name(name)
     args = normalize_tool_arguments(arguments)
@@ -135,6 +187,8 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
     dashboard = load_dashboard()
     payload = chat_payload(channel, language)
     reference_paths = safe_image_paths(args)
+    if not reference_paths and tool in CREATIVE_IMAGE_TOOLS and creative_args_mentions_uploaded_image(args):
+        reference_paths = latest_workspace_image_paths()
     if reference_paths:
         payload["image_paths"] = reference_paths[:4]
 

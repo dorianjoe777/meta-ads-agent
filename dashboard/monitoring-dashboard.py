@@ -4589,6 +4589,71 @@ def direct_product_guide_text(payload):
     return " / ".join(parts)
 
 
+REFERENCE_AS_BACKGROUND_FLAGS = (
+    "use_reference_as_background",
+    "use_uploaded_image_as_background",
+    "preserve_reference_image",
+    "preserve_real_photo",
+    "real_photo_background",
+    "reference_as_base",
+    "base_image",
+)
+REFERENCE_AS_BACKGROUND_TEXT = (
+    "base visual",
+    "como base",
+    "como fondo",
+    "conservar la foto",
+    "conservar mi foto",
+    "conserva la foto",
+    "conserva mi foto",
+    "foto real",
+    "fondo real",
+    "imagen de fondo",
+    "no cambies el fondo",
+    "no cambies el local",
+    "no reemplaces",
+    "pixel por pixel",
+    "píxel por píxel",
+    "recepcion",
+    "recepción",
+    "same background",
+    "use as background",
+    "use as base",
+    "use the real photo",
+)
+
+
+def reference_as_background_requested(payload, request=""):
+    payload = payload or {}
+    if any(truthy_payload_flag(payload.get(key)) for key in REFERENCE_AS_BACKGROUND_FLAGS):
+        return True
+    for key in ("reference_image_role", "image_reference_role", "reference_usage", "image_use_mode", "background_source"):
+        value = str(payload.get(key) or "").strip().lower()
+        if value and any(token in value for token in ("background", "base", "fondo", "foto real", "real_photo", "real photo", "recepcion", "recepción")):
+            return True
+    try:
+        text = json.dumps(payload, ensure_ascii=False).lower()
+    except (TypeError, ValueError):
+        text = str(payload or "").lower()
+    text = f"{text}\n{str(request or '').lower()}"
+    return any(phrase in text for phrase in REFERENCE_AS_BACKGROUND_TEXT)
+
+
+def reference_background_prompt_lock(reference_paths, payload=None, request=""):
+    if not reference_paths or not reference_as_background_requested(payload, request):
+        return ""
+    return (
+        "\nMODO FOTO REAL COMO BASE OBLIGATORIA PARA IMAGE 2:\n"
+        "- La primera imagen adjunta es la foto real/base/fondo del anuncio. No es solo inspiración.\n"
+        "- Usa esa foto real como la base visual principal y conserva fielmente la recepción/local/escena real.\n"
+        "- Mantén la composición, perspectiva, arquitectura, distribución, muebles, paredes, suelo, iluminación base, encuadre y proporciones de la foto original.\n"
+        "- No reemplaces el local por otra escena, no inventes otra recepción, no cambies el negocio visible ni conviertas la foto en una escena genérica de spa.\n"
+        "- Preserva el fondo de forma pixel-faithful / fiel píxel por píxel tanto como Image 2 lo permita.\n"
+        "- Sí puedes hacer mejoras globales sutiles para que se vea publicitario y bonito: luz, color, contraste, limpieza visual, nitidez y jerarquía de texto.\n"
+        "- Agrega el texto/oferta/CTA del anuncio encima de forma profesional, legible y elegante, sin tapar las partes importantes del local.\n"
+    )
+
+
 def branding_creatives_status():
     readiness = branding_creative_readiness()
     library = readiness["library"]
@@ -5145,6 +5210,9 @@ def codex_image_generate(payload):
         if payload.get("reference_image_summary"):
             image_prompt += f"\nReferencia visual descrita por el agente: {payload.get('reference_image_summary')}\n"
         reference_paths = safe_image_paths(payload)
+        background_prompt_lock = reference_background_prompt_lock(reference_paths, payload, request)
+        if background_prompt_lock:
+            image_prompt += background_prompt_lock
         official_logo = official_brand_logo_path()
         brand_fields = (guide_library().get("general") or {}).get("fields") or {}
         include_logo_value = payload.get("include_logo")
@@ -5209,6 +5277,7 @@ def codex_image_generate(payload):
             "include_logo": bool(include_logo and official_logo),
             "logo_render_mode": logo_render_mode if include_logo and official_logo else "none",
             "logo_protection": "exact_prompt_lock" if include_logo and official_logo and logo_render_mode == "protected_context" else ("deterministic_composite" if include_logo and official_logo else "none"),
+            "reference_image_role": "real_photo_background" if background_prompt_lock else ("reference" if reference_paths else "none"),
             "requires_full_ad_brief": require_brief,
         }
         if result.get("asset_id"):
