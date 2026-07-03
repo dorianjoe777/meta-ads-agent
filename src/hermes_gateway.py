@@ -212,6 +212,7 @@ def write_gateway_files(config):
         "terminal:",
         f"  cwd: {_quote_yaml(str(workspace))}",
         "telegram:",
+        "  gateway_restart_notification: false",
         "  reactions: false",
         "  extra:",
         "    rich_messages: false",

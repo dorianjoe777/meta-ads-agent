@@ -1633,6 +1633,7 @@ class IntegrationTestSuite:
             self.assert_true("TELEGRAM_BOT_TOKEN=123456:fake-token" in env_text and "TELEGRAM_ALLOWED_USERS=12345" in env_text, "Hermes Gateway stores Telegram credentials only in the isolated Hermes env")
             self.assert_true("platform_toolsets:" in config_yaml and "telegram:" in config_yaml and "hermes-telegram" in config_yaml, "Hermes Gateway config enables native Telegram toolsets")
             self.assert_true("rich_messages: false" in config_yaml, "Hermes Gateway disables Telegram rich rendering so tables cannot become empty bubbles")
+            self.assert_true("gateway_restart_notification: false" in config_yaml, "Hermes Gateway suppresses buyer-facing shutdown notices during planned dashboard restarts")
             self.assert_true("mcp_servers:" in config_yaml and "admira:" in config_yaml and "admira_mcp_server.py" in config_yaml, "Hermes Gateway registers the Admira MCP product-tool bridge")
             self.assert_true("    - admira" in config_yaml, "Hermes Gateway explicitly enables Admira MCP tools for Telegram")
             self.assert_true("disabled_toolsets:" in config_yaml and "code_execution" in config_yaml and str(workspace) in config_yaml, "Hermes Gateway config keeps Telegram in the curated workspace")
