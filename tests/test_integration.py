@@ -5955,7 +5955,8 @@ class IntegrationTestSuite:
         try:
             dashboard.refresh_real_metrics = lambda *args, **kwargs: {"ok": True, "saved": True, "source": "meta_graph", "rows": 1}
             dashboard.license_status = lambda config: {"valid": True, "status": "active", "detail": "Cloud license active"}
-            dashboard.start_hermes_gateway = lambda _config: {"started": True, "mode": "hermes_gateway"}
+            gateway_starts = []
+            dashboard.start_hermes_gateway = lambda _config: gateway_starts.append("start") or {"started": True, "mode": "hermes_gateway"}
             dashboard.update_env_values({"DASHBOARD_PASSWORD": "buyer-owned-password", "DASHBOARD_TOKEN": "buyer-owned-password", "META_ACCESS_TOKEN": "token_12345678901234567890", "META_AD_ACCOUNT_ID": "act_999"})
             ad_path.write_text(json.dumps({"creative": {"destination": {"page_id": "111", "url": "https://buyer.example"}}}), encoding="utf-8")
             dashboard.write_json(business_path, {"website_url": "https://buyer.example", "current_stage": "Ya vendo y quiero bajar CPA.", "initial_plan": ["Leer datos reales", "Preparar campaña con supervisión"]})
@@ -5972,6 +5973,10 @@ class IntegrationTestSuite:
                 self.assert_true(True, "Ad experience preference validates the supported global values")
             preferences = dashboard.save_agent_preferences({"communication_style": "simple", "ad_experience_level": "intermediate"})
             self.assert_true(preferences["saved"] is True and os.environ.get("AGENT_AD_EXPERIENCE_LEVEL") == "intermediate", "Agent preferences tool saves the global ads-experience preference")
+            self.assert_true(len(gateway_starts) == 1, "Dashboard preference saves may refresh the Telegram gateway")
+            gateway_starts.clear()
+            tool_preferences = dashboard.handle_save_agent_preferences_tool({"communication_style": "technical", "ad_experience_level": "advanced"}, {"language": "es", "channel": "telegram"}, "save_agent_preferences")
+            self.assert_true(tool_preferences["executed"] is True and not gateway_starts and tool_preferences.get("result", {}).get("gateway", {}).get("restart_deferred") is True, "MCP/Telegram preference saves persist without interrupting the active gateway")
             completed = dashboard.complete_onboarding({"communication_style": "technical", "ad_experience_level": "advanced"})
             payload = dashboard.dashboard_payload()
             self.assert_true(completed["completed"] is True, "Onboarding completion returns completed state")

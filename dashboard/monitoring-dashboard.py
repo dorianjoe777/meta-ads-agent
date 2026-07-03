@@ -5603,7 +5603,7 @@ def dashboard_setup_deferred_reasons(reasons):
     return [reason for reason in (reasons or []) if reason in DASHBOARD_SETUP_DEFERRED_REASONS and reason not in AGENT_INTERVIEW_DEFERRED_REASONS]
 
 
-def save_agent_preferences(payload):
+def save_agent_preferences(payload, restart_gateway=True):
     payload = payload or {}
     raw_style = str(payload.get("communication_style") or "").strip().lower()
     raw_experience = str(payload.get("ad_experience_level") or payload.get("ads_experience_level") or payload.get("ads_experience") or "").strip().lower()
@@ -5628,8 +5628,16 @@ def save_agent_preferences(payload):
         if ad_experience:
             state["ad_experience_level"] = ad_experience
         write_json(ONBOARDING_FILE, state)
-    config = load_config()
-    gateway = start_hermes_gateway(config)
+    if restart_gateway:
+        config = load_config()
+        gateway = start_hermes_gateway(config)
+    else:
+        gateway = {
+            "started": False,
+            "mode": "hermes_gateway",
+            "restart_deferred": True,
+            "detail": "Preference saved without restarting the active Telegram gateway.",
+        }
     log_action("agent_preferences_update", {"communication_style": style, "ad_experience_level": ad_experience}, "completed")
     return {
         "saved": True,
@@ -7911,7 +7919,7 @@ def handle_init_brand_guides_tool(arguments, chat_payload, tool):
 def handle_save_agent_preferences_tool(arguments, chat_payload, tool):
     payload = dict(arguments or {})
     payload.setdefault("language", chat_lang(chat_payload))
-    result = save_agent_preferences(payload)
+    result = save_agent_preferences(payload, restart_gateway=False)
     ad_level = result.get("ad_experience_level") or ""
     style = result.get("communication_preference", {}).get("style") or ""
     if chat_lang(chat_payload) == "es":
