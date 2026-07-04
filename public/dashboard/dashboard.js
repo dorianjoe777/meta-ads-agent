@@ -383,7 +383,7 @@ function allowedActionCall(name){
   saveProductMemory,saveAdBriefMemory,uploadBrandLogo,activateLicenseFromForm,setDashboardPasswordFromOnboarding,saveBusinessLinks,
   saveBusinessContextQuestion,saveGuardrails,saveProfitabilityRules,saveOptimizationSettings,saveShopifyConfig,testShopifyConnection,syncShopifyOutcomes,unlockOptimization,saveSetupConfig,sendChatGptTerminalInput,restoreMigrationBackup,
   budgetPrompt,campaignAction,detectTelegramChats,setLocalNetworkAccess,showDetails,selectAgentModelRoute,saveChatGptModel,
-  connectChatGpt,toggleChatGptDeviceAuthHelp,downloadMigrationBackup,refreshCloudAccess,loadUpdateSnapshots,showUpdateDetails,
+  connectChatGpt,connectImageChatGpt,saveImageChatGptRouting,toggleChatGptDeviceAuthHelp,downloadMigrationBackup,refreshCloudAccess,loadUpdateSnapshots,showUpdateDetails,
   openDailyBriefSchedule,closeDailyBriefSchedule,saveDailyBriefSchedule,renderOnboardingFlow,setOnboardingFlowStep
  };
  return actions[name]||null;
@@ -1617,6 +1617,7 @@ function chatGptConnectMarkup(onboarding=false){
  const auth=setupItem('hermes_auth');
  const codex=setupItem('codex_cli');
  const model=state.config.agent_model||{};
+ const studio=state.config.creative_studio||{};
  const brain=model.brain_provider||'openai_codex';
  const apiBrain=['openai_api','minimax','custom_api'].includes(brain);
  const apiReady=apiBrain&&model.api_key_set&&Boolean(model.base_url)&&Boolean(model.model);
@@ -1633,6 +1634,13 @@ function chatGptConnectMarkup(onboarding=false){
  const base=model.base_url||(selectedRoute==='openai_api'?'https://api.openai.com/v1':(selectedRoute==='custom_api'?'':'https://api.minimax.io/v1'));
  const modelName=model.model||(selectedRoute==='openai_api'?'gpt-4.1-mini':(selectedRoute==='custom_api'?'':'MiniMax-M3'));
  const codexModel=model.hermes_model||'gpt-5.5';
+ const imageSource=model.codex_image_source||studio.codex_image_source||'main_chatgpt';
+ const imageDedicated=imageSource==='dedicated_chatgpt';
+ const imageModel=model.codex_image_hermes_model||studio.codex_image_model||codexModel||'gpt-5.5';
+ const imageReady=Boolean(studio.codex_image_ready||model.codex_image_ready);
+ const imageStatusText=imageDedicated
+  ? (imageReady?(lang==='es'?'Image 2 listo con ChatGPT separado':'Image 2 ready with separate ChatGPT'):(lang==='es'?'ChatGPT separado pendiente para imágenes':'Separate ChatGPT pending for images'))
+  : (chatgptReady?(lang==='es'?'Image 2 usa la sesión principal de ChatGPT':'Image 2 uses the main ChatGPT session'):(lang==='es'?'Image 2 usará la sesión principal si conectas ChatGPT como cerebro':'Image 2 will use the main session if ChatGPT is the brain'));
  const api=model.api||'openai-chat-completions';
  const keyPlaceholder=model.api_key_set?(lang==='es'?'Clave guardada. Pega otra solo si quieres cambiarla.':'Key saved. Paste another only to replace it.'):(lang==='es'?'Pega la clave API del proveedor':'Paste the provider API key');
  const routeCopy={
@@ -1650,6 +1658,13 @@ function chatGptConnectMarkup(onboarding=false){
  const chatgptActions=chatgptReady
   ? `<button class="btn primary" type="button" data-action-code="saveChatGptModel(event)">${lang==='es'?'Guardar modelo':'Save model'}</button><button class="btn" type="button" data-action-code="pollChatGptConnection()">${lang==='es'?'Revisar conexión':'Recheck connection'}</button>`
   : `<button class="btn primary" type="button" data-action-code="connectChatGpt(event)">${lang==='es'?'Ya lo hice, conectar a ChatGPT ahora':'I did it, connect to ChatGPT now'}</button>`;
+ const imageModelOptions=[['gpt-5.5','gpt-5.5'],['gpt-5.4','gpt-5.4'],['gpt-5.4-mini','gpt-5.4-mini']].map(([value,label])=>`<option value="${escapeHtml(value)}" ${imageModel===value?'selected':''}>${escapeHtml(label)}</option>`).join('');
+ const imageChatgptCard=`<div class="image-chatgpt-card ${imageReady?'ready':''}">
+  <div><b>${lang==='es'?'ChatGPT/Codex solo para imágenes':'ChatGPT/Codex for images only'}</b><p>${lang==='es'?'Ideal si el texto del agente usa MiniMax u otra API, pero quieres que Image 2 genere creativos con una suscripción ChatGPT aparte.':'Best when the text agent uses MiniMax or another API, but Image 2 should generate creatives with a separate ChatGPT subscription.'}</p><span class="badge ${imageReady?'ok':'warn'}">${imageStatusText}</span></div>
+  <div class="form-grid codex-model-choice"><div class="field"><label>${lang==='es'?'Modelo para imágenes':'Image model'}</label><select name="codex_image_hermes_model">${imageModelOptions}</select></div><input type="hidden" name="codex_image_source" value="${escapeHtml(imageSource)}"></div>
+  <div id="image-chatgpt-connect-result" class="chatgpt-connect-result hidden"></div>
+  <div class="agent-route-actions"><button class="btn ${imageDedicated?'':'primary'}" type="button" data-action-code="connectImageChatGpt(event)">${imageDedicated?(lang==='es'?'Conectar/revisar imágenes':'Connect/recheck images'):(lang==='es'?'Usar ChatGPT solo para imágenes':'Use ChatGPT only for images')}</button>${imageDedicated?`<button class="btn" type="button" data-action-code="saveImageChatGptRouting('main_chatgpt')">${lang==='es'?'Usar sesión principal':'Use main session'}</button>`:''}</div>
+ </div>`;
  return `<section class="chatgpt-connect-card ${ready?'ready':''}"><div class="chatgpt-connect-head"><div><h3>${title}</h3><p>${body}</p></div><span class="badge ${ready?'ok':'warn'}">${badge}</span></div><div class="agent-model-picker" role="tablist" aria-label="${lang==='es'?'Opciones de modelo del agente':'Agent model options'}">${routeButton('openai_api')}${routeButton('chatgpt_subscription')}${routeButton('minimax_m3')}${routeButton('custom_api')}</div><form id="agent-model-form" class="model-provider-form" data-submit-code="saveSetupConfig(event)">
  <input type="hidden" name="agent_chat_provider" value="${escapeHtml(providerValue)}">
  <input type="hidden" name="agent_chat_api" value="${escapeHtml(api)}">
@@ -1662,6 +1677,7 @@ function chatGptConnectMarkup(onboarding=false){
    <div class="field wide"><button class="btn primary" type="submit">${lang==='es'?'Guardar modelo del agente':'Save agent model'}</button></div>
   </div></div>
  </div>
+ ${imageChatgptCard}
  </form><details class="helper-command"><summary>${lang==='es'?'Ver diagnóstico para soporte':'Show support diagnostics'}</summary><span class="step-command">${escapeHtml(detail||'-')}</span></details><div class="chatgpt-foot"><div></div><div class="mode-actions"><button class="btn primary chatgpt-recheck-main" type="button" data-action-code="load()">${lang==='es'?'Ya lo hice, revisar conexión':'I did it, recheck'}</button></div></div></section>`;
 }
 function renderChatGptPanel(){
@@ -1760,6 +1776,8 @@ async function saveCommunicationStyle(event,finish=false){
  await load();
 }
 let chatGptConnectPollTimer=null;
+let chatGptConnectPurpose='agent';
+let chatGptConnectTarget='chatgpt-connect-result';
 let chatGptAuthWindow=null;
 let chatGptAuthOpenedUrl='';
 function chatGptAuthWaitingHtml(title,body,kind='waiting'){
@@ -1821,11 +1839,18 @@ function scheduleChatGptConnectPoll(result){
  const shouldPoll=Boolean(r.running)||['browser_login_started','browser_login_waiting','needs_login'].includes(status);
  if(chatGptConnectPollTimer)clearTimeout(chatGptConnectPollTimer);
  if(!shouldPoll)return;
- chatGptConnectPollTimer=setTimeout(()=>pollChatGptConnection(),2400);
+ chatGptConnectPollTimer=setTimeout(()=>pollChatGptConnection(chatGptConnectPurpose,chatGptConnectTarget),2400);
 }
 function agentModelFormPayload(){
  const form=qs('#agent-model-form');
  return form?Object.fromEntries(new FormData(form).entries()):{};
+}
+function imageChatGptPayload(){
+ const payload=agentModelFormPayload();
+ payload.connection_purpose='image';
+ payload.codex_image_source='dedicated_chatgpt';
+ payload.codex_image_hermes_model=payload.codex_image_hermes_model||payload.hermes_model||'gpt-5.5';
+ return payload;
 }
 function advanceOnboardingAfterChatGptConnected(){
  const flow=qs('#onboarding-flow');
@@ -1835,13 +1860,15 @@ function advanceOnboardingAfterChatGptConnected(){
  if(idx<0||onboardingFlowStep!==idx)return;
  setOnboardingFlowStep(Math.min(steps.length-1,idx+1));
 }
-async function pollChatGptConnection(){
+async function pollChatGptConnection(purpose='agent',targetId='chatgpt-connect-result'){
  try{
+  chatGptConnectPurpose=purpose||'agent';
+  chatGptConnectTarget=targetId||'chatgpt-connect-result';
   rememberOnboardingStep('chatgpt');
   const steps=onboardingSteps();const idx=steps.findIndex(s=>s.id==='chatgpt');if(idx>=0){onboardingFlowTouched=true;onboardingFlowStep=idx}
-  const res=await api('/api/agent-model/connect-status',{method:'POST',body:'{}'});
-  renderChatGptConnectResult(res);
-  if((res.result?.status||res.status)==='completed'){await load();advanceOnboardingAfterChatGptConnected()}
+  const res=await api('/api/agent-model/connect-status',{method:'POST',body:JSON.stringify({connection_purpose:chatGptConnectPurpose})});
+  renderChatGptConnectResult(res,chatGptConnectTarget);
+  if((res.result?.status||res.status)==='completed'){await load();if(chatGptConnectPurpose!=='image')advanceOnboardingAfterChatGptConnected()}
  }catch(_err){
   if(chatGptConnectPollTimer)clearTimeout(chatGptConnectPollTimer);
   updateChatGptAuthWindow(
@@ -1858,9 +1885,9 @@ async function sendChatGptTerminalInput(event){
  if(!input.trim())return;
  const btn=form.querySelector('button');if(btn)btn.disabled=true;
  try{
-  const res=await api('/api/agent-model/connect-input',{method:'POST',body:JSON.stringify({input})});
+  const res=await api('/api/agent-model/connect-input',{method:'POST',body:JSON.stringify({input,connection_purpose:chatGptConnectPurpose})});
   form.reset();
-  renderChatGptConnectResult(res);
+  renderChatGptConnectResult(res,chatGptConnectTarget);
  }finally{
   if(btn)btn.disabled=false;
  }
@@ -1874,8 +1901,8 @@ function toggleChatGptDeviceAuthHelp(){
  box.classList.toggle('hidden');
  box.scrollIntoView({behavior:'smooth',block:'center'});
 }
-function renderChatGptConnectResult(response){
- const box=qs('#chatgpt-connect-result');if(!box)return;
+function renderChatGptConnectResult(response,targetId='chatgpt-connect-result'){
+ const box=qs(`#${targetId||'chatgpt-connect-result'}`);if(!box)return;
  const r=response.result||response||{};
  const status=String(r.status||'');
  const urls=Array.isArray(r.urls)?r.urls:[];
@@ -1937,13 +1964,15 @@ async function connectChatGpt(event){
  const btn=event?.currentTarget||event?.target;
  const box=qs('#chatgpt-connect-result');
  if(btn)btn.disabled=true;
+ chatGptConnectPurpose='agent';
+ chatGptConnectTarget='chatgpt-connect-result';
  rememberOnboardingStep('chatgpt');
  const steps=onboardingSteps();const idx=steps.findIndex(s=>s.id==='chatgpt');if(idx>=0){onboardingFlowTouched=true;onboardingFlowStep=idx}
  const popupReady=prepareChatGptAuthWindow();
  if(box){box.classList.remove('hidden');box.innerHTML=`<b>${lang==='es'?'Conectando...':'Connecting...'}</b><p>${popupReady?(lang==='es'?'Abrí una pestaña de espera. Cuando aparezca el login seguro, la llevaré ahí automáticamente.':'I opened a waiting tab. When the secure login appears, I will send it there automatically.'):(lang==='es'?'Si el navegador bloqueó la pestaña, te mostraré un botón para abrir el login.':'If the browser blocked the tab, I will show a button to open the login.')}</p>`}
  try{
   const res=await api('/api/agent-model/connect',{method:'POST',body:JSON.stringify(agentModelFormPayload())});
-  renderChatGptConnectResult(res);
+  renderChatGptConnectResult(res,'chatgpt-connect-result');
   const status=res.result?.status||res.status;
   const urls=res.result?.urls||res.urls||[];
   if((status==='completed'||status==='terminal_opened'||status==='needs_terminal'||status==='not_installed')&&!urls.length&&chatGptAuthWindow&&!chatGptAuthOpenedUrl){
@@ -1965,6 +1994,43 @@ async function connectChatGpt(event){
  }finally{
   if(btn)btn.disabled=false;
  }
+}
+async function connectImageChatGpt(event){
+ const btn=event?.currentTarget||event?.target;
+ const box=qs('#image-chatgpt-connect-result');
+ const form=qs('#agent-model-form');
+ if(form?.elements?.codex_image_source)form.elements.codex_image_source.value='dedicated_chatgpt';
+ if(btn)btn.disabled=true;
+ chatGptConnectPurpose='image';
+ chatGptConnectTarget='image-chatgpt-connect-result';
+ const popupReady=prepareChatGptAuthWindow();
+ if(box){box.classList.remove('hidden');box.innerHTML=`<b>${lang==='es'?'Conectando Image 2...':'Connecting Image 2...'}</b><p>${popupReady?(lang==='es'?'Abrí una pestaña de espera para la sesión ChatGPT/Codex de imágenes.':'I opened a waiting tab for the ChatGPT/Codex image session.'):(lang==='es'?'Si el navegador bloqueó la pestaña, te mostraré el enlace aquí.':'If the browser blocked the tab, I will show the link here.')}</p>`}
+ try{
+  const res=await api('/api/agent-model/connect',{method:'POST',body:JSON.stringify(imageChatGptPayload())});
+  renderChatGptConnectResult(res,'image-chatgpt-connect-result');
+  const status=res.result?.status||res.status;
+  const urls=res.result?.urls||res.urls||[];
+  if((status==='completed'||status==='terminal_opened'||status==='needs_terminal'||status==='not_installed')&&!urls.length&&chatGptAuthWindow&&!chatGptAuthOpenedUrl){
+   try{chatGptAuthWindow.close()}catch(_err){}
+   chatGptAuthWindow=null;
+  }
+  if(status==='completed'){toast(lang==='es'?'Image 2 conectado.':'Image 2 connected.');await load()}
+  else if(String(status).startsWith('browser_login'))toast(lang==='es'?'Login de imágenes abierto aquí.':'Image login opened here.');
+ }catch(err){
+  if(box){box.classList.remove('hidden');box.innerHTML=`<b>${lang==='es'?'No pude abrirlo todavía':'Could not open it yet'}</b><p>${escapeHtml(err.message||String(err))}</p>`}
+  updateChatGptAuthWindow(lang==='es'?'No pude abrir el login':'Could not open login',err.message||String(err),'error');
+ }finally{
+  if(btn)btn.disabled=false;
+ }
+}
+async function saveImageChatGptRouting(source='main_chatgpt'){
+ const form=qs('#agent-model-form');
+ if(form?.elements?.codex_image_source)form.elements.codex_image_source.value=source;
+ const payload=agentModelFormPayload();
+ payload.codex_image_source=source;
+ await api('/api/setup-config',{method:'POST',body:JSON.stringify(payload)});
+ toast(source==='dedicated_chatgpt'?(lang==='es'?'Image 2 usará ChatGPT separado.':'Image 2 will use separate ChatGPT.'):(lang==='es'?'Image 2 usará la sesión principal.':'Image 2 will use the main session.'));
+ await load();
 }
 function applyAgentModelPreset(kind){
  const form=qs('#agent-model-form');if(!form)return;

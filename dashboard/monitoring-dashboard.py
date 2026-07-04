@@ -62,9 +62,9 @@ from codex_brand_guides import (
     call_codex_image_cli,
     call_codex_cli,
     composite_official_logo,
-    codex_cli_auth_status,
     ensure_brand_guides,
     guide_library,
+    hermes_codex_image_status,
     normalize_ad_brief_payload,
     normalize_general_payload,
     normalize_product_payload,
@@ -123,7 +123,17 @@ from optimization_engine import (
     unlock_status as optimization_unlock_status,
 )
 from optimization_research import RESEARCH_FILE, load_research, save_research_item, seed_current_research
-from product_config import ENV_FILE, env_bool, load_config, normalize_daily_time, normalize_timezone
+from product_config import (
+    ENV_FILE,
+    default_codex_image_hermes_home,
+    env_bool,
+    image_codex_config,
+    load_config,
+    normalize_codex_image_source,
+    normalize_daily_time,
+    normalize_timezone,
+    resolved_codex_image_hermes_home,
+)
 from security import dashboard_password_configured, dashboard_token_valid, hash_dashboard_password, is_local_host, is_public_bind, redact_payload
 from shopify_connector import normalize_shop_domain, shopify_status, sync_shopify, test_connection as test_shopify_connection
 from setup_status import build_setup_status
@@ -2822,7 +2832,9 @@ def running_inside_container():
 
 def hermes_shell_command(config):
     cli = str(getattr(config, "hermes_cli", "") or "hermes").strip() or "hermes"
-    return f"{shlex.quote(cli)} model"
+    home = str(getattr(config, "hermes_home", "") or "").strip()
+    prefix = f"HERMES_HOME={shlex.quote(home)} " if home else ""
+    return f"{prefix}{shlex.quote(cli)} model"
 
 
 def hermes_browserless_command(config):
@@ -3302,8 +3314,11 @@ def launch_hermes_terminal(config):
         if os.name == "nt":
             ps_root = str(ROOT_DIR).replace("'", "''")
             ps_cli = str(getattr(config, "hermes_cli", "") or "hermes").replace("'", "''")
+            ps_home = str(getattr(config, "hermes_home", "") or "").replace("'", "''")
+            ps_home_prefix = f"$env:HERMES_HOME='{ps_home}'; " if ps_home else ""
             ps_command = (
                 f"Set-Location -LiteralPath '{ps_root}'; "
+                f"{ps_home_prefix}"
                 "Write-Host 'Conectando ChatGPT/Codex para Admira IA...'; "
                 "Write-Host 'Si el agente pregunta por proveedor, elige OpenAI Codex / ChatGPT.'; "
                 f"& '{ps_cli}' model; "
@@ -3328,8 +3343,18 @@ def launch_hermes_terminal(config):
     return False
 
 
-def hermes_browserless_snapshot(config=None):
+def normalize_connect_purpose(value):
+    return "image" if str(value or "").strip().lower() in {"image", "images", "codex_image", "image_only", "dedicated_chatgpt"} else "agent"
+
+
+def config_for_connect_purpose(purpose):
+    config = load_config()
+    return image_codex_config(config) if normalize_connect_purpose(purpose) == "image" else config
+
+
+def hermes_browserless_snapshot(config=None, purpose="agent"):
     config = config or load_config()
+    purpose = normalize_connect_purpose(purpose)
     ready, auth_detail = hermes_codex_ready(config)
     if not ready:
         nudge_hermes_browserless_autodrive()
@@ -3348,6 +3373,7 @@ def hermes_browserless_snapshot(config=None):
             output=output or auth_detail,
             running=False,
             job_id=state.get("id") or "",
+            connection_purpose=purpose,
             log=False,
         )
     if running:
@@ -3362,6 +3388,7 @@ def hermes_browserless_snapshot(config=None):
             output=output,
             running=True,
             job_id=state.get("id") or "",
+            connection_purpose=purpose,
             needs_input=prompt["needs_input"],
             phase=prompt["phase"],
             auto_note=prompt["auto_note"],
@@ -3379,6 +3406,7 @@ def hermes_browserless_snapshot(config=None):
                 output=output or auth_detail,
                 running=False,
                 job_id=state.get("id") or "",
+                connection_purpose=purpose,
                 needs_input=False,
                 phase=prompt["phase"],
                 auto_note=prompt["auto_note"],
@@ -3393,6 +3421,7 @@ def hermes_browserless_snapshot(config=None):
             output=output or auth_detail,
             running=False,
             job_id=state.get("id") or "",
+            connection_purpose=purpose,
             log=False,
         )
     return hermes_connect_response(
@@ -3404,6 +3433,7 @@ def hermes_browserless_snapshot(config=None):
         output=auth_detail,
         running=False,
         job_id=state.get("id") or "",
+        connection_purpose=purpose,
         log=False,
     )
 
@@ -3420,7 +3450,11 @@ def append_hermes_login_output(session_id, text):
 
 
 def finish_hermes_browserless_session(session_id, returncode):
-    config = load_config()
+    with HERMES_LOGIN_LOCK:
+        if HERMES_LOGIN_STATE.get("id") != session_id:
+            return
+        purpose = HERMES_LOGIN_STATE.get("purpose") or "agent"
+    config = config_for_connect_purpose(purpose)
     ready, auth_detail = hermes_codex_ready(config)
     with HERMES_LOGIN_LOCK:
         if HERMES_LOGIN_STATE.get("id") != session_id:
@@ -3459,7 +3493,8 @@ def read_hermes_browserless_output(session_id, master_fd, proc):
     finish_hermes_browserless_session(session_id, returncode)
 
 
-def start_hermes_browserless_login(config):
+def start_hermes_browserless_login(config, purpose="agent"):
+    purpose = normalize_connect_purpose(purpose)
     cli_path = shutil.which(str(getattr(config, "hermes_cli", "") or "hermes").strip() or "hermes")
     if not cli_path:
         return hermes_connect_response(
@@ -3468,6 +3503,7 @@ def start_hermes_browserless_login(config):
             "Instala o actualiza Admira IA y vuelve a tocar Conectar ahora.",
             mode="missing_runtime",
             command=hermes_browserless_shell_command(config),
+            connection_purpose=purpose,
         )
     ready, auth_detail = hermes_codex_ready(config)
     if ready:
@@ -3479,12 +3515,13 @@ def start_hermes_browserless_login(config):
             command=hermes_browserless_shell_command(config),
             output=auth_detail,
             running=False,
+            connection_purpose=purpose,
         )
     with HERMES_LOGIN_LOCK:
         proc = HERMES_LOGIN_STATE.get("proc")
         running = bool(proc and proc.poll() is None)
     if running:
-        return hermes_browserless_snapshot(config)
+        return hermes_browserless_snapshot(config, purpose=purpose)
     if os.name == "nt":
         return probe_hermes_model_login(config)
     try:
@@ -3520,6 +3557,7 @@ def start_hermes_browserless_login(config):
                     "auto_codex_subprovider_sent": False,
                     "auto_model_sent": False,
                     "preferred_model": normalize_hermes_model(getattr(config, "hermes_model", "")),
+                    "purpose": purpose,
                     "started_at": now_iso(),
                     "updated_at": now_iso(),
                     "proc": proc,
@@ -3536,6 +3574,7 @@ def start_hermes_browserless_login(config):
             command=hermes_browserless_shell_command(config),
             running=True,
             job_id=session_id,
+            connection_purpose=purpose,
             needs_input=False,
             phase="starting",
             auto_note="Estoy preparando el agente para usar OpenAI Codex.",
@@ -3552,13 +3591,17 @@ def start_hermes_browserless_login(config):
 
 
 def agent_model_connect_status(payload=None):
-    return hermes_browserless_snapshot(load_config())
+    payload = payload or {}
+    purpose = normalize_connect_purpose(payload.get("connection_purpose") or payload.get("purpose"))
+    return hermes_browserless_snapshot(config_for_connect_purpose(purpose), purpose=purpose)
 
 
 def agent_model_connect_input(payload=None):
+    payload = payload or {}
     text = str((payload or {}).get("input") or "")
     if not text.strip():
-        return hermes_browserless_snapshot(load_config())
+        purpose = normalize_connect_purpose(payload.get("connection_purpose") or payload.get("purpose"))
+        return hermes_browserless_snapshot(config_for_connect_purpose(purpose), purpose=purpose)
     if not text.endswith("\n"):
         text += "\n"
     with HERMES_LOGIN_LOCK:
@@ -3566,15 +3609,18 @@ def agent_model_connect_input(payload=None):
         proc = HERMES_LOGIN_STATE.get("proc")
         running = bool(proc and proc.poll() is None and fd is not None)
     if not running:
-        return hermes_browserless_snapshot(load_config())
+        purpose = normalize_connect_purpose(payload.get("connection_purpose") or payload.get("purpose"))
+        return hermes_browserless_snapshot(config_for_connect_purpose(purpose), purpose=purpose)
     os.write(fd, text.encode("utf-8", errors="replace"))
-    return hermes_browserless_snapshot(load_config())
+    with HERMES_LOGIN_LOCK:
+        purpose = normalize_connect_purpose(HERMES_LOGIN_STATE.get("purpose"))
+    return hermes_browserless_snapshot(config_for_connect_purpose(purpose), purpose=purpose)
 
 
 def probe_hermes_model_login(config):
     cli = str(getattr(config, "hermes_cli", "") or "hermes").strip() or "hermes"
     try:
-        result = subprocess.run([cli, "model", "--no-browser"], cwd=str(ROOT_DIR), text=True, capture_output=True, timeout=10, check=False)
+        result = subprocess.run([cli, "model", "--no-browser"], cwd=str(ROOT_DIR), env=hermes_environment(config), text=True, capture_output=True, timeout=10, check=False)
     except FileNotFoundError:
         return hermes_connect_response(
             "not_installed",
@@ -3616,6 +3662,38 @@ def probe_hermes_model_login(config):
 
 def connect_agent_model(payload=None):
     payload = payload or {}
+    purpose = normalize_connect_purpose(payload.get("connection_purpose") or payload.get("purpose"))
+    if purpose == "image":
+        image_model = normalize_hermes_model(payload.get("codex_image_hermes_model") or payload.get("hermes_model") or "")
+        update_env_values(
+            {
+                "CODEX_IMAGE_SOURCE": "dedicated_chatgpt",
+                "CODEX_IMAGE_HERMES_HOME": str(default_codex_image_hermes_home()),
+                "CODEX_IMAGE_HERMES_MODEL": image_model,
+            }
+        )
+        config = image_codex_config(load_config())
+        ready, auth_detail = hermes_codex_ready(config)
+        if ready:
+            return hermes_connect_response(
+                "completed",
+                "ChatGPT/Codex para imágenes conectado",
+                "Image 2 ya tiene lista una sesión de ChatGPT/Codex separada. El cerebro principal del agente no cambió.",
+                mode="image_already_ready",
+                command=hermes_browserless_shell_command(config),
+                output=auth_detail,
+                running=False,
+                connection_purpose="image",
+            )
+        if launch_hermes_terminal(config):
+            return hermes_connect_response(
+                "terminal_opened",
+                "Abrí la terminal",
+                "Sigue la ventana que se abrió para conectar ChatGPT/Codex solo para imágenes. El modelo principal no cambiará.",
+                mode="image_terminal",
+                connection_purpose="image",
+            )
+        return start_hermes_browserless_login(config, purpose="image")
     env_updates = {"AGENT_CHAT_PROVIDER": "hermes", "AGENT_BRAIN_PROVIDER": "openai_codex", "HERMES_REQUIRE_CODEX_AUTH": "true"}
     env_updates["HERMES_MODEL"] = normalize_hermes_model(payload.get("hermes_model") if "hermes_model" in payload else "")
     update_env_values(env_updates)
@@ -3694,6 +3772,13 @@ def save_setup_config(payload):
     if "hermes_model" in payload:
         hermes_model = normalize_hermes_model(payload.get("hermes_model"))
         env_updates["HERMES_MODEL"] = hermes_model
+    if "codex_image_source" in payload:
+        image_source = normalize_codex_image_source(payload.get("codex_image_source"))
+        env_updates["CODEX_IMAGE_SOURCE"] = image_source
+        if image_source == "dedicated_chatgpt":
+            env_updates["CODEX_IMAGE_HERMES_HOME"] = str(default_codex_image_hermes_home())
+    if "codex_image_hermes_model" in payload:
+        env_updates["CODEX_IMAGE_HERMES_MODEL"] = normalize_hermes_model(payload.get("codex_image_hermes_model"))
     if env_updates:
         update_env_values(env_updates)
 
@@ -8369,8 +8454,9 @@ def dashboard_payload():
     business_spaces = agency_spaces_payload()
     managed_accounts = managed_ad_accounts_payload()
     business_snapshot = business_context_snapshot(business_profile)
-    codex_image_status = codex_cli_auth_status(timeout=2)
+    codex_image_status = hermes_codex_image_status(timeout=2, config=config)
     codex_image_ready = bool(codex_image_status.get("ok"))
+    image_home = resolved_codex_image_hermes_home(config)
     return {
         "metrics": metrics,
         "recommendations": recommendations,
@@ -8439,6 +8525,10 @@ def dashboard_payload():
                 "image_generation_provider": "codex_image" if codex_image_ready else "",
                 "codex_image_ready": codex_image_ready,
                 "codex_image_error": "" if codex_image_ready else codex_image_status.get("error", ""),
+                "codex_image_source": getattr(config, "codex_image_source", "main_chatgpt"),
+                "codex_image_dedicated": getattr(config, "codex_image_source", "") == "dedicated_chatgpt",
+                "codex_image_home_configured": bool(image_home),
+                "codex_image_model": getattr(config, "codex_image_hermes_model", config.hermes_model),
                 "codex_planning_enabled": bool(config.codex_creative_enabled),
                 "asset_policy": creative_asset_policy(),
             },
@@ -8452,6 +8542,10 @@ def dashboard_payload():
                 "temperature": config.agent_chat_temperature,
                 "hermes_model": config.hermes_model,
                 "hermes_require_codex_auth": config.hermes_require_codex_auth,
+                "codex_image_source": getattr(config, "codex_image_source", "main_chatgpt"),
+                "codex_image_hermes_model": getattr(config, "codex_image_hermes_model", config.hermes_model),
+                "codex_image_ready": codex_image_ready,
+                "codex_image_error": "" if codex_image_ready else codex_image_status.get("error", ""),
             },
             "guardrails": {
                 "autonomy_mode": config.autonomy_mode,
@@ -8487,6 +8581,8 @@ def dashboard_payload():
                 "agent_chat_model": config.agent_chat_model,
                 "agent_chat_api": config.agent_chat_api,
                 "agent_chat_api_key_set": bool(config.agent_chat_api_key),
+                "codex_image_source": getattr(config, "codex_image_source", "main_chatgpt"),
+                "codex_image_hermes_model": getattr(config, "codex_image_hermes_model", config.hermes_model),
             },
         },
         "setup": setup,

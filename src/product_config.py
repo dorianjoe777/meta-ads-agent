@@ -2,8 +2,9 @@
 """Configuration helpers for Admira IA."""
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from communication_style import ad_experience_from_environment, communication_style_from_environment
@@ -13,6 +14,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT_DIR / ".env"
 DASHBOARD_IDENTITY_FILE = ROOT_DIR / "dashboard" / "data" / "dashboard_identity.json"
 DEFAULT_HERMES_CODEX_MODEL = "gpt-5.5"
+DEFAULT_CODEX_IMAGE_SOURCE = "main_chatgpt"
 
 
 def normalize_hermes_model(value):
@@ -165,6 +167,69 @@ def normalize_local_path(value, default):
     return str(path)
 
 
+def normalize_codex_image_source(value):
+    raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "": "main_chatgpt",
+        "auto": "main_chatgpt",
+        "main": "main_chatgpt",
+        "main_chatgpt": "main_chatgpt",
+        "primary": "main_chatgpt",
+        "agent": "main_chatgpt",
+        "same": "main_chatgpt",
+        "shared": "main_chatgpt",
+        "dedicated": "dedicated_chatgpt",
+        "separate": "dedicated_chatgpt",
+        "image": "dedicated_chatgpt",
+        "image_only": "dedicated_chatgpt",
+        "dedicated_chatgpt": "dedicated_chatgpt",
+        "image_chatgpt": "dedicated_chatgpt",
+    }
+    return aliases.get(raw, DEFAULT_CODEX_IMAGE_SOURCE)
+
+
+def default_codex_image_hermes_home():
+    return str(ROOT_DIR / "dashboard" / "data" / "hermes-image-home")
+
+
+def resolved_codex_image_hermes_home(config):
+    source = normalize_codex_image_source(getattr(config, "codex_image_source", ""))
+    if source != "dedicated_chatgpt":
+        return ""
+    configured = str(getattr(config, "codex_image_hermes_home", "") or "").strip()
+    return normalize_local_path(configured, default_codex_image_hermes_home())
+
+
+def image_codex_config(config):
+    """Return a config clone that points Codex/Image at the selected ChatGPT session."""
+    image_home = resolved_codex_image_hermes_home(config)
+    if not image_home:
+        return config
+    updates = {
+        "hermes_home": image_home,
+        "agent_brain_provider": "openai_codex",
+        "hermes_require_codex_auth": True,
+        "hermes_model": normalize_hermes_model(
+            getattr(config, "codex_image_hermes_model", "") or getattr(config, "hermes_model", "")
+        ),
+    }
+    try:
+        return replace(config, **updates)
+    except TypeError:
+        values = {}
+        for name in dir(config):
+            if name.startswith("_"):
+                continue
+            try:
+                value = getattr(config, name)
+            except Exception:
+                continue
+            if not callable(value):
+                values[name] = value
+        values.update(updates)
+        return SimpleNamespace(**values)
+
+
 @dataclass
 class AgentConfig:
     mode: str
@@ -222,6 +287,9 @@ class AgentConfig:
     codex_creative_enabled: bool
     codex_cli: str
     codex_creative_model: str
+    codex_image_source: str = DEFAULT_CODEX_IMAGE_SOURCE
+    codex_image_hermes_home: str = ""
+    codex_image_hermes_model: str = DEFAULT_HERMES_CODEX_MODEL
     agent_brain_provider: str = "openai_codex"
     dashboard_password_hash: str = ""
     license_public_key: str = ""
@@ -324,6 +392,9 @@ def load_config():
         codex_creative_enabled=env_bool("CODEX_CREATIVE_ENABLED", True),
         codex_cli=os.environ.get("CODEX_CLI", "codex"),
         codex_creative_model=os.environ.get("CODEX_CREATIVE_MODEL", ""),
+        codex_image_source=normalize_codex_image_source(os.environ.get("CODEX_IMAGE_SOURCE", DEFAULT_CODEX_IMAGE_SOURCE)),
+        codex_image_hermes_home=normalize_local_path(os.environ.get("CODEX_IMAGE_HERMES_HOME", ""), default_codex_image_hermes_home()) if os.environ.get("CODEX_IMAGE_HERMES_HOME") else "",
+        codex_image_hermes_model=normalize_hermes_model(os.environ.get("CODEX_IMAGE_HERMES_MODEL", os.environ.get("HERMES_MODEL", ""))),
         agent_brain_provider=brain_provider,
         dashboard_password_hash=os.environ.get("DASHBOARD_PASSWORD_HASH", ""),
         license_public_key=os.environ.get("LICENSE_PUBLIC_KEY", ""),

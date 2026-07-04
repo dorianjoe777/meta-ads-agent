@@ -16,7 +16,7 @@ from pathlib import Path
 
 from admira_rate_limit_messages import localized_textual_hint, retry_delay_hint, retry_seconds_from_text, textual_retry_hint
 from local_store import read_json
-from product_config import ROOT_DIR, load_config
+from product_config import ROOT_DIR, image_codex_config, load_config
 
 
 BRAND_DIR = ROOT_DIR / "brand_guides"
@@ -1473,7 +1473,9 @@ def codex_cli_error_message(stderr, stdout=""):
     return ""
 
 
-def codex_cli_environment(config):
+def codex_cli_environment(config, use_image_home=False):
+    if use_image_home:
+        config = image_codex_config(config)
     env = os.environ.copy()
     hermes_home = str(getattr(config, "hermes_home", "") or "").strip()
     if hermes_home:
@@ -1566,6 +1568,7 @@ def hermes_python_executable(config):
 
 
 def hermes_image_environment(config, image_model=""):
+    config = image_codex_config(config)
     try:
         from hermes_bridge import hermes_environment
 
@@ -1689,6 +1692,7 @@ def run_hermes_image_bridge(payload, timeout=360, config=None, image_model=""):
 
 def hermes_codex_image_status(timeout=10, config=None):
     config = config or load_config()
+    config = image_codex_config(config)
     result = run_hermes_image_bridge({"mode": "status"}, timeout=timeout, config=config)
     ok = bool(result.get("success"))
     return {
@@ -1800,7 +1804,7 @@ def call_codex_image_cli_direct(prompt, timeout=360, model=None, output_root=Non
     config = load_config()
     executable = getattr(config, "codex_cli", "codex")
     selected_model = str(model or getattr(config, "codex_creative_model", "") or getattr(config, "hermes_model", "") or "").strip()
-    env = codex_cli_environment(config)
+    env = codex_cli_environment(config, use_image_home=True)
     codex_home = Path(env.get("CODEX_HOME") or os.environ.get("CODEX_HOME") or (Path.home() / ".codex")).expanduser()
     generated_root = codex_home / "generated_images"
     auth = codex_cli_auth_status(env=env)

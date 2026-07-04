@@ -844,6 +844,7 @@ def hermes_codex_ready(config):
         completed = subprocess.run(
             [hermes_cli, "status"],
             cwd=str(ROOT_DIR),
+            env=hermes_environment(config),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

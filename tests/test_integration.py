@@ -1099,6 +1099,34 @@ class IntegrationTestSuite:
             dashboard.hermes_codex_ready = original_ready
             dashboard.log_action = original_log
 
+    def test_dashboard_image_only_chatgpt_connect_preserves_text_brain(self):
+        """Test a dedicated ChatGPT/Codex image login does not replace MiniMax/API as the text brain."""
+        print("\nTesting Dashboard Image-Only ChatGPT/Codex Connect...")
+
+        dashboard = load_dashboard_module()
+        captured = {}
+        original_update = dashboard.update_env_values
+        original_launch = dashboard.launch_hermes_terminal
+        original_ready = dashboard.hermes_codex_ready
+        original_log = dashboard.log_action
+        try:
+            dashboard.update_env_values = lambda values: captured.update(values)
+            dashboard.launch_hermes_terminal = lambda _config: False
+            dashboard.hermes_codex_ready = lambda _config: (True, "Provider: OpenAI Codex; OpenAI Codex ✓ logged in")
+            dashboard.log_action = lambda *_args, **_kwargs: None
+
+            result = dashboard.connect_agent_model({"connection_purpose": "image", "codex_image_hermes_model": "gpt-5.5"})
+
+            self.assert_true(result["status"] == "completed" and result.get("connection_purpose") == "image", "Image-only ChatGPT connection can complete independently")
+            self.assert_true(captured.get("CODEX_IMAGE_SOURCE") == "dedicated_chatgpt" and captured.get("CODEX_IMAGE_HERMES_MODEL") == "gpt-5.5", "Image-only connection saves dedicated image routing")
+            self.assert_true("CODEX_IMAGE_HERMES_HOME" in captured, "Image-only connection creates a persistent image auth home")
+            self.assert_true("AGENT_BRAIN_PROVIDER" not in captured and "AGENT_CHAT_PROVIDER" not in captured, "Image-only connection does not overwrite the main text brain")
+        finally:
+            dashboard.update_env_values = original_update
+            dashboard.launch_hermes_terminal = original_launch
+            dashboard.hermes_codex_ready = original_ready
+            dashboard.log_action = original_log
+
     def test_dashboard_chatgpt_connect_action_uses_vps_browserless_bridge(self):
         """Test the ChatGPT/Codex connection endpoint starts a browser-visible Hermes bridge on VPS/headless installs."""
         print("\nTesting Dashboard ChatGPT/Codex VPS Browserless Bridge...")
@@ -2772,6 +2800,38 @@ class IntegrationTestSuite:
             hermes_home = str(test_root / "hermes_home")
             self.assert_true(direct["ok"] is True and direct.get("backend") == "codex-cli-direct", "Codex/Image direct reference route can publish generated assets")
             self.assert_true(len(direct_calls) >= 2 and all(call[1].get("CODEX_HOME") == hermes_home and call[1].get("HERMES_HOME") == hermes_home for call in direct_calls), "Codex/Image direct reference route reuses the Hermes authenticated home for login status and exec")
+
+            image_only_home = str(test_root / "image_only_home")
+            direct_calls.clear()
+            codex_brand_guides.load_config = lambda: type("Cfg", (), {
+                "codex_cli": "codex",
+                "codex_creative_model": "gpt-5.5",
+                "hermes_model": "gpt-5.5",
+                "hermes_cli": "hermes",
+                "hermes_home": hermes_home,
+                "codex_image_source": "dedicated_chatgpt",
+                "codex_image_hermes_home": image_only_home,
+                "codex_image_hermes_model": "gpt-5.5",
+            })()
+            dedicated = codex_brand_guides.call_codex_image_cli(
+                "Usa la referencia adjunta para crear una variación con la sesión de imagen",
+                output_root=test_root / "creatives-image-only",
+                output_name="direct-image-only",
+                reference_image_paths=[reference_image],
+            )
+            self.assert_true(dedicated["ok"] is True and len(direct_calls) >= 2, "Codex/Image direct route still works with a dedicated image-only ChatGPT session")
+            self.assert_true(all(call[1].get("CODEX_HOME") == image_only_home and call[1].get("HERMES_HOME") == image_only_home for call in direct_calls), "Codex/Image direct route uses the dedicated image-only ChatGPT home when configured")
+
+            bridge_env = {}
+            codex_brand_guides.run_hermes_image_bridge = original_bridge
+
+            def fake_bridge_run(command, **kwargs):
+                bridge_env.update(kwargs.get("env") or {})
+                return type("Result", (), {"returncode": 0, "stdout": '{"success": false, "error": "status only"}\n', "stderr": ""})()
+
+            codex_brand_guides.subprocess.run = fake_bridge_run
+            codex_brand_guides.run_hermes_image_bridge({"mode": "status"}, config=codex_brand_guides.load_config())
+            self.assert_true(bridge_env.get("HERMES_HOME") == image_only_home, "Codex/Image Hermes bridge uses the dedicated image-only ChatGPT home for non-reference image calls")
         finally:
             codex_brand_guides.run_hermes_image_bridge = original_bridge
             codex_brand_guides.load_config = original_load_config
@@ -5436,6 +5496,7 @@ class IntegrationTestSuite:
         self.assert_true("Copiar paso" not in html and "Copy step" not in html, "ChatGPT/Codex connection no longer presents copy-only wording")
         self.assert_true("Abrir configuración de ChatGPT" in html and "chatgpt-settings-link" in html and "chatgpt-settings-actions" in html, "ChatGPT/Codex setup gives buyers a direct button to the ChatGPT security settings")
         self.assert_true("Modelo para ChatGPT/Codex" in html and "<select name=\"hermes_model\">" in html and "gpt-5.5" in html and "Recomendado automático" not in html and "agentModelFormPayload()" in html, "ChatGPT/Codex setup exposes gpt-5.5 as the clear default model selector")
+        self.assert_true("ChatGPT/Codex solo para imágenes" in html and "connectImageChatGpt(event)" in html and "codex_image_source" in html and "imageChatGptPayload()" in html, "Agent model setup can connect a separate ChatGPT/Codex session only for Image 2")
         self.assert_true("agent_chat_base_url" in html and "agent_chat_api_key" in html and "custom_api" in html, "OpenAI-compatible brain settings are exposed without showing saved keys")
         self.assert_true("DigitalOcean mostraré aquí el enlace" in html and "Ver diagnóstico para soporte" in html, "Hermes/ChatGPT setup has a browser-based VPS path with diagnostics folded")
         self.assert_true("Toca el botón de abajo para abrir la configuración de tu cuenta ChatGPT." in html and "Activar autorización con códigos de dispositivo para Codex" in html and "Vuelve aquí y toca el botón “Ya lo hice, conectar a ChatGPT ahora”" in html and "chatgpt-preflight" in html and ".chatgpt-preflight ol" in html, "ChatGPT/Codex setup tells buyers to enable device-code authorization before login without overlapping the model field")
@@ -5625,7 +5686,7 @@ class IntegrationTestSuite:
         onboarding_before = onboarding_path.read_text(encoding="utf-8") if onboarding_path.exists() else ""
         binding_before = binding_path.read_bytes() if binding_path.exists() else None
         managed_before = managed_path.read_bytes() if managed_path.exists() else None
-        env_keys = ["LICENSE_KEY", "LICENSE_BUYER_EMAIL", "META_AD_ACCOUNT_ID"]
+        env_keys = ["LICENSE_KEY", "LICENSE_BUYER_EMAIL", "META_AD_ACCOUNT_ID", "CODEX_IMAGE_SOURCE", "CODEX_IMAGE_HERMES_HOME", "CODEX_IMAGE_HERMES_MODEL"]
         env_backup = {key: os.environ.get(key) for key in env_keys}
         try:
             dashboard.update_env_values({"LICENSE_KEY": "MAO-TESTBUYER-30628D"})
@@ -5648,6 +5709,8 @@ class IntegrationTestSuite:
                     "agent_chat_model": "MiniMax-M3",
                     "agent_chat_api": "openai-chat-completions",
                     "agent_chat_api_key": "direct-model-key",
+                    "codex_image_source": "dedicated_chatgpt",
+                    "codex_image_hermes_model": "gpt-5.5",
                 }
             )
             env_after = env_path.read_text(encoding="utf-8")
@@ -5661,6 +5724,8 @@ class IntegrationTestSuite:
             self.assert_true("AGENT_CHAT_BASE_URL=https://api.minimax.io/v1" in env_after, "Agent model URL saved to .env")
             self.assert_true("AGENT_CHAT_MODEL=MiniMax-M3" in env_after, "Agent model name saved to .env")
             self.assert_true("AGENT_CHAT_API_KEY=direct-model-key" in env_after, "Agent model API key saved locally")
+            self.assert_true("CODEX_IMAGE_SOURCE=dedicated_chatgpt" in env_after and "CODEX_IMAGE_HERMES_MODEL=gpt-5.5" in env_after, "Separate ChatGPT/Codex image routing is saved without changing the text brain")
+            self.assert_true("CODEX_IMAGE_HERMES_HOME=" in env_after, "Dedicated image routing gets a persistent auth home")
             self.assert_true(saved["creative"]["destination"]["page_id"] == "12345", "Page ID saved to ad-config")
             self.assert_true(saved["creative"]["destination"]["default_adset_id"] == "67890", "Default ad set saved to ad-config")
             self.assert_true(saved["creative"]["destination"]["url"] == "https://buyer.example", "Landing URL saved to ad-config")
@@ -6757,6 +6822,7 @@ class IntegrationTestSuite:
             self.test_hermes_model_usage_limit_keeps_connection_state_clear,
             self.test_hermes_gateway_rate_limit_runtime_patch_localizes_reset_time,
             self.test_dashboard_chatgpt_connect_action_opens_terminal,
+            self.test_dashboard_image_only_chatgpt_connect_preserves_text_brain,
             self.test_dashboard_chatgpt_connect_action_uses_vps_browserless_bridge,
             self.test_dashboard_hermes_browserless_auto_selects_codex,
             self.test_hermes_blocks_non_codex_runtime_by_default,
