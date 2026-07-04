@@ -420,6 +420,11 @@ def start_gateway(config):
     env = hermes_environment(config)
     env["HERMES_HOME"] = files["hermes_home"]
     env["HERMES_ACCEPT_HOOKS"] = "1"
+    existing_pythonpath = env.get("PYTHONPATH", "")
+    source_path = str(ROOT_DIR / "src")
+    env["PYTHONPATH"] = source_path if not existing_pythonpath else f"{source_path}{os.pathsep}{existing_pythonpath}"
+    env["ADMIRA_HERMES_RUNTIME_PATCHES"] = "1"
+    env["ADMIRA_GATEWAY_LANGUAGE"] = status["language"]
     try:
         with log_path.open("a", encoding="utf-8") as log_file:
             log_file.write(f"\n[{now_iso()}] Starting Hermes Gateway for Admira IA\n")

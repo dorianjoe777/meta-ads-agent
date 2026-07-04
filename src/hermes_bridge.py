@@ -17,6 +17,13 @@ from experiment_scheduler import experiment_review_payload
 from local_store import read_json
 from optimization_engine import load_optimization_state
 from optimization_research import load_research
+from admira_rate_limit_messages import (
+    is_rate_limit_text,
+    localized_textual_hint,
+    retry_delay_hint,
+    retry_seconds_from_text,
+    textual_retry_hint,
+)
 from security import redact_payload
 
 try:
@@ -795,53 +802,22 @@ def setup_reply(language="es"):
 
 
 def model_usage_limit_error(error_text):
-    text = str(error_text or "").lower()
-    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in MODEL_USAGE_LIMIT_PATTERNS)
+    return is_rate_limit_text(error_text)
 
 
 def model_usage_limit_retry_hint(error_text):
-    text = re.sub(r"\s+", " ", str(error_text or "")).strip()
-    patterns = (
-        r"(?:try again|retry|available|reset(?:s)?|limit reset(?:s)?)(?:\s+\w+){0,4}\s+(?:in|at|after|on|until)\s+([^.;\n]{2,90})",
-        r"(?:please\s+)?wait\s+(?:for\s+)?([^.;\n]{2,60}?)(?:\s+and\s+try\s+again|$)",
-        r"(?:intenta|vuelve a intentar|reintenta|reinicia|disponible)(?:\s+\w+){0,5}\s+(?:en|a las|despues de|después de|hasta)\s+([^.;\n]{2,90})",
-        r"(?:after|in)\s+(\d+\s*(?:seconds?|minutes?|hours?|segundos?|minutos?|horas?))",
-    )
-    for pattern in patterns:
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if match:
-            hint = match.group(1).strip(" .,:;")
-            if hint:
-                return hint[:90]
-    return ""
+    seconds = retry_seconds_from_text(error_text)
+    if seconds is not None:
+        return retry_delay_hint(error_text, "en")
+    return textual_retry_hint(error_text)
 
 
 def localized_retry_hint(hint, language="es"):
-    value = str(hint or "").strip(" .,:;")
-    if not value:
-        return ""
-    if str(language or "es").lower().startswith("en"):
-        return value
-    lowered = value.lower()
-    replacements = [
-        (r"\ban hour\b", "1 hora"),
-        (r"\ba minute\b", "1 minuto"),
-        (r"\ba second\b", "1 segundo"),
-        (r"\ba moment\b", "un momento"),
-        (r"\bfew moments\b", "unos momentos"),
-        (r"\bseconds?\b", "segundos"),
-        (r"\bminutes?\b", "minutos"),
-        (r"\bhours?\b", "horas"),
-        (r"\bdays?\b", "días"),
-    ]
-    translated = lowered
-    for pattern, replacement in replacements:
-        translated = re.sub(pattern, replacement, translated, flags=re.IGNORECASE)
-    return translated.strip(" .,:;")
+    return localized_textual_hint(hint, language)
 
 
 def model_usage_limit_reply(language="es", error_text=""):
-    hint = model_usage_limit_retry_hint(error_text)
+    hint = retry_delay_hint(error_text, language)
     if language == "en":
         base = (
             "ChatGPT/Codex is connected, but the model hit a temporary usage limit. "

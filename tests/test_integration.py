@@ -42,6 +42,7 @@ import optimization_research
 import signal_quality
 import shopify_connector
 import verified_signal_ledger
+import admira_hermes_runtime_patch
 from audience_builder import build_audience_strategy
 from codex_brand_guides import build_codex_creative_prompt, build_codex_image_prompt_package
 import codex_brand_guides
@@ -1018,6 +1019,26 @@ class IntegrationTestSuite:
             hermes_bridge.hermes_brain_ready = original_ready
             hermes_bridge.cli_chat = original_cli
 
+    def test_hermes_gateway_rate_limit_runtime_patch_localizes_reset_time(self):
+        """Test native Hermes Gateway rate-limit fallbacks stay Spanish and include reset timing."""
+        print("\nTesting Hermes Gateway Rate Limit Runtime Patch...")
+
+        raw_five_hours = "HTTP 429: {'error': {'type': 'usage_limit_reached', 'resets_in_seconds': 18000}}"
+        spanish = admira_hermes_runtime_patch.provider_error_reply(raw_five_hours, "es", lambda text: "ORIGINAL")
+        english = admira_hermes_runtime_patch.provider_error_reply(raw_five_hours, "en", lambda text: "ORIGINAL")
+
+        self.assert_true("ChatGPT/Codex" in spanish and "5 horas" in spanish and "rate-limiting" not in spanish.lower(), "Gateway rate-limit text is localized in Spanish with a 5-hour reset")
+        self.assert_true("5 hours" in english and "usage limit" in english.lower(), "Gateway rate-limit text can stay English when configured")
+
+        raw_long_reset = "HTTP 429: {'error': {'type': 'usage_limit_reached', 'resets_in_seconds': 199500}}"
+        long_spanish = admira_hermes_runtime_patch.provider_error_reply(raw_long_reset, "es", lambda text: "ORIGINAL")
+        self.assert_true("2 días y 8 horas" in long_spanish, "Long provider reset windows are formatted as days plus hours")
+
+        unknown = admira_hermes_runtime_patch.provider_error_reply("The model provider is rate-limiting requests. Please wait a moment and try again.", "es", lambda text: "ORIGINAL")
+        passthrough = admira_hermes_runtime_patch.provider_error_reply("Some unrelated provider failure", "es", lambda text: f"ORIGINAL:{text}")
+        self.assert_true("un momento" in unknown and "rate-limiting" not in unknown.lower(), "Gateway keeps a Spanish fallback when only a vague wait hint exists")
+        self.assert_true(passthrough.startswith("ORIGINAL:"), "Runtime patch delegates unrelated provider failures to Hermes")
+
     def test_dashboard_chatgpt_connect_action_opens_terminal(self):
         """Test the dashboard ChatGPT/Codex connection endpoint prefers an automatic terminal action."""
         print("\nTesting Dashboard ChatGPT/Codex Connect Action...")
@@ -1966,10 +1987,13 @@ class IntegrationTestSuite:
             serialized_status = json.dumps(status, ensure_ascii=False)
             start_command = " ".join(popen_calls[0][0][0])
             start_kwargs = popen_calls[0][1]
+            gateway_process_env = start_kwargs.get("env") or {}
 
             self.assert_true(started["started"] is True, "Hermes Gateway can start through the configured isolated runtime")
             self.assert_true("--replace" in start_command and "admira_hermes_gateway_supervisor" in start_command and "while :" in start_command, "Hermes Gateway starts under a restart supervisor and replaces stale gateway instances")
             self.assert_true(start_kwargs.get("start_new_session") is True, "Hermes Gateway supervisor runs in its own process group for clean update replacement")
+            self.assert_true(gateway_process_env.get("ADMIRA_HERMES_RUNTIME_PATCHES") == "1" and str(ROOT_DIR / "src") in gateway_process_env.get("PYTHONPATH", ""), "Hermes Gateway loads Admira runtime patches from the product source path")
+            self.assert_true(gateway_process_env.get("ADMIRA_GATEWAY_LANGUAGE") == "es", "Hermes Gateway passes the buyer language to runtime patches")
             self.assert_true("MALICIOUS=1" not in env_text and "\nMALICIOUS" not in env_text, "Telegram token is sanitized before writing the isolated Hermes env")
             self.assert_true("secret-token" not in serialized_status and "123456:" not in serialized_status, "Gateway status never exposes the Telegram bot token")
 
@@ -6731,6 +6755,7 @@ class IntegrationTestSuite:
             self.test_hermes_creative_image_request_routes_to_codex_tool,
             self.test_hermes_missing_runtime_gives_chatgpt_setup_guidance,
             self.test_hermes_model_usage_limit_keeps_connection_state_clear,
+            self.test_hermes_gateway_rate_limit_runtime_patch_localizes_reset_time,
             self.test_dashboard_chatgpt_connect_action_opens_terminal,
             self.test_dashboard_chatgpt_connect_action_uses_vps_browserless_bridge,
             self.test_dashboard_hermes_browserless_auto_selects_codex,

@@ -14,6 +14,7 @@ import uuid
 from math import gcd
 from pathlib import Path
 
+from admira_rate_limit_messages import localized_textual_hint, retry_delay_hint, retry_seconds_from_text, textual_retry_hint
 from local_store import read_json
 from product_config import ROOT_DIR, load_config
 
@@ -1932,40 +1933,14 @@ def call_codex_image_cli(prompt, timeout=360, model=None, output_root=None, outp
 
 
 def image_rate_limit_retry_hint(error):
-    text = re.sub(r"\s+", " ", str(error or "")).strip()
-    patterns = (
-        r"(?:try again|retry|available|reset(?:s)?|limit reset(?:s)?)(?:\s+\w+){0,4}\s+(?:in|at|after|on|until)\s+([^.;\n]{2,90})",
-        r"(?:please\s+)?wait\s+(?:for\s+)?([^.;\n]{2,60}?)(?:\s+and\s+try\s+again|$)",
-        r"(?:intenta|vuelve a intentar|reintenta|reinicia|disponible)(?:\s+\w+){0,5}\s+(?:en|a las|despues de|después de|hasta)\s+([^.;\n]{2,90})",
-        r"(?:after|in)\s+(\d+\s*(?:seconds?|minutes?|hours?|segundos?|minutos?|horas?))",
-    )
-    for pattern in patterns:
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if match:
-            hint = match.group(1).strip(" .,:;")
-            if hint:
-                return hint[:90]
-    return ""
+    seconds = retry_seconds_from_text(error)
+    if seconds is not None:
+        return retry_delay_hint(error, "en")
+    return textual_retry_hint(error)
 
 
 def image_localized_retry_hint(hint):
-    value = str(hint or "").strip(" .,:;").lower()
-    if not value:
-        return ""
-    replacements = [
-        (r"\ban hour\b", "1 hora"),
-        (r"\ba minute\b", "1 minuto"),
-        (r"\ba second\b", "1 segundo"),
-        (r"\ba moment\b", "un momento"),
-        (r"\bfew moments\b", "unos momentos"),
-        (r"\bseconds?\b", "segundos"),
-        (r"\bminutes?\b", "minutos"),
-        (r"\bhours?\b", "horas"),
-        (r"\bdays?\b", "días"),
-    ]
-    for pattern, replacement in replacements:
-        value = re.sub(pattern, replacement, value, flags=re.IGNORECASE)
-    return value.strip(" .,:;")
+    return localized_textual_hint(hint, "es")
 
 
 def image_generation_error_message(error, error_type=""):
