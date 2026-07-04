@@ -213,6 +213,7 @@ def write_gateway_files(config):
         f"      ADMIRA_PRODUCT_ROOT: {_quote_yaml(str(ROOT_DIR))}",
         "    timeout: 900",
         "    connect_timeout: 45",
+        "    keepalive_interval: 1200",
         "terminal:",
         f"  cwd: {_quote_yaml(str(workspace))}",
         "telegram:",

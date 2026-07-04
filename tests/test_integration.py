@@ -1638,6 +1638,7 @@ class IntegrationTestSuite:
             self.assert_true("threshold: 0.85" in config_yaml and "codex_gpt55_autoraise: false" in config_yaml, "Hermes Gateway keeps the larger Codex context threshold without replaying the auto-compaction notice to buyers")
             self.assert_true("mcp_servers:" in config_yaml and "admira:" in config_yaml and "admira_mcp_server.py" in config_yaml, "Hermes Gateway registers the Admira MCP product-tool bridge")
             self.assert_true("    timeout: 900" in config_yaml, "Hermes Gateway lets long Codex/Image MCP calls finish instead of cutting them off at 300 seconds")
+            self.assert_true("    keepalive_interval: 1200" in config_yaml, "Hermes Gateway avoids MCP keepalive reconnects while a long creative tool call is still running")
             self.assert_true("    - admira" in config_yaml, "Hermes Gateway explicitly enables Admira MCP tools for Telegram")
             self.assert_true("disabled_toolsets:" in config_yaml and "code_execution" in config_yaml and str(workspace) in config_yaml, "Hermes Gateway config keeps Telegram in the curated workspace")
             self.assert_true('default: "gpt-5.5"' in config_yaml and 'default: "auto"' not in config_yaml, "Hermes Gateway normalizes legacy auto model to gpt-5.5")
@@ -1796,7 +1797,7 @@ class IntegrationTestSuite:
                 60,
             )
             self.assert_true(result["ok"] is False and result["reason"] == "admira_tool_timeout", "Creative MCP timeout is returned as a blocked tool result")
-            self.assert_true(result["result"]["retryable"] is True and "no se quede congelado" in result["reply"], "Creative MCP timeout gives the buyer a clear retryable fallback message")
+            self.assert_true(result["result"]["retryable"] is True and "no se quede congelado" in result["reply"] and "límite semanal de imágenes en 0" in result["reply"], "Creative MCP timeout gives the buyer a clear retryable fallback message including possible ChatGPT image caps")
             self.assert_true(any(sig == signal.SIGTERM for _, sig in kill_signals), "Creative MCP timeout terminates the stuck subprocess group")
         finally:
             admira_mcp_server.subprocess.Popen = original_popen

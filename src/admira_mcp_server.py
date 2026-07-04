@@ -95,6 +95,8 @@ def timeout_tool_result(name, seconds):
     message = (
         "La generación o planificación creativa tardó demasiado y la detuve para que el agente no se quede congelado. "
         "Puedes reintentar con una sola variación, una instrucción más corta o volver a pedirme que retome el creativo. "
+        "Si tu cuenta de ChatGPT/Codex muestra el límite semanal de imágenes en 0, espera a que se reinicie ese límite "
+        "o conecta una cuenta con capacidad disponible; a veces el proveedor no devuelve ese aviso y solo queda como timeout. "
         "Si estás usando DigitalOcean, usa mínimo 2GB de RAM para trabajar con creativos."
     )
     return {
