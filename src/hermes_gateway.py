@@ -211,7 +211,7 @@ def write_gateway_files(config):
         "    env:",
         f"      PYTHONPATH: {_quote_yaml(str(ROOT_DIR / 'src'))}",
         f"      ADMIRA_PRODUCT_ROOT: {_quote_yaml(str(ROOT_DIR))}",
-        "    timeout: 300",
+        "    timeout: 900",
         "    connect_timeout: 45",
         "terminal:",
         f"  cwd: {_quote_yaml(str(workspace))}",

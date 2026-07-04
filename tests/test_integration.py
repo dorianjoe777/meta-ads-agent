@@ -1637,6 +1637,7 @@ class IntegrationTestSuite:
             self.assert_true("gateway_restart_notification: false" in config_yaml, "Hermes Gateway suppresses buyer-facing shutdown notices during planned dashboard restarts")
             self.assert_true("threshold: 0.85" in config_yaml and "codex_gpt55_autoraise: false" in config_yaml, "Hermes Gateway keeps the larger Codex context threshold without replaying the auto-compaction notice to buyers")
             self.assert_true("mcp_servers:" in config_yaml and "admira:" in config_yaml and "admira_mcp_server.py" in config_yaml, "Hermes Gateway registers the Admira MCP product-tool bridge")
+            self.assert_true("    timeout: 900" in config_yaml, "Hermes Gateway lets long Codex/Image MCP calls finish instead of cutting them off at 300 seconds")
             self.assert_true("    - admira" in config_yaml, "Hermes Gateway explicitly enables Admira MCP tools for Telegram")
             self.assert_true("disabled_toolsets:" in config_yaml and "code_execution" in config_yaml and str(workspace) in config_yaml, "Hermes Gateway config keeps Telegram in the curated workspace")
             self.assert_true('default: "gpt-5.5"' in config_yaml and 'default: "auto"' not in config_yaml, "Hermes Gateway normalizes legacy auto model to gpt-5.5")
