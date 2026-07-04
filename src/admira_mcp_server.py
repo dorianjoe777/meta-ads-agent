@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """MCP server that exposes Admira IA product tools to Hermes."""
 import json
+import os
+from pathlib import Path
+import signal
+import subprocess
 import sys
 import traceback
 
@@ -14,6 +18,10 @@ except ImportError:  # pragma: no cover - exercised in lightweight test envs
 
 SERVER_NAME = "admira"
 PROTOCOL_VERSION = "2024-11-05"
+ORIGINAL_CALL_TOOL = call_tool
+BRIDGE_PATH = Path(__file__).resolve().parent / "admira_tool_bridge.py"
+HEAVY_TOOL_NAMES = {"codex_image_generate", "codex_creative_plan", "admira_codex_image_generate", "admira_codex_creative_plan"}
+DEFAULT_HEAVY_TOOL_TIMEOUT_SECONDS = 600
 
 
 TOOL_DEFINITIONS = [
@@ -59,6 +67,125 @@ def tool_schema(name, description):
     }
 
 
+def heavy_tool_timeout_seconds():
+    raw = os.environ.get("ADMIRA_HEAVY_TOOL_TIMEOUT_SECONDS", "")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = DEFAULT_HEAVY_TOOL_TIMEOUT_SECONDS
+    return max(60, min(1800, value))
+
+
+def is_heavy_tool(name):
+    normalized = str(name or "").strip()
+    if normalized.startswith("mcp_admira_"):
+        normalized = normalized.removeprefix("mcp_")
+    if normalized.startswith("admira_"):
+        without_prefix = normalized.removeprefix("admira_")
+        return normalized in HEAVY_TOOL_NAMES or without_prefix in HEAVY_TOOL_NAMES
+    return normalized in HEAVY_TOOL_NAMES
+
+
+def timeout_tool_result(name, seconds):
+    normalized = str(name or "").strip()
+    if normalized.startswith("mcp_admira_"):
+        normalized = "admira_" + normalized.removeprefix("mcp_admira_")
+    elif not normalized.startswith("admira_"):
+        normalized = f"admira_{normalized}"
+    message = (
+        "La generación o planificación creativa tardó demasiado y la detuve para que el agente no se quede congelado. "
+        "Puedes reintentar con una sola variación, una instrucción más corta o volver a pedirme que retome el creativo. "
+        "Si estás usando DigitalOcean, usa mínimo 2GB de RAM para trabajar con creativos."
+    )
+    return {
+        "ok": False,
+        "tool": normalized,
+        "blocked": True,
+        "reason": "admira_tool_timeout",
+        "error_type": "timeout",
+        "timeout_seconds": seconds,
+        "reply": message,
+        "result": {
+            "ok": False,
+            "blocked": True,
+            "error_type": "timeout",
+            "reason": "admira_tool_timeout",
+            "error": message,
+            "reply": message,
+            "retryable": True,
+        },
+    }
+
+
+def invalid_subprocess_result(name, stderr=""):
+    normalized = str(name or "").strip()
+    if not normalized.startswith("admira_") and not normalized.startswith("mcp_admira_"):
+        normalized = f"admira_{normalized}"
+    message = "No pude leer la respuesta interna de la herramienta creativa. Intenta de nuevo con una solicitud más corta."
+    return {
+        "ok": False,
+        "tool": normalized,
+        "blocked": True,
+        "reason": "admira_tool_invalid_response",
+        "error": message,
+        "reply": message,
+        "stderr": str(stderr or "")[-1000:],
+    }
+
+
+def call_tool_in_subprocess(name, arguments, timeout_seconds):
+    command = [
+        sys.executable,
+        str(BRIDGE_PATH),
+        "call",
+        str(name),
+        "--json",
+        json.dumps(arguments or {}, ensure_ascii=False),
+    ]
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+            stdout, stderr = process.communicate(timeout=5)
+        except Exception:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except Exception:
+                pass
+        return timeout_tool_result(name, timeout_seconds)
+    last_json = ""
+    for line in reversed((stdout or "").splitlines()):
+        if line.strip().startswith("{"):
+            last_json = line.strip()
+            break
+    if not last_json:
+        return invalid_subprocess_result(name, stderr)
+    try:
+        result = json.loads(last_json)
+    except json.JSONDecodeError:
+        return invalid_subprocess_result(name, stderr)
+    if isinstance(result, dict):
+        return result
+    return invalid_subprocess_result(name, stderr)
+
+
+def call_tool_guarded(name, arguments):
+    # Keep monkeypatched unit tests simple and direct.
+    if call_tool is not ORIGINAL_CALL_TOOL:
+        return call_tool(name, arguments)
+    if is_heavy_tool(name):
+        return call_tool_in_subprocess(name, arguments, heavy_tool_timeout_seconds())
+    return call_tool(name, arguments)
+
+
 def create_fastmcp_server():
     if FastMCP is None:
         return None
@@ -72,8 +199,10 @@ def create_fastmcp_server():
     )
 
     def _register_tool(tool_name, description):
-        def _tool(**kwargs):
-            result = call_tool(f"admira_{tool_name}", kwargs or {})
+        async def _tool(**kwargs):
+            import asyncio
+
+            result = await asyncio.to_thread(call_tool_guarded, f"admira_{tool_name}", kwargs or {})
             return json.dumps(result, ensure_ascii=False)
 
         _tool.__name__ = tool_name
@@ -147,7 +276,7 @@ def handle_request(request):
         name = str(params.get("name") or "").strip()
         arguments = params.get("arguments") or {}
         try:
-            result = call_tool(f"admira_{name}", arguments)
+            result = call_tool_guarded(f"admira_{name}", arguments)
             return success(
                 request_id,
                 {

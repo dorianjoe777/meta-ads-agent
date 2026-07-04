@@ -5,6 +5,7 @@ Integration tests for Meta Ads Agent modules.
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -1771,6 +1772,34 @@ class IntegrationTestSuite:
         finally:
             admira_mcp_server.write_message = original_write
             admira_mcp_server.call_tool = original_call
+
+    def test_admira_mcp_creative_timeout_returns_buyer_fallback(self):
+        """Test stuck creative MCP subprocesses return a friendly retryable fallback instead of hanging."""
+        print("\nTesting Admira MCP Creative Timeout Fallback...")
+
+        class HangingProcess:
+            pid = 999999
+
+            def communicate(self, timeout=None):
+                raise subprocess.TimeoutExpired(["admira_tool_bridge"], timeout)
+
+        original_popen = admira_mcp_server.subprocess.Popen
+        original_killpg = admira_mcp_server.os.killpg
+        try:
+            kill_signals = []
+            admira_mcp_server.subprocess.Popen = lambda *args, **kwargs: HangingProcess()
+            admira_mcp_server.os.killpg = lambda pid, sig: kill_signals.append((pid, sig))
+            result = admira_mcp_server.call_tool_in_subprocess(
+                "admira_codex_image_generate",
+                {"request": "revisa el creativo y agrega glow dorado"},
+                60,
+            )
+            self.assert_true(result["ok"] is False and result["reason"] == "admira_tool_timeout", "Creative MCP timeout is returned as a blocked tool result")
+            self.assert_true(result["result"]["retryable"] is True and "no se quede congelado" in result["reply"], "Creative MCP timeout gives the buyer a clear retryable fallback message")
+            self.assert_true(any(sig == signal.SIGTERM for _, sig in kill_signals), "Creative MCP timeout terminates the stuck subprocess group")
+        finally:
+            admira_mcp_server.subprocess.Popen = original_popen
+            admira_mcp_server.os.killpg = original_killpg
 
     def test_verified_signal_ledger_records_private_deduped_outcomes(self):
         """Test the local verified-signal ledger stores useful outcome truth without raw contact data."""
@@ -6421,7 +6450,8 @@ class IntegrationTestSuite:
         self.assert_true("mark_license_install_state" in dashboard_source and "onboarding_completed" in dashboard_source, "Dashboard reports onboarding progress to the license server without blocking local use")
         self.assert_true("Instalar en la nube" in portal_page and "/api/portal/cloud/digitalocean" in portal_page and "Crear mi servidor" in portal_page, "Download portal exposes guided DigitalOcean install after buyer access")
         self.assert_true("Crear cuenta en DigitalOcean" in portal_page and "https://cloud.digitalocean.com/registrations/new" in portal_page and "Haz clic aqui para obtener el token" in portal_page and "cloud-token-cta" in portal_page, "Cloud install gives buyers direct DigitalOcean signup and a clear token action beside the token field")
-        self.assert_true("US$4 a US$6 al mes" in portal_page and "credito inicial" in portal_page and "metodo de pago" in portal_page, "Cloud install explains expected DigitalOcean cost and signup requirements")
+        self.assert_true("US$12 al mes" in portal_page and "credito inicial" in portal_page and "metodo de pago" in portal_page, "Cloud install explains expected DigitalOcean cost and signup requirements")
+        self.assert_true("Minimo viable recomendado - 2GB RAM" in portal_page and "No usamos 1GB como minimo" in portal_page and 'default_size: "s-1vcpu-2gb"' in digitalocean_cloud_lib and "s-1vcpu-1gb" not in digitalocean_cloud_lib, "Cloud install uses 2GB RAM as the minimum viable DigitalOcean option")
         self.assert_true("cloud-progress" in portal_page and "startCloudProgressPolling" in portal_page and "action: 'status'" in portal_page, "Download portal shows cloud install progress and polls status")
         self.assert_true("Math.min(98, rawProgress)" in portal_page and "verificando_dashboard" in portal_digitalocean_api and "Math.min(98, cleanProgress" in portal_digitalocean_api, "Download portal never shows 100 percent until the cloud dashboard is actually ready")
         self.assert_true('if (estimated.ready)' in portal_digitalocean_api and 'progress: 100' in portal_digitalocean_api and "cloudPollFailures" in portal_page and "handleCloudProgressError" in portal_page, "Cloud progress does not freeze at the first preview when the saved install state is ready or polling has a transient failure")
@@ -6678,6 +6708,7 @@ class IntegrationTestSuite:
             self.test_hermes_product_skills_are_copied_to_workspace,
             self.test_admira_tool_bridge_maps_mcp_tools_to_dashboard_actions,
             self.test_admira_mcp_server_lists_and_calls_product_tools,
+            self.test_admira_mcp_creative_timeout_returns_buyer_fallback,
             self.test_verified_signal_ledger_records_private_deduped_outcomes,
             self.test_hermes_gateway_redacts_token_and_handles_start_failure,
             self.test_hermes_gateway_incomplete_config_stops_existing_process,

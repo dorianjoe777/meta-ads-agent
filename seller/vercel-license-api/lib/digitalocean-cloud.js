@@ -8,9 +8,9 @@ export const DIGITALOCEAN_REGIONS = [
 ];
 
 export const DIGITALOCEAN_SIZES = [
-  { id: "s-1vcpu-1gb", label: "Basico recomendado", note: "Suficiente para empezar con Docker y el dashboard." },
-  { id: "s-1vcpu-2gb", label: "Mas comodo", note: "Mejor si usara Telegram, creativos y reportes con frecuencia." },
-  { id: "s-2vcpu-2gb", label: "Agencia pequena", note: "Mas margen para varias cuentas y trabajo diario." }
+  { id: "s-1vcpu-2gb", label: "Minimo viable recomendado", note: "Recomendado para Telegram, dashboard, reportes y generacion de creativos sin quedarse justo de memoria." },
+  { id: "s-2vcpu-2gb", label: "Trabajo diario comodo", note: "Mas margen para sesiones largas, varias cuentas y creativos frecuentes." },
+  { id: "s-2vcpu-4gb", label: "Agencia / creativos intensivos", note: "Mejor si usara varias cuentas, imagenes, videos o revisiones creativas con frecuencia." }
 ];
 
 const SSH_PREFIXES = [
@@ -823,6 +823,6 @@ export function publicCloudOptions() {
     regions: DIGITALOCEAN_REGIONS,
     sizes: DIGITALOCEAN_SIZES,
     default_region: "nyc3",
-    default_size: "s-1vcpu-1gb"
+    default_size: "s-1vcpu-2gb"
   };
 }

@@ -860,7 +860,7 @@ export default async function handler(request, response) {
               </div>
               <div class="cloud-intro-card">
                 <strong>Costo esperado</strong>
-                <p>DigitalOcean suele ofrecer credito inicial para cuentas nuevas. Despues, el servidor basico normalmente queda cerca de US$4 a US$6 al mes, segun el tamano elegido. Revisa siempre el precio final en DigitalOcean antes de crear el servidor.</p>
+                <p>DigitalOcean suele ofrecer credito inicial para cuentas nuevas. Para Admira IA recomendamos minimo 2GB de RAM; suele quedar cerca de US$12 al mes en DigitalOcean, segun region y precio vigente. Revisa siempre el precio final antes de crear el servidor.</p>
               </div>
             </div>
             <div class="cloud-grid">
@@ -896,10 +896,11 @@ export default async function handler(request, response) {
               <div class="cloud-create-only">
                 <label for="cloudSize">Tamano del servidor</label>
                 <select id="cloudSize">
-                  <option value="s-1vcpu-1gb">Basico recomendado</option>
-                  <option value="s-1vcpu-2gb">Mas comodo</option>
-                  <option value="s-2vcpu-2gb">Agencia pequena</option>
+                  <option value="s-1vcpu-2gb">Minimo viable recomendado - 2GB RAM</option>
+                  <option value="s-2vcpu-2gb">Trabajo diario comodo - 2GB RAM</option>
+                  <option value="s-2vcpu-4gb">Agencia / creativos intensivos - 4GB RAM</option>
                 </select>
+                <div class="helper">No usamos 1GB como minimo porque puede quedarse sin memoria al generar o revisar creativos.</div>
               </div>
             </div>
             <button class="primary" id="cloudButton" type="submit">Crear mi servidor</button>

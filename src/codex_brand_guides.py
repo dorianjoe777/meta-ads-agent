@@ -1965,6 +1965,12 @@ def image_localized_retry_hint(hint):
 def image_generation_error_message(error, error_type=""):
     text = str(error or "").strip()
     lowered = text.lower()
+    if str(error_type or "").lower() == "timeout" or "timed out" in lowered or "timeout" in lowered or "tardó demasiado" in lowered or "tardo demasiado" in lowered:
+        return (
+            "La generación de imagen tardó demasiado y la detuve para que el agente no se quede congelado. "
+            "Puedes reintentar con una sola variación o una instrucción más corta. "
+            "Si estás usando DigitalOcean, usa mínimo 2GB de RAM para creativos."
+        )
     if any(token in lowered for token in ["usage limit", "rate limit", "rate-limiting", "rate limited", "429", "message limit", "limit reached", "quota"]):
         hint = image_localized_retry_hint(image_rate_limit_retry_hint(text))
         message = (
