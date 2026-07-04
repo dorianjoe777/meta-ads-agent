@@ -2684,6 +2684,8 @@ class IntegrationTestSuite:
         captured = {}
         original_bridge = codex_brand_guides.run_hermes_image_bridge
         original_load_config = codex_brand_guides.load_config
+        original_run = codex_brand_guides.subprocess.run
+        reference_dir = ROOT_DIR / "output" / "test-codex-direct-reference"
         try:
             codex_brand_guides.load_config = lambda: type("Cfg", (), {"codex_cli": "codex", "codex_creative_model": "gpt-5.5", "hermes_model": "", "hermes_cli": "hermes", "hermes_home": str(test_root / "hermes_home")})()
 
@@ -2715,10 +2717,41 @@ class IntegrationTestSuite:
             limited = codex_brand_guides.call_codex_image_cli("Genera un anuncio", output_root=output_root)
             self.assert_true(limited["ok"] is False and "rate-limiting" not in limited["error"].lower(), "Image rate-limit provider text is hidden from buyers")
             self.assert_true("Puedes intentar de nuevo en un momento" in limited["error"], "Image rate-limit retry hint is included in Spanish when available")
+
+            reference_dir.mkdir(parents=True, exist_ok=True)
+            reference_image = reference_dir / "reference.png"
+            reference_image.write_bytes(b"fake reference")
+            output_with_reference = test_root / "creatives-with-reference"
+            direct_calls = []
+
+            def fake_direct_run(command, **kwargs):
+                env = kwargs.get("env") or {}
+                direct_calls.append((command, env))
+                if command[:3] == ["codex", "login", "status"]:
+                    return type("Result", (), {"returncode": 0, "stdout": "Logged in", "stderr": ""})()
+                generated = Path(env["CODEX_HOME"]) / "generated_images" / "direct-test" / "image.png"
+                generated.parent.mkdir(parents=True, exist_ok=True)
+                generated.write_bytes(b"fake generated image")
+                last_message_index = command.index("--output-last-message") + 1
+                Path(command[last_message_index]).write_text("Imagen generada.", encoding="utf-8")
+                return type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+
+            codex_brand_guides.subprocess.run = fake_direct_run
+            direct = codex_brand_guides.call_codex_image_cli(
+                "Usa la referencia adjunta para crear una variación",
+                output_root=output_with_reference,
+                output_name="direct-ref",
+                reference_image_paths=[reference_image],
+            )
+            hermes_home = str(test_root / "hermes_home")
+            self.assert_true(direct["ok"] is True and direct.get("backend") == "codex-cli-direct", "Codex/Image direct reference route can publish generated assets")
+            self.assert_true(len(direct_calls) >= 2 and all(call[1].get("CODEX_HOME") == hermes_home and call[1].get("HERMES_HOME") == hermes_home for call in direct_calls), "Codex/Image direct reference route reuses the Hermes authenticated home for login status and exec")
         finally:
             codex_brand_guides.run_hermes_image_bridge = original_bridge
             codex_brand_guides.load_config = original_load_config
+            codex_brand_guides.subprocess.run = original_run
             shutil.rmtree(test_root, ignore_errors=True)
+            shutil.rmtree(reference_dir, ignore_errors=True)
 
     def test_agent_codex_image_creative_request_result(self):
         """Test the agent result when the buyer asks for final ad images using Codex/Image."""
@@ -3352,7 +3385,7 @@ class IntegrationTestSuite:
             )
             default_logo_refs = [str(path) for path in captured["kwargs"]["reference_image_paths"]]
             self.assert_true(str(logo) in default_logo_refs and default_logo["prompt_package"]["include_logo"] is True, "Saved official logo is attached by default for future creatives")
-            self.assert_true("pixel-level accurate" in captured["prompt"], "Default official-logo prompt explicitly asks for pixel-level accurate reproduction")
+            self.assert_true("pixel by pixel accuracy" in captured["prompt"] and "pixel-level accurate" in captured["prompt"], "Default official-logo prompt explicitly asks for pixel-by-pixel accurate reproduction")
 
             no_logo = dashboard.codex_image_generate(
                 {
@@ -3377,7 +3410,7 @@ class IntegrationTestSuite:
             protected_prompt = captured["prompt"]
             protected_refs = [str(path) for path in captured["kwargs"]["reference_image_paths"]]
             self.assert_true(str(logo) in protected_refs and "LOGO OFICIAL PROTEGIDO" in protected_prompt, "Saved official logo is attached to Image 2 as a protected context reference")
-            self.assert_true("Reprodúcelo exactamente" in protected_prompt and "pixel-level accurate" in protected_prompt and "pixel-faithful" in protected_prompt and "fiel píxel por píxel" in protected_prompt and "geometría" in protected_prompt, "Image prompt explicitly requires pixel-level accurate logo reproduction and locks artwork, geometry, colors, and proportions")
+            self.assert_true("Reprodúcelo exactamente" in protected_prompt and "pixel by pixel accuracy" in protected_prompt and "pixel-level accurate" in protected_prompt and "pixel-faithful" in protected_prompt and "fiel píxel por píxel" in protected_prompt and "geometría" in protected_prompt, "Image prompt explicitly requires pixel-by-pixel accurate logo reproduction and locks artwork, geometry, colors, and proportions")
             self.assert_true(protected["prompt_package"]["logo_render_mode"] == "protected_context" and "official_logo" not in protected, "Protected-context logo rendering is the default and does not add a duplicate post-process logo")
 
             fallback = dashboard.codex_image_generate(

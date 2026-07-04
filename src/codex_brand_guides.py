@@ -399,8 +399,9 @@ def brand_logo_context(fields):
         parts.append(f"Uso aprobado: {usage}")
     parts.append(
         "Usar ese logo como referencia de marca. Si el archivo oficial está adjunto, ese archivo es la única "
-        "fuente de verdad del logo: reproducir ese mismo logo exactamente con pixel-level accurate reproduction, "
-        "de forma pixel-faithful (fiel píxel por píxel); no inventar, redibujar, aproximar ni reinterpretar uno diferente."
+        "fuente de verdad del logo: reproducir ese mismo logo exactamente con pixel by pixel accuracy, "
+        "pixel-level accurate reproduction y de forma pixel-faithful (fiel píxel por píxel); no inventar, "
+        "redibujar, aproximar ni reinterpretar uno diferente."
     )
     return " / ".join(parts)
 
@@ -415,7 +416,8 @@ def official_logo_prompt_lock(position="top-right"):
         "Ese archivo adjunto es la única fuente de verdad para el logo; no lo infieras desde el nombre de marca. "
         "Trátalo como un activo plano bloqueado que debe aparecer una sola vez en el diseño, "
         f"preferiblemente en {normalized_position}. Reprodúcelo exactamente como está en el archivo adjunto, "
-        "con pixel-level accurate reproduction y reproducción pixel-faithful (fiel píxel por píxel). "
+        "con pixel by pixel accuracy, pixel-level accurate reproduction y reproducción pixel-faithful "
+        "(fiel píxel por píxel). "
         "No lo redibujes, regeneres, interpretes, simplifiques, estilices, limpies, retoques, recolorees, recortes, "
         "estires, gires ni reemplaces. Conserva sin cambios su texto y ortografía, letras, símbolos, ilustración, "
         "geometría, proporciones, espaciado, colores, bordes, textura y distribución interna. "
@@ -1406,7 +1408,7 @@ Reglas no negociables:
 - No leas archivos, credenciales, tokens ni configuracion local.
 - No ejecutes comandos.
 - Mantener colores, tipografias y elementos importantes de marca.
-- Si hay logo guardado y su archivo oficial está adjunto para aparecer, reproducirlo exactamente como un activo bloqueado con pixel-level accurate reproduction y de forma pixel-faithful (fiel píxel por píxel). No inventar otro logo ni cambiar texto, símbolos, geometría, proporciones, colores o distribución interna.
+- Si hay logo guardado y su archivo oficial está adjunto para aparecer, reproducirlo exactamente como un activo bloqueado con pixel by pixel accuracy, pixel-level accurate reproduction y de forma pixel-faithful (fiel píxel por píxel). No inventar otro logo ni cambiar texto, símbolos, geometría, proporciones, colores o distribución interna.
 - En modo libre, revisa el ledger y reemplaza cualquier idea que se parezca demasiado a otra.
 - Devuelve JSON valido con: variant_id, design_axis, final_image_prompt, aspect_ratios, on_image_text, why_this_is_different, safety_notes.
 
@@ -1519,13 +1521,14 @@ def call_codex_cli(prompt, timeout=120, model=None):
     }
 
 
-def codex_cli_auth_status(timeout=15):
+def codex_cli_auth_status(timeout=15, env=None):
     """Return whether the local Codex CLI is authenticated with ChatGPT/Codex."""
     config = load_config()
     executable = getattr(config, "codex_cli", "codex")
+    env = env or codex_cli_environment(config)
     command = [executable, "login", "status"]
     try:
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
+        completed = subprocess.run(command, env=env, capture_output=True, text=True, timeout=timeout, check=False)
     except FileNotFoundError:
         return {"ok": False, "error": "Codex CLI no esta instalado o no esta en PATH.", "command": command}
     except subprocess.TimeoutExpired:
@@ -1764,7 +1767,7 @@ def publish_generated_image(generated, output_root=None, output_name="creative",
 def codex_image_generation_prompt(prompt, has_references=False):
     reference_rules = (
         "- Usa las imágenes adjuntas como referencias visuales reales. Conserva fielmente el producto, persona, empaque o diseño que muestran.\n"
-        "- Si el pedido identifica una imagen adjunta como logo oficial, esa imagen adjunta es la única fuente de verdad del logo. Sigue su contrato de logo protegido: intégrala exactamente como un activo bloqueado, con pixel-level accurate reproduction y reproducción pixel-faithful (fiel píxel por píxel), sin redibujarla, aproximarla ni cambiar texto, símbolos, geometría, proporciones, colores o distribución interna.\n"
+        "- Si el pedido identifica una imagen adjunta como logo oficial, esa imagen adjunta es la única fuente de verdad del logo. Sigue su contrato de logo protegido: intégrala exactamente como un activo bloqueado, con pixel by pixel accuracy, pixel-level accurate reproduction y reproducción pixel-faithful (fiel píxel por píxel), sin redibujarla, aproximarla ni cambiar texto, símbolos, geometría, proporciones, colores o distribución interna.\n"
         "- Si el pedido indica que el logo se aplicará después, no dibujes ningún logo en la imagen base y deja la zona solicitada limpia.\n"
         if has_references else ""
     )
@@ -1796,7 +1799,10 @@ def call_codex_image_cli_direct(prompt, timeout=360, model=None, output_root=Non
     config = load_config()
     executable = getattr(config, "codex_cli", "codex")
     selected_model = str(model or getattr(config, "codex_creative_model", "") or getattr(config, "hermes_model", "") or "").strip()
-    auth = codex_cli_auth_status()
+    env = codex_cli_environment(config)
+    codex_home = Path(env.get("CODEX_HOME") or os.environ.get("CODEX_HOME") or (Path.home() / ".codex")).expanduser()
+    generated_root = codex_home / "generated_images"
+    auth = codex_cli_auth_status(env=env)
     if not auth.get("ok"):
         return {
             "ok": False,
@@ -1804,7 +1810,7 @@ def call_codex_image_cli_direct(prompt, timeout=360, model=None, output_root=Non
             "auth": auth,
             "command": [executable, "login", "status"],
         }
-    before = generated_image_index()
+    before = generated_image_index(root=generated_root)
     started_at = time.time()
     safe_references = safe_creative_reference_paths(reference_image_paths)
     with tempfile.TemporaryDirectory(prefix="meta-ads-codex-image-") as isolated_dir:
@@ -1829,13 +1835,13 @@ def call_codex_image_cli_direct(prompt, timeout=360, model=None, output_root=Non
             command.extend(["--image", str(attached)])
         command.append(codex_image_generation_prompt(request, has_references=bool(safe_references)))
         try:
-            completed = subprocess.run(command, cwd=isolated, capture_output=True, text=True, timeout=timeout, check=False)
+            completed = subprocess.run(command, cwd=isolated, env=env, capture_output=True, text=True, timeout=timeout, check=False)
         except FileNotFoundError:
             return {"ok": False, "error": "Codex CLI no esta instalado o no esta en PATH.", "command": [executable, "exec", "[image request]"]}
         except subprocess.TimeoutExpired:
             return {"ok": False, "error": "Codex/Image tardo demasiado en generar la imagen. Intenta otra vez con una solicitud mas corta.", "command": [executable, "exec", "[image request]"]}
         last_text = read_text(last_message)
-    generated = newest_generated_image(before=before, started_at=started_at)
+    generated = newest_generated_image(before=before, started_at=started_at, root=generated_root)
     error = "" if completed.returncode == 0 else codex_cli_error_message(completed.stderr, completed.stdout)
     if not generated:
         return {
