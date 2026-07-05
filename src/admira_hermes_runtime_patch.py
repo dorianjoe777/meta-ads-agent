@@ -30,6 +30,7 @@ ADMIRA_MINIMAX_ALIASES = {
     ADMIRA_MINIMAX_MODEL.lower(),
 }
 ADMIRA_MEDIA_EXTENSIONS = "png|jpe?g|gif|webp"
+ADMIRA_VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"}
 ADMIRA_MEDIA_TAG_RE = re.compile(
     rf"MEDIA:\s*(?P<path>(?:/|~/)\S+?\.(?:{ADMIRA_MEDIA_EXTENSIONS})(?=[\s\"'`,;:)\]]|$))",
     re.IGNORECASE,
@@ -166,6 +167,66 @@ def _append_generated_media_attachments(response):
         return response
     response["final_response"] = (final_response.rstrip() + "\n" + "\n".join(tags)).strip()
     return response
+
+
+def _event_video_paths(event):
+    video_paths = []
+    media_urls = list(getattr(event, "media_urls", None) or [])
+    media_types = list(getattr(event, "media_types", None) or [])
+    for index, raw_path in enumerate(media_urls):
+        media_type = str(media_types[index] if index < len(media_types) else "").lower()
+        try:
+            path = Path(str(raw_path or "")).expanduser().resolve(strict=True)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if media_type.startswith("video/") or path.suffix.lower() in ADMIRA_VIDEO_EXTENSIONS:
+            video_paths.append(str(path))
+    return video_paths
+
+
+def _append_video_frame_inputs_to_event(event):
+    """Convert cached inbound videos into frame image inputs before Hermes processes them."""
+    video_paths = _event_video_paths(event)
+    if not video_paths:
+        return event
+    try:
+        from public_asset_fetcher import extract_video_preview_frames
+    except Exception:
+        return event
+    media_urls = list(getattr(event, "media_urls", None) or [])
+    media_types = list(getattr(event, "media_types", None) or [])
+    existing = {str(Path(str(path)).expanduser()) for path in media_urls}
+    notes = []
+    for video_path in video_paths[:3]:
+        frame_dir = Path(video_path).parent / f"{Path(video_path).stem}_admira_frames"
+        frame_result = extract_video_preview_frames(video_path, output_dir=frame_dir)
+        frames = frame_result.get("frames") or []
+        if frames:
+            added = 0
+            for frame_path in frames:
+                normalized = str(Path(frame_path).expanduser())
+                if normalized in existing:
+                    continue
+                media_urls.append(normalized)
+                media_types.append("image/jpeg")
+                existing.add(normalized)
+                added += 1
+            duration = frame_result.get("duration_seconds") or 0
+            duration_note = f" Duration: about {duration:g} seconds." if duration else ""
+            notes.append(
+                f"[Admira prepared {added or len(frames)} representative frames from the user's uploaded video for visual review.{duration_note} "
+                "Use those attached frames to understand the video; the raw MP4 remains the original video creative asset.]"
+            )
+        else:
+            reason = frame_result.get("reason") or "frame_extraction_failed"
+            notes.append(f"[The user uploaded a video, but Admira could not extract preview frames automatically: {reason}.]")
+    if media_urls != list(getattr(event, "media_urls", None) or []):
+        event.media_urls = media_urls
+        event.media_types = media_types
+    if notes:
+        original_text = str(getattr(event, "text", "") or "")
+        event.text = ("\n".join(notes) + ("\n\n" + original_text if original_text else "")).strip()
+    return event
 
 
 def _admira_minimax_model():
@@ -415,9 +476,41 @@ def _patch_gateway_generated_media_delivery():
     return True
 
 
+def _patch_gateway_inbound_video_frames():
+    try:
+        import gateway.run as gateway_run
+    except Exception:
+        return False
+    runner = getattr(gateway_run, "GatewayRunner", None)
+    original = getattr(runner, "_prepare_inbound_message_text", None) if runner is not None else None
+    if not callable(original):
+        return False
+    if getattr(runner, "_admira_inbound_video_frame_patch", False):
+        return True
+
+    async def patched_prepare_inbound_message_text(self, *args, **kwargs):
+        event = kwargs.get("event")
+        if event is None and args:
+            # _prepare_inbound_message_text is keyword-only in current Hermes,
+            # but this makes the patch tolerant if the signature changes.
+            event = args[0]
+        if event is not None:
+            try:
+                _append_video_frame_inputs_to_event(event)
+            except Exception:
+                pass
+        return await original(self, *args, **kwargs)
+
+    runner._admira_original_prepare_inbound_message_text = original
+    runner._prepare_inbound_message_text = patched_prepare_inbound_message_text
+    runner._admira_inbound_video_frame_patch = True
+    return True
+
+
 def apply():
     rate_limit_patched = _patch_gateway_rate_limit_reply()
     minimax_patched = _patch_minimax_model_switch()
     runtime_patched = _patch_minimax_runtime_provider()
     media_patched = _patch_gateway_generated_media_delivery()
-    return bool(rate_limit_patched or minimax_patched or runtime_patched or media_patched)
+    video_patched = _patch_gateway_inbound_video_frames()
+    return bool(rate_limit_patched or minimax_patched or runtime_patched or media_patched or video_patched)

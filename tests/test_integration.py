@@ -1185,6 +1185,43 @@ class IntegrationTestSuite:
                     os.environ[key] = value
             shutil.rmtree(image_dir, ignore_errors=True)
 
+    def test_hermes_gateway_runtime_patch_extracts_inbound_video_frames(self):
+        """Test Telegram/Gateway video attachments become frame images for model vision."""
+        print("\nTesting Hermes Gateway Inbound Video Frame Runtime Patch...")
+
+        video_dir = ROOT_DIR / "output" / "test-runtime-video-frames"
+        frame_dir = video_dir / "video_admira_frames"
+        video_dir.mkdir(parents=True, exist_ok=True)
+        video_path = video_dir / "video.mp4"
+        video_path.write_bytes(b"fake mp4")
+        frames = []
+        for index in range(1, 4):
+            frame = frame_dir / f"video_frame_{index:02d}.jpg"
+            frame.parent.mkdir(parents=True, exist_ok=True)
+            frame.write_bytes(b"fake jpg")
+            frames.append(str(frame))
+
+        class Event:
+            text = "Revisa este UGC"
+            media_urls = [str(video_path)]
+            media_types = ["video/mp4"]
+
+        original_extract = public_asset_fetcher.extract_video_preview_frames
+        try:
+            public_asset_fetcher.extract_video_preview_frames = lambda *_args, **_kwargs: {
+                "ok": True,
+                "frames": frames,
+                "duration_seconds": 9,
+            }
+            event = Event()
+            patched = admira_hermes_runtime_patch._append_video_frame_inputs_to_event(event)
+            self.assert_true(patched is event, "Inbound video frame patch mutates the existing Hermes event")
+            self.assert_true(len(event.media_urls) == 4 and event.media_types.count("image/jpeg") == 3, "Inbound video attachments are expanded with extracted frame images")
+            self.assert_true("representative frames" in event.text and "uploaded video" in event.text, "Inbound video frame patch adds agent-only context about frame review")
+        finally:
+            public_asset_fetcher.extract_video_preview_frames = original_extract
+            shutil.rmtree(video_dir, ignore_errors=True)
+
     def test_hermes_gateway_minimax_runtime_patch_forces_official_provider(self):
         """Test Telegram /model MiniMax choices are forced onto Hermes' official providers entry."""
         print("\nTesting Hermes Gateway MiniMax Official Provider Runtime Patch...")
@@ -7394,6 +7431,7 @@ class IntegrationTestSuite:
             self.test_hermes_model_usage_limit_keeps_connection_state_clear,
             self.test_hermes_gateway_rate_limit_runtime_patch_localizes_reset_time,
             self.test_hermes_gateway_runtime_patch_always_attaches_generated_creatives,
+            self.test_hermes_gateway_runtime_patch_extracts_inbound_video_frames,
             self.test_hermes_gateway_minimax_runtime_patch_forces_official_provider,
             self.test_dashboard_chatgpt_connect_action_opens_terminal,
             self.test_dashboard_image_only_chatgpt_connect_preserves_text_brain,
