@@ -52,6 +52,7 @@ from creative_refresh import build_creative_plan
 from daily_agent import execute_campaign_creation
 import daily_agent
 from social_flow_client import SocialFlowClient
+import social_flow_client
 import telegram_agent
 
 
@@ -5553,6 +5554,51 @@ class IntegrationTestSuite:
         args, _ = captured[0]
         self.assert_true(args[args.index("--image-url") + 1] == "https://cdn.example/ad.jpg" and args[args.index("--video-url") + 1] == "https://cdn.example/ad.mp4", "Creative creation supports image and video URLs")
         self.assert_true(args[args.index("--cta-link") + 1] == "https://buyer.example/buy", "Creative creation supports CTA link override")
+
+    def test_social_flow_uses_graph_fallback_when_social_cli_missing(self):
+        """Test live Meta actions do not fail just because the social binary is absent."""
+        print("\nTesting Social CLI Missing Graph Fallback...")
+
+        class FakeConfig:
+            social_cli = "social"
+            mode = "live"
+            live = True
+            live_actions_enabled = True
+            meta_access_token = "meta-token"
+            meta_graph_api_version = "v24.0"
+            ad_account_id = "act_999"
+
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, body):
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps(self.body).encode("utf-8")
+
+        original_run = social_flow_client.subprocess.run
+        original_urlopen = social_flow_client.urllib.request.urlopen
+        requests = []
+        try:
+            social_flow_client.subprocess.run = lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("social"))
+            social_flow_client.urllib.request.urlopen = lambda request, timeout=90: requests.append(request) or FakeResponse({"id": "camp_graph_1"})
+            client = SocialFlowClient(FakeConfig())
+            result = client.create_campaign("act_999", "Campaña", "OUTCOME_SALES", 2000, "PAUSED", approved=True)
+            body = json.loads(result.get("stdout") or "{}")
+            self.assert_true(result.get("connector") == "graph_api_fallback", "Missing social binary falls back to direct Meta Graph when a token is configured")
+            self.assert_true(body.get("id") == "camp_graph_1", "Graph fallback preserves the JSON id shape expected by campaign execution")
+            self.assert_true("act_999/campaigns" in result.get("graph_endpoint", ""), "Graph fallback posts to the ad account campaign endpoint")
+            self.assert_true(requests and b"special_ad_categories=%5B%5D" in requests[0].data, "Graph campaign fallback includes required special ad categories")
+        finally:
+            social_flow_client.subprocess.run = original_run
+            social_flow_client.urllib.request.urlopen = original_urlopen
 
     def test_autopilot_action_updates_dashboard_only_after_meta_success(self):
         """Test autopilot UI/chat mutations are real connector actions, not local-only state."""

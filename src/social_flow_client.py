@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Thin execution wrapper around social-cli and Telegram notifications."""
 import json
+import mimetypes
 import subprocess
 import urllib.parse
 import urllib.request
+import urllib.error
 from dataclasses import asdict
+from datetime import datetime
+from pathlib import Path
 
 from security import redact_payload
 
@@ -37,9 +41,236 @@ class SocialFlowClient:
             record["stdout"] = completed.stdout.strip()
             record["stderr"] = completed.stderr.strip()
         except FileNotFoundError as exc:
+            fallback = self.graph_fallback(args, record)
+            if fallback:
+                return fallback
             record["returncode"] = 127
-            record["stderr"] = str(exc)
+            record["stderr"] = (
+                f"{exc}. Meta action could not run because social-cli is not installed "
+                "and no direct Meta Graph fallback is configured."
+            )
         return record
+
+    def graph_url(self, endpoint):
+        endpoint = str(endpoint or "").lstrip("/")
+        version = str(getattr(self.config, "meta_graph_api_version", "") or "v24.0").strip() or "v24.0"
+        return f"https://graph.facebook.com/{version}/{endpoint}"
+
+    def graph_record(self, record, endpoint, result):
+        stdout = json.dumps(result.get("body") if isinstance(result.get("body"), dict) else {"error": result.get("body")}, ensure_ascii=False)
+        return {
+            **record,
+            "connector": "graph_api_fallback",
+            "graph_endpoint": endpoint,
+            "returncode": 0 if result.get("ok") else int(result.get("status") or 1),
+            "stdout": stdout if result.get("ok") else "",
+            "stderr": "" if result.get("ok") else stdout,
+        }
+
+    def post_graph_form(self, endpoint, fields):
+        body = urllib.parse.urlencode(fields).encode("utf-8")
+        request = urllib.request.Request(
+            self.graph_url(endpoint),
+            data=body,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        return self.perform_graph_request(request)
+
+    def post_graph_multipart(self, endpoint, fields, files):
+        boundary, body = self.encode_multipart(fields, files)
+        request = urllib.request.Request(
+            self.graph_url(endpoint),
+            data=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            method="POST",
+        )
+        return self.perform_graph_request(request)
+
+    def perform_graph_request(self, request):
+        try:
+            with urllib.request.urlopen(request, timeout=90) as response:
+                return {"ok": True, "status": response.status, "body": json.loads(response.read().decode("utf-8"))}
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8")
+            try:
+                body = json.loads(raw)
+            except json.JSONDecodeError:
+                body = raw[:1000]
+            return {"ok": False, "status": exc.code, "body": body}
+        except Exception as exc:
+            return {"ok": False, "status": None, "body": str(exc)}
+
+    def encode_multipart(self, fields, files):
+        boundary = f"----admirasocialfallback{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+        chunks = []
+        for name, value in fields.items():
+            chunks.append(f"--{boundary}\r\n".encode("utf-8"))
+            chunks.append(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"))
+            chunks.append(str(value).encode("utf-8"))
+            chunks.append(b"\r\n")
+        for name, path in files.items():
+            file_path = Path(path)
+            mime_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+            chunks.append(f"--{boundary}\r\n".encode("utf-8"))
+            chunks.append(f'Content-Disposition: form-data; name="{name}"; filename="{file_path.name}"\r\n'.encode("utf-8"))
+            chunks.append(f"Content-Type: {mime_type}\r\n\r\n".encode("utf-8"))
+            with open(file_path, "rb") as handle:
+                chunks.append(handle.read())
+            chunks.append(b"\r\n")
+        chunks.append(f"--{boundary}--\r\n".encode("utf-8"))
+        return boundary, b"".join(chunks)
+
+    @staticmethod
+    def flag(args, name, default=""):
+        try:
+            index = list(args).index(name)
+            return str(args[index + 1])
+        except (ValueError, IndexError):
+            return default
+
+    @staticmethod
+    def positional(args, index, default=""):
+        try:
+            value = str(args[index])
+        except (IndexError, TypeError):
+            return default
+        return default if value.startswith("--") else value
+
+    @staticmethod
+    def normalize_ad_account_id(value):
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        return raw if raw.startswith("act_") else f"act_{raw}"
+
+    def graph_fallback(self, args, record):
+        if not getattr(self.config, "meta_access_token", ""):
+            return None
+        args = list(args)
+        if len(args) < 2 or args[0] != "marketing":
+            return None
+        action = args[1]
+        access_token = getattr(self.config, "meta_access_token", "")
+        ad_account_id = self.normalize_ad_account_id(self.positional(args, 2, getattr(self.config, "ad_account_id", "")))
+        configured_ad_account_id = self.normalize_ad_account_id(getattr(self.config, "ad_account_id", ""))
+        try:
+            if action == "create-campaign":
+                endpoint = f"{ad_account_id}/campaigns"
+                fields = {
+                    "access_token": access_token,
+                    "name": self.flag(args, "--name", "New Campaign"),
+                    "objective": self.flag(args, "--objective", "OUTCOME_SALES"),
+                    "status": self.flag(args, "--status", "PAUSED"),
+                    "special_ad_categories": "[]",
+                }
+                daily_budget = self.flag(args, "--daily-budget", "")
+                if daily_budget:
+                    fields["daily_budget"] = daily_budget
+                return self.graph_record(record, endpoint, self.post_graph_form(endpoint, fields))
+            if action == "create-adset":
+                campaign_id = self.positional(args, 2, "")
+                endpoint = f"{configured_ad_account_id}/adsets"
+                fields = {
+                    "access_token": access_token,
+                    "campaign_id": campaign_id,
+                    "name": self.flag(args, "--name", "Ad Set"),
+                    "status": self.flag(args, "--status", "PAUSED"),
+                    "targeting": self.flag(args, "--targeting", "{}"),
+                    "optimization_goal": self.flag(args, "--optimization-goal", "LINK_CLICKS"),
+                    "billing_event": self.flag(args, "--billing-event", "IMPRESSIONS"),
+                }
+                for source, target in (
+                    ("--daily-budget", "daily_budget"),
+                    ("--lifetime-budget", "lifetime_budget"),
+                    ("--start-time", "start_time"),
+                    ("--end-time", "end_time"),
+                    ("--promoted-object", "promoted_object"),
+                ):
+                    value = self.flag(args, source, "")
+                    if value:
+                        fields[target] = value
+                bidding = self.flag(args, "--bidding", "")
+                if bidding:
+                    try:
+                        bidding_payload = json.loads(bidding)
+                    except json.JSONDecodeError:
+                        bidding_payload = {"bid_strategy": bidding}
+                    if isinstance(bidding_payload, dict):
+                        if bidding_payload.get("bid_strategy"):
+                            fields["bid_strategy"] = bidding_payload["bid_strategy"]
+                        if bidding_payload.get("bid_amount"):
+                            fields["bid_amount"] = bidding_payload["bid_amount"]
+                return self.graph_record(record, endpoint, self.post_graph_form(endpoint, fields))
+            if action == "upload-image":
+                endpoint = f"{ad_account_id}/adimages"
+                file_path = self.flag(args, "--file", "")
+                if not file_path:
+                    return None
+                fields = {"access_token": access_token}
+                return self.graph_record(record, endpoint, self.post_graph_multipart(endpoint, fields, {"filename": file_path}))
+            if action == "create-creative":
+                endpoint = f"{ad_account_id}/adcreatives"
+                fields = {
+                    "access_token": access_token,
+                    "name": self.flag(args, "--name", "Ad Creative"),
+                }
+                object_story_spec = self.flag(args, "--object-story-spec", "")
+                if not object_story_spec:
+                    link = self.flag(args, "--cta-link", "") or self.flag(args, "--link", "")
+                    link_data = {
+                        "link": link,
+                        "message": self.flag(args, "--body-text", ""),
+                        "name": self.flag(args, "--headline", ""),
+                    }
+                    image_hash = self.flag(args, "--image-hash", "")
+                    image_url = self.flag(args, "--image-url", "")
+                    if image_hash:
+                        link_data["image_hash"] = image_hash
+                    if image_url:
+                        link_data["picture"] = image_url
+                    cta = self.flag(args, "--call-to-action", "")
+                    if cta:
+                        link_data["call_to_action"] = {"type": cta, "value": {"link": link}}
+                    object_story_spec = json.dumps({
+                        "page_id": self.flag(args, "--page-id", ""),
+                        **({"instagram_actor_id": self.flag(args, "--instagram-actor-id", "")} if self.flag(args, "--instagram-actor-id", "") else {}),
+                        "link_data": link_data,
+                    })
+                fields["object_story_spec"] = object_story_spec
+                return self.graph_record(record, endpoint, self.post_graph_form(endpoint, fields))
+            if action == "create-ad":
+                endpoint = f"{configured_ad_account_id}/ads"
+                fields = {
+                    "access_token": access_token,
+                    "name": self.flag(args, "--name", "Ad"),
+                    "adset_id": self.positional(args, 2, ""),
+                    "creative": json.dumps({"creative_id": self.flag(args, "--creative-id", "")}),
+                    "status": self.flag(args, "--status", "PAUSED"),
+                }
+                return self.graph_record(record, endpoint, self.post_graph_form(endpoint, fields))
+            if action in {"pause", "resume"}:
+                target_id = self.positional(args, 3, self.positional(args, 2, ""))
+                endpoint = target_id
+                fields = {"access_token": access_token, "status": "PAUSED" if action == "pause" else "ACTIVE"}
+                return self.graph_record(record, endpoint, self.post_graph_form(endpoint, fields))
+            if action == "set-budget":
+                target_id = self.positional(args, 3, self.positional(args, 2, ""))
+                daily_budget = self.flag(args, "--daily-budget", "")
+                if not daily_budget:
+                    return None
+                endpoint = target_id
+                fields = {"access_token": access_token, "daily_budget": daily_budget}
+                return self.graph_record(record, endpoint, self.post_graph_form(endpoint, fields))
+        except Exception as exc:
+            return {
+                **record,
+                "connector": "graph_api_fallback",
+                "returncode": 1,
+                "stdout": "",
+                "stderr": f"Graph API fallback failed: {exc}",
+            }
+        return None
 
     def auth_status(self):
         return self.run(["auth", "status"], live_required=False)

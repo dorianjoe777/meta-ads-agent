@@ -141,10 +141,11 @@ def files_section():
 
 
 def runtime_section(config, social_path, daily_report, action):
+    graph_fallback_ready = bool(getattr(config, "meta_access_token", ""))
     return [
         item("mode", "Nivel de control", "ok" if config.mode == "dry-run" else "warn", "Con supervision" if config.mode == "dry-run" else "Piloto automatico", "Usa Con supervision hasta confirmar licencia, Meta, datos reales y aprobaciones." if config.mode != "dry-run" else ""),
-        item("connector", "Primary connector", "ok" if config.meta_connector == "social_cli" else "warn", config.meta_connector, "Use social_cli for easiest buyer onboarding; graph_api is advanced."),
-        item("social_cli", "social-cli installed", "ok" if social_path else "warn", social_path or f"{config.social_cli} not found", "Install/configure social-cli before live Meta actions."),
+        item("connector", "Primary connector", "ok" if config.meta_connector in {"social_cli", "graph_api"} else "warn", config.meta_connector, "El token Meta del dashboard permite ejecutar por Graph API aunque social-cli no esté instalado."),
+        item("social_cli", "Meta execution path", "ok" if (social_path or graph_fallback_ready) else "warn", social_path or ("Graph API fallback ready from saved Meta token" if graph_fallback_ready else f"{config.social_cli} not found"), "Si no hay social-cli, el sistema usa el token Meta guardado como fallback directo."),
         item("social_onboarding", "social-cli onboarding", "warn", "Run social setup or social onboard, then social auth login.", "Recommended: social setup"),
         item("daily_report", "Latest daily report", "ok" if daily_report else "warn", str(daily_report) if daily_report else "No daily report yet.", "Run ./scripts/run-daily-agent.sh"),
         item("latest_action", "Latest action log", "ok" if action else "warn", action.get("type", "No actions yet") if action else "No actions logged yet."),
