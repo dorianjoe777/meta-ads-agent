@@ -853,11 +853,36 @@ def model_usage_limit_reply(language="es", error_text=""):
     return f"{base} Intenta de nuevo más tarde; el proveedor no me dio una hora exacta de reinicio. {model_hint}"
 
 
-def hermes_codex_ready(config):
+def extract_codex_account_identity(text):
+    """Best-effort extraction of the connected ChatGPT/Codex account label."""
+    raw = str(text or "")
+    email_match = re.search(r"[\w.!#$%&'*+/=?^_`{|}~-]+@[\w-]+(?:\.[\w-]+)+", raw)
+    email = email_match.group(0) if email_match else ""
+    if email:
+        return {"email": email, "label": email, "visible": True}
+    for pattern in (
+        r"(?:logged\s+in\s+as|signed\s+in\s+as|account)\s*[:=-]?\s*([^\n;]+)",
+        r"(?:usuario|cuenta)\s*[:=-]?\s*([^\n;]+)",
+    ):
+        match = re.search(pattern, raw, re.IGNORECASE)
+        if match:
+            label = re.sub(r"\s+", " ", match.group(1)).strip(" .;:-")
+            if label and "unknown" not in label.lower() and "not logged" not in label.lower():
+                return {"email": "", "label": label[:140], "visible": True}
+    return {"email": "", "label": "", "visible": False}
+
+
+def hermes_codex_session_status(config, timeout=None):
     hermes_cli = shutil.which(getattr(config, "hermes_cli", "hermes") or "hermes")
     if not hermes_cli:
-        return False, "Hermes not installed"
-    status_timeout = max(8, min(45, int(getattr(config, "hermes_status_timeout_seconds", 20) or 20)))
+        return {"ready": False, "detail": "Hermes not installed", "identity": extract_codex_account_identity("")}
+    if timeout is None:
+        status_timeout = max(8, min(45, int(getattr(config, "hermes_status_timeout_seconds", 20) or 20)))
+    else:
+        try:
+            status_timeout = max(1, min(45, int(timeout)))
+        except (TypeError, ValueError):
+            status_timeout = 5
     try:
         completed = subprocess.run(
             [hermes_cli, "status"],
@@ -870,7 +895,8 @@ def hermes_codex_ready(config):
             check=False,
         )
     except Exception as exc:
-        return False, f"Could not check Hermes status: {exc}"
+        detail = f"Could not check Hermes status: {exc}"
+        return {"ready": False, "detail": detail, "identity": extract_codex_account_identity(detail)}
     output = (completed.stdout or "") + "\n" + (completed.stderr or "")
     provider_line = next((line.strip() for line in output.splitlines() if "Provider:" in line), "")
     codex_line = next((line.strip() for line in output.splitlines() if "OpenAI Codex" in line), "")
@@ -878,7 +904,17 @@ def hermes_codex_ready(config):
     codex_detail = codex_line.lower()
     codex_ok = bool(codex_line and "not logged in" not in codex_detail and "\u2717" not in codex_line and "error:" not in codex_detail)
     detail = f"{provider_line or 'Provider unknown'}; {codex_line or 'OpenAI Codex auth unknown'}"
-    return provider_ok and codex_ok, detail
+    return {
+        "ready": provider_ok and codex_ok,
+        "detail": detail,
+        "identity": extract_codex_account_identity(output or detail),
+        "returncode": completed.returncode,
+    }
+
+
+def hermes_codex_ready(config):
+    status = hermes_codex_session_status(config)
+    return bool(status.get("ready")), status.get("detail", "")
 
 
 def hermes_prompt(config, payload, workspace_info=None):

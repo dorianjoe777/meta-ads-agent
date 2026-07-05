@@ -1131,6 +1131,63 @@ class IntegrationTestSuite:
             dashboard.hermes_codex_ready = original_ready
             dashboard.log_action = original_log
 
+    def test_dashboard_chatgpt_disconnect_clears_only_auth_artifacts(self):
+        """Test ChatGPT/Codex disconnect removes auth without deleting the Hermes workspace."""
+        print("\nTesting Dashboard ChatGPT/Codex Disconnect...")
+
+        dashboard = load_dashboard_module()
+        dashboard.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        auth_home = Path(tempfile.mkdtemp(prefix="disconnect-hermes-", dir=str(dashboard.DATA_DIR)))
+        outside_home = Path(tempfile.mkdtemp(prefix="disconnect-outside-"))
+        try:
+            (auth_home / "auth.json").write_text("{}", encoding="utf-8")
+            (auth_home / "credentials.json").write_text("{}", encoding="utf-8")
+            (auth_home / "auth").mkdir()
+            (auth_home / "auth" / "token").write_text("secret", encoding="utf-8")
+            (auth_home / "config.yaml").write_text("keep", encoding="utf-8")
+            (auth_home / "logs").mkdir()
+            (auth_home / "logs" / "agent.log").write_text("keep", encoding="utf-8")
+            (outside_home / "auth.json").write_text("{}", encoding="utf-8")
+
+            cfg = type(
+                "Cfg",
+                (),
+                {
+                    "hermes_home": str(auth_home),
+                    "hermes_model": "gpt-5.5",
+                    "codex_image_hermes_model": "gpt-5.5",
+                    "hermes_cli": "hermes",
+                },
+            )()
+            captured = {}
+            original_load = dashboard.load_config
+            original_update = dashboard.update_env_values
+            original_refresh = dashboard.refresh_telegram_gateway_after_agent_model_change
+            original_log = dashboard.log_action
+            try:
+                dashboard.load_config = lambda: cfg
+                dashboard.update_env_values = lambda values: captured.update(values)
+                dashboard.refresh_telegram_gateway_after_agent_model_change = lambda values: {"started": True, "changed": sorted(values)}
+                dashboard.log_action = lambda *_args, **_kwargs: None
+                result = dashboard.disconnect_agent_model({"connection_purpose": "agent"})
+                self.assert_true(result["status"] == "disconnected" and result["connection_purpose"] == "agent", "Disconnect endpoint reports the account as disconnected")
+                self.assert_true(not (auth_home / "auth.json").exists() and not (auth_home / "credentials.json").exists() and not (auth_home / "auth").exists(), "Disconnect removes only known Codex auth artifacts")
+                self.assert_true((auth_home / "config.yaml").exists() and (auth_home / "logs" / "agent.log").exists(), "Disconnect preserves non-auth Hermes workspace files")
+                self.assert_true(captured.get("HERMES_REQUIRE_CODEX_AUTH") == "true", "Disconnect keeps Codex auth required for the next login")
+                try:
+                    dashboard.clear_hermes_codex_auth(outside_home)
+                    self.assert_true(False, "Disconnect should refuse homes outside Admira runtime/data")
+                except ValueError:
+                    pass
+            finally:
+                dashboard.load_config = original_load
+                dashboard.update_env_values = original_update
+                dashboard.refresh_telegram_gateway_after_agent_model_change = original_refresh
+                dashboard.log_action = original_log
+        finally:
+            shutil.rmtree(auth_home, ignore_errors=True)
+            shutil.rmtree(outside_home, ignore_errors=True)
+
     def test_dashboard_chatgpt_connect_action_uses_vps_browserless_bridge(self):
         """Test the ChatGPT/Codex connection endpoint starts a browser-visible Hermes bridge on VPS/headless installs."""
         print("\nTesting Dashboard ChatGPT/Codex VPS Browserless Bridge...")
@@ -5667,7 +5724,10 @@ class IntegrationTestSuite:
         self.assert_true("Copiar paso" not in html and "Copy step" not in html, "ChatGPT/Codex connection no longer presents copy-only wording")
         self.assert_true("Abrir configuración de ChatGPT" in html and "chatgpt-settings-link" in html and "chatgpt-settings-actions" in html, "ChatGPT/Codex setup gives buyers a direct button to the ChatGPT security settings")
         self.assert_true("Modelo para ChatGPT/Codex" in html and "<select name=\"hermes_model\">" in html and "gpt-5.5" in html and "Recomendado automático" not in html and "agentModelFormPayload()" in html, "ChatGPT/Codex setup exposes gpt-5.5 as the clear default model selector")
-        self.assert_true("ChatGPT/Codex solo para imágenes" in html and "connectImageChatGpt(event)" in html and "codex_image_source" in html and "imageChatGptPayload()" in html, "Agent model setup can connect a separate ChatGPT/Codex session only for Image 2")
+        self.assert_true("Image 2 con ChatGPT/Codex" in html and "connectImageChatGpt(event)" in html and "codex_image_source" in html and "imageChatGptPayload()" in html, "Agent model setup can connect a separate ChatGPT/Codex session only for Image 2")
+        self.assert_true("Modelo para imágenes" not in html and "Image model" not in html and "Usar sesión principal" not in html and "Use main session" not in html, "Image 2 connection no longer exposes image model or confusing routing controls")
+        self.assert_true("disconnectAgentModel('agent')" in html and "disconnectAgentModel('image')" in html and "/api/agent-model/disconnect" in dashboard_source, "ChatGPT/Codex accounts can be disconnected safely before connecting another account")
+        self.assert_true("route-state" in html and "connected-account" in html and "chatgpt_connected" in dashboard_source and "codex_image_account" in dashboard_source, "Model cards separate connected accounts from the single primary brain")
         self.assert_true("agent_chat_base_url" in html and "agent_chat_api_key" in html and "custom_api" in html, "OpenAI-compatible brain settings are exposed without showing saved keys")
         self.assert_true("DigitalOcean mostraré aquí el enlace" in html and "Ver diagnóstico para soporte" in html, "Hermes/ChatGPT setup has a browser-based VPS path with diagnostics folded")
         self.assert_true("Toca el botón de abajo para abrir la configuración de tu cuenta ChatGPT." in html and "Activar autorización con códigos de dispositivo para Codex" in html and "Vuelve aquí y toca el botón “Ya lo hice, conectar a ChatGPT ahora”" in html and "chatgpt-preflight" in html and ".chatgpt-preflight ol" in html, "ChatGPT/Codex setup tells buyers to enable device-code authorization before login without overlapping the model field")
@@ -7013,6 +7073,7 @@ class IntegrationTestSuite:
             self.test_hermes_gateway_rate_limit_runtime_patch_localizes_reset_time,
             self.test_dashboard_chatgpt_connect_action_opens_terminal,
             self.test_dashboard_image_only_chatgpt_connect_preserves_text_brain,
+            self.test_dashboard_chatgpt_disconnect_clears_only_auth_artifacts,
             self.test_dashboard_chatgpt_connect_action_uses_vps_browserless_bridge,
             self.test_dashboard_hermes_browserless_auto_selects_codex,
             self.test_hermes_blocks_non_codex_runtime_by_default,

@@ -383,7 +383,7 @@ function allowedActionCall(name){
   saveProductMemory,saveAdBriefMemory,uploadBrandLogo,activateLicenseFromForm,setDashboardPasswordFromOnboarding,saveBusinessLinks,
   saveBusinessContextQuestion,saveGuardrails,saveProfitabilityRules,saveOptimizationSettings,saveShopifyConfig,testShopifyConnection,syncShopifyOutcomes,unlockOptimization,saveSetupConfig,sendChatGptTerminalInput,restoreMigrationBackup,
   budgetPrompt,campaignAction,detectTelegramChats,setLocalNetworkAccess,showDetails,selectAgentModelRoute,saveChatGptModel,
-  connectChatGpt,connectImageChatGpt,saveImageChatGptRouting,toggleChatGptDeviceAuthHelp,downloadMigrationBackup,refreshCloudAccess,loadUpdateSnapshots,showUpdateDetails,
+  connectChatGpt,connectImageChatGpt,disconnectAgentModel,saveImageChatGptRouting,toggleChatGptDeviceAuthHelp,downloadMigrationBackup,refreshCloudAccess,loadUpdateSnapshots,showUpdateDetails,
   openDailyBriefSchedule,closeDailyBriefSchedule,saveDailyBriefSchedule,renderOnboardingFlow,setOnboardingFlowStep
  };
  return actions[name]||null;
@@ -1621,7 +1621,8 @@ function chatGptConnectMarkup(onboarding=false){
  const brain=model.brain_provider||'openai_codex';
  const apiBrain=['openai_api','minimax','custom_api'].includes(brain);
  const apiReady=apiBrain&&model.api_key_set&&Boolean(model.base_url)&&Boolean(model.model);
- const chatgptReady=runtime.status==='ok'&&auth.status==='ok'&&brain==='openai_codex';
+ const chatgptConnected=Boolean(model.chatgpt_connected)||(runtime.status==='ok'&&String(model.chatgpt_session_detail||auth.detail||'').toLowerCase().includes('openai codex')&&!String(model.chatgpt_session_detail||auth.detail||'').toLowerCase().includes('not logged in'));
+ const chatgptReady=chatgptConnected&&brain==='openai_codex';
  const ready=chatgptReady||apiReady;
  const hermesMissing=runtime.status==='blocked';
  const title=ready?(lang==='es'?'Modelo del agente conectado':'Agent model connected'):(lang==='es'?'Conecta el cerebro del agente':'Connect the agent brain');
@@ -1636,11 +1637,14 @@ function chatGptConnectMarkup(onboarding=false){
  const codexModel=model.hermes_model||'gpt-5.5';
  const imageSource=model.codex_image_source||studio.codex_image_source||'main_chatgpt';
  const imageDedicated=imageSource==='dedicated_chatgpt';
- const imageModel=model.codex_image_hermes_model||studio.codex_image_model||codexModel||'gpt-5.5';
  const imageReady=Boolean(studio.codex_image_ready||model.codex_image_ready);
+ const imageConnected=Boolean(studio.codex_image_connected||model.codex_image_connected||imageReady);
+ const accountLabel=(account,connected)=>{const a=account||{};const label=a.email||a.label||'';if(label)return escapeHtml(label);return connected?(lang==='es'?'Cuenta conectada · email no visible por Codex':'Connected account · email not exposed by Codex'):(lang==='es'?'Sin cuenta conectada':'No connected account')};
+ const mainAccountLabel=accountLabel(model.chatgpt_account,chatgptConnected);
+ const imageAccountLabel=accountLabel(model.codex_image_account||studio.codex_image_account,imageConnected);
  const imageStatusText=imageDedicated
-  ? (imageReady?(lang==='es'?'Image 2 listo con ChatGPT separado':'Image 2 ready with separate ChatGPT'):(lang==='es'?'ChatGPT separado pendiente para imágenes':'Separate ChatGPT pending for images'))
-  : (chatgptReady?(lang==='es'?'Image 2 usa la sesión principal de ChatGPT':'Image 2 uses the main ChatGPT session'):(lang==='es'?'Image 2 usará la sesión principal si conectas ChatGPT como cerebro':'Image 2 will use the main session if ChatGPT is the brain'));
+  ? (imageConnected?(lang==='es'?'Image 2 listo con cuenta separada':'Image 2 ready with separate account'):(lang==='es'?'Cuenta de imágenes pendiente':'Image account pending'))
+  : (chatgptConnected?(lang==='es'?'Image 2 usa la cuenta principal de ChatGPT':'Image 2 uses the main ChatGPT account'):(lang==='es'?'Image 2 necesita una cuenta ChatGPT conectada':'Image 2 needs a connected ChatGPT account'));
  const api=model.api||'openai-chat-completions';
  const keyPlaceholder=model.api_key_set?(lang==='es'?'Clave guardada. Pega otra solo si quieres cambiarla.':'Key saved. Paste another only to replace it.'):(lang==='es'?'Pega la clave API del proveedor':'Paste the provider API key');
  const routeCopy={
@@ -1649,27 +1653,31 @@ function chatGptConnectMarkup(onboarding=false){
   minimax_m3:{icon:'M3',title:'MiniMax M3',desc:lang==='es'?'Con clave de MiniMax.':'With a MiniMax key.',panel:lang==='es'?'Pega tu clave de MiniMax. Ya dejé URL y modelo listos para M3. El agente seguirá usando su memoria y herramientas.':'Paste your MiniMax key. URL and model are already set for M3. The agent still keeps memory and tools.'},
   custom_api:{icon:'{}',title:lang==='es'?'Otra API compatible':'Other compatible API',desc:lang==='es'?'Para proveedores tipo OpenAI.':'For OpenAI-style providers.',panel:lang==='es'?'Pega la URL, el nombre del modelo y la clave del proveedor. El agente la usará como cerebro.':'Paste the provider URL, model name, and key. The agent will use it as its brain.'}
  };
- const routeButton=kind=>`<button class="agent-model-option ${selectedRoute===kind?'active':''}" type="button" data-agent-route="${kind}" aria-expanded="${selectedRoute===kind?'true':'false'}" data-action-code="selectAgentModelRoute('${kind}')"><span class="route-icon">${routeCopy[kind].icon}</span><span><b>${routeCopy[kind].title}</b><p>${routeCopy[kind].desc}</p></span></button>`;
+ const routeConnected={chatgpt_subscription:chatgptConnected,openai_api:brain==='openai_api'&&apiReady,minimax_m3:brain==='minimax'&&apiReady,custom_api:brain==='custom_api'&&apiReady};
+ const routeButton=kind=>{const primary=selectedRoute===kind;const connected=Boolean(routeConnected[kind]);const state=primary?(lang==='es'?'Principal':'Primary'):(connected?(lang==='es'?'Conectado':'Connected'):'');return `<button class="agent-model-option ${primary?'active primary-route':''} ${connected?'connected':''}" type="button" data-agent-route="${kind}" aria-expanded="${primary?'true':'false'}" data-action-code="selectAgentModelRoute('${kind}')"><span class="route-icon">${routeCopy[kind].icon}</span><span><b>${routeCopy[kind].title}</b><p>${routeCopy[kind].desc}</p>${state?`<em class="route-state">${state}</em>`:''}</span></button>`};
  const apiPanelTitle=selectedRoute==='chatgpt_subscription'?routeCopy.minimax_m3.title:routeCopy[selectedRoute].title;
  const apiPanelHelp=selectedRoute==='chatgpt_subscription'?routeCopy.minimax_m3.panel:routeCopy[selectedRoute].panel;
  const providerValue=brain;
  const codexModelOptions=[['gpt-5.5','gpt-5.5'],['gpt-5.4','gpt-5.4'],['gpt-5.4-mini','gpt-5.4-mini']].map(([value,label])=>`<option value="${escapeHtml(value)}" ${codexModel===value?'selected':''}>${escapeHtml(label)}</option>`).join('');
  const chatgptSettingsButton=`<a class="btn chatgpt-settings-link" href="https://chatgpt.com/#settings/Security" target="_blank" rel="noopener noreferrer">${lang==='es'?'Abrir configuración de ChatGPT':'Open ChatGPT settings'}</a>`;
- const chatgptActions=chatgptReady
-  ? `<button class="btn primary" type="button" data-action-code="saveChatGptModel(event)">${lang==='es'?'Guardar modelo':'Save model'}</button><button class="btn" type="button" data-action-code="pollChatGptConnection()">${lang==='es'?'Revisar conexión':'Recheck connection'}</button>`
+ const chatgptActions=chatgptConnected
+  ? `<button class="btn primary" type="button" data-action-code="saveChatGptModel(event)">${chatgptReady?(lang==='es'?'Guardar modelo principal':'Save primary model'):(lang==='es'?'Usar como principal':'Use as primary')}</button><button class="btn danger" type="button" data-action-code="disconnectAgentModel('agent')">${lang==='es'?'Desconectar para cambiar cuenta':'Disconnect to change account'}</button>`
   : `<button class="btn primary" type="button" data-action-code="connectChatGpt(event)">${lang==='es'?'Ya lo hice, conectar a ChatGPT ahora':'I did it, connect to ChatGPT now'}</button>`;
- const imageModelOptions=[['gpt-5.5','gpt-5.5'],['gpt-5.4','gpt-5.4'],['gpt-5.4-mini','gpt-5.4-mini']].map(([value,label])=>`<option value="${escapeHtml(value)}" ${imageModel===value?'selected':''}>${escapeHtml(label)}</option>`).join('');
- const imageChatgptCard=`<div class="image-chatgpt-card ${imageReady?'ready':''}">
-  <div><b>${lang==='es'?'ChatGPT/Codex solo para imágenes':'ChatGPT/Codex for images only'}</b><p>${lang==='es'?'Ideal si el texto del agente usa MiniMax u otra API, pero quieres que Image 2 genere creativos con una suscripción ChatGPT aparte.':'Best when the text agent uses MiniMax or another API, but Image 2 should generate creatives with a separate ChatGPT subscription.'}</p><span class="badge ${imageReady?'ok':'warn'}">${imageStatusText}</span></div>
-  <div class="form-grid codex-model-choice"><div class="field"><label>${lang==='es'?'Modelo para imágenes':'Image model'}</label><select name="codex_image_hermes_model">${imageModelOptions}</select></div><input type="hidden" name="codex_image_source" value="${escapeHtml(imageSource)}"></div>
+ const imagePrimaryNote=!imageDedicated&&chatgptConnected?`<p class="notice">${lang==='es'?'Ahora usa la misma cuenta ChatGPT del agente. Si quieres otra cuenta solo para imágenes, toca “Conectar otra cuenta para Image 2”.':'It currently uses the agent ChatGPT account. To use a different account only for images, click “Connect another account for Image 2”.'}</p>`:'';
+ const imageConnectLabel=imageDedicated?(lang==='es'?'Conectar cuenta de imágenes':'Connect image account'):(lang==='es'?'Conectar otra cuenta para Image 2':'Connect another account for Image 2');
+ const imageConnectButton=(!imageDedicated||!imageConnected)?`<button class="btn ${imageConnected?'':'primary'}" type="button" data-action-code="connectImageChatGpt(event)">${imageConnectLabel}</button>`:'';
+ const imageDisconnectButton=imageDedicated&&imageConnected?`<button class="btn danger" type="button" data-action-code="disconnectAgentModel('image')">${lang==='es'?'Desconectar imágenes':'Disconnect images'}</button>`:'';
+ const imageChatgptCard=`<div class="image-chatgpt-card ${imageConnected?'ready':''}">
+  <div><b>${lang==='es'?'Image 2 con ChatGPT/Codex':'Image 2 with ChatGPT/Codex'}</b><p>${lang==='es'?'Image 2 siempre usa Codex. Si el texto del agente usa MiniMax u otra API, puedes conectar una cuenta ChatGPT distinta solo para generar creativos.':'Image 2 always uses Codex. If the text agent uses MiniMax or another API, you can connect a different ChatGPT account only for creative generation.'}</p><span class="badge ${imageConnected?'ok':'warn'}">${imageStatusText}</span><div class="connected-account"><b>${lang==='es'?'Cuenta':'Account'}</b><span>${imageAccountLabel}</span></div>${imagePrimaryNote}</div>
+  <input type="hidden" name="codex_image_source" value="${escapeHtml(imageSource)}"><input type="hidden" name="codex_image_hermes_model" value="gpt-5.5">
   <div id="image-chatgpt-connect-result" class="chatgpt-connect-result hidden"></div>
-  <div class="agent-route-actions"><button class="btn ${imageDedicated?'':'primary'}" type="button" data-action-code="connectImageChatGpt(event)">${imageDedicated?(lang==='es'?'Conectar/revisar imágenes':'Connect/recheck images'):(lang==='es'?'Usar ChatGPT solo para imágenes':'Use ChatGPT only for images')}</button>${imageDedicated?`<button class="btn" type="button" data-action-code="saveImageChatGptRouting('main_chatgpt')">${lang==='es'?'Usar sesión principal':'Use main session'}</button>`:''}</div>
+  <div class="agent-route-actions">${imageConnectButton}${imageDisconnectButton}</div>
  </div>`;
  return `<section class="chatgpt-connect-card ${ready?'ready':''}"><div class="chatgpt-connect-head"><div><h3>${title}</h3><p>${body}</p></div><span class="badge ${ready?'ok':'warn'}">${badge}</span></div><div class="agent-model-picker" role="tablist" aria-label="${lang==='es'?'Opciones de modelo del agente':'Agent model options'}">${routeButton('openai_api')}${routeButton('chatgpt_subscription')}${routeButton('minimax_m3')}${routeButton('custom_api')}</div><form id="agent-model-form" class="model-provider-form" data-submit-code="saveSetupConfig(event)">
  <input type="hidden" name="agent_chat_provider" value="${escapeHtml(providerValue)}">
  <input type="hidden" name="agent_chat_api" value="${escapeHtml(api)}">
  <div class="agent-route-panels">
-  <div class="agent-route-panel ${selectedRoute==='chatgpt_subscription'?'active':''}" data-agent-route-panel="chatgpt_subscription"><h4>${routeCopy.chatgpt_subscription.title}</h4><p>${routeCopy.chatgpt_subscription.panel}</p><div class="chatgpt-preflight"><b>${chatgptReady?(lang==='es'?'Ya conectado':'Already connected'):(lang==='es'?'Antes de conectar':'Before connecting')}</b><ol><li>${lang==='es'?'Deja gpt-5.5 salvo que soporte te indique otro modelo.':'Leave gpt-5.5 unless support gives you another model.'}</li>${chatgptReady?'':`<li>${lang==='es'?'Toca el botón de abajo para abrir la configuración de tu cuenta ChatGPT.':'Click the button below to open your ChatGPT account settings.'}</li><li>${lang==='es'?'Entra a Seguridad, ve al final y activa “Activar autorización con códigos de dispositivo para Codex”.':'Open Security, go to the bottom, and turn on “Enable device code authorization for Codex”.'}</li><li>${lang==='es'?'Vuelve aquí y toca el botón “Ya lo hice, conectar a ChatGPT ahora”.':'Come back here and click “I did it, connect to ChatGPT now”.'}</li>`}</ol>${chatgptReady?'':`<div class="chatgpt-settings-actions">${chatgptSettingsButton}</div>`}</div><div class="form-grid codex-model-choice"><div class="field wide"><label>${lang==='es'?'Modelo para ChatGPT/Codex':'ChatGPT/Codex model'}</label><span class="field-help">${lang==='es'?'Usa gpt-5.5 salvo que soporte te indique otro modelo.':'Use gpt-5.5 unless support gives you another model.'}</span><select name="hermes_model">${codexModelOptions}</select></div></div><div class="agent-route-actions">${chatgptActions}</div><div id="chatgpt-connect-result" class="chatgpt-connect-result hidden"></div></div>
+  <div class="agent-route-panel ${selectedRoute==='chatgpt_subscription'?'active':''}" data-agent-route-panel="chatgpt_subscription"><h4>${routeCopy.chatgpt_subscription.title}</h4><p>${routeCopy.chatgpt_subscription.panel}</p><div class="chatgpt-preflight"><b>${chatgptConnected?(chatgptReady?(lang==='es'?'Conectado y principal':'Connected and primary'):(lang==='es'?'Conectado, no principal':'Connected, not primary')):(lang==='es'?'Antes de conectar':'Before connecting')}</b><div class="connected-account"><b>${lang==='es'?'Cuenta':'Account'}</b><span>${mainAccountLabel}</span></div><ol><li>${lang==='es'?'Deja gpt-5.5 salvo que soporte te indique otro modelo.':'Leave gpt-5.5 unless support gives you another model.'}</li>${chatgptConnected?'':`<li>${lang==='es'?'Toca el botón de abajo para abrir la configuración de tu cuenta ChatGPT.':'Click the button below to open your ChatGPT account settings.'}</li><li>${lang==='es'?'Entra a Seguridad, ve al final y activa “Activar autorización con códigos de dispositivo para Codex”.':'Open Security, go to the bottom, and turn on “Enable device code authorization for Codex”.'}</li><li>${lang==='es'?'Vuelve aquí y toca el botón “Ya lo hice, conectar a ChatGPT ahora”.':'Come back here and click “I did it, connect to ChatGPT now”.'}</li>`}</ol>${chatgptConnected?'':`<div class="chatgpt-settings-actions">${chatgptSettingsButton}</div>`}</div><div class="form-grid codex-model-choice"><div class="field wide"><label>${lang==='es'?'Modelo para ChatGPT/Codex':'ChatGPT/Codex model'}</label><span class="field-help">${lang==='es'?'Usa gpt-5.5 salvo que soporte te indique otro modelo.':'Use gpt-5.5 unless support gives you another model.'}</span><select name="hermes_model">${codexModelOptions}</select></div></div><div class="agent-route-actions">${chatgptActions}</div><div id="chatgpt-connect-result" class="chatgpt-connect-result hidden"></div></div>
   <div class="agent-route-panel ${selectedRoute!=='chatgpt_subscription'?'active':''}" data-agent-route-panel="api"><h4 id="agent-api-route-title">${apiPanelTitle}</h4><p id="agent-api-route-help">${apiPanelHelp}</p><div class="form-grid">
    <div class="field"><label>${lang==='es'?'Modelo':'Model'}</label><input name="agent_chat_model" value="${escapeHtml(modelName)}" placeholder="${lang==='es'?'Nombre del modelo':'Model name'}"></div>
    <div class="field"><label>${lang==='es'?'URL compatible OpenAI':'OpenAI-compatible URL'}</label><span class="field-help">${lang==='es'?'Debe usar https://. Solo se permite http:// para modelos locales como 127.0.0.1.':'Must use https://. http:// is allowed only for local models such as 127.0.0.1.'}</span><input name="agent_chat_base_url" value="${escapeHtml(base)}" placeholder="https://api.ejemplo.com/v1"></div>
@@ -1849,7 +1857,7 @@ function imageChatGptPayload(){
  const payload=agentModelFormPayload();
  payload.connection_purpose='image';
  payload.codex_image_source='dedicated_chatgpt';
- payload.codex_image_hermes_model=payload.codex_image_hermes_model||payload.hermes_model||'gpt-5.5';
+ payload.codex_image_hermes_model='gpt-5.5';
  return payload;
 }
 function advanceOnboardingAfterChatGptConnected(){
@@ -2021,6 +2029,19 @@ async function connectImageChatGpt(event){
   updateChatGptAuthWindow(lang==='es'?'No pude abrir el login':'Could not open login',err.message||String(err),'error');
  }finally{
   if(btn)btn.disabled=false;
+ }
+}
+async function disconnectAgentModel(purpose='agent'){
+ const target=purpose==='image'?'image':'agent';
+ const box=qs(target==='image'?'#image-chatgpt-connect-result':'#chatgpt-connect-result');
+ if(box){box.classList.remove('hidden');box.innerHTML=`<b>${lang==='es'?'Desconectando...':'Disconnecting...'}</b><p>${lang==='es'?'Estoy quitando solo la sesión de ChatGPT/Codex guardada en esta instalación.':'Removing only the ChatGPT/Codex session saved in this install.'}</p>`}
+ try{
+  const res=await api('/api/agent-model/disconnect',{method:'POST',body:JSON.stringify({connection_purpose:target})});
+  if(box){box.classList.remove('hidden');box.innerHTML=`<b>${escapeHtml(res.title||(lang==='es'?'Desconectado':'Disconnected'))}</b><p>${escapeHtml(res.detail||'')}</p>`}
+  toast(target==='image'?(lang==='es'?'Cuenta de imágenes desconectada.':'Image account disconnected.'):(lang==='es'?'ChatGPT/Codex desconectado.':'ChatGPT/Codex disconnected.'));
+  await load();
+ }catch(err){
+  if(box){box.classList.remove('hidden');box.innerHTML=`<b>${lang==='es'?'No pude desconectar':'Could not disconnect'}</b><p>${escapeHtml(err.message||String(err))}</p>`}
  }
 }
 async function saveImageChatGptRouting(source='main_chatgpt'){

@@ -97,7 +97,7 @@ from experiment_scheduler import (
     schedule_experiment,
 )
 from graph_executor import execute_upload_payload
-from hermes_bridge import hermes_codex_ready, hermes_environment, safe_image_paths
+from hermes_bridge import hermes_codex_ready, hermes_codex_session_status, hermes_environment, safe_image_paths
 from hermes_gateway import (
     ensure_daily_brief_cron,
     ensure_experiment_review_cron,
@@ -3353,6 +3353,146 @@ def normalize_connect_purpose(value):
 def config_for_connect_purpose(purpose):
     config = load_config()
     return image_codex_config(config) if normalize_connect_purpose(purpose) == "image" else config
+
+
+HERMES_CODEX_AUTH_FILES = {
+    "auth.json",
+    "auth.lock",
+    "credentials.json",
+    "credential.json",
+    "token.json",
+    "tokens.json",
+    "session.json",
+    "sessions.json",
+    "openai-auth.json",
+    "codex-auth.json",
+}
+
+HERMES_CODEX_AUTH_DIRS = {
+    "auth",
+    "oauth",
+    "tokens",
+    "credentials",
+    "openai-auth",
+    "codex-auth",
+}
+
+HERMES_CODEX_AUTH_RELATIVE_FILES = {
+    ".codex/auth.json",
+    ".codex/auth.lock",
+    ".codex/credentials.json",
+    "codex/auth.json",
+    "codex/auth.lock",
+    "openai/auth.json",
+    "openai/tokens.json",
+}
+
+
+def safe_hermes_auth_home(path):
+    home = Path(str(path or "")).expanduser()
+    if not home.is_absolute():
+        home = ROOT_DIR / home
+    try:
+        resolved = home.resolve()
+    except OSError:
+        resolved = home.absolute()
+    allowed_roots = [
+        (ROOT_DIR / "dashboard" / "data").resolve(),
+        (ROOT_DIR / "runtime").resolve(),
+    ]
+    if not any(resolved == root or root in resolved.parents for root in allowed_roots):
+        raise ValueError("No puedo desconectar esa sesión porque la ruta de autenticación no pertenece a Admira IA.")
+    return resolved
+
+
+def stop_hermes_login_session(purpose="agent"):
+    purpose = normalize_connect_purpose(purpose)
+    with HERMES_LOGIN_LOCK:
+        state_purpose = normalize_connect_purpose(HERMES_LOGIN_STATE.get("purpose"))
+        proc = HERMES_LOGIN_STATE.get("proc")
+        fd = HERMES_LOGIN_STATE.get("fd")
+        running = bool(proc and proc.poll() is None)
+        if state_purpose != purpose:
+            return False
+        HERMES_LOGIN_STATE.update({"proc": None, "fd": None, "status": "disconnected", "output": "", "updated_at": now_iso()})
+    if running:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    if fd is not None:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    return running
+
+
+def clear_hermes_codex_auth(home):
+    auth_home = safe_hermes_auth_home(home)
+    removed = []
+    auth_home.mkdir(parents=True, exist_ok=True)
+    for child in auth_home.iterdir():
+        name = child.name
+        target = None
+        if child.is_file() and name in HERMES_CODEX_AUTH_FILES:
+            target = child
+        elif child.is_dir() and name in HERMES_CODEX_AUTH_DIRS:
+            target = child
+        if not target:
+            continue
+        try:
+            if target.is_dir():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+            removed.append(str(target.relative_to(auth_home)))
+        except OSError:
+            continue
+    for relative in HERMES_CODEX_AUTH_RELATIVE_FILES:
+        target = auth_home / relative
+        if not target.exists():
+            continue
+        try:
+            target.unlink()
+            removed.append(relative)
+        except OSError:
+            continue
+    return {"home": str(auth_home), "removed": removed}
+
+
+def disconnect_agent_model(payload=None):
+    payload = payload or {}
+    purpose = normalize_connect_purpose(payload.get("connection_purpose") or payload.get("purpose"))
+    config = config_for_connect_purpose(purpose)
+    stop_hermes_login_session(purpose)
+    cleared = clear_hermes_codex_auth(getattr(config, "hermes_home", ""))
+    env_updates = {}
+    gateway = None
+    if purpose == "agent":
+        env_updates = {"HERMES_REQUIRE_CODEX_AUTH": "true"}
+        update_env_values(env_updates)
+        gateway = refresh_telegram_gateway_after_agent_model_change({"HERMES_MODEL": getattr(config, "hermes_model", "")})
+    else:
+        env_updates = {
+            "CODEX_IMAGE_SOURCE": "dedicated_chatgpt",
+            "CODEX_IMAGE_HERMES_HOME": str(default_codex_image_hermes_home()),
+            "CODEX_IMAGE_HERMES_MODEL": normalize_hermes_model(getattr(config, "codex_image_hermes_model", "") or getattr(config, "hermes_model", "")),
+        }
+        update_env_values(env_updates)
+    log_action("agent_model_disconnect", {"purpose": purpose, "removed": len(cleared.get("removed", []))}, "completed")
+    label = "ChatGPT/Codex de imágenes" if purpose == "image" else "ChatGPT/Codex"
+    return {
+        "ok": True,
+        "status": "disconnected",
+        "connection_purpose": purpose,
+        "title": f"{label} desconectado",
+        "detail": "Puedes conectar otra cuenta cuando quieras. No borré memoria, campañas ni configuración del agente.",
+        "removed": cleared.get("removed", []),
+        "home": cleared.get("home", ""),
+        "env_updated": sorted(env_updates.keys()),
+        "gateway": gateway,
+    }
 
 
 def hermes_browserless_snapshot(config=None, purpose="agent"):
@@ -8566,6 +8706,12 @@ def dashboard_payload():
     business_spaces = agency_spaces_payload()
     managed_accounts = managed_ad_accounts_payload()
     business_snapshot = business_context_snapshot(business_profile)
+    main_codex_session = hermes_codex_session_status(config, timeout=3)
+    image_codex_session = (
+        hermes_codex_session_status(image_codex_config(config), timeout=3)
+        if normalize_codex_image_source(getattr(config, "codex_image_source", "")) == "dedicated_chatgpt"
+        else main_codex_session
+    )
     codex_image_status = hermes_codex_image_status(timeout=2, config=config)
     codex_image_ready = bool(codex_image_status.get("ok"))
     image_home = resolved_codex_image_hermes_home(config)
@@ -8641,6 +8787,9 @@ def dashboard_payload():
                 "codex_image_dedicated": getattr(config, "codex_image_source", "") == "dedicated_chatgpt",
                 "codex_image_home_configured": bool(image_home),
                 "codex_image_model": getattr(config, "codex_image_hermes_model", config.hermes_model),
+                "codex_image_account": image_codex_session.get("identity", {}),
+                "codex_image_session_detail": image_codex_session.get("detail", ""),
+                "codex_image_connected": bool(image_codex_session.get("ready")),
                 "codex_planning_enabled": bool(config.codex_creative_enabled),
                 "asset_policy": creative_asset_policy(),
             },
@@ -8654,10 +8803,17 @@ def dashboard_payload():
                 "temperature": config.agent_chat_temperature,
                 "hermes_model": config.hermes_model,
                 "hermes_require_codex_auth": config.hermes_require_codex_auth,
+                "chatgpt_connected": bool(main_codex_session.get("ready")),
+                "chatgpt_account": main_codex_session.get("identity", {}),
+                "chatgpt_session_detail": main_codex_session.get("detail", ""),
+                "primary_brain": getattr(config, "agent_brain_provider", "openai_codex"),
                 "codex_image_source": getattr(config, "codex_image_source", "main_chatgpt"),
                 "codex_image_hermes_model": getattr(config, "codex_image_hermes_model", config.hermes_model),
                 "codex_image_ready": codex_image_ready,
                 "codex_image_error": "" if codex_image_ready else codex_image_status.get("error", ""),
+                "codex_image_connected": bool(image_codex_session.get("ready")),
+                "codex_image_account": image_codex_session.get("identity", {}),
+                "codex_image_session_detail": image_codex_session.get("detail", ""),
             },
             "guardrails": {
                 "autonomy_mode": config.autonomy_mode,
@@ -8885,7 +9041,7 @@ HTML = r"""<!DOCTYPE html>
 class DashboardHandler(BaseHTTPRequestHandler):
     HTML_PATHS = {"/", "/dashboard"}
     PROTECTED_GET_PATHS = {"/api/dashboard", "/api/export", "/api/report", "/api/setup", "/api/social/auth-status", "/api/social/accounts", "/api/update/snapshots", "/api/creative-asset", "/api/brand-asset"}
-    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/agent-model/connect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/logo", "/api/brand-guides/product", "/api/ad-briefs", "/api/codex/creative-plan", "/api/codex/image-generate", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/optimization/settings", "/api/optimization/unlock", "/api/shopify/config", "/api/shopify/test", "/api/shopify/sync", "/api/daily-brief/schedule", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/communication-style", "/api/onboarding/complete", "/api/onboarding/skip", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/local-network-access", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
+    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/agent-model/connect", "/api/agent-model/disconnect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/logo", "/api/brand-guides/product", "/api/ad-briefs", "/api/codex/creative-plan", "/api/codex/image-generate", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/optimization/settings", "/api/optimization/unlock", "/api/shopify/config", "/api/shopify/test", "/api/shopify/sync", "/api/daily-brief/schedule", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/communication-style", "/api/onboarding/complete", "/api/onboarding/skip", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/local-network-access", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
     ONBOARDING_OPEN_GETS = {"/api/dashboard", "/api/setup"}
     ONBOARDING_OPEN_POSTS = {"/api/dashboard-password", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/license/activate", "/api/agent-model/connect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/onboarding/communication-style", "/api/onboarding/complete"}
     GET_JSON_ROUTES = {
@@ -8905,6 +9061,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         "/api/social/default-account": social_set_default_account,
         "/api/social/discover-assets": social_discover_assets,
         "/api/agent-model/connect": connect_agent_model,
+        "/api/agent-model/disconnect": disconnect_agent_model,
         "/api/agent-model/connect-status": agent_model_connect_status,
         "/api/agent-model/connect-input": agent_model_connect_input,
         "/api/targeting/search": meta_targeting_search,
