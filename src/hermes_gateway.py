@@ -93,6 +93,51 @@ def _env_value(value):
     return str(value or "").replace("\r", "\n").split("\n", 1)[0].strip()
 
 
+def _gateway_model_config_lines(brain):
+    """Return Hermes model config lines for the selected Admira brain.
+
+    Admira's MiniMax M3 setup is configured as an OpenAI-compatible endpoint
+    in the dashboard. Hermes' built-in ``minimax`` provider is Anthropic-wire
+    oriented and its static picker/catalog can lag behind newer MiniMax models,
+    so the Telegram gateway should expose MiniMax M3 as a named custom
+    OpenAI-compatible provider. The API key stays in the process environment.
+    """
+    model_provider = brain.get("provider") or "openai-codex"
+    model_default = brain.get("model") or normalize_hermes_model(getattr(brain, "hermes_model", ""))
+    base_url = str(brain.get("base_url") or "").strip().rstrip("/")
+    lines = [
+        "model:",
+        f"  provider: {_quote_yaml(model_provider)}",
+        f"  default: {_quote_yaml(model_default)}",
+    ]
+    if brain.get("brain") == "minimax":
+        provider_slug = "custom:admira-minimax"
+        provider_name = "admira-minimax"
+        lines = [
+            "model:",
+            f"  provider: {_quote_yaml(provider_slug)}",
+            f"  default: {_quote_yaml(model_default)}",
+            "custom_providers:",
+            f"  - name: {_quote_yaml(provider_name)}",
+            f"    base_url: {_quote_yaml(base_url or 'https://api.minimax.io/v1')}",
+            "    key_env: \"MINIMAX_API_KEY\"",
+            "    api_mode: \"chat_completions\"",
+            f"    model: {_quote_yaml(model_default)}",
+            "    models:",
+            f"      {_quote_yaml(model_default)}: {{}}",
+            "model_aliases:",
+            f"  {_quote_yaml(model_default)}:",
+            f"    model: {_quote_yaml(model_default)}",
+            f"    provider: {_quote_yaml(provider_slug)}",
+            f"    base_url: {_quote_yaml(base_url or 'https://api.minimax.io/v1')}",
+            "  \"minimax m3\":",
+            f"    model: {_quote_yaml(model_default)}",
+            f"    provider: {_quote_yaml(provider_slug)}",
+            f"    base_url: {_quote_yaml(base_url or 'https://api.minimax.io/v1')}",
+        ]
+    return lines
+
+
 def _gateway_fingerprint(config, status, files):
     token_hash = hashlib.sha256(str(config.telegram_bot_token or "").encode("utf-8")).hexdigest()[:16]
     timezone_name = str(getattr(config, "daily_brief_timezone", "UTC") or "UTC")
@@ -203,15 +248,11 @@ def write_gateway_files(config):
     ad_experience = ad_experience_from_environment()
     prompt = gateway_prompt(status["language"], communication_style, ad_experience)
     brain = hermes_brain_settings(config)
-    model_provider = brain.get("provider") or "openai-codex"
-    model_default = brain.get("model") or normalize_hermes_model(getattr(config, "hermes_model", ""))
     toolsets = ["hermes-telegram", "memory", "skills", "session_search", "vision", "file", "web", "browser", "admira"]
     mcp_server_path = ROOT_DIR / "src" / "admira_mcp_server.py"
     config_yaml = [
         f"timezone: {_quote_yaml(timezone_name)}",
-        "model:",
-        f"  provider: {_quote_yaml(model_provider)}",
-        f"  default: {_quote_yaml(model_default)}",
+        *_gateway_model_config_lines(brain),
         "agent:",
         "  max_turns: 60",
         "  gateway_timeout: 1800",

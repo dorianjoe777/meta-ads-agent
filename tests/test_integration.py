@@ -1772,8 +1772,12 @@ class IntegrationTestSuite:
             self.assert_true("¿Tienes alguna pregunta?" in prompt and "No uses datos demo" in prompt, "Daily brief prompt ends with the buyer question and blocks demo data")
             minimax_files = hermes_gateway.write_gateway_files(MiniMaxConfig())
             minimax_yaml = Path(minimax_files["config"]).read_text(encoding="utf-8")
-            self.assert_true('provider: "minimax"' in minimax_yaml and 'default: "MiniMax-M3"' in minimax_yaml, "Hermes Gateway writes the selected MiniMax brain instead of hardcoding ChatGPT/Codex")
+            minimax_env = Path(minimax_files["env"]).read_text(encoding="utf-8")
+            self.assert_true('provider: "custom:admira-minimax"' in minimax_yaml and 'default: "MiniMax-M3"' in minimax_yaml, "Hermes Gateway writes MiniMax M3 as a named OpenAI-compatible provider instead of hardcoding ChatGPT/Codex")
+            self.assert_true("custom_providers:" in minimax_yaml and 'name: "admira-minimax"' in minimax_yaml and 'key_env: "MINIMAX_API_KEY"' in minimax_yaml and 'api_mode: "chat_completions"' in minimax_yaml, "Hermes Gateway exposes MiniMax through a custom provider that the Telegram /model switch can resolve")
+            self.assert_true("model_aliases:" in minimax_yaml and '"minimax m3":' in minimax_yaml, "Hermes Gateway pins manual /model MiniMax M3 switches to the Admira MiniMax endpoint")
             self.assert_true("direct-model-key" not in minimax_yaml, "Hermes Gateway config never writes the direct model API key")
+            self.assert_true("direct-model-key" not in minimax_env and "MINIMAX_API_KEY" not in minimax_env, "Hermes Gateway env file never persists direct model secrets")
             codex_fp = hermes_gateway._gateway_fingerprint(FakeConfig(), hermes_gateway.telegram_settings(FakeConfig()), files)
             minimax_fp = hermes_gateway._gateway_fingerprint(MiniMaxConfig(), hermes_gateway.telegram_settings(MiniMaxConfig()), minimax_files)
             self.assert_true(codex_fp != minimax_fp and "direct-model-key" not in minimax_fp, "Hermes Gateway fingerprint changes on brain/provider updates without leaking secrets")
@@ -2057,6 +2061,7 @@ class IntegrationTestSuite:
         original_prepare = hermes_gateway.prepare_hermes_workspace
         original_which = hermes_gateway.shutil.which
         original_popen = hermes_gateway.subprocess.Popen
+        original_stale_terminate = hermes_gateway._terminate_stale_gateway_from_state
         original_env = {key: os.environ.get(key) for key in ["TELEGRAM_AGENT_MODE", "TELEGRAM_AGENT_ENABLED", "TELEGRAM_LANGUAGE"]}
 
         class FakeConfig:
@@ -2071,6 +2076,13 @@ class IntegrationTestSuite:
             agent_chat_base_url = "https://api.openai.com/v1"
             agent_chat_api_key = ""
             agent_chat_model = "auto"
+
+        class MiniMaxConfig(FakeConfig):
+            agent_brain_provider = "minimax"
+            agent_chat_base_url = "https://api.minimax.io/v1"
+            agent_chat_api_key = "direct-model-key"
+            agent_chat_model = "MiniMax-M3"
+            hermes_require_codex_auth = False
 
         class FakeProcess:
             pid = 4321
@@ -2101,6 +2113,7 @@ class IntegrationTestSuite:
             hermes_gateway.prepare_hermes_workspace = lambda payload: {"path": str(workspace)}
             hermes_gateway.shutil.which = lambda command: "/usr/local/bin/hermes" if command == "hermes" else command
             hermes_gateway.subprocess.Popen = fake_popen
+            hermes_gateway._terminate_stale_gateway_from_state = lambda skip_pid=None: None
 
             started = hermes_gateway.start_gateway(FakeConfig())
             status = hermes_gateway.gateway_status(FakeConfig())
@@ -2118,6 +2131,16 @@ class IntegrationTestSuite:
             self.assert_true("MALICIOUS=1" not in env_text and "\nMALICIOUS" not in env_text, "Telegram token is sanitized before writing the isolated Hermes env")
             self.assert_true("secret-token" not in serialized_status and "123456:" not in serialized_status, "Gateway status never exposes the Telegram bot token")
 
+            popen_calls.clear()
+            minimax_started = hermes_gateway.start_gateway(MiniMaxConfig())
+            minimax_config = Path(minimax_started["config"]).read_text(encoding="utf-8")
+            minimax_process_env = popen_calls[0][1].get("env") or {}
+            self.assert_true(minimax_started["started"] is True, "Hermes Gateway restarts cleanly after switching the primary brain to MiniMax")
+            self.assert_true(minimax_process_env.get("MINIMAX_API_KEY") == "direct-model-key" and minimax_process_env.get("MINIMAX_BASE_URL") == "https://api.minimax.io/v1", "Hermes Gateway passes MiniMax API credentials only through the live process environment")
+            self.assert_true('provider: "custom:admira-minimax"' in minimax_config and 'key_env: "MINIMAX_API_KEY"' in minimax_config, "Hermes Gateway routes Telegram MiniMax M3 through the Admira custom provider")
+            self.assert_true("model_aliases:" in minimax_config and '"minimax m3":' in minimax_config, "Hermes Gateway keeps manual Telegram /model MiniMax M3 switches on the configured MiniMax API")
+            self.assert_true("direct-model-key" not in minimax_config, "Hermes Gateway never serializes MiniMax API keys into config.yaml")
+
             hermes_gateway.stop_gateway()
             hermes_gateway.subprocess.Popen = lambda *args, **kwargs: (_ for _ in ()).throw(OSError("boom"))
             failed = hermes_gateway.start_gateway(FakeConfig())
@@ -2128,6 +2151,7 @@ class IntegrationTestSuite:
             hermes_gateway.prepare_hermes_workspace = original_prepare
             hermes_gateway.shutil.which = original_which
             hermes_gateway.subprocess.Popen = original_popen
+            hermes_gateway._terminate_stale_gateway_from_state = original_stale_terminate
             for key, value in original_env.items():
                 if value is None:
                     os.environ.pop(key, None)
