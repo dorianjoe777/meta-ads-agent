@@ -100,6 +100,13 @@ def _env_value(value):
     return str(value or "").replace("\r", "\n").split("\n", 1)[0].strip()
 
 
+def _gateway_media_allow_dirs():
+    """Directories whose generated files Hermes may deliver as native media."""
+    return [
+        str((ROOT_DIR / "output").resolve()),
+    ]
+
+
 def _gateway_model_config_lines(brain):
     """Return Hermes model config lines for the selected Admira brain.
 
@@ -180,6 +187,7 @@ def gateway_prompt(language="es", communication_style="simple", ad_experience_le
             "You are Admira IA, the buyer's private Meta Ads manager. Your customer-facing identity is only Admira IA. "
             "Never mention Hermes, gateway/runtime details, MCP/tool names, internal commands, or `/help` command suggestions to the buyer unless support explicitly asks for diagnostics. "
             "Do not expose internal file paths such as `/app/...`, `dashboard/data/...`, `hermes-workspace/...`, `brand_guides/...`, `memory/...`, or `CURRENT_CONTEXT.json` to buyers unless support explicitly asks for technical diagnostics. "
+            "After an image or creative tool succeeds, never paste `MEDIA:/...` or a local path as the deliverable. If a native attachment directive is needed, use `MEDIA:<local_path>` only as internal delivery syntax at the end of the response, while the visible message says the image is attached and summarizes what is ready. "
             "If the buyer asks for a prompt, copy, plan, script, diagnosis, or useful content, paste it directly in the chat; do not reply only with “I saved it in this file” or ask them to open an internal path. "
             "Internal workspace files are your private memory/tooling; the buyer's usable workspace is the conversation. You may say you saved something internally only after giving the requested content in the same reply. "
             "Before any first-time greeting or onboarding question, read `memory/Conversation continuity.md`, `memory/continuity_status.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/creative_experiments.json`, and relevant `brand_guides/` files in the workspace. "
@@ -209,6 +217,7 @@ def gateway_prompt(language="es", communication_style="simple", ad_experience_le
         "Eres Admira IA, el manager privado de Meta Ads del comprador. Tu identidad de cara al cliente es solo Admira IA. "
         "Nunca menciones Hermes, gateway/runtime, nombres de herramientas MCP, comandos internos ni sugerencias de comandos como `/help` al comprador, salvo que soporte pida diagnóstico explícitamente. "
         "No muestres rutas internas como `/app/...`, `dashboard/data/...`, `hermes-workspace/...`, `brand_guides/...`, `memory/...` o `CURRENT_CONTEXT.json` al comprador, salvo que soporte pida diagnóstico técnico explícitamente. "
+        "Después de que una herramienta de imagen o creativo genere un archivo, nunca pegues `MEDIA:/...` ni una ruta local como entregable. Si necesitas adjuntar el archivo, usa `MEDIA:<ruta_local>` solo como sintaxis interna de entrega al final de la respuesta; el mensaje visible debe decir que la imagen va adjunta y resumir qué quedó listo. "
         "Si el comprador pide un prompt, copy, plan, guion, diagnóstico o contenido útil, entrégalo directamente en el chat; no respondas solo “lo guardé en este archivo” ni le pidas abrir una ruta interna. "
         "Los archivos internos son tu memoria/herramienta privada; el workspace útil del comprador es la conversación. Puedes decir que algo quedó guardado internamente solo después de dar el contenido solicitado en el mismo mensaje. "
         "Antes de saludar como si fuera la primera vez o hacer preguntas de onboarding, lee `memory/Conversation continuity.md`, `memory/continuity_status.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/creative_experiments.json` y los archivos relevantes de `brand_guides/` en el workspace. "
@@ -248,7 +257,7 @@ def write_gateway_files(config):
     if env_path.exists():
         for line in env_path.read_text(encoding="utf-8").splitlines():
             key = line.split("=", 1)[0].strip() if "=" in line else ""
-            if key not in {"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS", "TELEGRAM_HOME_CHANNEL", "HERMES_TIMEZONE"}:
+            if key not in {"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS", "TELEGRAM_HOME_CHANNEL", "HERMES_TIMEZONE", "HERMES_MEDIA_ALLOW_DIRS", "ADMIRA_PRODUCT_ROOT"}:
                 env_lines.append(line)
     if config.telegram_bot_token:
         env_lines.append(f"TELEGRAM_BOT_TOKEN={_env_value(config.telegram_bot_token)}")
@@ -256,6 +265,8 @@ def write_gateway_files(config):
         env_lines.append(f"TELEGRAM_ALLOWED_USERS={_env_value(status['chat_id'])}")
         env_lines.append(f"TELEGRAM_HOME_CHANNEL={_env_value(status['chat_id'])}")
     env_lines.append(f"HERMES_TIMEZONE={_env_value(timezone_name)}")
+    env_lines.append(f"HERMES_MEDIA_ALLOW_DIRS={_env_value(os.pathsep.join(_gateway_media_allow_dirs()))}")
+    env_lines.append(f"ADMIRA_PRODUCT_ROOT={_env_value(str(ROOT_DIR))}")
     env_path.write_text("\n".join(env_lines).rstrip() + "\n", encoding="utf-8")
     env_path.chmod(0o600)
 
@@ -505,6 +516,8 @@ def start_gateway(config):
     env["PYTHONPATH"] = source_path if not existing_pythonpath else f"{source_path}{os.pathsep}{existing_pythonpath}"
     env["ADMIRA_HERMES_RUNTIME_PATCHES"] = "1"
     env["ADMIRA_GATEWAY_LANGUAGE"] = status["language"]
+    env["HERMES_MEDIA_ALLOW_DIRS"] = os.pathsep.join(_gateway_media_allow_dirs())
+    env["ADMIRA_PRODUCT_ROOT"] = str(ROOT_DIR)
     try:
         with log_path.open("a", encoding="utf-8") as log_file:
             log_file.write(f"\n[{now_iso()}] Starting Hermes Gateway for Admira IA\n")

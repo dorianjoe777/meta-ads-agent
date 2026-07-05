@@ -71,6 +71,7 @@ WORKSPACE_IMAGE_TRIGGER_WORDS = (
     "subido",
     "uploaded",
 )
+IMAGE_OUTPUT_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 
 
 def load_dashboard():
@@ -98,6 +99,26 @@ def result_ok(result):
     if "ok" in result:
         return bool(result.get("ok"))
     return True
+
+
+def generated_media_attachment_for_result(tool, result):
+    """Return an internal MEDIA directive for generated creative files."""
+    if tool != "admira_codex_image_generate" or not result_ok(result):
+        return ""
+    nested = (result or {}).get("result") if isinstance(result, dict) else {}
+    if not isinstance(nested, dict):
+        return ""
+    raw_path = nested.get("image_path")
+    if not raw_path:
+        return ""
+    try:
+        path = Path(str(raw_path)).expanduser().resolve()
+        path.relative_to((ROOT_DIR / "output").resolve())
+    except (OSError, RuntimeError, ValueError):
+        return ""
+    if path.suffix.lower() not in IMAGE_OUTPUT_EXTENSIONS or not path.exists() or not path.is_file():
+        return ""
+    return f"MEDIA:{path}"
 
 
 def normalize_tool_name(name):
@@ -219,14 +240,20 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
         product_args["decision"] = "reject"
 
     result = dashboard.execute_agent_tool({"tool": product_tool, "arguments": product_args}, payload)
-    return redact_payload(
-        {
-            "ok": result_ok(result),
-            "tool": tool,
-            "product_tool": product_tool,
-            "result": result,
-        }
-    )
+    response = {
+        "ok": result_ok(result),
+        "tool": tool,
+        "product_tool": product_tool,
+        "result": result,
+    }
+    media_attachment = generated_media_attachment_for_result(tool, result)
+    if media_attachment:
+        response["media_attachment"] = media_attachment
+        response["buyer_delivery_instruction"] = (
+            "Native attachment prepared. In the visible buyer reply, say the image is attached here. "
+            "Do not paste MEDIA:/... or local file paths as links."
+        )
+    return redact_payload(response)
 
 
 def cli(argv=None):

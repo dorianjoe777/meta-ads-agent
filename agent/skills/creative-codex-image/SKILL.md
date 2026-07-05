@@ -30,7 +30,7 @@ Read these workspace files when present:
 
 Treat `brand_guides/` as read-only workspace context. Do not create or edit those Markdown files manually to unblock image production. If brand, product, or ad-brief readiness is incomplete, save the missing memory with `mcp_admira_save_brand_memory`, `mcp_admira_save_product_memory`, `mcp_admira_save_ad_brief`, or `mcp_admira_save_creative_references`, then call `mcp_admira_codex_image_generate` again.
 
-Internal files are not buyer-facing deliverables. Do not tell the buyer to open `/app/...`, `dashboard/data/...`, `hermes-workspace/...`, `brand_guides/...`, `memory/...`, or `CURRENT_CONTEXT.json`. If they ask for the prompt, paste the full prompt directly in the chat. You may also save it internally, but the answer must be usable from Telegram alone.
+Internal files are not buyer-facing deliverables. Do not tell the buyer to open `/app/...`, `dashboard/data/...`, `hermes-workspace/...`, `brand_guides/...`, `memory/...`, or `CURRENT_CONTEXT.json`. Do not present `MEDIA:/...` as a link, preview URL, or address the buyer should copy/open. If they ask for the prompt, paste the full prompt directly in the chat. You may also save it internally, but the answer must be usable from Telegram alone.
 
 If an uploaded image is relevant, summarize what you see and include that summary in the tool arguments as `reference_image_summary`.
 
@@ -65,4 +65,4 @@ Any generated person, product, location, food, interior, or other real-world sce
 
 ## Reply
 
-After the tool returns, tell the buyer the image is ready and what to do next using a buyer-facing link/attachment when available. Do not expose internal local paths. If the tool fails, explain the missing connection without inventing an image. If the buyer asks for a prompt because Image 2 is unavailable, paste the exact prompt in the chat instead of pointing to an internal file.
+After the tool returns successfully, the visible reply should say the image is ready and attached here, plus one short recommendation or next option. Do not expose internal local paths. If the platform needs a `MEDIA:<local_path>` tag to deliver the image, include that tag only as native attachment syntax at the very end of the response, never as text like "use this path" or "MEDIA:/app/...". If the tool fails, explain the missing connection without inventing an image. If the buyer asks for a prompt because Image 2 is unavailable, paste the exact prompt in the chat instead of pointing to an internal file.

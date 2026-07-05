@@ -1927,6 +1927,7 @@ class IntegrationTestSuite:
             self.assert_true("rich_messages: false" in config_yaml, "Hermes Gateway disables Telegram rich rendering so tables cannot become empty bubbles")
             self.assert_true("gateway_restart_notification: false" in config_yaml, "Hermes Gateway suppresses buyer-facing shutdown notices during planned dashboard restarts")
             self.assert_true("threshold: 0.85" in config_yaml and "codex_gpt55_autoraise: false" in config_yaml, "Hermes Gateway keeps the larger Codex context threshold without replaying the auto-compaction notice to buyers")
+            self.assert_true("HERMES_MEDIA_ALLOW_DIRS=" in env_text and "/output" in env_text, "Hermes Gateway allows generated output files to be delivered as native media attachments")
             self.assert_true("mcp_servers:" in config_yaml and "admira:" in config_yaml and "admira_mcp_server.py" in config_yaml, "Hermes Gateway registers the Admira MCP product-tool bridge")
             self.assert_true("    timeout: 900" in config_yaml, "Hermes Gateway lets long Codex/Image MCP calls finish instead of cutting them off at 300 seconds")
             self.assert_true("    keepalive_interval: 1200" in config_yaml, "Hermes Gateway avoids MCP keepalive reconnects while a long creative tool call is still running")
@@ -1939,6 +1940,7 @@ class IntegrationTestSuite:
             self.assert_true("Estás hablando directamente desde Hermes Telegram Gateway" not in config_yaml and "Usa tu memoria de Hermes" not in config_yaml, "Telegram prompt does not teach the buyer-facing agent to introduce itself as Hermes")
             english_prompt = hermes_gateway.gateway_prompt("en", "simple", "")
             self.assert_true("customer-facing identity is only Admira IA" in english_prompt and "Never mention Hermes" in english_prompt and "`/help` command suggestions" in english_prompt, "English Telegram prompt also hides Hermes/runtime branding from buyers")
+            self.assert_true("MEDIA:<local_path>" in english_prompt and "native attachment directive" in english_prompt, "English Telegram prompt treats MEDIA paths as attachment syntax, not buyer links")
             self.assert_true("experiencia creando/gestionando anuncios" in config_yaml and "Experiencia en anuncios: avanzada" in config_yaml, "Hermes Gateway asks and applies the global ad-experience preference")
             self.assert_true("Sé proactivo globalmente" in config_yaml and "evento correcto" in config_yaml, "Hermes Gateway applies the global expert configurator posture beyond placements")
             self.assert_true("no uses tablas Markdown" in config_yaml, "Hermes Gateway prompt keeps Telegram replies in mobile-safe bullet formatting")
@@ -2005,6 +2007,10 @@ class IntegrationTestSuite:
         print("\nTesting Admira MCP Tool Bridge...")
 
         calls = []
+        image_dir = ROOT_DIR / "output" / "test-admira-mcp-media"
+        image_dir.mkdir(parents=True, exist_ok=True)
+        generated_image = image_dir / "creative.png"
+        generated_image.write_bytes(b"fake png")
 
         class FakeDashboard:
             PENDING_FILE = "pending.json"
@@ -2030,6 +2036,17 @@ class IntegrationTestSuite:
 
             def execute_agent_tool(self, tool_request, payload):
                 calls.append((tool_request, payload))
+                if tool_request["tool"] == "codex_image_generate":
+                    return {
+                        "type": "codex_image_generate",
+                        "executed": True,
+                        "reply": "Listo. Imagen adjunta.",
+                        "result": {
+                            "ok": True,
+                            "image_path": str(generated_image),
+                            "asset_id": "test-admira-mcp-media/creative.png",
+                        },
+                    }
                 return {"type": tool_request["tool"], "executed": False, "staged": True, "reply": "Preparado."}
 
         original_loader = admira_tool_bridge.load_dashboard
@@ -2048,6 +2065,7 @@ class IntegrationTestSuite:
 
             self.assert_true(context["ok"] and context["metrics_source"]["is_real_meta_data"], "Tool bridge returns safe real Meta context")
             self.assert_true(image["product_tool"] == "codex_image_generate" and "codex_image_generate" in called_tools, "Tool bridge maps Codex/Image MCP calls to dashboard action handlers")
+            self.assert_true(image.get("media_attachment") == f"MEDIA:{generated_image.resolve()}" and "Do not paste MEDIA" in image.get("buyer_delivery_instruction", ""), "Tool bridge gives Hermes a native media attachment directive for generated creative images")
             self.assert_true(review["product_tool"] == "review_signal_quality" and "review_signal_quality" in called_tools, "Tool bridge maps signal-quality MCP review to dashboard action handlers")
             self.assert_true(preflight["product_tool"] == "preflight_campaign" and "preflight_campaign" in called_tools, "Tool bridge maps campaign preflight MCP review to dashboard action handlers")
             self.assert_true(public_asset["product_tool"] == "fetch_public_asset" and "fetch_public_asset" in called_tools, "Tool bridge maps public URL/Drive creative retrieval to dashboard action handlers")
@@ -2059,6 +2077,7 @@ class IntegrationTestSuite:
             self.assert_true(unknown["blocked"] and unknown["reason"] == "unsupported_tool", "Tool bridge rejects unknown tools")
         finally:
             admira_tool_bridge.load_dashboard = original_loader
+            shutil.rmtree(image_dir, ignore_errors=True)
 
     def test_admira_mcp_server_lists_and_calls_product_tools(self):
         """Test minimal MCP server exposes the Admira product tools in Hermes-compatible shape."""
@@ -2710,6 +2729,7 @@ class IntegrationTestSuite:
                 workspace,
             )
             onboarding_skill = (ROOT_DIR / "agent" / "skills" / "business-onboarding" / "SKILL.md").read_text(encoding="utf-8")
+            creative_skill = (ROOT_DIR / "agent" / "skills" / "creative-codex-image" / "SKILL.md").read_text(encoding="utf-8")
 
             self.assert_true(status["has_persistent_memory"] is True and status["resume_required"] is True, "Continuity status detects durable business memory after history cleanup")
             self.assert_true(status["sources"]["business_profile"] and status["sources"]["general_branding"] and status["sources"]["ad_briefs"], "Continuity status names the saved business, brand, and ad brief sources")
@@ -2718,10 +2738,13 @@ class IntegrationTestSuite:
             self.assert_true("limpieza de historial" in gateway_prompt and "no te presentes como primera vez" in gateway_prompt and "Conversation continuity" in gateway_prompt, "Telegram gateway prompt blocks first-run greetings when durable memory exists")
             self.assert_true("CURRENT_CONTEXT.json" in gateway_prompt and "data/business_profile.json" in gateway_prompt and "brand_guides/" in gateway_prompt, "Telegram gateway prompt tells new sessions to inspect durable workspace memory before repeating questions")
             self.assert_true("No muestres rutas internas" in gateway_prompt and "entrégalo directamente en el chat" in gateway_prompt, "Telegram gateway prompt blocks buyer-facing internal workspace paths")
+            self.assert_true("MEDIA:<ruta_local>" in gateway_prompt and "sintaxis interna de entrega" in gateway_prompt, "Telegram gateway prompt tells the agent to attach generated media instead of exposing MEDIA paths")
             self.assert_true("Before treating this as a new conversation" in bridge_prompt and "resume from durable business/brand/ad memory" in bridge_prompt, "Hermes bridge prompt also checks durable continuity before restarting onboarding")
             self.assert_true("do not say you need CLI or terminal access" in bridge_prompt and "public URL" in bridge_prompt and "web/browser" in bridge_prompt, "Dashboard Hermes prompt uses product actions and public URL retrieval instead of terminal excuses")
+            self.assert_true("Do not present `MEDIA:/...` as a link" in bridge_prompt and "native attachment directive" in bridge_prompt, "Dashboard Hermes prompt also hides raw media attachment directives from buyers")
             self.assert_true("Never expose internal workspace paths" in onboarding_skill and "paste the useful content directly in the chat" in onboarding_skill, "Business onboarding skill keeps internal paths out of buyer replies")
             self.assert_true("Do not rely on Telegram/Hermes session memory" in onboarding_skill and "resume from that memory" in onboarding_skill, "Business onboarding skill saves durable facts and resumes instead of repeating questions")
+            self.assert_true("Do not present `MEDIA:/...` as a link" in creative_skill and "native attachment syntax" in creative_skill, "Creative Image skill delivers generated files as attachments instead of internal paths")
         finally:
             hermes_bridge.DATA_DIR = original["DATA_DIR"]
             hermes_bridge.BRAND_GUIDES_DIR = original["BRAND_GUIDES_DIR"]
