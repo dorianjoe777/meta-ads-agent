@@ -1007,6 +1007,7 @@ class IntegrationTestSuite:
             self.assert_true(result.get("error_type") == "model_usage_limit", "Hermes classifies model usage limits separately")
             self.assert_true("sí está conectado" in result["reply"] and "límite temporal" in result["reply"], "Buyer message explains connected-but-limited state")
             self.assert_true("falta conectar" not in result["reply"].lower() and "4 hours" in result.get("retry_after_hint", "") and "4 horas" in result["reply"], "Usage limit reply does not ask to reconnect and localizes retry timing")
+            self.assert_true("/model" in result["reply"] and "gpt-5.4 mini" in result["reply"], "Usage limit reply suggests the simple Telegram model switch when limits happen often")
 
             def raise_rate_limited(_config, _payload):
                 raise RuntimeError("The model provider is rate-limiting requests. Please wait a moment and try again.")
@@ -1015,6 +1016,7 @@ class IntegrationTestSuite:
             limited = hermes_bridge.chat(FakeConfig(), {"message": "Hola", "language": "es", "channel": "telegram", "session_key": "telegram:123"})
             self.assert_true(limited.get("error_type") == "model_usage_limit" and "rate-limiting" not in limited["reply"].lower(), "English provider rate-limit text is converted to a Spanish buyer message")
             self.assert_true("Puedes intentar de nuevo en un momento" in limited["reply"], "Provider retry hint is included in Spanish when available")
+            self.assert_true("/model" in limited["reply"] and "gpt-5.4 mini" in limited["reply"], "Provider rate-limit reply includes a lightweight model guide")
         finally:
             hermes_bridge.hermes_brain_ready = original_ready
             hermes_bridge.cli_chat = original_cli
@@ -1029,6 +1031,7 @@ class IntegrationTestSuite:
 
         self.assert_true("ChatGPT/Codex" in spanish and "5 horas" in spanish and "rate-limiting" not in spanish.lower(), "Gateway rate-limit text is localized in Spanish with a 5-hour reset")
         self.assert_true("5 hours" in english and "usage limit" in english.lower(), "Gateway rate-limit text can stay English when configured")
+        self.assert_true("/model" in spanish and "gpt-5.4 mini" in spanish, "Gateway rate-limit text teaches the simple Telegram model switch")
 
         raw_long_reset = "HTTP 429: {'error': {'type': 'usage_limit_reached', 'resets_in_seconds': 199500}}"
         long_spanish = admira_hermes_runtime_patch.provider_error_reply(raw_long_reset, "es", lambda text: "ORIGINAL")

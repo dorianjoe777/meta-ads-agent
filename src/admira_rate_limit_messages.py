@@ -169,16 +169,31 @@ def retry_delay_hint(text, language="es"):
     return ""
 
 
+def lighter_model_switch_hint(language="es"):
+    """Short buyer-facing hint for repeated ChatGPT/Codex text-model limits."""
+    english = str(language or "es").lower().startswith("en")
+    if english:
+        return (
+            "If this happens often, send /model in Telegram and choose a lighter option such as gpt-5.4 mini if it appears. "
+            "That usually uses less of the heavy-model limit than gpt-5.5."
+        )
+    return (
+        "Si esto pasa muy seguido, escribe /model en Telegram y elige una opción más ligera como gpt-5.4 mini si aparece. "
+        "Suele gastar menos límite que gpt-5.5 para conversaciones normales."
+    )
+
+
 def gateway_rate_limit_reply(text, language="es"):
     """Return a concise Telegram-safe gateway notification for provider limits."""
     english = str(language or "es").lower().startswith("en")
     hint = retry_delay_hint(text, "en" if english else "es")
+    model_hint = lighter_model_switch_hint("en" if english else "es")
     if english:
         base = "⏱️ ChatGPT/Codex hit a temporary usage limit."
         if hint:
-            return f"{base} Try again in about {hint}."
-        return f"{base} Try again later; the provider did not send an exact reset time."
+            return f"{base} Try again in about {hint}. {model_hint}"
+        return f"{base} Try again later; the provider did not send an exact reset time. {model_hint}"
     base = "⏱️ ChatGPT/Codex alcanzó un límite temporal de uso."
     if hint:
-        return f"{base} Intenta de nuevo en aprox. {hint}."
-    return f"{base} Intenta de nuevo más tarde; el proveedor no dio una hora exacta de reinicio."
+        return f"{base} Intenta de nuevo en aprox. {hint}. {model_hint}"
+    return f"{base} Intenta de nuevo más tarde; el proveedor no dio una hora exacta de reinicio. {model_hint}"

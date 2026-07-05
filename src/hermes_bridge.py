@@ -19,6 +19,7 @@ from optimization_engine import load_optimization_state
 from optimization_research import load_research
 from admira_rate_limit_messages import (
     is_rate_limit_text,
+    lighter_model_switch_hint,
     localized_textual_hint,
     retry_delay_hint,
     retry_seconds_from_text,
@@ -836,16 +837,18 @@ def model_usage_limit_reply(language="es", error_text=""):
             "ChatGPT/Codex is connected, but the model hit a temporary usage limit. "
             "I will not invent an answer or execute actions while the brain cannot respond."
         )
+        model_hint = lighter_model_switch_hint("en")
         if hint:
-            return f"{base} Try again after: {localized_retry_hint(hint, 'en')}."
-        return f"{base} Try again later; the provider did not send me an exact reset time."
+            return f"{base} Try again after: {localized_retry_hint(hint, 'en')}. {model_hint}"
+        return f"{base} Try again later; the provider did not send me an exact reset time. {model_hint}"
     base = (
         "Tu ChatGPT/Codex sí está conectado, pero el modelo alcanzó su límite temporal de uso. "
         "No voy a inventar una respuesta ni ejecutar acciones mientras el cerebro no pueda responder."
     )
+    model_hint = lighter_model_switch_hint("es")
     if hint:
-        return f"{base} Puedes intentar de nuevo en {localized_retry_hint(hint, 'es')}."
-    return f"{base} Intenta de nuevo más tarde; el proveedor no me dio una hora exacta de reinicio."
+        return f"{base} Puedes intentar de nuevo en {localized_retry_hint(hint, 'es')}. {model_hint}"
+    return f"{base} Intenta de nuevo más tarde; el proveedor no me dio una hora exacta de reinicio. {model_hint}"
 
 
 def hermes_codex_ready(config):
