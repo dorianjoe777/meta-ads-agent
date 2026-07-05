@@ -39,6 +39,7 @@ import meta_upload
 import meta_insights
 import optimization_engine
 import optimization_research
+import public_asset_fetcher
 import signal_quality
 import shopify_connector
 import verified_signal_ledger
@@ -1756,6 +1757,7 @@ class IntegrationTestSuite:
             self.assert_true("likely placements" in branding_text and "vertical Reels version" in campaign_text and "Expert Configuration Posture" in campaign_text, "Skills teach proactive expert placement strategy instead of rigid placement defaults")
             self.assert_true("mcp_admira_preflight_campaign" in campaign_text and "object_story_spec" in campaign_text and "custom_audiences" in campaign_text, "Campaign skill teaches preflight and expert campaign controls")
             self.assert_true("three most important success metrics" in campaign_text and "success_metrics" in campaign_text and "mcp_admira_save_ads_onboarding" in agents_text, "Hermes workspace teaches campaign scorecards and exposes ads onboarding memory")
+            self.assert_true("mcp_admira_fetch_public_asset" in agents_text and "Google Drive" in campaign_text and "public video" in branding_text, "Hermes workspace teaches public link and Drive creative retrieval")
             self.assert_true("mcp_admira_approve_action" in approvals_skill.read_text(encoding="utf-8"), "Approval skill points Hermes to exact approval MCP tools")
             self.assert_true("Native Product Tools" in agents_text and "mcp_admira_stage_campaign" in agents_text and "mcp_admira_review_signal_quality" in agents_text and "mcp_admira_preflight_campaign" in agents_text, "Combined Hermes rules document the MCP product bridge and preflight review")
             self.assert_true((workspace_path / "skills" / "README.md").exists(), "Hermes workspace includes a product skill index")
@@ -1802,16 +1804,19 @@ class IntegrationTestSuite:
             image = admira_tool_bridge.call_tool("codex_image_generate", {"request": "haz una imagen"})
             review = admira_tool_bridge.call_tool("mcp_admira_review_signal_quality", {"objective": "PURCHASES", "pixel_id": "123"})
             preflight = admira_tool_bridge.call_tool("mcp_admira_preflight_campaign", {"objective": "PURCHASES", "pixel_id": "123"})
+            public_asset = admira_tool_bridge.call_tool("mcp_admira_fetch_public_asset", {"url": "https://drive.google.com/file/d/video123/view?usp=sharing"})
             ads_onboarding = admira_tool_bridge.call_tool("mcp_admira_save_ads_onboarding", {"success_metrics": ["ROAS", "cost per purchase", "cost per initiate checkout"]})
             approval = admira_tool_bridge.call_tool("mcp_admira_approve_action", {"approval_id": "approval_1"})
             pending = admira_tool_bridge.call_tool("list_pending_approvals", {})
             unknown = admira_tool_bridge.call_tool("delete_everything", {})
+            called_tools = [call[0]["tool"] for call in calls]
 
             self.assert_true(context["ok"] and context["metrics_source"]["is_real_meta_data"], "Tool bridge returns safe real Meta context")
-            self.assert_true(image["product_tool"] == "codex_image_generate" and calls[-5][0]["tool"] == "codex_image_generate", "Tool bridge maps Codex/Image MCP calls to dashboard action handlers")
-            self.assert_true(review["product_tool"] == "review_signal_quality" and calls[-4][0]["tool"] == "review_signal_quality", "Tool bridge maps signal-quality MCP review to dashboard action handlers")
-            self.assert_true(preflight["product_tool"] == "preflight_campaign" and calls[-3][0]["tool"] == "preflight_campaign", "Tool bridge maps campaign preflight MCP review to dashboard action handlers")
-            self.assert_true(ads_onboarding["product_tool"] == "save_ads_onboarding" and calls[-2][0]["tool"] == "save_ads_onboarding", "Tool bridge maps ads onboarding memory so Hermes can persist campaign KPIs")
+            self.assert_true(image["product_tool"] == "codex_image_generate" and "codex_image_generate" in called_tools, "Tool bridge maps Codex/Image MCP calls to dashboard action handlers")
+            self.assert_true(review["product_tool"] == "review_signal_quality" and "review_signal_quality" in called_tools, "Tool bridge maps signal-quality MCP review to dashboard action handlers")
+            self.assert_true(preflight["product_tool"] == "preflight_campaign" and "preflight_campaign" in called_tools, "Tool bridge maps campaign preflight MCP review to dashboard action handlers")
+            self.assert_true(public_asset["product_tool"] == "fetch_public_asset" and "fetch_public_asset" in called_tools, "Tool bridge maps public URL/Drive creative retrieval to dashboard action handlers")
+            self.assert_true(ads_onboarding["product_tool"] == "save_ads_onboarding" and "save_ads_onboarding" in called_tools, "Tool bridge maps ads onboarding memory so Hermes can persist campaign KPIs")
             self.assert_true(approval["product_tool"] == "approval_decision" and calls[-1][0]["arguments"]["decision"] == "approve", "Tool bridge converts approval MCP calls to exact approval decisions")
             verified = admira_tool_bridge.call_tool("mcp_admira_record_verified_signal", {"stage": "booked", "person_label": "Maria"})
             self.assert_true(verified["product_tool"] == "record_verified_signal" and calls[-1][0]["tool"] == "record_verified_signal", "Tool bridge maps verified-signal MCP calls to dashboard action handlers")
@@ -1838,11 +1843,22 @@ class IntegrationTestSuite:
             tool_names = [tool["name"] for tool in captured[1]["result"]["tools"]]
             call_text = captured[2]["result"]["content"][0]["text"]
             self.assert_true(captured[0]["result"]["serverInfo"]["name"] == "admira", "MCP server initializes as Admira")
-            self.assert_true("codex_image_generate" in tool_names and "stage_campaign" in tool_names and "approve_action" in tool_names and "review_signal_quality" in tool_names and "preflight_campaign" in tool_names and "record_verified_signal" in tool_names and "save_ads_onboarding" in tool_names, "MCP server lists product tools for Hermes")
+            self.assert_true("codex_image_generate" in tool_names and "stage_campaign" in tool_names and "approve_action" in tool_names and "review_signal_quality" in tool_names and "preflight_campaign" in tool_names and "fetch_public_asset" in tool_names and "record_verified_signal" in tool_names and "save_ads_onboarding" in tool_names, "MCP server lists product tools for Hermes")
             self.assert_true('"tool": "admira_codex_image_generate"' in call_text and '"request": "imagen"' in call_text, "MCP server calls the product bridge with Admira-prefixed tool names")
         finally:
             admira_mcp_server.write_message = original_write
             admira_mcp_server.call_tool = original_call
+
+    def test_public_asset_fetcher_normalizes_drive_and_blocks_private_urls(self):
+        """Test buyer-shared public links are normalized safely before download."""
+        print("\nTesting Public Asset Fetcher Safety...")
+
+        drive = public_asset_fetcher.normalize_public_asset_url("https://drive.google.com/file/d/abc123XYZ/view?usp=sharing")
+        self.assert_true(drive == "https://drive.google.com/uc?export=download&id=abc123XYZ", "Google Drive share links normalize to direct public download URLs")
+        blocked = public_asset_fetcher.fetch_public_asset_result({"url": "http://127.0.0.1/private-video.mp4"})
+        self.assert_true(blocked["blocked"] and blocked["reason"] == "private_or_local_url", "Public asset fetcher blocks local/private URLs")
+        unsupported = public_asset_fetcher.fetch_public_asset_result({"url": "file:///etc/passwd"})
+        self.assert_true(unsupported["blocked"] and unsupported["reason"] == "unsupported_url_scheme", "Public asset fetcher allows only http/https URLs")
 
     def test_admira_mcp_creative_timeout_returns_buyer_fallback(self):
         """Test stuck creative MCP subprocesses return a friendly retryable fallback instead of hanging."""

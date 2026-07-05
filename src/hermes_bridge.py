@@ -268,6 +268,7 @@ Use these MCP tools for real product actions instead of inventing results, runni
 - `mcp_admira_run_due_experiment_reviews`
 - `mcp_admira_review_signal_quality`
 - `mcp_admira_preflight_campaign`
+- `mcp_admira_fetch_public_asset`
 - `mcp_admira_codex_image_generate`
 - `mcp_admira_codex_creative_plan`
 - `mcp_admira_stage_campaign`
@@ -282,6 +283,7 @@ Use these MCP tools for real product actions instead of inventing results, runni
 - `mcp_admira_get_verified_signal_summary`
 - `mcp_admira_verified_signal_feedback_prompt`
 - `mcp_admira_save_business_memory`
+- `mcp_admira_save_ads_onboarding`
 - `mcp_admira_save_brand_memory`
 - `mcp_admira_save_product_memory`
 - `mcp_admira_save_ad_brief`
@@ -291,7 +293,7 @@ If the MCP tool is unavailable, say the action cannot be executed yet and explai
 
 Dashboard chat and Telegram are buyer-facing product surfaces, not terminals. Never tell the buyer you cannot create, prepare, or stage a campaign because you lack CLI/terminal access. Product actions must go through MCP tools in Telegram or the JSON tool-request contract in dashboard chat. If details are missing, ask the next missing business detail; if a protected action is ready, prepare it for approval.
 
-When the buyer shares a public URL and asks you to review, understand, use, or create ads from it, use the available `web`/`browser` retrieval tools or public-link scan context to inspect it. Do not immediately claim you cannot access links. If the tool is unavailable, blocked, private, or the page requires login, explain that specific limitation in simple words and ask the buyer to paste the key page content or upload screenshots.
+When the buyer shares a public URL and asks you to review, understand, use, or create ads from it, first use `mcp_admira_fetch_public_asset` for buyer-shared assets/pages, especially Google Drive videos/images or creative references. It safely inspects public pages and downloads public image/video assets to the product workspace. If it returns a video asset, use its returned `video_url`/`direct_url` when staging a video creative. Use the available `web`/`browser` retrieval tools as a secondary path for general research. Do not immediately claim you cannot access links. If access fails because the link is private, requires login, is too large, times out, or resolves to a private/local network, explain that specific limitation in simple words and ask the buyer to make it public or upload the file directly in Telegram.
 
 Brand, product, ad-brief, and creative-reference files are backend-owned memory. The `brand_guides/` files inside the Hermes workspace are read-only context snapshots, not the source of truth for production readiness. Never manually create, edit, or write `brand_guides/*.md`, `/app/brand_guides/*.md`, or workspace brand-guide files to unblock creative production. Use `mcp_admira_save_brand_memory`, `mcp_admira_save_product_memory`, `mcp_admira_save_ad_brief`, and `mcp_admira_save_creative_references`. If a save tool rejects natural wording, retry once with canonical fields such as `brand_name`, `offer`, `colors`, `visual_style`, `tone`, `logo_notes`, `references`, `asset_notes`, `name`, `product_guide`, `variation_count`, `concurrent_variations`, `formats`, and `creative_hypothesis`.
 
@@ -704,7 +706,7 @@ def hermes_user_query(payload, workspace_info):
             f"{message}\n\n"
             "Nota de sistema del producto: el contexto actual de la cuenta está en `CURRENT_CONTEXT.json`. "
             "Usa ese archivo y tu memoria de sesión solo si hace falta para responder o preparar una acción. "
-            "Si el mensaje incluye una URL pública, intenta leerla con web/browser antes de decir que no puedes acceder. "
+            "Si el mensaje incluye una URL pública o un enlace de Google Drive para usar como creativo, usa mcp_admira_fetch_public_asset antes de decir que no puedes acceder; después usa web/browser si hace falta investigación adicional. "
             "Si el comprador pide crear o preparar campaña, usa herramientas/acciones del producto; no digas que necesitas terminal o CLI."
         )
     return (
@@ -903,7 +905,7 @@ def hermes_prompt(config, payload, workspace_info=None):
         + "\n\nBefore treating this as a new conversation, read `memory/Conversation continuity.md`, `memory/continuity_status.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, and relevant `brand_guides/` files. If persistent memory exists, resume from durable business/brand/ad memory instead of restarting onboarding or repeating first-time preference questions."
         + "\n\nNever expose internal workspace paths to the buyer. If the buyer asks for a prompt, plan, script, copy, or diagnosis, paste it directly in the chat instead of pointing them to `/app/...`, `dashboard/data/...`, `hermes-workspace/...`, `brand_guides/...`, `memory/...`, or `CURRENT_CONTEXT.json`."
         + "\n\nDashboard action boundary: do not say you need CLI or terminal access to create or prepare campaigns. If the buyer asks for a product action, use the JSON tool_request contract below or ask the next missing detail. In dashboard chat, the backend executes supported product actions and keeps spend behind approval."
-        + "\n\nPublic URL handling: if the buyer provides a public URL, try to inspect it with available web/browser retrieval tools before saying you cannot access it. If access fails because of login, private URL, robots, timeout, or tool unavailability, say that precise reason and ask for page text/screenshots."
+        + "\n\nPublic URL handling: if the buyer provides a public URL, especially a Google Drive/video/image link for a creative, call mcp_admira_fetch_public_asset first. If it returns a video asset, use its video_url/direct_url for video creative staging. Use web/browser retrieval as a secondary path for general research. If access fails because of login, private URL, robots, timeout, private/local network, size limit, or tool unavailability, say that precise reason and ask the buyer to make it public, upload it directly, or paste page text/screenshots."
         + "\n\nCurrent account context JSON:\n"
         + json.dumps(context, ensure_ascii=False)
         + image_note

@@ -100,6 +100,8 @@ Propose a portfolio, not cosmetic recolors. Include the formats most likely to f
 
 For each proposed creative, state the hook, format, likely placements, hypothesis, required asset, and success signal. Separate “create now” from “backlog.” Do not bias the recommendation toward Image 2.
 
+If the buyer shares a public URL, Google Drive file, video, image, landing page, or ad reference, call `mcp_admira_fetch_public_asset` before saying you cannot access it. If the link is a public video, treat it as a buyer-owned creative asset or reference and use the returned `video_url`/`direct_url` later when staging a video ad.
+
 Think placement-first when format matters:
 
 - vertical UGC/demo/emotional clips usually deserve Reels/Stories consideration;

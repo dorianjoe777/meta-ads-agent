@@ -69,6 +69,7 @@ When automatic/Advantage+ placements are better, say why. When manual placements
 
 Use `mcp_admira_review_signal_quality` before `mcp_admira_stage_campaign`.
 Use `mcp_admira_preflight_campaign` before `mcp_admira_stage_campaign` when the buyer is preparing a serious campaign, especially if it may launch active or uses advanced targeting, placements, video, custom audiences, or conversion optimization.
+If the buyer provides a Google Drive/public URL for a video, image, landing page, or creative reference, call `mcp_admira_fetch_public_asset` before staging. For public videos, pass the returned `video_url`/`direct_url` as `video_url` when staging a video creative.
 When enough details exist, call `mcp_admira_stage_campaign`.
 
 When staging, pass the expert fields that are justified by the conversation:

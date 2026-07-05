@@ -134,6 +134,7 @@ from product_config import (
     normalize_timezone,
     resolved_codex_image_hermes_home,
 )
+from public_asset_fetcher import fetch_public_asset_result
 from security import dashboard_password_configured, dashboard_token_valid, hash_dashboard_password, is_local_host, is_public_bind, redact_payload
 from shopify_connector import normalize_shop_domain, shopify_status, sync_shopify, test_connection as test_shopify_connection
 from setup_status import build_setup_status
@@ -7995,6 +7996,36 @@ def handle_preflight_campaign_tool(arguments, chat_payload, tool):
     )
 
 
+def handle_fetch_public_asset_tool(arguments, chat_payload, tool):
+    result = fetch_public_asset_result(arguments)
+    if result.get("ok"):
+        asset_type = result.get("asset_type") or "recurso"
+        if asset_type == "video":
+            reply_es = "Listo. Pude abrir el enlace público y detecté un video usable para creativos. Lo puedo usar como fuente del anuncio o como referencia para preparar la campaña."
+            reply_en = "Done. I opened the public link and detected a video usable for creatives. I can use it as the ad source or as campaign creative reference."
+        elif asset_type == "image":
+            reply_es = "Listo. Pude abrir el enlace público y guardar la imagen como referencia creativa."
+            reply_en = "Done. I opened the public link and saved the image as a creative reference."
+        else:
+            title = result.get("title") or "el enlace"
+            reply_es = f"Listo. Pude leer {title} y extraer contexto útil del enlace público."
+            reply_en = f"Done. I read {title} and extracted useful context from the public link."
+        return agent_action_result(tool, True, chat_reply(chat_payload, reply_es, reply_en), result=result)
+    detail = result.get("error") or "No pude abrir ese enlace."
+    return agent_action_result(
+        tool,
+        False,
+        chat_reply(
+            chat_payload,
+            f"No pude usar ese enlace todavía: {detail} Si es de Google Drive, asegúrate de que esté compartido como público con enlace; también puedes subir el video directo por Telegram.",
+            f"I could not use that link yet: {detail} If it is from Google Drive, make sure it is shared publicly by link; you can also upload the video directly in Telegram.",
+        ),
+        blocked=True,
+        reason=result.get("reason") or "url_fetch_failed",
+        result=result,
+    )
+
+
 def handle_export_report_tool(arguments, chat_payload, tool):
     return export_report_action(chat_payload, tool)
 
@@ -8413,6 +8444,7 @@ AGENT_TOOL_HANDLERS = {
     "list_optimization_research": handle_list_optimization_research_tool,
     "review_signal_quality": handle_review_signal_quality_tool,
     "preflight_campaign": handle_preflight_campaign_tool,
+    "fetch_public_asset": handle_fetch_public_asset_tool,
     "export_report": handle_export_report_tool,
     "create_campaign_stack": handle_create_campaign_stack_tool,
     "build_audience_strategy": handle_build_audience_strategy_tool,
