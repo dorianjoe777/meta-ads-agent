@@ -426,6 +426,7 @@ def execute_campaign_creation(path, client, approved=False):
             return {"ok": False, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "failed_step": "create_adset", "steps": steps}
     target_adset_id = adset_ids[0] if adset_ids else ""
     image_hash = ad_plan.get("image_hash") or ""
+    video_id = ad_plan.get("video_id") or ""
     if ad_plan.get("creative_image_path"):
         upload_result = client.upload_image(client.config.ad_account_id, ad_plan.get("creative_image_path"), approved=approved)
         try:
@@ -440,6 +441,22 @@ def execute_campaign_creation(path, client, approved=False):
         steps.append({"step": "upload_image", "ok": bool(image_hash), "image_hash": image_hash, "result": upload_result})
         if not image_hash:
             return {"ok": False, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "failed_step": "upload_image", "steps": steps}
+    if ad_plan.get("video_url") and not video_id:
+        upload_result = client.upload_video(
+            client.config.ad_account_id,
+            file_url=ad_plan.get("video_url"),
+            title=f"{campaign.get('name', 'New Campaign')} - Video",
+            approved=approved,
+        )
+        try:
+            body = json.loads(upload_result.get("stdout") or "{}")
+            if isinstance(body, dict):
+                video_id = body.get("id") or body.get("video_id") or ""
+        except json.JSONDecodeError:
+            pass
+        steps.append({"step": "upload_video", "ok": bool(video_id), "video_id": video_id, "result": upload_result})
+        if not video_id:
+            return {"ok": False, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "failed_step": "upload_video", "steps": steps}
 
     creative_result = client.create_creative(
         client.config.ad_account_id,
@@ -454,6 +471,7 @@ def execute_campaign_creation(path, client, approved=False):
         object_story_spec=ad_plan.get("object_story_spec") or {},
         image_url=ad_plan.get("image_url") or "",
         video_url=ad_plan.get("video_url") or "",
+        video_id=video_id,
         cta_link=ad_plan.get("cta_link") or "",
         approved=approved,
     )

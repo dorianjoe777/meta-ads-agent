@@ -35,6 +35,10 @@ class SocialFlowClient:
             record["executed"] = False
             record["stderr"] = "blocked: LIVE_ACTIONS_ENABLED=false"
             return record
+        if str(getattr(self.config, "meta_connector", "") or "").strip().lower() == "graph_api":
+            fallback = self.graph_fallback(args, record, direct=True)
+            if fallback:
+                return fallback
         try:
             completed = subprocess.run(command, capture_output=True, text=True, check=False)
             record["returncode"] = completed.returncode
@@ -67,6 +71,32 @@ class SocialFlowClient:
             "stderr": "" if result.get("ok") else stdout,
         }
 
+    def graph_local_record(self, record, endpoint, body, ok=True, status=200):
+        stdout = json.dumps(body if isinstance(body, dict) else {"result": body}, ensure_ascii=False)
+        return {
+            **record,
+            "connector": "graph_api_fallback",
+            "graph_endpoint": endpoint,
+            "returncode": 0 if ok else int(status or 1),
+            "stdout": stdout if ok else "",
+            "stderr": "" if ok else stdout,
+        }
+
+    def get_graph(self, endpoint, params=None):
+        normalized = {}
+        for key, value in (params or {}).items():
+            if value in (None, ""):
+                continue
+            normalized[key] = json.dumps(value) if isinstance(value, (dict, list)) else value
+        normalized["access_token"] = getattr(self.config, "meta_access_token", "")
+        query = urllib.parse.urlencode(normalized).encode("utf-8").decode("utf-8")
+        request = urllib.request.Request(
+            f"{self.graph_url(endpoint)}?{query}",
+            headers={"Accept": "application/json", "User-Agent": "AdmiraIA/1.0"},
+            method="GET",
+        )
+        return self.perform_graph_request(request)
+
     def post_graph_form(self, endpoint, fields):
         body = urllib.parse.urlencode(fields).encode("utf-8")
         request = urllib.request.Request(
@@ -90,7 +120,16 @@ class SocialFlowClient:
     def perform_graph_request(self, request):
         try:
             with urllib.request.urlopen(request, timeout=90) as response:
-                return {"ok": True, "status": response.status, "body": json.loads(response.read().decode("utf-8"))}
+                headers = {}
+                try:
+                    headers = {
+                        key: value
+                        for key, value in response.headers.items()
+                        if str(key).lower().startswith(("x-", "facebook-api", "x-app", "x-ad-account"))
+                    }
+                except Exception:
+                    headers = {}
+                return {"ok": True, "status": response.status, "body": json.loads(response.read().decode("utf-8")), "headers": headers}
         except urllib.error.HTTPError as exc:
             raw = exc.read().decode("utf-8")
             try:
@@ -144,17 +183,108 @@ class SocialFlowClient:
             return ""
         return raw if raw.startswith("act_") else f"act_{raw}"
 
-    def graph_fallback(self, args, record):
+    @staticmethod
+    def json_flag(args, name, default=None):
+        raw = SocialFlowClient.flag(args, name, "")
+        if not raw:
+            return default
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return default
+
+    @staticmethod
+    def default_insight_fields(level):
+        identity_fields = {
+            "campaign": "campaign_id,campaign_name",
+            "adset": "campaign_id,campaign_name,adset_id,adset_name",
+            "ad": "campaign_id,campaign_name,adset_id,adset_name,ad_id,ad_name",
+        }.get(str(level or "campaign").lower(), "campaign_id,campaign_name")
+        return f"{identity_fields},date_start,date_stop,spend,impressions,clicks,inline_link_clicks,frequency,actions,action_values"
+
+    @staticmethod
+    def clean_graph_fields(value, fallback):
+        fields = str(value or "").strip()
+        return fields if fields else fallback
+
+    def graph_fallback(self, args, record, direct=False):
         if not getattr(self.config, "meta_access_token", ""):
             return None
         args = list(args)
-        if len(args) < 2 or args[0] != "marketing":
+        if len(args) < 2:
             return None
+        area = args[0]
         action = args[1]
         access_token = getattr(self.config, "meta_access_token", "")
         ad_account_id = self.normalize_ad_account_id(self.positional(args, 2, getattr(self.config, "ad_account_id", "")))
         configured_ad_account_id = self.normalize_ad_account_id(getattr(self.config, "ad_account_id", ""))
         try:
+            if area == "limits" and action == "check":
+                account = configured_ad_account_id or ad_account_id
+                endpoint = account
+                result = self.get_graph(endpoint, {"fields": "id,name,account_status,disable_reason"})
+                body = result.get("body") if isinstance(result.get("body"), dict) else {}
+                body = {
+                    "ok": bool(result.get("ok")),
+                    "source": "graph_api_health_check",
+                    "account": body,
+                    "headers": result.get("headers") or {},
+                    "note": "Meta Marketing API rate limits are exposed through response headers and 4xx errors, not through a generic limits endpoint.",
+                }
+                return self.graph_local_record(record, endpoint, body, ok=bool(result.get("ok")), status=result.get("status") or 1)
+            if area == "policy" and action == "preflight":
+                intent = self.positional(args, 2, "create Meta ad")
+                endpoint = configured_ad_account_id or ad_account_id
+                body = {
+                    "ok": True,
+                    "source": "graph_api_policy_preflight",
+                    "intent": intent,
+                    "action": self.flag(args, "--action", "create_ad"),
+                    "policy_validation": "Meta does not provide a generic policy decision endpoint for plain text intent. Validate the actual campaign/ad/creative payload with Marketing API validation/execution options, then keep final spend behind approval.",
+                    "supports_validate_only_payloads": True,
+                }
+                return self.graph_local_record(record, endpoint, body)
+            if area != "marketing":
+                return None
+            if action == "status":
+                endpoint = configured_ad_account_id or ad_account_id
+                fields = "id,name,account_status,currency,timezone_name,disable_reason,business,created_time,amount_spent,balance,spend_cap"
+                result = self.get_graph(endpoint, {"fields": fields})
+                body = result.get("body") if isinstance(result.get("body"), dict) else {}
+                if result.get("ok"):
+                    body = {"ok": True, "account": body}
+                return self.graph_record(record, endpoint, {"ok": result.get("ok"), "status": result.get("status"), "body": body})
+            if action == "insights":
+                endpoint = f"{configured_ad_account_id or ad_account_id}/insights"
+                level = self.flag(args, "--level", "campaign")
+                params = {
+                    "date_preset": self.flag(args, "--preset", "last_7d"),
+                    "level": level,
+                    "fields": self.clean_graph_fields(self.flag(args, "--fields", ""), self.default_insight_fields(level)),
+                    "action_report_time": "conversion",
+                    "limit": self.flag(args, "--limit", "500"),
+                }
+                breakdowns = self.flag(args, "--breakdowns", "")
+                if breakdowns:
+                    params["breakdowns"] = breakdowns
+                result = self.get_graph(endpoint, params)
+                return self.graph_record(record, endpoint, result)
+            if action == "audiences":
+                endpoint = f"{ad_account_id}/customaudiences"
+                limit = self.flag(args, "--limit", "50")
+                params = {
+                    "fields": "id,name,subtype,description,approximate_count,delivery_status,operation_status,time_created,time_updated",
+                    "limit": limit,
+                }
+                return self.graph_record(record, endpoint, self.get_graph(endpoint, params))
+            if action == "creatives":
+                endpoint = f"{ad_account_id}/adcreatives"
+                limit = self.flag(args, "--limit", "25")
+                params = {
+                    "fields": "id,name,effective_object_story_id,object_story_spec,asset_feed_spec,thumbnail_url,image_hash,video_id",
+                    "limit": limit,
+                }
+                return self.graph_record(record, endpoint, self.get_graph(endpoint, params))
             if action == "create-campaign":
                 endpoint = f"{ad_account_id}/campaigns"
                 fields = {
@@ -209,6 +339,20 @@ class SocialFlowClient:
                     return None
                 fields = {"access_token": access_token}
                 return self.graph_record(record, endpoint, self.post_graph_multipart(endpoint, fields, {"filename": file_path}))
+            if action == "upload-video":
+                endpoint = f"{ad_account_id}/advideos"
+                file_path = self.flag(args, "--file", "")
+                file_url = self.flag(args, "--file-url", "")
+                title = self.flag(args, "--title", "")
+                fields = {"access_token": access_token}
+                if title:
+                    fields["title"] = title
+                if file_url:
+                    fields["file_url"] = file_url
+                    return self.graph_record(record, endpoint, self.post_graph_form(endpoint, fields))
+                if not file_path:
+                    return None
+                return self.graph_record(record, endpoint, self.post_graph_multipart(endpoint, fields, {"source": file_path}))
             if action == "create-creative":
                 endpoint = f"{ad_account_id}/adcreatives"
                 fields = {
@@ -218,25 +362,39 @@ class SocialFlowClient:
                 object_story_spec = self.flag(args, "--object-story-spec", "")
                 if not object_story_spec:
                     link = self.flag(args, "--cta-link", "") or self.flag(args, "--link", "")
-                    link_data = {
-                        "link": link,
-                        "message": self.flag(args, "--body-text", ""),
-                        "name": self.flag(args, "--headline", ""),
-                    }
+                    video_id = self.flag(args, "--video-id", "")
                     image_hash = self.flag(args, "--image-hash", "")
                     image_url = self.flag(args, "--image-url", "")
-                    if image_hash:
-                        link_data["image_hash"] = image_hash
-                    if image_url:
-                        link_data["picture"] = image_url
                     cta = self.flag(args, "--call-to-action", "")
-                    if cta:
-                        link_data["call_to_action"] = {"type": cta, "value": {"link": link}}
-                    object_story_spec = json.dumps({
+                    story = {
                         "page_id": self.flag(args, "--page-id", ""),
                         **({"instagram_actor_id": self.flag(args, "--instagram-actor-id", "")} if self.flag(args, "--instagram-actor-id", "") else {}),
-                        "link_data": link_data,
-                    })
+                    }
+                    if video_id:
+                        video_data = {
+                            "video_id": video_id,
+                            "message": self.flag(args, "--body-text", ""),
+                            "title": self.flag(args, "--headline", ""),
+                        }
+                        if image_url:
+                            video_data["image_url"] = image_url
+                        if cta:
+                            video_data["call_to_action"] = {"type": cta, "value": {"link": link}}
+                        story["video_data"] = video_data
+                    else:
+                        link_data = {
+                            "link": link,
+                            "message": self.flag(args, "--body-text", ""),
+                            "name": self.flag(args, "--headline", ""),
+                        }
+                        if image_hash:
+                            link_data["image_hash"] = image_hash
+                        if image_url:
+                            link_data["picture"] = image_url
+                        if cta:
+                            link_data["call_to_action"] = {"type": cta, "value": {"link": link}}
+                        story["link_data"] = link_data
+                    object_story_spec = json.dumps(story)
                 fields["object_story_spec"] = object_story_spec
                 return self.graph_record(record, endpoint, self.post_graph_form(endpoint, fields))
             if action == "create-ad":
@@ -383,6 +541,19 @@ class SocialFlowClient:
         args.extend(["--file", file_path, "--json"])
         return self.run(args, live_required=True, mutation=True, approved=approved)
 
+    def upload_video(self, ad_account_id, file_path="", file_url="", title="", approved=False):
+        args = ["marketing", "upload-video"]
+        if ad_account_id:
+            args.append(ad_account_id)
+        if file_path:
+            args.extend(["--file", file_path])
+        if file_url:
+            args.extend(["--file-url", file_url])
+        if title:
+            args.extend(["--title", title])
+        args.extend(["--json", "--yes"])
+        return self.run(args, live_required=True, mutation=True, approved=approved)
+
     def create_creative(
         self,
         ad_account_id,
@@ -397,6 +568,7 @@ class SocialFlowClient:
         object_story_spec=None,
         image_url="",
         video_url="",
+        video_id="",
         cta_link="",
         approved=False,
     ):
@@ -419,6 +591,8 @@ class SocialFlowClient:
                 args.extend(["--image-url", image_url])
             if video_url:
                 args.extend(["--video-url", video_url])
+            if video_id:
+                args.extend(["--video-id", video_id])
             if cta:
                 args.extend(["--call-to-action", cta])
             if cta_link:

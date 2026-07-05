@@ -11,6 +11,7 @@ import sys
 import tempfile
 import types
 import importlib.util
+import urllib.parse
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
@@ -5636,6 +5637,143 @@ class IntegrationTestSuite:
             social_flow_client.subprocess.run = original_run
             social_flow_client.urllib.request.urlopen = original_urlopen
 
+    def test_social_flow_graph_api_covers_preflight_reads_without_social_cli(self):
+        """Test account, insight, audience and creative reads work directly through Graph API."""
+        print("\nTesting Social Graph API Preflight Read Coverage...")
+
+        class FakeConfig:
+            social_cli = "social"
+            mode = "live"
+            live = True
+            live_actions_enabled = True
+            meta_connector = "graph_api"
+            meta_access_token = "meta-token"
+            meta_graph_api_version = "v24.0"
+            ad_account_id = "act_999"
+
+        class FakeResponse:
+            status = 200
+            headers = {"x-business-use-case-usage": "{}"}
+
+            def __init__(self, body):
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps(self.body).encode("utf-8")
+
+        original_run = social_flow_client.subprocess.run
+        original_urlopen = social_flow_client.urllib.request.urlopen
+        requests = []
+
+        def fake_urlopen(request, timeout=90):
+            requests.append(request)
+            url = request.full_url
+            if "/insights" in url:
+                return FakeResponse({"data": [{"campaign_id": "cmp_1", "campaign_name": "Camp", "spend": "12.50", "impressions": "1000"}]})
+            if "/customaudiences" in url:
+                return FakeResponse({"data": [{"id": "ca_1", "name": "Compradores"}]})
+            if "/adcreatives" in url:
+                return FakeResponse({"data": [{"id": "cr_1", "name": "Creative"}]})
+            return FakeResponse({"id": "act_999", "name": "Cuenta", "account_status": 1})
+
+        try:
+            social_flow_client.subprocess.run = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("social-cli should not be called in graph_api mode"))
+            social_flow_client.urllib.request.urlopen = fake_urlopen
+            client = SocialFlowClient(FakeConfig())
+            status = client.marketing_status()
+            limits = client.rate_limits()
+            policy = client.policy_preflight("create Meta ad")
+            audiences = client.custom_audiences("act_999", limit=25)
+            creatives = client.creatives("act_999", limit=25)
+            insights = client.insights("last_7d", "ad", breakdowns="publisher_platform,platform_position", limit=250)
+            self.assert_true(status.get("connector") == "graph_api_fallback" and json.loads(status["stdout"])["account"]["id"] == "act_999", "Graph API reads account status without social-cli")
+            self.assert_true(json.loads(limits["stdout"])["source"] == "graph_api_health_check", "Graph API provides a health/rate-limit check without social-cli")
+            self.assert_true(json.loads(policy["stdout"])["supports_validate_only_payloads"] is True, "Policy preflight explains Graph validate-only payload coverage")
+            self.assert_true(json.loads(audiences["stdout"])["data"][0]["id"] == "ca_1", "Graph API lists custom audiences without social-cli")
+            self.assert_true(json.loads(creatives["stdout"])["data"][0]["id"] == "cr_1", "Graph API lists existing creatives without social-cli")
+            self.assert_true(insights.get("data", {}).get("data", [])[0]["campaign_id"] == "cmp_1", "Graph API insights are parsed into the standard data field")
+            self.assert_true(any("/insights" in request.full_url and "breakdowns=publisher_platform%2Cplatform_position" in request.full_url for request in requests), "Graph insights sends breakdown parameters for placement/device diagnosis")
+        finally:
+            social_flow_client.subprocess.run = original_run
+            social_flow_client.urllib.request.urlopen = original_urlopen
+
+    def test_social_flow_graph_api_uploads_video_and_creates_video_creative(self):
+        """Test public/direct videos can be uploaded to advideos then used in video_data."""
+        print("\nTesting Social Graph API Video Creative Coverage...")
+
+        class FakeConfig:
+            social_cli = "social"
+            mode = "live"
+            live = True
+            live_actions_enabled = True
+            meta_connector = "graph_api"
+            meta_access_token = "meta-token"
+            meta_graph_api_version = "v24.0"
+            ad_account_id = "act_999"
+
+        class FakeResponse:
+            status = 200
+            headers = {}
+
+            def __init__(self, body):
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps(self.body).encode("utf-8")
+
+        original_run = social_flow_client.subprocess.run
+        original_urlopen = social_flow_client.urllib.request.urlopen
+        requests = []
+
+        def fake_urlopen(request, timeout=90):
+            requests.append(request)
+            if "/advideos" in request.full_url:
+                return FakeResponse({"id": "vid_1"})
+            if "/adcreatives" in request.full_url:
+                return FakeResponse({"id": "creative_1"})
+            return FakeResponse({"id": "ok"})
+
+        try:
+            social_flow_client.subprocess.run = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("social-cli should not be called in graph_api mode"))
+            social_flow_client.urllib.request.urlopen = fake_urlopen
+            client = SocialFlowClient(FakeConfig())
+            uploaded = client.upload_video("act_999", file_url="https://cdn.example/video.mp4", title="Video Test", approved=True)
+            creative = client.create_creative(
+                "act_999",
+                "Video Creative",
+                "111",
+                "https://buyer.example",
+                "Texto",
+                "Titular",
+                "",
+                "LEARN_MORE",
+                image_url="https://cdn.example/thumb.jpg",
+                video_id="vid_1",
+                approved=True,
+            )
+            upload_body = urllib.parse.parse_qs(requests[0].data.decode("utf-8"))
+            creative_body = urllib.parse.parse_qs(requests[1].data.decode("utf-8"))
+            story = json.loads(creative_body["object_story_spec"][0])
+            self.assert_true(json.loads(uploaded["stdout"])["id"] == "vid_1" and "/advideos" in uploaded["graph_endpoint"], "Graph API uploads direct video URLs to advideos")
+            self.assert_true(upload_body["file_url"][0] == "https://cdn.example/video.mp4", "Video upload uses Meta's file_url field")
+            self.assert_true(json.loads(creative["stdout"])["id"] == "creative_1", "Graph API creates video creatives")
+            self.assert_true(story["video_data"]["video_id"] == "vid_1" and story["video_data"]["call_to_action"]["value"]["link"] == "https://buyer.example", "Video creative uses object_story_spec.video_data with CTA link")
+        finally:
+            social_flow_client.subprocess.run = original_run
+            social_flow_client.urllib.request.urlopen = original_urlopen
+
     def test_autopilot_action_updates_dashboard_only_after_meta_success(self):
         """Test autopilot UI/chat mutations are real connector actions, not local-only state."""
         print("\nTesting Autopilot Connector Execution...")
@@ -5734,6 +5872,10 @@ class IntegrationTestSuite:
                 self.calls.append(("upload_image", args, kwargs))
                 return {"stdout": json.dumps({"hash": "hash_1"}), "executed": True}
 
+            def upload_video(self, *args, **kwargs):
+                self.calls.append(("upload_video", args, kwargs))
+                return {"stdout": json.dumps({"id": "vid_1"}), "executed": True}
+
             def create_creative(self, *args, **kwargs):
                 self.calls.append(("create_creative", args, kwargs))
                 return {"stdout": json.dumps({"id": "creative_1"}), "executed": True}
@@ -5790,6 +5932,34 @@ class IntegrationTestSuite:
             self.assert_true(adset_call[1][2]["facebook_positions"] == ["feed"] and adset_call[1][2]["instagram_positions"] == ["story"], "Campaign stack sends the selected feed/story placement positions")
             self.assert_true(client.calls[-1][1][-1] == "ACTIVE", "Final ad status is active when confirmed")
             self.assert_true(all(call[2].get("approved") is True for call in client.calls), "Full campaign execution is explicitly marked as approved")
+
+            campaign_path.write_text(
+                json.dumps(
+                    {
+                        "name": "Video Stack",
+                        "objective": "LEADS",
+                        "budget": {"daily": 20},
+                        "ad_sets": [{"name": "Video Stack - Core", "targeting": {"locations": ["MX"]}, "budget": 20}],
+                        "ad": {
+                            "primary_text": "Mira el video",
+                            "headline": "Reserva hoy",
+                            "video_url": "https://cdn.example/video.mp4",
+                            "image_url": "https://cdn.example/thumb.jpg",
+                            "landing_url": "https://buyer.example",
+                            "final_status": "PAUSED",
+                            "active_spend_confirmed": False,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            client = FakeClient()
+            video_result = execute_campaign_creation(str(campaign_path), client, approved=True)
+            video_calls = [call[0] for call in client.calls]
+            creative_call = next(call for call in client.calls if call[0] == "create_creative")
+            self.assert_true(video_result["ok"], "Approved video campaign stack executes")
+            self.assert_true(video_calls == ["create_campaign", "create_adset", "upload_video", "create_creative", "create_ad"], "Video campaign uploads the video before creating the creative")
+            self.assert_true(creative_call[2]["video_id"] == "vid_1", "Campaign stack passes uploaded Meta video_id into creative creation")
         finally:
             if ad_before:
                 ad_path.write_text(ad_before, encoding="utf-8")

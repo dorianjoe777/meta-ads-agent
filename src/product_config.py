@@ -363,7 +363,7 @@ def load_config():
         auto_pause_enabled=env_bool("META_AUTO_PAUSE_ENABLED", True),
         zero_conversion_spend=env_float("META_AUTO_PAUSE_ZERO_CONVERSION_SPEND", 50),
         high_cpa_multiplier=env_float("META_AUTO_PAUSE_HIGH_CPA_MULTIPLIER", 3),
-        meta_connector=os.environ.get("META_CONNECTOR", "social_cli").strip().lower(),
+        meta_connector=os.environ.get("META_CONNECTOR", "graph_api").strip().lower(),
         social_cli=os.environ.get("SOCIAL_CLI", "social"),
         ad_account_id=os.environ.get("META_AD_ACCOUNT_ID", ""),
         meta_access_token=os.environ.get("META_ACCESS_TOKEN", ""),
