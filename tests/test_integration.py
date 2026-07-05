@@ -1123,6 +1123,68 @@ class IntegrationTestSuite:
         self.assert_true("un momento" in unknown and "rate-limiting" not in unknown.lower(), "Gateway keeps a Spanish fallback when only a vague wait hint exists")
         self.assert_true(passthrough.startswith("ORIGINAL:"), "Runtime patch delegates unrelated provider failures to Hermes")
 
+    def test_hermes_gateway_runtime_patch_always_attaches_generated_creatives(self):
+        """Test generated Codex/Image files are attached even when small models omit MEDIA in the reply."""
+        print("\nTesting Hermes Gateway Generated Media Runtime Patch...")
+
+        image_dir = ROOT_DIR / "output" / "test-runtime-generated-media"
+        image_dir.mkdir(parents=True, exist_ok=True)
+        generated_image = image_dir / "fixed-01.png"
+        generated_image.write_bytes(b"fake png")
+        original_env = {
+            "ADMIRA_PRODUCT_ROOT": os.environ.get("ADMIRA_PRODUCT_ROOT"),
+            "HERMES_MEDIA_ALLOW_DIRS": os.environ.get("HERMES_MEDIA_ALLOW_DIRS"),
+        }
+        try:
+            os.environ["ADMIRA_PRODUCT_ROOT"] = str(ROOT_DIR)
+            os.environ["HERMES_MEDIA_ALLOW_DIRS"] = str((ROOT_DIR / "output").resolve())
+            response = {
+                "final_response": "Listo, ya quedó generada. La imagen salió fuerte y editorial.",
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": json.dumps(
+                            {
+                                "ok": True,
+                                "tool": "admira_codex_image_generate",
+                                "result": {
+                                    "result": {
+                                        "ok": True,
+                                        "image_path": str(generated_image),
+                                    }
+                                },
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+                ],
+            }
+            patched = admira_hermes_runtime_patch._append_generated_media_attachments(response)
+            patched_again = admira_hermes_runtime_patch._append_generated_media_attachments(patched)
+            unsafe = admira_hermes_runtime_patch._append_generated_media_attachments(
+                {
+                    "final_response": "Listo.",
+                    "messages": [{"role": "assistant", "content": '{"image_path": "/etc/passwd"}'}],
+                }
+            )
+            plain_path_response = admira_hermes_runtime_patch._append_generated_media_attachments(
+                {
+                    "final_response": f"Si quieres verla/usar la actual: {generated_image.resolve()}",
+                    "messages": [],
+                }
+            )
+            self.assert_true(f"MEDIA:{generated_image.resolve()}" in patched["final_response"], "Runtime patch appends generated image MEDIA directive from non-tool message results")
+            self.assert_true(patched_again["final_response"].count("MEDIA:") == 1, "Runtime patch does not duplicate generated media attachments")
+            self.assert_true("MEDIA:" not in unsafe["final_response"], "Runtime patch does not attach unsafe paths outside product output")
+            self.assert_true(f"MEDIA:{generated_image.resolve()}" in plain_path_response["final_response"], "Runtime patch still attaches media when a small model leaks a plain output path")
+        finally:
+            for key, value in original_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            shutil.rmtree(image_dir, ignore_errors=True)
+
     def test_hermes_gateway_minimax_runtime_patch_forces_official_provider(self):
         """Test Telegram /model MiniMax choices are forced onto Hermes' official providers entry."""
         print("\nTesting Hermes Gateway MiniMax Official Provider Runtime Patch...")
@@ -7293,6 +7355,7 @@ class IntegrationTestSuite:
             self.test_hermes_missing_runtime_gives_chatgpt_setup_guidance,
             self.test_hermes_model_usage_limit_keeps_connection_state_clear,
             self.test_hermes_gateway_rate_limit_runtime_patch_localizes_reset_time,
+            self.test_hermes_gateway_runtime_patch_always_attaches_generated_creatives,
             self.test_hermes_gateway_minimax_runtime_patch_forces_official_provider,
             self.test_dashboard_chatgpt_connect_action_opens_terminal,
             self.test_dashboard_image_only_chatgpt_connect_preserves_text_brain,

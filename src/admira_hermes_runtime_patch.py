@@ -7,6 +7,8 @@ PYTHONPATH/sitecustomize only for the gateway process and wraps the narrow
 provider-error formatter that can otherwise leak raw English provider text.
 """
 import os
+import re
+from pathlib import Path
 
 from admira_rate_limit_messages import gateway_rate_limit_reply, is_rate_limit_text
 
@@ -27,6 +29,21 @@ ADMIRA_MINIMAX_ALIASES = {
     "minimax-m3-oficial",
     ADMIRA_MINIMAX_MODEL.lower(),
 }
+ADMIRA_MEDIA_EXTENSIONS = "png|jpe?g|gif|webp"
+ADMIRA_MEDIA_TAG_RE = re.compile(
+    rf"MEDIA:\s*(?P<path>(?:/|~/)\S+?\.(?:{ADMIRA_MEDIA_EXTENSIONS})(?=[\s\"'`,;:)\]]|$))",
+    re.IGNORECASE,
+)
+ADMIRA_OUTPUT_IMAGE_RE = re.compile(
+    rf"(?P<path>(?:/|~/)\S*?/output/\S+?\.(?:{ADMIRA_MEDIA_EXTENSIONS})(?=[\s\"'`,;:)\]]|$))",
+    re.IGNORECASE,
+)
+ADMIRA_GENERATED_MEDIA_KEYS = {
+    "image_path",
+    "media_attachment",
+    "generated_image_path",
+    "creative_image_path",
+}
 
 
 def provider_error_reply(text, language=None, original=None):
@@ -35,6 +52,120 @@ def provider_error_reply(text, language=None, original=None):
     if callable(original):
         return original(text)
     return str(text or "")
+
+
+def _path_within(path, root):
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _admira_generated_media_roots():
+    roots = []
+    product_root = str(os.environ.get("ADMIRA_PRODUCT_ROOT") or "").strip()
+    if product_root:
+        roots.append(Path(product_root).expanduser() / "output")
+    roots.append(Path("/app/output"))
+    extra_roots = str(os.environ.get("HERMES_MEDIA_ALLOW_DIRS") or "")
+    for chunk in extra_roots.split(os.pathsep):
+        raw = chunk.strip()
+        if raw:
+            roots.append(Path(raw).expanduser())
+    normalized = []
+    seen = set()
+    for root in roots:
+        try:
+            resolved = root.resolve(strict=False)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        key = str(resolved)
+        if key not in seen:
+            seen.add(key)
+            normalized.append(resolved)
+    return normalized
+
+
+def _safe_generated_media_path(raw_path):
+    value = str(raw_path or "").strip()
+    if value.startswith("MEDIA:"):
+        value = value.split("MEDIA:", 1)[1].strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "`\"'":
+        value = value[1:-1].strip()
+    value = value.lstrip("`\"'").rstrip("`\"',.;:)}]")
+    if not value:
+        return ""
+    candidate = Path(os.path.expanduser(value))
+    if not candidate.is_absolute():
+        return ""
+    try:
+        resolved = candidate.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return ""
+    if not resolved.is_file() or not re.search(rf"\.(?:{ADMIRA_MEDIA_EXTENSIONS})$", resolved.name, re.IGNORECASE):
+        return ""
+    for root in _admira_generated_media_roots():
+        if _path_within(resolved, root):
+            return str(resolved)
+    return ""
+
+
+def _collect_generated_media_paths(value, key_hint="", paths=None, depth=0):
+    paths = paths if paths is not None else []
+    if depth > 12:
+        return paths
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _collect_generated_media_paths(item, str(key or ""), paths, depth + 1)
+        return paths
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            _collect_generated_media_paths(item, key_hint, paths, depth + 1)
+        return paths
+    if not isinstance(value, str):
+        return paths
+    text = value.strip()
+    if not text:
+        return paths
+    if key_hint in ADMIRA_GENERATED_MEDIA_KEYS:
+        safe_path = _safe_generated_media_path(text)
+        if safe_path:
+            paths.append(safe_path)
+    for pattern in (ADMIRA_MEDIA_TAG_RE, ADMIRA_OUTPUT_IMAGE_RE):
+        for match in pattern.finditer(text):
+            safe_path = _safe_generated_media_path(match.group("path"))
+            if safe_path:
+                paths.append(safe_path)
+    return paths
+
+
+def _append_generated_media_attachments(response):
+    """Append native MEDIA directives for generated images in any result shape."""
+    if not isinstance(response, dict):
+        return response
+    final_response = str(response.get("final_response") or "")
+    paths = _collect_generated_media_paths(response)
+    if not paths:
+        return response
+    existing_media_paths = {
+        safe_path
+        for match in ADMIRA_MEDIA_TAG_RE.finditer(final_response)
+        for safe_path in [_safe_generated_media_path(match.group("path"))]
+        if safe_path
+    }
+    seen = set()
+    tags = []
+    for path in paths:
+        tag = f"MEDIA:{path}"
+        if path in seen or path in existing_media_paths or tag in final_response:
+            continue
+        seen.add(path)
+        tags.append(tag)
+    if not tags:
+        return response
+    response["final_response"] = (final_response.rstrip() + "\n" + "\n".join(tags)).strip()
+    return response
 
 
 def _admira_minimax_model():
@@ -259,8 +390,34 @@ def _patch_gateway_rate_limit_reply():
     return True
 
 
+def _patch_gateway_generated_media_delivery():
+    try:
+        import gateway.run as gateway_run
+    except Exception:
+        return False
+    runner = getattr(gateway_run, "GatewayRunner", None)
+    original = getattr(runner, "_run_agent", None) if runner is not None else None
+    if not callable(original):
+        return False
+    if getattr(runner, "_admira_generated_media_delivery_patch", False):
+        return True
+
+    async def patched_run_agent(self, *args, **kwargs):
+        result = await original(self, *args, **kwargs)
+        try:
+            return _append_generated_media_attachments(result)
+        except Exception:
+            return result
+
+    runner._admira_original_run_agent = original
+    runner._run_agent = patched_run_agent
+    runner._admira_generated_media_delivery_patch = True
+    return True
+
+
 def apply():
     rate_limit_patched = _patch_gateway_rate_limit_reply()
     minimax_patched = _patch_minimax_model_switch()
     runtime_patched = _patch_minimax_runtime_provider()
-    return bool(rate_limit_patched or minimax_patched or runtime_patched)
+    media_patched = _patch_gateway_generated_media_delivery()
+    return bool(rate_limit_patched or minimax_patched or runtime_patched or media_patched)
