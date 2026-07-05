@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from agent_runtime import build_system_prompt
@@ -97,6 +98,174 @@ MODEL_USAGE_LIMIT_PATTERNS = (
 
 def split_csv(value):
     return [item.strip() for item in str(value or "").split(",") if item.strip()]
+
+
+def _quote_yaml(value):
+    return json.dumps(str(value or ""), ensure_ascii=False)
+
+
+def hermes_home_path(config):
+    path = Path(str(getattr(config, "hermes_home", "") or DATA_DIR / "hermes-home")).expanduser()
+    if not path.is_absolute():
+        path = ROOT_DIR / path
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.chmod(0o700)
+    except OSError:
+        pass
+    return path
+
+
+def _hermes_model_config_lines(brain):
+    """Return Hermes model config lines for the selected Admira brain.
+
+    MiniMax M3 must use the official MiniMax OpenAI-compatible endpoint, not
+    OpenRouter. Hermes' native MiniMax provider can lag the official model
+    catalog, so Admira exposes it as a named custom provider while keeping the
+    API key only in the process environment.
+    """
+    model_provider = brain.get("provider") or "openai-codex"
+    model_default = brain.get("model") or normalize_hermes_model("")
+    base_url = str(brain.get("base_url") or "").strip().rstrip("/")
+    lines = [
+        "model:",
+        f"  provider: {_quote_yaml(model_provider)}",
+        f"  default: {_quote_yaml(model_default)}",
+    ]
+    if brain.get("brain") == "minimax":
+        provider_slug = "custom:admira-minimax"
+        provider_name = "admira-minimax"
+        official_base_url = base_url or "https://api.minimax.io/v1"
+        lines = [
+            "model:",
+            f"  provider: {_quote_yaml(provider_slug)}",
+            f"  default: {_quote_yaml(model_default)}",
+            "custom_providers:",
+            f"  - name: {_quote_yaml(provider_name)}",
+            f"    base_url: {_quote_yaml(official_base_url)}",
+            "    key_env: \"MINIMAX_API_KEY\"",
+            "    api_mode: \"chat_completions\"",
+            f"    model: {_quote_yaml(model_default)}",
+            "    models:",
+            f"      {_quote_yaml(model_default)}: {{}}",
+            "model_aliases:",
+            f"  {_quote_yaml(model_default)}:",
+            f"    model: {_quote_yaml(model_default)}",
+            f"    provider: {_quote_yaml(provider_slug)}",
+            f"    base_url: {_quote_yaml(official_base_url)}",
+            "  \"minimax m3\":",
+            f"    model: {_quote_yaml(model_default)}",
+            f"    provider: {_quote_yaml(provider_slug)}",
+            f"    base_url: {_quote_yaml(official_base_url)}",
+        ]
+    return lines
+
+
+def hermes_cli_provider(brain):
+    if brain.get("brain") == "minimax":
+        return "custom:admira-minimax"
+    return brain.get("provider") or ""
+
+
+def cli_toolsets(config, payload=None):
+    configured = split_csv(getattr(config, "hermes_enabled_toolsets", ""))
+    toolsets = configured or ["memory", "skills", "session_search", "vision", "file", "web", "browser"]
+    channel = str((payload or {}).get("channel") or "").strip().lower()
+    if channel in {"dashboard", "telegram"} or not channel:
+        toolsets.append("admira")
+    seen = set()
+    unique = []
+    for toolset in toolsets:
+        key = str(toolset or "").strip()
+        if key and key not in seen:
+            unique.append(key)
+            seen.add(key)
+    return unique
+
+
+def _cli_hermes_config_needs_write(config_text, brain):
+    if "mcp_servers:" not in config_text or "admira_mcp_server.py" not in config_text:
+        return True
+    if brain.get("brain") == "minimax":
+        lowered = config_text.lower()
+        return "custom:admira-minimax" not in config_text or "api.minimax.io/v1" not in config_text or "openrouter" in lowered
+    return False
+
+
+def write_cli_hermes_config(config, workspace_info, payload=None):
+    """Ensure Hermes CLI chats have the same safe Admira MCP tools as Telegram.
+
+    The dashboard chat already routes through Hermes, but Hermes only gains
+    product "hands" when its home has the Admira MCP server registered. This
+    writer is intentionally conservative: if a gateway-generated config already
+    has the Admira MCP server, it leaves that richer config untouched.
+    """
+    home = hermes_home_path(config)
+    config_path = home / "config.yaml"
+    brain = hermes_brain_settings(config)
+    existing = ""
+    if config_path.exists():
+        try:
+            existing = config_path.read_text(encoding="utf-8")
+        except OSError:
+            existing = ""
+    if existing and not _cli_hermes_config_needs_write(existing, brain):
+        return {"hermes_home": str(home), "config": str(config_path), "written": False}
+
+    timezone_name = str(getattr(config, "daily_brief_timezone", "UTC") or "UTC")
+    workspace_path = str(workspace_info.get("path") or HERMES_WORKSPACE_DIR)
+    mcp_server_path = ROOT_DIR / "src" / "admira_mcp_server.py"
+    disabled = split_csv(getattr(config, "hermes_disabled_toolsets", ""))
+    for protected in ("terminal", "code_execution", "image_gen"):
+        if protected not in disabled:
+            disabled.append(protected)
+    dashboard_toolsets = cli_toolsets(config, {"channel": "dashboard"})
+    telegram_toolsets = ["hermes-telegram", *cli_toolsets(config, {"channel": "telegram"})]
+    config_yaml = [
+        f"timezone: {_quote_yaml(timezone_name)}",
+        *_hermes_model_config_lines(brain),
+        "agent:",
+        f"  max_turns: {max(1, int(getattr(config, 'hermes_max_iterations', 12) or 12))}",
+        "  disabled_toolsets:",
+        *[f"    - {toolset}" for toolset in disabled],
+        "compression:",
+        "  enabled: true",
+        "  threshold: 0.85",
+        "  codex_gpt55_autoraise: false",
+        "mcp_servers:",
+        "  admira:",
+        "    enabled: true",
+        f"    command: {_quote_yaml(sys.executable)}",
+        "    args:",
+        f"      - {_quote_yaml(str(mcp_server_path))}",
+        "    env:",
+        f"      PYTHONPATH: {_quote_yaml(str(ROOT_DIR / 'src'))}",
+        f"      ADMIRA_PRODUCT_ROOT: {_quote_yaml(str(ROOT_DIR))}",
+        "    timeout: 900",
+        "    connect_timeout: 45",
+        "    keepalive_interval: 1200",
+        "terminal:",
+        f"  cwd: {_quote_yaml(workspace_path)}",
+        "telegram:",
+        "  gateway_restart_notification: false",
+        "  reactions: false",
+        "platform_toolsets:",
+        "  dashboard:",
+        *[f"    - {toolset}" for toolset in dashboard_toolsets],
+        "  telegram:",
+        *[f"    - {toolset}" for toolset in telegram_toolsets],
+        "  cli:",
+        *[f"    - {toolset}" for toolset in dashboard_toolsets],
+        "streaming:",
+        "  enabled: false",
+        "hooks_auto_accept: true",
+    ]
+    config_path.write_text("\n".join(config_yaml).rstrip() + "\n", encoding="utf-8")
+    try:
+        config_path.chmod(0o600)
+    except OSError:
+        pass
+    return {"hermes_home": str(home), "config": str(config_path), "written": True}
 
 
 def allowed_image_dirs():
@@ -707,7 +876,8 @@ def hermes_user_query(payload, workspace_info):
             "Nota de sistema del producto: el contexto actual de la cuenta está en `CURRENT_CONTEXT.json`. "
             "Usa ese archivo y tu memoria de sesión solo si hace falta para responder o preparar una acción. "
             "Si el mensaje incluye una URL pública o un enlace de Google Drive para usar como creativo, usa mcp_admira_fetch_public_asset antes de decir que no puedes acceder; después usa web/browser si hace falta investigación adicional. "
-            "Si el comprador pide crear o preparar campaña, usa herramientas/acciones del producto; no digas que necesitas terminal o CLI."
+            "Si el comprador pide crear o preparar campaña, usa las herramientas MCP de Admira cuando estén disponibles. "
+            "Si estás en un contexto sin MCP, devuelve el JSON tool_request del producto. No digas que necesitas terminal o CLI."
         )
     return (
         f"{message}\n\n"
@@ -723,9 +893,12 @@ def hermes_environment(config):
     # also set for child processes and third-party tools launched by Hermes.
     env["HERMES_TIMEZONE"] = timezone_name
     env["TZ"] = timezone_name
-    hermes_home = getattr(config, "hermes_home", "") or ""
+    hermes_home = getattr(config, "hermes_home", "") or DATA_DIR / "hermes-home"
     if hermes_home:
-        env["HERMES_HOME"] = str(Path(hermes_home).expanduser())
+        path = Path(str(hermes_home)).expanduser()
+        if not path.is_absolute():
+            path = ROOT_DIR / path
+        env["HERMES_HOME"] = str(path)
     settings = hermes_brain_settings(config)
     if settings.get("provider") == "minimax" and settings.get("api_key"):
         env["MINIMAX_API_KEY"] = settings["api_key"]
@@ -940,7 +1113,7 @@ def hermes_prompt(config, payload, workspace_info=None):
         + "\n\nRead product rules from AGENTS.md/SOUL.md and business files only inside this workspace. Do not read arbitrary local files. If a needed file is missing, ask the buyer or request a backend tool."
         + "\n\nBefore treating this as a new conversation, read `memory/Conversation continuity.md`, `memory/continuity_status.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, and relevant `brand_guides/` files. If persistent memory exists, resume from durable business/brand/ad memory instead of restarting onboarding or repeating first-time preference questions."
         + "\n\nNever expose internal workspace paths to the buyer. If the buyer asks for a prompt, plan, script, copy, or diagnosis, paste it directly in the chat instead of pointing them to `/app/...`, `dashboard/data/...`, `hermes-workspace/...`, `brand_guides/...`, `memory/...`, or `CURRENT_CONTEXT.json`."
-        + "\n\nDashboard action boundary: do not say you need CLI or terminal access to create or prepare campaigns. If the buyer asks for a product action, use the JSON tool_request contract below or ask the next missing detail. In dashboard chat, the backend executes supported product actions and keeps spend behind approval."
+        + "\n\nDashboard action boundary: do not say you need CLI or terminal access to create or prepare campaigns. If MCP tools are available, use the `mcp_admira_*` tools directly. If MCP is unavailable in the current runtime, use the JSON tool_request contract below or ask the next missing detail. In dashboard chat, the backend executes supported product actions and keeps spend behind approval."
         + "\n\nPublic URL handling: if the buyer provides a public URL, especially a Google Drive/video/image link for a creative, call mcp_admira_fetch_public_asset first. If it returns a video asset, use its video_url/direct_url for video creative staging. Use web/browser retrieval as a secondary path for general research. If access fails because of login, private URL, robots, timeout, private/local network, size limit, or tool unavailability, say that precise reason and ask the buyer to make it public, upload it directly, or paste page text/screenshots."
         + "\n\nCurrent account context JSON:\n"
         + json.dumps(context, ensure_ascii=False)
@@ -1003,6 +1176,7 @@ def library_chat(config, payload):
 
 def cli_chat(config, payload):
     workspace_info = prepare_hermes_workspace(payload)
+    hermes_files = write_cli_hermes_config(config, workspace_info, payload)
     query = hermes_user_query(payload, workspace_info)
     images = workspace_info.get("image_paths") or []
     brain = hermes_brain_settings(config)
@@ -1024,11 +1198,12 @@ def cli_chat(config, payload):
         ]
         if use_continue and session_name:
             command.extend(["--continue", session_name])
-        if brain.get("provider"):
-            command.extend(["--provider", brain["provider"]])
+        provider = hermes_cli_provider(brain)
+        if provider:
+            command.extend(["--provider", provider])
         if brain.get("model"):
             command.extend(["--model", brain["model"]])
-        enabled = ",".join(split_csv(getattr(config, "hermes_enabled_toolsets", "")))
+        enabled = ",".join(cli_toolsets(config, payload))
         if enabled:
             command.extend(["--toolsets", enabled])
         if images:
@@ -1036,10 +1211,12 @@ def cli_chat(config, payload):
         return command
 
     def run_command(command):
+        env = hermes_environment(config)
+        env["HERMES_HOME"] = hermes_files["hermes_home"]
         return subprocess.run(
             command,
             cwd=workspace_info["path"],
-            env=hermes_environment(config),
+            env=env,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

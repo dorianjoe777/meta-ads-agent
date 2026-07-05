@@ -915,6 +915,85 @@ class IntegrationTestSuite:
             hermes_bridge.library_chat = original_library
             hermes_bridge.cli_chat = original_cli
 
+    def test_dashboard_hermes_cli_registers_admira_mcp_tools(self):
+        """Test dashboard Hermes CLI chat receives Admira product tools and official MiniMax routing."""
+        print("\nTesting Dashboard Hermes CLI Admira MCP Registration...")
+
+        temp_dir = Path(tempfile.mkdtemp(prefix="admira-dashboard-hermes-"))
+        workspace = temp_dir / "workspace"
+        home = temp_dir / "hermes-home"
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        class FakeConfig:
+            agent_chat_provider = "hermes"
+            agent_brain_provider = "minimax"
+            agent_chat_base_url = "https://api.minimax.io/v1"
+            agent_chat_api_key = "direct-minimax-key"
+            agent_chat_model = "MiniMax-M3"
+            hermes_require_codex_auth = False
+            hermes_use_python_library = True
+            hermes_max_iterations = 3
+            hermes_timeout_seconds = 1
+            hermes_status_timeout_seconds = 1
+            hermes_response_timeout_seconds = 30
+            hermes_enabled_toolsets = "memory,skills,session_search,vision,file,web,browser"
+            hermes_disabled_toolsets = "terminal,code_execution,image_gen"
+            hermes_cli = "hermes"
+            hermes_home = str(home)
+            daily_brief_timezone = "America/Bogota"
+
+        captured = {}
+        original_prepare = hermes_bridge.prepare_hermes_workspace
+        original_run = hermes_bridge.subprocess.run
+        try:
+            hermes_bridge.prepare_hermes_workspace = lambda payload: {
+                "path": str(workspace),
+                "files": ["AGENTS.md", "CURRENT_CONTEXT.json"],
+                "image_paths": [],
+            }
+
+            def fake_run(command, **kwargs):
+                captured["command"] = list(command)
+                captured["kwargs"] = kwargs
+
+                class Completed:
+                    returncode = 0
+                    stdout = "Respuesta Hermes dashboard."
+                    stderr = ""
+
+                return Completed()
+
+            hermes_bridge.subprocess.run = fake_run
+            result = hermes_bridge.chat(
+                FakeConfig(),
+                {
+                    "message": "prepara una campaña y revisa este enlace",
+                    "language": "es",
+                    "channel": "dashboard",
+                    "account_context": {},
+                },
+            )
+
+            command = captured["command"]
+            toolsets = command[command.index("--toolsets") + 1].split(",")
+            config_text = (home / "config.yaml").read_text(encoding="utf-8")
+            env = captured["kwargs"]["env"]
+
+            self.assert_true(result["ok"] is True and result["reply"] == "Respuesta Hermes dashboard.", "Dashboard Hermes CLI returns the model response")
+            self.assert_true("--continue" in command and "meta-ads-agent-dashboard" in command, "Dashboard chat uses a persistent Hermes dashboard session")
+            self.assert_true("--provider" in command and command[command.index("--provider") + 1] == "custom:admira-minimax", "Dashboard MiniMax uses the official custom provider route")
+            self.assert_true("admira" in toolsets and "web" in toolsets and "browser" in toolsets, "Dashboard Hermes CLI includes Admira MCP plus safe web/browser toolsets")
+            self.assert_true(env["HERMES_HOME"] == str(home), "Dashboard Hermes CLI uses the configured Hermes home")
+            self.assert_true(env["MINIMAX_API_KEY"] == "direct-minimax-key" and env["MINIMAX_BASE_URL"] == "https://api.minimax.io/v1", "Official MiniMax credentials stay in the process environment")
+            self.assert_true("mcp_servers:" in config_text and "admira_mcp_server.py" in config_text, "Hermes config registers the Admira MCP server")
+            self.assert_true("custom:admira-minimax" in config_text and "https://api.minimax.io/v1" in config_text, "Hermes config points MiniMax to the official API")
+            self.assert_true("direct-minimax-key" not in config_text and "openrouter" not in config_text.lower(), "Hermes config does not persist API keys or OpenRouter routing")
+            self.assert_true("platform_toolsets:" in config_text and "dashboard:" in config_text and "admira" in config_text, "Hermes config exposes Admira tools to the dashboard platform")
+        finally:
+            hermes_bridge.prepare_hermes_workspace = original_prepare
+            hermes_bridge.subprocess.run = original_run
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_hermes_creative_image_request_routes_to_codex_tool(self):
         """Test Hermes can route a natural image-creative request to the Codex image tool."""
         print("\nTesting Hermes Creative Image Tool Routing...")
@@ -1551,8 +1630,10 @@ class IntegrationTestSuite:
             self.assert_true("--image" in command and attached_image.endswith("test-reference.png"), "Safe uploaded image is attached to Hermes")
             self.assert_true("dashboard/data/hermes-workspace/current/uploads" in attached_image, "Safe uploaded image is copied into the Hermes workspace before attachment")
             self.assert_true(str(unsafe_image.resolve()) not in command, "Unsafe local file is not attached as an image")
-            self.assert_true("memory,skills,session_search,vision,file,web,browser" in command, "Creative-friendly Hermes toolsets include scoped file and website access")
-            self.assert_true("image_gen" not in command[command.index("--toolsets") + 1], "Hermes internal image generation stays disabled so Codex/Image bridge owns final creatives")
+            toolset_arg = command[command.index("--toolsets") + 1]
+            toolsets = toolset_arg.split(",")
+            self.assert_true(all(toolset in toolsets for toolset in ["memory", "skills", "session_search", "vision", "file", "web", "browser", "admira"]), "Creative-friendly Hermes toolsets include scoped file, website access, and Admira product tools")
+            self.assert_true("image_gen" not in toolset_arg, "Hermes internal image generation stays disabled so Codex/Image bridge owns final creatives")
         finally:
             hermes_bridge.subprocess.run = original_run
 
@@ -7091,6 +7172,7 @@ class IntegrationTestSuite:
             self.test_agent_setup_status_accepts_direct_model_provider,
             self.test_hermes_provider_parses_tool_request,
             self.test_hermes_empty_library_reply_falls_back_to_cli,
+            self.test_dashboard_hermes_cli_registers_admira_mcp_tools,
             self.test_hermes_creative_image_request_routes_to_codex_tool,
             self.test_hermes_missing_runtime_gives_chatgpt_setup_guidance,
             self.test_hermes_model_usage_limit_keeps_connection_state_clear,
