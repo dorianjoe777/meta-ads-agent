@@ -19,7 +19,7 @@ OBJECTIVE_RULES = {
         "primary_event": "Purchase",
         "fallback_events": SALES_EVENTS[1:],
         "valid_events": set(SALES_EVENTS),
-        "optimization_goal": "CONVERSIONS",
+        "optimization_goal": "OFFSITE_CONVERSIONS",
         "volume_label": "compras",
     },
     "leads": {

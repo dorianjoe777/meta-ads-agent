@@ -207,6 +207,20 @@ class SocialFlowClient:
         fields = str(value or "").strip()
         return fields if fields else fallback
 
+    @staticmethod
+    def normalize_optimization_goal(value):
+        goal = str(value or "").strip().upper()
+        aliases = {
+            "CONVERSIONS": "OFFSITE_CONVERSIONS",
+            "WEBSITE_CONVERSIONS": "OFFSITE_CONVERSIONS",
+            "WEB_CONVERSIONS": "OFFSITE_CONVERSIONS",
+            "PURCHASES": "OFFSITE_CONVERSIONS",
+            "SALES": "OFFSITE_CONVERSIONS",
+            "LEADS": "LEAD_GENERATION",
+            "QUALITY_LEADS": "QUALITY_LEAD",
+        }
+        return aliases.get(goal, goal or "LINK_CLICKS")
+
     def graph_fallback(self, args, record, direct=False):
         if not getattr(self.config, "meta_access_token", ""):
             return None
@@ -307,7 +321,7 @@ class SocialFlowClient:
                     "name": self.flag(args, "--name", "Ad Set"),
                     "status": self.flag(args, "--status", "PAUSED"),
                     "targeting": self.flag(args, "--targeting", "{}"),
-                    "optimization_goal": self.flag(args, "--optimization-goal", "LINK_CLICKS"),
+                    "optimization_goal": self.normalize_optimization_goal(self.flag(args, "--optimization-goal", "LINK_CLICKS")),
                     "billing_event": self.flag(args, "--billing-event", "IMPRESSIONS"),
                 }
                 for source, target in (
@@ -510,6 +524,7 @@ class SocialFlowClient:
         end_time="",
         approved=False,
     ):
+        optimization_goal = self.normalize_optimization_goal(optimization_goal)
         args = [
             "marketing", "create-adset", campaign_id,
             "--name", name,

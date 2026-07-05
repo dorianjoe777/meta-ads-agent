@@ -5002,6 +5002,7 @@ class IntegrationTestSuite:
             language="es",
         )
         self.assert_true(ready["status"] == "ready" and ready["safe_to_launch_active"], "Healthy purchase signal can be launch-ready")
+        self.assert_true(ready["campaign_patch"]["optimization_goal"] == "OFFSITE_CONVERSIONS", "Sales signal review uses the Graph-valid offsite conversion optimization goal")
         self.assert_true(ready["campaign_patch"]["promoted_object"]["custom_event_type"] == "Purchase", "Signal review prepares the promoted_object event")
 
     def test_meta_snapshot_collects_adset_signal_configuration(self):
@@ -5024,7 +5025,7 @@ class IntegrationTestSuite:
                             "campaign_id": "camp_1",
                             "status": "ACTIVE",
                             "effective_status": "ACTIVE",
-                            "optimization_goal": "CONVERSIONS",
+                            "optimization_goal": "OFFSITE_CONVERSIONS",
                             "billing_event": "IMPRESSIONS",
                             "promoted_object": {"pixel_id": "123", "custom_event_type": "Purchase"},
                             "daily_budget": "2500",
@@ -5040,7 +5041,7 @@ class IntegrationTestSuite:
             meta_insights.graph_rows = fake_graph_rows
             snapshot = meta_insights.collect_meta_snapshot("act_123", "token")
             adset = snapshot["adset_statuses"]["adset_1"]
-            self.assert_true(adset["optimization_goal"] == "CONVERSIONS", "Meta snapshot stores ad set optimization goal")
+            self.assert_true(adset["optimization_goal"] == "OFFSITE_CONVERSIONS", "Meta snapshot stores ad set optimization goal")
             self.assert_true(adset["promoted_object"]["custom_event_type"] == "Purchase", "Meta snapshot stores promoted_object event")
             self.assert_true(adset["daily_budget"] == 25.0, "Meta snapshot normalizes ad set budget from minor units")
         finally:
@@ -5560,7 +5561,7 @@ class IntegrationTestSuite:
         )
         args, kwargs = captured[0]
         promoted = json.loads(args[args.index("--promoted-object") + 1])
-        self.assert_true(args[args.index("--optimization-goal") + 1] == "CONVERSIONS", "Social CLI receives the ad set optimization goal")
+        self.assert_true(args[args.index("--optimization-goal") + 1] == "OFFSITE_CONVERSIONS", "Social CLI normalizes legacy conversion goals before ad set creation")
         self.assert_true(promoted == {"pixel_id": "123", "custom_event_type": "Purchase"}, "Social CLI receives the promoted object for conversion optimization")
         self.assert_true(args[args.index("--billing-event") + 1] == "LINK_CLICKS", "Social CLI receives the selected billing event")
         self.assert_true(json.loads(args[args.index("--bidding") + 1])["bid_strategy"] == "LOWEST_COST_WITHOUT_CAP", "Social CLI receives the selected bidding controls")
@@ -5888,6 +5889,7 @@ class IntegrationTestSuite:
         ad_before = ad_path.read_text(encoding="utf-8") if ad_path.exists() else ""
         image_path = ROOT_DIR / "output" / "test-creative.png"
         campaign_path = ROOT_DIR / "output" / "test-campaign-stack.json"
+        retry_campaign_path = ROOT_DIR / "output" / "test-campaign-stack-retry.json"
         try:
             image_path.parent.mkdir(exist_ok=True)
             image_path.write_bytes(b"fake")
@@ -5926,12 +5928,51 @@ class IntegrationTestSuite:
             self.assert_true([call[0] for call in client.calls] == ["create_campaign", "create_adset", "upload_image", "create_creative", "create_ad"], "Campaign stack executes in correct order")
             self.assert_true(client.calls[0][1][4] == "ACTIVE" and client.calls[1][1][4] == "ACTIVE", "Approved active campaign stack activates campaign and ad set, not only the ad")
             adset_call = client.calls[1]
-            self.assert_true(adset_call[1][5] == "CONVERSIONS", "Campaign stack sends the signal-selected optimization goal to ad set creation")
+            self.assert_true(adset_call[1][5] == "OFFSITE_CONVERSIONS", "Campaign stack normalizes legacy conversion goals before ad set creation")
             self.assert_true(adset_call[2]["promoted_object"] == {"pixel_id": "123", "custom_event_type": "Purchase"}, "Campaign stack sends the signal-selected promoted object to ad set creation")
             self.assert_true(adset_call[1][2]["publisher_platforms"] == ["facebook", "instagram"], "Campaign stack sends manual Facebook/Instagram placement platforms")
             self.assert_true(adset_call[1][2]["facebook_positions"] == ["feed"] and adset_call[1][2]["instagram_positions"] == ["story"], "Campaign stack sends the selected feed/story placement positions")
             self.assert_true(client.calls[-1][1][-1] == "ACTIVE", "Final ad status is active when confirmed")
             self.assert_true(all(call[2].get("approved") is True for call in client.calls), "Full campaign execution is explicitly marked as approved")
+            saved_campaign = json.loads(campaign_path.read_text(encoding="utf-8"))
+            self.assert_true(saved_campaign.get("execution_state", {}).get("campaign_id") == "cmp_1", "Campaign execution stores the created Meta campaign ID for safe retries")
+
+            retry_campaign_path.write_text(
+                json.dumps(
+                    {
+                        "name": "Retry Stack",
+                        "objective": "PURCHASES",
+                        "budget": {"daily": 25},
+                        "ad_sets": [
+                            {
+                                "name": "Retry Stack - Core",
+                                "targeting": {"locations": ["MX"]},
+                                "budget": 25,
+                                "optimization_goal": "CONVERSIONS",
+                                "promoted_object": {"pixel_id": "123", "custom_event_type": "Purchase"},
+                            }
+                        ],
+                        "ad": {
+                            "primary_text": "Texto",
+                            "headline": "Titular",
+                            "creative_image_path": str(image_path),
+                            "landing_url": "https://buyer.example",
+                            "final_status": "PAUSED",
+                            "active_spend_confirmed": False,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            retry_client = FakeClient()
+            retry_result = execute_campaign_creation(
+                str(retry_campaign_path),
+                retry_client,
+                approved=True,
+                prior_result={"ok": False, "executed": True, "campaign_id": "cmp_existing", "failed_step": "create_adset"},
+            )
+            self.assert_true(retry_result["ok"] and retry_result["campaign_id"] == "cmp_existing", "Campaign retry reuses the previously-created Meta campaign ID")
+            self.assert_true(retry_client.calls[0][0] == "create_adset" and "create_campaign" not in [call[0] for call in retry_client.calls], "Campaign retry does not duplicate the already-created Meta campaign")
 
             campaign_path.write_text(
                 json.dumps(
@@ -5969,6 +6010,8 @@ class IntegrationTestSuite:
                 image_path.unlink()
             if campaign_path.exists():
                 campaign_path.unlink()
+            if retry_campaign_path.exists():
+                retry_campaign_path.unlink()
 
     def test_chat_stages_campaign_creation_and_requires_exact_approval(self):
         """Test natural language can stage campaign creation while approvals require an exact pending decision."""

@@ -264,6 +264,36 @@ def social_id_from_result(result):
     return None
 
 
+def prior_meta_id(prior_result, key, step_name):
+    if not isinstance(prior_result, dict):
+        return ""
+    direct = str(prior_result.get(key) or "").strip()
+    if direct:
+        return direct
+    for step in prior_result.get("steps") or []:
+        if not isinstance(step, dict) or step.get("step") != step_name:
+            continue
+        value = str(step.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def persist_campaign_execution_state(path, campaign, updates):
+    try:
+        execution_state = dict(campaign.get("execution_state") or {})
+        cleaned = {}
+        for key, value in (updates or {}).items():
+            if value is None or value == "":
+                continue
+            cleaned[key] = value
+        execution_state.update(cleaned)
+        campaign["execution_state"] = execution_state
+        write_json(Path(path), campaign)
+    except Exception:
+        pass
+
+
 def campaign_objective_for_social(objective):
     mapping = {
         "PURCHASES": "OUTCOME_SALES",
@@ -341,7 +371,7 @@ def targeting_for_social(targeting):
     return apply_placement_targeting(spec, targeting.get("placements") or targeting.get("placement_preset"))
 
 
-def execute_campaign_creation(path, client, approved=False):
+def execute_campaign_creation(path, client, approved=False, prior_result=None):
     campaign = read_json(Path(path), {})
     if not campaign:
         return {"ok": False, "error": "Campaign file missing or empty", "path": path}
@@ -385,16 +415,29 @@ def execute_campaign_creation(path, client, approved=False):
             },
         }
     budget_plan = campaign.get("budget_plan") or normalize_budget_plan({}, float(campaign.get("budget", {}).get("daily", 0) or 0))
-    campaign_result = client.create_campaign(
-        client.config.ad_account_id,
-        campaign.get("name", "New Campaign"),
-        campaign_objective_for_social(campaign.get("objective")),
-        int(float(campaign.get("budget", {}).get("daily", 0) or 0) * 100),
-        status_plan.get("campaign", "PAUSED"),
-        approved=approved,
-    )
-    campaign_id = social_id_from_result(campaign_result)
-    steps = [{"step": "create_campaign", "ok": bool(campaign_id), "campaign_id": campaign_id, "status": status_plan.get("campaign", "PAUSED"), "result": campaign_result}]
+    execution_state = campaign.get("execution_state") if isinstance(campaign.get("execution_state"), dict) else {}
+    campaign_id = str(
+        execution_state.get("campaign_id")
+        or campaign.get("meta_campaign_id")
+        or prior_meta_id(prior_result, "campaign_id", "create_campaign")
+        or ""
+    ).strip()
+    steps = []
+    if campaign_id:
+        steps.append({"step": "create_campaign", "ok": True, "campaign_id": campaign_id, "status": status_plan.get("campaign", "PAUSED"), "reused": True})
+    else:
+        campaign_result = client.create_campaign(
+            client.config.ad_account_id,
+            campaign.get("name", "New Campaign"),
+            campaign_objective_for_social(campaign.get("objective")),
+            int(float(campaign.get("budget", {}).get("daily", 0) or 0) * 100),
+            status_plan.get("campaign", "PAUSED"),
+            approved=approved,
+        )
+        campaign_id = social_id_from_result(campaign_result)
+        steps.append({"step": "create_campaign", "ok": bool(campaign_id), "campaign_id": campaign_id, "status": status_plan.get("campaign", "PAUSED"), "result": campaign_result})
+        if campaign_id:
+            persist_campaign_execution_state(path, campaign, {"campaign_id": campaign_id})
     if not campaign_id:
         return {"ok": False, "mode": client.config.mode, "executed": True, "failed_step": "create_campaign", "steps": steps}
     adset_ids = []
@@ -410,7 +453,7 @@ def execute_campaign_creation(path, client, approved=False):
             targeting_for_social(adset_targeting),
             daily_budget,
             status_plan.get("adset", adset.get("status", "PAUSED")),
-            adset.get("optimization_goal") or "LINK_CLICKS",
+            SocialFlowClient.normalize_optimization_goal(adset.get("optimization_goal") or "LINK_CLICKS"),
             promoted_object=adset.get("promoted_object") or {},
             billing_event=adset.get("billing_event") or "IMPRESSIONS",
             bidding=adset.get("bidding") or {},
@@ -422,6 +465,8 @@ def execute_campaign_creation(path, client, approved=False):
         adset_id = social_id_from_result(result)
         adset_ids.append(adset_id)
         steps.append({"step": "create_adset", "ok": bool(adset_id), "adset_id": adset_id, "status": status_plan.get("adset", "PAUSED"), "result": result})
+        if adset_id:
+            persist_campaign_execution_state(path, campaign, {"campaign_id": campaign_id, "adset_ids": [value for value in adset_ids if value]})
         if not adset_id:
             return {"ok": False, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "failed_step": "create_adset", "steps": steps}
     target_adset_id = adset_ids[0] if adset_ids else ""
@@ -508,7 +553,7 @@ def execute_pending(item, client):
     elif command[0] == "pause":
         result = client.pause(command[1], command[2], approved=True)
     elif command[0] == "create_campaign":
-        result = execute_campaign_creation(command[1], client, approved=True)
+        result = execute_campaign_creation(command[1], client, approved=True, prior_result=item.get("result"))
     elif command[0] == "creative_upload":
         result = execute_upload_payload(command[1], approved=True)
     else:
