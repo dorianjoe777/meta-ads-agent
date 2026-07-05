@@ -454,7 +454,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
             daily_budget,
             status_plan.get("adset", adset.get("status", "PAUSED")),
             SocialFlowClient.normalize_optimization_goal(adset.get("optimization_goal") or "LINK_CLICKS"),
-            promoted_object=adset.get("promoted_object") or {},
+            promoted_object=SocialFlowClient.normalize_promoted_object(adset.get("promoted_object") or {}),
             billing_event=adset.get("billing_event") or "IMPRESSIONS",
             bidding=adset.get("bidding") or {},
             lifetime_budget_cents=lifetime_budget,

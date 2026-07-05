@@ -5003,7 +5003,17 @@ class IntegrationTestSuite:
         )
         self.assert_true(ready["status"] == "ready" and ready["safe_to_launch_active"], "Healthy purchase signal can be launch-ready")
         self.assert_true(ready["campaign_patch"]["optimization_goal"] == "OFFSITE_CONVERSIONS", "Sales signal review uses the Graph-valid offsite conversion optimization goal")
-        self.assert_true(ready["campaign_patch"]["promoted_object"]["custom_event_type"] == "Purchase", "Signal review prepares the promoted_object event")
+        self.assert_true(ready["campaign_patch"]["promoted_object"]["custom_event_type"] == "PURCHASE", "Signal review prepares the Graph enum promoted_object event")
+        checkout_proxy = signal_quality.review_signal_quality(
+            {
+                "objective": "PURCHASES",
+                "optimization_event": "InitiateCheckout",
+                "weekly_event_volume": 8,
+                "pixel_id": "123",
+            },
+            language="es",
+        )
+        self.assert_true(checkout_proxy["campaign_patch"]["promoted_object"]["custom_event_type"] == "INITIATED_CHECKOUT", "Signal review maps InitiateCheckout to Meta's INITIATED_CHECKOUT enum")
 
     def test_meta_snapshot_collects_adset_signal_configuration(self):
         """Test Meta snapshot reads ad set optimization event configuration for diagnostics."""
@@ -5027,7 +5037,7 @@ class IntegrationTestSuite:
                             "effective_status": "ACTIVE",
                             "optimization_goal": "OFFSITE_CONVERSIONS",
                             "billing_event": "IMPRESSIONS",
-                            "promoted_object": {"pixel_id": "123", "custom_event_type": "Purchase"},
+                            "promoted_object": {"pixel_id": "123", "custom_event_type": "PURCHASE"},
                             "daily_budget": "2500",
                         }
                     ],
@@ -5042,7 +5052,7 @@ class IntegrationTestSuite:
             snapshot = meta_insights.collect_meta_snapshot("act_123", "token")
             adset = snapshot["adset_statuses"]["adset_1"]
             self.assert_true(adset["optimization_goal"] == "OFFSITE_CONVERSIONS", "Meta snapshot stores ad set optimization goal")
-            self.assert_true(adset["promoted_object"]["custom_event_type"] == "Purchase", "Meta snapshot stores promoted_object event")
+            self.assert_true(adset["promoted_object"]["custom_event_type"] == "PURCHASE", "Meta snapshot stores promoted_object event")
             self.assert_true(adset["daily_budget"] == 25.0, "Meta snapshot normalizes ad set budget from minor units")
         finally:
             meta_insights.graph_rows = original_graph_rows
@@ -5562,11 +5572,25 @@ class IntegrationTestSuite:
         args, kwargs = captured[0]
         promoted = json.loads(args[args.index("--promoted-object") + 1])
         self.assert_true(args[args.index("--optimization-goal") + 1] == "OFFSITE_CONVERSIONS", "Social CLI normalizes legacy conversion goals before ad set creation")
-        self.assert_true(promoted == {"pixel_id": "123", "custom_event_type": "Purchase"}, "Social CLI receives the promoted object for conversion optimization")
+        self.assert_true(promoted == {"pixel_id": "123", "custom_event_type": "PURCHASE"}, "Social CLI receives the Graph enum promoted object for conversion optimization")
         self.assert_true(args[args.index("--billing-event") + 1] == "LINK_CLICKS", "Social CLI receives the selected billing event")
         self.assert_true(json.loads(args[args.index("--bidding") + 1])["bid_strategy"] == "LOWEST_COST_WITHOUT_CAP", "Social CLI receives the selected bidding controls")
         self.assert_true(args[args.index("--lifetime-budget") + 1] == "30000" and args[args.index("--start-time") + 1].startswith("2026-07-01"), "Social CLI receives lifetime budget and schedule controls")
         self.assert_true(kwargs["mutation"] is True and kwargs["approved"] is True, "Promoted-object ad set creation remains gated as an approved mutation")
+        captured.clear()
+        client.create_adset(
+            "camp_1",
+            "Ad Set Checkout",
+            {"geo_locations": {"countries": ["MX"]}},
+            2500,
+            "PAUSED",
+            "OFFSITE_CONVERSIONS",
+            promoted_object={"pixel_id": "123", "custom_event_type": "InitiateCheckout"},
+            approved=True,
+        )
+        checkout_args, _ = captured[0]
+        checkout_promoted = json.loads(checkout_args[checkout_args.index("--promoted-object") + 1])
+        self.assert_true(checkout_promoted["custom_event_type"] == "INITIATED_CHECKOUT", "Social CLI maps InitiateCheckout to Meta's INITIATED_CHECKOUT enum")
 
     def test_social_flow_creative_supports_full_story_and_media_urls(self):
         """Test Social CLI creative creation can use full object_story_spec and media URL controls."""
@@ -5906,7 +5930,7 @@ class IntegrationTestSuite:
                                 "targeting": {"locations": ["MX"], "age_range": {"min": 18, "max": 65}},
                                 "budget": 25,
                                 "optimization_goal": "CONVERSIONS",
-                                "promoted_object": {"pixel_id": "123", "custom_event_type": "Purchase"},
+                                "promoted_object": {"pixel_id": "123", "custom_event_type": "InitiateCheckout"},
                                 "placements": {"automatic": False, "manual": ["FACEBOOK_FEED", "INSTAGRAM_STORIES"]},
                             }
                         ],
@@ -5929,7 +5953,7 @@ class IntegrationTestSuite:
             self.assert_true(client.calls[0][1][4] == "ACTIVE" and client.calls[1][1][4] == "ACTIVE", "Approved active campaign stack activates campaign and ad set, not only the ad")
             adset_call = client.calls[1]
             self.assert_true(adset_call[1][5] == "OFFSITE_CONVERSIONS", "Campaign stack normalizes legacy conversion goals before ad set creation")
-            self.assert_true(adset_call[2]["promoted_object"] == {"pixel_id": "123", "custom_event_type": "Purchase"}, "Campaign stack sends the signal-selected promoted object to ad set creation")
+            self.assert_true(adset_call[2]["promoted_object"] == {"pixel_id": "123", "custom_event_type": "INITIATED_CHECKOUT"}, "Campaign stack sends the Graph enum promoted object to ad set creation")
             self.assert_true(adset_call[1][2]["publisher_platforms"] == ["facebook", "instagram"], "Campaign stack sends manual Facebook/Instagram placement platforms")
             self.assert_true(adset_call[1][2]["facebook_positions"] == ["feed"] and adset_call[1][2]["instagram_positions"] == ["story"], "Campaign stack sends the selected feed/story placement positions")
             self.assert_true(client.calls[-1][1][-1] == "ACTIVE", "Final ad status is active when confirmed")
@@ -5949,7 +5973,7 @@ class IntegrationTestSuite:
                                 "targeting": {"locations": ["MX"]},
                                 "budget": 25,
                                 "optimization_goal": "CONVERSIONS",
-                                "promoted_object": {"pixel_id": "123", "custom_event_type": "Purchase"},
+                                "promoted_object": {"pixel_id": "123", "custom_event_type": "InitiateCheckout"},
                             }
                         ],
                         "ad": {

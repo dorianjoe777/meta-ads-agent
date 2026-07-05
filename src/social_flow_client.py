@@ -221,6 +221,50 @@ class SocialFlowClient:
         }
         return aliases.get(goal, goal or "LINK_CLICKS")
 
+    @staticmethod
+    def normalize_custom_event_type(value):
+        raw = str(value or "").strip()
+        compact = raw.lower().replace("-", "_").replace(" ", "_")
+        squashed = compact.replace("_", "")
+        aliases = {
+            "purchase": "PURCHASE",
+            "purchases": "PURCHASE",
+            "omni_purchase": "PURCHASE",
+            "offsite_conversion.fb_pixel_purchase": "PURCHASE",
+            "initiatecheckout": "INITIATED_CHECKOUT",
+            "initiatedcheckout": "INITIATED_CHECKOUT",
+            "initiate_checkout": "INITIATED_CHECKOUT",
+            "initiated_checkout": "INITIATED_CHECKOUT",
+            "offsite_conversion.fb_pixel_initiate_checkout": "INITIATED_CHECKOUT",
+            "offsite_conversion.fb_pixel_initiated_checkout": "INITIATED_CHECKOUT",
+            "addtocart": "ADD_TO_CART",
+            "add_to_cart": "ADD_TO_CART",
+            "offsite_conversion.fb_pixel_add_to_cart": "ADD_TO_CART",
+            "viewcontent": "VIEW_CONTENT",
+            "view_content": "VIEW_CONTENT",
+            "offsite_conversion.fb_pixel_view_content": "VIEW_CONTENT",
+            "lead": "LEAD",
+            "leads": "LEAD",
+            "offsite_conversion.fb_pixel_lead": "LEAD",
+            "complete_registration": "COMPLETE_REGISTRATION",
+            "completeregistration": "COMPLETE_REGISTRATION",
+            "contact": "CONTACT",
+        }
+        if compact in aliases:
+            return aliases[compact]
+        if squashed in aliases:
+            return aliases[squashed]
+        return raw.upper()[:80]
+
+    @classmethod
+    def normalize_promoted_object(cls, value):
+        if not isinstance(value, dict):
+            return value
+        promoted = dict(value)
+        if promoted.get("custom_event_type"):
+            promoted["custom_event_type"] = cls.normalize_custom_event_type(promoted.get("custom_event_type"))
+        return promoted
+
     def graph_fallback(self, args, record, direct=False):
         if not getattr(self.config, "meta_access_token", ""):
             return None
@@ -333,6 +377,12 @@ class SocialFlowClient:
                 ):
                     value = self.flag(args, source, "")
                     if value:
+                        if source == "--promoted-object":
+                            try:
+                                promoted_payload = json.loads(value)
+                                value = json.dumps(self.normalize_promoted_object(promoted_payload))
+                            except json.JSONDecodeError:
+                                pass
                         fields[target] = value
                 bidding = self.flag(args, "--bidding", "")
                 if bidding:
@@ -536,7 +586,7 @@ class SocialFlowClient:
             "--yes",
         ]
         if promoted_object:
-            args.extend(["--promoted-object", json.dumps(promoted_object)])
+            args.extend(["--promoted-object", json.dumps(self.normalize_promoted_object(promoted_object))])
         if bidding:
             args.extend(["--bidding", json.dumps(bidding)])
         if daily_budget_cents:

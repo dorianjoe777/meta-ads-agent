@@ -56,24 +56,32 @@ EVENT_ALIASES = {
     "omni_purchase": "Purchase",
     "offsite_conversion.fb_pixel_purchase": "Purchase",
     "initiatecheckout": "InitiateCheckout",
+    "initiatedcheckout": "InitiateCheckout",
     "initiate_checkout": "InitiateCheckout",
+    "initiated_checkout": "InitiateCheckout",
+    "offsite_conversion.fb_pixel_initiate_checkout": "InitiateCheckout",
+    "offsite_conversion.fb_pixel_initiated_checkout": "InitiateCheckout",
     "checkout": "InitiateCheckout",
     "inicio de pago": "InitiateCheckout",
     "addtocart": "AddToCart",
     "add_to_cart": "AddToCart",
+    "offsite_conversion.fb_pixel_add_to_cart": "AddToCart",
     "carrito": "AddToCart",
     "agregar al carrito": "AddToCart",
     "viewcontent": "ViewContent",
     "view_content": "ViewContent",
+    "offsite_conversion.fb_pixel_view_content": "ViewContent",
     "ver contenido": "ViewContent",
     "landingpageview": "LandingPageView",
     "landing_page_view": "LandingPageView",
     "visita": "LandingPageView",
     "lead": "Lead",
     "leads": "Lead",
+    "offsite_conversion.fb_pixel_lead": "Lead",
     "contacto": "Lead",
     "complete registration": "CompleteRegistration",
     "complete_registration": "CompleteRegistration",
+    "completeregistration": "CompleteRegistration",
     "registro": "CompleteRegistration",
     "contact": "Contact",
     "mensaje": "MessagingConversationStarted",
@@ -84,6 +92,16 @@ EVENT_ALIASES = {
     "conversacion": "MessagingConversationStarted",
     "conversación": "MessagingConversationStarted",
     "onsite_conversion.messaging_conversation_started_7d": "MessagingConversationStarted",
+}
+
+META_CUSTOM_EVENT_TYPES = {
+    "Purchase": "PURCHASE",
+    "InitiateCheckout": "INITIATED_CHECKOUT",
+    "AddToCart": "ADD_TO_CART",
+    "ViewContent": "VIEW_CONTENT",
+    "Lead": "LEAD",
+    "CompleteRegistration": "COMPLETE_REGISTRATION",
+    "Contact": "CONTACT",
 }
 
 TRUTHY = {"1", "true", "yes", "si", "sí", "on", "configured", "ready", "ok", "connected"}
@@ -136,6 +154,14 @@ def normalize_event(value):
     for canonical in set().union(*(rule["valid_events"] for rule in OBJECTIVE_RULES.values())):
         if compact == canonical.lower():
             return canonical
+    return text[:80]
+
+
+def meta_custom_event_type(value):
+    event = normalize_event(value)
+    if event in META_CUSTOM_EVENT_TYPES:
+        return META_CUSTOM_EVENT_TYPES[event]
+    text = str(value or "").strip().upper()
     return text[:80]
 
 
@@ -313,7 +339,7 @@ def review_signal_quality(payload=None, metrics=None, language="es"):
     manual_actions = [check for check in checks if not check.get("can_auto_optimize")]
     promoted_object = {}
     if pixel_id and event_requires_dataset(recommended_event):
-        promoted_object = {"pixel_id": pixel_id, "custom_event_type": recommended_event}
+        promoted_object = {"pixel_id": pixel_id, "custom_event_type": meta_custom_event_type(recommended_event)}
 
     campaign_patch = {
         "optimization_goal": rule["optimization_goal"],
