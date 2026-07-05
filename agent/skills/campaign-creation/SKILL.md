@@ -83,6 +83,8 @@ When staging, pass the expert fields that are justified by the conversation:
 - `object_story_spec`, `image_hash`, `image_url`, `video_url`, `cta_link`, `creative_format`
 - `custom_audiences`, `excluded_custom_audiences`, `excluded_interests`, `device_platforms`, `user_os`, `user_device`, and `flexible_spec` only when the buyer/context supports them
 
+Budgets are always interpreted in the connected Meta ad account currency. Do not assume USD. Accept buyer wording like `S/20`, `COP 40.000`, `MXN 300`, `€15`, or `$20`, and pass the numeric amount plus any known `account_currency`/`ad_account_currency` context. If the buyer mentions a different currency from the account currency, explain simply that Meta will use the ad account currency and do not invent currency conversion.
+
 Do not expose auth, app-secret, gateway, hub/package, raw batch, or WhatsApp-send operations as campaign-creation controls.
 
 Use `final_status: "ACTIVE"` only when the buyer clearly requested an active campaign and confirmed that it can spend.

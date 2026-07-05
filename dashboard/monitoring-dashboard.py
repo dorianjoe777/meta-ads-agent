@@ -6688,13 +6688,14 @@ def apply_action(payload):
 
 
 def create_campaign(payload):
+    payload = normalize_campaign_stack_arguments(payload)
     final_status = str(payload.get("final_status") or "ACTIVE").strip().upper()
     if final_status not in {"PAUSED", "ACTIVE"}:
         final_status = "ACTIVE"
-    active_confirmed = str(payload.get("active_spend_confirmed") or "").strip().lower() in {"1", "true", "yes", "on", "si", "sí"}
+    active_confirmed = boolish(payload.get("active_spend_confirmed")) is True
     if requires_active_confirmation(payload, final_status) and not active_confirmed:
         raise ValueError("Para dejar anuncios activos debes marcar: Sí, crear y dejar activo.")
-    budget_plan = normalize_budget_plan(payload, float(payload.get("daily_budget", 50) or 50))
+    budget_plan = normalize_budget_plan(payload, parse_money_like(payload.get("daily_budget"), 50) or 50)
     status_plan = normalize_status_plan(payload, final_status, active_confirmed)
     creator = CampaignCreator()
     selected_interests = parse_targeting_items(payload.get("targeting_interests_json") or payload.get("targeting_interests"), "interest")
@@ -6749,6 +6750,10 @@ def create_campaign(payload):
     campaign["status"] = status_plan["campaign"]
     campaign["status_plan"] = status_plan
     campaign["budget_plan"] = budget_plan
+    campaign["budget_currency"] = payload.get("budget_currency") or "account_default"
+    campaign["budget_currency_hint"] = payload.get("budget_currency_hint") or ""
+    if payload.get("budget_currency_warning"):
+        campaign["budget_currency_warning"] = payload.get("budget_currency_warning")
     campaign["success_metrics"] = success_metrics
     campaign["id"] = creator.generate_campaign_id(campaign)
     campaign["ab_test"] = {
@@ -6786,6 +6791,9 @@ def create_campaign(payload):
         "requested": {
             "campaign": campaign["name"],
             "daily_budget": campaign["budget"]["daily"],
+            "currency": campaign.get("budget_currency"),
+            "currency_hint": campaign.get("budget_currency_hint"),
+            "currency_warning": campaign.get("budget_currency_warning", ""),
             "budget_plan": budget_plan,
             "status_plan": status_plan,
             "objective": campaign["objective"],
@@ -6821,6 +6829,234 @@ def create_campaign(payload):
         "signal_quality_review": signal_review,
     }
     return add_pending("create_campaign", pending_payload)
+
+
+CAMPAIGN_CREATIVE_SOURCE_KEYS = (
+    "creative_image_path",
+    "image_hash",
+    "image_url",
+    "video_url",
+    "object_story_spec",
+    "object_story_spec_json",
+)
+
+CAMPAIGN_CREATIVE_ALIAS_KEYS = (
+    "creative_image_path_or_url_or_story_spec",
+    "creative_path",
+    "creative_asset",
+    "creative_asset_path",
+    "creative_url",
+    "creative_image_url",
+    "ad_image_path",
+    "image_path",
+    "image",
+    "asset_path",
+    "asset_url",
+    "media_path",
+    "media_url",
+    "video_path",
+    "video_asset",
+    "video_asset_url",
+)
+
+CURRENCY_SYMBOL_HINTS = (
+    ("US$", "USD"),
+    ("USD", "USD"),
+    ("COP", "COP"),
+    ("COL$", "COP"),
+    ("MXN", "MXN"),
+    ("MX$", "MXN"),
+    ("PEN", "PEN"),
+    ("S/", "PEN"),
+    ("EUR", "EUR"),
+    ("€", "EUR"),
+    ("GBP", "GBP"),
+    ("£", "GBP"),
+    ("BRL", "BRL"),
+    ("R$", "BRL"),
+    ("CLP", "CLP"),
+    ("ARS", "ARS"),
+    ("CAD", "CAD"),
+    ("AUD", "AUD"),
+)
+
+
+def parse_localized_number_token(token):
+    text = str(token or "").strip()
+    if not text:
+        return None
+    if "," in text and "." in text:
+        decimal_separator = "," if text.rfind(",") > text.rfind(".") else "."
+        thousands_separator = "." if decimal_separator == "," else ","
+        normalized = text.replace(thousands_separator, "").replace(decimal_separator, ".")
+    elif "." in text:
+        parts = text.split(".")
+        normalized = "".join(parts) if len(parts) > 1 and all(len(part) == 3 for part in parts[1:]) else text
+    elif "," in text:
+        parts = text.split(",")
+        normalized = "".join(parts) if len(parts) > 1 and all(len(part) == 3 for part in parts[1:]) else text.replace(",", ".")
+    else:
+        normalized = text
+    try:
+        return float(normalized)
+    except ValueError:
+        return None
+
+
+def parse_money_like(value, default=None):
+    if value in (None, ""):
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value or "").strip()
+    if not text:
+        return default
+    match = re.search(r"[-+]?\d[\d.,]*", text)
+    if not match:
+        return default
+    parsed = parse_localized_number_token(match.group(0))
+    return default if parsed is None else parsed
+
+
+def currency_hint_from_text(value):
+    text = str(value or "").strip().upper()
+    if not text:
+        return ""
+    for token, currency in CURRENCY_SYMBOL_HINTS:
+        if token in text:
+            return currency
+    return ""
+
+
+def configured_ad_account_currency():
+    state = normalize_managed_accounts_state(seed=False)
+    active_id = clean_ad_account_id(state.get("active_ad_account_id") or "")
+    accounts = state.get("accounts") or []
+    active = next((account for account in accounts if clean_ad_account_id(account.get("id")) == active_id), None)
+    if not active and accounts:
+        active = accounts[0]
+    return str((active or {}).get("currency") or "").strip().upper()
+
+
+def boolish(value):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on", "si", "sí", "claro", "confirmado"}:
+        return True
+    if text in {"0", "false", "no", "n", "off", "pausado", "pausada", "paused"}:
+        return False
+    return None
+
+
+def campaign_status_from_text(value):
+    if isinstance(value, dict):
+        value = " ".join(str(item or "") for item in value.values())
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    if re.search(r"\b(paused|pause|pausar|pausad[oa]|en pausa|draft|borrador)\b", text):
+        return "PAUSED"
+    if re.search(r"\b(active|activo|activa|encendid[oa]|live|lanzar|publicar)\b", text):
+        return "ACTIVE"
+    return ""
+
+
+def normalize_campaign_stack_arguments(arguments, chat_payload=None):
+    """Accept the looser shapes Hermes/Telegram may send for campaign staging."""
+    args = dict(arguments or {})
+
+    if not args.get("daily_budget"):
+        for key in ("budget", "budget_daily", "daily_budget_usd", "daily_budget_amount", "presupuesto_diario"):
+            if args.get(key):
+                args["daily_budget"] = args.get(key)
+                break
+    daily_budget = parse_money_like(args.get("daily_budget"))
+    if daily_budget is not None:
+        args["daily_budget"] = daily_budget
+    total_budget = parse_money_like(args.get("total_budget"))
+    if total_budget is not None:
+        args["total_budget"] = total_budget
+    currency_hint = (
+        currency_hint_from_text(args.get("daily_budget_raw"))
+        or currency_hint_from_text(arguments.get("daily_budget") if isinstance(arguments, dict) else "")
+        or currency_hint_from_text(arguments.get("budget") if isinstance(arguments, dict) else "")
+    )
+    account_currency = str(
+        args.get("ad_account_currency")
+        or args.get("account_currency")
+        or configured_ad_account_currency()
+        or ""
+    ).strip().upper()
+    if currency_hint:
+        args["budget_currency_hint"] = currency_hint
+    if account_currency:
+        args["ad_account_currency"] = account_currency
+        args["budget_currency"] = account_currency
+    elif currency_hint:
+        args["budget_currency"] = currency_hint
+    else:
+        args.setdefault("budget_currency", "account_default")
+    if currency_hint and account_currency and currency_hint != account_currency:
+        args["budget_currency_warning"] = (
+            f"El presupuesto se aplicará en la moneda de la cuenta publicitaria ({account_currency}), "
+            f"pero el texto enviado mencionaba {currency_hint}. No se hizo conversión automática."
+        )
+
+    if not args.get("final_status"):
+        for key in ("status_plan", "status", "desired_status", "campaign_status", "adset_status", "ad_set_status", "ad_status"):
+            status = campaign_status_from_text(args.get(key))
+            if status:
+                args["final_status"] = status
+                break
+    if not args.get("final_status"):
+        args["final_status"] = "PAUSED"
+
+    confirmed = boolish(args.get("active_spend_confirmed"))
+    if confirmed is not None:
+        args["active_spend_confirmed"] = confirmed
+
+    if not any(args.get(key) for key in CAMPAIGN_CREATIVE_SOURCE_KEYS):
+        safe_from_args = safe_image_paths(args)
+        safe_from_chat = safe_image_paths(chat_payload or {})
+        if safe_from_args:
+            args["creative_image_path"] = safe_from_args[0]
+        elif safe_from_chat:
+            args["creative_image_path"] = safe_from_chat[0]
+
+    if not any(args.get(key) for key in CAMPAIGN_CREATIVE_SOURCE_KEYS):
+        alias_value = ""
+        for key in CAMPAIGN_CREATIVE_ALIAS_KEYS:
+            if args.get(key):
+                alias_value = args.get(key)
+                break
+        if isinstance(alias_value, dict):
+            args["object_story_spec"] = alias_value
+        elif alias_value:
+            parsed_story = None
+            if isinstance(alias_value, str):
+                try:
+                    parsed_story = json.loads(alias_value)
+                except json.JSONDecodeError:
+                    parsed_story = None
+            if isinstance(parsed_story, dict):
+                args["object_story_spec"] = parsed_story
+            else:
+                safe_alias_paths = safe_image_paths({"creative_image_path": alias_value})
+                if safe_alias_paths:
+                    args["creative_image_path"] = safe_alias_paths[0]
+                else:
+                    text = str(alias_value or "").strip()
+                    lowered = text.lower()
+                    if text.startswith(("http://", "https://")):
+                        if any(lowered.split("?", 1)[0].endswith(ext) for ext in (".mp4", ".mov", ".m4v", ".webm")):
+                            args["video_url"] = text
+                        else:
+                            args["image_url"] = text
+
+    return args
 
 
 def create_audience_strategy(payload, language="es"):
@@ -7436,7 +7672,8 @@ def parse_campaign_creation_payload(text, payload):
     budget_match = re.search(r"(?:presupuesto|budget|diario|daily|con)\s*(?:de)?\s*\$?\s*(\d+(?:[.,]\d+)?)", text, flags=re.I)
     budget = float(budget_match.group(1).replace(",", ".")) if budget_match else 0
     url = extract_url(payload.get("message", ""))
-    image_path = extract_image_path(payload.get("message", ""))
+    attached_images = safe_image_paths(payload)
+    image_path = extract_image_path(payload.get("message", "")) or (attached_images[0] if attached_images else "")
     success_metric_candidates = success_metric_candidates_from_text(payload.get("message", ""))
     final_status = "ACTIVE" if text_has_any(text, ["activo", "activa", "active", "encendida", "encendido"]) else "PAUSED"
     confirmed = text_confirms_active_approval(text)
@@ -7814,7 +8051,7 @@ def route_chat_action(payload):
                 "producto u oferta": "¿Qué producto u oferta quieres anunciar?",
                 "presupuesto diario": "¿Qué presupuesto diario quieres usar para esta campaña?",
                 "link de destino": "¿A qué link debe mandar el anuncio?",
-                "ruta de imagen creativa": "Pásame la ruta local de la imagen creativa que quieres usar, por ejemplo /Users/tu/imagen.png.",
+                "ruta de imagen creativa": "Adjunta la imagen creativa final que quieres usar o compárteme un enlace público del asset.",
                 "confirmación exacta: Sí, crear y dejar activo": "Como pediste dejarla activa, necesito que confirmes exactamente: Sí, crear y dejar activo.",
             }
             return {"ok": True, "provider": "local-action-router", "fallback": False, "routed_action": {"type": "clarify_campaign_creation", "executed": False, "missing": missing}, "reply": chat_reply(payload, questions[first], f"I need one detail first: {first}.")}
@@ -8055,7 +8292,7 @@ def summarize_cli_result(result, max_items=8):
 
 
 def campaign_preflight(arguments, chat_payload):
-    arguments = arguments or {}
+    arguments = normalize_campaign_stack_arguments(arguments or {}, chat_payload)
     config = load_config()
     client = SocialFlowClient(config)
     account_id = config.ad_account_id or str(arguments.get("ad_account_id") or "").strip()
@@ -8065,7 +8302,7 @@ def campaign_preflight(arguments, chat_payload):
     budget_plan = normalize_budget_plan(arguments, float(arguments.get("daily_budget", 50) or 50))
     success_metrics = normalize_success_metrics(arguments)
     final_status = str(arguments.get("final_status") or "PAUSED").upper()
-    active_confirmed = str(arguments.get("active_spend_confirmed") or "").strip().lower() in {"1", "true", "yes", "on", "si", "sí"}
+    active_confirmed = boolish(arguments.get("active_spend_confirmed")) is True
     status_plan = normalize_status_plan(arguments, final_status, active_confirmed)
     preflight = {
         "ok": True,
@@ -8176,12 +8413,14 @@ def handle_export_report_tool(arguments, chat_payload, tool):
 
 
 def handle_create_campaign_stack_tool(arguments, chat_payload, tool):
+    arguments = normalize_campaign_stack_arguments(arguments or {}, chat_payload)
     required = ["name", "daily_budget", "landing_url"]
     missing = [key for key in required if not arguments.get(key)]
-    if not any(arguments.get(key) for key in ["creative_image_path", "image_hash", "image_url", "video_url", "object_story_spec", "object_story_spec_json"]):
+    if not any(arguments.get(key) for key in CAMPAIGN_CREATIVE_SOURCE_KEYS):
         missing.append("creative_image_path_or_url_or_story_spec")
-    final_status = str(arguments.get("final_status") or "ACTIVE").upper()
-    if final_status == "ACTIVE" and not arguments.get("active_spend_confirmed"):
+    final_status = str(arguments.get("final_status") or "PAUSED").strip().upper()
+    active_confirmed = boolish(arguments.get("active_spend_confirmed")) is True
+    if requires_active_confirmation(arguments, final_status) and not active_confirmed:
         missing.append("active_spend_confirmed")
     if missing:
         return agent_action_result(

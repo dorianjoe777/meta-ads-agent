@@ -411,6 +411,8 @@ def campaign_preview(campaign):
             "name": campaign.get("name"),
             "objective": campaign.get("objective"),
             "budget": campaign.get("budget"),
+            "budget_currency": campaign.get("budget_currency"),
+            "budget_currency_warning": campaign.get("budget_currency_warning"),
             "status": campaign.get("status"),
             "success_metrics": campaign.get("success_metrics"),
         },

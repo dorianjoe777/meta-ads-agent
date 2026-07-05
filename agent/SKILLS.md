@@ -580,6 +580,8 @@ In English mode, use:
 
 If product, budget, landing URL, creative image path, or active-spend confirmation is missing, ask one clear question and do not request the tool.
 
+Budgets are interpreted in the connected Meta ad account currency. Do not assume USD. If the buyer writes `S/20`, `COP 40.000`, `MXN 300`, `€15`, or another currency, preserve the numeric amount and include any known `account_currency`/`ad_account_currency` context. If the written currency differs from the ad account currency, explain that Meta uses the account currency and do not invent conversion.
+
 ### `review_live_readiness`
 
 Use when the user asks what is missing before activating `Piloto automatico` or whether setup is ready for real actions.

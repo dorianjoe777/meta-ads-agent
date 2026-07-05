@@ -2156,6 +2156,17 @@ class IntegrationTestSuite:
             review = admira_tool_bridge.call_tool("mcp_admira_review_signal_quality", {"objective": "PURCHASES", "pixel_id": "123"})
             preflight = admira_tool_bridge.call_tool("mcp_admira_preflight_campaign", {"objective": "PURCHASES", "pixel_id": "123"})
             public_asset = admira_tool_bridge.call_tool("mcp_admira_fetch_public_asset", {"url": "https://drive.google.com/file/d/video123/view?usp=sharing"})
+            staged_campaign = admira_tool_bridge.call_tool(
+                "mcp_admira_stage_campaign",
+                {
+                    "name": "Stage con imagen",
+                    "daily_budget": "COP 40.000",
+                    "landing_url": "https://uboost.lat",
+                    "status_plan": "paused",
+                    "active_spend_confirmed": False,
+                    "creative_image_path_or_url_or_story_spec": str(generated_image),
+                },
+            )
             ads_onboarding = admira_tool_bridge.call_tool("mcp_admira_save_ads_onboarding", {"success_metrics": ["ROAS", "cost per purchase", "cost per initiate checkout"]})
             approval = admira_tool_bridge.call_tool("mcp_admira_approve_action", {"approval_id": "approval_1"})
             pending = admira_tool_bridge.call_tool("list_pending_approvals", {})
@@ -2168,6 +2179,7 @@ class IntegrationTestSuite:
             self.assert_true(review["product_tool"] == "review_signal_quality" and "review_signal_quality" in called_tools, "Tool bridge maps signal-quality MCP review to dashboard action handlers")
             self.assert_true(preflight["product_tool"] == "preflight_campaign" and "preflight_campaign" in called_tools, "Tool bridge maps campaign preflight MCP review to dashboard action handlers")
             self.assert_true(public_asset["product_tool"] == "fetch_public_asset" and "fetch_public_asset" in called_tools, "Tool bridge maps public URL/Drive creative retrieval to dashboard action handlers")
+            self.assert_true(staged_campaign["product_tool"] == "create_campaign_stack" and calls[-3][0]["tool"] == "create_campaign_stack" and calls[-3][0]["arguments"]["creative_image_path"] == str(generated_image.resolve()), "Tool bridge resolves safe campaign creative aliases before staging")
             self.assert_true(ads_onboarding["product_tool"] == "save_ads_onboarding" and "save_ads_onboarding" in called_tools, "Tool bridge maps ads onboarding memory so Hermes can persist campaign KPIs")
             self.assert_true(approval["product_tool"] == "approval_decision" and calls[-1][0]["arguments"]["decision"] == "approve", "Tool bridge converts approval MCP calls to exact approval decisions")
             verified = admira_tool_bridge.call_tool("mcp_admira_record_verified_signal", {"stage": "booked", "person_label": "Maria"})
@@ -5191,6 +5203,68 @@ class IntegrationTestSuite:
         except ValueError as exc:
             self.assert_true("crear y dejar activo" in str(exc), "Active spend confirmation is required")
 
+    def test_campaign_stage_accepts_paused_false_and_attached_creative(self):
+        """Test campaign staging accepts paused/no-spend plans and resolves attached creative assets."""
+        print("\nTesting Campaign Stage Argument Normalization...")
+
+        dashboard = load_dashboard_module()
+        image_dir = ROOT_DIR / "output" / "test-stage-campaign-attachments"
+        image_path = image_dir / "final-creative.png"
+        original_require = dashboard.require_cloud_license
+        original_create = dashboard.create_campaign
+        captured = []
+        try:
+            shutil.rmtree(image_dir, ignore_errors=True)
+            image_dir.mkdir(parents=True, exist_ok=True)
+            image_path.write_bytes(b"fake png")
+            dashboard.require_cloud_license = lambda *args, **kwargs: None
+            dashboard.create_campaign = lambda payload: captured.append(payload) or {"status": "pending", "payload": payload}
+
+            result = dashboard.execute_agent_tool(
+                {
+                    "tool": "create_campaign_stack",
+                    "arguments": {
+                        "name": "AdMira IA - Prueba inicial LATAM",
+                        "objective": "sales",
+                        "daily_budget": "S/20",
+                        "account_currency": "PEN",
+                        "landing_url": "https://uboost.lat",
+                        "pixel_id": "1352606006932923",
+                        "creative_image_path_or_url_or_story_spec": "imagen final adjunta por el usuario",
+                        "active_spend_confirmed": False,
+                        "status_plan": "paused",
+                    },
+                },
+                {"language": "es", "image_paths": [str(image_path)]},
+            )
+
+            self.assert_true(result.get("staged") is True and not result.get("blocked"), "Paused campaign with false active confirmation stages successfully")
+            self.assert_true(captured and captured[0]["creative_image_path"] == str(image_path.resolve()), "Attached chat creative is resolved as the campaign image path")
+            self.assert_true(captured[0]["daily_budget"] == 20.0 and captured[0]["final_status"] == "PAUSED", "Campaign staging normalizes currency budget strings and paused status")
+            self.assert_true(captured[0]["budget_currency"] == "PEN" and captured[0]["budget_currency_hint"] == "PEN", "Campaign staging keeps the ad-account currency for non-USD budgets")
+            self.assert_true(dashboard.parse_money_like("COP 40.000") == 40000.0 and dashboard.parse_money_like("1.234,56") == 1234.56, "Campaign staging parses LATAM thousands and decimal separators safely")
+            self.assert_true(captured[0]["active_spend_confirmed"] is False, "False active-spend confirmation is preserved as an intentional paused choice")
+
+            blocked = dashboard.execute_agent_tool(
+                {
+                    "tool": "create_campaign_stack",
+                    "arguments": {
+                        "name": "Active spend test",
+                        "daily_budget": 20,
+                        "landing_url": "https://uboost.lat",
+                        "creative_image_path": str(image_path),
+                        "final_status": "ACTIVE",
+                        "active_spend_confirmed": False,
+                    },
+                },
+                {"language": "es"},
+            )
+            self.assert_true(blocked.get("blocked") and "active_spend_confirmed" in blocked.get("missing", []), "Active campaigns still require explicit spend confirmation")
+        finally:
+            dashboard.require_cloud_license = original_require
+            dashboard.create_campaign = original_create
+            shutil.rmtree(image_dir, ignore_errors=True)
+
     def test_signal_quality_tool_reviews_campaign_event_readiness(self):
         """Test dashboard exposes a read-only signal-quality review tool to Hermes."""
         print("\nTesting Dashboard Signal Quality Tool...")
@@ -7485,6 +7559,7 @@ class IntegrationTestSuite:
             self.test_demo_metrics_are_labeled,
             self.test_supervised_approval_executes_only_with_valid_license_and_retries_failures,
             self.test_campaign_creation_requires_active_confirmation,
+            self.test_campaign_stage_accepts_paused_false_and_attached_creative,
             self.test_campaign_creation_uses_meta_targeting_selection,
             self.test_social_targeting_uses_meta_ids,
             self.test_autopilot_action_updates_dashboard_only_after_meta_success,

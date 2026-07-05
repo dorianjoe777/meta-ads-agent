@@ -52,6 +52,15 @@ TOOL_MAP = {
 PUBLIC_TOOLS = sorted(["admira_get_real_meta_context", "admira_list_pending_approvals", *TOOL_MAP.keys()])
 ARGUMENT_WRAPPER_KEYS = {"arguments", "args", "kwargs", "payload", "fields", "data", "input"}
 CREATIVE_IMAGE_TOOLS = {"admira_codex_image_generate", "admira_codex_creative_plan"}
+CAMPAIGN_STAGE_TOOLS = {"admira_stage_campaign"}
+CAMPAIGN_CREATIVE_SOURCE_KEYS = {
+    "creative_image_path",
+    "image_hash",
+    "image_url",
+    "video_url",
+    "object_story_spec",
+    "object_story_spec_json",
+}
 WORKSPACE_IMAGE_TRIGGER_WORDS = (
     "adjunta",
     "adjunto",
@@ -212,6 +221,8 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
     reference_paths = safe_image_paths(args)
     if not reference_paths and tool in CREATIVE_IMAGE_TOOLS and creative_args_mentions_uploaded_image(args):
         reference_paths = latest_workspace_image_paths()
+    if not reference_paths and tool in CAMPAIGN_STAGE_TOOLS and creative_args_mentions_uploaded_image(args):
+        reference_paths = latest_workspace_image_paths(limit=1)
     if reference_paths:
         payload["image_paths"] = reference_paths[:4]
 
@@ -234,6 +245,8 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
 
     product_tool = TOOL_MAP[tool]
     product_args = dict(args)
+    if tool in CAMPAIGN_STAGE_TOOLS and reference_paths and not any(product_args.get(key) for key in CAMPAIGN_CREATIVE_SOURCE_KEYS):
+        product_args["creative_image_path"] = reference_paths[0]
     if tool == "admira_approve_action":
         product_args["decision"] = "approve"
     elif tool == "admira_reject_action":
