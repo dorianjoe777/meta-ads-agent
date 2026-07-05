@@ -46,8 +46,8 @@ HERMES_WORKSPACE_DIR = DATA_DIR / "hermes-workspace" / "current"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 ADMIRA_MINIMAX_KEY_ENV = "ADMIRA_MINIMAX_API_KEY"
 ADMIRA_MINIMAX_BASE_URL_ENV = "ADMIRA_MINIMAX_BASE_URL"
-ADMIRA_MINIMAX_PROVIDER = "custom:admira-minimax"
-ADMIRA_MINIMAX_PROVIDER_NAME = "admira-minimax"
+ADMIRA_MINIMAX_PROVIDER = "admira-minimax"
+ADMIRA_MINIMAX_PROVIDER_NAME = "MiniMax M3 oficial"
 BASE_ALLOWED_IMAGE_DIRS = (
     ROOT_DIR / "output",
     ROOT_DIR / "dashboard" / "data" / "uploads",
@@ -144,8 +144,9 @@ def _hermes_model_config_lines(brain):
             "model:",
             f"  provider: {_quote_yaml(provider_slug)}",
             f"  default: {_quote_yaml(model_default)}",
-            "custom_providers:",
-            f"  - name: {_quote_yaml(provider_name)}",
+            "providers:",
+            f"  {provider_slug}:",
+            f"    name: {_quote_yaml(provider_name)}",
             f"    base_url: {_quote_yaml(official_base_url)}",
             f"    key_env: {_quote_yaml(ADMIRA_MINIMAX_KEY_ENV)}",
             "    api_mode: \"chat_completions\"",
@@ -200,7 +201,7 @@ def _cli_hermes_config_needs_write(config_text, brain):
         return True
     if brain.get("brain") == "minimax":
         lowered = config_text.lower()
-        return "custom:admira-minimax" not in config_text or "api.minimax.io/v1" not in config_text or "openrouter" in lowered
+        return "admira-minimax" not in config_text or "providers:" not in config_text or "api.minimax.io/v1" not in config_text or "openrouter" in lowered or "custom:admira-minimax" in config_text
     return False
 
 

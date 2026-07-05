@@ -10,8 +10,8 @@ import os
 
 from admira_rate_limit_messages import gateway_rate_limit_reply, is_rate_limit_text
 
-ADMIRA_MINIMAX_PROVIDER = "custom:admira-minimax"
-ADMIRA_MINIMAX_PROVIDER_NAME = "admira-minimax"
+ADMIRA_MINIMAX_PROVIDER = "admira-minimax"
+ADMIRA_MINIMAX_PROVIDER_NAME = "MiniMax M3 oficial"
 ADMIRA_MINIMAX_MODEL = "MiniMax-M3"
 ADMIRA_MINIMAX_KEY_ENV = "ADMIRA_MINIMAX_API_KEY"
 ADMIRA_MINIMAX_DEFAULT_BASE_URL = "https://api.minimax.io/v1"
@@ -71,7 +71,7 @@ def _is_admira_minimax_provider(value):
     }
 
 
-def _admira_minimax_custom_provider():
+def _admira_minimax_provider_entry():
     model = _admira_minimax_model()
     return {
         "name": ADMIRA_MINIMAX_PROVIDER_NAME,
@@ -83,27 +83,25 @@ def _admira_minimax_custom_provider():
     }
 
 
-def _ensure_admira_minimax_custom_provider(custom_providers):
-    providers = list(custom_providers or []) if isinstance(custom_providers, list) else []
-    wanted = _admira_minimax_custom_provider()
-    wanted_name = wanted["name"].lower()
-    wanted_url = wanted["base_url"].rstrip("/").lower()
-    for entry in providers:
-        if not isinstance(entry, dict):
-            continue
-        name = str(entry.get("name") or "").strip().lower()
-        url = str(entry.get("base_url") or entry.get("url") or entry.get("api") or "").strip().rstrip("/").lower()
-        if name == wanted_name or url == wanted_url:
-            entry.setdefault("key_env", ADMIRA_MINIMAX_KEY_ENV)
-            entry.setdefault("api_mode", "chat_completions")
-            entry.setdefault("model", wanted["model"])
-            models = entry.get("models")
-            if not isinstance(models, dict):
-                entry["models"] = {wanted["model"]: {}}
-            elif wanted["model"] not in models:
-                models[wanted["model"]] = {}
-            return providers
-    return [wanted, *providers]
+def _ensure_admira_minimax_user_provider(user_providers):
+    providers = dict(user_providers or {}) if isinstance(user_providers, dict) else {}
+    provider_key = _admira_minimax_provider()
+    existing = providers.get(provider_key)
+    wanted = _admira_minimax_provider_entry()
+    if isinstance(existing, dict):
+        merged = {**wanted, **existing}
+        merged.setdefault("key_env", ADMIRA_MINIMAX_KEY_ENV)
+        merged.setdefault("api_mode", "chat_completions")
+        merged.setdefault("model", wanted["model"])
+        models = merged.get("models")
+        if not isinstance(models, dict):
+            merged["models"] = {wanted["model"]: {}}
+        elif wanted["model"] not in models:
+            models[wanted["model"]] = {}
+        providers[provider_key] = merged
+    else:
+        providers[provider_key] = wanted
+    return providers
 
 
 def _patch_minimax_model_switch():
@@ -155,7 +153,7 @@ def _patch_minimax_model_switch():
             if requested_minimax or native_minimax_provider:
                 raw_input = _admira_minimax_model()
                 explicit_provider = _admira_minimax_provider()
-                custom_providers = _ensure_admira_minimax_custom_provider(custom_providers)
+                user_providers = _ensure_admira_minimax_user_provider(user_providers)
             return original_switch_model(
                 raw_input=raw_input,
                 current_provider=current_provider,
@@ -182,7 +180,7 @@ def _patch_minimax_model_switch():
                 rows = [row for row in rows if str((row or {}).get("slug") or "").strip().lower() != "minimax"]
             for row in rows:
                 slug = str((row or {}).get("slug") or "").strip().lower()
-                if slug in {"custom:admira-minimax", "admira-minimax"}:
+                if slug == "admira-minimax":
                     row["name"] = "MiniMax M3 oficial"
             return rows
 
@@ -197,7 +195,7 @@ def _patch_minimax_model_switch():
                 rows = [row for row in rows if str((row or {}).get("slug") or "").strip().lower() != "minimax"]
             for row in rows:
                 slug = str((row or {}).get("slug") or "").strip().lower()
-                if slug in {"custom:admira-minimax", "admira-minimax"}:
+                if slug == "admira-minimax":
                     row["name"] = "MiniMax M3 oficial"
             return rows
 
@@ -205,6 +203,39 @@ def _patch_minimax_model_switch():
         model_switch.list_picker_providers = patched_list_picker_providers
 
     model_switch._admira_minimax_official_patch = True
+    return True
+
+
+def _patch_minimax_runtime_provider():
+    try:
+        import hermes_cli.runtime_provider as runtime_provider
+    except Exception:
+        return False
+    if getattr(runtime_provider, "_admira_minimax_official_patch", False):
+        return True
+    original_get_named = getattr(runtime_provider, "_get_named_custom_provider", None)
+    if not callable(original_get_named):
+        return False
+
+    def patched_get_named_custom_provider(requested_provider):
+        found = original_get_named(requested_provider)
+        if found:
+            return found
+        if _is_admira_minimax_provider(requested_provider):
+            entry = _admira_minimax_provider_entry()
+            return {
+                "name": entry["name"],
+                "base_url": entry["base_url"],
+                "api_key": os.getenv(ADMIRA_MINIMAX_KEY_ENV, "").strip(),
+                "key_env": ADMIRA_MINIMAX_KEY_ENV,
+                "model": entry["model"],
+                "api_mode": entry["api_mode"],
+            }
+        return None
+
+    runtime_provider._admira_original_get_named_custom_provider = original_get_named
+    runtime_provider._get_named_custom_provider = patched_get_named_custom_provider
+    runtime_provider._admira_minimax_official_patch = True
     return True
 
 
@@ -231,4 +262,5 @@ def _patch_gateway_rate_limit_reply():
 def apply():
     rate_limit_patched = _patch_gateway_rate_limit_reply()
     minimax_patched = _patch_minimax_model_switch()
-    return bool(rate_limit_patched or minimax_patched)
+    runtime_patched = _patch_minimax_runtime_provider()
+    return bool(rate_limit_patched or minimax_patched or runtime_patched)
