@@ -1464,6 +1464,12 @@ Reglas no negociables:
 
 def codex_cli_error_message(stderr, stdout=""):
     combined = f"{stderr or ''}\n{stdout or ''}".lower()
+    if "enoent" in combined or ("no such file or directory" in combined and "spawn" in combined):
+        return (
+            "La ruta local opcional de Codex CLI está instalada pero incompleta o rota en este PC/VPS. "
+            "La generación normal debe usar Hermes + ChatGPT/Codex; si esta ruta directa se necesita como respaldo, "
+            "reinstala Codex CLI o actualiza Admira IA."
+        )
     if "401 unauthorized" in combined or "missing bearer" in combined or "not logged" in combined:
         return "Codex CLI no esta autenticado en este PC/VPS. Conecta Codex CLI en este entorno o usa el cerebro de Hermes/API para preparar creativos."
     if "model is not supported" in combined or "modelo" in combined and "no esta disponible" in combined:
@@ -1530,16 +1536,26 @@ def codex_cli_auth_status(timeout=15, env=None):
     executable = getattr(config, "codex_cli", "codex")
     env = env or codex_cli_environment(config)
     command = [executable, "login", "status"]
+    resolved_executable = shutil.which(executable, path=env.get("PATH")) if not Path(str(executable)).is_absolute() else str(executable)
+    if not resolved_executable:
+        return {
+            "ok": False,
+            "reason": "codex_cli_missing",
+            "error": "La ruta local opcional de Codex CLI no está instalada en este PC/VPS.",
+            "command": command,
+        }
     try:
         completed = subprocess.run(command, env=env, capture_output=True, text=True, timeout=timeout, check=False)
     except FileNotFoundError:
-        return {"ok": False, "error": "Codex CLI no esta instalado o no esta en PATH.", "command": command}
+        return {"ok": False, "reason": "codex_cli_missing", "error": "La ruta local opcional de Codex CLI no está instalada en este PC/VPS.", "command": command}
     except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "Codex CLI tardo demasiado en confirmar la sesion.", "command": command}
+        return {"ok": False, "reason": "codex_cli_timeout", "error": "Codex CLI tardó demasiado en confirmar la sesión.", "command": command}
     combined = f"{completed.stdout}\n{completed.stderr}".lower()
     ok = completed.returncode == 0 and "logged in" in combined and "not logged" not in combined
+    runtime_broken = "enoent" in combined or ("no such file or directory" in combined and "spawn" in combined)
     return {
         "ok": ok,
+        "reason": "" if ok else ("codex_cli_broken" if runtime_broken else "codex_cli_not_authenticated"),
         "returncode": completed.returncode,
         "stdout": completed.stdout[-2000:],
         "stderr": completed.stderr[-2000:],
@@ -1596,6 +1612,7 @@ def infer_image_aspect_ratio(prompt):
 
 
 HERMES_IMAGE_BRIDGE_SCRIPT = r"""
+import inspect
 import json
 import sys
 
@@ -1633,10 +1650,60 @@ try:
         })
         raise SystemExit(0)
 
-    result = provider.generate(
-        prompt=payload.get("prompt") or "",
-        aspect_ratio=payload.get("aspect_ratio") or "square",
-    )
+    reference_paths = payload.get("reference_image_paths") or payload.get("image_paths") or []
+    if not isinstance(reference_paths, list):
+        reference_paths = []
+    reference_paths = [str(path) for path in reference_paths if str(path or "").strip()]
+    base_kwargs = {
+        "prompt": payload.get("prompt") or "",
+        "aspect_ratio": payload.get("aspect_ratio") or "square",
+    }
+    used_reference_arg = ""
+    if reference_paths:
+        try:
+            signature = inspect.signature(provider.generate)
+            params = signature.parameters
+            accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values())
+        except Exception:
+            params = {}
+            accepts_kwargs = False
+        candidate_args = []
+        for name in ("reference_image_paths", "image_paths", "input_image_paths", "reference_images", "input_images", "images"):
+            if accepts_kwargs or name in params:
+                candidate_args.append(name)
+        if not candidate_args:
+            respond({
+                "success": False,
+                "error": "El proveedor de imágenes de Hermes no expone adjuntos de referencia en esta instalación.",
+                "error_type": "reference_images_unsupported",
+                "reference_image_count": len(reference_paths),
+            })
+            raise SystemExit(0)
+        last_type_error = None
+        result = None
+        for name in dict.fromkeys(candidate_args):
+            kwargs = dict(base_kwargs)
+            kwargs[name] = reference_paths
+            try:
+                result = provider.generate(**kwargs)
+                used_reference_arg = name
+                break
+            except TypeError as exc:
+                last_type_error = exc
+                continue
+        if result is None:
+            respond({
+                "success": False,
+                "error": str(last_type_error or "El proveedor de imágenes no aceptó imágenes de referencia."),
+                "error_type": "reference_images_unsupported",
+                "reference_image_count": len(reference_paths),
+            })
+            raise SystemExit(0)
+    else:
+        result = provider.generate(**base_kwargs)
+    if isinstance(result, dict):
+        result.setdefault("reference_image_count", len(reference_paths))
+        result.setdefault("reference_image_arg", used_reference_arg)
     respond(result if isinstance(result, dict) else {
         "success": False,
         "error": "Hermes devolvió una respuesta inesperada al generar la imagen.",
@@ -1809,9 +1876,18 @@ def call_codex_image_cli_direct(prompt, timeout=360, model=None, output_root=Non
     generated_root = codex_home / "generated_images"
     auth = codex_cli_auth_status(env=env)
     if not auth.get("ok"):
+        reason = auth.get("reason") or "codex_cli_not_authenticated"
+        if reason in {"codex_cli_missing", "codex_cli_broken"}:
+            error = (
+                "No pude usar la ruta local opcional de Codex CLI para imágenes con referencia. "
+                "La conexión principal de Admira debe ir por Hermes + ChatGPT/Codex; actualiza Admira IA o reconecta ChatGPT/Codex desde Configuración."
+            )
+        else:
+            error = "Codex/Image todavia no esta conectado en este PC/VPS. Conecta ChatGPT/Codex y vuelve a intentar."
         return {
             "ok": False,
-            "error": "Codex/Image todavia no esta conectado en este PC/VPS. Conecta ChatGPT/Codex y vuelve a intentar.",
+            "error": error,
+            "reason": reason,
             "auth": auth,
             "command": [executable, "login", "status"],
         }
@@ -1882,15 +1958,6 @@ def call_codex_image_cli(prompt, timeout=360, model=None, output_root=None, outp
     if not request:
         return {"ok": False, "error": "Necesito una descripcion del creativo antes de generar la imagen."}
     safe_references = safe_creative_reference_paths(reference_image_paths)
-    if safe_references:
-        return call_codex_image_cli_direct(
-            prompt,
-            timeout=timeout,
-            model=model,
-            output_root=output_root,
-            output_name=output_name,
-            reference_image_paths=safe_references,
-        )
     config = load_config()
     image_model = str(model or "").strip() if str(model or "").strip().startswith("gpt-image-2") else ""
     bridge = run_hermes_image_bridge(
@@ -1898,6 +1965,7 @@ def call_codex_image_cli(prompt, timeout=360, model=None, output_root=None, outp
             "mode": "generate",
             "prompt": request,
             "aspect_ratio": infer_image_aspect_ratio(request),
+            "reference_image_paths": [str(path) for path in safe_references],
         },
         timeout=timeout,
         config=config,
@@ -1918,13 +1986,22 @@ def call_codex_image_cli(prompt, timeout=360, model=None, output_root=None, outp
             "command": bridge.get("command", ["hermes", "image_generate"]),
             "model": bridge.get("model", "gpt-image-2-medium"),
             "provider": bridge.get("provider", "openai-codex"),
+            "reference_image_count": bridge.get("reference_image_count", len(safe_references)),
             "backend": "hermes-openai-codex",
         }
     error_type = str(bridge.get("error_type") or "").lower()
     raw_error = bridge.get("error") or "No pude usar la herramienta de imagen de ChatGPT/Codex."
-    if error_type in {"modulenotfounderror", "provider_not_registered", "missing_dependency"}:
-        fallback = call_codex_image_cli_direct(prompt, timeout=timeout, model=model, output_root=output_root, output_name=output_name)
+    if error_type in {"modulenotfounderror", "provider_not_registered", "missing_dependency", "reference_images_unsupported"}:
+        fallback = call_codex_image_cli_direct(
+            prompt,
+            timeout=timeout,
+            model=model,
+            output_root=output_root,
+            output_name=output_name,
+            reference_image_paths=safe_references,
+        )
         fallback.setdefault("bridge_warning", raw_error)
+        fallback.setdefault("bridge_error_type", error_type)
         return fallback
     return {
         "ok": False,

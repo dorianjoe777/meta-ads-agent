@@ -2796,6 +2796,35 @@ class IntegrationTestSuite:
             output_with_reference = test_root / "creatives-with-reference"
             direct_calls = []
 
+            def fake_reference_bridge(payload, **kwargs):
+                captured["reference_payload"] = payload
+                generated = generated_root / "run-refs" / "image.png"
+                generated.parent.mkdir(parents=True, exist_ok=True)
+                generated.write_bytes(b"fake reference png")
+                return {
+                    "success": True,
+                    "image": str(generated),
+                    "model": "gpt-image-2-medium",
+                    "provider": "openai-codex",
+                    "returncode": 0,
+                    "reference_image_count": len(payload.get("reference_image_paths") or []),
+                    "reference_image_arg": "reference_image_paths",
+                }
+
+            codex_brand_guides.run_hermes_image_bridge = fake_reference_bridge
+            referenced = codex_brand_guides.call_codex_image_cli(
+                "Usa la referencia adjunta para crear una variación",
+                output_root=output_with_reference,
+                output_name="bridge-ref",
+                reference_image_paths=[reference_image],
+            )
+            self.assert_true(referenced["ok"] is True and referenced.get("backend") == "hermes-openai-codex", "Codex/Image reference route prefers the Hermes image bridge")
+            self.assert_true(str(reference_image) in captured["reference_payload"]["reference_image_paths"], "Codex/Image bridge receives uploaded reference image paths")
+            self.assert_true(referenced.get("reference_image_count") == 1, "Codex/Image bridge reports attached reference images")
+
+            def fake_reference_unsupported_bridge(payload, **kwargs):
+                return {"success": False, "error": "reference images not supported by provider", "error_type": "reference_images_unsupported"}
+
             def fake_direct_run(command, **kwargs):
                 env = kwargs.get("env") or {}
                 direct_calls.append((command, env))
@@ -2808,6 +2837,7 @@ class IntegrationTestSuite:
                 Path(command[last_message_index]).write_text("Imagen generada.", encoding="utf-8")
                 return type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
 
+            codex_brand_guides.run_hermes_image_bridge = fake_reference_unsupported_bridge
             codex_brand_guides.subprocess.run = fake_direct_run
             direct = codex_brand_guides.call_codex_image_cli(
                 "Usa la referencia adjunta para crear una variación",
@@ -2819,8 +2849,28 @@ class IntegrationTestSuite:
             self.assert_true(direct["ok"] is True and direct.get("backend") == "codex-cli-direct", "Codex/Image direct reference route can publish generated assets")
             self.assert_true(len(direct_calls) >= 2 and all(call[1].get("CODEX_HOME") == hermes_home and call[1].get("HERMES_HOME") == hermes_home for call in direct_calls), "Codex/Image direct reference route reuses the Hermes authenticated home for login status and exec")
 
+            def fake_broken_codex_run(command, **kwargs):
+                direct_calls.append((command, kwargs.get("env") or {}))
+                return type("Result", (), {
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": "Error: spawn /usr/local/lib/node_modules/@openai/codex/vendor/codex ENOENT",
+                })()
+
+            direct_calls.clear()
+            codex_brand_guides.subprocess.run = fake_broken_codex_run
+            broken = codex_brand_guides.call_codex_image_cli(
+                "Usa la referencia adjunta para crear una variación",
+                output_root=output_with_reference,
+                output_name="direct-broken",
+                reference_image_paths=[reference_image],
+            )
+            self.assert_true(broken["ok"] is False and broken.get("reason") == "codex_cli_broken", "Broken optional Codex CLI fallback is classified instead of looking like missing buyer context")
+            self.assert_true("ruta local opcional" in broken["error"], "Broken optional Codex CLI fallback returns a buyer-safe remediation message")
+
             image_only_home = str(test_root / "image_only_home")
             direct_calls.clear()
+            codex_brand_guides.subprocess.run = fake_direct_run
             codex_brand_guides.load_config = lambda: type("Cfg", (), {
                 "codex_cli": "codex",
                 "codex_creative_model": "gpt-5.5",
