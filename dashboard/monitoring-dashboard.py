@@ -9079,6 +9079,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not chat_result:
             chat_result = handle_creative_memory_wizard(chat_payload)
         if not chat_result:
+            chat_result = route_chat_action(chat_payload)
+        if not chat_result:
             chat_result = agent_chat(load_config(), chat_payload)
             tool_result = execute_agent_tool(chat_result.get("tool_request"), chat_payload)
             if tool_result:

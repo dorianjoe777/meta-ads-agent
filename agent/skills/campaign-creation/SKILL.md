@@ -8,6 +8,7 @@ Use this skill when the buyer asks to create, launch, prepare, or publish a Meta
 - If the buyer wants the final ad active and able to spend, require explicit active-spend confirmation.
 - Chat can stage a campaign but cannot silently approve it.
 - If information is missing, ask one clear question at a time.
+- Do not say campaign creation is blocked because you lack CLI or terminal access. In Telegram use the MCP tools; in dashboard chat use the JSON tool request contract. The product backend stages supported actions and keeps spend behind approval.
 
 ## Minimum Details
 

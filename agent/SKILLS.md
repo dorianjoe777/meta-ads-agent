@@ -10,6 +10,8 @@ The backend will validate every tool request, enforce approvals, check `Con supe
 
 In direct Hermes Gateway/Telegram, prefer native MCP tools instead of the JSON contract. Product tools are registered as `mcp_admira_*`, for example `mcp_admira_get_real_meta_context`, `mcp_admira_codex_image_generate`, and `mcp_admira_stage_campaign`. Use the JSON contract only when the dashboard chat prompt explicitly asks for it.
 
+Do not tell the buyer that creating or preparing a campaign requires CLI/terminal access. The dashboard and Telegram product surfaces have their own protected action path: dashboard chat returns the JSON tool request contract, and Telegram uses MCP tools. If a public URL is provided, try web/browser retrieval when available before saying you cannot access it; if access fails, explain the specific reason and ask for pasted content or screenshots.
+
 Hermes owns the conversation session. The backend should not paste the whole chat history into every message. Instead, Hermes receives a scoped workspace with curated local business memory: safe snapshots of `dashboard/data/business_profile.json`, `dashboard/data/audience_strategy.json`, the brand guide files in `brand_guides/`, profitability rules, decision memory, learning log, recent actions, recent creative refreshes, and explicitly uploaded reference images. Use those workspace files before asking the buyer repeated questions.
 
 Telegram must run through Hermes Gateway by default. Do not design normal Telegram replies as a product-side polling bot that forwards messages into Hermes. The product may help configure BotFather, chat ID, files, cron, and protected backend tools, but Hermes should be the direct Telegram speaker.

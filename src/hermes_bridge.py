@@ -288,6 +288,10 @@ Use these MCP tools for real product actions instead of inventing results, runni
 
 If the MCP tool is unavailable, say the action cannot be executed yet and explain what must be connected. Do not fall back to fake campaign data or uncontrolled terminal commands.
 
+Dashboard chat and Telegram are buyer-facing product surfaces, not terminals. Never tell the buyer you cannot create, prepare, or stage a campaign because you lack CLI/terminal access. Product actions must go through MCP tools in Telegram or the JSON tool-request contract in dashboard chat. If details are missing, ask the next missing business detail; if a protected action is ready, prepare it for approval.
+
+When the buyer shares a public URL and asks you to review, understand, use, or create ads from it, use the available `web`/`browser` retrieval tools or public-link scan context to inspect it. Do not immediately claim you cannot access links. If the tool is unavailable, blocked, private, or the page requires login, explain that specific limitation in simple words and ask the buyer to paste the key page content or upload screenshots.
+
 Brand, product, ad-brief, and creative-reference files are backend-owned memory. The `brand_guides/` files inside the Hermes workspace are read-only context snapshots, not the source of truth for production readiness. Never manually create, edit, or write `brand_guides/*.md`, `/app/brand_guides/*.md`, or workspace brand-guide files to unblock creative production. Use `mcp_admira_save_brand_memory`, `mcp_admira_save_product_memory`, `mcp_admira_save_ad_brief`, and `mcp_admira_save_creative_references`. If a save tool rejects natural wording, retry once with canonical fields such as `brand_name`, `offer`, `colors`, `visual_style`, `tone`, `logo_notes`, `references`, `asset_notes`, `name`, `product_guide`, `variation_count`, `concurrent_variations`, `formats`, and `creative_hypothesis`.
 
 Never call `mcp_admira_codex_creative_plan` as a replacement for the branding interview. Before using it for serious ad strategy or launch-ready assets, the workspace should have brand name/offer, colors, visual style, tone, logo decision, reference decision, real-asset decision, and product/offer. Budget helps size tests and launch decisions, but it must not block a standalone image/asset the buyer simply wants to create. If an important brand/offer item is missing, ask the exact next branding question or pass the buyer's current product context in the tool request instead of claiming Codex generated something.
@@ -698,7 +702,9 @@ def hermes_user_query(payload, workspace_info):
         return (
             f"{message}\n\n"
             "Nota de sistema del producto: el contexto actual de la cuenta está en `CURRENT_CONTEXT.json`. "
-            "Usa ese archivo y tu memoria de sesión solo si hace falta para responder o preparar una acción."
+            "Usa ese archivo y tu memoria de sesión solo si hace falta para responder o preparar una acción. "
+            "Si el mensaje incluye una URL pública, intenta leerla con web/browser antes de decir que no puedes acceder. "
+            "Si el comprador pide crear o preparar campaña, usa herramientas/acciones del producto; no digas que necesitas terminal o CLI."
         )
     return (
         f"{message}\n\n"
@@ -893,6 +899,8 @@ def hermes_prompt(config, payload, workspace_info=None):
         + "\n\nRead product rules from AGENTS.md/SOUL.md and business files only inside this workspace. Do not read arbitrary local files. If a needed file is missing, ask the buyer or request a backend tool."
         + "\n\nBefore treating this as a new conversation, read `memory/Conversation continuity.md`, `memory/continuity_status.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, and relevant `brand_guides/` files. If persistent memory exists, resume from durable business/brand/ad memory instead of restarting onboarding or repeating first-time preference questions."
         + "\n\nNever expose internal workspace paths to the buyer. If the buyer asks for a prompt, plan, script, copy, or diagnosis, paste it directly in the chat instead of pointing them to `/app/...`, `dashboard/data/...`, `hermes-workspace/...`, `brand_guides/...`, `memory/...`, or `CURRENT_CONTEXT.json`."
+        + "\n\nDashboard action boundary: do not say you need CLI or terminal access to create or prepare campaigns. If the buyer asks for a product action, use the JSON tool_request contract below or ask the next missing detail. In dashboard chat, the backend executes supported product actions and keeps spend behind approval."
+        + "\n\nPublic URL handling: if the buyer provides a public URL, try to inspect it with available web/browser retrieval tools before saying you cannot access it. If access fails because of login, private URL, robots, timeout, or tool unavailability, say that precise reason and ask for page text/screenshots."
         + "\n\nCurrent account context JSON:\n"
         + json.dumps(context, ensure_ascii=False)
         + image_note

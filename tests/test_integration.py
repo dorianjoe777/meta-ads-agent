@@ -2442,6 +2442,7 @@ class IntegrationTestSuite:
             self.assert_true("CURRENT_CONTEXT.json" in gateway_prompt and "data/business_profile.json" in gateway_prompt and "brand_guides/" in gateway_prompt, "Telegram gateway prompt tells new sessions to inspect durable workspace memory before repeating questions")
             self.assert_true("No muestres rutas internas" in gateway_prompt and "entrégalo directamente en el chat" in gateway_prompt, "Telegram gateway prompt blocks buyer-facing internal workspace paths")
             self.assert_true("Before treating this as a new conversation" in bridge_prompt and "resume from durable business/brand/ad memory" in bridge_prompt, "Hermes bridge prompt also checks durable continuity before restarting onboarding")
+            self.assert_true("do not say you need CLI or terminal access" in bridge_prompt and "public URL" in bridge_prompt and "web/browser" in bridge_prompt, "Dashboard Hermes prompt uses product actions and public URL retrieval instead of terminal excuses")
             self.assert_true("Never expose internal workspace paths" in onboarding_skill and "paste the useful content directly in the chat" in onboarding_skill, "Business onboarding skill keeps internal paths out of buyer replies")
             self.assert_true("Do not rely on Telegram/Hermes session memory" in onboarding_skill and "resume from that memory" in onboarding_skill, "Business onboarding skill saves durable facts and resumes instead of repeating questions")
         finally:
@@ -5140,6 +5141,74 @@ class IntegrationTestSuite:
             dashboard.PENDING_FILE = original_pending
             shutil.rmtree(test_dir, ignore_errors=True)
 
+    def test_dashboard_chat_uses_product_actions_before_generic_agent(self):
+        """Test dashboard chat routes known product actions before a generic model can claim missing terminal access."""
+        print("\nTesting Dashboard Chat Product Action Routing...")
+
+        dashboard = load_dashboard_module()
+        original_dashboard_payload = dashboard.dashboard_payload
+        original_load_history = dashboard.load_chat_history
+        original_append_history = dashboard.append_chat_turn
+        original_wizard = dashboard.handle_creative_memory_wizard
+        original_agent_chat = dashboard.agent_chat
+        original_require = dashboard.require_cloud_license
+        original_create = dashboard.create_campaign
+        original_pending = dashboard.PENDING_FILE
+        test_dir = ROOT_DIR / "output" / "test-dashboard-chat-router"
+
+        class FakeSelf:
+            result = None
+
+            def send_ok_result(self, result):
+                self.result = result
+
+        try:
+            shutil.rmtree(test_dir, ignore_errors=True)
+            test_dir.mkdir(parents=True, exist_ok=True)
+            dashboard.PENDING_FILE = test_dir / "pending.json"
+            dashboard.write_json(dashboard.PENDING_FILE, [])
+            dashboard.dashboard_payload = lambda: {
+                "metrics": {"source": "meta_graph", "campaigns": [], "summary": {}},
+                "recommendations": [],
+                "fatigue": [],
+                "pending": [],
+                "audience_strategy": {},
+                "brand_guides": {},
+                "business_profile": {},
+                "agent_onboarding_phase": {},
+            }
+            dashboard.load_chat_history = lambda: []
+            dashboard.append_chat_turn = lambda message, reply: [{"role": "user", "content": message}, {"role": "agent", "content": reply}]
+            dashboard.handle_creative_memory_wizard = lambda payload: None
+            generic_calls = []
+            dashboard.agent_chat = lambda config, payload: generic_calls.append(payload) or {"reply": "No puedo usar CLI ni terminal desde aquí.", "tool_request": None}
+            dashboard.require_cloud_license = lambda *args, **kwargs: None
+            dashboard.create_campaign = lambda payload: {"status": "pending", "id": "approval_test", "payload": payload}
+
+            fake = FakeSelf()
+            dashboard.DashboardHandler.post_chat(
+                fake,
+                {
+                    "language": "es",
+                    "message": "Crea una campaña para vender mi curso con presupuesto de $20 https://buyer.example /tmp/creative.png",
+                },
+            )
+
+            result = fake.result
+            self.assert_true(not generic_calls, "Dashboard chat uses local product action router before generic agent for campaign creation")
+            self.assert_true(result["routed_action"]["type"] == "create_campaign_stack" and result["routed_action"]["staged"] is True, "Dashboard chat stages campaign creation from natural language")
+            self.assert_true("terminal" not in result["reply"].lower() and "aprobación" in result["reply"].lower(), "Dashboard chat reply does not expose CLI/terminal as a blocker")
+        finally:
+            dashboard.dashboard_payload = original_dashboard_payload
+            dashboard.load_chat_history = original_load_history
+            dashboard.append_chat_turn = original_append_history
+            dashboard.handle_creative_memory_wizard = original_wizard
+            dashboard.agent_chat = original_agent_chat
+            dashboard.require_cloud_license = original_require
+            dashboard.create_campaign = original_create
+            dashboard.PENDING_FILE = original_pending
+            shutil.rmtree(test_dir, ignore_errors=True)
+
     def test_telegram_channel_routes_agent_and_blocks_approval(self):
         """Test Telegram uses the manager path and approves only exact decisions."""
         print("\nTesting Telegram Agent Channel...")
@@ -6911,6 +6980,7 @@ class IntegrationTestSuite:
             self.test_autopilot_action_updates_dashboard_only_after_meta_success,
             self.test_campaign_stack_execution_creates_full_ad_order,
             self.test_chat_stages_campaign_creation_and_requires_exact_approval,
+            self.test_dashboard_chat_uses_product_actions_before_generic_agent,
             self.test_telegram_channel_routes_agent_and_blocks_approval,
             self.test_telegram_codex_image_request_sends_generated_photo,
             self.test_telegram_connection_change_resets_polling_state,
