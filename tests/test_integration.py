@@ -1755,6 +1755,7 @@ class IntegrationTestSuite:
             self.assert_true("ElevenLabs" in branding_text and "photorealism" in branding_text and "reference_image_paths" in branding_text, "Branding skill covers UGC guidance, real-world photorealism, and uploaded references")
             self.assert_true("likely placements" in branding_text and "vertical Reels version" in campaign_text and "Expert Configuration Posture" in campaign_text, "Skills teach proactive expert placement strategy instead of rigid placement defaults")
             self.assert_true("mcp_admira_preflight_campaign" in campaign_text and "object_story_spec" in campaign_text and "custom_audiences" in campaign_text, "Campaign skill teaches preflight and expert campaign controls")
+            self.assert_true("three most important success metrics" in campaign_text and "success_metrics" in campaign_text and "mcp_admira_save_ads_onboarding" in agents_text, "Hermes workspace teaches campaign scorecards and exposes ads onboarding memory")
             self.assert_true("mcp_admira_approve_action" in approvals_skill.read_text(encoding="utf-8"), "Approval skill points Hermes to exact approval MCP tools")
             self.assert_true("Native Product Tools" in agents_text and "mcp_admira_stage_campaign" in agents_text and "mcp_admira_review_signal_quality" in agents_text and "mcp_admira_preflight_campaign" in agents_text, "Combined Hermes rules document the MCP product bridge and preflight review")
             self.assert_true((workspace_path / "skills" / "README.md").exists(), "Hermes workspace includes a product skill index")
@@ -1801,14 +1802,16 @@ class IntegrationTestSuite:
             image = admira_tool_bridge.call_tool("codex_image_generate", {"request": "haz una imagen"})
             review = admira_tool_bridge.call_tool("mcp_admira_review_signal_quality", {"objective": "PURCHASES", "pixel_id": "123"})
             preflight = admira_tool_bridge.call_tool("mcp_admira_preflight_campaign", {"objective": "PURCHASES", "pixel_id": "123"})
+            ads_onboarding = admira_tool_bridge.call_tool("mcp_admira_save_ads_onboarding", {"success_metrics": ["ROAS", "cost per purchase", "cost per initiate checkout"]})
             approval = admira_tool_bridge.call_tool("mcp_admira_approve_action", {"approval_id": "approval_1"})
             pending = admira_tool_bridge.call_tool("list_pending_approvals", {})
             unknown = admira_tool_bridge.call_tool("delete_everything", {})
 
             self.assert_true(context["ok"] and context["metrics_source"]["is_real_meta_data"], "Tool bridge returns safe real Meta context")
-            self.assert_true(image["product_tool"] == "codex_image_generate" and calls[-4][0]["tool"] == "codex_image_generate", "Tool bridge maps Codex/Image MCP calls to dashboard action handlers")
-            self.assert_true(review["product_tool"] == "review_signal_quality" and calls[-3][0]["tool"] == "review_signal_quality", "Tool bridge maps signal-quality MCP review to dashboard action handlers")
-            self.assert_true(preflight["product_tool"] == "preflight_campaign" and calls[-2][0]["tool"] == "preflight_campaign", "Tool bridge maps campaign preflight MCP review to dashboard action handlers")
+            self.assert_true(image["product_tool"] == "codex_image_generate" and calls[-5][0]["tool"] == "codex_image_generate", "Tool bridge maps Codex/Image MCP calls to dashboard action handlers")
+            self.assert_true(review["product_tool"] == "review_signal_quality" and calls[-4][0]["tool"] == "review_signal_quality", "Tool bridge maps signal-quality MCP review to dashboard action handlers")
+            self.assert_true(preflight["product_tool"] == "preflight_campaign" and calls[-3][0]["tool"] == "preflight_campaign", "Tool bridge maps campaign preflight MCP review to dashboard action handlers")
+            self.assert_true(ads_onboarding["product_tool"] == "save_ads_onboarding" and calls[-2][0]["tool"] == "save_ads_onboarding", "Tool bridge maps ads onboarding memory so Hermes can persist campaign KPIs")
             self.assert_true(approval["product_tool"] == "approval_decision" and calls[-1][0]["arguments"]["decision"] == "approve", "Tool bridge converts approval MCP calls to exact approval decisions")
             verified = admira_tool_bridge.call_tool("mcp_admira_record_verified_signal", {"stage": "booked", "person_label": "Maria"})
             self.assert_true(verified["product_tool"] == "record_verified_signal" and calls[-1][0]["tool"] == "record_verified_signal", "Tool bridge maps verified-signal MCP calls to dashboard action handlers")
@@ -1835,7 +1838,7 @@ class IntegrationTestSuite:
             tool_names = [tool["name"] for tool in captured[1]["result"]["tools"]]
             call_text = captured[2]["result"]["content"][0]["text"]
             self.assert_true(captured[0]["result"]["serverInfo"]["name"] == "admira", "MCP server initializes as Admira")
-            self.assert_true("codex_image_generate" in tool_names and "stage_campaign" in tool_names and "approve_action" in tool_names and "review_signal_quality" in tool_names and "preflight_campaign" in tool_names and "record_verified_signal" in tool_names, "MCP server lists product tools for Hermes")
+            self.assert_true("codex_image_generate" in tool_names and "stage_campaign" in tool_names and "approve_action" in tool_names and "review_signal_quality" in tool_names and "preflight_campaign" in tool_names and "record_verified_signal" in tool_names and "save_ads_onboarding" in tool_names, "MCP server lists product tools for Hermes")
             self.assert_true('"tool": "admira_codex_image_generate"' in call_text and '"request": "imagen"' in call_text, "MCP server calls the product bridge with Admira-prefixed tool names")
         finally:
             admira_mcp_server.write_message = original_write
@@ -3319,6 +3322,7 @@ class IntegrationTestSuite:
                         "promoted_before": "promociones en Instagram",
                         "previous_ads_results": "muchos mensajes pero pocas citas",
                         "campaign_goal": "agendar citas",
+                        "success_metrics": ["cost per qualified lead", "cost per booking", "ROAS"],
                         "budget_comfort": "20 dolares diarios",
                         "first_strategy": "campana de mensajes con creativos premium y retargeting simple",
                         "ads_onboarding_complete": True,
@@ -3356,6 +3360,8 @@ class IntegrationTestSuite:
             self.assert_true("mcp_admira_save_product_memory" in branding_skill_text and "logo" in branding_skill_text.lower(), "Focused branding skill covers product memory and logo context")
             self.assert_true("Primer mensaje del onboarding" in plan_text and "entender tu negocio" in plan_text and "marca, logo, colores" in plan_text and "ofertas especificas" in plan_text, "Agent onboarding plan tells Hermes to introduce business, branding, then ads strategy")
             self.assert_true("continuous_ads_manager" in plan_text and "save_ads_onboarding" in plan_text, "Agent onboarding plan records the continuous manager phase")
+            ads_onboarding_text = dashboard.ADS_ONBOARDING_FILE.read_text(encoding="utf-8")
+            self.assert_true("3 resultados principales/KPIs" in ads_onboarding_text and "cost_per_qualified_lead" in ads_onboarding_text and "cost_per_booking" in ads_onboarding_text, "Ads onboarding persists the buyer's ranked campaign scorecard")
             self.assert_true("Presupuesto: 20 dolares diarios" in brief_text and "Presupuesto de prueba: 20 dolares diarios" in brief_text, "Ad brief persists test budget as structured fields for creative production readiness")
         finally:
             for path, content in backups.items():
@@ -4821,6 +4827,7 @@ class IntegrationTestSuite:
                         "target_cpa": 20,
                         "pixel_id": "123",
                         "optimization_event": "Purchase",
+                        "success_metrics": ["ROAS", "cost per purchase", "cost per initiate checkout"],
                         "image_url": "https://cdn.example/ad.jpg",
                         "placements": {"automatic": False, "manual": ["INSTAGRAM_REELS", "INSTAGRAM_STORIES"]},
                     },
@@ -4833,6 +4840,7 @@ class IntegrationTestSuite:
             self.assert_true(preflight["dry_run_preview"]["budget_plan"]["expected_daily_events"] == 2, "Campaign preflight exposes budget sanity")
             self.assert_true(preflight["dry_run_preview"]["placements"]["manual"] == ["INSTAGRAM_REELS", "INSTAGRAM_STORIES"], "Campaign preflight exposes placement strategy")
             self.assert_true(preflight["dry_run_preview"]["creative_controls"]["has_image_url"], "Campaign preflight exposes creative media controls")
+            self.assert_true(preflight["dry_run_preview"]["success_metrics"]["items"][0]["metric"] == "roas" and preflight["dry_run_preview"]["success_metrics"]["items"][2]["metric"] == "cost_per_initiate_checkout", "Campaign preflight exposes the ranked success metrics scorecard")
         finally:
             dashboard.load_config = original_config
             dashboard.SocialFlowClient = original_client
@@ -4879,6 +4887,11 @@ class IntegrationTestSuite:
                 "user_os": "iOS,Android",
                 "targeting_locations_json": json.dumps([{"kind": "location", "key": "CO", "name": "Colombia", "type": "country", "country_code": "CO"}]),
                 "targeting_interests_json": json.dumps([{"kind": "interest", "id": "6001", "name": "Ecommerce"}]),
+                "success_metrics_json": json.dumps([
+                    {"metric": "ROAS", "target": "2.5x"},
+                    "cost per purchase",
+                    "cost per initiate checkout",
+                ]),
             }
             result = dashboard.create_campaign(payload)
             created = dashboard.read_json(dashboard.CREATED_FILE, [])
@@ -4893,6 +4906,9 @@ class IntegrationTestSuite:
             self.assert_true(campaign["ad_sets"][0]["placements"]["manual"] == ["FACEBOOK_FEED", "FACEBOOK_STORIES", "INSTAGRAM_FEED", "INSTAGRAM_STORIES"], "Staged campaign defaults to feed/story placements on Facebook and Instagram")
             self.assert_true(result["payload"]["requested"]["placements"]["mode"] == "manual", "Approval card exposes manual placement mode")
             self.assert_true(campaign["budget_plan"]["adset_lifetime"] == 300 and campaign["budget_plan"]["per_variant_daily"] == 8.33, "Staged campaign stores expert budget allocation")
+            self.assert_true(campaign["success_metrics"]["items"][0]["metric"] == "roas" and campaign["success_metrics"]["items"][2]["metric"] == "cost_per_initiate_checkout", "Staged campaign stores the buyer's ranked success metrics")
+            self.assert_true(result["payload"]["requested"]["success_metrics"]["items"][0]["target"] == "2.5x", "Approval card exposes ranked success metrics and targets")
+            self.assert_true(result["payload"]["dry_run_preview"]["campaign"]["success_metrics"]["items"][1]["metric"] == "cost_per_purchase", "Dry-run preview includes campaign success metrics")
             self.assert_true(campaign["status_plan"] == {"campaign": "PAUSED", "adset": "PAUSED", "ad": "PAUSED"}, "Staged campaign stores campaign/adset/ad status plan")
             self.assert_true(campaign["ad_sets"][0]["billing_event"] == "IMPRESSIONS" and campaign["ad_sets"][0]["bidding"]["bid_strategy"] == "LOWEST_COST_WITHOUT_CAP", "Staged campaign stores billing and bidding controls")
             self.assert_true(campaign["ad_sets"][0]["start_time"].startswith("2026-07-01") and campaign["ad_sets"][0]["end_time"].startswith("2026-07-15"), "Staged campaign stores ad set schedule controls")

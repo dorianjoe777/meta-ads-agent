@@ -147,6 +147,8 @@ from expert_campaign import (
     normalize_budget_plan,
     normalize_creative_controls,
     normalize_schedule,
+    success_metric_candidates_from_text,
+    normalize_success_metrics,
     normalize_status_plan,
     requires_active_confirmation,
 )
@@ -4946,6 +4948,7 @@ El agente no debe ser pasivo ni limitar su criterio experto a placements. Debe p
 
 3. ads_campaign_onboarding
    - Entender que anuncio antes, que resultados tuvo, que cree que fallo, que quiere mantener, presupuesto, CPA/CPL objetivo cuando exista, paises, ofertas y restricciones.
+   - Preguntar por los 3 resultados/KPIs mas importantes para juzgar cada campana en orden de prioridad, por ejemplo ROAS, costo por compra y costo por iniciar checkout; guardarlos y pasarlos como `success_metrics`.
    - Preguntar el presupuesto antes de proponer cuantos creativos probar simultaneamente.
    - Preparar un portafolio de hipotesis y formatos: UGC, fotos reales, demostracion, prueba, estaticos, carrusel o movimiento segun la oferta. Image 2 es una herramienta, no la estrategia.
    - Recomendar varias perspectivas creativas y guardar extras en backlog si el presupuesto no permite probarlas todas a la vez.
@@ -5025,6 +5028,7 @@ Instrucciones para el agente:
 - Si falta informacion, pregunta lo minimo necesario para poder actuar.
 - Cuando el negocio este claro, pasa a la fase de branding/creativos; no saltes directo a campanas si faltan estilo, referencias, colores o reglas visuales.
 - Despues de branding, pregunta por anuncios/campanas anteriores y guarda aprendizajes antes de proponer la estrategia inicial.
+- Antes de crear o preparar una campana, pregunta por los 3 resultados principales que importan para juzgarla, no solo por un evento. Ejemplos: ROAS, costo por compra, costo por iniciar checkout, costo por lead calificado, reservas o conversaciones reales de WhatsApp.
 
 Preguntas que debes cubrir poco a poco:
 1. Que vende exactamente y cual es su oferta principal.
@@ -5187,6 +5191,9 @@ def save_ads_campaign_onboarding(payload):
         "offers_to_promote",
         "lessons_learned",
         "first_strategy",
+        "primary_success_metric",
+        "secondary_success_metric",
+        "tertiary_success_metric",
     ]
     changed = {}
     for key in allowed:
@@ -5194,6 +5201,34 @@ def save_ads_campaign_onboarding(payload):
         if value:
             profile[key] = value[:1600]
             changed[key] = profile[key]
+    success_metrics = normalize_success_metrics(payload)
+    explicit_success_metric_keys = {
+        "success_metrics",
+        "success_metrics_json",
+        "priority_metrics",
+        "priority_results",
+        "key_results",
+        "important_results",
+        "main_results",
+        "desired_results",
+        "top_results",
+        "top_3_results",
+        "kpis",
+        "primary_metrics",
+        "conversion_results",
+        "primary_success_metric",
+        "secondary_success_metric",
+        "tertiary_success_metric",
+        "primary_kpi",
+        "secondary_kpi",
+        "tertiary_kpi",
+        "primary_result",
+        "secondary_result",
+        "tertiary_result",
+    }
+    if any(payload.get(key) for key in explicit_success_metric_keys):
+        profile["success_metrics"] = success_metrics
+        changed["success_metrics"] = json.dumps(success_metrics.get("items", []), ensure_ascii=False)
     completion_ready = all(str(profile.get(key) or "").strip() for key in ["campaign_goal", "budget_comfort", "first_strategy"])
     if (payload.get("ads_onboarding_complete") or payload.get("completed")) and completion_ready:
         profile["ads_onboarding_completed_at"] = now_iso()
@@ -5213,6 +5248,7 @@ Usa este archivo para recordar lo que el cliente ya intento en anuncios y que es
 ## Objetivo y limites
 
 - Meta principal: {profile.get('campaign_goal', '')}
+- 3 resultados principales/KPIs: {json.dumps((profile.get('success_metrics') or {}).get('items', []), ensure_ascii=False) if isinstance(profile.get('success_metrics'), dict) else profile.get('success_metrics', '')}
 - Presupuesto comodo: {profile.get('budget_comfort', '')}
 - Paises o zonas: {profile.get('countries', '')}
 - Ofertas a promover: {profile.get('offers_to_promote', '')}
@@ -6539,6 +6575,7 @@ def create_campaign(payload):
             "interests": selected_interests,
         }
     signal_review = review_signal_quality(payload, metrics=load_metrics(), language=chat_lang(payload))
+    success_metrics = normalize_success_metrics(payload)
     placement_config = normalize_placement_config(payload.get("placements") or payload.get("placement_preset") or payload.get("manual_placements"))
     schedule = normalize_schedule(payload)
     bidding = normalize_bidding(payload)
@@ -6571,6 +6608,7 @@ def create_campaign(payload):
     campaign["status"] = status_plan["campaign"]
     campaign["status_plan"] = status_plan
     campaign["budget_plan"] = budget_plan
+    campaign["success_metrics"] = success_metrics
     campaign["id"] = creator.generate_campaign_id(campaign)
     campaign["ab_test"] = {
         "enabled": bool(payload.get("ab_test")),
@@ -6610,6 +6648,7 @@ def create_campaign(payload):
             "budget_plan": budget_plan,
             "status_plan": status_plan,
             "objective": campaign["objective"],
+            "success_metrics": success_metrics,
             "ad_sets": [adset.get("name") for adset in campaign.get("ad_sets", [])],
             "creative_image_path": campaign["ad"]["creative_image_path"],
             "creative_controls": {
@@ -7257,6 +7296,7 @@ def parse_campaign_creation_payload(text, payload):
     budget = float(budget_match.group(1).replace(",", ".")) if budget_match else 0
     url = extract_url(payload.get("message", ""))
     image_path = extract_image_path(payload.get("message", ""))
+    success_metric_candidates = success_metric_candidates_from_text(payload.get("message", ""))
     final_status = "ACTIVE" if text_has_any(text, ["activo", "activa", "active", "encendida", "encendido"]) else "PAUSED"
     confirmed = text_confirms_active_approval(text)
     return {
@@ -7273,6 +7313,7 @@ def parse_campaign_creation_payload(text, payload):
         "headline": product.title() if product else "",
         "landing_url": url,
         "creative_image_path": image_path,
+        "success_metrics": success_metric_candidates,
         "final_status": final_status,
         "active_spend_confirmed": confirmed,
     }
@@ -7881,6 +7922,7 @@ def campaign_preflight(arguments, chat_payload):
     placement_config = normalize_placement_config(arguments.get("placements") or arguments.get("placement_preset") or arguments.get("manual_placements"))
     creative_controls = normalize_creative_controls(arguments)
     budget_plan = normalize_budget_plan(arguments, float(arguments.get("daily_budget", 50) or 50))
+    success_metrics = normalize_success_metrics(arguments)
     final_status = str(arguments.get("final_status") or "PAUSED").upper()
     active_confirmed = str(arguments.get("active_spend_confirmed") or "").strip().lower() in {"1", "true", "yes", "on", "si", "sí"}
     status_plan = normalize_status_plan(arguments, final_status, active_confirmed)
@@ -7894,6 +7936,7 @@ def campaign_preflight(arguments, chat_payload):
         },
         "dry_run_preview": {
             "budget_plan": budget_plan,
+            "success_metrics": success_metrics,
             "status_plan": status_plan,
             "placements": placement_config_summary(placement_config),
             "creative_controls": {
@@ -8210,7 +8253,7 @@ def handle_save_creative_references_tool(arguments, chat_payload, tool):
 
 
 def handle_save_ads_onboarding_tool(arguments, chat_payload, tool):
-    if not any(arguments.get(key) for key in ["promoted_before", "previous_ads_results", "campaign_goal", "first_strategy", "current_campaign_context", "budget_comfort", "countries", "offers_to_promote", "campaign_constraints"]):
+    if not any(arguments.get(key) for key in ["promoted_before", "previous_ads_results", "campaign_goal", "first_strategy", "current_campaign_context", "budget_comfort", "countries", "offers_to_promote", "campaign_constraints", "success_metrics", "success_metrics_json", "key_results", "top_3_results", "primary_success_metric"]):
         return agent_action_result(
             tool,
             False,

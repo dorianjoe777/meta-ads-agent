@@ -41,6 +41,7 @@ TOOL_MAP = {
     "admira_get_verified_signal_summary": "get_verified_signal_summary",
     "admira_verified_signal_feedback_prompt": "verified_signal_feedback_prompt",
     "admira_save_business_memory": "save_business_context",
+    "admira_save_ads_onboarding": "save_ads_onboarding",
     "admira_save_brand_memory": "save_brand_guide",
     "admira_save_product_memory": "save_product_guide",
     "admira_save_ad_brief": "save_ad_brief",

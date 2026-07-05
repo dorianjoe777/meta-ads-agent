@@ -6,6 +6,8 @@ the backend stages or executes a Meta campaign. They intentionally keep the raw
 Social CLI/Marketing API escape hatches behind allowlisted, typed structures.
 """
 import json
+import re
+import unicodedata
 from datetime import datetime
 
 
@@ -172,6 +174,138 @@ def normalize_budget_plan(payload, default_daily=50.0):
     }
 
 
+SUCCESS_METRIC_ALIASES = {
+    "roas": ("roas", "return on ad spend", "retorno", "retorno publicitario"),
+    "cost_per_purchase": ("cost per purchase", "costo por compra", "coste por compra", "purchase cost", "cpa compra", "cpa"),
+    "cost_per_initiate_checkout": ("cost per initiate checkout", "costo por initiate checkout", "costo por iniciar checkout", "initiate checkout", "iniciar checkout", "checkout"),
+    "cost_per_lead": ("cost per lead", "costo por lead", "cpl", "lead cost"),
+    "cost_per_qualified_lead": ("qualified lead", "lead calificado", "costo por lead calificado", "qualified contact"),
+    "cost_per_message": ("cost per message", "costo por mensaje", "conversation cost", "costo por conversación", "costo por conversacion"),
+    "cost_per_booking": ("cost per booking", "costo por reserva", "booking cost", "appointment cost", "costo por cita"),
+    "purchase_volume": ("purchase volume", "compras", "ventas", "sales volume"),
+}
+
+
+def normalized_metric_text(value):
+    text = str(value or "").strip().lower()
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(char for char in text if not unicodedata.combining(char))
+    return re.sub(r"\s+", " ", text)
+
+
+def canonical_success_metric(value):
+    text = normalized_metric_text(value)
+    for canonical, aliases in SUCCESS_METRIC_ALIASES.items():
+        if canonical in text or any(normalized_metric_text(alias) in text for alias in aliases):
+            return canonical
+    safe = re.sub(r"[^a-z0-9]+", "_", text).strip("_")
+    return safe[:80] or "custom_metric"
+
+
+def normalize_success_metric_item(item, rank):
+    if isinstance(item, dict):
+        raw_metric = item.get("metric") or item.get("name") or item.get("label") or item.get("result") or item.get("event")
+        target = str(item.get("target") or item.get("goal") or item.get("desired_value") or "").strip()
+        notes = str(item.get("notes") or item.get("why") or item.get("description") or "").strip()
+    else:
+        raw_metric = str(item or "").strip()
+        target = ""
+        notes = ""
+    if not raw_metric:
+        return {}
+    label = str(raw_metric).strip()
+    return {
+        "rank": int(rank),
+        "metric": canonical_success_metric(label),
+        "label": label[:120],
+        "target": target[:120],
+        "notes": notes[:240],
+    }
+
+
+def success_metric_candidates_from_text(text):
+    lowered = normalized_metric_text(text)
+    candidates = []
+    ordered_patterns = [
+        ("ROAS", ("roas", "retorno")),
+        ("cost per purchase", ("cost per purchase", "costo por compra", "coste por compra", "cpa")),
+        ("cost per initiate checkout", ("initiate checkout", "iniciar checkout", "checkout")),
+        ("cost per lead", ("cost per lead", "costo por lead", "cpl")),
+        ("cost per qualified lead", ("qualified lead", "lead calificado")),
+        ("cost per message", ("cost per message", "costo por mensaje", "costo por conversación", "costo por conversacion")),
+        ("cost per booking", ("cost per booking", "costo por reserva", "costo por cita")),
+    ]
+    for label, tokens in ordered_patterns:
+        if any(normalized_metric_text(token) in lowered for token in tokens) and label not in candidates:
+            candidates.append(label)
+    return candidates
+
+
+def inferred_success_metrics_for_objective(objective):
+    normalized = normalized_metric_text(objective)
+    if any(token in normalized for token in ("lead", "contact", "formulario")):
+        defaults = ["cost per qualified lead", "cost per lead", "lead-to-booking rate"]
+    elif any(token in normalized for token in ("message", "mensaje", "whatsapp", "conversation")):
+        defaults = ["cost per qualified conversation", "cost per booking", "conversation-to-purchase rate"]
+    else:
+        defaults = ["ROAS", "cost per purchase", "cost per initiate checkout"]
+    return [
+        {**normalize_success_metric_item(item, index), "source": "inferred", "needs_confirmation": True}
+        for index, item in enumerate(defaults, start=1)
+    ]
+
+
+def normalize_success_metrics(payload):
+    raw = None
+    for key in (
+        "success_metrics",
+        "success_metrics_json",
+        "priority_metrics",
+        "priority_results",
+        "key_results",
+        "important_results",
+        "main_results",
+        "desired_results",
+        "top_results",
+        "top_3_results",
+        "kpis",
+        "primary_metrics",
+        "conversion_results",
+    ):
+        if payload.get(key):
+            raw = parse_jsonish(payload.get(key), payload.get(key))
+            break
+    if raw in (None, ""):
+        scalar_items = [
+            payload.get("primary_success_metric") or payload.get("primary_kpi") or payload.get("primary_result"),
+            payload.get("secondary_success_metric") or payload.get("secondary_kpi") or payload.get("secondary_result"),
+            payload.get("tertiary_success_metric") or payload.get("tertiary_kpi") or payload.get("tertiary_result"),
+        ]
+        raw = [item for item in scalar_items if str(item or "").strip()]
+    if isinstance(raw, str):
+        candidates = success_metric_candidates_from_text(raw)
+        raw = candidates or [part.strip() for part in re.split(r"[\n,;]+", raw) if part.strip()]
+    if isinstance(raw, dict):
+        raw = list(raw.values())
+    metrics = []
+    seen = set()
+    for item in raw if isinstance(raw, list) else []:
+        normalized = normalize_success_metric_item(item, len(metrics) + 1)
+        metric = normalized.get("metric")
+        if not metric or metric in seen:
+            continue
+        normalized["source"] = "buyer"
+        normalized["needs_confirmation"] = False
+        metrics.append(normalized)
+        seen.add(metric)
+        if len(metrics) >= 3:
+            break
+    if metrics:
+        return {"items": metrics, "source": "buyer", "needs_confirmation": False}
+    inferred = inferred_success_metrics_for_objective(payload.get("objective") or payload.get("campaign_objective") or payload.get("goal"))
+    return {"items": inferred, "source": "inferred", "needs_confirmation": True}
+
+
 def id_objects(value):
     raw = parse_jsonish(value, value)
     if raw in (None, ""):
@@ -278,6 +412,7 @@ def campaign_preview(campaign):
             "objective": campaign.get("objective"),
             "budget": campaign.get("budget"),
             "status": campaign.get("status"),
+            "success_metrics": campaign.get("success_metrics"),
         },
         "adset": {
             "name": ad_set.get("name"),

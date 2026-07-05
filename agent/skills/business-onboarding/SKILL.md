@@ -28,6 +28,7 @@ Never expose internal workspace paths to the buyer. Do not tell them to open `/a
 
 - `mcp_admira_save_agent_preferences`
 - `mcp_admira_save_business_memory`
+- `mcp_admira_save_ads_onboarding`
 - `mcp_admira_save_brand_memory`
 - `mcp_admira_save_product_memory`
 - `mcp_admira_save_ad_brief`
@@ -46,6 +47,7 @@ Never expose internal workspace paths to the buyer. Do not tell them to open `/a
 - Save brand facts through `mcp_admira_save_brand_memory`. It can receive either natural names or canonical fields like `brand_name`, `offer`, `colors`, `visual_style`, `tone`, `logo_notes`, `references`, and `asset_notes`.
 - If the buyer shared website or social links, use available browser/web retrieval to understand public information, then confirm the important findings with the buyer.
 - After business basics, move to `skills/branding-creatives-creation/SKILL.md`, then prior ads and campaign goals. “Business basics complete” only means you know enough to start branding; it does not authorize creative planning or image generation yet.
+- During the prior ads/campaign-goals phase, ask for the three campaign results that matter most in priority order. Keep it simple: “What are the 3 results that matter most for judging your ads?” Examples: ROAS, cost per purchase, cost per initiate checkout, cost per qualified lead, bookings, or real WhatsApp conversations. Save them with `mcp_admira_save_ads_onboarding` when available, and pass them as `success_metrics` when staging campaigns.
 - When you move phases or identify the next planned step, persist that state with the available memory tool so a later session can say “retomo donde quedamos” accurately.
 - If the buyer sends a logo or brand image, use the branding skill and save it as logo context before creating images.
 - If the buyer asks for creatives before brand memory is ready, do not call `mcp_admira_codex_creative_plan` or `mcp_admira_codex_image_generate`. Briefly say you need to lock the brand first, then ask the next missing branding question: logo, colors, visual references/uploads, real photos/assets, tone, or style.

@@ -16,6 +16,7 @@ Collect:
 
 - product or offer
 - objective
+- the three most important success metrics/results in priority order. Ask simply: “What are the 3 results that matter most for judging this campaign?” Examples: ROAS, cost per purchase, cost per initiate checkout, cost per qualified lead, booked appointments, or cost per real WhatsApp conversation.
 - target audience/location
 - daily budget
 - target CPA/CPL when known
@@ -46,6 +47,7 @@ For every campaign proposal, actively evaluate:
 - creative format and asset quality: square/feed image, vertical video, UGC, carousel, proof/testimonial, product demo, native post, or motion graphic
 - budget and evidence needs: enough budget for placement spread, or narrower delivery to avoid starving the test
 - measurement fit: optimization event, Pixel/Dataset, promoted object, signal quality, and conversion volume
+- decision scorecard: the primary metric plus two supporting metrics so daily briefings and optimization do not judge the campaign from only one number
 - preflight readiness: account status, policy/rate-limit checks, available custom audiences, existing creatives, recent placement/device/ad/adset insight availability, and dry-run payload preview
 
 ## Placement Strategy
@@ -72,6 +74,7 @@ When enough details exist, call `mcp_admira_stage_campaign`.
 When staging, pass the expert fields that are justified by the conversation:
 
 - `optimization_event`, `pixel_id`, `optimization_goal`, `billing_event`, `promoted_object` context when known
+- `success_metrics` or `key_results` as a ranked list of up to three campaign KPIs/results, for example `["ROAS", "cost per purchase", "cost per initiate checkout"]`
 - `placements` with manual placement names or `{ "automatic": true }`
 - `bidding`, `bid_strategy`, and `bid_amount` only when there is a clear reason
 - `daily_budget`, `adset_daily_budget`, `lifetime_budget`/`adset_lifetime_budget`, `target_cpa`/`target_cpl`, and `concurrent_creatives`
