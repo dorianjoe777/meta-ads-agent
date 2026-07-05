@@ -8141,8 +8141,13 @@ def handle_fetch_public_asset_tool(arguments, chat_payload, tool):
     if result.get("ok"):
         asset_type = result.get("asset_type") or "recurso"
         if asset_type == "video":
-            reply_es = "Listo. Pude abrir el enlace público y detecté un video usable para creativos. Lo puedo usar como fuente del anuncio o como referencia para preparar la campaña."
-            reply_en = "Done. I opened the public link and detected a video usable for creatives. I can use it as the ad source or as campaign creative reference."
+            frame_count = int(result.get("video_frame_count") or 0)
+            if frame_count:
+                reply_es = f"Listo. Pude abrir el enlace público, descargar el video y extraer {frame_count} capturas para revisarlo visualmente. Lo puedo usar como fuente del anuncio o como referencia para preparar la campaña."
+                reply_en = f"Done. I opened the public link, downloaded the video, and extracted {frame_count} frames for visual review. I can use it as the ad source or as campaign creative reference."
+            else:
+                reply_es = "Listo. Pude abrir el enlace público y detecté un video usable para creativos, pero no pude extraer capturas automáticas en este entorno. Lo puedo usar como fuente del anuncio; si quieres feedback visual fino, sube 2-4 capturas clave."
+                reply_en = "Done. I opened the public link and detected a video usable for creatives, but I could not extract automatic frames in this environment. I can use it as the ad source; for detailed visual feedback, upload 2-4 key screenshots."
         elif asset_type == "image":
             reply_es = "Listo. Pude abrir el enlace público y guardar la imagen como referencia creativa."
             reply_en = "Done. I opened the public link and saved the image as a creative reference."

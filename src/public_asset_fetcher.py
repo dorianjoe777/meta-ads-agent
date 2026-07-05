@@ -7,7 +7,9 @@ import ipaddress
 import mimetypes
 import os
 import re
+import shutil
 import socket
+import subprocess
 import time
 import urllib.error
 import urllib.parse
@@ -24,6 +26,7 @@ DEFAULT_MAX_TEXT_BYTES = 1024 * 1024
 READ_CHUNK_BYTES = 1024 * 1024
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+DEFAULT_VIDEO_FRAME_COUNT = 4
 TEXT_CONTENT_TYPES = {"text/html", "text/plain", "application/json", "text/markdown"}
 BLOCKED_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
 
@@ -40,6 +43,10 @@ def max_asset_bytes():
 
 def max_text_bytes():
     return max(64 * 1024, min(DEFAULT_MAX_TEXT_BYTES, env_int("PUBLIC_ASSET_MAX_TEXT_BYTES", DEFAULT_MAX_TEXT_BYTES)))
+
+
+def max_video_frame_count():
+    return max(1, min(6, env_int("PUBLIC_ASSET_VIDEO_FRAME_COUNT", DEFAULT_VIDEO_FRAME_COUNT)))
 
 
 def extract_url(value):
@@ -202,6 +209,118 @@ def save_stream(response, target, limit):
     return total, digest.hexdigest()
 
 
+def ffmpeg_binary(name):
+    configured = os.environ.get(f"{name.upper()}_PATH", "").strip()
+    if configured:
+        return configured
+    return shutil.which(name) or ""
+
+
+def video_duration_seconds(video_path):
+    ffprobe = ffmpeg_binary("ffprobe")
+    if not ffprobe:
+        return 0.0
+    try:
+        completed = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(video_path),
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=12,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return 0.0
+    if completed.returncode != 0:
+        return 0.0
+    try:
+        return max(0.0, float(str(completed.stdout or "").strip() or 0))
+    except ValueError:
+        return 0.0
+
+
+def video_frame_times(duration, count):
+    count = max(1, int(count or DEFAULT_VIDEO_FRAME_COUNT))
+    if duration > 0:
+        ratios = [0.12, 0.35, 0.6, 0.85, 0.5, 0.72]
+        raw_times = [min(max(duration * ratio, 0.1), max(duration - 0.1, 0.1)) for ratio in ratios[:count]]
+    else:
+        raw_times = [0.1, 1.5, 3.0, 5.0, 8.0, 12.0][:count]
+    unique = []
+    seen = set()
+    for value in raw_times:
+        rounded = round(float(value), 2)
+        key = f"{rounded:.2f}"
+        if key not in seen:
+            seen.add(key)
+            unique.append(rounded)
+    return unique[:count]
+
+
+def extract_video_preview_frames(video_path, output_dir=None, max_frames=None):
+    """Extract representative JPG frames so vision-capable models can review MP4/MOV assets."""
+    path = Path(video_path).expanduser()
+    try:
+        path = path.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return {"ok": False, "reason": "video_missing", "frames": [], "duration_seconds": 0}
+    if path.suffix.lower() not in VIDEO_EXTENSIONS or not path.is_file():
+        return {"ok": False, "reason": "not_video", "frames": [], "duration_seconds": 0}
+    ffmpeg = ffmpeg_binary("ffmpeg")
+    if not ffmpeg:
+        return {"ok": False, "reason": "ffmpeg_missing", "frames": [], "duration_seconds": 0}
+    duration = video_duration_seconds(path)
+    count = max_frames if max_frames is not None else max_video_frame_count()
+    frame_dir = Path(output_dir or (path.parent / f"{path.stem}_frames")).expanduser()
+    frame_dir.mkdir(parents=True, exist_ok=True)
+    frames = []
+    for index, second in enumerate(video_frame_times(duration, count), start=1):
+        frame_path = frame_dir / f"{path.stem}_frame_{index:02d}.jpg"
+        try:
+            completed = subprocess.run(
+                [
+                    ffmpeg,
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-ss",
+                    f"{second:.2f}",
+                    "-i",
+                    str(path),
+                    "-frames:v",
+                    "1",
+                    "-q:v",
+                    "2",
+                    str(frame_path),
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=25,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if completed.returncode == 0 and frame_path.exists() and frame_path.stat().st_size > 0:
+            frames.append(str(frame_path))
+    return {
+        "ok": bool(frames),
+        "reason": "" if frames else "frame_extraction_failed",
+        "frames": frames,
+        "duration_seconds": round(duration, 2) if duration else 0,
+    }
+
+
 def fetch_public_asset(payload):
     payload = payload or {}
     raw_url = payload.get("url") or payload.get("asset_url") or payload.get("link") or payload.get("message") or ""
@@ -281,6 +400,8 @@ def fetch_public_asset(payload):
     direct_url = final_url if kind == "video" else ""
     if google_drive_file_id(urllib.parse.urlparse(normalized_url)) and kind == "video":
         direct_url = normalized_url
+    frame_result = extract_video_preview_frames(target) if kind == "video" else {"frames": [], "duration_seconds": 0, "ok": False, "reason": ""}
+    frame_paths = frame_result.get("frames") or []
     return {
         "ok": True,
         "asset_type": kind,
@@ -296,6 +417,16 @@ def fetch_public_asset(payload):
         "size": size,
         "sha256": sha256,
         "video_url": direct_url if kind == "video" else "",
+        "video_duration_seconds": frame_result.get("duration_seconds") or 0,
+        "video_frame_paths": frame_paths,
+        "video_preview_frame_paths": frame_paths,
+        "video_frame_count": len(frame_paths),
+        "video_visual_review": (
+            "Use video_frame_paths with the vision/image tool to inspect representative frames; do not try to visually inspect the MP4 directly."
+            if kind == "video" and frame_paths
+            else ""
+        ),
+        "video_frame_error": frame_result.get("reason") if kind == "video" and not frame_paths else "",
         "image_path": str(target) if kind == "image" else "",
         "created_at": now_iso(),
     }
@@ -308,4 +439,3 @@ def fetch_public_asset_result(payload):
         return {"ok": False, "blocked": True, "reason": exc.reason, "error": str(exc)}
     except Exception as exc:
         return {"ok": False, "blocked": True, "reason": "url_fetch_failed", "error": str(exc)}
-

@@ -23,6 +23,7 @@ from agent_chat import chat as agent_chat
 from agent_chat import clean_reply
 from local_store import read_json, utc_iso, write_json as write_json_file
 from product_config import ROOT_DIR, env_bool, env_int, load_config
+from public_asset_fetcher import VIDEO_EXTENSIONS, extract_video_preview_frames
 from security import redact_payload
 
 
@@ -534,16 +535,41 @@ def handle_text(config, chat_id, text, send=True, image_paths=None, reply_approv
     return reply
 
 
-def download_photo(config, file_id):
+def download_telegram_file(config, file_id, default_suffix=".bin", prefix="telegram"):
     info = bot_request(config, "getFile", {"file_id": file_id})
     remote_path = str(info.get("file_path") or "")
-    suffix = Path(remote_path).suffix or ".jpg"
+    suffix = Path(remote_path).suffix or default_suffix
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    target = UPLOAD_DIR / f"telegram_{datetime.now().strftime('%Y%m%d_%H%M%S')}{suffix}"
+    safe_suffix = suffix if re.match(r"^\.[a-zA-Z0-9]{1,8}$", suffix or "") else default_suffix
+    target = UPLOAD_DIR / f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{safe_suffix}"
     url = f"https://api.telegram.org/file/bot{config.telegram_bot_token}/{remote_path}"
     with urllib.request.urlopen(url, timeout=45) as response:
         target.write_bytes(response.read())
     return target
+
+
+def download_photo(config, file_id):
+    return download_telegram_file(config, file_id, default_suffix=".jpg", prefix="telegram")
+
+
+def download_video(config, file_id, filename=""):
+    suffix = Path(str(filename or "")).suffix.lower()
+    if suffix not in VIDEO_EXTENSIONS:
+        suffix = ".mp4"
+    return download_telegram_file(config, file_id, default_suffix=suffix, prefix="telegram_video")
+
+
+def telegram_video_payload(message):
+    video = message.get("video") or message.get("animation") or {}
+    if video.get("file_id"):
+        return video, video.get("file_name") or ""
+    document = message.get("document") or {}
+    file_name = str(document.get("file_name") or "")
+    mime_type = str(document.get("mime_type") or "")
+    suffix = Path(file_name).suffix.lower()
+    if document.get("file_id") and (mime_type.startswith("video/") or suffix in VIDEO_EXTENSIONS):
+        return document, file_name
+    return {}, ""
 
 
 def handle_update(config, update):
@@ -556,6 +582,7 @@ def handle_update(config, update):
     text = str(message.get("text") or message.get("caption") or "").strip()
     photos = message.get("photo") or []
     image_paths = []
+    video, video_filename = telegram_video_payload(message)
     if photos:
         target = download_photo(config, photos[-1].get("file_id"))
         image_paths.append(str(target))
@@ -565,6 +592,22 @@ def handle_update(config, update):
             reply = f"Imagen recibida y guardada. Para usarla, dime que campaña quieres preparar con esta imagen:\n{target}"
             send_message(config, chat_id, reply)
             return {"handled": True, "type": "photo_saved", "path": str(target)}
+    if video:
+        target = download_video(config, video.get("file_id"), video_filename)
+        frames = extract_video_preview_frames(target, output_dir=UPLOAD_DIR / f"{target.stem}_frames").get("frames") or []
+        image_paths.extend(frames)
+        if text:
+            if frames:
+                text = f"{text}\nVideo adjunto guardado. Se extrajeron {len(frames)} capturas representativas para revisarlo visualmente."
+            else:
+                text = f"{text}\nVideo adjunto guardado. No pude extraer capturas automáticas; úsalo como video creativo si el usuario lo aprueba."
+        else:
+            if frames:
+                reply = f"Video recibido. Extraje {len(frames)} capturas para poder revisarlo visualmente. Dime si quieres que lo evalúe como UGC, anuncio o referencia creativa."
+            else:
+                reply = "Video recibido y guardado. Dime si quieres usarlo como creativo de video o como referencia; si necesitas revisión visual fina, envíame capturas clave."
+            send_message(config, chat_id, reply)
+            return {"handled": True, "type": "video_saved", "path": str(target), "frames": frames}
     if not text:
         return {"handled": False, "reason": "unsupported_message"}
     reply_approval_id = extract_approval_id((message.get("reply_to_message") or {}).get("text", ""))

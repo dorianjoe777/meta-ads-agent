@@ -2176,6 +2176,44 @@ class IntegrationTestSuite:
         unsupported = public_asset_fetcher.fetch_public_asset_result({"url": "file:///etc/passwd"})
         self.assert_true(unsupported["blocked"] and unsupported["reason"] == "unsupported_url_scheme", "Public asset fetcher allows only http/https URLs")
 
+    def test_public_asset_fetcher_extracts_video_frames_for_vision_review(self):
+        """Test downloaded videos become image frames that Hermes can inspect with vision."""
+        print("\nTesting Public Asset Video Frame Extraction...")
+
+        video_dir = ROOT_DIR / "output" / "test-video-frame-extraction"
+        frame_dir = video_dir / "frames"
+        video_dir.mkdir(parents=True, exist_ok=True)
+        video_path = video_dir / "buyer-ugc.mp4"
+        video_path.write_bytes(b"fake mp4")
+
+        class Completed:
+            def __init__(self, stdout="", returncode=0):
+                self.stdout = stdout
+                self.stderr = ""
+                self.returncode = returncode
+
+        original_binary = public_asset_fetcher.ffmpeg_binary
+        original_run = public_asset_fetcher.subprocess.run
+        try:
+            def fake_run(command, **_kwargs):
+                if "ffprobe" in str(command[0]):
+                    return Completed(stdout="12.0\n")
+                output = Path(command[-1])
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_bytes(b"fake jpg")
+                return Completed()
+
+            public_asset_fetcher.ffmpeg_binary = lambda name: f"/usr/bin/{name}"
+            public_asset_fetcher.subprocess.run = fake_run
+            result = public_asset_fetcher.extract_video_preview_frames(video_path, output_dir=frame_dir, max_frames=3)
+            self.assert_true(result["ok"] and len(result["frames"]) == 3, "Video frame extraction produces representative image frames")
+            self.assert_true(all(Path(path).suffix.lower() == ".jpg" and Path(path).exists() for path in result["frames"]), "Extracted video frames are saved as image files")
+            self.assert_true(result["duration_seconds"] == 12.0, "Video duration metadata is included for creative review context")
+        finally:
+            public_asset_fetcher.ffmpeg_binary = original_binary
+            public_asset_fetcher.subprocess.run = original_run
+            shutil.rmtree(video_dir, ignore_errors=True)
+
     def test_admira_mcp_creative_timeout_returns_buyer_fallback(self):
         """Test stuck creative MCP subprocesses return a friendly retryable fallback instead of hanging."""
         print("\nTesting Admira MCP Creative Timeout Fallback...")
@@ -7371,6 +7409,8 @@ class IntegrationTestSuite:
             self.test_hermes_product_skills_are_copied_to_workspace,
             self.test_admira_tool_bridge_maps_mcp_tools_to_dashboard_actions,
             self.test_admira_mcp_server_lists_and_calls_product_tools,
+            self.test_public_asset_fetcher_normalizes_drive_and_blocks_private_urls,
+            self.test_public_asset_fetcher_extracts_video_frames_for_vision_review,
             self.test_admira_mcp_creative_timeout_returns_buyer_fallback,
             self.test_verified_signal_ledger_records_private_deduped_outcomes,
             self.test_hermes_gateway_redacts_token_and_handles_start_failure,
