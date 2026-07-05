@@ -44,6 +44,7 @@ except ImportError:
 DATA_DIR = ROOT_DIR / "dashboard" / "data"
 LOGS_DIR = ROOT_DIR / "logs"
 GATEWAY_STATE_FILE = DATA_DIR / "hermes_gateway_state.json"
+TELEGRAM_MODEL_STATE_FILE = DATA_DIR / "telegram_model_state.json"
 DAILY_BRIEF_PROMPT_FILE = DATA_DIR / "hermes_daily_brief_prompt.md"
 RESEARCH_PROMPT_FILE = DATA_DIR / "hermes_optimization_research_prompt.md"
 
@@ -106,6 +107,85 @@ def _gateway_media_allow_dirs():
     return [
         str((ROOT_DIR / "output").resolve()),
     ]
+
+
+def _telegram_model_provider_for_brain(brain):
+    if (brain or {}).get("brain") == "minimax":
+        return ADMIRA_MINIMAX_PROVIDER
+    return str((brain or {}).get("provider") or "openai-codex").strip() or "openai-codex"
+
+
+def _telegram_model_label(provider, model):
+    provider_raw = str(provider or "").strip()
+    provider_key = provider_raw.lower().replace("_", "-")
+    model_name = str(model or "").strip()
+    if provider_key in {"admira-minimax", "minimax"}:
+        return f"MiniMax M3 · {model_name or 'MiniMax-M3'}"
+    if provider_key in {"openai-codex", "openai_codex", "codex"}:
+        return f"ChatGPT/Codex · {model_name or 'gpt-5.5'}"
+    if provider_key in {"custom", "openai", "openai-api"}:
+        return model_name or provider_raw or "API compatible"
+    return model_name or provider_raw or "Modelo configurado"
+
+
+def configured_telegram_model_state(config):
+    brain = hermes_brain_settings(config)
+    provider = _telegram_model_provider_for_brain(brain)
+    model = str(brain.get("model") or "").strip()
+    return {
+        "provider": provider,
+        "model": model,
+        "base_url": str(brain.get("base_url") or "").strip(),
+        "label": _telegram_model_label(provider, model),
+        "source": "configured_primary",
+        "updated_at": "",
+    }
+
+
+def write_configured_telegram_model_state(config):
+    payload = configured_telegram_model_state(config)
+    payload["updated_at"] = now_iso()
+    try:
+        TELEGRAM_MODEL_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        TELEGRAM_MODEL_STATE_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            TELEGRAM_MODEL_STATE_FILE.chmod(0o600)
+        except OSError:
+            pass
+    except OSError:
+        return False
+    return True
+
+
+def telegram_runtime_model_state(config):
+    configured = configured_telegram_model_state(config)
+    state = {}
+    if TELEGRAM_MODEL_STATE_FILE.exists():
+        try:
+            state = json.loads(TELEGRAM_MODEL_STATE_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            state = {}
+    provider = str(state.get("provider") or configured["provider"]).strip()
+    model = str(state.get("model") or configured["model"]).strip()
+    base_url = str(state.get("base_url") or configured.get("base_url") or "").strip()
+    source = str(state.get("source") or configured["source"]).strip()
+    runtime = {
+        **configured,
+        **state,
+        "provider": provider,
+        "model": model,
+        "base_url": base_url,
+        "source": source,
+        "label": _telegram_model_label(provider, model),
+        "configured_provider": configured["provider"],
+        "configured_model": configured["model"],
+        "configured_label": configured["label"],
+    }
+    runtime["is_configured_primary"] = (
+        provider.lower().replace("_", "-") == configured["provider"].lower().replace("_", "-")
+        and model.lower() == configured["model"].lower()
+    )
+    return runtime
 
 
 def _gateway_model_config_lines(brain):
@@ -523,6 +603,8 @@ def start_gateway(config):
     env["ADMIRA_GATEWAY_LANGUAGE"] = status["language"]
     env["HERMES_MEDIA_ALLOW_DIRS"] = os.pathsep.join(_gateway_media_allow_dirs())
     env["ADMIRA_PRODUCT_ROOT"] = str(ROOT_DIR)
+    env["ADMIRA_TELEGRAM_MODEL_STATE_FILE"] = str(TELEGRAM_MODEL_STATE_FILE)
+    write_configured_telegram_model_state(config)
     try:
         with log_path.open("a", encoding="utf-8") as log_file:
             log_file.write(f"\n[{now_iso()}] Starting Hermes Gateway for Admira IA\n")

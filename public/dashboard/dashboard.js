@@ -1632,13 +1632,21 @@ function chatGptConnectMarkup(onboarding=false){
  const draft=lang==='es'?'Ayúdame a elegir el cerebro del agente. Explícame en palabras simples si me conviene ChatGPT/Codex, MiniMax M3 u otra API.':'Help me choose the agent brain. Explain simply whether ChatGPT/Codex, MiniMax M3, or another API is better for me.';
  const savedBase=model.base_url||'';
  const selectedRoute=brain==='openai_codex'?'chatgpt_subscription':(brain==='minimax'||savedBase.includes('minimax')?'minimax_m3':(brain==='openai_api'||savedBase.includes('api.openai.com')?'openai_api':'custom_api'));
+ const telegramRuntime=model.telegram_runtime_model||{};
+ const runtimeProvider=String(telegramRuntime.provider||'').toLowerCase().replace(/_/g,'-');
+ const runtimeBase=String(telegramRuntime.base_url||'').toLowerCase();
+ const runtimeRoute=runtimeProvider.includes('minimax')?'minimax_m3':((runtimeProvider.includes('openai-codex')||runtimeProvider.includes('codex'))?'chatgpt_subscription':((runtimeProvider.includes('openai')||runtimeBase.includes('api.openai.com'))?'openai_api':(runtimeProvider.includes('custom')?'custom_api':'')));
+ const runtimeModelLabel=telegramRuntime.label||[telegramRuntime.provider,telegramRuntime.model].filter(Boolean).join(' · ');
+ const runtimeChanged=Boolean(runtimeModelLabel&&(telegramRuntime.source==='telegram_model_command'||telegramRuntime.is_configured_primary===false));
+ const telegramRuntimeNotice=runtimeModelLabel?`<div class="telegram-runtime-note ${runtimeChanged?'changed':''}"><b>${lang==='es'?'Telegram ahora usa':'Telegram is using now'}</b><span>${escapeHtml(runtimeModelLabel)}</span>${runtimeChanged?`<small>${lang==='es'?'Cambiado desde Telegram con /model. Si quieres que sea el principal fijo, guárdalo aquí también.':'Changed from Telegram with /model. To make it the permanent primary model, save it here too.'}</small>`:''}</div>`:'';
  const base=model.base_url||(selectedRoute==='openai_api'?'https://api.openai.com/v1':(selectedRoute==='custom_api'?'':'https://api.minimax.io/v1'));
  const modelName=model.model||(selectedRoute==='openai_api'?'gpt-4.1-mini':(selectedRoute==='custom_api'?'':'MiniMax-M3'));
  const codexModel=model.hermes_model||'gpt-5.5';
  const imageSource=model.codex_image_source||studio.codex_image_source||'main_chatgpt';
  const imageDedicated=imageSource==='dedicated_chatgpt';
  const imageReady=Boolean(studio.codex_image_ready||model.codex_image_ready);
- const imageConnected=Boolean(studio.codex_image_connected||model.codex_image_connected||imageReady);
+ const imageSessionConnected=Boolean(studio.codex_image_connected||model.codex_image_connected);
+ const imageConnected=imageDedicated?imageSessionConnected:chatgptConnected;
  const accountLabel=(account,connected)=>{const a=account||{};const label=a.email||a.label||'';if(label)return escapeHtml(label);return connected?(lang==='es'?'Cuenta conectada · email no visible por Codex':'Connected account · email not exposed by Codex'):(lang==='es'?'Sin cuenta conectada':'No connected account')};
  const mainAccountLabel=accountLabel(model.chatgpt_account,chatgptConnected);
  const imageAccountLabel=accountLabel(model.codex_image_account||studio.codex_image_account,imageConnected);
@@ -1654,7 +1662,7 @@ function chatGptConnectMarkup(onboarding=false){
   custom_api:{icon:'{}',title:lang==='es'?'Otra API compatible':'Other compatible API',desc:lang==='es'?'Para proveedores tipo OpenAI.':'For OpenAI-style providers.',panel:lang==='es'?'Pega la URL, el nombre del modelo y la clave del proveedor. El agente la usará como cerebro.':'Paste the provider URL, model name, and key. The agent will use it as its brain.'}
  };
  const routeConnected={chatgpt_subscription:chatgptConnected,openai_api:brain==='openai_api'&&apiReady,minimax_m3:brain==='minimax'&&apiReady,custom_api:brain==='custom_api'&&apiReady};
- const routeButton=kind=>{const primary=selectedRoute===kind;const connected=Boolean(routeConnected[kind]);const state=primary?(lang==='es'?'Principal':'Primary'):(connected?(lang==='es'?'Conectado':'Connected'):'');return `<button class="agent-model-option ${primary?'active primary-route':''} ${connected?'connected':''}" type="button" data-agent-route="${kind}" aria-expanded="${primary?'true':'false'}" data-action-code="selectAgentModelRoute('${kind}')"><span class="route-icon">${routeCopy[kind].icon}</span><span><b>${routeCopy[kind].title}</b><p>${routeCopy[kind].desc}</p>${state?`<em class="route-state">${state}</em>`:''}</span></button>`};
+ const routeButton=kind=>{const primary=selectedRoute===kind;const connected=Boolean(routeConnected[kind]);const runtimeActive=Boolean(runtimeRoute===kind&&runtimeModelLabel&&!primary);const state=primary?(lang==='es'?'Principal':'Primary'):(runtimeActive?(lang==='es'?'En uso en Telegram':'In use on Telegram'):(connected?(lang==='es'?'Conectado':'Connected'):''));return `<button class="agent-model-option ${primary?'active primary-route':''} ${(connected||runtimeActive)?'connected':''}" type="button" data-agent-route="${kind}" aria-expanded="${primary?'true':'false'}" data-action-code="selectAgentModelRoute('${kind}')"><span class="route-icon">${routeCopy[kind].icon}</span><span><b>${routeCopy[kind].title}</b><p>${routeCopy[kind].desc}</p>${state?`<em class="route-state">${state}</em>`:''}</span></button>`};
  const apiPanelTitle=selectedRoute==='chatgpt_subscription'?routeCopy.minimax_m3.title:routeCopy[selectedRoute].title;
  const apiPanelHelp=selectedRoute==='chatgpt_subscription'?routeCopy.minimax_m3.panel:routeCopy[selectedRoute].panel;
  const providerValue=brain;
@@ -1673,7 +1681,7 @@ function chatGptConnectMarkup(onboarding=false){
   <div id="image-chatgpt-connect-result" class="chatgpt-connect-result hidden"></div>
   <div class="agent-route-actions">${imageConnectButton}${imageDisconnectButton}</div>
  </div>`;
- return `<section class="chatgpt-connect-card ${ready?'ready':''}"><div class="chatgpt-connect-head"><div><h3>${title}</h3><p>${body}</p></div><span class="badge ${ready?'ok':'warn'}">${badge}</span></div><div class="agent-model-picker" role="tablist" aria-label="${lang==='es'?'Opciones de modelo del agente':'Agent model options'}">${routeButton('openai_api')}${routeButton('chatgpt_subscription')}${routeButton('minimax_m3')}${routeButton('custom_api')}</div><form id="agent-model-form" class="model-provider-form" data-submit-code="saveSetupConfig(event)">
+ return `<section class="chatgpt-connect-card ${ready?'ready':''}"><div class="chatgpt-connect-head"><div><h3>${title}</h3><p>${body}</p></div><span class="badge ${ready?'ok':'warn'}">${badge}</span></div><div class="agent-model-picker" role="tablist" aria-label="${lang==='es'?'Opciones de modelo del agente':'Agent model options'}">${routeButton('openai_api')}${routeButton('chatgpt_subscription')}${routeButton('minimax_m3')}${routeButton('custom_api')}</div>${telegramRuntimeNotice}<form id="agent-model-form" class="model-provider-form" data-submit-code="saveSetupConfig(event)">
  <input type="hidden" name="agent_chat_provider" value="${escapeHtml(providerValue)}">
  <input type="hidden" name="agent_chat_api" value="${escapeHtml(api)}">
  <div class="agent-route-panels">

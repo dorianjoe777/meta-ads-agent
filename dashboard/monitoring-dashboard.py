@@ -105,6 +105,7 @@ from hermes_gateway import (
     ensure_weekly_research_cron,
     gateway_status as hermes_gateway_status,
     start_gateway as start_hermes_gateway,
+    telegram_runtime_model_state,
 )
 from hermes_gateway import telegram_settings
 from license import activate_license, default_device_id, license_status, mark_license_install_state, normalize_license_entitlements, validate_license_key
@@ -3356,10 +3357,14 @@ def config_for_connect_purpose(purpose):
 
 
 HERMES_CODEX_AUTH_FILES = {
+    "account.json",
     "auth.json",
     "auth.lock",
     "credentials.json",
     "credential.json",
+    "login.json",
+    "oauth.json",
+    "openai.json",
     "token.json",
     "tokens.json",
     "session.json",
@@ -3369,13 +3374,25 @@ HERMES_CODEX_AUTH_FILES = {
 }
 
 HERMES_CODEX_AUTH_DIRS = {
+    "account",
     "auth",
+    "login",
     "oauth",
     "tokens",
     "credentials",
     "openai-auth",
     "codex-auth",
 }
+HERMES_CODEX_AUTH_NAME_PARTS = {
+    "account",
+    "auth",
+    "credential",
+    "login",
+    "oauth",
+    "session",
+    "token",
+}
+HERMES_CODEX_AUTH_SUFFIXES = {"", ".json", ".lock", ".db", ".sqlite", ".sqlite3"}
 
 HERMES_CODEX_AUTH_RELATIVE_FILES = {
     ".codex/auth.json",
@@ -3434,10 +3451,15 @@ def clear_hermes_codex_auth(home):
     auth_home.mkdir(parents=True, exist_ok=True)
     for child in auth_home.iterdir():
         name = child.name
+        lowered = name.lower()
         target = None
         if child.is_file() and name in HERMES_CODEX_AUTH_FILES:
             target = child
         elif child.is_dir() and name in HERMES_CODEX_AUTH_DIRS:
+            target = child
+        elif child.is_file() and child.suffix.lower() in HERMES_CODEX_AUTH_SUFFIXES and any(part in lowered for part in HERMES_CODEX_AUTH_NAME_PARTS):
+            target = child
+        elif child.is_dir() and any(part in lowered for part in HERMES_CODEX_AUTH_NAME_PARTS):
             target = child
         if not target:
             continue
@@ -8959,6 +8981,7 @@ def dashboard_payload():
     codex_image_status = hermes_codex_image_status(timeout=2, config=config)
     codex_image_ready = bool(codex_image_status.get("ok"))
     image_home = resolved_codex_image_hermes_home(config)
+    runtime_model_state = telegram_runtime_model_state(config)
     return {
         "metrics": metrics,
         "recommendations": recommendations,
@@ -9058,6 +9081,7 @@ def dashboard_payload():
                 "codex_image_connected": bool(image_codex_session.get("ready")),
                 "codex_image_account": image_codex_session.get("identity", {}),
                 "codex_image_session_detail": image_codex_session.get("detail", ""),
+                "telegram_runtime_model": runtime_model_state,
             },
             "guardrails": {
                 "autonomy_mode": config.autonomy_mode,

@@ -1231,7 +1231,9 @@ class IntegrationTestSuite:
             "hermes_cli.model_switch": sys.modules.get("hermes_cli.model_switch"),
             "hermes_cli.runtime_provider": sys.modules.get("hermes_cli.runtime_provider"),
         }
-        original_env = {key: os.environ.get(key) for key in ["ADMIRA_MINIMAX_API_KEY", "ADMIRA_MINIMAX_BASE_URL", "ADMIRA_MINIMAX_MODEL", "ADMIRA_MINIMAX_PROVIDER"]}
+        original_env = {key: os.environ.get(key) for key in ["ADMIRA_MINIMAX_API_KEY", "ADMIRA_MINIMAX_BASE_URL", "ADMIRA_MINIMAX_MODEL", "ADMIRA_MINIMAX_PROVIDER", "ADMIRA_TELEGRAM_MODEL_STATE_FILE"]}
+        state_dir = Path(tempfile.mkdtemp(prefix="admira-model-state-"))
+        state_file = state_dir / "telegram_model_state.json"
 
         class DirectAlias:
             def __init__(self, model, provider, base_url):
@@ -1277,6 +1279,7 @@ class IntegrationTestSuite:
             os.environ["ADMIRA_MINIMAX_BASE_URL"] = "https://api.minimax.io/v1"
             os.environ["ADMIRA_MINIMAX_MODEL"] = "MiniMax-M3"
             os.environ["ADMIRA_MINIMAX_PROVIDER"] = "admira-minimax"
+            os.environ["ADMIRA_TELEGRAM_MODEL_STATE_FILE"] = str(state_file)
 
             applied = admira_hermes_runtime_patch.apply()
             alias = fake_model_switch.resolve_alias("MiniMax M3", "openai-codex")
@@ -1293,6 +1296,7 @@ class IntegrationTestSuite:
             provider_rows = fake_model_switch.list_authenticated_providers()
             picker_rows = fake_model_switch.list_picker_providers()
             runtime_provider = fake_runtime_provider._get_named_custom_provider("custom:admira-minimax")
+            runtime_state = json.loads(state_file.read_text(encoding="utf-8"))
 
             self.assert_true(applied is True, "Admira runtime patch applies even when only the model-switch patch is available")
             self.assert_true(alias == ("admira-minimax", "MiniMax-M3", "minimax m3"), "MiniMax M3 aliases resolve to the Admira providers entry")
@@ -1300,6 +1304,7 @@ class IntegrationTestSuite:
             self.assert_true(switch_calls["explicit_provider"] == "admira-minimax" and switch_calls["raw_input"] == "MiniMax-M3", "Native MiniMax picker selections are rewritten to the official providers entry")
             self.assert_true(switch_calls["user_providers"]["admira-minimax"]["key_env"] == "ADMIRA_MINIMAX_API_KEY" and switch_calls["user_providers"]["admira-minimax"]["api_mode"] == "chat_completions", "Injected provider uses Admira's private key env and OpenAI-compatible mode")
             self.assert_true(runtime_provider["key_env"] == "ADMIRA_MINIMAX_API_KEY" and runtime_provider["base_url"] == "https://api.minimax.io/v1", "Runtime provider patch migrates stale custom-prefixed overrides to the official providers entry")
+            self.assert_true(runtime_state["provider"] == "admira-minimax" and runtime_state["model"] == "MiniMax-M3", "Telegram /model switches write the live runtime model for the dashboard")
             self.assert_true(all(row["slug"] != "minimax" for row in provider_rows + picker_rows), "Native Hermes MiniMax row is hidden when Admira MiniMax is configured")
             self.assert_true(any(row["name"] == "MiniMax M3 oficial" for row in provider_rows + picker_rows), "MiniMax providers entry is shown with a buyer-friendly label")
         finally:
@@ -1313,6 +1318,7 @@ class IntegrationTestSuite:
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
+            shutil.rmtree(state_dir, ignore_errors=True)
 
     def test_dashboard_chatgpt_connect_action_opens_terminal(self):
         """Test the dashboard ChatGPT/Codex connection endpoint prefers an automatic terminal action."""
@@ -1413,6 +1419,8 @@ class IntegrationTestSuite:
         try:
             (auth_home / "auth.json").write_text("{}", encoding="utf-8")
             (auth_home / "credentials.json").write_text("{}", encoding="utf-8")
+            (auth_home / "login.json").write_text("{}", encoding="utf-8")
+            (auth_home / "codex-session.sqlite").write_text("session", encoding="utf-8")
             (auth_home / "auth").mkdir()
             (auth_home / "auth" / "token").write_text("secret", encoding="utf-8")
             (auth_home / "config.yaml").write_text("keep", encoding="utf-8")
@@ -1442,7 +1450,7 @@ class IntegrationTestSuite:
                 dashboard.log_action = lambda *_args, **_kwargs: None
                 result = dashboard.disconnect_agent_model({"connection_purpose": "agent"})
                 self.assert_true(result["status"] == "disconnected" and result["connection_purpose"] == "agent", "Disconnect endpoint reports the account as disconnected")
-                self.assert_true(not (auth_home / "auth.json").exists() and not (auth_home / "credentials.json").exists() and not (auth_home / "auth").exists(), "Disconnect removes only known Codex auth artifacts")
+                self.assert_true(not (auth_home / "auth.json").exists() and not (auth_home / "credentials.json").exists() and not (auth_home / "auth").exists() and not (auth_home / "login.json").exists() and not (auth_home / "codex-session.sqlite").exists(), "Disconnect removes known and obvious Codex auth artifacts")
                 self.assert_true((auth_home / "config.yaml").exists() and (auth_home / "logs" / "agent.log").exists(), "Disconnect preserves non-auth Hermes workspace files")
                 self.assert_true(captured.get("HERMES_REQUIRE_CODEX_AUTH") == "true", "Disconnect keeps Codex auth required for the next login")
                 try:
@@ -2405,6 +2413,7 @@ class IntegrationTestSuite:
         original_popen = hermes_gateway.subprocess.Popen
         original_stale_terminate = hermes_gateway._terminate_stale_gateway_from_state
         original_env = {key: os.environ.get(key) for key in ["TELEGRAM_AGENT_MODE", "TELEGRAM_AGENT_ENABLED", "TELEGRAM_LANGUAGE"]}
+        model_state_before = hermes_gateway.TELEGRAM_MODEL_STATE_FILE.read_bytes() if hermes_gateway.TELEGRAM_MODEL_STATE_FILE.exists() else None
 
         class FakeConfig:
             telegram_bot_token = token
@@ -2477,6 +2486,7 @@ class IntegrationTestSuite:
             self.assert_true(start_kwargs.get("start_new_session") is True, "Hermes Gateway supervisor runs in its own process group for clean update replacement")
             self.assert_true(gateway_process_env.get("ADMIRA_HERMES_RUNTIME_PATCHES") == "1" and str(ROOT_DIR / "src") in gateway_process_env.get("PYTHONPATH", ""), "Hermes Gateway loads Admira runtime patches from the product source path")
             self.assert_true(gateway_process_env.get("ADMIRA_GATEWAY_LANGUAGE") == "es", "Hermes Gateway passes the buyer language to runtime patches")
+            self.assert_true(gateway_process_env.get("ADMIRA_TELEGRAM_MODEL_STATE_FILE") == str(hermes_gateway.TELEGRAM_MODEL_STATE_FILE), "Hermes Gateway tells runtime patches where to write the live Telegram model state")
             self.assert_true("MALICIOUS=1" not in env_text and "\nMALICIOUS" not in env_text, "Telegram token is sanitized before writing the isolated Hermes env")
             self.assert_true("secret-token" not in serialized_status and "123456:" not in serialized_status, "Gateway status never exposes the Telegram bot token")
 
@@ -2484,9 +2494,11 @@ class IntegrationTestSuite:
             minimax_started = hermes_gateway.start_gateway(MiniMaxConfig())
             minimax_config = Path(minimax_started["config"]).read_text(encoding="utf-8")
             minimax_process_env = popen_calls[0][1].get("env") or {}
+            minimax_runtime_state = hermes_gateway.telegram_runtime_model_state(MiniMaxConfig())
             self.assert_true(minimax_started["started"] is True, "Hermes Gateway restarts cleanly after switching the primary brain to MiniMax")
             self.assert_true(minimax_process_env.get("ADMIRA_MINIMAX_API_KEY") == "direct-model-key" and minimax_process_env.get("ADMIRA_MINIMAX_BASE_URL") == "https://api.minimax.io/v1" and "MINIMAX_API_KEY" not in minimax_process_env, "Hermes Gateway passes MiniMax API credentials only through the live process environment without activating Hermes' native MiniMax provider")
             self.assert_true('provider: "admira-minimax"' in minimax_config and 'key_env: "ADMIRA_MINIMAX_API_KEY"' in minimax_config and "custom:admira-minimax" not in minimax_config, "Hermes Gateway routes Telegram MiniMax M3 through Hermes' official providers entry")
+            self.assert_true(minimax_runtime_state["provider"] == "admira-minimax" and minimax_runtime_state["is_configured_primary"] is True, "Gateway start records the configured primary model for dashboard sync")
             self.assert_true("model_aliases:" in minimax_config and '"minimax m3":' in minimax_config and '"minimax":' in minimax_config, "Hermes Gateway keeps manual Telegram /model MiniMax M3 switches on the configured MiniMax API")
             self.assert_true("direct-model-key" not in minimax_config, "Hermes Gateway never serializes MiniMax API keys into config.yaml")
 
@@ -2515,6 +2527,14 @@ class IntegrationTestSuite:
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
+            if model_state_before is None:
+                try:
+                    hermes_gateway.TELEGRAM_MODEL_STATE_FILE.unlink()
+                except OSError:
+                    pass
+            else:
+                hermes_gateway.TELEGRAM_MODEL_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+                hermes_gateway.TELEGRAM_MODEL_STATE_FILE.write_bytes(model_state_before)
             shutil.rmtree(test_dir, ignore_errors=True)
 
     def test_hermes_gateway_incomplete_config_stops_existing_process(self):
@@ -6167,12 +6187,14 @@ class IntegrationTestSuite:
         self.assert_true("Conecta el cerebro del agente" in html and "MiniMax M3" in html and "Guardar modelo del agente" in html, "Agent model setup supports MiniMax M3 as a Hermes brain")
         self.assert_true("OpenAI API" in html and "ChatGPT suscripción" in html and "Otra API compatible" in html and "OAuth" in html, "Onboarding shows four simple model choices immediately")
         self.assert_true("routeButton('openai_api')" in html and "routeButton('chatgpt_subscription')" in html and "routeButton('minimax_m3')" in html and "routeButton('custom_api')" in html and "selectAgentModelRoute('${kind}')" in html, "Agent model setup uses four collapsible route buttons")
+        self.assert_true("telegram_runtime_model" in dashboard_source and "Telegram ahora usa" in html and "En uso en Telegram" in html, "Agent model panel shows the live Telegram /model runtime state separately from the saved primary model")
         self.assert_true("connectChatGpt(event)" in html and "saveChatGptModel(event)" in html and "/api/agent-model/connect" in html and "Ya lo hice, conectar a ChatGPT ahora" in html, "ChatGPT/Codex connection saves model choice before connecting and uses a buyer-friendly CTA")
         self.assert_true("Copiar comando" not in html and ".agent-model-option .route-icon" in html and ".agent-route-panel.active" in html, "ChatGPT/Codex setup hides command-copy UI and keeps route choices readable")
         self.assert_true("Copiar paso" not in html and "Copy step" not in html, "ChatGPT/Codex connection no longer presents copy-only wording")
         self.assert_true("Abrir configuración de ChatGPT" in html and "chatgpt-settings-link" in html and "chatgpt-settings-actions" in html, "ChatGPT/Codex setup gives buyers a direct button to the ChatGPT security settings")
         self.assert_true("Modelo para ChatGPT/Codex" in html and "<select name=\"hermes_model\">" in html and "gpt-5.5" in html and "Recomendado automático" not in html and "agentModelFormPayload()" in html, "ChatGPT/Codex setup exposes gpt-5.5 as the clear default model selector")
         self.assert_true("Image 2 con ChatGPT/Codex" in html and "connectImageChatGpt(event)" in html and "codex_image_source" in html and "imageChatGptPayload()" in html, "Agent model setup can connect a separate ChatGPT/Codex session only for Image 2")
+        self.assert_true("imageSessionConnected" in html and "imageConnected=imageDedicated?imageSessionConnected:chatgptConnected" in html, "Image 2 card treats auth connection separately from image readiness")
         self.assert_true("Modelo para imágenes" not in html and "Image model" not in html and "Usar sesión principal" not in html and "Use main session" not in html, "Image 2 connection no longer exposes image model or confusing routing controls")
         self.assert_true("disconnectAgentModel('agent')" in html and "disconnectAgentModel('image')" in html and "/api/agent-model/disconnect" in dashboard_source, "ChatGPT/Codex accounts can be disconnected safely before connecting another account")
         self.assert_true("route-state" in html and "connected-account" in html and "chatgpt_connected" in dashboard_source and "codex_image_account" in dashboard_source, "Model cards separate connected accounts from the single primary brain")

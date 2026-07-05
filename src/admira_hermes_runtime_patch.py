@@ -6,8 +6,10 @@ Admira should not edit site-packages in place, so this module is loaded through
 PYTHONPATH/sitecustomize only for the gateway process and wraps the narrow
 provider-error formatter that can otherwise leak raw English provider text.
 """
+import json
 import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 from admira_rate_limit_messages import gateway_rate_limit_reply, is_rate_limit_text
@@ -45,6 +47,52 @@ ADMIRA_GENERATED_MEDIA_KEYS = {
     "generated_image_path",
     "creative_image_path",
 }
+
+
+def _runtime_model_state_path():
+    configured = str(os.environ.get("ADMIRA_TELEGRAM_MODEL_STATE_FILE") or "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    root = str(os.environ.get("ADMIRA_PRODUCT_ROOT") or "").strip()
+    if not root:
+        return None
+    return Path(root).expanduser() / "dashboard" / "data" / "telegram_model_state.json"
+
+
+def _model_switch_succeeded(result):
+    if isinstance(result, dict):
+        if result.get("success") is False or result.get("ok") is False:
+            return False
+        if str(result.get("status") or "").strip().lower() in {"failed", "error", "cancelled", "canceled"}:
+            return False
+    return True
+
+
+def _write_runtime_model_state(provider, model, base_url="", source="telegram_model_command"):
+    path = _runtime_model_state_path()
+    if not path:
+        return False
+    provider = str(provider or "").strip()
+    model = str(model or "").strip()
+    if not (provider or model):
+        return False
+    payload = {
+        "provider": provider,
+        "model": model,
+        "base_url": str(base_url or "").strip(),
+        "source": source,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+        return True
+    except OSError:
+        return False
 
 
 def provider_error_reply(text, language=None, original=None):
@@ -346,7 +394,7 @@ def _patch_minimax_model_switch():
                 raw_input = _admira_minimax_model()
                 explicit_provider = _admira_minimax_provider()
                 user_providers = _ensure_admira_minimax_user_provider(user_providers)
-            return original_switch_model(
+            result = original_switch_model(
                 raw_input=raw_input,
                 current_provider=current_provider,
                 current_model=current_model,
@@ -357,6 +405,17 @@ def _patch_minimax_model_switch():
                 user_providers=user_providers,
                 custom_providers=custom_providers,
             )
+            if _model_switch_succeeded(result):
+                result_provider = result.get("provider") if isinstance(result, dict) else ""
+                result_model = result.get("model") if isinstance(result, dict) else ""
+                result_base_url = result.get("base_url") if isinstance(result, dict) else ""
+                selected_provider = result_provider or explicit_provider or current_provider
+                selected_model = result_model or raw_input or current_model
+                selected_base_url = result_base_url or (
+                    _admira_minimax_base_url() if _is_admira_minimax_provider(selected_provider) else current_base_url
+                )
+                _write_runtime_model_state(selected_provider, selected_model, selected_base_url)
+            return result
 
         model_switch._admira_original_switch_model = original_switch_model
         model_switch.switch_model = patched_switch_model
