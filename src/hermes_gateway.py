@@ -19,7 +19,7 @@ from communication_style import (
     communication_style_from_environment,
     communication_style_instruction,
 )
-from hermes_bridge import hermes_environment, prepare_hermes_workspace
+from hermes_bridge import hermes_brain_settings, hermes_environment, prepare_hermes_workspace
 from local_store import now_iso
 from product_config import ROOT_DIR, env_bool, env_int
 
@@ -98,7 +98,17 @@ def _gateway_fingerprint(config, status, files):
     timezone_name = str(getattr(config, "daily_brief_timezone", "UTC") or "UTC")
     communication_style = communication_style_from_environment()
     ad_experience = ad_experience_from_environment()
-    return f"{token_hash}:{status['chat_id']}:{files['hermes_home']}:{timezone_name}:{communication_style}:{ad_experience}"
+    brain = hermes_brain_settings(config)
+    brain_fingerprint = {
+        "brain": brain.get("brain", ""),
+        "provider": brain.get("provider", ""),
+        "model": brain.get("model", ""),
+        "base_url": brain.get("base_url", ""),
+        "api_key_set": bool(brain.get("api_key")),
+        "requires_codex_auth": bool(brain.get("requires_codex_auth")),
+    }
+    brain_hash = hashlib.sha256(json.dumps(brain_fingerprint, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+    return f"{token_hash}:{status['chat_id']}:{files['hermes_home']}:{timezone_name}:{communication_style}:{ad_experience}:{brain_hash}"
 
 
 def gateway_prompt(language="es", communication_style="simple", ad_experience_level=""):
@@ -108,7 +118,10 @@ def gateway_prompt(language="es", communication_style="simple", ad_experience_le
         return (
             "You are Admira IA, the buyer's private Meta Ads manager. Your customer-facing identity is only Admira IA. "
             "Never mention Hermes, gateway/runtime details, MCP/tool names, internal commands, or `/help` command suggestions to the buyer unless support explicitly asks for diagnostics. "
-            "Before any first-time greeting or onboarding question, read `memory/Conversation continuity.md` and `memory/continuity_status.json` in the workspace. "
+            "Do not expose internal file paths such as `/app/...`, `dashboard/data/...`, `hermes-workspace/...`, `brand_guides/...`, `memory/...`, or `CURRENT_CONTEXT.json` to buyers unless support explicitly asks for technical diagnostics. "
+            "If the buyer asks for a prompt, copy, plan, script, diagnosis, or useful content, paste it directly in the chat; do not reply only with “I saved it in this file” or ask them to open an internal path. "
+            "Internal workspace files are your private memory/tooling; the buyer's usable workspace is the conversation. You may say you saved something internally only after giving the requested content in the same reply. "
+            "Before any first-time greeting or onboarding question, read `memory/Conversation continuity.md`, `memory/continuity_status.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/creative_experiments.json`, and relevant `brand_guides/` files in the workspace. "
             "If the continuity status says persistent memory exists, treat history cleanup, gateway restart, updates, or a fresh runtime session as a resume event: do not introduce yourself as first time, do not restart onboarding, and do not repeat the initial ads-experience/technical-detail question unless those files prove it is still missing. "
             "Resume with a short continuation message that mentions one concrete remembered item and continue from the next useful step. Use session search for prior Telegram sessions only as a helper; durable workspace files are enough to keep moving. "
             "Use your memory and workspace files before asking repeated questions. Do not cite ROAS, CPA, CTR, winners, losers, "
@@ -132,7 +145,10 @@ def gateway_prompt(language="es", communication_style="simple", ad_experience_le
     return (
         "Eres Admira IA, el manager privado de Meta Ads del comprador. Tu identidad de cara al cliente es solo Admira IA. "
         "Nunca menciones Hermes, gateway/runtime, nombres de herramientas MCP, comandos internos ni sugerencias de comandos como `/help` al comprador, salvo que soporte pida diagnóstico explícitamente. "
-        "Antes de saludar como si fuera la primera vez o hacer preguntas de onboarding, lee `memory/Conversation continuity.md` y `memory/continuity_status.json` en el workspace. "
+        "No muestres rutas internas como `/app/...`, `dashboard/data/...`, `hermes-workspace/...`, `brand_guides/...`, `memory/...` o `CURRENT_CONTEXT.json` al comprador, salvo que soporte pida diagnóstico técnico explícitamente. "
+        "Si el comprador pide un prompt, copy, plan, guion, diagnóstico o contenido útil, entrégalo directamente en el chat; no respondas solo “lo guardé en este archivo” ni le pidas abrir una ruta interna. "
+        "Los archivos internos son tu memoria/herramienta privada; el workspace útil del comprador es la conversación. Puedes decir que algo quedó guardado internamente solo después de dar el contenido solicitado en el mismo mensaje. "
+        "Antes de saludar como si fuera la primera vez o hacer preguntas de onboarding, lee `memory/Conversation continuity.md`, `memory/continuity_status.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/creative_experiments.json` y los archivos relevantes de `brand_guides/` en el workspace. "
         "Si el estado de continuidad dice que existe memoria persistente, trata una limpieza de historial, reinicio del gateway, actualización o sesión nueva del runtime como una reanudación: no te presentes como primera vez, no reinicies el onboarding y no repitas la pregunta inicial de experiencia en anuncios/detalle técnico salvo que esos archivos demuestren que todavía falta. "
         "Retoma con un mensaje corto que mencione un dato concreto recordado y sigue con el siguiente paso útil. Usa búsqueda de sesiones anteriores de Telegram solo como ayuda; los archivos durables del workspace bastan para continuar. "
         "Usa tu memoria y los archivos de este workspace antes de repetir preguntas. No cites ROAS, CPA, CTR, ganadoras, "
@@ -182,13 +198,16 @@ def write_gateway_files(config):
     communication_style = communication_style_from_environment()
     ad_experience = ad_experience_from_environment()
     prompt = gateway_prompt(status["language"], communication_style, ad_experience)
+    brain = hermes_brain_settings(config)
+    model_provider = brain.get("provider") or "openai-codex"
+    model_default = brain.get("model") or normalize_hermes_model(getattr(config, "hermes_model", ""))
     toolsets = ["hermes-telegram", "memory", "skills", "session_search", "vision", "file", "web", "browser", "admira"]
     mcp_server_path = ROOT_DIR / "src" / "admira_mcp_server.py"
     config_yaml = [
         f"timezone: {_quote_yaml(timezone_name)}",
         "model:",
-        "  provider: openai-codex",
-        f"  default: {_quote_yaml(normalize_hermes_model(getattr(config, 'hermes_model', '')))}",
+        f"  provider: {_quote_yaml(model_provider)}",
+        f"  default: {_quote_yaml(model_default)}",
         "agent:",
         "  max_turns: 60",
         "  gateway_timeout: 1800",

@@ -242,12 +242,17 @@ For each turn, read the buyer message normally. If you need live account context
 - `data/business_binding.json`: selected Meta account/page binding.
 - `memory/Agent onboarding plan.md`: current onboarding phase.
 - `memory/Ads campaign onboarding.md`: prior ads/campaign context.
+- `memory/recent_actions.json`: recent protected actions and tool outcomes when present.
 - `memory/profitability_rules.json`, `memory/decision_memory.json`, `memory/learning_log.md`: decision memory.
 - `memory/creative_experiments.json`: adaptive creative-test checkpoints, evidence, provisional leaders, and next review dates.
 - `brand_guides/`: brand, product, ad brief, and creative reference memory.
 - `skills/`: focused product skills. Read the relevant skill before taking product actions.
 
-Do not expect the backend to paste the whole conversation history into the prompt. Hermes session memory is useful, but it is cache; durable workspace files are the source of truth. At the start of a fresh/restarted Telegram session, after a history cleanup, or after an update/gateway restart, first read `memory/Conversation continuity.md` and `memory/continuity_status.json`. If `has_persistent_memory` is true, do not introduce yourself as first time, do not restart onboarding, and do not repeat the initial ads-experience/technical-style question unless the files prove it is still missing. Resume with a short "retomo donde quedamos" style message, mention one concrete remembered item, and continue from the next missing/actionable step. If needed, use session search to inspect previous Telegram sessions, but do not block the buyer when durable workspace memory is enough. If the buyer's short answer is still ambiguous, ask one clear follow-up.
+Do not expect the backend to paste the whole conversation history into the prompt. Hermes session memory is useful, but it is cache; durable workspace files are the source of truth. At the start of a fresh/restarted Telegram session, after a history cleanup, or after an update/gateway restart, first read `memory/Conversation continuity.md`, `memory/continuity_status.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/creative_experiments.json`, and relevant `brand_guides/` files. If `has_persistent_memory` is true, do not introduce yourself as first time, do not restart onboarding, and do not repeat the initial ads-experience/technical-style question unless the files prove it is still missing. Resume with a short "retomo donde quedamos" style message, mention one concrete remembered item, and continue from the next missing/actionable step. If needed, use session search to inspect previous Telegram sessions, but do not block the buyer when durable workspace memory is enough. If the buyer's short answer is still ambiguous, ask one clear follow-up.
+
+# Buyer-facing content boundary
+
+Internal workspace files are private memory/tooling, not the buyer's workspace. Do not expose internal paths such as `/app/...`, `dashboard/data/...`, `hermes-workspace/...`, `brand_guides/...`, `memory/...`, or `CURRENT_CONTEXT.json` unless support explicitly asks for technical diagnostics. If the buyer asks for a prompt, copy, plan, script, checklist, or explanation, paste the useful content directly in the chat. Do not reply only with "lo guardé en este archivo" or ask them to open an internal path they cannot access. You may save the content internally too, but the buyer-facing answer must stand on its own.
 
 # Native Product Tools
 
@@ -520,7 +525,7 @@ def build_conversation_continuity(memory, status=None):
                 "## Resume behavior",
                 "",
                 "- Treat Telegram/Hermes session history as cache. These durable workspace files are the source of truth after cleanup or updates.",
-                "- Before sending a first message, read this file plus `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, and `brand_guides/`.",
+                "- Before sending a first message, read this file plus `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/creative_experiments.json`, and relevant `brand_guides/` files.",
                 "- Do not restart onboarding, do not introduce yourself as if this were the first conversation, and do not repeat the initial ads-experience/technical-style question if it is already configured or implied by saved memory.",
                 "- If the current Hermes session is empty but this file says memory exists, say briefly that you are resuming and continue from the next missing or active item.",
                 "- If needed, use session search to look for the previous Telegram session, but never block the buyer on that search when durable workspace memory is enough to continue.",
@@ -599,7 +604,9 @@ This folder is the only workspace Hermes should read for this product turn.
 It contains curated business memory, brand guides, recent activity, and uploaded reference images.
 
 Hermes owns the conversation and should use its own session memory. The backend does not paste the whole chat history into the prompt.
-If session memory was cleaned, the gateway restarted, or an update created a fresh runtime session, read `memory/Conversation continuity.md` and resume from durable business/brand files before greeting.
+If session memory was cleaned, the gateway restarted, or an update created a fresh runtime session, read `memory/Conversation continuity.md`, `memory/continuity_status.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, and relevant `brand_guides/` files before greeting.
+
+Never expose this workspace's internal paths to the buyer. If the buyer asks for a prompt, plan, script, copy, or diagnosis, paste the useful content directly in the chat instead of pointing them to `/app/...`, `dashboard/data/...`, `hermes-workspace/...`, `brand_guides/...`, `memory/...`, or `CURRENT_CONTEXT.json`.
 
 Do not request files outside this workspace. If something is missing, ask the buyer or request a backend tool.
 
@@ -884,7 +891,8 @@ def hermes_prompt(config, payload, workspace_info=None):
         + "\n\nHermes workspace files:\n"
         + "\n".join(f"- {path}" for path in workspace_info.get("files", []))
         + "\n\nRead product rules from AGENTS.md/SOUL.md and business files only inside this workspace. Do not read arbitrary local files. If a needed file is missing, ask the buyer or request a backend tool."
-        + "\n\nBefore treating this as a new conversation, read `memory/Conversation continuity.md` and `memory/continuity_status.json`. If persistent memory exists, resume from durable business/brand/ad memory instead of restarting onboarding or repeating first-time preference questions."
+        + "\n\nBefore treating this as a new conversation, read `memory/Conversation continuity.md`, `memory/continuity_status.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, and relevant `brand_guides/` files. If persistent memory exists, resume from durable business/brand/ad memory instead of restarting onboarding or repeating first-time preference questions."
+        + "\n\nNever expose internal workspace paths to the buyer. If the buyer asks for a prompt, plan, script, copy, or diagnosis, paste it directly in the chat instead of pointing them to `/app/...`, `dashboard/data/...`, `hermes-workspace/...`, `brand_guides/...`, `memory/...`, or `CURRENT_CONTEXT.json`."
         + "\n\nCurrent account context JSON:\n"
         + json.dumps(context, ensure_ascii=False)
         + image_note

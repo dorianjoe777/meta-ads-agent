@@ -22,6 +22,8 @@ Read and update through tools, not by editing arbitrary files:
 
 These files are backend-owned memory. Do not manually create or edit `brand_guides/*.md` or `/app/brand_guides/*.md` from the Hermes workspace. If a memory tool rejects a save, retry once with canonical field names instead of writing Markdown yourself.
 
+Never expose internal workspace paths to the buyer. Do not tell them to open `/app/...`, `dashboard/data/...`, `hermes-workspace/...`, `brand_guides/...`, `memory/...`, or `CURRENT_CONTEXT.json`. If the buyer asks for a prompt, plan, copy, script, summary, or diagnosis, paste the useful content directly in the chat and only then mention that you saved it internally if helpful.
+
 ## Tools
 
 - `mcp_admira_save_agent_preferences`
@@ -33,7 +35,7 @@ These files are backend-owned memory. Do not manually create or edit `brand_guid
 
 ## Conversation Pattern
 
-- Before any first-time onboarding reply, read `memory/Conversation continuity.md` and `memory/continuity_status.json`. If they show saved business, brand, product, ad brief, creative, action, or preference memory, resume from that memory instead of starting over.
+- Before any first-time onboarding reply, read `memory/Conversation continuity.md`, `memory/continuity_status.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, and relevant `brand_guides/` files. If they show saved business, brand, product, ad brief, creative, action, or preference memory, resume from that memory instead of starting over.
 - In a true first onboarding reply, briefly explain the path before asking:
   1. first understand the business,
   2. then define the visual brand, logo, colors, references, and tone,

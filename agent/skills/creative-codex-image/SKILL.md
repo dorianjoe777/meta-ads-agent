@@ -30,6 +30,8 @@ Read these workspace files when present:
 
 Treat `brand_guides/` as read-only workspace context. Do not create or edit those Markdown files manually to unblock image production. If brand, product, or ad-brief readiness is incomplete, save the missing memory with `mcp_admira_save_brand_memory`, `mcp_admira_save_product_memory`, `mcp_admira_save_ad_brief`, or `mcp_admira_save_creative_references`, then call `mcp_admira_codex_image_generate` again.
 
+Internal files are not buyer-facing deliverables. Do not tell the buyer to open `/app/...`, `dashboard/data/...`, `hermes-workspace/...`, `brand_guides/...`, `memory/...`, or `CURRENT_CONTEXT.json`. If they ask for the prompt, paste the full prompt directly in the chat. You may also save it internally, but the answer must be usable from Telegram alone.
+
 If an uploaded image is relevant, summarize what you see and include that summary in the tool arguments as `reference_image_summary`.
 
 Also pass its safe workspace path in `reference_image_paths`. Ask proactively whether the buyer has a real product, founder, customer, location, packaging, or design-reference image to upload.
@@ -63,4 +65,4 @@ Any generated person, product, location, food, interior, or other real-world sce
 
 ## Reply
 
-After the tool returns, tell the buyer where the image is saved and what to do next. If the tool fails, explain the missing connection without inventing an image.
+After the tool returns, tell the buyer the image is ready and what to do next using a buyer-facing link/attachment when available. Do not expose internal local paths. If the tool fails, explain the missing connection without inventing an image. If the buyer asks for a prompt because Image 2 is unavailable, paste the exact prompt in the chat instead of pointing to an internal file.

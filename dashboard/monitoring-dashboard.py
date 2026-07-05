@@ -3364,6 +3364,9 @@ def hermes_browserless_snapshot(config=None, purpose="agent"):
         running = bool(proc and proc.poll() is None)
         output = state.get("output", "")
     if ready:
+        gateway = refresh_telegram_gateway_after_agent_model_change(
+            {"AGENT_BRAIN_PROVIDER": "openai_codex", "HERMES_MODEL": getattr(config, "hermes_model", "")}
+        ) if purpose == "agent" else None
         return hermes_connect_response(
             "completed",
             "ChatGPT/Codex conectado",
@@ -3374,6 +3377,7 @@ def hermes_browserless_snapshot(config=None, purpose="agent"):
             running=False,
             job_id=state.get("id") or "",
             connection_purpose=purpose,
+            gateway=gateway,
             log=False,
         )
     if running:
@@ -3507,6 +3511,9 @@ def start_hermes_browserless_login(config, purpose="agent"):
         )
     ready, auth_detail = hermes_codex_ready(config)
     if ready:
+        gateway = refresh_telegram_gateway_after_agent_model_change(
+            {"AGENT_BRAIN_PROVIDER": "openai_codex", "HERMES_MODEL": getattr(config, "hermes_model", "")}
+        ) if purpose == "agent" else None
         return hermes_connect_response(
             "completed",
             "ChatGPT/Codex conectado",
@@ -3516,6 +3523,7 @@ def start_hermes_browserless_login(config, purpose="agent"):
             output=auth_detail,
             running=False,
             connection_purpose=purpose,
+            gateway=gateway,
         )
     with HERMES_LOGIN_LOCK:
         proc = HERMES_LOGIN_STATE.get("proc")
@@ -3700,6 +3708,7 @@ def connect_agent_model(payload=None):
     config = load_config()
     ready, auth_detail = hermes_codex_ready(config)
     if ready:
+        gateway = refresh_telegram_gateway_after_agent_model_change(env_updates)
         return hermes_connect_response(
             "completed",
             "ChatGPT/Codex conectado",
@@ -3708,6 +3717,7 @@ def connect_agent_model(payload=None):
             command=hermes_browserless_shell_command(config),
             output=auth_detail,
             running=False,
+            gateway=gateway,
         )
     if launch_hermes_terminal(config):
         return hermes_connect_response(
@@ -3717,6 +3727,31 @@ def connect_agent_model(payload=None):
             mode="terminal",
         )
     return start_hermes_browserless_login(config)
+
+
+AGENT_MODEL_GATEWAY_ENV_KEYS = {
+    "AGENT_BRAIN_PROVIDER",
+    "AGENT_CHAT_PROVIDER",
+    "AGENT_CHAT_BASE_URL",
+    "AGENT_CHAT_MODEL",
+    "AGENT_CHAT_API",
+    "AGENT_CHAT_API_KEY",
+    "HERMES_MODEL",
+    "HERMES_REQUIRE_CODEX_AUTH",
+}
+
+
+def refresh_telegram_gateway_after_agent_model_change(env_updates):
+    changed = sorted(set(env_updates or {}) & AGENT_MODEL_GATEWAY_ENV_KEYS)
+    if not changed:
+        return None
+    try:
+        gateway = start_hermes_gateway(load_config())
+    except Exception as exc:
+        return {"started": False, "mode": "hermes_gateway", "detail": "No pude refrescar Telegram con el modelo nuevo.", "error": str(exc), "changed": changed}
+    if isinstance(gateway, dict):
+        return {**gateway, "changed": changed}
+    return {"started": bool(gateway), "mode": "hermes_gateway", "changed": changed}
 
 
 def save_setup_config(payload):
@@ -3781,6 +3816,7 @@ def save_setup_config(payload):
         env_updates["CODEX_IMAGE_HERMES_MODEL"] = normalize_hermes_model(payload.get("codex_image_hermes_model"))
     if env_updates:
         update_env_values(env_updates)
+    gateway_refresh = None
 
     ad_config = read_json(AD_CONFIG_FILE, {})
     ad_config.setdefault("account", {})
@@ -3814,8 +3850,9 @@ def save_setup_config(payload):
             "landing_url": destination.get("url", "") or page.get("website", ""),
         }
         sync_business_profile_from_meta_assets(page, suggested, [suggested["landing_url"]] if suggested.get("landing_url") else [])
+    gateway_refresh = refresh_telegram_gateway_after_agent_model_change(env_updates)
     log_action("setup_config_save", {"updated": sorted(list(env_updates.keys()) + ["ad-config.json"] + (["managed_ad_accounts.json"] if managed_state else [])), "business_replaced": replaced}, "completed")
-    return {"saved": True, "business_replaced": replaced, "env_updated": sorted(env_updates.keys()), "ad_config": ad_config, "managed_ad_accounts": managed_ad_accounts_payload()}
+    return {"saved": True, "business_replaced": replaced, "env_updated": sorted(env_updates.keys()), "ad_config": ad_config, "managed_ad_accounts": managed_ad_accounts_payload(), "gateway": gateway_refresh}
 
 
 class WebsiteSummaryParser(HTMLParser):

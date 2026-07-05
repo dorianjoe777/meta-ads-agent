@@ -1664,6 +1664,13 @@ class IntegrationTestSuite:
             hermes_model = "auto"
             daily_brief_time = "08:00"
 
+        class MiniMaxConfig(FakeConfig):
+            agent_brain_provider = "minimax"
+            agent_chat_base_url = "https://api.minimax.io/v1"
+            agent_chat_model = "MiniMax-M3"
+            agent_chat_api_key = "direct-model-key"
+            hermes_require_codex_auth = False
+
         try:
             shutil.rmtree(test_dir, ignore_errors=True)
             workspace.mkdir(parents=True, exist_ok=True)
@@ -1702,6 +1709,13 @@ class IntegrationTestSuite:
             self.assert_true("no uses tablas Markdown" in config_yaml, "Hermes Gateway prompt keeps Telegram replies in mobile-safe bullet formatting")
             self.assert_true("Preferencia de comunicación: técnica" in config_yaml and "detalles de implementación" in config_yaml, "Hermes Gateway applies the global technical communication preference")
             self.assert_true("¿Tienes alguna pregunta?" in prompt and "No uses datos demo" in prompt, "Daily brief prompt ends with the buyer question and blocks demo data")
+            minimax_files = hermes_gateway.write_gateway_files(MiniMaxConfig())
+            minimax_yaml = Path(minimax_files["config"]).read_text(encoding="utf-8")
+            self.assert_true('provider: "minimax"' in minimax_yaml and 'default: "MiniMax-M3"' in minimax_yaml, "Hermes Gateway writes the selected MiniMax brain instead of hardcoding ChatGPT/Codex")
+            self.assert_true("direct-model-key" not in minimax_yaml, "Hermes Gateway config never writes the direct model API key")
+            codex_fp = hermes_gateway._gateway_fingerprint(FakeConfig(), hermes_gateway.telegram_settings(FakeConfig()), files)
+            minimax_fp = hermes_gateway._gateway_fingerprint(MiniMaxConfig(), hermes_gateway.telegram_settings(MiniMaxConfig()), minimax_files)
+            self.assert_true(codex_fp != minimax_fp and "direct-model-key" not in minimax_fp, "Hermes Gateway fingerprint changes on brain/provider updates without leaking secrets")
         finally:
             hermes_gateway.prepare_hermes_workspace = original_prepare
             for key, value in original_env.items():
@@ -2425,7 +2439,10 @@ class IntegrationTestSuite:
             self.assert_true("Spa MediCentro Juliana" in continuity and "S/99" in continuity and "Retomo donde quedamos" in continuity, "Continuity brief gives Hermes concrete remembered context and a resume pattern")
             self.assert_true("history cleanup" in agents_text and "has_persistent_memory" in agents_text and "do not restart onboarding" in agents_text, "Combined Hermes rules force resume behavior after cleanup or restart")
             self.assert_true("limpieza de historial" in gateway_prompt and "no te presentes como primera vez" in gateway_prompt and "Conversation continuity" in gateway_prompt, "Telegram gateway prompt blocks first-run greetings when durable memory exists")
+            self.assert_true("CURRENT_CONTEXT.json" in gateway_prompt and "data/business_profile.json" in gateway_prompt and "brand_guides/" in gateway_prompt, "Telegram gateway prompt tells new sessions to inspect durable workspace memory before repeating questions")
+            self.assert_true("No muestres rutas internas" in gateway_prompt and "entrégalo directamente en el chat" in gateway_prompt, "Telegram gateway prompt blocks buyer-facing internal workspace paths")
             self.assert_true("Before treating this as a new conversation" in bridge_prompt and "resume from durable business/brand/ad memory" in bridge_prompt, "Hermes bridge prompt also checks durable continuity before restarting onboarding")
+            self.assert_true("Never expose internal workspace paths" in onboarding_skill and "paste the useful content directly in the chat" in onboarding_skill, "Business onboarding skill keeps internal paths out of buyer replies")
             self.assert_true("Do not rely on Telegram/Hermes session memory" in onboarding_skill and "resume from that memory" in onboarding_skill, "Business onboarding skill saves durable facts and resumes instead of repeating questions")
         finally:
             hermes_bridge.DATA_DIR = original["DATA_DIR"]
@@ -5686,9 +5703,26 @@ class IntegrationTestSuite:
         onboarding_before = onboarding_path.read_text(encoding="utf-8") if onboarding_path.exists() else ""
         binding_before = binding_path.read_bytes() if binding_path.exists() else None
         managed_before = managed_path.read_bytes() if managed_path.exists() else None
-        env_keys = ["LICENSE_KEY", "LICENSE_BUYER_EMAIL", "META_AD_ACCOUNT_ID", "CODEX_IMAGE_SOURCE", "CODEX_IMAGE_HERMES_HOME", "CODEX_IMAGE_HERMES_MODEL"]
+        original_gateway = dashboard.start_hermes_gateway
+        env_keys = [
+            "LICENSE_KEY",
+            "LICENSE_BUYER_EMAIL",
+            "META_AD_ACCOUNT_ID",
+            "AGENT_CHAT_PROVIDER",
+            "AGENT_BRAIN_PROVIDER",
+            "AGENT_CHAT_BASE_URL",
+            "AGENT_CHAT_MODEL",
+            "AGENT_CHAT_API",
+            "AGENT_CHAT_API_KEY",
+            "HERMES_REQUIRE_CODEX_AUTH",
+            "CODEX_IMAGE_SOURCE",
+            "CODEX_IMAGE_HERMES_HOME",
+            "CODEX_IMAGE_HERMES_MODEL",
+        ]
         env_backup = {key: os.environ.get(key) for key in env_keys}
         try:
+            gateway_refreshes = []
+            dashboard.start_hermes_gateway = lambda config: gateway_refreshes.append(getattr(config, "agent_brain_provider", "")) or {"started": True, "mode": "hermes_gateway"}
             dashboard.update_env_values({"LICENSE_KEY": "MAO-TESTBUYER-30628D"})
             dashboard.write_json(onboarding_path, {"completed": False})
             if binding_path.exists():
@@ -5726,6 +5760,7 @@ class IntegrationTestSuite:
             self.assert_true("AGENT_CHAT_API_KEY=direct-model-key" in env_after, "Agent model API key saved locally")
             self.assert_true("CODEX_IMAGE_SOURCE=dedicated_chatgpt" in env_after and "CODEX_IMAGE_HERMES_MODEL=gpt-5.5" in env_after, "Separate ChatGPT/Codex image routing is saved without changing the text brain")
             self.assert_true("CODEX_IMAGE_HERMES_HOME=" in env_after, "Dedicated image routing gets a persistent auth home")
+            self.assert_true(gateway_refreshes == ["minimax"] and result.get("gateway", {}).get("started") is True, "Saving the agent brain refreshes Telegram Gateway so Telegram switches with the dashboard chat")
             self.assert_true(saved["creative"]["destination"]["page_id"] == "12345", "Page ID saved to ad-config")
             self.assert_true(saved["creative"]["destination"]["default_adset_id"] == "67890", "Default ad set saved to ad-config")
             self.assert_true(saved["creative"]["destination"]["url"] == "https://buyer.example", "Landing URL saved to ad-config")
@@ -5746,6 +5781,7 @@ class IntegrationTestSuite:
                     managed_path.unlink()
             else:
                 managed_path.write_bytes(managed_before)
+            dashboard.start_hermes_gateway = original_gateway
             for key, value in env_backup.items():
                 if value is None:
                     os.environ.pop(key, None)
