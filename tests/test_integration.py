@@ -2426,6 +2426,13 @@ class IntegrationTestSuite:
             agent_chat_model = "MiniMax-M3"
             hermes_require_codex_auth = False
 
+        class CodexWithMiniMaxCredentialConfig(FakeConfig):
+            agent_brain_provider = "openai_codex"
+            agent_chat_base_url = "https://api.minimax.io/v1"
+            agent_chat_api_key = "secondary-minimax-key"
+            agent_chat_model = "MiniMax-M3"
+            hermes_model = "gpt-5.5"
+
         class FakeProcess:
             pid = 4321
 
@@ -2482,6 +2489,15 @@ class IntegrationTestSuite:
             self.assert_true('provider: "admira-minimax"' in minimax_config and 'key_env: "ADMIRA_MINIMAX_API_KEY"' in minimax_config and "custom:admira-minimax" not in minimax_config, "Hermes Gateway routes Telegram MiniMax M3 through Hermes' official providers entry")
             self.assert_true("model_aliases:" in minimax_config and '"minimax m3":' in minimax_config and '"minimax":' in minimax_config, "Hermes Gateway keeps manual Telegram /model MiniMax M3 switches on the configured MiniMax API")
             self.assert_true("direct-model-key" not in minimax_config, "Hermes Gateway never serializes MiniMax API keys into config.yaml")
+
+            popen_calls.clear()
+            secondary_started = hermes_gateway.start_gateway(CodexWithMiniMaxCredentialConfig())
+            secondary_config = Path(secondary_started["config"]).read_text(encoding="utf-8")
+            secondary_process_env = popen_calls[0][1].get("env") or {}
+            self.assert_true(secondary_started["started"] is True, "Hermes Gateway starts when ChatGPT/Codex is primary and MiniMax is only a manual /model option")
+            self.assert_true(secondary_process_env.get("ADMIRA_MINIMAX_API_KEY") == "secondary-minimax-key" and secondary_process_env.get("ADMIRA_MINIMAX_BASE_URL") == "https://api.minimax.io/v1", "Hermes Gateway still passes MiniMax credentials for manual Telegram /model switches")
+            self.assert_true("MINIMAX_API_KEY" not in secondary_process_env, "Manual MiniMax support still avoids Hermes' native MiniMax credential path")
+            self.assert_true('provider: "openai-codex"' in secondary_config and "secondary-minimax-key" not in secondary_config, "Secondary MiniMax credentials do not change the primary ChatGPT/Codex model or leak into config.yaml")
 
             hermes_gateway.stop_gateway()
             hermes_gateway.subprocess.Popen = lambda *args, **kwargs: (_ for _ in ()).throw(OSError("boom"))

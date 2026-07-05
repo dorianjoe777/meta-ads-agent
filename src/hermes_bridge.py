@@ -913,23 +913,64 @@ def hermes_environment(config):
             path = ROOT_DIR / path
         env["HERMES_HOME"] = str(path)
     settings = hermes_brain_settings(config)
-    if settings.get("provider") == "minimax" and settings.get("api_key"):
+    minimax_settings = admira_minimax_credentials(config, settings)
+    if minimax_settings.get("api_key"):
         # Do not expose Admira's official MiniMax key as MINIMAX_API_KEY.
         # Hermes treats that variable as a signal to show/use its native
         # MiniMax provider, whose transport can differ from MiniMax's official
         # OpenAI-compatible endpoint. Admira registers MiniMax M3 as a named
         # custom provider instead, so keep the key under an Admira-only env var.
         env.pop("MINIMAX_API_KEY", None)
-        env[ADMIRA_MINIMAX_KEY_ENV] = settings["api_key"]
-        if settings.get("base_url"):
-            env[ADMIRA_MINIMAX_BASE_URL_ENV] = settings["base_url"]
+        env[ADMIRA_MINIMAX_KEY_ENV] = minimax_settings["api_key"]
+        if minimax_settings.get("base_url"):
+            env[ADMIRA_MINIMAX_BASE_URL_ENV] = minimax_settings["base_url"]
         env["ADMIRA_MINIMAX_PROVIDER"] = ADMIRA_MINIMAX_PROVIDER
-        env["ADMIRA_MINIMAX_MODEL"] = settings.get("model") or "MiniMax-M3"
+        env["ADMIRA_MINIMAX_MODEL"] = minimax_settings.get("model") or "MiniMax-M3"
     if settings.get("provider") == "custom" and settings.get("api_key"):
         env["OPENAI_API_KEY"] = settings["api_key"]
         if settings.get("base_url"):
             env["OPENAI_BASE_URL"] = settings["base_url"]
     return env
+
+
+def admira_minimax_credentials(config, primary_settings=None):
+    """Return MiniMax credentials that should be available to Hermes /model.
+
+    MiniMax may be the primary text brain, or it may be a saved secondary API
+    credential the buyer wants to select manually from Telegram with /model.
+    In both cases the key must be available under Admira's custom provider env,
+    otherwise Hermes can list/select MiniMax and then fail provider auth.
+    """
+    settings = dict(primary_settings or {})
+    if settings.get("provider") == "minimax" and settings.get("api_key"):
+        return {
+            "api_key": str(settings.get("api_key") or "").strip(),
+            "base_url": str(settings.get("base_url") or "https://api.minimax.io/v1").strip().rstrip("/"),
+            "model": str(settings.get("model") or "MiniMax-M3").strip(),
+        }
+    api_key = str(getattr(config, "agent_chat_api_key", "") or "").strip()
+    base_url = str(getattr(config, "agent_chat_base_url", "") or "").strip().rstrip("/")
+    model = str(getattr(config, "agent_chat_model", "") or "").strip()
+    brain = str(getattr(config, "agent_brain_provider", "") or "").strip().lower().replace("-", "_")
+    looks_like_minimax = (
+        brain in {"minimax", "minimax_m3"}
+        or "minimax" in base_url.lower()
+        or "minimax" in model.lower()
+    )
+    if api_key and looks_like_minimax:
+        return {
+            "api_key": api_key,
+            "base_url": base_url or "https://api.minimax.io/v1",
+            "model": model or "MiniMax-M3",
+        }
+    env_key = os.environ.get(ADMIRA_MINIMAX_KEY_ENV, "").strip()
+    if env_key:
+        return {
+            "api_key": env_key,
+            "base_url": os.environ.get(ADMIRA_MINIMAX_BASE_URL_ENV, "https://api.minimax.io/v1").strip().rstrip("/") or "https://api.minimax.io/v1",
+            "model": os.environ.get("ADMIRA_MINIMAX_MODEL", "MiniMax-M3").strip() or "MiniMax-M3",
+        }
+    return {}
 
 
 def hermes_brain_settings(config):

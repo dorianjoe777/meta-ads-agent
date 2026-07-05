@@ -23,6 +23,7 @@ from hermes_bridge import (
     ADMIRA_MINIMAX_KEY_ENV,
     ADMIRA_MINIMAX_PROVIDER,
     ADMIRA_MINIMAX_PROVIDER_NAME,
+    admira_minimax_credentials,
     hermes_brain_settings,
     hermes_environment,
     prepare_hermes_workspace,
@@ -167,12 +168,16 @@ def _gateway_fingerprint(config, status, files):
     communication_style = communication_style_from_environment()
     ad_experience = ad_experience_from_environment()
     brain = hermes_brain_settings(config)
+    minimax_credentials = admira_minimax_credentials(config, brain)
     brain_fingerprint = {
         "brain": brain.get("brain", ""),
         "provider": brain.get("provider", ""),
         "model": brain.get("model", ""),
         "base_url": brain.get("base_url", ""),
         "api_key_set": bool(brain.get("api_key")),
+        "minimax_api_key_set": bool(minimax_credentials.get("api_key")),
+        "minimax_model": minimax_credentials.get("model", ""),
+        "minimax_base_url": minimax_credentials.get("base_url", ""),
         "requires_codex_auth": bool(brain.get("requires_codex_auth")),
     }
     brain_hash = hashlib.sha256(json.dumps(brain_fingerprint, sort_keys=True).encode("utf-8")).hexdigest()[:16]
