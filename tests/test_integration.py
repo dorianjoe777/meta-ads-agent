@@ -1131,7 +1131,11 @@ class IntegrationTestSuite:
         image_dir = ROOT_DIR / "output" / "test-runtime-generated-media"
         image_dir.mkdir(parents=True, exist_ok=True)
         generated_image = image_dir / "fixed-01.png"
+        old_image = image_dir / "old-creative.png"
+        current_image = image_dir / "current-creative.png"
         generated_image.write_bytes(b"fake png")
+        old_image.write_bytes(b"fake old png")
+        current_image.write_bytes(b"fake current png")
         original_env = {
             "ADMIRA_PRODUCT_ROOT": os.environ.get("ADMIRA_PRODUCT_ROOT"),
             "HERMES_MEDIA_ALLOW_DIRS": os.environ.get("HERMES_MEDIA_ALLOW_DIRS"),
@@ -1174,10 +1178,42 @@ class IntegrationTestSuite:
                     "messages": [],
                 }
             )
+            history_only_response = admira_hermes_runtime_patch._append_generated_media_attachments(
+                {
+                    "final_response": "Listo, revisé el error de aprobación. No generé imagen nueva.",
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": json.dumps({"image_path": str(old_image)}, ensure_ascii=False),
+                        },
+                        {"role": "user", "content": "Por qué falló la campaña?"},
+                        {"role": "assistant", "content": "Falló porque el ejecutable social no existe."},
+                    ],
+                }
+            )
+            current_turn_response = admira_hermes_runtime_patch._append_generated_media_attachments(
+                {
+                    "final_response": "Listo, generé una versión nueva.",
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": json.dumps({"image_path": str(old_image)}, ensure_ascii=False),
+                        },
+                        {"role": "user", "content": "Haz una versión nueva"},
+                        {
+                            "role": "assistant",
+                            "content": json.dumps({"image_path": str(current_image)}, ensure_ascii=False),
+                        },
+                    ],
+                }
+            )
             self.assert_true(f"MEDIA:{generated_image.resolve()}" in patched["final_response"], "Runtime patch appends generated image MEDIA directive from non-tool message results")
             self.assert_true(patched_again["final_response"].count("MEDIA:") == 1, "Runtime patch does not duplicate generated media attachments")
             self.assert_true("MEDIA:" not in unsafe["final_response"], "Runtime patch does not attach unsafe paths outside product output")
             self.assert_true(f"MEDIA:{generated_image.resolve()}" in plain_path_response["final_response"], "Runtime patch still attaches media when a small model leaks a plain output path")
+            self.assert_true("MEDIA:" not in history_only_response["final_response"], "Runtime patch does not reattach media from older session messages")
+            self.assert_true(f"MEDIA:{current_image.resolve()}" in current_turn_response["final_response"], "Runtime patch attaches media from the newest assistant result")
+            self.assert_true(f"MEDIA:{old_image.resolve()}" not in current_turn_response["final_response"], "Runtime patch does not attach older generated media when a newer image exists")
         finally:
             for key, value in original_env.items():
                 if value is None:

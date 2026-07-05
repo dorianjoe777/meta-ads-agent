@@ -189,12 +189,56 @@ def _collect_generated_media_paths(value, key_hint="", paths=None, depth=0):
     return paths
 
 
+def _latest_assistant_message(messages):
+    """Return only the newest assistant/tool message to avoid replaying old media."""
+    if not isinstance(messages, list):
+        return None
+    for message in reversed(messages):
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role") or "").strip().lower()
+        if role in {"assistant", "tool"}:
+            return message
+    return None
+
+
+def _current_generated_media_sources(response):
+    """Collect media-bearing fields from the current turn, not the whole session history."""
+    sources = []
+    final_response = str(response.get("final_response") or "")
+    if final_response:
+        sources.append(final_response)
+    for key in ADMIRA_GENERATED_MEDIA_KEYS:
+        if key in response:
+            sources.append({key: response.get(key)})
+    for key in (
+        "tool_result",
+        "tool_results",
+        "tool_response",
+        "tool_responses",
+        "result",
+        "results",
+        "action_result",
+        "action_results",
+        "mcp_result",
+        "mcp_results",
+    ):
+        if key in response:
+            sources.append(response.get(key))
+    latest_message = _latest_assistant_message(response.get("messages"))
+    if latest_message:
+        sources.append(latest_message)
+    return sources
+
+
 def _append_generated_media_attachments(response):
     """Append native MEDIA directives for generated images in any result shape."""
     if not isinstance(response, dict):
         return response
     final_response = str(response.get("final_response") or "")
-    paths = _collect_generated_media_paths(response)
+    paths = []
+    for source in _current_generated_media_sources(response):
+        _collect_generated_media_paths(source, paths=paths)
     if not paths:
         return response
     existing_media_paths = {
