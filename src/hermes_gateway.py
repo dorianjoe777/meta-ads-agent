@@ -19,7 +19,14 @@ from communication_style import (
     communication_style_from_environment,
     communication_style_instruction,
 )
-from hermes_bridge import hermes_brain_settings, hermes_environment, prepare_hermes_workspace
+from hermes_bridge import (
+    ADMIRA_MINIMAX_KEY_ENV,
+    ADMIRA_MINIMAX_PROVIDER,
+    ADMIRA_MINIMAX_PROVIDER_NAME,
+    hermes_brain_settings,
+    hermes_environment,
+    prepare_hermes_workspace,
+)
 from local_store import now_iso
 from product_config import ROOT_DIR, env_bool, env_int
 
@@ -111,8 +118,8 @@ def _gateway_model_config_lines(brain):
         f"  default: {_quote_yaml(model_default)}",
     ]
     if brain.get("brain") == "minimax":
-        provider_slug = "custom:admira-minimax"
-        provider_name = "admira-minimax"
+        provider_slug = ADMIRA_MINIMAX_PROVIDER
+        provider_name = ADMIRA_MINIMAX_PROVIDER_NAME
         lines = [
             "model:",
             f"  provider: {_quote_yaml(provider_slug)}",
@@ -120,7 +127,7 @@ def _gateway_model_config_lines(brain):
             "custom_providers:",
             f"  - name: {_quote_yaml(provider_name)}",
             f"    base_url: {_quote_yaml(base_url or 'https://api.minimax.io/v1')}",
-            "    key_env: \"MINIMAX_API_KEY\"",
+            f"    key_env: {_quote_yaml(ADMIRA_MINIMAX_KEY_ENV)}",
             "    api_mode: \"chat_completions\"",
             f"    model: {_quote_yaml(model_default)}",
             "    models:",
@@ -131,6 +138,14 @@ def _gateway_model_config_lines(brain):
             f"    provider: {_quote_yaml(provider_slug)}",
             f"    base_url: {_quote_yaml(base_url or 'https://api.minimax.io/v1')}",
             "  \"minimax m3\":",
+            f"    model: {_quote_yaml(model_default)}",
+            f"    provider: {_quote_yaml(provider_slug)}",
+            f"    base_url: {_quote_yaml(base_url or 'https://api.minimax.io/v1')}",
+            "  \"minimax-m3\":",
+            f"    model: {_quote_yaml(model_default)}",
+            f"    provider: {_quote_yaml(provider_slug)}",
+            f"    base_url: {_quote_yaml(base_url or 'https://api.minimax.io/v1')}",
+            "  \"minimax\":",
             f"    model: {_quote_yaml(model_default)}",
             f"    provider: {_quote_yaml(provider_slug)}",
             f"    base_url: {_quote_yaml(base_url or 'https://api.minimax.io/v1')}",

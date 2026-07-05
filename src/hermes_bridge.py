@@ -44,6 +44,10 @@ BRAND_GUIDES_DIR = ROOT_DIR / "brand_guides"
 AGENT_SKILLS_DIR = ROOT_DIR / "agent" / "skills"
 HERMES_WORKSPACE_DIR = DATA_DIR / "hermes-workspace" / "current"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+ADMIRA_MINIMAX_KEY_ENV = "ADMIRA_MINIMAX_API_KEY"
+ADMIRA_MINIMAX_BASE_URL_ENV = "ADMIRA_MINIMAX_BASE_URL"
+ADMIRA_MINIMAX_PROVIDER = "custom:admira-minimax"
+ADMIRA_MINIMAX_PROVIDER_NAME = "admira-minimax"
 BASE_ALLOWED_IMAGE_DIRS = (
     ROOT_DIR / "output",
     ROOT_DIR / "dashboard" / "data" / "uploads",
@@ -133,8 +137,8 @@ def _hermes_model_config_lines(brain):
         f"  default: {_quote_yaml(model_default)}",
     ]
     if brain.get("brain") == "minimax":
-        provider_slug = "custom:admira-minimax"
-        provider_name = "admira-minimax"
+        provider_slug = ADMIRA_MINIMAX_PROVIDER
+        provider_name = ADMIRA_MINIMAX_PROVIDER_NAME
         official_base_url = base_url or "https://api.minimax.io/v1"
         lines = [
             "model:",
@@ -143,7 +147,7 @@ def _hermes_model_config_lines(brain):
             "custom_providers:",
             f"  - name: {_quote_yaml(provider_name)}",
             f"    base_url: {_quote_yaml(official_base_url)}",
-            "    key_env: \"MINIMAX_API_KEY\"",
+            f"    key_env: {_quote_yaml(ADMIRA_MINIMAX_KEY_ENV)}",
             "    api_mode: \"chat_completions\"",
             f"    model: {_quote_yaml(model_default)}",
             "    models:",
@@ -157,13 +161,21 @@ def _hermes_model_config_lines(brain):
             f"    model: {_quote_yaml(model_default)}",
             f"    provider: {_quote_yaml(provider_slug)}",
             f"    base_url: {_quote_yaml(official_base_url)}",
+            "  \"minimax-m3\":",
+            f"    model: {_quote_yaml(model_default)}",
+            f"    provider: {_quote_yaml(provider_slug)}",
+            f"    base_url: {_quote_yaml(official_base_url)}",
+            "  \"minimax\":",
+            f"    model: {_quote_yaml(model_default)}",
+            f"    provider: {_quote_yaml(provider_slug)}",
+            f"    base_url: {_quote_yaml(official_base_url)}",
         ]
     return lines
 
 
 def hermes_cli_provider(brain):
     if brain.get("brain") == "minimax":
-        return "custom:admira-minimax"
+        return ADMIRA_MINIMAX_PROVIDER
     return brain.get("provider") or ""
 
 
@@ -901,9 +913,17 @@ def hermes_environment(config):
         env["HERMES_HOME"] = str(path)
     settings = hermes_brain_settings(config)
     if settings.get("provider") == "minimax" and settings.get("api_key"):
-        env["MINIMAX_API_KEY"] = settings["api_key"]
+        # Do not expose Admira's official MiniMax key as MINIMAX_API_KEY.
+        # Hermes treats that variable as a signal to show/use its native
+        # MiniMax provider, whose transport can differ from MiniMax's official
+        # OpenAI-compatible endpoint. Admira registers MiniMax M3 as a named
+        # custom provider instead, so keep the key under an Admira-only env var.
+        env.pop("MINIMAX_API_KEY", None)
+        env[ADMIRA_MINIMAX_KEY_ENV] = settings["api_key"]
         if settings.get("base_url"):
-            env["MINIMAX_BASE_URL"] = settings["base_url"]
+            env[ADMIRA_MINIMAX_BASE_URL_ENV] = settings["base_url"]
+        env["ADMIRA_MINIMAX_PROVIDER"] = ADMIRA_MINIMAX_PROVIDER
+        env["ADMIRA_MINIMAX_MODEL"] = settings.get("model") or "MiniMax-M3"
     if settings.get("provider") == "custom" and settings.get("api_key"):
         env["OPENAI_API_KEY"] = settings["api_key"]
         if settings.get("base_url"):

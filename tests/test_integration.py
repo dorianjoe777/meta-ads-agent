@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import types
 import importlib.util
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -984,7 +985,7 @@ class IntegrationTestSuite:
             self.assert_true("--provider" in command and command[command.index("--provider") + 1] == "custom:admira-minimax", "Dashboard MiniMax uses the official custom provider route")
             self.assert_true("admira" in toolsets and "web" in toolsets and "browser" in toolsets, "Dashboard Hermes CLI includes Admira MCP plus safe web/browser toolsets")
             self.assert_true(env["HERMES_HOME"] == str(home), "Dashboard Hermes CLI uses the configured Hermes home")
-            self.assert_true(env["MINIMAX_API_KEY"] == "direct-minimax-key" and env["MINIMAX_BASE_URL"] == "https://api.minimax.io/v1", "Official MiniMax credentials stay in the process environment")
+            self.assert_true(env["ADMIRA_MINIMAX_API_KEY"] == "direct-minimax-key" and env["ADMIRA_MINIMAX_BASE_URL"] == "https://api.minimax.io/v1" and "MINIMAX_API_KEY" not in env, "Official MiniMax credentials stay in the process environment without activating Hermes' native MiniMax provider")
             self.assert_true("mcp_servers:" in config_text and "admira_mcp_server.py" in config_text, "Hermes config registers the Admira MCP server")
             self.assert_true("custom:admira-minimax" in config_text and "https://api.minimax.io/v1" in config_text, "Hermes config points MiniMax to the official API")
             self.assert_true("direct-minimax-key" not in config_text and "openrouter" not in config_text.lower(), "Hermes config does not persist API keys or OpenRouter routing")
@@ -1121,6 +1122,89 @@ class IntegrationTestSuite:
         passthrough = admira_hermes_runtime_patch.provider_error_reply("Some unrelated provider failure", "es", lambda text: f"ORIGINAL:{text}")
         self.assert_true("un momento" in unknown and "rate-limiting" not in unknown.lower(), "Gateway keeps a Spanish fallback when only a vague wait hint exists")
         self.assert_true(passthrough.startswith("ORIGINAL:"), "Runtime patch delegates unrelated provider failures to Hermes")
+
+    def test_hermes_gateway_minimax_runtime_patch_forces_official_provider(self):
+        """Test Telegram /model MiniMax choices are forced onto Admira's official custom provider."""
+        print("\nTesting Hermes Gateway MiniMax Official Provider Runtime Patch...")
+
+        original_modules = {
+            "hermes_cli": sys.modules.get("hermes_cli"),
+            "hermes_cli.model_switch": sys.modules.get("hermes_cli.model_switch"),
+        }
+        original_env = {key: os.environ.get(key) for key in ["ADMIRA_MINIMAX_API_KEY", "ADMIRA_MINIMAX_BASE_URL", "ADMIRA_MINIMAX_MODEL", "ADMIRA_MINIMAX_PROVIDER"]}
+
+        class DirectAlias:
+            def __init__(self, model, provider, base_url):
+                self.model = model
+                self.provider = provider
+                self.base_url = base_url
+
+        fake_parent = types.ModuleType("hermes_cli")
+        fake_parent.__path__ = []
+        fake_model_switch = types.ModuleType("hermes_cli.model_switch")
+        fake_model_switch.DirectAlias = DirectAlias
+        fake_model_switch.DIRECT_ALIASES = {}
+        switch_calls = {}
+
+        def original_resolve_alias(raw_input, current_provider=""):
+            return None
+
+        def original_switch_model(**kwargs):
+            switch_calls.update(kwargs)
+            return {"success": True}
+
+        def original_list_authenticated_providers(*_args, **_kwargs):
+            return [
+                {"slug": "minimax", "name": "MiniMax", "models": ["MiniMax-M3"]},
+                {"slug": "custom:admira-minimax", "name": "admira-minimax", "models": ["MiniMax-M3"]},
+            ]
+
+        fake_model_switch.resolve_alias = original_resolve_alias
+        fake_model_switch.switch_model = original_switch_model
+        fake_model_switch.list_authenticated_providers = original_list_authenticated_providers
+        fake_model_switch.list_picker_providers = original_list_authenticated_providers
+
+        try:
+            sys.modules["hermes_cli"] = fake_parent
+            sys.modules["hermes_cli.model_switch"] = fake_model_switch
+            os.environ["ADMIRA_MINIMAX_API_KEY"] = "direct-minimax-key"
+            os.environ["ADMIRA_MINIMAX_BASE_URL"] = "https://api.minimax.io/v1"
+            os.environ["ADMIRA_MINIMAX_MODEL"] = "MiniMax-M3"
+            os.environ["ADMIRA_MINIMAX_PROVIDER"] = "custom:admira-minimax"
+
+            applied = admira_hermes_runtime_patch.apply()
+            alias = fake_model_switch.resolve_alias("MiniMax M3", "openai-codex")
+            fake_model_switch.switch_model(
+                raw_input="MiniMax-M3",
+                current_provider="openai-codex",
+                current_model="gpt-5.5",
+                current_base_url="",
+                current_api_key="",
+                explicit_provider="minimax",
+                user_providers={},
+                custom_providers=[],
+            )
+            provider_rows = fake_model_switch.list_authenticated_providers()
+            picker_rows = fake_model_switch.list_picker_providers()
+
+            self.assert_true(applied is True, "Admira runtime patch applies even when only the model-switch patch is available")
+            self.assert_true(alias == ("custom:admira-minimax", "MiniMax-M3", "minimax m3"), "MiniMax M3 aliases resolve to the Admira custom provider")
+            self.assert_true("minimax" in fake_model_switch.DIRECT_ALIASES and fake_model_switch.DIRECT_ALIASES["minimax"].provider == "custom:admira-minimax", "Runtime patch injects direct MiniMax aliases before picker resolution")
+            self.assert_true(switch_calls["explicit_provider"] == "custom:admira-minimax" and switch_calls["raw_input"] == "MiniMax-M3", "Native MiniMax picker selections are rewritten to the official custom provider")
+            self.assert_true(switch_calls["custom_providers"][0]["key_env"] == "ADMIRA_MINIMAX_API_KEY" and switch_calls["custom_providers"][0]["api_mode"] == "chat_completions", "Injected custom provider uses Admira's private key env and OpenAI-compatible mode")
+            self.assert_true(all(row["slug"] != "minimax" for row in provider_rows + picker_rows), "Native Hermes MiniMax row is hidden when Admira MiniMax is configured")
+            self.assert_true(any(row["name"] == "MiniMax M3 oficial" for row in provider_rows + picker_rows), "Custom MiniMax row is shown with a buyer-friendly label")
+        finally:
+            for key, value in original_modules.items():
+                if value is None:
+                    sys.modules.pop(key, None)
+                else:
+                    sys.modules[key] = value
+            for key, value in original_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
     def test_dashboard_chatgpt_connect_action_opens_terminal(self):
         """Test the dashboard ChatGPT/Codex connection endpoint prefers an automatic terminal action."""
@@ -1855,10 +1939,10 @@ class IntegrationTestSuite:
             minimax_yaml = Path(minimax_files["config"]).read_text(encoding="utf-8")
             minimax_env = Path(minimax_files["env"]).read_text(encoding="utf-8")
             self.assert_true('provider: "custom:admira-minimax"' in minimax_yaml and 'default: "MiniMax-M3"' in minimax_yaml, "Hermes Gateway writes MiniMax M3 as a named OpenAI-compatible provider instead of hardcoding ChatGPT/Codex")
-            self.assert_true("custom_providers:" in minimax_yaml and 'name: "admira-minimax"' in minimax_yaml and 'key_env: "MINIMAX_API_KEY"' in minimax_yaml and 'api_mode: "chat_completions"' in minimax_yaml, "Hermes Gateway exposes MiniMax through a custom provider that the Telegram /model switch can resolve")
-            self.assert_true("model_aliases:" in minimax_yaml and '"minimax m3":' in minimax_yaml, "Hermes Gateway pins manual /model MiniMax M3 switches to the Admira MiniMax endpoint")
+            self.assert_true("custom_providers:" in minimax_yaml and 'name: "admira-minimax"' in minimax_yaml and 'key_env: "ADMIRA_MINIMAX_API_KEY"' in minimax_yaml and 'api_mode: "chat_completions"' in minimax_yaml, "Hermes Gateway exposes MiniMax through a custom provider that the Telegram /model switch can resolve")
+            self.assert_true("model_aliases:" in minimax_yaml and '"minimax m3":' in minimax_yaml and '"minimax-m3":' in minimax_yaml and '"minimax":' in minimax_yaml, "Hermes Gateway pins manual /model MiniMax M3 switches to the Admira MiniMax endpoint")
             self.assert_true("direct-model-key" not in minimax_yaml, "Hermes Gateway config never writes the direct model API key")
-            self.assert_true("direct-model-key" not in minimax_env and "MINIMAX_API_KEY" not in minimax_env, "Hermes Gateway env file never persists direct model secrets")
+            self.assert_true("direct-model-key" not in minimax_env and "MINIMAX_API_KEY" not in minimax_env and "ADMIRA_MINIMAX_API_KEY" not in minimax_env, "Hermes Gateway env file never persists direct model secrets")
             codex_fp = hermes_gateway._gateway_fingerprint(FakeConfig(), hermes_gateway.telegram_settings(FakeConfig()), files)
             minimax_fp = hermes_gateway._gateway_fingerprint(MiniMaxConfig(), hermes_gateway.telegram_settings(MiniMaxConfig()), minimax_files)
             self.assert_true(codex_fp != minimax_fp and "direct-model-key" not in minimax_fp, "Hermes Gateway fingerprint changes on brain/provider updates without leaking secrets")
@@ -2217,9 +2301,9 @@ class IntegrationTestSuite:
             minimax_config = Path(minimax_started["config"]).read_text(encoding="utf-8")
             minimax_process_env = popen_calls[0][1].get("env") or {}
             self.assert_true(minimax_started["started"] is True, "Hermes Gateway restarts cleanly after switching the primary brain to MiniMax")
-            self.assert_true(minimax_process_env.get("MINIMAX_API_KEY") == "direct-model-key" and minimax_process_env.get("MINIMAX_BASE_URL") == "https://api.minimax.io/v1", "Hermes Gateway passes MiniMax API credentials only through the live process environment")
-            self.assert_true('provider: "custom:admira-minimax"' in minimax_config and 'key_env: "MINIMAX_API_KEY"' in minimax_config, "Hermes Gateway routes Telegram MiniMax M3 through the Admira custom provider")
-            self.assert_true("model_aliases:" in minimax_config and '"minimax m3":' in minimax_config, "Hermes Gateway keeps manual Telegram /model MiniMax M3 switches on the configured MiniMax API")
+            self.assert_true(minimax_process_env.get("ADMIRA_MINIMAX_API_KEY") == "direct-model-key" and minimax_process_env.get("ADMIRA_MINIMAX_BASE_URL") == "https://api.minimax.io/v1" and "MINIMAX_API_KEY" not in minimax_process_env, "Hermes Gateway passes MiniMax API credentials only through the live process environment without activating Hermes' native MiniMax provider")
+            self.assert_true('provider: "custom:admira-minimax"' in minimax_config and 'key_env: "ADMIRA_MINIMAX_API_KEY"' in minimax_config, "Hermes Gateway routes Telegram MiniMax M3 through the Admira custom provider")
+            self.assert_true("model_aliases:" in minimax_config and '"minimax m3":' in minimax_config and '"minimax":' in minimax_config, "Hermes Gateway keeps manual Telegram /model MiniMax M3 switches on the configured MiniMax API")
             self.assert_true("direct-model-key" not in minimax_config, "Hermes Gateway never serializes MiniMax API keys into config.yaml")
 
             hermes_gateway.stop_gateway()
@@ -7177,6 +7261,7 @@ class IntegrationTestSuite:
             self.test_hermes_missing_runtime_gives_chatgpt_setup_guidance,
             self.test_hermes_model_usage_limit_keeps_connection_state_clear,
             self.test_hermes_gateway_rate_limit_runtime_patch_localizes_reset_time,
+            self.test_hermes_gateway_minimax_runtime_patch_forces_official_provider,
             self.test_dashboard_chatgpt_connect_action_opens_terminal,
             self.test_dashboard_image_only_chatgpt_connect_preserves_text_brain,
             self.test_dashboard_chatgpt_disconnect_clears_only_auth_artifacts,
