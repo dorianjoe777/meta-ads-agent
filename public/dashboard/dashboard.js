@@ -7,9 +7,12 @@ let businessContextQuestionIndex=0;
 let destinationAutoDiscoveryKey='';
 let dailyBriefTimezoneSyncStarted=false;
 let updateCheckStarted=false;
+let updateCheckInFlight=false;
+let updateLastCheckedAt=0;
 let updateInfo=null;
 let updateAutoTimer=null;
 const UPDATE_INSTALLED_ACK_KEY='dashboardUpdateInstalledVersion';
+const UPDATE_CHECK_COOLDOWN_MS=60*1000;
 const ONBOARDING_STEP_KEY='dashboardOnboardingStepId';
 const fmtMoney=n=>'$'+Number(n||0).toLocaleString(undefined,{maximumFractionDigits:2});
 const fmtPct=n=>Number(n||0).toFixed(2)+'%';
@@ -383,7 +386,7 @@ function allowedActionCall(name){
   saveProductMemory,saveAdBriefMemory,uploadBrandLogo,activateLicenseFromForm,setDashboardPasswordFromOnboarding,saveBusinessLinks,
   saveBusinessContextQuestion,saveGuardrails,saveProfitabilityRules,saveOptimizationSettings,saveShopifyConfig,testShopifyConnection,syncShopifyOutcomes,unlockOptimization,saveSetupConfig,sendChatGptTerminalInput,restoreMigrationBackup,
   budgetPrompt,campaignAction,detectTelegramChats,setLocalNetworkAccess,showDetails,selectAgentModelRoute,saveChatGptModel,
-  connectChatGpt,connectImageChatGpt,disconnectAgentModel,saveImageChatGptRouting,toggleChatGptDeviceAuthHelp,downloadMigrationBackup,refreshCloudAccess,loadUpdateSnapshots,showUpdateDetails,
+  connectChatGpt,connectImageChatGpt,disconnectAgentModel,saveImageChatGptRouting,toggleChatGptDeviceAuthHelp,downloadMigrationBackup,refreshCloudAccess,loadUpdateSnapshots,showUpdateDetails,checkForUpdates,
   openDailyBriefSchedule,closeDailyBriefSchedule,saveDailyBriefSchedule,renderOnboardingFlow,setOnboardingFlowStep
  };
  return actions[name]||null;
@@ -2145,7 +2148,7 @@ function renderCloudAccessPanel(){
  qs('#cloud-access-panel').innerHTML=`<div class="next-step"><div><b>${lang==='es'?'Mantener acceso cuando estás en la nube':'Keep cloud dashboard access'}</b><p>${lang==='es'?'Si este dashboard ya abrió desde tu red actual, este botón autoriza esta red en DigitalOcean. Úsalo cuando cambies de Wi-Fi antes de cerrar la página.':'If this dashboard already opened from your current network, this button authorizes this network in DigitalOcean. Use it when you change Wi-Fi before closing the page.'}</p></div><div class="mode-actions"><button class="btn" type="button" data-action-code="refreshCloudAccess()">${lang==='es'?'Permitir esta red':'Allow this network'}</button></div></div><div id="cloud-access-result"></div><p class="notice">${lang==='es'?'Si el dashboard no carga porque tu IP ya cambió, este botón no puede ayudarte todavía. Recupera entrada desde el portal de DigitalOcean, SSH o la consola web; después vuelve aquí para dejar la nueva red guardada.':'If the dashboard does not load because your IP already changed, this button cannot help yet. Recover access from the DigitalOcean portal, SSH, or web console; then return here to save the new network.'}</p>`;
 }
 function renderUpdateRollbackPanel(){
- qs('#update-rollback-panel').innerHTML=`<div class="next-step"><div><b>${lang==='es'?'Volver a una versión anterior':'Restore previous update'}</b><p>${lang==='es'?'Antes de instalar una actualización oficial, guardo una copia de seguridad. Conservo las últimas 3 por si necesitas volver a algo que ya funcionaba.':'Before installing an official update, I save a backup. The last 3 are kept so you can return to something that was working.'}</p></div><div class="mode-actions"><button class="btn" type="button" data-action-code="loadUpdateSnapshots(true)">${lang==='es'?'Ver copias guardadas':'View saved copies'}</button></div></div><div id="update-snapshot-list"></div>`;
+ qs('#update-rollback-panel').innerHTML=`<div class="next-step"><div><b>${lang==='es'?'Actualizaciones y copias':'Updates and backups'}</b><p>${lang==='es'?'Antes de instalar una actualización oficial, guardo una copia de seguridad. También puedes buscar updates manualmente si acabamos de publicar una corrección.':'Before installing an official update, I save a backup. You can also check manually if we just published a fix.'}</p></div><div class="mode-actions"><button class="btn primary" type="button" data-action-code="checkForUpdates(true)">${lang==='es'?'Buscar update ahora':'Check for updates now'}</button><button class="btn" type="button" data-action-code="loadUpdateSnapshots(true)">${lang==='es'?'Ver copias guardadas':'View saved copies'}</button></div></div><div id="update-snapshot-list"></div>`;
  loadUpdateSnapshots(false);
 }
 function updateCardsMarkup(info){
@@ -2196,11 +2199,15 @@ function startUpdateAutoCheck(){
  updateAutoTimer=setInterval(()=>checkForUpdates(true,{silent:true}),15*60*1000);
 }
 async function checkForUpdates(force=false,options={}){
- if(updateCheckStarted&&!force)return;
+ const now=Date.now();
+ if(updateCheckInFlight)return;
+ if(updateCheckStarted&&!force&&updateLastCheckedAt&&now-updateLastCheckedAt<UPDATE_CHECK_COOLDOWN_MS)return;
  if(!dashboardPassword())return;
  updateCheckStarted=true;
+ updateCheckInFlight=true;
+ updateLastCheckedAt=now;
  const silent=Boolean(options.silent);
- try{const res=await api('/api/update/check',{method:'POST',body:'{}'});updateInfo=res.result||null;renderUpdateBanner(updateInfo);if(force&&!silent)toast(updateInfo?.available?(lang==='es'?'Actualización disponible':'Update available'):(lang==='es'?'Ya tienes la versión más reciente':'You already have the latest version'))}catch(err){if(force&&!silent)toast(lang==='es'?'No pude revisar actualizaciones':'Could not check for updates')}
+ try{const res=await api('/api/update/check',{method:'POST',body:'{}'});updateInfo=res.result||null;renderUpdateBanner(updateInfo);if(force&&!silent)toast(updateInfo?.available?(lang==='es'?'Actualización disponible':'Update available'):(lang==='es'?'Ya tienes la versión más reciente':'You already have the latest version'))}catch(err){if(force&&!silent)toast(lang==='es'?'No pude revisar actualizaciones':'Could not check for updates')}finally{updateCheckInFlight=false}
 }
 async function applyDashboardUpdate(){
  const box=qs('#confirm-overlay');box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'Instalando actualización':'Installing update'}</h2><p>${lang==='es'?'Estoy descargando el paquete oficial y conservando tus datos locales. El dashboard se reiniciará al terminar.':'Downloading the official package and keeping local data. The dashboard will restart when finished.'}</p></div>`;box.classList.add('open');
