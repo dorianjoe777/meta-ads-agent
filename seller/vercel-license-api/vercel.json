@@ -31,19 +31,19 @@
     },
     {
       "source": "/privacy",
-      "destination": "/api/privacy"
+      "destination": "/privacy.html"
     },
     {
       "source": "/privacy-policy",
-      "destination": "/api/privacy"
+      "destination": "/privacy.html"
     },
     {
       "source": "/data-deletion",
-      "destination": "/api/data-deletion"
+      "destination": "/data-deletion.html"
     },
     {
       "source": "/delete-data",
-      "destination": "/api/data-deletion"
+      "destination": "/data-deletion.html"
     }
   ]
 }

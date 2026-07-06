@@ -1,19 +1,4 @@
-const UPDATED_AT = "July 6, 2026";
-
-function setHtmlHeaders(response) {
-  response.setHeader("Content-Type", "text/html; charset=utf-8");
-  response.setHeader("Cache-Control", "public, max-age=300, s-maxage=3600");
-  response.setHeader("X-Frame-Options", "DENY");
-  response.setHeader("X-Content-Type-Options", "nosniff");
-  response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
-  response.setHeader(
-    "Content-Security-Policy",
-    "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
-  );
-}
-
-function page() {
-  return `<!doctype html>
+<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -39,7 +24,7 @@ function page() {
     <article class="card">
       <div class="eyebrow">Admira IA</div>
       <h1>Data Deletion Instructions</h1>
-      <p class="updated">Last updated: ${UPDATED_AT}</p>
+      <p class="updated">Last updated: July 6, 2026</p>
 
       <p>
         If you connected Admira IA to Meta/Facebook and want your data deleted from Admira IA systems,
@@ -77,13 +62,4 @@ function page() {
     </article>
   </main>
 </body>
-</html>`;
-}
-
-export default function handler(request, response) {
-  if (request.method !== "GET" && request.method !== "HEAD") {
-    return response.status(405).send("Method not allowed");
-  }
-  setHtmlHeaders(response);
-  return response.status(200).send(request.method === "HEAD" ? "" : page());
-}
+</html>
