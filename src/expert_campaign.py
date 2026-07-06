@@ -14,6 +14,15 @@ from datetime import datetime
 ACTIVE_STATUSES = {"ACTIVE", "PAUSED"}
 BILLING_EVENTS = {"IMPRESSIONS", "LINK_CLICKS", "THRUPLAY", "APP_INSTALLS", "POST_ENGAGEMENT"}
 DEFAULT_BILLING_EVENT = "IMPRESSIONS"
+BID_STRATEGY_ALIASES = {
+    "LOWEST_COST": "LOWEST_COST_WITHOUT_CAP",
+    "LOWEST_COST_NO_CAP": "LOWEST_COST_WITHOUT_CAP",
+    "WITHOUT_CAP": "LOWEST_COST_WITHOUT_CAP",
+    "BID_CAP": "LOWEST_COST_WITH_BID_CAP",
+    "CAP": "LOWEST_COST_WITH_BID_CAP",
+    "TARGET": "TARGET_COST",
+}
+BID_AMOUNT_REQUIRED_STRATEGIES = {"LOWEST_COST_WITH_BID_CAP", "TARGET_COST", "COST_CAP"}
 
 TARGETING_LIST_FIELDS = {
     "device_platforms",
@@ -110,16 +119,37 @@ def normalize_billing_event(value):
     return event if event in BILLING_EVENTS else DEFAULT_BILLING_EVENT
 
 
+def normalize_bid_strategy(value):
+    strategy = str(value or "").strip().upper().replace(" ", "_").replace("-", "_")
+    return BID_STRATEGY_ALIASES.get(strategy, strategy)
+
+
+def sanitize_bidding(bidding):
+    bidding = dict(bidding or {}) if isinstance(bidding, dict) else {}
+    strategy = normalize_bid_strategy(bidding.get("bid_strategy"))
+    bid_amount = intish(bidding.get("bid_amount"), 0)
+    clean = {}
+    if strategy:
+        if strategy in BID_AMOUNT_REQUIRED_STRATEGIES and bid_amount <= 0:
+            strategy = "LOWEST_COST_WITHOUT_CAP"
+        clean["bid_strategy"] = strategy
+    elif bid_amount > 0:
+        clean["bid_strategy"] = "LOWEST_COST_WITH_BID_CAP"
+    if bid_amount > 0 and clean.get("bid_strategy") in BID_AMOUNT_REQUIRED_STRATEGIES:
+        clean["bid_amount"] = bid_amount
+    return clean
+
+
 def normalize_bidding(payload):
     raw = parse_jsonish(payload.get("bidding") or payload.get("bidding_json"), {})
     bidding = dict(raw) if isinstance(raw, dict) else {}
-    bid_strategy = str(payload.get("bid_strategy") or payload.get("bid_strategy_type") or bidding.get("bid_strategy") or "").strip().upper()
+    bid_strategy = normalize_bid_strategy(payload.get("bid_strategy") or payload.get("bid_strategy_type") or bidding.get("bid_strategy"))
     if bid_strategy:
         bidding["bid_strategy"] = bid_strategy
     bid_amount = intish(payload.get("bid_amount") or payload.get("bid_amount_cents") or bidding.get("bid_amount"), 0)
     if bid_amount > 0:
         bidding["bid_amount"] = bid_amount
-    return bidding
+    return sanitize_bidding(bidding)
 
 
 def normalize_schedule(payload):

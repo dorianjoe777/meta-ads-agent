@@ -5465,7 +5465,7 @@ class IntegrationTestSuite:
                 "adset_status": "PAUSED",
                 "ad_status": "PAUSED",
                 "billing_event": "IMPRESSIONS",
-                "bid_strategy": "LOWEST_COST_WITHOUT_CAP",
+                "bid_strategy": "LOWEST_COST_WITH_BID_CAP",
                 "start_time": "2026-07-01T09:00:00-05:00",
                 "end_time": "2026-07-15T23:59:00-05:00",
                 "creative_format": "static_feed",
@@ -5500,7 +5500,7 @@ class IntegrationTestSuite:
             self.assert_true(result["payload"]["requested"]["success_metrics"]["items"][0]["target"] == "2.5x", "Approval card exposes ranked success metrics and targets")
             self.assert_true(result["payload"]["dry_run_preview"]["campaign"]["success_metrics"]["items"][1]["metric"] == "cost_per_purchase", "Dry-run preview includes campaign success metrics")
             self.assert_true(campaign["status_plan"] == {"campaign": "PAUSED", "adset": "PAUSED", "ad": "PAUSED"}, "Staged campaign stores campaign/adset/ad status plan")
-            self.assert_true(campaign["ad_sets"][0]["billing_event"] == "IMPRESSIONS" and campaign["ad_sets"][0]["bidding"]["bid_strategy"] == "LOWEST_COST_WITHOUT_CAP", "Staged campaign stores billing and bidding controls")
+            self.assert_true(campaign["ad_sets"][0]["billing_event"] == "IMPRESSIONS" and campaign["ad_sets"][0]["bidding"]["bid_strategy"] == "LOWEST_COST_WITHOUT_CAP", "Staged campaign downgrades bid-cap bidding without bid_amount to safe lowest-cost bidding")
             self.assert_true(campaign["ad_sets"][0]["start_time"].startswith("2026-07-01") and campaign["ad_sets"][0]["end_time"].startswith("2026-07-15"), "Staged campaign stores ad set schedule controls")
             self.assert_true(targeting["custom_audiences"][0]["id"] == "ca_1" and targeting["excluded_custom_audiences"][0]["id"] == "ca_2", "Campaign stores custom audience inclusion and exclusion")
             self.assert_true(targeting["device_platforms"] == ["mobile"] and targeting["user_os"] == ["iOS", "Android"], "Campaign stores device/platform targeting fields")
@@ -5591,6 +5591,21 @@ class IntegrationTestSuite:
         checkout_args, _ = captured[0]
         checkout_promoted = json.loads(checkout_args[checkout_args.index("--promoted-object") + 1])
         self.assert_true(checkout_promoted["custom_event_type"] == "INITIATED_CHECKOUT", "Social CLI maps InitiateCheckout to Meta's INITIATED_CHECKOUT enum")
+        captured.clear()
+        client.create_adset(
+            "camp_1",
+            "Ad Set No Bid Cap Amount",
+            {"geo_locations": {"countries": ["MX"]}},
+            2500,
+            "PAUSED",
+            "OFFSITE_CONVERSIONS",
+            promoted_object={"pixel_id": "123", "custom_event_type": "InitiateCheckout"},
+            bidding={"bid_strategy": "LOWEST_COST_WITH_BID_CAP"},
+            approved=True,
+        )
+        cap_args, _ = captured[0]
+        cap_bidding = json.loads(cap_args[cap_args.index("--bidding") + 1])
+        self.assert_true(cap_bidding == {"bid_strategy": "LOWEST_COST_WITHOUT_CAP"}, "Social CLI downgrades bid-cap bidding without bid_amount before execution")
 
     def test_social_flow_creative_supports_full_story_and_media_urls(self):
         """Test Social CLI creative creation can use full object_story_spec and media URL controls."""
@@ -5658,6 +5673,19 @@ class IntegrationTestSuite:
             self.assert_true(body.get("id") == "camp_graph_1", "Graph fallback preserves the JSON id shape expected by campaign execution")
             self.assert_true("act_999/campaigns" in result.get("graph_endpoint", ""), "Graph fallback posts to the ad account campaign endpoint")
             self.assert_true(requests and b"special_ad_categories=%5B%5D" in requests[0].data, "Graph campaign fallback includes required special ad categories")
+            requests.clear()
+            client.create_adset(
+                "camp_graph_1",
+                "Ad Set",
+                {"geo_locations": {"countries": ["MX"]}},
+                2000,
+                "PAUSED",
+                "OFFSITE_CONVERSIONS",
+                promoted_object={"pixel_id": "123", "custom_event_type": "InitiateCheckout"},
+                bidding={"bid_strategy": "TARGET_COST"},
+                approved=True,
+            )
+            self.assert_true(requests and b"bid_strategy=LOWEST_COST_WITHOUT_CAP" in requests[-1].data and b"bid_amount=" not in requests[-1].data, "Graph fallback downgrades target-cost bidding without bid_amount before calling Meta")
         finally:
             social_flow_client.subprocess.run = original_run
             social_flow_client.urllib.request.urlopen = original_urlopen

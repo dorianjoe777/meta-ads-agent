@@ -265,6 +265,41 @@ class SocialFlowClient:
             promoted["custom_event_type"] = cls.normalize_custom_event_type(promoted.get("custom_event_type"))
         return promoted
 
+    @staticmethod
+    def normalize_bid_strategy(value):
+        strategy = str(value or "").strip().upper().replace(" ", "_").replace("-", "_")
+        aliases = {
+            "LOWEST_COST": "LOWEST_COST_WITHOUT_CAP",
+            "LOWEST_COST_NO_CAP": "LOWEST_COST_WITHOUT_CAP",
+            "WITHOUT_CAP": "LOWEST_COST_WITHOUT_CAP",
+            "BID_CAP": "LOWEST_COST_WITH_BID_CAP",
+            "CAP": "LOWEST_COST_WITH_BID_CAP",
+            "TARGET": "TARGET_COST",
+        }
+        return aliases.get(strategy, strategy)
+
+    @classmethod
+    def normalize_bidding_config(cls, value):
+        if not isinstance(value, dict):
+            return value
+        bidding = dict(value)
+        strategy = cls.normalize_bid_strategy(bidding.get("bid_strategy"))
+        try:
+            amount = int(float(str(bidding.get("bid_amount") or 0).replace(",", "")))
+        except (TypeError, ValueError):
+            amount = 0
+        amount_required = {"LOWEST_COST_WITH_BID_CAP", "TARGET_COST", "COST_CAP"}
+        clean = {}
+        if strategy:
+            if strategy in amount_required and amount <= 0:
+                strategy = "LOWEST_COST_WITHOUT_CAP"
+            clean["bid_strategy"] = strategy
+        elif amount > 0:
+            clean["bid_strategy"] = "LOWEST_COST_WITH_BID_CAP"
+        if amount > 0 and clean.get("bid_strategy") in amount_required:
+            clean["bid_amount"] = amount
+        return clean
+
     def graph_fallback(self, args, record, direct=False):
         if not getattr(self.config, "meta_access_token", ""):
             return None
@@ -391,6 +426,7 @@ class SocialFlowClient:
                     except json.JSONDecodeError:
                         bidding_payload = {"bid_strategy": bidding}
                     if isinstance(bidding_payload, dict):
+                        bidding_payload = self.normalize_bidding_config(bidding_payload)
                         if bidding_payload.get("bid_strategy"):
                             fields["bid_strategy"] = bidding_payload["bid_strategy"]
                         if bidding_payload.get("bid_amount"):
@@ -588,7 +624,7 @@ class SocialFlowClient:
         if promoted_object:
             args.extend(["--promoted-object", json.dumps(self.normalize_promoted_object(promoted_object))])
         if bidding:
-            args.extend(["--bidding", json.dumps(bidding)])
+            args.extend(["--bidding", json.dumps(self.normalize_bidding_config(bidding))])
         if daily_budget_cents:
             args.extend(["--daily-budget", str(int(daily_budget_cents))])
         if lifetime_budget_cents:

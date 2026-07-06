@@ -456,7 +456,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
             SocialFlowClient.normalize_optimization_goal(adset.get("optimization_goal") or "LINK_CLICKS"),
             promoted_object=SocialFlowClient.normalize_promoted_object(adset.get("promoted_object") or {}),
             billing_event=adset.get("billing_event") or "IMPRESSIONS",
-            bidding=adset.get("bidding") or {},
+            bidding=SocialFlowClient.normalize_bidding_config(adset.get("bidding") or {}),
             lifetime_budget_cents=lifetime_budget,
             start_time=adset.get("start_time") or "",
             end_time=adset.get("end_time") or "",
