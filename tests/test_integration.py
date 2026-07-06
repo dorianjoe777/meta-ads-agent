@@ -6448,6 +6448,7 @@ class IntegrationTestSuite:
         self.assert_true("unlock-overlay" in html, "Unlock overlay exists")
         self.assert_true("security-trust" not in html, "Security trust cards are not shown inside setup")
         self.assert_true("header-guide-btn" in html and "openUsageGuide()" in html, "Guide opens from compact header button")
+        self.assert_true("version-pill" in html and 'id="s-version"' in html and "product_version" in dashboard_source, "Header exposes the installed product version")
         self.assert_true("guide-overlay" in html and "guide-modal-card" in html, "Guide cards are shown in a popup")
         self.assert_true("@keyframes chat-panel-in" in html and "chat-avatar-pop" in html, "Chat opens with polished motion")
         self.assert_true("agent-chat-bar" in html and "agent-bar-input" in html, "Primary chat entry is a wide agent input bar")

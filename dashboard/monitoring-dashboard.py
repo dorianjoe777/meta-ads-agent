@@ -9087,6 +9087,7 @@ def dashboard_payload():
         "local_network_access": dashboard_network_access_payload(),
         "config": {
             "mode": config.mode,
+            "product_version": current_product_version(),
             "communication_preference": {
                 **communication_preference(
                     config.communication_style,
@@ -9221,6 +9222,7 @@ HTML = r"""<!DOCTYPE html>
 <div class="pill"><span id="top-cpa"></span> <strong id="s-cpa">--</strong></div>
 <div class="pill"><span id="top-mode"></span> <strong id="s-mode">--</strong></div>
 <div class="pill"><span data-i18n="updated">Updated</span> <strong id="s-updated">--</strong></div>
+<div class="pill version-pill" title="Installed version"><span data-i18n="version">Version</span> <strong id="s-version">--</strong></div>
 </div>
 </header>
 <section class="update-banner hidden" id="update-banner"></section>
