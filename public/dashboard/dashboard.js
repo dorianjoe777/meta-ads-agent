@@ -1671,7 +1671,7 @@ function chatGptConnectMarkup(onboarding=false){
  const brain=model.brain_provider||'openai_codex';
  const apiBrain=['openai_api','minimax','custom_api'].includes(brain);
  const apiReady=apiBrain&&model.api_key_set&&Boolean(model.base_url)&&Boolean(model.model);
- const chatgptConnected=Boolean(model.chatgpt_connected)||(runtime.status==='ok'&&String(model.chatgpt_session_detail||auth.detail||'').toLowerCase().includes('openai codex')&&!String(model.chatgpt_session_detail||auth.detail||'').toLowerCase().includes('not logged in'));
+ const chatgptConnected=Boolean(model.chatgpt_connected);
  const chatgptReady=chatgptConnected&&brain==='openai_codex';
  const ready=chatgptReady||apiReady;
  const hermesMissing=runtime.status==='blocked';
