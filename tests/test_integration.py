@@ -987,6 +987,7 @@ class IntegrationTestSuite:
             self.assert_true("--provider" in command and command[command.index("--provider") + 1] == "admira-minimax", "Dashboard MiniMax uses Hermes' official providers entry route")
             self.assert_true("admira" in toolsets and "web" in toolsets and "browser" in toolsets, "Dashboard Hermes CLI includes Admira MCP plus safe web/browser toolsets")
             self.assert_true(env["HERMES_HOME"] == str(home), "Dashboard Hermes CLI uses the configured Hermes home")
+            self.assert_true(env["CODEX_HOME"] == str(home), "Dashboard Hermes CLI isolates Codex auth to the same configured Hermes home")
             self.assert_true(env["ADMIRA_MINIMAX_API_KEY"] == "direct-minimax-key" and env["ADMIRA_MINIMAX_BASE_URL"] == "https://api.minimax.io/v1" and "MINIMAX_API_KEY" not in env, "Official MiniMax credentials stay in the process environment without activating Hermes' native MiniMax provider")
             self.assert_true("mcp_servers:" in config_text and "admira_mcp_server.py" in config_text, "Hermes config registers the Admira MCP server")
             self.assert_true("providers:" in config_text and "admira-minimax:" in config_text and "https://api.minimax.io/v1" in config_text and "custom:admira-minimax" not in config_text, "Hermes config points MiniMax to the official API through a providers entry")
@@ -1453,7 +1454,9 @@ class IntegrationTestSuite:
         dashboard = load_dashboard_module()
         dashboard.DATA_DIR.mkdir(parents=True, exist_ok=True)
         auth_home = Path(tempfile.mkdtemp(prefix="disconnect-hermes-", dir=str(dashboard.DATA_DIR)))
+        codex_home = Path(tempfile.mkdtemp(prefix="disconnect-codex-", dir=str(dashboard.DATA_DIR)))
         outside_home = Path(tempfile.mkdtemp(prefix="disconnect-outside-"))
+        original_codex_home_env = os.environ.get("CODEX_HOME")
         try:
             (auth_home / "auth.json").write_text("{}", encoding="utf-8")
             (auth_home / "credentials.json").write_text("{}", encoding="utf-8")
@@ -1464,6 +1467,10 @@ class IntegrationTestSuite:
             (auth_home / "config.yaml").write_text("keep", encoding="utf-8")
             (auth_home / "logs").mkdir()
             (auth_home / "logs" / "agent.log").write_text("keep", encoding="utf-8")
+            (codex_home / "auth.json").write_text("{}", encoding="utf-8")
+            (codex_home / "codex-session.sqlite").write_text("session", encoding="utf-8")
+            (codex_home / "config.yaml").write_text("keep", encoding="utf-8")
+            os.environ["CODEX_HOME"] = str(codex_home)
             (outside_home / "auth.json").write_text("{}", encoding="utf-8")
 
             cfg = type(
@@ -1484,13 +1491,17 @@ class IntegrationTestSuite:
             try:
                 dashboard.load_config = lambda: cfg
                 dashboard.update_env_values = lambda values: captured.update(values)
-                dashboard.refresh_telegram_gateway_after_agent_model_change = lambda values: {"started": True, "changed": sorted(values)}
+                dashboard.refresh_telegram_gateway_after_agent_model_change = lambda values, force_restart=False: {"started": True, "changed": sorted(values), "force_restart": force_restart}
                 dashboard.log_action = lambda *_args, **_kwargs: None
                 result = dashboard.disconnect_agent_model({"connection_purpose": "agent"})
                 self.assert_true(result["status"] == "disconnected" and result["connection_purpose"] == "agent", "Disconnect endpoint reports the account as disconnected")
                 self.assert_true(not (auth_home / "auth.json").exists() and not (auth_home / "credentials.json").exists() and not (auth_home / "auth").exists() and not (auth_home / "login.json").exists() and not (auth_home / "codex-session.sqlite").exists(), "Disconnect removes known and obvious Codex auth artifacts")
+                self.assert_true(not (codex_home / "auth.json").exists() and not (codex_home / "codex-session.sqlite").exists(), "Disconnect also removes safe inherited CODEX_HOME auth artifacts")
                 self.assert_true((auth_home / "config.yaml").exists() and (auth_home / "logs" / "agent.log").exists(), "Disconnect preserves non-auth Hermes workspace files")
+                self.assert_true((codex_home / "config.yaml").exists(), "Disconnect preserves non-auth files in inherited CODEX_HOME")
                 self.assert_true(captured.get("HERMES_REQUIRE_CODEX_AUTH") == "true", "Disconnect keeps Codex auth required for the next login")
+                self.assert_true(str(auth_home) in result.get("homes", []) and str(codex_home) in result.get("homes", []), "Disconnect reports every safe auth home it cleared")
+                self.assert_true(result.get("gateway", {}).get("force_restart") is True, "Disconnect forces Telegram gateway restart so old auth cannot stay in memory")
                 try:
                     dashboard.clear_hermes_codex_auth(outside_home)
                     self.assert_true(False, "Disconnect should refuse homes outside Admira runtime/data")
@@ -1503,7 +1514,12 @@ class IntegrationTestSuite:
                 dashboard.log_action = original_log
         finally:
             shutil.rmtree(auth_home, ignore_errors=True)
+            shutil.rmtree(codex_home, ignore_errors=True)
             shutil.rmtree(outside_home, ignore_errors=True)
+            if original_codex_home_env is None:
+                os.environ.pop("CODEX_HOME", None)
+            else:
+                os.environ["CODEX_HOME"] = original_codex_home_env
 
     def test_dashboard_chatgpt_connect_action_uses_vps_browserless_bridge(self):
         """Test the ChatGPT/Codex connection endpoint starts a browser-visible Hermes bridge on VPS/headless installs."""

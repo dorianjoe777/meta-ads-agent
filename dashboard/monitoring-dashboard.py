@@ -105,6 +105,7 @@ from hermes_gateway import (
     ensure_weekly_research_cron,
     gateway_status as hermes_gateway_status,
     start_gateway as start_hermes_gateway,
+    stop_gateway as stop_hermes_gateway,
     telegram_runtime_model_state,
 )
 from hermes_gateway import telegram_settings
@@ -3581,18 +3582,76 @@ def clear_hermes_codex_auth(home):
     return {"home": str(auth_home), "removed": removed}
 
 
+def disconnect_auth_homes(config, purpose="agent"):
+    """Return safe auth homes that must be cleared for a true ChatGPT disconnect.
+
+    New installs use HERMES_HOME as the isolated Codex/ChatGPT auth home, but
+    older gateway processes inherited CODEX_HOME from the container/runtime.
+    Clearing both safe homes avoids the UI saying "desconectado" while an old
+    Codex session still prevents connecting a different account.
+    """
+    normalized_purpose = normalize_connect_purpose(purpose)
+    homes = []
+    seen = set()
+
+    def add_home(path):
+        if not path:
+            return None
+        try:
+            safe_home = safe_hermes_auth_home(path)
+        except ValueError:
+            return None
+        key = str(safe_home)
+        if key not in seen:
+            seen.add(key)
+            homes.append(safe_home)
+        return safe_home
+
+    configured_home = add_home(getattr(config, "hermes_home", ""))
+    codex_home = os.environ.get("CODEX_HOME")
+    if codex_home:
+        try:
+            safe_codex_home = safe_hermes_auth_home(codex_home)
+        except ValueError:
+            safe_codex_home = None
+        if safe_codex_home and (normalized_purpose == "agent" or configured_home == safe_codex_home):
+            add_home(safe_codex_home)
+    return homes
+
+
+def clear_hermes_codex_auth_homes(homes):
+    cleared = []
+    removed = []
+    for home in homes:
+        result = clear_hermes_codex_auth(home)
+        cleared.append(result)
+        home_label = result.get("home", "")
+        for item in result.get("removed", []):
+            removed.append(f"{home_label}:{item}" if home_label else item)
+    first_home = cleared[0].get("home", "") if cleared else ""
+    return {
+        "home": first_home,
+        "homes": [item.get("home", "") for item in cleared if item.get("home")],
+        "removed": removed,
+        "cleared": cleared,
+    }
+
+
 def disconnect_agent_model(payload=None):
     payload = payload or {}
     purpose = normalize_connect_purpose(payload.get("connection_purpose") or payload.get("purpose"))
     config = config_for_connect_purpose(purpose)
     stop_hermes_login_session(purpose)
-    cleared = clear_hermes_codex_auth(getattr(config, "hermes_home", ""))
+    cleared = clear_hermes_codex_auth_homes(disconnect_auth_homes(config, purpose))
     env_updates = {}
     gateway = None
     if purpose == "agent":
         env_updates = {"HERMES_REQUIRE_CODEX_AUTH": "true"}
         update_env_values(env_updates)
-        gateway = refresh_telegram_gateway_after_agent_model_change({"HERMES_MODEL": getattr(config, "hermes_model", "")})
+        gateway = refresh_telegram_gateway_after_agent_model_change(
+            {"HERMES_MODEL": getattr(config, "hermes_model", "")},
+            force_restart=True,
+        )
     else:
         env_updates = {
             "CODEX_IMAGE_SOURCE": "dedicated_chatgpt",
@@ -3610,6 +3669,7 @@ def disconnect_agent_model(payload=None):
         "detail": "Puedes conectar otra cuenta cuando quieras. No borré memoria, campañas ni configuración del agente.",
         "removed": cleared.get("removed", []),
         "home": cleared.get("home", ""),
+        "homes": cleared.get("homes", []),
         "env_updated": sorted(env_updates.keys()),
         "gateway": gateway,
     }
@@ -4004,11 +4064,13 @@ AGENT_MODEL_GATEWAY_ENV_KEYS = {
 }
 
 
-def refresh_telegram_gateway_after_agent_model_change(env_updates):
+def refresh_telegram_gateway_after_agent_model_change(env_updates, force_restart=False):
     changed = sorted(set(env_updates or {}) & AGENT_MODEL_GATEWAY_ENV_KEYS)
     if not changed:
         return None
     try:
+        if force_restart:
+            stop_hermes_gateway()
         gateway = start_hermes_gateway(load_config())
     except Exception as exc:
         return {"started": False, "mode": "hermes_gateway", "detail": "No pude refrescar Telegram con el modelo nuevo.", "error": str(exc), "changed": changed}

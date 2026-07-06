@@ -912,6 +912,11 @@ def hermes_environment(config):
         if not path.is_absolute():
             path = ROOT_DIR / path
         env["HERMES_HOME"] = str(path)
+        # Keep Codex/ChatGPT auth isolated to the same buyer-specific home.
+        # Some Codex paths still consult CODEX_HOME; inheriting the container's
+        # global value can keep an old account alive after the dashboard says it
+        # was disconnected.
+        env["CODEX_HOME"] = str(path)
     settings = hermes_brain_settings(config)
     minimax_settings = admira_minimax_credentials(config, settings)
     if minimax_settings.get("api_key"):
