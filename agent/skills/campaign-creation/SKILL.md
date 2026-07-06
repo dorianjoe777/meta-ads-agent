@@ -81,7 +81,9 @@ When staging, pass the expert fields that are justified by the conversation:
 - `success_metrics` or `key_results` as a ranked list of up to three campaign KPIs/results, for example `["ROAS", "cost per purchase", "cost per initiate checkout"]`
 - `placements` with manual placement names or `{ "automatic": true }`
 - `bidding`, `bid_strategy`, and `bid_amount` only when there is a clear reason
-- `daily_budget`, `adset_daily_budget`, `lifetime_budget`/`adset_lifetime_budget`, `target_cpa`/`target_cpl`, and `concurrent_creatives`
+- `budget_level` as `"adset"` by default for controlled first tests/small budgets, or `"campaign"` when the strategy is CBO/Advantage campaign budget and Meta should distribute spend across multiple ad sets
+- `daily_budget`, `campaign_daily_budget`, `adset_daily_budget`, `lifetime_budget`/`adset_lifetime_budget`, `target_cpa`/`target_cpl`, and `concurrent_creatives`
+- `is_adset_budget_sharing_enabled` only when intentionally allowing ad set budget sharing; otherwise leave it omitted and the backend will send `false` for ad set budget mode
 - `start_time`, `end_time`, `campaign_status`, `adset_status`, `ad_status`, and `final_status`
 - `object_story_spec`, `image_hash`, `image_url`, `video_url`, `cta_link`, `creative_format`
 - `object_story_id` only when using an existing Page post; otherwise let the backend create a native unpublished Page post when Publicación directa is connected

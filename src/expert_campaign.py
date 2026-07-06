@@ -187,7 +187,13 @@ def normalize_budget_plan(payload, default_daily=50.0):
     ).strip().lower()
     campaign_budget_enabled = raw_budget_level in {"campaign", "campaign_budget", "cbo", "advantage", "advantage_plus", "advantage_campaign_budget"} or campaign_budget_flag in {"1", "true", "yes", "si", "sí", "on", "enabled"}
     budget_level = "campaign" if campaign_budget_enabled else "adset"
-    campaign_daily = money(payload.get("daily_budget"), default_daily)
+    raw_sharing = None
+    for key in ("is_adset_budget_sharing_enabled", "adset_budget_sharing_enabled", "ad_set_budget_sharing_enabled", "budget_sharing_enabled"):
+        raw_sharing = boolish(payload.get(key))
+        if raw_sharing is not None:
+            break
+    adset_budget_sharing_enabled = None if budget_level == "campaign" else bool(raw_sharing) if raw_sharing is not None else False
+    campaign_daily = money(payload.get("campaign_daily_budget") or payload.get("daily_budget"), default_daily)
     total_budget = money(payload.get("total_budget"), campaign_daily * 30)
     adset_daily = 0 if budget_level == "campaign" else money(payload.get("adset_daily_budget"), campaign_daily)
     adset_lifetime = money(payload.get("adset_lifetime_budget") or payload.get("lifetime_budget"), 0)
@@ -208,6 +214,7 @@ def normalize_budget_plan(payload, default_daily=50.0):
     return {
         "campaign_daily": campaign_daily,
         "budget_level": budget_level,
+        "is_adset_budget_sharing_enabled": adset_budget_sharing_enabled,
         "total_budget": total_budget,
         "adset_daily": adset_daily,
         "adset_lifetime": adset_lifetime,
@@ -482,6 +489,7 @@ def campaign_preview(campaign):
             "promoted_object": ad_set.get("promoted_object"),
             "placements": ad_set.get("placements"),
             "bidding": ad_set.get("bidding"),
+            "is_adset_budget_sharing_enabled": ad_set.get("is_adset_budget_sharing_enabled"),
             "schedule": {"start_time": ad_set.get("start_time"), "end_time": ad_set.get("end_time")},
             "status": ad_set.get("status"),
         },

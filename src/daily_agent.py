@@ -563,6 +563,11 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         else:
             daily_budget = int(float(adset.get("budget", 0) or budget_plan.get("adset_daily") or campaign.get("budget", {}).get("daily", 0) or 0) * 100)
             lifetime_budget = int(float(adset.get("lifetime_budget", 0) or budget_plan.get("adset_lifetime") or 0) * 100)
+        adset_budget_sharing = adset.get("is_adset_budget_sharing_enabled")
+        if budget_level == "campaign":
+            adset_budget_sharing = None
+        elif adset_budget_sharing is None:
+            adset_budget_sharing = False
         adset_targeting = dict(adset.get("targeting") or {})
         if adset.get("placements") is not None and not adset_targeting.get("placements"):
             adset_targeting["placements"] = adset.get("placements")
@@ -579,6 +584,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
             lifetime_budget_cents=lifetime_budget,
             start_time=adset.get("start_time") or "",
             end_time=adset.get("end_time") or "",
+            is_adset_budget_sharing_enabled=adset_budget_sharing,
             approved=approved,
         )
         adset_id = social_id_from_result(result)

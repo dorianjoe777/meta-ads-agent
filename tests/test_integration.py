@@ -5399,6 +5399,25 @@ class IntegrationTestSuite:
             self.assert_true(captured[0]["use_direct_publishing"] is True, "Campaign staging accepts explicit direct-publishing intent")
 
             captured.clear()
+            campaign_budget_result = dashboard.execute_agent_tool(
+                {
+                    "tool": "create_campaign_stack",
+                    "arguments": {
+                        "name": "AdMira IA - Campaign Budget",
+                        "objective": "sales",
+                        "budget_level": "campaign",
+                        "campaign_daily_budget": 30,
+                        "landing_url": "https://uboost.lat",
+                        "creative_image_path": str(image_path),
+                        "active_spend_confirmed": False,
+                        "status_plan": "paused",
+                    },
+                },
+                {"language": "es"},
+            )
+            self.assert_true(campaign_budget_result.get("staged") is True and captured[0]["daily_budget"] == 30 and captured[0]["budget_level"] == "campaign", "Campaign staging accepts campaign_daily_budget and campaign-level budget mode")
+
+            captured.clear()
             post_result = dashboard.execute_agent_tool(
                 {
                     "tool": "create_campaign_stack",
@@ -5588,11 +5607,13 @@ class IntegrationTestSuite:
             self.assert_true(result["payload"]["dry_run_preview"]["campaign"]["success_metrics"]["items"][1]["metric"] == "cost_per_purchase", "Dry-run preview includes campaign success metrics")
             self.assert_true(campaign["status_plan"] == {"campaign": "PAUSED", "adset": "PAUSED", "ad": "PAUSED"}, "Staged campaign stores campaign/adset/ad status plan")
             self.assert_true(campaign["ad_sets"][0]["billing_event"] == "IMPRESSIONS" and campaign["ad_sets"][0]["bidding"]["bid_strategy"] == "LOWEST_COST_WITHOUT_CAP", "Staged campaign downgrades bid-cap bidding without bid_amount to safe lowest-cost bidding")
+            self.assert_true(campaign["budget_plan"]["budget_level"] == "adset" and campaign["ad_sets"][0]["is_adset_budget_sharing_enabled"] is False, "Staged ad set budget campaigns explicitly disable ad set budget sharing by default")
             self.assert_true(campaign["ad_sets"][0]["start_time"].startswith("2026-07-01") and campaign["ad_sets"][0]["end_time"].startswith("2026-07-15"), "Staged campaign stores ad set schedule controls")
             self.assert_true(targeting["custom_audiences"][0]["id"] == "ca_1" and targeting["excluded_custom_audiences"][0]["id"] == "ca_2", "Campaign stores custom audience inclusion and exclusion")
             self.assert_true(targeting["device_platforms"] == ["mobile"] and targeting["user_os"] == ["iOS", "Android"], "Campaign stores device/platform targeting fields")
             self.assert_true(campaign["ad"]["image_hash"] == "hash_existing" and campaign["ad"]["cta_link"] == "https://buyer.example/offer", "Campaign stores creative image hash and CTA link override")
             self.assert_true(result["payload"]["requested"]["adset_controls"]["schedule"]["start_time"].startswith("2026-07-01"), "Approval card exposes expert ad set controls")
+            self.assert_true(result["payload"]["requested"]["adset_controls"]["is_adset_budget_sharing_enabled"] is False, "Approval card exposes ad set budget sharing control")
             self.assert_true(result["payload"]["dry_run_preview"]["creative"]["has_image_hash"], "Approval payload includes a dry-run preview of creative inputs")
         finally:
             for key, value in original.items():
@@ -5653,6 +5674,7 @@ class IntegrationTestSuite:
             lifetime_budget_cents=30000,
             start_time="2026-07-01T09:00:00-05:00",
             end_time="2026-07-15T23:59:00-05:00",
+            is_adset_budget_sharing_enabled=False,
             approved=True,
         )
         args, kwargs = captured[0]
@@ -5662,6 +5684,7 @@ class IntegrationTestSuite:
         self.assert_true(args[args.index("--billing-event") + 1] == "LINK_CLICKS", "Meta Graph execution receives the selected billing event")
         self.assert_true(json.loads(args[args.index("--bidding") + 1])["bid_strategy"] == "LOWEST_COST_WITHOUT_CAP", "Meta Graph execution receives the selected bidding controls")
         self.assert_true(args[args.index("--lifetime-budget") + 1] == "30000" and args[args.index("--start-time") + 1].startswith("2026-07-01"), "Meta Graph execution receives lifetime budget and schedule controls")
+        self.assert_true(args[args.index("--is-adset-budget-sharing-enabled") + 1] == "false", "Meta Graph execution receives explicit ad set budget sharing control")
         self.assert_true(kwargs["mutation"] is True and kwargs["approved"] is True, "Promoted-object ad set creation remains gated as an approved mutation")
         captured.clear()
         client.create_adset(
@@ -5773,9 +5796,11 @@ class IntegrationTestSuite:
                 "PAUSED",
                 "OFFSITE_CONVERSIONS",
                 promoted_object={"pixel_id": "123", "custom_event_type": "InitiateCheckout"},
+                is_adset_budget_sharing_enabled=False,
                 approved=True,
             )
             self.assert_true(requests and b"bid_strategy=LOWEST_COST_WITHOUT_CAP" in requests[-1].data and b"bid_amount=" not in requests[-1].data, "Graph execution sends safe default bidding without bid_amount for old pending approvals")
+            self.assert_true(requests and b"is_adset_budget_sharing_enabled=false" in requests[-1].data, "Graph execution sends explicit ad set budget sharing false when ad set budgets are used")
             requests.clear()
             client.create_adset(
                 "camp_graph_1",
@@ -6144,6 +6169,7 @@ class IntegrationTestSuite:
             self.assert_true(client.calls[0][1][3] == 0 and client.calls[0][2].get("bid_strategy", "") == "", "Campaign stack does not enable campaign-level budget by default")
             adset_call = client.calls[1]
             self.assert_true(adset_call[1][3] == 2500, "Campaign stack keeps the daily budget at ad set level by default")
+            self.assert_true(adset_call[2]["is_adset_budget_sharing_enabled"] is False, "Campaign stack explicitly disables ad set budget sharing by default")
             self.assert_true(adset_call[1][5] == "OFFSITE_CONVERSIONS", "Campaign stack normalizes legacy conversion goals before ad set creation")
             self.assert_true(adset_call[2]["promoted_object"] == {"pixel_id": "123", "custom_event_type": "INITIATED_CHECKOUT"}, "Campaign stack sends the Graph enum promoted object to ad set creation")
             self.assert_true(adset_call[1][2]["publisher_platforms"] == ["facebook", "instagram"], "Campaign stack sends manual Facebook/Instagram placement platforms")
@@ -6314,6 +6340,7 @@ class IntegrationTestSuite:
             legacy_adset_call = next(call for call in legacy_client.calls if call[0] == "create_adset")
             self.assert_true(legacy_result["ok"] and legacy_steps[:3] == ["campaign_details", "update_campaign_bid_strategy", "create_adset"], "Campaign retry repairs existing campaign-budget campaigns before creating the ad set")
             self.assert_true(legacy_adset_call[1][3] == 0, "Campaign-budget retry omits ad set daily budget to avoid mixing campaign and ad set budgets")
+            self.assert_true(legacy_adset_call[2]["is_adset_budget_sharing_enabled"] is None, "Campaign-budget retries do not send ad set budget sharing flags")
 
             campaign_path.write_text(
                 json.dumps(

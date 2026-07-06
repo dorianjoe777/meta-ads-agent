@@ -507,6 +507,7 @@ class SocialFlowClient:
                     ("--start-time", "start_time"),
                     ("--end-time", "end_time"),
                     ("--promoted-object", "promoted_object"),
+                    ("--is-adset-budget-sharing-enabled", "is_adset_budget_sharing_enabled"),
                 ):
                     value = self.flag(args, source, "")
                     if value:
@@ -516,6 +517,8 @@ class SocialFlowClient:
                                 value = json.dumps(self.normalize_promoted_object(promoted_payload))
                             except json.JSONDecodeError:
                                 pass
+                        elif source == "--is-adset-budget-sharing-enabled":
+                            value = "true" if str(value).strip().lower() in {"1", "true", "yes", "si", "sí", "on"} else "false"
                         fields[target] = value
                 bidding = self.flag(args, "--bidding", "")
                 bidding_payload = self.default_adset_bidding({})
@@ -720,6 +723,7 @@ class SocialFlowClient:
         lifetime_budget_cents=0,
         start_time="",
         end_time="",
+        is_adset_budget_sharing_enabled=None,
         approved=False,
     ):
         optimization_goal = self.normalize_optimization_goal(optimization_goal)
@@ -744,6 +748,8 @@ class SocialFlowClient:
             args.extend(["--start-time", start_time])
         if end_time:
             args.extend(["--end-time", end_time])
+        if is_adset_budget_sharing_enabled is not None:
+            args.extend(["--is-adset-budget-sharing-enabled", "true" if is_adset_budget_sharing_enabled else "false"])
         return self.run(args, live_required=True, mutation=True, approved=approved)
 
     def upload_image(self, ad_account_id, file_path, approved=False):

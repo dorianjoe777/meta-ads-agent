@@ -6946,6 +6946,8 @@ def create_campaign(payload):
         audience,
         budget_plan["adset_daily"],
     )
+    if budget_plan.get("is_adset_budget_sharing_enabled") is not None:
+        ad_set["is_adset_budget_sharing_enabled"] = bool(budget_plan.get("is_adset_budget_sharing_enabled"))
     if budget_plan.get("adset_lifetime"):
         ad_set["lifetime_budget"] = budget_plan["adset_lifetime"]
     ad_set["placements"] = placement_config
@@ -7039,6 +7041,7 @@ def create_campaign(payload):
                 "billing_event": ad_set.get("billing_event"),
                 "promoted_object": ad_set.get("promoted_object"),
                 "bidding": ad_set.get("bidding", {}),
+                "is_adset_budget_sharing_enabled": ad_set.get("is_adset_budget_sharing_enabled"),
                 "schedule": schedule,
             },
             "signal_quality": {
@@ -7201,7 +7204,7 @@ def normalize_campaign_stack_arguments(arguments, chat_payload=None):
     args = dict(arguments or {})
 
     if not args.get("daily_budget"):
-        for key in ("budget", "budget_daily", "daily_budget_usd", "daily_budget_amount", "presupuesto_diario"):
+        for key in ("campaign_daily_budget", "budget", "budget_daily", "daily_budget_usd", "daily_budget_amount", "presupuesto_diario"):
             if args.get(key):
                 args["daily_budget"] = args.get(key)
                 break
