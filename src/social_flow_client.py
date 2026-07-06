@@ -399,6 +399,27 @@ class SocialFlowClient:
                 daily_budget = self.flag(args, "--daily-budget", "")
                 if daily_budget:
                     fields["daily_budget"] = daily_budget
+                    fields["bid_strategy"] = self.normalize_bid_strategy(self.flag(args, "--bid-strategy", "LOWEST_COST_WITHOUT_CAP"))
+                bid_strategy = self.flag(args, "--bid-strategy", "")
+                if bid_strategy and not fields.get("bid_strategy"):
+                    fields["bid_strategy"] = self.normalize_bid_strategy(bid_strategy)
+                return self.graph_record(record, endpoint, self.post_graph_form(endpoint, fields))
+            if action == "campaign-details":
+                campaign_id = self.positional(args, 2, "")
+                endpoint = campaign_id
+                return self.graph_record(record, endpoint, self.get_graph(endpoint, {"fields": "id,name,daily_budget,lifetime_budget,bid_strategy"}))
+            if action == "update-campaign":
+                campaign_id = self.positional(args, 2, "")
+                endpoint = campaign_id
+                fields = {"access_token": access_token}
+                bid_strategy = self.flag(args, "--bid-strategy", "")
+                if bid_strategy:
+                    fields["bid_strategy"] = self.normalize_bid_strategy(bid_strategy)
+                status = self.flag(args, "--status", "")
+                if status:
+                    fields["status"] = status
+                if len(fields) <= 1:
+                    return None
                 return self.graph_record(record, endpoint, self.post_graph_form(endpoint, fields))
             if action == "create-adset":
                 campaign_id = self.positional(args, 2, "")
@@ -595,13 +616,22 @@ class SocialFlowClient:
     def set_budget(self, target_type, target_id, daily_budget_cents, approved=False):
         return self.run(["marketing", "set-budget", target_type, target_id, "--daily-budget", str(int(daily_budget_cents))], live_required=True, mutation=True, approved=approved)
 
-    def create_campaign(self, ad_account_id, name, objective, daily_budget_cents=0, status="PAUSED", approved=False):
+    def campaign_details(self, campaign_id):
+        return self.run(["marketing", "campaign-details", campaign_id, "--json"], live_required=False)
+
+    def update_campaign_bid_strategy(self, campaign_id, bid_strategy="LOWEST_COST_WITHOUT_CAP", approved=False):
+        return self.run(["marketing", "update-campaign", campaign_id, "--bid-strategy", bid_strategy, "--json", "--yes"], live_required=True, mutation=True, approved=approved)
+
+    def create_campaign(self, ad_account_id, name, objective, daily_budget_cents=0, status="PAUSED", approved=False, bid_strategy=""):
         args = ["marketing", "create-campaign"]
         if ad_account_id:
             args.append(ad_account_id)
         args.extend(["--name", name, "--objective", objective, "--status", status, "--json", "--yes"])
         if daily_budget_cents:
             args.extend(["--daily-budget", str(int(daily_budget_cents))])
+            args.extend(["--bid-strategy", bid_strategy or "LOWEST_COST_WITHOUT_CAP"])
+        elif bid_strategy:
+            args.extend(["--bid-strategy", bid_strategy])
         return self.run(args, live_required=True, mutation=True, approved=approved)
 
     def create_adset(

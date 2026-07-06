@@ -5655,6 +5655,7 @@ class IntegrationTestSuite:
             self.assert_true(body.get("id") == "camp_graph_1", "Graph execution preserves the JSON id shape expected by campaign execution")
             self.assert_true("act_999/campaigns" in result.get("graph_endpoint", ""), "Graph execution posts to the ad account campaign endpoint")
             self.assert_true(requests and b"special_ad_categories=%5B%5D" in requests[0].data, "Graph campaign creation includes required special ad categories")
+            self.assert_true(requests and b"bid_strategy=LOWEST_COST_WITHOUT_CAP" in requests[0].data, "Graph campaign budget creation sets campaign-level automatic bidding")
             requests.clear()
             client.create_adset(
                 "camp_graph_1",
@@ -5964,7 +5965,9 @@ class IntegrationTestSuite:
             self.assert_true(result["ok"], "Approved campaign stack executes while supervised")
             self.assert_true([call[0] for call in client.calls] == ["create_campaign", "create_adset", "upload_image", "create_creative", "create_ad"], "Campaign stack executes in correct order")
             self.assert_true(client.calls[0][1][4] == "ACTIVE" and client.calls[1][1][4] == "ACTIVE", "Approved active campaign stack activates campaign and ad set, not only the ad")
+            self.assert_true(client.calls[0][1][3] == 0 and client.calls[0][2].get("bid_strategy", "") == "", "Campaign stack does not enable campaign-level budget by default")
             adset_call = client.calls[1]
+            self.assert_true(adset_call[1][3] == 2500, "Campaign stack keeps the daily budget at ad set level by default")
             self.assert_true(adset_call[1][5] == "OFFSITE_CONVERSIONS", "Campaign stack normalizes legacy conversion goals before ad set creation")
             self.assert_true(adset_call[2]["promoted_object"] == {"pixel_id": "123", "custom_event_type": "INITIATED_CHECKOUT"}, "Campaign stack sends the Graph enum promoted object to ad set creation")
             self.assert_true(adset_call[1][2]["publisher_platforms"] == ["facebook", "instagram"], "Campaign stack sends manual Facebook/Instagram placement platforms")
@@ -6010,6 +6013,55 @@ class IntegrationTestSuite:
             )
             self.assert_true(retry_result["ok"] and retry_result["campaign_id"] == "cmp_existing", "Campaign retry reuses the previously-created Meta campaign ID")
             self.assert_true(retry_client.calls[0][0] == "create_adset" and "create_campaign" not in [call[0] for call in retry_client.calls], "Campaign retry does not duplicate the already-created Meta campaign")
+
+            retry_campaign_path.write_text(
+                json.dumps(
+                    {
+                        "name": "Legacy CBO Retry Stack",
+                        "objective": "PURCHASES",
+                        "budget": {"daily": 25},
+                        "ad_sets": [
+                            {
+                                "name": "Legacy CBO Retry Stack - Core",
+                                "targeting": {"locations": ["MX"]},
+                                "budget": 25,
+                                "optimization_goal": "CONVERSIONS",
+                                "promoted_object": {"pixel_id": "123", "custom_event_type": "InitiateCheckout"},
+                            }
+                        ],
+                        "ad": {
+                            "primary_text": "Texto",
+                            "headline": "Titular",
+                            "creative_image_path": str(image_path),
+                            "landing_url": "https://buyer.example",
+                            "final_status": "PAUSED",
+                            "active_spend_confirmed": False,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            class LegacyCampaignBudgetClient(FakeClient):
+                def campaign_details(self, campaign_id):
+                    self.calls.append(("campaign_details", (campaign_id,), {}))
+                    return {"returncode": 0, "stdout": json.dumps({"id": campaign_id, "daily_budget": "2500", "bid_strategy": "LOWEST_COST_WITH_BID_CAP"})}
+
+                def update_campaign_bid_strategy(self, campaign_id, bid_strategy="LOWEST_COST_WITHOUT_CAP", approved=False):
+                    self.calls.append(("update_campaign_bid_strategy", (campaign_id, bid_strategy), {"approved": approved}))
+                    return {"returncode": 0, "stdout": json.dumps({"success": True})}
+
+            legacy_client = LegacyCampaignBudgetClient()
+            legacy_result = execute_campaign_creation(
+                str(retry_campaign_path),
+                legacy_client,
+                approved=True,
+                prior_result={"ok": False, "executed": True, "campaign_id": "cmp_cbo_existing", "failed_step": "create_adset"},
+            )
+            legacy_steps = [call[0] for call in legacy_client.calls]
+            legacy_adset_call = next(call for call in legacy_client.calls if call[0] == "create_adset")
+            self.assert_true(legacy_result["ok"] and legacy_steps[:3] == ["campaign_details", "update_campaign_bid_strategy", "create_adset"], "Campaign retry repairs existing campaign-budget campaigns before creating the ad set")
+            self.assert_true(legacy_adset_call[1][3] == 0, "Campaign-budget retry omits ad set daily budget to avoid mixing campaign and ad set budgets")
 
             campaign_path.write_text(
                 json.dumps(

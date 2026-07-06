@@ -173,9 +173,23 @@ def normalize_iso_time(value):
 
 
 def normalize_budget_plan(payload, default_daily=50.0):
+    raw_budget_level = str(
+        payload.get("budget_level")
+        or payload.get("budget_mode")
+        or payload.get("budget_strategy")
+        or ""
+    ).strip().lower().replace("-", "_").replace(" ", "_")
+    campaign_budget_flag = str(
+        payload.get("campaign_budget_optimization")
+        or payload.get("advantage_campaign_budget")
+        or payload.get("cbo")
+        or ""
+    ).strip().lower()
+    campaign_budget_enabled = raw_budget_level in {"campaign", "campaign_budget", "cbo", "advantage", "advantage_plus", "advantage_campaign_budget"} or campaign_budget_flag in {"1", "true", "yes", "si", "sí", "on", "enabled"}
+    budget_level = "campaign" if campaign_budget_enabled else "adset"
     campaign_daily = money(payload.get("daily_budget"), default_daily)
     total_budget = money(payload.get("total_budget"), campaign_daily * 30)
-    adset_daily = money(payload.get("adset_daily_budget"), campaign_daily)
+    adset_daily = 0 if budget_level == "campaign" else money(payload.get("adset_daily_budget"), campaign_daily)
     adset_lifetime = money(payload.get("adset_lifetime_budget") or payload.get("lifetime_budget"), 0)
     target_cost = money(payload.get("target_cpa") or payload.get("target_cpl") or payload.get("target_cost_per_result"), 0)
     concurrent = max(intish(payload.get("concurrent_creatives") or payload.get("creative_variations"), 1), 1)
@@ -193,6 +207,7 @@ def normalize_budget_plan(payload, default_daily=50.0):
         expected_daily_events = None
     return {
         "campaign_daily": campaign_daily,
+        "budget_level": budget_level,
         "total_budget": total_budget,
         "adset_daily": adset_daily,
         "adset_lifetime": adset_lifetime,

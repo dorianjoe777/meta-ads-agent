@@ -264,6 +264,38 @@ def social_id_from_result(result):
     return None
 
 
+def social_body_from_result(result):
+    try:
+        body = json.loads(result.get("stdout") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        body = {}
+    return body if isinstance(body, dict) else {}
+
+
+def campaign_budget_level_from_plan(campaign, budget_plan):
+    plan = budget_plan if isinstance(budget_plan, dict) else {}
+    raw = str(plan.get("budget_level") or campaign.get("budget_level") or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if raw in {"campaign", "campaign_budget", "cbo", "advantage", "advantage_plus", "advantage_campaign_budget"}:
+        return "campaign"
+    return "adset"
+
+
+def meta_campaign_has_campaign_budget(client, campaign_id):
+    if not campaign_id or not hasattr(client, "campaign_details"):
+        return False
+    result = client.campaign_details(campaign_id)
+    if result.get("returncode") not in {0, None}:
+        return False
+    body = social_body_from_result(result)
+    for key in ("daily_budget", "lifetime_budget"):
+        try:
+            if int(float(str(body.get(key) or 0).replace(",", ""))) > 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
 def prior_meta_id(prior_result, key, step_name):
     if not isinstance(prior_result, dict):
         return ""
@@ -415,6 +447,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
             },
         }
     budget_plan = campaign.get("budget_plan") or normalize_budget_plan({}, float(campaign.get("budget", {}).get("daily", 0) or 0))
+    budget_level = campaign_budget_level_from_plan(campaign, budget_plan)
     execution_state = campaign.get("execution_state") if isinstance(campaign.get("execution_state"), dict) else {}
     campaign_id = str(
         execution_state.get("campaign_id")
@@ -425,25 +458,39 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
     steps = []
     if campaign_id:
         steps.append({"step": "create_campaign", "ok": True, "campaign_id": campaign_id, "status": status_plan.get("campaign", "PAUSED"), "reused": True})
+        if meta_campaign_has_campaign_budget(client, campaign_id):
+            budget_level = "campaign"
+            if hasattr(client, "update_campaign_bid_strategy"):
+                bid_result = client.update_campaign_bid_strategy(campaign_id, "LOWEST_COST_WITHOUT_CAP", approved=approved)
+                bid_ok = bid_result.get("returncode") in {0, None}
+                steps.append({"step": "update_campaign_bid_strategy", "ok": bid_ok, "campaign_id": campaign_id, "result": bid_result})
+                if not bid_ok:
+                    return {"ok": False, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "failed_step": "update_campaign_bid_strategy", "steps": steps}
     else:
+        campaign_daily_budget = int(float(campaign.get("budget", {}).get("daily", 0) or 0) * 100) if budget_level == "campaign" else 0
         campaign_result = client.create_campaign(
             client.config.ad_account_id,
             campaign.get("name", "New Campaign"),
             campaign_objective_for_social(campaign.get("objective")),
-            int(float(campaign.get("budget", {}).get("daily", 0) or 0) * 100),
+            campaign_daily_budget,
             status_plan.get("campaign", "PAUSED"),
             approved=approved,
+            bid_strategy="LOWEST_COST_WITHOUT_CAP" if campaign_daily_budget else "",
         )
         campaign_id = social_id_from_result(campaign_result)
         steps.append({"step": "create_campaign", "ok": bool(campaign_id), "campaign_id": campaign_id, "status": status_plan.get("campaign", "PAUSED"), "result": campaign_result})
         if campaign_id:
-            persist_campaign_execution_state(path, campaign, {"campaign_id": campaign_id})
+            persist_campaign_execution_state(path, campaign, {"campaign_id": campaign_id, "budget_level": budget_level})
     if not campaign_id:
         return {"ok": False, "mode": client.config.mode, "executed": True, "failed_step": "create_campaign", "steps": steps}
     adset_ids = []
     for adset in campaign.get("ad_sets", []):
-        daily_budget = int(float(adset.get("budget", 0) or budget_plan.get("adset_daily") or campaign.get("budget", {}).get("daily", 0) or 0) * 100)
-        lifetime_budget = int(float(adset.get("lifetime_budget", 0) or budget_plan.get("adset_lifetime") or 0) * 100)
+        if budget_level == "campaign":
+            daily_budget = 0
+            lifetime_budget = 0
+        else:
+            daily_budget = int(float(adset.get("budget", 0) or budget_plan.get("adset_daily") or campaign.get("budget", {}).get("daily", 0) or 0) * 100)
+            lifetime_budget = int(float(adset.get("lifetime_budget", 0) or budget_plan.get("adset_lifetime") or 0) * 100)
         adset_targeting = dict(adset.get("targeting") or {})
         if adset.get("placements") is not None and not adset_targeting.get("placements"):
             adset_targeting["placements"] = adset.get("placements")
