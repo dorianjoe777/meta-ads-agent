@@ -28,6 +28,22 @@
     {
       "source": "/health",
       "destination": "/api/health"
+    },
+    {
+      "source": "/privacy",
+      "destination": "/api/privacy"
+    },
+    {
+      "source": "/privacy-policy",
+      "destination": "/api/privacy"
+    },
+    {
+      "source": "/data-deletion",
+      "destination": "/api/data-deletion"
+    },
+    {
+      "source": "/delete-data",
+      "destination": "/api/data-deletion"
     }
   ]
 }
