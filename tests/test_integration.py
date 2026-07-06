@@ -587,6 +587,8 @@ class IntegrationTestSuite:
             self.assert_true(not handler.auth_required_for_post("/api/onboarding/complete"), "First-run onboarding can reach the finish endpoint and receive its own setup validation message")
             self.assert_true(not handler.auth_required_for_get("/api/dashboard"), "Initial setup dashboard can load before a password exists")
             self.assert_true(handler.auth_required_for_post("/api/social/token"), "Meta token save is protected during onboarding")
+            self.assert_true(handler.auth_required_for_post("/api/publishing/config"), "Direct publishing token save is protected during onboarding")
+            self.assert_true(handler.auth_required_for_post("/api/publishing/test"), "Direct publishing token test is protected during onboarding")
             self.assert_true(handler.auth_required_for_get("/api/social/accounts"), "Meta account discovery is protected before a password exists")
             dashboard.load_onboarding_state = lambda: {"completed": True}
             self.assert_true(not handler.auth_required_for_post("/api/dashboard-password"), "Password recovery stays open if a completed install has lost its dashboard password")
@@ -6609,6 +6611,9 @@ class IntegrationTestSuite:
         self.assert_true("security-trust" not in html, "Security trust cards are not shown inside setup")
         self.assert_true("header-guide-btn" in html and "openUsageGuide()" in html, "Guide opens from compact header button")
         self.assert_true("version-pill" in html and 'id="s-version"' in html and "product_version" in dashboard_source, "Header exposes the installed product version")
+        self.assert_true("Opcional: clave de Publicación directa" in html and "app Live de publicaciones" in html and "savePublishingConfig" in html, "Onboarding exposes optional direct publishing setup without making it required")
+        self.assert_true("direct-publishing-shots" in html and "meta-business-24-select-app-token.png" in html and "pages_manage_posts" in html, "Direct publishing guide includes screenshot-based Meta token steps and required Page permissions")
+        self.assert_true("testPublishingConnection" in html and "disconnectPublishingConfig" in html, "Direct publishing UI actions are allowed from dashboard/onboarding buttons")
         self.assert_true("guide-overlay" in html and "guide-modal-card" in html, "Guide cards are shown in a popup")
         self.assert_true("@keyframes chat-panel-in" in html and "chat-avatar-pop" in html, "Chat opens with polished motion")
         self.assert_true("agent-chat-bar" in html and "agent-bar-input" in html, "Primary chat entry is a wide agent input bar")

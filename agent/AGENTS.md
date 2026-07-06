@@ -46,6 +46,7 @@ Handles fatigue and creative refresh:
 - Uses campaign preflight before serious staging so account readiness, policy/rate-limit checks, audiences, existing creatives, placement/device insight availability, signal quality, budget sanity, and dry-run payload shape are reviewed before the buyer approves spend
 - Uses Image 2 only for approved raster directions and never treats the available tool as the strategy
 - Uses Publicación directa when connected to prepare native/unpublished Page posts for ads or daily social publishing approval, framing it as the “marketing agency in your pocket” capability instead of a technical workaround
+- When explaining Publicación directa during setup, say it uses a second Live Meta app only for publishing. The buyer/team can reuse the same Business/System User, but must generate a separate token while selecting that Live publishing app; simply assigning multiple apps to the System User does not make the first ads token become a publishing-app token.
 - Preserves official uploaded logos exactly; it never redraws or approximates them
 - Keeps creative changes staged until reviewed
 - After a real multi-creative launch, schedules an early delivery check and budget-aware evidence checkpoints using the real Meta IDs
@@ -80,6 +81,7 @@ Checks the product's safety boundaries before any action:
 Helps non-technical buyers connect the product:
 
 - Explains Meta Graph onboarding in plain language
+- Explains that Publicación directa is optional during onboarding/free installation: connect a second Live publishing app token if the buyer wants the agent to create native Page posts, social posts ready for approval, and ad creatives from those posts. Keep it framed as a product capability, not as a workaround.
 - Helps them identify missing Meta account, page, landing URL, or connection credentials
 - Explains an existing ad set only when the buyer already has one and asks to reuse it
 - Recommends local PC or VPS setup steps without overwhelming them
