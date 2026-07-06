@@ -69,13 +69,13 @@ class SocialFlowClient:
             "stderr": "" if ok else stdout,
         }
 
-    def get_graph(self, endpoint, params=None):
+    def get_graph(self, endpoint, params=None, access_token=""):
         normalized = {}
         for key, value in (params or {}).items():
             if value in (None, ""):
                 continue
             normalized[key] = json.dumps(value) if isinstance(value, (dict, list)) else value
-        normalized["access_token"] = getattr(self.config, "meta_access_token", "")
+        normalized["access_token"] = access_token or getattr(self.config, "meta_access_token", "")
         query = urllib.parse.urlencode(normalized).encode("utf-8").decode("utf-8")
         request = urllib.request.Request(
             f"{self.graph_url(endpoint)}?{query}",
@@ -103,6 +103,30 @@ class SocialFlowClient:
             method="POST",
         )
         return self.perform_graph_request(request)
+
+    def page_access_token(self, page_id, user_token):
+        page_id = str(page_id or "").strip()
+        user_token = str(user_token or "").strip()
+        if not page_id or not user_token:
+            return {"ok": False, "access_token": "", "page": {}, "error": "missing_page_or_token"}
+        result = self.get_graph("me/accounts", {"fields": "id,name,access_token,tasks,perms", "limit": "200"}, access_token=user_token)
+        body = result.get("body") if isinstance(result.get("body"), dict) else {}
+        for page in body.get("data") or []:
+            if str(page.get("id") or "") == page_id:
+                return {"ok": True, "access_token": page.get("access_token") or user_token, "page": page}
+        return {"ok": False, "access_token": user_token, "page": {}, "error": "page_not_found", "lookup": body}
+
+    @staticmethod
+    def page_post_id_from_body(page_id, body):
+        if not isinstance(body, dict):
+            return ""
+        post_id = str(body.get("post_id") or body.get("object_story_id") or "").strip()
+        if post_id:
+            return post_id
+        media_id = str(body.get("id") or "").strip()
+        if media_id and "_" not in media_id and str(page_id or "").strip():
+            return f"{str(page_id).strip()}_{media_id}"
+        return media_id
 
     def perform_graph_request(self, request):
         try:
@@ -346,6 +370,50 @@ class SocialFlowClient:
                 return self.graph_local_record(record, endpoint, body)
             if area != "marketing":
                 return None
+            if action == "create-page-post":
+                publishing_token = str(getattr(self.config, "meta_publishing_access_token", "") or "").strip()
+                page_id = self.flag(args, "--page-id", "")
+                if not publishing_token:
+                    return self.graph_local_record(record, "local/meta-publishing-token", {"ok": False, "error": "missing_meta_publishing_access_token", "message": "Direct publishing is not connected."}, ok=False, status=1)
+                if not page_id:
+                    return self.graph_local_record(record, "local/meta-page-post", {"ok": False, "error": "missing_page_id"}, ok=False, status=1)
+                page_lookup = self.page_access_token(page_id, publishing_token)
+                if not page_lookup.get("ok"):
+                    return self.graph_local_record(record, "local/meta-page-post", {"ok": False, "error": page_lookup.get("error") or "page_not_found", "message": "The publishing token cannot access this Facebook Page."}, ok=False, status=1)
+                page_token = page_lookup.get("access_token") or publishing_token
+                message = self.flag(args, "--message", "")
+                link = self.flag(args, "--link", "")
+                image_path = self.flag(args, "--image-path", "")
+                image_url = self.flag(args, "--image-url", "")
+                unpublished_type = self.flag(args, "--unpublished-content-type", "ADS_POST") or "ADS_POST"
+                if image_path:
+                    if not Path(image_path).exists():
+                        return self.graph_local_record(record, "local/meta-page-post", {"ok": False, "error": "image_file_missing", "path": image_path}, ok=False, status=1)
+                    endpoint = f"{page_id}/photos"
+                    fields = {"access_token": page_token, "published": "false", "unpublished_content_type": unpublished_type}
+                    if message:
+                        fields["caption"] = message
+                    result = self.post_graph_multipart(endpoint, fields, {"source": image_path})
+                elif image_url:
+                    endpoint = f"{page_id}/photos"
+                    fields = {"access_token": page_token, "published": "false", "unpublished_content_type": unpublished_type, "url": image_url}
+                    if message:
+                        fields["caption"] = message
+                    result = self.post_graph_form(endpoint, fields)
+                else:
+                    endpoint = f"{page_id}/feed"
+                    fields = {"access_token": page_token, "published": "false", "unpublished_content_type": unpublished_type}
+                    if message:
+                        fields["message"] = message
+                    if link:
+                        fields["link"] = link
+                    result = self.post_graph_form(endpoint, fields)
+                body = result.get("body") if isinstance(result.get("body"), dict) else {}
+                if result.get("ok"):
+                    post_id = self.page_post_id_from_body(page_id, body)
+                    body = {**body, "ok": bool(post_id), "post_id": post_id, "object_story_id": post_id, "page_id": page_id, "page_name": (page_lookup.get("page") or {}).get("name", "")}
+                    result = {**result, "ok": bool(post_id), "status": result.get("status") if post_id else 1, "body": body}
+                return self.graph_record(record, endpoint, result)
             if not access_token:
                 return self.graph_local_record(record, "local/meta-token", {"ok": False, "error": "missing_meta_access_token"}, ok=False, status=1)
             if action == "status":
@@ -695,6 +763,21 @@ class SocialFlowClient:
             args.extend(["--file-url", file_url])
         if title:
             args.extend(["--title", title])
+        args.extend(["--json", "--yes"])
+        return self.run(args, live_required=True, mutation=True, approved=approved)
+
+    def create_page_post(self, page_id, message="", link="", image_path="", image_url="", unpublished_content_type="ADS_POST", approved=False):
+        args = ["marketing", "create-page-post", "--page-id", page_id]
+        if message:
+            args.extend(["--message", message])
+        if link:
+            args.extend(["--link", link])
+        if image_path:
+            args.extend(["--image-path", image_path])
+        if image_url:
+            args.extend(["--image-url", image_url])
+        if unpublished_content_type:
+            args.extend(["--unpublished-content-type", unpublished_content_type])
         args.extend(["--json", "--yes"])
         return self.run(args, live_required=True, mutation=True, approved=approved)
 

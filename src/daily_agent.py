@@ -550,22 +550,55 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         if not video_id:
             return {"ok": False, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "failed_step": "upload_video", "steps": steps}
 
+    link = ad_plan.get("landing_url") or destination.get("url", "")
+    body_text = ad_plan.get("primary_text") or f"Conoce {campaign.get('name', 'esta oferta')}."
+    headline = ad_plan.get("headline") or campaign.get("name", "Nueva oferta")
+    object_story_id = str(ad_plan.get("object_story_id") or "").strip()
+    can_create_native_page_post = (
+        not object_story_id
+        and not ad_plan.get("object_story_spec")
+        and not video_id
+        and bool(destination.get("page_id"))
+        and bool(getattr(client.config, "meta_publishing_access_token", ""))
+        and bool(ad_plan.get("creative_image_path") or ad_plan.get("image_url"))
+        and hasattr(client, "create_page_post")
+    )
+    if can_create_native_page_post:
+        page_post_result = client.create_page_post(
+            destination.get("page_id", ""),
+            message="\n\n".join([part for part in [body_text, headline] if part]),
+            link=link,
+            image_path=ad_plan.get("creative_image_path") or "",
+            image_url=ad_plan.get("image_url") or "",
+            unpublished_content_type="ADS_POST",
+            approved=approved,
+        )
+        try:
+            body = json.loads(page_post_result.get("stdout") or "{}")
+            if isinstance(body, dict):
+                object_story_id = str(body.get("object_story_id") or body.get("post_id") or "").strip()
+        except json.JSONDecodeError:
+            pass
+        steps.append({"step": "create_page_post", "ok": bool(object_story_id), "object_story_id": object_story_id, "result": page_post_result})
+        if not object_story_id:
+            return {"ok": False, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "failed_step": "create_page_post", "steps": steps}
+
     creative_result = client.create_creative(
         client.config.ad_account_id,
         f"{campaign.get('name', 'New Campaign')} - Creative",
         destination.get("page_id", ""),
-        ad_plan.get("landing_url") or destination.get("url", ""),
-        ad_plan.get("primary_text") or f"Conoce {campaign.get('name', 'esta oferta')}.",
-        ad_plan.get("headline") or campaign.get("name", "Nueva oferta"),
+        link,
+        body_text,
+        headline,
         image_hash,
         ad_plan.get("cta", "LEARN_MORE"),
         destination.get("instagram_actor_id", ""),
-        object_story_spec=ad_plan.get("object_story_spec") or {},
+        object_story_spec={} if object_story_id else (ad_plan.get("object_story_spec") or {}),
         image_url=ad_plan.get("image_url") or "",
         video_url=ad_plan.get("video_url") or "",
         video_id=video_id,
         cta_link=ad_plan.get("cta_link") or "",
-        object_story_id=ad_plan.get("object_story_id") or "",
+        object_story_id=object_story_id,
         approved=approved,
     )
     creative_id = social_id_from_result(creative_result)
@@ -1179,7 +1212,12 @@ def run_daily():
     if config.creative_refresh_enabled and config.creative_auto_generate_on_daily:
         for campaign in campaigns_needing_refresh(metrics.get("campaigns", [])):
             plan, manifest_path = generate_creative_refresh(campaign, generate_images=config.creative_live)
-            creative_refreshes.append({"id": plan["id"], "campaign": plan["campaign"], "manifest_path": str(manifest_path)})
+            creative_refreshes.append({
+                "id": plan["id"],
+                "campaign": plan["campaign"],
+                "manifest_path": str(manifest_path),
+                "social_publishing": plan.get("social_publishing", {}),
+            })
         if creative_refreshes:
             log_action("creative_refresh", {"items": creative_refreshes}, "generated")
 

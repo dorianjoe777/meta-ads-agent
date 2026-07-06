@@ -376,6 +376,13 @@ def build_creative_plan(campaign, ad_config=None, variants_per_campaign=None, pr
             "create_ads_as_paused": bool(creative_cfg.get("create_ads_as_paused", True)),
             "requires_approval": True,
         },
+        "social_publishing": {
+            "direct_publishing_ready": bool(getattr(config, "meta_publishing_access_token", "")),
+            "approval_required": True,
+            "positioning": "marketing_agency_in_your_pocket",
+            "use_cases": ["daily_social_post", "native_page_post_ad", "creative_refresh"],
+            "buyer_copy": "Admira can prepare posts and creatives for approval; publishing only happens after the buyer approves.",
+        },
     }
 
 

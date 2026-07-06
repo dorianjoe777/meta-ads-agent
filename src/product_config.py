@@ -305,6 +305,8 @@ class AgentConfig:
     hermes_require_codex_auth: bool = True
     meta_access_token_kind: str = ""
     meta_access_token_saved_at: str = ""
+    meta_publishing_access_token: str = ""
+    meta_publishing_token_saved_at: str = ""
     shopify_shop_domain: str = ""
     shopify_admin_token: str = ""
     shopify_api_version: str = "2026-04"
@@ -367,6 +369,8 @@ def load_config():
         meta_access_token=os.environ.get("META_ACCESS_TOKEN", ""),
         meta_access_token_kind=os.environ.get("META_ACCESS_TOKEN_KIND", ""),
         meta_access_token_saved_at=os.environ.get("META_ACCESS_TOKEN_SAVED_AT", ""),
+        meta_publishing_access_token=os.environ.get("META_PUBLISHING_ACCESS_TOKEN", ""),
+        meta_publishing_token_saved_at=os.environ.get("META_PUBLISHING_TOKEN_SAVED_AT", ""),
         meta_graph_api_version=os.environ.get("META_GRAPH_API_VERSION", "v24.0"),
         notify_channel=os.environ.get("META_NOTIFY_CHANNEL", "dashboard").strip().lower(),
         daily_brief_time=normalize_daily_time(env_first("DAILY_BRIEF_TIME", "META_DAILY_BRIEF_TIME", default="08:00")),

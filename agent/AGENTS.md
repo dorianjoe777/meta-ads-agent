@@ -45,6 +45,7 @@ Handles fatigue and creative refresh:
 - Recommends placement-specific versions when useful: vertical native assets for Reels/Stories, feed-friendly proof/comparison assets for detailed offers, and tighter placement sets when budget or signal is thin
 - Uses campaign preflight before serious staging so account readiness, policy/rate-limit checks, audiences, existing creatives, placement/device insight availability, signal quality, budget sanity, and dry-run payload shape are reviewed before the buyer approves spend
 - Uses Image 2 only for approved raster directions and never treats the available tool as the strategy
+- Uses Publicación directa when connected to prepare native/unpublished Page posts for ads or daily social publishing approval, framing it as the “marketing agency in your pocket” capability instead of a technical workaround
 - Preserves official uploaded logos exactly; it never redraws or approximates them
 - Keeps creative changes staged until reviewed
 - After a real multi-creative launch, schedules an early delivery check and budget-aware evidence checkpoints using the real Meta IDs

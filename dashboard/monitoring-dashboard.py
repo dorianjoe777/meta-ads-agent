@@ -277,6 +277,8 @@ BUSINESS_ENV_KEYS = [
     "META_ACCESS_TOKEN",
     "META_ACCESS_TOKEN_KIND",
     "META_ACCESS_TOKEN_SAVED_AT",
+    "META_PUBLISHING_ACCESS_TOKEN",
+    "META_PUBLISHING_TOKEN_SAVED_AT",
     "TELEGRAM_AGENT_ENABLED",
     "TELEGRAM_BOT_TOKEN",
     "TELEGRAM_CHAT_ID",
@@ -1565,6 +1567,8 @@ def snapshot_workspace(space_id):
         "META_ACCESS_TOKEN": config.meta_access_token,
         "META_ACCESS_TOKEN_KIND": config.meta_access_token_kind,
         "META_ACCESS_TOKEN_SAVED_AT": config.meta_access_token_saved_at,
+        "META_PUBLISHING_ACCESS_TOKEN": getattr(config, "meta_publishing_access_token", ""),
+        "META_PUBLISHING_TOKEN_SAVED_AT": getattr(config, "meta_publishing_token_saved_at", ""),
         "TELEGRAM_AGENT_ENABLED": "true" if telegram_settings(config)["enabled"] else "false",
         "TELEGRAM_BOT_TOKEN": config.telegram_bot_token,
         "TELEGRAM_CHAT_ID": config.telegram_chat_id,
@@ -1596,6 +1600,8 @@ def restore_workspace(space_id):
         "META_ACCESS_TOKEN": "",
         "META_ACCESS_TOKEN_KIND": "",
         "META_ACCESS_TOKEN_SAVED_AT": "",
+        "META_PUBLISHING_ACCESS_TOKEN": "",
+        "META_PUBLISHING_TOKEN_SAVED_AT": "",
         "TELEGRAM_AGENT_ENABLED": "false",
         "TELEGRAM_BOT_TOKEN": "",
         "TELEGRAM_CHAT_ID": "",
@@ -2055,6 +2061,101 @@ def social_save_facebook_token(payload):
     redacted["graph_ready"] = bool(result.get("ok"))
     redacted["token_kind"] = token_kind
     return redacted
+
+
+def publishing_status(config=None, destination=None):
+    config = config or load_config()
+    if destination is None:
+        destination = read_json(AD_CONFIG_FILE, {}).get("creative", {}).get("destination", {})
+    token_set = bool(getattr(config, "meta_publishing_access_token", ""))
+    page_id = str((destination or {}).get("page_id") or "").strip()
+    return {
+        "ok": token_set and bool(page_id),
+        "token_set": token_set,
+        "ready": token_set and bool(page_id),
+        "page_id": page_id,
+        "saved_at": getattr(config, "meta_publishing_token_saved_at", ""),
+        "description": "Direct publishing can create unpublished Page posts for ads and scheduled social posts." if token_set else "Direct publishing is optional and not connected.",
+    }
+
+
+def _debug_token_scopes(debug_result):
+    data = debug_result.get("data") if isinstance(debug_result, dict) else {}
+    if isinstance(data, dict) and isinstance(data.get("data"), dict):
+        scopes = data["data"].get("scopes") or data["data"].get("granular_scopes") or []
+    else:
+        scopes = []
+    if isinstance(scopes, list):
+        normalized = []
+        for scope in scopes:
+            if isinstance(scope, dict):
+                normalized.append(str(scope.get("scope") or "").strip())
+            else:
+                normalized.append(str(scope or "").strip())
+        return {scope for scope in normalized if scope}
+    return set()
+
+
+def test_publishing_connection(payload=None):
+    payload = payload or {}
+    config = load_config()
+    token = str(payload.get("token") or getattr(config, "meta_publishing_access_token", "") or "").strip()
+    destination = read_json(AD_CONFIG_FILE, {}).get("creative", {}).get("destination", {})
+    page_id = str(payload.get("page_id") or destination.get("page_id") or "").strip()
+    if not token:
+        return {"ok": False, "code": "missing_token", "message": "Falta conectar Publicación directa.", "page_id": page_id}
+    debug = graph_get("/debug_token", {"input_token": token}, page_token=token)
+    pages = graph_get("/me/accounts", {"fields": "id,name,tasks,perms,access_token", "limit": 100}, page_token=token)
+    scopes = _debug_token_scopes(debug)
+    required_scopes = {"pages_manage_posts", "pages_read_engagement"}
+    missing_scopes = sorted(required_scopes - scopes) if scopes else []
+    pages_data = []
+    if pages.get("ok") and isinstance(pages.get("data"), dict):
+        pages_data = pages["data"].get("data") or []
+    page = next((entry for entry in pages_data if str(entry.get("id") or "") == page_id), None) if page_id else None
+    page_found = bool(page) if page_id else bool(pages_data)
+    ok = bool(pages.get("ok")) and page_found and not missing_scopes
+    message = "Publicación directa lista." if ok else "La clave de publicación no está lista todavía."
+    if missing_scopes:
+        message = f"Faltan permisos: {', '.join(missing_scopes)}."
+    elif page_id and not page_found:
+        message = "La clave de publicación no puede acceder a la página guardada."
+    elif not pages.get("ok"):
+        message = graph_error_message(pages) or message
+    debug_data = debug.get("data", {}).get("data", {}) if isinstance(debug.get("data"), dict) else {}
+    return {
+        "ok": ok,
+        "code": "ready" if ok else "not_ready",
+        "message": message,
+        "app_id": debug_data.get("app_id", ""),
+        "application": debug_data.get("application", ""),
+        "scopes": sorted(scopes),
+        "missing_scopes": missing_scopes,
+        "page_id": page_id,
+        "page_found": page_found,
+        "page_name": (page or {}).get("name", ""),
+        "pages_seen": len(pages_data),
+    }
+
+
+def save_publishing_config(payload):
+    payload = payload or {}
+    if payload.get("disconnect"):
+        update_env_values({
+            "META_PUBLISHING_ACCESS_TOKEN": "",
+            "META_PUBLISHING_TOKEN_SAVED_AT": "",
+        })
+        return {"ok": True, "saved": True, "disconnected": True, "message": "Publicación directa desconectada."}
+    token = str(payload.get("token") or payload.get("publishing_token") or payload.get("meta_publishing_access_token") or "").strip()
+    if len(token) < 20:
+        raise ValueError("La clave de publicación es demasiado corta.")
+    check = test_publishing_connection({"token": token, "page_id": payload.get("page_id") or ""})
+    update_env_values({
+        "META_PUBLISHING_ACCESS_TOKEN": token,
+        "META_PUBLISHING_TOKEN_SAVED_AT": now_iso(),
+    })
+    log_action("meta_direct_publishing_config", {"ready": bool(check.get("ok")), "page_found": bool(check.get("page_found")), "missing_scopes": check.get("missing_scopes", [])}, "completed" if check.get("ok") else "warn")
+    return {**check, "saved": True, "token_set": True}
 
 
 def graph_get(path, params=None, page_token=""):
@@ -9185,6 +9286,8 @@ def dashboard_payload():
                 "license_server_url_set": bool(config.license_server_url),
                 "license_required_for_live": config.license_required_for_live,
                 "meta_access_token_set": bool(config.meta_access_token),
+                "meta_publishing_access_token_set": bool(getattr(config, "meta_publishing_access_token", "")),
+                "meta_publishing_token_saved_at": getattr(config, "meta_publishing_token_saved_at", ""),
                 "ad_account_id": config.ad_account_id or ("" if str(ad_config.get("account", {}).get("id", "")).strip() in EXAMPLE_AD_ACCOUNT_IDS else ad_config.get("account", {}).get("id", "")),
                 "managed_ad_accounts": managed_accounts,
                 "meta_access_token_kind": config.meta_access_token_kind,
@@ -9202,6 +9305,7 @@ def dashboard_payload():
                 "codex_image_source": getattr(config, "codex_image_source", "main_chatgpt"),
                 "codex_image_hermes_model": getattr(config, "codex_image_hermes_model", config.hermes_model),
             },
+            "publishing": publishing_status(config, destination),
         },
         "setup": setup,
         "onboarding": onboarding,
@@ -9262,7 +9366,7 @@ HTML = r"""<!DOCTYPE html>
 <div class="dashboard-view hidden" id="view-idle"></div>
 </div>
 <div id="tab-setup" class="hidden">
-<section class="section"><div class="head"><span>03</span><b data-i18n="setup_status">Setup Status</b><button class="btn ask-btn" data-action-code="openChat(t('draft_setup'))" data-i18n="ask_agent">Ask agent</button><button class="btn" data-action-code="load()" data-i18n="refresh">Refresh</button></div><div class="body"><div id="mode-control"></div><div id="guardrails-panel"></div><div id="onboarding-wizard"></div><div id="license-panel"></div><div id="meta-connection-panel"></div><div id="setup-config"></div><div id="chatgpt-panel"></div><div id="telegram-panel"></div><div id="communication-style-panel"></div><div id="local-network-panel"></div><div id="migration-panel"></div><div id="update-rollback-panel"></div><div id="cloud-access-panel"></div><div id="setup-summary"></div><div id="setup-sections"></div></div></section>
+<section class="section"><div class="head"><span>03</span><b data-i18n="setup_status">Setup Status</b><button class="btn ask-btn" data-action-code="openChat(t('draft_setup'))" data-i18n="ask_agent">Ask agent</button><button class="btn" data-action-code="load()" data-i18n="refresh">Refresh</button></div><div class="body"><div id="mode-control"></div><div id="guardrails-panel"></div><div id="onboarding-wizard"></div><div id="license-panel"></div><div id="meta-connection-panel"></div><div id="publishing-panel"></div><div id="setup-config"></div><div id="chatgpt-panel"></div><div id="telegram-panel"></div><div id="communication-style-panel"></div><div id="local-network-panel"></div><div id="migration-panel"></div><div id="update-rollback-panel"></div><div id="cloud-access-panel"></div><div id="setup-summary"></div><div id="setup-sections"></div></div></section>
 </div>
 <div id="tab-creator" class="hidden">
 <section class="section"><div class="head"><span>04</span><b data-i18n="campaign_creator">Campaign Creator</b></div><div class="body">
@@ -9392,7 +9496,7 @@ HTML = r"""<!DOCTYPE html>
 class DashboardHandler(BaseHTTPRequestHandler):
     HTML_PATHS = {"/", "/dashboard"}
     PROTECTED_GET_PATHS = {"/api/dashboard", "/api/export", "/api/report", "/api/setup", "/api/social/auth-status", "/api/social/accounts", "/api/update/snapshots", "/api/creative-asset", "/api/brand-asset"}
-    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/agent-model/connect", "/api/agent-model/disconnect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/logo", "/api/brand-guides/product", "/api/ad-briefs", "/api/codex/creative-plan", "/api/codex/image-generate", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/optimization/settings", "/api/optimization/unlock", "/api/shopify/config", "/api/shopify/test", "/api/shopify/sync", "/api/daily-brief/schedule", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/communication-style", "/api/onboarding/complete", "/api/onboarding/skip", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/local-network-access", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
+    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/publishing/config", "/api/publishing/test", "/api/agent-model/connect", "/api/agent-model/disconnect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/logo", "/api/brand-guides/product", "/api/ad-briefs", "/api/codex/creative-plan", "/api/codex/image-generate", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/optimization/settings", "/api/optimization/unlock", "/api/shopify/config", "/api/shopify/test", "/api/shopify/sync", "/api/daily-brief/schedule", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/communication-style", "/api/onboarding/complete", "/api/onboarding/skip", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/local-network-access", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
     ONBOARDING_OPEN_GETS = {"/api/dashboard", "/api/setup"}
     ONBOARDING_OPEN_POSTS = {"/api/dashboard-password", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/license/activate", "/api/agent-model/connect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/onboarding/communication-style", "/api/onboarding/complete"}
     GET_JSON_ROUTES = {
@@ -9411,6 +9515,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         "/api/social/token": social_save_facebook_token,
         "/api/social/default-account": social_set_default_account,
         "/api/social/discover-assets": social_discover_assets,
+        "/api/publishing/config": save_publishing_config,
+        "/api/publishing/test": test_publishing_connection,
         "/api/agent-model/connect": connect_agent_model,
         "/api/agent-model/disconnect": disconnect_agent_model,
         "/api/agent-model/connect-status": agent_model_connect_status,

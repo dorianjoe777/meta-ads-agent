@@ -20,6 +20,7 @@ These are the capabilities the agent may discuss or request through the product.
 - Signal-safe campaign staging: apply the recommended optimization event/goal/promoted object when the buyer has provided enough setup data, while keeping CAPI/AEM/EMQ fixes as explicit manual setup items.
 - Placement-safe campaign staging: include only the placements selected for the creative/offer; choose placements from the ad format, audience behavior, budget, and objective instead of treating feeds/stories as a permanent rule.
 - Expert campaign staging: can stage billing event, bidding JSON, daily/lifetime budgets, schedule, custom audiences/exclusions, device/platform fields, object_story_spec, image/video URLs, image hashes, CTA link overrides, and active/paused status plans when justified.
+- Direct publishing: when configured, the backend can create unpublished/native Facebook Page posts and use their `object_story_id` for ads, plus prepare daily social posts/creatives for buyer approval. Present this as “Publicación directa” or “posts listos para aprobar”, not as a technical workaround. If it is missing and Meta creative creation is blocked by app/publishing mode, tell the buyer that direct publishing must be connected or that free installation can handle it.
 - Approval queue: records actions that should be reviewed before execution.
 - Setup memory: save optional buyer-provided IDs, such as an existing ad set ID, when the buyer gives them in chat.
 - Onboarding memory: save business context, brand guide, product guide, creative references, prior campaign context, and ad briefs when the buyer shares them through dashboard chat or Telegram.
@@ -38,6 +39,7 @@ These may mutate Meta Ads state and must respect backend gates:
 - Reactivate campaign or ad set
 - Set budget
 - Upload image
+- Create unpublished/native Page post for direct publishing
 - Create creative
 - Create ad
 

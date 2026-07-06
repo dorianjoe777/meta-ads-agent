@@ -5707,6 +5707,64 @@ class IntegrationTestSuite:
         finally:
             social_flow_client.urllib.request.urlopen = original_urlopen
 
+    def test_social_flow_creates_native_page_post_for_direct_publishing(self):
+        """Test direct publishing creates unpublished native Page posts with the publishing token."""
+        print("\nTesting Meta Graph Direct Publishing Page Posts...")
+
+        class FakeConfig:
+            mode = "live"
+            live = True
+            live_actions_enabled = True
+            meta_connector = "graph_api"
+            meta_access_token = "ads-token"
+            meta_publishing_access_token = "publish-token"
+            meta_graph_api_version = "v24.0"
+            ad_account_id = "act_999"
+
+        class FakeResponse:
+            status = 200
+            headers = {}
+
+            def __init__(self, body):
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps(self.body).encode("utf-8")
+
+        image_path = ROOT_DIR / "output" / "test-direct-publishing.png"
+        original_urlopen = social_flow_client.urllib.request.urlopen
+        requests = []
+
+        def fake_urlopen(request, timeout=90):
+            requests.append(request)
+            if "/me/accounts" in request.full_url:
+                return FakeResponse({"data": [{"id": "page_1", "name": "Uboost Marketing", "access_token": "page-token"}]})
+            if "/page_1/photos" in request.full_url:
+                return FakeResponse({"id": "photo_1", "post_id": "page_1_post_1"})
+            return FakeResponse({"id": "ok"})
+
+        try:
+            image_path.parent.mkdir(exist_ok=True)
+            image_path.write_bytes(b"fake")
+            social_flow_client.urllib.request.urlopen = fake_urlopen
+            client = SocialFlowClient(FakeConfig())
+            result = client.create_page_post("page_1", message="Post listo", link="https://uboost.lat", image_path=str(image_path), approved=True)
+            body = json.loads(result.get("stdout") or "{}")
+            post_body = requests[-1].data
+            self.assert_true(result.get("connector") == "graph_api" and body.get("object_story_id") == "page_1_post_1", "Direct publishing returns a native Page post object_story_id")
+            self.assert_true(b"page-token" in post_body and b"ads-token" not in post_body, "Page post creation uses the Page publishing token, not the ads token")
+            self.assert_true(b'published' in post_body and b'false' in post_body and b'ADS_POST' in post_body, "Direct publishing creates an unpublished ads-ready Page post")
+        finally:
+            social_flow_client.urllib.request.urlopen = original_urlopen
+            if image_path.exists():
+                image_path.unlink()
+
     def test_social_flow_graph_api_covers_preflight_reads(self):
         """Test account, insight, audience and creative reads work directly through Graph API."""
         print("\nTesting Meta Graph API Preflight Read Coverage...")
@@ -5920,6 +5978,7 @@ class IntegrationTestSuite:
             live = False
             mode = "dry-run"
             ad_account_id = "act_999"
+            meta_publishing_access_token = ""
 
         class FakeClient:
             config = FakeConfig()
@@ -5942,6 +6001,10 @@ class IntegrationTestSuite:
             def upload_video(self, *args, **kwargs):
                 self.calls.append(("upload_video", args, kwargs))
                 return {"stdout": json.dumps({"id": "vid_1"}), "executed": True}
+
+            def create_page_post(self, *args, **kwargs):
+                self.calls.append(("create_page_post", args, kwargs))
+                return {"stdout": json.dumps({"post_id": "111_999", "object_story_id": "111_999"}), "executed": True}
 
             def create_creative(self, *args, **kwargs):
                 self.calls.append(("create_creative", args, kwargs))
@@ -6004,6 +6067,38 @@ class IntegrationTestSuite:
             self.assert_true(all(call[2].get("approved") is True for call in client.calls), "Full campaign execution is explicitly marked as approved")
             saved_campaign = json.loads(campaign_path.read_text(encoding="utf-8"))
             self.assert_true(saved_campaign.get("execution_state", {}).get("campaign_id") == "cmp_1", "Campaign execution stores the created Meta campaign ID for safe retries")
+
+            class PublishingConfig(FakeConfig):
+                meta_publishing_access_token = "publishing-token"
+
+            class PublishingClient(FakeClient):
+                config = PublishingConfig()
+
+            campaign_path.write_text(
+                json.dumps(
+                    {
+                        "name": "Native Post Stack",
+                        "objective": "PURCHASES",
+                        "budget": {"daily": 25},
+                        "ad_sets": [{"name": "Native Post Stack - Core", "targeting": {"locations": ["MX"]}, "budget": 25}],
+                        "ad": {
+                            "primary_text": "Texto",
+                            "headline": "Titular",
+                            "creative_image_path": str(image_path),
+                            "landing_url": "https://buyer.example",
+                            "final_status": "PAUSED",
+                            "active_spend_confirmed": False,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            publishing_client = PublishingClient()
+            publishing_result = execute_campaign_creation(str(campaign_path), publishing_client, approved=True)
+            publishing_steps = [call[0] for call in publishing_client.calls]
+            publishing_creative_call = next(call for call in publishing_client.calls if call[0] == "create_creative")
+            self.assert_true(publishing_result["ok"] and publishing_steps == ["create_campaign", "create_adset", "upload_image", "create_page_post", "create_creative", "create_ad"], "Campaign stack uses direct publishing native Page posts before creative creation when configured")
+            self.assert_true(publishing_creative_call[2]["object_story_id"] == "111_999" and not publishing_creative_call[2]["object_story_spec"], "Native Page post object_story_id replaces inline story specs for direct publishing")
 
             retry_campaign_path.write_text(
                 json.dumps(
@@ -7078,6 +7173,51 @@ class IntegrationTestSuite:
                 else:
                     os.environ[key] = value
 
+    def test_dashboard_direct_publishing_config_is_safe(self):
+        """Test dashboard stores and tests direct publishing without returning raw tokens."""
+        print("\nTesting Dashboard Direct Publishing Config...")
+
+        dashboard = load_dashboard_module()
+        env_path = dashboard.ENV_FILE
+        ad_path = dashboard.AD_CONFIG_FILE
+        env_before = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+        ad_before = ad_path.read_text(encoding="utf-8") if ad_path.exists() else ""
+        env_backup = {key: os.environ.get(key) for key in ["META_PUBLISHING_ACCESS_TOKEN", "META_PUBLISHING_TOKEN_SAVED_AT", "META_ACCESS_TOKEN", "META_AD_ACCOUNT_ID"]}
+        original_graph_get = dashboard.graph_get
+
+        def fake_graph_get(path, params=None, page_token=""):
+            if "debug_token" in str(path):
+                return {"ok": True, "data": {"data": {"app_id": "app_live", "application": "Poster", "scopes": ["pages_manage_posts", "pages_read_engagement"]}}}
+            if "me/accounts" in str(path):
+                return {"ok": True, "data": {"data": [{"id": "page_1", "name": "Uboost Marketing", "access_token": "page-token"}]}}
+            return {"ok": True, "data": {}}
+
+        try:
+            dashboard.graph_get = fake_graph_get
+            dashboard.write_json(ad_path, {"creative": {"destination": {"page_id": "page_1", "url": "https://uboost.lat"}}})
+            dashboard.update_env_values({"META_PUBLISHING_ACCESS_TOKEN": "", "META_PUBLISHING_TOKEN_SAVED_AT": ""})
+            missing = dashboard.test_publishing_connection({})
+            self.assert_true(not missing["ok"] and missing["code"] == "missing_token", "Publishing test explains missing direct publishing token")
+
+            saved = dashboard.save_publishing_config({"token": "EAA-test-direct-publishing-token-1234567890"})
+            payload = dashboard.dashboard_payload()
+            payload_json = json.dumps(payload)
+            self.assert_true(saved["saved"] and saved["ok"] and saved["page_found"], "Publishing config validates page access before reporting ready")
+            self.assert_true(payload["config"]["setup_values"]["meta_publishing_access_token_set"] is True and payload["config"]["publishing"]["ready"] is True, "Dashboard payload exposes direct publishing readiness")
+            self.assert_true("EAA-test-direct-publishing-token" not in payload_json and "page-token" not in payload_json, "Dashboard payload never returns raw publishing tokens")
+
+            disconnected = dashboard.save_publishing_config({"disconnect": True})
+            self.assert_true(disconnected["disconnected"] and not dashboard.load_config().meta_publishing_access_token, "Publishing config disconnect clears the local token")
+        finally:
+            dashboard.graph_get = original_graph_get
+            env_path.write_text(env_before, encoding="utf-8")
+            ad_path.write_text(ad_before, encoding="utf-8")
+            for key, value in env_backup.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
     def test_agency_spaces_keep_client_data_separate(self):
         """Test Agency can switch spaces without discarding each client's data."""
         print("\nTesting Agency Client Spaces...")
@@ -8019,6 +8159,7 @@ class IntegrationTestSuite:
             self.test_campaign_creation_uses_meta_targeting_selection,
             self.test_social_targeting_uses_meta_ids,
             self.test_autopilot_action_updates_dashboard_only_after_meta_success,
+            self.test_social_flow_creates_native_page_post_for_direct_publishing,
             self.test_campaign_stack_execution_creates_full_ad_order,
             self.test_chat_stages_campaign_creation_and_requires_exact_approval,
             self.test_dashboard_chat_uses_product_actions_before_generic_agent,
@@ -8029,6 +8170,7 @@ class IntegrationTestSuite:
             self.test_setup_config_save_preserves_blank_license,
             self.test_individual_license_replaces_one_business_only_with_confirmation,
             self.test_standard_managed_ad_accounts_share_business_manager_limit,
+            self.test_dashboard_direct_publishing_config_is_safe,
             self.test_agency_spaces_keep_client_data_separate,
             self.test_license_limits_block_individual_and_enforce_agency_caps,
             self.test_onboarding_state_persists,

@@ -9,6 +9,7 @@ Use this skill when the buyer asks to create, launch, prepare, or publish a Meta
 - Chat can stage a campaign but cannot silently approve it.
 - If information is missing, ask one clear question at a time.
 - Do not say campaign creation is blocked because you lack CLI or terminal access. In Telegram use the MCP tools; in dashboard chat use the JSON tool request contract. The product backend stages supported actions and keeps spend behind approval.
+- If the buyer wants the agent to create/publish posts or if ad creative creation fails because the Meta app cannot create the creative, explain the product step as “Publicación directa”: a separate Live publishing connection lets Admira create native/unpublished Page posts, then use them for ads or daily social posts after approval. Do not call it a hack or workaround.
 
 ## Minimum Details
 
@@ -26,6 +27,7 @@ Collect:
 - whether Conversions API, Event Match Quality, AEM/event eligibility, event prioritization, and recent weekly event volume are known
 - placement strategy. Use expert judgment instead of a rigid default: choose controlled Facebook/Instagram feeds and stories when they fit, add Reels/Explore/other placements when the creative format, audience behavior, offer, and budget justify them, or use automatic/Advantage+ placements when that is strategically stronger.
 - creative object strategy: local image, image hash, image URL, video URL, or full `object_story_spec`; CTA and optional CTA link override; Page ID and Instagram actor should come from saved setup when available.
+- direct publishing strategy: if the creative is a static image and Publicación directa is connected, the backend can create the native unpublished Page post automatically before creating the ad creative. If it is not connected, keep the campaign prepared and offer the simple next setup step or free installation support.
 - budget/schedule strategy: daily vs lifetime budget, ad set budget, start/end time, active/paused status for campaign, ad set, and ad, and whether the budget can support the proposed number of concurrent variants.
 - audience strategy: geo, age, interests, custom audiences, exclusions, lookalikes/retargeting audiences when available, device/platform fields when they materially help, and placements.
 - saved creative test brief with distinct hypotheses, formats, and variation count
@@ -81,6 +83,7 @@ When staging, pass the expert fields that are justified by the conversation:
 - `daily_budget`, `adset_daily_budget`, `lifetime_budget`/`adset_lifetime_budget`, `target_cpa`/`target_cpl`, and `concurrent_creatives`
 - `start_time`, `end_time`, `campaign_status`, `adset_status`, `ad_status`, and `final_status`
 - `object_story_spec`, `image_hash`, `image_url`, `video_url`, `cta_link`, `creative_format`
+- `object_story_id` only when using an existing Page post; otherwise let the backend create a native unpublished Page post when Publicación directa is connected
 - `custom_audiences`, `excluded_custom_audiences`, `excluded_interests`, `device_platforms`, `user_os`, `user_device`, and `flexible_spec` only when the buyer/context supports them
 
 Budgets are always interpreted in the connected Meta ad account currency. Do not assume USD. Accept buyer wording like `S/20`, `COP 40.000`, `MXN 300`, `€15`, or `$20`, and pass the numeric amount plus any known `account_currency`/`ad_account_currency` context. If the buyer mentions a different currency from the account currency, explain simply that Meta will use the ad account currency and do not invent currency conversion.
