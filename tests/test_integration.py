@@ -1061,6 +1061,67 @@ class IntegrationTestSuite:
         self.assert_true(result.get("fallback") is True, "Missing Hermes runtime is a fallback state")
         self.assert_true("cerebro del agente" in result["reply"].lower() and "chatgpt" in result["reply"].lower(), "Fallback explains ChatGPT/Codex setup without exposing technical commands")
 
+    def test_hermes_codex_status_requires_positive_login_signal(self):
+        """Test auth unknown is not treated as a connected ChatGPT/Codex account."""
+        print("\nTesting Hermes Codex Status Positive Login Signal...")
+
+        import setup_status
+
+        class FakeConfig:
+            hermes_cli = "hermes"
+            hermes_status_timeout_seconds = 1
+            hermes_home = ""
+            daily_brief_timezone = "UTC"
+
+        class Completed:
+            returncode = 0
+
+            def __init__(self, stdout):
+                self.stdout = stdout
+                self.stderr = ""
+
+        outputs = [
+            "Provider:     OpenAI Codex\nOpenAI Codex auth unknown\n",
+            "Provider:     OpenAI Codex\nOpenAI Codex  ✓ logged in as buyer@example.com\n",
+            "Provider:     MiniMax\nOpenAI Codex  ✓ logged in as buyer@example.com\n",
+            "Provider:     OpenAI Codex\nOpenAI Codex auth unknown\n",
+            "Provider:     OpenAI Codex\nOpenAI Codex  ✓ logged in as buyer@example.com\n",
+        ]
+
+        original_run = hermes_bridge.subprocess.run
+        original_which = hermes_bridge.shutil.which
+        original_setup_run = setup_status.subprocess.run
+        original_setup_which = setup_status.shutil.which
+        try:
+            hermes_bridge.shutil.which = lambda _cmd: "/usr/local/bin/hermes"
+            setup_status.shutil.which = lambda _cmd: "/usr/local/bin/hermes"
+
+            def fake_run(*_args, **_kwargs):
+                return Completed(outputs.pop(0))
+
+            hermes_bridge.subprocess.run = fake_run
+            setup_status.subprocess.run = fake_run
+
+            unknown = hermes_bridge.hermes_codex_session_status(FakeConfig())
+            self.assert_true(unknown.get("ready") is False and unknown.get("authenticated") is False, "OpenAI Codex auth unknown is not a connected account")
+
+            logged = hermes_bridge.hermes_codex_session_status(FakeConfig())
+            self.assert_true(logged.get("ready") is True and logged.get("authenticated") is True and logged.get("identity", {}).get("email") == "buyer@example.com", "A positive logged-in Codex line marks the account connected")
+
+            non_primary = hermes_bridge.hermes_codex_session_status(FakeConfig())
+            self.assert_true(non_primary.get("ready") is False and non_primary.get("authenticated") is True, "Authenticated Codex can be detected separately from the active primary provider")
+
+            setup_unknown = setup_status.hermes_codex_status(FakeConfig())
+            self.assert_true(setup_unknown.get("ready") is False and "auth unknown" in setup_unknown.get("detail", "").lower(), "Setup status does not treat auth unknown as ready")
+
+            setup_logged = setup_status.hermes_codex_status(FakeConfig())
+            self.assert_true(setup_logged.get("ready") is True, "Setup status accepts a real positive logged-in Codex line")
+        finally:
+            hermes_bridge.subprocess.run = original_run
+            hermes_bridge.shutil.which = original_which
+            setup_status.subprocess.run = original_setup_run
+            setup_status.shutil.which = original_setup_which
+
     def test_hermes_model_usage_limit_keeps_connection_state_clear(self):
         """Test ChatGPT/Codex usage limits are not reported as missing setup."""
         print("\nTesting Hermes Model Usage Limit Messaging...")
@@ -8120,6 +8181,7 @@ class IntegrationTestSuite:
             self.test_dashboard_hermes_cli_registers_admira_mcp_tools,
             self.test_hermes_creative_image_request_routes_to_codex_tool,
             self.test_hermes_missing_runtime_gives_chatgpt_setup_guidance,
+            self.test_hermes_codex_status_requires_positive_login_signal,
             self.test_hermes_model_usage_limit_keeps_connection_state_clear,
             self.test_hermes_gateway_rate_limit_runtime_patch_localizes_reset_time,
             self.test_hermes_gateway_runtime_patch_always_attaches_generated_creatives,

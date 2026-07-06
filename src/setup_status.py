@@ -10,7 +10,7 @@ from codex_brand_guides import hermes_codex_image_status
 from creative_refresh import INDEX_FILE as CREATIVE_INDEX_FILE
 from creative_refresh import load_ad_config, read_json
 from agent_runtime import load_agent_profile
-from hermes_bridge import hermes_brain_ready, hermes_brain_settings
+from hermes_bridge import codex_auth_line_from_status, codex_auth_line_is_logged_in, hermes_brain_ready, hermes_brain_settings
 from license import license_status as current_license_status
 from meta_upload import UPLOAD_INDEX_FILE, recent_uploads
 from product_config import ENV_FILE, ROOT_DIR, load_config
@@ -105,8 +105,8 @@ def hermes_codex_status(config):
         return {"ready": False, "detail": f"Could not check Hermes status: {exc}"}
     output = (completed.stdout or "") + "\n" + (completed.stderr or "")
     provider_line = next((line.strip() for line in output.splitlines() if "Provider:" in line), "")
-    codex_line = next((line.strip() for line in output.splitlines() if "OpenAI Codex" in line), "")
-    codex_logged_in = bool(codex_line and "not logged in" not in codex_line.lower() and "\u2717" not in codex_line)
+    codex_line = codex_auth_line_from_status(output)
+    codex_logged_in = codex_auth_line_is_logged_in(codex_line)
     codex_selected = "codex" in provider_line.lower() or "openai codex" in provider_line.lower()
     ready = codex_logged_in and codex_selected
     detail = f"{provider_line or 'Provider unknown'}; {codex_line or 'OpenAI Codex auth unknown'}"

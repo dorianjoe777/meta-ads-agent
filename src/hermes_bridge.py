@@ -1112,6 +1112,42 @@ def extract_codex_account_identity(text):
     return {"email": "", "label": "", "visible": False}
 
 
+CODEX_AUTH_NEGATIVE_PARTS = (
+    "not logged",
+    "logged out",
+    "auth unknown",
+    "unknown",
+    "login required",
+    "missing",
+    "unauthorized",
+    "401",
+    "error:",
+    "failed",
+)
+CODEX_AUTH_POSITIVE_PARTS = ("logged in", "signed in", "authenticated")
+CODEX_AUTH_POSITIVE_MARKS = ("\u2713", "\u2714", "✅")
+
+
+def codex_auth_line_is_logged_in(line):
+    """Return True only for a positive OpenAI Codex auth signal."""
+    text = str(line or "").strip()
+    lower = text.lower()
+    if not text or "openai codex" not in lower:
+        return False
+    if any(part in lower for part in CODEX_AUTH_NEGATIVE_PARTS):
+        return False
+    return any(part in lower for part in CODEX_AUTH_POSITIVE_PARTS) or any(mark in text for mark in CODEX_AUTH_POSITIVE_MARKS)
+
+
+def codex_auth_line_from_status(output):
+    lines = [line.strip() for line in str(output or "").splitlines() if line.strip()]
+    explicit = next((line for line in lines if "openai codex" in line.lower() and "provider:" not in line.lower()), "")
+    if explicit:
+        return explicit
+    provider_line = next((line for line in lines if "provider:" in line.lower() and "openai codex" in line.lower()), "")
+    return provider_line if codex_auth_line_is_logged_in(provider_line) else ""
+
+
 def hermes_codex_session_status(config, timeout=None):
     hermes_cli = shutil.which(getattr(config, "hermes_cli", "hermes") or "hermes")
     if not hermes_cli:
@@ -1139,13 +1175,14 @@ def hermes_codex_session_status(config, timeout=None):
         return {"ready": False, "detail": detail, "identity": extract_codex_account_identity(detail)}
     output = (completed.stdout or "") + "\n" + (completed.stderr or "")
     provider_line = next((line.strip() for line in output.splitlines() if "Provider:" in line), "")
-    codex_line = next((line.strip() for line in output.splitlines() if "OpenAI Codex" in line), "")
+    codex_line = codex_auth_line_from_status(output)
     provider_ok = "codex" in provider_line.lower() or "openai codex" in provider_line.lower()
-    codex_detail = codex_line.lower()
-    codex_ok = bool(codex_line and "not logged in" not in codex_detail and "\u2717" not in codex_line and "error:" not in codex_detail)
+    codex_ok = codex_auth_line_is_logged_in(codex_line)
     detail = f"{provider_line or 'Provider unknown'}; {codex_line or 'OpenAI Codex auth unknown'}"
     return {
         "ready": provider_ok and codex_ok,
+        "authenticated": codex_ok,
+        "provider_ready": provider_ok and codex_ok,
         "detail": detail,
         "identity": extract_codex_account_identity(output or detail),
         "returncode": completed.returncode,
