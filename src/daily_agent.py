@@ -34,7 +34,7 @@ from security import redact_payload
 from shopify_connector import sync_shopify
 from setup_status import build_setup_status
 from adset_controls import apply_placement_targeting
-from expert_campaign import creative_source_available, normalize_budget_plan, normalize_status_plan
+from expert_campaign import boolish, creative_source_available, normalize_budget_plan, normalize_status_plan
 from social_flow_client import SocialFlowClient, config_snapshot, send_notification
 
 
@@ -270,6 +270,78 @@ def social_body_from_result(result):
     except (TypeError, json.JSONDecodeError):
         body = {}
     return body if isinstance(body, dict) else {}
+
+
+def result_debug_text(result):
+    """Collect provider error text without exposing it directly to buyers."""
+    if not isinstance(result, dict):
+        return str(result or "")
+    parts = []
+    for key in ("stderr", "stdout", "error", "message"):
+        value = result.get(key)
+        if value:
+            parts.append(str(value))
+    body = social_body_from_result(result)
+    if body:
+        parts.append(json.dumps(body, ensure_ascii=False))
+    return "\n".join(parts).lower()
+
+
+def creative_blocked_by_development_mode(result):
+    text = result_debug_text(result)
+    return (
+        "development mode" in text
+        or "must be in public" in text
+        or ("error_subcode" in text and "1885183" in text)
+    )
+
+
+def direct_publishing_preference(ad_plan):
+    for key in ("use_direct_publishing", "direct_publishing", "create_as_unpublished_post", "unpublished_post"):
+        parsed = boolish(ad_plan.get(key))
+        if parsed is not None:
+            return parsed
+    strategy = str(ad_plan.get("creative_creation_strategy") or ad_plan.get("publishing_strategy") or "").strip().lower()
+    if strategy in {"direct", "direct_publishing", "native_post", "page_post", "dark_post", "unpublished_post"}:
+        return True
+    if strategy in {"direct_creative", "inline_creative", "image_hash", "legacy"}:
+        return False
+    return None
+
+
+def direct_publishing_missing_requirements(ad_plan, destination, client, video_id=""):
+    missing = []
+    if not destination.get("page_id"):
+        missing.append("Facebook Page ID")
+    if not getattr(client.config, "meta_publishing_access_token", ""):
+        missing.append("META_PUBLISHING_ACCESS_TOKEN")
+    if video_id or ad_plan.get("video_url"):
+        missing.append("static creative image path or image URL")
+    if not (ad_plan.get("creative_image_path") or ad_plan.get("image_url")):
+        missing.append("creative_image_path_or_image_url")
+    if not hasattr(client, "create_page_post"):
+        missing.append("create_page_post capability")
+    return missing
+
+
+def create_native_page_post_for_ad(client, destination, ad_plan, link, body_text, headline, approved=False):
+    page_post_result = client.create_page_post(
+        destination.get("page_id", ""),
+        message="\n\n".join([part for part in [body_text, headline] if part]),
+        link=link,
+        image_path=ad_plan.get("creative_image_path") or "",
+        image_url=ad_plan.get("image_url") or "",
+        unpublished_content_type="ADS_POST",
+        approved=approved,
+    )
+    object_story_id = ""
+    try:
+        body = json.loads(page_post_result.get("stdout") or "{}")
+        if isinstance(body, dict):
+            object_story_id = str(body.get("object_story_id") or body.get("post_id") or "").strip()
+    except json.JSONDecodeError:
+        pass
+    return object_story_id, page_post_result
 
 
 def campaign_budget_level_from_plan(campaign, budget_plan):
@@ -519,7 +591,51 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
     target_adset_id = adset_ids[0] if adset_ids else ""
     image_hash = ad_plan.get("image_hash") or ""
     video_id = ad_plan.get("video_id") or ""
-    if ad_plan.get("creative_image_path"):
+    link = ad_plan.get("landing_url") or destination.get("url", "")
+    body_text = ad_plan.get("primary_text") or f"Conoce {campaign.get('name', 'esta oferta')}."
+    headline = ad_plan.get("headline") or campaign.get("name", "Nueva oferta")
+    object_story_id = str(ad_plan.get("object_story_id") or "").strip()
+    direct_preference = direct_publishing_preference(ad_plan)
+    direct_missing = direct_publishing_missing_requirements(ad_plan, destination, client, video_id)
+    should_create_native_page_post = (
+        not object_story_id
+        and not direct_missing
+        and direct_preference is not False
+        and bool(getattr(client.config, "meta_publishing_access_token", ""))
+    )
+    if direct_preference is True and not object_story_id and direct_missing:
+        steps.append({
+            "step": "create_page_post",
+            "ok": False,
+            "direct_publishing_requested": True,
+            "missing_requirements": direct_missing,
+        })
+        return {
+            "ok": False,
+            "mode": client.config.mode,
+            "executed": True,
+            "campaign_id": campaign_id,
+            "adset_ids": adset_ids,
+            "failed_step": "create_page_post",
+            "direct_publishing_required": True,
+            "missing_requirements": direct_missing,
+            "steps": steps,
+        }
+    if should_create_native_page_post:
+        object_story_id, page_post_result = create_native_page_post_for_ad(
+            client,
+            destination,
+            ad_plan,
+            link,
+            body_text,
+            headline,
+            approved=approved,
+        )
+        steps.append({"step": "create_page_post", "ok": bool(object_story_id), "object_story_id": object_story_id, "result": page_post_result})
+        if not object_story_id:
+            return {"ok": False, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "failed_step": "create_page_post", "steps": steps}
+
+    if ad_plan.get("creative_image_path") and not object_story_id:
         upload_result = client.upload_image(client.config.ad_account_id, ad_plan.get("creative_image_path"), approved=approved)
         try:
             body = json.loads(upload_result.get("stdout") or "{}")
@@ -550,39 +666,6 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         if not video_id:
             return {"ok": False, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "failed_step": "upload_video", "steps": steps}
 
-    link = ad_plan.get("landing_url") or destination.get("url", "")
-    body_text = ad_plan.get("primary_text") or f"Conoce {campaign.get('name', 'esta oferta')}."
-    headline = ad_plan.get("headline") or campaign.get("name", "Nueva oferta")
-    object_story_id = str(ad_plan.get("object_story_id") or "").strip()
-    can_create_native_page_post = (
-        not object_story_id
-        and not ad_plan.get("object_story_spec")
-        and not video_id
-        and bool(destination.get("page_id"))
-        and bool(getattr(client.config, "meta_publishing_access_token", ""))
-        and bool(ad_plan.get("creative_image_path") or ad_plan.get("image_url"))
-        and hasattr(client, "create_page_post")
-    )
-    if can_create_native_page_post:
-        page_post_result = client.create_page_post(
-            destination.get("page_id", ""),
-            message="\n\n".join([part for part in [body_text, headline] if part]),
-            link=link,
-            image_path=ad_plan.get("creative_image_path") or "",
-            image_url=ad_plan.get("image_url") or "",
-            unpublished_content_type="ADS_POST",
-            approved=approved,
-        )
-        try:
-            body = json.loads(page_post_result.get("stdout") or "{}")
-            if isinstance(body, dict):
-                object_story_id = str(body.get("object_story_id") or body.get("post_id") or "").strip()
-        except json.JSONDecodeError:
-            pass
-        steps.append({"step": "create_page_post", "ok": bool(object_story_id), "object_story_id": object_story_id, "result": page_post_result})
-        if not object_story_id:
-            return {"ok": False, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "failed_step": "create_page_post", "steps": steps}
-
     creative_result = client.create_creative(
         client.config.ad_account_id,
         f"{campaign.get('name', 'New Campaign')} - Creative",
@@ -603,6 +686,55 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
     )
     creative_id = social_id_from_result(creative_result)
     steps.append({"step": "create_creative", "ok": bool(creative_id), "creative_id": creative_id, "result": creative_result})
+    if not creative_id and not object_story_id and creative_blocked_by_development_mode(creative_result):
+        fallback_missing = direct_publishing_missing_requirements(ad_plan, destination, client, video_id)
+        if not fallback_missing:
+            object_story_id, page_post_result = create_native_page_post_for_ad(
+                client,
+                destination,
+                ad_plan,
+                link,
+                body_text,
+                headline,
+                approved=approved,
+            )
+            steps.append({"step": "create_page_post_fallback", "ok": bool(object_story_id), "object_story_id": object_story_id, "result": page_post_result})
+            if object_story_id:
+                creative_result = client.create_creative(
+                    client.config.ad_account_id,
+                    f"{campaign.get('name', 'New Campaign')} - Creative",
+                    destination.get("page_id", ""),
+                    link,
+                    body_text,
+                    headline,
+                    "",
+                    ad_plan.get("cta", "LEARN_MORE"),
+                    destination.get("instagram_actor_id", ""),
+                    object_story_spec={},
+                    image_url="",
+                    video_url="",
+                    video_id="",
+                    cta_link=ad_plan.get("cta_link") or "",
+                    object_story_id=object_story_id,
+                    approved=approved,
+                )
+                creative_id = social_id_from_result(creative_result)
+                steps.append({"step": "create_creative_retry_object_story_id", "ok": bool(creative_id), "creative_id": creative_id, "result": creative_result})
+        if not creative_id:
+            return {
+                "ok": False,
+                "mode": client.config.mode,
+                "executed": True,
+                "campaign_id": campaign_id,
+                "adset_ids": adset_ids,
+                "failed_step": "create_creative",
+                "recovery": {
+                    "direct_publishing_required": True,
+                    "missing_requirements": fallback_missing,
+                    "message": "Meta blocked direct creative creation because the ads app is in development mode. Connect Publicación directa or provide an original image path/URL so the backend can create a native unpublished Page post first.",
+                },
+                "steps": steps,
+            }
     if not creative_id:
         return {"ok": False, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "failed_step": "create_creative", "steps": steps}
 

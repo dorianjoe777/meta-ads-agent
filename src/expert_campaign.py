@@ -414,6 +414,16 @@ def merge_expert_targeting(audience, payload):
 
 def normalize_creative_controls(payload):
     object_story_spec = parse_jsonish(payload.get("object_story_spec") or payload.get("object_story_spec_json"), {})
+    direct_preference = None
+    for key in ("use_direct_publishing", "direct_publishing", "create_as_unpublished_post", "unpublished_post"):
+        direct_preference = boolish(payload.get(key))
+        if direct_preference is not None:
+            break
+    strategy = str(payload.get("creative_creation_strategy") or payload.get("publishing_strategy") or "").strip().lower()
+    if direct_preference is None and strategy in {"direct", "direct_publishing", "native_post", "page_post", "dark_post", "unpublished_post"}:
+        direct_preference = True
+    if direct_preference is None and strategy in {"direct_creative", "inline_creative", "image_hash", "legacy"}:
+        direct_preference = False
     return {
         "object_story_spec": object_story_spec if isinstance(object_story_spec, dict) and object_story_spec else {},
         "object_story_id": str(payload.get("object_story_id") or payload.get("page_post_id") or payload.get("post_id") or "").strip(),
@@ -422,6 +432,7 @@ def normalize_creative_controls(payload):
         "video_url": str(payload.get("video_url") or "").strip(),
         "cta_link": str(payload.get("cta_link") or payload.get("call_to_action_link") or "").strip(),
         "format": str(payload.get("creative_format") or payload.get("format") or "").strip().lower(),
+        "use_direct_publishing": direct_preference,
     }
 
 
@@ -480,6 +491,7 @@ def campaign_preview(campaign):
             "has_image_hash": bool(ad.get("image_hash")),
             "has_image_url": bool(ad.get("image_url")),
             "has_video_url": bool(ad.get("video_url")),
+            "direct_publishing_plan": ad.get("direct_publishing_plan"),
             "cta": ad.get("cta"),
             "cta_link": ad.get("cta_link"),
             "status": ad.get("final_status"),

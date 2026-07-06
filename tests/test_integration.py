@@ -5382,6 +5382,7 @@ class IntegrationTestSuite:
                         "landing_url": "https://uboost.lat",
                         "pixel_id": "1352606006932923",
                         "creative_image_path_or_url_or_story_spec": "imagen final adjunta por el usuario",
+                        "use_direct_publishing": "sí",
                         "active_spend_confirmed": False,
                         "status_plan": "paused",
                     },
@@ -5395,6 +5396,7 @@ class IntegrationTestSuite:
             self.assert_true(captured[0]["budget_currency"] == "PEN" and captured[0]["budget_currency_hint"] == "PEN", "Campaign staging keeps the ad-account currency for non-USD budgets")
             self.assert_true(dashboard.parse_money_like("COP 40.000") == 40000.0 and dashboard.parse_money_like("1.234,56") == 1234.56, "Campaign staging parses LATAM thousands and decimal separators safely")
             self.assert_true(captured[0]["active_spend_confirmed"] is False, "False active-spend confirmation is preserved as an intentional paused choice")
+            self.assert_true(captured[0]["use_direct_publishing"] is True, "Campaign staging accepts explicit direct-publishing intent")
 
             captured.clear()
             post_result = dashboard.execute_agent_tool(
@@ -5502,6 +5504,7 @@ class IntegrationTestSuite:
                         "optimization_event": "Purchase",
                         "success_metrics": ["ROAS", "cost per purchase", "cost per initiate checkout"],
                         "image_url": "https://cdn.example/ad.jpg",
+                        "use_direct_publishing": True,
                         "placements": {"automatic": False, "manual": ["INSTAGRAM_REELS", "INSTAGRAM_STORIES"]},
                     },
                 },
@@ -5513,6 +5516,7 @@ class IntegrationTestSuite:
             self.assert_true(preflight["dry_run_preview"]["budget_plan"]["expected_daily_events"] == 2, "Campaign preflight exposes budget sanity")
             self.assert_true(preflight["dry_run_preview"]["placements"]["manual"] == ["INSTAGRAM_REELS", "INSTAGRAM_STORIES"], "Campaign preflight exposes placement strategy")
             self.assert_true(preflight["dry_run_preview"]["creative_controls"]["has_image_url"], "Campaign preflight exposes creative media controls")
+            self.assert_true("META_PUBLISHING_ACCESS_TOKEN" in preflight["dry_run_preview"]["creative_controls"]["direct_publishing_plan"]["missing_requirements"], "Campaign preflight exposes direct-publishing readiness")
             self.assert_true(preflight["dry_run_preview"]["success_metrics"]["items"][0]["metric"] == "roas" and preflight["dry_run_preview"]["success_metrics"]["items"][2]["metric"] == "cost_per_initiate_checkout", "Campaign preflight exposes the ranked success metrics scorecard")
         finally:
             dashboard.load_config = original_config
@@ -6178,8 +6182,52 @@ class IntegrationTestSuite:
             publishing_result = execute_campaign_creation(str(campaign_path), publishing_client, approved=True)
             publishing_steps = [call[0] for call in publishing_client.calls]
             publishing_creative_call = next(call for call in publishing_client.calls if call[0] == "create_creative")
-            self.assert_true(publishing_result["ok"] and publishing_steps == ["create_campaign", "create_adset", "upload_image", "create_page_post", "create_creative", "create_ad"], "Campaign stack uses direct publishing native Page posts before creative creation when configured")
+            self.assert_true(publishing_result["ok"] and publishing_steps == ["create_campaign", "create_adset", "create_page_post", "create_creative", "create_ad"], "Campaign stack uses direct publishing native Page posts before the legacy image-hash upload path when configured")
             self.assert_true(publishing_creative_call[2]["object_story_id"] == "111_999" and not publishing_creative_call[2]["object_story_spec"], "Native Page post object_story_id replaces inline story specs for direct publishing")
+
+            class DevModeFallbackClient(PublishingClient):
+                def __init__(self):
+                    super().__init__()
+                    self.creative_attempts = 0
+
+                def create_creative(self, *args, **kwargs):
+                    self.calls.append(("create_creative", args, kwargs))
+                    self.creative_attempts += 1
+                    if self.creative_attempts == 1:
+                        return {
+                            "stdout": json.dumps({"error": {"error_subcode": 1885183, "message": "Ads creative post was created by an app that is in development mode. It must be in public to create this ad."}}),
+                            "stderr": "development mode",
+                            "returncode": 1,
+                            "executed": True,
+                        }
+                    return {"stdout": json.dumps({"id": "creative_retry"}), "executed": True}
+
+            campaign_path.write_text(
+                json.dumps(
+                    {
+                        "name": "Fallback Native Post Stack",
+                        "objective": "PURCHASES",
+                        "budget": {"daily": 25},
+                        "ad_sets": [{"name": "Fallback Native Post Stack - Core", "targeting": {"locations": ["MX"]}, "budget": 25}],
+                        "ad": {
+                            "primary_text": "Texto",
+                            "headline": "Titular",
+                            "creative_image_path": str(image_path),
+                            "landing_url": "https://buyer.example",
+                            "use_direct_publishing": False,
+                            "final_status": "PAUSED",
+                            "active_spend_confirmed": False,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            fallback_client = DevModeFallbackClient()
+            fallback_result = execute_campaign_creation(str(campaign_path), fallback_client, approved=True)
+            fallback_steps = [step.get("step") for step in fallback_result.get("steps", [])]
+            fallback_retry_call = fallback_client.calls[-2]
+            self.assert_true(fallback_result["ok"] and "create_page_post_fallback" in fallback_steps and "create_creative_retry_object_story_id" in fallback_steps, "Campaign stack falls back to unpublished Page post when Meta blocks direct creative creation for development-mode apps")
+            self.assert_true(fallback_retry_call[2]["object_story_id"] == "111_999", "Development-mode fallback retries the creative with object_story_id")
 
             retry_campaign_path.write_text(
                 json.dumps(

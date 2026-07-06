@@ -85,6 +85,7 @@ When staging, pass the expert fields that are justified by the conversation:
 - `start_time`, `end_time`, `campaign_status`, `adset_status`, `ad_status`, and `final_status`
 - `object_story_spec`, `image_hash`, `image_url`, `video_url`, `cta_link`, `creative_format`
 - `object_story_id` only when using an existing Page post; otherwise let the backend create a native unpublished Page post when Publicación directa is connected
+- `use_direct_publishing: true` when the buyer/setup specifically needs the native unpublished Page post route; if omitted, the backend will still use Publicación directa automatically for static image ads when it is connected
 - `custom_audiences`, `excluded_custom_audiences`, `excluded_interests`, `device_platforms`, `user_os`, `user_device`, and `flexible_spec` only when the buyer/context supports them
 
 Budgets are always interpreted in the connected Meta ad account currency. Do not assume USD. Accept buyer wording like `S/20`, `COP 40.000`, `MXN 300`, `€15`, or `$20`, and pass the numeric amount plus any known `account_currency`/`ad_account_currency` context. If the buyer mentions a different currency from the account currency, explain simply that Meta will use the ad account currency and do not invent currency conversion.

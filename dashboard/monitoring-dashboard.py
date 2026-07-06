@@ -2080,6 +2080,42 @@ def publishing_status(config=None, destination=None):
     }
 
 
+def direct_publishing_campaign_plan(payload=None, creative_controls=None, config=None, destination=None):
+    payload = payload or {}
+    creative_controls = creative_controls or normalize_creative_controls(payload)
+    config = config or load_config()
+    destination = destination if destination is not None else read_json(AD_CONFIG_FILE, {}).get("creative", {}).get("destination", {})
+    status = publishing_status(config, destination)
+    explicit = creative_controls.get("use_direct_publishing")
+    strategy = str(payload.get("creative_creation_strategy") or payload.get("publishing_strategy") or "").strip().lower()
+    has_existing_post = bool(creative_controls.get("object_story_id"))
+    has_static_image = bool(payload.get("creative_image_path") or creative_controls.get("image_url")) and not bool(creative_controls.get("video_url"))
+    requested = explicit is True or strategy in {"direct", "direct_publishing", "native_post", "page_post", "dark_post", "unpublished_post"}
+    disabled = explicit is False or strategy in {"direct_creative", "inline_creative", "image_hash", "legacy"}
+    will_create = bool(status.get("ready")) and has_static_image and not has_existing_post and not disabled
+    missing = []
+    if requested and not has_existing_post:
+        if not status.get("token_set"):
+            missing.append("META_PUBLISHING_ACCESS_TOKEN")
+        if not status.get("page_id"):
+            missing.append("Facebook Page ID")
+        if not has_static_image:
+            missing.append("creative_image_path_or_image_url")
+    return {
+        "requested": requested,
+        "disabled": disabled,
+        "ready": bool(status.get("ready")),
+        "token_set": bool(status.get("token_set")),
+        "page_id": status.get("page_id", ""),
+        "has_existing_post": has_existing_post,
+        "has_static_image": has_static_image,
+        "will_create_unpublished_post": will_create,
+        "creative_route": "existing_object_story_id" if has_existing_post else ("unpublished_page_post_object_story_id" if will_create else "direct_creative"),
+        "missing_requirements": missing,
+        "note": "Publicación directa: crear post no publicado y usar object_story_id." if will_create else "",
+    }
+
+
 def _debug_token_scopes(debug_result):
     data = debug_result.get("data") if isinstance(debug_result, dict) else {}
     if isinstance(data, dict) and isinstance(data.get("data"), dict):
@@ -6904,6 +6940,7 @@ def create_campaign(payload):
     schedule = normalize_schedule(payload)
     bidding = normalize_bidding(payload)
     creative_controls = normalize_creative_controls(payload)
+    direct_plan = direct_publishing_campaign_plan(payload, creative_controls)
     ad_set = creator.create_ad_set_config(
         f"{payload.get('name', 'New Campaign')} - Core",
         audience,
@@ -6954,6 +6991,8 @@ def create_campaign(payload):
         "video_url": creative_controls["video_url"],
         "object_story_spec": creative_controls["object_story_spec"],
         "object_story_id": creative_controls["object_story_id"],
+        "use_direct_publishing": creative_controls["use_direct_publishing"],
+        "direct_publishing_plan": direct_plan,
         "creative_format": creative_controls["format"],
         "final_status": final_status,
         "active_spend_confirmed": active_confirmed,
@@ -6991,6 +7030,7 @@ def create_campaign(payload):
                 "has_video_url": bool(campaign["ad"].get("video_url")),
                 "cta_link": campaign["ad"].get("cta_link"),
                 "format_review": campaign.get("creative_format_review"),
+                "direct_publishing_plan": direct_plan,
             },
             "targeting": targeting_summary(audience),
             "placements": placement_config_summary(placement_config),
@@ -7209,6 +7249,19 @@ def normalize_campaign_stack_arguments(arguments, chat_payload=None):
     confirmed = boolish(args.get("active_spend_confirmed"))
     if confirmed is not None:
         args["active_spend_confirmed"] = confirmed
+
+    direct_preference = None
+    for key in ("use_direct_publishing", "direct_publishing", "create_as_unpublished_post", "unpublished_post"):
+        direct_preference = boolish(args.get(key))
+        if direct_preference is not None:
+            args["use_direct_publishing"] = direct_preference
+            break
+    if direct_preference is None:
+        strategy = str(args.get("creative_creation_strategy") or args.get("publishing_strategy") or "").strip().lower()
+        if strategy in {"direct", "direct_publishing", "native_post", "page_post", "dark_post", "unpublished_post"}:
+            args["use_direct_publishing"] = True
+        elif strategy in {"direct_creative", "inline_creative", "image_hash", "legacy"}:
+            args["use_direct_publishing"] = False
 
     for key in ("object_story_id", "page_post_id", "post_id", "existing_post_id", "facebook_post_id"):
         if args.get(key):
@@ -8555,6 +8608,7 @@ def campaign_preflight(arguments, chat_payload):
     signal = review_signal_quality(arguments, metrics=load_metrics(), language=chat_lang(chat_payload))
     placement_config = normalize_placement_config(arguments.get("placements") or arguments.get("placement_preset") or arguments.get("manual_placements"))
     creative_controls = normalize_creative_controls(arguments)
+    direct_plan = direct_publishing_campaign_plan(arguments, creative_controls, config=config)
     budget_plan = normalize_budget_plan(arguments, float(arguments.get("daily_budget", 50) or 50))
     success_metrics = normalize_success_metrics(arguments)
     final_status = str(arguments.get("final_status") or "PAUSED").upper()
@@ -8581,6 +8635,7 @@ def campaign_preflight(arguments, chat_payload):
                 "has_video_url": bool(creative_controls.get("video_url")),
                 "cta_link": creative_controls.get("cta_link"),
                 "format": creative_controls.get("format"),
+                "direct_publishing_plan": direct_plan,
             },
             "signal_quality": {
                 "status": signal.get("status"),
