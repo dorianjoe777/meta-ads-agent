@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Thin execution wrapper around social-cli and Telegram notifications."""
+"""Meta Graph API execution wrapper and Telegram notifications."""
 import json
 import mimetypes
-import subprocess
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -18,9 +17,10 @@ class SocialFlowClient:
         self.config = config
 
     def run(self, args, live_required=True, mutation=False, approved=False):
-        command = [self.config.social_cli] + list(args)
+        operation = ["meta-graph"] + list(args)
         record = {
-            "command": command,
+            "command": operation,
+            "operation": list(args),
             "mode": self.config.mode,
             "approved_execution": bool(approved),
             "executed": self.config.live or approved or not live_required,
@@ -35,24 +35,11 @@ class SocialFlowClient:
             record["executed"] = False
             record["stderr"] = "blocked: LIVE_ACTIONS_ENABLED=false"
             return record
-        if str(getattr(self.config, "meta_connector", "") or "").strip().lower() == "graph_api":
-            fallback = self.graph_fallback(args, record, direct=True)
-            if fallback:
-                return fallback
-        try:
-            completed = subprocess.run(command, capture_output=True, text=True, check=False)
-            record["returncode"] = completed.returncode
-            record["stdout"] = completed.stdout.strip()
-            record["stderr"] = completed.stderr.strip()
-        except FileNotFoundError as exc:
-            fallback = self.graph_fallback(args, record)
-            if fallback:
-                return fallback
-            record["returncode"] = 127
-            record["stderr"] = (
-                f"{exc}. Meta action could not run because social-cli is not installed "
-                "and no direct Meta Graph fallback is configured."
-            )
+        result = self.graph_execute(args, record)
+        if result:
+            return result
+        record["returncode"] = 1
+        record["stderr"] = "Unsupported Meta Graph operation or missing Meta access token."
         return record
 
     def graph_url(self, endpoint):
@@ -64,7 +51,7 @@ class SocialFlowClient:
         stdout = json.dumps(result.get("body") if isinstance(result.get("body"), dict) else {"error": result.get("body")}, ensure_ascii=False)
         return {
             **record,
-            "connector": "graph_api_fallback",
+            "connector": "graph_api",
             "graph_endpoint": endpoint,
             "returncode": 0 if result.get("ok") else int(result.get("status") or 1),
             "stdout": stdout if result.get("ok") else "",
@@ -75,7 +62,7 @@ class SocialFlowClient:
         stdout = json.dumps(body if isinstance(body, dict) else {"result": body}, ensure_ascii=False)
         return {
             **record,
-            "connector": "graph_api_fallback",
+            "connector": "graph_api",
             "graph_endpoint": endpoint,
             "returncode": 0 if ok else int(status or 1),
             "stdout": stdout if ok else "",
@@ -141,7 +128,7 @@ class SocialFlowClient:
             return {"ok": False, "status": None, "body": str(exc)}
 
     def encode_multipart(self, fields, files):
-        boundary = f"----admirasocialfallback{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+        boundary = f"----admirametagraph{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
         chunks = []
         for name, value in fields.items():
             chunks.append(f"--{boundary}\r\n".encode("utf-8"))
@@ -300,9 +287,16 @@ class SocialFlowClient:
             clean["bid_amount"] = amount
         return clean
 
-    def graph_fallback(self, args, record, direct=False):
-        if not getattr(self.config, "meta_access_token", ""):
-            return None
+    @classmethod
+    def default_adset_bidding(cls, value=None):
+        bidding = cls.normalize_bidding_config(value or {})
+        if not isinstance(bidding, dict):
+            bidding = {}
+        if not bidding.get("bid_strategy"):
+            bidding["bid_strategy"] = "LOWEST_COST_WITHOUT_CAP"
+        return bidding
+
+    def graph_execute(self, args, record):
         args = list(args)
         if len(args) < 2:
             return None
@@ -312,7 +306,20 @@ class SocialFlowClient:
         ad_account_id = self.normalize_ad_account_id(self.positional(args, 2, getattr(self.config, "ad_account_id", "")))
         configured_ad_account_id = self.normalize_ad_account_id(getattr(self.config, "ad_account_id", ""))
         try:
+            if area == "auth" and action == "status":
+                endpoint = "local/meta-token"
+                body = {
+                    "ok": bool(access_token),
+                    "source": "graph_api_local_auth",
+                    "facebook_ready": bool(access_token),
+                    "token_expired": False,
+                    "default_account": configured_ad_account_id,
+                    "message": "Meta access token is configured." if access_token else "Missing Meta access token.",
+                }
+                return self.graph_local_record(record, endpoint, body, ok=bool(access_token), status=0 if access_token else 1)
             if area == "limits" and action == "check":
+                if not access_token:
+                    return self.graph_local_record(record, "local/meta-token", {"ok": False, "error": "missing_meta_access_token"}, ok=False, status=1)
                 account = configured_ad_account_id or ad_account_id
                 endpoint = account
                 result = self.get_graph(endpoint, {"fields": "id,name,account_status,disable_reason"})
@@ -339,6 +346,8 @@ class SocialFlowClient:
                 return self.graph_local_record(record, endpoint, body)
             if area != "marketing":
                 return None
+            if not access_token:
+                return self.graph_local_record(record, "local/meta-token", {"ok": False, "error": "missing_meta_access_token"}, ok=False, status=1)
             if action == "status":
                 endpoint = configured_ad_account_id or ad_account_id
                 fields = "id,name,account_status,currency,timezone_name,disable_reason,business,created_time,amount_spent,balance,spend_cap"
@@ -420,17 +429,18 @@ class SocialFlowClient:
                                 pass
                         fields[target] = value
                 bidding = self.flag(args, "--bidding", "")
+                bidding_payload = self.default_adset_bidding({})
                 if bidding:
                     try:
                         bidding_payload = json.loads(bidding)
                     except json.JSONDecodeError:
                         bidding_payload = {"bid_strategy": bidding}
-                    if isinstance(bidding_payload, dict):
-                        bidding_payload = self.normalize_bidding_config(bidding_payload)
-                        if bidding_payload.get("bid_strategy"):
-                            fields["bid_strategy"] = bidding_payload["bid_strategy"]
-                        if bidding_payload.get("bid_amount"):
-                            fields["bid_amount"] = bidding_payload["bid_amount"]
+                if isinstance(bidding_payload, dict):
+                    bidding_payload = self.default_adset_bidding(bidding_payload)
+                    if bidding_payload.get("bid_strategy"):
+                        fields["bid_strategy"] = bidding_payload["bid_strategy"]
+                    if bidding_payload.get("bid_amount"):
+                        fields["bid_amount"] = bidding_payload["bid_amount"]
                 return self.graph_record(record, endpoint, self.post_graph_form(endpoint, fields))
             if action == "upload-image":
                 endpoint = f"{ad_account_id}/adimages"
@@ -523,10 +533,10 @@ class SocialFlowClient:
         except Exception as exc:
             return {
                 **record,
-                "connector": "graph_api_fallback",
+                "connector": "graph_api",
                 "returncode": 1,
                 "stdout": "",
-                "stderr": f"Graph API fallback failed: {exc}",
+                "stderr": f"Meta Graph API request failed: {exc}",
             }
         return None
 
@@ -623,8 +633,7 @@ class SocialFlowClient:
         ]
         if promoted_object:
             args.extend(["--promoted-object", json.dumps(self.normalize_promoted_object(promoted_object))])
-        if bidding:
-            args.extend(["--bidding", json.dumps(self.normalize_bidding_config(bidding))])
+        args.extend(["--bidding", json.dumps(self.default_adset_bidding(bidding or {}))])
         if daily_budget_cents:
             args.extend(["--daily-budget", str(int(daily_budget_cents))])
         if lifetime_budget_cents:

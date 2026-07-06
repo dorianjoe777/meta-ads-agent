@@ -140,13 +140,11 @@ def files_section():
     ]
 
 
-def runtime_section(config, social_path, daily_report, action):
-    graph_fallback_ready = bool(getattr(config, "meta_access_token", ""))
+def runtime_section(config, daily_report, action):
+    graph_ready = bool(getattr(config, "meta_access_token", ""))
     return [
         item("mode", "Nivel de control", "ok" if config.mode == "dry-run" else "warn", "Con supervision" if config.mode == "dry-run" else "Piloto automatico", "Usa Con supervision hasta confirmar licencia, Meta, datos reales y aprobaciones." if config.mode != "dry-run" else ""),
-        item("connector", "Primary connector", "ok" if config.meta_connector in {"social_cli", "graph_api"} else "warn", config.meta_connector, "El token Meta del dashboard permite ejecutar por Graph API aunque social-cli no esté instalado."),
-        item("social_cli", "Meta execution path", "ok" if (social_path or graph_fallback_ready) else "warn", social_path or ("Graph API fallback ready from saved Meta token" if graph_fallback_ready else f"{config.social_cli} not found"), "Si no hay social-cli, el sistema usa el token Meta guardado como fallback directo."),
-        item("social_onboarding", "social-cli onboarding", "warn", "Run social setup or social onboard, then social auth login.", "Recommended: social setup"),
+        item("connector", "Meta execution path", "ok" if graph_ready else "warn", "Meta Graph API directo" if graph_ready else "Falta clave de Meta", "Pega una clave de Meta válida en Configuración para que Admira ejecute acciones reales."),
         item("daily_report", "Latest daily report", "ok" if daily_report else "warn", str(daily_report) if daily_report else "No daily report yet.", "Run ./scripts/run-daily-agent.sh"),
         item("latest_action", "Latest action log", "ok" if action else "warn", action.get("type", "No actions yet") if action else "No actions logged yet."),
     ]
@@ -174,7 +172,7 @@ def security_section(config, license_status):
 
 def meta_section(config, destination):
     return [
-        item("ad_account", "Meta ad account", "ok" if configured(config.ad_account_id) else "blocked", config.ad_account_id or "Missing META_AD_ACCOUNT_ID", "Run social marketing accounts, then set META_AD_ACCOUNT_ID or social marketing set-default-account act_XXXX."),
+        item("ad_account", "Meta ad account", "ok" if configured(config.ad_account_id) else "blocked", config.ad_account_id or "Missing META_AD_ACCOUNT_ID", "Elige una cuenta publicitaria desde Configuración o pega el ID act_XXXX manualmente."),
         item("access_token", "Meta access key", "ok" if configured(config.meta_access_token) else ("blocked" if config.live and config.meta_connector == "graph_api" else "warn"), meta_token_detail(config) if configured(config.meta_access_token) else "Not configured; paste your Meta key in onboarding.", "Pega la clave creada en tu propia app de Meta."),
         meta_token_renewal_item(config),
         item("page_id", "Page ID", "ok" if configured(destination.get("page_id")) else "blocked", destination.get("page_id") or "Missing creative.destination.page_id", "Set creative.destination.page_id in ad-config.json."),
@@ -263,7 +261,7 @@ def setup_summary(config, sections, context):
         "security_ready": all(entry["status"] == "ok" for entry in security[:4]),
         "license_ready": context["license_status"]["valid"],
         "live_actions_enabled": config.live_actions_enabled,
-        "live_ads_ready": bool(context["social_path"] and configured(config.ad_account_id) and config.live_actions_enabled),
+        "live_ads_ready": bool(config.meta_access_token and configured(config.ad_account_id) and config.live_actions_enabled),
         "direct_graph_ready": all(entry["status"] == "ok" for entry in meta),
         "creative_ready": config.creative_refresh_enabled and codex_image_ready,
         "agent_chat_ready": (
@@ -280,7 +278,6 @@ def build_setup_status():
     ad_config = load_ad_config()
     creative_cfg = ad_config.get("creative", {})
     destination = creative_cfg.get("destination", {})
-    social_path = shutil.which(config.social_cli)
     codex_path = shutil.which(config.codex_cli)
     recent_upload = recent_uploads(1)
     latest_upload = recent_upload[0] if recent_upload else None
@@ -289,7 +286,7 @@ def build_setup_status():
     telegram = telegram_settings(config)
 
     files = files_section()
-    runtime = runtime_section(config, social_path, latest_daily_report(), latest_action())
+    runtime = runtime_section(config, latest_daily_report(), latest_action())
     security = security_section(config, license_status)
     meta = meta_section(config, destination)
     creative = creative_section(config, codex_path)
@@ -313,7 +310,6 @@ def build_setup_status():
         "agent_profile": agent_profile,
         "latest_upload": latest_upload,
         "license_status": license_status,
-        "social_path": social_path,
         "telegram": telegram,
     }
     return {

@@ -33,17 +33,9 @@ Edit `ad-config.json`:
 }
 ```
 
-Recommended connector:
+Recommended Graph configuration:
 
 ```bash
-META_CONNECTOR=social_cli
-META_AD_ACCOUNT_ID=act_123456789
-```
-
-Advanced direct Graph fallback:
-
-```bash
-META_CONNECTOR=graph_api
 META_AD_ACCOUNT_ID=act_123456789
 META_ACCESS_TOKEN=your_meta_system_user_or_user_token
 META_GRAPH_API_VERSION=v24.0

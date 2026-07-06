@@ -41,7 +41,7 @@ These may mutate Meta Ads state and must respect backend gates:
 - Create creative
 - Create ad
 
-Do not expose WhatsApp sending as an ads-creation control. Social CLI has WhatsApp messaging commands, but those can contact people directly and belong to a separate messaging/CRM workflow with different consent and approval rules.
+Do not expose WhatsApp sending as an ads-creation control. Direct messaging tools can contact people directly and belong to a separate messaging/CRM workflow with different consent and approval rules.
 
 Verified-signal or CAPI sending is also protected. Before sending hashed customer identifiers, CRM/offline events, WhatsApp business messaging events, or custom-audience data to Meta, the manager must tell the buyer to update their privacy policy/notice and confirm they have the required consent/legal basis. This applies even when campaigns are message-only if Admira captures message/contact identifiers or sends conversation outcomes back to Meta.
 

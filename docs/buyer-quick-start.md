@@ -107,14 +107,7 @@ Si usas Docker, la conexion ChatGPT/Codex queda dentro del contenedor y se manti
 
 Ver tambien: `docs/es-instaladores-doble-clic.md`.
 
-Si haces la configuracion por terminal durante una llamada guiada, puedes usar:
-
-```bash
-social setup
-social auth login
-social marketing accounts
-social marketing set-default-account act_XXXX
-```
+Durante la configuración guiada, pega la clave de Meta en el dashboard y elige la cuenta publicitaria desde la lista que trae Meta Graph.
 
 ## 6. Configurar destino de anuncios
 

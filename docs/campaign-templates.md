@@ -191,4 +191,4 @@ meta-ads generate adset \
 
 - [Meta Ads Agent SKILL.md](../SKILL.md) - Main skill documentation
 - [Campaign Decision Rules](../SKILL.md#decision-rules) - Auto-pause and approval rules
-- [Social Flow Commands](../SKILL.md#commands-reference) - CLI commands reference
+- [Meta Graph campaign controls](../SKILL.md#commands-reference) - action reference

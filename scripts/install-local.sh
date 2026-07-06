@@ -117,12 +117,7 @@ PY
 
 python3 -m py_compile src/daily_agent.py dashboard/monitoring-dashboard.py
 
-if command -v social >/dev/null 2>&1; then
-  echo "social-cli found: $(command -v social)"
-else
-  echo "social-cli was not found. Con supervision remains available after you connect Meta."
-  echo "Para conectar Meta con datos reales, instala/configura social-cli y ejecuta: social auth login"
-fi
+echo "Meta Graph execution is built in. Connect Meta from the dashboard setup with your Meta key."
 
 echo
 echo "Install complete."

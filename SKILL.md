@@ -10,7 +10,7 @@ Buyer message
   -> Hermes conversation runtime
   -> scoped workspace files and product tools
   -> backend safety gates and approvals
-  -> Meta/social-cli/Graph/Codex actions when allowed
+  -> Meta Graph/Codex actions when allowed
 ```
 
 ## Product Rules

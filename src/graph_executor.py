@@ -13,7 +13,6 @@ from license import license_status
 from local_store import now_iso, read_json, write_json
 from product_config import ROOT_DIR, load_config
 from security import redact_payload
-from social_flow_client import SocialFlowClient
 
 
 ACTIONS_FILE = ROOT_DIR / "dashboard" / "data" / "actions.json"
@@ -67,7 +66,7 @@ def validate_payload(payload, config, approved=False):
         missing.append("META_AD_ACCOUNT_ID")
     if config.live and not config.live_actions_enabled and not approved:
         missing.append("LIVE_ACTIONS_ENABLED")
-    if (config.live or approved) and config.meta_connector == "graph_api" and not config.meta_access_token:
+    if (config.live or approved) and not config.meta_access_token:
         missing.append("META_ACCESS_TOKEN")
     if payload.get("status") == "blocked":
         missing.append("payload status is blocked")
@@ -161,92 +160,6 @@ def dry_run_result(payload, missing):
     }
 
 
-def parse_json_stdout(result):
-    try:
-        return json.loads(result.get("stdout") or "{}")
-    except json.JSONDecodeError:
-        return {}
-
-
-def extract_social_image_hash(result):
-    body = parse_json_stdout(result)
-    if body.get("hash"):
-        return body["hash"]
-    images = body.get("images", {}) if isinstance(body, dict) else {}
-    if images:
-        first = next(iter(images.values()))
-        return first.get("hash")
-    return None
-
-
-def extract_social_id(result):
-    body = parse_json_stdout(result)
-    return body.get("id") if isinstance(body, dict) else None
-
-
-def execute_with_social_cli(payload_path, payload, missing, config, approved=False):
-    if not config.live and not approved:
-        result = dry_run_result(payload, missing)
-        result["connector"] = "social_cli"
-        log_action("creative_upload_execute", {"payload_path": str(payload_path), "result": result}, "dry_run")
-        return result
-    if missing:
-        result = {"ok": False, "connector": "social_cli", "mode": "live", "executed": False, "missing_requirements": missing}
-        log_action("creative_upload_execute", {"payload_path": str(payload_path), "result": result}, "blocked")
-        return result
-
-    client = SocialFlowClient(config)
-    destination = payload["graph_payloads"]["adcreative"]["payload"]["object_story_spec"]
-    ad_payload = payload["graph_payloads"]["ad"]["payload"]
-    review = payload.get("review", {})
-    steps = []
-    image_hash = ""
-
-    for upload in payload.get("asset_uploads", []):
-        upload_result = client.upload_image(config.ad_account_id, upload["file_path"], approved=approved)
-        image_hash = extract_social_image_hash(upload_result)
-        steps.append({"step": "social_upload_image", "ok": bool(image_hash), "image_hash": image_hash, "result": upload_result})
-        if not image_hash:
-            final = {"ok": False, "connector": "social_cli", "mode": "live", "executed": True, "failed_step": "upload_image", "steps": steps}
-            log_action("creative_upload_execute", {"payload_path": str(payload_path), "result": final}, "failed")
-            return final
-        break
-
-    creative_result = client.create_creative(
-        config.ad_account_id,
-        payload["graph_payloads"]["adcreative"]["payload"]["name"],
-        destination.get("page_id", ""),
-        review.get("destination_url", ""),
-        review.get("primary_text", ""),
-        review.get("headline", ""),
-        image_hash,
-        review.get("cta", "LEARN_MORE").upper().replace(" ", "_"),
-        destination.get("instagram_actor_id", ""),
-        approved=approved,
-    )
-    creative_id = extract_social_id(creative_result)
-    steps.append({"step": "social_create_creative", "ok": bool(creative_id), "creative_id": creative_id, "result": creative_result})
-    if not creative_id:
-        final = {"ok": False, "connector": "social_cli", "mode": "live", "executed": True, "failed_step": "create_creative", "steps": steps}
-        log_action("creative_upload_execute", {"payload_path": str(payload_path), "result": final}, "failed")
-        return final
-
-    ad_result = client.create_ad(ad_payload["adset_id"], ad_payload["name"], creative_id, "PAUSED", approved=approved)
-    ad_id = extract_social_id(ad_result)
-    steps.append({"step": "social_create_paused_ad", "ok": bool(ad_id), "ad_id": ad_id, "result": ad_result})
-    final = {"ok": bool(ad_id), "connector": "social_cli", "mode": "live", "executed": True, "creative_id": creative_id, "ad_id": ad_id, "steps": steps}
-    if final["ok"]:
-        mark_assets_retained(
-            payload.get("manifest_path", ""),
-            payload.get("variant_id", ""),
-            payload.get("selected_ratios", []),
-            reason="ad_created",
-            meta={"creative_id": creative_id, "ad_id": ad_id, "connector": "social_cli"},
-        )
-    log_action("creative_upload_execute", {"payload_path": str(payload_path), "result": final}, "completed" if final["ok"] else "failed")
-    return final
-
-
 def extract_image_hash(result):
     body = result.get("body", {})
     images = body.get("images", {}) if isinstance(body, dict) else {}
@@ -267,15 +180,13 @@ def execute_upload_payload(payload_path, approved=False):
             result = {"ok": False, "mode": config.mode, "executed": False, "blocked": True, "missing_requirements": missing, "error": f"License unlock required before creative upload: {status.get('detail')}"}
             log_action("creative_upload_execute", {"payload_path": str(payload_path), "result": result}, "blocked")
             return result
-    if config.meta_connector == "social_cli":
-        return execute_with_social_cli(payload_path, payload, missing, config, approved=approved)
     if not config.live and not approved:
         result = dry_run_result(payload, missing)
         result["connector"] = "graph_api"
         log_action("creative_upload_execute", {"payload_path": str(payload_path), "result": result}, "dry_run")
         return result
     if missing:
-        result = {"ok": False, "mode": "live", "executed": False, "missing_requirements": missing}
+        result = {"ok": False, "connector": "graph_api", "mode": "live", "executed": False, "missing_requirements": missing}
         log_action("creative_upload_execute", {"payload_path": str(payload_path), "result": result}, "blocked")
         return result
 

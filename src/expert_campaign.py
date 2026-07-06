@@ -2,8 +2,8 @@
 """Expert campaign configuration helpers.
 
 These functions normalize the richer campaign fields Hermes may propose before
-the backend stages or executes a Meta campaign. They intentionally keep the raw
-Social CLI/Marketing API escape hatches behind allowlisted, typed structures.
+the backend stages or executes a Meta campaign. They intentionally keep Meta
+Marketing API controls behind allowlisted, typed structures.
 """
 import json
 import re

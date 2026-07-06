@@ -27,7 +27,7 @@ Files:
 Runtime:
 
 - control level
-- social-cli installation
+- Meta Graph connection
 - latest daily report
 - latest action log
 

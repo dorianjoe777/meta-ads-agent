@@ -17,7 +17,7 @@ El post muestra cuatro ideas importantes:
    - algo para vigilar
    - datos del dia
    - pruebas siguientes
-3. **La arquitectura no termina en reporte**: agente -> skills -> social-cli -> Meta API -> datos + decisiones + acciones -> Telegram.
+3. **La arquitectura no termina en reporte**: agente -> skills -> Meta Graph API -> datos + decisiones + acciones -> Telegram.
 4. **La parte creativa cierra el loop**: datos dicen que gana; el sistema creativo ayuda a producir mas versiones.
 
 ## Como debe funcionar Admira IA

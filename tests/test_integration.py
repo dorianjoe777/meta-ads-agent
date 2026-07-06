@@ -404,8 +404,7 @@ class IntegrationTestSuite:
             auto_pause_enabled=True,
             zero_conversion_spend=50,
             high_cpa_multiplier=3,
-            meta_connector="social_cli",
-            social_cli="social",
+            meta_connector="graph_api",
             ad_account_id="",
             meta_access_token="",
             meta_graph_api_version="v20.0",
@@ -497,8 +496,7 @@ class IntegrationTestSuite:
             auto_pause_enabled=True,
             zero_conversion_spend=50,
             high_cpa_multiplier=3,
-            meta_connector="social_cli",
-            social_cli="social",
+            meta_connector="graph_api",
             ad_account_id="",
             meta_access_token="",
             meta_graph_api_version="v20.0",
@@ -4609,12 +4607,11 @@ class IntegrationTestSuite:
         finally:
             dashboard.graph_get = original_graph_get
 
-    def test_social_accounts_use_graph_api_fallback(self):
-        """Test Graph API Explorer keys can list ad accounts even when social-cli is empty."""
-        print("\nTesting Social Account Graph Fallback...")
+    def test_meta_accounts_use_graph_api_directly(self):
+        """Test Meta Graph keys list and save ad accounts without a local CLI connector."""
+        print("\nTesting Meta Account Graph Direct...")
 
         dashboard = load_dashboard_module()
-        original_social_command = dashboard.social_command
         original_graph_get = dashboard.graph_get
         env_path = dashboard.ENV_FILE
         ad_path = dashboard.AD_CONFIG_FILE
@@ -4626,9 +4623,6 @@ class IntegrationTestSuite:
         onboarding_before = onboarding_path.read_text(encoding="utf-8") if onboarding_path.exists() else ""
         binding_before = binding_path.read_bytes() if binding_path.exists() else None
         managed_before = managed_path.read_bytes() if managed_path.exists() else None
-
-        def fake_social_command(args, timeout=30):
-            return {"ok": False, "code": 1, "command": "social marketing accounts --json", "output": "No accounts returned by cli"}
 
         def fake_graph_get(path, params=None, page_token=""):
             if path == "/me/adaccounts":
@@ -4645,13 +4639,12 @@ class IntegrationTestSuite:
             return {"ok": False, "error": "unexpected path"}
 
         try:
-            dashboard.social_command = fake_social_command
             dashboard.graph_get = fake_graph_get
             result = dashboard.social_marketing_accounts()
-            self.assert_true(result["accounts"][0]["id"] == "act_123456789", "Graph API fallback lists buyer ad accounts")
+            self.assert_true(result["accounts"][0]["id"] == "act_123456789", "Graph API lists buyer ad accounts")
             self.assert_true(result["accounts"][0]["business_id"] == "bm_main" and result["accounts"][0]["business_name"] == "Main Business", "Graph account discovery preserves Business Manager metadata")
-            self.assert_true(result["source"] == "graph_api" and result["graph_checked"], "Account discovery records direct Graph fallback")
-            self.assert_true(result["ok"] is True, "Graph fallback makes account discovery successful")
+            self.assert_true(result["source"] == "graph_api" and result["graph_checked"], "Account discovery records direct Graph execution")
+            self.assert_true(result["ok"] is True, "Graph account discovery succeeds")
             dashboard.write_json(onboarding_path, {"completed": False})
             if binding_path.exists():
                 binding_path.unlink()
@@ -4660,21 +4653,14 @@ class IntegrationTestSuite:
             selected = dashboard.social_set_default_account({"ad_account_id": "act_123456789"})
             env_after = env_path.read_text(encoding="utf-8")
             saved_config = json.loads(ad_path.read_text(encoding="utf-8"))
-            self.assert_true(selected["ok"] is True and selected["local_saved"] is True and selected["social_cli_default_set"] is False, "Graph-selected account is saved locally even if social-cli default fails")
+            self.assert_true(selected["ok"] is True and selected["local_saved"] is True and selected["graph_account_selected"] is True, "Graph-selected account is saved locally")
             self.assert_true("META_AD_ACCOUNT_ID=act_123456789" in env_after and saved_config["account"]["id"] == "act_123456789", "Graph-selected account persists to env and ad-config")
             self.assert_true(saved_config["account"]["business_manager_id"] == "bm_main" and selected["managed_ad_accounts"]["business_manager"]["id"] == "bm_main", "Selected account stores the Business Manager lock")
 
-            dashboard.social_command = lambda args, timeout=30: {"ok": True, "code": 0, "command": "social marketing accounts --json", "output": json.dumps([{"account_id": "555", "name": "CLI Account"}])}
-            social_first = dashboard.social_marketing_accounts()
-            self.assert_true(social_first["accounts"][0]["id"] == "act_555", "social-cli accounts remain the primary account discovery source")
-            self.assert_true(social_first["source"] == "social_cli", "Graph fallback does not override social-cli when social-cli works")
-
-            dashboard.social_command = fake_social_command
             dashboard.graph_get = lambda path, params=None, page_token="": {"ok": True, "data": {"data": []}}
             empty = dashboard.social_marketing_accounts()
             self.assert_true("0 cuentas publicitarias" in empty["message"], "Empty Graph response explains that Meta returned no ad accounts")
         finally:
-            dashboard.social_command = original_social_command
             dashboard.graph_get = original_graph_get
             env_path.write_text(env_before, encoding="utf-8")
             ad_path.write_text(ad_before, encoding="utf-8")
@@ -5069,7 +5055,6 @@ class IntegrationTestSuite:
                 return {"stdout": "{}", "returncode": 0, "executed": True}
 
         class ReadConfig:
-            social_cli = "social"
             mode = "dry-run"
             live = False
             live_actions_enabled = False
@@ -5080,7 +5065,7 @@ class IntegrationTestSuite:
             {"data": [{"campaign_id": "meta_1", "campaign_name": "Real", "spend": "10", "impressions": "100", "clicks": "5"}]},
             {"campaigns": []},
         )
-        self.assert_true(normalized["source"] == "meta_graph", "Scheduled social-cli reads remain labeled as real Meta data")
+        self.assert_true(normalized["source"] == "meta_graph", "Scheduled Meta Graph reads remain labeled as real Meta data")
 
         original = {
             "METRICS_FILE": daily_agent.METRICS_FILE,
@@ -5542,11 +5527,10 @@ class IntegrationTestSuite:
         self.assert_true("publisher_platforms" not in automatic, "Automatic placements remain available when explicitly requested")
 
     def test_social_flow_adset_sends_promoted_object(self):
-        """Test Social CLI ad set creation receives the selected optimization event object."""
-        print("\nTesting Social Ad Set Promoted Object...")
+        """Test Meta Graph ad set creation receives the selected optimization event object."""
+        print("\nTesting Meta Graph Ad Set Promoted Object...")
 
         class FakeConfig:
-            social_cli = "social"
             mode = "live"
             live = True
             live_actions_enabled = True
@@ -5571,11 +5555,11 @@ class IntegrationTestSuite:
         )
         args, kwargs = captured[0]
         promoted = json.loads(args[args.index("--promoted-object") + 1])
-        self.assert_true(args[args.index("--optimization-goal") + 1] == "OFFSITE_CONVERSIONS", "Social CLI normalizes legacy conversion goals before ad set creation")
-        self.assert_true(promoted == {"pixel_id": "123", "custom_event_type": "PURCHASE"}, "Social CLI receives the Graph enum promoted object for conversion optimization")
-        self.assert_true(args[args.index("--billing-event") + 1] == "LINK_CLICKS", "Social CLI receives the selected billing event")
-        self.assert_true(json.loads(args[args.index("--bidding") + 1])["bid_strategy"] == "LOWEST_COST_WITHOUT_CAP", "Social CLI receives the selected bidding controls")
-        self.assert_true(args[args.index("--lifetime-budget") + 1] == "30000" and args[args.index("--start-time") + 1].startswith("2026-07-01"), "Social CLI receives lifetime budget and schedule controls")
+        self.assert_true(args[args.index("--optimization-goal") + 1] == "OFFSITE_CONVERSIONS", "Meta Graph execution normalizes legacy conversion goals before ad set creation")
+        self.assert_true(promoted == {"pixel_id": "123", "custom_event_type": "PURCHASE"}, "Meta Graph execution receives the Graph enum promoted object for conversion optimization")
+        self.assert_true(args[args.index("--billing-event") + 1] == "LINK_CLICKS", "Meta Graph execution receives the selected billing event")
+        self.assert_true(json.loads(args[args.index("--bidding") + 1])["bid_strategy"] == "LOWEST_COST_WITHOUT_CAP", "Meta Graph execution receives the selected bidding controls")
+        self.assert_true(args[args.index("--lifetime-budget") + 1] == "30000" and args[args.index("--start-time") + 1].startswith("2026-07-01"), "Meta Graph execution receives lifetime budget and schedule controls")
         self.assert_true(kwargs["mutation"] is True and kwargs["approved"] is True, "Promoted-object ad set creation remains gated as an approved mutation")
         captured.clear()
         client.create_adset(
@@ -5590,7 +5574,9 @@ class IntegrationTestSuite:
         )
         checkout_args, _ = captured[0]
         checkout_promoted = json.loads(checkout_args[checkout_args.index("--promoted-object") + 1])
-        self.assert_true(checkout_promoted["custom_event_type"] == "INITIATED_CHECKOUT", "Social CLI maps InitiateCheckout to Meta's INITIATED_CHECKOUT enum")
+        checkout_bidding = json.loads(checkout_args[checkout_args.index("--bidding") + 1])
+        self.assert_true(checkout_promoted["custom_event_type"] == "INITIATED_CHECKOUT", "Meta Graph execution maps InitiateCheckout to Meta's INITIATED_CHECKOUT enum")
+        self.assert_true(checkout_bidding == {"bid_strategy": "LOWEST_COST_WITHOUT_CAP"}, "Meta Graph execution adds safe default bidding when an old draft has no bidding config")
         captured.clear()
         client.create_adset(
             "camp_1",
@@ -5605,14 +5591,13 @@ class IntegrationTestSuite:
         )
         cap_args, _ = captured[0]
         cap_bidding = json.loads(cap_args[cap_args.index("--bidding") + 1])
-        self.assert_true(cap_bidding == {"bid_strategy": "LOWEST_COST_WITHOUT_CAP"}, "Social CLI downgrades bid-cap bidding without bid_amount before execution")
+        self.assert_true(cap_bidding == {"bid_strategy": "LOWEST_COST_WITHOUT_CAP"}, "Meta Graph execution downgrades bid-cap bidding without bid_amount before execution")
 
     def test_social_flow_creative_supports_full_story_and_media_urls(self):
-        """Test Social CLI creative creation can use full object_story_spec and media URL controls."""
-        print("\nTesting Social Creative Expert Controls...")
+        """Test Meta Graph creative creation can use full object_story_spec and media URL controls."""
+        print("\nTesting Meta Graph Creative Expert Controls...")
 
         class FakeConfig:
-            social_cli = "social"
             mode = "live"
             live = True
             live_actions_enabled = True
@@ -5632,12 +5617,11 @@ class IntegrationTestSuite:
         self.assert_true(args[args.index("--image-url") + 1] == "https://cdn.example/ad.jpg" and args[args.index("--video-url") + 1] == "https://cdn.example/ad.mp4", "Creative creation supports image and video URLs")
         self.assert_true(args[args.index("--cta-link") + 1] == "https://buyer.example/buy", "Creative creation supports CTA link override")
 
-    def test_social_flow_uses_graph_fallback_when_social_cli_missing(self):
-        """Test live Meta actions do not fail just because the social binary is absent."""
-        print("\nTesting Social CLI Missing Graph Fallback...")
+    def test_social_flow_uses_graph_api_directly(self):
+        """Test live Meta actions execute through direct Meta Graph only."""
+        print("\nTesting Meta Graph Direct Execution...")
 
         class FakeConfig:
-            social_cli = "social"
             mode = "live"
             live = True
             live_actions_enabled = True
@@ -5660,19 +5644,17 @@ class IntegrationTestSuite:
             def read(self):
                 return json.dumps(self.body).encode("utf-8")
 
-        original_run = social_flow_client.subprocess.run
         original_urlopen = social_flow_client.urllib.request.urlopen
         requests = []
         try:
-            social_flow_client.subprocess.run = lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("social"))
             social_flow_client.urllib.request.urlopen = lambda request, timeout=90: requests.append(request) or FakeResponse({"id": "camp_graph_1"})
             client = SocialFlowClient(FakeConfig())
             result = client.create_campaign("act_999", "Campaña", "OUTCOME_SALES", 2000, "PAUSED", approved=True)
             body = json.loads(result.get("stdout") or "{}")
-            self.assert_true(result.get("connector") == "graph_api_fallback", "Missing social binary falls back to direct Meta Graph when a token is configured")
-            self.assert_true(body.get("id") == "camp_graph_1", "Graph fallback preserves the JSON id shape expected by campaign execution")
-            self.assert_true("act_999/campaigns" in result.get("graph_endpoint", ""), "Graph fallback posts to the ad account campaign endpoint")
-            self.assert_true(requests and b"special_ad_categories=%5B%5D" in requests[0].data, "Graph campaign fallback includes required special ad categories")
+            self.assert_true(result.get("connector") == "graph_api", "Campaign creation uses direct Meta Graph")
+            self.assert_true(body.get("id") == "camp_graph_1", "Graph execution preserves the JSON id shape expected by campaign execution")
+            self.assert_true("act_999/campaigns" in result.get("graph_endpoint", ""), "Graph execution posts to the ad account campaign endpoint")
+            self.assert_true(requests and b"special_ad_categories=%5B%5D" in requests[0].data, "Graph campaign creation includes required special ad categories")
             requests.clear()
             client.create_adset(
                 "camp_graph_1",
@@ -5682,20 +5664,30 @@ class IntegrationTestSuite:
                 "PAUSED",
                 "OFFSITE_CONVERSIONS",
                 promoted_object={"pixel_id": "123", "custom_event_type": "InitiateCheckout"},
+                approved=True,
+            )
+            self.assert_true(requests and b"bid_strategy=LOWEST_COST_WITHOUT_CAP" in requests[-1].data and b"bid_amount=" not in requests[-1].data, "Graph execution sends safe default bidding without bid_amount for old pending approvals")
+            requests.clear()
+            client.create_adset(
+                "camp_graph_1",
+                "Ad Set Target Cost",
+                {"geo_locations": {"countries": ["MX"]}},
+                2000,
+                "PAUSED",
+                "OFFSITE_CONVERSIONS",
+                promoted_object={"pixel_id": "123", "custom_event_type": "InitiateCheckout"},
                 bidding={"bid_strategy": "TARGET_COST"},
                 approved=True,
             )
-            self.assert_true(requests and b"bid_strategy=LOWEST_COST_WITHOUT_CAP" in requests[-1].data and b"bid_amount=" not in requests[-1].data, "Graph fallback downgrades target-cost bidding without bid_amount before calling Meta")
+            self.assert_true(requests and b"bid_strategy=LOWEST_COST_WITHOUT_CAP" in requests[-1].data and b"bid_amount=" not in requests[-1].data, "Graph execution downgrades target-cost bidding without bid_amount before calling Meta")
         finally:
-            social_flow_client.subprocess.run = original_run
             social_flow_client.urllib.request.urlopen = original_urlopen
 
-    def test_social_flow_graph_api_covers_preflight_reads_without_social_cli(self):
+    def test_social_flow_graph_api_covers_preflight_reads(self):
         """Test account, insight, audience and creative reads work directly through Graph API."""
-        print("\nTesting Social Graph API Preflight Read Coverage...")
+        print("\nTesting Meta Graph API Preflight Read Coverage...")
 
         class FakeConfig:
-            social_cli = "social"
             mode = "live"
             live = True
             live_actions_enabled = True
@@ -5720,7 +5712,6 @@ class IntegrationTestSuite:
             def read(self):
                 return json.dumps(self.body).encode("utf-8")
 
-        original_run = social_flow_client.subprocess.run
         original_urlopen = social_flow_client.urllib.request.urlopen
         requests = []
 
@@ -5736,7 +5727,6 @@ class IntegrationTestSuite:
             return FakeResponse({"id": "act_999", "name": "Cuenta", "account_status": 1})
 
         try:
-            social_flow_client.subprocess.run = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("social-cli should not be called in graph_api mode"))
             social_flow_client.urllib.request.urlopen = fake_urlopen
             client = SocialFlowClient(FakeConfig())
             status = client.marketing_status()
@@ -5745,23 +5735,21 @@ class IntegrationTestSuite:
             audiences = client.custom_audiences("act_999", limit=25)
             creatives = client.creatives("act_999", limit=25)
             insights = client.insights("last_7d", "ad", breakdowns="publisher_platform,platform_position", limit=250)
-            self.assert_true(status.get("connector") == "graph_api_fallback" and json.loads(status["stdout"])["account"]["id"] == "act_999", "Graph API reads account status without social-cli")
-            self.assert_true(json.loads(limits["stdout"])["source"] == "graph_api_health_check", "Graph API provides a health/rate-limit check without social-cli")
+            self.assert_true(status.get("connector") == "graph_api" and json.loads(status["stdout"])["account"]["id"] == "act_999", "Graph API reads account status directly")
+            self.assert_true(json.loads(limits["stdout"])["source"] == "graph_api_health_check", "Graph API provides a health/rate-limit check directly")
             self.assert_true(json.loads(policy["stdout"])["supports_validate_only_payloads"] is True, "Policy preflight explains Graph validate-only payload coverage")
-            self.assert_true(json.loads(audiences["stdout"])["data"][0]["id"] == "ca_1", "Graph API lists custom audiences without social-cli")
-            self.assert_true(json.loads(creatives["stdout"])["data"][0]["id"] == "cr_1", "Graph API lists existing creatives without social-cli")
+            self.assert_true(json.loads(audiences["stdout"])["data"][0]["id"] == "ca_1", "Graph API lists custom audiences directly")
+            self.assert_true(json.loads(creatives["stdout"])["data"][0]["id"] == "cr_1", "Graph API lists existing creatives directly")
             self.assert_true(insights.get("data", {}).get("data", [])[0]["campaign_id"] == "cmp_1", "Graph API insights are parsed into the standard data field")
             self.assert_true(any("/insights" in request.full_url and "breakdowns=publisher_platform%2Cplatform_position" in request.full_url for request in requests), "Graph insights sends breakdown parameters for placement/device diagnosis")
         finally:
-            social_flow_client.subprocess.run = original_run
             social_flow_client.urllib.request.urlopen = original_urlopen
 
     def test_social_flow_graph_api_uploads_video_and_creates_video_creative(self):
         """Test public/direct videos can be uploaded to advideos then used in video_data."""
-        print("\nTesting Social Graph API Video Creative Coverage...")
+        print("\nTesting Meta Graph API Video Creative Coverage...")
 
         class FakeConfig:
-            social_cli = "social"
             mode = "live"
             live = True
             live_actions_enabled = True
@@ -5786,7 +5774,6 @@ class IntegrationTestSuite:
             def read(self):
                 return json.dumps(self.body).encode("utf-8")
 
-        original_run = social_flow_client.subprocess.run
         original_urlopen = social_flow_client.urllib.request.urlopen
         requests = []
 
@@ -5799,7 +5786,6 @@ class IntegrationTestSuite:
             return FakeResponse({"id": "ok"})
 
         try:
-            social_flow_client.subprocess.run = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("social-cli should not be called in graph_api mode"))
             social_flow_client.urllib.request.urlopen = fake_urlopen
             client = SocialFlowClient(FakeConfig())
             uploaded = client.upload_video("act_999", file_url="https://cdn.example/video.mp4", title="Video Test", approved=True)
@@ -5824,7 +5810,6 @@ class IntegrationTestSuite:
             self.assert_true(json.loads(creative["stdout"])["id"] == "creative_1", "Graph API creates video creatives")
             self.assert_true(story["video_data"]["video_id"] == "vid_1" and story["video_data"]["call_to_action"]["value"]["link"] == "https://buyer.example", "Video creative uses object_story_spec.video_data with CTA link")
         finally:
-            social_flow_client.subprocess.run = original_run
             social_flow_client.urllib.request.urlopen = original_urlopen
 
     def test_autopilot_action_updates_dashboard_only_after_meta_success(self):
@@ -6586,8 +6571,8 @@ class IntegrationTestSuite:
         self.assert_true("Elige el estilo que más te guste" in html and "Arriba, junto al menú" in html and "#theme-toggle" in html and ".tour-spot" in html and "theme-choice" in html, "The post-onboarding tour starts with an interactive theme selection coach mark at the header theme picker")
         self.assert_true("Elige la hora de tu lectura diaria" in html and "#daily-brief-schedule-button" in html and "zona horaria se detecta automáticamente" in html, "The first dashboard tour teaches buyers where to change the locally timed daily brief")
         self.assert_true(".guide-overlay.product-tour" in html and "backdrop-filter:none" in html and "rgba(3,4,7,var(--tour-dim))" in html, "The dashboard tour spotlights targets without blurring the buttons buyers need to click")
-        self.assert_true("{id:'meta',status:tokenOk?'ok':(socialOk?'warn':'blocked')}" in html and "{id:'account',status:accountOk?'ok':'blocked'}" in html and "{id:'destination',status:destinationStatus}" in html, "Initial onboarding starts with the buyer Facebook/Meta connection")
-        self.assert_true("{id:'meta',status:tokenOk?'ok':(socialOk?'warn':'blocked')},\n\t  {id:'account',status:accountOk?'ok':'blocked'},\n\t  {id:'destination',status:destinationStatus},\n\t  {id:'chatgpt',status:chatgptOk?'ok':'warn'},\n\t  {id:'telegram',status:telegramOk?'ok':'warn'}" in html, "Initial onboarding goes Facebook, account, destination, ChatGPT, and Telegram")
+        self.assert_true("{id:'meta',status:tokenOk?'ok':'blocked'}" in html and "{id:'account',status:accountOk?'ok':'blocked'}" in html and "{id:'destination',status:destinationStatus}" in html, "Initial onboarding starts with the buyer Facebook/Meta connection")
+        self.assert_true("{id:'meta',status:tokenOk?'ok':'blocked'},\n\t  {id:'account',status:accountOk?'ok':'blocked'},\n\t  {id:'destination',status:destinationStatus},\n\t  {id:'chatgpt',status:chatgptOk?'ok':'warn'},\n\t  {id:'telegram',status:telegramOk?'ok':'warn'}" in html, "Initial onboarding goes Facebook, account, destination, ChatGPT, and Telegram")
         self.assert_true("found-choice-card" in html and "account-choice-grid" in html and "destination-choice-grid" in html and "Usar esta cuenta y seguir" in html and "Usar esta página" in html, "Meta account and Page discovery results are shown as prominent glowing choices")
         self.assert_true("Elige qué modelo usará el agente" in html and "apiBrainOk" in html, "Onboarding positions model setup as part of installation and accepts API brain readiness")
         self.assert_true("license-panel" in html, "License activation panel exists")

@@ -71,9 +71,9 @@ The customer-facing product should remain:
 ## Updated Build Priorities
 
 1. Add an `ad-config.json` benchmark file and load it into the dashboard/agent.
-2. Normalize live `social-cli` insights into `dashboard/data/metrics.json`.
+2. Normalize live Meta Graph insights into `dashboard/data/metrics.json`.
 3. Add dashboard setup status:
-   - social-cli installed
+   - Meta Graph token ready
    - auth status
    - default ad account
    - mode
@@ -89,4 +89,3 @@ The customer-facing product should remain:
    - `asset_feed_spec`
    - create ads as paused
 7. Add release packaging with attribution if any MIT-licensed code is incorporated.
-

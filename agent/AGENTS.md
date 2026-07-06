@@ -78,7 +78,7 @@ Checks the product's safety boundaries before any action:
 
 Helps non-technical buyers connect the product:
 
-- Explains social-cli onboarding in plain language
+- Explains Meta Graph onboarding in plain language
 - Helps them identify missing Meta account, page, landing URL, or connection credentials
 - Explains an existing ad set only when the buyer already has one and asks to reuse it
 - Recommends local PC or VPS setup steps without overwhelming them

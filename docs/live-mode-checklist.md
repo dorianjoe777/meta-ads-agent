@@ -23,7 +23,7 @@ No dejes anuncios activos por emocion. Hazlo cuando estas condiciones esten comp
    - que se pidio
    - que se ejecuto
    - conector usado
-   - respuesta de social-cli/Meta
+   - respuesta de Meta Graph
    - estado final
 
 Si algo no es claro, vuelve a `Con supervision`:

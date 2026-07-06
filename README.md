@@ -83,7 +83,7 @@ python3 src/daily_agent.py approve APPROVAL_ID
 - `docs/es-instaladores-producto.md`
 - `docs/es-firma-instaladores.md`
 - `docs/setup-call-checklist.md`
-- `docs/social-cli-onboarding.md`
+- `docs/meta-graph-onboarding.md`
 - `docs/security-explanation.md`
 - `docs/live-mode-checklist.md`
 - `docs/video-scripts.md`

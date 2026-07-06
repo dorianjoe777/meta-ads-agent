@@ -719,7 +719,7 @@ def normalize_social_insights(data, previous_metrics):
         "timestamp": now_iso(),
         "source": "meta_graph",
         "source_label": "Meta Ads real data",
-        "connector": "social_cli",
+        "connector": "graph_api",
         "campaigns": campaigns,
         "summary": build_summary(campaigns),
     }
@@ -1190,7 +1190,7 @@ def main():
     reject_parser = sub.add_parser("reject", help="Reject one pending item")
     reject_parser.add_argument("approval_id")
     sub.add_parser("approve-all", help="Approve and execute all pending items")
-    sub.add_parser("status", help="Show agent configuration and social-cli status")
+    sub.add_parser("status", help="Show agent configuration and Meta Graph status")
     refresh_parser = sub.add_parser("creative-refresh", help="Generate creative refresh drafts for matching campaigns")
     refresh_parser.add_argument("--campaign-id", default="", help="Only refresh one campaign")
     refresh_parser.add_argument("--all", action="store_true", help="Generate drafts for all campaigns")

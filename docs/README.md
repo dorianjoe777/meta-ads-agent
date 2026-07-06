@@ -10,7 +10,7 @@ This is positioned as a self-hosted product, not as an official OpenClaw agent a
 - Starts in `Con supervision`: real-data reading, explanation, and approval staging.
 - Requires a dashboard password for protected actions.
 - Blocks real mutations behind license validation, dashboard password, approvals, guardrails, and `LIVE_ACTIONS_ENABLED`.
-- Connects to Meta through the buyer's own Meta app/token, with social-cli/direct Graph execution where available.
+- Connects to Meta through the buyer's own Meta app/token, using direct Meta Graph execution.
 - Answers the 5 daily operator questions:
   - Am I on track?
   - What's running?
@@ -86,7 +86,7 @@ python3 src/daily_agent.py status
 
 See [setup-status.md](setup-status.md).
 
-See [social-cli-onboarding.md](social-cli-onboarding.md) for the recommended buyer flow.
+See [meta-graph-onboarding.md](meta-graph-onboarding.md) for the recommended buyer flow.
 
 ## Future Platform Direction
 
@@ -94,23 +94,15 @@ The current product is local/VPS-first. A later cloud company version may expose
 
 ## Piloto Automatico
 
-Piloto automatico should only be enabled after license, Meta connection, real insights, password, and approvals are ready. Existing social-cli helper commands are still useful for support:
-
-```bash
-social setup
-social auth login
-social auth status
-social marketing accounts
-social marketing set-default-account act_XXXX
-```
+Piloto automatico should only be enabled after license, Meta connection, real insights, password, and approvals are ready.
 
 Then confirm `.env` has:
 
 ```bash
 META_ADS_AGENT_MODE=live
 LIVE_ACTIONS_ENABLED=true
-META_CONNECTOR=social_cli
 META_AD_ACCOUNT_ID=act_XXXX
+META_ACCESS_TOKEN=your_meta_system_user_or_user_token
 META_NOTIFY_CHANNEL=telegram
 TELEGRAM_BOT_TOKEN=your_bot_token
 TELEGRAM_CHAT_ID=your_chat_id
@@ -167,7 +159,7 @@ That starts the dashboard and schedules the daily run.
 .env.example                         Example configuration
 dashboard/monitoring-dashboard.py     Web dashboard
 src/daily_agent.py                    Daily runner and approval executor
-src/social_flow_client.py             social-cli and notification wrapper
+src/social_flow_client.py             Meta Graph execution and notification wrapper
 src/product_config.py                 Config loader
 dashboard/data/metrics.json           Demo/live metrics cache
 dashboard/data/pending_approvals.json Approval queue

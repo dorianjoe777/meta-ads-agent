@@ -1994,27 +1994,31 @@ def activate_license_now(payload=None):
     return status
 
 
-def social_command(args, timeout=30):
-    config = load_config()
-    cmd = [config.social_cli] + args + ["--no-banner"]
-    try:
-        result = subprocess.run(cmd, cwd=str(ROOT_DIR), text=True, capture_output=True, timeout=timeout)
-        output = (result.stdout or "") + (result.stderr or "")
-        return {"ok": result.returncode == 0, "code": result.returncode, "command": " ".join(cmd), "output": output[-5000:]}
-    except FileNotFoundError:
-        return {"ok": False, "code": 127, "command": " ".join(cmd), "output": "social-cli was not found on this machine."}
-    except subprocess.TimeoutExpired as exc:
-        output = ((exc.stdout or "") + (exc.stderr or "")) if isinstance(exc.stdout, str) else ""
-        return {"ok": False, "code": 124, "command": " ".join(cmd), "output": (output + "\nCommand timed out.").strip()}
-
-
 def social_auth_status():
-    result = social_command(["auth", "status"], timeout=15)
-    output = result.get("output", "")
-    default_match = re.search(r"Ad Account\s+(act_\d+)", output)
-    token_ready = bool(re.search(r"facebook\s+READY", output, re.I))
-    expired = "expired" in output.lower() or "OAuthException" in output
-    return {**result, "facebook_ready": token_ready and not expired, "token_expired": expired, "default_account": default_match.group(1) if default_match else ""}
+    config = load_config()
+    if not config.meta_access_token:
+        return {
+            "ok": False,
+            "code": 1,
+            "command": "Meta Graph token check",
+            "output": "Missing Meta access token.",
+            "facebook_ready": False,
+            "token_expired": False,
+            "default_account": config.ad_account_id,
+        }
+    result = graph_get("/me", {"fields": "id,name"})
+    raw = json.dumps(result.get("data") if result.get("ok") else result.get("error"), ensure_ascii=False)
+    raw_lower = raw.lower()
+    expired = any(token in raw_lower for token in ["expired", "oauthexception", "code: 190", "validating access token"])
+    return {
+        "ok": bool(result.get("ok")),
+        "code": 0 if result.get("ok") else 1,
+        "command": "Meta Graph /me",
+        "output": raw[-5000:],
+        "facebook_ready": bool(result.get("ok")) and not expired,
+        "token_expired": expired,
+        "default_account": config.ad_account_id,
+    }
 
 
 def social_login_url():
@@ -2040,11 +2044,15 @@ def social_save_facebook_token(payload):
         "META_ACCESS_TOKEN_SAVED_AT": now_iso(),
     }
     update_env_values(env_updates)
-    result = social_command(["auth", "login", "--token", token], timeout=30)
-    redacted = dict(result)
-    redacted["output"] = re.sub(re.escape(token), "[token hidden]", redacted.get("output", ""))
+    result = graph_get("/me", {"fields": "id,name"})
+    redacted = {
+        "ok": bool(result.get("ok")),
+        "code": 0 if result.get("ok") else 1,
+        "command": "Meta Graph /me",
+        "output": json.dumps(result.get("data") if result.get("ok") else result.get("error"), ensure_ascii=False)[-5000:],
+    }
     redacted["saved"] = True
-    redacted["cli_ready"] = bool(result.get("ok"))
+    redacted["graph_ready"] = bool(result.get("ok"))
     redacted["token_kind"] = token_kind
     return redacted
 
@@ -2679,11 +2687,8 @@ def graph_marketing_accounts():
     }
 
 
-def social_accounts_friendly_message(cli_result, graph_result):
-    raw = " ".join([
-        str(cli_result.get("output") or ""),
-        str(graph_result.get("graph_error") or ""),
-    ])
+def social_accounts_friendly_message(graph_result):
+    raw = str(graph_result.get("graph_error") or "")
     raw_lower = raw.lower()
     if any(token in raw_lower for token in ["expired", "oauthexception", "code: 190", "validating access token"]):
         return "Tu clave de Meta venció o Meta la rechazó. Pega una clave nueva y vuelve a buscar tus cuentas."
@@ -2695,36 +2700,27 @@ def social_accounts_friendly_message(cli_result, graph_result):
 
 
 def social_marketing_accounts():
-    result = social_command(["marketing", "accounts", "--json"], timeout=30)
-    output = result.get("output", "")
-    output_lower = output.lower()
-    token_expired = "expired" in output_lower or "oauth" in output_lower or "code: 190" in output_lower or "auth login" in output_lower
-    payload = extract_json_payload(output)
-    accounts = normalize_social_accounts(payload)
-    cli_accounts_found = bool(accounts)
     graph_result = graph_marketing_accounts()
-    graph_accounts = graph_result.get("accounts") or []
-    if accounts and graph_accounts:
-        accounts = merge_account_metadata(accounts, graph_accounts)
-    elif not accounts and graph_accounts:
-        accounts = graph_accounts
+    accounts = graph_result.get("accounts") or []
     accounts = annotate_accounts_with_management(accounts)
     managed = managed_ad_accounts_payload()
-    friendly_message = social_accounts_friendly_message(result, graph_result) if not accounts else ""
+    friendly_message = social_accounts_friendly_message(graph_result) if not accounts else ""
     graph_error_lower = str(graph_result.get("graph_error") or "").lower()
     graph_expired = "expired" in graph_error_lower or "oauthexception" in graph_error_lower or "code: 190" in graph_error_lower or "validating access token" in graph_error_lower
     return {
-        **result,
+        "ok": bool(accounts) or bool(graph_result.get("ok")),
+        "code": 0 if (accounts or graph_result.get("ok")) else 1,
+        "command": "Meta Graph ad accounts",
+        "output": str(graph_result.get("graph_error") or "")[-5000:],
         "accounts": accounts,
         "managed_ad_accounts": managed,
         "business_manager": managed.get("business_manager", {}),
         "max_managed_accounts": MAX_MANAGED_META_AD_ACCOUNTS,
-        "ok": bool(accounts) or bool(result.get("ok")) or bool(graph_result.get("ok")),
-        "source": "social_cli" if cli_accounts_found else ("graph_api" if graph_accounts else "social_cli"),
+        "source": "graph_api",
         "graph_checked": bool(graph_result.get("graph_checked")),
-        "needs_login": not accounts and ((not result.get("ok") and token_expired) or graph_expired),
-        "token_expired": token_expired or graph_expired,
-        "friendly_reason": "token_expired" if token_expired or graph_expired else ("empty_accounts" if not accounts else ""),
+        "needs_login": not accounts and graph_expired,
+        "token_expired": graph_expired,
+        "friendly_reason": "token_expired" if graph_expired else ("empty_accounts" if not accounts else ""),
         "message": friendly_message,
     }
 
@@ -2734,16 +2730,10 @@ def discover_account_metadata(account_id):
     if not account_id:
         return {}
     try:
-        result = social_command(["marketing", "accounts", "--json"], timeout=20)
-        cli_accounts = normalize_social_accounts(extract_json_payload(result.get("output", "")))
-    except Exception:
-        cli_accounts = []
-    try:
         graph_accounts = graph_marketing_accounts().get("accounts") or []
     except Exception:
         graph_accounts = []
-    accounts = merge_account_metadata(cli_accounts, graph_accounts) if cli_accounts else graph_accounts
-    return next((account for account in accounts if account.get("id") == account_id), {"id": account_id})
+    return next((account for account in graph_accounts if account.get("id") == account_id), {"id": account_id})
 
 
 def social_set_default_account(payload):
@@ -2776,10 +2766,17 @@ def social_set_default_account(payload):
     saved = save_setup_config({**replace_payload, "_skip_business_enforcement": True})
     saved["business_replaced"] = replaced
     saved["managed_ad_accounts"] = managed_ad_accounts_payload()
-    result = social_command(["marketing", "set-default-account", account_id], timeout=20)
-    if not result.get("ok"):
-        return {**result, "ok": True, "local_saved": True, "social_cli_default_set": False, "warning": "social_cli_default_failed_but_account_saved_locally", "saved": saved, "ad_account_id": account_id, "managed_ad_accounts": saved["managed_ad_accounts"]}
-    return {**result, "local_saved": True, "social_cli_default_set": True, "saved": saved, "ad_account_id": account_id, "managed_ad_accounts": saved["managed_ad_accounts"]}
+    return {
+        "ok": True,
+        "code": 0,
+        "command": "Meta Graph local account selection",
+        "output": "",
+        "local_saved": True,
+        "graph_account_selected": True,
+        "saved": saved,
+        "ad_account_id": account_id,
+        "managed_ad_accounts": saved["managed_ad_accounts"],
+    }
 
 
 def set_dashboard_password(payload):
@@ -6642,7 +6639,7 @@ def execute_autopilot_action(config, action_type, campaign, action_payload):
         result = client.set_budget(target_type, target_id, int(float(action_payload.get("new_budget", 0)) * 100))
     else:
         raise ValueError("Unsupported automatic action")
-    action_payload["connector"] = "social_cli"
+    action_payload["connector"] = "graph_api"
     action_payload["result"] = result
     action_payload["executed"] = bool(result.get("executed") and result.get("returncode") == 0)
     if not action_payload["executed"]:

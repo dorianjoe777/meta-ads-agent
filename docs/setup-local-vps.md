@@ -135,7 +135,7 @@ The cron writes `output/daily_brief_YYYY-MM-DD.json`. The dashboard's `Lectura d
 
 ## Troubleshooting
 
-Check configuration and social-cli status:
+Check configuration and Meta Graph status:
 
 ```bash
 python3 src/daily_agent.py status
