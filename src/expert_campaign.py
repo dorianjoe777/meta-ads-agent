@@ -470,6 +470,8 @@ def campaign_preview(campaign):
     ad_sets = campaign.get("ad_sets") or []
     ad_set = ad_sets[0] if ad_sets else {}
     ad = campaign.get("ad") or {}
+    direct_plan = ad.get("direct_publishing_plan") if isinstance(ad.get("direct_publishing_plan"), dict) else {}
+    will_create_object_story_id = bool(direct_plan.get("will_create_unpublished_post") or ad.get("object_story_id"))
     return {
         "campaign": {
             "name": campaign.get("name"),
@@ -496,9 +498,12 @@ def campaign_preview(campaign):
         "creative": {
             "has_object_story_spec": bool(ad.get("object_story_spec")),
             "has_object_story_id": bool(ad.get("object_story_id")),
+            "will_create_object_story_id": will_create_object_story_id,
             "has_image_hash": bool(ad.get("image_hash")),
             "has_image_url": bool(ad.get("image_url")),
             "has_video_url": bool(ad.get("video_url")),
+            "use_direct_publishing": ad.get("use_direct_publishing"),
+            "creative_route": direct_plan.get("creative_route") or ("existing_object_story_id" if ad.get("object_story_id") else "direct_creative"),
             "direct_publishing_plan": ad.get("direct_publishing_plan"),
             "cta": ad.get("cta"),
             "cta_link": ad.get("cta_link"),

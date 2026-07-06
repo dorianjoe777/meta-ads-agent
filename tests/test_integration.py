@@ -5535,6 +5535,8 @@ class IntegrationTestSuite:
             self.assert_true(preflight["dry_run_preview"]["budget_plan"]["expected_daily_events"] == 2, "Campaign preflight exposes budget sanity")
             self.assert_true(preflight["dry_run_preview"]["placements"]["manual"] == ["INSTAGRAM_REELS", "INSTAGRAM_STORIES"], "Campaign preflight exposes placement strategy")
             self.assert_true(preflight["dry_run_preview"]["creative_controls"]["has_image_url"], "Campaign preflight exposes creative media controls")
+            self.assert_true(preflight["dry_run_preview"]["creative_controls"]["will_create_object_story_id"] is False, "Campaign preflight does not imply object_story_id exists or will be created when publishing is missing")
+            self.assert_true(preflight["dry_run_preview"]["creative_controls"]["creative_route"] == "direct_creative", "Campaign preflight exposes the current creative route")
             self.assert_true("META_PUBLISHING_ACCESS_TOKEN" in preflight["dry_run_preview"]["creative_controls"]["direct_publishing_plan"]["missing_requirements"], "Campaign preflight exposes direct-publishing readiness")
             self.assert_true(preflight["dry_run_preview"]["success_metrics"]["items"][0]["metric"] == "roas" and preflight["dry_run_preview"]["success_metrics"]["items"][2]["metric"] == "cost_per_initiate_checkout", "Campaign preflight exposes the ranked success metrics scorecard")
         finally:
@@ -5550,6 +5552,8 @@ class IntegrationTestSuite:
             "OUTPUT_DIR": dashboard.OUTPUT_DIR,
             "CREATED_FILE": dashboard.CREATED_FILE,
             "PENDING_FILE": dashboard.PENDING_FILE,
+            "AD_CONFIG_FILE": dashboard.AD_CONFIG_FILE,
+            "load_config": dashboard.load_config,
         }
         test_dir = ROOT_DIR / "output" / "test-meta-targeting"
         try:
@@ -5557,6 +5561,7 @@ class IntegrationTestSuite:
             dashboard.OUTPUT_DIR = test_dir / "campaigns"
             dashboard.CREATED_FILE = test_dir / "created.json"
             dashboard.PENDING_FILE = test_dir / "pending.json"
+            dashboard.AD_CONFIG_FILE = test_dir / "ad-config.json"
             payload = {
                 "name": "Meta Targeting Test",
                 "objective": "PURCHASES",
@@ -5615,6 +5620,28 @@ class IntegrationTestSuite:
             self.assert_true(result["payload"]["requested"]["adset_controls"]["schedule"]["start_time"].startswith("2026-07-01"), "Approval card exposes expert ad set controls")
             self.assert_true(result["payload"]["requested"]["adset_controls"]["is_adset_budget_sharing_enabled"] is False, "Approval card exposes ad set budget sharing control")
             self.assert_true(result["payload"]["dry_run_preview"]["creative"]["has_image_hash"], "Approval payload includes a dry-run preview of creative inputs")
+
+            class PublishingConfig:
+                meta_publishing_access_token = "page-token"
+
+            dashboard.load_config = lambda: PublishingConfig()
+            dashboard.write_json(dashboard.AD_CONFIG_FILE, {"creative": {"destination": {"page_id": "111"}}})
+            direct_result = dashboard.create_campaign(
+                {
+                    "name": "Direct Publishing Test",
+                    "objective": "PURCHASES",
+                    "daily_budget": 25,
+                    "final_status": "PAUSED",
+                    "active_spend_confirmed": False,
+                    "landing_url": "https://buyer.example",
+                    "image_url": "https://cdn.example/ad.jpg",
+                    "use_direct_publishing": True,
+                }
+            )
+            direct_controls = direct_result["payload"]["requested"]["creative_controls"]
+            direct_preview = direct_result["payload"]["dry_run_preview"]["creative"]
+            self.assert_true(direct_controls["will_create_object_story_id"] is True and direct_controls["creative_route"] == "unpublished_page_post_object_story_id", "Approval card exposes that direct publishing will create object_story_id during execution")
+            self.assert_true(direct_preview["will_create_object_story_id"] is True and direct_preview["creative_route"] == "unpublished_page_post_object_story_id", "Dry-run preview distinguishes future object_story_id creation from existing object_story_id presence")
         finally:
             for key, value in original.items():
                 setattr(dashboard, key, value)
