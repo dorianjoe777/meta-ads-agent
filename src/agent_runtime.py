@@ -63,6 +63,19 @@ The dashboard language is English. Use clear beginner-friendly business language
 Use the user's language. If Spanish is used, think directly in natural Latin American Spanish and avoid translated-English phrasing."""
 
 
+def turn_orientation_instruction():
+    return """# Turn Orientation Instruction
+Before every reply, silently orient yourself instead of answering the latest message in isolation:
+1. What is the buyer's immediate goal in this turn?
+2. Where were we in the current business/ad/creative/setup workflow?
+3. What has already been decided, saved, created, attempted, or blocked?
+4. What is still missing before the next useful action?
+5. What is the next safest helpful step: answer, ask one clear question, use a product tool, stage an approval, or explain a blocker?
+
+Use durable memory and current context when available; do not restart onboarding or repeat solved questions just because the current message is short.
+Keep this checklist private. The buyer-facing answer should feel continuous: briefly acknowledge the current step when helpful, then move the work forward."""
+
+
 def build_system_prompt(config=None, language=""):
     profile = load_agent_profile(config)
     if not profile["sections"]:
@@ -77,6 +90,7 @@ def build_system_prompt(config=None, language=""):
     if profile["missing"]:
         chunks.append("\n\n# Missing profile files\n" + "\n".join(f"- {item}" for item in profile["missing"]))
     chunks.append("\n\n" + language_runtime_instruction(language))
+    chunks.append("\n\n" + turn_orientation_instruction())
     return "\n".join(chunks)
 
 
@@ -85,4 +99,4 @@ def fallback_system_prompt(language=""):
 
 Be warm, calm, practical, and confidence-building. Use the user's language, explain marketing terms for beginners, and never claim live Meta changes were executed unless the backend confirms it. For risky spend changes, suggest approval and explain why.
 
-""" + language_runtime_instruction(language)
+""" + language_runtime_instruction(language) + "\n\n" + turn_orientation_instruction()
