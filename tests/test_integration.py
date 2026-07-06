@@ -5896,6 +5896,8 @@ class IntegrationTestSuite:
                 return FakeResponse({"data": [{"id": "page_1", "name": "Uboost Marketing", "access_token": "page-token"}]})
             if "/page_1/photos" in request.full_url:
                 return FakeResponse({"id": "photo_1", "post_id": "page_1_post_1"})
+            if "/page_1/videos" in request.full_url:
+                return FakeResponse({"id": "987654321"})
             return FakeResponse({"id": "ok"})
 
         try:
@@ -5909,6 +5911,11 @@ class IntegrationTestSuite:
             self.assert_true(result.get("connector") == "graph_api" and body.get("object_story_id") == "page_1_post_1", "Direct publishing returns a native Page post object_story_id")
             self.assert_true(b"page-token" in post_body and b"ads-token" not in post_body, "Page post creation uses the Page publishing token, not the ads token")
             self.assert_true(b'published' in post_body and b'false' in post_body and b'ADS_POST' in post_body, "Direct publishing creates an unpublished ads-ready Page post")
+            requests.clear()
+            video_result = client.create_page_post("page_1", message="Video listo", video_url="https://cdn.example/video.mp4", approved=True)
+            video_body = json.loads(video_result.get("stdout") or "{}")
+            self.assert_true("/page_1/videos" in requests[-1].full_url and video_body.get("object_story_id") == "page_1_987654321", "Direct publishing can create unpublished Page video posts for ads")
+            self.assert_true(b"file_url=https%3A%2F%2Fcdn.example%2Fvideo.mp4" in requests[-1].data and b"description=Video+listo" in requests[-1].data, "Page video direct publishing sends the video URL and buyer-facing post text")
         finally:
             social_flow_client.urllib.request.urlopen = original_urlopen
             if image_path.exists():
@@ -6409,6 +6416,42 @@ class IntegrationTestSuite:
             self.assert_true(video_result["ok"], "Approved video campaign stack executes")
             self.assert_true(video_calls == ["create_campaign", "create_adset", "upload_video", "create_creative", "create_ad"], "Video campaign uploads the video before creating the creative")
             self.assert_true(creative_call[2]["video_id"] == "vid_1", "Campaign stack passes uploaded Meta video_id into creative creation")
+
+            class DirectPublishingConfig(FakeConfig):
+                meta_publishing_access_token = "page-token"
+
+            class DirectPublishingClient(FakeClient):
+                config = DirectPublishingConfig()
+
+            campaign_path.write_text(
+                json.dumps(
+                    {
+                        "name": "Video Direct Publishing Stack",
+                        "objective": "LEADS",
+                        "budget": {"daily": 20},
+                        "ad_sets": [{"name": "Video Direct Publishing Stack - Core", "targeting": {"locations": ["MX"]}, "budget": 20}],
+                        "ad": {
+                            "primary_text": "Mira el video",
+                            "headline": "Reserva hoy",
+                            "video_url": "https://cdn.example/video.mp4",
+                            "landing_url": "https://buyer.example",
+                            "use_direct_publishing": True,
+                            "final_status": "PAUSED",
+                            "active_spend_confirmed": False,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            direct_video_client = DirectPublishingClient()
+            direct_video_result = execute_campaign_creation(str(campaign_path), direct_video_client, approved=True)
+            direct_video_calls = [call[0] for call in direct_video_client.calls]
+            direct_page_post_call = next(call for call in direct_video_client.calls if call[0] == "create_page_post")
+            direct_creative_call = next(call for call in direct_video_client.calls if call[0] == "create_creative")
+            self.assert_true(direct_video_result["ok"], "Approved video campaign can use direct publishing when connected")
+            self.assert_true(direct_video_calls == ["create_campaign", "create_adset", "create_page_post", "create_creative", "create_ad"], "Direct-publishing video campaign creates a Page post instead of uploading an ad-account video")
+            self.assert_true(direct_page_post_call[2]["video_url"] == "https://cdn.example/video.mp4", "Video direct publishing passes the buyer video URL to Page post creation")
+            self.assert_true(direct_creative_call[2]["object_story_id"] == "111_999" and not direct_creative_call[2]["video_id"], "Video direct publishing creates the ad creative from the Page post object_story_id")
         finally:
             if ad_before:
                 ad_path.write_text(ad_before, encoding="utf-8")

@@ -2089,18 +2089,20 @@ def direct_publishing_campaign_plan(payload=None, creative_controls=None, config
     explicit = creative_controls.get("use_direct_publishing")
     strategy = str(payload.get("creative_creation_strategy") or payload.get("publishing_strategy") or "").strip().lower()
     has_existing_post = bool(creative_controls.get("object_story_id"))
-    has_static_image = bool(payload.get("creative_image_path") or creative_controls.get("image_url")) and not bool(creative_controls.get("video_url"))
+    has_video_url = bool(creative_controls.get("video_url"))
+    has_static_image = bool(payload.get("creative_image_path") or creative_controls.get("image_url")) and not has_video_url
+    has_native_asset = has_static_image or has_video_url
     requested = explicit is True or strategy in {"direct", "direct_publishing", "native_post", "page_post", "dark_post", "unpublished_post"}
     disabled = explicit is False or strategy in {"direct_creative", "inline_creative", "image_hash", "legacy"}
-    will_create = bool(status.get("ready")) and has_static_image and not has_existing_post and not disabled
+    will_create = bool(status.get("ready")) and has_native_asset and not has_existing_post and not disabled
     missing = []
     if requested and not has_existing_post:
         if not status.get("token_set"):
             missing.append("META_PUBLISHING_ACCESS_TOKEN")
         if not status.get("page_id"):
             missing.append("Facebook Page ID")
-        if not has_static_image:
-            missing.append("creative_image_path_or_image_url")
+        if not has_native_asset:
+            missing.append("creative_image_path_or_image_url_or_video_url")
     return {
         "requested": requested,
         "disabled": disabled,
@@ -2109,6 +2111,7 @@ def direct_publishing_campaign_plan(payload=None, creative_controls=None, config
         "page_id": status.get("page_id", ""),
         "has_existing_post": has_existing_post,
         "has_static_image": has_static_image,
+        "has_video_url": has_video_url,
         "will_create_unpublished_post": will_create,
         "creative_route": "existing_object_story_id" if has_existing_post else ("unpublished_page_post_object_story_id" if will_create else "direct_creative"),
         "missing_requirements": missing,

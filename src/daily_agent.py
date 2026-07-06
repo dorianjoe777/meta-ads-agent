@@ -315,10 +315,11 @@ def direct_publishing_missing_requirements(ad_plan, destination, client, video_i
         missing.append("Facebook Page ID")
     if not getattr(client.config, "meta_publishing_access_token", ""):
         missing.append("META_PUBLISHING_ACCESS_TOKEN")
-    if video_id or ad_plan.get("video_url"):
-        missing.append("static creative image path or image URL")
-    if not (ad_plan.get("creative_image_path") or ad_plan.get("image_url")):
-        missing.append("creative_image_path_or_image_url")
+    has_page_post_asset = bool(ad_plan.get("creative_image_path") or ad_plan.get("image_url") or ad_plan.get("video_url"))
+    if video_id and not ad_plan.get("video_url"):
+        missing.append("video_url")
+    if not has_page_post_asset:
+        missing.append("creative_image_path_or_image_url_or_video_url")
     if not hasattr(client, "create_page_post"):
         missing.append("create_page_post capability")
     return missing
@@ -331,6 +332,7 @@ def create_native_page_post_for_ad(client, destination, ad_plan, link, body_text
         link=link,
         image_path=ad_plan.get("creative_image_path") or "",
         image_url=ad_plan.get("image_url") or "",
+        video_url=ad_plan.get("video_url") or "",
         unpublished_content_type="ADS_POST",
         approved=approved,
     )
@@ -657,7 +659,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         steps.append({"step": "upload_image", "ok": bool(image_hash), "image_hash": image_hash, "result": upload_result})
         if not image_hash:
             return {"ok": False, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "failed_step": "upload_image", "steps": steps}
-    if ad_plan.get("video_url") and not video_id:
+    if ad_plan.get("video_url") and not video_id and not object_story_id:
         upload_result = client.upload_video(
             client.config.ad_account_id,
             file_url=ad_plan.get("video_url"),

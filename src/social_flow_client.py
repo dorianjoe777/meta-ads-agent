@@ -385,8 +385,24 @@ class SocialFlowClient:
                 link = self.flag(args, "--link", "")
                 image_path = self.flag(args, "--image-path", "")
                 image_url = self.flag(args, "--image-url", "")
+                video_path = self.flag(args, "--video-path", "")
+                video_url = self.flag(args, "--video-url", "")
                 unpublished_type = self.flag(args, "--unpublished-content-type", "ADS_POST") or "ADS_POST"
-                if image_path:
+                if video_path:
+                    if not Path(video_path).exists():
+                        return self.graph_local_record(record, "local/meta-page-post", {"ok": False, "error": "video_file_missing", "path": video_path}, ok=False, status=1)
+                    endpoint = f"{page_id}/videos"
+                    fields = {"access_token": page_token, "published": "false", "unpublished_content_type": unpublished_type}
+                    if message:
+                        fields["description"] = message
+                    result = self.post_graph_multipart(endpoint, fields, {"source": video_path})
+                elif video_url:
+                    endpoint = f"{page_id}/videos"
+                    fields = {"access_token": page_token, "published": "false", "unpublished_content_type": unpublished_type, "file_url": video_url}
+                    if message:
+                        fields["description"] = message
+                    result = self.post_graph_form(endpoint, fields)
+                elif image_path:
                     if not Path(image_path).exists():
                         return self.graph_local_record(record, "local/meta-page-post", {"ok": False, "error": "image_file_missing", "path": image_path}, ok=False, status=1)
                     endpoint = f"{page_id}/photos"
@@ -777,7 +793,7 @@ class SocialFlowClient:
         args.extend(["--json", "--yes"])
         return self.run(args, live_required=True, mutation=True, approved=approved)
 
-    def create_page_post(self, page_id, message="", link="", image_path="", image_url="", unpublished_content_type="ADS_POST", approved=False):
+    def create_page_post(self, page_id, message="", link="", image_path="", image_url="", video_path="", video_url="", unpublished_content_type="ADS_POST", approved=False):
         args = ["marketing", "create-page-post", "--page-id", page_id]
         if message:
             args.extend(["--message", message])
@@ -787,6 +803,10 @@ class SocialFlowClient:
             args.extend(["--image-path", image_path])
         if image_url:
             args.extend(["--image-url", image_url])
+        if video_path:
+            args.extend(["--video-path", video_path])
+        if video_url:
+            args.extend(["--video-url", video_url])
         if unpublished_content_type:
             args.extend(["--unpublished-content-type", unpublished_content_type])
         args.extend(["--json", "--yes"])
