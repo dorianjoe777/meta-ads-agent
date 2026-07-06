@@ -540,6 +540,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
                     return {"ok": False, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "failed_step": "update_campaign_bid_strategy", "steps": steps}
     else:
         campaign_daily_budget = int(float(campaign.get("budget", {}).get("daily", 0) or 0) * 100) if budget_level == "campaign" else 0
+        campaign_adset_budget_sharing = False if budget_level == "adset" else None
         campaign_result = client.create_campaign(
             client.config.ad_account_id,
             campaign.get("name", "New Campaign"),
@@ -548,6 +549,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
             status_plan.get("campaign", "PAUSED"),
             approved=approved,
             bid_strategy="LOWEST_COST_WITHOUT_CAP" if campaign_daily_budget else "",
+            is_adset_budget_sharing_enabled=campaign_adset_budget_sharing,
         )
         campaign_id = social_id_from_result(campaign_result)
         steps.append({"step": "create_campaign", "ok": bool(campaign_id), "campaign_id": campaign_id, "status": status_plan.get("campaign", "PAUSED"), "result": campaign_result})

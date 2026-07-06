@@ -5788,6 +5788,18 @@ class IntegrationTestSuite:
             self.assert_true(requests and b"special_ad_categories=%5B%5D" in requests[0].data, "Graph campaign creation includes required special ad categories")
             self.assert_true(requests and b"bid_strategy=LOWEST_COST_WITHOUT_CAP" in requests[0].data, "Graph campaign budget creation sets campaign-level automatic bidding")
             requests.clear()
+            client.create_campaign(
+                "act_999",
+                "Campaña Adset Budget",
+                "OUTCOME_SALES",
+                0,
+                "PAUSED",
+                approved=True,
+                is_adset_budget_sharing_enabled=False,
+            )
+            self.assert_true(requests and b"is_adset_budget_sharing_enabled=false" in requests[-1].data, "Graph campaign creation sends explicit ad set budget sharing false for ad set budget mode")
+            self.assert_true(requests and b"daily_budget=" not in requests[-1].data, "Graph ad set budget campaign creation does not set campaign-level budget")
+            requests.clear()
             client.create_adset(
                 "camp_graph_1",
                 "Ad Set",
@@ -6167,6 +6179,7 @@ class IntegrationTestSuite:
             self.assert_true([call[0] for call in client.calls] == ["create_campaign", "create_adset", "upload_image", "create_creative", "create_ad"], "Campaign stack executes in correct order")
             self.assert_true(client.calls[0][1][4] == "ACTIVE" and client.calls[1][1][4] == "ACTIVE", "Approved active campaign stack activates campaign and ad set, not only the ad")
             self.assert_true(client.calls[0][1][3] == 0 and client.calls[0][2].get("bid_strategy", "") == "", "Campaign stack does not enable campaign-level budget by default")
+            self.assert_true(client.calls[0][2]["is_adset_budget_sharing_enabled"] is False, "Campaign stack disables ad set budget sharing during campaign creation for ad set budget mode")
             adset_call = client.calls[1]
             self.assert_true(adset_call[1][3] == 2500, "Campaign stack keeps the daily budget at ad set level by default")
             self.assert_true(adset_call[2]["is_adset_budget_sharing_enabled"] is False, "Campaign stack explicitly disables ad set budget sharing by default")

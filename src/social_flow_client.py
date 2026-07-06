@@ -471,6 +471,9 @@ class SocialFlowClient:
                 bid_strategy = self.flag(args, "--bid-strategy", "")
                 if bid_strategy and not fields.get("bid_strategy"):
                     fields["bid_strategy"] = self.normalize_bid_strategy(bid_strategy)
+                adset_sharing = self.flag(args, "--is-adset-budget-sharing-enabled", "")
+                if adset_sharing:
+                    fields["is_adset_budget_sharing_enabled"] = "true" if str(adset_sharing).strip().lower() in {"1", "true", "yes", "si", "sí", "on"} else "false"
                 return self.graph_record(record, endpoint, self.post_graph_form(endpoint, fields))
             if action == "campaign-details":
                 campaign_id = self.positional(args, 2, "")
@@ -697,7 +700,7 @@ class SocialFlowClient:
     def update_campaign_bid_strategy(self, campaign_id, bid_strategy="LOWEST_COST_WITHOUT_CAP", approved=False):
         return self.run(["marketing", "update-campaign", campaign_id, "--bid-strategy", bid_strategy, "--json", "--yes"], live_required=True, mutation=True, approved=approved)
 
-    def create_campaign(self, ad_account_id, name, objective, daily_budget_cents=0, status="PAUSED", approved=False, bid_strategy=""):
+    def create_campaign(self, ad_account_id, name, objective, daily_budget_cents=0, status="PAUSED", approved=False, bid_strategy="", is_adset_budget_sharing_enabled=None):
         args = ["marketing", "create-campaign"]
         if ad_account_id:
             args.append(ad_account_id)
@@ -707,6 +710,8 @@ class SocialFlowClient:
             args.extend(["--bid-strategy", bid_strategy or "LOWEST_COST_WITHOUT_CAP"])
         elif bid_strategy:
             args.extend(["--bid-strategy", bid_strategy])
+        if is_adset_budget_sharing_enabled is not None:
+            args.extend(["--is-adset-budget-sharing-enabled", "true" if is_adset_budget_sharing_enabled else "false"])
         return self.run(args, live_required=True, mutation=True, approved=approved)
 
     def create_adset(
