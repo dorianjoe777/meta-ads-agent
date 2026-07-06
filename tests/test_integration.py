@@ -5315,6 +5315,23 @@ class IntegrationTestSuite:
             self.assert_true(dashboard.parse_money_like("COP 40.000") == 40000.0 and dashboard.parse_money_like("1.234,56") == 1234.56, "Campaign staging parses LATAM thousands and decimal separators safely")
             self.assert_true(captured[0]["active_spend_confirmed"] is False, "False active-spend confirmation is preserved as an intentional paused choice")
 
+            captured.clear()
+            post_result = dashboard.execute_agent_tool(
+                {
+                    "tool": "create_campaign_stack",
+                    "arguments": {
+                        "name": "AdMira IA - Post existente",
+                        "objective": "sales",
+                        "daily_budget": 20,
+                        "object_story_id": "12345_67890",
+                        "active_spend_confirmed": False,
+                        "status_plan": "paused",
+                    },
+                },
+                {"language": "es"},
+            )
+            self.assert_true(post_result.get("staged") is True and captured and captured[0]["object_story_id"] == "12345_67890", "Campaign staging accepts existing Page posts as the creative source")
+
             blocked = dashboard.execute_agent_tool(
                 {
                     "tool": "create_campaign_stack",
@@ -5612,6 +5629,12 @@ class IntegrationTestSuite:
         self.assert_true("--page-id" not in args and "--image-hash" not in args, "Full object_story_spec path does not mix simple creative fields")
 
         captured.clear()
+        client.create_creative("act_999", "Existing Post Creative", "111", "https://buyer.example", "Texto", "Titular", "", "SHOP_NOW", object_story_id="111_222", approved=True)
+        args, _ = captured[0]
+        self.assert_true(args[args.index("--object-story-id") + 1] == "111_222", "Creative creation supports existing Page posts through object_story_id")
+        self.assert_true("--object-story-spec" not in args and "--page-id" not in args, "Existing post creatives do not create inline story specs")
+
+        captured.clear()
         client.create_creative("act_999", "Creative URL", "111", "https://buyer.example", "Texto", "Titular", "", "SHOP_NOW", image_url="https://cdn.example/ad.jpg", video_url="https://cdn.example/ad.mp4", cta_link="https://buyer.example/buy", approved=True)
         args, _ = captured[0]
         self.assert_true(args[args.index("--image-url") + 1] == "https://cdn.example/ad.jpg" and args[args.index("--video-url") + 1] == "https://cdn.example/ad.mp4", "Creative creation supports image and video URLs")
@@ -5810,6 +5833,11 @@ class IntegrationTestSuite:
             self.assert_true(upload_body["file_url"][0] == "https://cdn.example/video.mp4", "Video upload uses Meta's file_url field")
             self.assert_true(json.loads(creative["stdout"])["id"] == "creative_1", "Graph API creates video creatives")
             self.assert_true(story["video_data"]["video_id"] == "vid_1" and story["video_data"]["call_to_action"]["value"]["link"] == "https://buyer.example", "Video creative uses object_story_spec.video_data with CTA link")
+            requests.clear()
+            existing = client.create_creative("act_999", "Existing Post Creative", "111", "", "", "", "", "", object_story_id="111_222", approved=True)
+            existing_body = urllib.parse.parse_qs(requests[0].data.decode("utf-8"))
+            self.assert_true(json.loads(existing["stdout"])["id"] == "creative_1", "Graph API creates creatives from existing Page posts")
+            self.assert_true(existing_body["object_story_id"][0] == "111_222" and "object_story_spec" not in existing_body, "Graph API sends object_story_id directly instead of inline story spec")
         finally:
             social_flow_client.urllib.request.urlopen = original_urlopen
 

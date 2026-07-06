@@ -416,6 +416,7 @@ def normalize_creative_controls(payload):
     object_story_spec = parse_jsonish(payload.get("object_story_spec") or payload.get("object_story_spec_json"), {})
     return {
         "object_story_spec": object_story_spec if isinstance(object_story_spec, dict) and object_story_spec else {},
+        "object_story_id": str(payload.get("object_story_id") or payload.get("page_post_id") or payload.get("post_id") or "").strip(),
         "image_hash": str(payload.get("image_hash") or "").strip(),
         "image_url": str(payload.get("image_url") or "").strip(),
         "video_url": str(payload.get("video_url") or "").strip(),
@@ -427,7 +428,7 @@ def normalize_creative_controls(payload):
 def creative_source_available(ad_plan):
     return any(
         ad_plan.get(key)
-        for key in ("creative_image_path", "image_hash", "image_url", "video_url", "object_story_spec")
+        for key in ("creative_image_path", "image_hash", "image_url", "video_url", "object_story_spec", "object_story_id")
     )
 
 
@@ -475,6 +476,7 @@ def campaign_preview(campaign):
         },
         "creative": {
             "has_object_story_spec": bool(ad.get("object_story_spec")),
+            "has_object_story_id": bool(ad.get("object_story_id")),
             "has_image_hash": bool(ad.get("image_hash")),
             "has_image_url": bool(ad.get("image_url")),
             "has_video_url": bool(ad.get("video_url")),

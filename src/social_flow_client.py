@@ -490,6 +490,10 @@ class SocialFlowClient:
                     "access_token": access_token,
                     "name": self.flag(args, "--name", "Ad Creative"),
                 }
+                object_story_id = self.flag(args, "--object-story-id", "")
+                if object_story_id:
+                    fields["object_story_id"] = object_story_id
+                    return self.graph_record(record, endpoint, self.post_graph_form(endpoint, fields))
                 object_story_spec = self.flag(args, "--object-story-spec", "")
                 if not object_story_spec:
                     link = self.flag(args, "--cta-link", "") or self.flag(args, "--link", "")
@@ -710,13 +714,16 @@ class SocialFlowClient:
         video_url="",
         video_id="",
         cta_link="",
+        object_story_id="",
         approved=False,
     ):
         args = ["marketing", "create-creative"]
         if ad_account_id:
             args.append(ad_account_id)
         args.extend(["--name", name])
-        if object_story_spec:
+        if object_story_id:
+            args.extend(["--object-story-id", object_story_id])
+        elif object_story_spec:
             args.extend(["--object-story-spec", json.dumps(object_story_spec)])
         else:
             args.extend([

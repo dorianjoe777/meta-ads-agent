@@ -60,6 +60,9 @@ CAMPAIGN_CREATIVE_SOURCE_KEYS = {
     "video_url",
     "object_story_spec",
     "object_story_spec_json",
+    "object_story_id",
+    "page_post_id",
+    "post_id",
 }
 WORKSPACE_IMAGE_TRIGGER_WORDS = (
     "adjunta",

@@ -6790,6 +6790,7 @@ def create_campaign(payload):
         "image_url": creative_controls["image_url"],
         "video_url": creative_controls["video_url"],
         "object_story_spec": creative_controls["object_story_spec"],
+        "object_story_id": creative_controls["object_story_id"],
         "creative_format": creative_controls["format"],
         "final_status": final_status,
         "active_spend_confirmed": active_confirmed,
@@ -6821,6 +6822,7 @@ def create_campaign(payload):
             "creative_image_path": campaign["ad"]["creative_image_path"],
             "creative_controls": {
                 "has_object_story_spec": bool(campaign["ad"].get("object_story_spec")),
+                "has_object_story_id": bool(campaign["ad"].get("object_story_id")),
                 "has_image_hash": bool(campaign["ad"].get("image_hash")),
                 "has_image_url": bool(campaign["ad"].get("image_url")),
                 "has_video_url": bool(campaign["ad"].get("video_url")),
@@ -6857,6 +6859,9 @@ CAMPAIGN_CREATIVE_SOURCE_KEYS = (
     "video_url",
     "object_story_spec",
     "object_story_spec_json",
+    "object_story_id",
+    "page_post_id",
+    "post_id",
 )
 
 CAMPAIGN_CREATIVE_ALIAS_KEYS = (
@@ -6876,6 +6881,11 @@ CAMPAIGN_CREATIVE_ALIAS_KEYS = (
     "video_path",
     "video_asset",
     "video_asset_url",
+    "existing_post_id",
+    "facebook_post_id",
+    "page_post_id",
+    "post_id",
+    "object_story_id",
 )
 
 CURRENCY_SYMBOL_HINTS = (
@@ -7036,6 +7046,11 @@ def normalize_campaign_stack_arguments(arguments, chat_payload=None):
     confirmed = boolish(args.get("active_spend_confirmed"))
     if confirmed is not None:
         args["active_spend_confirmed"] = confirmed
+
+    for key in ("object_story_id", "page_post_id", "post_id", "existing_post_id", "facebook_post_id"):
+        if args.get(key):
+            args["object_story_id"] = str(args.get(key) or "").strip()
+            break
 
     if not any(args.get(key) for key in CAMPAIGN_CREATIVE_SOURCE_KEYS):
         safe_from_args = safe_image_paths(args)
@@ -8397,6 +8412,7 @@ def campaign_preflight(arguments, chat_payload):
             "placements": placement_config_summary(placement_config),
             "creative_controls": {
                 "has_object_story_spec": bool(creative_controls.get("object_story_spec")),
+                "has_object_story_id": bool(creative_controls.get("object_story_id")),
                 "has_image_hash": bool(creative_controls.get("image_hash")),
                 "has_image_url": bool(creative_controls.get("image_url")),
                 "has_video_url": bool(creative_controls.get("video_url")),
@@ -8492,7 +8508,9 @@ def handle_export_report_tool(arguments, chat_payload, tool):
 
 def handle_create_campaign_stack_tool(arguments, chat_payload, tool):
     arguments = normalize_campaign_stack_arguments(arguments or {}, chat_payload)
-    required = ["name", "daily_budget", "landing_url"]
+    required = ["name", "daily_budget"]
+    if not arguments.get("object_story_id"):
+        required.append("landing_url")
     missing = [key for key in required if not arguments.get(key)]
     if not any(arguments.get(key) for key in CAMPAIGN_CREATIVE_SOURCE_KEYS):
         missing.append("creative_image_path_or_url_or_story_spec")

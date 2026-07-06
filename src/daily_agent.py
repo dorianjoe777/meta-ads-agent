@@ -420,12 +420,12 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
     missing = []
     if not client.config.ad_account_id:
         missing.append("META_AD_ACCOUNT_ID")
-    if not destination.get("page_id"):
+    if not destination.get("page_id") and not ad_plan.get("object_story_id"):
         missing.append("Facebook Page ID")
-    if not (ad_plan.get("landing_url") or destination.get("url") or ad_plan.get("object_story_spec")):
+    if not (ad_plan.get("landing_url") or destination.get("url") or ad_plan.get("object_story_spec") or ad_plan.get("object_story_id")):
         missing.append("landing URL")
     if not creative_source_available(ad_plan):
-        missing.append("creative image path, image hash, image URL, video URL, or object_story_spec")
+        missing.append("creative image path, image hash, image URL, video URL, object_story_spec, or object_story_id")
     elif ad_plan.get("creative_image_path") and not Path(ad_plan.get("creative_image_path")).exists():
         missing.append(f"creative image file missing: {ad_plan.get('creative_image_path')}")
     if final_status == "ACTIVE" and not active_confirmed:
@@ -565,6 +565,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         video_url=ad_plan.get("video_url") or "",
         video_id=video_id,
         cta_link=ad_plan.get("cta_link") or "",
+        object_story_id=ad_plan.get("object_story_id") or "",
         approved=approved,
     )
     creative_id = social_id_from_result(creative_result)
