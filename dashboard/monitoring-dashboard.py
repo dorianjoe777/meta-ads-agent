@@ -7873,7 +7873,53 @@ def agent_action_result(action_type, executed=False, reply_text="", **fields):
     return result
 
 
+def staged_approval_chat_instruction(payload, approval):
+    if not isinstance(approval, dict) or approval.get("status") != "pending" or not approval.get("id"):
+        return ""
+    approval_id = approval.get("id", "")
+    if chat_lang(payload) == "es":
+        if approval_requires_active_confirmation(approval):
+            return (
+                f"Para aprobar desde Telegram, responde exactamente: Sí, crear y dejar activo {approval_id}. "
+                f"Para rechazar: rechazar {approval_id}. El panel de Aprobaciones queda solo como respaldo."
+            )
+        return (
+            f"Puedes aprobar aquí mismo respondiendo: aprobar {approval_id}. "
+            f"Para rechazar: rechazar {approval_id}. El panel de Aprobaciones queda solo como respaldo."
+        )
+    if approval_requires_active_confirmation(approval):
+        return (
+            f"To approve from Telegram, type exactly: Yes, create and leave active {approval_id}. "
+            f"To reject: reject {approval_id}. The Approvals panel is only a backup."
+        )
+    return (
+        f"You can approve right here by replying: approve {approval_id}. "
+        f"To reject: reject {approval_id}. The Approvals panel is only a backup."
+    )
+
+
+def append_staged_approval_instruction(payload, reply, approval):
+    instruction = staged_approval_chat_instruction(payload, approval)
+    if not instruction:
+        return reply
+    if instruction in str(reply or ""):
+        return reply
+    return (str(reply or "").rstrip() + "\n\n" + instruction).strip()
+
+
+def staged_approval_choices(approval):
+    if isinstance(approval, dict) and approval.get("status") == "pending" and approval.get("id"):
+        return [approval_public_payload(approval)]
+    return []
+
+
 def local_chat_route(payload, action):
+    if isinstance(action, dict) and action.get("staged"):
+        approval = action.get("result")
+        action["reply"] = append_staged_approval_instruction(payload, action.get("reply", ""), approval)
+        choices = staged_approval_choices(approval)
+        if choices:
+            action["approval_choices"] = choices
     return {
         "ok": True,
         "provider": "local-action-router",
@@ -8080,7 +8126,20 @@ def route_chat_action(payload):
         try:
             require_cloud_license("Campaign creation requires an active license")
             result = create_campaign(draft)
-            return {"ok": True, "provider": "local-action-router", "fallback": False, "routed_action": {"type": "create_campaign_stack", "executed": False, "staged": True, "result": result}, "reply": chat_reply(payload, "Hice el analisis y ya preparé la campaña completa para aprobación. Revísala en Aprobaciones; si confirmas, quedará activa y podrá gastar presupuesto real.", "I analyzed the request and staged the full campaign stack for approval. Review it in Approvals; if confirmed, it will be active and able to spend real budget.")}
+            reply = append_staged_approval_instruction(
+                payload,
+                chat_reply(
+                    payload,
+                    "Hice el analisis y ya preparé la campaña completa para aprobación.",
+                    "I analyzed the request and staged the full campaign stack for approval.",
+                ),
+                result,
+            )
+            routed_action = {"type": "create_campaign_stack", "executed": False, "staged": True, "result": result}
+            choices = staged_approval_choices(result)
+            if choices:
+                routed_action["approval_choices"] = choices
+            return {"ok": True, "provider": "local-action-router", "fallback": False, "routed_action": routed_action, "reply": reply}
         except Exception as exc:
             return {"ok": True, "provider": "local-action-router", "fallback": False, "routed_action": {"type": "create_campaign_stack", "executed": False, "blocked": True, "error": str(exc)}, "reply": chat_reply(payload, f"No puedo preparar esa campaña todavía: {exc}", f"I cannot stage that campaign yet: {exc}")}
 
@@ -8105,7 +8164,7 @@ def route_chat_action(payload):
             return local_chat_route(payload, campaign_pause_action(campaign, payload, "pause"))
         if wants_resume:
             action = campaign_resume_action(campaign, payload, "resume")
-            action["reply"] = chat_reply(payload, f"Preparé la reactivación de {campaign.get('name')} para aprobación. Revísala en la cola antes de ejecutarla.", f"I staged the reactivation of {campaign.get('name')} for approval. Review it in the queue before execution.")
+            action["reply"] = chat_reply(payload, f"Preparé la reactivación de {campaign.get('name')} para aprobación.", f"I staged the reactivation of {campaign.get('name')} for approval.")
             return local_chat_route(payload, action)
         if wants_budget:
             new_budget = parse_budget_request(text, campaign)
@@ -8456,19 +8515,26 @@ def handle_create_campaign_stack_tool(arguments, chat_payload, tool):
             blocked=True,
             reason="missing_campaign_creation_detail",
             missing=missing,
-        )
+    )
     require_cloud_license("Campaign creation requires an active license")
     result = create_campaign(arguments)
+    reply = append_staged_approval_instruction(
+        chat_payload,
+        chat_reply(
+            chat_payload,
+            "Hice el analisis y preparé la campaña completa para aprobación.",
+            "I analyzed the request and staged the full campaign for approval.",
+        ),
+        result,
+    )
+    choices = staged_approval_choices(result)
     return agent_action_result(
         tool,
         False,
-        chat_reply(
-            chat_payload,
-            "Hice el analisis y preparé la campaña completa para aprobación. Revísala en Aprobaciones; si confirmas, se ejecutará con el estado final elegido.",
-            "I analyzed the request and staged the full campaign for approval. Review it in Approvals; if confirmed, it will execute with the selected final status.",
-        ),
+        reply,
         staged=True,
         result=result,
+        approval_choices=choices,
     )
 
 

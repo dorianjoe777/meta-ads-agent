@@ -6090,6 +6090,9 @@ class IntegrationTestSuite:
             approve = dashboard.route_chat_action({"language": "es", "message": "aprueba esa campaña"})
             self.assert_true(routed["routed_action"]["type"] == "create_campaign_stack", "Chat routes campaign creation")
             self.assert_true(routed["routed_action"]["staged"] is True, "Chat stages campaign creation for approval")
+            self.assert_true("aprobar approval_test" in routed["reply"], "Staged campaigns can be approved directly by Telegram text")
+            self.assert_true("Revísala en Aprobaciones" not in routed["reply"], "Staged campaigns do not force the buyer into the Approvals UI")
+            self.assert_true(routed["routed_action"]["approval_choices"][0]["id"] == "approval_test", "Staged campaigns expose exact approval choices to chat clients")
             self.assert_true(approve["routed_action"]["type"] == "approval_decision", "Chat approval requests route through exact approval logic")
             self.assert_true(approve["routed_action"]["executed"] is False, "Chat approval without a pending decision is blocked")
         finally:

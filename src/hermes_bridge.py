@@ -1182,7 +1182,8 @@ def hermes_prompt(config, payload, workspace_info=None):
         + image_note
         + "\n\nDo not expect full conversation history here. Hermes session memory helps continuity, but durable workspace memory is the fallback after cleanup/update/restart. Return normal helpful text for explanations. If the user asks for a product action, return this JSON contract only:\n"
         + '{"assistant_message":"short user-facing reply","tool_request":{"tool":"tool_name","arguments":{}}}\n'
-        + "Approvals are allowed only when the buyer asks to approve or reject one exact pending approval ID already present in context. Use `approval_decision` with that exact ID. If ambiguous, ask which decision or show choices; never invent approval IDs.\n\n"
+        + "Approvals are allowed only when the buyer asks to approve or reject one exact pending approval ID already present in context. Use `approval_decision` with that exact ID. If ambiguous, ask which decision or show choices; never invent approval IDs.\n"
+        + "If a tool stages an action for approval, tell the buyer they can approve/reject directly in Telegram with the exact approval ID or the buttons shown there. Do not say the dashboard Approvals UI is required; it is only a backup. For actions that can leave ads active and spend real money, preserve the exact active-spend confirmation phrase required by the backend.\n\n"
         + f"User message:\n{str(payload.get('message') or '')[:5000]}"
     )
 
