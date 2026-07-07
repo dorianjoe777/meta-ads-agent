@@ -1,5 +1,15 @@
 # Campaign Creation Skill
 
+## Compatibility shim
+
+This legacy skill remains for compatibility. Before using it, read:
+
+- `skills/core-agent-behavior/SKILL.md`
+- `skills/session-continuity/SKILL.md`
+- `skills/campaign-strategy/SKILL.md`
+- `skills/meta-campaign-execution/SKILL.md`
+- `skills/measurement-optimization/SKILL.md` when the campaign depends on real performance, events, feedback, or follow-up decisions
+
 Use this skill when the buyer asks to create, launch, prepare, or publish a Meta Ads campaign, ad set, creative, or ad.
 
 ## Safety Rules

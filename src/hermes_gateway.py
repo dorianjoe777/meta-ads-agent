@@ -45,6 +45,7 @@ DATA_DIR = ROOT_DIR / "dashboard" / "data"
 LOGS_DIR = ROOT_DIR / "logs"
 GATEWAY_STATE_FILE = DATA_DIR / "hermes_gateway_state.json"
 TELEGRAM_MODEL_STATE_FILE = DATA_DIR / "telegram_model_state.json"
+TELEGRAM_RECENT_TURNS_FILE = DATA_DIR / "hermes_gateway_recent_turns.json"
 DAILY_BRIEF_PROMPT_FILE = DATA_DIR / "hermes_daily_brief_prompt.md"
 RESEARCH_PROMPT_FILE = DATA_DIR / "hermes_optimization_research_prompt.md"
 
@@ -275,8 +276,8 @@ def gateway_prompt(language="es", communication_style="simple", ad_experience_le
             "After an image or creative tool succeeds, never paste `MEDIA:/...` or a local path as the deliverable. If a native attachment directive is needed, use `MEDIA:<local_path>` only as internal delivery syntax at the end of the response, while the visible message says the image is attached and summarizes what is ready. "
             "If the buyer asks for a prompt, copy, plan, script, diagnosis, or useful content, paste it directly in the chat; do not reply only with “I saved it in this file” or ask them to open an internal path. "
             "Internal workspace files are your private memory/tooling; the buyer's usable workspace is the conversation. You may say you saved something internally only after giving the requested content in the same reply. "
-            "Before any first-time greeting or onboarding question, read `memory/Conversation continuity.md`, `memory/continuity_status.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/creative_experiments.json`, and relevant `brand_guides/` files in the workspace. "
-            "If the continuity status says persistent memory exists, treat history cleanup, gateway restart, updates, or a fresh runtime session as a resume event: do not introduce yourself as first time, do not restart onboarding, and do not repeat the initial ads-experience/technical-detail question unless those files prove it is still missing. "
+            "Before every buyer-facing reply, read `skills/core-agent-behavior/SKILL.md`. Before any first-time greeting or onboarding question, also read `skills/session-continuity/SKILL.md`, `memory/Conversation continuity.md`, `memory/continuity_status.json`, `memory/latest_day_context.md`, `memory/active_workflow.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/pending_approvals.json`, `memory/creative_experiments.json`, and relevant `brand_guides/` files in the workspace. "
+            "If the continuity status says persistent memory exists or active_workflow says work is active, treat history cleanup, gateway restart, updates, or a fresh runtime session as a resume event: do not introduce yourself as first time, do not restart onboarding, and do not repeat the initial ads-experience/technical-detail question unless those files prove it is still missing. "
             "Resume with a short continuation message that mentions one concrete remembered item and continue from the next useful step. Use session search for prior Telegram sessions only as a helper; durable workspace files are enough to keep moving. "
             "When the buyer shares a public URL, Google Drive link, video, image, landing page, or creative reference, use `mcp_admira_fetch_public_asset` before saying you cannot access it. If it returns a video, use its returned video_url/direct_url when preparing a video creative. If it returns video_frame_paths/video_preview_frame_paths, inspect those extracted image frames with vision to understand the video visually; do not try to inspect the raw MP4 directly and do not tell the buyer you cannot review video just because one low-level viewer only accepts images. "
             "Use your memory and workspace files before asking repeated questions. Do not cite ROAS, CPA, CTR, winners, losers, "
@@ -307,8 +308,8 @@ def gateway_prompt(language="es", communication_style="simple", ad_experience_le
         "Después de que una herramienta de imagen o creativo genere un archivo, nunca pegues `MEDIA:/...` ni una ruta local como entregable. Si necesitas adjuntar el archivo, usa `MEDIA:<ruta_local>` solo como sintaxis interna de entrega al final de la respuesta; el mensaje visible debe decir que la imagen va adjunta y resumir qué quedó listo. "
         "Si el comprador pide un prompt, copy, plan, guion, diagnóstico o contenido útil, entrégalo directamente en el chat; no respondas solo “lo guardé en este archivo” ni le pidas abrir una ruta interna. "
         "Los archivos internos son tu memoria/herramienta privada; el workspace útil del comprador es la conversación. Puedes decir que algo quedó guardado internamente solo después de dar el contenido solicitado en el mismo mensaje. "
-        "Antes de saludar como si fuera la primera vez o hacer preguntas de onboarding, lee `memory/Conversation continuity.md`, `memory/continuity_status.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/creative_experiments.json` y los archivos relevantes de `brand_guides/` en el workspace. "
-        "Si el estado de continuidad dice que existe memoria persistente, trata una limpieza de historial, reinicio del gateway, actualización o sesión nueva del runtime como una reanudación: no te presentes como primera vez, no reinicies el onboarding y no repitas la pregunta inicial de experiencia en anuncios/detalle técnico salvo que esos archivos demuestren que todavía falta. "
+        "Antes de cada respuesta al comprador, lee `skills/core-agent-behavior/SKILL.md`. Antes de saludar como si fuera la primera vez o hacer preguntas de onboarding, lee también `skills/session-continuity/SKILL.md`, `memory/Conversation continuity.md`, `memory/continuity_status.json`, `memory/latest_day_context.md`, `memory/active_workflow.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/pending_approvals.json`, `memory/creative_experiments.json` y los archivos relevantes de `brand_guides/` en el workspace. "
+        "Si el estado de continuidad dice que existe memoria persistente o active_workflow dice que hay trabajo activo, trata una limpieza de historial, reinicio del gateway, actualización o sesión nueva del runtime como una reanudación: no te presentes como primera vez, no reinicies el onboarding y no repitas la pregunta inicial de experiencia en anuncios/detalle técnico salvo que esos archivos demuestren que todavía falta. "
         "Retoma con un mensaje corto que mencione un dato concreto recordado y sigue con el siguiente paso útil. Usa búsqueda de sesiones anteriores de Telegram solo como ayuda; los archivos durables del workspace bastan para continuar. "
         "Cuando el comprador comparta una URL pública, enlace de Google Drive, video, imagen, landing page o referencia creativa, usa `mcp_admira_fetch_public_asset` antes de decir que no puedes acceder. Si devuelve un video, usa su video_url/direct_url al preparar un creativo de video. Si devuelve video_frame_paths/video_preview_frame_paths, revisa esas capturas extraídas con visión para entender visualmente el video; no intentes inspeccionar el MP4 crudo directamente ni le digas al comprador que no puedes revisar video solo porque un visor interno acepte imágenes. "
         "Usa tu memoria y los archivos de este workspace antes de repetir preguntas. No cites ROAS, CPA, CTR, ganadoras, "
@@ -346,7 +347,7 @@ def write_gateway_files(config):
     if env_path.exists():
         for line in env_path.read_text(encoding="utf-8").splitlines():
             key = line.split("=", 1)[0].strip() if "=" in line else ""
-            if key not in {"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS", "TELEGRAM_HOME_CHANNEL", "HERMES_TIMEZONE", "HERMES_MEDIA_ALLOW_DIRS", "ADMIRA_PRODUCT_ROOT"}:
+            if key not in {"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS", "TELEGRAM_HOME_CHANNEL", "HERMES_TIMEZONE", "HERMES_MEDIA_ALLOW_DIRS", "ADMIRA_PRODUCT_ROOT", "ADMIRA_TELEGRAM_RECENT_TURNS_FILE"}:
                 env_lines.append(line)
     if config.telegram_bot_token:
         env_lines.append(f"TELEGRAM_BOT_TOKEN={_env_value(config.telegram_bot_token)}")
@@ -356,6 +357,7 @@ def write_gateway_files(config):
     env_lines.append(f"HERMES_TIMEZONE={_env_value(timezone_name)}")
     env_lines.append(f"HERMES_MEDIA_ALLOW_DIRS={_env_value(os.pathsep.join(_gateway_media_allow_dirs()))}")
     env_lines.append(f"ADMIRA_PRODUCT_ROOT={_env_value(str(ROOT_DIR))}")
+    env_lines.append(f"ADMIRA_TELEGRAM_RECENT_TURNS_FILE={_env_value(str(TELEGRAM_RECENT_TURNS_FILE))}")
     env_path.write_text("\n".join(env_lines).rstrip() + "\n", encoding="utf-8")
     env_path.chmod(0o600)
 
@@ -608,6 +610,7 @@ def start_gateway(config):
     env["HERMES_MEDIA_ALLOW_DIRS"] = os.pathsep.join(_gateway_media_allow_dirs())
     env["ADMIRA_PRODUCT_ROOT"] = str(ROOT_DIR)
     env["ADMIRA_TELEGRAM_MODEL_STATE_FILE"] = str(TELEGRAM_MODEL_STATE_FILE)
+    env["ADMIRA_TELEGRAM_RECENT_TURNS_FILE"] = str(TELEGRAM_RECENT_TURNS_FILE)
     write_configured_telegram_model_state(config)
     try:
         with log_path.open("a", encoding="utf-8") as log_file:

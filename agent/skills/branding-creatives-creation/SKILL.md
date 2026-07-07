@@ -5,6 +5,16 @@ description: Build brand memory, reference and real-asset decisions, budget-awar
 
 # Branding and Creative Strategy Skill
 
+## Compatibility shim
+
+This legacy skill remains for compatibility. Before using it, read:
+
+- `skills/core-agent-behavior/SKILL.md`
+- `skills/session-continuity/SKILL.md`
+- `skills/brand-and-assets/SKILL.md`
+- `skills/creative-strategy/SKILL.md`
+- `skills/creative-production-codex-image/SKILL.md` only when actual image production is needed
+
 Use this skill after business discovery and before producing ads or planning a campaign.
 
 ## Role

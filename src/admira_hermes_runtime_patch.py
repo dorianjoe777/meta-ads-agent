@@ -47,6 +47,62 @@ ADMIRA_GENERATED_MEDIA_KEYS = {
     "generated_image_path",
     "creative_image_path",
 }
+ADMIRA_RECENT_TURNS_LIMIT = 80
+
+
+def _recent_turns_path():
+    configured = str(os.environ.get("ADMIRA_TELEGRAM_RECENT_TURNS_FILE") or "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    root = str(os.environ.get("ADMIRA_PRODUCT_ROOT") or "").strip()
+    if not root:
+        return None
+    return Path(root).expanduser() / "dashboard" / "data" / "hermes_gateway_recent_turns.json"
+
+
+def _redact_turn_text(value):
+    text = str(value or "")
+    if not text:
+        return ""
+    clean = re.sub(r"MEDIA:\s*(?:/|~/)\S+", "MEDIA:[attached]", text)
+    clean = re.sub(r"(?:/app|/Users|/root)(?:/[^\s\"'`]+)+", "[internal-path]", clean)
+    clean = re.sub(r"\b(?:EA[A-Za-z0-9_-]{40,}|EAA[A-Za-z0-9_-]{40,})\b", "[redacted-token]", clean)
+    clean = re.sub(r"\bdop_v1_[A-Za-z0-9_-]{40,}\b", "[redacted-token]", clean)
+    clean = re.sub(r"\bsk-[A-Za-z0-9_-]{24,}\b", "[redacted-token]", clean)
+    clean = re.sub(r"(?i)\b(passphrase|password|contraseña|token|api key|access token)\s*[:=]\s*\S+", r"\1: [redacted]", clean)
+    clean = re.sub(r"\s+", " ", clean).strip()
+    return clean[:5000]
+
+
+def _append_gateway_turn(role, content):
+    path = _recent_turns_path()
+    text = _redact_turn_text(content)
+    if not path or not text:
+        return False
+    try:
+        if path.exists():
+            existing = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(existing, list):
+                existing = []
+        else:
+            existing = []
+        existing.append(
+            {
+                "role": "agent" if str(role or "").lower() in {"agent", "assistant"} else "user",
+                "content": text,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "source": "hermes_gateway",
+            }
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(existing[-ADMIRA_RECENT_TURNS_LIMIT:], ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+        return True
+    except Exception:
+        return False
 
 
 def _runtime_model_state_path():
@@ -569,9 +625,17 @@ def _patch_gateway_generated_media_delivery():
     async def patched_run_agent(self, *args, **kwargs):
         result = await original(self, *args, **kwargs)
         try:
-            return _append_generated_media_attachments(result)
+            result = _append_generated_media_attachments(result)
         except Exception:
-            return result
+            pass
+        try:
+            if isinstance(result, dict):
+                _append_gateway_turn("agent", result.get("final_response") or result.get("response") or result.get("message") or "")
+            else:
+                _append_gateway_turn("agent", result)
+        except Exception:
+            pass
+        return result
 
     runner._admira_original_run_agent = original
     runner._run_agent = patched_run_agent
@@ -602,7 +666,12 @@ def _patch_gateway_inbound_video_frames():
                 _append_video_frame_inputs_to_event(event)
             except Exception:
                 pass
-        return await original(self, *args, **kwargs)
+        result = await original(self, *args, **kwargs)
+        try:
+            _append_gateway_turn("user", result)
+        except Exception:
+            pass
+        return result
 
     runner._admira_original_prepare_inbound_message_text = original
     runner._prepare_inbound_message_text = patched_prepare_inbound_message_text

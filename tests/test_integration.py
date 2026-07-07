@@ -1202,10 +1202,13 @@ class IntegrationTestSuite:
         original_env = {
             "ADMIRA_PRODUCT_ROOT": os.environ.get("ADMIRA_PRODUCT_ROOT"),
             "HERMES_MEDIA_ALLOW_DIRS": os.environ.get("HERMES_MEDIA_ALLOW_DIRS"),
+            "ADMIRA_TELEGRAM_RECENT_TURNS_FILE": os.environ.get("ADMIRA_TELEGRAM_RECENT_TURNS_FILE"),
         }
         try:
             os.environ["ADMIRA_PRODUCT_ROOT"] = str(ROOT_DIR)
             os.environ["HERMES_MEDIA_ALLOW_DIRS"] = str((ROOT_DIR / "output").resolve())
+            turn_log = image_dir / "gateway-turns.json"
+            os.environ["ADMIRA_TELEGRAM_RECENT_TURNS_FILE"] = str(turn_log)
             response = {
                 "final_response": "Listo, ya quedó generada. La imagen salió fuerte y editorial.",
                 "messages": [
@@ -1277,6 +1280,9 @@ class IntegrationTestSuite:
             self.assert_true("MEDIA:" not in history_only_response["final_response"], "Runtime patch does not reattach media from older session messages")
             self.assert_true(f"MEDIA:{current_image.resolve()}" in current_turn_response["final_response"], "Runtime patch attaches media from the newest assistant result")
             self.assert_true(f"MEDIA:{old_image.resolve()}" not in current_turn_response["final_response"], "Runtime patch does not attach older generated media when a newer image exists")
+            admira_hermes_runtime_patch._append_gateway_turn("user", f"Mi token es EAARZCS9BuvSwBR3CyhVZCZCLT5aAnjoKNuCFwbrVEUNV8q5Gojivo0rBA8HMhWuHddbCS52ZCZCLQ2LZBLLtymDbr6plcexfeDdi7hqLY8pAPVNE4CIVhZAvcZAXQH5UvG8ndWZBVjT4wpH9N8BFDrYp04eBWq47Oifrsb2hss4e9p3NwN63VAVxXqRRWPdJe y la ruta es {generated_image.resolve()}")
+            turn_log_text = turn_log.read_text(encoding="utf-8")
+            self.assert_true("redacted-token" in turn_log_text and "EAARZCS9Buv" not in turn_log_text and str(generated_image.resolve()) not in turn_log_text, "Gateway recent-turn log stores redacted conversation context")
         finally:
             for key, value in original_env.items():
                 if value is None:
@@ -2203,16 +2209,27 @@ class IntegrationTestSuite:
             branding_skill = workspace_path / "skills" / "branding-creatives-creation" / "SKILL.md"
             campaign_skill = workspace_path / "skills" / "campaign-creation" / "SKILL.md"
             approvals_skill = workspace_path / "skills" / "telegram-approvals" / "SKILL.md"
+            core_skill = workspace_path / "skills" / "core-agent-behavior" / "SKILL.md"
+            continuity_skill = workspace_path / "skills" / "session-continuity" / "SKILL.md"
+            brand_assets_skill = workspace_path / "skills" / "brand-and-assets" / "SKILL.md"
+            creative_strategy_skill = workspace_path / "skills" / "creative-strategy" / "SKILL.md"
+            meta_execution_skill = workspace_path / "skills" / "meta-campaign-execution" / "SKILL.md"
+            skills_readme = (workspace_path / "skills" / "README.md").read_text(encoding="utf-8")
             agents_text = (workspace_path / "AGENTS.md").read_text(encoding="utf-8")
 
             self.assert_true(creative_skill.exists() and branding_skill.exists() and campaign_skill.exists() and approvals_skill.exists(), "Focused product skill files are copied into the Hermes workspace")
+            self.assert_true(core_skill.exists() and continuity_skill.exists() and brand_assets_skill.exists() and creative_strategy_skill.exists() and meta_execution_skill.exists(), "Modular product skills are copied into the Hermes workspace")
+            self.assert_true("Mandatory first reads" in skills_readme and "core-agent-behavior" in skills_readme and "session-continuity" in skills_readme and "Legacy compatibility shims" in skills_readme, "Skills README routes Hermes through mandatory behavior/continuity and legacy shims")
             self.assert_true("mcp_admira_codex_image_generate" in creative_skill.read_text(encoding="utf-8"), "Creative skill points Hermes to the Codex/Image MCP tool")
             self.assert_true("logo" in branding_skill.read_text(encoding="utf-8").lower() and "mcp_admira_save_brand_memory" in branding_skill.read_text(encoding="utf-8"), "Branding skill teaches Hermes to save logo-aware creative memory")
             branding_text = branding_skill.read_text(encoding="utf-8")
             campaign_text = campaign_skill.read_text(encoding="utf-8")
+            brand_assets_text = brand_assets_skill.read_text(encoding="utf-8")
+            creative_strategy_text = creative_strategy_skill.read_text(encoding="utf-8")
             self.assert_true("Image 2 is one production tool; it is never the strategy" in branding_text and "Budget informs testing and launch planning, but it does not block draft image generation" in branding_text, "Branding skill separates creative strategy from the available image tool without making budget block drafts")
             self.assert_true("Meta Ad Library" in branding_text and "not private CPA, ROAS, or conversions" in branding_text, "Branding skill supports evidence-labeled competitor creative research without claiming public conversion data")
             self.assert_true("ElevenLabs" in branding_text and "photorealism" in branding_text and "reference_image_paths" in branding_text, "Branding skill covers UGC guidance, real-world photorealism, and uploaded references")
+            self.assert_true("pixel-level accurate" in brand_assets_text and "Image 2 is a production tool" in creative_strategy_text, "New brand/creative strategy skills split exact logo assets from creative portfolio strategy")
             self.assert_true("likely placements" in branding_text and "vertical Reels version" in campaign_text and "Expert Configuration Posture" in campaign_text, "Skills teach proactive expert placement strategy instead of rigid placement defaults")
             self.assert_true("mcp_admira_preflight_campaign" in campaign_text and "object_story_spec" in campaign_text and "custom_audiences" in campaign_text, "Campaign skill teaches preflight and expert campaign controls")
             self.assert_true("three most important success metrics" in campaign_text and "success_metrics" in campaign_text and "mcp_admira_save_ads_onboarding" in agents_text, "Hermes workspace teaches campaign scorecards and exposes ads onboarding memory")
@@ -2220,6 +2237,7 @@ class IntegrationTestSuite:
             self.assert_true("mcp_admira_fetch_public_asset" in agents_text and "Google Drive" in campaign_text and "public video" in branding_text, "Hermes workspace teaches public link and Drive creative retrieval")
             self.assert_true("mcp_admira_approve_action" in approvals_skill.read_text(encoding="utf-8"), "Approval skill points Hermes to exact approval MCP tools")
             self.assert_true("Native Product Tools" in agents_text and "mcp_admira_stage_campaign" in agents_text and "mcp_admira_review_signal_quality" in agents_text and "mcp_admira_preflight_campaign" in agents_text, "Combined Hermes rules document the MCP product bridge and preflight review")
+            self.assert_true("latest_day_context" in agents_text and "active_workflow" in agents_text and "core-agent-behavior" in agents_text, "Combined Hermes rules force modular behavior and continuity memory")
             self.assert_true((workspace_path / "skills" / "README.md").exists(), "Hermes workspace includes a product skill index")
         finally:
             hermes_bridge.HERMES_WORKSPACE_DIR = original_workspace
@@ -2991,6 +3009,7 @@ class IntegrationTestSuite:
             "HERMES_WORKSPACE_DIR": hermes_bridge.HERMES_WORKSPACE_DIR,
             "AGENT_COMMUNICATION_STYLE": os.environ.get("AGENT_COMMUNICATION_STYLE"),
             "AGENT_AD_EXPERIENCE_LEVEL": os.environ.get("AGENT_AD_EXPERIENCE_LEVEL"),
+            "TZ": os.environ.get("TZ"),
         }
         try:
             data_dir.mkdir(parents=True, exist_ok=True)
@@ -2998,6 +3017,7 @@ class IntegrationTestSuite:
             (brand_dir / "ad_briefs").mkdir(parents=True, exist_ok=True)
             os.environ["AGENT_COMMUNICATION_STYLE"] = "simple"
             os.environ["AGENT_AD_EXPERIENCE_LEVEL"] = "intermediate"
+            os.environ["TZ"] = "America/Bogota"
             hermes_bridge.DATA_DIR = data_dir
             hermes_bridge.BRAND_GUIDES_DIR = brand_dir
             hermes_bridge.HERMES_WORKSPACE_DIR = workspace_dir
@@ -3033,11 +3053,44 @@ class IntegrationTestSuite:
                 "name: Prueba WhatsApp facial masaje\nproduct_guide: facial-masaje-s99\nvariation_count: 2\ncreative_hypothesis: lujo accesible vs relajación rápida\n",
                 encoding="utf-8",
             )
+            yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+            two_days_ago = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+            (data_dir / "chat_history.json").write_text(
+                json.dumps(
+                    [
+                        {"role": "user", "content": "Hace dos días hablamos de otra cosa.", "created_at": two_days_ago},
+                        {"role": "user", "content": "Quiero retomar las dos piezas visuales. Mi token es EAARZCS9BuvSwBR3CyhVZCZCLT5aAnjoKNuCFwbrVEUNV8q5Gojivo0rBA8HMhWuHddbCS52ZCZCLQ2LZBLLtymDbr6plcexfeDdi7hqLY8pAPVNE4CIVhZAvcZAXQH5UvG8ndWZBVjT4wpH9N8BFDrYp04eBWq47Oifrsb2hss4e9p3NwN63VAVxXqRRWPdJe", "created_at": yesterday},
+                        {"role": "agent", "content": "Perfecto, el siguiente paso es generar las dos piezas visuales para WhatsApp.", "created_at": yesterday},
+                    ],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (data_dir / "hermes_gateway_recent_turns.json").write_text(
+                json.dumps(
+                    [
+                        {"role": "user", "content": "En Telegram confirmé que vamos con estilo premium relajante.", "created_at": yesterday},
+                    ],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (data_dir / "pending_approvals.json").write_text(
+                json.dumps(
+                    [
+                        {"id": "approval_test", "type": "create_campaign", "status": "pending", "created_at": yesterday, "payload": {"name": "Campaña WhatsApp Spa"}},
+                    ],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
 
             workspace = hermes_bridge.prepare_hermes_workspace({"channel": "telegram", "language": "es", "account_context": {}})
             workspace_path = Path(workspace["path"])
             status = json.loads((workspace_path / "memory" / "continuity_status.json").read_text(encoding="utf-8"))
             continuity = (workspace_path / "memory" / "Conversation continuity.md").read_text(encoding="utf-8")
+            latest_day = (workspace_path / "memory" / "latest_day_context.md").read_text(encoding="utf-8")
+            active_workflow = json.loads((workspace_path / "memory" / "active_workflow.json").read_text(encoding="utf-8"))
             agents_text = (workspace_path / "AGENTS.md").read_text(encoding="utf-8")
             gateway_prompt = hermes_gateway.gateway_prompt("es", "simple", "")
             bridge_prompt = hermes_bridge.hermes_prompt(
@@ -3050,10 +3103,13 @@ class IntegrationTestSuite:
 
             self.assert_true(status["has_persistent_memory"] is True and status["resume_required"] is True, "Continuity status detects durable business memory after history cleanup")
             self.assert_true(status["sources"]["business_profile"] and status["sources"]["general_branding"] and status["sources"]["ad_briefs"], "Continuity status names the saved business, brand, and ad brief sources")
+            self.assert_true(status["sources"]["latest_day_context"] and status["sources"]["active_workflow"] and status["sources"]["pending_approvals"], "Continuity status detects latest-day context, active workflow, and pending approvals")
+            self.assert_true("Latest local activity day" in latest_day and "dos piezas visuales" in latest_day and "redacted-token" in latest_day and "EAARZCS9Buv" not in latest_day, "Latest day context uses the most recent available day and redacts raw tokens")
+            self.assert_true(active_workflow["has_active_workflow"] is True and active_workflow["phase"] == "approval" and "aprobación pendiente" in active_workflow["next_step"], "Active workflow preserves phase and next step after cleanup")
             self.assert_true("Spa MediCentro Juliana" in continuity and "S/99" in continuity and "Retomo donde quedamos" in continuity, "Continuity brief gives Hermes concrete remembered context and a resume pattern")
             self.assert_true("history cleanup" in agents_text and "has_persistent_memory" in agents_text and "do not restart onboarding" in agents_text, "Combined Hermes rules force resume behavior after cleanup or restart")
             self.assert_true("Turn Orientation Before Every Reply" in agents_text and "immediate goal" in agents_text and "next safest useful action" in agents_text, "Combined Hermes rules force the agent to orient around goal, progress, missing items, and next action before replying")
-            self.assert_true("limpieza de historial" in gateway_prompt and "no te presentes como primera vez" in gateway_prompt and "Conversation continuity" in gateway_prompt, "Telegram gateway prompt blocks first-run greetings when durable memory exists")
+            self.assert_true("limpieza de historial" in gateway_prompt and "no te presentes como primera vez" in gateway_prompt and "latest_day_context" in gateway_prompt, "Telegram gateway prompt blocks first-run greetings when durable memory exists")
             self.assert_true("CURRENT_CONTEXT.json" in gateway_prompt and "data/business_profile.json" in gateway_prompt and "brand_guides/" in gateway_prompt, "Telegram gateway prompt tells new sessions to inspect durable workspace memory before repeating questions")
             self.assert_true("No muestres rutas internas" in gateway_prompt and "entrégalo directamente en el chat" in gateway_prompt, "Telegram gateway prompt blocks buyer-facing internal workspace paths")
             self.assert_true("MEDIA:<ruta_local>" in gateway_prompt and "sintaxis interna de entrega" in gateway_prompt, "Telegram gateway prompt tells the agent to attach generated media instead of exposing MEDIA paths")
@@ -3068,7 +3124,7 @@ class IntegrationTestSuite:
             hermes_bridge.DATA_DIR = original["DATA_DIR"]
             hermes_bridge.BRAND_GUIDES_DIR = original["BRAND_GUIDES_DIR"]
             hermes_bridge.HERMES_WORKSPACE_DIR = original["HERMES_WORKSPACE_DIR"]
-            for key in ["AGENT_COMMUNICATION_STYLE", "AGENT_AD_EXPERIENCE_LEVEL"]:
+            for key in ["AGENT_COMMUNICATION_STYLE", "AGENT_AD_EXPERIENCE_LEVEL", "TZ"]:
                 value = original[key]
                 if value is None:
                     os.environ.pop(key, None)

@@ -9,7 +9,13 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None
 
 from agent_runtime import build_system_prompt
 from communication_style import ad_experience_from_environment, ad_experience_instruction, communication_style_from_environment, communication_style_instruction
@@ -70,6 +76,8 @@ IMAGE_PATH_TEXT_KEYS = {
 EMBEDDED_IMAGE_PATH_RE = re.compile(r"(?P<path>(?:~|/|\.{1,2}/)?(?:[^\s\"'<>|]+/)+[^\s\"'<>|]+\.(?:jpe?g|png|webp|gif))", re.IGNORECASE)
 MEMORY_TEXT_LIMIT = 14000
 MEMORY_ITEM_LIMIT = 8
+RECENT_CONTEXT_LOOKBACK_DAYS = 7
+RECENT_CONTEXT_ITEM_LIMIT = 12
 BLOCKED_MEMORY_TOKENS = {".env", "license_unlock.json"}
 PROFILE_FILES = ("SOUL.md", "USER.md", "AGENTS.md", "TOOLS.md", "SKILLS.md")
 SKILL_FILE_NAME = "SKILL.md"
@@ -419,23 +427,24 @@ Business interview, brand, creative direction, and previous campaign questions a
 For each turn, read the buyer message normally. If you need live account context, use the local files in this workspace:
 
 - `CURRENT_CONTEXT.json`: current dashboard/account snapshot for this turn.
-- `memory/Conversation continuity.md` and `memory/continuity_status.json`: mandatory resume brief after history cleanup, gateway restart, update, or a fresh runtime session.
+- `memory/Conversation continuity.md`, `memory/continuity_status.json`, `memory/latest_day_context.md`, and `memory/active_workflow.json`: mandatory resume brief after history cleanup, gateway restart, update, or a fresh runtime session.
 - `data/business_profile.json`: business memory.
 - `data/audience_strategy.json`: audience strategy.
 - `data/business_binding.json`: selected Meta account/page binding.
 - `memory/Agent onboarding plan.md`: current onboarding phase.
 - `memory/Ads campaign onboarding.md`: prior ads/campaign context.
 - `memory/recent_actions.json`: recent protected actions and tool outcomes when present.
+- `memory/pending_approvals.json`: pending protected decisions when present.
 - `memory/profitability_rules.json`, `memory/decision_memory.json`, `memory/learning_log.md`: decision memory.
 - `memory/creative_experiments.json`: adaptive creative-test checkpoints, evidence, provisional leaders, and next review dates.
 - `brand_guides/`: brand, product, ad brief, and creative reference memory.
-- `skills/`: focused product skills. Read the relevant skill before taking product actions.
+- `skills/`: focused product skills. Read `core-agent-behavior` before every reply, `session-continuity` after cleanup/restart/update/fresh sessions, and the relevant specialist skill before taking product actions.
 
-Do not expect the backend to paste the whole conversation history into the prompt. Hermes session memory is useful, but it is cache; durable workspace files are the source of truth. At the start of a fresh/restarted Telegram session, after a history cleanup, or after an update/gateway restart, first read `memory/Conversation continuity.md`, `memory/continuity_status.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/creative_experiments.json`, and relevant `brand_guides/` files. If `has_persistent_memory` is true, do not introduce yourself as first time, do not restart onboarding, and do not repeat the initial ads-experience/technical-style question unless the files prove it is still missing. Resume with a short "retomo donde quedamos" style message, mention one concrete remembered item, and continue from the next missing/actionable step. If needed, use session search to inspect previous Telegram sessions, but do not block the buyer when durable workspace memory is enough. If the buyer's short answer is still ambiguous, ask one clear follow-up.
+Do not expect the backend to paste the whole conversation history into the prompt. Hermes session memory is useful, but it is cache; durable workspace files are the source of truth. At the start of a fresh/restarted Telegram session, after a history cleanup, or after an update/gateway restart, first read `skills/session-continuity/SKILL.md`, `memory/Conversation continuity.md`, `memory/continuity_status.json`, `memory/latest_day_context.md`, `memory/active_workflow.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/pending_approvals.json`, `memory/creative_experiments.json`, and relevant `brand_guides/` files. If `has_persistent_memory` or `has_active_workflow` is true, do not introduce yourself as first time, do not restart onboarding, and do not repeat the initial ads-experience/technical-style question unless the files prove it is still missing. Resume with a short "retomo donde quedamos" style message when natural, mention one concrete remembered item, and continue from the next missing/actionable step. If needed, use session search to inspect previous Telegram sessions, but do not block the buyer when durable workspace memory is enough. If the buyer's short answer is still ambiguous, ask one clear follow-up.
 
 # Turn Orientation Before Every Reply
 
-Before answering, silently determine the buyer's immediate goal, the current workflow phase, what is already done/saved/created/attempted, what remains missing or blocked, and the next safest useful action. Do not respond as if the latest message is disconnected from the ongoing setup, creative, campaign, or optimization work. Keep this checklist private; in the visible reply, continue naturally and move the work forward.
+Read `skills/core-agent-behavior/SKILL.md`. Before answering, silently determine the buyer's immediate goal, the current workflow phase, what is already done/saved/created/attempted, what remains missing or blocked, and the next safest useful action. Do not respond as if the latest message is disconnected from the ongoing setup, creative, campaign, or optimization work. Keep this checklist private; in the visible reply, continue naturally and move the work forward.
 
 # Buyer-facing content boundary
 
@@ -522,11 +531,34 @@ def write_product_skill_workspace_files():
         written.append(write_workspace_file(target, content))
         skill_names.append(skill_dir.name)
     if skill_names:
+        routing = [
+            "",
+            "## Mandatory first reads",
+            "",
+            "- `core-agent-behavior/SKILL.md` before every buyer-facing reply.",
+            "- `session-continuity/SKILL.md` before any first greeting, onboarding question, or response after cleanup/restart/update.",
+            "",
+            "## Routing",
+            "",
+            "- Business discovery: `business-onboarding/SKILL.md`.",
+            "- Brand/logo/assets: `brand-and-assets/SKILL.md`.",
+            "- Creative ideas/tests: `creative-strategy/SKILL.md`.",
+            "- Codex/Image production: `creative-production-codex-image/SKILL.md`.",
+            "- Campaign planning: `campaign-strategy/SKILL.md`.",
+            "- Meta Graph execution, direct publishing, lead forms: `meta-campaign-execution/SKILL.md`.",
+            "- Results, budgets, experiments, daily brief, feedback loop: `measurement-optimization/SKILL.md`.",
+            "- Failures, rate limits, access/update issues: `support-recovery/SKILL.md`.",
+            "- Legacy compatibility shims: `branding-creatives-creation`, `campaign-creation`, `creative-codex-image`.",
+            "",
+            "## Available skill files",
+            "",
+        ]
         written.append(
             write_workspace_file(
                 "skills/README.md",
                 "# Admira IA Product Skills\n\n"
-                "Use the most relevant skill before taking product actions.\n\n"
+                "Use the most relevant skill before taking product actions.\n"
+                + "\n".join(routing)
                 + "\n".join(f"- `{name}/SKILL.md`" for name in skill_names)
                 + "\n",
             )
@@ -609,7 +641,10 @@ def business_memory_context():
         },
         "recent_history": {
             "chat": scrub_memory(redact_payload(read_json(DATA_DIR / "chat_history.json", [])[-MEMORY_ITEM_LIMIT:])),
+            "telegram_legacy": scrub_memory(redact_payload(read_json(DATA_DIR / "telegram_chat_history.json", {}))),
+            "telegram_gateway": scrub_memory(redact_payload(read_json(DATA_DIR / "hermes_gateway_recent_turns.json", [])[-(MEMORY_ITEM_LIMIT * 4):])),
             "actions": scrub_memory(redact_payload(read_json(DATA_DIR / "actions.json", [])[-MEMORY_ITEM_LIMIT:])),
+            "pending_approvals": scrub_memory(redact_payload(read_json(DATA_DIR / "pending_approvals.json", [])[-MEMORY_ITEM_LIMIT:])),
             "creative_refreshes": scrub_memory(redact_payload(read_json(ROOT_DIR / "output" / "creatives" / "index.json", [])[-MEMORY_ITEM_LIMIT:])),
         },
         "profitability_memory": scrub_memory(redact_payload(decision_memory_payload())),
@@ -618,6 +653,8 @@ def business_memory_context():
         "business_outcomes": scrub_memory(redact_payload(read_json(DATA_DIR / "business_outcomes.json", {}))),
         "optimization_research": scrub_memory(redact_payload(load_research())),
     }
+    memory["latest_day_context"] = latest_day_context_payload(memory)
+    memory["active_workflow"] = active_workflow_payload(memory, memory["latest_day_context"])
     return memory
 
 
@@ -653,9 +690,298 @@ def _json_excerpt(value, limit=1600):
     return _text_excerpt(text, limit)
 
 
+def _redact_text(value):
+    text = str(value or "")
+    if not text:
+        return ""
+    replacements = [
+        (r"\b(?:EA[A-Za-z0-9_-]{40,}|EAA[A-Za-z0-9_-]{40,})\b", "[redacted-token]"),
+        (r"\bdop_v1_[A-Za-z0-9_-]{40,}\b", "[redacted-token]"),
+        (r"\bsk-[A-Za-z0-9_-]{24,}\b", "[redacted-token]"),
+        (r"(?i)\b(passphrase|password|contraseña|token|api key|access token)\s*[:=]\s*\S+", r"\1: [redacted]"),
+    ]
+    clean = text
+    for pattern, replacement in replacements:
+        clean = re.sub(pattern, replacement, clean)
+    return clean
+
+
+def _continuity_timezone():
+    raw = (
+        os.environ.get("HERMES_TIMEZONE")
+        or os.environ.get("DAILY_BRIEF_TIMEZONE")
+        or os.environ.get("META_DAILY_BRIEF_TIMEZONE")
+        or os.environ.get("TZ")
+        or "UTC"
+    )
+    name = str(raw or "UTC").strip() or "UTC"
+    if ZoneInfo is not None:
+        try:
+            return name, ZoneInfo(name)
+        except Exception:
+            pass
+    return "UTC", timezone.utc
+
+
+def _parse_datetime(value):
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(value), tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    text = str(value or "").strip()
+    if not text:
+        return None
+    normalized = text.replace("Z", "+00:00") if text.endswith("Z") else text
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _append_timeline_item(items, source, role, content, created_at="", kind="message", extra=None):
+    text = _redact_text(_text_excerpt(content, 1400))
+    if not text:
+        return
+    dt = _parse_datetime(created_at) or datetime.now(timezone.utc)
+    timezone_name, tz = _continuity_timezone()
+    local_dt = dt.astimezone(tz)
+    items.append(
+        {
+            "source": source,
+            "role": role,
+            "kind": kind,
+            "content": text,
+            "created_at": dt.isoformat(),
+            "local_date": local_dt.date().isoformat(),
+            "local_time": local_dt.strftime("%H:%M"),
+            "timezone": timezone_name,
+            **(extra or {}),
+        }
+    )
+
+
+def _history_list_items(raw, source):
+    items = []
+    if isinstance(raw, dict):
+        iterable = []
+        for chat_id, history in raw.items():
+            if isinstance(history, list):
+                for item in history:
+                    if isinstance(item, dict):
+                        iterable.append({**item, "_chat_id": str(chat_id)})
+    elif isinstance(raw, list):
+        iterable = [item for item in raw if isinstance(item, dict)]
+    else:
+        iterable = []
+    for item in iterable:
+        role = "agent" if str(item.get("role") or "").lower() in {"agent", "assistant"} else "user"
+        content = item.get("content") or item.get("message") or item.get("text") or item.get("reply") or ""
+        _append_timeline_item(
+            items,
+            source=source,
+            role=role,
+            content=content,
+            created_at=item.get("created_at") or item.get("updated_at") or item.get("timestamp"),
+            extra={"chat_id": item.get("_chat_id", "")} if item.get("_chat_id") else None,
+        )
+    return items
+
+
+def _activity_items(memory):
+    recent = memory.get("recent_history") or {}
+    items = []
+    items.extend(_history_list_items(recent.get("chat"), "dashboard_chat"))
+    items.extend(_history_list_items(recent.get("telegram_legacy"), "telegram_legacy"))
+    items.extend(_history_list_items(recent.get("telegram_gateway"), "telegram_gateway"))
+    for action in recent.get("actions") or []:
+        if not isinstance(action, dict):
+            continue
+        summary = {
+            "type": action.get("type") or action.get("action") or action.get("tool"),
+            "status": action.get("status"),
+            "payload": action.get("payload") or action.get("request") or action.get("result") or {},
+        }
+        _append_timeline_item(
+            items,
+            source="protected_actions",
+            role="system",
+            kind="action",
+            content=_json_excerpt(summary, 1200),
+            created_at=action.get("created_at") or action.get("timestamp") or action.get("updated_at"),
+        )
+    for approval in recent.get("pending_approvals") or []:
+        if not isinstance(approval, dict):
+            continue
+        _append_timeline_item(
+            items,
+            source="pending_approvals",
+            role="system",
+            kind="approval",
+            content=_json_excerpt(approval, 1200),
+            created_at=approval.get("created_at") or approval.get("updated_at") or approval.get("timestamp"),
+        )
+    for creative in recent.get("creative_refreshes") or []:
+        if not isinstance(creative, dict):
+            continue
+        _append_timeline_item(
+            items,
+            source="creative_outputs",
+            role="system",
+            kind="creative",
+            content=_json_excerpt(creative, 1200),
+            created_at=creative.get("created_at") or creative.get("updated_at") or creative.get("timestamp"),
+        )
+    return sorted(items, key=lambda item: item.get("created_at") or "")
+
+
+def latest_day_context_payload(memory, lookback_days=RECENT_CONTEXT_LOOKBACK_DAYS):
+    timezone_name, tz = _continuity_timezone()
+    items = _activity_items(memory)
+    recent = memory.get("recent_history") or {}
+    today = datetime.now(timezone.utc).astimezone(tz).date()
+    selected_date = ""
+    selected_items = []
+    for offset in range(max(1, int(lookback_days))):
+        candidate = (today - timedelta(days=offset)).isoformat()
+        matches = [item for item in items if item.get("local_date") == candidate]
+        if matches:
+            selected_date = candidate
+            selected_items = matches[-RECENT_CONTEXT_ITEM_LIMIT:]
+            break
+    if not selected_items and items:
+        recent_cutoff = today - timedelta(days=max(1, int(lookback_days)) - 1)
+        recent_items = [item for item in items if item.get("local_date", "0000-00-00") >= recent_cutoff.isoformat()]
+        if recent_items:
+            selected_date = recent_items[-1].get("local_date") or ""
+            selected_items = [item for item in recent_items if item.get("local_date") == selected_date][-RECENT_CONTEXT_ITEM_LIMIT:]
+    return {
+        "selected_date": selected_date,
+        "timezone": timezone_name,
+        "lookback_days": lookback_days,
+        "items": selected_items,
+        "item_count": len(selected_items),
+        "source_counts": {
+            "dashboard_chat": len(recent.get("chat") or []),
+            "telegram_legacy": sum(len(value) for value in (recent.get("telegram_legacy") or {}).values()) if isinstance(recent.get("telegram_legacy"), dict) else len(recent.get("telegram_legacy") or []),
+            "telegram_gateway": len(recent.get("telegram_gateway") or []),
+            "actions": len(recent.get("actions") or []),
+            "pending_approvals": len(recent.get("pending_approvals") or []),
+            "creative_outputs": len(recent.get("creative_refreshes") or []),
+        },
+    }
+
+
+def _latest_by_role(items, role):
+    for item in reversed(items or []):
+        if item.get("role") == role:
+            return item
+    return {}
+
+
+def _infer_next_step(memory, latest_context, blocker=""):
+    recent = memory.get("recent_history") or {}
+    pending = recent.get("pending_approvals") or []
+    onboarding_plan = str(memory.get("onboarding_plan") or "")
+    if pending:
+        return "Revisar la aprobación pendiente más reciente y permitir aprobar/rechazar desde Telegram."
+    if blocker:
+        return "Retomar el bloqueo técnico o de datos más reciente y explicar el siguiente intento seguro."
+    match = re.search(r"Siguiente paso\s*:\s*([^\n.]+)", onboarding_plan, re.IGNORECASE)
+    if match:
+        return _text_excerpt(match.group(1), 260)
+    last_agent = _latest_by_role(latest_context.get("items") or [], "agent")
+    if str(last_agent.get("content") or "").strip().endswith("?"):
+        return "Responder la última pregunta pendiente antes de avanzar."
+    if memory.get("brand_guides", {}).get("ad_briefs"):
+        return "Continuar desde el brief guardado y preparar la siguiente acción creativa o de campaña."
+    if memory.get("brand_guides", {}).get("general_branding"):
+        return "Continuar desde la marca guardada y completar producto/oferta, brief o campaña según el pedido."
+    if has_meaningful_memory(memory.get("business_profile")):
+        return "Continuar el onboarding desde la memoria de negocio ya guardada."
+    return ""
+
+
+def active_workflow_payload(memory, latest_context):
+    items = latest_context.get("items") or []
+    recent = memory.get("recent_history") or {}
+    pending = recent.get("pending_approvals") or []
+    blockers = [
+        item
+        for item in reversed(items)
+        if re.search(r"(?i)\b(error|fall[óo]|bloque|missing|falta|rate limit|timeout|not logged|page_not_found|creative_production_not_ready)\b", item.get("content") or "")
+    ]
+    blocker = blockers[0] if blockers else {}
+    brand = memory.get("brand_guides") or {}
+    if pending:
+        phase = "approval"
+    elif blocker:
+        phase = "blocked_or_retrying"
+    elif recent.get("creative_refreshes"):
+        phase = "creative_review"
+    elif brand.get("ad_briefs"):
+        phase = "creative_or_campaign_brief"
+    elif brand.get("general_branding"):
+        phase = "brand_ready"
+    elif has_meaningful_memory(memory.get("business_profile")):
+        phase = "business_onboarding"
+    else:
+        phase = ""
+    next_step = _infer_next_step(memory, latest_context, blocker.get("content", ""))
+    return {
+        "has_active_workflow": bool(phase or items or pending),
+        "phase": phase,
+        "last_day_context_date": latest_context.get("selected_date", ""),
+        "last_user_message": _latest_by_role(items, "user"),
+        "last_agent_message": _latest_by_role(items, "agent"),
+        "recent_blocker": blocker,
+        "pending_approval_count": len(pending),
+        "next_step": next_step,
+        "resume_instruction": "If has_active_workflow is true, resume this workflow before greeting or restarting onboarding.",
+    }
+
+
+def build_latest_day_context(latest_context, active_workflow):
+    lines = [
+        "# Latest day context",
+        "",
+        "This file summarizes the most recent local day with buyer activity. Use it after history cleanup, gateway restart, update, or a fresh runtime session.",
+        f"Timezone: {latest_context.get('timezone', 'UTC')}",
+        f"Lookback days: {latest_context.get('lookback_days', RECENT_CONTEXT_LOOKBACK_DAYS)}",
+        f"Latest local activity day: {latest_context.get('selected_date') or 'none'}",
+        "",
+    ]
+    if latest_context.get("items"):
+        lines.extend(["## Timeline", ""])
+        for item in latest_context.get("items", []):
+            role = item.get("role", "system")
+            source = item.get("source", "")
+            when = f"{item.get('local_date', '')} {item.get('local_time', '')}".strip()
+            lines.append(f"- {when} [{source}/{role}]: {_text_excerpt(item.get('content'), 420)}")
+        lines.append("")
+    else:
+        lines.extend(["## Timeline", "", "- No chat/action activity found in the recent lookback window.", ""])
+    lines.extend(
+        [
+            "## Active workflow",
+            "",
+            f"- Phase: {active_workflow.get('phase') or 'none'}",
+            f"- Pending approvals: {active_workflow.get('pending_approval_count', 0)}",
+            f"- Next step: {active_workflow.get('next_step') or 'Use durable business/brand memory and ask one necessary question.'}",
+            "",
+        ]
+    )
+    return "\n".join(lines).strip() + "\n"
+
+
 def conversation_continuity_status(memory):
     brand = memory.get("brand_guides") or {}
     recent = memory.get("recent_history") or {}
+    latest_context = memory.get("latest_day_context") or {}
+    active_workflow = memory.get("active_workflow") or {}
     communication_style = communication_style_from_environment()
     ad_experience = ad_experience_from_environment()
     operator_preference_saved = bool(str(os.environ.get("AGENT_COMMUNICATION_STYLE") or "").strip()) or bool(ad_experience)
@@ -669,7 +995,12 @@ def conversation_continuity_status(memory):
         "creative_references": has_meaningful_memory(memory.get("creative_references")),
         "product_guides": has_meaningful_memory(brand.get("products")),
         "ad_briefs": has_meaningful_memory(brand.get("ad_briefs")),
+        "latest_day_context": bool(latest_context.get("selected_date")),
+        "active_workflow": bool(active_workflow.get("has_active_workflow")),
+        "telegram_gateway_turns": has_meaningful_memory(recent.get("telegram_gateway")),
+        "telegram_legacy_history": has_meaningful_memory(recent.get("telegram_legacy")),
         "recent_actions": has_meaningful_memory(recent.get("actions")),
+        "pending_approvals": has_meaningful_memory(recent.get("pending_approvals")),
         "recent_creative_outputs": has_meaningful_memory(recent.get("creative_refreshes")),
         "creative_experiments": has_meaningful_memory(memory.get("creative_experiments")),
         "business_outcomes": has_meaningful_memory(memory.get("business_outcomes")),
@@ -683,7 +1014,7 @@ def conversation_continuity_status(memory):
         "resume_required": has_persistent_memory,
         "session_history_is_cache": True,
         "instructions": {
-            "on_history_cleanup_or_gateway_restart": "read durable workspace files before greeting; resume from saved business, brand, brief, actions, and experiment memory",
+            "on_history_cleanup_or_gateway_restart": "read durable workspace files before greeting; resume from latest-day context, active workflow, saved business, brand, brief, actions, and experiment memory",
             "if_has_persistent_memory": "do not restart onboarding, do not introduce yourself as first time, and do not repeat the ads-experience question unless it is genuinely missing after checking memory",
             "if_no_persistent_memory": "a first onboarding greeting is acceptable",
         },
@@ -692,7 +1023,19 @@ def conversation_continuity_status(memory):
             "product_guides": len(brand.get("products") or []),
             "ad_briefs": len(brand.get("ad_briefs") or []),
             "recent_actions": len(recent.get("actions") or []),
+            "telegram_gateway_turns": len(recent.get("telegram_gateway") or []),
+            "pending_approvals": len(recent.get("pending_approvals") or []),
             "recent_creative_outputs": len(recent.get("creative_refreshes") or []),
+        },
+        "latest_day_context": {
+            "selected_date": latest_context.get("selected_date", ""),
+            "timezone": latest_context.get("timezone", ""),
+            "item_count": latest_context.get("item_count", 0),
+        },
+        "active_workflow": {
+            "has_active_workflow": bool(active_workflow.get("has_active_workflow")),
+            "phase": active_workflow.get("phase", ""),
+            "next_step": active_workflow.get("next_step", ""),
         },
         "operator_preferences": {
             "communication_style": communication_style,
@@ -705,6 +1048,8 @@ def build_conversation_continuity(memory, status=None):
     status = status or conversation_continuity_status(memory)
     brand = memory.get("brand_guides") or {}
     recent = memory.get("recent_history") or {}
+    latest_context = memory.get("latest_day_context") or {}
+    active_workflow = memory.get("active_workflow") or {}
     lines = [
         "# Conversation continuity",
         "",
@@ -718,7 +1063,7 @@ def build_conversation_continuity(memory, status=None):
                 "## Resume behavior",
                 "",
                 "- Treat Telegram/Hermes session history as cache. These durable workspace files are the source of truth after cleanup or updates.",
-                "- Before sending a first message, read this file plus `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/creative_experiments.json`, and relevant `brand_guides/` files.",
+                "- Before sending a first message, read this file plus `memory/latest_day_context.md`, `memory/active_workflow.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/pending_approvals.json`, `memory/creative_experiments.json`, and relevant `brand_guides/` files.",
                 "- Do not restart onboarding, do not introduce yourself as if this were the first conversation, and do not repeat the initial ads-experience/technical-style question if it is already configured or implied by saved memory.",
                 "- If the current Hermes session is empty but this file says memory exists, say briefly that you are resuming and continue from the next missing or active item.",
                 "- If needed, use session search to look for the previous Telegram session, but never block the buyer on that search when durable workspace memory is enough to continue.",
@@ -742,6 +1087,32 @@ def build_conversation_continuity(memory, status=None):
             "",
         ]
     )
+    if latest_context.get("selected_date"):
+        lines.extend(
+            [
+                "## Latest day context",
+                "",
+                f"- Latest local activity day: {latest_context.get('selected_date')} ({latest_context.get('timezone', 'UTC')})",
+                f"- Activity items in that day: {latest_context.get('item_count', 0)}",
+                "",
+            ]
+        )
+    if active_workflow.get("has_active_workflow"):
+        last_user = active_workflow.get("last_user_message") or {}
+        last_agent = active_workflow.get("last_agent_message") or {}
+        lines.extend(
+            [
+                "## Active workflow",
+                "",
+                f"- Phase: {active_workflow.get('phase') or 'unknown'}",
+                f"- Next step: {active_workflow.get('next_step') or 'continue from saved memory'}",
+            ]
+        )
+        if last_user.get("content"):
+            lines.append(f"- Last buyer message: {_text_excerpt(last_user.get('content'), 500)}")
+        if last_agent.get("content"):
+            lines.append(f"- Last agent message: {_text_excerpt(last_agent.get('content'), 500)}")
+        lines.append("")
     if has_meaningful_memory(memory.get("business_profile")):
         lines.extend(["## Known business profile", "", "```json", _json_excerpt(memory.get("business_profile"), 2200), "```", ""])
     if has_meaningful_memory(memory.get("onboarding_plan")):
@@ -766,6 +1137,8 @@ def build_conversation_continuity(memory, status=None):
         lines.append("")
     if has_meaningful_memory(recent.get("actions")):
         lines.extend(["## Recent protected actions", "", "```json", _json_excerpt(recent.get("actions"), 2200), "```", ""])
+    if has_meaningful_memory(recent.get("pending_approvals")):
+        lines.extend(["## Pending approvals", "", "```json", _json_excerpt(recent.get("pending_approvals"), 1800), "```", ""])
     if has_meaningful_memory(recent.get("creative_refreshes")):
         lines.extend(["## Recent creative outputs", "", "```json", _json_excerpt(recent.get("creative_refreshes"), 2200), "```", ""])
     if has_meaningful_memory(memory.get("creative_experiments")):
@@ -797,14 +1170,14 @@ This folder is the only workspace Hermes should read for this product turn.
 It contains curated business memory, brand guides, recent activity, and uploaded reference images.
 
 Hermes owns the conversation and should use its own session memory. The backend does not paste the whole chat history into the prompt.
-If session memory was cleaned, the gateway restarted, or an update created a fresh runtime session, read `memory/Conversation continuity.md`, `memory/continuity_status.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, and relevant `brand_guides/` files before greeting.
+Before every buyer-facing turn, read `skills/core-agent-behavior/SKILL.md`. If session memory was cleaned, the gateway restarted, or an update created a fresh runtime session, also read `skills/session-continuity/SKILL.md`, `memory/Conversation continuity.md`, `memory/continuity_status.json`, `memory/latest_day_context.md`, `memory/active_workflow.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, and relevant `brand_guides/` files before greeting.
 
 Never expose this workspace's internal paths to the buyer. If the buyer asks for a prompt, plan, script, copy, or diagnosis, paste the useful content directly in the chat instead of pointing them to `/app/...`, `dashboard/data/...`, `hermes-workspace/...`, `brand_guides/...`, `memory/...`, or `CURRENT_CONTEXT.json`.
 
 Do not request files outside this workspace. If something is missing, ask the buyer or request a backend tool.
 
 Product actions are exposed as Hermes MCP tools with names starting with `mcp_admira_`.
-Read `skills/README.md` and the relevant `skills/*/SKILL.md` file before acting.
+Read `skills/README.md`, then the relevant `skills/*/SKILL.md` file before acting.
 """,
         )
     )
@@ -826,12 +1199,16 @@ Read `skills/README.md` and the relevant `skills/*/SKILL.md` file before acting.
     written.append(write_workspace_file("data/business_profile.json", memory["business_profile"]))
     written.append(write_workspace_file("memory/continuity_status.json", continuity_status))
     written.append(write_workspace_file("memory/Conversation continuity.md", build_conversation_continuity(memory, continuity_status)))
+    written.append(write_workspace_file("memory/latest_day_context.md", build_latest_day_context(memory["latest_day_context"], memory["active_workflow"])))
+    written.append(write_workspace_file("memory/active_workflow.json", memory["active_workflow"]))
     written.append(write_workspace_file("memory/Onboarding questions.md", memory.get("onboarding_questions", "")))
     written.append(write_workspace_file("memory/Agent onboarding plan.md", memory.get("onboarding_plan", "")))
     written.append(write_workspace_file("memory/Ads campaign onboarding.md", memory.get("ads_onboarding", "")))
     written.append(write_workspace_file("data/audience_strategy.json", memory["audience_strategy"]))
     written.append(write_workspace_file("data/business_binding.json", memory["business_binding"]))
     written.append(write_workspace_file("memory/recent_actions.json", memory["recent_history"]["actions"]))
+    written.append(write_workspace_file("memory/recent_telegram_gateway_turns.json", memory["recent_history"].get("telegram_gateway", [])))
+    written.append(write_workspace_file("memory/pending_approvals.json", memory["recent_history"].get("pending_approvals", [])))
     written.append(write_workspace_file("memory/creative_refreshes.json", memory["recent_history"]["creative_refreshes"]))
     written.append(write_workspace_file("memory/profitability_rules.json", memory["profitability_memory"].get("profitability_rules", {})))
     written.append(write_workspace_file("memory/decision_memory.json", memory["profitability_memory"]))
@@ -857,6 +1234,8 @@ Read `skills/README.md` and the relevant `skills/*/SKILL.md` file before acting.
         "image_paths": workspace_images,
         "memory": memory,
         "continuity_status": continuity_status,
+        "active_workflow": memory["active_workflow"],
+        "latest_day_context": memory["latest_day_context"],
     }
 
 
@@ -1219,8 +1598,8 @@ def hermes_prompt(config, payload, workspace_info=None):
         + "\n\nHermes workspace files:\n"
         + "\n".join(f"- {path}" for path in workspace_info.get("files", []))
         + "\n\nRead product rules from AGENTS.md/SOUL.md and business files only inside this workspace. Do not read arbitrary local files. If a needed file is missing, ask the buyer or request a backend tool."
-        + "\n\nTurn orientation before every reply: silently identify the buyer's immediate goal, where we were in the current workflow, what has already been done/saved/attempted, what is still missing or blocked, and the next safest useful action. Do not answer isolated from the previous context; continue the active work unless the buyer clearly changes topic."
-        + "\n\nBefore treating this as a new conversation, read `memory/Conversation continuity.md`, `memory/continuity_status.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, and relevant `brand_guides/` files. If persistent memory exists, resume from durable business/brand/ad memory instead of restarting onboarding or repeating first-time preference questions."
+        + "\n\nTurn orientation before every reply: read `skills/core-agent-behavior/SKILL.md`, then silently identify the buyer's immediate goal, where we were in the current workflow, what has already been done/saved/attempted, what is still missing or blocked, and the next safest useful action. Do not answer isolated from the previous context; continue the active work unless the buyer clearly changes topic."
+        + "\n\nBefore treating this as a new conversation, read `skills/session-continuity/SKILL.md`, `memory/Conversation continuity.md`, `memory/continuity_status.json`, `memory/latest_day_context.md`, `memory/active_workflow.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/pending_approvals.json`, and relevant `brand_guides/` files. If persistent memory or active workflow exists, resume from durable business/brand/ad memory and latest-day context instead of restarting onboarding or repeating first-time preference questions."
         + "\n\nNever expose internal workspace paths to the buyer. Do not present `MEDIA:/...` as a link or address. If a generated image/file must be delivered, use `MEDIA:<local_path>` only as a native attachment directive and keep the visible reply focused on the attached file. If the buyer asks for a prompt, plan, script, copy, or diagnosis, paste it directly in the chat instead of pointing them to `/app/...`, `dashboard/data/...`, `hermes-workspace/...`, `brand_guides/...`, `memory/...`, or `CURRENT_CONTEXT.json`."
         + "\n\nDashboard action boundary: do not say you need CLI or terminal access to create or prepare campaigns. If MCP tools are available, use the `mcp_admira_*` tools directly. If MCP is unavailable in the current runtime, use the JSON tool_request contract below or ask the next missing detail. In dashboard chat, the backend executes supported product actions and keeps spend behind approval."
         + "\n\nPublic URL/video handling: if the buyer provides a public URL, especially a Google Drive/video/image link for a creative, call mcp_admira_fetch_public_asset first. If it returns a video asset, use its video_url/direct_url for video creative staging. If it returns video_frame_paths/video_preview_frame_paths, inspect those extracted image frames with vision to understand the video visually; do not try to inspect the MP4 directly and do not say you cannot review video merely because one viewer accepts only images. Use web/browser retrieval as a secondary path for general research. If access fails because of login, private URL, robots, timeout, private/local network, size limit, or tool unavailability, say that precise reason and ask the buyer to make it public, upload it directly, or paste page text/screenshots."
