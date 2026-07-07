@@ -4,6 +4,7 @@ import json
 import mimetypes
 import os
 import time
+import unicodedata
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -87,7 +88,12 @@ class SocialFlowClient:
         return self.perform_graph_request(request)
 
     def post_graph_form(self, endpoint, fields):
-        body = urllib.parse.urlencode(fields).encode("utf-8")
+        normalized = {}
+        for key, value in (fields or {}).items():
+            if value in (None, ""):
+                continue
+            normalized[key] = json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else value
+        body = urllib.parse.urlencode(normalized).encode("utf-8")
         request = urllib.request.Request(
             self.graph_url(endpoint),
             data=body,
@@ -509,6 +515,113 @@ class SocialFlowClient:
         page = str(page_id or "").strip()
         return f"https://www.facebook.com/{page}" if page else "https://www.facebook.com"
 
+    @staticmethod
+    def normalize_lead_form_slug(value, fallback="custom_question"):
+        text = unicodedata.normalize("NFKD", str(value or "").strip().lower())
+        text = "".join(char for char in text if not unicodedata.combining(char))
+        chars = []
+        for char in text:
+            chars.append(char if char.isalnum() else "_")
+        slug = "_".join(part for part in "".join(chars).split("_") if part)
+        return (slug or fallback)[:80]
+
+    @classmethod
+    def normalize_lead_form_question(cls, value):
+        aliases = {
+            "correo": "EMAIL",
+            "email": "EMAIL",
+            "e_mail": "EMAIL",
+            "mail": "EMAIL",
+            "nombre": "FULL_NAME",
+            "nombre_completo": "FULL_NAME",
+            "full_name": "FULL_NAME",
+            "fullname": "FULL_NAME",
+            "first_name": "FIRST_NAME",
+            "nombre_de_pila": "FIRST_NAME",
+            "last_name": "LAST_NAME",
+            "apellido": "LAST_NAME",
+            "telefono": "PHONE",
+            "teléfono": "PHONE",
+            "phone": "PHONE",
+            "phone_number": "PHONE",
+            "numero": "PHONE",
+            "número": "PHONE",
+            "ciudad": "CITY",
+            "city": "CITY",
+            "provincia": "STATE",
+            "estado": "STATE",
+            "state": "STATE",
+            "pais": "COUNTRY",
+            "país": "COUNTRY",
+            "country": "COUNTRY",
+            "empresa": "COMPANY_NAME",
+            "company": "COMPANY_NAME",
+            "company_name": "COMPANY_NAME",
+            "cargo": "JOB_TITLE",
+            "job_title": "JOB_TITLE",
+            "work_email": "WORK_EMAIL",
+            "correo_laboral": "WORK_EMAIL",
+            "zip": "ZIP",
+            "postal": "ZIP",
+            "codigo_postal": "ZIP",
+            "código_postal": "ZIP",
+        }
+        if isinstance(value, str):
+            raw = value.strip()
+            normalized = cls.normalize_lead_form_slug(raw, raw).lower()
+            return {"type": aliases.get(normalized, raw.upper().replace(" ", "_") or "EMAIL")}
+        if not isinstance(value, dict):
+            return {}
+        question = {key: val for key, val in value.items() if val not in (None, "")}
+        label = str(question.get("label") or question.get("question") or question.get("title") or "").strip()
+        raw_type = str(question.get("type") or ("CUSTOM" if label else "")).strip()
+        normalized = cls.normalize_lead_form_slug(raw_type, raw_type).lower()
+        if raw_type:
+            question["type"] = aliases.get(normalized, raw_type.upper().replace(" ", "_"))
+        if question.get("type") == "CUSTOM":
+            if label:
+                question["label"] = label
+            if not question.get("key"):
+                question["key"] = cls.normalize_lead_form_slug(label or "custom_question")
+        return question
+
+    @classmethod
+    def normalize_lead_form_questions(cls, value):
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                parsed = [item.strip() for item in text.split(",") if item.strip()]
+        else:
+            parsed = value
+        if not isinstance(parsed, list):
+            parsed = [parsed] if parsed else []
+        questions = []
+        for item in parsed:
+            question = cls.normalize_lead_form_question(item)
+            if question:
+                questions.append(question)
+        return questions
+
+    @staticmethod
+    def normalize_lead_form_form_type(value):
+        raw = str(value or "").strip().upper().replace("-", "_").replace(" ", "_")
+        aliases = {
+            "MORE_VOLUME": "MORE_VOLUME",
+            "VOLUME": "MORE_VOLUME",
+            "MAS_VOLUMEN": "MORE_VOLUME",
+            "MÁS_VOLUMEN": "MORE_VOLUME",
+            "HIGHER_INTENT": "HIGHER_INTENT",
+            "HIGH_INTENT": "HIGHER_INTENT",
+            "MAYOR_INTENCION": "HIGHER_INTENT",
+            "MAYOR_INTENCIÓN": "HIGHER_INTENT",
+            "CALIDAD": "HIGHER_INTENT",
+        }
+        return aliases.get(raw, raw)
+
     @classmethod
     def destination_type_for_message_destination(cls, destination):
         normalized = cls.normalize_message_destination(destination)
@@ -771,6 +884,85 @@ class SocialFlowClient:
                         post_id = self.page_post_id_from_body(page_id, body)
                         body = {**body, "ok": bool(post_id), "post_id": post_id, "object_story_id": post_id, "page_id": page_id, "page_name": (page_lookup.get("page") or {}).get("name", "")}
                         result = {**result, "ok": bool(post_id), "status": result.get("status") if post_id else 1, "body": body}
+                return self.graph_record(record, endpoint, result)
+            if action in {"lead-forms", "create-lead-form"}:
+                page_id = self.flag(args, "--page-id", "")
+                token = str(getattr(self.config, "meta_publishing_access_token", "") or access_token or "").strip()
+                if not token:
+                    return self.graph_local_record(record, "local/meta-page-token", {"ok": False, "error": "missing_meta_page_token", "message": "Lead forms need a Page-capable token. Connect Publicación directa or a Page access token first."}, ok=False, status=1)
+                if not page_id:
+                    return self.graph_local_record(record, "local/meta-lead-form", {"ok": False, "error": "missing_page_id"}, ok=False, status=1)
+                page_lookup = self.page_access_token(page_id, token)
+                if not page_lookup.get("ok"):
+                    return self.graph_local_record(
+                        record,
+                        "local/meta-lead-form",
+                        {
+                            "ok": False,
+                            "error": page_lookup.get("error") or "page_not_found",
+                            "message": "The configured Page token cannot access this Facebook Page, so it cannot list or create lead forms for it.",
+                            "lookup_methods": page_lookup.get("lookup_methods", {}),
+                        },
+                        ok=False,
+                        status=1,
+                    )
+                page_token = page_lookup.get("access_token") or token
+                endpoint = f"{page_id}/leadgen_forms"
+                if action == "lead-forms":
+                    limit = self.flag(args, "--limit", "25")
+                    fields = self.clean_graph_fields(
+                        self.flag(args, "--fields", ""),
+                        "id,name,status,created_time,leads_count,locale,questions",
+                    )
+                    result = self.get_graph(endpoint, {"fields": fields, "limit": limit}, access_token=page_token)
+                    return self.graph_record(record, endpoint, result)
+
+                name = self.flag(args, "--name", "")
+                privacy_url = self.flag(args, "--privacy-policy-url", "")
+                questions = self.normalize_lead_form_questions(self.flag(args, "--questions", ""))
+                if not name:
+                    return self.graph_local_record(record, "local/meta-lead-form", {"ok": False, "error": "missing_lead_form_name"}, ok=False, status=1)
+                if not privacy_url.startswith(("http://", "https://")):
+                    return self.graph_local_record(record, "local/meta-lead-form", {"ok": False, "error": "missing_or_invalid_privacy_policy_url"}, ok=False, status=1)
+                if not questions:
+                    return self.graph_local_record(record, "local/meta-lead-form", {"ok": False, "error": "missing_lead_form_questions"}, ok=False, status=1)
+                link_text = (self.flag(args, "--privacy-policy-link-text", "Política de privacidad") or "Política de privacidad")[:70]
+                fields = {
+                    "access_token": page_token,
+                    "name": name,
+                    "questions": questions,
+                    "privacy_policy": {"url": privacy_url, "link_text": link_text},
+                }
+                locale = self.flag(args, "--locale", "")
+                form_type = self.normalize_lead_form_form_type(self.flag(args, "--form-type", ""))
+                follow_up_url = self.flag(args, "--follow-up-action-url", "")
+                context_card = self.json_flag(args, "--context-card", None)
+                thank_you_page = self.json_flag(args, "--thank-you-page", None)
+                custom_disclaimer = self.json_flag(args, "--custom-disclaimer", None)
+                if locale:
+                    fields["locale"] = locale
+                if form_type:
+                    fields["form_type"] = form_type
+                if follow_up_url:
+                    fields["follow_up_action_url"] = follow_up_url
+                if isinstance(context_card, dict) and context_card:
+                    fields["context_card"] = context_card
+                if isinstance(thank_you_page, dict) and thank_you_page:
+                    fields["thank_you_page"] = thank_you_page
+                if isinstance(custom_disclaimer, dict) and custom_disclaimer:
+                    fields["custom_disclaimer"] = custom_disclaimer
+                result = self.post_graph_form(endpoint, fields)
+                body = result.get("body") if isinstance(result.get("body"), dict) else {}
+                if result.get("ok"):
+                    form_id = str(body.get("id") or body.get("lead_gen_form_id") or "").strip()
+                    body = {
+                        **body,
+                        "ok": bool(form_id),
+                        "lead_gen_form_id": form_id,
+                        "page_id": page_id,
+                        "page_name": (page_lookup.get("page") or {}).get("name", ""),
+                    }
+                    result = {**result, "ok": bool(form_id), "status": result.get("status") if form_id else 1, "body": body}
                 return self.graph_record(record, endpoint, result)
             if not access_token:
                 return self.graph_local_record(record, "local/meta-token", {"ok": False, "error": "missing_meta_access_token"}, ok=False, status=1)
@@ -1168,6 +1360,48 @@ class SocialFlowClient:
             args.extend(["--video-url", video_url])
         if unpublished_content_type:
             args.extend(["--unpublished-content-type", unpublished_content_type])
+        args.extend(["--json", "--yes"])
+        return self.run(args, live_required=True, mutation=True, approved=approved)
+
+    def lead_forms(self, page_id="", limit=25):
+        args = ["marketing", "lead-forms", "--page-id", page_id, "--limit", str(int(limit or 25)), "--json"]
+        return self.run(args, live_required=False)
+
+    def create_lead_form(
+        self,
+        page_id,
+        name,
+        questions=None,
+        privacy_policy_url="",
+        privacy_policy_link_text="Política de privacidad",
+        follow_up_action_url="",
+        locale="",
+        form_type="",
+        context_card=None,
+        thank_you_page=None,
+        custom_disclaimer=None,
+        approved=False,
+    ):
+        args = ["marketing", "create-lead-form", "--page-id", page_id, "--name", name]
+        normalized_questions = self.normalize_lead_form_questions(questions or [])
+        if normalized_questions:
+            args.extend(["--questions", json.dumps(normalized_questions, ensure_ascii=False)])
+        if privacy_policy_url:
+            args.extend(["--privacy-policy-url", privacy_policy_url])
+        if privacy_policy_link_text:
+            args.extend(["--privacy-policy-link-text", privacy_policy_link_text])
+        if follow_up_action_url:
+            args.extend(["--follow-up-action-url", follow_up_action_url])
+        if locale:
+            args.extend(["--locale", locale])
+        if form_type:
+            args.extend(["--form-type", self.normalize_lead_form_form_type(form_type)])
+        if isinstance(context_card, dict) and context_card:
+            args.extend(["--context-card", json.dumps(context_card, ensure_ascii=False)])
+        if isinstance(thank_you_page, dict) and thank_you_page:
+            args.extend(["--thank-you-page", json.dumps(thank_you_page, ensure_ascii=False)])
+        if isinstance(custom_disclaimer, dict) and custom_disclaimer:
+            args.extend(["--custom-disclaimer", json.dumps(custom_disclaimer, ensure_ascii=False)])
         args.extend(["--json", "--yes"])
         return self.run(args, live_required=True, mutation=True, approved=approved)
 

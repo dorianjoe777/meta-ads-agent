@@ -31,6 +31,8 @@ TOOL_MAP = {
     "admira_fetch_public_asset": "fetch_public_asset",
     "admira_codex_image_generate": "codex_image_generate",
     "admira_codex_creative_plan": "codex_creative_plan",
+    "admira_list_lead_forms": "list_lead_forms",
+    "admira_stage_lead_form": "stage_lead_form",
     "admira_stage_campaign": "create_campaign_stack",
     "admira_stage_budget_change": "set_budget",
     "admira_pause_campaign": "pause_campaign",

@@ -2279,6 +2279,16 @@ class IntegrationTestSuite:
             review = admira_tool_bridge.call_tool("mcp_admira_review_signal_quality", {"objective": "PURCHASES", "pixel_id": "123"})
             preflight = admira_tool_bridge.call_tool("mcp_admira_preflight_campaign", {"objective": "PURCHASES", "pixel_id": "123"})
             public_asset = admira_tool_bridge.call_tool("mcp_admira_fetch_public_asset", {"url": "https://drive.google.com/file/d/video123/view?usp=sharing"})
+            lead_forms = admira_tool_bridge.call_tool("mcp_admira_list_lead_forms", {"page_id": "page_1"})
+            staged_lead_form = admira_tool_bridge.call_tool(
+                "mcp_admira_stage_lead_form",
+                {
+                    "page_id": "page_1",
+                    "name": "Valoración gratuita",
+                    "questions": ["full_name", "email", "phone"],
+                    "privacy_policy_url": "https://uboost.lat/privacy",
+                },
+            )
             staged_campaign = admira_tool_bridge.call_tool(
                 "mcp_admira_stage_campaign",
                 {
@@ -2302,9 +2312,15 @@ class IntegrationTestSuite:
             self.assert_true(review["product_tool"] == "review_signal_quality" and "review_signal_quality" in called_tools, "Tool bridge maps signal-quality MCP review to dashboard action handlers")
             self.assert_true(preflight["product_tool"] == "preflight_campaign" and "preflight_campaign" in called_tools, "Tool bridge maps campaign preflight MCP review to dashboard action handlers")
             self.assert_true(public_asset["product_tool"] == "fetch_public_asset" and "fetch_public_asset" in called_tools, "Tool bridge maps public URL/Drive creative retrieval to dashboard action handlers")
-            self.assert_true(staged_campaign["product_tool"] == "create_campaign_stack" and calls[-3][0]["tool"] == "create_campaign_stack" and calls[-3][0]["arguments"]["creative_image_path"] == str(generated_image.resolve()), "Tool bridge resolves safe campaign creative aliases before staging")
+            lead_forms_call = next(call for call in calls if call[0]["tool"] == "list_lead_forms")
+            lead_form_stage_call = next(call for call in calls if call[0]["tool"] == "stage_lead_form")
+            self.assert_true(lead_forms["product_tool"] == "list_lead_forms" and lead_forms_call[0]["arguments"]["page_id"] == "page_1", "Tool bridge maps lead form listing to the protected dashboard handler")
+            self.assert_true(staged_lead_form["product_tool"] == "stage_lead_form" and lead_form_stage_call[0]["arguments"]["privacy_policy_url"] == "https://uboost.lat/privacy", "Tool bridge maps assisted lead form creation to the protected dashboard handler")
+            staged_campaign_call = next(call for call in calls if call[0]["tool"] == "create_campaign_stack")
+            self.assert_true(staged_campaign["product_tool"] == "create_campaign_stack" and staged_campaign_call[0]["arguments"]["creative_image_path"] == str(generated_image.resolve()), "Tool bridge resolves safe campaign creative aliases before staging")
             self.assert_true(ads_onboarding["product_tool"] == "save_ads_onboarding" and "save_ads_onboarding" in called_tools, "Tool bridge maps ads onboarding memory so Hermes can persist campaign KPIs")
-            self.assert_true(approval["product_tool"] == "approval_decision" and calls[-1][0]["arguments"]["decision"] == "approve", "Tool bridge converts approval MCP calls to exact approval decisions")
+            approval_call = next(call for call in calls if call[0]["tool"] == "approval_decision")
+            self.assert_true(approval["product_tool"] == "approval_decision" and approval_call[0]["arguments"]["decision"] == "approve", "Tool bridge converts approval MCP calls to exact approval decisions")
             verified = admira_tool_bridge.call_tool("mcp_admira_record_verified_signal", {"stage": "booked", "person_label": "Maria"})
             self.assert_true(verified["product_tool"] == "record_verified_signal" and calls[-1][0]["tool"] == "record_verified_signal", "Tool bridge maps verified-signal MCP calls to dashboard action handlers")
             self.assert_true(len(pending["pending"]) == 1 and pending["pending"][0]["id"] == "approval_1", "Tool bridge lists only pending approvals")
@@ -2331,7 +2347,7 @@ class IntegrationTestSuite:
             tool_names = [tool["name"] for tool in captured[1]["result"]["tools"]]
             call_text = captured[2]["result"]["content"][0]["text"]
             self.assert_true(captured[0]["result"]["serverInfo"]["name"] == "admira", "MCP server initializes as Admira")
-            self.assert_true("codex_image_generate" in tool_names and "stage_campaign" in tool_names and "approve_action" in tool_names and "review_signal_quality" in tool_names and "preflight_campaign" in tool_names and "fetch_public_asset" in tool_names and "record_verified_signal" in tool_names and "save_ads_onboarding" in tool_names, "MCP server lists product tools for Hermes")
+            self.assert_true("codex_image_generate" in tool_names and "stage_campaign" in tool_names and "stage_lead_form" in tool_names and "list_lead_forms" in tool_names and "approve_action" in tool_names and "review_signal_quality" in tool_names and "preflight_campaign" in tool_names and "fetch_public_asset" in tool_names and "record_verified_signal" in tool_names and "save_ads_onboarding" in tool_names, "MCP server lists product tools for Hermes")
             self.assert_true('"tool": "admira_codex_image_generate"' in call_text and '"request": "imagen"' in call_text, "MCP server calls the product bridge with Admira-prefixed tool names")
         finally:
             admira_mcp_server.write_message = original_write
@@ -5874,6 +5890,156 @@ class IntegrationTestSuite:
         finally:
             social_flow_client.urllib.request.urlopen = original_urlopen
 
+    def test_social_flow_graph_api_lists_and_creates_lead_forms(self):
+        """Test native Meta lead forms can be listed and created through the Page leadgen_forms edge."""
+        print("\nTesting Meta Graph Lead Form Creation...")
+
+        class FakeConfig:
+            mode = "live"
+            live = True
+            live_actions_enabled = True
+            meta_connector = "graph_api"
+            meta_access_token = "ads-token"
+            meta_publishing_access_token = "publish-token"
+            meta_graph_api_version = "v24.0"
+            ad_account_id = "act_999"
+
+        class FakeResponse:
+            status = 200
+            headers = {}
+
+            def __init__(self, body):
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps(self.body).encode("utf-8")
+
+        original_urlopen = social_flow_client.urllib.request.urlopen
+        requests = []
+
+        def fake_urlopen(request, timeout=90):
+            requests.append(request)
+            if "/me/accounts" in request.full_url:
+                return FakeResponse({"data": [{"id": "page_1", "name": "Uboost Marketing", "access_token": "page-token"}]})
+            if "/page_1/leadgen_forms" in request.full_url and request.data is None:
+                return FakeResponse({"data": [{"id": "form_existing", "name": "Consulta"}]})
+            if "/page_1/leadgen_forms" in request.full_url and request.data is not None:
+                return FakeResponse({"id": "form_123"})
+            return FakeResponse({"id": "ok"})
+
+        try:
+            social_flow_client.urllib.request.urlopen = fake_urlopen
+            client = SocialFlowClient(FakeConfig())
+            listed = client.lead_forms("page_1", limit=10)
+            created = client.create_lead_form(
+                "page_1",
+                "Valoración gratuita",
+                questions=[
+                    "full_name",
+                    "phone",
+                    {"type": "CUSTOM", "label": "¿Qué servicio te interesa?"},
+                ],
+                privacy_policy_url="https://uboost.lat/privacy",
+                privacy_policy_link_text="Política de privacidad de Uboost",
+                follow_up_action_url="https://uboost.lat/gracias",
+                locale="es_LA",
+                form_type="higher intent",
+                context_card={"title": "Te contactaremos pronto", "content": ["Déjanos tus datos."]},
+                approved=True,
+            )
+            list_body = json.loads(listed.get("stdout") or "{}")
+            create_body = json.loads(created.get("stdout") or "{}")
+            create_request = next(request for request in requests if "/page_1/leadgen_forms" in request.full_url and request.data is not None)
+            form_fields = urllib.parse.parse_qs(create_request.data.decode("utf-8"))
+            questions = json.loads(form_fields["questions"][0])
+            privacy_policy = json.loads(form_fields["privacy_policy"][0])
+            context_card = json.loads(form_fields["context_card"][0])
+            self.assert_true(list_body["data"][0]["id"] == "form_existing", "Graph API lists existing native lead forms before creating duplicates")
+            self.assert_true(create_body["lead_gen_form_id"] == "form_123" and create_body["page_id"] == "page_1", "Graph API creates a native lead form and returns lead_gen_form_id")
+            self.assert_true(form_fields["access_token"][0] == "page-token" and "ads-token" not in create_request.data.decode("utf-8"), "Lead form creation uses the resolved Page token instead of the ads token")
+            self.assert_true(questions[0]["type"] == "FULL_NAME" and questions[1]["type"] == "PHONE" and questions[2]["type"] == "CUSTOM" and questions[2]["key"] == "que_servicio_te_interesa", "Lead form questions are normalized for Meta")
+            self.assert_true(privacy_policy["url"] == "https://uboost.lat/privacy" and len(privacy_policy["link_text"]) <= 70, "Lead form creation sends required privacy policy details")
+            self.assert_true(form_fields["form_type"][0] == "HIGHER_INTENT" and form_fields["follow_up_action_url"][0] == "https://uboost.lat/gracias" and context_card["title"] == "Te contactaremos pronto", "Lead form creation sends intent, follow-up URL, locale, and context card")
+        finally:
+            social_flow_client.urllib.request.urlopen = original_urlopen
+
+    def test_chat_stages_and_executes_native_lead_form_creation(self):
+        """Test the agent can stage a native lead form from chat and approval executes it."""
+        print("\nTesting Assisted Lead Form Staging and Approval...")
+
+        dashboard = load_dashboard_module()
+        temp_dir = Path(tempfile.mkdtemp())
+        original = {
+            "pending_file": dashboard.PENDING_FILE,
+            "output_dir": dashboard.OUTPUT_DIR,
+            "require_cloud_license": dashboard.require_cloud_license,
+        }
+
+        class FakeConfig:
+            license_required_for_live = False
+
+        class FakeClient:
+            config = FakeConfig()
+
+            def __init__(self):
+                self.calls = []
+
+            def create_lead_form(self, *args, **kwargs):
+                self.calls.append((args, kwargs))
+                return {"returncode": 0, "stdout": json.dumps({"id": "form_123", "lead_gen_form_id": "form_123"})}
+
+        try:
+            dashboard.PENDING_FILE = temp_dir / "pending_approvals.json"
+            dashboard.OUTPUT_DIR = temp_dir / "output"
+            dashboard.require_cloud_license = lambda *_args, **_kwargs: None
+            staged = dashboard.execute_agent_tool(
+                {
+                    "tool": "stage_lead_form",
+                    "arguments": {
+                        "page_id": "page_1",
+                        "name": "Valoración gratuita",
+                        "questions": "nombre, email, teléfono",
+                        "privacy_policy_url": "https://uboost.lat/privacy",
+                        "follow_up_action_url": "https://uboost.lat/gracias",
+                    },
+                },
+                {"language": "es", "channel": "telegram"},
+            )
+            pending = dashboard.read_json(dashboard.PENDING_FILE, [])
+            payload_path = Path(pending[0]["payload"]["path"])
+            saved_payload = dashboard.read_json(payload_path, {})
+            fake_client = FakeClient()
+            executed = daily_agent.execute_pending(pending[0], fake_client)
+            call_args, call_kwargs = fake_client.calls[0]
+            missing = dashboard.execute_agent_tool(
+                {
+                    "tool": "stage_lead_form",
+                    "arguments": {
+                        "page_id": "page_1",
+                        "name": "Sin privacidad",
+                        "questions": ["email"],
+                    },
+                },
+                {"language": "es", "channel": "telegram"},
+            )
+            self.assert_true(staged.get("staged") and "aprobar" in staged.get("reply", "").lower(), "Agent chat stages native lead form creation behind approval")
+            self.assert_true(pending[0]["type"] == "create_lead_form" and pending[0]["payload"]["page_id"] == "page_1", "Lead form staging creates a pending approval")
+            self.assert_true(saved_payload["questions"][0]["type"] == "FULL_NAME" and saved_payload["privacy_policy_url"] == "https://uboost.lat/privacy", "Lead form staging persists normalized form details")
+            self.assert_true(executed["ok"] and executed["lead_gen_form_id"] == "form_123", "Approving the pending lead form returns lead_gen_form_id")
+            self.assert_true(call_args[0] == "page_1" and call_args[1] == "Valoración gratuita" and call_kwargs["approved"] is True, "Pending execution calls the Page lead form creator as an approved mutation")
+            self.assert_true(missing.get("blocked") and "privacy_policy_url" in missing.get("missing", []), "Lead form staging blocks clearly when privacy policy URL is missing")
+        finally:
+            dashboard.PENDING_FILE = original["pending_file"]
+            dashboard.OUTPUT_DIR = original["output_dir"]
+            dashboard.require_cloud_license = original["require_cloud_license"]
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_social_flow_creates_native_page_post_for_direct_publishing(self):
         """Test direct publishing creates unpublished native Page posts with the publishing token."""
         print("\nTesting Meta Graph Direct Publishing Page Posts...")
@@ -8661,6 +8827,8 @@ class IntegrationTestSuite:
             self.test_campaign_creation_uses_meta_targeting_selection,
             self.test_social_targeting_uses_meta_ids,
             self.test_autopilot_action_updates_dashboard_only_after_meta_success,
+            self.test_social_flow_graph_api_lists_and_creates_lead_forms,
+            self.test_chat_stages_and_executes_native_lead_form_creation,
             self.test_social_flow_creates_native_page_post_for_direct_publishing,
             self.test_campaign_stack_execution_creates_full_ad_order,
             self.test_chat_stages_campaign_creation_and_requires_exact_approval,

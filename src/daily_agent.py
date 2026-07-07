@@ -249,6 +249,8 @@ def command_for_pending(item):
         return ["pause", payload.get("target_type", "campaign"), payload.get("target_id", payload.get("campaign_id"))]
     if item.get("type") == "create_campaign":
         return ["create_campaign", payload.get("path")]
+    if item.get("type") == "create_lead_form":
+        return ["create_lead_form", payload.get("path")]
     if item.get("type") == "creative_upload":
         return ["creative_upload", payload.get("payload_path")]
     return None
@@ -262,6 +264,16 @@ def social_id_from_result(result):
     if isinstance(body, dict):
         return body.get("id") or body.get("campaign_id") or body.get("adset_id")
     return None
+
+
+def lead_form_id_from_result(result):
+    try:
+        body = json.loads(result.get("stdout") or "{}")
+    except json.JSONDecodeError:
+        body = {}
+    if isinstance(body, dict):
+        return body.get("lead_gen_form_id") or body.get("id")
+    return ""
 
 
 def social_body_from_result(result):
@@ -533,6 +545,36 @@ def targeting_for_social(targeting):
         if targeting.get(key):
             spec[key] = targeting.get(key)
     return apply_placement_targeting(spec, targeting.get("placements") or targeting.get("placement_preset"))
+
+
+def execute_lead_form_creation(path, client, approved=False):
+    payload = read_json(Path(path), {})
+    if not isinstance(payload, dict) or not payload:
+        return {"ok": False, "error": "invalid_lead_form_payload", "path": path}
+    result = client.create_lead_form(
+        payload.get("page_id") or "",
+        payload.get("name") or payload.get("form_name") or "Nuevo formulario",
+        questions=payload.get("questions") or [],
+        privacy_policy_url=payload.get("privacy_policy_url") or "",
+        privacy_policy_link_text=payload.get("privacy_policy_link_text") or "Política de privacidad",
+        follow_up_action_url=payload.get("follow_up_action_url") or "",
+        locale=payload.get("locale") or "",
+        form_type=payload.get("form_type") or "",
+        context_card=payload.get("context_card") or {},
+        thank_you_page=payload.get("thank_you_page") or {},
+        custom_disclaimer=payload.get("custom_disclaimer") or {},
+        approved=approved,
+    )
+    form_id = lead_form_id_from_result(result)
+    return {
+        "ok": bool(form_id),
+        "executed": True,
+        "lead_gen_form_id": form_id,
+        "page_id": payload.get("page_id") or "",
+        "name": payload.get("name") or "",
+        "path": str(path),
+        "result": result,
+    }
 
 
 def execute_campaign_creation(path, client, approved=False, prior_result=None):
@@ -852,6 +894,8 @@ def execute_pending(item, client):
         result = client.pause(command[1], command[2], approved=True)
     elif command[0] == "create_campaign":
         result = execute_campaign_creation(command[1], client, approved=True, prior_result=item.get("result"))
+    elif command[0] == "create_lead_form":
+        result = execute_lead_form_creation(command[1], client, approved=True)
     elif command[0] == "creative_upload":
         result = execute_upload_payload(command[1], approved=True)
     else:

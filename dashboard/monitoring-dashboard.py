@@ -8813,6 +8813,158 @@ def handle_create_campaign_stack_tool(arguments, chat_payload, tool):
     )
 
 
+def parse_optional_json_object(value):
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("{"):
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def normalize_lead_form_tool_arguments(arguments, chat_payload):
+    payload = dict(arguments or {})
+    identity = business_identity(payload)
+    page_id = str(payload.get("page_id") or payload.get("facebook_page_id") or identity.get("page_id") or "").strip()
+    name = str(payload.get("name") or payload.get("form_name") or payload.get("lead_form_name") or payload.get("title") or "").strip()
+    privacy_url = str(
+        payload.get("privacy_policy_url")
+        or payload.get("privacy_url")
+        or payload.get("policy_url")
+        or payload.get("privacy_policy")
+        or ""
+    ).strip()
+    link_text = str(payload.get("privacy_policy_link_text") or payload.get("privacy_link_text") or "Política de privacidad").strip()[:70]
+    questions = (
+        payload.get("questions")
+        or payload.get("form_questions")
+        or payload.get("fields")
+        or payload.get("lead_fields")
+        or []
+    )
+    normalized = {
+        "page_id": page_id,
+        "name": name,
+        "questions": SocialFlowClient.normalize_lead_form_questions(questions),
+        "privacy_policy_url": privacy_url,
+        "privacy_policy_link_text": link_text or "Política de privacidad",
+        "follow_up_action_url": str(payload.get("follow_up_action_url") or payload.get("thank_you_url") or payload.get("landing_url") or payload.get("website_url") or "").strip(),
+        "locale": str(payload.get("locale") or "").strip(),
+        "form_type": SocialFlowClient.normalize_lead_form_form_type(payload.get("form_type") or payload.get("intent") or "HIGHER_INTENT"),
+        "context_card": parse_optional_json_object(payload.get("context_card") or payload.get("intro_card")),
+        "thank_you_page": parse_optional_json_object(payload.get("thank_you_page") or payload.get("thank_you")),
+        "custom_disclaimer": parse_optional_json_object(payload.get("custom_disclaimer") or payload.get("disclaimer")),
+        "business_goal": str(payload.get("business_goal") or payload.get("goal") or "").strip(),
+        "notes": str(payload.get("notes") or payload.get("agent_notes") or "").strip(),
+    }
+    if not normalized["locale"]:
+        normalized["locale"] = "es_LA" if chat_lang(chat_payload) == "es" else "en_US"
+    return normalized
+
+
+def stage_lead_form_creation(arguments, chat_payload):
+    payload = normalize_lead_form_tool_arguments(arguments, chat_payload)
+    missing = []
+    if not payload.get("page_id"):
+        missing.append("page_id")
+    if not payload.get("name"):
+        missing.append("name")
+    if not str(payload.get("privacy_policy_url") or "").startswith(("http://", "https://")):
+        missing.append("privacy_policy_url")
+    if not payload.get("questions"):
+        missing.append("questions")
+    if missing:
+        return agent_action_result(
+            "stage_lead_form",
+            False,
+            chat_reply(
+                chat_payload,
+                f"Puedo crear el formulario contigo, pero falta esto: {', '.join(missing)}.",
+                f"I can create the form with you, but this is missing: {', '.join(missing)}.",
+            ),
+            blocked=True,
+            reason="missing_lead_form_detail",
+            missing=missing,
+        )
+    require_cloud_license("Lead form creation requires an active license")
+    forms_dir = OUTPUT_DIR / "lead_forms"
+    forms_dir.mkdir(parents=True, exist_ok=True)
+    slug = re.sub(r"[^a-z0-9]+", "-", payload["name"].lower()).strip("-")[:50] or "lead-form"
+    out_path = forms_dir / f"lead_form_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{slug}.json"
+    write_json(out_path, payload)
+    pending_payload = {
+        "name": payload["name"],
+        "path": str(out_path),
+        "page_id": payload["page_id"],
+        "requested": {
+            "form": payload["name"],
+            "page_id": payload["page_id"],
+            "questions": payload["questions"],
+            "privacy_policy_url": payload["privacy_policy_url"],
+            "form_type": payload.get("form_type", ""),
+            "locale": payload.get("locale", ""),
+            "follow_up_action_url": payload.get("follow_up_action_url", ""),
+        },
+        "guardrail_reason": "lead_form_creation_requires_approval",
+    }
+    return add_pending("create_lead_form", pending_payload)
+
+
+def handle_stage_lead_form_tool(arguments, chat_payload, tool):
+    result = stage_lead_form_creation(arguments or {}, chat_payload)
+    if isinstance(result, dict) and result.get("status") == "pending":
+        reply = append_staged_approval_instruction(
+            chat_payload,
+            chat_reply(
+                chat_payload,
+                "Preparé el formulario de clientes potenciales para aprobación.",
+                "I staged the lead form for approval.",
+            ),
+            result,
+        )
+        return agent_action_result(
+            tool,
+            False,
+            reply,
+            staged=True,
+            result=result,
+            approval_choices=staged_approval_choices(result),
+        )
+    return result
+
+
+def handle_list_lead_forms_tool(arguments, chat_payload, tool):
+    payload = dict(arguments or {})
+    page_id = str(payload.get("page_id") or payload.get("facebook_page_id") or business_identity(payload).get("page_id") or "").strip()
+    if not page_id:
+        return agent_action_result(
+            tool,
+            False,
+            chat_reply(chat_payload, "Necesito la página de Facebook para listar formularios.", "I need the Facebook Page to list lead forms."),
+            blocked=True,
+            reason="missing_page_id",
+        )
+    limit = int(float(payload.get("limit") or 25))
+    result = SocialFlowClient(load_config()).lead_forms(page_id, limit=max(1, min(100, limit)))
+    ok = result.get("returncode") == 0
+    return agent_action_result(
+        tool,
+        ok,
+        chat_reply(
+            chat_payload,
+            "Listo. Revisé los formularios disponibles de la página." if ok else "No pude listar los formularios de esa página todavía.",
+            "Done. I checked the available lead forms for the Page." if ok else "I could not list lead forms for that Page yet.",
+        ),
+        blocked=not ok,
+        result=result,
+    )
+
+
 def handle_build_audience_strategy_tool(arguments, chat_payload, tool):
     if not any(arguments.get(key) for key in ["product", "buyer", "locations", "interests", "data_sources"]):
         return agent_action_result(
@@ -9193,6 +9345,8 @@ AGENT_TOOL_HANDLERS = {
     "preflight_campaign": handle_preflight_campaign_tool,
     "fetch_public_asset": handle_fetch_public_asset_tool,
     "export_report": handle_export_report_tool,
+    "list_lead_forms": handle_list_lead_forms_tool,
+    "stage_lead_form": handle_stage_lead_form_tool,
     "create_campaign_stack": handle_create_campaign_stack_tool,
     "build_audience_strategy": handle_build_audience_strategy_tool,
     "init_brand_guides": handle_init_brand_guides_tool,
