@@ -373,6 +373,12 @@ class SocialFlowClient:
             "SALES": "OFFSITE_CONVERSIONS",
             "LEADS": "LEAD_GENERATION",
             "QUALITY_LEADS": "QUALITY_LEAD",
+            "MESSAGES": "CONVERSATIONS",
+            "MESSAGE": "CONVERSATIONS",
+            "MESSAGING": "CONVERSATIONS",
+            "MESSAGING_CONVERSATIONS": "CONVERSATIONS",
+            "WHATSAPP": "CONVERSATIONS",
+            "MESSENGER": "CONVERSATIONS",
         }
         return aliases.get(goal, goal or "LINK_CLICKS")
 
@@ -456,29 +462,100 @@ class SocialFlowClient:
         return aliases.get(cta, cta or "LEARN_MORE")
 
     @classmethod
-    def page_post_call_to_action(cls, cta, link):
+    def normalize_message_destination(cls, value):
+        destination = str(value or "").strip().upper().replace("-", "_").replace(" ", "_")
+        aliases = {
+            "WA": "WHATSAPP",
+            "WSP": "WHATSAPP",
+            "WHATS": "WHATSAPP",
+            "WHATSAPP_BUSINESS": "WHATSAPP",
+            "CLICK_TO_WHATSAPP": "WHATSAPP",
+            "CTWA": "WHATSAPP",
+            "FB_MESSENGER": "MESSENGER",
+            "FACEBOOK_MESSENGER": "MESSENGER",
+            "CLICK_TO_MESSENGER": "MESSENGER",
+            "CTM": "MESSENGER",
+            "IG": "INSTAGRAM_DIRECT",
+            "INSTAGRAM": "INSTAGRAM_DIRECT",
+            "INSTAGRAM_DM": "INSTAGRAM_DIRECT",
+            "INSTAGRAM_DIRECT_MESSAGE": "INSTAGRAM_DIRECT",
+        }
+        return aliases.get(destination, destination)
+
+    @classmethod
+    def message_destination_cta_type(cls, destination):
+        normalized = cls.normalize_message_destination(destination)
+        return {
+            "WHATSAPP": "WHATSAPP_MESSAGE",
+            "MESSENGER": "MESSAGE_PAGE",
+            "INSTAGRAM_DIRECT": "INSTAGRAM_MESSAGE",
+        }.get(normalized, "")
+
+    @classmethod
+    def default_message_destination_link(cls, destination, page_id=""):
+        normalized = cls.normalize_message_destination(destination)
+        if normalized == "WHATSAPP":
+            return "https://api.whatsapp.com/send"
+        if normalized == "MESSENGER" and str(page_id or "").strip():
+            return f"https://m.me/{str(page_id).strip()}"
+        return ""
+
+    @classmethod
+    def destination_type_for_message_destination(cls, destination):
+        normalized = cls.normalize_message_destination(destination)
+        return {
+            "WHATSAPP": "WHATSAPP",
+            "MESSENGER": "MESSENGER",
+            "INSTAGRAM_DIRECT": "INSTAGRAM_DIRECT",
+        }.get(normalized, normalized)
+
+    @classmethod
+    def normalize_destination_type(cls, value):
+        raw = str(value or "").strip().upper().replace("-", "_").replace(" ", "_")
+        aliases = {
+            "WA": "WHATSAPP",
+            "WSP": "WHATSAPP",
+            "WHATSAPP_BUSINESS": "WHATSAPP",
+            "FB_MESSENGER": "MESSENGER",
+            "FACEBOOK_MESSENGER": "MESSENGER",
+            "IG": "INSTAGRAM_DIRECT",
+            "INSTAGRAM": "INSTAGRAM_DIRECT",
+            "INSTAGRAM_DM": "INSTAGRAM_DIRECT",
+            "MESSAGING_WHATSAPP": "WHATSAPP",
+            "MESSAGING_MESSENGER": "MESSENGER",
+        }
+        return aliases.get(raw, raw)
+
+    @classmethod
+    def page_post_call_to_action(cls, cta, link, message_destination=""):
+        destination = cls.normalize_message_destination(message_destination)
+        cta_type = cls.message_destination_cta_type(destination) if destination else cls.normalize_call_to_action(cta)
         target = str(link or "").strip()
-        if not target:
+        if not target and not destination:
             return ""
+        value = {"app_destination": destination} if destination else {"link": target}
+        if target and destination:
+            value["link"] = target
         return json.dumps(
             {
-                "type": cls.normalize_call_to_action(cta),
-                "value": {"link": target},
+                "type": cta_type,
+                "value": value,
             },
             ensure_ascii=False,
         )
 
-    def create_linked_image_page_post(self, page_id, page_token, message, link, image_id, cta, unpublished_type):
+    def create_linked_image_page_post(self, page_id, page_token, message, link, image_id, cta, unpublished_type, message_destination=""):
         fields = {
             "access_token": page_token,
             "published": "false",
             "unpublished_content_type": unpublished_type,
-            "link": link,
             "attached_media": json.dumps([{"media_fbid": image_id}], ensure_ascii=False),
         }
+        if link:
+            fields["link"] = link
         if message:
             fields["message"] = message
-        call_to_action = self.page_post_call_to_action(cta, link)
+        call_to_action = self.page_post_call_to_action(cta, link, message_destination)
         if call_to_action:
             fields["call_to_action"] = call_to_action
         return self.post_graph_form(f"{page_id}/feed", fields)
@@ -593,6 +670,9 @@ class SocialFlowClient:
                 video_path = self.flag(args, "--video-path", "")
                 video_url = self.flag(args, "--video-url", "")
                 cta = self.flag(args, "--call-to-action", "LEARN_MORE")
+                message_destination = self.normalize_message_destination(self.flag(args, "--message-destination", ""))
+                if message_destination and not link:
+                    link = self.default_message_destination_link(message_destination, page_id)
                 unpublished_type = self.flag(args, "--unpublished-content-type", "ADS_POST") or "ADS_POST"
                 is_video_post = bool(video_path or video_url)
                 if video_path:
@@ -602,7 +682,7 @@ class SocialFlowClient:
                     fields = {"access_token": page_token, "published": "false", "unpublished_content_type": unpublished_type}
                     if message:
                         fields["description"] = message
-                    call_to_action = self.page_post_call_to_action(cta, link)
+                    call_to_action = self.page_post_call_to_action(cta, link, message_destination)
                     if call_to_action:
                         fields["call_to_action"] = call_to_action
                     result = self.post_graph_multipart(endpoint, fields, {"source": video_path})
@@ -611,7 +691,7 @@ class SocialFlowClient:
                     fields = {"access_token": page_token, "published": "false", "unpublished_content_type": unpublished_type, "file_url": video_url}
                     if message:
                         fields["description"] = message
-                    call_to_action = self.page_post_call_to_action(cta, link)
+                    call_to_action = self.page_post_call_to_action(cta, link, message_destination)
                     if call_to_action:
                         fields["call_to_action"] = call_to_action
                     result = self.post_graph_form(endpoint, fields)
@@ -625,9 +705,9 @@ class SocialFlowClient:
                     photo_result = self.post_graph_multipart(endpoint, fields, {"source": image_path})
                     photo_body = photo_result.get("body") if isinstance(photo_result.get("body"), dict) else {}
                     image_id = str(photo_body.get("id") or "").strip()
-                    if link and photo_result.get("ok") and image_id:
+                    if (link or message_destination) and photo_result.get("ok") and image_id:
                         endpoint = f"{page_id}/feed"
-                        result = self.create_linked_image_page_post(page_id, page_token, message, link, image_id, cta, unpublished_type)
+                        result = self.create_linked_image_page_post(page_id, page_token, message, link, image_id, cta, unpublished_type, message_destination)
                     else:
                         result = photo_result
                 elif image_url:
@@ -638,9 +718,9 @@ class SocialFlowClient:
                     photo_result = self.post_graph_form(endpoint, fields)
                     photo_body = photo_result.get("body") if isinstance(photo_result.get("body"), dict) else {}
                     image_id = str(photo_body.get("id") or "").strip()
-                    if link and photo_result.get("ok") and image_id:
+                    if (link or message_destination) and photo_result.get("ok") and image_id:
                         endpoint = f"{page_id}/feed"
-                        result = self.create_linked_image_page_post(page_id, page_token, message, link, image_id, cta, unpublished_type)
+                        result = self.create_linked_image_page_post(page_id, page_token, message, link, image_id, cta, unpublished_type, message_destination)
                     else:
                         result = photo_result
                 else:
@@ -650,7 +730,7 @@ class SocialFlowClient:
                         fields["message"] = message
                     if link:
                         fields["link"] = link
-                    call_to_action = self.page_post_call_to_action(cta, link)
+                    call_to_action = self.page_post_call_to_action(cta, link, message_destination)
                     if call_to_action:
                         fields["call_to_action"] = call_to_action
                     result = self.post_graph_form(endpoint, fields)
@@ -780,6 +860,7 @@ class SocialFlowClient:
                     ("--end-time", "end_time"),
                     ("--promoted-object", "promoted_object"),
                     ("--is-adset-budget-sharing-enabled", "is_adset_budget_sharing_enabled"),
+                    ("--destination-type", "destination_type"),
                 ):
                     value = self.flag(args, source, "")
                     if value:
@@ -791,6 +872,8 @@ class SocialFlowClient:
                                 pass
                         elif source == "--is-adset-budget-sharing-enabled":
                             value = "true" if str(value).strip().lower() in {"1", "true", "yes", "si", "sí", "on"} else "false"
+                        elif source == "--destination-type":
+                            value = self.normalize_destination_type(value)
                         fields[target] = value
                 bidding = self.flag(args, "--bidding", "")
                 bidding_payload = self.default_adset_bidding({})
@@ -998,6 +1081,7 @@ class SocialFlowClient:
         start_time="",
         end_time="",
         is_adset_budget_sharing_enabled=None,
+        destination_type="",
         approved=False,
     ):
         optimization_goal = self.normalize_optimization_goal(optimization_goal)
@@ -1024,6 +1108,8 @@ class SocialFlowClient:
             args.extend(["--end-time", end_time])
         if is_adset_budget_sharing_enabled is not None:
             args.extend(["--is-adset-budget-sharing-enabled", "true" if is_adset_budget_sharing_enabled else "false"])
+        if destination_type:
+            args.extend(["--destination-type", self.normalize_destination_type(destination_type)])
         return self.run(args, live_required=True, mutation=True, approved=approved)
 
     def upload_image(self, ad_account_id, file_path, approved=False):
@@ -1046,7 +1132,7 @@ class SocialFlowClient:
         args.extend(["--json", "--yes"])
         return self.run(args, live_required=True, mutation=True, approved=approved)
 
-    def create_page_post(self, page_id, message="", link="", image_path="", image_url="", video_path="", video_url="", unpublished_content_type="ADS_POST", cta="LEARN_MORE", approved=False):
+    def create_page_post(self, page_id, message="", link="", image_path="", image_url="", video_path="", video_url="", unpublished_content_type="ADS_POST", cta="LEARN_MORE", message_destination="", approved=False):
         args = ["marketing", "create-page-post", "--page-id", page_id]
         if message:
             args.extend(["--message", message])
@@ -1054,6 +1140,8 @@ class SocialFlowClient:
             args.extend(["--link", link])
         if cta:
             args.extend(["--call-to-action", cta])
+        if message_destination:
+            args.extend(["--message-destination", self.normalize_message_destination(message_destination)])
         if image_path:
             args.extend(["--image-path", image_path])
         if image_url:

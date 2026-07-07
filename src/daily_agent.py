@@ -335,6 +335,7 @@ def create_native_page_post_for_ad(client, destination, ad_plan, link, body_text
         video_url=ad_plan.get("video_url") or "",
         unpublished_content_type="ADS_POST",
         cta=ad_plan.get("cta", "LEARN_MORE"),
+        message_destination=message_destination_from_plan(ad_plan),
         approved=approved,
     )
     object_story_id = ""
@@ -415,8 +416,32 @@ def campaign_objective_for_social(objective):
         "SALES": "OUTCOME_SALES",
         "LEADS": "LEAD_GENERATION",
         "LEAD_GENERATION": "LEAD_GENERATION",
+        "MESSAGES": "OUTCOME_ENGAGEMENT",
+        "MESSAGE": "OUTCOME_ENGAGEMENT",
+        "CONVERSATIONS": "OUTCOME_ENGAGEMENT",
+        "WHATSAPP": "OUTCOME_ENGAGEMENT",
+        "MESSENGER": "OUTCOME_ENGAGEMENT",
+        "ENGAGEMENT": "OUTCOME_ENGAGEMENT",
     }
     return mapping.get(str(objective or "").upper(), "OUTCOME_SALES")
+
+
+def message_destination_from_plan(ad_plan):
+    for key in ("message_destination", "messaging_destination", "messaging_app", "click_to_message_destination", "conversation_destination"):
+        value = str((ad_plan or {}).get(key) or "").strip()
+        if value:
+            return SocialFlowClient.normalize_message_destination(value)
+    text = " ".join(
+        str((ad_plan or {}).get(key) or "")
+        for key in ("destination_type", "objective", "goal", "sales_channel", "conversion_location", "cta", "landing_url")
+    ).lower()
+    if "whatsapp" in text or "wa.me" in text or "api.whatsapp.com" in text:
+        return "WHATSAPP"
+    if "messenger" in text or "m.me/" in text:
+        return "MESSENGER"
+    if "instagram" in text and ("direct" in text or "dm" in text or "mensaje" in text or "message" in text):
+        return "INSTAGRAM_DIRECT"
+    return ""
 
 
 def targeting_for_social(targeting):
@@ -492,6 +517,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
     ad_config = read_json(AD_CONFIG_FILE, {})
     destination = ad_config.get("creative", {}).get("destination", {})
     ad_plan = campaign.get("ad") or {}
+    message_destination = message_destination_from_plan(ad_plan)
     final_status = str(ad_plan.get("final_status") or "PAUSED").upper()
     if final_status not in {"PAUSED", "ACTIVE"}:
         final_status = "PAUSED"
@@ -504,7 +530,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         missing.append("META_AD_ACCOUNT_ID")
     if not destination.get("page_id") and not ad_plan.get("object_story_id"):
         missing.append("Facebook Page ID")
-    if not (ad_plan.get("landing_url") or destination.get("url") or ad_plan.get("object_story_spec") or ad_plan.get("object_story_id")):
+    if not (ad_plan.get("landing_url") or destination.get("url") or ad_plan.get("object_story_spec") or ad_plan.get("object_story_id") or message_destination):
         missing.append("landing URL")
     if not creative_source_available(ad_plan):
         missing.append("creative image path, image hash, image URL, video URL, object_story_spec, or object_story_id")
@@ -597,6 +623,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
             start_time=adset.get("start_time") or "",
             end_time=adset.get("end_time") or "",
             is_adset_budget_sharing_enabled=adset_budget_sharing,
+            destination_type=adset.get("destination_type") or ad_plan.get("destination_type") or SocialFlowClient.destination_type_for_message_destination(message_destination),
             approved=approved,
         )
         adset_id = social_id_from_result(result)
@@ -609,7 +636,8 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
     target_adset_id = adset_ids[0] if adset_ids else ""
     image_hash = ad_plan.get("image_hash") or ""
     video_id = ad_plan.get("video_id") or ""
-    link = ad_plan.get("landing_url") or destination.get("url", "")
+    message_destination_link = SocialFlowClient.default_message_destination_link(message_destination, destination.get("page_id", ""))
+    link = ad_plan.get("landing_url") or message_destination_link or destination.get("url", "")
     body_text = ad_plan.get("primary_text") or f"Conoce {campaign.get('name', 'esta oferta')}."
     headline = ad_plan.get("headline") or campaign.get("name", "Nueva oferta")
     reuse_prior_object_story_id = not prior_result_missing_website_url(prior_result)

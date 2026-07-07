@@ -5853,6 +5853,19 @@ class IntegrationTestSuite:
                 approved=True,
             )
             self.assert_true(requests and b"bid_strategy=LOWEST_COST_WITHOUT_CAP" in requests[-1].data and b"bid_amount=" not in requests[-1].data, "Graph execution downgrades target-cost bidding without bid_amount before calling Meta")
+            requests.clear()
+            client.create_adset(
+                "camp_graph_1",
+                "WhatsApp Ad Set",
+                {"geo_locations": {"countries": ["MX"]}},
+                2000,
+                "PAUSED",
+                "MESSAGES",
+                billing_event="IMPRESSIONS",
+                destination_type="whatsapp",
+                approved=True,
+            )
+            self.assert_true(requests and b"optimization_goal=CONVERSATIONS" in requests[-1].data and b"destination_type=WHATSAPP" in requests[-1].data, "Graph ad set creation supports click-to-message destination type")
         finally:
             social_flow_client.urllib.request.urlopen = original_urlopen
 
@@ -5958,6 +5971,15 @@ class IntegrationTestSuite:
             self.assert_true(b'published' in post_body and b'false' in post_body and b'ADS_POST' in post_body, "Direct publishing creates an unpublished ads-ready Page post")
             self.assert_true(feed_fields["link"][0] == "https://uboost.lat" and attached_media[0]["media_fbid"] == "photo_1", "Static direct publishing creates a linked feed post with the uploaded image attached")
             self.assert_true(image_cta["type"] == "LEARN_MORE" and image_cta["value"]["link"] == "https://uboost.lat", "Static direct publishing includes a website URL CTA")
+            requests.clear()
+            whatsapp_result = client.create_page_post("page_1", message="Escríbenos por WhatsApp", image_url="https://cdn.example/ad.jpg", message_destination="WHATSAPP", approved=True)
+            whatsapp_body = json.loads(whatsapp_result.get("stdout") or "{}")
+            whatsapp_feed_request = requests[-1]
+            whatsapp_fields = urllib.parse.parse_qs(whatsapp_feed_request.data.decode("utf-8"))
+            whatsapp_cta = json.loads(whatsapp_fields["call_to_action"][0])
+            self.assert_true(whatsapp_body.get("object_story_id") == "page_1_link_post_1", "WhatsApp direct publishing creates an ads-ready Page post")
+            self.assert_true(whatsapp_fields["link"][0] == "https://api.whatsapp.com/send", "WhatsApp direct publishing uses Meta's click-to-WhatsApp default link")
+            self.assert_true(whatsapp_cta["type"] == "WHATSAPP_MESSAGE" and whatsapp_cta["value"]["app_destination"] == "WHATSAPP", "WhatsApp direct publishing uses a messaging CTA instead of a website CTA")
             requests.clear()
             video_lookup_mode["value"] = "processing"
             processing_result = client.create_page_post("page_1", message="Video procesando", video_url="https://cdn.example/video.mp4", approved=True)
@@ -6587,6 +6609,36 @@ class IntegrationTestSuite:
             self.assert_true(retry_missing_website_result["ok"] and "create_page_post" in retry_missing_website_calls, "Campaign retry recreates the Page post when the previous one was missing the website URL")
             self.assert_true(retry_missing_website_post[2]["link"] == "https://buyer.example", "Website-missing retries create the new hidden post with the landing URL")
             self.assert_true(retry_missing_website_creative[2]["object_story_id"] == "111_999", "Website-missing retries use the newly-created Page post instead of the old post without URL")
+
+            campaign_path.write_text(
+                json.dumps(
+                    {
+                        "name": "WhatsApp Messages Stack",
+                        "objective": "MESSAGES",
+                        "budget": {"daily": 20},
+                        "ad_sets": [{"name": "WhatsApp Messages Stack - Core", "targeting": {"locations": ["MX"]}, "budget": 20, "optimization_goal": "MESSAGES"}],
+                        "ad": {
+                            "primary_text": "Escríbenos por WhatsApp",
+                            "headline": "Reserva hoy",
+                            "image_url": "https://cdn.example/whatsapp-ad.jpg",
+                            "message_destination": "WHATSAPP",
+                            "use_direct_publishing": True,
+                            "final_status": "PAUSED",
+                            "active_spend_confirmed": False,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            whatsapp_client = DirectPublishingClient()
+            whatsapp_result = execute_campaign_creation(str(campaign_path), whatsapp_client, approved=True)
+            whatsapp_campaign = next(call for call in whatsapp_client.calls if call[0] == "create_campaign")
+            whatsapp_adset = next(call for call in whatsapp_client.calls if call[0] == "create_adset")
+            whatsapp_post = next(call for call in whatsapp_client.calls if call[0] == "create_page_post")
+            self.assert_true(whatsapp_result["ok"], "Click-to-WhatsApp campaign can be created without a website landing URL")
+            self.assert_true(whatsapp_campaign[1][2] == "OUTCOME_ENGAGEMENT", "Click-to-WhatsApp campaign uses an engagement-compatible objective")
+            self.assert_true(whatsapp_adset[2]["destination_type"] == "WHATSAPP", "Click-to-WhatsApp ad set carries the WhatsApp destination type")
+            self.assert_true(whatsapp_post[2]["message_destination"] == "WHATSAPP" and whatsapp_post[2]["link"] == "https://api.whatsapp.com/send", "Click-to-WhatsApp hidden post carries the message destination instead of requiring a website URL")
         finally:
             if ad_before:
                 ad_path.write_text(ad_before, encoding="utf-8")
