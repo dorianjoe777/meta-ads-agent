@@ -5890,6 +5890,7 @@ class IntegrationTestSuite:
         original_urlopen = social_flow_client.urllib.request.urlopen
         requests = []
         lookup_mode = {"value": "me_accounts"}
+        video_lookup_mode = {"value": "ready"}
 
         def fake_urlopen(request, timeout=90):
             requests.append(request)
@@ -5915,6 +5916,18 @@ class IntegrationTestSuite:
             if "/page_1/videos" in request.full_url:
                 return FakeResponse({"id": "987654321"})
             if "/987654321?" in request.full_url:
+                if video_lookup_mode["value"] == "processing":
+                    return FakeResponse({
+                        "id": "987654321",
+                        "post_id": "post_987654321",
+                        "picture": "https://cdn.example/video-thumb.jpg",
+                        "status": {
+                            "video_status": "processing",
+                            "uploading_phase": {"status": "complete"},
+                            "processing_phase": {"status": "in_progress"},
+                            "publishing_phase": {"status": "not_started"},
+                        },
+                    })
                 return FakeResponse({
                     "id": "987654321",
                     "post_id": "post_987654321",
@@ -5923,7 +5936,11 @@ class IntegrationTestSuite:
                 })
             return FakeResponse({"id": "ok"})
 
+        original_attempts = os.environ.get("META_VIDEO_POST_READY_ATTEMPTS")
+        original_sleep = os.environ.get("META_VIDEO_POST_READY_SLEEP_SECONDS")
         try:
+            os.environ["META_VIDEO_POST_READY_ATTEMPTS"] = "2"
+            os.environ["META_VIDEO_POST_READY_SLEEP_SECONDS"] = "0"
             image_path.parent.mkdir(exist_ok=True)
             image_path.write_bytes(b"fake")
             social_flow_client.urllib.request.urlopen = fake_urlopen
@@ -5935,6 +5952,13 @@ class IntegrationTestSuite:
             self.assert_true(b"page-token" in post_body and b"ads-token" not in post_body, "Page post creation uses the Page publishing token, not the ads token")
             self.assert_true(b'published' in post_body and b'false' in post_body and b'ADS_POST' in post_body, "Direct publishing creates an unpublished ads-ready Page post")
             requests.clear()
+            video_lookup_mode["value"] = "processing"
+            processing_result = client.create_page_post("page_1", message="Video procesando", video_url="https://cdn.example/video.mp4", approved=True)
+            processing_body = json.loads(processing_result.get("stderr") or "{}")
+            self.assert_true(processing_result.get("returncode") != 0 and processing_body.get("error") == "video_post_not_ready", "Direct publishing waits instead of treating a processing Page video as promotable")
+            self.assert_true(processing_body.get("object_story_id") == "page_1_post_987654321", "Processing video failures preserve the resolved object_story_id for a later retry")
+            requests.clear()
+            video_lookup_mode["value"] = "ready"
             video_result = client.create_page_post("page_1", message="Video listo", video_url="https://cdn.example/video.mp4", approved=True)
             video_body = json.loads(video_result.get("stdout") or "{}")
             video_publish_request = next(item for item in requests if "/page_1/videos" in item.full_url)
@@ -5963,6 +5987,14 @@ class IntegrationTestSuite:
             self.assert_true(any(item.data and b"access_token=publish-token" in item.data for item in requests), "Direct Page token retry publishes with the saved direct Page token")
         finally:
             social_flow_client.urllib.request.urlopen = original_urlopen
+            if original_attempts is None:
+                os.environ.pop("META_VIDEO_POST_READY_ATTEMPTS", None)
+            else:
+                os.environ["META_VIDEO_POST_READY_ATTEMPTS"] = original_attempts
+            if original_sleep is None:
+                os.environ.pop("META_VIDEO_POST_READY_SLEEP_SECONDS", None)
+            else:
+                os.environ["META_VIDEO_POST_READY_SLEEP_SECONDS"] = original_sleep
             if image_path.exists():
                 image_path.unlink()
 
@@ -6497,6 +6529,27 @@ class IntegrationTestSuite:
             self.assert_true(direct_video_calls == ["create_campaign", "create_adset", "create_page_post", "create_creative", "create_ad"], "Direct-publishing video campaign creates a Page post instead of uploading an ad-account video")
             self.assert_true(direct_page_post_call[2]["video_url"] == "https://cdn.example/video.mp4", "Video direct publishing passes the buyer video URL to Page post creation")
             self.assert_true(direct_creative_call[2]["object_story_id"] == "111_999" and not direct_creative_call[2]["video_id"], "Video direct publishing creates the ad creative from the Page post object_story_id")
+
+            retry_object_story_client = DirectPublishingClient()
+            retry_object_story_result = execute_campaign_creation(
+                str(campaign_path),
+                retry_object_story_client,
+                approved=True,
+                prior_result={
+                    "ok": False,
+                    "executed": True,
+                    "campaign_id": "cmp_existing",
+                    "adset_ids": ["adset_existing"],
+                    "failed_step": "create_page_post",
+                    "steps": [
+                        {"step": "create_page_post", "ok": False, "object_story_id": "111_existing_post", "result": {"stderr": json.dumps({"error": "video_post_not_ready"})}},
+                    ],
+                },
+            )
+            retry_object_story_calls = [call[0] for call in retry_object_story_client.calls]
+            retry_object_story_creative = next(call for call in retry_object_story_client.calls if call[0] == "create_creative")
+            self.assert_true(retry_object_story_result["ok"] and "create_page_post" not in retry_object_story_calls, "Campaign retry reuses a previously-created Page post instead of creating another hidden video post")
+            self.assert_true(retry_object_story_creative[2]["object_story_id"] == "111_existing_post", "Campaign retry passes the prior object_story_id into creative creation")
         finally:
             if ad_before:
                 ad_path.write_text(ad_before, encoding="utf-8")

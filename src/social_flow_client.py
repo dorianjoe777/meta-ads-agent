@@ -2,6 +2,7 @@
 """Meta Graph API execution wrapper and Telegram notifications."""
 import json
 import mimetypes
+import os
 import time
 import urllib.parse
 import urllib.request
@@ -191,8 +192,20 @@ class SocialFlowClient:
         page_token = str(page_token or "").strip()
         if not page_id or not video_id or not page_token:
             return {"ok": False, "error": "missing_page_video_lookup_detail", "video_id": video_id}
+        try:
+            attempts = max(1, min(60, int(os.environ.get("META_VIDEO_POST_READY_ATTEMPTS", "30") or 30)))
+        except ValueError:
+            attempts = 30
+        try:
+            sleep_seconds = max(0.0, min(10.0, float(os.environ.get("META_VIDEO_POST_READY_SLEEP_SECONDS", "3") or 3)))
+        except ValueError:
+            sleep_seconds = 3.0
         last = {}
-        for attempt in range(1, 9):
+        last_object_story_id = ""
+        last_page_post_id = ""
+        last_thumbnail_url = ""
+        last_status = {}
+        for attempt in range(1, attempts + 1):
             result = self.get_graph(video_id, {"fields": "id,post_id,picture,status", "access_token": page_token}, access_token=page_token)
             body = result.get("body") if isinstance(result.get("body"), dict) else {}
             last = {
@@ -203,17 +216,25 @@ class SocialFlowClient:
             }
             raw_post_id = str(body.get("post_id") or "").strip()
             object_story_id = raw_post_id if raw_post_id.startswith(f"{page_id}_") else (f"{page_id}_{raw_post_id}" if raw_post_id else "")
-            if result.get("ok") and object_story_id:
+            video_status = body.get("status") if isinstance(body.get("status"), dict) else {}
+            ready = self.page_video_status_ready(video_status)
+            if object_story_id:
+                last_object_story_id = object_story_id
+                last_page_post_id = raw_post_id
+            if body.get("picture"):
+                last_thumbnail_url = str(body.get("picture") or "").strip()
+            if video_status:
+                last_status = video_status
+            if result.get("ok") and object_story_id and ready:
                 return {
                     "ok": True,
                     "video_id": video_id,
                     "page_post_id": raw_post_id,
                     "object_story_id": object_story_id,
                     "thumbnail_url": str(body.get("picture") or "").strip(),
-                    "status": body.get("status") if isinstance(body.get("status"), dict) else {},
+                    "status": video_status,
                     "attempt": attempt,
                 }
-            video_status = body.get("status") if isinstance(body.get("status"), dict) else {}
             phase_statuses = [
                 str((video_status.get(key) or {}).get("status") or "").lower()
                 for key in ("uploading_phase", "processing_phase", "publishing_phase")
@@ -221,14 +242,35 @@ class SocialFlowClient:
             ]
             if "error" in phase_statuses or "failed" in phase_statuses:
                 break
-            if attempt < 8:
-                time.sleep(2)
+            if attempt < attempts and sleep_seconds:
+                time.sleep(sleep_seconds)
         return {
             "ok": False,
-            "error": "video_post_id_not_ready",
+            "error": "video_post_not_ready" if last_object_story_id else "video_post_id_not_ready",
             "video_id": video_id,
+            "page_post_id": last_page_post_id,
+            "object_story_id": last_object_story_id,
+            "thumbnail_url": last_thumbnail_url,
+            "status": last_status,
             "last_lookup": last,
         }
+
+    @staticmethod
+    def page_video_status_ready(status):
+        if not isinstance(status, dict):
+            return False
+        overall = str(status.get("video_status") or "").strip().lower()
+        if overall in {"ready", "complete", "completed", "published"}:
+            return True
+        phase_values = []
+        for key in ("uploading_phase", "processing_phase", "publishing_phase"):
+            value = status.get(key)
+            if isinstance(value, dict):
+                phase_values.append(str(value.get("status") or "").strip().lower())
+        if not phase_values:
+            return False
+        ready_values = {"complete", "completed", "ready", "published", "success", "succeeded"}
+        return all(value in ready_values for value in phase_values)
 
     def perform_graph_request(self, request):
         try:
@@ -544,9 +586,10 @@ class SocialFlowClient:
                         video_id = str(body.get("id") or body.get("video_id") or "").strip()
                         details = self.page_video_ad_post_details(page_id, video_id, page_token)
                         object_story_id = str(details.get("object_story_id") or "").strip()
+                        details_ok = bool(details.get("ok") and object_story_id)
                         body = {
                             **body,
-                            "ok": bool(object_story_id),
+                            "ok": details_ok,
                             "video_id": video_id,
                             "page_post_id": details.get("page_post_id") or "",
                             "post_id": object_story_id,
@@ -557,10 +600,10 @@ class SocialFlowClient:
                             "page_id": page_id,
                             "page_name": (page_lookup.get("page") or {}).get("name", ""),
                         }
-                        if not object_story_id:
+                        if not details_ok:
                             body["error"] = details.get("error") or "video_post_id_not_ready"
-                            body["message"] = "Meta created the Page video, but the promotable Page post ID was not ready yet. Retry the approval in a moment."
-                        result = {**result, "ok": bool(object_story_id), "status": result.get("status") if object_story_id else 1, "body": body}
+                            body["message"] = "Meta created the Page video, but it is still processing and is not promotable yet. Retry the approval in a moment."
+                        result = {**result, "ok": details_ok, "status": result.get("status") if details_ok else 1, "body": body}
                     else:
                         post_id = self.page_post_id_from_body(page_id, body)
                         body = {**body, "ok": bool(post_id), "post_id": post_id, "object_story_id": post_id, "page_id": page_id, "page_name": (page_lookup.get("page") or {}).get("name", "")}

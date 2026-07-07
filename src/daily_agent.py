@@ -338,7 +338,7 @@ def create_native_page_post_for_ad(client, destination, ad_plan, link, body_text
     )
     object_story_id = ""
     try:
-        body = json.loads(page_post_result.get("stdout") or "{}")
+        body = json.loads(page_post_result.get("stdout") or page_post_result.get("stderr") or "{}")
         if isinstance(body, dict):
             object_story_id = str(body.get("object_story_id") or body.get("post_id") or "").strip()
     except json.JSONDecodeError:
@@ -604,7 +604,12 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
     link = ad_plan.get("landing_url") or destination.get("url", "")
     body_text = ad_plan.get("primary_text") or f"Conoce {campaign.get('name', 'esta oferta')}."
     headline = ad_plan.get("headline") or campaign.get("name", "Nueva oferta")
-    object_story_id = str(ad_plan.get("object_story_id") or "").strip()
+    object_story_id = str(
+        ad_plan.get("object_story_id")
+        or prior_meta_id(prior_result, "object_story_id", "create_page_post")
+        or prior_meta_id(prior_result, "object_story_id", "create_page_post_fallback")
+        or ""
+    ).strip()
     direct_preference = direct_publishing_preference(ad_plan)
     direct_missing = direct_publishing_missing_requirements(ad_plan, destination, client, video_id)
     should_create_native_page_post = (
