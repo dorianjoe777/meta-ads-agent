@@ -28,6 +28,7 @@ Collect:
 - whether Conversions API, Event Match Quality, AEM/event eligibility, event prioritization, and recent weekly event volume are known
 - placement strategy. Use expert judgment instead of a rigid default: choose controlled Facebook/Instagram feeds and stories when they fit, add Reels/Explore/other placements when the creative format, audience behavior, offer, and budget justify them, or use automatic/Advantage+ placements when that is strategically stronger.
 - creative object strategy: local image, image hash, image URL, video URL, or full `object_story_spec`; CTA and optional CTA link override; Page ID and Instagram actor should come from saved setup when available.
+- message-ad conversation starter when the destination is WhatsApp, Messenger, or Instagram Direct. Ask the buyer what first message/welcome text should appear, or proactively propose 2-3 options if they are unsure. For WhatsApp, prefer a buyer-sent `prefilled_message` such as “Hola, quiero más información sobre [oferta]”; for Messenger/Instagram, define a `welcome_message`, useful `quick_replies`, and a `message_flow_id` only when a connected messaging partner/app supports it. Never claim Admira can send an unsolicited first WhatsApp/Messenger message from an ad; the user must click/tap or the approved Meta welcome/flow must show it.
 - direct publishing strategy: if the creative is an image or video and Publicación directa is connected, the backend can create the native unpublished Page post automatically before creating the ad creative. If it is not connected, keep the campaign prepared and offer the simple onboarding/configuration step or free installation support.
 - budget/schedule strategy: daily vs lifetime budget, ad set budget, start/end time, active/paused status for campaign, ad set, and ad, and whether the budget can support the proposed number of concurrent variants.
 - audience strategy: geo, age, interests, custom audiences, exclusions, lookalikes/retargeting audiences when available, device/platform fields when they materially help, and placements.
@@ -51,6 +52,7 @@ For every campaign proposal, actively evaluate:
 - budget and evidence needs: enough budget for placement spread, or narrower delivery to avoid starving the test
 - measurement fit: optimization event, Pixel/Dataset, promoted object, signal quality, and conversion volume
 - decision scorecard: the primary metric plus two supporting metrics so daily briefings and optimization do not judge the campaign from only one number
+- message experience: for click-to-message campaigns, the first conversation text is part of the ad experience. It should match the offer, reduce friction, and qualify intent. If the buyer has no wording ready, propose concise options like: “Hola, quiero más información”, “Hola, ¿hay disponibilidad para esta semana?”, or “Hola, quiero reservar la oferta de [producto]”.
 - preflight readiness: account status, policy/rate-limit checks, available custom audiences, existing creatives, recent placement/device/ad/adset insight availability, and dry-run payload preview
 
 ## Placement Strategy
@@ -86,6 +88,7 @@ When staging, pass the expert fields that are justified by the conversation:
 - `is_adset_budget_sharing_enabled` only when intentionally allowing ad set budget sharing; otherwise leave it omitted and the backend will send `false` for ad set budget mode
 - `start_time`, `end_time`, `campaign_status`, `adset_status`, `ad_status`, and `final_status`
 - `object_story_spec`, `image_hash`, `image_url`, `video_url`, `cta_link`, `creative_format`
+- `message_destination` for WhatsApp/Messenger/Instagram Direct campaigns, plus `prefilled_message` for WhatsApp when known, `welcome_message` and `quick_replies` for Messenger/Instagram when known, and `message_flow_id`/`ref_payload` only when the buyer has a connected messaging app or partner flow.
 - `object_story_id` only when using an existing Page post; otherwise let the backend create a native unpublished Page post when Publicación directa is connected
 - `use_direct_publishing: true` when the buyer/setup specifically needs the native unpublished Page post route; if omitted, the backend will still use Publicación directa automatically for image or video ads when it is connected
 - `custom_audiences`, `excluded_custom_audiences`, `excluded_interests`, `device_platforms`, `user_os`, `user_device`, and `flexible_spec` only when the buyer/context supports them
