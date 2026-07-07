@@ -5894,13 +5894,20 @@ class IntegrationTestSuite:
         def fake_urlopen(request, timeout=90):
             requests.append(request)
             if "/me/accounts" in request.full_url:
-                if lookup_mode["value"] in {"direct_page_lookup", "page_token"}:
+                if lookup_mode["value"] in {"direct_page_lookup", "page_token", "page_token_retry"}:
                     return FakeResponse({"data": []})
                 return FakeResponse({"data": [{"id": "page_1", "name": "Uboost Marketing", "access_token": "page-token"}]})
             if "/page_1?" in request.full_url:
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(request.full_url).query)
+                fields = str((query.get("fields") or [""])[0])
+                self.assert_true("tasks" not in fields and "perms" not in fields, "Specific Page lookup avoids fields unsupported by direct Page tokens")
                 if lookup_mode["value"] == "direct_page_lookup":
                     return FakeResponse({"id": "page_1", "name": "Uboost Marketing", "access_token": "direct-page-token"})
                 if lookup_mode["value"] == "page_token":
+                    return FakeResponse({"id": "page_1", "name": "Uboost Marketing"})
+                if lookup_mode["value"] == "page_token_retry":
+                    if "access_token" in fields:
+                        return FakeResponse({"error": {"message": "(#100) Tried accessing nonexisting field (access_token)"}})
                     return FakeResponse({"id": "page_1", "name": "Uboost Marketing"})
                 return FakeResponse({"error": {"message": "Unexpected direct lookup"}})
             if "/page_1/photos" in request.full_url:
@@ -5937,6 +5944,14 @@ class IntegrationTestSuite:
             page_token_body = json.loads(page_token_result.get("stdout") or "{}")
             self.assert_true(page_token_body.get("object_story_id") == "page_1_post_1", "Direct publishing accepts a saved direct Page access token")
             self.assert_true(any("/page_1?" in item.full_url for item in requests) and b"access_token=publish-token" in requests[-1].data, "Direct Page token fallback uses the saved publishing token when no child access token is returned")
+            requests.clear()
+            lookup_mode["value"] = "page_token_retry"
+            page_token_retry_result = client.create_page_post("page_1", message="Token de pagina con retry", image_url="https://cdn.example/ad.jpg", approved=True)
+            page_token_retry_body = json.loads(page_token_retry_result.get("stdout") or "{}")
+            direct_lookup_urls = [item.full_url for item in requests if "/page_1?" in item.full_url]
+            self.assert_true(page_token_retry_body.get("object_story_id") == "page_1_post_1", "Direct Page token lookup retries with minimal fields when Meta rejects optional fields")
+            self.assert_true(len(direct_lookup_urls) >= 2 and "fields=id%2Cname%2Caccess_token" in direct_lookup_urls[0] and "fields=id%2Cname" in direct_lookup_urls[-1], "Direct Page token retry first asks for access_token then falls back to id/name only")
+            self.assert_true(any(item.data and b"access_token=publish-token" in item.data for item in requests), "Direct Page token retry publishes with the saved direct Page token")
         finally:
             social_flow_client.urllib.request.urlopen = original_urlopen
             if image_path.exists():

@@ -114,16 +114,35 @@ class SocialFlowClient:
         for page in body.get("data") or []:
             if str(page.get("id") or "") == page_id:
                 return {"ok": True, "access_token": page.get("access_token") or user_token, "page": page, "source": "me_accounts"}
-        direct = self.get_graph(page_id, {"fields": "id,name,access_token,tasks,perms"}, access_token=user_token)
-        direct_body = direct.get("body") if isinstance(direct.get("body"), dict) else {}
-        if direct.get("ok") and str(direct_body.get("id") or "") == page_id:
-            return {
-                "ok": True,
-                "access_token": direct_body.get("access_token") or user_token,
-                "page": direct_body,
-                "source": "direct_page_lookup",
-                "used_direct_page_token": not bool(direct_body.get("access_token")),
-            }
+        direct_attempts = []
+        for fields in ("id,name,access_token", "id,name"):
+            direct = self.get_graph(page_id, {"fields": fields}, access_token=user_token)
+            direct_body = direct.get("body") if isinstance(direct.get("body"), dict) else {}
+            direct_error = (direct_body.get("error") or {}).get("message", "") if isinstance(direct_body.get("error"), dict) else ""
+            direct_attempts.append(
+                {
+                    "fields": fields,
+                    "ok": bool(direct.get("ok")),
+                    "status": direct.get("status"),
+                    "matched": str(direct_body.get("id") or "") == page_id,
+                    "error": direct_error,
+                }
+            )
+            if direct.get("ok") and str(direct_body.get("id") or "") == page_id:
+                return {
+                    "ok": True,
+                    "access_token": direct_body.get("access_token") or user_token,
+                    "page": direct_body,
+                    "source": "direct_page_lookup",
+                    "lookup_fields": fields,
+                    "used_direct_page_token": not bool(direct_body.get("access_token")),
+                }
+            if not direct_error:
+                break
+            if "nonexisting field" not in direct_error.lower() and "unknown field" not in direct_error.lower():
+                break
+        last_direct = direct_attempts[-1] if direct_attempts else {}
+        direct_errors = [str(item.get("error") or "") for item in direct_attempts if item.get("error")]
         return {
             "ok": False,
             "access_token": user_token,
@@ -132,9 +151,18 @@ class SocialFlowClient:
             "lookup_methods": {
                 "me_accounts_ok": bool(result.get("ok")),
                 "me_accounts_count": len(body.get("data") or []) if isinstance(body.get("data"), list) else 0,
-                "direct_page_lookup_ok": bool(direct.get("ok")),
-                "direct_page_lookup_status": direct.get("status"),
-                "direct_page_lookup_error": (direct_body.get("error") or {}).get("message", "") if isinstance(direct_body.get("error"), dict) else "",
+                "direct_page_lookup_ok": any(bool(item.get("matched")) for item in direct_attempts),
+                "direct_page_lookup_status": last_direct.get("status"),
+                "direct_page_lookup_error": " | ".join(direct_errors)[:500],
+                "direct_page_lookup_attempts": [
+                    {
+                        "fields": item.get("fields"),
+                        "ok": bool(item.get("ok")),
+                        "status": item.get("status"),
+                        "matched": bool(item.get("matched")),
+                    }
+                    for item in direct_attempts
+                ],
             },
         }
 
@@ -396,7 +424,7 @@ class SocialFlowClient:
                 publishing_token = str(getattr(self.config, "meta_publishing_access_token", "") or "").strip()
                 page_id = self.flag(args, "--page-id", "")
                 if not publishing_token:
-                    return self.graph_local_record(record, "local/meta-publishing-token", {"ok": False, "error": "missing_meta_publishing_access_token", "message": "Direct publishing is not connected."}, ok=False, status=1)
+                    return self.graph_local_record(record, "local/meta-publishing-token", {"ok": False, "error": "missing_meta_publishing_access_token", "message": "Direct publishing is not connected. Save the Page publishing token in Settings > Publicación directa, not in the main Meta Ads token field."}, ok=False, status=1)
                 if not page_id:
                     return self.graph_local_record(record, "local/meta-page-post", {"ok": False, "error": "missing_page_id"}, ok=False, status=1)
                 page_lookup = self.page_access_token(page_id, publishing_token)
@@ -407,7 +435,7 @@ class SocialFlowClient:
                         {
                             "ok": False,
                             "error": page_lookup.get("error") or "page_not_found",
-                            "message": "The publishing token cannot access this Facebook Page. Make sure the saved publishing token is a user/system token that can list the Page, or a direct Page access token for this exact Page.",
+                            "message": "The publishing token cannot access this Facebook Page. Save the Page publishing token in Settings > Publicación directa, not in the main Meta Ads token field. It can be a user/system token that can list the Page, or a direct Page access token for this exact Page.",
                             "lookup_methods": page_lookup.get("lookup_methods", {}),
                         },
                         ok=False,
