@@ -47,6 +47,8 @@ TOOL_DEFINITIONS = [
     ("approve_action", "Approve one exact pending action."),
     ("reject_action", "Reject one exact pending action."),
     ("save_agent_preferences", "Save global operator preferences, including simple/technical wording and the buyer's ads-management experience level."),
+    ("save_daily_social_content_settings", "Enable or update the optional daily social-content cron. Use after the buyer agrees that Admira should prepare branded Image 2 posts for approval on a daily basis."),
+    ("save_content_asset", "Save a buyer-shared file, image, video link, frame set, or reference into the content asset library with its purpose/category for future posts, ads, and strategy."),
     ("record_verified_signal", "Save a local verified-signal ledger event or batch: fake/not interested/wrong audience, qualified, booked, showed, purchased, or high-value outcomes. Does not send to Meta."),
     ("get_verified_signal_summary", "Read the local verified-signal ledger summary: stages, open follow-ups, match/privacy readiness, and recent records."),
     ("verified_signal_feedback_prompt", "Generate the daily exception/outcome feedback prompt for verified-signal mode."),

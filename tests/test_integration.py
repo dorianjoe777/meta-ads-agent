@@ -411,6 +411,10 @@ class IntegrationTestSuite:
             notify_channel="dashboard",
             daily_brief_time="08:00",
             daily_brief_timezone="America/Bogota",
+            daily_social_content_enabled=False,
+            daily_social_content_decision="",
+            daily_social_content_time="10:00",
+            daily_social_content_posts_per_day=1,
             telegram_bot_token="",
             telegram_chat_id="",
             creative_refresh_enabled=True,
@@ -503,6 +507,10 @@ class IntegrationTestSuite:
             notify_channel="dashboard",
             daily_brief_time="08:00",
             daily_brief_timezone="America/Bogota",
+            daily_social_content_enabled=False,
+            daily_social_content_decision="",
+            daily_social_content_time="10:00",
+            daily_social_content_posts_per_day=1,
             telegram_bot_token="",
             telegram_chat_id="",
             creative_refresh_enabled=True,
@@ -2212,24 +2220,27 @@ class IntegrationTestSuite:
             core_skill = workspace_path / "skills" / "core-agent-behavior" / "SKILL.md"
             continuity_skill = workspace_path / "skills" / "session-continuity" / "SKILL.md"
             brand_assets_skill = workspace_path / "skills" / "brand-and-assets" / "SKILL.md"
+            organic_content_skill = workspace_path / "skills" / "organic-content-strategy" / "SKILL.md"
             creative_strategy_skill = workspace_path / "skills" / "creative-strategy" / "SKILL.md"
             meta_execution_skill = workspace_path / "skills" / "meta-campaign-execution" / "SKILL.md"
             skills_readme = (workspace_path / "skills" / "README.md").read_text(encoding="utf-8")
             agents_text = (workspace_path / "AGENTS.md").read_text(encoding="utf-8")
 
             self.assert_true(creative_skill.exists() and branding_skill.exists() and campaign_skill.exists() and approvals_skill.exists(), "Focused product skill files are copied into the Hermes workspace")
-            self.assert_true(core_skill.exists() and continuity_skill.exists() and brand_assets_skill.exists() and creative_strategy_skill.exists() and meta_execution_skill.exists(), "Modular product skills are copied into the Hermes workspace")
-            self.assert_true("Mandatory first reads" in skills_readme and "core-agent-behavior" in skills_readme and "session-continuity" in skills_readme and "Legacy compatibility shims" in skills_readme, "Skills README routes Hermes through mandatory behavior/continuity and legacy shims")
+            self.assert_true(core_skill.exists() and continuity_skill.exists() and brand_assets_skill.exists() and organic_content_skill.exists() and creative_strategy_skill.exists() and meta_execution_skill.exists(), "Modular product skills are copied into the Hermes workspace")
+            self.assert_true("Mandatory first reads" in skills_readme and "core-agent-behavior" in skills_readme and "session-continuity" in skills_readme and "organic-content-strategy" in skills_readme and "Legacy compatibility shims" in skills_readme, "Skills README routes Hermes through mandatory behavior/continuity, organic content, and legacy shims")
             self.assert_true("mcp_admira_codex_image_generate" in creative_skill.read_text(encoding="utf-8"), "Creative skill points Hermes to the Codex/Image MCP tool")
             self.assert_true("logo" in branding_skill.read_text(encoding="utf-8").lower() and "mcp_admira_save_brand_memory" in branding_skill.read_text(encoding="utf-8"), "Branding skill teaches Hermes to save logo-aware creative memory")
             branding_text = branding_skill.read_text(encoding="utf-8")
             campaign_text = campaign_skill.read_text(encoding="utf-8")
             brand_assets_text = brand_assets_skill.read_text(encoding="utf-8")
+            organic_content_text = organic_content_skill.read_text(encoding="utf-8")
             creative_strategy_text = creative_strategy_skill.read_text(encoding="utf-8")
             self.assert_true("Image 2 is one production tool; it is never the strategy" in branding_text and "Budget informs testing and launch planning, but it does not block draft image generation" in branding_text, "Branding skill separates creative strategy from the available image tool without making budget block drafts")
             self.assert_true("Meta Ad Library" in branding_text and "not private CPA, ROAS, or conversions" in branding_text, "Branding skill supports evidence-labeled competitor creative research without claiming public conversion data")
             self.assert_true("ElevenLabs" in branding_text and "photorealism" in branding_text and "reference_image_paths" in branding_text, "Branding skill covers UGC guidance, real-world photorealism, and uploaded references")
             self.assert_true("pixel-level accurate" in brand_assets_text and "Image 2 is a production tool" in creative_strategy_text, "New brand/creative strategy skills split exact logo assets from creative portfolio strategy")
+            self.assert_true("mcp_admira_save_daily_social_content_settings" in organic_content_text and "mcp_admira_save_content_asset" in organic_content_text and "daily_social_post" in organic_content_text, "Organic content skill teaches opt-in daily posts, asset categorization, and Image 2 post production")
             self.assert_true("likely placements" in branding_text and "vertical Reels version" in campaign_text and "Expert Configuration Posture" in campaign_text, "Skills teach proactive expert placement strategy instead of rigid placement defaults")
             self.assert_true("mcp_admira_preflight_campaign" in campaign_text and "object_story_spec" in campaign_text and "custom_audiences" in campaign_text, "Campaign skill teaches preflight and expert campaign controls")
             self.assert_true("three most important success metrics" in campaign_text and "success_metrics" in campaign_text and "mcp_admira_save_ads_onboarding" in agents_text, "Hermes workspace teaches campaign scorecards and exposes ads onboarding memory")
@@ -2238,6 +2249,7 @@ class IntegrationTestSuite:
             self.assert_true("mcp_admira_approve_action" in approvals_skill.read_text(encoding="utf-8"), "Approval skill points Hermes to exact approval MCP tools")
             self.assert_true("Native Product Tools" in agents_text and "mcp_admira_stage_campaign" in agents_text and "mcp_admira_review_signal_quality" in agents_text and "mcp_admira_preflight_campaign" in agents_text, "Combined Hermes rules document the MCP product bridge and preflight review")
             self.assert_true("latest_day_context" in agents_text and "active_workflow" in agents_text and "core-agent-behavior" in agents_text, "Combined Hermes rules force modular behavior and continuity memory")
+            self.assert_true((workspace_path / "memory" / "content_asset_library.json").exists() and (workspace_path / "memory" / "content_strategy.md").exists(), "Hermes workspace includes durable organic content memory files")
             self.assert_true((workspace_path / "skills" / "README.md").exists(), "Hermes workspace includes a product skill index")
         finally:
             hermes_bridge.HERMES_WORKSPACE_DIR = original_workspace
@@ -2320,6 +2332,8 @@ class IntegrationTestSuite:
                 },
             )
             ads_onboarding = admira_tool_bridge.call_tool("mcp_admira_save_ads_onboarding", {"success_metrics": ["ROAS", "cost per purchase", "cost per initiate checkout"]})
+            daily_content = admira_tool_bridge.call_tool("mcp_admira_save_daily_social_content_settings", {"enabled": True, "time": "10:00", "posts_per_day": 1})
+            content_asset = admira_tool_bridge.call_tool("mcp_admira_save_content_asset", {"category": "location", "purpose": "usar como fondo real del local"})
             approval = admira_tool_bridge.call_tool("mcp_admira_approve_action", {"approval_id": "approval_1"})
             pending = admira_tool_bridge.call_tool("list_pending_approvals", {})
             unknown = admira_tool_bridge.call_tool("delete_everything", {})
@@ -2338,6 +2352,8 @@ class IntegrationTestSuite:
             staged_campaign_call = next(call for call in calls if call[0]["tool"] == "create_campaign_stack")
             self.assert_true(staged_campaign["product_tool"] == "create_campaign_stack" and staged_campaign_call[0]["arguments"]["creative_image_path"] == str(generated_image.resolve()), "Tool bridge resolves safe campaign creative aliases before staging")
             self.assert_true(ads_onboarding["product_tool"] == "save_ads_onboarding" and "save_ads_onboarding" in called_tools, "Tool bridge maps ads onboarding memory so Hermes can persist campaign KPIs")
+            self.assert_true(daily_content["product_tool"] == "save_daily_social_content_settings" and "save_daily_social_content_settings" in called_tools, "Tool bridge maps daily organic content settings to the dashboard handler")
+            self.assert_true(content_asset["product_tool"] == "save_content_asset" and "save_content_asset" in called_tools, "Tool bridge maps buyer-shared content assets to the dashboard handler")
             approval_call = next(call for call in calls if call[0]["tool"] == "approval_decision")
             self.assert_true(approval["product_tool"] == "approval_decision" and approval_call[0]["arguments"]["decision"] == "approve", "Tool bridge converts approval MCP calls to exact approval decisions")
             verified = admira_tool_bridge.call_tool("mcp_admira_record_verified_signal", {"stage": "booked", "person_label": "Maria"})
@@ -2366,11 +2382,45 @@ class IntegrationTestSuite:
             tool_names = [tool["name"] for tool in captured[1]["result"]["tools"]]
             call_text = captured[2]["result"]["content"][0]["text"]
             self.assert_true(captured[0]["result"]["serverInfo"]["name"] == "admira", "MCP server initializes as Admira")
-            self.assert_true("codex_image_generate" in tool_names and "stage_campaign" in tool_names and "stage_lead_form" in tool_names and "list_lead_forms" in tool_names and "approve_action" in tool_names and "review_signal_quality" in tool_names and "preflight_campaign" in tool_names and "fetch_public_asset" in tool_names and "record_verified_signal" in tool_names and "save_ads_onboarding" in tool_names, "MCP server lists product tools for Hermes")
+            self.assert_true("codex_image_generate" in tool_names and "stage_campaign" in tool_names and "stage_lead_form" in tool_names and "list_lead_forms" in tool_names and "approve_action" in tool_names and "review_signal_quality" in tool_names and "preflight_campaign" in tool_names and "fetch_public_asset" in tool_names and "record_verified_signal" in tool_names and "save_ads_onboarding" in tool_names and "save_daily_social_content_settings" in tool_names and "save_content_asset" in tool_names, "MCP server lists product tools for Hermes")
             self.assert_true('"tool": "admira_codex_image_generate"' in call_text and '"request": "imagen"' in call_text, "MCP server calls the product bridge with Admira-prefixed tool names")
         finally:
             admira_mcp_server.write_message = original_write
             admira_mcp_server.call_tool = original_call
+
+    def test_content_asset_library_persists_buyer_files(self):
+        """Test buyer-shared content assets are categorized and saved for future posts/ads."""
+        print("\nTesting Content Asset Library...")
+
+        dashboard = load_dashboard_module()
+        test_dir = ROOT_DIR / "output" / "test-content-assets"
+        image_path = test_dir / "local.png"
+        library_path = test_dir / "content_asset_library.json"
+        original_library_file = dashboard.CONTENT_ASSET_LIBRARY_FILE
+        original_plan_writer = dashboard.write_agent_onboarding_plan
+        try:
+            shutil.rmtree(test_dir, ignore_errors=True)
+            test_dir.mkdir(parents=True, exist_ok=True)
+            image_path.write_bytes(b"fake png")
+            dashboard.CONTENT_ASSET_LIBRARY_FILE = library_path
+            dashboard.write_agent_onboarding_plan = lambda *args, **kwargs: {"path": "test"}
+            result = dashboard.save_content_asset_memory(
+                {
+                    "category": "local",
+                    "purpose": "usar como fondo real del spa para posts diarios",
+                    "notes": "recepción del negocio",
+                    "image_paths": [str(image_path)],
+                }
+            )
+            library = json.loads(library_path.read_text(encoding="utf-8"))
+            item = library["items"][0]
+            self.assert_true(result["saved"] and result["count"] == 1, "Content asset memory reports a saved asset")
+            self.assert_true(item["category"] == "location" and item["purpose"] == "usar como fondo real del spa para posts diarios", "Content asset category and purpose are stored for strategy reuse")
+            self.assert_true(str(image_path.resolve()) in item["file_paths"], "Content asset memory stores safe uploaded image paths")
+        finally:
+            dashboard.CONTENT_ASSET_LIBRARY_FILE = original_library_file
+            dashboard.write_agent_onboarding_plan = original_plan_writer
+            shutil.rmtree(test_dir, ignore_errors=True)
 
     def test_public_asset_fetcher_normalizes_drive_and_blocks_private_urls(self):
         """Test buyer-shared public links are normalized safely before download."""
@@ -2820,6 +2870,25 @@ class IntegrationTestSuite:
             self.assert_true(created["configured"] and created["schedule"] == "0 8 * * *", "Invalid daily brief time falls back to 08:00")
             self.assert_true("telegram:12345" in create_command and "¿Tienes alguna pregunta?" in create_command[-1], "Hermes cron delivers the daily brief to Telegram with the required closing question")
             self.assert_true(normalize_timezone("America/Bogota") == "America/Bogota" and normalize_timezone("not/a-zone", default="") == "UTC", "Daily brief timezone accepts IANA browser zones and rejects unknown values")
+
+            social_calls = []
+            FakeConfig.daily_social_content_enabled = True
+            FakeConfig.daily_social_content_time = "10:15"
+            FakeConfig.daily_social_content_posts_per_day = 2
+
+            def fake_social_run(command, **kwargs):
+                social_calls.append((command, kwargs.get("env", {})))
+                if command[:3] == ["/usr/local/bin/hermes", "cron", "list"]:
+                    return Completed(stdout="")
+                return Completed(stdout="created")
+
+            hermes_gateway.subprocess.run = fake_social_run
+            social_created = hermes_gateway.ensure_daily_social_content_cron(FakeConfig())
+            social_command, social_env = next((command, env) for command, env in social_calls if command[:3] == ["/usr/local/bin/hermes", "cron", "create"])
+            social_prompt = social_command[-1]
+            self.assert_true(social_created["configured"] and social_created["schedule"] == "15 10 * * *" and social_created["posts_per_day"] == 2, "Hermes creates the optional daily social content cron at the buyer's chosen time")
+            self.assert_true("Admira IA - posts diarios" in social_command and "telegram:12345" in social_command and "mcp_admira_codex_image_generate" in social_prompt and "memory/content_asset_library.json" in social_prompt and "pixel-level accurate" in social_prompt, "Daily social content cron uses Image 2 with brand assets and direct media delivery")
+            self.assert_true(social_env.get("HERMES_TIMEZONE") == "America/Bogota" and social_env.get("TZ") == "America/Bogota", "Daily social content cron inherits the buyer timezone")
 
             hermes_gateway.subprocess.run = lambda *args, **kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired(args[0], 20))
             failed = hermes_gateway.ensure_daily_brief_cron(FakeConfig())
@@ -8842,6 +8911,7 @@ class IntegrationTestSuite:
             self.test_hermes_product_skills_are_copied_to_workspace,
             self.test_admira_tool_bridge_maps_mcp_tools_to_dashboard_actions,
             self.test_admira_mcp_server_lists_and_calls_product_tools,
+            self.test_content_asset_library_persists_buyer_files,
             self.test_public_asset_fetcher_normalizes_drive_and_blocks_private_urls,
             self.test_public_asset_fetcher_extracts_video_frames_for_vision_review,
             self.test_admira_mcp_creative_timeout_returns_buyer_fallback,

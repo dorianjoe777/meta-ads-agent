@@ -17,7 +17,7 @@ Collect and save:
 - real asset decision: buyer photos/videos, generated assets, or both;
 - reference decision: uploaded or public references to follow.
 
-Use `mcp_admira_save_brand_memory`, `mcp_admira_save_product_memory`, and `mcp_admira_save_creative_references`. Treat `brand_guides/` files as read-only snapshots; do not manually write them.
+Use `mcp_admira_save_brand_memory`, `mcp_admira_save_product_memory`, `mcp_admira_save_creative_references`, and `mcp_admira_save_content_asset`. Treat `brand_guides/` and `memory/content_*` files as read-only snapshots; do not manually write them.
 
 ## Official logo rule
 
@@ -28,3 +28,13 @@ If a generated creative visibly alters the official logo, retry with the exact-c
 ## Real assets
 
 Ask if the buyer has real photos/videos that should be used. If they provide a public link, use `mcp_admira_fetch_public_asset`. If a real photo should be the base/background, pass it as an input/reference and preserve it pixel-faithfully as much as Image 2 allows.
+
+## Asset library
+
+When the buyer uploads or links a reusable asset, save its purpose with `mcp_admira_save_content_asset` so future posts/ads can reuse it correctly after history cleanup.
+
+Categories to use: `official_logo`, `product`, `location`, `team_founder`, `customer_testimonial`, `ugc`, `style_reference`, `offer_promo`, `social_proof`, `do_not_use`, or `other`.
+
+If the purpose is unclear, ask one short question before saving: “¿Esto lo uso como logo oficial, foto real, referencia de estilo, prueba social, UGC, oferta, o prefieres que no lo use?”
+
+For videos, use any extracted frames to understand the footage visually, save the video/link/frame set with `mcp_admira_save_content_asset`, and note whether it is for ads, organic posts, UGC review, or “reference only.”

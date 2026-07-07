@@ -40,6 +40,8 @@ TOOL_MAP = {
     "admira_approve_action": "approval_decision",
     "admira_reject_action": "approval_decision",
     "admira_save_agent_preferences": "save_agent_preferences",
+    "admira_save_daily_social_content_settings": "save_daily_social_content_settings",
+    "admira_save_content_asset": "save_content_asset",
     "admira_record_verified_signal": "record_verified_signal",
     "admira_get_verified_signal_summary": "get_verified_signal_summary",
     "admira_verified_signal_feedback_prompt": "verified_signal_feedback_prompt",

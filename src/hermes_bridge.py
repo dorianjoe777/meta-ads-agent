@@ -437,10 +437,12 @@ For each turn, read the buyer message normally. If you need live account context
 - `memory/pending_approvals.json`: pending protected decisions when present.
 - `memory/profitability_rules.json`, `memory/decision_memory.json`, `memory/learning_log.md`: decision memory.
 - `memory/creative_experiments.json`: adaptive creative-test checkpoints, evidence, provisional leaders, and next review dates.
+- `memory/content_asset_library.json`: buyer-shared logos, photos, videos, references, offers, and other assets categorized by intended use.
+- `memory/content_strategy.md`: organic content strategy, pillars, cadence, and daily-post preferences when present.
 - `brand_guides/`: brand, product, ad brief, and creative reference memory.
 - `skills/`: focused product skills. Read `core-agent-behavior` before every reply, `session-continuity` after cleanup/restart/update/fresh sessions, and the relevant specialist skill before taking product actions.
 
-Do not expect the backend to paste the whole conversation history into the prompt. Hermes session memory is useful, but it is cache; durable workspace files are the source of truth. At the start of a fresh/restarted Telegram session, after a history cleanup, or after an update/gateway restart, first read `skills/session-continuity/SKILL.md`, `memory/Conversation continuity.md`, `memory/continuity_status.json`, `memory/latest_day_context.md`, `memory/active_workflow.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/pending_approvals.json`, `memory/creative_experiments.json`, and relevant `brand_guides/` files. If `has_persistent_memory` or `has_active_workflow` is true, do not introduce yourself as first time, do not restart onboarding, and do not repeat the initial ads-experience/technical-style question unless the files prove it is still missing. Resume with a short "retomo donde quedamos" style message when natural, mention one concrete remembered item, and continue from the next missing/actionable step. If needed, use session search to inspect previous Telegram sessions, but do not block the buyer when durable workspace memory is enough. If the buyer's short answer is still ambiguous, ask one clear follow-up.
+Do not expect the backend to paste the whole conversation history into the prompt. Hermes session memory is useful, but it is cache; durable workspace files are the source of truth. At the start of a fresh/restarted Telegram session, after a history cleanup, or after an update/gateway restart, first read `skills/session-continuity/SKILL.md`, `memory/Conversation continuity.md`, `memory/continuity_status.json`, `memory/latest_day_context.md`, `memory/active_workflow.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/pending_approvals.json`, `memory/creative_experiments.json`, `memory/content_asset_library.json`, `memory/content_strategy.md`, and relevant `brand_guides/` files. If `has_persistent_memory` or `has_active_workflow` is true, do not introduce yourself as first time, do not restart onboarding, and do not repeat the initial ads-experience/technical-style question unless the files prove it is still missing. Resume with a short "retomo donde quedamos" style message when natural, mention one concrete remembered item, and continue from the next missing/actionable step. If needed, use session search to inspect previous Telegram sessions, but do not block the buyer when durable workspace memory is enough. If the buyer's short answer is still ambiguous, ask one clear follow-up.
 
 # Turn Orientation Before Every Reply
 
@@ -483,6 +485,8 @@ Use these MCP tools for real product actions instead of inventing results, runni
 - `mcp_admira_save_product_memory`
 - `mcp_admira_save_ad_brief`
 - `mcp_admira_save_creative_references`
+- `mcp_admira_save_daily_social_content_settings`
+- `mcp_admira_save_content_asset`
 
 If the MCP tool is unavailable, say the action cannot be executed yet and explain what must be connected. Do not fall back to fake campaign data or uncontrolled terminal commands.
 
@@ -490,7 +494,7 @@ Dashboard chat and Telegram are buyer-facing product surfaces, not terminals. Ne
 
 When the buyer shares a public URL and asks you to review, understand, use, or create ads from it, first use `mcp_admira_fetch_public_asset` for buyer-shared assets/pages, especially Google Drive videos/images or creative references. It safely inspects public pages and downloads public image/video assets to the product workspace. If it returns a video asset, use its returned `video_url`/`direct_url` when staging a video creative. If it returns `video_frame_paths`/`video_preview_frame_paths`, use those extracted image frames with vision to understand the MP4/MOV visually; do not try to inspect the raw video file directly and do not tell the buyer you cannot review video merely because a low-level viewer only accepts images. If frame extraction fails, explain that precise limitation and ask for public access, a direct upload, or 2-4 key screenshots. Use the available `web`/`browser` retrieval tools as a secondary path for general research. Do not immediately claim you cannot access links. If access fails because the link is private, requires login, is too large, times out, or resolves to a private/local network, explain that specific limitation in simple words and ask the buyer to make it public or upload the file directly in Telegram.
 
-Brand, product, ad-brief, and creative-reference files are backend-owned memory. The `brand_guides/` files inside the Hermes workspace are read-only context snapshots, not the source of truth for production readiness. Never manually create, edit, or write `brand_guides/*.md`, `/app/brand_guides/*.md`, or workspace brand-guide files to unblock creative production. Use `mcp_admira_save_brand_memory`, `mcp_admira_save_product_memory`, `mcp_admira_save_ad_brief`, and `mcp_admira_save_creative_references`. If a save tool rejects natural wording, retry once with canonical fields such as `brand_name`, `offer`, `colors`, `visual_style`, `tone`, `logo_notes`, `references`, `asset_notes`, `name`, `product_guide`, `variation_count`, `concurrent_variations`, `formats`, and `creative_hypothesis`.
+Brand, product, ad-brief, creative-reference, and content-asset files are backend-owned memory. The `brand_guides/` and `memory/content_*` files inside the Hermes workspace are read-only context snapshots, not the source of truth for production readiness. Never manually create, edit, or write `brand_guides/*.md`, `/app/brand_guides/*.md`, or workspace brand-guide files to unblock creative production. Use `mcp_admira_save_brand_memory`, `mcp_admira_save_product_memory`, `mcp_admira_save_ad_brief`, `mcp_admira_save_creative_references`, `mcp_admira_save_daily_social_content_settings`, and `mcp_admira_save_content_asset`. If a save tool rejects natural wording, retry once with canonical fields such as `brand_name`, `offer`, `colors`, `visual_style`, `tone`, `logo_notes`, `references`, `asset_notes`, `name`, `product_guide`, `variation_count`, `concurrent_variations`, `formats`, `creative_hypothesis`, `category`, `purpose`, `file_path`, `url`, `enabled`, `time`, and `posts_per_day`.
 
 Never call `mcp_admira_codex_creative_plan` as a replacement for the branding interview. Before using it for serious ad strategy or launch-ready assets, the workspace should have brand name/offer, colors, visual style, tone, logo decision, reference decision, real-asset decision, and product/offer. Budget helps size tests and launch decisions, but it must not block a standalone image/asset the buyer simply wants to create. If an important brand/offer item is missing, ask the exact next branding question or pass the buyer's current product context in the tool request instead of claiming Codex generated something.
 
@@ -542,6 +546,7 @@ def write_product_skill_workspace_files():
             "",
             "- Business discovery: `business-onboarding/SKILL.md`.",
             "- Brand/logo/assets: `brand-and-assets/SKILL.md`.",
+            "- Organic posts/content calendar: `organic-content-strategy/SKILL.md`.",
             "- Creative ideas/tests: `creative-strategy/SKILL.md`.",
             "- Codex/Image production: `creative-production-codex-image/SKILL.md`.",
             "- Campaign planning: `campaign-strategy/SKILL.md`.",
@@ -600,6 +605,8 @@ def business_memory_files():
         "individual_business_binding": DATA_DIR / "individual_business_binding.json",
         "general_branding": BRAND_GUIDES_DIR / "general_branding.md",
         "creative_references": BRAND_GUIDES_DIR / "creative_references.md",
+        "content_asset_library": DATA_DIR / "content_asset_library.json",
+        "content_strategy": DATA_DIR / "content_strategy.md",
     }
     product_guides = []
     products_dir = BRAND_GUIDES_DIR / "products"
@@ -628,6 +635,8 @@ def business_memory_context():
         "onboarding_plan": read_text(files["onboarding_plan"]),
         "ads_onboarding": read_text(files["ads_onboarding"]),
         "creative_references": read_text(files["creative_references"]),
+        "content_asset_library": scrub_memory(redact_payload(read_json(files["content_asset_library"], {"items": []}))),
+        "content_strategy": read_text(files["content_strategy"]),
         "brand_guides": {
             "general_branding": read_text(files["general_branding"]),
             "products": [
@@ -993,6 +1002,8 @@ def conversation_continuity_status(memory):
         "audience_strategy": has_meaningful_memory(memory.get("audience_strategy")),
         "general_branding": has_meaningful_memory(brand.get("general_branding")),
         "creative_references": has_meaningful_memory(memory.get("creative_references")),
+        "content_asset_library": has_meaningful_memory(memory.get("content_asset_library")),
+        "content_strategy": has_meaningful_memory(memory.get("content_strategy")),
         "product_guides": has_meaningful_memory(brand.get("products")),
         "ad_briefs": has_meaningful_memory(brand.get("ad_briefs")),
         "latest_day_context": bool(latest_context.get("selected_date")),
@@ -1026,6 +1037,7 @@ def conversation_continuity_status(memory):
             "telegram_gateway_turns": len(recent.get("telegram_gateway") or []),
             "pending_approvals": len(recent.get("pending_approvals") or []),
             "recent_creative_outputs": len(recent.get("creative_refreshes") or []),
+            "content_assets": len((memory.get("content_asset_library") or {}).get("items") or []),
         },
         "latest_day_context": {
             "selected_date": latest_context.get("selected_date", ""),
@@ -1063,7 +1075,7 @@ def build_conversation_continuity(memory, status=None):
                 "## Resume behavior",
                 "",
                 "- Treat Telegram/Hermes session history as cache. These durable workspace files are the source of truth after cleanup or updates.",
-                "- Before sending a first message, read this file plus `memory/latest_day_context.md`, `memory/active_workflow.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/pending_approvals.json`, `memory/creative_experiments.json`, and relevant `brand_guides/` files.",
+                "- Before sending a first message, read this file plus `memory/latest_day_context.md`, `memory/active_workflow.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/pending_approvals.json`, `memory/creative_experiments.json`, `memory/content_asset_library.json`, `memory/content_strategy.md`, and relevant `brand_guides/` files.",
                 "- Do not restart onboarding, do not introduce yourself as if this were the first conversation, and do not repeat the initial ads-experience/technical-style question if it is already configured or implied by saved memory.",
                 "- If the current Hermes session is empty but this file says memory exists, say briefly that you are resuming and continue from the next missing or active item.",
                 "- If needed, use session search to look for the previous Telegram session, but never block the buyer on that search when durable workspace memory is enough to continue.",
@@ -1123,6 +1135,10 @@ def build_conversation_continuity(memory, status=None):
         lines.extend(["## Brand memory", "", _text_excerpt(brand.get("general_branding"), 1800), ""])
     if has_meaningful_memory(memory.get("creative_references")):
         lines.extend(["## Creative references", "", _text_excerpt(memory.get("creative_references"), 1200), ""])
+    if has_meaningful_memory(memory.get("content_strategy")):
+        lines.extend(["## Organic content strategy", "", _text_excerpt(memory.get("content_strategy"), 1600), ""])
+    if has_meaningful_memory(memory.get("content_asset_library")):
+        lines.extend(["## Content asset library", "", "```json", _json_excerpt(memory.get("content_asset_library"), 2200), "```", ""])
     products = brand.get("products") or []
     if products:
         lines.extend(["## Product guides", ""])
@@ -1213,6 +1229,8 @@ Read `skills/README.md`, then the relevant `skills/*/SKILL.md` file before actin
     written.append(write_workspace_file("memory/profitability_rules.json", memory["profitability_memory"].get("profitability_rules", {})))
     written.append(write_workspace_file("memory/decision_memory.json", memory["profitability_memory"]))
     written.append(write_workspace_file("memory/creative_experiments.json", memory["creative_experiments"]))
+    written.append(write_workspace_file("memory/content_asset_library.json", memory.get("content_asset_library", {"items": []})))
+    written.append(write_workspace_file("memory/content_strategy.md", memory.get("content_strategy", "")))
     written.append(write_workspace_file("memory/optimization_state.json", memory["optimization_state"]))
     written.append(write_workspace_file("memory/business_outcomes.json", memory["business_outcomes"]))
     written.append(write_workspace_file("memory/optimization_research.json", memory["optimization_research"]))

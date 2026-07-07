@@ -12,10 +12,12 @@ Use this skill when the buyer asks to generate, revise, or deliver image creativ
 - Use `mcp_admira_codex_image_generate` for actual image files.
 - Use `mcp_admira_codex_creative_plan` only for concept/prompt planning after brand/product context is ready.
 - Do not use Hermes internal image generation or mention external image APIs.
+- For organic daily posts, use purpose `daily_social_post` or `standalone_creative`; do not require budget, launch readiness, or a campaign brief unless the buyer is actually creating an ad.
 
 ## References and logos
 
 - Pass safe uploaded images in `reference_image_paths`.
+- Use `memory/content_asset_library.json` to choose only assets approved for the requested purpose.
 - When the buyer wants a real photo as the base/background, set `use_reference_as_background: true`.
 - When an official logo is saved and should appear, set `include_logo: true` and require `pixel-level accurate` reproduction.
 - If the logo is altered, retry with `logo_render_mode: "exact_composite"`.

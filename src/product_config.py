@@ -267,6 +267,10 @@ class AgentConfig:
     notify_channel: str
     daily_brief_time: str
     daily_brief_timezone: str
+    daily_social_content_enabled: bool
+    daily_social_content_decision: str
+    daily_social_content_time: str
+    daily_social_content_posts_per_day: int
     telegram_bot_token: str
     telegram_chat_id: str
     creative_refresh_enabled: bool
@@ -375,6 +379,10 @@ def load_config():
         notify_channel=os.environ.get("META_NOTIFY_CHANNEL", "dashboard").strip().lower(),
         daily_brief_time=normalize_daily_time(env_first("DAILY_BRIEF_TIME", "META_DAILY_BRIEF_TIME", default="08:00")),
         daily_brief_timezone=normalize_timezone(env_first("DAILY_BRIEF_TIMEZONE", "TZ", default="UTC")),
+        daily_social_content_enabled=env_bool("DAILY_SOCIAL_CONTENT_ENABLED", False),
+        daily_social_content_decision=os.environ.get("DAILY_SOCIAL_CONTENT_DECISION", "").strip().lower(),
+        daily_social_content_time=normalize_daily_time(env_first("DAILY_SOCIAL_CONTENT_TIME", default="10:00")),
+        daily_social_content_posts_per_day=max(1, min(5, env_int("DAILY_SOCIAL_CONTENT_POSTS_PER_DAY", 1))),
         telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
         telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),
         creative_refresh_enabled=env_bool("CREATIVE_REFRESH_ENABLED", True),

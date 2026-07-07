@@ -28,6 +28,15 @@ More variation increases the chance of finding a winner, but do not starve small
 
 Use Meta Ad Library and public references only for visible creative patterns. Never claim public competitor ads reveal private CPA, ROAS, conversions, or winners. Convert patterns into original hypotheses.
 
+## Organic content bridge
+
+If the buyer wants daily posts or a content calendar, switch to `skills/organic-content-strategy/SKILL.md` before production. Keep organic posts separate from launch-ready ads:
+
+- organic posts can educate, build trust, show proof, answer objections, or keep the page alive;
+- paid ad creatives need a clearer conversion hypothesis, audience, destination, event/message objective, and test scorecard.
+
+Reuse `memory/content_asset_library.json` for approved photos, videos, testimonials, offers, and style references.
+
 ## Brief
 
 Before launch-ready production, save an ad brief with objective, offer, audience, formats, variation axes, hypothesis, and success metrics. For standalone draft assets, do not block on full budget/brief.

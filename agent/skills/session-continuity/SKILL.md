@@ -22,6 +22,8 @@ Read these workspace files when present:
 - `memory/recent_actions.json`
 - `memory/pending_approvals.json`
 - `memory/creative_refreshes.json`
+- `memory/content_asset_library.json`
+- `memory/content_strategy.md`
 - relevant `brand_guides/` files
 
 ## Resume behavior
@@ -29,6 +31,7 @@ Read these workspace files when present:
 - If persistent memory or an active workflow exists, do not introduce yourself as if this were the first conversation.
 - Do not repeat the initial ads-experience/technical-detail question unless memory proves it is missing.
 - Continue from the next missing/actionable step, not from the beginning of onboarding.
+- If daily content settings, content strategy, or content assets exist, continue with that context instead of asking again whether uploaded files/logos/references exist.
 - Mention one concrete remembered item only when it helps the buyer feel continuity.
 - Use a short phrase like “Retomo donde quedamos…” only when the session truly feels fresh after cleanup/update.
 

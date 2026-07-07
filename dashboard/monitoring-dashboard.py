@@ -100,6 +100,7 @@ from graph_executor import execute_upload_payload
 from hermes_bridge import hermes_codex_ready, hermes_codex_session_status, hermes_environment, safe_image_paths
 from hermes_gateway import (
     ensure_daily_brief_cron,
+    ensure_daily_social_content_cron,
     ensure_experiment_review_cron,
     ensure_experiment_review_crons,
     ensure_weekly_research_cron,
@@ -191,6 +192,8 @@ VERIFIED_SIGNAL_LEDGER_FILE = DATA_DIR / "verified_signal_ledger.json"
 ONBOARDING_QUESTIONS_FILE = DATA_DIR / "Onboarding questions.md"
 AGENT_ONBOARDING_PLAN_FILE = DATA_DIR / "Agent onboarding plan.md"
 ADS_ONBOARDING_FILE = DATA_DIR / "Ads campaign onboarding.md"
+CONTENT_ASSET_LIBRARY_FILE = DATA_DIR / "content_asset_library.json"
+CONTENT_STRATEGY_FILE = DATA_DIR / "content_strategy.md"
 INDIVIDUAL_BINDING_FILE = DATA_DIR / "individual_business_binding.json"
 MANAGED_AD_ACCOUNTS_FILE = DATA_DIR / "managed_ad_accounts.json"
 AGENCY_SPACES_FILE = DATA_DIR / "agency_spaces.json"
@@ -1797,6 +1800,7 @@ def save_daily_brief_schedule(payload):
     config = load_config()
     gateway = start_hermes_gateway(config)
     cron = ensure_daily_brief_cron(config)
+    social_content_cron = ensure_daily_social_content_cron(config)
     experiment_crons = ensure_experiment_review_crons(config)
     research_cron = ensure_weekly_research_cron(config)
     log_action(
@@ -1810,9 +1814,138 @@ def save_daily_brief_schedule(payload):
         "timezone": normalized_timezone,
         "gateway": gateway,
         "cron": cron,
+        "social_content_cron": social_content_cron,
         "experiment_crons": experiment_crons,
         "research_cron": research_cron,
     }
+
+
+def _truthy_payload_value(payload, key, default=False):
+    value = (payload or {}).get(key, default)
+    return str(value).strip().lower() in {"1", "true", "yes", "si", "sí", "on", "enabled", "activar", "activo"}
+
+
+def save_daily_social_content_settings(payload):
+    payload = payload or {}
+    enabled = _truthy_payload_value(payload, "enabled", _truthy_payload_value(payload, "daily_social_content_enabled", False))
+    raw_time = str(payload.get("time") or payload.get("daily_social_content_time") or "10:00").strip()
+    normalized_time = normalize_daily_time(raw_time, default="")
+    if not normalized_time or normalized_time != raw_time:
+        raise ValueError("Elige una hora válida para preparar los posts diarios.")
+    try:
+        posts_per_day = int(payload.get("posts_per_day") or payload.get("count") or payload.get("daily_social_content_posts_per_day") or 1)
+    except (TypeError, ValueError):
+        posts_per_day = 1
+    posts_per_day = max(1, min(5, posts_per_day))
+    updates = {
+        "DAILY_SOCIAL_CONTENT_ENABLED": "true" if enabled else "false",
+        "DAILY_SOCIAL_CONTENT_DECISION": "enabled" if enabled else "declined",
+        "DAILY_SOCIAL_CONTENT_TIME": normalized_time,
+        "DAILY_SOCIAL_CONTENT_POSTS_PER_DAY": str(posts_per_day),
+    }
+    update_env_values(updates)
+    strategy_note = str(payload.get("content_strategy") or payload.get("strategy") or "").strip()
+    if strategy_note:
+        CONTENT_STRATEGY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        CONTENT_STRATEGY_FILE.write_text(
+            "# Content strategy\n\n"
+            "Buyer-approved or agent-proposed direction for daily organic posts.\n\n"
+            f"{strategy_note}\n",
+            encoding="utf-8",
+        )
+    config = load_config()
+    gateway = start_hermes_gateway(config)
+    cron = ensure_daily_social_content_cron(config)
+    log_action(
+        "daily_social_content_settings_update",
+        {"enabled": enabled, "time": normalized_time, "posts_per_day": posts_per_day, "cron_configured": bool(cron.get("configured"))},
+        "completed" if (not enabled or cron.get("configured")) else "blocked",
+    )
+    return {
+        "saved": True,
+        "enabled": enabled,
+        "time": normalized_time,
+        "timezone": config.daily_brief_timezone,
+        "posts_per_day": posts_per_day,
+        "gateway": gateway,
+        "cron": cron,
+    }
+
+
+CONTENT_ASSET_CATEGORIES = {
+    "official_logo": {"logo", "official_logo", "logo_oficial", "brand_logo"},
+    "product": {"product", "producto", "service", "servicio", "offer", "oferta"},
+    "location": {"local", "location", "store", "studio", "office", "recepcion", "recepción", "ubicacion", "ubicación"},
+    "team_founder": {"team", "equipo", "founder", "fundador", "owner", "dueño", "dueno"},
+    "customer_testimonial": {"customer", "client", "cliente", "testimonial", "testimonio", "case", "caso"},
+    "ugc": {"ugc", "video_ugc", "creator", "creador"},
+    "style_reference": {"reference", "referencia", "style", "estilo", "inspiration", "inspiracion", "inspiración"},
+    "offer_promo": {"promo", "promotion", "promocion", "promoción", "discount", "descuento"},
+    "social_proof": {"proof", "prueba", "review", "reviews", "reseña", "resena", "result"},
+    "do_not_use": {"no_usar", "do_not_use", "avoid", "evitar"},
+    "other": {"other", "otro", "misc"},
+}
+
+
+def normalize_content_asset_category(value):
+    raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    for category, aliases in CONTENT_ASSET_CATEGORIES.items():
+        if raw == category or raw in aliases:
+            return category
+    return "other"
+
+
+def load_content_asset_library():
+    library = read_json(CONTENT_ASSET_LIBRARY_FILE, {"items": [], "updated_at": ""})
+    if not isinstance(library, dict):
+        library = {"items": [], "updated_at": ""}
+    if not isinstance(library.get("items"), list):
+        library["items"] = []
+    return library
+
+
+def save_content_asset_memory(payload, chat_payload=None):
+    payload = payload or {}
+    image_paths = []
+    image_paths.extend(safe_image_paths(payload))
+    image_paths.extend(safe_image_paths(chat_payload or {}))
+    deduped_paths = []
+    seen = set()
+    for path in image_paths:
+        if path not in seen:
+            seen.add(path)
+            deduped_paths.append(path)
+    urls = [
+        str(payload.get(key) or "").strip()
+        for key in ("url", "asset_url", "source_url", "public_url", "video_url", "direct_url")
+        if str(payload.get(key) or "").strip()
+    ]
+    frame_paths = [str(item) for item in (payload.get("video_frame_paths") or payload.get("video_preview_frame_paths") or []) if str(item).strip()]
+    purpose = str(payload.get("purpose") or payload.get("usage") or payload.get("what_is_it_for") or payload.get("para_que_es") or "").strip()
+    notes = str(payload.get("notes") or payload.get("description") or payload.get("context") or "").strip()
+    if not (deduped_paths or urls or frame_paths or purpose or notes):
+        raise ValueError("Necesito al menos un archivo, link, propósito o nota para guardar este asset.")
+    category = normalize_content_asset_category(payload.get("category") or payload.get("asset_type") or payload.get("tipo"))
+    item = {
+        "id": f"asset_{len(load_content_asset_library().get('items', [])) + 1}_{re.sub(r'[^a-z0-9]+', '-', category.lower()).strip('-')}",
+        "category": category,
+        "purpose": purpose,
+        "notes": notes,
+        "file_paths": deduped_paths[:8],
+        "urls": urls[:4],
+        "video_frame_paths": frame_paths[:8],
+        "approved_for_daily_content": _truthy_payload_value(payload, "approved_for_daily_content", True),
+        "approved_for_ads": _truthy_payload_value(payload, "approved_for_ads", False),
+        "created_at": now_iso(),
+    }
+    library = load_content_asset_library()
+    library["items"].insert(0, item)
+    library["items"] = library["items"][:200]
+    library["updated_at"] = now_iso()
+    write_json(CONTENT_ASSET_LIBRARY_FILE, redact_payload(library), ensure_ascii=False)
+    write_agent_onboarding_plan()
+    log_action("content_asset_save", {"category": category, "file_count": len(deduped_paths), "url_count": len(urls)}, "completed")
+    return {"saved": True, "asset": item, "library_file": "dashboard/data/content_asset_library.json", "count": len(library["items"])}
 
 
 def save_profitability_rule_settings(payload):
@@ -1950,6 +2083,7 @@ def save_telegram_config(payload):
             write_json(BUSINESS_PROFILE_FILE, profile)
             status["onboarding_message_ready"] = True
         status["daily_brief_cron"] = ensure_daily_brief_cron(config)
+        status["daily_social_content_cron"] = ensure_daily_social_content_cron(config)
         status["experiment_review_crons"] = ensure_experiment_review_crons(config)
         status["research_cron"] = ensure_weekly_research_cron(config)
     log_action("telegram_config_save", {"enabled": status["enabled"], "mode": status.get("mode"), "bot_configured": status["bot_configured"], "chat_id_set": bool(status["chat_id"])}, "completed")
@@ -5294,6 +5428,13 @@ def write_agent_onboarding_plan(profile=None):
     if not isinstance(profile, dict):
         profile = {}
     phase = agent_onboarding_phase(profile)
+    social_content_decision = str(os.environ.get("DAILY_SOCIAL_CONTENT_DECISION") or "").strip().lower() or "pendiente"
+    social_content_enabled = env_bool("DAILY_SOCIAL_CONTENT_ENABLED", False)
+    social_content_time = normalize_daily_time(os.environ.get("DAILY_SOCIAL_CONTENT_TIME") or "10:00")
+    try:
+        social_content_posts = max(1, min(5, int(os.environ.get("DAILY_SOCIAL_CONTENT_POSTS_PER_DAY") or 1)))
+    except ValueError:
+        social_content_posts = 1
     body = f"""# Agent onboarding plan
 
 Estado actual: {phase["phase"]}.
@@ -5329,6 +5470,7 @@ El agente no debe ser pasivo ni limitar su criterio experto a placements. Debe p
 
 2. branding_creatives_creation
    - Usar el skill `skills/branding-creatives-creation/SKILL.md`.
+   - Despues de entender marca/logo/assets, usar tambien `skills/organic-content-strategy/SKILL.md` si el cliente quiere posts organicos diarios o comparte assets reutilizables.
    - Buscar referencias visuales de anuncios del nicho con las herramientas web/browser disponibles.
    - No generar anuncios todavía. Completar colores, estilo visual, tono, decisión de logo, decisión de referencias y decisión sobre fotos/activos reales.
    - Preguntar activamente si el cliente quiere subir un logo, diseño de referencia, foto de producto, fundador, cliente, local o empaque.
@@ -5336,6 +5478,8 @@ El agente no debe ser pasivo ni limitar su criterio experto a placements. Debe p
    - Distinguir que es continuo para toda la marca y que cambia por producto, servicio o campana.
    - Si el cliente envia un logo, guardarlo en la guia general como Logo de marca y Notas del logo.
    - Si el cliente aprueba referencias encontradas, generadas o ambas, guardarlas con `save_creative_references`.
+   - Si el cliente envia fotos/videos/links/UGC/testimonios/ofertas, guardar su proposito con `save_content_asset`.
+   - Preguntar una vez si quiere que Admira prepare posts diarios con Image 2 para revisar/aprobar. Si acepta o rechaza, guardar con `save_daily_social_content_settings`.
    - Guardar la guia general con `save_brand_guide` y fichas por producto con `save_product_guide`.
 
 3. ads_campaign_onboarding
@@ -5358,6 +5502,7 @@ El agente no debe ser pasivo ni limitar su criterio experto a placements. Debe p
 - Negocio: {phase["business"]}
 - Branding/creativos: {phase["branding"]}
 - Campanas/anuncios previos: {phase["campaigns"]}
+- Posts diarios organicos: decision={social_content_decision}, activo={"si" if social_content_enabled else "no"}, hora={social_content_time}, cantidad={social_content_posts}/dia
 
 ## Preparacion creativa actual
 
@@ -5419,6 +5564,8 @@ Instrucciones para el agente:
 - Documenta lo aprendido en el perfil del negocio y en las guias de marca/producto/brief cuando corresponda.
 - Si falta informacion, pregunta lo minimo necesario para poder actuar.
 - Cuando el negocio este claro, pasa a la fase de branding/creativos; no saltes directo a campanas si faltan estilo, referencias, colores o reglas visuales.
+- Cuando marca/logo/assets esten razonablemente claros, pregunta una vez si quiere que Admira prepare posts diarios con Image 2 para revisar y aprobar. Si acepta o rechaza, guarda la decision con `save_daily_social_content_settings`.
+- Si el cliente comparte archivos, fotos, videos, links, testimonios, ofertas o referencias, pregunta/infiera para que son y guardalos con `save_content_asset` para que se puedan reutilizar en posts, anuncios o estrategia.
 - Despues de branding, pregunta por anuncios/campanas anteriores y guarda aprendizajes antes de proponer la estrategia inicial.
 - Antes de crear o preparar una campana, pregunta por los 3 resultados principales que importan para juzgarla, no solo por un evento. Ejemplos: ROAS, costo por compra, costo por iniciar checkout, costo por lead calificado, reservas o conversaciones reales de WhatsApp.
 
@@ -9040,6 +9187,40 @@ def handle_save_agent_preferences_tool(arguments, chat_payload, tool):
     return agent_action_result(tool, True, message, result=result)
 
 
+def handle_save_daily_social_content_settings_tool(arguments, chat_payload, tool):
+    payload = dict(arguments or {})
+    result = save_daily_social_content_settings(payload)
+    if chat_lang(chat_payload) == "es":
+        if result.get("enabled"):
+            message = (
+                f"Listo. Activé los posts diarios: prepararé {result.get('posts_per_day', 1)} "
+                f"pieza(s) al día a las {result.get('time')} y te las dejaré para revisar/aprobar."
+            )
+            if not result.get("cron", {}).get("configured"):
+                message += " Guardé la preferencia, pero el horario todavía necesita que Telegram/Hermes quede completo."
+        else:
+            message = "Listo. Dejé desactivados los posts diarios automáticos."
+    else:
+        if result.get("enabled"):
+            message = f"Done. Daily posts are enabled: I will prepare {result.get('posts_per_day', 1)} piece(s) per day at {result.get('time')} for your review/approval."
+            if not result.get("cron", {}).get("configured"):
+                message += " I saved the preference, but the schedule still needs Telegram/Hermes to be ready."
+        else:
+            message = "Done. Daily automatic posts are disabled."
+    return agent_action_result(tool, True, message, result=result)
+
+
+def handle_save_content_asset_tool(arguments, chat_payload, tool):
+    payload = dict(arguments or {})
+    result = save_content_asset_memory(payload, chat_payload)
+    category = result.get("asset", {}).get("category") or "other"
+    if chat_lang(chat_payload) == "es":
+        message = f"Listo. Guardé ese asset como {category} para usarlo en estrategia de contenido, posts o anuncios cuando corresponda."
+    else:
+        message = f"Done. I saved that asset as {category} for content strategy, posts, or ads when relevant."
+    return agent_action_result(tool, True, message, result=result)
+
+
 def handle_record_verified_signal_tool(arguments, chat_payload, tool):
     payload = dict(arguments or {})
     if isinstance(payload.get("items"), list):
@@ -9351,6 +9532,8 @@ AGENT_TOOL_HANDLERS = {
     "build_audience_strategy": handle_build_audience_strategy_tool,
     "init_brand_guides": handle_init_brand_guides_tool,
     "save_agent_preferences": handle_save_agent_preferences_tool,
+    "save_daily_social_content_settings": handle_save_daily_social_content_settings_tool,
+    "save_content_asset": handle_save_content_asset_tool,
     "record_verified_signal": handle_record_verified_signal_tool,
     "get_verified_signal_summary": handle_get_verified_signal_summary_tool,
     "verified_signal_feedback_prompt": handle_verified_signal_feedback_prompt_tool,
@@ -9809,7 +9992,7 @@ HTML = r"""<!DOCTYPE html>
 class DashboardHandler(BaseHTTPRequestHandler):
     HTML_PATHS = {"/", "/dashboard"}
     PROTECTED_GET_PATHS = {"/api/dashboard", "/api/export", "/api/report", "/api/setup", "/api/social/auth-status", "/api/social/accounts", "/api/update/snapshots", "/api/creative-asset", "/api/brand-asset"}
-    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/publishing/config", "/api/publishing/test", "/api/agent-model/connect", "/api/agent-model/disconnect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/logo", "/api/brand-guides/product", "/api/ad-briefs", "/api/codex/creative-plan", "/api/codex/image-generate", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/optimization/settings", "/api/optimization/unlock", "/api/shopify/config", "/api/shopify/test", "/api/shopify/sync", "/api/daily-brief/schedule", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/communication-style", "/api/onboarding/complete", "/api/onboarding/skip", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/local-network-access", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
+    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/publishing/config", "/api/publishing/test", "/api/agent-model/connect", "/api/agent-model/disconnect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/logo", "/api/brand-guides/product", "/api/ad-briefs", "/api/codex/creative-plan", "/api/codex/image-generate", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/optimization/settings", "/api/optimization/unlock", "/api/shopify/config", "/api/shopify/test", "/api/shopify/sync", "/api/daily-brief/schedule", "/api/daily-social-content/settings", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/communication-style", "/api/onboarding/complete", "/api/onboarding/skip", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/local-network-access", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
     ONBOARDING_OPEN_GETS = {"/api/dashboard", "/api/setup"}
     ONBOARDING_OPEN_POSTS = {"/api/dashboard-password", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/license/activate", "/api/agent-model/connect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/onboarding/communication-style", "/api/onboarding/complete"}
     GET_JSON_ROUTES = {
@@ -9850,6 +10033,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         "/api/setup-config": save_setup_config,
         "/api/guardrails": save_guardrails,
         "/api/daily-brief/schedule": save_daily_brief_schedule,
+        "/api/daily-social-content/settings": save_daily_social_content_settings,
         "/api/profitability-rules": save_profitability_rule_settings,
         "/api/optimization/settings": save_optimization_settings,
         "/api/optimization/unlock": unlock_optimization,

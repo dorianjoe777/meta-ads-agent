@@ -47,6 +47,7 @@ GATEWAY_STATE_FILE = DATA_DIR / "hermes_gateway_state.json"
 TELEGRAM_MODEL_STATE_FILE = DATA_DIR / "telegram_model_state.json"
 TELEGRAM_RECENT_TURNS_FILE = DATA_DIR / "hermes_gateway_recent_turns.json"
 DAILY_BRIEF_PROMPT_FILE = DATA_DIR / "hermes_daily_brief_prompt.md"
+DAILY_SOCIAL_CONTENT_PROMPT_FILE = DATA_DIR / "hermes_daily_social_content_prompt.md"
 RESEARCH_PROMPT_FILE = DATA_DIR / "hermes_optimization_research_prompt.md"
 
 _GATEWAY_PROCESS = None
@@ -676,6 +677,33 @@ Si todavía no hay Datos reales de Meta, dilo claramente y explica qué falta co
 """
 
 
+def daily_social_content_prompt(posts_per_day=1):
+    count = max(1, min(5, int(posts_per_day or 1)))
+    plural = "post" if count == 1 else "posts"
+    return f"""Prepara el lote diario de contenido orgánico de Admira IA para este negocio.
+
+Objetivo: dejar {count} {plural} visual(es) listo(s) para que el comprador los revise/apruebe desde Telegram. No publiques automáticamente.
+
+Antes de crear nada:
+1. Lee `skills/core-agent-behavior/SKILL.md`, `skills/session-continuity/SKILL.md`, `skills/brand-and-assets/SKILL.md`, `skills/organic-content-strategy/SKILL.md`, `skills/creative-strategy/SKILL.md` y `skills/creative-production-codex-image/SKILL.md`.
+2. Lee `memory/content_asset_library.json`, `memory/content_strategy.md`, `brand_guides/general_branding.md`, `brand_guides/creative_references.md`, productos/briefs y memoria reciente.
+3. Si no existe una estrategia de contenido clara, propón primero 3 pilares simples de contenido y pide confirmación; no generes una tanda grande sin estrategia.
+
+Cuando haya marca suficiente:
+- Usa Codex/Image mediante `mcp_admira_codex_image_generate`.
+- Usa propósito `daily_social_post` o `standalone_creative`, no campaña pagada.
+- Usa el logo oficial cuando exista y exige `pixel-level accurate` para no alterarlo.
+- Si hay fotos/videos/assets compartidos por el cliente, respeta su categoría y propósito: logo oficial, producto, local, equipo/fundador, cliente/testimonio, referencia de estilo, UGC, oferta, prueba social o no usar.
+- Si un asset no tiene propósito claro, pregunta para qué quiere usarlo antes de basar la estrategia en él.
+- Mantén los diseños alineados con colores, tono, referencias y restricciones de marca.
+
+Entrega en Telegram:
+- Adjunta/envía las imágenes generadas; no pegues rutas internas.
+- Incluye copy/caption sugerido, objetivo del post, pilar de contenido y por qué encaja.
+- Pregunta si aprueba, quiere cambios o quiere publicar/programar después con Publicación directa si está conectada.
+"""
+
+
 def optimization_research_prompt():
     return """Haz la revisión semanal de estrategias actuales para Meta Ads.
 
@@ -726,6 +754,121 @@ def ensure_weekly_research_cron(config):
             return {"configured": False, "detail": "No pude programar la investigación semanal.", "error": str(exc), **files}
         return {"configured": result.returncode == 0, "name": name, "schedule": schedule, "timezone": timezone_name, "stdout": (result.stdout or "")[-500:], "stderr": (result.stderr or "")[-500:], **files}
     return {"configured": True, "exists": True, "name": name, "job_id": (existing or {}).get("id", ""), "schedule": schedule, "timezone": timezone_name, **files}
+
+
+def ensure_daily_social_content_cron(config):
+    if not bool(getattr(config, "daily_social_content_enabled", False)):
+        return {"configured": False, "needed": False, "detail": "La generación diaria de posts está desactivada."}
+    status = telegram_settings(config)
+    if not (status["enabled"] and status["bot_configured"] and status["chat_id"]):
+        return {"configured": False, "needed": True, "detail": "Telegram no está completo todavía."}
+    hermes_cli = shutil.which(getattr(config, "hermes_cli", "hermes") or "hermes")
+    if not hermes_cli:
+        return {"configured": False, "needed": True, "detail": "Hermes no está instalado."}
+    files = write_gateway_files(config)
+    posts_per_day = max(1, min(5, int(getattr(config, "daily_social_content_posts_per_day", 1) or 1)))
+    prompt = daily_social_content_prompt(posts_per_day)
+    DAILY_SOCIAL_CONTENT_PROMPT_FILE.write_text(prompt, encoding="utf-8")
+    env = hermes_environment(config)
+    env["HERMES_HOME"] = files["hermes_home"]
+    timezone_name = str(getattr(config, "daily_brief_timezone", "UTC") or "UTC")
+    env["HERMES_TIMEZONE"] = timezone_name
+    env["TZ"] = timezone_name
+    name = "Admira IA - posts diarios"
+    try:
+        hour, minute = str(getattr(config, "daily_social_content_time", "10:00") or "10:00").split(":", 1)
+        schedule = f"{int(minute)} {int(hour)} * * *"
+    except (TypeError, ValueError):
+        schedule = "0 10 * * *"
+    try:
+        list_result = subprocess.run([hermes_cli, "cron", "list"], cwd=files["workspace"], env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"configured": False, "needed": True, "detail": "No pude revisar los horarios de posts diarios.", "error": str(exc), **files}
+    list_output = (list_result.stdout or "") + (list_result.stderr or "")
+    existing = _cron_job(list_output, name)
+    desired_delivery = f"telegram:{status['chat_id']}"
+    if existing:
+        if existing.get("schedule") == schedule and existing.get("deliver") == desired_delivery:
+            return {"configured": True, "needed": True, "exists": True, "name": name, "job_id": existing["id"], "schedule": schedule, "timezone": timezone_name, "posts_per_day": posts_per_day, **files}
+        try:
+            edit_result = subprocess.run(
+                [
+                    hermes_cli,
+                    "cron",
+                    "edit",
+                    existing["id"],
+                    "--schedule",
+                    schedule,
+                    "--prompt",
+                    prompt,
+                    "--deliver",
+                    desired_delivery,
+                    "--workdir",
+                    files["workspace"],
+                ],
+                cwd=files["workspace"],
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {"configured": False, "needed": True, "detail": "No pude actualizar el horario de posts diarios.", "error": str(exc), "name": name, "schedule": schedule, "timezone": timezone_name, **files}
+        return {
+            "configured": edit_result.returncode == 0,
+            "needed": True,
+            "exists": True,
+            "updated": edit_result.returncode == 0,
+            "name": name,
+            "job_id": existing["id"],
+            "schedule": schedule,
+            "timezone": timezone_name,
+            "posts_per_day": posts_per_day,
+            "stdout": (edit_result.stdout or "")[-500:],
+            "stderr": (edit_result.stderr or "")[-500:],
+            **files,
+        }
+    if name in list_output:
+        return {"configured": True, "needed": True, "exists": True, "name": name, "schedule": schedule, "timezone": timezone_name, "posts_per_day": posts_per_day, **files}
+    try:
+        result = subprocess.run(
+            [
+                hermes_cli,
+                "cron",
+                "create",
+                "--name",
+                name,
+                "--deliver",
+                desired_delivery,
+                "--workdir",
+                files["workspace"],
+                schedule,
+                prompt,
+            ],
+            cwd=files["workspace"],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"configured": False, "needed": True, "detail": "No pude crear el cron de posts diarios.", "error": str(exc), "name": name, "schedule": schedule, "timezone": timezone_name, **files}
+    return {
+        "configured": result.returncode == 0,
+        "needed": True,
+        "exists": False,
+        "name": name,
+        "schedule": schedule,
+        "timezone": timezone_name,
+        "posts_per_day": posts_per_day,
+        "stdout": (result.stdout or "")[-500:],
+        "stderr": (result.stderr or "")[-500:],
+        **files,
+    }
 
 
 def _cron_job(output, name):

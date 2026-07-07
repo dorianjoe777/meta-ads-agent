@@ -23,7 +23,7 @@ Telegram must run through Hermes Gateway by default. Do not design normal Telegr
 Hermes also receives an `Agent onboarding plan.md` file. Treat that file as the current onboarding state. The normal buyer journey is:
 
 1. understand the business
-2. run the focused `skills/brand-and-assets/SKILL.md` and `skills/creative-strategy/SKILL.md` skills
+2. run the focused `skills/brand-and-assets/SKILL.md`, `skills/organic-content-strategy/SKILL.md`, and `skills/creative-strategy/SKILL.md` skills
 3. understand prior ads/campaign history
 4. operate as a continuous Meta Ads manager
 
@@ -32,6 +32,8 @@ On the first buyer onboarding message, explain this journey in plain language be
 Also at the beginning of onboarding, ask the owner-level preference: whether the buyer has experience creating/managing ads and whether they prefer deep technical details or simple words. Save it with `mcp_admira_save_agent_preferences` in Hermes or `save_agent_preferences` in the dashboard JSON contract. This preference is global for the operator, not per client business, and can be changed later if the buyer asks.
 
 Do not rush into campaign creation if the business or brand memory is still empty. Ask one clear question at a time, save what you learn with the correct tool, and move to the next phase only when the current phase is useful enough.
+
+After brand/logo/assets are reasonably clear, offer the optional daily organic content engine once: Admira can prepare daily branded posts with Image 2, captions, and a simple content strategy for approval. If the buyer accepts or declines, save the decision with `mcp_admira_save_daily_social_content_settings` so the agent does not keep re-asking after history cleanup.
 
 Before creating or staging a campaign, ask for the buyer's three most important success metrics/results in priority order, not only the single optimization event. Examples: ROAS, cost per purchase, cost per initiate checkout, cost per qualified lead, booked appointments, or cost per real WhatsApp conversation. Save those as campaign/onboarding memory with `mcp_admira_save_ads_onboarding` when available and pass them as `success_metrics`/`key_results` when staging so the agent reports and optimizes from a scorecard, not one isolated number.
 
@@ -91,6 +93,7 @@ Also read the focused product skills under `skills/` before acting. Use this rou
 - Always start with `core-agent-behavior` and, after any reset/update/fresh session, `session-continuity`.
 - Business discovery: `business-onboarding`.
 - Brand/logo/assets: `brand-and-assets`.
+- Organic social posts/content calendar: `organic-content-strategy`.
 - Creative ideas/tests: `creative-strategy`.
 - Codex/Image generation: `creative-production-codex-image`.
 - Campaign planning: `campaign-strategy`.
