@@ -7815,11 +7815,13 @@ class IntegrationTestSuite:
             (root / "src" / "agent.py").write_text("VERSION='old'\n", encoding="utf-8")
             (root / "brand_guides").mkdir()
             (root / "output").mkdir()
+            (root / "runtime").mkdir()
             (root / ".env").write_text("DASHBOARD_PASSWORD=old\n", encoding="utf-8")
             (root / "ad-config.json").write_text('{"url":"old"}\n', encoding="utf-8")
             (root / "VERSION").write_text("v1.0.0\n", encoding="utf-8")
             (root / "dashboard" / "data" / "chat_history.json").write_text('{"turns":["old"]}\n', encoding="utf-8")
             (root / "output" / "generated.png").write_text("large-runtime-output\n", encoding="utf-8")
+            (root / "runtime" / "codex-auth.json").write_text('{"secret":"buyer-runtime"}\n', encoding="utf-8")
             (root / "dashboard" / "data" / "onboarding_state.json").write_text('{"completed":true,"source":"buyer"}\n', encoding="utf-8")
             (root / "dashboard" / "data" / "dashboard_identity.json").write_text('{"dashboard_password_hash":"buyer-hash"}\n', encoding="utf-8")
             try:
@@ -7838,14 +7840,28 @@ class IntegrationTestSuite:
                 self.assert_true(not (payload / "ad-config.json").exists(), "Snapshot does not duplicate buyer ad config")
                 self.assert_true(not (payload / "dashboard" / "data").exists(), "Snapshot does not duplicate runtime dashboard data")
                 self.assert_true(not (payload / "output").exists(), "Snapshot does not duplicate generated output")
+                self.assert_true(not (payload / "runtime").exists(), "Snapshot does not duplicate runtime auth/session data")
                 release_root = root / "release-unpack"
                 (release_root / "dashboard" / "data").mkdir(parents=True)
                 (release_root / "dashboard" / "monitoring-dashboard.py").write_text("print('new dashboard')\n", encoding="utf-8")
+                (release_root / "src").mkdir()
+                (release_root / "src" / "agent.py").write_text("VERSION='new'\n", encoding="utf-8")
+                (release_root / "scripts").mkdir()
                 (release_root / ".env").write_text("DASHBOARD_PASSWORD_HASH=release-should-not-win\n", encoding="utf-8")
                 (release_root / "ad-config.json").write_text('{"url":"release-should-not-win"}\n', encoding="utf-8")
                 (release_root / "dashboard" / "data" / "onboarding_state.json").write_text('{"completed":false,"source":"release"}\n', encoding="utf-8")
                 (release_root / "dashboard" / "data" / "dashboard_identity.json").write_text('{"dashboard_password_hash":"release-hash"}\n', encoding="utf-8")
                 (release_root / "VERSION").write_text("v1.0.2\n", encoding="utf-8")
+                nested_root = root / "nested-unpack"
+                shutil.copytree(release_root, nested_root / "MetaAdsAgent")
+                self.assert_true(dashboard.update_package_source_root(nested_root) == nested_root / "MetaAdsAgent", "Updater detects release root inside a nested archive folder")
+                self.assert_true(dashboard.validate_update_package_source(release_root, "v1.0.2").get("package_version") == "v1.0.2", "Updater validates package VERSION before installing")
+                try:
+                    dashboard.validate_update_package_source(release_root, "v1.0.3")
+                    mismatch_blocked = False
+                except ValueError as exc:
+                    mismatch_blocked = "no coincide" in str(exc)
+                self.assert_true(mismatch_blocked, "Updater blocks mismatched release ZIPs instead of stamping the expected VERSION over old code")
                 dashboard.safe_copytree_contents(release_root, root)
                 self.assert_true("DASHBOARD_PASSWORD=old" in (root / ".env").read_text(encoding="utf-8"), "Official update copy preserves buyer .env and dashboard password")
                 self.assert_true('"old"' in (root / "ad-config.json").read_text(encoding="utf-8"), "Official update copy preserves buyer ad-config")

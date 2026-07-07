@@ -580,11 +580,11 @@ def safe_snapshot_id(value):
 
 def is_skipped_snapshot_path(relative, source):
     parts = set(relative.parts)
-    if source.name in {".git", "node_modules", "__pycache__", ".pytest_cache", ".DS_Store", ".env", "ad-config.json"}:
+    if source.name in {".git", "node_modules", "__pycache__", ".pytest_cache", ".DS_Store", ".env", "ad-config.json", "runtime"}:
         return True
     if source.name.endswith((".pyc", ".log", ".zip", ".tar.gz", ".dmg", ".exe", ".pkg", ".msi")):
         return True
-    if relative.parts and relative.parts[0] in {"release", "node_modules", ".git", "logs", "output", "dist", "build"}:
+    if relative.parts and relative.parts[0] in {"release", "node_modules", ".git", "logs", "output", "runtime", "dist", "build"}:
         return True
     if relative.parts[:2] == ("dashboard", "data"):
         return True
@@ -971,6 +971,33 @@ def safe_copytree_contents(source, target, base=None):
             shutil.copy2(item, destination)
 
 
+def update_package_source_root(unpack_dir):
+    candidates = [unpack_dir]
+    try:
+        candidates.extend([item for item in unpack_dir.iterdir() if item.is_dir()])
+    except OSError:
+        pass
+    for candidate in candidates:
+        if (candidate / "VERSION").exists() and (candidate / "dashboard" / "monitoring-dashboard.py").exists():
+            return candidate
+    return unpack_dir
+
+
+def validate_update_package_source(source_root, expected_version):
+    package_version_file = source_root / "VERSION"
+    if not package_version_file.exists():
+        raise ValueError("La actualizacion oficial no incluye VERSION; no voy a instalar un paquete incompleto.")
+    package_version = package_version_file.read_text(encoding="utf-8").strip()
+    expected = str(expected_version or "").strip()
+    if expected and package_version != expected:
+        raise ValueError(f"La descarga oficial no coincide con la version esperada ({package_version} != {expected}). Intenta actualizar de nuevo en unos minutos.")
+    required = [source_root / "dashboard" / "monitoring-dashboard.py", source_root / "src", source_root / "scripts"]
+    missing = [str(path.relative_to(source_root)) for path in required if not path.exists()]
+    if missing:
+        raise ValueError("La actualizacion oficial esta incompleta. Faltan: " + ", ".join(missing))
+    return {"ok": True, "package_version": package_version}
+
+
 def restart_dashboard_process():
     try:
         os.execv(sys.executable, [sys.executable] + sys.argv)
@@ -1079,7 +1106,7 @@ def set_local_network_access(payload):
     return {**result, "saved": True, "restarting": should_restart}
 
 
-def run_update_health_checks():
+def run_update_health_checks(expected_version=""):
     dashboard_file = ROOT_DIR / "dashboard" / "monitoring-dashboard.py"
     py_compile.compile(str(dashboard_file), doraise=True)
     config = load_config()
@@ -1088,9 +1115,11 @@ def run_update_health_checks():
     missing = [str(path.relative_to(ROOT_DIR)) for path in required if not path.exists()]
     if missing:
         raise ValueError("La actualizacion quedo incompleta. Faltan: " + ", ".join(missing))
+    if expected_version and current_product_version() != str(expected_version).strip():
+        raise ValueError("La actualizacion no quedo aplicada realmente. Version instalada: " + current_product_version())
     if "</html>" not in dashboard_file.read_text(encoding="utf-8").lower():
         raise ValueError("La interfaz del dashboard no pudo validarse despues de actualizar.")
-    return {"ok": True, "checked": ["python", "config", "required_files", "dashboard_html"]}
+    return {"ok": True, "checked": ["python", "config", "required_files", "version", "dashboard_html"]}
 
 
 def apply_official_update():
@@ -1120,9 +1149,10 @@ def apply_official_update():
                 if not is_safe_extract_member(unpack_dir, member.filename) or not zip_member_is_safe(member):
                     raise ValueError("La actualizacion contiene rutas no seguras.")
             archive.extractall(unpack_dir)
-        safe_copytree_contents(unpack_dir, ROOT_DIR)
-        installed_version = str(release["latest_version"]).strip()
-        VERSION_FILE.write_text(installed_version + "\n", encoding="utf-8")
+        source_root = update_package_source_root(unpack_dir)
+        package_validation = validate_update_package_source(source_root, release["latest_version"])
+        safe_copytree_contents(source_root, ROOT_DIR)
+        installed_version = str(package_validation["package_version"]).strip()
         update_env_values({"META_ADS_AGENT_VERSION": installed_version})
         os.environ["META_ADS_AGENT_VERSION"] = installed_version
         try:
@@ -1130,8 +1160,8 @@ def apply_official_update():
                 script.chmod(0o755)
         except OSError:
             pass
-    health = run_update_health_checks()
-    log_action("official_update_apply", {"from": release["current_version"], "to": release["latest_version"], "channel": release["channel"], "snapshot_id": snapshot.get("id")}, "completed")
+    health = run_update_health_checks(str(release["latest_version"]).strip())
+    log_action("official_update_apply", {"from": release["current_version"], "to": release["latest_version"], "channel": release["channel"], "snapshot_id": snapshot.get("id"), "package_version": health.get("package_version", installed_version)}, "completed")
     threading.Timer(1.2, restart_dashboard_process).start()
     return {**release, "installed": True, "snapshot": snapshot, "health": health, "message": "Actualizacion instalada. El dashboard se reiniciara automaticamente."}
 
