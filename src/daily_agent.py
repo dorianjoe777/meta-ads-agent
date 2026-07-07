@@ -334,6 +334,7 @@ def create_native_page_post_for_ad(client, destination, ad_plan, link, body_text
         image_url=ad_plan.get("image_url") or "",
         video_url=ad_plan.get("video_url") or "",
         unpublished_content_type="ADS_POST",
+        cta=ad_plan.get("cta", "LEARN_MORE"),
         approved=approved,
     )
     object_story_id = ""
@@ -383,6 +384,13 @@ def prior_meta_id(prior_result, key, step_name):
         if value:
             return value
     return ""
+
+
+def prior_result_missing_website_url(prior_result):
+    if not isinstance(prior_result, dict):
+        return False
+    text = json.dumps(prior_result, ensure_ascii=False).lower()
+    return "website url" in text and ("required" in text or "missing" in text or "falta" in text)
 
 
 def persist_campaign_execution_state(path, campaign, updates):
@@ -604,10 +612,11 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
     link = ad_plan.get("landing_url") or destination.get("url", "")
     body_text = ad_plan.get("primary_text") or f"Conoce {campaign.get('name', 'esta oferta')}."
     headline = ad_plan.get("headline") or campaign.get("name", "Nueva oferta")
+    reuse_prior_object_story_id = not prior_result_missing_website_url(prior_result)
     object_story_id = str(
         ad_plan.get("object_story_id")
-        or prior_meta_id(prior_result, "object_story_id", "create_page_post")
-        or prior_meta_id(prior_result, "object_story_id", "create_page_post_fallback")
+        or (prior_meta_id(prior_result, "object_story_id", "create_page_post") if reuse_prior_object_story_id else "")
+        or (prior_meta_id(prior_result, "object_story_id", "create_page_post_fallback") if reuse_prior_object_story_id else "")
         or ""
     ).strip()
     direct_preference = direct_publishing_preference(ad_plan)

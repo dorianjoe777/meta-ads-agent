@@ -5913,6 +5913,8 @@ class IntegrationTestSuite:
                 return FakeResponse({"error": {"message": "Unexpected direct lookup"}})
             if "/page_1/photos" in request.full_url:
                 return FakeResponse({"id": "photo_1", "post_id": "page_1_post_1"})
+            if "/page_1/feed" in request.full_url:
+                return FakeResponse({"id": "page_1_link_post_1"})
             if "/page_1/videos" in request.full_url:
                 return FakeResponse({"id": "987654321"})
             if "/987654321?" in request.full_url:
@@ -5948,9 +5950,14 @@ class IntegrationTestSuite:
             result = client.create_page_post("page_1", message="Post listo", link="https://uboost.lat", image_path=str(image_path), approved=True)
             body = json.loads(result.get("stdout") or "{}")
             post_body = requests[-1].data
-            self.assert_true(result.get("connector") == "graph_api" and body.get("object_story_id") == "page_1_post_1", "Direct publishing returns a native Page post object_story_id")
+            feed_fields = urllib.parse.parse_qs(post_body.decode("utf-8"))
+            attached_media = json.loads(feed_fields["attached_media"][0])
+            image_cta = json.loads(feed_fields["call_to_action"][0])
+            self.assert_true(result.get("connector") == "graph_api" and body.get("object_story_id") == "page_1_link_post_1", "Direct publishing returns a native Page post object_story_id")
             self.assert_true(b"page-token" in post_body and b"ads-token" not in post_body, "Page post creation uses the Page publishing token, not the ads token")
             self.assert_true(b'published' in post_body and b'false' in post_body and b'ADS_POST' in post_body, "Direct publishing creates an unpublished ads-ready Page post")
+            self.assert_true(feed_fields["link"][0] == "https://uboost.lat" and attached_media[0]["media_fbid"] == "photo_1", "Static direct publishing creates a linked feed post with the uploaded image attached")
+            self.assert_true(image_cta["type"] == "LEARN_MORE" and image_cta["value"]["link"] == "https://uboost.lat", "Static direct publishing includes a website URL CTA")
             requests.clear()
             video_lookup_mode["value"] = "processing"
             processing_result = client.create_page_post("page_1", message="Video procesando", video_url="https://cdn.example/video.mp4", approved=True)
@@ -5959,12 +5966,15 @@ class IntegrationTestSuite:
             self.assert_true(processing_body.get("object_story_id") == "page_1_post_987654321", "Processing video failures preserve the resolved object_story_id for a later retry")
             requests.clear()
             video_lookup_mode["value"] = "ready"
-            video_result = client.create_page_post("page_1", message="Video listo", video_url="https://cdn.example/video.mp4", approved=True)
+            video_result = client.create_page_post("page_1", message="Video listo", link="https://uboost.lat", video_url="https://cdn.example/video.mp4", cta="BUY_NOW", approved=True)
             video_body = json.loads(video_result.get("stdout") or "{}")
             video_publish_request = next(item for item in requests if "/page_1/videos" in item.full_url)
+            video_publish_fields = urllib.parse.parse_qs(video_publish_request.data.decode("utf-8"))
+            video_cta = json.loads(video_publish_fields["call_to_action"][0])
             self.assert_true(video_body.get("video_id") == "987654321" and video_body.get("object_story_id") == "page_1_post_987654321", "Direct publishing resolves Page videos to the real promotable post object_story_id")
             self.assert_true(video_body.get("page_post_id") == "post_987654321" and video_body.get("thumbnail_url") == "https://cdn.example/video-thumb.jpg", "Page video direct publishing stores the real post id and thumbnail URL returned by Meta")
             self.assert_true(b"file_url=https%3A%2F%2Fcdn.example%2Fvideo.mp4" in video_publish_request.data and b"description=Video+listo" in video_publish_request.data, "Page video direct publishing sends the video URL and buyer-facing post text")
+            self.assert_true(video_cta["type"] == "SHOP_NOW" and video_cta["value"]["link"] == "https://uboost.lat", "Page video direct publishing attaches the landing URL as the CTA website")
             requests.clear()
             lookup_mode["value"] = "direct_page_lookup"
             direct_lookup_result = client.create_page_post("page_1", message="Lookup directo", image_url="https://cdn.example/ad.jpg", approved=True)
@@ -6528,6 +6538,7 @@ class IntegrationTestSuite:
             self.assert_true(direct_video_result["ok"], "Approved video campaign can use direct publishing when connected")
             self.assert_true(direct_video_calls == ["create_campaign", "create_adset", "create_page_post", "create_creative", "create_ad"], "Direct-publishing video campaign creates a Page post instead of uploading an ad-account video")
             self.assert_true(direct_page_post_call[2]["video_url"] == "https://cdn.example/video.mp4", "Video direct publishing passes the buyer video URL to Page post creation")
+            self.assert_true(direct_page_post_call[2]["link"] == "https://buyer.example" and direct_page_post_call[2]["cta"] == "LEARN_MORE", "Video direct publishing passes the landing URL and CTA into the Page post")
             self.assert_true(direct_creative_call[2]["object_story_id"] == "111_999" and not direct_creative_call[2]["video_id"], "Video direct publishing creates the ad creative from the Page post object_story_id")
 
             retry_object_story_client = DirectPublishingClient()
@@ -6550,6 +6561,32 @@ class IntegrationTestSuite:
             retry_object_story_creative = next(call for call in retry_object_story_client.calls if call[0] == "create_creative")
             self.assert_true(retry_object_story_result["ok"] and "create_page_post" not in retry_object_story_calls, "Campaign retry reuses a previously-created Page post instead of creating another hidden video post")
             self.assert_true(retry_object_story_creative[2]["object_story_id"] == "111_existing_post", "Campaign retry passes the prior object_story_id into creative creation")
+
+            retry_missing_website_client = DirectPublishingClient()
+            retry_missing_website_result = execute_campaign_creation(
+                str(campaign_path),
+                retry_missing_website_client,
+                approved=True,
+                prior_result={
+                    "ok": False,
+                    "executed": True,
+                    "campaign_id": "cmp_existing",
+                    "adset_ids": ["adset_existing"],
+                    "creative_id": "creative_without_url",
+                    "failed_step": "create_ad",
+                    "steps": [
+                        {"step": "create_page_post", "ok": True, "object_story_id": "111_post_without_url"},
+                        {"step": "create_creative", "ok": True, "creative_id": "creative_without_url"},
+                        {"step": "create_ad", "ok": False, "result": {"stderr": json.dumps({"error": {"message": "Required Field Is Missing: website URL"}})}},
+                    ],
+                },
+            )
+            retry_missing_website_calls = [call[0] for call in retry_missing_website_client.calls]
+            retry_missing_website_post = next(call for call in retry_missing_website_client.calls if call[0] == "create_page_post")
+            retry_missing_website_creative = next(call for call in retry_missing_website_client.calls if call[0] == "create_creative")
+            self.assert_true(retry_missing_website_result["ok"] and "create_page_post" in retry_missing_website_calls, "Campaign retry recreates the Page post when the previous one was missing the website URL")
+            self.assert_true(retry_missing_website_post[2]["link"] == "https://buyer.example", "Website-missing retries create the new hidden post with the landing URL")
+            self.assert_true(retry_missing_website_creative[2]["object_story_id"] == "111_999", "Website-missing retries use the newly-created Page post instead of the old post without URL")
         finally:
             if ad_before:
                 ad_path.write_text(ad_before, encoding="utf-8")

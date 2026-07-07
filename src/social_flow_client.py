@@ -433,6 +433,56 @@ class SocialFlowClient:
         }
         return aliases.get(strategy, strategy)
 
+    @staticmethod
+    def normalize_call_to_action(value):
+        cta = str(value or "").strip().upper().replace("-", "_").replace(" ", "_")
+        aliases = {
+            "COMPRAR": "SHOP_NOW",
+            "COMPRA": "SHOP_NOW",
+            "COMPRA_AHORA": "SHOP_NOW",
+            "BUY": "SHOP_NOW",
+            "BUY_NOW": "SHOP_NOW",
+            "RESERVAR": "BOOK_NOW",
+            "RESERVA": "BOOK_NOW",
+            "RESERVA_AHORA": "BOOK_NOW",
+            "BOOK": "BOOK_NOW",
+            "CONTACTAR": "CONTACT_US",
+            "CONTACTO": "CONTACT_US",
+            "ESCRIBIR": "CONTACT_US",
+            "MENSAJE": "MESSAGE_PAGE",
+            "MESSAGE": "MESSAGE_PAGE",
+            "SIGNUP": "SIGN_UP",
+        }
+        return aliases.get(cta, cta or "LEARN_MORE")
+
+    @classmethod
+    def page_post_call_to_action(cls, cta, link):
+        target = str(link or "").strip()
+        if not target:
+            return ""
+        return json.dumps(
+            {
+                "type": cls.normalize_call_to_action(cta),
+                "value": {"link": target},
+            },
+            ensure_ascii=False,
+        )
+
+    def create_linked_image_page_post(self, page_id, page_token, message, link, image_id, cta, unpublished_type):
+        fields = {
+            "access_token": page_token,
+            "published": "false",
+            "unpublished_content_type": unpublished_type,
+            "link": link,
+            "attached_media": json.dumps([{"media_fbid": image_id}], ensure_ascii=False),
+        }
+        if message:
+            fields["message"] = message
+        call_to_action = self.page_post_call_to_action(cta, link)
+        if call_to_action:
+            fields["call_to_action"] = call_to_action
+        return self.post_graph_form(f"{page_id}/feed", fields)
+
     @classmethod
     def normalize_bidding_config(cls, value):
         if not isinstance(value, dict):
@@ -542,6 +592,7 @@ class SocialFlowClient:
                 image_url = self.flag(args, "--image-url", "")
                 video_path = self.flag(args, "--video-path", "")
                 video_url = self.flag(args, "--video-url", "")
+                cta = self.flag(args, "--call-to-action", "LEARN_MORE")
                 unpublished_type = self.flag(args, "--unpublished-content-type", "ADS_POST") or "ADS_POST"
                 is_video_post = bool(video_path or video_url)
                 if video_path:
@@ -551,12 +602,18 @@ class SocialFlowClient:
                     fields = {"access_token": page_token, "published": "false", "unpublished_content_type": unpublished_type}
                     if message:
                         fields["description"] = message
+                    call_to_action = self.page_post_call_to_action(cta, link)
+                    if call_to_action:
+                        fields["call_to_action"] = call_to_action
                     result = self.post_graph_multipart(endpoint, fields, {"source": video_path})
                 elif video_url:
                     endpoint = f"{page_id}/videos"
                     fields = {"access_token": page_token, "published": "false", "unpublished_content_type": unpublished_type, "file_url": video_url}
                     if message:
                         fields["description"] = message
+                    call_to_action = self.page_post_call_to_action(cta, link)
+                    if call_to_action:
+                        fields["call_to_action"] = call_to_action
                     result = self.post_graph_form(endpoint, fields)
                 elif image_path:
                     if not Path(image_path).exists():
@@ -565,13 +622,27 @@ class SocialFlowClient:
                     fields = {"access_token": page_token, "published": "false", "unpublished_content_type": unpublished_type}
                     if message:
                         fields["caption"] = message
-                    result = self.post_graph_multipart(endpoint, fields, {"source": image_path})
+                    photo_result = self.post_graph_multipart(endpoint, fields, {"source": image_path})
+                    photo_body = photo_result.get("body") if isinstance(photo_result.get("body"), dict) else {}
+                    image_id = str(photo_body.get("id") or "").strip()
+                    if link and photo_result.get("ok") and image_id:
+                        endpoint = f"{page_id}/feed"
+                        result = self.create_linked_image_page_post(page_id, page_token, message, link, image_id, cta, unpublished_type)
+                    else:
+                        result = photo_result
                 elif image_url:
                     endpoint = f"{page_id}/photos"
                     fields = {"access_token": page_token, "published": "false", "unpublished_content_type": unpublished_type, "url": image_url}
                     if message:
                         fields["caption"] = message
-                    result = self.post_graph_form(endpoint, fields)
+                    photo_result = self.post_graph_form(endpoint, fields)
+                    photo_body = photo_result.get("body") if isinstance(photo_result.get("body"), dict) else {}
+                    image_id = str(photo_body.get("id") or "").strip()
+                    if link and photo_result.get("ok") and image_id:
+                        endpoint = f"{page_id}/feed"
+                        result = self.create_linked_image_page_post(page_id, page_token, message, link, image_id, cta, unpublished_type)
+                    else:
+                        result = photo_result
                 else:
                     endpoint = f"{page_id}/feed"
                     fields = {"access_token": page_token, "published": "false", "unpublished_content_type": unpublished_type}
@@ -579,6 +650,9 @@ class SocialFlowClient:
                         fields["message"] = message
                     if link:
                         fields["link"] = link
+                    call_to_action = self.page_post_call_to_action(cta, link)
+                    if call_to_action:
+                        fields["call_to_action"] = call_to_action
                     result = self.post_graph_form(endpoint, fields)
                 body = result.get("body") if isinstance(result.get("body"), dict) else {}
                 if result.get("ok"):
@@ -972,12 +1046,14 @@ class SocialFlowClient:
         args.extend(["--json", "--yes"])
         return self.run(args, live_required=True, mutation=True, approved=approved)
 
-    def create_page_post(self, page_id, message="", link="", image_path="", image_url="", video_path="", video_url="", unpublished_content_type="ADS_POST", approved=False):
+    def create_page_post(self, page_id, message="", link="", image_path="", image_url="", video_path="", video_url="", unpublished_content_type="ADS_POST", cta="LEARN_MORE", approved=False):
         args = ["marketing", "create-page-post", "--page-id", page_id]
         if message:
             args.extend(["--message", message])
         if link:
             args.extend(["--link", link])
+        if cta:
+            args.extend(["--call-to-action", cta])
         if image_path:
             args.extend(["--image-path", image_path])
         if image_url:
