@@ -5889,11 +5889,20 @@ class IntegrationTestSuite:
         image_path = ROOT_DIR / "output" / "test-direct-publishing.png"
         original_urlopen = social_flow_client.urllib.request.urlopen
         requests = []
+        lookup_mode = {"value": "me_accounts"}
 
         def fake_urlopen(request, timeout=90):
             requests.append(request)
             if "/me/accounts" in request.full_url:
+                if lookup_mode["value"] in {"direct_page_lookup", "page_token"}:
+                    return FakeResponse({"data": []})
                 return FakeResponse({"data": [{"id": "page_1", "name": "Uboost Marketing", "access_token": "page-token"}]})
+            if "/page_1?" in request.full_url:
+                if lookup_mode["value"] == "direct_page_lookup":
+                    return FakeResponse({"id": "page_1", "name": "Uboost Marketing", "access_token": "direct-page-token"})
+                if lookup_mode["value"] == "page_token":
+                    return FakeResponse({"id": "page_1", "name": "Uboost Marketing"})
+                return FakeResponse({"error": {"message": "Unexpected direct lookup"}})
             if "/page_1/photos" in request.full_url:
                 return FakeResponse({"id": "photo_1", "post_id": "page_1_post_1"})
             if "/page_1/videos" in request.full_url:
@@ -5916,6 +5925,18 @@ class IntegrationTestSuite:
             video_body = json.loads(video_result.get("stdout") or "{}")
             self.assert_true("/page_1/videos" in requests[-1].full_url and video_body.get("object_story_id") == "page_1_987654321", "Direct publishing can create unpublished Page video posts for ads")
             self.assert_true(b"file_url=https%3A%2F%2Fcdn.example%2Fvideo.mp4" in requests[-1].data and b"description=Video+listo" in requests[-1].data, "Page video direct publishing sends the video URL and buyer-facing post text")
+            requests.clear()
+            lookup_mode["value"] = "direct_page_lookup"
+            direct_lookup_result = client.create_page_post("page_1", message="Lookup directo", image_url="https://cdn.example/ad.jpg", approved=True)
+            direct_lookup_body = json.loads(direct_lookup_result.get("stdout") or "{}")
+            self.assert_true(direct_lookup_body.get("object_story_id") == "page_1_post_1", "Direct publishing falls back to specific Page lookup when /me/accounts does not list the Page")
+            self.assert_true(any("/page_1?" in item.full_url for item in requests) and b"access_token=direct-page-token" in requests[-1].data, "Specific Page lookup can supply the Page access token for publishing")
+            requests.clear()
+            lookup_mode["value"] = "page_token"
+            page_token_result = client.create_page_post("page_1", message="Token de pagina directo", image_url="https://cdn.example/ad.jpg", approved=True)
+            page_token_body = json.loads(page_token_result.get("stdout") or "{}")
+            self.assert_true(page_token_body.get("object_story_id") == "page_1_post_1", "Direct publishing accepts a saved direct Page access token")
+            self.assert_true(any("/page_1?" in item.full_url for item in requests) and b"access_token=publish-token" in requests[-1].data, "Direct Page token fallback uses the saved publishing token when no child access token is returned")
         finally:
             social_flow_client.urllib.request.urlopen = original_urlopen
             if image_path.exists():

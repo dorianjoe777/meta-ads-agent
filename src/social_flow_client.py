@@ -113,8 +113,30 @@ class SocialFlowClient:
         body = result.get("body") if isinstance(result.get("body"), dict) else {}
         for page in body.get("data") or []:
             if str(page.get("id") or "") == page_id:
-                return {"ok": True, "access_token": page.get("access_token") or user_token, "page": page}
-        return {"ok": False, "access_token": user_token, "page": {}, "error": "page_not_found", "lookup": body}
+                return {"ok": True, "access_token": page.get("access_token") or user_token, "page": page, "source": "me_accounts"}
+        direct = self.get_graph(page_id, {"fields": "id,name,access_token,tasks,perms"}, access_token=user_token)
+        direct_body = direct.get("body") if isinstance(direct.get("body"), dict) else {}
+        if direct.get("ok") and str(direct_body.get("id") or "") == page_id:
+            return {
+                "ok": True,
+                "access_token": direct_body.get("access_token") or user_token,
+                "page": direct_body,
+                "source": "direct_page_lookup",
+                "used_direct_page_token": not bool(direct_body.get("access_token")),
+            }
+        return {
+            "ok": False,
+            "access_token": user_token,
+            "page": {},
+            "error": "page_not_found",
+            "lookup_methods": {
+                "me_accounts_ok": bool(result.get("ok")),
+                "me_accounts_count": len(body.get("data") or []) if isinstance(body.get("data"), list) else 0,
+                "direct_page_lookup_ok": bool(direct.get("ok")),
+                "direct_page_lookup_status": direct.get("status"),
+                "direct_page_lookup_error": (direct_body.get("error") or {}).get("message", "") if isinstance(direct_body.get("error"), dict) else "",
+            },
+        }
 
     @staticmethod
     def page_post_id_from_body(page_id, body):
@@ -379,7 +401,18 @@ class SocialFlowClient:
                     return self.graph_local_record(record, "local/meta-page-post", {"ok": False, "error": "missing_page_id"}, ok=False, status=1)
                 page_lookup = self.page_access_token(page_id, publishing_token)
                 if not page_lookup.get("ok"):
-                    return self.graph_local_record(record, "local/meta-page-post", {"ok": False, "error": page_lookup.get("error") or "page_not_found", "message": "The publishing token cannot access this Facebook Page."}, ok=False, status=1)
+                    return self.graph_local_record(
+                        record,
+                        "local/meta-page-post",
+                        {
+                            "ok": False,
+                            "error": page_lookup.get("error") or "page_not_found",
+                            "message": "The publishing token cannot access this Facebook Page. Make sure the saved publishing token is a user/system token that can list the Page, or a direct Page access token for this exact Page.",
+                            "lookup_methods": page_lookup.get("lookup_methods", {}),
+                        },
+                        ok=False,
+                        status=1,
+                    )
                 page_token = page_lookup.get("access_token") or publishing_token
                 message = self.flag(args, "--message", "")
                 link = self.flag(args, "--link", "")
