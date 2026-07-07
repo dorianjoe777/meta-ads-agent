@@ -1,5 +1,5 @@
 import { normalizeEntitlements, signedReleaseGrant, validFormat } from "../../lib/license.js";
-import { buyerFacingImprovements } from "../../lib/download-portal.js";
+import { buyerFacingImprovements, releaseAssetByName, releaseWithDiscoveredAssets } from "../../lib/download-portal.js";
 import { deviceRegistrations, isRegisteredDevice, readLicense, readReleases, registerDevice, resetDeviceRegistrations, writeLicense } from "../../lib/store.js";
 
 function baseUrl(request) {
@@ -85,8 +85,9 @@ export default async function handler(request, response) {
     await writeLicense(record);
 
     const releases = await readReleases();
-    const release = releases.channels?.[channel];
-    const asset = release?.assets?.[assetName];
+    const rawRelease = releases.channels?.[channel];
+    const release = rawRelease ? await releaseWithDiscoveredAssets(rawRelease) : null;
+    const asset = releaseAssetByName(release, assetName);
     if (!release || !asset) {
       return friendlyFailure(response, "release_missing", "No encontre la descarga publicada para este instalador. Contacta soporte.");
     }

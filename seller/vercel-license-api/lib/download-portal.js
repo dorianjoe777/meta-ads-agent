@@ -159,13 +159,30 @@ export async function releaseWithDiscoveredAssets(release = {}) {
     return {
       ...release,
       assets: {
-        ...discovered,
-        ...(release.assets || {})
+        ...(release.assets || {}),
+        ...discovered
       }
     };
   } catch {
     return release;
   }
+}
+
+export function releaseAssetByName(release = {}, assetName = "") {
+  const desired = String(assetName || "").trim();
+  if (!desired) return null;
+  const assets = release.assets || {};
+  if (assets[desired]) return assets[desired];
+  for (const [key, asset] of Object.entries(assets)) {
+    const names = [
+      key,
+      asset?.asset_name,
+      asset?.name,
+      asset?.filename
+    ].map((value) => String(value || "").trim()).filter(Boolean);
+    if (names.includes(desired)) return asset;
+  }
+  return null;
 }
 
 function assetScore(assetName, filename, platform) {
