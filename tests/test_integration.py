@@ -5914,6 +5914,13 @@ class IntegrationTestSuite:
                 return FakeResponse({"id": "photo_1", "post_id": "page_1_post_1"})
             if "/page_1/videos" in request.full_url:
                 return FakeResponse({"id": "987654321"})
+            if "/987654321?" in request.full_url:
+                return FakeResponse({
+                    "id": "987654321",
+                    "post_id": "post_987654321",
+                    "picture": "https://cdn.example/video-thumb.jpg",
+                    "status": {"processing_phase": {"status": "complete"}, "publishing_phase": {"status": "complete"}},
+                })
             return FakeResponse({"id": "ok"})
 
         try:
@@ -5930,8 +5937,10 @@ class IntegrationTestSuite:
             requests.clear()
             video_result = client.create_page_post("page_1", message="Video listo", video_url="https://cdn.example/video.mp4", approved=True)
             video_body = json.loads(video_result.get("stdout") or "{}")
-            self.assert_true("/page_1/videos" in requests[-1].full_url and video_body.get("object_story_id") == "page_1_987654321", "Direct publishing can create unpublished Page video posts for ads")
-            self.assert_true(b"file_url=https%3A%2F%2Fcdn.example%2Fvideo.mp4" in requests[-1].data and b"description=Video+listo" in requests[-1].data, "Page video direct publishing sends the video URL and buyer-facing post text")
+            video_publish_request = next(item for item in requests if "/page_1/videos" in item.full_url)
+            self.assert_true(video_body.get("video_id") == "987654321" and video_body.get("object_story_id") == "page_1_post_987654321", "Direct publishing resolves Page videos to the real promotable post object_story_id")
+            self.assert_true(video_body.get("page_post_id") == "post_987654321" and video_body.get("thumbnail_url") == "https://cdn.example/video-thumb.jpg", "Page video direct publishing stores the real post id and thumbnail URL returned by Meta")
+            self.assert_true(b"file_url=https%3A%2F%2Fcdn.example%2Fvideo.mp4" in video_publish_request.data and b"description=Video+listo" in video_publish_request.data, "Page video direct publishing sends the video URL and buyer-facing post text")
             requests.clear()
             lookup_mode["value"] = "direct_page_lookup"
             direct_lookup_result = client.create_page_post("page_1", message="Lookup directo", image_url="https://cdn.example/ad.jpg", approved=True)

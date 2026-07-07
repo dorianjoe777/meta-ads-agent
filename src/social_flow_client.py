@@ -2,6 +2,7 @@
 """Meta Graph API execution wrapper and Telegram notifications."""
 import json
 import mimetypes
+import time
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -177,6 +178,57 @@ class SocialFlowClient:
         if media_id and "_" not in media_id and str(page_id or "").strip():
             return f"{str(page_id).strip()}_{media_id}"
         return media_id
+
+    def page_video_ad_post_details(self, page_id, video_id, page_token):
+        """Resolve the real Page post ID for a Page video uploaded as an ads post.
+
+        The Page videos edge returns the video object ID first. That ID is not
+        always the promotable Page post ID. Meta exposes the actual post through
+        the video's `post_id` field; ad creatives must use page_id_post_id.
+        """
+        page_id = str(page_id or "").strip()
+        video_id = str(video_id or "").strip()
+        page_token = str(page_token or "").strip()
+        if not page_id or not video_id or not page_token:
+            return {"ok": False, "error": "missing_page_video_lookup_detail", "video_id": video_id}
+        last = {}
+        for attempt in range(1, 9):
+            result = self.get_graph(video_id, {"fields": "id,post_id,picture,status", "access_token": page_token}, access_token=page_token)
+            body = result.get("body") if isinstance(result.get("body"), dict) else {}
+            last = {
+                "ok": bool(result.get("ok")),
+                "status": result.get("status"),
+                "body": body,
+                "attempt": attempt,
+            }
+            raw_post_id = str(body.get("post_id") or "").strip()
+            object_story_id = raw_post_id if raw_post_id.startswith(f"{page_id}_") else (f"{page_id}_{raw_post_id}" if raw_post_id else "")
+            if result.get("ok") and object_story_id:
+                return {
+                    "ok": True,
+                    "video_id": video_id,
+                    "page_post_id": raw_post_id,
+                    "object_story_id": object_story_id,
+                    "thumbnail_url": str(body.get("picture") or "").strip(),
+                    "status": body.get("status") if isinstance(body.get("status"), dict) else {},
+                    "attempt": attempt,
+                }
+            video_status = body.get("status") if isinstance(body.get("status"), dict) else {}
+            phase_statuses = [
+                str((video_status.get(key) or {}).get("status") or "").lower()
+                for key in ("uploading_phase", "processing_phase", "publishing_phase")
+                if isinstance(video_status.get(key), dict)
+            ]
+            if "error" in phase_statuses or "failed" in phase_statuses:
+                break
+            if attempt < 8:
+                time.sleep(2)
+        return {
+            "ok": False,
+            "error": "video_post_id_not_ready",
+            "video_id": video_id,
+            "last_lookup": last,
+        }
 
     def perform_graph_request(self, request):
         try:
@@ -449,6 +501,7 @@ class SocialFlowClient:
                 video_path = self.flag(args, "--video-path", "")
                 video_url = self.flag(args, "--video-url", "")
                 unpublished_type = self.flag(args, "--unpublished-content-type", "ADS_POST") or "ADS_POST"
+                is_video_post = bool(video_path or video_url)
                 if video_path:
                     if not Path(video_path).exists():
                         return self.graph_local_record(record, "local/meta-page-post", {"ok": False, "error": "video_file_missing", "path": video_path}, ok=False, status=1)
@@ -487,9 +540,31 @@ class SocialFlowClient:
                     result = self.post_graph_form(endpoint, fields)
                 body = result.get("body") if isinstance(result.get("body"), dict) else {}
                 if result.get("ok"):
-                    post_id = self.page_post_id_from_body(page_id, body)
-                    body = {**body, "ok": bool(post_id), "post_id": post_id, "object_story_id": post_id, "page_id": page_id, "page_name": (page_lookup.get("page") or {}).get("name", "")}
-                    result = {**result, "ok": bool(post_id), "status": result.get("status") if post_id else 1, "body": body}
+                    if is_video_post:
+                        video_id = str(body.get("id") or body.get("video_id") or "").strip()
+                        details = self.page_video_ad_post_details(page_id, video_id, page_token)
+                        object_story_id = str(details.get("object_story_id") or "").strip()
+                        body = {
+                            **body,
+                            "ok": bool(object_story_id),
+                            "video_id": video_id,
+                            "page_post_id": details.get("page_post_id") or "",
+                            "post_id": object_story_id,
+                            "object_story_id": object_story_id,
+                            "thumbnail_url": details.get("thumbnail_url") or "",
+                            "video_status": details.get("status") or {},
+                            "video_post_lookup": details,
+                            "page_id": page_id,
+                            "page_name": (page_lookup.get("page") or {}).get("name", ""),
+                        }
+                        if not object_story_id:
+                            body["error"] = details.get("error") or "video_post_id_not_ready"
+                            body["message"] = "Meta created the Page video, but the promotable Page post ID was not ready yet. Retry the approval in a moment."
+                        result = {**result, "ok": bool(object_story_id), "status": result.get("status") if object_story_id else 1, "body": body}
+                    else:
+                        post_id = self.page_post_id_from_body(page_id, body)
+                        body = {**body, "ok": bool(post_id), "post_id": post_id, "object_story_id": post_id, "page_id": page_id, "page_name": (page_lookup.get("page") or {}).get("name", "")}
+                        result = {**result, "ok": bool(post_id), "status": result.get("status") if post_id else 1, "body": body}
                 return self.graph_record(record, endpoint, result)
             if not access_token:
                 return self.graph_local_record(record, "local/meta-token", {"ok": False, "error": "missing_meta_access_token"}, ok=False, status=1)
