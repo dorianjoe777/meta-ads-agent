@@ -437,6 +437,7 @@ def normalize_creative_controls(payload):
         "image_hash": str(payload.get("image_hash") or "").strip(),
         "image_url": str(payload.get("image_url") or "").strip(),
         "video_url": str(payload.get("video_url") or "").strip(),
+        "lead_gen_form_id": str(payload.get("lead_gen_form_id") or payload.get("lead_form_id") or payload.get("instant_form_id") or payload.get("meta_lead_form_id") or payload.get("form_id") or "").strip(),
         "cta_link": str(payload.get("cta_link") or payload.get("call_to_action_link") or "").strip(),
         "format": str(payload.get("creative_format") or payload.get("format") or "").strip().lower(),
         "use_direct_publishing": direct_preference,

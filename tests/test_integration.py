@@ -5775,6 +5775,11 @@ class IntegrationTestSuite:
         self.assert_true(args[args.index("--image-url") + 1] == "https://cdn.example/ad.jpg" and args[args.index("--video-url") + 1] == "https://cdn.example/ad.mp4", "Creative creation supports image and video URLs")
         self.assert_true(args[args.index("--cta-link") + 1] == "https://buyer.example/buy", "Creative creation supports CTA link override")
 
+        captured.clear()
+        client.create_creative("act_999", "Lead Form Creative", "111", "", "Texto", "Titular", "", "SIGN_UP", image_url="https://cdn.example/lead.jpg", lead_gen_form_id="form_123", approved=True)
+        args, _ = captured[0]
+        self.assert_true(args[args.index("--lead-gen-form-id") + 1] == "form_123" and args[args.index("--link") + 1] == "", "Creative creation supports Meta lead form IDs without requiring a website link")
+
     def test_social_flow_uses_graph_api_directly(self):
         """Test live Meta actions execute through direct Meta Graph only."""
         print("\nTesting Meta Graph Direct Execution...")
@@ -6156,6 +6161,24 @@ class IntegrationTestSuite:
             self.assert_true(upload_body["file_url"][0] == "https://cdn.example/video.mp4", "Video upload uses Meta's file_url field")
             self.assert_true(json.loads(creative["stdout"])["id"] == "creative_1", "Graph API creates video creatives")
             self.assert_true(story["video_data"]["video_id"] == "vid_1" and story["video_data"]["call_to_action"]["value"]["link"] == "https://buyer.example", "Video creative uses object_story_spec.video_data with CTA link")
+            requests.clear()
+            lead_creative = client.create_creative(
+                "act_999",
+                "Lead Form Creative",
+                "111",
+                "",
+                "Texto lead",
+                "Regístrate",
+                "",
+                "SIGN_UP",
+                image_url="https://cdn.example/lead.jpg",
+                lead_gen_form_id="form_123",
+                approved=True,
+            )
+            lead_body = urllib.parse.parse_qs(requests[0].data.decode("utf-8"))
+            lead_story = json.loads(lead_body["object_story_spec"][0])
+            self.assert_true(json.loads(lead_creative["stdout"])["id"] == "creative_1", "Graph API creates lead form creatives")
+            self.assert_true(lead_story["link_data"]["link"] == "https://www.facebook.com/111" and lead_story["link_data"]["call_to_action"]["value"]["lead_gen_form_id"] == "form_123", "Lead form creative uses lead_gen_form_id instead of a website URL CTA")
             requests.clear()
             existing = client.create_creative("act_999", "Existing Post Creative", "111", "", "", "", "", "", object_story_id="111_222", approved=True)
             existing_body = urllib.parse.parse_qs(requests[0].data.decode("utf-8"))
@@ -6639,6 +6662,38 @@ class IntegrationTestSuite:
             self.assert_true(whatsapp_campaign[1][2] == "OUTCOME_ENGAGEMENT", "Click-to-WhatsApp campaign uses an engagement-compatible objective")
             self.assert_true(whatsapp_adset[2]["destination_type"] == "WHATSAPP", "Click-to-WhatsApp ad set carries the WhatsApp destination type")
             self.assert_true(whatsapp_post[2]["message_destination"] == "WHATSAPP" and whatsapp_post[2]["link"] == "https://api.whatsapp.com/send", "Click-to-WhatsApp hidden post carries the message destination instead of requiring a website URL")
+
+            campaign_path.write_text(
+                json.dumps(
+                    {
+                        "name": "Lead Form Stack",
+                        "objective": "LEAD_FORM",
+                        "budget": {"daily": 20},
+                        "ad_sets": [{"name": "Lead Form Stack - Core", "targeting": {"locations": ["MX"]}, "budget": 20}],
+                        "ad": {
+                            "primary_text": "Déjanos tus datos",
+                            "headline": "Recibe información",
+                            "image_url": "https://cdn.example/lead-form-ad.jpg",
+                            "lead_gen_form_id": "form_123",
+                            "use_direct_publishing": True,
+                            "final_status": "PAUSED",
+                            "active_spend_confirmed": False,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            lead_form_client = DirectPublishingClient()
+            lead_form_result = execute_campaign_creation(str(campaign_path), lead_form_client, approved=True)
+            lead_form_calls = [call[0] for call in lead_form_client.calls]
+            lead_form_campaign = next(call for call in lead_form_client.calls if call[0] == "create_campaign")
+            lead_form_adset = next(call for call in lead_form_client.calls if call[0] == "create_adset")
+            lead_form_creative = next(call for call in lead_form_client.calls if call[0] == "create_creative")
+            self.assert_true(lead_form_result["ok"], "Lead form campaign can be created without a website landing URL")
+            self.assert_true("create_page_post" not in lead_form_calls, "Lead form campaigns use the native lead form creative path instead of direct publishing")
+            self.assert_true(lead_form_campaign[1][2] == "LEAD_GENERATION", "Lead form campaign uses the Meta lead-generation objective")
+            self.assert_true(lead_form_adset[1][5] == "LEAD_GENERATION" and lead_form_adset[2]["promoted_object"]["page_id"] == "111", "Lead form ad set optimizes for leads and includes page_id as promoted object")
+            self.assert_true(lead_form_creative[2]["lead_gen_form_id"] == "form_123" and lead_form_creative[1][3] == "https://www.facebook.com/111", "Lead form creative receives the lead form ID and a safe Page link fallback")
         finally:
             if ad_before:
                 ad_path.write_text(ad_before, encoding="utf-8")

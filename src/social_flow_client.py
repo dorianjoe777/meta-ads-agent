@@ -458,6 +458,10 @@ class SocialFlowClient:
             "MENSAJE": "MESSAGE_PAGE",
             "MESSAGE": "MESSAGE_PAGE",
             "SIGNUP": "SIGN_UP",
+            "REGISTRO": "SIGN_UP",
+            "REGISTRARME": "SIGN_UP",
+            "INSCRIBIRME": "SIGN_UP",
+            "SOLICITAR_INFO": "SIGN_UP",
         }
         return aliases.get(cta, cta or "LEARN_MORE")
 
@@ -499,6 +503,11 @@ class SocialFlowClient:
         if normalized == "MESSENGER" and str(page_id or "").strip():
             return f"https://m.me/{str(page_id).strip()}"
         return ""
+
+    @staticmethod
+    def default_lead_form_link(page_id=""):
+        page = str(page_id or "").strip()
+        return f"https://www.facebook.com/{page}" if page else "https://www.facebook.com"
 
     @classmethod
     def destination_type_for_message_destination(cls, destination):
@@ -927,10 +936,13 @@ class SocialFlowClient:
                     image_hash = self.flag(args, "--image-hash", "")
                     image_url = self.flag(args, "--image-url", "")
                     cta = self.flag(args, "--call-to-action", "")
+                    lead_gen_form_id = self.flag(args, "--lead-gen-form-id", "")
                     story = {
                         "page_id": self.flag(args, "--page-id", ""),
                         **({"instagram_actor_id": self.flag(args, "--instagram-actor-id", "")} if self.flag(args, "--instagram-actor-id", "") else {}),
                     }
+                    if lead_gen_form_id and not link:
+                        link = self.default_lead_form_link(story.get("page_id", ""))
                     if video_id:
                         video_data = {
                             "video_id": video_id,
@@ -939,7 +951,9 @@ class SocialFlowClient:
                         }
                         if image_url:
                             video_data["image_url"] = image_url
-                        if cta:
+                        if lead_gen_form_id:
+                            video_data["call_to_action"] = {"type": self.normalize_call_to_action(cta or "SIGN_UP"), "value": {"lead_gen_form_id": lead_gen_form_id}}
+                        elif cta:
                             video_data["call_to_action"] = {"type": cta, "value": {"link": link}}
                         story["video_data"] = video_data
                     else:
@@ -952,7 +966,9 @@ class SocialFlowClient:
                             link_data["image_hash"] = image_hash
                         if image_url:
                             link_data["picture"] = image_url
-                        if cta:
+                        if lead_gen_form_id:
+                            link_data["call_to_action"] = {"type": self.normalize_call_to_action(cta or "SIGN_UP"), "value": {"lead_gen_form_id": lead_gen_form_id}}
+                        elif cta:
                             link_data["call_to_action"] = {"type": cta, "value": {"link": link}}
                         story["link_data"] = link_data
                     object_story_spec = json.dumps(story)
@@ -1172,6 +1188,7 @@ class SocialFlowClient:
         video_id="",
         cta_link="",
         object_story_id="",
+        lead_gen_form_id="",
         approved=False,
     ):
         args = ["marketing", "create-creative"]
@@ -1201,6 +1218,8 @@ class SocialFlowClient:
                 args.extend(["--call-to-action", cta])
             if cta_link:
                 args.extend(["--cta-link", cta_link])
+            if lead_gen_form_id:
+                args.extend(["--lead-gen-form-id", lead_gen_form_id])
         args.extend(["--json", "--yes"])
         if instagram_actor_id:
             args.extend(["--instagram-actor-id", instagram_actor_id])

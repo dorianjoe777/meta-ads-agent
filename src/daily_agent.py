@@ -416,6 +416,11 @@ def campaign_objective_for_social(objective):
         "SALES": "OUTCOME_SALES",
         "LEADS": "LEAD_GENERATION",
         "LEAD_GENERATION": "LEAD_GENERATION",
+        "LEAD_FORM": "LEAD_GENERATION",
+        "LEAD_FORMS": "LEAD_GENERATION",
+        "INSTANT_FORM": "LEAD_GENERATION",
+        "INSTANT_FORMS": "LEAD_GENERATION",
+        "FORMS": "LEAD_GENERATION",
         "MESSAGES": "OUTCOME_ENGAGEMENT",
         "MESSAGE": "OUTCOME_ENGAGEMENT",
         "CONVERSATIONS": "OUTCOME_ENGAGEMENT",
@@ -424,6 +429,14 @@ def campaign_objective_for_social(objective):
         "ENGAGEMENT": "OUTCOME_ENGAGEMENT",
     }
     return mapping.get(str(objective or "").upper(), "OUTCOME_SALES")
+
+
+def lead_gen_form_id_from_plan(ad_plan):
+    for key in ("lead_gen_form_id", "lead_form_id", "instant_form_id", "meta_lead_form_id", "form_id"):
+        value = str((ad_plan or {}).get(key) or "").strip()
+        if value:
+            return value
+    return ""
 
 
 def message_destination_from_plan(ad_plan):
@@ -442,6 +455,18 @@ def message_destination_from_plan(ad_plan):
     if "instagram" in text and ("direct" in text or "dm" in text or "mensaje" in text or "message" in text):
         return "INSTAGRAM_DIRECT"
     return ""
+
+
+def adset_optimization_goal_for_campaign(adset, campaign, lead_gen_form_id="", message_destination=""):
+    explicit = str((adset or {}).get("optimization_goal") or "").strip()
+    if explicit:
+        return SocialFlowClient.normalize_optimization_goal(explicit)
+    objective = str((campaign or {}).get("objective") or "").upper()
+    if lead_gen_form_id or objective in {"LEADS", "LEAD_GENERATION", "LEAD_FORM", "LEAD_FORMS", "INSTANT_FORM", "INSTANT_FORMS", "FORMS"}:
+        return "LEAD_GENERATION"
+    if message_destination:
+        return "CONVERSATIONS"
+    return "LINK_CLICKS"
 
 
 def targeting_for_social(targeting):
@@ -517,6 +542,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
     ad_config = read_json(AD_CONFIG_FILE, {})
     destination = ad_config.get("creative", {}).get("destination", {})
     ad_plan = campaign.get("ad") or {}
+    lead_gen_form_id = lead_gen_form_id_from_plan(ad_plan)
     message_destination = message_destination_from_plan(ad_plan)
     final_status = str(ad_plan.get("final_status") or "PAUSED").upper()
     if final_status not in {"PAUSED", "ACTIVE"}:
@@ -530,7 +556,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         missing.append("META_AD_ACCOUNT_ID")
     if not destination.get("page_id") and not ad_plan.get("object_story_id"):
         missing.append("Facebook Page ID")
-    if not (ad_plan.get("landing_url") or destination.get("url") or ad_plan.get("object_story_spec") or ad_plan.get("object_story_id") or message_destination):
+    if not (ad_plan.get("landing_url") or destination.get("url") or ad_plan.get("object_story_spec") or ad_plan.get("object_story_id") or message_destination or lead_gen_form_id):
         missing.append("landing URL")
     if not creative_source_available(ad_plan):
         missing.append("creative image path, image hash, image URL, video URL, object_story_spec, or object_story_id")
@@ -609,14 +635,17 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         adset_targeting = dict(adset.get("targeting") or {})
         if adset.get("placements") is not None and not adset_targeting.get("placements"):
             adset_targeting["placements"] = adset.get("placements")
+        promoted_object = SocialFlowClient.normalize_promoted_object(adset.get("promoted_object") or {})
+        if lead_gen_form_id and destination.get("page_id") and not promoted_object.get("page_id"):
+            promoted_object = {**promoted_object, "page_id": destination.get("page_id")}
         result = client.create_adset(
             campaign_id,
             adset.get("name", "Ad Set"),
             targeting_for_social(adset_targeting),
             daily_budget,
             status_plan.get("adset", adset.get("status", "PAUSED")),
-            SocialFlowClient.normalize_optimization_goal(adset.get("optimization_goal") or "LINK_CLICKS"),
-            promoted_object=SocialFlowClient.normalize_promoted_object(adset.get("promoted_object") or {}),
+            adset_optimization_goal_for_campaign(adset, campaign, lead_gen_form_id, message_destination),
+            promoted_object=promoted_object,
             billing_event=adset.get("billing_event") or "IMPRESSIONS",
             bidding=SocialFlowClient.normalize_bidding_config(adset.get("bidding") or {}),
             lifetime_budget_cents=lifetime_budget,
@@ -637,7 +666,8 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
     image_hash = ad_plan.get("image_hash") or ""
     video_id = ad_plan.get("video_id") or ""
     message_destination_link = SocialFlowClient.default_message_destination_link(message_destination, destination.get("page_id", ""))
-    link = ad_plan.get("landing_url") or message_destination_link or destination.get("url", "")
+    lead_form_link = SocialFlowClient.default_lead_form_link(destination.get("page_id", "")) if lead_gen_form_id else ""
+    link = ad_plan.get("landing_url") or message_destination_link or lead_form_link or destination.get("url", "")
     body_text = ad_plan.get("primary_text") or f"Conoce {campaign.get('name', 'esta oferta')}."
     headline = ad_plan.get("headline") or campaign.get("name", "Nueva oferta")
     reuse_prior_object_story_id = not prior_result_missing_website_url(prior_result)
@@ -651,6 +681,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
     direct_missing = direct_publishing_missing_requirements(ad_plan, destination, client, video_id)
     should_create_native_page_post = (
         not object_story_id
+        and not lead_gen_form_id
         and not direct_missing
         and direct_preference is not False
         and bool(getattr(client.config, "meta_publishing_access_token", ""))
@@ -734,6 +765,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         video_id=video_id,
         cta_link=ad_plan.get("cta_link") or "",
         object_story_id=object_story_id,
+        lead_gen_form_id=lead_gen_form_id,
         approved=approved,
     )
     creative_id = social_id_from_result(creative_result)
@@ -768,6 +800,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
                     video_id="",
                     cta_link=ad_plan.get("cta_link") or "",
                     object_story_id=object_story_id,
+                    lead_gen_form_id=lead_gen_form_id,
                     approved=approved,
                 )
                 creative_id = social_id_from_result(creative_result)
