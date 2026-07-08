@@ -853,6 +853,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         cta_link=ad_plan.get("cta_link") or "",
         object_story_id=creative_object_story_id,
         lead_gen_form_id=lead_gen_form_id,
+        prefer_publishing_token=bool(direct_video_story_spec),
         approved=approved,
     )
     creative_id = social_id_from_result(creative_result)
@@ -912,6 +913,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
                     cta_link=ad_plan.get("cta_link") or "",
                     object_story_id="" if retry_video_story_spec else object_story_id,
                     lead_gen_form_id=lead_gen_form_id,
+                    prefer_publishing_token=bool(retry_video_story_spec),
                     approved=approved,
                 )
                 creative_id = social_id_from_result(creative_result)

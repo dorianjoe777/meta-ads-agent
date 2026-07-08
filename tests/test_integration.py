@@ -5906,6 +5906,11 @@ class IntegrationTestSuite:
         self.assert_true("--page-id" not in args and "--image-hash" not in args, "Full object_story_spec path does not mix simple creative fields")
 
         captured.clear()
+        client.create_creative("act_999", "Live App Creative", "111", "https://buyer.example", "Texto", "Titular", "", "SHOP_NOW", object_story_spec=spec, prefer_publishing_token=True, approved=True)
+        args, _ = captured[0]
+        self.assert_true("--creative-token-source" in args and args[args.index("--creative-token-source") + 1] == "publishing", "Creative creation can prefer the live publishing app token for URL-aware direct publishing creatives")
+
+        captured.clear()
         client.create_creative("act_999", "Existing Post Creative", "111", "https://buyer.example", "Texto", "Titular", "", "SHOP_NOW", object_story_id="111_222", approved=True)
         args, _ = captured[0]
         self.assert_true(args[args.index("--object-story-id") + 1] == "111_222", "Creative creation supports existing Page posts through object_story_id")
@@ -6342,6 +6347,7 @@ class IntegrationTestSuite:
             live_actions_enabled = True
             meta_connector = "graph_api"
             meta_access_token = "meta-token"
+            meta_publishing_access_token = "publishing-token"
             meta_graph_api_version = "v24.0"
             ad_account_id = "act_999"
 
@@ -6458,6 +6464,24 @@ class IntegrationTestSuite:
             self.assert_true(upload_body["file_url"][0] == "https://cdn.example/video.mp4", "Video upload uses Meta's file_url field")
             self.assert_true(json.loads(creative["stdout"])["id"] == "creative_1", "Graph API creates video creatives")
             self.assert_true(story["video_data"]["video_id"] == "vid_1" and story["video_data"]["call_to_action"]["value"]["link"] == "https://buyer.example", "Video creative uses object_story_spec.video_data with CTA link")
+            requests.clear()
+            live_app_spec = {"page_id": "111", "video_data": {"video_id": "page_vid_1", "call_to_action": {"type": "LEARN_MORE", "value": {"link": "https://buyer.example"}}}}
+            live_app_creative = client.create_creative(
+                "act_999",
+                "Live App Video Creative",
+                "111",
+                "https://buyer.example",
+                "Texto",
+                "Titular",
+                "",
+                "LEARN_MORE",
+                object_story_spec=live_app_spec,
+                prefer_publishing_token=True,
+                approved=True,
+            )
+            live_app_body = urllib.parse.parse_qs(requests[0].data.decode("utf-8"))
+            self.assert_true(json.loads(live_app_creative["stdout"])["id"] == "creative_1" and live_app_creative.get("credential_source") == "publishing", "Graph API can create creatives with the live publishing app token")
+            self.assert_true(live_app_body["access_token"][0] == "publishing-token" and json.loads(live_app_body["object_story_spec"][0]) == live_app_spec, "Publishing-token creatives keep the URL-aware object_story_spec payload")
             requests.clear()
             lead_creative = client.create_creative(
                 "act_999",
@@ -6887,6 +6911,7 @@ class IntegrationTestSuite:
             self.assert_true(direct_page_post_call[2]["video_url"] == "https://cdn.example/video.mp4", "Video direct publishing passes the buyer video URL to Page post creation")
             self.assert_true(direct_page_post_call[2]["link"] == "https://buyer.example" and direct_page_post_call[2]["cta"] == "LEARN_MORE", "Video direct publishing passes the landing URL and CTA into the Page post")
             self.assert_true(direct_video_story["video_data"]["video_id"] == "page_video_1" and direct_video_story["video_data"]["call_to_action"]["value"]["link"] == "https://buyer.example" and not direct_creative_call[2]["object_story_id"], "Video direct publishing creates a website-aware video creative from the Page video")
+            self.assert_true(direct_creative_call[2]["prefer_publishing_token"] is True, "Video direct publishing creates the URL-aware creative with the live publishing app token when available")
             self.assert_true(direct_ad_call[2]["website_url"] == "https://buyer.example", "Final ad creation receives the landing URL for validation/debug tracing")
 
             retry_object_story_client = DirectPublishingClient()
@@ -6936,6 +6961,7 @@ class IntegrationTestSuite:
             self.assert_true(retry_missing_website_post[2]["link"] == "https://buyer.example", "Website-missing retries create the new hidden post with the landing URL")
             retry_missing_story = retry_missing_website_creative[2]["object_story_spec"]
             self.assert_true(retry_missing_story["video_data"]["video_id"] == "page_video_1" and retry_missing_story["video_data"]["call_to_action"]["value"]["link"] == "https://buyer.example", "Website-missing retries create a new website-aware video creative instead of reusing the old post without URL")
+            self.assert_true(retry_missing_website_creative[2]["prefer_publishing_token"] is True, "Website-missing retries use the live publishing app token for the replacement URL-aware creative")
 
             campaign_path.write_text(
                 json.dumps(

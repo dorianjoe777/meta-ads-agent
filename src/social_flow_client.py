@@ -1113,10 +1113,19 @@ class SocialFlowClient:
                 return self.graph_record(record, endpoint, self.post_graph_multipart(endpoint, fields, {"source": file_path}))
             if action == "create-creative":
                 endpoint = f"{ad_account_id}/adcreatives"
+                creative_token_source = self.flag(args, "--creative-token-source", "")
+                creative_access_token = access_token
+                credential_source = "primary"
+                if str(creative_token_source or "").strip().lower() in {"publishing", "direct_publishing", "page_publishing"}:
+                    publishing_token = str(getattr(self.config, "meta_publishing_access_token", "") or "").strip()
+                    if publishing_token:
+                        creative_access_token = publishing_token
+                        credential_source = "publishing"
                 fields = {
-                    "access_token": access_token,
+                    "access_token": creative_access_token,
                     "name": self.flag(args, "--name", "Ad Creative"),
                 }
+                record = {**record, "credential_source": credential_source}
                 object_story_id = self.flag(args, "--object-story-id", "")
                 if object_story_id:
                     fields["object_story_id"] = object_story_id
@@ -1423,12 +1432,15 @@ class SocialFlowClient:
         cta_link="",
         object_story_id="",
         lead_gen_form_id="",
+        prefer_publishing_token=False,
         approved=False,
     ):
         args = ["marketing", "create-creative"]
         if ad_account_id:
             args.append(ad_account_id)
         args.extend(["--name", name])
+        if prefer_publishing_token:
+            args.extend(["--creative-token-source", "publishing"])
         if object_story_id:
             args.extend(["--object-story-id", object_story_id])
         elif object_story_spec:
