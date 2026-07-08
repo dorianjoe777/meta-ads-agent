@@ -8,7 +8,7 @@ El comprador recibe una licencia por email. Esa es la unica clave comercial que 
 
 - Desbloquea configuracion real de comprador.
 - Permite crear campanas y preparar acciones reales.
-- Permite usar Piloto automatico si el comprador lo activa.
+- Permite preparar campañas en pausa y aprobar activación/gasto cuando corresponda.
 - Vincula la instalacion a este PC o VPS mediante un ID local.
 - En licencia Individual, permite transferir la activacion a otro equipo cuando el comprador cambia de PC o reinstala.
 

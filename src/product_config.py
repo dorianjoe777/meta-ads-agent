@@ -358,7 +358,7 @@ def load_config():
         license_signature_secret=os.environ.get("LICENSE_SIGNATURE_SECRET", ""),
         target_cpa=env_float("META_TARGET_CPA", 50),
         approval_required_over_pct=env_float("META_APPROVAL_REQUIRED_OVER_PCT", 20),
-        autonomy_mode=os.environ.get("META_AUTONOMY_MODE", "supervised").strip().lower() if os.environ.get("META_AUTONOMY_MODE", "supervised").strip().lower() in {"supervised", "autopilot"} else "supervised",
+        autonomy_mode="approval",
         auto_budget_change_pct=env_float("META_AUTO_BUDGET_CHANGE_PCT", 10),
         auto_budget_change_amount=env_float("META_AUTO_BUDGET_CHANGE_AMOUNT", 25),
         auto_pause_max_spend=env_float("META_AUTO_PAUSE_MAX_SPEND", 100),

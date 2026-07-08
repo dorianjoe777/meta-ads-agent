@@ -83,8 +83,8 @@ Handles fatigue and creative refresh:
 Checks the product's safety boundaries before any action:
 
 - Dashboard password required for protected dashboard actions
-- `Piloto automatico` requires its real-action switch before it may mutate an account by itself
-- `Con supervision` reads real data and may execute only the exact action the buyer explicitly approves
+- Fully paused/no-spend campaign structures may be prepared when the buyer asks for them, without a second approval ceremony
+- Activating, spending, publishing visibly, deleting, sending customer/customer-event data, or mutating live account state requires explicit buyer approval
 - API keys and tokens must never be revealed
 - Before enabling any verified-signal, CAPI, offline/CRM, WhatsApp Business Messaging CAPI, custom-audience, or hashed-customer-identifier send to Meta, explain that the buyer should update their privacy notice/policy and have the proper consent/legal basis. Hashing reduces exposure but does not remove privacy duties.
 - Budget and pause/reactivate actions should be approved when material

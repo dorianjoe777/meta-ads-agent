@@ -182,9 +182,7 @@ def calculate_recommendations(campaigns):
             "recommended_budget": money(decision.get("recommended_budget")),
             "change_pct": round(change_pct, 1),
             "proposal_only": decision.get("shadow_mode", True) and decision.get("action") != "observe",
-            "requires_approval": decision.get("action") != "observe" and not decision.get("shadow_mode", True) and (
-                config.autonomy_mode == "supervised" or abs(change_pct) > config.approval_required_over_pct
-            ),
+            "requires_approval": decision.get("action") != "observe" and not decision.get("shadow_mode", True),
             "reason": decision.get("reason"),
             "health": campaign.get("health"),
             "decision": decision.get("decision"),
@@ -1402,7 +1400,7 @@ def build_action_summary(recommendations, auto_paused, proposed_pauses, fatigue,
     if auto_paused:
         already_done.append({
             "type": "auto_pause",
-            "label": f"Paused {len(auto_paused)} clear bleeder(s) under autopilot rules.",
+            "label": f"Paused {len(auto_paused)} clear bleeder(s) after approval.",
             "items": auto_paused[:5],
         })
     if creative_refreshes:
@@ -1754,18 +1752,12 @@ def run_daily():
                 "evidence_gate": recommendation.get("evidence_gate"),
                 "shadow_mode": recommendation.get("shadow_mode", True),
             }
-            may_execute = (
-                config.autonomy_mode == "autopilot"
-                and config.live
-                and config.live_actions_enabled
-                and float(campaign.get("spend", 0) or 0) <= config.auto_pause_max_spend
-                and recommendation.get("mutation_allowed")
-            )
+            may_execute = False
             if may_execute and config.license_required_for_live and not license_status(config).get("valid"):
                 may_execute = False
                 item["guardrail_reason"] = "license_required_for_live"
             if not may_execute:
-                item.setdefault("guardrail_reason", "shadow_mode" if recommendation.get("shadow_mode", True) else "supervised_or_outside_autopilot_rules")
+                item.setdefault("guardrail_reason", "shadow_mode" if recommendation.get("shadow_mode", True) else "approval_required")
                 if recommendation.get("shadow_mode", True):
                     proposed_pauses.append(item)
                     log_action("shadow_pause_proposal", item, "observing")

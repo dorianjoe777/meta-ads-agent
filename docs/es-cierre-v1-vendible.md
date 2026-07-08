@@ -13,7 +13,7 @@ El producto ya tiene:
 - Chat principal con manager IA.
 - Telegram opcional para hablar y aprobar desde el teléfono.
 - Creación de campañas completas con aprobación.
-- Modo `Con supervisión` y `Piloto automático`.
+- Regla simple de aprobación: preparar en pausa; activar/gastar solo con luz verde.
 - Reglas de guardrails configurables.
 - Instaladores: Mac `.pkg`, Windows vía NSIS, Linux `.tar.gz`.
 - Docker con Python, Node y Codex CLI.
@@ -128,7 +128,7 @@ Sí puedes decir:
 ```text
 Te ayuda a tomar mejores decisiones, detectar gasto débil,
 renovar creativos y operar tu cuenta con menos estrés.
-En piloto automático puede ejecutar acciones permitidas bajo tus reglas.
+Puede dejar campañas listas en pausa y pedirte luz verde antes de activar o gastar.
 ```
 
 ## Orden de cierre

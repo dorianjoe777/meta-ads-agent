@@ -2,7 +2,7 @@
 
 A local/VPS Meta Ads operator for daily monitoring, budget recommendations, creative refresh drafts, approval-based actions, and a warm manager-style chat.
 
-The product is designed for business owners and marketers who want automation without handing control of their ad account to a black-box SaaS. It starts **Con supervisión**: it reads real Meta data, explains what is happening, and executes only an exact approved action. **Piloto automático** can execute allowed actions only after setup, license validation and guardrails are ready.
+The product is designed for business owners and marketers who want automation without handing control of their ad account to a black-box SaaS. Admira follows one simple approval rule: it may analyze, recommend, and create fully paused/no-spend campaign structures after the buyer asks; activation, spend, visible publishing, deletion, customer-data sending, or live-account mutations require explicit approval.
 
 ## Quick Start
 
@@ -41,11 +41,11 @@ Use the dashboard `Configuración` / `Setup` tab. The guided path is:
 3. Choose the ad account.
 4. Select or save Facebook Page, Instagram if available, and landing URL.
 5. Pull read-only live insights and confirm the dashboard shows `Datos reales de Meta`.
-6. Run one supervised daily check.
+6. Run one daily check with real data.
 7. Confirm approvals work.
 8. Create the buyer-owned dashboard password.
-9. Enable Piloto automatico only if the buyer wants allowed actions executed under their rules.
-10. Complete a small real-action smoke test.
+9. Prepare a paused campaign structure.
+10. Activate or spend only after the buyer approves clearly.
 
 ## Important Commands
 
@@ -60,8 +60,8 @@ python3 src/daily_agent.py approve APPROVAL_ID
 
 ## Safety Defaults
 
-- `META_ADS_AGENT_MODE=dry-run` shown to buyers as `Con supervisión`
-- `LIVE_ACTIONS_ENABLED=false`
+- Buyer-facing behavior is approval-based: paused creation is allowed; activation/spend is approval-protected.
+- Legacy internal compatibility keeps `META_ADS_AGENT_MODE=dry-run` and `LIVE_ACTIONS_ENABLED=false`.
 - `DASHBOARD_HOST=127.0.0.1`
 - Buyer-created dashboard password required for protected actions
 - `LICENSE_SERVER_URL` is required for buyer release builds.
@@ -75,7 +75,7 @@ python3 src/daily_agent.py approve APPROVAL_ID
 - `docs/es-activar-licencia.md`
 - `docs/es-conectar-meta.md`
 - `docs/es-crear-primera-campana.md`
-- `docs/es-supervision-vs-piloto.md`
+- `docs/es-aprobaciones-y-seguridad.md`
 - `docs/es-checklist-anuncios-activos.md`
 - `docs/es-solucion-problemas.md`
 - `docs/es-usar-telegram.md`

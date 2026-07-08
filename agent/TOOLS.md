@@ -52,7 +52,7 @@ Do not expose WhatsApp sending as an ads-creation control. Direct messaging tool
 
 Verified-signal or CAPI sending is also protected. Before sending hashed customer identifiers, CRM/offline events, WhatsApp business messaging events, or custom-audience data to Meta, the manager must tell the buyer to update their privacy policy/notice and confirm they have the required consent/legal basis. This applies even when campaigns are message-only if Admira captures message/contact identifiers or sends conversation outcomes back to Meta.
 
-Protected real-account tools require the configured connector, a valid account, authorization, and the buyer's selected rules. If any gate is missing, the agent should explain what is blocked and offer `Con supervision` or the next setup step.
+Protected real-account tools require the configured connector, a valid account, authorization, and the approval rule for risky actions. If any gate is missing, explain what is blocked and offer the next setup step. Do not offer product modes; the simple rule is: prepare/create paused when safe, ask approval before activation, spend, visible publishing, deletion, customer-data sending, or live-account mutation.
 
 ## External AI Tools
 

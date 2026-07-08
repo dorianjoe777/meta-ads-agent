@@ -6,7 +6,7 @@ This skill lets Admira IA understand natural language and request product action
 
 Always answer the user naturally first. If the user asks for an action, decide whether enough information exists. If yes, return a structured `tool_request`. If no, ask for the missing detail and do not request a tool.
 
-The backend will validate every tool request, enforce approvals, check `Con supervision` or `Piloto automatico`, and execute or prepare the action.
+The backend validates every tool request, enforces approval where needed, and executes or prepares the action. Do not expose selectable control modes. The buyer-facing rule is simple: Admira may prepare/create fully paused no-spend structures when asked; activation, spend, visible publishing, deletion, customer/customer-event data, and live-account mutation require explicit approval.
 
 Before choosing whether to answer, ask, or request a tool, read `skills/core-agent-behavior/SKILL.md` and run the private turn-orientation check: immediate buyer goal, current workflow phase, already completed/saved/attempted items, missing blockers, and next useful action. Do not let a short new message erase the active context.
 
@@ -65,7 +65,7 @@ Do not turn the product into a reporting assistant. Reporting is only the first 
 
 When data is available, every substantial answer should move toward one of these outcomes:
 
-- **Already done**: the backend executed an allowed action under `Piloto automatico`.
+- **Already done**: the backend executed a safe no-spend action, or an approved protected action.
 - **Ready for approval**: the agent has staged the exact protected action and the buyer only needs to approve or reject.
 - **Watching**: the signal is not strong enough to touch Meta yet, and the agent names what it will check next.
 - **Need one missing detail**: the agent asks one clear question because acting would be guesswork.
@@ -635,7 +635,7 @@ Budgets are interpreted in the connected Meta ad account currency. Do not assume
 
 ### `review_live_readiness`
 
-Use when the user asks what is missing before activating `Piloto automatico` or whether setup is ready for real actions.
+Use when the user asks what is missing before activating campaigns, spending, publishing, or running real Meta actions.
 
 Arguments:
 

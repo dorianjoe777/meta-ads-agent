@@ -132,7 +132,7 @@ Ejemplos de accion real:
 - Subir o bajar presupuesto con aprobacion.
 - Pausar una campaña con justificacion.
 - Crear una lista de pendientes.
-- Explicar que falta para activar piloto automatico.
+- Explicar que falta para activar una campana con seguridad.
 - Preparar un reporte.
 
 ### 5. Uso correcto de herramientas: 15 puntos

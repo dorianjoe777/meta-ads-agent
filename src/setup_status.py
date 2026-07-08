@@ -143,7 +143,7 @@ def files_section():
 def runtime_section(config, daily_report, action):
     graph_ready = bool(getattr(config, "meta_access_token", ""))
     return [
-        item("mode", "Nivel de control", "ok" if config.mode == "dry-run" else "warn", "Con supervision" if config.mode == "dry-run" else "Piloto automatico", "Usa Con supervision hasta confirmar licencia, Meta, datos reales y aprobaciones." if config.mode != "dry-run" else ""),
+        item("approval_protection", "Protección por aprobación", "ok", "Crear pausado permitido; activar/gastar pide aprobación", "Admira puede dejar estructuras listas en pausa. La luz verde se pide al activar o gastar."),
         item("connector", "Meta execution path", "ok" if graph_ready else "warn", "Meta Graph API directo" if graph_ready else "Falta clave de Meta", "Pega una clave de Meta válida en Configuración para que Admira ejecute acciones reales."),
         item("daily_report", "Latest daily report", "ok" if daily_report else "warn", str(daily_report) if daily_report else "No daily report yet.", "Run ./scripts/run-daily-agent.sh"),
         item("latest_action", "Latest action log", "ok" if action else "warn", action.get("type", "No actions yet") if action else "No actions logged yet."),
@@ -161,7 +161,6 @@ def security_section(config, license_status):
         item("dashboard_token", "Dashboard password", "ok" if configured(config.dashboard_token) else ("blocked" if config.dashboard_token_required else "warn"), "configured" if configured(config.dashboard_token) else "Missing DASHBOARD_PASSWORD", "Run ./scripts/install-local.sh or set a strong DASHBOARD_PASSWORD."),
         item("dashboard_token_required", "Password required for actions", "ok" if config.dashboard_token_required else "warn", str(config.dashboard_token_required), "Keep REQUIRE_DASHBOARD_TOKEN=true for buyer installs."),
         item("public_dashboard", "Public dashboard opt-in", "warn" if config.allow_public_dashboard else "ok", str(config.allow_public_dashboard), "Only enable behind HTTPS, firewall, and a reverse proxy."),
-        item("live_actions", "Switch de acciones reales", "warn" if config.live_actions_enabled else "ok", str(config.live_actions_enabled), "Mantenlo apagado hasta confirmar licencia, datos reales y aprobaciones."),
         item("license_key", "License key", "ok" if license_status["valid"] else "warn", license_status["detail"], "Enter LICENSE_KEY in the Setup tab before guided live setup." if not license_status["valid"] else ""),
         item("env_permissions", ".env permissions", "ok" if env_perm["private"] else ("warn" if env_perm["exists"] else "blocked"), env_perm["mode"] or "missing", "Run chmod 600 .env."),
         item("data_permissions", "Dashboard data permissions", "ok" if data_perm["private"] else ("warn" if data_perm["exists"] else "blocked"), data_perm["mode"] or "missing", "Run chmod 700 dashboard/data."),
@@ -261,8 +260,9 @@ def setup_summary(config, sections, context):
         "demo_ready": ENV_FILE.exists() and METRICS_FILE.exists(),
         "security_ready": all(entry["status"] == "ok" for entry in security[:4]),
         "license_ready": context["license_status"]["valid"],
-        "live_actions_enabled": config.live_actions_enabled,
-        "live_ads_ready": bool(config.meta_access_token and configured(config.ad_account_id) and config.live_actions_enabled),
+        "live_actions_enabled": False,
+        "live_ads_ready": bool(config.meta_access_token and configured(config.ad_account_id)),
+        "approval_protection": True,
         "direct_graph_ready": all(entry["status"] == "ok" for entry in meta),
         "creative_ready": config.creative_refresh_enabled and codex_image_ready,
         "agent_chat_ready": (

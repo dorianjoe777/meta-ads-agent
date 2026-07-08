@@ -898,14 +898,7 @@ def fallback_improvements():
 
 
 def update_safety_warnings():
-    config = load_config()
     warnings = []
-    if getattr(config, "live_actions_enabled", False) or getattr(config, "mode", "") == "live":
-        warnings.append({
-            "code": "live_mode",
-            "title": "Piloto automatico activo",
-            "body": "Estas en modo de cambios reales. Si no necesitas esta actualizacion ahora, es mas tranquilo actualizar fuera de una ventana critica.",
-        })
     metrics = load_metrics()
     active = [campaign for campaign in metrics.get("campaigns", []) if str(campaign.get("status", "")).lower() in {"active", "enabled"}]
     if active:
@@ -1748,34 +1741,22 @@ def switch_agency_space(payload):
 
 
 def set_mode(payload):
-    requested = str(payload.get("mode") or "").strip().lower()
-    if requested not in {"dry-run", "live"}:
-        raise ValueError("Unsupported mode")
-    config = load_config()
-    status = activate_license(config) if requested == "live" else license_status(config)
-    if requested == "live" and config.license_required_for_live and not status.get("valid"):
-        raise ValueError(f"License unlock required before live mode: {status.get('detail')}")
-    live_enabled = bool(payload.get("live_actions_enabled")) if requested == "live" else False
+    # Backward-compatible no-op for older dashboards. The product no longer
+    # exposes control modes; protected actions are governed by approval risk.
     values = {
-        "META_ADS_AGENT_MODE": requested,
-        "LIVE_ACTIONS_ENABLED": "true" if live_enabled else "false",
+        "META_ADS_AGENT_MODE": "dry-run",
+        "LIVE_ACTIONS_ENABLED": "false",
     }
     update_env_values(values)
-    log_action("mode_switch", {"mode": requested, "live_actions_enabled": live_enabled}, "completed")
-    return {"mode": requested, "live_actions_enabled": live_enabled}
+    log_action("mode_switch_deprecated", {"approval_model": "approval_required_for_spend_activation_publish_delete"}, "completed")
+    return {"mode": "approval", "approval_model": True, "live_actions_enabled": False}
 
 
 def save_guardrails(payload):
-    mode = str(payload.get("autonomy_mode") or "supervised").strip().lower()
-    if mode not in {"supervised", "autopilot"}:
-        mode = "supervised"
     bool_value = lambda key, default=True: str(payload.get(key, "true" if default else "false")).strip().lower() in {"1", "true", "yes", "on"}
     values = {
-        "META_AUTONOMY_MODE": mode,
+        "META_AUTONOMY_MODE": "approval",
         "META_APPROVAL_REQUIRED_OVER_PCT": str(float(payload.get("approval_required_over_pct") or 20)),
-        "META_AUTO_BUDGET_CHANGE_PCT": str(float(payload.get("auto_budget_change_pct") or 10)),
-        "META_AUTO_BUDGET_CHANGE_AMOUNT": str(float(payload.get("auto_budget_change_amount") or 25)),
-        "META_AUTO_PAUSE_MAX_SPEND": str(float(payload.get("auto_pause_max_spend") or 100)),
         "META_REQUIRE_APPROVAL_FOR_RESUME": "true" if bool_value("require_approval_for_resume", True) else "false",
         "META_REQUIRE_APPROVAL_FOR_NEW_CAMPAIGNS": "true" if bool_value("require_approval_for_new_campaigns", True) else "false",
         "META_REQUIRE_APPROVAL_FOR_CREATIVES": "true" if bool_value("require_approval_for_creatives", True) else "false",
@@ -4564,7 +4545,7 @@ def infer_business_profile(url, parser, context):
     plan = [
         "Primero leer datos reales de Meta para no decidir a ciegas.",
         f"Preparar una campaña inicial para {business_type} con 2 o 3 ángulos creativos.",
-        "Mantener el primer ciclo con supervisión: el agente recomienda y prepara, el comprador aprueba.",
+        "Preparar el primer ciclo en pausa: el agente recomienda y deja la estructura lista; el comprador aprueba solo antes de activar o gastar.",
         "Revisar en la lectura diaria qué sube, qué se cansa y qué conviene escalar.",
     ]
     return {
@@ -4938,7 +4919,7 @@ def scan_business_website(payload):
             "initial_plan": [
                 "Completar la conexión de Meta.",
                 "Contarle al agente qué vendes y qué quieres mejorar.",
-                "Crear una primera campaña con supervisión.",
+                "Preparar una primera campaña en pausa.",
             ],
             "source": "manual_context",
             "scan_error": str(exc)[:300],
@@ -6785,9 +6766,7 @@ def calculate_recommendations(campaigns):
             "confidence": 90 if decision.get("ready") else 0,
             "reason": decision.get("reason"),
             "proposal_only": decision.get("shadow_mode", True) and decision.get("action") != "observe",
-            "requires_approval": decision.get("action") != "observe" and not decision.get("shadow_mode", True) and (
-                config.autonomy_mode == "supervised" or abs(change_pct) > float(config.approval_required_over_pct or 20)
-            ),
+            "requires_approval": decision.get("action") != "observe" and not decision.get("shadow_mode", True),
             "roas": round(campaign.get("roas", 0), 2),
             "health": campaign.get("health"),
             "decision": decision.get("decision"),
@@ -6875,7 +6854,7 @@ def business_context_snapshot(profile):
     else:
         creative_hint = "Usar una imagen clara, un beneficio directo y poco texto."
     if "lead" in success_goal.lower() or "mensaje" in success_goal.lower():
-        campaign_hint = "Campaña de leads o mensajes, con supervisión primero."
+        campaign_hint = "Campaña de leads o mensajes, creada en pausa antes de activar."
     elif "venta" in success_goal.lower() or "buy" in success_goal.lower() or website_url:
         campaign_hint = "Campaña de conversiones o compras, con una oferta fácil de entender."
     else:
@@ -7028,26 +7007,24 @@ def assert_campaign_uses_active_account(config, campaign):
 
 
 def should_stage_action(config, action_type, payload):
-    if config.autonomy_mode == "supervised" or not config.live or not config.live_actions_enabled:
-        return True, "supervised_mode"
+    # Admira no longer exposes selectable control modes.
+    # The only buyer-facing rule is action risk: the agent may prepare/create
+    # no-spend paused structures, while spend-capable or destructive mutations
+    # wait for the buyer's explicit approval.
     if action_type == "pause_campaign":
-        return float(payload.get("spend", 0) or 0) > config.auto_pause_max_spend, "pause_spend_over_limit"
+        return True, "approval_required_for_account_change"
     if action_type == "budget_change":
-        return (
-            abs(float(payload.get("change_pct", 0) or 0)) > config.auto_budget_change_pct
-            or abs(float(payload.get("new_budget", 0) or 0) - float(payload.get("current_budget", 0) or 0)) > config.auto_budget_change_amount
-            or abs(float(payload.get("change_pct", 0) or 0)) > config.approval_required_over_pct
-        ), "budget_over_autopilot_limit"
+        return True, "approval_required_for_budget_change"
     if action_type == "resume_campaign":
-        return config.require_approval_for_resume, "resume_requires_approval"
+        return True, "activation_requires_approval"
     if action_type == "create_campaign":
-        return config.require_approval_for_new_campaigns, "new_campaign_requires_approval"
+        return True, "active_campaign_requires_approval"
     if action_type in {"creative_upload", "create_ad", "create_creative"}:
-        return config.require_approval_for_creatives, "creative_requires_approval"
+        return True, "publishing_requires_approval"
     return False, "within_rules"
 
 
-def execute_autopilot_action(config, action_type, campaign, action_payload):
+def execute_approved_account_action(config, action_type, campaign, action_payload):
     require_cloud_license(f"{action_type} requires an active license")
     client = SocialFlowClient(config)
     target_type = campaign.get("target_type", "campaign")
@@ -7059,7 +7036,7 @@ def execute_autopilot_action(config, action_type, campaign, action_payload):
     elif action_type == "budget_change":
         result = client.set_budget(target_type, target_id, int(float(action_payload.get("new_budget", 0)) * 100))
     else:
-        raise ValueError("Unsupported automatic action")
+        raise ValueError("Unsupported approved account action")
     action_payload["connector"] = "graph_api"
     action_payload["result"] = result
     action_payload["executed"] = bool(result.get("executed") and result.get("returncode") == 0)
@@ -7088,7 +7065,7 @@ def apply_action(payload):
         if stage:
             action_payload["guardrail_reason"] = reason
             return add_pending("pause_campaign", action_payload)
-        execute_autopilot_action(config, "pause_campaign", campaign, action_payload)
+        execute_approved_account_action(config, "pause_campaign", campaign, action_payload)
         campaign["status"] = "paused"
         record_optimization_action(campaign_id)
         save_metrics(metrics)
@@ -7100,7 +7077,7 @@ def apply_action(payload):
         if stage:
             action_payload["guardrail_reason"] = reason
             return add_pending("resume_campaign", action_payload)
-        execute_autopilot_action(config, "resume_campaign", campaign, action_payload)
+        execute_approved_account_action(config, "resume_campaign", campaign, action_payload)
         campaign["status"] = "active"
         record_optimization_action(campaign_id)
         save_metrics(metrics)
@@ -7115,7 +7092,7 @@ def apply_action(payload):
         if stage:
             action_payload["guardrail_reason"] = reason
             return add_pending("budget_change", action_payload)
-        execute_autopilot_action(config, "budget_change", campaign, action_payload)
+        execute_approved_account_action(config, "budget_change", campaign, action_payload)
         campaign["daily_budget"] = money(new_budget)
         record_optimization_action(campaign_id)
         save_metrics(metrics)
@@ -7482,10 +7459,11 @@ def boolish(value):
 def can_execute_paused_campaign_setup(config):
     """True when a buyer-requested no-spend Meta setup can be materialized.
 
-    `mode=live`/`LIVE_ACTIONS_ENABLED` protects spend-capable actions. A fully
-    PAUSED campaign/ad set/ad stack is a different boundary: after the buyer
-    asks to create it, Admira should create the no-spend structure whenever the
-    real Meta account connection exists. Activation still requires approval.
+    Spend-capable actions are protected by explicit approval, not by a buyer
+    mode switch. A fully PAUSED campaign/ad set/ad stack is a different
+    boundary: after the buyer asks to create it, Admira should create the
+    no-spend structure whenever the real Meta account connection exists.
+    Activation still requires approval.
     """
     return bool(
         str(getattr(config, "ad_account_id", "") or "").strip()
@@ -8519,10 +8497,10 @@ def live_readiness_reply(payload, blockers, include_queue_wording=True):
     if chat_lang(payload) == "es":
         detail = "; ".join(f"{item.get('label')}: {item.get('detail')}" for item in top) or "no veo bloqueos principales"
         approval_part = "revisa la cola de aprobaciones" if include_queue_wording else "revisa aprobaciones"
-        return f"Para activar piloto automático con calma, atiende esto primero: {detail}. Después corre una revisión con supervisión, {approval_part} y recién ahí activa piloto automático."
+        return f"Para activar campañas con calma, atiende esto primero: {detail}. Después revisa la campaña pausada, {approval_part} y dale luz verde solo cuando quieras que pueda gastar."
     detail = "; ".join(f"{item.get('label')}: {item.get('detail')}" for item in top) or "I do not see major blockers"
     approval_part = "review the approval queue" if include_queue_wording else "review approvals"
-    return f"To enable autopilot calmly, handle this first: {detail}. Then run one supervised check, {approval_part}, and only then enable autopilot."
+    return f"To activate campaigns calmly, handle this first: {detail}. Then review the paused campaign, {approval_part}, and give the green light only when you want it able to spend."
 
 
 def run_daily_check_action(payload, action_type="run_daily_check"):
@@ -9863,7 +9841,7 @@ def execute_agent_tool(tool_request, chat_payload):
 
 def require_license_unlock(action_name="action"):
     config = load_config()
-    if not config.license_required_for_live or not (config.live or config.live_actions_enabled):
+    if not config.license_required_for_live:
         return
     status = license_status(config)
     if not status.get("valid"):
@@ -9971,7 +9949,7 @@ def dashboard_payload():
             "dashboard_token_set": dashboard_password_configured(config),
             "dashboard_password_required": config.dashboard_token_required,
             "dashboard_password_set": dashboard_password_configured(config),
-            "live_actions_enabled": config.live_actions_enabled,
+            "live_actions_enabled": False,
             "creative_studio": {
                 "provider": "codex-image",
                 "image_mode": "codex-image",
@@ -10013,7 +9991,7 @@ def dashboard_payload():
                 "telegram_runtime_model": runtime_model_state,
             },
             "guardrails": {
-                "autonomy_mode": config.autonomy_mode,
+                "autonomy_mode": "approval",
                 "approval_required_over_pct": config.approval_required_over_pct,
                 "auto_budget_change_pct": config.auto_budget_change_pct,
                 "auto_budget_change_amount": config.auto_budget_change_amount,
@@ -10117,7 +10095,7 @@ HTML = r"""<!DOCTYPE html>
 <div id="tab-creator" class="hidden">
 <section class="section"><div class="head"><span>04</span><b data-i18n="campaign_creator">Campaign Creator</b></div><div class="body">
 <section class="creator-hero"><span class="creative-kicker" data-i18n="creator_kicker">New campaign</span><h2 data-i18n="creator_title">Create a campaign</h2><p data-i18n="creator_body">Tell the agent what you sell, who should see it, and how much you can spend. It will organize the campaign and show it to you before anything can spend money.</p><div class="creator-hero-actions"><button class="btn primary" type="button" data-action-code="openChat(isEs()?'Quiero crear una campaña nueva. Hazme preguntas fáciles, una a la vez: qué vendo, a quién quiero llegar, cuánto puedo gastar al día, a qué página enviar a las personas y si quiero dejarla lista o activa después de aprobar. Si necesito imágenes o textos, guíame para prepararlos.':'I want to create a new campaign. Ask me simple questions one at a time: what I sell, who I want to reach, how much I can spend daily, where people should go, and whether it should remain ready or active after approval. If I need images or text, guide me through preparing them.')"><span data-i18n="creator_chat_cta">Create by talking to the agent</span></button></div></section>
-<div class="creator-safety"><span class="creator-safety-mark">✓</span><div><b data-i18n="paused_draft_title">You decide before money is spent</b><p data-i18n="paused_draft_body">The agent prepares the campaign and asks for your approval. If you choose to leave it active, it can start spending only after you approve it.</p></div></div>
+<div class="creator-safety"><span class="creator-safety-mark">✓</span><div><b data-i18n="paused_draft_title">You decide before money is spent</b><p data-i18n="paused_draft_body">The agent can create the campaign fully paused. It only asks for approval before activation or spend.</p></div></div>
 <details class="creator-manual-entry">
 <summary><span><b data-i18n="creator_manual_title">I prefer to enter the details myself</b><small data-i18n="creator_manual_help">Optional: the agent can ask you these questions in chat.</small></span></summary>
 <form id="campaign-form" class="creator-manual-form">
@@ -10153,8 +10131,8 @@ HTML = r"""<!DOCTYPE html>
 <div class="field wide"><label class="creator-confirm"><input type="checkbox" name="active_spend_confirmed" value="true"> <span data-i18n="confirm_active_spend">Only if I choose to turn it on: I understand that after approving, this campaign may start spending my chosen budget.</span></label></div>
 </div></section>
 <details class="creator-advanced"><summary data-i18n="creator_meta_optional">Only if you already know this Meta detail</summary><div class="form-grid"><div class="field wide"><label data-i18n="pixel_optional">Meta tracking number (Pixel ID), optional</label><input name="pixel_id" data-i18n-placeholder="optional" placeholder="Optional"></div></div></details>
-<p class="creator-submit-note" data-i18n="creator_review_notice">Nothing will be created in your Meta account until you review and approve this request.</p>
-<button class="btn primary" type="submit" data-i18n="stage_campaign">Send for my approval</button>
+<p class="creator-submit-note" data-i18n="creator_review_notice">If it stays paused, Admira can create it without spending. Activation still needs your approval.</p>
+<button class="btn primary" type="submit" data-i18n="stage_campaign">Prepare / create paused</button>
 </form>
 </details>
 </div></section>

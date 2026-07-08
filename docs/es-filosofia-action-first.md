@@ -26,7 +26,7 @@ Cada lectura diaria debe terminar con accion, aunque la accion sea "dejar prepar
 
 Tres grupos claros:
 
-- **Ya hice**: acciones permitidas por reglas, por ejemplo pausar un gasto claramente malo en piloto automatico.
+- **Ya hice**: acciones seguras sin gasto, por ejemplo preparar una estructura en pausa o generar nuevos borradores creativos.
 - **Necesita tu luz verde**: presupuesto, reactivaciones, campanas nuevas activas, uploads creativos o cualquier cambio fuera de limites.
 - **Estoy vigilando**: senales tempranas donde aun no conviene tocar nada.
 
@@ -44,13 +44,12 @@ La experiencia principal es:
 4. el comprador responde rapido
 5. el agente recuerda el resultado
 
-En `Con supervision`, el agente prepara acciones concretas y pide luz verde. En `Piloto automatico`, ejecuta solo lo que entra dentro de reglas claras. Lo que toca mas riesgo sigue pidiendo confirmacion.
+La regla es unica: el agente puede preparar y crear estructuras en pausa cuando el comprador ya lo pidio; activar, gastar, publicar visible, borrar, enviar datos sensibles o cambiar una campaña viva requiere luz verde clara.
 
 ## Que acciones deben ser mas automaticas
 
-Acciones que pueden ser automaticas bajo piloto:
+Acciones que pueden avanzar sin friccion cuando no gastan ni cambian campañas vivas:
 
-- pausar gasto malo evidente
 - generar borradores creativos por fatiga
 - actualizar lectura diaria
 - crear reportes

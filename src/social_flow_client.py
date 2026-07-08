@@ -34,9 +34,9 @@ class SocialFlowClient:
         if live_required and not self.config.live and not approved:
             record["stdout"] = "dry-run: command not executed"
             return record
-        if mutation and self.config.live and not self.config.live_actions_enabled and not approved:
+        if mutation and live_required and not approved:
             record["executed"] = False
-            record["stderr"] = "blocked: LIVE_ACTIONS_ENABLED=false"
+            record["stderr"] = "blocked: approval_required"
             return record
         result = self.graph_execute(args, record)
         if result:

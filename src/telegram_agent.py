@@ -260,7 +260,7 @@ def help_message():
         "- Que debo vigilar hoy?\n"
         "- Prepara una campana para mi producto.\n"
         "- Revisa presupuesto de la campana X.\n"
-        "- Que falta para activar piloto automatico?\n\n"
+        "- Que falta para activar una campana con seguridad?\n\n"
         "Comandos:\n"
         "/nuevo - empezar una conversacion nueva\n"
         "/pendientes - ver decisiones esperando aprobacion\n"

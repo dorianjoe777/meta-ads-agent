@@ -234,8 +234,8 @@ El agente no debe improvisar una marca desde cero si ya existen guias. Primero d
 
 Codex ayuda a pensar y crear, pero las acciones reales de Meta Ads siguen protegidas por las reglas del producto:
 
-- Con supervision: el agente prepara y solo ejecuta la accion exacta que tu apruebas.
-- Piloto automatico: el agente actua solo dentro de tus reglas.
-- Campanas nuevas y creativos importantes pueden requerir aprobacion.
+- El agente puede preparar campañas y creativos en pausa sin gastar.
+- Activar, gastar, publicar visible, borrar o enviar datos sensibles requiere tu aprobación clara.
+- Campañas activas y creativos importantes siguen protegidos por aprobación.
 
 La creatividad puede ser rapida, pero el gasto real sigue protegido.

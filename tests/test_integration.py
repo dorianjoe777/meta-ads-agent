@@ -394,7 +394,7 @@ class IntegrationTestSuite:
             license_signature_secret="",
             target_cpa=50,
             approval_required_over_pct=20,
-            autonomy_mode="supervised",
+            autonomy_mode="approval",
             auto_budget_change_pct=10,
             auto_budget_change_amount=25,
             auto_pause_max_spend=100,
@@ -490,7 +490,7 @@ class IntegrationTestSuite:
             license_signature_secret="",
             target_cpa=50,
             approval_required_over_pct=20,
-            autonomy_mode="supervised",
+            autonomy_mode="approval",
             auto_budget_change_pct=10,
             auto_budget_change_amount=25,
             auto_pause_max_spend=100,
@@ -738,7 +738,7 @@ class IntegrationTestSuite:
                             "products_services": ["Producto uno", "Servicio dos"],
                             "current_stage": "Ya tengo web y quiero lanzar",
                             "what_to_improve": "Elegir el primer concepto de anuncios",
-                            "initial_plan": ["Revisar web", "Crear campaña con supervisión"],
+                            "initial_plan": ["Revisar web", "Preparar campaña en pausa"],
                             "questions": [
                                 {
                                     "key": "main_offer",
@@ -3313,7 +3313,7 @@ class IntegrationTestSuite:
         result = dashboard.execute_agent_tool({"tool": "review_live_readiness", "arguments": {}}, {"language": "es"})
         self.assert_true(result["type"] == "review_live_readiness", "Live readiness tool recognized")
         self.assert_true(result["executed"] is False, "Readiness review does not mutate account")
-        self.assert_true("piloto automático" in result["reply"].lower(), "Readiness reply generated")
+        self.assert_true("activar" in result["reply"].lower() or "aprobación" in result["reply"].lower(), "Readiness reply generated")
 
     def test_codex_creative_prompt_rejects_local_file_escape(self):
         """Test an agent request cannot feed arbitrary local files to Codex."""
@@ -5293,9 +5293,9 @@ class IntegrationTestSuite:
         finally:
             meta_insights.graph_rows = original_graph_rows
 
-    def test_supervised_daily_reads_real_data_and_stages_pause(self):
-        """Test scheduled supervised reports read Meta without inventing executed pauses."""
-        print("\nTesting Supervised Scheduled Daily Safety...")
+    def test_daily_reads_real_data_and_keeps_risky_pauses_as_proposals(self):
+        """Test scheduled reports read Meta without inventing executed account mutations."""
+        print("\nTesting Approval-Based Scheduled Daily Safety...")
 
         read_flags = []
 
@@ -5310,7 +5310,7 @@ class IntegrationTestSuite:
             live_actions_enabled = False
 
         InspectClient(ReadConfig()).insights()
-        self.assert_true(read_flags[0][1] is False and read_flags[0][2] is False, "Supervised insights are treated as safe real-data reads")
+        self.assert_true(read_flags[0][1] is False and read_flags[0][2] is False, "Insights are treated as safe real-data reads")
         normalized = daily_agent.normalize_social_insights(
             {"data": [{"campaign_id": "meta_1", "campaign_name": "Real", "spend": "10", "impressions": "100", "clicks": "5"}]},
             {"campaigns": []},
@@ -5329,7 +5329,7 @@ class IntegrationTestSuite:
             "config_snapshot": daily_agent.config_snapshot,
             "send_notification": daily_agent.send_notification,
         }
-        test_dir = ROOT_DIR / "output" / "test-supervised-daily"
+        test_dir = ROOT_DIR / "output" / "test-approval-daily"
         pulls = []
 
         class Config:
@@ -5338,7 +5338,7 @@ class IntegrationTestSuite:
             live = False
             mode = "dry-run"
             live_actions_enabled = False
-            autonomy_mode = "supervised"
+            autonomy_mode = "approval"
             license_required_for_live = True
             target_cpa = 10
             approval_required_over_pct = 20
@@ -5374,12 +5374,12 @@ class IntegrationTestSuite:
             )
             real_metrics = {"source": "meta_graph", "campaigns": [risky], "summary": daily_agent.build_summary([risky])}
             daily_agent.pull_live_metrics = lambda metrics, client: pulls.append(True) or real_metrics
-            daily_agent.config_snapshot = lambda config: {"control_level": "supervised"}
+            daily_agent.config_snapshot = lambda config: {"control_level": "approval"}
             daily_agent.send_notification = lambda config, title, message: {"sent": False}
             _, report = daily_agent.run_daily()
             pending = daily_agent.read_json(daily_agent.PENDING_FILE, [])
-            self.assert_true(bool(pulls), "Scheduled supervised daily pulls connected Meta data")
-            self.assert_true(real_metrics["campaigns"][0]["status"] == "active", "Supervised daily does not falsely mark a Meta campaign paused")
+            self.assert_true(bool(pulls), "Scheduled daily pulls connected Meta data")
+            self.assert_true(real_metrics["campaigns"][0]["status"] == "active", "Daily safety run does not falsely mark a Meta campaign paused")
             self.assert_true(not any(item.get("type") == "pause_campaign" for item in pending), "Shadow optimizer records risky pauses without creating an executable approval")
             self.assert_true(report["brief"]["auto_paused"] == [] and len(report["brief"]["proposed_pauses"]) == 1, "Daily brief distinguishes proposed pause from executed pause")
         finally:
@@ -5445,9 +5445,9 @@ class IntegrationTestSuite:
                 os.environ["ADMIRO_ALLOW_DEMO_METRICS"] = original_demo_env
             shutil.rmtree(test_dir, ignore_errors=True)
 
-    def test_supervised_approval_executes_only_with_valid_license_and_retries_failures(self):
-        """Test explicit approval is live-capable without activating autopilot."""
-        print("\nTesting Supervised Approval Execution...")
+    def test_explicit_approval_executes_only_with_valid_license_and_retries_failures(self):
+        """Test explicit approval is live-capable without enabling a separate mode."""
+        print("\nTesting Explicit Approval Execution...")
 
         class Config:
             license_required_for_live = True
@@ -5470,12 +5470,12 @@ class IntegrationTestSuite:
         original_client = daily_agent.SocialFlowClient
         original_pending = daily_agent.PENDING_FILE
         original_actions = daily_agent.ACTIONS_FILE
-        test_dir = ROOT_DIR / "output" / "test-supervised-approval"
+        test_dir = ROOT_DIR / "output" / "test-explicit-approval"
         try:
             daily_agent.license_status = lambda config: {"valid": True}
             client = ApprovedClient()
             result = daily_agent.execute_pending({"type": "pause_campaign", "payload": {"campaign_id": "camp_1"}}, client)
-            self.assert_true(client.calls == [True] and daily_agent.execution_succeeded(result), "Button approval can execute under Con supervision without enabling autopilot")
+            self.assert_true(client.calls == [True] and daily_agent.execution_succeeded(result), "Button approval can execute without enabling a separate mode")
             daily_agent.license_status = lambda config: {"valid": False, "detail": "Licencia no activa"}
             blocked = daily_agent.execute_pending({"type": "pause_campaign", "payload": {"campaign_id": "camp_1"}}, client)
             self.assert_true(blocked.get("blocked") is True and client.calls == [True], "Approval cannot execute without a valid live license")
@@ -5547,7 +5547,7 @@ class IntegrationTestSuite:
             meta_access_token = "test-token"
             live_actions_enabled = False
 
-        class SupervisedConnectedConfig:
+        class ApprovalConnectedConfig:
             live = False
             mode = "dry-run"
             ad_account_id = "act_123"
@@ -5588,10 +5588,10 @@ class IntegrationTestSuite:
             self.assert_true(pending_after_paused == [], "Paused campaign creation does not add a pending approval")
             self.assert_true(actions_after_paused[0]["status"] == "completed", "Paused direct creation is logged as completed")
 
-            dashboard.load_config = lambda: SupervisedConnectedConfig()
-            supervised_paused = dashboard.create_campaign(
+            dashboard.load_config = lambda: ApprovalConnectedConfig()
+            connected_paused = dashboard.create_campaign(
                 {
-                    "name": "Paused Supervised Direct Create",
+                    "name": "Paused Approval Direct Create",
                     "objective": "PURCHASES",
                     "daily_budget": 20,
                     "landing_url": "https://buyer.example",
@@ -5600,10 +5600,10 @@ class IntegrationTestSuite:
                     "active_spend_confirmed": False,
                 }
             )
-            pending_after_supervised = dashboard.read_json(dashboard.PENDING_FILE, [])
-            self.assert_true(supervised_paused["status"] == "created_paused" and supervised_paused["approval_required"] is False, "Paused campaign creation executes in supervised/dry-run mode when real Meta credentials are configured")
-            self.assert_true(captured[-1][1] is True and captured[-1][2] is False, "Supervised paused setup bypasses only the creation approval gate, not live/autopilot mode")
-            self.assert_true(pending_after_supervised == [], "Supervised paused creation does not add a pending approval")
+            pending_after_connected = dashboard.read_json(dashboard.PENDING_FILE, [])
+            self.assert_true(connected_paused["status"] == "created_paused" and connected_paused["approval_required"] is False, "Paused campaign creation executes when real Meta credentials are configured")
+            self.assert_true(captured[-1][1] is True and captured[-1][2] is False, "Paused setup bypasses only the activation approval gate, not the approval model")
+            self.assert_true(pending_after_connected == [], "Paused creation does not add a pending approval")
 
             active = dashboard.create_campaign(
                 {
@@ -6749,9 +6749,9 @@ class IntegrationTestSuite:
         finally:
             social_flow_client.urllib.request.urlopen = original_urlopen
 
-    def test_autopilot_action_updates_dashboard_only_after_meta_success(self):
-        """Test autopilot UI/chat mutations are real connector actions, not local-only state."""
-        print("\nTesting Autopilot Connector Execution...")
+    def test_live_account_actions_stage_for_approval_instead_of_auto_mutating(self):
+        """Test live-account mutations are staged for explicit approval instead of executing from UI/chat."""
+        print("\nTesting Approval Gate For Live Account Actions...")
 
         dashboard = load_dashboard_module()
         original = {
@@ -6762,13 +6762,13 @@ class IntegrationTestSuite:
             "SocialFlowClient": dashboard.SocialFlowClient,
             "require_cloud_license": dashboard.require_cloud_license,
         }
-        test_dir = ROOT_DIR / "output" / "test-autopilot-action"
+        test_dir = ROOT_DIR / "output" / "test-live-action-approval"
         connector_calls = []
 
         class Config:
             live = True
             live_actions_enabled = True
-            autonomy_mode = "autopilot"
+            autonomy_mode = "approval"
             auto_pause_max_spend = 100
             auto_budget_change_pct = 20
             auto_budget_change_amount = 100
@@ -6800,21 +6800,14 @@ class IntegrationTestSuite:
             dashboard.write_json(dashboard.METRICS_FILE, base_metrics)
             result = dashboard.apply_action({"action": "pause", "campaign_id": "camp_live"})
             saved = dashboard.read_json(dashboard.METRICS_FILE, {})
-            self.assert_true(connector_calls == [("campaign", "meta_camp_1")], "Autopilot pause calls the Meta connector")
-            self.assert_true(saved["campaigns"][0]["status"] == "paused" and result["status"] == "completed", "Dashboard status updates after confirmed Meta execution")
+            pending = dashboard.read_json(dashboard.PENDING_FILE, [])
+            self.assert_true(connector_calls == [], "Pause request does not call Meta before explicit approval")
+            self.assert_true(result["status"] == "pending" and pending and pending[0]["type"] == "pause_campaign", "Pause request is staged as an approval")
+            self.assert_true(saved["campaigns"][0]["status"] == "active", "Dashboard status stays unchanged until approval executes")
 
-            class FailureClient(SuccessClient):
-                def pause(self, target_type, target_id):
-                    return {"executed": False, "returncode": 1, "stderr": "rejected"}
-
-            dashboard.SocialFlowClient = FailureClient
-            dashboard.write_json(dashboard.METRICS_FILE, base_metrics)
-            try:
-                dashboard.apply_action({"action": "pause", "campaign_id": "camp_live"})
-                self.assert_true(False, "Failed Meta mutation should not appear successful")
-            except ValueError:
-                failed_state = dashboard.read_json(dashboard.METRICS_FILE, {})
-                self.assert_true(failed_state["campaigns"][0]["status"] == "active", "Failed Meta mutation leaves dashboard state unchanged")
+            result_budget = dashboard.apply_action({"action": "adjust_budget", "campaign_id": "camp_live", "new_budget": 35})
+            pending = dashboard.read_json(dashboard.PENDING_FILE, [])
+            self.assert_true(result_budget["status"] == "pending" and any(item.get("type") == "budget_change" for item in pending), "Budget changes are also staged for approval")
         finally:
             for key, value in original.items():
                 setattr(dashboard, key, value)
@@ -6910,7 +6903,7 @@ class IntegrationTestSuite:
             )
             client = FakeClient()
             result = execute_campaign_creation(str(campaign_path), client, approved=True)
-            self.assert_true(result["ok"], "Approved campaign stack executes while supervised")
+            self.assert_true(result["ok"], "Approved campaign stack executes after explicit approval")
             self.assert_true([call[0] for call in client.calls] == ["create_campaign", "create_adset", "upload_image", "create_creative", "create_ad"], "Campaign stack executes in correct order")
             self.assert_true(client.calls[0][1][4] == "ACTIVE" and client.calls[1][1][4] == "ACTIVE", "Approved active campaign stack activates campaign and ad set, not only the ad")
             self.assert_true(client.calls[0][1][3] == 0 and client.calls[0][2].get("bid_strategy", "") == "", "Campaign stack does not enable campaign-level budget by default")
@@ -7961,8 +7954,8 @@ class IntegrationTestSuite:
         self.assert_true("Grupo de anuncios a usar" not in html, "Old required-ad-set wording is removed")
         self.assert_true("El grupo de anuncios es opcional" not in html, "Onboarding no longer mentions ad groups")
         self.assert_true("const destinationOk=['page_id','landing_url']" in html, "Onboarding does not require an existing ad set")
-        self.assert_true("Deja la supervisión activa" in html, "Live onboarding recommends supervised mode first")
-        self.assert_true("Con supervisión" in html, "Last onboarding step avoids simulation wording")
+        self.assert_true("Protección por aprobación" in html, "Onboarding uses approval protection wording")
+        self.assert_true("prepara y crea en pausa" in html or "crear en pausa" in html, "Last onboarding step explains paused creation")
         self.assert_true("modo simulación" not in html, "Buyer-facing onboarding avoids simulation mode wording")
         self.assert_true("/api/onboarding/skip" in html and "Saltar y completar luego" in html, "Live setup details do not block first dashboard entry")
         self.assert_true("deferred-onboarding-banner" in html and "Completa la configuración para ver datos reales" in html, "Skipped setup creates a visible reminder instead of trapping the buyer")
@@ -7971,11 +7964,11 @@ class IntegrationTestSuite:
         filtered = dashboard.onboarding_health({"completed": True, "skipped": True, "deferred": True, "deferred_reasons": ["entrevista_negocio", "branding_creativos", "campanas_anuncios"]}, type("Cfg", (), {})(), {"source": "demo"}, {"valid": True}, {"page_id": "1", "url": "https://example.com"}, {})
         self.assert_true(filtered.get("deferred") is False and not filtered.get("deferred_reasons"), "Agent interview items do not block dashboard/Telegram real-data readiness")
         self.assert_true("Datos de ejemplo, no reales" in html, "Demo metrics are labeled as not real in the UI")
-        self.assert_true("Con supervisión" in html, "Buyer-facing supervised control wording exists")
-        self.assert_true("Piloto automático" in html, "Buyer-facing autopilot wording exists")
+        self.assert_true("Con supervisión" not in html and "Piloto automático" not in html, "Buyer-facing mode wording is removed")
+        self.assert_true("No hay modos que elegir" in html and "Activar/gastar: aprobación" in html, "Buyer-facing approval rule is visible")
         self.assert_true("guardrails-panel" in html, "Guardrail settings panel exists")
         self.assert_true("/api/guardrails" in html, "Guardrail settings can be saved")
-        self.assert_true("Cuánto puede hacer solo" in html and "Preguntar si el presupuesto cambia más de" in html, "Guardrails use simple buyer-friendly questions")
+        self.assert_true("Reglas de aprobación" in html and "Activar campañas, gastar presupuesto" in html, "Guardrails use simple approval-focused wording")
         self.assert_true("Revisión técnica para soporte" in html and "renderSetupBeginnerSummary" in html and "Lo que falta primero" in html, "Configuration leads with simple next steps and hides technical review")
         self.assert_true("Gasto: " in html and "campañas activas." in html and "señales de cansancio del anuncio." in html, "Daily reading localizes scheduled report answers in Spanish")
         self.assert_true("recommendationText" in html and "Buen rendimiento: conviene mantener el presupuesto actual." in html, "Budget advice avoids English optimizer wording in Spanish")
@@ -8545,7 +8538,7 @@ class IntegrationTestSuite:
             dashboard.start_hermes_gateway = lambda _config: gateway_starts.append("start") or {"started": True, "mode": "hermes_gateway"}
             dashboard.update_env_values({"DASHBOARD_PASSWORD": "buyer-owned-password", "DASHBOARD_TOKEN": "buyer-owned-password", "META_ACCESS_TOKEN": "token_12345678901234567890", "META_AD_ACCOUNT_ID": "act_999"})
             ad_path.write_text(json.dumps({"creative": {"destination": {"page_id": "111", "url": "https://buyer.example"}}}), encoding="utf-8")
-            dashboard.write_json(business_path, {"website_url": "https://buyer.example", "current_stage": "Ya vendo y quiero bajar CPA.", "initial_plan": ["Leer datos reales", "Preparar campaña con supervisión"]})
+            dashboard.write_json(business_path, {"website_url": "https://buyer.example", "current_stage": "Ya vendo y quiero bajar CPA.", "initial_plan": ["Leer datos reales", "Preparar campaña en pausa"]})
             dashboard.write_json(metrics_path, {"timestamp": dashboard.now_iso(), "source": "meta_graph", "campaigns": [], "summary": {}})
             try:
                 dashboard.save_communication_style({"communication_style": "expert-ish"})
@@ -8803,7 +8796,7 @@ class IntegrationTestSuite:
             "docs/es-activar-licencia.md",
             "docs/es-conectar-meta.md",
             "docs/es-crear-primera-campana.md",
-            "docs/es-supervision-vs-piloto.md",
+            "docs/es-aprobaciones-y-seguridad.md",
             "docs/es-checklist-anuncios-activos.md",
             "docs/es-solucion-problemas.md",
             "docs/es-usar-telegram.md",
@@ -9324,15 +9317,15 @@ class IntegrationTestSuite:
             self.test_creative_memory_wizard_collects_and_saves_guides,
             self.test_meta_asset_discovery_saves_connected_assets,
             self.test_live_insights_normalize_into_dashboard_metrics,
-            self.test_supervised_daily_reads_real_data_and_stages_pause,
+            self.test_daily_reads_real_data_and_keeps_risky_pauses_as_proposals,
             self.test_demo_metrics_are_labeled,
-            self.test_supervised_approval_executes_only_with_valid_license_and_retries_failures,
+            self.test_explicit_approval_executes_only_with_valid_license_and_retries_failures,
             self.test_campaign_creation_requires_active_confirmation,
             self.test_paused_campaign_creation_executes_without_approval_gate,
             self.test_campaign_stage_accepts_paused_false_and_attached_creative,
             self.test_campaign_creation_uses_meta_targeting_selection,
             self.test_social_targeting_uses_meta_ids,
-            self.test_autopilot_action_updates_dashboard_only_after_meta_success,
+            self.test_live_account_actions_stage_for_approval_instead_of_auto_mutating,
             self.test_social_flow_graph_api_lists_and_creates_lead_forms,
             self.test_chat_stages_and_executes_native_lead_form_creation,
             self.test_social_flow_creates_native_page_post_for_direct_publishing,

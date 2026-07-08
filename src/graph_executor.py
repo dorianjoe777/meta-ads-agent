@@ -64,9 +64,7 @@ def validate_payload(payload, config, approved=False):
     missing = list(payload.get("missing_requirements", []))
     if not config.ad_account_id:
         missing.append("META_AD_ACCOUNT_ID")
-    if config.live and not config.live_actions_enabled and not approved:
-        missing.append("LIVE_ACTIONS_ENABLED")
-    if (config.live or approved) and not config.meta_access_token:
+    if approved and not config.meta_access_token:
         missing.append("META_ACCESS_TOKEN")
     if payload.get("status") == "blocked":
         missing.append("payload status is blocked")
@@ -174,13 +172,13 @@ def execute_upload_payload(payload_path, approved=False):
     payload_path = safe_upload_payload_path(payload_path)
     payload = read_json(payload_path, {})
     missing = validate_payload(payload, config, approved=approved)
-    if config.license_required_for_live and (approved or config.live or config.live_actions_enabled):
+    if config.license_required_for_live and approved:
         status = license_status(config)
         if not status.get("valid"):
             result = {"ok": False, "mode": config.mode, "executed": False, "blocked": True, "missing_requirements": missing, "error": f"License unlock required before creative upload: {status.get('detail')}"}
             log_action("creative_upload_execute", {"payload_path": str(payload_path), "result": result}, "blocked")
             return result
-    if not config.live and not approved:
+    if not approved:
         result = dry_run_result(payload, missing)
         result["connector"] = "graph_api"
         log_action("creative_upload_execute", {"payload_path": str(payload_path), "result": result}, "dry_run")

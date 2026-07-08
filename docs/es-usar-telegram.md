@@ -37,7 +37,7 @@ Telegram no permite que el dashboard cree el bot por ti: la clave solo la entreg
 Que debo vigilar hoy?
 Prepara una campana para mi producto.
 Revisa el presupuesto de la campana de ventas.
-Que falta para activar piloto automatico?
+Que falta para activar una campana con seguridad?
 ```
 
 Tambien puedes mandar una foto al bot. El agente la guarda localmente en tu PC/VPS para usarla como creativo cuando prepares una campana.
