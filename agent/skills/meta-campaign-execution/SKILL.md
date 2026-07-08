@@ -22,6 +22,15 @@ When Publicación directa is connected, prefer native unpublished Page posts for
 
 If the publishing token/page access fails, explain the connection problem simply and keep the campaign prepared for retry.
 
+## Partial campaign cleanup
+
+Do not leave failed campaign-creation attempts scattered in Meta Ads Manager when Admira created them.
+
+- If a paused campaign creation fails after Admira already created the campaign/ad set, the backend may automatically roll back the partial campaign. Tell the buyer plainly: “Meta stopped the setup, and I cleaned the incomplete paused campaign so it does not stay abandoned.”
+- If the automatic cleanup fails, tell the buyer the campaign ID and offer to clean it with `mcp_admira_delete_campaign`.
+- Use `mcp_admira_delete_campaign` only with an exact campaign ID and only for buyer-approved cleanup/deletion. Never silently delete active campaigns, old campaigns, or campaigns not clearly created by the failed Admira attempt.
+- Prefer cleanup over leaving duplicate partial campaigns, but prefer pause/retry over deletion when the campaign has real delivery history, spend, or uncertain ownership.
+
 ## Video website completion modes
 
 For video ads that send traffic/conversions to a website, avoid claiming that an empty ad can be created. Meta requires a creative before an ad exists.

@@ -300,6 +300,10 @@ def approval_body(item):
         lines.append("")
         lines.append("ATENCION: si apruebas, el anuncio puede quedar ACTIVO y gastar presupuesto real.")
         lines.append("Para aprobar por texto, responde exactamente: Si, crear y dejar activo")
+    elif item.get("type") == "delete_campaign":
+        lines.append("")
+        lines.append("ATENCION: si apruebas, eliminaré/archivaré esta campaña en Meta. Usa esto solo para limpiar campañas incompletas o claramente elegidas.")
+        lines.append("Puedes tocar Aprobar o responder: aprobar")
     else:
         lines.append("")
         lines.append("Si apruebas, ejecutaré exactamente esta accion y guardaré el resultado.")

@@ -102,6 +102,16 @@ class SocialFlowClient:
         )
         return self.perform_graph_request(request)
 
+    def delete_graph_object(self, endpoint, access_token=""):
+        token = access_token or getattr(self.config, "meta_access_token", "")
+        query = urllib.parse.urlencode({"access_token": token}).encode("utf-8").decode("utf-8")
+        request = urllib.request.Request(
+            f"{self.graph_url(endpoint)}?{query}",
+            headers={"Accept": "application/json", "User-Agent": "AdmiraIA/1.0"},
+            method="DELETE",
+        )
+        return self.perform_graph_request(request)
+
     def post_graph_multipart(self, endpoint, fields, files):
         boundary, body = self.encode_multipart(fields, files)
         request = urllib.request.Request(
@@ -1042,6 +1052,30 @@ class SocialFlowClient:
                 if len(fields) <= 1:
                     return None
                 return self.graph_record(record, endpoint, self.post_graph_form(endpoint, fields))
+            if action == "delete":
+                target_type = self.positional(args, 2, "")
+                target_id = self.positional(args, 3, "")
+                if not target_id:
+                    target_id = target_type
+                    target_type = "object"
+                endpoint = target_id
+                result = self.delete_graph_object(endpoint, access_token)
+                body = result.get("body") if isinstance(result.get("body"), dict) else {}
+                if not result.get("ok"):
+                    fallback = self.post_graph_form(endpoint, {"access_token": access_token, "status": "DELETED"})
+                    fallback_body = fallback.get("body") if isinstance(fallback.get("body"), dict) else {}
+                    body = {
+                        "ok": bool(fallback.get("ok")),
+                        "target_type": target_type,
+                        "target_id": target_id,
+                        "primary_delete": body,
+                        "fallback_status_deleted": fallback_body,
+                    }
+                    result = {"ok": bool(fallback.get("ok")), "status": fallback.get("status") or result.get("status"), "body": body}
+                else:
+                    body = {**body, "ok": True, "target_type": target_type, "target_id": target_id}
+                    result = {**result, "body": body}
+                return self.graph_record(record, endpoint, result)
             if action == "create-adset":
                 campaign_id = self.positional(args, 2, "")
                 endpoint = f"{configured_ad_account_id}/adsets"
@@ -1259,6 +1293,9 @@ class SocialFlowClient:
 
     def resume(self, target_type, target_id, approved=False):
         return self.run(["marketing", "resume", target_type, target_id], live_required=True, mutation=True, approved=approved)
+
+    def delete(self, target_type, target_id, approved=False):
+        return self.run(["marketing", "delete", target_type, target_id, "--json", "--yes"], live_required=True, mutation=True, approved=approved)
 
     def set_budget(self, target_type, target_id, daily_budget_cents, approved=False):
         return self.run(["marketing", "set-budget", target_type, target_id, "--daily-budget", str(int(daily_budget_cents))], live_required=True, mutation=True, approved=approved)

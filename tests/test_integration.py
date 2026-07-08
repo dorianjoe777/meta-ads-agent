@@ -5605,11 +5605,15 @@ class IntegrationTestSuite:
         image_path = image_dir / "final-creative.png"
         original_require = dashboard.require_cloud_license
         original_create = dashboard.create_campaign
+        original_pending = dashboard.PENDING_FILE
+        original_actions = dashboard.ACTIONS_FILE
         captured = []
         try:
             shutil.rmtree(image_dir, ignore_errors=True)
             image_dir.mkdir(parents=True, exist_ok=True)
             image_path.write_bytes(b"fake png")
+            dashboard.PENDING_FILE = image_dir / "pending.json"
+            dashboard.ACTIONS_FILE = image_dir / "actions.json"
             dashboard.require_cloud_license = lambda *args, **kwargs: None
             dashboard.create_campaign = lambda payload: captured.append(payload) or {"status": "pending", "payload": payload}
 
@@ -5717,6 +5721,21 @@ class IntegrationTestSuite:
             self.assert_true(placeholder_completion_result.get("staged") is True and captured[0]["create_placeholder_ad"] is True and captured[0]["placeholder_ad_count"] == 2, "Campaign staging allows paused placeholder ads without a provisional image")
             self.assert_true(captured[0]["placeholder_ad_names"] == ["UGC - Problema agencia", "Demo - Instalación simple"], "Campaign staging preserves creative-plan ad names for placeholder ads")
 
+            delete_result = dashboard.execute_agent_tool(
+                {
+                    "tool": "delete_campaign",
+                    "arguments": {
+                        "campaign_id": "120250000000000096",
+                        "name": "Campaña parcial rota",
+                        "reason": "incomplete_failed_creation",
+                    },
+                },
+                {"language": "es"},
+            )
+            pending_delete = dashboard.read_json(dashboard.PENDING_FILE, [])
+            self.assert_true(delete_result.get("staged") is True and pending_delete[0]["type"] == "delete_campaign", "Campaign delete tool stages destructive cleanup for approval")
+            self.assert_true(pending_delete[0]["payload"]["target_id"] == "120250000000000096" and pending_delete[0]["payload"]["destructive"] is True, "Campaign delete approval stores exact target id and destructive flag")
+
             blocked = dashboard.execute_agent_tool(
                 {
                     "tool": "create_campaign_stack",
@@ -5735,6 +5754,8 @@ class IntegrationTestSuite:
         finally:
             dashboard.require_cloud_license = original_require
             dashboard.create_campaign = original_create
+            dashboard.PENDING_FILE = original_pending
+            dashboard.ACTIONS_FILE = original_actions
             shutil.rmtree(image_dir, ignore_errors=True)
 
     def test_signal_quality_tool_reviews_campaign_event_readiness(self):
@@ -6213,6 +6234,9 @@ class IntegrationTestSuite:
                 approved=True,
             )
             self.assert_true(requests and b"optimization_goal=CONVERSATIONS" in requests[-1].data and b"destination_type=WHATSAPP" in requests[-1].data, "Graph ad set creation supports click-to-message destination type")
+            requests.clear()
+            delete_result = client.delete("campaign", "cmp_partial", approved=True)
+            self.assert_true(delete_result.get("connector") == "graph_api" and requests[-1].get_method() == "DELETE" and "cmp_partial" in delete_result.get("graph_endpoint", ""), "Graph campaign cleanup deletes the exact Meta object by ID")
         finally:
             social_flow_client.urllib.request.urlopen = original_urlopen
 
@@ -6816,6 +6840,10 @@ class IntegrationTestSuite:
                 self.calls.append(("create_ad", args, kwargs))
                 return {"stdout": json.dumps({"id": "ad_1"}), "executed": True}
 
+            def delete(self, *args, **kwargs):
+                self.calls.append(("delete", args, kwargs))
+                return {"stdout": json.dumps({"success": True}), "returncode": 0, "executed": True}
+
         ad_path = ROOT_DIR / "ad-config.json"
         ad_before = ad_path.read_text(encoding="utf-8") if ad_path.exists() else ""
         image_path = ROOT_DIR / "output" / "test-creative.png"
@@ -6871,6 +6899,39 @@ class IntegrationTestSuite:
             self.assert_true(all(call[2].get("approved") is True for call in client.calls), "Full campaign execution is explicitly marked as approved")
             saved_campaign = json.loads(campaign_path.read_text(encoding="utf-8"))
             self.assert_true(saved_campaign.get("execution_state", {}).get("campaign_id") == "cmp_1", "Campaign execution stores the created Meta campaign ID for safe retries")
+
+            class FailingAdsetClient(FakeClient):
+                def create_adset(self, *args, **kwargs):
+                    self.calls.append(("create_adset", args, kwargs))
+                    return {"stdout": json.dumps({"error": {"message": "Invalid targeting"}}), "stderr": "Invalid targeting", "returncode": 1, "executed": True}
+
+            campaign_path.write_text(
+                json.dumps(
+                    {
+                        "name": "Partial Cleanup Stack",
+                        "objective": "PURCHASES",
+                        "budget": {"daily": 25},
+                        "status_plan": {"campaign": "PAUSED", "adset": "PAUSED", "ad": "PAUSED"},
+                        "ad_sets": [{"name": "Partial Cleanup Stack - Core", "targeting": {"locations": ["MX"]}, "budget": 25}],
+                        "ad": {
+                            "primary_text": "Texto",
+                            "headline": "Titular",
+                            "creative_image_path": str(image_path),
+                            "landing_url": "https://buyer.example",
+                            "final_status": "PAUSED",
+                            "active_spend_confirmed": False,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            cleanup_client = FailingAdsetClient()
+            cleanup_result = execute_campaign_creation(str(campaign_path), cleanup_client, approved=True)
+            cleanup_calls = [call[0] for call in cleanup_client.calls]
+            cleaned_campaign = json.loads(campaign_path.read_text(encoding="utf-8"))
+            self.assert_true(cleanup_result["failed_step"] == "create_adset" and cleanup_result.get("partial_campaign_deleted") is True, "Failed paused campaign creation rolls back the partial Meta campaign")
+            self.assert_true(cleanup_calls == ["create_campaign", "create_adset", "delete"], "Partial cleanup deletes only after a campaign was created and a later step failed")
+            self.assert_true("campaign_id" not in cleaned_campaign.get("execution_state", {}) and cleaned_campaign["execution_state"].get("partial_deleted_campaign_id") == "cmp_1", "Partial cleanup clears the reusable campaign id so retry starts clean")
 
             class PublishingConfig(FakeConfig):
                 meta_publishing_access_token = "publishing-token"

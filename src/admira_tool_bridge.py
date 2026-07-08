@@ -37,6 +37,7 @@ TOOL_MAP = {
     "admira_stage_budget_change": "set_budget",
     "admira_pause_campaign": "pause_campaign",
     "admira_resume_campaign": "resume_campaign",
+    "admira_delete_campaign": "delete_campaign",
     "admira_approve_action": "approval_decision",
     "admira_reject_action": "approval_decision",
     "admira_save_agent_preferences": "save_agent_preferences",

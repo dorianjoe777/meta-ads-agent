@@ -256,6 +256,23 @@ Arguments:
 
 This is always staged for approval by the backend.
 
+### `delete_campaign`
+
+Use only for explicit cleanup/deletion of an exact campaign ID, especially paused campaigns that Admira partially created during a failed setup attempt.
+
+Rules:
+
+- Do not silently delete campaigns the buyer already had, active campaigns, or campaigns without an exact ID.
+- For manual cleanup, call `mcp_admira_delete_campaign` and let the approval guardrail ask for confirmation.
+- If a paused campaign creation fails after Admira created objects, the backend may automatically roll back the partial campaign. In that case, explain simply whether it was cleaned up and whether the user can retry from zero.
+- If cleanup fails, keep the campaign paused and tell the buyer the exact campaign ID so they can remove it manually or approve another cleanup attempt.
+
+Arguments:
+
+```json
+{"campaign_id": "120000000000000000", "reason": "incomplete_failed_creation"}
+```
+
 ### `set_budget`
 
 Use when the user asks to change a campaign daily budget.

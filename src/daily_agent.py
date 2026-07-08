@@ -259,6 +259,8 @@ def command_for_pending(item):
         return ["resume", payload.get("target_type", "adset"), payload.get("target_id", payload.get("campaign_id"))]
     if item.get("type") == "pause_campaign":
         return ["pause", payload.get("target_type", "campaign"), payload.get("target_id", payload.get("campaign_id"))]
+    if item.get("type") == "delete_campaign":
+        return ["delete", payload.get("target_type", "campaign"), payload.get("target_id", payload.get("campaign_id"))]
     if item.get("type") == "create_campaign":
         return ["create_campaign", payload.get("path")]
     if item.get("type") == "create_lead_form":
@@ -552,6 +554,82 @@ def persist_campaign_execution_state(path, campaign, updates):
         pass
 
 
+def reset_campaign_execution_after_partial_cleanup(path, campaign, campaign_id, cleanup):
+    try:
+        execution_state = dict(campaign.get("execution_state") or {})
+        execution_state.pop("campaign_id", None)
+        execution_state.pop("adset_ids", None)
+        execution_state["partial_cleanup"] = cleanup
+        execution_state["partial_deleted_campaign_id"] = campaign_id
+        execution_state["partial_cleanup_at"] = now_iso()
+        campaign["execution_state"] = execution_state
+        write_json(Path(path), campaign)
+    except Exception:
+        pass
+
+
+def safe_for_partial_campaign_cleanup(campaign, status_plan, active_confirmed):
+    if bool(campaign.get("disable_auto_cleanup_partial_failures")):
+        return False
+    if active_confirmed:
+        return False
+    statuses = list((status_plan or {}).values()) or ["PAUSED"]
+    return all(str(status or "PAUSED").strip().upper() == "PAUSED" for status in statuses)
+
+
+def cleanup_partial_created_campaign(path, campaign, client, campaign_id, failed_step, steps, status_plan, active_confirmed, approved, allow_cleanup=True):
+    if not campaign_id:
+        return {"attempted": False, "reason": "missing_campaign_id"}
+    if not allow_cleanup:
+        return {"attempted": False, "reason": "campaign_not_created_in_this_attempt", "campaign_id": campaign_id}
+    if not safe_for_partial_campaign_cleanup(campaign, status_plan, active_confirmed):
+        return {"attempted": False, "reason": "not_safe_for_auto_cleanup", "campaign_id": campaign_id}
+    if not hasattr(client, "delete"):
+        return {"attempted": False, "reason": "delete_not_supported", "campaign_id": campaign_id}
+    result = client.delete("campaign", campaign_id, approved=approved)
+    ok = result.get("returncode") in {0, None}
+    cleanup = {
+        "attempted": True,
+        "ok": ok,
+        "campaign_id": campaign_id,
+        "failed_step": failed_step,
+        "result": result,
+    }
+    if ok:
+        reset_campaign_execution_after_partial_cleanup(path, campaign, campaign_id, cleanup)
+    log_action(
+        "cleanup_partial_campaign",
+        {
+            "campaign_id": campaign_id,
+            "campaign_name": campaign.get("name"),
+            "failed_step": failed_step,
+            "deleted": ok,
+            "step_count": len(steps or []),
+        },
+        "completed" if ok else "failed",
+    )
+    return cleanup
+
+
+def campaign_creation_failure_result(path, campaign, client, campaign_id, failed_step, steps, status_plan, active_confirmed, approved, allow_cleanup=True, **extra):
+    result = {
+        "ok": False,
+        "mode": client.config.mode,
+        "executed": True,
+        "failed_step": failed_step,
+        "steps": steps,
+        **extra,
+    }
+    if campaign_id:
+        result.setdefault("campaign_id", campaign_id)
+        cleanup = cleanup_partial_created_campaign(path, campaign, client, campaign_id, failed_step, steps, status_plan, active_confirmed, approved, allow_cleanup=allow_cleanup)
+        if cleanup.get("attempted"):
+            result["cleanup"] = cleanup
+            result["cleanup_attempted"] = True
+            result["partial_campaign_deleted"] = bool(cleanup.get("ok"))
+    return result
+
+
 def campaign_objective_for_social(objective):
     mapping = {
         "PURCHASES": "OUTCOME_SALES",
@@ -775,6 +853,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         or ""
     ).strip()
     steps = []
+    campaign_created_this_attempt = False
     if campaign_id:
         steps.append({"step": "create_campaign", "ok": True, "campaign_id": campaign_id, "status": status_plan.get("campaign", "PAUSED"), "reused": True})
         if meta_campaign_has_campaign_budget(client, campaign_id):
@@ -784,7 +863,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
                 bid_ok = bid_result.get("returncode") in {0, None}
                 steps.append({"step": "update_campaign_bid_strategy", "ok": bid_ok, "campaign_id": campaign_id, "result": bid_result})
                 if not bid_ok:
-                    return {"ok": False, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "failed_step": "update_campaign_bid_strategy", "steps": steps}
+                    return campaign_creation_failure_result(path, campaign, client, campaign_id, "update_campaign_bid_strategy", steps, status_plan, active_confirmed, approved, allow_cleanup=False)
     else:
         campaign_daily_budget = int(float(campaign.get("budget", {}).get("daily", 0) or 0) * 100) if budget_level == "campaign" else 0
         campaign_adset_budget_sharing = False if budget_level == "adset" else None
@@ -801,6 +880,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         campaign_id = social_id_from_result(campaign_result)
         steps.append({"step": "create_campaign", "ok": bool(campaign_id), "campaign_id": campaign_id, "status": status_plan.get("campaign", "PAUSED"), "result": campaign_result})
         if campaign_id:
+            campaign_created_this_attempt = True
             persist_campaign_execution_state(path, campaign, {"campaign_id": campaign_id, "budget_level": budget_level})
     if not campaign_id:
         return {"ok": False, "mode": client.config.mode, "executed": True, "failed_step": "create_campaign", "steps": steps}
@@ -846,7 +926,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         if adset_id:
             persist_campaign_execution_state(path, campaign, {"campaign_id": campaign_id, "adset_ids": [value for value in adset_ids if value]})
         if not adset_id:
-            return {"ok": False, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "failed_step": "create_adset", "steps": steps}
+            return campaign_creation_failure_result(path, campaign, client, campaign_id, "create_adset", steps, status_plan, active_confirmed, approved, allow_cleanup=campaign_created_this_attempt)
     target_adset_id = adset_ids[0] if adset_ids else ""
     image_hash = ad_plan.get("image_hash") or ""
     video_id = ad_plan.get("video_id") or ""
@@ -909,17 +989,21 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
             "direct_publishing_requested": True,
             "missing_requirements": direct_missing,
         })
-        return {
-            "ok": False,
-            "mode": client.config.mode,
-            "executed": True,
-            "campaign_id": campaign_id,
-            "adset_ids": adset_ids,
-            "failed_step": "create_page_post",
-            "direct_publishing_required": True,
-            "missing_requirements": direct_missing,
-            "steps": steps,
-        }
+        return campaign_creation_failure_result(
+            path,
+            campaign,
+            client,
+            campaign_id,
+            "create_page_post",
+            steps,
+            status_plan,
+            active_confirmed,
+            approved,
+            allow_cleanup=campaign_created_this_attempt,
+            adset_ids=adset_ids,
+            direct_publishing_required=True,
+            missing_requirements=direct_missing,
+        )
     if should_create_native_page_post:
         object_story_id, page_post_result = create_native_page_post_for_ad(
             client,
@@ -933,7 +1017,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         page_post_body = social_body_from_result(page_post_result)
         steps.append({"step": "create_page_post", "ok": bool(object_story_id), "object_story_id": object_story_id, "result": page_post_result})
         if not object_story_id:
-            return {"ok": False, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "failed_step": "create_page_post", "steps": steps}
+            return campaign_creation_failure_result(path, campaign, client, campaign_id, "create_page_post", steps, status_plan, active_confirmed, approved, allow_cleanup=campaign_created_this_attempt, adset_ids=adset_ids)
 
     if ad_plan.get("creative_image_path") and not object_story_id:
         upload_result = client.upload_image(client.config.ad_account_id, ad_plan.get("creative_image_path"), approved=approved)
@@ -948,7 +1032,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
             pass
         steps.append({"step": "upload_image", "ok": bool(image_hash), "image_hash": image_hash, "result": upload_result})
         if not image_hash:
-            return {"ok": False, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "failed_step": "upload_image", "steps": steps}
+            return campaign_creation_failure_result(path, campaign, client, campaign_id, "upload_image", steps, status_plan, active_confirmed, approved, allow_cleanup=campaign_created_this_attempt, adset_ids=adset_ids)
     if ad_plan.get("video_url") and not video_id and not object_story_id:
         upload_result = client.upload_video(
             client.config.ad_account_id,
@@ -964,7 +1048,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
             pass
         steps.append({"step": "upload_video", "ok": bool(video_id), "video_id": video_id, "result": upload_result})
         if not video_id:
-            return {"ok": False, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "failed_step": "upload_video", "steps": steps}
+            return campaign_creation_failure_result(path, campaign, client, campaign_id, "upload_video", steps, status_plan, active_confirmed, approved, allow_cleanup=campaign_created_this_attempt, adset_ids=adset_ids)
 
     direct_video_story_spec = direct_page_video_story_spec(destination, ad_plan, link, body_text, headline, page_post_body)
     creative_object_story_id = "" if direct_video_story_spec else object_story_id
@@ -1053,22 +1137,26 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
                 creative_id = social_id_from_result(creative_result)
                 steps.append({"step": "create_creative_retry_object_story_id", "ok": bool(creative_id), "creative_id": creative_id, "result": creative_result})
         if not creative_id:
-            return {
-                "ok": False,
-                "mode": client.config.mode,
-                "executed": True,
-                "campaign_id": campaign_id,
-                "adset_ids": adset_ids,
-                "failed_step": "create_creative",
-                "recovery": {
+            return campaign_creation_failure_result(
+                path,
+                campaign,
+                client,
+                campaign_id,
+                "create_creative",
+                steps,
+                status_plan,
+                active_confirmed,
+                approved,
+                allow_cleanup=campaign_created_this_attempt,
+                adset_ids=adset_ids,
+                recovery={
                     "direct_publishing_required": True,
                     "missing_requirements": fallback_missing,
                     "message": "Meta blocked direct creative creation because the ads app is in development mode. Connect Publicación directa or provide an original image path/URL so the backend can create a native unpublished Page post first.",
                 },
-                "steps": steps,
-            }
+            )
     if not creative_id:
-        return {"ok": False, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "failed_step": "create_creative", "steps": steps}
+        return campaign_creation_failure_result(path, campaign, client, campaign_id, "create_creative", steps, status_plan, active_confirmed, approved, allow_cleanup=campaign_created_this_attempt, adset_ids=adset_ids)
 
     ad_ids = []
     names = placeholder_ad_names(ad_plan)
@@ -1086,7 +1174,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         ad_ids.append(ad_id)
         steps.append({"step": "create_ad", "ok": bool(ad_id), "ad_id": ad_id, "final_status": "PAUSED" if placeholder_static else status_plan.get("ad", final_status), "result": ad_result})
         if not ad_id:
-            return {"ok": False, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "creative_id": creative_id, "ad_ids": [value for value in ad_ids if value], "failed_step": "create_ad", "steps": steps}
+            return campaign_creation_failure_result(path, campaign, client, campaign_id, "create_ad", steps, status_plan, active_confirmed, approved, allow_cleanup=campaign_created_this_attempt, adset_ids=adset_ids, creative_id=creative_id, ad_ids=[value for value in ad_ids if value])
     ad_id = ad_ids[0] if ad_ids else ""
     final = {"ok": bool(ad_id), "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "creative_id": creative_id, "ad_id": ad_id, "ad_ids": ad_ids, "final_status": "PAUSED" if placeholder_static else status_plan.get("ad", final_status), "status_plan": status_plan, "steps": steps}
     if placeholder_static:
@@ -1120,6 +1208,8 @@ def execute_pending(item, client):
         result = client.resume(command[1], command[2], approved=True)
     elif command[0] == "pause":
         result = client.pause(command[1], command[2], approved=True)
+    elif command[0] == "delete":
+        result = client.delete(command[1], command[2], approved=True)
     elif command[0] == "create_campaign":
         result = execute_campaign_creation(command[1], client, approved=True, prior_result=item.get("result"))
     elif command[0] == "create_lead_form":

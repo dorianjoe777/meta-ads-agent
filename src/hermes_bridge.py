@@ -472,6 +472,7 @@ Use these MCP tools for real product actions instead of inventing results, runni
 - `mcp_admira_stage_budget_change`
 - `mcp_admira_pause_campaign`
 - `mcp_admira_resume_campaign`
+- `mcp_admira_delete_campaign`
 - `mcp_admira_list_pending_approvals`
 - `mcp_admira_approve_action`
 - `mcp_admira_reject_action`

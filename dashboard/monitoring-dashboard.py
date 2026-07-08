@@ -8597,6 +8597,39 @@ def campaign_resume_action(campaign, payload, tool_type="resume"):
     )
 
 
+def campaign_delete_action(campaign, payload, tool_type="delete_campaign", reason=""):
+    campaign_id = str(campaign.get("id") or campaign.get("campaign_id") or campaign.get("target_id") or "").strip()
+    if not campaign_id:
+        return agent_action_result(
+            tool_type,
+            False,
+            chat_reply(payload, "Necesito el ID exacto de la campaña para eliminarla.", "I need the exact campaign ID before deleting it."),
+            blocked=True,
+            reason="missing_campaign_id",
+        )
+    action_payload = {
+        "campaign_id": campaign_id,
+        "target_id": campaign_id,
+        "target_type": "campaign",
+        "name": campaign.get("name") or campaign_id,
+        "reason": reason or "buyer_requested_cleanup",
+        "destructive": True,
+    }
+    staged = add_pending("delete_campaign", action_payload)
+    return agent_action_result(
+        tool_type,
+        False,
+        chat_reply(
+            payload,
+            f"Preparé la eliminación de {action_payload['name']} para aprobación. No la borro sin confirmación porque es una acción destructiva.",
+            f"I staged deletion for {action_payload['name']}. I will not delete it without confirmation because this is destructive.",
+        ),
+        staged=True,
+        campaign_id=campaign_id,
+        result=staged,
+    )
+
+
 def campaign_budget_action(campaign, new_budget, payload, tool_type="adjust_budget"):
     result = apply_action({"action": "adjust_budget", "campaign_id": campaign.get("id"), "new_budget": new_budget})
     staged = isinstance(result, dict) and result.get("status") == "pending"
@@ -9679,8 +9712,10 @@ def handle_save_existing_adset_tool(arguments, chat_payload, tool):
 
 
 def handle_campaign_mutation_tool(arguments, chat_payload, tool):
-    campaign_id = arguments.get("campaign_id")
+    campaign_id = arguments.get("campaign_id") or arguments.get("target_id")
     campaign = campaign_by_id(load_metrics(), campaign_id)
+    if not campaign and tool == "delete_campaign" and campaign_id:
+        campaign = {"id": str(campaign_id).strip(), "name": arguments.get("name") or arguments.get("campaign_name") or str(campaign_id).strip()}
     if not campaign:
         return agent_action_result(
             tool,
@@ -9693,6 +9728,8 @@ def handle_campaign_mutation_tool(arguments, chat_payload, tool):
         return campaign_pause_action(campaign, chat_payload, tool)
     if tool == "resume_campaign":
         return campaign_resume_action(campaign, chat_payload, tool)
+    if tool == "delete_campaign":
+        return campaign_delete_action(campaign, chat_payload, tool, reason=arguments.get("reason") or "agent_requested_cleanup")
     if tool == "set_budget":
         try:
             new_budget = float(arguments.get("new_budget"))
@@ -9746,6 +9783,7 @@ AGENT_TOOL_HANDLERS = {
     "save_existing_adset": handle_save_existing_adset_tool,
     "pause_campaign": handle_campaign_mutation_tool,
     "resume_campaign": handle_campaign_mutation_tool,
+    "delete_campaign": handle_campaign_mutation_tool,
     "set_budget": handle_campaign_mutation_tool,
     "generate_creatives": handle_campaign_mutation_tool,
 }

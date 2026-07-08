@@ -43,6 +43,7 @@ TOOL_DEFINITIONS = [
     ("stage_budget_change", "Stage or execute a guarded budget change."),
     ("pause_campaign", "Stage or execute a guarded campaign pause."),
     ("resume_campaign", "Stage or execute a guarded campaign resume."),
+    ("delete_campaign", "Stage deletion/archival of an exact Meta campaign ID. Use for buyer-approved cleanup of incomplete paused campaigns; never delete active or external campaigns silently."),
     ("list_pending_approvals", "List pending approval cards."),
     ("approve_action", "Approve one exact pending action."),
     ("reject_action", "Reject one exact pending action."),
