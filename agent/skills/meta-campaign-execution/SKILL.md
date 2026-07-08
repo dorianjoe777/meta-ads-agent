@@ -13,6 +13,7 @@ Use this skill when the campaign strategy is ready and the buyer asks to prepare
 - Use `mcp_admira_preflight_campaign` for serious launches or advanced targeting/creative setups.
 - Use `mcp_admira_stage_campaign` to prepare campaigns.
 - New campaigns and spend-capable changes require approval. Do not claim execution unless a tool confirms it.
+- Preparing a paused draft, preflight, retry, or approval-ready staging is the normal next step after the buyer asks for it. Do not ask a redundant “should I prepare it?” confirmation unless an unresolved choice would materially change what is staged.
 
 ## Direct publishing
 

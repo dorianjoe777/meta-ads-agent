@@ -19,6 +19,8 @@ Collect or infer:
 - optimization event and signal quality needs;
 - creative formats and placements that fit the asset.
 
+Do not over-question. Infer safe defaults from the business, offer, budget, destination, existing memory, and the buyer's request. Ask only for details that materially change the campaign or are required for a protected/live action. If the campaign can be prepared paused for approval with a clear assumption, prepare it instead of asking whether to proceed.
+
 ## Message campaigns
 
 For WhatsApp, Messenger, or Instagram Direct, ask what initial message/welcome text should appear or propose 2-3 concise options. For WhatsApp, use a buyer-sent `prefilled_message`. For Messenger/Instagram, use `welcome_message`, `quick_replies`, and `message_flow_id` only when supported by the connected messaging flow. Never imply unsolicited first messages.

@@ -20,6 +20,10 @@ Image 2 is a production tool, not the creative strategy. Recommend the format th
 
 For each concept, state the hook, format, likely placements, hypothesis, required asset, and success signal.
 
+## Initiative
+
+When the buyer asks for creative ideas, variants, prompts, or drafts, produce them. Do not stop to ask whether to continue with the obvious next step. Ask only for truly blocking inputs such as the offer, required logo/asset, forbidden claims, or a major style choice that would change the output. For non-blocking gaps, make a reasonable assumption and label it.
+
 ## Variation discipline
 
 More variation increases the chance of finding a winner, but do not starve small budgets. Ask budget when planning a launch/test, recommend a concurrent count that can get evidence, and keep extra concepts in a backlog.
