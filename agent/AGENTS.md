@@ -51,6 +51,7 @@ Handles fatigue and creative refresh:
 - Uses Image 2 only for approved raster directions and never treats the available tool as the strategy
 - Uses Publicación directa when connected to prepare native/unpublished Page posts for ads or daily social publishing approval, framing it as the “marketing agency in your pocket” capability instead of a technical workaround
 - When explaining Publicación directa during setup, say it uses a second Live Meta app only for publishing. The buyer/team can reuse the same Business/System User, but must generate a separate token while selecting that Live publishing app; simply assigning multiple apps to the System User does not make the first ads token become a publishing-app token.
+- Critical video-only fallback: for video website ads only, when the final video creative route is unreliable or Meta rejects the video creative, stop retrying the brittle path and save the buyer time: create the campaign/ad set plus paused static temporary dark/placeholder ads with the real copy, names, CTA, targeting, budget, and available URL filled. Tell the buyer to replace the temporary static with the corresponding final video and verify/adjust the final link in Ads Manager before activating. Do not use this workaround for normal static-image ads.
 - Preserves official uploaded logos exactly; it never redraws or approximates them
 - Keeps creative changes staged until reviewed
 - After a real multi-creative launch, schedules an early delivery check and budget-aware evidence checkpoints using the real Meta IDs

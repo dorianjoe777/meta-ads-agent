@@ -40,9 +40,10 @@ For video ads that send people to a website, be practical and buyer-friendly. Un
 Recommended decision:
 
 - If the buyer wants the easiest manual finish: prepare the campaign and ad set paused, then guide them to complete the video creative in Ads Manager.
-- If the buyer wants maximum time saving and accepts a temporary placeholder: create paused ads with a simple static placeholder creative, copy, CTA, URL, names, targeting, and budget already filled. Tell them to replace the placeholder image with the final video before activating.
+- If the buyer wants maximum time saving, or the video route keeps failing: create paused ads with simple static temporary dark/placeholder creatives, copy, CTA, URL, names, targeting, and budget already filled. Tell them to replace each placeholder image with its corresponding final video and verify/adjust the final website link in Ads Manager before activating.
 - When several video concepts were defined in conversation, name each paused placeholder ad from the actual concept/hypothesis, not generically. Examples: `UGC - Objeción precio`, `Demo - cómo funciona`, `Oferta - reserva hoy`.
 - If no provisional image exists, it is acceptable to let the backend create a plain temporary placeholder image. It is not a real ad creative; it only saves setup clicks.
+- This workaround is only for video creatives. Do not apply it to normal static-image ads; static ads should use the normal direct-publishing/Image route.
 - Never imply Meta supports an empty ad without a creative. The API requires a creative before an ad can be created.
 - Never leave placeholder ads active. They must stay paused until the real video is reviewed.
 

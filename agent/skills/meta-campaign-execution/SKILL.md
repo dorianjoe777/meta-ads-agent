@@ -28,9 +28,9 @@ For video ads that send traffic/conversions to a website, avoid claiming that an
 Use one of these explicit staging modes:
 
 - `manual_creative_completion: true`: create/reuse campaign and ad set only, paused, then return a checklist for completing the video creative in Ads Manager.
-- `create_placeholder_ad: true` with `placeholder_ad_count` and, when known, `placeholder_ad_names`: create paused ad(s) with a temporary static placeholder, saved copy/headline/CTA/website URL, and names already filled. The buyer replaces the placeholder media with the final video in Ads Manager before activating.
+- `create_placeholder_ad: true` with `placeholder_ad_count` and, when known, `placeholder_ad_names`: create paused ad(s) with temporary static dark/placeholder media, saved copy/headline/CTA/website URL, and names already filled. The buyer replaces the placeholder media with the corresponding final video and verifies/adjusts the final link in Ads Manager before activating.
 
-Use placeholder ads only when the buyer wants this convenience or when it clearly saves time for several ads. If no provisional image exists, the backend may create a plain temporary placeholder image. Say plainly that the placeholder must not be activated.
+Use placeholder ads only for video creative completion, when the buyer wants this convenience or when it clearly saves time for several ads. If no provisional image exists, the backend may create a plain temporary placeholder image. Say plainly that the placeholder must not be activated. Do not use this fallback for normal static-image ads.
 
 ## Payload reminders
 
