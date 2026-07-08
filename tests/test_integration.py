@@ -5576,6 +5576,46 @@ class IntegrationTestSuite:
             )
             self.assert_true(post_result.get("staged") is True and captured and captured[0]["object_story_id"] == "12345_67890", "Campaign staging accepts existing Page posts as the creative source")
 
+            captured.clear()
+            manual_completion_result = dashboard.execute_agent_tool(
+                {
+                    "tool": "create_campaign_stack",
+                    "arguments": {
+                        "name": "Video manual completion",
+                        "objective": "sales",
+                        "daily_budget": 20,
+                        "landing_url": "https://uboost.lat",
+                        "video_url": "https://cdn.example/final-video.mp4",
+                        "manual_creative_completion": True,
+                        "final_status": "ACTIVE",
+                        "active_spend_confirmed": True,
+                    },
+                },
+                {"language": "es"},
+            )
+            self.assert_true(manual_completion_result.get("staged") is True and captured[0]["manual_creative_completion"] is True, "Campaign staging allows video manual completion without a static creative source")
+            self.assert_true(captured[0]["final_status"] == "PAUSED" and captured[0]["active_spend_confirmed"] is False, "Manual completion staging forces paused/no-spend status")
+
+            captured.clear()
+            placeholder_completion_result = dashboard.execute_agent_tool(
+                {
+                    "tool": "create_campaign_stack",
+                    "arguments": {
+                        "name": "Video placeholder completion",
+                        "objective": "sales",
+                        "daily_budget": 20,
+                        "landing_url": "https://uboost.lat",
+                        "video_url": "https://cdn.example/final-video.mp4",
+                        "create_placeholder_ad": True,
+                        "placeholder_ad_count": 2,
+                        "placeholder_ad_names": ["UGC - Problema agencia", "Demo - Instalación simple"],
+                    },
+                },
+                {"language": "es"},
+            )
+            self.assert_true(placeholder_completion_result.get("staged") is True and captured[0]["create_placeholder_ad"] is True and captured[0]["placeholder_ad_count"] == 2, "Campaign staging allows paused placeholder ads without a provisional image")
+            self.assert_true(captured[0]["placeholder_ad_names"] == ["UGC - Problema agencia", "Demo - Instalación simple"], "Campaign staging preserves creative-plan ad names for placeholder ads")
+
             blocked = dashboard.execute_agent_tool(
                 {
                     "tool": "create_campaign_stack",
@@ -5784,6 +5824,38 @@ class IntegrationTestSuite:
             direct_preview = direct_result["payload"]["dry_run_preview"]["creative"]
             self.assert_true(direct_controls["will_create_object_story_id"] is True and direct_controls["creative_route"] == "unpublished_page_post_object_story_id", "Approval card exposes that direct publishing will create object_story_id during execution")
             self.assert_true(direct_preview["will_create_object_story_id"] is True and direct_preview["creative_route"] == "unpublished_page_post_object_story_id", "Dry-run preview distinguishes future object_story_id creation from existing object_story_id presence")
+
+            manual_video_result = dashboard.create_campaign(
+                {
+                    "name": "Manual Video Completion Test",
+                    "objective": "PURCHASES",
+                    "daily_budget": 25,
+                    "final_status": "ACTIVE",
+                    "active_spend_confirmed": True,
+                    "landing_url": "https://buyer.example",
+                    "video_url": "https://cdn.example/final-video.mp4",
+                    "manual_creative_completion": True,
+                }
+            )
+            manual_preview = manual_video_result["payload"]["dry_run_preview"]["creative"]
+            self.assert_true(manual_preview["manual_creative_completion"] is True and manual_preview["will_create_ad"] is False and manual_preview["creative_route"] == "manual_ads_manager_completion", "Manual video completion stages paused campaign/ad set without requiring a static creative")
+            self.assert_true(manual_video_result["payload"]["requested"]["status_plan"] == {"campaign": "PAUSED", "adset": "PAUSED", "ad": "PAUSED"}, "Manual video completion forces the staged action to stay paused")
+
+            placeholder_video_result = dashboard.create_campaign(
+                {
+                    "name": "Placeholder Video Completion Test",
+                    "objective": "PURCHASES",
+                    "daily_budget": 25,
+                    "landing_url": "https://buyer.example",
+                    "video_url": "https://cdn.example/final-video.mp4",
+                    "create_placeholder_ad": True,
+                    "placeholder_ad_count": 2,
+                    "placeholder_ad_names": ["UGC - Dolor: pagar agencia cada mes", "Demo - instalar Admira IA"],
+                }
+            )
+            placeholder_preview = placeholder_video_result["payload"]["dry_run_preview"]["creative"]
+            self.assert_true(placeholder_preview["create_placeholder_ad"] is True and placeholder_preview["placeholder_ad_count"] == 2 and placeholder_preview["creative_route"] == "paused_static_placeholder_ads", "Placeholder mode stages paused static-placeholder ads for later video replacement")
+            self.assert_true(placeholder_preview["placeholder_ad_names"][0].startswith("UGC - Dolor"), "Placeholder mode preserves intelligent ad names from the creative plan")
         finally:
             for key, value in original.items():
                 setattr(dashboard, key, value)
@@ -7024,6 +7096,68 @@ class IntegrationTestSuite:
             self.assert_true(lead_form_campaign[1][2] == "LEAD_GENERATION", "Lead form campaign uses the Meta lead-generation objective")
             self.assert_true(lead_form_adset[1][5] == "LEAD_GENERATION" and lead_form_adset[2]["promoted_object"]["page_id"] == "111", "Lead form ad set optimizes for leads and includes page_id as promoted object")
             self.assert_true(lead_form_creative[2]["lead_gen_form_id"] == "form_123" and lead_form_creative[1][3] == "https://www.facebook.com/111", "Lead form creative receives the lead form ID and a safe Page link fallback")
+
+            campaign_path.write_text(
+                json.dumps(
+                    {
+                        "name": "Manual Video Completion Stack",
+                        "objective": "PURCHASES",
+                        "budget": {"daily": 20},
+                        "ad_sets": [{"name": "Manual Video Completion Stack - Core", "targeting": {"locations": ["MX"]}, "budget": 20}],
+                        "ad": {
+                            "primary_text": "Mira el video",
+                            "headline": "Compra hoy",
+                            "landing_url": "https://buyer.example",
+                            "video_url": "https://cdn.example/final-video.mp4",
+                            "manual_creative_completion": True,
+                            "final_status": "ACTIVE",
+                            "active_spend_confirmed": True,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manual_completion_client = FakeClient()
+            manual_completion_result = execute_campaign_creation(str(campaign_path), manual_completion_client, approved=True)
+            manual_completion_calls = [call[0] for call in manual_completion_client.calls]
+            self.assert_true(manual_completion_result["ok"] and manual_completion_result["manual_completion_required"] is True, "Manual video completion succeeds after preparing the paused structure")
+            self.assert_true(manual_completion_calls == ["create_campaign", "create_adset"], "Manual video completion stops before creating a creative or ad")
+            self.assert_true(manual_completion_result["final_status"] == "PAUSED" and manual_completion_result["status_plan"] == {"campaign": "PAUSED", "adset": "PAUSED", "ad": "PAUSED"}, "Manual video completion forces all Meta objects to remain paused")
+            self.assert_true(manual_completion_result["manual_creative_task"]["video_url"] == "https://cdn.example/final-video.mp4", "Manual completion task preserves the intended video URL")
+
+            campaign_path.write_text(
+                json.dumps(
+                    {
+                        "name": "Placeholder Video Completion Stack",
+                        "objective": "PURCHASES",
+                        "budget": {"daily": 20},
+                        "ad_sets": [{"name": "Placeholder Video Completion Stack - Core", "targeting": {"locations": ["MX"]}, "budget": 20}],
+                        "ad": {
+                            "primary_text": "Mira el video",
+                            "headline": "Compra hoy",
+                            "landing_url": "https://buyer.example",
+                            "video_url": "https://cdn.example/final-video.mp4",
+                            "create_placeholder_ad": True,
+                            "placeholder_ad_count": 2,
+                            "placeholder_ad_names": ["UGC - Objeción agencia", "Demo - Control en Telegram"],
+                            "final_status": "ACTIVE",
+                            "active_spend_confirmed": True,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            placeholder_client = FakeClient()
+            placeholder_result = execute_campaign_creation(str(campaign_path), placeholder_client, approved=True)
+            placeholder_calls = [call[0] for call in placeholder_client.calls]
+            placeholder_upload = next(call for call in placeholder_client.calls if call[0] == "upload_image")
+            placeholder_ads = [call for call in placeholder_client.calls if call[0] == "create_ad"]
+            self.assert_true(placeholder_result["ok"] and placeholder_result["placeholder_ads_created"] is True and len(placeholder_result["ad_ids"]) == 2, "Placeholder mode creates multiple paused ads ready for video replacement")
+            self.assert_true(placeholder_calls == ["create_campaign", "create_adset", "upload_image", "create_creative", "create_ad", "create_ad"], "Placeholder mode uses a static placeholder instead of uploading the video through the ads API")
+            self.assert_true(Path(placeholder_upload[1][1]).exists(), "Placeholder mode creates a local temporary static image when no provisional image exists")
+            self.assert_true(all(call[1][3] == "PAUSED" for call in placeholder_ads), "Placeholder ads are always created paused")
+            self.assert_true([call[1][1] for call in placeholder_ads] == ["UGC - Objeción agencia", "Demo - Control en Telegram"], "Placeholder ads use the creative-plan names instead of generic default names")
+            self.assert_true(placeholder_result["manual_creative_task"]["buyer_warning"].startswith("Do not activate"), "Placeholder completion task warns the buyer to replace the media before activation")
         finally:
             if ad_before:
                 ad_path.write_text(ad_before, encoding="utf-8")

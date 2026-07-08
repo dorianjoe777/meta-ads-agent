@@ -598,7 +598,7 @@ In English mode, use:
 
 > Yes, create and leave active
 
-If product, budget, landing URL, creative image path, or active-spend confirmation is missing, ask one clear question and do not request the tool.
+If product, budget, landing URL, creative image path, or active-spend confirmation is missing, ask one clear question and do not request the tool. Exception: for video website ads that should be completed in Ads Manager, pass `manual_creative_completion: true` to prepare campaign/ad set only, or `create_placeholder_ad: true` plus `placeholder_ad_count` and `placeholder_ad_names` to create paused static-placeholder ads. Use names from the real creative concepts discussed with the buyer. Meta does not support empty ads without creatives; placeholder ads are temporary and must stay paused until the buyer replaces the image with the real video.
 
 Budgets are interpreted in the connected Meta ad account currency. Do not assume USD. If the buyer writes `S/20`, `COP 40.000`, `MXN 300`, `€15`, or another currency, preserve the numeric amount and include any known `account_currency`/`ad_account_currency` context. If the written currency differs from the ad account currency, explain that Meta uses the account currency and do not invent conversion.
 

@@ -146,6 +146,7 @@ from expert_campaign import (
     campaign_preview,
     creative_format_review,
     merge_expert_targeting,
+    manual_creative_completion_enabled,
     normalize_bidding,
     normalize_billing_event,
     normalize_budget_plan,
@@ -154,6 +155,9 @@ from expert_campaign import (
     success_metric_candidates_from_text,
     normalize_success_metrics,
     normalize_status_plan,
+    placeholder_ad_count,
+    placeholder_ad_names,
+    placeholder_static_ad_enabled,
     requires_active_confirmation,
 )
 from signal_quality import apply_signal_quality_to_adset, review_signal_quality, signal_quality_reply
@@ -2252,21 +2256,29 @@ def direct_publishing_campaign_plan(payload=None, creative_controls=None, config
     status = publishing_status(config, destination)
     explicit = creative_controls.get("use_direct_publishing")
     strategy = str(payload.get("creative_creation_strategy") or payload.get("publishing_strategy") or "").strip().lower()
+    manual_completion = manual_creative_completion_enabled({**payload, **creative_controls})
+    placeholder_static = placeholder_static_ad_enabled({**payload, **creative_controls})
     has_existing_post = bool(creative_controls.get("object_story_id"))
     has_video_url = bool(creative_controls.get("video_url"))
     has_static_image = bool(payload.get("creative_image_path") or creative_controls.get("image_url")) and not has_video_url
-    has_native_asset = has_static_image or has_video_url
+    has_native_asset = has_static_image or has_video_url or placeholder_static
     requested = explicit is True or strategy in {"direct", "direct_publishing", "native_post", "page_post", "dark_post", "unpublished_post"}
     disabled = explicit is False or strategy in {"direct_creative", "inline_creative", "image_hash", "legacy"}
-    will_create = bool(status.get("ready")) and has_native_asset and not has_existing_post and not disabled
+    will_create = bool(status.get("ready")) and has_native_asset and not has_existing_post and not disabled and not manual_completion and not placeholder_static
     missing = []
     if requested and not has_existing_post:
         if not status.get("token_set"):
             missing.append("META_PUBLISHING_ACCESS_TOKEN")
         if not status.get("page_id"):
             missing.append("Facebook Page ID")
-        if not has_native_asset:
+        if not has_native_asset and not placeholder_static:
             missing.append("creative_image_path_or_image_url_or_video_url")
+    if placeholder_static:
+        route = "paused_static_placeholder_ads"
+    elif manual_completion:
+        route = "manual_ads_manager_completion"
+    else:
+        route = "existing_object_story_id" if has_existing_post else ("unpublished_page_post_object_story_id" if will_create else "direct_creative")
     return {
         "requested": requested,
         "disabled": disabled,
@@ -2277,7 +2289,11 @@ def direct_publishing_campaign_plan(payload=None, creative_controls=None, config
         "has_static_image": has_static_image,
         "has_video_url": has_video_url,
         "will_create_unpublished_post": will_create,
-        "creative_route": "existing_object_story_id" if has_existing_post else ("unpublished_page_post_object_story_id" if will_create else "direct_creative"),
+        "manual_creative_completion": manual_completion,
+        "create_placeholder_ad": placeholder_static,
+        "placeholder_ad_count": placeholder_ad_count({**payload, **creative_controls}, default=len(placeholder_ad_names({**payload, **creative_controls})) or 1) if placeholder_static else 0,
+        "placeholder_ad_names": placeholder_ad_names({**payload, **creative_controls}) if placeholder_static else [],
+        "creative_route": route,
         "missing_requirements": missing,
         "note": "Publicación directa: crear post no publicado y usar object_story_id." if will_create else "",
     }
@@ -7120,6 +7136,10 @@ def create_campaign(payload):
     schedule = normalize_schedule(payload)
     bidding = normalize_bidding(payload)
     creative_controls = normalize_creative_controls(payload)
+    if creative_controls.get("manual_creative_completion") or creative_controls.get("create_placeholder_ad"):
+        final_status = "PAUSED"
+        active_confirmed = False
+        status_plan = {"campaign": "PAUSED", "adset": "PAUSED", "ad": "PAUSED"}
     direct_plan = direct_publishing_campaign_plan(payload, creative_controls)
     ad_set = creator.create_ad_set_config(
         f"{payload.get('name', 'New Campaign')} - Core",
@@ -7174,6 +7194,11 @@ def create_campaign(payload):
         "object_story_spec": creative_controls["object_story_spec"],
         "object_story_id": creative_controls["object_story_id"],
         "use_direct_publishing": creative_controls["use_direct_publishing"],
+        "manual_creative_completion": creative_controls["manual_creative_completion"],
+        "create_placeholder_ad": creative_controls["create_placeholder_ad"],
+        "placeholder_ad_count": creative_controls["placeholder_ad_count"],
+        "placeholder_ad_names": creative_controls["placeholder_ad_names"],
+        "creative_creation_strategy": creative_controls["creative_creation_strategy"],
         "direct_publishing_plan": direct_plan,
         "creative_format": creative_controls["format"],
         "final_status": final_status,
@@ -7212,6 +7237,10 @@ def create_campaign(payload):
                 "has_image_url": bool(campaign["ad"].get("image_url")),
                 "has_video_url": bool(campaign["ad"].get("video_url")),
                 "use_direct_publishing": campaign["ad"].get("use_direct_publishing"),
+                "manual_creative_completion": campaign["ad"].get("manual_creative_completion"),
+                "create_placeholder_ad": campaign["ad"].get("create_placeholder_ad"),
+                "placeholder_ad_count": campaign["ad"].get("placeholder_ad_count"),
+                "placeholder_ad_names": campaign["ad"].get("placeholder_ad_names"),
                 "creative_route": direct_plan.get("creative_route"),
                 "cta_link": campaign["ad"].get("cta_link"),
                 "format_review": campaign.get("creative_format_review"),
@@ -7448,6 +7477,20 @@ def normalize_campaign_stack_arguments(arguments, chat_payload=None):
             args["use_direct_publishing"] = True
         elif strategy in {"direct_creative", "inline_creative", "image_hash", "legacy"}:
             args["use_direct_publishing"] = False
+
+    manual_completion = manual_creative_completion_enabled(args)
+    placeholder_static = placeholder_static_ad_enabled(args)
+    if manual_completion:
+        args["manual_creative_completion"] = True
+        args["final_status"] = "PAUSED"
+        args["active_spend_confirmed"] = False
+    if placeholder_static:
+        args["manual_creative_completion"] = True
+        args["create_placeholder_ad"] = True
+        args["placeholder_ad_count"] = placeholder_ad_count(args, default=len(placeholder_ad_names(args)) or 1)
+        args["placeholder_ad_names"] = placeholder_ad_names(args)
+        args["final_status"] = "PAUSED"
+        args["active_spend_confirmed"] = False
 
     for key in ("object_story_id", "page_post_id", "post_id", "existing_post_id", "facebook_post_id"):
         if args.get(key):
@@ -8821,6 +8864,10 @@ def campaign_preflight(arguments, chat_payload):
                 "has_image_url": bool(creative_controls.get("image_url")),
                 "has_video_url": bool(creative_controls.get("video_url")),
                 "use_direct_publishing": creative_controls.get("use_direct_publishing"),
+                "manual_creative_completion": creative_controls.get("manual_creative_completion"),
+                "create_placeholder_ad": creative_controls.get("create_placeholder_ad"),
+                "placeholder_ad_count": creative_controls.get("placeholder_ad_count"),
+                "placeholder_ad_names": creative_controls.get("placeholder_ad_names"),
                 "creative_route": direct_plan.get("creative_route"),
                 "cta_link": creative_controls.get("cta_link"),
                 "format": creative_controls.get("format"),
@@ -8915,14 +8962,22 @@ def handle_export_report_tool(arguments, chat_payload, tool):
 
 def handle_create_campaign_stack_tool(arguments, chat_payload, tool):
     arguments = normalize_campaign_stack_arguments(arguments or {}, chat_payload)
+    creative_controls = normalize_creative_controls(arguments)
+    manual_completion = bool(creative_controls.get("manual_creative_completion"))
+    placeholder_static = bool(creative_controls.get("create_placeholder_ad"))
     required = ["name", "daily_budget"]
     if not arguments.get("object_story_id"):
         required.append("landing_url")
     missing = [key for key in required if not arguments.get(key)]
-    if not any(arguments.get(key) for key in CAMPAIGN_CREATIVE_SOURCE_KEYS):
+    if not any(arguments.get(key) for key in CAMPAIGN_CREATIVE_SOURCE_KEYS) and not (manual_completion or placeholder_static):
         missing.append("creative_image_path_or_url_or_story_spec")
     final_status = str(arguments.get("final_status") or "PAUSED").strip().upper()
     active_confirmed = boolish(arguments.get("active_spend_confirmed")) is True
+    if manual_completion or placeholder_static:
+        final_status = "PAUSED"
+        active_confirmed = False
+        arguments["final_status"] = "PAUSED"
+        arguments["active_spend_confirmed"] = False
     if requires_active_confirmation(arguments, final_status) and not active_confirmed:
         missing.append("active_spend_confirmed")
     if missing:

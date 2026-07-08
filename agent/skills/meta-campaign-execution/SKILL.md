@@ -16,12 +16,23 @@ Use this skill when the campaign strategy is ready and the buyer asks to prepare
 
 ## Direct publishing
 
-When Publicación directa is connected, prefer native unpublished Page posts for image/video ads, then create the ad from `object_story_id`. Present this as a product capability, not a hack.
+When Publicación directa is connected, prefer native unpublished Page posts for image/static ads, then create the ad from `object_story_id`. Present this as a product capability, not a hack.
 
 If the publishing token/page access fails, explain the connection problem simply and keep the campaign prepared for retry.
 
+## Video website completion modes
+
+For video ads that send traffic/conversions to a website, avoid claiming that an empty ad can be created. Meta requires a creative before an ad exists.
+
+Use one of these explicit staging modes:
+
+- `manual_creative_completion: true`: create/reuse campaign and ad set only, paused, then return a checklist for completing the video creative in Ads Manager.
+- `create_placeholder_ad: true` with `placeholder_ad_count` and, when known, `placeholder_ad_names`: create paused ad(s) with a temporary static placeholder, saved copy/headline/CTA/website URL, and names already filled. The buyer replaces the placeholder media with the final video in Ads Manager before activating.
+
+Use placeholder ads only when the buyer wants this convenience or when it clearly saves time for several ads. If no provisional image exists, the backend may create a plain temporary placeholder image. Say plainly that the placeholder must not be activated.
+
 ## Payload reminders
 
-Pass justified fields only: objective, budget level, daily/lifetime budgets, statuses, placements, promoted object, optimization goal/event, billing event, bid strategy, image/video/story fields, CTA/link, message starter fields, lead form ID, and direct publishing flag.
+Pass justified fields only: objective, budget level, daily/lifetime budgets, statuses, placements, promoted object, optimization goal/event, billing event, bid strategy, image/video/story fields, CTA/link, message starter fields, lead form ID, direct publishing flag, and video completion fields (`manual_creative_completion`, `create_placeholder_ad`, `placeholder_ad_count`, `placeholder_ad_names`) when appropriate.
 
 Budgets are interpreted in the connected ad account currency; do not assume USD.

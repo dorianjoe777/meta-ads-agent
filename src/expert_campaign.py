@@ -421,6 +421,10 @@ def merge_expert_targeting(audience, payload):
 
 def normalize_creative_controls(payload):
     object_story_spec = parse_jsonish(payload.get("object_story_spec") or payload.get("object_story_spec_json"), {})
+    manual_completion = manual_creative_completion_enabled(payload)
+    placeholder_static = placeholder_static_ad_enabled(payload)
+    placeholder_names = placeholder_ad_names(payload)
+    placeholder_count = placeholder_ad_count(payload, default=len(placeholder_names) or 1) if placeholder_static else 0
     direct_preference = None
     for key in ("use_direct_publishing", "direct_publishing", "create_as_unpublished_post", "unpublished_post"):
         direct_preference = boolish(payload.get(key))
@@ -441,7 +445,137 @@ def normalize_creative_controls(payload):
         "cta_link": str(payload.get("cta_link") or payload.get("call_to_action_link") or "").strip(),
         "format": str(payload.get("creative_format") or payload.get("format") or "").strip().lower(),
         "use_direct_publishing": direct_preference,
+        "manual_creative_completion": manual_completion,
+        "create_placeholder_ad": placeholder_static,
+        "placeholder_ad_count": placeholder_count,
+        "placeholder_ad_names": placeholder_names[:placeholder_count] if placeholder_count else [],
+        "creative_creation_strategy": str(payload.get("creative_creation_strategy") or payload.get("publishing_strategy") or "").strip().lower(),
     }
+
+
+def manual_creative_completion_enabled(payload):
+    """Return true when the campaign should stop at campaign/ad set creation.
+
+    Meta's Marketing API requires a creative before an ad can be created. For
+    some video website ads, Admira can still prepare the paused campaign/ad set
+    and hand the buyer a precise Ads Manager completion checklist.
+    """
+    payload = payload or {}
+    for key in (
+        "manual_creative_completion",
+        "defer_creative",
+        "manual_video_completion",
+        "manual_ads_manager_completion",
+        "complete_creative_in_ads_manager",
+        "ads_manager_creative_completion",
+    ):
+        parsed = boolish(payload.get(key))
+        if parsed is not None:
+            return parsed
+    strategy = str(payload.get("creative_creation_strategy") or payload.get("publishing_strategy") or "").strip().lower()
+    return strategy in {
+        "manual_creative_completion",
+        "manual_video_completion",
+        "manual_video_ads_manager",
+        "ads_manager_video_completion",
+        "ads_manager_creative_completion",
+        "defer_creative",
+        "campaign_adset_only",
+    }
+
+
+def placeholder_static_ad_enabled(payload):
+    """Return true when Admira should create paused static-placeholder ads.
+
+    This is useful for video website ads that the buyer will finish in Ads
+    Manager. The API-created ads stay paused and use a safe static placeholder
+    creative, so the buyer can open each ad and replace the media with video.
+    """
+    payload = payload or {}
+    for key in (
+        "create_placeholder_ad",
+        "placeholder_static_ad",
+        "static_placeholder_ad",
+        "placeholder_creative",
+        "placeholder_creative_for_video",
+        "video_placeholder_ad",
+        "create_paused_placeholder_ads",
+    ):
+        parsed = boolish(payload.get(key))
+        if parsed is not None:
+            return parsed
+    strategy = str(payload.get("creative_creation_strategy") or payload.get("publishing_strategy") or "").strip().lower()
+    return strategy in {
+        "placeholder_static_ad",
+        "static_placeholder_ad",
+        "video_placeholder_ad",
+        "placeholder_creative_for_video",
+        "paused_placeholder_ads",
+    }
+
+
+def placeholder_ad_count(payload, default=1, maximum=10):
+    payload = payload or {}
+    for key in (
+        "placeholder_ad_count",
+        "paused_placeholder_ad_count",
+        "manual_completion_ad_count",
+        "ads_to_prepare",
+        "ad_count",
+        "number_of_ads",
+    ):
+        parsed = intish(payload.get(key), 0)
+        if parsed > 0:
+            return max(1, min(parsed, maximum))
+    return max(1, min(int(default or 1), maximum))
+
+
+def placeholder_ad_names(payload, maximum=10):
+    payload = payload or {}
+    raw = None
+    for key in (
+        "placeholder_ad_names",
+        "paused_placeholder_ad_names",
+        "manual_completion_ad_names",
+        "ad_names",
+        "ads_to_prepare",
+        "ad_variants",
+        "creative_variants",
+        "video_variants",
+        "variation_names",
+    ):
+        if payload.get(key):
+            raw = parse_jsonish(payload.get(key), payload.get(key))
+            break
+    if raw in (None, ""):
+        return []
+    if isinstance(raw, dict):
+        raw = raw.get("items") or raw.get("ads") or raw.get("variants") or list(raw.values())
+    if isinstance(raw, str):
+        raw = [part.strip() for part in re.split(r"[\n;]+", raw) if part.strip()]
+        if len(raw) == 1 and "," in raw[0]:
+            raw = [part.strip() for part in raw[0].split(",") if part.strip()]
+    names = []
+    for item in raw if isinstance(raw, list) else []:
+        if isinstance(item, dict):
+            value = (
+                item.get("name")
+                or item.get("ad_name")
+                or item.get("title")
+                or item.get("label")
+                or item.get("angle")
+                or item.get("hook")
+                or item.get("hypothesis")
+                or item.get("concept")
+            )
+        else:
+            value = item
+        text = re.sub(r"\s+", " ", str(value or "").strip())
+        if text and text not in names:
+            names.append(text[:120])
+        if len(names) >= maximum:
+            break
+    return names
 
 
 def creative_source_available(ad_plan):
@@ -472,6 +606,9 @@ def campaign_preview(campaign):
     ad_set = ad_sets[0] if ad_sets else {}
     ad = campaign.get("ad") or {}
     direct_plan = ad.get("direct_publishing_plan") if isinstance(ad.get("direct_publishing_plan"), dict) else {}
+    manual_completion = manual_creative_completion_enabled(ad)
+    placeholder_static = placeholder_static_ad_enabled(ad)
+    placeholder_names = placeholder_ad_names(ad)
     will_create_object_story_id = bool(direct_plan.get("will_create_unpublished_post") or ad.get("object_story_id"))
     return {
         "campaign": {
@@ -504,7 +641,18 @@ def campaign_preview(campaign):
             "has_image_url": bool(ad.get("image_url")),
             "has_video_url": bool(ad.get("video_url")),
             "use_direct_publishing": ad.get("use_direct_publishing"),
-            "creative_route": direct_plan.get("creative_route") or ("existing_object_story_id" if ad.get("object_story_id") else "direct_creative"),
+            "manual_creative_completion": manual_completion,
+            "create_placeholder_ad": placeholder_static,
+            "placeholder_ad_count": placeholder_ad_count(ad, default=len(placeholder_names) or 1) if placeholder_static else 0,
+            "placeholder_ad_names": placeholder_names,
+            "will_create_ad": not manual_completion or placeholder_static,
+            "creative_route": (
+                "paused_static_placeholder_ads"
+                if placeholder_static
+                else "manual_ads_manager_completion"
+                if manual_completion
+                else direct_plan.get("creative_route") or ("existing_object_story_id" if ad.get("object_story_id") else "direct_creative")
+            ),
             "direct_publishing_plan": ad.get("direct_publishing_plan"),
             "cta": ad.get("cta"),
             "cta_link": ad.get("cta_link"),

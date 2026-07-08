@@ -30,3 +30,18 @@ Use ad set budget by default for small controlled tests. Use campaign budget/CBO
 ## Lead forms
 
 For native Meta Lead Ads, check existing forms when possible. If a new form is needed, gather name, questions, privacy policy URL, thank-you URL when useful, and form intent before execution.
+
+## Video website ads
+
+For video ads that send people to a website, be practical and buyer-friendly. Until the product has a central approved Meta ads app, do not keep forcing brittle full video creative creation through the API when Ads Manager is better for previewing video crops, placements, and final appearance.
+
+Recommended decision:
+
+- If the buyer wants the easiest manual finish: prepare the campaign and ad set paused, then guide them to complete the video creative in Ads Manager.
+- If the buyer wants maximum time saving and accepts a temporary placeholder: create paused ads with a simple static placeholder creative, copy, CTA, URL, names, targeting, and budget already filled. Tell them to replace the placeholder image with the final video before activating.
+- When several video concepts were defined in conversation, name each paused placeholder ad from the actual concept/hypothesis, not generically. Examples: `UGC - Objeción precio`, `Demo - cómo funciona`, `Oferta - reserva hoy`.
+- If no provisional image exists, it is acceptable to let the backend create a plain temporary placeholder image. It is not a real ad creative; it only saves setup clicks.
+- Never imply Meta supports an empty ad without a creative. The API requires a creative before an ad can be created.
+- Never leave placeholder ads active. They must stay paused until the real video is reviewed.
+
+Explain this simply: “I can leave the structure and paused placeholder ads ready, so you only replace the image with the video in Ads Manager and check previews before turning it on.”

@@ -2,7 +2,9 @@
 """Daily runner and approval executor for Admira IA."""
 import argparse
 import json
+import struct
 import sys
+import zlib
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -34,7 +36,16 @@ from security import redact_payload
 from shopify_connector import sync_shopify
 from setup_status import build_setup_status
 from adset_controls import apply_placement_targeting
-from expert_campaign import boolish, creative_source_available, normalize_budget_plan, normalize_status_plan
+from expert_campaign import (
+    boolish,
+    creative_source_available,
+    manual_creative_completion_enabled,
+    normalize_budget_plan,
+    normalize_status_plan,
+    placeholder_ad_count,
+    placeholder_ad_names,
+    placeholder_static_ad_enabled,
+)
 from social_flow_client import SocialFlowClient, config_snapshot, send_notification
 
 
@@ -399,6 +410,86 @@ def direct_page_video_story_spec(destination, ad_plan, link, body_text, headline
     return story
 
 
+def static_creative_source_available(ad_plan):
+    return any(ad_plan.get(key) for key in ("creative_image_path", "image_hash", "image_url", "object_story_spec", "object_story_id"))
+
+
+def write_solid_placeholder_png(path, width=1080, height=1080, color=(250, 250, 247)):
+    """Create a simple local PNG placeholder without external imaging deps."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    def chunk(kind, data):
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+
+    raw_row = bytes([0]) + bytes(color) * width
+    raw = raw_row * height
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(raw, 9))
+        + chunk(b"IEND", b"")
+    )
+    path.write_bytes(png)
+    return str(path)
+
+
+def ensure_placeholder_image(campaign):
+    safe_name = "".join(char.lower() if char.isalnum() else "-" for char in str(campaign.get("name") or "campaign"))[:80].strip("-")
+    safe_name = safe_name or "campaign"
+    placeholder_dir = OUTPUT_DIR / "manual-creative-placeholders"
+    placeholder_path = placeholder_dir / f"{safe_name}-replace-with-video.png"
+    if not placeholder_path.exists():
+        write_solid_placeholder_png(placeholder_path)
+    return str(placeholder_path)
+
+
+def manual_creative_completion_task(campaign, ad_plan, campaign_id, adset_ids, link, body_text, headline, placeholder_ad_ids=None, placeholder_image_path=""):
+    adsets = campaign.get("ad_sets") or []
+    placements = adsets[0].get("placements") if adsets and isinstance(adsets[0], dict) else {}
+    video_url = str(ad_plan.get("deferred_video_url") or ad_plan.get("video_url") or "").strip()
+    names = placeholder_ad_names(ad_plan)
+    return {
+        "type": "ads_manager_video_creative_completion",
+        "reason": "Meta requires an ad creative before an ad can exist. For video website ads, Admira can prepare the paused structure and, when requested, paused placeholder ads so the buyer only replaces the media in Ads Manager.",
+        "campaign_id": campaign_id,
+        "adset_ids": [value for value in adset_ids if value],
+        "ad_ids": [value for value in (placeholder_ad_ids or []) if value],
+        "ad_names": names,
+        "placeholder_ads_created": bool(placeholder_ad_ids),
+        "placeholder_image_path": placeholder_image_path,
+        "landing_url": link,
+        "video_url": video_url,
+        "primary_text": body_text,
+        "headline": headline,
+        "cta": SocialFlowClient.normalize_call_to_action(ad_plan.get("cta", "LEARN_MORE")),
+        "placements": placements,
+        "dimension_guidance": [
+            "Review 1:1 feed preview if the video will appear in feeds.",
+            "Review 4:5 feed preview for stronger mobile feed usage.",
+            "Review 9:16 Stories/Reels preview before enabling vertical placements.",
+        ],
+        "checklist": [
+            "Open Meta Ads Manager and find the paused campaign/ad set IDs shown here.",
+            "Open each paused placeholder ad, or create a new ad inside the prepared ad set if no placeholder ads were created.",
+            "Replace the temporary static image with the final video.",
+            "Keep or paste the saved primary text, headline, CTA, and website URL.",
+            "Check feed, stories, and reels previews before turning anything on.",
+            "Leave the campaign paused until the final video creative is reviewed and approved.",
+        ],
+        "buyer_warning": "Do not activate the placeholder image. It exists only to save setup time before replacing the media with the real video.",
+    }
+
+
+def placeholder_ad_name(campaign, ad_plan, index, total):
+    names = placeholder_ad_names(ad_plan)
+    if index < len(names):
+        return names[index]
+    suffix = f" {index + 1}" if total > 1 else ""
+    return f"{campaign.get('name', 'New Campaign')} - Ad{suffix}"
+
+
 def campaign_budget_level_from_plan(campaign, budget_plan):
     plan = budget_plan if isinstance(budget_plan, dict) else {}
     raw = str(plan.get("budget_level") or campaign.get("budget_level") or "").strip().lower().replace("-", "_").replace(" ", "_")
@@ -622,14 +713,20 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         return {"ok": False, "error": "Campaign file missing or empty", "path": path}
     ad_config = read_json(AD_CONFIG_FILE, {})
     destination = ad_config.get("creative", {}).get("destination", {})
-    ad_plan = campaign.get("ad") or {}
+    ad_plan = dict(campaign.get("ad") or {})
     lead_gen_form_id = lead_gen_form_id_from_plan(ad_plan)
     message_destination = message_destination_from_plan(ad_plan)
+    manual_completion = manual_creative_completion_enabled(ad_plan)
+    placeholder_static = placeholder_static_ad_enabled(ad_plan)
     final_status = str(ad_plan.get("final_status") or "PAUSED").upper()
     if final_status not in {"PAUSED", "ACTIVE"}:
         final_status = "PAUSED"
     active_confirmed = bool(ad_plan.get("active_spend_confirmed"))
     status_plan = campaign.get("status_plan") or normalize_status_plan({}, final_status, active_confirmed)
+    if manual_completion or placeholder_static:
+        final_status = "PAUSED"
+        active_confirmed = False
+        status_plan = {"campaign": "PAUSED", "adset": "PAUSED", "ad": "PAUSED"}
     if not active_confirmed:
         status_plan = {key: ("PAUSED" if str(value).upper() == "ACTIVE" else value) for key, value in status_plan.items()}
     missing = []
@@ -639,7 +736,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         missing.append("Facebook Page ID")
     if not (ad_plan.get("landing_url") or destination.get("url") or ad_plan.get("object_story_spec") or ad_plan.get("object_story_id") or message_destination or lead_gen_form_id):
         missing.append("landing URL")
-    if not creative_source_available(ad_plan):
+    if not creative_source_available(ad_plan) and not (manual_completion or placeholder_static):
         missing.append("creative image path, image hash, image URL, video URL, object_story_spec, or object_story_id")
     elif ad_plan.get("creative_image_path") and not Path(ad_plan.get("creative_image_path")).exists():
         missing.append(f"creative image file missing: {ad_plan.get('creative_image_path')}")
@@ -657,7 +754,9 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
                 "campaign": campaign.get("name"),
                 "ad_sets": [adset.get("name") for adset in campaign.get("ad_sets", [])],
                 "final_status": final_status,
-                "will_create_ad": True,
+                "will_create_ad": not manual_completion or placeholder_static,
+                "manual_creative_completion": manual_completion,
+                "create_placeholder_ad": placeholder_static,
                 "status_plan": status_plan,
             },
         }
@@ -751,6 +850,36 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
     link = ad_plan.get("landing_url") or message_destination_link or lead_form_link or destination.get("url", "")
     body_text = ad_plan.get("primary_text") or f"Conoce {campaign.get('name', 'esta oferta')}."
     headline = ad_plan.get("headline") or campaign.get("name", "Nueva oferta")
+    if manual_completion and not placeholder_static:
+        task = manual_creative_completion_task(campaign, ad_plan, campaign_id, adset_ids, link, body_text, headline)
+        steps.append({"step": "manual_creative_completion", "ok": True, "completed_step": "adset", "task": task})
+        return {
+            "ok": True,
+            "mode": client.config.mode,
+            "executed": True,
+            "campaign_id": campaign_id,
+            "adset_ids": adset_ids,
+            "creative_id": "",
+            "ad_id": "",
+            "ad_ids": [],
+            "manual_completion_required": True,
+            "completed_step": "adset",
+            "final_status": "PAUSED",
+            "status_plan": status_plan,
+            "manual_creative_task": task,
+            "steps": steps,
+        }
+    placeholder_image_path = ""
+    if placeholder_static:
+        ad_plan["deferred_video_url"] = ad_plan.get("deferred_video_url") or ad_plan.get("video_url") or ""
+        ad_plan["video_url"] = ""
+        ad_plan["final_status"] = "PAUSED"
+        ad_plan["active_spend_confirmed"] = False
+        if not static_creative_source_available(ad_plan):
+            placeholder_image_path = ensure_placeholder_image(campaign)
+            ad_plan["creative_image_path"] = placeholder_image_path
+        elif ad_plan.get("creative_image_path"):
+            placeholder_image_path = ad_plan.get("creative_image_path")
     reuse_prior_object_story_id = not prior_result_missing_website_url(prior_result)
     object_story_id = str(
         ad_plan.get("object_story_id")
@@ -936,15 +1065,38 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
     if not creative_id:
         return {"ok": False, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "failed_step": "create_creative", "steps": steps}
 
-    ad_result = client.create_ad(target_adset_id, f"{campaign.get('name', 'New Campaign')} - Ad", creative_id, status_plan.get("ad", final_status), website_url=link, approved=approved)
-    ad_id = social_id_from_result(ad_result)
-    steps.append({"step": "create_ad", "ok": bool(ad_id), "ad_id": ad_id, "final_status": status_plan.get("ad", final_status), "result": ad_result})
-    final = {"ok": bool(ad_id), "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "creative_id": creative_id, "ad_id": ad_id, "final_status": status_plan.get("ad", final_status), "status_plan": status_plan, "steps": steps}
+    ad_ids = []
+    names = placeholder_ad_names(ad_plan)
+    create_count = max(placeholder_ad_count(ad_plan, default=len(names) or 1), len(names)) if placeholder_static else 1
+    for index in range(create_count):
+        ad_result = client.create_ad(
+            target_adset_id,
+            placeholder_ad_name(campaign, ad_plan, index, create_count),
+            creative_id,
+            "PAUSED" if placeholder_static else status_plan.get("ad", final_status),
+            website_url=link,
+            approved=approved,
+        )
+        ad_id = social_id_from_result(ad_result)
+        ad_ids.append(ad_id)
+        steps.append({"step": "create_ad", "ok": bool(ad_id), "ad_id": ad_id, "final_status": "PAUSED" if placeholder_static else status_plan.get("ad", final_status), "result": ad_result})
+        if not ad_id:
+            return {"ok": False, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "creative_id": creative_id, "ad_ids": [value for value in ad_ids if value], "failed_step": "create_ad", "steps": steps}
+    ad_id = ad_ids[0] if ad_ids else ""
+    final = {"ok": bool(ad_id), "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "creative_id": creative_id, "ad_id": ad_id, "ad_ids": ad_ids, "final_status": "PAUSED" if placeholder_static else status_plan.get("ad", final_status), "status_plan": status_plan, "steps": steps}
+    if placeholder_static:
+        task = manual_creative_completion_task(campaign, ad_plan, campaign_id, adset_ids, link, body_text, headline, placeholder_ad_ids=ad_ids, placeholder_image_path=placeholder_image_path)
+        steps.append({"step": "manual_creative_completion", "ok": True, "completed_step": "paused_placeholder_ads", "task": task})
+        final.update({
+            "manual_completion_required": True,
+            "placeholder_ads_created": True,
+            "manual_creative_task": task,
+        })
     if final["ok"]:
         mark_asset_files_retained(
             [ad_plan.get("creative_image_path")],
-            reason="campaign_ad_created",
-            meta={"campaign_id": campaign_id, "creative_id": creative_id, "ad_id": ad_id, "final_status": final_status},
+            reason="placeholder_ads_created" if placeholder_static else "campaign_ad_created",
+            meta={"campaign_id": campaign_id, "creative_id": creative_id, "ad_id": ad_id, "ad_ids": ad_ids, "final_status": final["final_status"]},
         )
     return final
 
