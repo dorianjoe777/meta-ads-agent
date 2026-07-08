@@ -7321,7 +7321,7 @@ def create_campaign(payload):
                 "status_plan": status_plan,
             },
         }
-        if getattr(config, "live", False):
+        if can_execute_paused_campaign_setup(config):
             require_cloud_license("Paused campaign creation requires an active license")
             execution_result = execute_campaign_creation(str(out_path), SocialFlowClient(config), approved=True)
         succeeded = bool(execution_result.get("ok")) and not execution_result.get("blocked")
@@ -7477,6 +7477,20 @@ def boolish(value):
     if text in {"0", "false", "no", "n", "off", "pausado", "pausada", "paused"}:
         return False
     return None
+
+
+def can_execute_paused_campaign_setup(config):
+    """True when a buyer-requested no-spend Meta setup can be materialized.
+
+    `mode=live`/`LIVE_ACTIONS_ENABLED` protects spend-capable actions. A fully
+    PAUSED campaign/ad set/ad stack is a different boundary: after the buyer
+    asks to create it, Admira should create the no-spend structure whenever the
+    real Meta account connection exists. Activation still requires approval.
+    """
+    return bool(
+        str(getattr(config, "ad_account_id", "") or "").strip()
+        and str(getattr(config, "meta_access_token", "") or "").strip()
+    )
 
 
 def campaign_status_from_text(value):

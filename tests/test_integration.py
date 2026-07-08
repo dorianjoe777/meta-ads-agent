@@ -5543,6 +5543,16 @@ class IntegrationTestSuite:
         class LiveConfig:
             live = True
             mode = "live"
+            ad_account_id = "act_123"
+            meta_access_token = "test-token"
+            live_actions_enabled = False
+
+        class SupervisedConnectedConfig:
+            live = False
+            mode = "dry-run"
+            ad_account_id = "act_123"
+            meta_access_token = "test-token"
+            live_actions_enabled = False
 
         class FakeClient:
             def __init__(self, config):
@@ -5577,6 +5587,23 @@ class IntegrationTestSuite:
             self.assert_true(captured and captured[0][1] is True and captured[0][2] is True, "Paused live creation is allowed as the buyer-requested no-spend setup")
             self.assert_true(pending_after_paused == [], "Paused campaign creation does not add a pending approval")
             self.assert_true(actions_after_paused[0]["status"] == "completed", "Paused direct creation is logged as completed")
+
+            dashboard.load_config = lambda: SupervisedConnectedConfig()
+            supervised_paused = dashboard.create_campaign(
+                {
+                    "name": "Paused Supervised Direct Create",
+                    "objective": "PURCHASES",
+                    "daily_budget": 20,
+                    "landing_url": "https://buyer.example",
+                    "image_hash": "hash_1",
+                    "final_status": "PAUSED",
+                    "active_spend_confirmed": False,
+                }
+            )
+            pending_after_supervised = dashboard.read_json(dashboard.PENDING_FILE, [])
+            self.assert_true(supervised_paused["status"] == "created_paused" and supervised_paused["approval_required"] is False, "Paused campaign creation executes in supervised/dry-run mode when real Meta credentials are configured")
+            self.assert_true(captured[-1][1] is True and captured[-1][2] is False, "Supervised paused setup bypasses only the creation approval gate, not live/autopilot mode")
+            self.assert_true(pending_after_supervised == [], "Supervised paused creation does not add a pending approval")
 
             active = dashboard.create_campaign(
                 {
