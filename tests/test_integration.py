@@ -5254,6 +5254,21 @@ class IntegrationTestSuite:
                     ],
                     "requested_fields": fields,
                 }
+            if path.endswith("/ads"):
+                return {
+                    "ok": True,
+                    "rows": [
+                        {
+                            "id": "ad_1",
+                            "name": "Ad",
+                            "campaign_id": "camp_1",
+                            "adset_id": "adset_1",
+                            "status": "PAUSED",
+                            "effective_status": "PAUSED",
+                            "creative": {"id": "creative_1", "object_story_id": "page_post_1"},
+                        }
+                    ],
+                }
             if path.endswith("/insights"):
                 return {"ok": True, "rows": []}
             return {"ok": False, "rows": [], "error": "unexpected path"}
@@ -5265,6 +5280,12 @@ class IntegrationTestSuite:
             self.assert_true(adset["optimization_goal"] == "OFFSITE_CONVERSIONS", "Meta snapshot stores ad set optimization goal")
             self.assert_true(adset["promoted_object"]["custom_event_type"] == "PURCHASE", "Meta snapshot stores promoted_object event")
             self.assert_true(adset["daily_budget"] == 25.0, "Meta snapshot normalizes ad set budget from minor units")
+            campaigns = meta_insights.aggregate_campaigns(snapshot)
+            tree = meta_insights.campaign_inventory_tree(snapshot)
+            self.assert_true(len(campaigns) == 1 and campaigns[0]["id"] == "camp_1" and campaigns[0]["spend"] == 0, "Meta snapshot keeps real paused/new campaigns even when insights has no rows")
+            self.assert_true(tree[0]["adsets"][0]["ads"][0]["id"] == "ad_1", "Meta snapshot builds a real campaign/ad set/ad inventory tree")
+            context = agent_chat.account_context({"metrics": {"source": "meta_graph", "campaigns": campaigns, "adsets": list(snapshot["adset_statuses"].values()), "ads": list(snapshot["ad_statuses"].values()), "campaign_tree": tree}})
+            self.assert_true(context["campaigns"][0]["id"] == "camp_1" and context["campaign_tree"][0]["adsets"][0]["ads"][0]["id"] == "ad_1", "Agent context exposes real Meta inventory even without spend insights")
         finally:
             meta_insights.graph_rows = original_graph_rows
 

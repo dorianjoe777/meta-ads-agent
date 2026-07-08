@@ -12,6 +12,7 @@ Use this skill when the buyer asks what is happening in the Meta Ads account, as
 - First call `mcp_admira_get_real_meta_context`.
 - If `metrics_source.is_real_meta_data` is not true, do not cite campaign names, ROAS, CPA, CTR, winners, losers, budgets, or fatigue.
 - If there is no real Meta data, say clearly that Meta is not connected or the data has not been refreshed yet, then guide the buyer to update real data.
+- If real Meta inventory exists but insights are empty or all delivery metrics are zero, you may enumerate the created campaigns/ad sets/ads and their statuses. Say clearly that there is not enough delivery/performance data yet to judge winners, losers, CPA, ROAS, fatigue, or scaling.
 - Explain in beginner-friendly Latin American Spanish.
 - End with one clear next step.
 - For a creative test, call `mcp_admira_list_experiment_reviews` before naming a winner. Respect its evidence status and next review date.

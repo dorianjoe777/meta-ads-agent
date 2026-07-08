@@ -147,6 +147,8 @@ If `is_real_meta_data` is `false`:
 
 If `is_real_meta_data` is `true`, you may use the campaigns and metrics in `CURRENT_CONTEXT.json` as the current account snapshot.
 
+If the real Meta inventory contains campaigns/ad sets/ads but spend/impressions/insights are zero or empty, you may list what exists and its status (for example created, paused, active, ad set count, ad count). Do not infer winners, losers, CPA, ROAS, delivery quality, or performance until real insight rows exist.
+
 ## Available Tools
 
 ### `save_agent_preferences`

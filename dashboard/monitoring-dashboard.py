@@ -112,7 +112,7 @@ from hermes_gateway import (
 from hermes_gateway import telegram_settings
 from license import activate_license, default_device_id, license_status, mark_license_install_state, normalize_license_entitlements, validate_license_key
 from local_store import now_iso, read_json, write_json, write_private_json
-from meta_insights import aggregate_campaigns as aggregate_meta_campaigns, collect_meta_snapshot, save_meta_snapshot
+from meta_insights import aggregate_campaigns as aggregate_meta_campaigns, campaign_inventory_tree as meta_campaign_inventory_tree, collect_meta_snapshot, save_meta_snapshot
 from meta_upload import recent_uploads, stage_upload
 from optimization_engine import (
     anomaly_diagnostics,
@@ -2632,6 +2632,9 @@ def fetch_real_metrics(account_id="", persist_snapshot=True):
         date_preset="last_30d",
     )
     campaigns = aggregate_meta_campaigns(snapshot)
+    adsets = list((snapshot.get("adset_statuses") or {}).values())
+    ads = list((snapshot.get("ad_statuses") or {}).values())
+    campaign_tree = meta_campaign_inventory_tree(snapshot)
     if not campaigns and snapshot.get("data_quality", {}).get("unavailable"):
         first_error = snapshot["data_quality"]["unavailable"][0].get("reason") or {}
         return {"ok": False, "reason": "graph_error", "message": str(first_error.get("message") or "Meta Graph request failed"), "raw": first_error}
@@ -2643,6 +2646,11 @@ def fetch_real_metrics(account_id="", persist_snapshot=True):
         if account.get("business_id"):
             campaign["business_manager_id"] = account.get("business_id")
             campaign["business_manager_name"] = account.get("business_name", "")
+    for collection in (adsets, ads, campaign_tree):
+        for item in collection:
+            item["account_id"] = account_id
+            item["ad_account_id"] = account_id
+            item["account_name"] = account.get("name") or account_id
     metrics = {
         "timestamp": now_iso(),
         "source": "meta_graph",
@@ -2650,6 +2658,9 @@ def fetch_real_metrics(account_id="", persist_snapshot=True):
         "account_id": account_id,
         "date_preset": "last_30d",
         "campaigns": campaigns,
+        "adsets": adsets,
+        "ads": ads,
+        "campaign_tree": campaign_tree,
         "summary": {},
         "data_quality": snapshot.get("data_quality"),
     }
@@ -2663,6 +2674,9 @@ def refresh_managed_real_metrics(reason="manual"):
     if len(accounts) <= 1:
         return refresh_real_metrics(accounts[0]["id"] if accounts else "", reason=reason)
     campaigns = []
+    adsets = []
+    ads = []
+    campaign_tree = []
     account_results = []
     errors = []
     for account in accounts:
@@ -2671,7 +2685,11 @@ def refresh_managed_real_metrics(reason="manual"):
         if result.get("ok"):
             rows = result.get("rows", 0)
             account_results.append({"id": account_id, "name": account.get("name") or account_id, "rows": rows})
-            campaigns.extend(result.get("metrics", {}).get("campaigns", []))
+            metrics_result = result.get("metrics", {})
+            campaigns.extend(metrics_result.get("campaigns", []))
+            adsets.extend(metrics_result.get("adsets", []))
+            ads.extend(metrics_result.get("ads", []))
+            campaign_tree.extend(metrics_result.get("campaign_tree", []))
         else:
             errors.append({"id": account_id, "name": account.get("name") or account_id, "reason": result.get("reason"), "message": result.get("message")})
     if campaigns or account_results:
@@ -2685,6 +2703,9 @@ def refresh_managed_real_metrics(reason="manual"):
             "business_manager": managed.get("business_manager", {}),
             "accounts": account_results,
             "campaigns": campaigns,
+            "adsets": adsets,
+            "ads": ads,
+            "campaign_tree": campaign_tree,
             "summary": {},
             "data_quality": {"complete": not errors, "unavailable": errors, "source": "meta_graph_read_only_multi_account"},
         }

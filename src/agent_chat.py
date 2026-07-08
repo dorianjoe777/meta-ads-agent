@@ -65,6 +65,9 @@ def account_context(payload):
     has_real_metrics = source_context["is_real_meta_data"]
     summary = metrics.get("summary", {})
     campaigns = metrics.get("campaigns", [])
+    adsets = metrics.get("adsets", [])
+    ads = metrics.get("ads", [])
+    campaign_tree = metrics.get("campaign_tree", [])
     recommendations = payload.get("recommendations", [])
     fatigue = payload.get("fatigue", [])
     pending = payload.get("pending", [])
@@ -99,6 +102,72 @@ def account_context(payload):
                 "daily_budget": c.get("daily_budget"),
             }
             for c in (campaigns[:8] if has_real_metrics else [])
+        ],
+        "adsets": [
+            {
+                "id": item.get("id"),
+                "name": item.get("name"),
+                "campaign_id": item.get("campaign_id"),
+                "status": item.get("status"),
+                "effective_status": item.get("effective_status"),
+                "optimization_goal": item.get("optimization_goal"),
+                "billing_event": item.get("billing_event"),
+                "daily_budget": item.get("daily_budget"),
+            }
+            for item in (adsets[:20] if has_real_metrics and isinstance(adsets, list) else [])
+        ],
+        "ads": [
+            {
+                "id": item.get("id"),
+                "name": item.get("name"),
+                "campaign_id": item.get("campaign_id"),
+                "adset_id": item.get("adset_id"),
+                "status": item.get("status"),
+                "effective_status": item.get("effective_status"),
+                "creative_id": (item.get("creative") or {}).get("id") if isinstance(item.get("creative"), dict) else None,
+                "object_story_id": (item.get("creative") or {}).get("object_story_id") if isinstance(item.get("creative"), dict) else None,
+            }
+            for item in (ads[:30] if has_real_metrics and isinstance(ads, list) else [])
+        ],
+        "campaign_tree": [
+            {
+                "id": c.get("id"),
+                "name": c.get("name"),
+                "status": c.get("status"),
+                "effective_status": c.get("effective_status"),
+                "adsets": [
+                    {
+                        "id": adset.get("id"),
+                        "name": adset.get("name"),
+                        "status": adset.get("status"),
+                        "effective_status": adset.get("effective_status"),
+                        "ads": [
+                            {
+                                "id": ad.get("id"),
+                                "name": ad.get("name"),
+                                "status": ad.get("status"),
+                                "effective_status": ad.get("effective_status"),
+                            }
+                            for ad in (adset.get("ads") or [])[:10]
+                            if isinstance(ad, dict)
+                        ],
+                    }
+                    for adset in (c.get("adsets") or [])[:10]
+                    if isinstance(adset, dict)
+                ],
+                "ads": [
+                    {
+                        "id": ad.get("id"),
+                        "name": ad.get("name"),
+                        "status": ad.get("status"),
+                        "effective_status": ad.get("effective_status"),
+                    }
+                    for ad in (c.get("ads") or [])[:10]
+                    if isinstance(ad, dict)
+                ],
+            }
+            for c in (campaign_tree[:8] if has_real_metrics and isinstance(campaign_tree, list) else [])
+            if isinstance(c, dict)
         ],
         "recommendations": recommendations[:6] if has_real_metrics else [],
         "fatigue": fatigue[:6] if has_real_metrics else [],
