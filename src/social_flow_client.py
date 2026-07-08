@@ -1459,8 +1459,12 @@ class SocialFlowClient:
             args.extend(["--instagram-actor-id", instagram_actor_id])
         return self.run(args, live_required=True, mutation=True, approved=approved)
 
-    def create_ad(self, adset_id, name, creative_id, status="PAUSED", approved=False):
-        return self.run(["marketing", "create-ad", adset_id, "--name", name, "--creative-id", creative_id, "--status", status, "--json", "--yes"], live_required=True, mutation=True, approved=approved)
+    def create_ad(self, adset_id, name, creative_id, status="PAUSED", website_url="", approved=False):
+        args = ["marketing", "create-ad", adset_id, "--name", name, "--creative-id", creative_id, "--status", status]
+        if website_url:
+            args.extend(["--website-url", website_url])
+        args.extend(["--json", "--yes"])
+        return self.run(args, live_required=True, mutation=True, approved=approved)
 
 
 def send_notification(config, title, message):

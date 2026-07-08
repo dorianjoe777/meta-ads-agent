@@ -5922,6 +5922,11 @@ class IntegrationTestSuite:
         args, _ = captured[0]
         self.assert_true(args[args.index("--lead-gen-form-id") + 1] == "form_123" and args[args.index("--link") + 1] == "", "Creative creation supports Meta lead form IDs without requiring a website link")
 
+        captured.clear()
+        client.create_ad("adset_1", "Ad with URL", "creative_1", "PAUSED", website_url="https://buyer.example", approved=True)
+        args, _ = captured[0]
+        self.assert_true("--website-url" in args and args[args.index("--website-url") + 1] == "https://buyer.example", "Final ad creation preserves the landing URL for connectors that validate it at ad level")
+
     def test_social_flow_uses_graph_api_directly(self):
         """Test live Meta actions execute through direct Meta Graph only."""
         print("\nTesting Meta Graph Direct Execution...")
@@ -6584,7 +6589,10 @@ class IntegrationTestSuite:
 
             def create_page_post(self, *args, **kwargs):
                 self.calls.append(("create_page_post", args, kwargs))
-                return {"stdout": json.dumps({"post_id": "111_999", "object_story_id": "111_999"}), "executed": True}
+                body = {"post_id": "111_999", "object_story_id": "111_999"}
+                if kwargs.get("video_url"):
+                    body.update({"video_id": "page_video_1", "thumbnail_url": "https://cdn.example/thumb.jpg"})
+                return {"stdout": json.dumps(body), "executed": True}
 
             def create_creative(self, *args, **kwargs):
                 self.calls.append(("create_creative", args, kwargs))
@@ -6872,11 +6880,14 @@ class IntegrationTestSuite:
             direct_video_calls = [call[0] for call in direct_video_client.calls]
             direct_page_post_call = next(call for call in direct_video_client.calls if call[0] == "create_page_post")
             direct_creative_call = next(call for call in direct_video_client.calls if call[0] == "create_creative")
+            direct_ad_call = next(call for call in direct_video_client.calls if call[0] == "create_ad")
+            direct_video_story = direct_creative_call[2]["object_story_spec"]
             self.assert_true(direct_video_result["ok"], "Approved video campaign can use direct publishing when connected")
             self.assert_true(direct_video_calls == ["create_campaign", "create_adset", "create_page_post", "create_creative", "create_ad"], "Direct-publishing video campaign creates a Page post instead of uploading an ad-account video")
             self.assert_true(direct_page_post_call[2]["video_url"] == "https://cdn.example/video.mp4", "Video direct publishing passes the buyer video URL to Page post creation")
             self.assert_true(direct_page_post_call[2]["link"] == "https://buyer.example" and direct_page_post_call[2]["cta"] == "LEARN_MORE", "Video direct publishing passes the landing URL and CTA into the Page post")
-            self.assert_true(direct_creative_call[2]["object_story_id"] == "111_999" and not direct_creative_call[2]["video_id"], "Video direct publishing creates the ad creative from the Page post object_story_id")
+            self.assert_true(direct_video_story["video_data"]["video_id"] == "page_video_1" and direct_video_story["video_data"]["call_to_action"]["value"]["link"] == "https://buyer.example" and not direct_creative_call[2]["object_story_id"], "Video direct publishing creates a website-aware video creative from the Page video")
+            self.assert_true(direct_ad_call[2]["website_url"] == "https://buyer.example", "Final ad creation receives the landing URL for validation/debug tracing")
 
             retry_object_story_client = DirectPublishingClient()
             retry_object_story_result = execute_campaign_creation(
@@ -6923,7 +6934,8 @@ class IntegrationTestSuite:
             retry_missing_website_creative = next(call for call in retry_missing_website_client.calls if call[0] == "create_creative")
             self.assert_true(retry_missing_website_result["ok"] and "create_page_post" in retry_missing_website_calls, "Campaign retry recreates the Page post when the previous one was missing the website URL")
             self.assert_true(retry_missing_website_post[2]["link"] == "https://buyer.example", "Website-missing retries create the new hidden post with the landing URL")
-            self.assert_true(retry_missing_website_creative[2]["object_story_id"] == "111_999", "Website-missing retries use the newly-created Page post instead of the old post without URL")
+            retry_missing_story = retry_missing_website_creative[2]["object_story_spec"]
+            self.assert_true(retry_missing_story["video_data"]["video_id"] == "page_video_1" and retry_missing_story["video_data"]["call_to_action"]["value"]["link"] == "https://buyer.example", "Website-missing retries create a new website-aware video creative instead of reusing the old post without URL")
 
             campaign_path.write_text(
                 json.dumps(

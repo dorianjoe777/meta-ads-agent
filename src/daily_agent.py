@@ -360,6 +360,45 @@ def create_native_page_post_for_ad(client, destination, ad_plan, link, body_text
     return object_story_id, page_post_result
 
 
+def direct_page_video_story_spec(destination, ad_plan, link, body_text, headline, page_post_body):
+    """Build a website-aware video story spec from a Page video created by Publicación directa.
+
+    Promoting a Page video post by `object_story_id` can pass creative creation
+    but still fail at final ad validation with "website URL required" because
+    Meta does not always treat the Page post CTA as the ad destination. When we
+    already have the Page video ID, create the ad creative as explicit
+    `video_data` with the landing URL in the CTA.
+    """
+    if not isinstance(page_post_body, dict):
+        return {}
+    if not ad_plan.get("video_url"):
+        return {}
+    if message_destination_from_plan(ad_plan) or ad_plan.get("lead_gen_form_id"):
+        return {}
+    page_id = str((destination or {}).get("page_id") or "").strip()
+    video_id = str(page_post_body.get("video_id") or page_post_body.get("id") or "").strip()
+    target = str(link or ad_plan.get("cta_link") or "").strip()
+    if not (page_id and video_id and target.startswith(("http://", "https://"))):
+        return {}
+    video_data = {
+        "video_id": video_id,
+        "message": body_text or "",
+        "title": headline or "",
+        "call_to_action": {
+            "type": SocialFlowClient.normalize_call_to_action(ad_plan.get("cta", "LEARN_MORE")),
+            "value": {"link": target},
+        },
+    }
+    thumbnail = str(page_post_body.get("thumbnail_url") or page_post_body.get("picture") or "").strip()
+    if thumbnail:
+        video_data["image_url"] = thumbnail
+    story = {"page_id": page_id, "video_data": video_data}
+    instagram_actor_id = str((destination or {}).get("instagram_actor_id") or "").strip()
+    if instagram_actor_id:
+        story["instagram_actor_id"] = instagram_actor_id
+    return story
+
+
 def campaign_budget_level_from_plan(campaign, budget_plan):
     plan = budget_plan if isinstance(budget_plan, dict) else {}
     raw = str(plan.get("budget_level") or campaign.get("budget_level") or "").strip().lower().replace("-", "_").replace(" ", "_")
@@ -719,6 +758,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         or (prior_meta_id(prior_result, "object_story_id", "create_page_post_fallback") if reuse_prior_object_story_id else "")
         or ""
     ).strip()
+    page_post_body = {}
     direct_preference = direct_publishing_preference(ad_plan)
     direct_missing = direct_publishing_missing_requirements(ad_plan, destination, client, video_id)
     should_create_native_page_post = (
@@ -756,6 +796,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
             headline,
             approved=approved,
         )
+        page_post_body = social_body_from_result(page_post_result)
         steps.append({"step": "create_page_post", "ok": bool(object_story_id), "object_story_id": object_story_id, "result": page_post_result})
         if not object_story_id:
             return {"ok": False, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "failed_step": "create_page_post", "steps": steps}
@@ -791,6 +832,10 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         if not video_id:
             return {"ok": False, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "failed_step": "upload_video", "steps": steps}
 
+    direct_video_story_spec = direct_page_video_story_spec(destination, ad_plan, link, body_text, headline, page_post_body)
+    creative_object_story_id = "" if direct_video_story_spec else object_story_id
+    creative_object_story_spec = direct_video_story_spec or ({} if object_story_id else (ad_plan.get("object_story_spec") or {}))
+
     creative_result = client.create_creative(
         client.config.ad_account_id,
         f"{campaign.get('name', 'New Campaign')} - Creative",
@@ -801,18 +846,40 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         image_hash,
         ad_plan.get("cta", "LEARN_MORE"),
         destination.get("instagram_actor_id", ""),
-        object_story_spec={} if object_story_id else (ad_plan.get("object_story_spec") or {}),
+        object_story_spec=creative_object_story_spec,
         image_url=ad_plan.get("image_url") or "",
         video_url=ad_plan.get("video_url") or "",
         video_id=video_id,
         cta_link=ad_plan.get("cta_link") or "",
-        object_story_id=object_story_id,
+        object_story_id=creative_object_story_id,
         lead_gen_form_id=lead_gen_form_id,
         approved=approved,
     )
     creative_id = social_id_from_result(creative_result)
     steps.append({"step": "create_creative", "ok": bool(creative_id), "creative_id": creative_id, "result": creative_result})
-    if not creative_id and not object_story_id and creative_blocked_by_development_mode(creative_result):
+    if not creative_id and direct_video_story_spec and object_story_id and creative_blocked_by_development_mode(creative_result):
+        creative_result = client.create_creative(
+            client.config.ad_account_id,
+            f"{campaign.get('name', 'New Campaign')} - Creative",
+            destination.get("page_id", ""),
+            link,
+            body_text,
+            headline,
+            "",
+            ad_plan.get("cta", "LEARN_MORE"),
+            destination.get("instagram_actor_id", ""),
+            object_story_spec={},
+            image_url="",
+            video_url="",
+            video_id="",
+            cta_link=ad_plan.get("cta_link") or "",
+            object_story_id=object_story_id,
+            lead_gen_form_id=lead_gen_form_id,
+            approved=approved,
+        )
+        creative_id = social_id_from_result(creative_result)
+        steps.append({"step": "create_creative_retry_object_story_id", "ok": bool(creative_id), "creative_id": creative_id, "result": creative_result})
+    if not creative_id and not creative_object_story_id and not direct_video_story_spec and creative_blocked_by_development_mode(creative_result):
         fallback_missing = direct_publishing_missing_requirements(ad_plan, destination, client, video_id)
         if not fallback_missing:
             object_story_id, page_post_result = create_native_page_post_for_ad(
@@ -824,8 +891,10 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
                 headline,
                 approved=approved,
             )
+            page_post_body = social_body_from_result(page_post_result)
             steps.append({"step": "create_page_post_fallback", "ok": bool(object_story_id), "object_story_id": object_story_id, "result": page_post_result})
             if object_story_id:
+                retry_video_story_spec = direct_page_video_story_spec(destination, ad_plan, link, body_text, headline, page_post_body)
                 creative_result = client.create_creative(
                     client.config.ad_account_id,
                     f"{campaign.get('name', 'New Campaign')} - Creative",
@@ -836,12 +905,12 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
                     "",
                     ad_plan.get("cta", "LEARN_MORE"),
                     destination.get("instagram_actor_id", ""),
-                    object_story_spec={},
+                    object_story_spec=retry_video_story_spec,
                     image_url="",
                     video_url="",
                     video_id="",
                     cta_link=ad_plan.get("cta_link") or "",
-                    object_story_id=object_story_id,
+                    object_story_id="" if retry_video_story_spec else object_story_id,
                     lead_gen_form_id=lead_gen_form_id,
                     approved=approved,
                 )
@@ -865,7 +934,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
     if not creative_id:
         return {"ok": False, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "failed_step": "create_creative", "steps": steps}
 
-    ad_result = client.create_ad(target_adset_id, f"{campaign.get('name', 'New Campaign')} - Ad", creative_id, status_plan.get("ad", final_status), approved=approved)
+    ad_result = client.create_ad(target_adset_id, f"{campaign.get('name', 'New Campaign')} - Ad", creative_id, status_plan.get("ad", final_status), website_url=link, approved=approved)
     ad_id = social_id_from_result(ad_result)
     steps.append({"step": "create_ad", "ok": bool(ad_id), "ad_id": ad_id, "final_status": status_plan.get("ad", final_status), "result": ad_result})
     final = {"ok": bool(ad_id), "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "creative_id": creative_id, "ad_id": ad_id, "final_status": status_plan.get("ad", final_status), "status_plan": status_plan, "steps": steps}
