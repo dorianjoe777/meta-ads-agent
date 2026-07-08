@@ -21,6 +21,17 @@ Collect or infer:
 
 Do not over-question. Infer safe defaults from the business, offer, budget, destination, existing memory, and the buyer's request. Ask only for details that materially change the campaign or are required for a protected/live action. If the campaign can be prepared paused for approval with a clear assumption, prepare it instead of asking whether to proceed.
 
+Do not ask broad campaign questions as a blank form. For each important lever, first give the professional recommendation and why:
+
+- geography/market: infer from language, offer, payment platform, shipping/service area, page, website, and previous conversation; never default silently to US;
+- objective and optimization event: recommend the closest event Meta can learn from with enough volume, not just the final dream event;
+- budget mode and test size: recommend ad set budget or campaign budget based on budget, number of ad sets, and need for control;
+- placements: recommend from the creative format and buyer behavior, not from a rigid default;
+- creative portfolio: recommend the number and types of creatives that the budget can realistically test;
+- destination: recommend website, WhatsApp/Messenger, Instagram DM, lead form, or booking flow based on friction and buyer intent.
+
+If recent market context could improve the choice, use available web/browser/search tools before finalizing. Then summarize the recommendation in buyer language and ask only for a correction or one strategic confirmation.
+
 ## Message campaigns
 
 For WhatsApp, Messenger, or Instagram Direct, ask what initial message/welcome text should appear or propose 2-3 concise options. For WhatsApp, use a buyer-sent `prefilled_message`. For Messenger/Instagram, use `welcome_message`, `quick_replies`, and `message_flow_id` only when supported by the connected messaging flow. Never imply unsolicited first messages.

@@ -5,6 +5,7 @@ These functions normalize the richer campaign fields Hermes may propose before
 the backend stages or executes a Meta campaign. They intentionally keep Meta
 Marketing API controls behind allowlisted, typed structures.
 """
+import ast
 import json
 import re
 import unicodedata
@@ -36,6 +37,135 @@ TARGETING_LIST_FIELDS = {
     "audience_network_positions",
     "threads_positions",
 }
+
+LATAM_COUNTRY_CODES = [
+    "MX",
+    "CO",
+    "PE",
+    "CL",
+    "AR",
+    "EC",
+    "CR",
+    "PA",
+    "UY",
+    "DO",
+    "GT",
+    "SV",
+    "HN",
+    "PY",
+    "BO",
+]
+
+COUNTRY_CODE_ALIASES = {
+    "ARGENTINA": "AR",
+    "BOLIVIA": "BO",
+    "CHILE": "CL",
+    "COLOMBIA": "CO",
+    "COSTA RICA": "CR",
+    "DOMINICAN REPUBLIC": "DO",
+    "REPUBLICA DOMINICANA": "DO",
+    "ECUADOR": "EC",
+    "EL SALVADOR": "SV",
+    "GUATEMALA": "GT",
+    "HONDURAS": "HN",
+    "MEXICO": "MX",
+    "MÉXICO": "MX",
+    "PANAMA": "PA",
+    "PANAMÁ": "PA",
+    "PARAGUAY": "PY",
+    "PERU": "PE",
+    "PERÚ": "PE",
+    "UNITED STATES": "US",
+    "ESTADOS UNIDOS": "US",
+    "URUGUAY": "UY",
+}
+
+LATAM_ALIASES = {
+    "LATAM",
+    "LATIN AMERICA",
+    "LATINOAMERICA",
+    "LATINOAMÉRICA",
+    "AMERICA LATINA",
+    "AMÉRICA LATINA",
+}
+
+
+def _ascii_upper(value):
+    text = str(value or "").strip().upper()
+    return "".join(
+        char for char in unicodedata.normalize("NFKD", text)
+        if not unicodedata.combining(char)
+    )
+
+
+LATAM_ALIAS_KEYS = {_ascii_upper(item) for item in LATAM_ALIASES}
+COUNTRY_ALIAS_KEYS = {_ascii_upper(key): value for key, value in COUNTRY_CODE_ALIASES.items()}
+
+
+def normalize_location_codes(value, default=None):
+    """Normalize loose country/location input into Meta country codes.
+
+    Hermes and the dashboard may send locations as lists, comma-separated text,
+    Python-list-looking strings such as "['US']", country names, or broad
+    market labels like LATAM. Keep the output as plain country code strings so
+    Meta never receives a serialized list as one invalid country value.
+    """
+    codes = []
+
+    def add(raw):
+        if raw in (None, ""):
+            return
+        if isinstance(raw, (list, tuple, set)):
+            for item in raw:
+                add(item)
+            return
+        text = str(raw or "").strip()
+        if not text:
+            return
+        if text.startswith("[") and text.endswith("]"):
+            for parser in (json.loads, ast.literal_eval):
+                try:
+                    parsed = parser(text)
+                except (ValueError, SyntaxError, TypeError, json.JSONDecodeError):
+                    continue
+                if parsed != text:
+                    add(parsed)
+                    return
+        for part in re.split(r"[,;/|]+", text):
+            cleaned = part.strip().strip("[](){}'\" ")
+            if not cleaned:
+                continue
+            cleaned_upper = cleaned.upper()
+            ascii_upper = _ascii_upper(cleaned)
+            if cleaned_upper in LATAM_ALIASES or ascii_upper in LATAM_ALIAS_KEYS:
+                for code in LATAM_COUNTRY_CODES:
+                    add(code)
+            elif len(cleaned_upper) == 2 and cleaned_upper.isalpha():
+                codes.append(cleaned_upper)
+            elif cleaned_upper in COUNTRY_CODE_ALIASES:
+                codes.append(COUNTRY_CODE_ALIASES[cleaned_upper])
+            elif ascii_upper in COUNTRY_ALIAS_KEYS:
+                codes.append(COUNTRY_ALIAS_KEYS[ascii_upper])
+
+    add(value)
+    deduped = []
+    seen = set()
+    for code in codes:
+        code = str(code or "").strip().upper()
+        if len(code) == 2 and code.isalpha() and code not in seen:
+            seen.add(code)
+            deduped.append(code)
+    if deduped:
+        return deduped
+    return list(default or [])
+
+
+def infer_location_codes_from_context(*values):
+    text = " ".join(str(value or "") for value in values)
+    ascii_text = _ascii_upper(text)
+    if "LATAM" in ascii_text or "LATIN AMERICA" in ascii_text or "AMERICA LATINA" in ascii_text:
+        return list(LATAM_COUNTRY_CODES)
+    return []
 
 
 def parse_jsonish(value, default=None):

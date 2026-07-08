@@ -12,7 +12,8 @@ Use this skill when the campaign strategy is ready and the buyer asks to prepare
 - Use `mcp_admira_review_signal_quality` before conversion, lead, message, or website-action campaigns.
 - Use `mcp_admira_preflight_campaign` for serious launches or advanced targeting/creative setups.
 - Use `mcp_admira_stage_campaign` to prepare campaigns.
-- New campaigns and spend-capable changes require approval. Do not claim execution unless a tool confirms it.
+- Creating a complete campaign/ad set/ad structure in `PAUSED` status is allowed after the buyer asks for it; it should not require a second approval just to create non-spending Meta objects. The protected approval is activation, resuming, publishing active, budget increases, customer-data sends, or any action that can spend or materially mutate a live running account.
+- New campaigns requested as `ACTIVE` or any spend-capable change require explicit approval/confirmation. Do not claim execution unless a tool confirms it.
 - Preparing a paused draft, preflight, retry, or approval-ready staging is the normal next step after the buyer asks for it. Do not ask a redundant “should I prepare it?” confirmation unless an unresolved choice would materially change what is staged.
 
 ## Direct publishing

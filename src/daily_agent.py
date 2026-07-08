@@ -41,6 +41,7 @@ from expert_campaign import (
     creative_source_available,
     manual_creative_completion_enabled,
     normalize_budget_plan,
+    normalize_location_codes,
     normalize_status_plan,
     placeholder_ad_count,
     placeholder_ad_names,
@@ -614,12 +615,16 @@ def adset_optimization_goal_for_campaign(adset, campaign, lead_gen_form_id="", m
 def targeting_for_social(targeting):
     targeting = targeting or {}
     if isinstance(targeting.get("geo_locations"), dict):
-        geo_locations = targeting["geo_locations"]
+        geo_locations = dict(targeting["geo_locations"])
     else:
         geo_locations = None
     age_range = targeting.get("age_range") or {}
-    countries = [str(item).upper() for item in targeting.get("locations", ["US"]) if item]
+    countries = normalize_location_codes(targeting.get("locations"), default=["US"])
     meta_targeting = targeting.get("meta_targeting") or {}
+    if isinstance(geo_locations, dict) and "countries" in geo_locations:
+        normalized_geo_countries = normalize_location_codes(geo_locations.get("countries"), default=[])
+        if normalized_geo_countries:
+            geo_locations["countries"] = normalized_geo_countries
     geo_locations = geo_locations or {"countries": countries or ["US"]}
     selected_locations = meta_targeting.get("locations") if isinstance(meta_targeting, dict) else []
     if isinstance(selected_locations, list) and selected_locations:

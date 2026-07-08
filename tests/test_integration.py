@@ -3055,6 +3055,10 @@ class IntegrationTestSuite:
         self.assert_true("onboarding_plan" in memory and "creative_references" in memory, "Hermes memory builder includes onboarding phase and creative reference memory")
         self.assert_true((hermes_bridge.HERMES_WORKSPACE_DIR / "AGENTS.md").exists(), "Hermes receives product role and tool rules as workspace AGENTS.md")
         self.assert_true((hermes_bridge.HERMES_WORKSPACE_DIR / "SOUL.md").exists(), "Hermes receives product soul instructions")
+        soul_text = (hermes_bridge.HERMES_WORKSPACE_DIR / "SOUL.md").read_text(encoding="utf-8")
+        agents_text = (hermes_bridge.HERMES_WORKSPACE_DIR / "AGENTS.md").read_text(encoding="utf-8")
+        self.assert_true("advisory-first" in soul_text and "not form-first" in soul_text, "Hermes soul defines the agent as an advisor instead of a form")
+        self.assert_true("Advisory-first rule" in agents_text and "professional agency" in agents_text, "Combined Hermes rules include the professional strategist posture")
         self.assert_true((hermes_bridge.HERMES_WORKSPACE_DIR / "CURRENT_CONTEXT.json").exists(), "Hermes receives current turn account context as a scoped workspace file")
         self.assert_true((hermes_bridge.HERMES_WORKSPACE_DIR / "data" / "business_profile.json").exists(), "Business profile is copied into Hermes workspace")
         self.assert_true((hermes_bridge.HERMES_WORKSPACE_DIR / "brand_guides" / "general_branding.md").exists(), "Brand guide is copied into Hermes workspace")
@@ -5519,6 +5523,79 @@ class IntegrationTestSuite:
         except ValueError as exc:
             self.assert_true("crear y dejar activo" in str(exc), "Active spend confirmation is required")
 
+    def test_paused_campaign_creation_executes_without_approval_gate(self):
+        """Test paused campaign creation avoids approval friction while active creation stays protected."""
+        print("\nTesting Paused Campaign Creation Without Approval Gate...")
+
+        dashboard = load_dashboard_module()
+        test_dir = ROOT_DIR / "output" / "test-paused-campaign-direct-create"
+        original = {
+            "OUTPUT_DIR": dashboard.OUTPUT_DIR,
+            "CREATED_FILE": dashboard.CREATED_FILE,
+            "ACTIONS_FILE": dashboard.ACTIONS_FILE,
+            "PENDING_FILE": dashboard.PENDING_FILE,
+            "load_config": dashboard.load_config,
+            "SocialFlowClient": dashboard.SocialFlowClient,
+            "execute_campaign_creation": dashboard.execute_campaign_creation,
+            "require_cloud_license": dashboard.require_cloud_license,
+        }
+
+        class LiveConfig:
+            live = True
+            mode = "live"
+
+        class FakeClient:
+            def __init__(self, config):
+                self.config = config
+
+        captured = []
+        try:
+            shutil.rmtree(test_dir, ignore_errors=True)
+            dashboard.OUTPUT_DIR = test_dir
+            dashboard.CREATED_FILE = test_dir / "created.json"
+            dashboard.ACTIONS_FILE = test_dir / "actions.json"
+            dashboard.PENDING_FILE = test_dir / "pending.json"
+            dashboard.load_config = lambda: LiveConfig()
+            dashboard.SocialFlowClient = FakeClient
+            dashboard.require_cloud_license = lambda *args, **kwargs: None
+            dashboard.execute_campaign_creation = lambda path, client, approved=False, prior_result=None: captured.append((path, approved, getattr(client.config, "live", False))) or {"ok": True, "executed": True, "campaign_id": "cmp_1", "adset_ids": ["adset_1"], "ad_ids": ["ad_1"]}
+
+            paused = dashboard.create_campaign(
+                {
+                    "name": "Paused Direct Create",
+                    "objective": "PURCHASES",
+                    "daily_budget": 20,
+                    "landing_url": "https://buyer.example",
+                    "image_hash": "hash_1",
+                    "final_status": "PAUSED",
+                    "active_spend_confirmed": False,
+                }
+            )
+            pending_after_paused = dashboard.read_json(dashboard.PENDING_FILE, [])
+            actions_after_paused = dashboard.read_json(dashboard.ACTIONS_FILE, [])
+            self.assert_true(paused["status"] == "created_paused" and paused["approval_required"] is False, "Paused campaign creation executes without creating an approval")
+            self.assert_true(captured and captured[0][1] is True and captured[0][2] is True, "Paused live creation is allowed as the buyer-requested no-spend setup")
+            self.assert_true(pending_after_paused == [], "Paused campaign creation does not add a pending approval")
+            self.assert_true(actions_after_paused[0]["status"] == "completed", "Paused direct creation is logged as completed")
+
+            active = dashboard.create_campaign(
+                {
+                    "name": "Active Protected Create",
+                    "objective": "PURCHASES",
+                    "daily_budget": 20,
+                    "landing_url": "https://buyer.example",
+                    "image_hash": "hash_1",
+                    "final_status": "ACTIVE",
+                    "active_spend_confirmed": True,
+                }
+            )
+            pending_after_active = dashboard.read_json(dashboard.PENDING_FILE, [])
+            self.assert_true(active["status"] == "pending" and pending_after_active[0]["type"] == "create_campaign", "Active campaign creation remains approval-protected")
+        finally:
+            for key, value in original.items():
+                setattr(dashboard, key, value)
+            shutil.rmtree(test_dir, ignore_errors=True)
+
     def test_campaign_stage_accepts_paused_false_and_attached_creative(self):
         """Test campaign staging accepts paused/no-spend plans and resolves attached creative assets."""
         print("\nTesting Campaign Stage Argument Normalization...")
@@ -5562,6 +5639,7 @@ class IntegrationTestSuite:
             self.assert_true(dashboard.parse_money_like("COP 40.000") == 40000.0 and dashboard.parse_money_like("1.234,56") == 1234.56, "Campaign staging parses LATAM thousands and decimal separators safely")
             self.assert_true(captured[0]["active_spend_confirmed"] is False, "False active-spend confirmation is preserved as an intentional paused choice")
             self.assert_true(captured[0]["use_direct_publishing"] is True, "Campaign staging accepts explicit direct-publishing intent")
+            self.assert_true("MX" in captured[0]["locations"] and "CO" in captured[0]["locations"] and "US" not in captured[0]["locations"], "Campaign staging infers LATAM countries from campaign context instead of silently defaulting to US")
 
             captured.clear()
             campaign_budget_result = dashboard.execute_agent_tool(
@@ -5761,12 +5839,18 @@ class IntegrationTestSuite:
             "load_config": dashboard.load_config,
         }
         test_dir = ROOT_DIR / "output" / "test-meta-targeting"
+        class DryRunConfig:
+            live = False
+            mode = "dry-run"
+            meta_publishing_access_token = ""
+
         try:
             shutil.rmtree(test_dir, ignore_errors=True)
             dashboard.OUTPUT_DIR = test_dir / "campaigns"
             dashboard.CREATED_FILE = test_dir / "created.json"
             dashboard.PENDING_FILE = test_dir / "pending.json"
             dashboard.AD_CONFIG_FILE = test_dir / "ad-config.json"
+            dashboard.load_config = lambda: DryRunConfig()
             payload = {
                 "name": "Meta Targeting Test",
                 "objective": "PURCHASES",
@@ -5827,6 +5911,8 @@ class IntegrationTestSuite:
             self.assert_true(result["payload"]["dry_run_preview"]["creative"]["has_image_hash"], "Approval payload includes a dry-run preview of creative inputs")
 
             class PublishingConfig:
+                live = False
+                mode = "dry-run"
                 meta_publishing_access_token = "page-token"
 
             dashboard.load_config = lambda: PublishingConfig()
@@ -5912,6 +5998,15 @@ class IntegrationTestSuite:
 
         automatic = daily_agent.targeting_for_social({"locations": ["US"], "placements": {"automatic": True}})
         self.assert_true("publisher_platforms" not in automatic, "Automatic placements remain available when explicitly requested")
+
+        list_string = daily_agent.targeting_for_social({"locations": "['US']"})
+        self.assert_true(list_string["geo_locations"]["countries"] == ["US"], "List-looking location strings are normalized before sending to Meta")
+
+        geo_string = daily_agent.targeting_for_social({"geo_locations": {"countries": "['MX', 'CO']"}})
+        self.assert_true(geo_string["geo_locations"]["countries"] == ["MX", "CO"], "Geo location country strings are normalized before sending to Meta")
+
+        latam = daily_agent.targeting_for_social({"locations": "LATAM"})
+        self.assert_true("MX" in latam["geo_locations"]["countries"] and "CO" in latam["geo_locations"]["countries"], "LATAM shorthand expands to valid Meta country codes")
 
     def test_social_flow_adset_sends_promoted_object(self):
         """Test Meta Graph ad set creation receives the selected optimization event object."""
@@ -9145,6 +9240,7 @@ class IntegrationTestSuite:
             self.test_demo_metrics_are_labeled,
             self.test_supervised_approval_executes_only_with_valid_license_and_retries_failures,
             self.test_campaign_creation_requires_active_confirmation,
+            self.test_paused_campaign_creation_executes_without_approval_gate,
             self.test_campaign_stage_accepts_paused_false_and_attached_creative,
             self.test_campaign_creation_uses_meta_targeting_selection,
             self.test_social_targeting_uses_meta_ids,

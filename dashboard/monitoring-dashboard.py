@@ -83,7 +83,7 @@ from creative_refresh import (
     generate_creative_refresh,
     recent_creative_refreshes,
 )
-from daily_agent import approve as approve_pending, build_action_summary, reject as reject_pending, run_daily as run_scheduled_daily
+from daily_agent import approve as approve_pending, build_action_summary, execute_campaign_creation, reject as reject_pending, run_daily as run_scheduled_daily
 from decision_memory import (
     decision_memory_payload,
     load_profitability_rules,
@@ -151,6 +151,8 @@ from expert_campaign import (
     normalize_billing_event,
     normalize_budget_plan,
     normalize_creative_controls,
+    normalize_location_codes,
+    infer_location_codes_from_context,
     normalize_schedule,
     success_metric_candidates_from_text,
     normalize_success_metrics,
@@ -2523,7 +2525,7 @@ def targeting_location_values(selected, fallback):
             values.append(str(item["country_code"]).upper())
         elif item.get("name"):
             values.append(str(item["name"]))
-    return values or fallback
+    return normalize_location_codes(values, default=[]) or normalize_location_codes(fallback, default=[])
 
 
 def targeting_summary(audience):
@@ -5498,6 +5500,8 @@ Despues de esa preferencia, haz una sola pregunta clara de negocio. La mejor pri
 
 El agente no debe ser pasivo ni limitar su criterio experto a placements. Debe proponer mejoras de alto impacto en todo lo que pueda afectar aprendizaje o gasto: evento de optimizacion, Pixel/Dataset, CAPI/EMQ/AEM como diagnostico, presupuesto, calendario, audiencias, exclusiones, placements, formato creativo, preflight, aprobaciones y revisiones futuras. Si el comprador pidio palabras simples, explica el impacto en negocio y evita tecnicismos; si pidio detalle tecnico, puede profundizar.
 
+Regla asesor-profesional: antes de preguntar cualquier configuracion amplia, primero recomienda lo que haria una agencia experta usando el contexto del negocio, oferta, embudo, presupuesto, activos, moneda/cuenta, destino y objetivo actual. No preguntes como formulario "que paises?", "que evento?", "que placement?", "que audiencia?" o "cuantos creativos?" si puedes proponer un punto de partida razonado. Esto aplica globalmente, no solo a geografia. Si hace falta informacion actual y hay herramienta web/browser disponible, investiga y convierte eso en recomendacion practica.
+
 ## Fases
 
 1. business_discovery
@@ -5597,6 +5601,7 @@ Instrucciones para el agente:
 - Haz una sola pregunta a la vez.
 - No hagas una lista enorme de preguntas en un solo mensaje.
 - Actua como experto proactivo en todo lo que impacte el resultado: medicion, evento correcto, presupuesto, calendario, audiencias, exclusiones, ubicaciones, formato creativo, diagnosticos, aprobaciones y seguimiento. No esperes a que el cliente sepa pedir esas configuraciones.
+- Antes de preguntar por una decision amplia, da tu recomendacion profesional y el por que. Si la decision sigue siendo ambigua, pregunta una sola confirmacion con un default sugerido. No uses US como default silencioso si el contexto sugiere LATAM u otro mercado.
 - Usa los links guardados como contexto, pero deja que el cliente corrija todo.
 - Documenta lo aprendido en el perfil del negocio y en las guias de marca/producto/brief cuando corresponda.
 - Si falta informacion, pregunta lo minimo necesario para poder actuar.
@@ -7136,7 +7141,16 @@ def create_campaign(payload):
     selected_interests = parse_targeting_items(payload.get("targeting_interests_json") or payload.get("targeting_interests"), "interest")
     selected_locations = parse_targeting_items(payload.get("targeting_locations_json") or payload.get("targeting_locations"), "location")
     manual_interests = [item.strip() for item in str(payload.get("interests", "")).split(",") if item.strip()]
-    manual_locations = [item.strip().upper() for item in str(payload.get("locations", "US")).split(",") if item.strip()]
+    manual_locations = normalize_location_codes(payload.get("locations"), default=[])
+    if not manual_locations:
+        manual_locations = infer_location_codes_from_context(
+            payload.get("name"),
+            payload.get("market"),
+            payload.get("target_market"),
+            payload.get("campaign_constraints"),
+            payload.get("audience"),
+            payload.get("target_audience"),
+        )
     interests = [item.get("name") for item in selected_interests if item.get("name")] or manual_interests
     locations = targeting_location_values(selected_locations, manual_locations or ["US"])
     audience = creator.create_audience_targeting(
@@ -7284,10 +7298,56 @@ def create_campaign(payload):
                 "checks": signal_review.get("checks", []),
             },
         },
-        "guardrail_reason": "new_campaigns_always_require_approval",
+        "guardrail_reason": "active_or_spend_requires_approval",
         "dry_run_preview": campaign_preview(campaign),
         "signal_quality_review": signal_review,
     }
+    all_statuses = [final_status, *(status_plan or {}).values()]
+    paused_no_spend = (
+        not active_confirmed
+        and all(str(status or "PAUSED").strip().upper() == "PAUSED" for status in all_statuses)
+    )
+    if paused_no_spend:
+        config = load_config()
+        execution_result = {
+            "ok": True,
+            "mode": "dry-run",
+            "executed": False,
+            "path": str(out_path),
+            "planned": {
+                "campaign": campaign.get("name"),
+                "ad_sets": [adset.get("name") for adset in campaign.get("ad_sets", [])],
+                "final_status": "PAUSED",
+                "status_plan": status_plan,
+            },
+        }
+        if getattr(config, "live", False):
+            require_cloud_license("Paused campaign creation requires an active license")
+            execution_result = execute_campaign_creation(str(out_path), SocialFlowClient(config), approved=True)
+        succeeded = bool(execution_result.get("ok")) and not execution_result.get("blocked")
+        status = "created_paused" if (succeeded and execution_result.get("executed")) else "planned" if succeeded else "failed"
+        action_status = "completed" if status == "created_paused" else "planned" if status == "planned" else "failed"
+        log_action(
+            "create_campaign",
+            {
+                "name": campaign["name"],
+                "path": str(out_path),
+                "final_status": "PAUSED",
+                "approval_required": False,
+                "result": execution_result,
+            },
+            action_status,
+        )
+        return {
+            "status": status,
+            "executed": bool(execution_result.get("executed")),
+            "approval_required": False,
+            "payload": pending_payload,
+            "result": execution_result,
+            "path": str(out_path),
+            "dry_run_preview": pending_payload["dry_run_preview"],
+            "signal_quality_review": signal_review,
+        }
     return add_pending("create_campaign", pending_payload)
 
 
@@ -7481,6 +7541,30 @@ def normalize_campaign_stack_arguments(arguments, chat_payload=None):
                 break
     if not args.get("final_status"):
         args["final_status"] = "PAUSED"
+
+    location_source = (
+        args.get("locations")
+        or args.get("countries")
+        or args.get("country_codes")
+        or args.get("market")
+        or args.get("target_market")
+        or args.get("geography")
+        or args.get("geo")
+    )
+    normalized_locations = normalize_location_codes(location_source, default=[])
+    if not normalized_locations:
+        normalized_locations = infer_location_codes_from_context(
+            args.get("name"),
+            args.get("market"),
+            args.get("target_market"),
+            args.get("campaign_constraints"),
+            args.get("audience"),
+            args.get("target_audience"),
+            args.get("offer"),
+            args.get("product"),
+        )
+    if normalized_locations:
+        args["locations"] = normalized_locations
 
     confirmed = boolish(args.get("active_spend_confirmed"))
     if confirmed is not None:
@@ -8604,16 +8688,35 @@ def route_chat_action(payload):
         try:
             require_cloud_license("Campaign creation requires an active license")
             result = create_campaign(draft)
-            reply = append_staged_approval_instruction(
-                payload,
-                chat_reply(
+            if result.get("status") == "created_paused":
+                reply = chat_reply(
                     payload,
-                    "Hice el analisis y ya preparé la campaña completa para aprobación.",
-                    "I analyzed the request and staged the full campaign stack for approval.",
-                ),
-                result,
-            )
-            routed_action = {"type": "create_campaign_stack", "executed": False, "staged": True, "result": result}
+                    "Hice el análisis y ya creé la campaña en Meta en pausa. No está gastando dinero; cuando la revises, la aprobación importante será activarla.",
+                    "I analyzed it and created the campaign in Meta as paused. It is not spending money; after review, the important approval is activation.",
+                )
+            elif result.get("status") == "planned":
+                reply = chat_reply(
+                    payload,
+                    "Hice el análisis y dejé el plan listo en modo prueba. No se creó nada activo ni se gastó dinero.",
+                    "I analyzed it and prepared the dry-run plan. Nothing active was created and no money was spent.",
+                )
+            elif result.get("status") == "failed":
+                reply = chat_reply(
+                    payload,
+                    "Intenté crear la campaña en pausa, pero Meta frenó el proceso. Revisemos ese error y reintentamos.",
+                    "I tried to create the paused campaign, but Meta blocked the process. Let's fix that error and retry.",
+                )
+            else:
+                reply = append_staged_approval_instruction(
+                    payload,
+                    chat_reply(
+                        payload,
+                        "Hice el analisis y ya preparé la campaña completa para aprobación.",
+                        "I analyzed the request and staged the full campaign stack for approval.",
+                    ),
+                    result,
+                )
+            routed_action = {"type": "create_campaign_stack", "executed": bool(result.get("executed")), "staged": result.get("status") == "pending", "result": result}
             choices = staged_approval_choices(result)
             if choices:
                 routed_action["approval_choices"] = choices
@@ -9016,21 +9119,40 @@ def handle_create_campaign_stack_tool(arguments, chat_payload, tool):
     )
     require_cloud_license("Campaign creation requires an active license")
     result = create_campaign(arguments)
-    reply = append_staged_approval_instruction(
-        chat_payload,
-        chat_reply(
+    if result.get("status") == "created_paused":
+        reply = chat_reply(
             chat_payload,
-            "Hice el analisis y preparé la campaña completa para aprobación.",
-            "I analyzed the request and staged the full campaign for approval.",
-        ),
-        result,
-    )
+            "Hice el análisis y creé la campaña en Meta en pausa. No está gastando dinero; el siguiente paso protegido es activarla cuando la revises.",
+            "I analyzed it and created the campaign in Meta as paused. It is not spending money; the protected next step is activating it after review.",
+        )
+    elif result.get("status") == "planned":
+        reply = chat_reply(
+            chat_payload,
+            "Hice el análisis y dejé la campaña lista en modo prueba/plan. No se creó nada activo ni se gastó dinero.",
+            "I analyzed it and prepared the campaign as a dry-run plan. Nothing active was created and no money was spent.",
+        )
+    elif result.get("status") == "failed":
+        reply = chat_reply(
+            chat_payload,
+            "Intenté crear la campaña en pausa, pero Meta frenó el proceso. Te dejo el detalle para corregir y reintentar sin aprobar otra vez.",
+            "I tried to create the paused campaign, but Meta blocked the process. I am keeping the details so we can fix and retry without another approval step.",
+        )
+    else:
+        reply = append_staged_approval_instruction(
+            chat_payload,
+            chat_reply(
+                chat_payload,
+                "Hice el analisis y preparé la campaña completa para aprobación.",
+                "I analyzed the request and staged the full campaign for approval.",
+            ),
+            result,
+        )
     choices = staged_approval_choices(result)
     return agent_action_result(
         tool,
-        False,
+        bool(result.get("executed")),
         reply,
-        staged=True,
+        staged=bool(choices) or result.get("status") == "pending",
         result=result,
         approval_choices=choices,
     )
