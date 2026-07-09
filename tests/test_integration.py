@@ -5554,6 +5554,13 @@ class IntegrationTestSuite:
             meta_access_token = "test-token"
             live_actions_enabled = False
 
+        class MissingMetaConnectionConfig:
+            live = False
+            mode = "dry-run"
+            ad_account_id = ""
+            meta_access_token = ""
+            live_actions_enabled = False
+
         class FakeClient:
             def __init__(self, config):
                 self.config = config
@@ -5605,6 +5612,40 @@ class IntegrationTestSuite:
             self.assert_true(captured[-1][1] is True and captured[-1][2] is False, "Paused setup bypasses only the activation approval gate, not the approval model")
             self.assert_true(pending_after_connected == [], "Paused creation does not add a pending approval")
 
+            placeholder_paused = dashboard.create_campaign(
+                {
+                    "name": "Paused Placeholder Direct Create",
+                    "objective": "PURCHASES",
+                    "daily_budget": 20,
+                    "landing_url": "https://buyer.example",
+                    "video_url": "https://cdn.example/final-video.mp4",
+                    "create_placeholder_ad": True,
+                    "placeholder_ad_count": 2,
+                    "placeholder_ad_names": ["UGC - Dolor", "Demo - Telegram"],
+                    "final_status": "ACTIVE",
+                    "active_spend_confirmed": True,
+                }
+            )
+            self.assert_true(placeholder_paused["status"] == "created_paused" and placeholder_paused["executed"] is True, "Video placeholder fallback also materializes the paused Meta structure without approval")
+            self.assert_true(placeholder_paused["payload"]["requested"]["status_plan"] == {"campaign": "PAUSED", "adset": "PAUSED", "ad": "PAUSED"}, "Video placeholder fallback forces every object to PAUSED before execution")
+
+            dashboard.load_config = lambda: MissingMetaConnectionConfig()
+            disconnected_paused = dashboard.create_campaign(
+                {
+                    "name": "Paused Missing Connection",
+                    "objective": "PURCHASES",
+                    "daily_budget": 20,
+                    "landing_url": "https://buyer.example",
+                    "image_hash": "hash_1",
+                    "final_status": "PAUSED",
+                    "active_spend_confirmed": False,
+                }
+            )
+            self.assert_true(disconnected_paused["status"] == "failed" and disconnected_paused["approval_required"] is False, "Paused creation without a Meta connection fails explicitly instead of returning planned")
+            self.assert_true(disconnected_paused["result"]["blocked"] is True and "META_ACCESS_TOKEN" in disconnected_paused["result"]["missing_requirements"], "Paused creation reports the missing Meta connection requirement")
+            self.assert_true(dashboard.read_json(dashboard.PENDING_FILE, []) == [], "A missing Meta connection does not create a pointless approval")
+
+            dashboard.load_config = lambda: ApprovalConnectedConfig()
             active = dashboard.create_campaign(
                 {
                     "name": "Active Protected Create",
@@ -7065,6 +7106,52 @@ class IntegrationTestSuite:
             )
             self.assert_true(retry_result["ok"] and retry_result["campaign_id"] == "cmp_existing", "Campaign retry reuses the previously-created Meta campaign ID")
             self.assert_true(retry_client.calls[0][0] == "create_adset" and "create_campaign" not in [call[0] for call in retry_client.calls], "Campaign retry does not duplicate the already-created Meta campaign")
+
+            class DeletedCampaignRetryClient(FakeClient):
+                def create_campaign(self, *args, **kwargs):
+                    self.calls.append(("create_campaign", args, kwargs))
+                    return {"stdout": json.dumps({"id": "cmp_recreated"}), "executed": True}
+
+                def campaign_details(self, campaign_id):
+                    self.calls.append(("campaign_details", (campaign_id,), {}))
+                    return {
+                        "stdout": "",
+                        "stderr": json.dumps({"error": {"message": "Campaign Deleted: Ad Sets may not be added to deleted Campaigns."}}),
+                        "returncode": 1,
+                        "executed": True,
+                    }
+
+            retry_campaign_path.write_text(
+                json.dumps(
+                    {
+                        "name": "Retry Deleted Campaign Stack",
+                        "objective": "PURCHASES",
+                        "budget": {"daily": 25},
+                        "ad_sets": [{"name": "Retry Deleted Campaign Stack - Core", "targeting": {"locations": ["MX"]}, "budget": 25}],
+                        "ad": {
+                            "primary_text": "Texto",
+                            "headline": "Titular",
+                            "creative_image_path": str(image_path),
+                            "landing_url": "https://buyer.example",
+                            "final_status": "PAUSED",
+                            "active_spend_confirmed": False,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            deleted_retry_client = DeletedCampaignRetryClient()
+            deleted_retry_result = execute_campaign_creation(
+                str(retry_campaign_path),
+                deleted_retry_client,
+                approved=True,
+                prior_result={"ok": False, "executed": True, "campaign_id": "cmp_deleted", "failed_step": "create_adset"},
+            )
+            deleted_retry_calls = [call[0] for call in deleted_retry_client.calls]
+            recreated_campaign = json.loads(retry_campaign_path.read_text(encoding="utf-8"))
+            self.assert_true(deleted_retry_result["ok"] and deleted_retry_result["campaign_id"] == "cmp_recreated", "Campaign retry recreates the campaign when the stored Meta campaign ID was deleted")
+            self.assert_true(deleted_retry_calls[:3] == ["campaign_details", "create_campaign", "create_adset"], "Deleted campaign retry validates the old ID, clears it, then starts a clean creation")
+            self.assert_true(recreated_campaign.get("execution_state", {}).get("stale_campaign_id") == "cmp_deleted", "Deleted campaign retry records the stale campaign ID for debugging")
 
             retry_campaign_path.write_text(
                 json.dumps(

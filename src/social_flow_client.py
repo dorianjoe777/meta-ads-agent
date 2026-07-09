@@ -1038,7 +1038,7 @@ class SocialFlowClient:
             if action == "campaign-details":
                 campaign_id = self.positional(args, 2, "")
                 endpoint = campaign_id
-                return self.graph_record(record, endpoint, self.get_graph(endpoint, {"fields": "id,name,daily_budget,lifetime_budget,bid_strategy"}))
+                return self.graph_record(record, endpoint, self.get_graph(endpoint, {"fields": "id,name,status,effective_status,configured_status,daily_budget,lifetime_budget,bid_strategy"}))
             if action == "update-campaign":
                 campaign_id = self.positional(args, 2, "")
                 endpoint = campaign_id

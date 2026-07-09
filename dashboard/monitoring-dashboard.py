@@ -7286,24 +7286,37 @@ def create_campaign(payload):
     )
     if paused_no_spend:
         config = load_config()
-        execution_result = {
-            "ok": True,
-            "mode": "dry-run",
-            "executed": False,
-            "path": str(out_path),
-            "planned": {
-                "campaign": campaign.get("name"),
-                "ad_sets": [adset.get("name") for adset in campaign.get("ad_sets", [])],
-                "final_status": "PAUSED",
-                "status_plan": status_plan,
-            },
-        }
-        if can_execute_paused_campaign_setup(config):
+        missing_setup = paused_campaign_setup_missing_requirements(config)
+        if missing_setup:
+            execution_result = {
+                "ok": False,
+                "mode": getattr(config, "mode", "dry-run"),
+                "executed": False,
+                "blocked": True,
+                "reason": "paused_campaign_creation_missing_meta_connection",
+                "missing_requirements": missing_setup,
+                "path": str(out_path),
+                "planned": {
+                    "campaign": campaign.get("name"),
+                    "ad_sets": [adset.get("name") for adset in campaign.get("ad_sets", [])],
+                    "final_status": "PAUSED",
+                    "status_plan": status_plan,
+                },
+            }
+        else:
             require_cloud_license("Paused campaign creation requires an active license")
             execution_result = execute_campaign_creation(str(out_path), SocialFlowClient(config), approved=True)
+            if execution_result.get("ok") and not execution_result.get("executed"):
+                execution_result = {
+                    **execution_result,
+                    "ok": False,
+                    "blocked": True,
+                    "reason": "paused_campaign_creation_not_materialized",
+                    "message": "Paused campaign creation must materialize Meta objects or return a real blocker; dry-run planned is not a valid success state for this flow.",
+                }
         succeeded = bool(execution_result.get("ok")) and not execution_result.get("blocked")
-        status = "created_paused" if (succeeded and execution_result.get("executed")) else "planned" if succeeded else "failed"
-        action_status = "completed" if status == "created_paused" else "planned" if status == "planned" else "failed"
+        status = "created_paused" if (succeeded and execution_result.get("executed")) else "failed"
+        action_status = "completed" if status == "created_paused" else "failed"
         log_action(
             "create_campaign",
             {
@@ -7465,10 +7478,16 @@ def can_execute_paused_campaign_setup(config):
     no-spend structure whenever the real Meta account connection exists.
     Activation still requires approval.
     """
-    return bool(
-        str(getattr(config, "ad_account_id", "") or "").strip()
-        and str(getattr(config, "meta_access_token", "") or "").strip()
-    )
+    return not paused_campaign_setup_missing_requirements(config)
+
+
+def paused_campaign_setup_missing_requirements(config):
+    missing = []
+    if not str(getattr(config, "ad_account_id", "") or "").strip():
+        missing.append("META_AD_ACCOUNT_ID")
+    if not str(getattr(config, "meta_access_token", "") or "").strip():
+        missing.append("META_ACCESS_TOKEN")
+    return missing
 
 
 def campaign_status_from_text(value):

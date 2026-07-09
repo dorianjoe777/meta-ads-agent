@@ -499,13 +499,9 @@ def campaign_budget_level_from_plan(campaign, budget_plan):
     return "adset"
 
 
-def meta_campaign_has_campaign_budget(client, campaign_id):
-    if not campaign_id or not hasattr(client, "campaign_details"):
+def meta_campaign_body_has_campaign_budget(body):
+    if not isinstance(body, dict):
         return False
-    result = client.campaign_details(campaign_id)
-    if result.get("returncode") not in {0, None}:
-        return False
-    body = social_body_from_result(result)
     for key in ("daily_budget", "lifetime_budget"):
         try:
             if int(float(str(body.get(key) or 0).replace(",", ""))) > 0:
@@ -513,6 +509,62 @@ def meta_campaign_has_campaign_budget(client, campaign_id):
         except (TypeError, ValueError):
             continue
     return False
+
+
+def meta_campaign_has_campaign_budget(client, campaign_id):
+    if not campaign_id or not hasattr(client, "campaign_details"):
+        return False
+    result = client.campaign_details(campaign_id)
+    if result.get("returncode") not in {0, None}:
+        return False
+    return meta_campaign_body_has_campaign_budget(social_body_from_result(result))
+
+
+def meta_campaign_reuse_check(client, campaign_id):
+    """Return whether a previously-created campaign ID is safe to reuse.
+
+    Retries are useful when Meta accepted the campaign but failed later at the
+    ad set/creative/ad step. The sharp edge is a cleanup or manual deletion
+    between attempts: the old approval result can still carry a campaign_id,
+    and blindly reusing it makes Meta fail with "Campaign Deleted". When the
+    connector can look up the campaign, use that as the source of truth.
+    """
+    campaign_id = str(campaign_id or "").strip()
+    if not campaign_id:
+        return {"checked": False, "reusable": False, "reason": "missing_campaign_id"}
+    if not hasattr(client, "campaign_details"):
+        return {"checked": False, "reusable": True, "reason": "lookup_not_supported"}
+    result = client.campaign_details(campaign_id)
+    text = result_debug_text(result)
+    body = social_body_from_result(result)
+    if result.get("returncode") not in {0, None}:
+        return {
+            "checked": True,
+            "reusable": False,
+            "reason": "lookup_failed",
+            "campaign_id": campaign_id,
+            "result": result,
+        }
+    status_text = " ".join(
+        str(body.get(key) or "")
+        for key in ("status", "effective_status", "configured_status")
+    ).lower()
+    if "deleted" in text or "deleted" in status_text:
+        return {
+            "checked": True,
+            "reusable": False,
+            "reason": "campaign_deleted",
+            "campaign_id": campaign_id,
+            "result": result,
+        }
+    return {
+        "checked": True,
+        "reusable": True,
+        "reason": "campaign_found",
+        "campaign_id": campaign_id,
+        "body_has_campaign_budget": meta_campaign_body_has_campaign_budget(body),
+        "result": result,
+    }
 
 
 def prior_meta_id(prior_result, key, step_name):
@@ -546,6 +598,21 @@ def persist_campaign_execution_state(path, campaign, updates):
                 continue
             cleaned[key] = value
         execution_state.update(cleaned)
+        campaign["execution_state"] = execution_state
+        write_json(Path(path), campaign)
+    except Exception:
+        pass
+
+
+def clear_campaign_execution_ids(path, campaign, reason, campaign_id=""):
+    try:
+        execution_state = dict(campaign.get("execution_state") or {})
+        execution_state.pop("campaign_id", None)
+        execution_state.pop("adset_ids", None)
+        execution_state["stale_campaign_reason"] = reason
+        if campaign_id:
+            execution_state["stale_campaign_id"] = campaign_id
+        execution_state["stale_campaign_cleared_at"] = now_iso()
         campaign["execution_state"] = execution_state
         write_json(Path(path), campaign)
     except Exception:
@@ -852,9 +919,19 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
     ).strip()
     steps = []
     campaign_created_this_attempt = False
+    reuse_check = {}
     if campaign_id:
-        steps.append({"step": "create_campaign", "ok": True, "campaign_id": campaign_id, "status": status_plan.get("campaign", "PAUSED"), "reused": True})
-        if meta_campaign_has_campaign_budget(client, campaign_id):
+        reuse_check = meta_campaign_reuse_check(client, campaign_id)
+        steps.append({"step": "reuse_campaign_check", "ok": bool(reuse_check.get("reusable")), "campaign_id": campaign_id, "result": reuse_check})
+        if not reuse_check.get("reusable"):
+            clear_campaign_execution_ids(path, campaign, str(reuse_check.get("reason") or "campaign_not_reusable"), campaign_id)
+            campaign_id = ""
+        else:
+            steps.append({"step": "create_campaign", "ok": True, "campaign_id": campaign_id, "status": status_plan.get("campaign", "PAUSED"), "reused": True})
+        campaign_has_budget = bool(reuse_check.get("body_has_campaign_budget"))
+        if campaign_id and not reuse_check.get("checked"):
+            campaign_has_budget = meta_campaign_has_campaign_budget(client, campaign_id)
+        if campaign_id and campaign_has_budget:
             budget_level = "campaign"
             if hasattr(client, "update_campaign_bid_strategy"):
                 bid_result = client.update_campaign_bid_strategy(campaign_id, "LOWEST_COST_WITHOUT_CAP", approved=approved)
@@ -862,7 +939,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
                 steps.append({"step": "update_campaign_bid_strategy", "ok": bid_ok, "campaign_id": campaign_id, "result": bid_result})
                 if not bid_ok:
                     return campaign_creation_failure_result(path, campaign, client, campaign_id, "update_campaign_bid_strategy", steps, status_plan, active_confirmed, approved, allow_cleanup=False)
-    else:
+    if not campaign_id:
         campaign_daily_budget = int(float(campaign.get("budget", {}).get("daily", 0) or 0) * 100) if budget_level == "campaign" else 0
         campaign_adset_budget_sharing = False if budget_level == "adset" else None
         campaign_result = client.create_campaign(
