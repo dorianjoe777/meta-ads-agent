@@ -1757,15 +1757,36 @@ def run_hermes_image_bridge(payload, timeout=360, config=None, image_model=""):
     return result
 
 
+CODEX_IMAGE_DIRECT_FALLBACK_ERROR_TYPES = {
+    "modulenotfounderror",
+    "provider_not_registered",
+    "missing_dependency",
+    "reference_images_unsupported",
+    "auth_required",
+}
+
+
 def hermes_codex_image_status(timeout=10, config=None):
     config = config or load_config()
     config = image_codex_config(config)
     result = run_hermes_image_bridge({"mode": "status"}, timeout=timeout, config=config)
     ok = bool(result.get("success"))
+    error_type = str(result.get("error_type") or "").lower()
+    if not ok and error_type in CODEX_IMAGE_DIRECT_FALLBACK_ERROR_TYPES:
+        env = codex_cli_environment(config, use_image_home=True)
+        auth = codex_cli_auth_status(timeout=max(3, min(10, int(timeout or 10))), env=env)
+        if auth.get("ok"):
+            return {
+                "ok": True,
+                "detail": "ChatGPT/Codex listo para imágenes por ruta directa Codex",
+                "error_type": "",
+                "provider": "codex-cli-direct",
+                "raw": {"bridge": result, "direct_auth": auth},
+            }
     return {
         "ok": ok,
         "detail": "ChatGPT/Codex listo para imágenes" if ok else (result.get("error") or "ChatGPT/Codex no está listo para imágenes"),
-        "error_type": result.get("error_type", ""),
+        "error_type": error_type,
         "provider": result.get("provider", "openai-codex"),
         "raw": result,
     }
@@ -1991,7 +2012,7 @@ def call_codex_image_cli(prompt, timeout=360, model=None, output_root=None, outp
         }
     error_type = str(bridge.get("error_type") or "").lower()
     raw_error = bridge.get("error") or "No pude usar la herramienta de imagen de ChatGPT/Codex."
-    if error_type in {"modulenotfounderror", "provider_not_registered", "missing_dependency", "reference_images_unsupported"}:
+    if error_type in CODEX_IMAGE_DIRECT_FALLBACK_ERROR_TYPES:
         fallback = call_codex_image_cli_direct(
             prompt,
             timeout=timeout,

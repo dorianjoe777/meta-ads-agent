@@ -3579,7 +3579,11 @@ class IntegrationTestSuite:
             def fake_unauth_bridge(payload, **kwargs):
                 return {"success": False, "error": "No Codex/ChatGPT OAuth credentials available.", "error_type": "auth_required"}
 
+            def fake_not_logged_codex_run(command, **kwargs):
+                return type("Result", (), {"returncode": 1, "stdout": "", "stderr": "Not logged in"})()
+
             codex_brand_guides.run_hermes_image_bridge = fake_unauth_bridge
+            codex_brand_guides.subprocess.run = fake_not_logged_codex_run
             unauth = codex_brand_guides.call_codex_image_cli("Genera un anuncio", output_root=output_root)
             self.assert_true(unauth["ok"] is False and "ChatGPT/Codex" in unauth["error"], "Missing Hermes image auth gives a buyer-friendly image error")
 
@@ -3637,6 +3641,19 @@ class IntegrationTestSuite:
                 last_message_index = command.index("--output-last-message") + 1
                 Path(command[last_message_index]).write_text("Imagen generada.", encoding="utf-8")
                 return type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+
+            codex_brand_guides.run_hermes_image_bridge = fake_unauth_bridge
+            codex_brand_guides.subprocess.run = fake_direct_run
+            direct_calls.clear()
+            auth_fallback = codex_brand_guides.call_codex_image_cli(
+                "Genera un anuncio usando la sesión directa de Codex",
+                output_root=test_root / "creatives-auth-fallback",
+                output_name="direct-auth-fallback",
+            )
+            self.assert_true(auth_fallback["ok"] is True and auth_fallback.get("backend") == "codex-cli-direct", "Codex/Image falls back to direct Codex CLI when Hermes image provider cannot see OAuth")
+            self.assert_true(auth_fallback.get("bridge_error_type") == "auth_required", "Direct fallback preserves the Hermes image auth warning for diagnostics")
+            direct_status = codex_brand_guides.hermes_codex_image_status(timeout=5, config=codex_brand_guides.load_config())
+            self.assert_true(direct_status["ok"] is True and direct_status.get("provider") == "codex-cli-direct", "Codex/Image status is ready when direct Codex CLI auth works even if Hermes image auth fails")
 
             codex_brand_guides.run_hermes_image_bridge = fake_reference_unsupported_bridge
             codex_brand_guides.subprocess.run = fake_direct_run
