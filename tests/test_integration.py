@@ -7107,6 +7107,48 @@ class IntegrationTestSuite:
             self.assert_true(retry_result["ok"] and retry_result["campaign_id"] == "cmp_existing", "Campaign retry reuses the previously-created Meta campaign ID")
             self.assert_true(retry_client.calls[0][0] == "create_adset" and "create_campaign" not in [call[0] for call in retry_client.calls], "Campaign retry does not duplicate the already-created Meta campaign")
 
+            class ReusedFailingAdsetClient(FakeClient):
+                def campaign_details(self, campaign_id):
+                    self.calls.append(("campaign_details", (campaign_id,), {}))
+                    return {"returncode": 0, "stdout": json.dumps({"id": campaign_id, "status": "PAUSED"})}
+
+                def create_adset(self, *args, **kwargs):
+                    self.calls.append(("create_adset", args, kwargs))
+                    return {"stdout": json.dumps({"error": {"message": "Invalid targeting"}}), "stderr": "Invalid targeting", "returncode": 1, "executed": True}
+
+            retry_campaign_path.write_text(
+                json.dumps(
+                    {
+                        "name": "Retry Dirty Partial Stack",
+                        "objective": "PURCHASES",
+                        "budget": {"daily": 25},
+                        "status_plan": {"campaign": "PAUSED", "adset": "PAUSED", "ad": "PAUSED"},
+                        "ad_sets": [{"name": "Retry Dirty Partial Stack - Core", "targeting": {"locations": ["MX"]}, "budget": 25}],
+                        "ad": {
+                            "primary_text": "Texto",
+                            "headline": "Titular",
+                            "creative_image_path": str(image_path),
+                            "landing_url": "https://buyer.example",
+                            "final_status": "PAUSED",
+                            "active_spend_confirmed": False,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            reused_failure_client = ReusedFailingAdsetClient()
+            reused_failure_result = execute_campaign_creation(
+                str(retry_campaign_path),
+                reused_failure_client,
+                approved=True,
+                prior_result={"ok": False, "executed": True, "campaign_id": "cmp_dirty_partial", "failed_step": "create_adset"},
+            )
+            reused_failure_calls = [call[0] for call in reused_failure_client.calls]
+            cleaned_retry_campaign = json.loads(retry_campaign_path.read_text(encoding="utf-8"))
+            self.assert_true(reused_failure_result["failed_step"] == "create_adset" and reused_failure_result.get("partial_campaign_deleted") is True, "Failed retry deletes the previously-created paused partial campaign instead of leaving it for another dirty retry")
+            self.assert_true(reused_failure_calls == ["campaign_details", "create_adset", "delete"], "Failed retry validates, attempts, and then deletes the stale partial campaign")
+            self.assert_true(cleaned_retry_campaign.get("execution_state", {}).get("partial_deleted_campaign_id") == "cmp_dirty_partial", "Failed retry records the cleaned partial campaign ID")
+
             class DeletedCampaignRetryClient(FakeClient):
                 def create_campaign(self, *args, **kwargs):
                     self.calls.append(("create_campaign", args, kwargs))
