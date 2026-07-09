@@ -128,7 +128,9 @@ from optimization_engine import (
 from optimization_research import RESEARCH_FILE, load_research, save_research_item, seed_current_research
 from product_config import (
     ENV_FILE,
+    agent_brain_uses_chatgpt_codex,
     default_codex_image_hermes_home,
+    effective_codex_image_source,
     env_bool,
     image_codex_config,
     load_config,
@@ -3863,6 +3865,21 @@ def clear_hermes_codex_auth_homes(homes):
 def disconnect_agent_model(payload=None):
     payload = payload or {}
     purpose = normalize_connect_purpose(payload.get("connection_purpose") or payload.get("purpose"))
+    base_config = load_config()
+    if purpose == "image" and agent_brain_uses_chatgpt_codex(base_config):
+        log_action("agent_model_disconnect", {"purpose": purpose, "removed": 0, "uses_main_chatgpt": True}, "completed")
+        return {
+            "ok": True,
+            "status": "using_main_chatgpt",
+            "connection_purpose": purpose,
+            "title": "Image 2 usa la cuenta principal",
+            "detail": "Como el cerebro principal es ChatGPT/Codex, Image 2 reutiliza esa misma sesión. Para cambiarla, desconecta la cuenta principal de ChatGPT/Codex.",
+            "removed": [],
+            "home": "",
+            "homes": [],
+            "env_updated": [],
+            "gateway": None,
+        }
     config = config_for_connect_purpose(purpose)
     stop_hermes_login_session(purpose)
     cleared = clear_hermes_codex_auth_homes(disconnect_auth_homes(config, purpose))
@@ -4218,6 +4235,30 @@ def connect_agent_model(payload=None):
     payload = payload or {}
     purpose = normalize_connect_purpose(payload.get("connection_purpose") or payload.get("purpose"))
     if purpose == "image":
+        base_config = load_config()
+        if agent_brain_uses_chatgpt_codex(base_config):
+            ready, auth_detail = hermes_codex_ready(base_config)
+            if ready:
+                return hermes_connect_response(
+                    "completed",
+                    "Image 2 listo con la cuenta principal",
+                    "Como el cerebro principal es ChatGPT/Codex, Image 2 usa esa misma sesión. No hace falta conectar una segunda cuenta.",
+                    mode="image_uses_main_chatgpt",
+                    command=hermes_browserless_shell_command(base_config),
+                    output=auth_detail,
+                    running=False,
+                    connection_purpose="image",
+                )
+            return hermes_connect_response(
+                "needs_terminal",
+                "Conecta ChatGPT/Codex principal",
+                "Image 2 usa la misma cuenta ChatGPT/Codex del agente. Conecta primero el cerebro principal y luego vuelve a generar los creativos.",
+                mode="image_needs_main_chatgpt",
+                command=hermes_browserless_shell_command(base_config),
+                output=auth_detail,
+                running=False,
+                connection_purpose="image",
+            )
         image_model = normalize_hermes_model(payload.get("codex_image_hermes_model") or payload.get("hermes_model") or "")
         update_env_values(
             {
@@ -9898,14 +9939,16 @@ def dashboard_payload():
     managed_accounts = managed_ad_accounts_payload()
     business_snapshot = business_context_snapshot(business_profile)
     main_codex_session = hermes_codex_session_status(config, timeout=3)
+    codex_image_source = effective_codex_image_source(config)
     image_codex_session = (
         hermes_codex_session_status(image_codex_config(config), timeout=3)
-        if normalize_codex_image_source(getattr(config, "codex_image_source", "")) == "dedicated_chatgpt"
+        if codex_image_source == "dedicated_chatgpt"
         else main_codex_session
     )
     codex_image_status = hermes_codex_image_status(timeout=2, config=config)
     codex_image_ready = bool(codex_image_status.get("ok"))
     image_home = resolved_codex_image_hermes_home(config)
+    image_model = getattr(config, "codex_image_hermes_model", config.hermes_model) if codex_image_source == "dedicated_chatgpt" else config.hermes_model
     runtime_model_state = telegram_runtime_model_state(config)
     return {
         "metrics": metrics,
@@ -9976,10 +10019,11 @@ def dashboard_payload():
                 "image_generation_provider": "codex_image" if codex_image_ready else "",
                 "codex_image_ready": codex_image_ready,
                 "codex_image_error": "" if codex_image_ready else codex_image_status.get("error", ""),
-                "codex_image_source": getattr(config, "codex_image_source", "main_chatgpt"),
-                "codex_image_dedicated": getattr(config, "codex_image_source", "") == "dedicated_chatgpt",
+                "codex_image_source": codex_image_source,
+                "codex_image_source_configured": getattr(config, "codex_image_source", "main_chatgpt"),
+                "codex_image_dedicated": codex_image_source == "dedicated_chatgpt",
                 "codex_image_home_configured": bool(image_home),
-                "codex_image_model": getattr(config, "codex_image_hermes_model", config.hermes_model),
+                "codex_image_model": image_model,
                 "codex_image_account": image_codex_session.get("identity", {}),
                 "codex_image_session_detail": image_codex_session.get("detail", ""),
                 "codex_image_connected": bool(image_codex_session.get("authenticated", image_codex_session.get("ready"))),
@@ -10000,8 +10044,9 @@ def dashboard_payload():
                 "chatgpt_account": main_codex_session.get("identity", {}),
                 "chatgpt_session_detail": main_codex_session.get("detail", ""),
                 "primary_brain": getattr(config, "agent_brain_provider", "openai_codex"),
-                "codex_image_source": getattr(config, "codex_image_source", "main_chatgpt"),
-                "codex_image_hermes_model": getattr(config, "codex_image_hermes_model", config.hermes_model),
+                "codex_image_source": codex_image_source,
+                "codex_image_source_configured": getattr(config, "codex_image_source", "main_chatgpt"),
+                "codex_image_hermes_model": image_model,
                 "codex_image_ready": codex_image_ready,
                 "codex_image_error": "" if codex_image_ready else codex_image_status.get("error", ""),
                 "codex_image_connected": bool(image_codex_session.get("authenticated", image_codex_session.get("ready"))),
@@ -10045,8 +10090,9 @@ def dashboard_payload():
                 "agent_chat_model": config.agent_chat_model,
                 "agent_chat_api": config.agent_chat_api,
                 "agent_chat_api_key_set": bool(config.agent_chat_api_key),
-                "codex_image_source": getattr(config, "codex_image_source", "main_chatgpt"),
-                "codex_image_hermes_model": getattr(config, "codex_image_hermes_model", config.hermes_model),
+                "codex_image_source": codex_image_source,
+                "codex_image_source_configured": getattr(config, "codex_image_source", "main_chatgpt"),
+                "codex_image_hermes_model": image_model,
             },
             "publishing": publishing_status(config, destination),
         },

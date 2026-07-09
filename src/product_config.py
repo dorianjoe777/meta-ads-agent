@@ -188,12 +188,35 @@ def normalize_codex_image_source(value):
     return aliases.get(raw, DEFAULT_CODEX_IMAGE_SOURCE)
 
 
+def agent_brain_uses_chatgpt_codex(config):
+    """Return whether the primary agent brain is the buyer's ChatGPT/Codex login.
+
+    Image 2 can use a separate ChatGPT/Codex home only when the text brain is
+    an API/custom provider. When the primary brain is already ChatGPT/Codex,
+    images must reuse that same authenticated session so reconnecting the main
+    account does not leave Image 2 pointed at a stale image-only home.
+    """
+    brain = normalize_agent_brain_provider(
+        getattr(config, "agent_brain_provider", ""),
+        legacy_chat_provider=getattr(config, "agent_chat_provider", "hermes"),
+        base_url=getattr(config, "agent_chat_base_url", ""),
+    )
+    return brain == "openai_codex"
+
+
+def effective_codex_image_source(config):
+    source = normalize_codex_image_source(getattr(config, "codex_image_source", ""))
+    if agent_brain_uses_chatgpt_codex(config):
+        return "main_chatgpt"
+    return source
+
+
 def default_codex_image_hermes_home():
     return str(ROOT_DIR / "dashboard" / "data" / "hermes-image-home")
 
 
 def resolved_codex_image_hermes_home(config):
-    source = normalize_codex_image_source(getattr(config, "codex_image_source", ""))
+    source = effective_codex_image_source(config)
     if source != "dedicated_chatgpt":
         return ""
     configured = str(getattr(config, "codex_image_hermes_home", "") or "").strip()

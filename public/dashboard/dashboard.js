@@ -1694,6 +1694,7 @@ function chatGptConnectMarkup(onboarding=false){
  const codexModel=model.hermes_model||'gpt-5.5';
  const imageSource=model.codex_image_source||studio.codex_image_source||'main_chatgpt';
  const imageDedicated=imageSource==='dedicated_chatgpt';
+ const imageDedicatedAllowed=apiBrain;
  const imageReady=Boolean(studio.codex_image_ready||model.codex_image_ready);
  const imageSessionConnected=Boolean(studio.codex_image_connected||model.codex_image_connected);
  const imageConnected=imageDedicated?imageSessionConnected:chatgptConnected;
@@ -1721,9 +1722,9 @@ function chatGptConnectMarkup(onboarding=false){
  const chatgptActions=chatgptConnected
   ? `<button class="btn primary" type="button" data-action-code="saveChatGptModel(event)">${chatgptReady?(lang==='es'?'Guardar modelo principal':'Save primary model'):(lang==='es'?'Usar como principal':'Use as primary')}</button><button class="btn danger" type="button" data-action-code="disconnectAgentModel('agent')">${lang==='es'?'Desconectar para cambiar cuenta':'Disconnect to change account'}</button>`
   : `<button class="btn primary" type="button" data-action-code="connectChatGpt(event)">${lang==='es'?'Ya lo hice, conectar a ChatGPT ahora':'I did it, connect to ChatGPT now'}</button>`;
- const imagePrimaryNote=!imageDedicated&&chatgptConnected?`<p class="notice">${lang==='es'?'Ahora usa la misma cuenta ChatGPT del agente. Si quieres otra cuenta solo para imágenes, toca “Conectar otra cuenta para Image 2”.':'It currently uses the agent ChatGPT account. To use a different account only for images, click “Connect another account for Image 2”.'}</p>`:'';
+ const imagePrimaryNote=!imageDedicated&&chatgptConnected?`<p class="notice">${lang==='es'?'Image 2 usa la misma cuenta ChatGPT/Codex del cerebro principal. Para cambiarla, desconecta y conecta otra cuenta en la tarjeta principal.':'Image 2 uses the same ChatGPT/Codex account as the primary brain. To change it, disconnect and connect a different account in the main card.'}</p>`:'';
  const imageConnectLabel=imageDedicated?(lang==='es'?'Conectar cuenta de imágenes':'Connect image account'):(lang==='es'?'Conectar otra cuenta para Image 2':'Connect another account for Image 2');
- const imageConnectButton=(!imageDedicated||!imageConnected)?`<button class="btn ${imageConnected?'':'primary'}" type="button" data-action-code="connectImageChatGpt(event)">${imageConnectLabel}</button>`:'';
+ const imageConnectButton=imageDedicatedAllowed&&(!imageDedicated||!imageConnected)?`<button class="btn ${imageConnected?'':'primary'}" type="button" data-action-code="connectImageChatGpt(event)">${imageConnectLabel}</button>`:'';
  const imageDisconnectButton=imageDedicated&&imageConnected?`<button class="btn danger" type="button" data-action-code="disconnectAgentModel('image')">${lang==='es'?'Desconectar imágenes':'Disconnect images'}</button>`:'';
  const imageChatgptCard=`<div class="image-chatgpt-card ${imageConnected?'ready':''}">
   <div><b>${lang==='es'?'Image 2 con ChatGPT/Codex':'Image 2 with ChatGPT/Codex'}</b><p>${lang==='es'?'Image 2 siempre usa Codex. Si el texto del agente usa MiniMax u otra API, puedes conectar una cuenta ChatGPT distinta solo para generar creativos.':'Image 2 always uses Codex. If the text agent uses MiniMax or another API, you can connect a different ChatGPT account only for creative generation.'}</p><span class="badge ${imageConnected?'ok':'warn'}">${imageStatusText}</span><div class="connected-account"><b>${lang==='es'?'Cuenta':'Account'}</b><span>${imageAccountLabel}</span></div>${imagePrimaryNote}</div>
