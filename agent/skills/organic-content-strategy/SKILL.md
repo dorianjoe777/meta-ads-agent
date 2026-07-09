@@ -11,17 +11,20 @@ Use this skill when the buyer asks for social posts, daily content, content cale
 
 After business basics and brand/logo/assets are reasonably clear, ask once:
 
-“¿Quieres que también te prepare posts diarios con tu marca para revisar y aprobar?”
+“¿Quieres que también te prepare posts con tu marca, diarios o cada X días, para revisar y aprobar?”
 
 Explain it simply: Admira can use the saved brand, logo, photos, videos, references, and offers to propose daily posts with Image 2, captions, and a small content strategy. It does not publish automatically unless the buyer later approves and Publicación directa is connected.
 
-If yes, ask the preferred time and rough quantity, defaulting to 1 post/day at 10:00 in the buyer timezone. Save with `mcp_admira_save_daily_social_content_settings`:
+If brand/logo/colors/references/assets are not clear, do not jump into a content calendar. Start or continue `memory/Branding onboarding.md` first: logo decision, colors, style references, tone, real photos/videos/assets, and font/style direction.
+
+If yes, ask the preferred time, rough quantity, and cadence, defaulting to 1 post at 10:00 every 1 day in the buyer timezone. Save with `mcp_admira_save_daily_social_content_settings`:
 
 ```json
 {
   "enabled": true,
   "time": "10:00",
   "posts_per_day": 1,
+  "interval_days": 1,
   "content_strategy": "short summary of pillars/cadence"
 }
 ```
@@ -54,7 +57,7 @@ Store the intended use in plain language: background, product proof, style direc
 
 ## Content strategy
 
-Build 3–5 pillars before generating daily posts. Good defaults:
+Build 3–5 pillars before generating regular posts. Read `brand_guides/Offer map.md` and separate pillars by brand-wide themes and active child offers/products/services. Good defaults:
 
 - education/helpful tips;
 - offer and promotion;
@@ -62,6 +65,13 @@ Build 3–5 pillars before generating daily posts. Good defaults:
 - behind-the-scenes or founder/local trust;
 - objection handling;
 - seasonal/community posts.
+
+Before locking the strategy, discuss:
+
+- which offers/services/products should receive content;
+- which topics are educational, proof-based, promotional, community, objection-handling, or behind-the-scenes;
+- whether the cadence should be daily or every X days;
+- whether posts go to Facebook, Instagram, or both after buyer approval.
 
 For each proposed post, include:
 

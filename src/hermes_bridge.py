@@ -432,6 +432,7 @@ For each turn, read the buyer message normally. If you need live account context
 - `data/audience_strategy.json`: audience strategy.
 - `data/business_binding.json`: selected Meta account/page binding.
 - `memory/Agent onboarding plan.md`: current onboarding phase.
+- `memory/Branding onboarding.md`: visual-branding checklist after general business discovery.
 - `memory/Ads campaign onboarding.md`: prior ads/campaign context.
 - `memory/recent_actions.json`: recent protected actions and tool outcomes when present.
 - `memory/pending_approvals.json`: pending protected decisions when present.
@@ -439,14 +440,15 @@ For each turn, read the buyer message normally. If you need live account context
 - `memory/creative_experiments.json`: adaptive creative-test checkpoints, evidence, provisional leaders, and next review dates.
 - `memory/content_asset_library.json`: buyer-shared logos, photos, videos, references, offers, and other assets categorized by intended use.
 - `memory/content_strategy.md`: organic content strategy, pillars, cadence, and daily-post preferences when present.
+- `brand_guides/Offer map.md`: parent-brand/child-offer index. Use it to avoid mixing products/services/offers under the same brand.
 - `brand_guides/`: brand, product, ad brief, and creative reference memory.
 - `skills/`: focused product skills. Read `core-agent-behavior` before every reply, `session-continuity` after cleanup/restart/update/fresh sessions, and the relevant specialist skill before taking product actions.
 
-Do not expect the backend to paste the whole conversation history into the prompt. Hermes session memory is useful, but it is cache; durable workspace files are the source of truth. At the start of a fresh/restarted Telegram session, after a history cleanup, or after an update/gateway restart, first read `skills/session-continuity/SKILL.md`, `memory/Conversation continuity.md`, `memory/continuity_status.json`, `memory/latest_day_context.md`, `memory/active_workflow.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/pending_approvals.json`, `memory/creative_experiments.json`, `memory/content_asset_library.json`, `memory/content_strategy.md`, and relevant `brand_guides/` files. If `has_persistent_memory` or `has_active_workflow` is true, do not introduce yourself as first time, do not restart onboarding, and do not repeat the initial ads-experience/technical-style question unless the files prove it is still missing. Resume with a short "retomo donde quedamos" style message when natural, mention one concrete remembered item, and continue from the next missing/actionable step. If needed, use session search to inspect previous Telegram sessions, but do not block the buyer when durable workspace memory is enough. If the buyer's short answer is still ambiguous, ask one clear follow-up.
+Do not expect the backend to paste the whole conversation history into the prompt. Hermes session memory is useful, but it is cache; durable workspace files are the source of truth. At the start of a fresh/restarted Telegram session, after a history cleanup, or after an update/gateway restart, first read `skills/session-continuity/SKILL.md`, `memory/Conversation continuity.md`, `memory/continuity_status.json`, `memory/latest_day_context.md`, `memory/active_workflow.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Branding onboarding.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/pending_approvals.json`, `memory/creative_experiments.json`, `memory/content_asset_library.json`, `memory/content_strategy.md`, `brand_guides/Offer map.md`, and relevant `brand_guides/` files. If `has_persistent_memory` or `has_active_workflow` is true, do not introduce yourself as first time, do not restart onboarding, and do not repeat the initial ads-experience/technical-style question unless the files prove it is still missing. Resume with a short "retomo donde quedamos" style message when natural, mention one concrete remembered item, and continue from the next missing/actionable step. If needed, use session search to inspect previous Telegram sessions, but do not block the buyer when durable workspace memory is enough. If the buyer's short answer is still ambiguous, ask one clear follow-up.
 
 # Turn Orientation Before Every Reply
 
-Read `skills/core-agent-behavior/SKILL.md`. Before answering, silently determine the buyer's immediate goal, the current workflow phase, what is already done/saved/created/attempted, what remains missing or blocked, and the next safest useful action. Do not respond as if the latest message is disconnected from the ongoing setup, creative, campaign, or optimization work. Keep this checklist private; in the visible reply, continue naturally and move the work forward.
+Read `skills/core-agent-behavior/SKILL.md`. Before answering, silently determine the buyer's immediate goal, the current workflow phase, the active child offer/product/service when relevant, what is already done/saved/created/attempted, what remains missing or blocked, and the next safest useful action. Do not respond as if the latest message is disconnected from the ongoing setup, creative, campaign, or optimization work. Keep this checklist private; in the visible reply, continue naturally and move the work forward.
 
 # Buyer-facing content boundary
 
@@ -496,6 +498,8 @@ Dashboard chat and Telegram are buyer-facing product surfaces, not terminals. Ne
 When the buyer shares a public URL and asks you to review, understand, use, or create ads from it, first use `mcp_admira_fetch_public_asset` for buyer-shared assets/pages, especially Google Drive videos/images or creative references. It safely inspects public pages and downloads public image/video assets to the product workspace. If it returns a video asset, use its returned `video_url`/`direct_url` when staging a video creative. If it returns `video_frame_paths`/`video_preview_frame_paths`, use those extracted image frames with vision to understand the MP4/MOV visually; do not try to inspect the raw video file directly and do not tell the buyer you cannot review video merely because a low-level viewer only accepts images. If frame extraction fails, explain that precise limitation and ask for public access, a direct upload, or 2-4 key screenshots. Use the available `web`/`browser` retrieval tools as a secondary path for general research. Do not immediately claim you cannot access links. If access fails because the link is private, requires login, is too large, times out, or resolves to a private/local network, explain that specific limitation in simple words and ask the buyer to make it public or upload the file directly in Telegram.
 
 Brand, product, ad-brief, creative-reference, and content-asset files are backend-owned memory. The `brand_guides/` and `memory/content_*` files inside the Hermes workspace are read-only context snapshots, not the source of truth for production readiness. Never manually create, edit, or write `brand_guides/*.md`, `/app/brand_guides/*.md`, or workspace brand-guide files to unblock creative production. Use `mcp_admira_save_brand_memory`, `mcp_admira_save_product_memory`, `mcp_admira_save_ad_brief`, `mcp_admira_save_creative_references`, `mcp_admira_save_daily_social_content_settings`, and `mcp_admira_save_content_asset`. If a save tool rejects natural wording, retry once with canonical fields such as `brand_name`, `offer`, `colors`, `visual_style`, `tone`, `logo_notes`, `references`, `asset_notes`, `name`, `product_guide`, `variation_count`, `concurrent_variations`, `formats`, `creative_hypothesis`, `category`, `purpose`, `file_path`, `url`, `enabled`, `time`, and `posts_per_day`.
+
+Parent-brand / child-offer rule: do not keep re-saving every new product/service/promotion into onboarding or the general brand guide. Save parent-brand identity with `mcp_admira_save_brand_memory`. Save each concrete offer as a separate child with `mcp_admira_save_product_memory`, and save ad-test/campaign specifics with `mcp_admira_save_ad_brief`. The current request or selected child offer wins for promise, audience, CTA, price, benefit, and conversion intent; the parent brand supplies style, tone, logo, colors, and restrictions.
 
 Never call `mcp_admira_codex_creative_plan` as a replacement for the branding interview. Before using it for serious ad strategy or launch-ready assets, the workspace should have brand name/offer, colors, visual style, tone, logo decision, reference decision, real-asset decision, and product/offer. Budget helps size tests and launch decisions, but it must not block a standalone image/asset the buyer simply wants to create. If an important brand/offer item is missing, ask the exact next branding question or pass the buyer's current product context in the tool request instead of claiming Codex generated something.
 
@@ -601,10 +605,12 @@ def business_memory_files():
         "business_profile": DATA_DIR / "business_profile.json",
         "onboarding_questions": DATA_DIR / "Onboarding questions.md",
         "onboarding_plan": DATA_DIR / "Agent onboarding plan.md",
+        "branding_onboarding": DATA_DIR / "Branding onboarding.md",
         "ads_onboarding": DATA_DIR / "Ads campaign onboarding.md",
         "audience_strategy": DATA_DIR / "audience_strategy.json",
         "individual_business_binding": DATA_DIR / "individual_business_binding.json",
         "general_branding": BRAND_GUIDES_DIR / "general_branding.md",
+        "offer_map": BRAND_GUIDES_DIR / "Offer map.md",
         "creative_references": BRAND_GUIDES_DIR / "creative_references.md",
         "content_asset_library": DATA_DIR / "content_asset_library.json",
         "content_strategy": DATA_DIR / "content_strategy.md",
@@ -634,12 +640,14 @@ def business_memory_context():
         "business_binding": redact_payload(read_json(files["individual_business_binding"], {})),
         "onboarding_questions": read_text(files["onboarding_questions"]),
         "onboarding_plan": read_text(files["onboarding_plan"]),
+        "branding_onboarding": read_text(files["branding_onboarding"]),
         "ads_onboarding": read_text(files["ads_onboarding"]),
         "creative_references": read_text(files["creative_references"]),
         "content_asset_library": scrub_memory(redact_payload(read_json(files["content_asset_library"], {"items": []}))),
         "content_strategy": read_text(files["content_strategy"]),
         "brand_guides": {
             "general_branding": read_text(files["general_branding"]),
+            "offer_map": read_text(files["offer_map"]),
             "products": [
                 {"path": memory_display_path(path), "content": read_text(path, 5000)}
                 for path in product_guides
@@ -999,9 +1007,11 @@ def conversation_continuity_status(memory):
         "business_profile": has_meaningful_memory(memory.get("business_profile")),
         "onboarding_questions": has_meaningful_memory(memory.get("onboarding_questions")),
         "onboarding_plan": has_meaningful_memory(memory.get("onboarding_plan")),
+        "branding_onboarding": has_meaningful_memory(memory.get("branding_onboarding")),
         "ads_campaign_onboarding": has_meaningful_memory(memory.get("ads_onboarding")),
         "audience_strategy": has_meaningful_memory(memory.get("audience_strategy")),
         "general_branding": has_meaningful_memory(brand.get("general_branding")),
+        "offer_map": has_meaningful_memory(brand.get("offer_map")),
         "creative_references": has_meaningful_memory(memory.get("creative_references")),
         "content_asset_library": has_meaningful_memory(memory.get("content_asset_library")),
         "content_strategy": has_meaningful_memory(memory.get("content_strategy")),
@@ -1130,10 +1140,14 @@ def build_conversation_continuity(memory, status=None):
         lines.extend(["## Known business profile", "", "```json", _json_excerpt(memory.get("business_profile"), 2200), "```", ""])
     if has_meaningful_memory(memory.get("onboarding_plan")):
         lines.extend(["## Last known onboarding plan", "", _text_excerpt(memory.get("onboarding_plan"), 1800), ""])
+    if has_meaningful_memory(memory.get("branding_onboarding")):
+        lines.extend(["## Branding onboarding", "", _text_excerpt(memory.get("branding_onboarding"), 1600), ""])
     if has_meaningful_memory(memory.get("ads_onboarding")):
         lines.extend(["## Ads/campaign onboarding memory", "", _text_excerpt(memory.get("ads_onboarding"), 1800), ""])
     if has_meaningful_memory(brand.get("general_branding")):
         lines.extend(["## Brand memory", "", _text_excerpt(brand.get("general_branding"), 1800), ""])
+    if has_meaningful_memory(brand.get("offer_map")):
+        lines.extend(["## Offer map", "", _text_excerpt(brand.get("offer_map"), 1800), ""])
     if has_meaningful_memory(memory.get("creative_references")):
         lines.extend(["## Creative references", "", _text_excerpt(memory.get("creative_references"), 1200), ""])
     if has_meaningful_memory(memory.get("content_strategy")):
@@ -1187,7 +1201,7 @@ This folder is the only workspace Hermes should read for this product turn.
 It contains curated business memory, brand guides, recent activity, and uploaded reference images.
 
 Hermes owns the conversation and should use its own session memory. The backend does not paste the whole chat history into the prompt.
-Before every buyer-facing turn, read `skills/core-agent-behavior/SKILL.md`. If session memory was cleaned, the gateway restarted, or an update created a fresh runtime session, also read `skills/session-continuity/SKILL.md`, `memory/Conversation continuity.md`, `memory/continuity_status.json`, `memory/latest_day_context.md`, `memory/active_workflow.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, and relevant `brand_guides/` files before greeting.
+Before every buyer-facing turn, read `skills/core-agent-behavior/SKILL.md`. If session memory was cleaned, the gateway restarted, or an update created a fresh runtime session, also read `skills/session-continuity/SKILL.md`, `memory/Conversation continuity.md`, `memory/continuity_status.json`, `memory/latest_day_context.md`, `memory/active_workflow.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Branding onboarding.md`, `memory/Ads campaign onboarding.md`, `brand_guides/Offer map.md`, and relevant `brand_guides/` files before greeting.
 
 Never expose this workspace's internal paths to the buyer. If the buyer asks for a prompt, plan, script, copy, or diagnosis, paste the useful content directly in the chat instead of pointing them to `/app/...`, `dashboard/data/...`, `hermes-workspace/...`, `brand_guides/...`, `memory/...`, or `CURRENT_CONTEXT.json`.
 
@@ -1220,6 +1234,7 @@ Read `skills/README.md`, then the relevant `skills/*/SKILL.md` file before actin
     written.append(write_workspace_file("memory/active_workflow.json", memory["active_workflow"]))
     written.append(write_workspace_file("memory/Onboarding questions.md", memory.get("onboarding_questions", "")))
     written.append(write_workspace_file("memory/Agent onboarding plan.md", memory.get("onboarding_plan", "")))
+    written.append(write_workspace_file("memory/Branding onboarding.md", memory.get("branding_onboarding", "")))
     written.append(write_workspace_file("memory/Ads campaign onboarding.md", memory.get("ads_onboarding", "")))
     written.append(write_workspace_file("data/audience_strategy.json", memory["audience_strategy"]))
     written.append(write_workspace_file("data/business_binding.json", memory["business_binding"]))
@@ -1237,6 +1252,7 @@ Read `skills/README.md`, then the relevant `skills/*/SKILL.md` file before actin
     written.append(write_workspace_file("memory/optimization_research.json", memory["optimization_research"]))
     written.append(write_workspace_file("memory/learning_log.md", format_learning_log()))
     written.append(write_workspace_file("brand_guides/general_branding.md", memory["brand_guides"]["general_branding"]))
+    written.append(write_workspace_file("brand_guides/Offer map.md", memory["brand_guides"].get("offer_map", "")))
     written.append(write_workspace_file("brand_guides/creative_references.md", memory.get("creative_references", "")))
     for product in memory["brand_guides"]["products"]:
         name = Path(product["path"]).name
@@ -1618,7 +1634,7 @@ def hermes_prompt(config, payload, workspace_info=None):
         + "\n".join(f"- {path}" for path in workspace_info.get("files", []))
         + "\n\nRead product rules from AGENTS.md/SOUL.md and business files only inside this workspace. Do not read arbitrary local files. If a needed file is missing, ask the buyer or request a backend tool."
         + "\n\nTurn orientation before every reply: read `skills/core-agent-behavior/SKILL.md`, then silently identify the buyer's immediate goal, where we were in the current workflow, what has already been done/saved/attempted, what is still missing or blocked, and the next safest useful action. Do not answer isolated from the previous context; continue the active work unless the buyer clearly changes topic."
-        + "\n\nBefore treating this as a new conversation, read `skills/session-continuity/SKILL.md`, `memory/Conversation continuity.md`, `memory/continuity_status.json`, `memory/latest_day_context.md`, `memory/active_workflow.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/pending_approvals.json`, and relevant `brand_guides/` files. If persistent memory or active workflow exists, resume from durable business/brand/ad memory and latest-day context instead of restarting onboarding or repeating first-time preference questions."
+        + "\n\nBefore treating this as a new conversation, read `skills/session-continuity/SKILL.md`, `memory/Conversation continuity.md`, `memory/continuity_status.json`, `memory/latest_day_context.md`, `memory/active_workflow.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Branding onboarding.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/pending_approvals.json`, `brand_guides/Offer map.md`, and relevant `brand_guides/` files. If persistent memory or active workflow exists, resume from durable business/brand/ad memory and latest-day context instead of restarting onboarding or repeating first-time preference questions."
         + "\n\nNever expose internal workspace paths to the buyer. Do not present `MEDIA:/...` as a link or address. If a generated image/file must be delivered, use `MEDIA:<local_path>` only as a native attachment directive and keep the visible reply focused on the attached file. If the buyer asks for a prompt, plan, script, copy, or diagnosis, paste it directly in the chat instead of pointing them to `/app/...`, `dashboard/data/...`, `hermes-workspace/...`, `brand_guides/...`, `memory/...`, or `CURRENT_CONTEXT.json`."
         + "\n\nDashboard action boundary: do not say you need CLI or terminal access to create or prepare campaigns. If MCP tools are available, use the `mcp_admira_*` tools directly. If MCP is unavailable in the current runtime, use the JSON tool_request contract below or ask the next missing detail. In dashboard chat, the backend executes supported product actions and keeps spend behind approval."
         + "\n\nPublic URL/video handling: if the buyer provides a public URL, especially a Google Drive/video/image link for a creative, call mcp_admira_fetch_public_asset first. If it returns a video asset, use its video_url/direct_url for video creative staging. If it returns video_frame_paths/video_preview_frame_paths, inspect those extracted image frames with vision to understand the video visually; do not try to inspect the MP4 directly and do not say you cannot review video merely because one viewer accepts only images. Use web/browser retrieval as a secondary path for general research. If access fails because of login, private URL, robots, timeout, private/local network, size limit, or tool unavailability, say that precise reason and ask the buyer to make it public, upload it directly, or paste page text/screenshots."

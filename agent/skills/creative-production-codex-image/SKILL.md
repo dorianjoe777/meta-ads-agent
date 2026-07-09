@@ -15,6 +15,7 @@ Use this skill when the buyer asks to generate, revise, or deliver image creativ
 - For organic daily posts, use purpose `daily_social_post` or `standalone_creative`; do not require budget, launch readiness, or a campaign brief unless the buyer is actually creating an ad.
 - If the buyer asks you to create, revise, or show an image, proceed to generate/deliver it once the necessary creative inputs exist. Do not ask a redundant “quieres que la genere ahora?” unless the choice would materially change the design direction or spend/publish something.
 - If a non-blocking detail is missing, make the best safe assumption, state it briefly, and generate a draft the buyer can correct.
+- Before calling the tool, identify the active offer from the latest request, selected product guide, ad brief, or `brand_guides/Offer map.md`. If the buyer is asking about a different/new offer under the same parent brand, pass that active offer in `product_guide` or in the request. Do not let older saved products contaminate the output.
 
 ## References and logos
 

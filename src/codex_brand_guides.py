@@ -25,6 +25,7 @@ AD_BRIEF_DIR = BRAND_DIR / "ad_briefs"
 BRAND_ASSET_DIR = BRAND_DIR / "assets"
 GENERAL_GUIDE = BRAND_DIR / "general_branding.md"
 CREATIVE_REFERENCES_FILE = BRAND_DIR / "creative_references.md"
+OFFER_MAP_FILENAME = "Offer map.md"
 CODEX_GENERATED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 BRAND_LOGO_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 GENERAL_EXAMPLE = BRAND_DIR / "general_branding.example.md"
@@ -644,7 +645,112 @@ def ensure_brand_guides(product_name="Oferta principal"):
     if not product_path.exists():
         write_text(product_path, default_product_guide(product_name))
         created.append(str(product_path))
+    refresh_offer_map()
     return {"ok": True, "created": created, "general_guide": str(GENERAL_GUIDE), "product_guide": str(product_path), "status": brand_guide_status()}
+
+
+def offer_map_path():
+    return BRAND_DIR / OFFER_MAP_FILENAME
+
+
+def _offer_map_line(label, value):
+    text = clean_field(value)
+    return f"  - {label}: {text}" if text else ""
+
+
+def build_offer_map_markdown():
+    """Build a natural-language parent-brand/child-offer index for Hermes."""
+    general = general_fields(read_text(GENERAL_GUIDE, default_general_guide()))
+    products = sorted(path for path in PRODUCT_DIR.glob("*.md") if path.name != "product.example.md") if PRODUCT_DIR.exists() else []
+    ad_briefs = sorted(path for path in AD_BRIEF_DIR.glob("*.md") if path.name != "ad_brief.example.md") if AD_BRIEF_DIR.exists() else []
+    lines = [
+        "# Offer map",
+        "",
+        "Este archivo es el mapa natural de marca madre y ofertas hijas. Úsalo para no mezclar productos, servicios o promociones diferentes bajo la misma marca.",
+        "",
+        "## Regla principal",
+        "",
+        "- La marca madre define identidad visual, tono, logo, colores, referencias y límites generales.",
+        "- Cada producto, servicio, promoción, lead magnet, paquete o campaña específica debe vivir como oferta hija separada.",
+        "- No sobrescribas `onboarding.md`, `general_branding.md` ni la memoria general de negocio solo porque el comprador menciona una nueva oferta.",
+        "- Si el comprador cambia de oferta o presenta una oferta nueva, crea o actualiza una ficha en `brand_guides/products/` y, si hay intención de anuncio o test, un brief en `brand_guides/ad_briefs/`.",
+        "- Antes de generar una imagen, prompt, post orgánico o campaña, identifica primero cuál es la oferta activa de esta conversación. Si no está clara, pregunta una sola vez.",
+        "- Al producir creativos, usa la oferta activa como fuente principal de promesa, audiencia, CTA y beneficio. Usa la marca madre solo para estilo, logo, tono y restricciones.",
+        "",
+        "## Marca madre",
+        "",
+        _offer_map_line("Marca", general.get("brand_name")),
+        _offer_map_line("Categoría", general.get("category")),
+        _offer_map_line("Mercado", general.get("market")),
+        _offer_map_line("Qué vende en general", general.get("offer")),
+        _offer_map_line("Promesa general", general.get("promise")),
+        _offer_map_line("Cliente ideal general", general.get("ideal_customer")),
+        _offer_map_line("Colores", general.get("colors")),
+        _offer_map_line("Estilo visual", general.get("visual_style")),
+        _offer_map_line("Tono", general.get("tone")),
+        "",
+        "## Ofertas/productos hijos guardados",
+        "",
+    ]
+    product_lines = []
+    for path in products[:30]:
+        fields = product_fields(read_text(path))
+        product_lines.extend(
+            [
+                f"### {fields.get('name') or path.stem.replace('-', ' ').title()}",
+                "",
+                f"- Archivo: `brand_guides/products/{path.name}`",
+                _offer_map_line("Audiencia", fields.get("audience")),
+                _offer_map_line("Problema", fields.get("pain")),
+                _offer_map_line("Deseo/beneficio", fields.get("desire")),
+                _offer_map_line("Precio", fields.get("price")),
+                _offer_map_line("Debe mostrar", fields.get("show")),
+                _offer_map_line("Evitar", fields.get("avoid")),
+                "",
+            ]
+        )
+    lines.extend(product_lines or ["- Todavía no hay ofertas hijas guardadas. Cuando aparezca una oferta específica, guárdala como producto/oferta separada.", ""])
+    lines.extend(["## Briefs publicitarios guardados", ""])
+    brief_lines = []
+    for path in ad_briefs[:30]:
+        fields = ad_brief_fields(read_text(path))
+        brief_lines.extend(
+            [
+                f"### {fields.get('name') or path.stem.replace('-', ' ').title()}",
+                "",
+                f"- Archivo: `brand_guides/ad_briefs/{path.name}`",
+                _offer_map_line("Ficha de producto relacionada", fields.get("product_guide")),
+                _offer_map_line("Promoción", fields.get("promotion")),
+                _offer_map_line("Campaña", fields.get("campaign_name")),
+                _offer_map_line("Formatos", fields.get("formats")),
+                _offer_map_line("Ejes de variación", fields.get("variation_axes")),
+                _offer_map_line("Hipótesis", fields.get("creative_hypothesis")),
+                _offer_map_line("Métricas/señal", fields.get("success_signal")),
+                "",
+            ]
+        )
+    lines.extend(brief_lines or ["- Todavía no hay briefs publicitarios guardados para ofertas hijas.", ""])
+    lines.extend(
+        [
+            "## Cómo decidir la oferta activa",
+            "",
+            "- Si el comprador dice “este nuevo servicio”, “otra oferta”, “un paquete”, “esta promo”, “este producto” o describe un nuevo ángulo, trátalo como oferta activa nueva hasta que el comprador indique lo contrario.",
+            "- Si el pedido puntual contradice una ficha vieja, el pedido puntual gana para esa pieza. No arrastres la oferta vieja por memoria fuerte.",
+            "- Si hay varias ofertas bajo la misma marca, menciona el nombre de la oferta que estás usando antes de crear el activo: “Voy a trabajar sobre [oferta], no sobre [otra oferta previa]”.",
+            "- Para contenido orgánico, también separa pilares/temas por oferta. Una misma marca puede tener varios calendarios o líneas editoriales según servicio/producto.",
+            "",
+        ]
+    )
+    return "\n".join(line for line in lines if line is not None).strip() + "\n"
+
+
+def refresh_offer_map():
+    BRAND_DIR.mkdir(parents=True, exist_ok=True)
+    PRODUCT_DIR.mkdir(parents=True, exist_ok=True)
+    AD_BRIEF_DIR.mkdir(parents=True, exist_ok=True)
+    path = offer_map_path()
+    write_text(path, build_offer_map_markdown())
+    return str(path)
 
 
 def brand_guide_status():
@@ -653,6 +759,8 @@ def brand_guide_status():
     return {
         "general_exists": GENERAL_GUIDE.exists(),
         "general_guide": str(GENERAL_GUIDE),
+        "offer_map_exists": offer_map_path().exists(),
+        "offer_map": str(offer_map_path()),
         "creative_references_exists": CREATIVE_REFERENCES_FILE.exists(),
         "creative_references": str(CREATIVE_REFERENCES_FILE),
         "product_count": len(products),
@@ -711,6 +819,7 @@ def guide_library():
                 "saved": GENERAL_GUIDE.exists(),
                 "fields": general_fields(read_text(GENERAL_GUIDE, suggested_general)),
             },
+            "offer_map_text": read_text(offer_map_path()),
             "creative_references_text": read_text(CREATIVE_REFERENCES_FILE),
             "products": product_cards,
             "ad_briefs": brief_cards,
@@ -927,6 +1036,7 @@ def save_general_guide(payload):
     if not fields.get("brand_name") and not fields.get("offer"):
         raise ValueError("Escribe al menos el nombre de marca o lo que vende.")
     write_text(GENERAL_GUIDE, render_general_guide(fields))
+    refresh_offer_map()
     return guide_library()
 
 
@@ -943,6 +1053,7 @@ def save_product_guide(payload):
         raise ValueError("Elige otro nombre de producto.")
     path = PRODUCT_DIR / f"{product_id}.md"
     write_text(path, render_product_guide(fields))
+    refresh_offer_map()
     return {"library": guide_library(), "product_id": product_id, "guide": product_reference(path)}
 
 
@@ -982,6 +1093,7 @@ def save_ad_brief(payload):
         raise ValueError("Elige otro nombre para el brief publicitario.")
     path = AD_BRIEF_DIR / f"{ad_brief_id}.md"
     write_text(path, render_ad_brief(fields))
+    refresh_offer_map()
     return {"library": guide_library(), "ad_brief_id": ad_brief_id, "ad_brief": product_reference(path)}
 
 
@@ -1326,6 +1438,7 @@ def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", 
         product_guide = ad_brief_fields(ad_text).get("product_guide", "")
     product_path, product_text = product_guide_context(product_guide)
     references = read_text(CREATIVE_REFERENCES_FILE)
+    offer_map = read_text(offer_map_path())
     used_seed = seed or uuid.uuid4().hex
     routes = list(FIXED_IMAGE_ROUTES[:count]) if selected_mode == "fixed" else _seeded_routes(FREE_IMAGE_ROUTES, count, used_seed)
     request_text = str(request or "").strip()
@@ -1335,7 +1448,8 @@ def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", 
             f"Pedido puntual del comprador: {request_text}" if request_text else "",
             f"Producto/oferta: {_text_excerpt(product_text, 1200)}" if product_text else "",
             f"Brief del anuncio: {_text_excerpt(ad_text, 1200)}" if ad_text else "",
-            f"Reglas generales de marca: {_text_excerpt(general, 1200)}" if general else "",
+            f"Mapa de ofertas: {_text_excerpt(offer_map, 900)}" if offer_map else "",
+            f"Reglas generales de marca madre: {_text_excerpt(general, 1200)}" if general else "",
             f"Logo de marca: {logo_context}" if logo_context else "",
             f"Referencias aprobadas: {_text_excerpt(references, 900)}" if references else "",
         ]
@@ -1343,8 +1457,10 @@ def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", 
     )
     brand_lock = (
         "Usa el pedido puntual del comprador como fuente principal. Respeta colores, tipografias, "
-        "personalidad, promesa, oferta, publico, elementos bloqueados, referencias aprobadas y cosas prohibidas "
-        "cuando existan. Si existe Logo de marca, úsalo como referencia visual y no inventes otro logo. "
+        "personalidad, elementos bloqueados, referencias aprobadas y cosas prohibidas cuando existan. "
+        "La marca madre solo define estilo, tono, logo y restricciones; no importes promesas, audiencia, CTA, "
+        "precio ni beneficio de otro producto/oferta guardado si la solicitud activa describe una oferta distinta. "
+        "Si existe Logo de marca, úsalo como referencia visual y no inventes otro logo. "
         "Si el archivo oficial está adjunto, trátalo como un activo bloqueado: "
         "reprodúcelo exactamente con pixel-level accurate reproduction y de forma pixel-faithful "
         "(fiel píxel por píxel), sin cambiar texto, símbolos, "
@@ -1406,6 +1522,8 @@ Tu tarea es convertir memoria de marca, producto y brief en prompts finales de i
 
 Reglas no negociables:
 - Usa solo el contexto incluido abajo.
+- Identifica la oferta activa antes de escribir el prompt final. La oferta activa viene del pedido puntual, del brief elegido o de la ficha de producto elegida; no mezcles beneficios, CTA, audiencia, precios ni promesas de otras ofertas bajo la misma marca.
+- Trata la guía general como marca madre: identidad visual, tono, logo, colores y restricciones. No la uses para reemplazar la oferta activa si el comprador está hablando de otro producto/servicio.
 - No leas archivos, credenciales, tokens ni configuracion local.
 - No ejecutes comandos.
 - Mantener colores, tipografias y elementos importantes de marca.
@@ -1424,6 +1542,10 @@ Reglas no negociables:
 ## Guia de producto
 
 {_text_excerpt(product_text)}
+
+## Mapa de ofertas
+
+{_text_excerpt(offer_map, 3000)}
 
 ## Brief publicitario
 

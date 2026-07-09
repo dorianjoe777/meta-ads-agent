@@ -415,6 +415,7 @@ class IntegrationTestSuite:
             daily_social_content_decision="",
             daily_social_content_time="10:00",
             daily_social_content_posts_per_day=1,
+            daily_social_content_interval_days=1,
             telegram_bot_token="",
             telegram_chat_id="",
             creative_refresh_enabled=True,
@@ -511,6 +512,7 @@ class IntegrationTestSuite:
             daily_social_content_decision="",
             daily_social_content_time="10:00",
             daily_social_content_posts_per_day=1,
+            daily_social_content_interval_days=1,
             telegram_bot_token="",
             telegram_chat_id="",
             creative_refresh_enabled=True,
@@ -2302,6 +2304,9 @@ class IntegrationTestSuite:
             self.assert_true("mcp_admira_approve_action" in approvals_skill.read_text(encoding="utf-8"), "Approval skill points Hermes to exact approval MCP tools")
             self.assert_true("Native Product Tools" in agents_text and "mcp_admira_stage_campaign" in agents_text and "mcp_admira_review_signal_quality" in agents_text and "mcp_admira_preflight_campaign" in agents_text, "Combined Hermes rules document the MCP product bridge and preflight review")
             self.assert_true("latest_day_context" in agents_text and "active_workflow" in agents_text and "core-agent-behavior" in agents_text, "Combined Hermes rules force modular behavior and continuity memory")
+            self.assert_true((workspace_path / "memory" / "Branding onboarding.md").exists() and (workspace_path / "brand_guides" / "Offer map.md").exists(), "Hermes workspace includes separate branding onboarding and offer-map memory files")
+            self.assert_true("child offer" in agents_text and "Offer map" in agents_text and "active child offer" in core_skill.read_text(encoding="utf-8"), "Hermes rules teach parent-brand versus child-offer separation")
+            self.assert_true("interval_days" in organic_content_text and "cada X días" in organic_content_text, "Organic content skill supports daily or every-X-days cadence")
             self.assert_true((workspace_path / "memory" / "content_asset_library.json").exists() and (workspace_path / "memory" / "content_strategy.md").exists(), "Hermes workspace includes durable organic content memory files")
             self.assert_true((workspace_path / "skills" / "README.md").exists(), "Hermes workspace includes a product skill index")
         finally:
@@ -2851,6 +2856,8 @@ class IntegrationTestSuite:
         original_prepare = hermes_gateway.prepare_hermes_workspace
         original_which = hermes_gateway.shutil.which
         original_run = hermes_gateway.subprocess.run
+        original_intro_prompt_file = hermes_gateway.POST_INSTALL_ORGANIC_INTRO_PROMPT_FILE
+        original_intro_state_file = hermes_gateway.POST_INSTALL_ORGANIC_INTRO_STATE_FILE
         original_env = {key: os.environ.get(key) for key in ["TELEGRAM_AGENT_MODE", "TELEGRAM_AGENT_ENABLED", "TELEGRAM_LANGUAGE"]}
 
         class FakeConfig:
@@ -2881,6 +2888,8 @@ class IntegrationTestSuite:
             os.environ["TELEGRAM_LANGUAGE"] = "es"
             hermes_gateway.prepare_hermes_workspace = lambda payload: {"path": str(workspace)}
             hermes_gateway.shutil.which = lambda command: "/usr/local/bin/hermes" if command == "hermes" else command
+            hermes_gateway.POST_INSTALL_ORGANIC_INTRO_PROMPT_FILE = test_dir / "post_install_organic_prompt.md"
+            hermes_gateway.POST_INSTALL_ORGANIC_INTRO_STATE_FILE = test_dir / "post_install_organic_state.json"
 
             duplicate_calls = []
             def fake_duplicate_run(command, **kwargs):
@@ -2943,6 +2952,28 @@ class IntegrationTestSuite:
             self.assert_true("Admira IA - posts diarios" in social_command and "telegram:12345" in social_command and "mcp_admira_codex_image_generate" in social_prompt and "memory/content_asset_library.json" in social_prompt and "pixel-level accurate" in social_prompt, "Daily social content cron uses Image 2 with brand assets and direct media delivery")
             self.assert_true(social_env.get("HERMES_TIMEZONE") == "America/Bogota" and social_env.get("TZ") == "America/Bogota", "Daily social content cron inherits the buyer timezone")
 
+            intro_calls = []
+
+            def fake_intro_run(command, **kwargs):
+                intro_calls.append((command, kwargs.get("env", {})))
+                if command[:3] == ["/usr/local/bin/hermes", "cron", "list"]:
+                    return Completed(stdout="")
+                return Completed(stdout="created")
+
+            hermes_gateway.subprocess.run = fake_intro_run
+            before_intro = datetime.now(timezone.utc)
+            intro = hermes_gateway.ensure_post_install_organic_intro_cron(FakeConfig())
+            intro_command, intro_env = next((command, env) for command, env in intro_calls if command[:3] == ["/usr/local/bin/hermes", "cron", "create"])
+            intro_due = datetime.fromisoformat(intro_command[-2])
+            delta_seconds = (intro_due - before_intro).total_seconds()
+            intro_prompt = intro_command[-1]
+            intro_state = json.loads(hermes_gateway.POST_INSTALL_ORGANIC_INTRO_STATE_FILE.read_text(encoding="utf-8"))
+            duplicate_intro = hermes_gateway.ensure_post_install_organic_intro_cron(FakeConfig())
+            self.assert_true(intro["configured"] and "--repeat" in intro_command and intro_command[intro_command.index("--repeat") + 1] == "1", "Hermes creates the post-install organic-content invitation as a one-shot cron")
+            self.assert_true(2.9 * 3600 <= delta_seconds <= 3.1 * 3600 and intro_state.get("scheduled") is True, "Post-install organic invitation is scheduled about three hours after first setup and marked scheduled")
+            self.assert_true("Branding onboarding" in intro_prompt and "cada X días" in intro_prompt and intro_env.get("HERMES_TIMEZONE") == "America/Bogota", "Post-install organic invitation asks for branding first and content cadence in buyer timezone")
+            self.assert_true(duplicate_intro.get("needed") is False and not [command for command, _env in intro_calls if command[:3] == ["/usr/local/bin/hermes", "cron", "create"]][1:], "Post-install organic invitation is not scheduled twice once state is marked")
+
             hermes_gateway.subprocess.run = lambda *args, **kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired(args[0], 20))
             failed = hermes_gateway.ensure_daily_brief_cron(FakeConfig())
             self.assert_true(failed["configured"] is False and "No pude revisar" in failed["detail"], "Hermes cron list timeout becomes a recoverable status")
@@ -2950,6 +2981,8 @@ class IntegrationTestSuite:
             hermes_gateway.prepare_hermes_workspace = original_prepare
             hermes_gateway.shutil.which = original_which
             hermes_gateway.subprocess.run = original_run
+            hermes_gateway.POST_INSTALL_ORGANIC_INTRO_PROMPT_FILE = original_intro_prompt_file
+            hermes_gateway.POST_INSTALL_ORGANIC_INTRO_STATE_FILE = original_intro_state_file
             for key, value in original_env.items():
                 if value is None:
                     os.environ.pop(key, None)
@@ -4094,6 +4127,7 @@ class IntegrationTestSuite:
             dashboard.BUSINESS_PROFILE_FILE,
             dashboard.ONBOARDING_QUESTIONS_FILE,
             dashboard.AGENT_ONBOARDING_PLAN_FILE,
+            dashboard.BRANDING_ONBOARDING_FILE,
             dashboard.ADS_ONBOARDING_FILE,
             codex_brand_guides.GENERAL_GUIDE,
             codex_brand_guides.CREATIVE_REFERENCES_FILE,
@@ -4195,6 +4229,7 @@ class IntegrationTestSuite:
             )
             final_phase = dashboard.agent_onboarding_phase()
             plan_text = dashboard.AGENT_ONBOARDING_PLAN_FILE.read_text(encoding="utf-8")
+            branding_onboarding_text = dashboard.BRANDING_ONBOARDING_FILE.read_text(encoding="utf-8")
             brief_text = (codex_brand_guides.AD_BRIEF_DIR / "brief-fase-prueba.md").read_text(encoding="utf-8")
             skill_text = (ROOT_DIR / "agent" / "SKILLS.md").read_text(encoding="utf-8")
             branding_skill_text = (ROOT_DIR / "agent" / "skills" / "branding-creatives-creation" / "SKILL.md").read_text(encoding="utf-8")
@@ -4204,6 +4239,7 @@ class IntegrationTestSuite:
             self.assert_true("branding creatives creation" in skill_text and "save_creative_references" in skill_text, "Branding creatives creation skill is documented for Hermes")
             self.assert_true("mcp_admira_save_product_memory" in branding_skill_text and "logo" in branding_skill_text.lower(), "Focused branding skill covers product memory and logo context")
             self.assert_true("Primer mensaje del onboarding" in plan_text and "entender tu negocio" in plan_text and "marca, logo, colores" in plan_text and "ofertas especificas" in plan_text, "Agent onboarding plan tells Hermes to introduce business, branding, then ads strategy")
+            self.assert_true("Branding onboarding" in branding_onboarding_text and "Regla multi-oferta" in branding_onboarding_text and "oferta hija" in branding_onboarding_text, "Branding onboarding is separated from general onboarding and teaches child-offer memory")
             self.assert_true("continuous_ads_manager" in plan_text and "save_ads_onboarding" in plan_text, "Agent onboarding plan records the continuous manager phase")
             ads_onboarding_text = dashboard.ADS_ONBOARDING_FILE.read_text(encoding="utf-8")
             self.assert_true("3 resultados principales/KPIs" in ads_onboarding_text and "cost_per_qualified_lead" in ads_onboarding_text and "cost_per_booking" in ads_onboarding_text, "Ads onboarding persists the buyer's ranked campaign scorecard")
@@ -4337,6 +4373,18 @@ class IntegrationTestSuite:
                 {"language": "es"},
             )
             self.assert_true(standalone_no_brief["executed"] is True and standalone_no_brief["result"]["prompt_package"]["requires_full_ad_brief"] is False, "Standalone creative images do not require a saved ad-test brief")
+            separate_offer = dashboard.execute_agent_tool(
+                {
+                    "tool": "codex_image_generate",
+                    "arguments": {
+                        "request": "Crea dos creativos para una oferta nueva: servicio de marketing + IA a medida por WhatsApp para negocios LATAM que hacen demasiado manualmente. CTA: hablar por WhatsApp.",
+                        "asset_only": True,
+                    },
+                },
+                {"language": "es"},
+            )
+            self.assert_true(separate_offer["executed"] is True and separate_offer["result"]["prompt_package"]["product_context_source"] == "active_request", "A new offer described in the buyer request becomes the active product context instead of reusing old product memory")
+            self.assert_true("Oferta activa de esta solicitud" in profile_only_capture["prompt"] and "No importes la promesa" in profile_only_capture["prompt"], "Image prompt isolates the active request from other saved child offers under the same brand")
             no_brief = dashboard.execute_agent_tool(
                 {"tool": "codex_image_generate", "arguments": {"request": "Crea un anuncio listo para lanzar", "purpose": "launch_ad", "require_brief": True}},
                 {"language": "es"},
@@ -4525,6 +4573,7 @@ class IntegrationTestSuite:
                 }
             )
             library = codex_brand_guides.guide_library()
+            offer_map_text = codex_brand_guides.offer_map_path().read_text(encoding="utf-8")
             product_card = next(item for item in library["products"] if item["id"] == "triva")
             brief_card = next(item for item in library["ad_briefs"] if item["id"] == "triva-compradores-vivienda")
             self.assert_true(brand_fields["brand_name"] == "Spa MediCentro Juliana" and "faciales" in brand_fields["offer"], "Brand aliases save natural onboarding fields as structured brand memory")
@@ -4539,6 +4588,7 @@ class IntegrationTestSuite:
             self.assert_true(brief_card["fields"]["variation_count"] == "2" and brief_card["fields"]["concurrent_variations"] == "2", "Brief parser maps variants and simultaneous creative aliases")
             self.assert_true(brief_card["fields"]["formats"] == "imagen estática realista para Meta Ads", "Brief parser maps creative_formats to formats")
             self.assert_true("acompañamiento" in brief_card["fields"]["variation_axes"] and brief_card["fields"]["creative_hypothesis"], "Brief parser keeps variation axes and hypothesis")
+            self.assert_true("Offer map" in offer_map_text and "TRIVA" in offer_map_text and "marca madre" in offer_map_text.lower(), "Saving product/brief refreshes the natural-language offer map for multi-offer memory")
 
             dashboard = load_dashboard_module()
             dashboard_brand = dashboard.execute_agent_tool(

@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from communication_style import (
@@ -28,7 +29,7 @@ from hermes_bridge import (
     hermes_environment,
     prepare_hermes_workspace,
 )
-from local_store import now_iso
+from local_store import now_iso, read_json, write_private_json
 from product_config import ROOT_DIR, env_bool, env_int
 
 try:
@@ -48,6 +49,8 @@ TELEGRAM_MODEL_STATE_FILE = DATA_DIR / "telegram_model_state.json"
 TELEGRAM_RECENT_TURNS_FILE = DATA_DIR / "hermes_gateway_recent_turns.json"
 DAILY_BRIEF_PROMPT_FILE = DATA_DIR / "hermes_daily_brief_prompt.md"
 DAILY_SOCIAL_CONTENT_PROMPT_FILE = DATA_DIR / "hermes_daily_social_content_prompt.md"
+POST_INSTALL_ORGANIC_INTRO_PROMPT_FILE = DATA_DIR / "hermes_post_install_organic_intro_prompt.md"
+POST_INSTALL_ORGANIC_INTRO_STATE_FILE = DATA_DIR / "post_install_organic_intro_cron.json"
 RESEARCH_PROMPT_FILE = DATA_DIR / "hermes_optimization_research_prompt.md"
 
 _GATEWAY_PROCESS = None
@@ -678,17 +681,19 @@ Si todavía no hay Datos reales de Meta, dilo claramente y explica qué falta co
 """
 
 
-def daily_social_content_prompt(posts_per_day=1):
+def daily_social_content_prompt(posts_per_day=1, interval_days=1):
     count = max(1, min(5, int(posts_per_day or 1)))
+    interval = max(1, min(30, int(interval_days or 1)))
     plural = "post" if count == 1 else "posts"
-    return f"""Prepara el lote diario de contenido orgánico de Admira IA para este negocio.
+    cadence = "diario" if interval == 1 else f"cada {interval} días"
+    return f"""Prepara el lote de contenido orgánico {cadence} de Admira IA para este negocio.
 
 Objetivo: dejar {count} {plural} visual(es) listo(s) para que el comprador los revise/apruebe desde Telegram. No publiques automáticamente.
 
 Antes de crear nada:
 1. Lee `skills/core-agent-behavior/SKILL.md`, `skills/session-continuity/SKILL.md`, `skills/brand-and-assets/SKILL.md`, `skills/organic-content-strategy/SKILL.md`, `skills/creative-strategy/SKILL.md` y `skills/creative-production-codex-image/SKILL.md`.
 2. Lee `memory/content_asset_library.json`, `memory/content_strategy.md`, `brand_guides/general_branding.md`, `brand_guides/creative_references.md`, productos/briefs y memoria reciente.
-3. Si no existe una estrategia de contenido clara, propón primero 3 pilares simples de contenido y pide confirmación; no generes una tanda grande sin estrategia.
+3. Si no existe una estrategia de contenido clara, propón primero 3 pilares simples de contenido por marca/oferta y pide confirmación; no generes una tanda grande sin estrategia.
 
 Cuando haya marca suficiente:
 - Usa Codex/Image mediante `mcp_admira_codex_image_generate`.
@@ -703,6 +708,158 @@ Entrega en Telegram:
 - Incluye copy/caption sugerido, objetivo del post, pilar de contenido y por qué encaja.
 - Pregunta si aprueba, quiere cambios o quiere publicar/programar después con Publicación directa si está conectada.
 """
+
+
+def post_install_organic_intro_prompt():
+    return """Haz una invitación única y breve para activar la estrategia de contenido orgánico.
+
+Contexto: esta instalación ya quedó andando. Este mensaje ocurre una sola vez unas horas después de la primera instalación para ofrecer ayuda proactiva, no para vender agresivamente.
+
+Antes de escribir:
+1. Lee `skills/core-agent-behavior/SKILL.md`, `skills/session-continuity/SKILL.md`, `skills/business-onboarding/SKILL.md`, `skills/brand-and-assets/SKILL.md` y `skills/organic-content-strategy/SKILL.md`.
+2. Lee `memory/Branding onboarding.md`, `brand_guides/general_branding.md`, `brand_guides/Offer map.md`, `brand_guides/creative_references.md`, `memory/content_asset_library.json` y `memory/content_strategy.md`.
+3. No repitas onboarding si ya hay memoria. Retoma con un dato concreto.
+
+Mensaje deseado:
+- Si branding todavía no está claro, empieza por branding: logo, colores, referencias, fotos/videos reales, tono o fuentes. Di que para crear posts bonitos primero conviene dejar esa base clara.
+- Si branding ya está razonablemente claro, ofrece preparar una estrategia de contenido orgánico: pilares, temas por oferta/servicio/producto, frecuencia diaria o cada X días, y posts listos para aprobar con Image 2.
+- Explica que el comprador puede compartir fotos, videos, testimonios, referencias o productos; Admira los guarda/categoriza y los usa inteligentemente.
+- No actives un cron ni publiques nada todavía. Solo pregunta si quiere que lo armen juntos ahora.
+- Mantén la respuesta corta, cálida y en español simple.
+"""
+
+
+def _parse_state_datetime(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def ensure_post_install_organic_intro_cron(config):
+    status = telegram_settings(config)
+    if not (status["enabled"] and status["bot_configured"] and status["chat_id"]):
+        return {"configured": False, "needed": False, "detail": "Telegram no está completo todavía."}
+    state = read_json(POST_INSTALL_ORGANIC_INTRO_STATE_FILE, {})
+    if not isinstance(state, dict):
+        state = {}
+    if state.get("done") or state.get("scheduled"):
+        return {
+            "configured": bool(state.get("scheduled") or state.get("done")),
+            "needed": False,
+            "exists": True,
+            "name": state.get("name", "Admira IA - invitación contenido orgánico"),
+            "schedule": state.get("due_at", ""),
+            "state": "done" if state.get("done") else "scheduled",
+        }
+    hermes_cli = shutil.which(getattr(config, "hermes_cli", "hermes") or "hermes")
+    if not hermes_cli:
+        return {"configured": False, "needed": True, "detail": "Hermes no está instalado."}
+    files = write_gateway_files(config)
+    env = hermes_environment(config)
+    env["HERMES_HOME"] = files["hermes_home"]
+    timezone_name = str(getattr(config, "daily_brief_timezone", "UTC") or "UTC")
+    env["HERMES_TIMEZONE"] = timezone_name
+    env["TZ"] = timezone_name
+    now = datetime.now(timezone.utc)
+    first_seen = _parse_state_datetime(state.get("first_install_seen_at")) or now
+    due = first_seen + timedelta(hours=3)
+    if due <= now:
+        due = now + timedelta(minutes=1)
+    due_iso = due.isoformat(timespec="seconds")
+    name = "Admira IA - invitación contenido orgánico"
+    prompt = post_install_organic_intro_prompt()
+    POST_INSTALL_ORGANIC_INTRO_PROMPT_FILE.write_text(prompt, encoding="utf-8")
+    try:
+        list_result = subprocess.run([hermes_cli, "cron", "list"], cwd=files["workspace"], env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        write_private_json(
+            POST_INSTALL_ORGANIC_INTRO_STATE_FILE,
+            {**state, "first_install_seen_at": first_seen.isoformat(timespec="seconds"), "last_error": str(exc), "updated_at": now_iso()},
+            ensure_ascii=False,
+        )
+        return {"configured": False, "needed": True, "detail": "No pude revisar la invitación orgánica post-instalación.", "error": str(exc), **files}
+    output = (list_result.stdout or "") + (list_result.stderr or "")
+    existing = _cron_job(output, name)
+    if existing or name in output:
+        write_private_json(
+            POST_INSTALL_ORGANIC_INTRO_STATE_FILE,
+            {
+                **state,
+                "first_install_seen_at": first_seen.isoformat(timespec="seconds"),
+                "scheduled": True,
+                "name": name,
+                "job_id": (existing or {}).get("id", ""),
+                "due_at": (existing or {}).get("schedule") or due_iso,
+                "updated_at": now_iso(),
+            },
+            ensure_ascii=False,
+        )
+        return {"configured": True, "needed": False, "exists": True, "name": name, "job_id": (existing or {}).get("id", ""), "schedule": (existing or {}).get("schedule") or due_iso, "timezone": timezone_name, **files}
+    try:
+        result = subprocess.run(
+            [
+                hermes_cli,
+                "cron",
+                "create",
+                "--name",
+                name,
+                "--deliver",
+                f"telegram:{status['chat_id']}",
+                "--repeat",
+                "1",
+                "--workdir",
+                files["workspace"],
+                due_iso,
+                prompt,
+            ],
+            cwd=files["workspace"],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        write_private_json(
+            POST_INSTALL_ORGANIC_INTRO_STATE_FILE,
+            {**state, "first_install_seen_at": first_seen.isoformat(timespec="seconds"), "due_at": due_iso, "last_error": str(exc), "updated_at": now_iso()},
+            ensure_ascii=False,
+        )
+        return {"configured": False, "needed": True, "detail": "No pude programar la invitación orgánica post-instalación.", "error": str(exc), "name": name, "schedule": due_iso, **files}
+    ok = result.returncode == 0
+    write_private_json(
+        POST_INSTALL_ORGANIC_INTRO_STATE_FILE,
+        {
+            **state,
+            "first_install_seen_at": first_seen.isoformat(timespec="seconds"),
+            "scheduled": ok,
+            "name": name,
+            "due_at": due_iso,
+            "scheduled_at": now_iso() if ok else "",
+            "stdout": (result.stdout or "")[-500:],
+            "stderr": (result.stderr or "")[-500:],
+        },
+        ensure_ascii=False,
+    )
+    return {
+        "configured": ok,
+        "needed": True,
+        "exists": False,
+        "name": name,
+        "schedule": due_iso,
+        "timezone": timezone_name,
+        "stdout": (result.stdout or "")[-500:],
+        "stderr": (result.stderr or "")[-500:],
+        **files,
+    }
 
 
 def optimization_research_prompt():
@@ -768,7 +925,8 @@ def ensure_daily_social_content_cron(config):
         return {"configured": False, "needed": True, "detail": "Hermes no está instalado."}
     files = write_gateway_files(config)
     posts_per_day = max(1, min(5, int(getattr(config, "daily_social_content_posts_per_day", 1) or 1)))
-    prompt = daily_social_content_prompt(posts_per_day)
+    interval_days = max(1, min(30, int(getattr(config, "daily_social_content_interval_days", 1) or 1)))
+    prompt = daily_social_content_prompt(posts_per_day, interval_days)
     DAILY_SOCIAL_CONTENT_PROMPT_FILE.write_text(prompt, encoding="utf-8")
     env = hermes_environment(config)
     env["HERMES_HOME"] = files["hermes_home"]
@@ -778,7 +936,7 @@ def ensure_daily_social_content_cron(config):
     name = "Admira IA - posts diarios"
     try:
         hour, minute = str(getattr(config, "daily_social_content_time", "10:00") or "10:00").split(":", 1)
-        schedule = f"{int(minute)} {int(hour)} * * *"
+        schedule = f"{int(minute)} {int(hour)} * * *" if interval_days == 1 else f"{int(minute)} {int(hour)} */{interval_days} * *"
     except (TypeError, ValueError):
         schedule = "0 10 * * *"
     try:
@@ -790,7 +948,7 @@ def ensure_daily_social_content_cron(config):
     desired_delivery = f"telegram:{status['chat_id']}"
     if existing:
         if existing.get("schedule") == schedule and existing.get("deliver") == desired_delivery:
-            return {"configured": True, "needed": True, "exists": True, "name": name, "job_id": existing["id"], "schedule": schedule, "timezone": timezone_name, "posts_per_day": posts_per_day, **files}
+            return {"configured": True, "needed": True, "exists": True, "name": name, "job_id": existing["id"], "schedule": schedule, "timezone": timezone_name, "posts_per_day": posts_per_day, "interval_days": interval_days, **files}
         try:
             edit_result = subprocess.run(
                 [
@@ -827,12 +985,13 @@ def ensure_daily_social_content_cron(config):
             "schedule": schedule,
             "timezone": timezone_name,
             "posts_per_day": posts_per_day,
+            "interval_days": interval_days,
             "stdout": (edit_result.stdout or "")[-500:],
             "stderr": (edit_result.stderr or "")[-500:],
             **files,
         }
     if name in list_output:
-        return {"configured": True, "needed": True, "exists": True, "name": name, "schedule": schedule, "timezone": timezone_name, "posts_per_day": posts_per_day, **files}
+        return {"configured": True, "needed": True, "exists": True, "name": name, "schedule": schedule, "timezone": timezone_name, "posts_per_day": posts_per_day, "interval_days": interval_days, **files}
     try:
         result = subprocess.run(
             [
@@ -866,6 +1025,7 @@ def ensure_daily_social_content_cron(config):
         "schedule": schedule,
         "timezone": timezone_name,
         "posts_per_day": posts_per_day,
+        "interval_days": interval_days,
         "stdout": (result.stdout or "")[-500:],
         "stderr": (result.stderr or "")[-500:],
         **files,

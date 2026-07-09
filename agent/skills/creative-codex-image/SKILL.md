@@ -31,6 +31,7 @@ Image 2 is a production capability, not the creative strategy. First read `memor
 Read these workspace files when present:
 
 - `brand_guides/general_branding.md`
+- `brand_guides/Offer map.md`
 - `brand_guides/products/*.md`
 - `brand_guides/ad_briefs/*.md`
 - `brand_guides/creative_references.md`
@@ -38,6 +39,8 @@ Read these workspace files when present:
 - uploaded images in `uploads/`
 
 Treat `brand_guides/` as read-only workspace context. Do not create or edit those Markdown files manually to unblock image production. If brand, product, or ad-brief readiness is incomplete, save the missing memory with `mcp_admira_save_brand_memory`, `mcp_admira_save_product_memory`, `mcp_admira_save_ad_brief`, or `mcp_admira_save_creative_references`, then call `mcp_admira_codex_image_generate` again.
+
+Use the active offer/product from the latest buyer request or `brand_guides/Offer map.md`. Do not reuse an older product guide just because it exists when the buyer is asking for another offer under the same brand.
 
 Internal files are not buyer-facing deliverables. Do not tell the buyer to open `/app/...`, `dashboard/data/...`, `hermes-workspace/...`, `brand_guides/...`, `memory/...`, or `CURRENT_CONTEXT.json`. Do not present `MEDIA:/...` as a link, preview URL, or address the buyer should copy/open. If they ask for the prompt, paste the full prompt directly in the chat. You may also save it internally, but the answer must be usable from Telegram alone.
 

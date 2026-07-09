@@ -36,7 +36,9 @@ Do not rush into a launch-ready ad until these stages are complete:
 7. Saved ad brief
 8. Production
 
-Read `memory/Agent onboarding plan.md` before every branding or creative turn. If it lists missing items, ask its next question. Ask one question at a time.
+Read `memory/Agent onboarding plan.md`, `memory/Branding onboarding.md`, and `brand_guides/Offer map.md` before every branding or creative turn. If it lists missing items, ask its next question. Ask one question at a time.
+
+Parent-brand / child-offer rule: do not keep re-saving new products into onboarding or the general brand guide. Save visual identity as parent-brand memory. Save each concrete product, service, package, promotion, lead magnet, or campaign angle as a separate offer/product guide, and create an ad brief when it will be tested or launched.
 
 Internal workspace files are private memory, not something the buyer can open. Never answer a buyer request by pointing to `/app/...`, `dashboard/data/...`, `hermes-workspace/...`, `brand_guides/...`, `memory/...`, or `CURRENT_CONTEXT.json`. If the buyer asks for a prompt, creative plan, copy, UGC script, or diagnosis, paste the content directly in the chat and only then mention that it was saved internally if useful.
 

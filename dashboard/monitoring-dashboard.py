@@ -103,6 +103,7 @@ from hermes_gateway import (
     ensure_daily_social_content_cron,
     ensure_experiment_review_cron,
     ensure_experiment_review_crons,
+    ensure_post_install_organic_intro_cron,
     ensure_weekly_research_cron,
     gateway_status as hermes_gateway_status,
     start_gateway as start_hermes_gateway,
@@ -199,6 +200,7 @@ BUSINESS_PROFILE_FILE = DATA_DIR / "business_profile.json"
 VERIFIED_SIGNAL_LEDGER_FILE = DATA_DIR / "verified_signal_ledger.json"
 ONBOARDING_QUESTIONS_FILE = DATA_DIR / "Onboarding questions.md"
 AGENT_ONBOARDING_PLAN_FILE = DATA_DIR / "Agent onboarding plan.md"
+BRANDING_ONBOARDING_FILE = DATA_DIR / "Branding onboarding.md"
 ADS_ONBOARDING_FILE = DATA_DIR / "Ads campaign onboarding.md"
 CONTENT_ASSET_LIBRARY_FILE = DATA_DIR / "content_asset_library.json"
 CONTENT_STRATEGY_FILE = DATA_DIR / "content_strategy.md"
@@ -1790,6 +1792,7 @@ def save_daily_brief_schedule(payload):
     gateway = start_hermes_gateway(config)
     cron = ensure_daily_brief_cron(config)
     social_content_cron = ensure_daily_social_content_cron(config)
+    organic_intro_cron = ensure_post_install_organic_intro_cron(config)
     experiment_crons = ensure_experiment_review_crons(config)
     research_cron = ensure_weekly_research_cron(config)
     log_action(
@@ -1804,6 +1807,7 @@ def save_daily_brief_schedule(payload):
         "gateway": gateway,
         "cron": cron,
         "social_content_cron": social_content_cron,
+        "organic_intro_cron": organic_intro_cron,
         "experiment_crons": experiment_crons,
         "research_cron": research_cron,
     }
@@ -1826,11 +1830,17 @@ def save_daily_social_content_settings(payload):
     except (TypeError, ValueError):
         posts_per_day = 1
     posts_per_day = max(1, min(5, posts_per_day))
+    try:
+        interval_days = int(payload.get("interval_days") or payload.get("frequency_days") or payload.get("every_days") or payload.get("daily_social_content_interval_days") or 1)
+    except (TypeError, ValueError):
+        interval_days = 1
+    interval_days = max(1, min(30, interval_days))
     updates = {
         "DAILY_SOCIAL_CONTENT_ENABLED": "true" if enabled else "false",
         "DAILY_SOCIAL_CONTENT_DECISION": "enabled" if enabled else "declined",
         "DAILY_SOCIAL_CONTENT_TIME": normalized_time,
         "DAILY_SOCIAL_CONTENT_POSTS_PER_DAY": str(posts_per_day),
+        "DAILY_SOCIAL_CONTENT_INTERVAL_DAYS": str(interval_days),
     }
     update_env_values(updates)
     strategy_note = str(payload.get("content_strategy") or payload.get("strategy") or "").strip()
@@ -1847,7 +1857,7 @@ def save_daily_social_content_settings(payload):
     cron = ensure_daily_social_content_cron(config)
     log_action(
         "daily_social_content_settings_update",
-        {"enabled": enabled, "time": normalized_time, "posts_per_day": posts_per_day, "cron_configured": bool(cron.get("configured"))},
+        {"enabled": enabled, "time": normalized_time, "posts_per_day": posts_per_day, "interval_days": interval_days, "cron_configured": bool(cron.get("configured"))},
         "completed" if (not enabled or cron.get("configured")) else "blocked",
     )
     return {
@@ -1856,6 +1866,7 @@ def save_daily_social_content_settings(payload):
         "time": normalized_time,
         "timezone": config.daily_brief_timezone,
         "posts_per_day": posts_per_day,
+        "interval_days": interval_days,
         "gateway": gateway,
         "cron": cron,
     }
@@ -2073,6 +2084,7 @@ def save_telegram_config(payload):
             status["onboarding_message_ready"] = True
         status["daily_brief_cron"] = ensure_daily_brief_cron(config)
         status["daily_social_content_cron"] = ensure_daily_social_content_cron(config)
+        status["post_install_organic_intro_cron"] = ensure_post_install_organic_intro_cron(config)
         status["experiment_review_crons"] = ensure_experiment_review_crons(config)
         status["research_cron"] = ensure_weekly_research_cron(config)
     log_action("telegram_config_save", {"enabled": status["enabled"], "mode": status.get("mode"), "bot_configured": status["bot_configured"], "chat_id_set": bool(status["chat_id"])}, "completed")
@@ -5349,6 +5361,77 @@ def direct_product_guide_text(payload):
     return "; ".join(parts)
 
 
+ACTIVE_OFFER_REQUEST_HINTS = (
+    "oferta",
+    "offer",
+    "producto",
+    "product",
+    "servicio",
+    "service",
+    "promocion",
+    "promoción",
+    "campaign",
+    "campaña",
+    "audiencia",
+    "audience",
+    "whatsapp",
+    "latam",
+    "marketing",
+    "automatizacion",
+    "automatización",
+    "ia",
+    "ai",
+    "manual",
+    "manualmente",
+    "ahorro",
+    "ahorrar",
+    "gratis",
+    "free",
+    "headline",
+    "cta",
+)
+
+
+def request_describes_active_offer(value):
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    if len(text) < 24:
+        return False
+    lowered = text.lower()
+    if not any(hint in lowered for hint in ACTIVE_OFFER_REQUEST_HINTS):
+        return False
+    return meaningful_creative_context_text(text, min_len=24)
+
+
+def active_request_product_context(payload):
+    payload = payload or {}
+    request = str(payload.get("request") or payload.get("image_prompt") or payload.get("prompt") or "").strip()
+    if not request_describes_active_offer(request):
+        return ""
+    return (
+        "Oferta activa de esta solicitud: usa este pedido como la ficha del producto/servicio para este creativo. "
+        "No importes la promesa, audiencia, CTA ni detalles de otros productos guardados bajo la misma marca. "
+        f"Pedido activo: {compact_creative_context_value(request, limit=900)}"
+    )
+
+
+def selected_product_guide_for_creative(payload):
+    payload = payload or {}
+    brief_payload = normalize_ad_brief_payload(payload)
+    explicit = str(brief_payload.get("product_guide") or payload.get("product_guide") or "").strip()
+    if explicit:
+        return explicit, "explicit_product_guide"
+    direct = direct_product_guide_text(payload)
+    if direct:
+        return direct, "direct_product_fields"
+    active_request = active_request_product_context(payload)
+    if active_request:
+        return active_request, "active_request"
+    profile_context = business_profile_product_context()
+    if profile_context:
+        return profile_context, "business_profile"
+    return "", "library_default"
+
+
 REFERENCE_AS_BACKGROUND_FLAGS = (
     "use_reference_as_background",
     "use_uploaded_image_as_background",
@@ -5496,6 +5579,10 @@ def write_agent_onboarding_plan(profile=None):
         social_content_posts = max(1, min(5, int(os.environ.get("DAILY_SOCIAL_CONTENT_POSTS_PER_DAY") or 1)))
     except ValueError:
         social_content_posts = 1
+    try:
+        social_content_interval = max(1, min(30, int(os.environ.get("DAILY_SOCIAL_CONTENT_INTERVAL_DAYS") or 1)))
+    except ValueError:
+        social_content_interval = 1
     body = f"""# Agent onboarding plan
 
 Estado actual: {phase["phase"]}.
@@ -5518,6 +5605,8 @@ Cuando responda, guarda esa preferencia con `save_agent_preferences` / `mcp_admi
 
 Despues de esa preferencia, haz una sola pregunta clara de negocio. La mejor primera pregunta es: "Que vendes exactamente y cual es tu oferta principal hoy?"
 
+Al terminar el onboarding general de negocio, no sigas reescribiendo esta memoria para cada oferta nueva. Pasa al archivo separado `Branding onboarding.md` para marca visual, logo, colores, referencias y activos. Luego trata cada producto/servicio/promocion como oferta hija separada en `brand_guides/products/` y `brand_guides/ad_briefs/`.
+
 ## Postura experta global
 
 El agente no debe ser pasivo ni limitar su criterio experto a placements. Debe proponer mejoras de alto impacto en todo lo que pueda afectar aprendizaje o gasto: evento de optimizacion, Pixel/Dataset, CAPI/EMQ/AEM como diagnostico, presupuesto, calendario, audiencias, exclusiones, placements, formato creativo, preflight, aprobaciones y revisiones futuras. Si el comprador pidio palabras simples, explica el impacto en negocio y evita tecnicismos; si pidio detalle tecnico, puede profundizar.
@@ -5533,16 +5622,18 @@ Regla asesor-profesional: antes de preguntar cualquier configuracion amplia, pri
 
 2. branding_creatives_creation
    - Usar el skill `skills/branding-creatives-creation/SKILL.md`.
+   - Leer `Branding onboarding.md` como la guia especifica de branding. El onboarding general solo indica que esta fase empieza; el detalle de branding vive separado.
    - Despues de entender marca/logo/assets, usar tambien `skills/organic-content-strategy/SKILL.md` si el cliente quiere posts organicos diarios o comparte assets reutilizables.
    - Buscar referencias visuales de anuncios del nicho con las herramientas web/browser disponibles.
    - No generar anuncios todavía. Completar colores, estilo visual, tono, decisión de logo, decisión de referencias y decisión sobre fotos/activos reales.
    - Preguntar activamente si el cliente quiere subir un logo, diseño de referencia, foto de producto, fundador, cliente, local o empaque.
    - Proponer estilos, paletas, fuentes, sensaciones, uso de logo y reglas visuales solo después de escuchar esas respuestas.
    - Distinguir que es continuo para toda la marca y que cambia por producto, servicio o campana.
+   - Revisar `brand_guides/Offer map.md` antes de crear creativos para no mezclar una oferta nueva con la oferta principal guardada.
    - Si el cliente envia un logo, guardarlo en la guia general como Logo de marca y Notas del logo.
    - Si el cliente aprueba referencias encontradas, generadas o ambas, guardarlas con `save_creative_references`.
    - Si el cliente envia fotos/videos/links/UGC/testimonios/ofertas, guardar su proposito con `save_content_asset`.
-   - Preguntar una vez si quiere que Admira prepare posts diarios con Image 2 para revisar/aprobar. Si acepta o rechaza, guardar con `save_daily_social_content_settings`.
+   - Preguntar una vez si quiere que Admira prepare posts diarios o cada X dias con Image 2 para revisar/aprobar. Si acepta o rechaza, guardar con `save_daily_social_content_settings`.
    - Guardar la guia general con `save_brand_guide` y fichas por producto con `save_product_guide`.
 
 3. ads_campaign_onboarding
@@ -5565,7 +5656,7 @@ Regla asesor-profesional: antes de preguntar cualquier configuracion amplia, pri
 - Negocio: {phase["business"]}
 - Branding/creativos: {phase["branding"]}
 - Campanas/anuncios previos: {phase["campaigns"]}
-- Posts diarios organicos: decision={social_content_decision}, activo={"si" if social_content_enabled else "no"}, hora={social_content_time}, cantidad={social_content_posts}/dia
+- Posts organicos: decision={social_content_decision}, activo={"si" if social_content_enabled else "no"}, hora={social_content_time}, cantidad={social_content_posts} por tanda, frecuencia=cada {social_content_interval} dia(s)
 
 ## Preparacion creativa actual
 
@@ -5576,6 +5667,55 @@ Regla asesor-profesional: antes de preguntar cualquier configuracion amplia, pri
 """
     AGENT_ONBOARDING_PLAN_FILE.parent.mkdir(parents=True, exist_ok=True)
     AGENT_ONBOARDING_PLAN_FILE.write_text(body, encoding="utf-8")
+    branding_body = f"""# Branding onboarding
+
+Este archivo separa el onboarding visual de la entrevista general del negocio.
+
+## Objetivo
+
+Completar la marca madre antes de producir creativos, posts diarios o campanas.
+
+La marca madre incluye:
+
+- nombre de marca;
+- logo oficial o decision clara de logo;
+- colores;
+- tipografia/fuentes o estilo de letras;
+- referencias visuales;
+- tono;
+- fotos, videos, UGC, testimonios, local, producto o assets reales;
+- restricciones: que mostrar siempre y que evitar.
+
+## Flujo recomendado
+
+1. Leer memoria existente: `brand_guides/general_branding.md`, `brand_guides/Offer map.md`, `brand_guides/creative_references.md` y `memory/content_asset_library.json`.
+2. Si falta branding esencial, no crear creativos finales todavía. Preguntar una cosa: logo, colores, referencias, fotos/assets reales, tono o estilo.
+3. Guardar marca madre con `save_brand_guide` / `mcp_admira_save_brand_memory`.
+4. Guardar assets subidos con `save_content_asset` / `mcp_admira_save_content_asset` y una categoría clara.
+5. Guardar referencias aprobadas con `save_creative_references`.
+6. Cuando el branding esté razonablemente claro, pasar a ofertas hijas/productos. No sobrescribir la marca madre para resolver una nueva oferta.
+
+## Regla multi-oferta
+
+Una marca puede tener muchos productos, servicios, paquetes, promociones o líneas de contenido.
+
+- La marca madre da estilo.
+- La oferta activa da promesa, audiencia, beneficio, CTA y mensaje.
+- Si el comprador pide un creativo para una oferta nueva, crea o actualiza una ficha hija en `brand_guides/products/`.
+- Cada oferta hija debe mantener su promesa, audiencia, CTA, precio y beneficio separados de otras ofertas de la misma marca.
+- Si esa oferta se usará para anuncios o tests, crea o actualiza un brief en `brand_guides/ad_briefs/`.
+- Antes de generar, di internamente cuál oferta estás usando. Si hay riesgo de mezclar, aclara brevemente al comprador: “Trabajo esta pieza sobre [oferta nueva], no sobre [oferta previa]”.
+
+## Estado
+
+- Fase actual: {phase["phase"]}.
+- Branding/creativos: {phase["branding"]}.
+- Siguiente paso: {phase["next_step"]}.
+- Preparación creativa lista: {"si" if phase["creative_readiness"]["ready"] else "no"}.
+- Pendientes: {", ".join(item.get("key", "") for item in phase["creative_readiness"]["missing"]) or "ninguno"}.
+"""
+    BRANDING_ONBOARDING_FILE.parent.mkdir(parents=True, exist_ok=True)
+    BRANDING_ONBOARDING_FILE.write_text(branding_body, encoding="utf-8")
     return {"path": str(AGENT_ONBOARDING_PLAN_FILE), **phase}
 
 
@@ -5598,6 +5738,8 @@ def write_onboarding_questions_memory(profile=None, status="pending"):
 Estado: completado.
 
 El cliente ya compartio suficiente contexto inicial. Usa `dashboard/data/business_profile.json`, `brand_guides/general_branding.md`, las fichas de producto y los briefs publicitarios para responder con memoria real.
+
+Despues del onboarding general, el detalle visual debe retomarse desde `Branding onboarding.md`. No uses el onboarding general para mezclar ofertas nuevas con la oferta principal.
 
 Si el cliente pide revisar su negocio desde cero, vuelve a preguntar una cosa a la vez y actualiza la memoria con las herramientas disponibles.
 """
@@ -5628,7 +5770,9 @@ Instrucciones para el agente:
 - Documenta lo aprendido en el perfil del negocio y en las guias de marca/producto/brief cuando corresponda.
 - Si falta informacion, pregunta lo minimo necesario para poder actuar.
 - Cuando el negocio este claro, pasa a la fase de branding/creativos; no saltes directo a campanas si faltan estilo, referencias, colores o reglas visuales.
-- Cuando marca/logo/assets esten razonablemente claros, pregunta una vez si quiere que Admira prepare posts diarios con Image 2 para revisar y aprobar. Si acepta o rechaza, guarda la decision con `save_daily_social_content_settings`.
+- Al pasar a branding, usa `Branding onboarding.md`. El onboarding general termina cuando entiendes el negocio; marca visual, logo, colores, fuentes, referencias y assets viven en esa memoria separada.
+- Cuando marca/logo/assets esten razonablemente claros, pregunta una vez si quiere que Admira prepare posts diarios o cada X dias con Image 2 para revisar y aprobar. Si acepta o rechaza, guarda la decision con `save_daily_social_content_settings`.
+- Si el cliente menciona una nueva oferta, servicio, paquete o promocion despues del onboarding, no lo guardes encima de la marca general. Trátalo como oferta hija y usa/crea `brand_guides/products/` y, si aplica, `brand_guides/ad_briefs/`.
 - Si el cliente comparte archivos, fotos, videos, links, testimonios, ofertas o referencias, pregunta/infiera para que son y guardalos con `save_content_asset` para que se puedan reutilizar en posts, anuncios o estrategia.
 - Despues de branding, pregunta por anuncios/campanas anteriores y guarda aprendizajes antes de proponer la estrategia inicial.
 - Antes de crear o preparar una campana, pregunta por los 3 resultados principales que importan para juzgarla, no solo por un evento. Ejemplos: ROAS, costo por compra, costo por iniciar checkout, costo por lead calificado, reservas o conversaciones reales de WhatsApp.
@@ -5917,11 +6061,7 @@ def save_creative_references_memory(payload):
 def codex_creative_plan(payload):
     payload = payload or {}
     brief_payload = normalize_ad_brief_payload(payload)
-    product_guide = str(brief_payload.get("product_guide") or payload.get("product_guide") or "").strip()
-    if not product_guide:
-        product_guide = direct_product_guide_text(payload)
-    if not product_guide:
-        product_guide = business_profile_product_context()
+    product_guide, product_context_source = selected_product_guide_for_creative(payload)
     request = str(payload.get("request") or "").strip()
     mode = str(payload.get("mode") or payload.get("image_mode") or "fixed").strip().lower()
     variations = payload.get("variations") or brief_payload.get("variation_count") or 3
@@ -5966,6 +6106,7 @@ def codex_creative_plan(payload):
             "variation_ledger": prompt_package["variation_ledger"],
             "prompts": prompt_package["prompts"],
             "product_guide": prompt_package["product_guide"],
+            "product_context_source": product_context_source,
             "ad_brief": prompt_package["ad_brief"],
         }
     except ValueError as exc:
@@ -5978,11 +6119,7 @@ def codex_image_generate(payload):
     """Generate a raster creative through the Codex/Image bridge."""
     payload = payload or {}
     brief_payload = normalize_ad_brief_payload(payload)
-    product_guide = str(brief_payload.get("product_guide") or payload.get("product_guide") or "").strip()
-    if not product_guide:
-        product_guide = direct_product_guide_text(payload)
-    if not product_guide:
-        product_guide = business_profile_product_context()
+    product_guide, product_context_source = selected_product_guide_for_creative(payload)
     ad_brief = str(payload.get("ad_brief") or "").strip()
     mode = str(payload.get("mode") or payload.get("image_mode") or "fixed").strip().lower()
     variations = payload.get("variations") or brief_payload.get("variation_count") or 1
@@ -6084,6 +6221,7 @@ def codex_image_generate(payload):
             "variation_count": prompt_package["variation_count"],
             "variation_ledger": prompt_package["variation_ledger"],
             "product_guide": prompt_package["product_guide"],
+            "product_context_source": product_context_source,
             "ad_brief": prompt_package["ad_brief"],
             "selected_prompt": selected_prompt,
             "logo_context": prompt_package.get("logo_context", ""),

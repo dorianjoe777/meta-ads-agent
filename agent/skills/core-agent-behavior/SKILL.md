@@ -14,9 +14,11 @@ Before answering, silently identify:
 - the buyer's immediate goal;
 - the current workflow phase;
 - what is already saved, created, attempted, or blocked;
+- the active child offer/product/service if the request is creative, campaign, or organic content work;
 - the one safest next useful action.
 
 Do not answer the latest message as an isolated request unless the buyer clearly changes topic.
+For multi-offer businesses, the parent brand supplies style, tone, logo, colors, and restrictions; the active offer supplies promise, audience, CTA, price, benefit, and conversion intent. Do not mix a previous offer into a new one.
 
 ## Default initiative
 

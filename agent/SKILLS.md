@@ -22,7 +22,7 @@ Always read `skills/session-continuity/SKILL.md` before any first greeting, onbo
 
 Telegram must run through Hermes Gateway by default. Do not design normal Telegram replies as a product-side polling bot that forwards messages into Hermes. The product may help configure BotFather, chat ID, files, cron, and protected backend tools, but Hermes should be the direct Telegram speaker.
 
-Hermes also receives an `Agent onboarding plan.md` file. Treat that file as the current onboarding state. The normal buyer journey is:
+Hermes also receives `Agent onboarding plan.md`, `Branding onboarding.md`, and `brand_guides/Offer map.md`. Treat the first as the current general onboarding state, the second as the visual-branding checklist, and the third as the parent-brand/child-offer map. The normal buyer journey is:
 
 1. understand the business
 2. run the focused `skills/brand-and-assets/SKILL.md`, `skills/organic-content-strategy/SKILL.md`, and `skills/creative-strategy/SKILL.md` skills
@@ -35,7 +35,9 @@ Also at the beginning of onboarding, ask the owner-level preference: whether the
 
 Do not rush into campaign creation if the business or brand memory is still empty. Ask one clear question at a time, save what you learn with the correct tool, and move to the next phase only when the current phase is useful enough.
 
-After brand/logo/assets are reasonably clear, offer the optional daily organic content engine once: Admira can prepare daily branded posts with Image 2, captions, and a simple content strategy for approval. If the buyer accepts or declines, save the decision with `mcp_admira_save_daily_social_content_settings` so the agent does not keep re-asking after history cleanup.
+After brand/logo/assets are reasonably clear, offer the optional organic content engine once: Admira can prepare daily or every-X-days branded posts with Image 2, captions, and a simple content strategy for approval. If the buyer accepts or declines, save the decision with `mcp_admira_save_daily_social_content_settings` so the agent does not keep re-asking after history cleanup.
+
+Parent-brand / child-offer rule: after general onboarding, do not keep overwriting onboarding memory when the buyer introduces a new service, product, package, promotion, or content line. Use `brand_guides/Offer map.md` to choose the active offer. Save new offer memory with `mcp_admira_save_product_memory` and, for ad tests/campaigns, `mcp_admira_save_ad_brief`. The current request or selected product guide wins over older offers for promise, audience, CTA, price, benefit, and conversion intent; the general brand guide only supplies style, tone, logo, colors, and restrictions.
 
 Before creating or staging a campaign, ask for the buyer's three most important success metrics/results in priority order, not only the single optimization event. Examples: ROAS, cost per purchase, cost per initiate checkout, cost per qualified lead, booked appointments, or cost per real WhatsApp conversation. Save those as campaign/onboarding memory with `mcp_admira_save_ads_onboarding` when available and pass them as `success_metrics`/`key_results` when staging so the agent reports and optimizes from a scorecard, not one isolated number.
 
@@ -725,6 +727,7 @@ Tell the buyer you need the exact decision and show/mention the pending choices.
 Use this when the buyer asks for new creatives, image concepts, marketing plans, or consistent visual direction.
 
 - Read the general brand guide first: `brand_guides/general_branding.md`.
+- Read `brand_guides/Offer map.md` to identify the active offer and avoid mixing multiple products/services under the same brand.
 - Read the product-specific guide in `brand_guides/products/` when the request mentions a product.
 - Treat `brand_guides/` as read-only context. Save changes through the brand/product/ad-brief tools; do not write Markdown files manually as a workaround.
 - If guides do not exist, ask the buyer to create them from the Creativos tab or help collect the missing brand/product details.

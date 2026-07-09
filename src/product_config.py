@@ -294,6 +294,7 @@ class AgentConfig:
     daily_social_content_decision: str
     daily_social_content_time: str
     daily_social_content_posts_per_day: int
+    daily_social_content_interval_days: int
     telegram_bot_token: str
     telegram_chat_id: str
     creative_refresh_enabled: bool
@@ -406,6 +407,7 @@ def load_config():
         daily_social_content_decision=os.environ.get("DAILY_SOCIAL_CONTENT_DECISION", "").strip().lower(),
         daily_social_content_time=normalize_daily_time(env_first("DAILY_SOCIAL_CONTENT_TIME", default="10:00")),
         daily_social_content_posts_per_day=max(1, min(5, env_int("DAILY_SOCIAL_CONTENT_POSTS_PER_DAY", 1))),
+        daily_social_content_interval_days=max(1, min(30, env_int("DAILY_SOCIAL_CONTENT_INTERVAL_DAYS", 1))),
         telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
         telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),
         creative_refresh_enabled=env_bool("CREATIVE_REFRESH_ENABLED", True),

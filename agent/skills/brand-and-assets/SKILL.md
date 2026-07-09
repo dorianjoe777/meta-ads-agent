@@ -17,7 +17,13 @@ Collect and save:
 - real asset decision: buyer photos/videos, generated assets, or both;
 - reference decision: uploaded or public references to follow.
 
-Use `mcp_admira_save_brand_memory`, `mcp_admira_save_product_memory`, `mcp_admira_save_creative_references`, and `mcp_admira_save_content_asset`. Treat `brand_guides/` and `memory/content_*` files as read-only snapshots; do not manually write them.
+Use `mcp_admira_save_brand_memory`, `mcp_admira_save_product_memory`, `mcp_admira_save_creative_references`, and `mcp_admira_save_content_asset`. Read `memory/Branding onboarding.md` and `brand_guides/Offer map.md` when present. Treat `brand_guides/` and `memory/content_*` files as read-only snapshots; do not manually write them.
+
+## Parent brand vs child offers
+
+Save colors, logo, tone, typography, visual style, and general restrictions as parent-brand memory. Do not save every new promotion or service by overwriting the brand's core offer. If the buyer introduces a specific package, service, product, seasonal promo, lead magnet, or organic content line, save it as a child offer with `mcp_admira_save_product_memory`.
+
+When a creative request references a different offer from the one already saved, explicitly keep them separate: brand style can transfer, but promise, price, audience, CTA, and benefit must come from the active child offer.
 
 ## Official logo rule
 
