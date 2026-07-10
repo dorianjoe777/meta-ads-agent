@@ -43,19 +43,19 @@ const ASSETS = [
 
 const improvements = [
   {
-    title: "Guía automática para reconectar",
-    body: "Si la cuenta del modelo pierde autorización, Telegram muestra pasos simples para volver a conectarla desde el dashboard.",
-    impact: "Recuperación"
+    title: "Login directo desde Telegram",
+    body: "Si vence la autorización de ChatGPT/Codex, el agente inicia una conexión nueva y envía el enlace oficial y el código temporal directamente en el chat.",
+    impact: "Telegram"
   },
   {
-    title: "Enlace directo a la configuración",
-    body: "Cuando la instalación conoce su dirección, el aviso incluye un enlace que abre Configuración y resalta la tarjeta correcta.",
+    title: "Sin repetir pasos del dashboard",
+    body: "El comprador puede completar el login inmediatamente; la guía anterior queda disponible solo como alternativa si OpenAI no entrega un código a tiempo.",
     impact: "Rapidez"
   },
   {
-    title: "Alternativa segura para instalaciones cloud",
-    body: "Si no hay una dirección directa disponible, la recuperación lleva al portal de acceso oficial sin mostrar datos internos.",
-    impact: "DigitalOcean"
+    title: "Código temporal protegido",
+    body: "La recuperación usa un canal local privado y excluye el código temporal de la memoria durable y los registros del agente.",
+    impact: "Seguridad"
   }
 ];
 

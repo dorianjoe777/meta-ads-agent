@@ -9,7 +9,10 @@ provider-error formatter that can otherwise leak raw English provider text.
 import json
 import os
 import re
+import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -73,6 +76,9 @@ def _redact_turn_text(value):
     text = str(value or "")
     if not text:
         return ""
+    lower = text.lower()
+    if "código temporal para conectar chatgpt" in lower or "temporary code to connect chatgpt" in lower:
+        return "Se inició una reconexión segura de ChatGPT/Codex. Los datos temporales de acceso no se guardaron."
     clean = re.sub(r"MEDIA:\s*(?:/|~/)\S+", "MEDIA:[attached]", text)
     clean = re.sub(r"(?:/app|/Users|/root)(?:/[^\s\"'`]+)+", "[internal-path]", clean)
     clean = re.sub(r"\b(?:EA[A-Za-z0-9_-]{40,}|EAA[A-Za-z0-9_-]{40,})\b", "[redacted-token]", clean)
@@ -190,6 +196,88 @@ def _dashboard_recovery_link():
     return safe, kind
 
 
+def _safe_openai_login_url(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urllib.parse.urlsplit(raw)
+    except ValueError:
+        return ""
+    hostname = str(parsed.hostname or "").lower().rstrip(".")
+    allowed = hostname in {"openai.com", "chatgpt.com"} or hostname.endswith(".openai.com") or hostname.endswith(".chatgpt.com")
+    if parsed.scheme != "https" or not allowed or parsed.username or parsed.password:
+        return ""
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path or "/", parsed.query, ""))
+
+
+def _internal_recovery_settings():
+    raw_url = str(os.environ.get("ADMIRA_INTERNAL_MODEL_RECOVERY_URL") or "").strip()
+    token_path = str(os.environ.get("ADMIRA_INTERNAL_MODEL_RECOVERY_TOKEN_FILE") or "").strip()
+    if not raw_url or not token_path:
+        return "", ""
+    try:
+        parsed = urllib.parse.urlsplit(raw_url)
+    except ValueError:
+        return "", ""
+    if parsed.scheme != "http" or str(parsed.hostname or "").lower() not in {"127.0.0.1", "localhost", "::1"}:
+        return "", ""
+    try:
+        token = Path(token_path).expanduser().read_text(encoding="utf-8").strip()
+    except OSError:
+        return "", ""
+    if len(token) < 32:
+        return "", ""
+    return raw_url, token
+
+
+def _request_internal_model_recovery(action):
+    url, token = _internal_recovery_settings()
+    if not url:
+        return {}
+    body = json.dumps({"action": str(action or "status")}).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-Admira-Internal-Recovery": token,
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=3) as response:
+            if int(getattr(response, "status", 200)) != 200:
+                return {}
+            payload = json.loads(response.read(64 * 1024).decode("utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError):
+        return {}
+    result = payload.get("result") if isinstance(payload, dict) else {}
+    return result if isinstance(result, dict) else {}
+
+
+def _automatic_codex_recovery(wait_seconds=12):
+    if not _internal_recovery_settings()[0]:
+        return {}
+    result = _request_internal_model_recovery("start")
+    deadline = time.monotonic() + max(0, min(float(wait_seconds), 15))
+    while time.monotonic() < deadline:
+        urls = [_safe_openai_login_url(item) for item in (result.get("urls") or [])]
+        login_url = next((item for item in urls if item), "")
+        codes = result.get("login_codes") if isinstance(result.get("login_codes"), list) else []
+        login_code = str(result.get("login_code") or (codes[0] if codes else "")).strip()
+        login_code = login_code if re.fullmatch(r"[A-Z0-9](?:[A-Z0-9-]{4,30})[A-Z0-9]", login_code.upper()) else ""
+        if login_url and login_code:
+            return {"url": login_url, "code": login_code.upper()}
+        if str(result.get("phase") or "") == "device_auth_settings":
+            return {"device_auth_settings": True}
+        if result and not result.get("running") and str(result.get("status") or "") not in {"browser_login_started", "browser_login_waiting", "needs_login"}:
+            break
+        time.sleep(0.65)
+        result = _request_internal_model_recovery("status")
+    return {}
+
+
 def gateway_authentication_reply(text, language=None):
     language = str(language or os.environ.get("ADMIRA_GATEWAY_LANGUAGE", "es")).lower()
     lowered = str(text or "").lower()
@@ -204,9 +292,18 @@ def gateway_authentication_reply(text, language=None):
     )
     codex_session = codex_session or "codex" in str(os.environ.get("ADMIRA_GATEWAY_PROVIDER") or "").lower()
     recovery_url, recovery_kind = _dashboard_recovery_link()
+    automatic = _automatic_codex_recovery() if codex_session else {}
     if language.startswith("en"):
         if codex_session:
             intro = "🔐 The ChatGPT/Codex connection expired or was closed."
+            if automatic.get("url") and automatic.get("code"):
+                return (
+                    f"{intro}\n\nI opened a new secure login for you:\n"
+                    f"1. Open: {automatic['url']}\n"
+                    f"2. Enter this temporary code to connect ChatGPT: {automatic['code']}\n"
+                    "3. Finish the ChatGPT login and then message me again.\n\n"
+                    "The code expires shortly. Your saved business memory and work are safe."
+                )
             if recovery_url:
                 first_step = f"1. Open your Admira access page and then open the dashboard: {recovery_url}" if recovery_kind == "portal" else f"1. Open the dashboard: {recovery_url}"
                 return (
@@ -222,6 +319,14 @@ def gateway_authentication_reply(text, language=None):
         )
     if codex_session:
         intro = "🔐 La conexión de ChatGPT/Codex venció o fue cerrada."
+        if automatic.get("url") and automatic.get("code"):
+            return (
+                f"{intro}\n\nYa abrí un login seguro nuevo:\n"
+                f"1. Abre: {automatic['url']}\n"
+                f"2. Escribe este código temporal para conectar ChatGPT: {automatic['code']}\n"
+                "3. Termina el login de ChatGPT y luego vuelve a escribirme.\n\n"
+                "El código vence pronto. La memoria y el trabajo guardado no se pierden."
+            )
         if recovery_url:
             first_step = f"1. Abre tu acceso de Admira y luego abre el dashboard: {recovery_url}" if recovery_kind == "portal" else f"1. Abre el dashboard: {recovery_url}"
             return (

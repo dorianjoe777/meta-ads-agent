@@ -546,6 +546,7 @@ class IntegrationTestSuite:
         original_load_config = dashboard.load_config
         original_onboarding = dashboard.load_onboarding_state
         original_sessions_file = dashboard.DASHBOARD_SESSIONS_FILE
+        original_internal_recovery_token = dashboard.ensure_internal_model_recovery_token
         original_product_env_file = product_config.ENV_FILE
         original_product_identity_file = product_config.DASHBOARD_IDENTITY_FILE
         handler = object.__new__(dashboard.DashboardHandler)
@@ -606,6 +607,15 @@ class IntegrationTestSuite:
             self.assert_true(handler.auth_required_for_post("/api/agent-model/connect"), "ChatGPT/Codex login is protected once a dashboard password exists")
             self.assert_true(handler.auth_required_for_post("/api/dashboard-password"), "Changing password requires auth after a password exists")
             self.assert_true(handler.auth_required_for_get("/api/dashboard"), "Dashboard API is protected after password exists even before onboarding is complete")
+            dashboard.ensure_internal_model_recovery_token = lambda: "private-loopback-secret-1234567890"
+            handler.headers = {"X-Admira-Internal-Recovery": "private-loopback-secret-1234567890"}
+            handler.client_address = ("127.0.0.1", 45678)
+            self.assert_true(handler.internal_model_recovery_allowed(), "Automatic model recovery accepts the private shared token only from dashboard loopback")
+            handler.client_address = ("203.0.113.10", 45678)
+            self.assert_true(not handler.internal_model_recovery_allowed(), "Automatic model recovery rejects the private token from non-loopback clients")
+            handler.client_address = ("127.0.0.1", 45678)
+            handler.headers = {"X-Admira-Internal-Recovery": "wrong-secret"}
+            self.assert_true(not handler.internal_model_recovery_allowed(), "Automatic model recovery rejects an invalid internal token")
             with tempfile.TemporaryDirectory() as tmpdir:
                 dashboard.DASHBOARD_SESSIONS_FILE = Path(tmpdir) / "dashboard_sessions.json"
                 session = dashboard.create_dashboard_session(remember=False)
@@ -617,6 +627,7 @@ class IntegrationTestSuite:
             dashboard.load_config = original_load_config
             dashboard.load_onboarding_state = original_onboarding
             dashboard.DASHBOARD_SESSIONS_FILE = original_sessions_file
+            dashboard.ensure_internal_model_recovery_token = original_internal_recovery_token
             product_config.ENV_FILE = original_product_env_file
             product_config.DASHBOARD_IDENTITY_FILE = original_product_identity_file
 
@@ -1280,6 +1291,9 @@ class IntegrationTestSuite:
         old_recovery_url = os.environ.get("ADMIRA_DASHBOARD_RECOVERY_URL")
         old_recovery_kind = os.environ.get("ADMIRA_DASHBOARD_RECOVERY_KIND")
         old_gateway_provider = os.environ.get("ADMIRA_GATEWAY_PROVIDER")
+        old_internal_url = os.environ.get("ADMIRA_INTERNAL_MODEL_RECOVERY_URL")
+        old_internal_token_file = os.environ.get("ADMIRA_INTERNAL_MODEL_RECOVERY_TOKEN_FILE")
+        original_internal_request = admira_hermes_runtime_patch._request_internal_model_recovery
         try:
             os.environ["ADMIRA_DASHBOARD_RECOVERY_URL"] = "https://buyer.example.test/?reconnect_model=1"
             os.environ["ADMIRA_DASHBOARD_RECOVERY_KIND"] = "dashboard"
@@ -1295,7 +1309,29 @@ class IntegrationTestSuite:
             os.environ["ADMIRA_DASHBOARD_RECOVERY_URL"] = "javascript:alert(1)"
             unsafe = admira_hermes_runtime_patch.provider_error_reply("HTTP 401 token_invalidated provider=openai-codex", "es", str)
             self.assert_true("javascript:" not in unsafe and "Configuración → Modelo del agente" in unsafe, "Authentication recovery never echoes an unsafe dashboard URL")
+            with tempfile.TemporaryDirectory() as tmp_name:
+                token_file = Path(tmp_name) / "recovery.token"
+                token_file.write_text("x" * 48, encoding="utf-8")
+                os.environ["ADMIRA_INTERNAL_MODEL_RECOVERY_URL"] = "http://127.0.0.1:7871/api/internal/model-recovery"
+                os.environ["ADMIRA_INTERNAL_MODEL_RECOVERY_TOKEN_FILE"] = str(token_file)
+                recovery_results = iter(
+                    [
+                        {"running": True, "status": "browser_login_started"},
+                        {
+                            "running": True,
+                            "status": "needs_login",
+                            "urls": ["https://auth.openai.com/device"],
+                            "login_code": "HTTP-45552",
+                        },
+                    ]
+                )
+                admira_hermes_runtime_patch._request_internal_model_recovery = lambda _action: next(recovery_results, {})
+                direct = admira_hermes_runtime_patch.provider_error_reply("HTTP 401 token_invalidated provider=openai-codex", "es", str)
+                self.assert_true("https://auth.openai.com/device" in direct and "HTTP-45552" in direct and "código temporal para conectar ChatGPT" in direct, "Invalidated Codex OAuth starts a fresh device login and sends its official URL and temporary code directly in Telegram")
+                redacted = admira_hermes_runtime_patch._redact_turn_text(direct)
+                self.assert_true("HTTP-45552" not in redacted and "datos temporales de acceso no se guardaron" in redacted, "Temporary ChatGPT device codes are excluded from durable conversation memory")
         finally:
+            admira_hermes_runtime_patch._request_internal_model_recovery = original_internal_request
             if old_recovery_url is None:
                 os.environ.pop("ADMIRA_DASHBOARD_RECOVERY_URL", None)
             else:
@@ -1308,6 +1344,14 @@ class IntegrationTestSuite:
                 os.environ.pop("ADMIRA_GATEWAY_PROVIDER", None)
             else:
                 os.environ["ADMIRA_GATEWAY_PROVIDER"] = old_gateway_provider
+            if old_internal_url is None:
+                os.environ.pop("ADMIRA_INTERNAL_MODEL_RECOVERY_URL", None)
+            else:
+                os.environ["ADMIRA_INTERNAL_MODEL_RECOVERY_URL"] = old_internal_url
+            if old_internal_token_file is None:
+                os.environ.pop("ADMIRA_INTERNAL_MODEL_RECOVERY_TOKEN_FILE", None)
+            else:
+                os.environ["ADMIRA_INTERNAL_MODEL_RECOVERY_TOKEN_FILE"] = old_internal_token_file
 
     def test_hermes_gateway_runtime_patch_always_attaches_generated_creatives(self):
         """Test generated Codex/Image files are attached even when small models omit MEDIA in the reply."""
@@ -2327,6 +2371,7 @@ class IntegrationTestSuite:
             self.assert_true(str(home) == files["hermes_home"] and ".hermes" not in files["hermes_home"], "Hermes Gateway uses an isolated product HERMES_HOME")
             self.assert_true("TELEGRAM_BOT_TOKEN=123456:fake-token" in env_text and "TELEGRAM_ALLOWED_USERS=12345" in env_text, "Hermes Gateway stores Telegram credentials only in the isolated Hermes env")
             self.assert_true("ADMIRA_DASHBOARD_RECOVERY_URL=http://127.0.0.1:7871/?reconnect_model=1" in env_text and "ADMIRA_DASHBOARD_RECOVERY_KIND=dashboard" in env_text and "ADMIRA_GATEWAY_PROVIDER=openai-codex" in env_text, "Gateway gives local buyers a direct model-reconnect dashboard link and provider context")
+            self.assert_true("ADMIRA_INTERNAL_MODEL_RECOVERY_URL=http://127.0.0.1:7871/api/internal/model-recovery" in env_text and "ADMIRA_INTERNAL_MODEL_RECOVERY_TOKEN_FILE=" in env_text, "Gateway can request a fresh device code through the private loopback-only dashboard bridge")
             self.assert_true("platform_toolsets:" in config_yaml and "telegram:" in config_yaml and "hermes-telegram" in config_yaml, "Hermes Gateway config enables native Telegram toolsets")
             self.assert_true("rich_messages: false" in config_yaml, "Hermes Gateway disables Telegram rich rendering so tables cannot become empty bubbles")
             self.assert_true("gateway_restart_notification: false" in config_yaml, "Hermes Gateway suppresses buyer-facing shutdown notices during planned dashboard restarts")

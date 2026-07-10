@@ -99,6 +99,7 @@ from experiment_scheduler import (
 from graph_executor import execute_upload_payload
 from hermes_bridge import hermes_codex_ready, hermes_codex_session_status, hermes_environment, safe_image_paths
 from hermes_gateway import (
+    ensure_internal_model_recovery_token,
     ensure_daily_brief_cron,
     ensure_daily_social_content_cron,
     ensure_experiment_review_cron,
@@ -10610,6 +10611,38 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return True
         return request_host_is_local(self.headers.get("Host", ""))
 
+    def internal_model_recovery_allowed(self):
+        try:
+            is_loopback = ipaddress.ip_address(str(self.client_address[0])).is_loopback
+        except (ValueError, TypeError, IndexError):
+            is_loopback = False
+        provided = str(self.headers.get("X-Admira-Internal-Recovery") or "")
+        expected = ensure_internal_model_recovery_token()
+        return bool(is_loopback and provided and hmac.compare_digest(provided, expected))
+
+    def post_internal_model_recovery(self, payload):
+        if not self.internal_model_recovery_allowed():
+            self.send_json({"error": "not found"}, 404)
+            return
+        action = str((payload or {}).get("action") or "status").strip().lower()
+        config = load_config()
+        result = connect_agent_model({"hermes_model": getattr(config, "hermes_model", "")}) if action == "start" else agent_model_connect_status({"connection_purpose": "agent"})
+        safe = {
+            key: result.get(key)
+            for key in (
+                "status",
+                "running",
+                "urls",
+                "login_code",
+                "login_codes",
+                "phase",
+                "title",
+                "detail",
+            )
+            if key in result
+        }
+        self.send_ok_result(safe)
+
     def send_redirect(self, url):
         self.send_response(302)
         self.send_security_headers()
@@ -10780,6 +10813,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             parsed = urlparse(self.path)
+            if parsed.path == "/api/internal/model-recovery":
+                self.post_internal_model_recovery(self.read_body(parsed.path))
+                return
             if not self.local_network_request_allowed():
                 self.send_local_network_disabled(parsed)
                 return
@@ -10821,6 +10857,7 @@ def main():
         print("Refusing to start dashboard on a public host.")
         print("Keep DASHBOARD_HOST=127.0.0.1, or set ALLOW_PUBLIC_DASHBOARD=true only behind HTTPS, firewall, and a reverse proxy.")
         return 2
+    ensure_internal_model_recovery_token()
     write_static_snapshot()
     ensure_telegram_listener()
     server = ThreadingHTTPServer((host, port), DashboardHandler)

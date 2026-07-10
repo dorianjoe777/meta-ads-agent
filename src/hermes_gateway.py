@@ -4,6 +4,7 @@ import json
 import os
 import hashlib
 import re
+import secrets
 import shlex
 import shutil
 import signal
@@ -48,6 +49,7 @@ LOGS_DIR = ROOT_DIR / "logs"
 GATEWAY_STATE_FILE = DATA_DIR / "hermes_gateway_state.json"
 TELEGRAM_MODEL_STATE_FILE = DATA_DIR / "telegram_model_state.json"
 TELEGRAM_RECENT_TURNS_FILE = DATA_DIR / "hermes_gateway_recent_turns.json"
+INTERNAL_MODEL_RECOVERY_TOKEN_FILE = DATA_DIR / "internal_model_recovery.token"
 DAILY_BRIEF_PROMPT_FILE = DATA_DIR / "hermes_daily_brief_prompt.md"
 DAILY_SOCIAL_CONTENT_PROMPT_FILE = DATA_DIR / "hermes_daily_social_content_prompt.md"
 POST_INSTALL_ORGANIC_INTRO_PROMPT_FILE = DATA_DIR / "hermes_post_install_organic_intro_prompt.md"
@@ -126,6 +128,32 @@ def _safe_dashboard_url(value):
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
         return ""
     return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path or "/", parsed.query, ""))
+
+
+def ensure_internal_model_recovery_token():
+    """Create the private shared secret used only between dashboard and Gateway."""
+    path = INTERNAL_MODEL_RECOVERY_TOKEN_FILE
+    try:
+        existing = path.read_text(encoding="utf-8").strip() if path.exists() else ""
+    except OSError:
+        existing = ""
+    if len(existing) >= 32:
+        return existing
+    path.parent.mkdir(parents=True, exist_ok=True)
+    token = secrets.token_urlsafe(48)
+    path.write_text(token + "\n", encoding="utf-8")
+    path.chmod(0o600)
+    return token
+
+
+def internal_model_recovery_url(config):
+    try:
+        port = int(getattr(config, "dashboard_port", 0) or os.environ.get("DASHBOARD_PORT") or 7871)
+    except (TypeError, ValueError):
+        port = 7871
+    if port < 1 or port > 65535:
+        port = 7871
+    return f"http://127.0.0.1:{port}/api/internal/model-recovery"
 
 
 def dashboard_recovery_link(config):
@@ -412,7 +440,7 @@ def write_gateway_files(config):
     if env_path.exists():
         for line in env_path.read_text(encoding="utf-8").splitlines():
             key = line.split("=", 1)[0].strip() if "=" in line else ""
-            if key not in {"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS", "TELEGRAM_HOME_CHANNEL", "HERMES_TIMEZONE", "HERMES_MEDIA_ALLOW_DIRS", "ADMIRA_PRODUCT_ROOT", "ADMIRA_TELEGRAM_RECENT_TURNS_FILE", "ADMIRA_DASHBOARD_RECOVERY_URL", "ADMIRA_DASHBOARD_RECOVERY_KIND", "ADMIRA_GATEWAY_PROVIDER"}:
+            if key not in {"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS", "TELEGRAM_HOME_CHANNEL", "HERMES_TIMEZONE", "HERMES_MEDIA_ALLOW_DIRS", "ADMIRA_PRODUCT_ROOT", "ADMIRA_TELEGRAM_RECENT_TURNS_FILE", "ADMIRA_DASHBOARD_RECOVERY_URL", "ADMIRA_DASHBOARD_RECOVERY_KIND", "ADMIRA_GATEWAY_PROVIDER", "ADMIRA_INTERNAL_MODEL_RECOVERY_URL", "ADMIRA_INTERNAL_MODEL_RECOVERY_TOKEN_FILE"}:
                 env_lines.append(line)
     if config.telegram_bot_token:
         env_lines.append(f"TELEGRAM_BOT_TOKEN={_env_value(config.telegram_bot_token)}")
@@ -427,6 +455,8 @@ def write_gateway_files(config):
     env_lines.append(f"ADMIRA_DASHBOARD_RECOVERY_URL={_env_value(recovery_link['url'])}")
     env_lines.append(f"ADMIRA_DASHBOARD_RECOVERY_KIND={_env_value(recovery_link['kind'])}")
     env_lines.append(f"ADMIRA_GATEWAY_PROVIDER={_env_value(_telegram_model_provider_for_brain(hermes_brain_settings(config)))}")
+    env_lines.append(f"ADMIRA_INTERNAL_MODEL_RECOVERY_URL={_env_value(internal_model_recovery_url(config))}")
+    env_lines.append(f"ADMIRA_INTERNAL_MODEL_RECOVERY_TOKEN_FILE={_env_value(str(INTERNAL_MODEL_RECOVERY_TOKEN_FILE))}")
     env_path.write_text("\n".join(env_lines).rstrip() + "\n", encoding="utf-8")
     env_path.chmod(0o600)
 
@@ -689,6 +719,9 @@ def start_gateway(config):
     env["ADMIRA_DASHBOARD_RECOVERY_URL"] = recovery_link["url"]
     env["ADMIRA_DASHBOARD_RECOVERY_KIND"] = recovery_link["kind"]
     env["ADMIRA_GATEWAY_PROVIDER"] = _telegram_model_provider_for_brain(hermes_brain_settings(config))
+    ensure_internal_model_recovery_token()
+    env["ADMIRA_INTERNAL_MODEL_RECOVERY_URL"] = internal_model_recovery_url(config)
+    env["ADMIRA_INTERNAL_MODEL_RECOVERY_TOKEN_FILE"] = str(INTERNAL_MODEL_RECOVERY_TOKEN_FILE)
     write_configured_telegram_model_state(config)
     try:
         with log_path.open("a", encoding="utf-8") as log_file:
