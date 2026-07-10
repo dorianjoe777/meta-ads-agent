@@ -987,7 +987,7 @@ export default async function handler(request, response) {
       const legacyOne = 'licencias-admi' + 'ro-ai.uboost.lat';
       const legacyTwo = 'licencias-mi' + 'ro-ai.uboost.lat';
       return String(value || '')
-        .replaceAll(`${legacyOne}/descargas`, 'admiraia.uboost.lat/access')
+        .replaceAll(legacyOne + '/descargas', 'admiraia.uboost.lat/access')
         .replaceAll(legacyOne, 'admiraia.uboost.lat')
         .replaceAll(legacyTwo, 'admiraia.uboost.lat')
         .replaceAll('licencias-admira-ia.uboost.lat/descargas', 'admiraia.uboost.lat/access')
