@@ -8,7 +8,7 @@ if [[ ! "$APP_VERSION" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
   APP_VERSION="1.0.0"
 fi
 APP_NAME="Admira IA"
-BUNDLE_ID="${MAC_APP_BUNDLE_ID:-lat.uboost.admiro.metaadsagent}"
+BUNDLE_ID="${MAC_APP_BUNDLE_ID:-lat.uboost.admira.metaadsagent}"
 RELEASE_DIR="$ROOT_DIR/release"
 BUILD_DIR="$RELEASE_DIR/dmg-build"
 DMG_STAGE="$BUILD_DIR/dmg-stage"
@@ -74,7 +74,7 @@ if not path.exists():
 
 updates = {
     "BOOTSTRAP_PROVIDER": os.environ.get("META_ADS_BOOTSTRAP_PROVIDER", "license_server"),
-    "LICENSE_SERVER_URL": os.environ.get("META_ADS_LICENSE_SERVER_URL", "https://admiroia.uboost.lat"),
+    "LICENSE_SERVER_URL": os.environ.get("META_ADS_LICENSE_SERVER_URL", "https://admiraia.uboost.lat"),
     "LICENSE_RELEASE_ENDPOINT": os.environ.get("META_ADS_LICENSE_RELEASE_ENDPOINT", "/api/license/release"),
     "RELEASE_CHANNEL": os.environ.get("META_ADS_RELEASE_CHANNEL", "stable"),
     "RELEASE_ASSET_NAME": os.environ.get("META_ADS_RELEASE_ASSET_NAME", "MetaAdsAgent-source.zip"),
@@ -269,7 +269,7 @@ if [ -n "$docker_cmd" ] && ! "$docker_cmd" image inspect meta-ads-agent:local >/
   skip_build="false"
 fi
 
-if ADMIRO_DOCKER_DETACHED=true ADMIRO_DOCKER_SKIP_BUILD="$skip_build" ./scripts/run-docker.sh >> "$LOG_FILE" 2>&1; then
+if ADMIRA_DOCKER_DETACHED=true ADMIRA_DOCKER_SKIP_BUILD="$skip_build" ./scripts/run-docker.sh >> "$LOG_FILE" 2>&1; then
   for _ in $(seq 1 90); do
     if curl -fsS "${DASHBOARD_URL}health" >/dev/null 2>&1 || curl -fsS "$DASHBOARD_URL" >/dev/null 2>&1; then
       open "$DASHBOARD_URL"

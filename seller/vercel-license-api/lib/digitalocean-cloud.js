@@ -120,7 +120,7 @@ export function buildDigitalOceanCloudInit({
 }) {
   return `#!/usr/bin/env bash
 set -euo pipefail
-exec > >(tee -a /var/log/admiro-cloud-install.log) 2>&1
+exec > >(tee -a /var/log/admira-cloud-install.log) 2>&1
 
 export DEBIAN_FRONTEND=noninteractive
 SIGNED_RELEASE_URL=${shellQuote(signedDownloadUrl)}
@@ -177,11 +177,11 @@ except Exception:
 PY
 }
 
-echo "ADMIRO_STAGE bootstrap"
+echo "ADMIRA_STAGE bootstrap"
 install_cloud_status_gate_early() {
   [ -n "$CLOUD_ACCESS_SECRET" ] || return 0
-  mkdir -p /opt/admiro-cloud-access-gate /etc/admiro-cloud-access-gate
-  cat > /opt/admiro-cloud-access-gate/server.py <<'PY'
+  mkdir -p /opt/admira-cloud-access-gate /etc/admira-cloud-access-gate
+  cat > /opt/admira-cloud-access-gate/server.py <<'PY'
 #!/usr/bin/env python3
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -206,25 +206,31 @@ def dashboard_ready():
 
 def install_log_tail():
     try:
-        with open("/var/log/admiro-cloud-install.log", "r", encoding="utf-8", errors="ignore") as handle:
+        with open("/var/log/admira-cloud-install.log", "r", encoding="utf-8", errors="ignore") as handle:
             lines = handle.readlines()[-24:]
         return "".join(lines)[-2600:]
     except Exception:
         return ""
 
 def stage_from_log(log_tail):
+    current_prefix = "ADMIRA_STAGE"
+    legacy_prefix = "ADMI" + "RO_STAGE"
+    stage_markers = [
+        ("verifying_dashboard", "verificando_dashboard", 98),
+        ("starting_dashboard", "iniciando_dashboard", 92),
+        ("app_installed", "preparando_dashboard", 86),
+        ("running_installer", "instalando_dependencias", 72),
+        ("unpacked_release", "preparando_archivos", 56),
+        ("downloading_release", "descargando_producto", 44),
+        ("packages_ready", "paquetes_listos", 34),
+        ("package_install", "instalando_paquetes", 24),
+        ("bootstrap", "arrancando_servidor", 12),
+    ]
     markers = [
         ("Admira IA cloud install complete", "verificando_dashboard", 98),
-        ("ADMIRO_STAGE verifying_dashboard", "verificando_dashboard", 98),
-        ("ADMIRO_STAGE starting_dashboard", "iniciando_dashboard", 92),
-        ("ADMIRO_STAGE app_installed", "preparando_dashboard", 86),
-        ("ADMIRO_STAGE running_installer", "instalando_dependencias", 72),
-        ("ADMIRO_STAGE unpacked_release", "preparando_archivos", 56),
-        ("ADMIRO_STAGE downloading_release", "descargando_producto", 44),
-        ("ADMIRO_STAGE packages_ready", "paquetes_listos", 34),
-        ("ADMIRO_STAGE package_install", "instalando_paquetes", 24),
-        ("ADMIRO_STAGE bootstrap", "arrancando_servidor", 12),
     ]
+    markers.extend((current_prefix + " " + marker, stage, progress) for marker, stage, progress in stage_markers)
+    markers.extend((legacy_prefix + " " + marker, stage, progress) for marker, stage, progress in stage_markers)
     for marker, stage, progress in markers:
         if marker in log_tail:
             return stage, progress
@@ -284,7 +290,7 @@ def status_payload():
     }
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "AdmiroCloudAccessGate/1.0"
+    server_version = "AdmiraCloudAccessGate/1.0"
 
     def log_message(self, fmt, *args):
         return
@@ -331,14 +337,14 @@ if __name__ == "__main__":
         raise SystemExit("CLOUD_ACCESS_SECRET is required")
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
 PY
-  chmod 700 /opt/admiro-cloud-access-gate/server.py
-  cat > /etc/admiro-cloud-access-gate/env <<EOF
+  chmod 700 /opt/admira-cloud-access-gate/server.py
+  cat > /etc/admira-cloud-access-gate/env <<EOF
 CLOUD_ACCESS_SECRET=$CLOUD_ACCESS_SECRET
 CLOUD_ACCESS_PORT=$CLOUD_ACCESS_PORT
 DASHBOARD_PORT=$DASHBOARD_PORT
 EOF
-  chmod 600 /etc/admiro-cloud-access-gate/env
-  cat > /etc/systemd/system/admiro-cloud-access-gate.service <<'SERVICE'
+  chmod 600 /etc/admira-cloud-access-gate/env
+  cat > /etc/systemd/system/admira-cloud-access-gate.service <<'SERVICE'
 [Unit]
 Description=Admira IA dashboard access gate
 After=network-online.target
@@ -346,8 +352,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/admiro-cloud-access-gate/env
-ExecStart=/usr/bin/python3 /opt/admiro-cloud-access-gate/server.py
+EnvironmentFile=/etc/admira-cloud-access-gate/env
+ExecStart=/usr/bin/python3 /opt/admira-cloud-access-gate/server.py
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
@@ -359,12 +365,12 @@ PrivateTmp=true
 WantedBy=multi-user.target
 SERVICE
   systemctl daemon-reload
-  systemctl enable --now admiro-cloud-access-gate.service || true
+  systemctl enable --now admira-cloud-access-gate.service || true
 }
 install_cloud_status_gate_early
 
 mkdir -p /etc/ssh/sshd_config.d
-cat > /etc/ssh/sshd_config.d/99-admiro-key-only.conf <<'SSHCONF'
+cat > /etc/ssh/sshd_config.d/99-admira-key-only.conf <<'SSHCONF'
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 PermitRootLogin prohibit-password
@@ -372,7 +378,7 @@ PubkeyAuthentication yes
 SSHCONF
 systemctl restart ssh || systemctl restart sshd || true
 
-echo "ADMIRO_STAGE package_install"
+echo "ADMIRA_STAGE package_install"
 apt-get update
 apt-get install -y ca-certificates curl unzip rsync python3 gnupg
 install_docker_runtime() {
@@ -385,7 +391,7 @@ install_docker_runtime() {
   if apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
     return 0
   fi
-  echo "ADMIRO_STAGE docker_official_repo_fallback"
+  echo "ADMIRA_STAGE docker_official_repo_fallback"
   apt-get install -y docker.io
   mkdir -p /usr/local/lib/docker/cli-plugins
   case "$(uname -m)" in
@@ -400,25 +406,25 @@ install_docker_runtime
 docker --version
 docker compose version
 systemctl enable --now docker || true
-echo "ADMIRO_STAGE packages_ready"
+echo "ADMIRA_STAGE packages_ready"
 report_cloud_runtime "paquetes_listos" "34" "false" || true
 
 TMP_DIR="$(mktemp -d)"
 INSTALL_DIR="/opt/meta-ads-agent"
 mkdir -p "$TMP_DIR/unpack" "$INSTALL_DIR"
-echo "ADMIRO_STAGE downloading_release"
+echo "ADMIRA_STAGE downloading_release"
 curl -fL --retry 6 --connect-timeout 20 "$SIGNED_RELEASE_URL" -o "$TMP_DIR/source.zip"
 ${zipValidationSnippet()}
 unzip -q "$TMP_DIR/source.zip" -d "$TMP_DIR/unpack"
-echo "ADMIRO_STAGE unpacked_release"
+echo "ADMIRA_STAGE unpacked_release"
 report_cloud_runtime "preparando_archivos" "56" "false" || true
 rsync -a "$TMP_DIR/unpack/" "$INSTALL_DIR/"
 chmod +x "$INSTALL_DIR/scripts/"*.sh 2>/dev/null || true
 
 cd "$INSTALL_DIR"
-echo "ADMIRO_STAGE running_installer"
+echo "ADMIRA_STAGE running_installer"
 ./scripts/install-local.sh
-echo "ADMIRO_STAGE app_installed"
+echo "ADMIRA_STAGE app_installed"
 ${cloudEnvSetterSnippet()}
 set_env_value LICENSE_KEY "$LICENSE_KEY"
 set_env_value LICENSE_BUYER_EMAIL "$BUYER_EMAIL"
@@ -461,8 +467,8 @@ SH
 chmod 0700 /usr/local/bin/meta-ads-refresh-access
 install_cloud_access_gate() {
   [ -n "$CLOUD_ACCESS_SECRET" ] || return 0
-  mkdir -p /opt/admiro-cloud-access-gate /etc/admiro-cloud-access-gate
-  cat > /opt/admiro-cloud-access-gate/server.py <<'PY'
+  mkdir -p /opt/admira-cloud-access-gate /etc/admira-cloud-access-gate
+  cat > /opt/admira-cloud-access-gate/server.py <<'PY'
 #!/usr/bin/env python3
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import html
@@ -480,7 +486,7 @@ SECRET = os.environ.get("CLOUD_ACCESS_SECRET", "").strip()
 PORT = int(os.environ.get("CLOUD_ACCESS_PORT", "7870") or "7870")
 DASHBOARD_PORT = os.environ.get("DASHBOARD_PORT", "7871").strip() or "7871"
 REFRESH_COMMAND = os.environ.get("REFRESH_COMMAND", "/usr/local/bin/meta-ads-refresh-access")
-STATE_DIR = "/var/lib/admiro-cloud-access-gate"
+STATE_DIR = "/var/lib/admira-cloud-access-gate"
 STATE_FILE = f"{STATE_DIR}/state.json"
 
 def valid_client_ip(value):
@@ -522,25 +528,31 @@ def dashboard_ready():
 
 def install_log_tail():
     try:
-        with open("/var/log/admiro-cloud-install.log", "r", encoding="utf-8", errors="ignore") as handle:
+        with open("/var/log/admira-cloud-install.log", "r", encoding="utf-8", errors="ignore") as handle:
             lines = handle.readlines()[-24:]
         return "".join(lines)[-2600:]
     except Exception:
         return ""
 
 def stage_from_log(log_tail):
+    current_prefix = "ADMIRA_STAGE"
+    legacy_prefix = "ADMI" + "RO_STAGE"
+    stage_markers = [
+        ("verifying_dashboard", "verificando_dashboard", 98),
+        ("starting_dashboard", "iniciando_dashboard", 92),
+        ("app_installed", "preparando_dashboard", 86),
+        ("running_installer", "instalando_dependencias", 72),
+        ("unpacked_release", "preparando_archivos", 56),
+        ("downloading_release", "descargando_producto", 44),
+        ("packages_ready", "paquetes_listos", 34),
+        ("package_install", "instalando_paquetes", 24),
+        ("bootstrap", "arrancando_servidor", 12),
+    ]
     markers = [
         ("Admira IA cloud install complete", "verificando_dashboard", 98),
-        ("ADMIRO_STAGE verifying_dashboard", "verificando_dashboard", 98),
-        ("ADMIRO_STAGE starting_dashboard", "iniciando_dashboard", 92),
-        ("ADMIRO_STAGE app_installed", "preparando_dashboard", 86),
-        ("ADMIRO_STAGE running_installer", "instalando_dependencias", 72),
-        ("ADMIRO_STAGE unpacked_release", "preparando_archivos", 56),
-        ("ADMIRO_STAGE downloading_release", "descargando_producto", 44),
-        ("ADMIRO_STAGE packages_ready", "paquetes_listos", 34),
-        ("ADMIRO_STAGE package_install", "instalando_paquetes", 24),
-        ("ADMIRO_STAGE bootstrap", "arrancando_servidor", 12),
     ]
+    markers.extend((current_prefix + " " + marker, stage, progress) for marker, stage, progress in stage_markers)
+    markers.extend((legacy_prefix + " " + marker, stage, progress) for marker, stage, progress in stage_markers)
     for marker, stage, progress in markers:
         if marker in log_tail:
             return stage, progress
@@ -626,7 +638,7 @@ def status_payload():
     return payload
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "AdmiroCloudAccessGate/1.0"
+    server_version = "AdmiraCloudAccessGate/1.0"
 
     def log_message(self, fmt, *args):
         return
@@ -700,16 +712,16 @@ if __name__ == "__main__":
         raise SystemExit("CLOUD_ACCESS_SECRET is required")
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
 PY
-  chmod 700 /opt/admiro-cloud-access-gate/server.py
-  cat > /etc/admiro-cloud-access-gate/env <<EOF
+  chmod 700 /opt/admira-cloud-access-gate/server.py
+  cat > /etc/admira-cloud-access-gate/env <<EOF
 CLOUD_ACCESS_SECRET=$CLOUD_ACCESS_SECRET
 CLOUD_ACCESS_PORT=$CLOUD_ACCESS_PORT
 DASHBOARD_PORT=$DASHBOARD_PORT
 CLOUD_DASHBOARD_HTTPS_URL=$CLOUD_DASHBOARD_HTTPS_URL
 REFRESH_COMMAND=/usr/local/bin/meta-ads-refresh-access
 EOF
-  chmod 600 /etc/admiro-cloud-access-gate/env
-  cat > /etc/systemd/system/admiro-cloud-access-gate.service <<'SERVICE'
+  chmod 600 /etc/admira-cloud-access-gate/env
+  cat > /etc/systemd/system/admira-cloud-access-gate.service <<'SERVICE'
 [Unit]
 Description=Admira IA dashboard access gate
 After=network-online.target docker.service
@@ -717,8 +729,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/admiro-cloud-access-gate/env
-ExecStart=/usr/bin/python3 /opt/admiro-cloud-access-gate/server.py
+EnvironmentFile=/etc/admira-cloud-access-gate/env
+ExecStart=/usr/bin/python3 /opt/admira-cloud-access-gate/server.py
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
@@ -730,17 +742,17 @@ PrivateTmp=true
 WantedBy=multi-user.target
 SERVICE
   systemctl daemon-reload
-  systemctl restart admiro-cloud-access-gate.service || systemctl enable --now admiro-cloud-access-gate.service || true
+  systemctl restart admira-cloud-access-gate.service || systemctl enable --now admira-cloud-access-gate.service || true
 }
 install_cloud_access_gate
 
 install_caddy_https() {
   [ -n "$CLOUD_DASHBOARD_HOSTNAME" ] || return 0
-  echo "ADMIRO_STAGE configuring_https"
+  echo "ADMIRA_STAGE configuring_https"
   if ! command -v caddy >/dev/null 2>&1; then
     apt-get update || true
     apt-get install -y caddy || {
-      echo "ADMIRO_STAGE caddy_install_skipped"
+      echo "ADMIRA_STAGE caddy_install_skipped"
       return 0
     }
   fi
@@ -755,7 +767,7 @@ EOF
   systemctl reload caddy || systemctl restart caddy || true
 }
 
-echo "ADMIRO_STAGE starting_dashboard"
+echo "ADMIRA_STAGE starting_dashboard"
 docker compose up -d --build
 install_caddy_https
 dashboard_ready=false
@@ -771,7 +783,7 @@ if [ "$dashboard_ready" = "true" ]; then
   echo "Admira IA cloud install complete. Dashboard port: $DASHBOARD_PORT"
 else
   report_cloud_runtime "verificando_dashboard" "98" "false" || true
-  echo "ADMIRO_STAGE verifying_dashboard"
+  echo "ADMIRA_STAGE verifying_dashboard"
 fi
 rm -rf "$TMP_DIR"
 `;

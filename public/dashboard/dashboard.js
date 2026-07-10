@@ -1393,7 +1393,7 @@ function directPublishingGuide(onboarding=false){
   ? `<label class="wide">${lang==='es'?'Clave de la app Live de publicaciones':'Live publishing app key'}<span class="field-help">${lang==='es'?'Debe tener pages_manage_posts y pages_read_engagement. Se guarda solo en este equipo/VPS.':'Needs pages_manage_posts and pages_read_engagement. Stored only on this PC/VPS.'}</span><input type="password" name="token" value="" placeholder="${escapeHtml(s.placeholder)}" autocomplete="off"></label>`
   : `<div class="field wide"><label>${lang==='es'?'Clave de la app Live de publicaciones':'Live publishing app key'}</label><span class="field-help">${lang==='es'?'Debe tener pages_manage_posts y pages_read_engagement. Se guarda solo en este equipo/VPS.':'Needs pages_manage_posts and pages_read_engagement. Stored only on this PC/VPS.'}</span><input type="password" name="token" value="" placeholder="${escapeHtml(s.placeholder)}" autocomplete="off"></div>`;
  const actions=`<div class="${onboarding?'wide onboarding-step-actions':'field wide'}"><div class="mode-actions"><button class="btn primary" type="submit">${s.tokenSet?(lang==='es'?'Cambiar clave':'Replace key'):(lang==='es'?'Guardar publicación directa':'Save direct publishing')}</button><button class="btn" type="button" data-action-code="testPublishingConnection()">${lang==='es'?'Revisar conexión':'Check connection'}</button>${s.tokenSet?`<button class="btn danger" type="button" data-action-code="disconnectPublishingConfig()">${lang==='es'?'Desconectar':'Disconnect'}</button>`:''}</div></div>`;
- const markup=`<div class="setup-guide direct-publishing-guide"><section class="guide-hero"><div class="guide-main"><span class="guide-eyebrow">${lang==='es'?'Publicación directa':'Direct publishing'}</span><h3>${headline}</h3><p>${escapeHtml(installerNote)}</p><div class="guide-actions"><a class="btn" href="${appsUrl}" target="_blank" rel="noopener noreferrer">${lang==='es'?'Abrir Apps':'Open Apps'}</a><a class="btn" href="${usersUrl}" target="_blank" rel="noopener noreferrer">${lang==='es'?'Abrir System Users':'Open System Users'}</a><a class="btn" href="https://admiroia.uboost.lat/privacy" target="_blank" rel="noopener noreferrer">${lang==='es'?'URL de privacidad':'Privacy URL'}</a></div></div><aside class="guide-checklist"><b>${lang==='es'?'Qué habilita':'What it enables'}</b><ol><li>${lang==='es'?'Posts diarios listos para aprobar.':'Daily posts ready for approval.'}</li><li>${lang==='es'?'Creativos de anuncio usando posts nativos.':'Ad creatives using native posts.'}</li><li>${lang==='es'?'Menos fricción cuando Meta rechaza creativos de una app en desarrollo.':'Less friction when Meta rejects creatives from a development app.'}</li></ol></aside></section><div class="direct-publishing-shots">${shotCards}</div><div class="guide-panel"><b>${lang==='es'?'Sobre la segunda clave':'About the second key'}</b><p>${escapeHtml(keyNote)}</p></div><form class="${formClass}" data-submit-code="savePublishingConfig(event)">${tokenField}${actions}</form></div>`;
+ const markup=`<div class="setup-guide direct-publishing-guide"><section class="guide-hero"><div class="guide-main"><span class="guide-eyebrow">${lang==='es'?'Publicación directa':'Direct publishing'}</span><h3>${headline}</h3><p>${escapeHtml(installerNote)}</p><div class="guide-actions"><a class="btn" href="${appsUrl}" target="_blank" rel="noopener noreferrer">${lang==='es'?'Abrir Apps':'Open Apps'}</a><a class="btn" href="${usersUrl}" target="_blank" rel="noopener noreferrer">${lang==='es'?'Abrir System Users':'Open System Users'}</a><a class="btn" href="https://admiraia.uboost.lat/privacy" target="_blank" rel="noopener noreferrer">${lang==='es'?'URL de privacidad':'Privacy URL'}</a></div></div><aside class="guide-checklist"><b>${lang==='es'?'Qué habilita':'What it enables'}</b><ol><li>${lang==='es'?'Posts diarios listos para aprobar.':'Daily posts ready for approval.'}</li><li>${lang==='es'?'Creativos de anuncio usando posts nativos.':'Ad creatives using native posts.'}</li><li>${lang==='es'?'Menos fricción cuando Meta rechaza creativos de una app en desarrollo.':'Less friction when Meta rejects creatives from a development app.'}</li></ol></aside></section><div class="direct-publishing-shots">${shotCards}</div><div class="guide-panel"><b>${lang==='es'?'Sobre la segunda clave':'About the second key'}</b><p>${escapeHtml(keyNote)}</p></div><form class="${formClass}" data-submit-code="savePublishingConfig(event)">${tokenField}${actions}</form></div>`;
  return onboarding?`<details class="fallback-details direct-publishing-onboarding"><summary>${summary}</summary>${markup}</details>`:markup;
 }
 function firstActionableOnboardingIndex(steps){
@@ -1660,7 +1660,7 @@ function renderPublishingPanel(){
  const box=qs('#publishing-panel');if(!box)return;
  const s=directPublishingState();
  box.innerHTML=`<div class="next-step meta-connection-card"><div><b>${s.title}</b><p>${s.body}</p>${s.savedAt?`<p class="notice">${lang==='es'?'Guardada':'Saved'}: ${escapeHtml(s.savedAt)}</p>`:''}</div><span class="badge ${s.ready?'ok':(s.tokenSet?'warn':'')}">${s.badge}</span></div>
- <div class="trust-grid license-limits-grid"><div class="trust-card"><b>${lang==='es'?'Página':'Page'}</b><p>${escapeHtml(s.page||'-')}</p></div><div class="trust-card"><b>${lang==='es'?'Uso':'Use'}</b><p>${lang==='es'?'Posts diarios, anuncios con post nativo y aprobación simple.':'Daily posts, native-post ads, and simple approval.'}</p></div><div class="trust-card"><b>${lang==='es'?'Privacidad':'Privacy'}</b><p><a href="https://admiroia.uboost.lat/privacy" target="_blank" rel="noopener noreferrer">admiroia.uboost.lat/privacy</a></p></div></div>${directPublishingGuide(false)}`;
+ <div class="trust-grid license-limits-grid"><div class="trust-card"><b>${lang==='es'?'Página':'Page'}</b><p>${escapeHtml(s.page||'-')}</p></div><div class="trust-card"><b>${lang==='es'?'Uso':'Use'}</b><p>${lang==='es'?'Posts diarios, anuncios con post nativo y aprobación simple.':'Daily posts, native-post ads, and simple approval.'}</p></div><div class="trust-card"><b>${lang==='es'?'Privacidad':'Privacy'}</b><p><a href="https://admiraia.uboost.lat/privacy" target="_blank" rel="noopener noreferrer">admiraia.uboost.lat/privacy</a></p></div></div>${directPublishingGuide(false)}`;
 }
 function chatGptConnectMarkup(onboarding=false){
  const runtime=setupItem('hermes_runtime');
@@ -1864,7 +1864,7 @@ function updateChatGptAuthWindow(title,body,kind='waiting'){
 function prepareChatGptAuthWindow(){
  try{
   chatGptAuthOpenedUrl='';
-  chatGptAuthWindow=window.open('about:blank','admiro_chatgpt_login');
+  chatGptAuthWindow=window.open('about:blank','admira_chatgpt_login');
   if(!chatGptAuthWindow)return false;
   updateChatGptAuthWindow(
    lang==='es'?'Preparando login':'Preparing login',
@@ -1897,7 +1897,7 @@ function maybeOpenChatGptAuthUrl(url){
 function reopenChatGptAuthUrl(){
  const raw=String(chatGptAuthOpenedUrl||'').trim();
  if(!raw)return false;
- window.open(raw,'admiro_chatgpt_login');
+ window.open(raw,'admira_chatgpt_login');
  return true;
 }
 function scheduleChatGptConnectPoll(result){

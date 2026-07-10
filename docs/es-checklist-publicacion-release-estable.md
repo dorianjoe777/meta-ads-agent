@@ -1,6 +1,6 @@
 # Checklist de publicacion estable
 
-Esta checklist existe para futuras sesiones de Codex. No basta con decir "ya esta en GitHub" si el comprador instala desde `https://admiroia.uboost.lat/access` o desde DigitalOcean. El comprador no descarga la rama directamente: descarga el asset estable registrado en el servidor de licencias.
+Esta checklist existe para futuras sesiones de Codex. No basta con decir "ya esta en GitHub" si el comprador instala desde `https://admiraia.uboost.lat/access` o desde DigitalOcean. El comprador no descarga la rama directamente: descarga el asset estable registrado en el servidor de licencias.
 
 ## Regla principal
 
@@ -98,7 +98,7 @@ Debe quedar sin cambios pendientes y con `origin/<branch>` en el mismo commit.
 Usar el canal estable actual salvo que se decida publicar una version completa nueva con todos los instaladores.
 
 ```bash
-META_ADS_LICENSE_SERVER_URL=https://admiroia.uboost.lat \
+META_ADS_LICENSE_SERVER_URL=https://admiraia.uboost.lat \
 META_ADS_GITHUB_REPO=dorianjoe777/meta-ads-agent \
 ./scripts/package-release.sh "$(cat VERSION)"
 ```
@@ -181,22 +181,22 @@ La salida debe mostrar el asset ID nuevo.
 Como minimo, descargar el asset publicado desde GitHub y revisar contenido:
 
 ```bash
-rm -rf /tmp/admiro-release-test
-mkdir -p /tmp/admiro-release-test
+rm -rf /tmp/admira-release-test
+mkdir -p /tmp/admira-release-test
 gh release download "$(cat VERSION)" \
   --repo dorianjoe777/meta-ads-agent \
   --pattern MetaAdsAgent-source.zip \
-  --dir /tmp/admiro-release-test \
+  --dir /tmp/admira-release-test \
   --clobber
 
-unzip -p /tmp/admiro-release-test/MetaAdsAgent-source.zip dashboard/monitoring-dashboard.py \
+unzip -p /tmp/admira-release-test/MetaAdsAgent-source.zip dashboard/monitoring-dashboard.py \
   | rg -n "CAMBIO_ESPERADO|TEXTO_QUE_NO_DEBE_APARECER"
 ```
 
 Si hay una licencia cloud real disponible, tambien probar:
 
 ```bash
-POST https://admiroia.uboost.lat/api/license/release
+POST https://admiraia.uboost.lat/api/license/release
 ```
 
 con `license_key`, `buyer_email`, `device_id`, `channel=stable` y `asset_name=MetaAdsAgent-source.zip`. No imprimir la licencia ni la URL firmada completa en logs.

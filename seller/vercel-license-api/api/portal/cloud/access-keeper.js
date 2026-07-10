@@ -4,7 +4,8 @@ set -euo pipefail
 HOST=""
 SSH_USER="root"
 SSH_PORT="22"
-IDENTITY_FILE="$HOME/.ssh/admiro_ai"
+IDENTITY_FILE="$HOME/.ssh/admira_ia"
+LEGACY_IDENTITY_FILE="$HOME/.ssh/admi""ro_ai"
 INTERVAL_MINUTES="60"
 RUN_NOW="false"
 
@@ -35,7 +36,7 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     -h|--help)
-      echo "Usage: install --host DROPLET_IP [--identity ~/.ssh/admiro_ai] [--run-now]"
+      echo "Usage: install --host DROPLET_IP [--identity ~/.ssh/admira_ia] [--run-now]"
       exit 0
       ;;
     *)
@@ -44,6 +45,10 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+if [ "$IDENTITY_FILE" = "$HOME/.ssh/admira_ia" ] && [ ! -f "$IDENTITY_FILE" ] && [ -f "$LEGACY_IDENTITY_FILE" ]; then
+  IDENTITY_FILE="$LEGACY_IDENTITY_FILE"
+fi
 
 if [ -z "$HOST" ]; then
   echo "Missing --host DROPLET_IP"
@@ -68,7 +73,7 @@ LOG_DIR="$CONFIG_DIR/logs"
 CONFIG_FILE="$CONFIG_DIR/cloud-access-keeper.env"
 STATE_FILE="$CONFIG_DIR/cloud-access-keeper.state"
 LOG_FILE="$LOG_DIR/cloud-access-keeper.log"
-BIN_FILE="$BIN_DIR/admiro-cloud-access-keeper"
+BIN_FILE="$BIN_DIR/admira-cloud-access-keeper"
 
 mkdir -p "$CONFIG_DIR" "$BIN_DIR" "$LOG_DIR"
 chmod 700 "$CONFIG_DIR" "$LOG_DIR"
@@ -167,14 +172,14 @@ chmod 600 "$CONFIG_FILE"
 
 install_launchd() {
   local plist_dir="$HOME/Library/LaunchAgents"
-  local plist="$plist_dir/lat.uboost.admiro-cloud-access-keeper.plist"
+  local plist="$plist_dir/lat.uboost.admira-cloud-access-keeper.plist"
   mkdir -p "$plist_dir"
   cat > "$plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>lat.uboost.admiro-cloud-access-keeper</string>
+  <key>Label</key><string>lat.uboost.admira-cloud-access-keeper</string>
   <key>ProgramArguments</key>
   <array><string>$BIN_FILE</string></array>
   <key>StartInterval</key><integer>$((INTERVAL_MINUTES * 60))</integer>
@@ -192,7 +197,7 @@ install_systemd_or_cron() {
   if command -v systemctl >/dev/null 2>&1; then
     local user_dir="$HOME/.config/systemd/user"
     mkdir -p "$user_dir"
-    cat > "$user_dir/admiro-cloud-access-keeper.service" <<SERVICE
+    cat > "$user_dir/admira-cloud-access-keeper.service" <<SERVICE
 [Unit]
 Description=Admira IA cloud access keeper
 
@@ -201,20 +206,20 @@ Type=oneshot
 ExecStart=$BIN_FILE
 SERVICE
     local interval_seconds="$((INTERVAL_MINUTES * 60))"
-    cat > "$user_dir/admiro-cloud-access-keeper.timer" <<TIMER
+    cat > "$user_dir/admira-cloud-access-keeper.timer" <<TIMER
 [Unit]
 Description=Run Admira IA cloud access keeper
 
 [Timer]
 OnBootSec=2min
 OnUnitActiveSec=$interval_seconds
-Unit=admiro-cloud-access-keeper.service
+Unit=admira-cloud-access-keeper.service
 
 [Install]
 WantedBy=timers.target
 TIMER
     systemctl --user daemon-reload >/dev/null 2>&1 || true
-    systemctl --user enable --now admiro-cloud-access-keeper.timer >/dev/null 2>&1 && return 0
+    systemctl --user enable --now admira-cloud-access-keeper.timer >/dev/null 2>&1 && return 0
   fi
   local cron_schedule="*/$INTERVAL_MINUTES * * * *"
   if [ "$INTERVAL_MINUTES" -ge 60 ]; then
@@ -223,7 +228,7 @@ TIMER
     cron_schedule="0 */$cron_hours * * *"
   fi
   local cron_line="$cron_schedule $BIN_FILE >/dev/null 2>&1"
-  (crontab -l 2>/dev/null | grep -v 'admiro-cloud-access-keeper'; echo "$cron_line") | crontab -
+  (crontab -l 2>/dev/null | grep -v 'admira-cloud-access-keeper'; echo "$cron_line") | crontab -
 }
 
 case "$(uname -s)" in

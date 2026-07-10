@@ -41,7 +41,7 @@ function githubAssetHeaders(source) {
   return {
     "Accept": "application/octet-stream",
     "Authorization": `Bearer ${token}`,
-    "User-Agent": "miro-ai-license-api",
+    "User-Agent": "admira-ia-license-api",
     "X-GitHub-Api-Version": "2022-11-28"
   };
 }

@@ -13,7 +13,7 @@ Este producto ya valida licencia desde el dashboard del comprador. Para vender r
 ## Crear una licencia
 
 ```bash
-curl -X POST "https://admiroia.uboost.lat/api/admin/licenses" \
+curl -X POST "https://admiraia.uboost.lat/api/admin/licenses" \
   -H "Authorization: Bearer TU_CLAVE_ADMIN_PRIVADA" \
   -H "Content-Type: application/json" \
   -d '{"buyer_email":"comprador@email.com","buyer_name":"Nombre del comprador","plan":"individual"}'
@@ -22,7 +22,7 @@ curl -X POST "https://admiroia.uboost.lat/api/admin/licenses" \
 Para licencia Agencia, que permite hasta 4 dispositivos y espacios separados para varios clientes:
 
 ```bash
-curl -X POST "https://admiroia.uboost.lat/api/admin/licenses" \
+curl -X POST "https://admiraia.uboost.lat/api/admin/licenses" \
   -H "Authorization: Bearer TU_CLAVE_ADMIN_PRIVADA" \
   -H "Content-Type: application/json" \
   -d '{"buyer_email":"agencia@email.com","buyer_name":"Nombre Agencia","plan":"agency"}'
@@ -35,7 +35,7 @@ El servidor mantiene un archivo privado por licencia para que una licencia nueva
 En el `.env` de release debes definir:
 
 ```text
-LICENSE_SERVER_URL=https://admiroia.uboost.lat
+LICENSE_SERVER_URL=https://admiraia.uboost.lat
 LICENSE_PUBLIC_KEY=clave-publica-incluida-en-el-release
 LICENSE_REQUIRED_FOR_LIVE=true
 ```
@@ -43,13 +43,13 @@ LICENSE_REQUIRED_FOR_LIVE=true
 El dashboard llamará:
 
 ```text
-POST https://admiroia.uboost.lat/api/license/activate
+POST https://admiraia.uboost.lat/api/license/activate
 ```
 
 Y los instaladores del comprador llamarán:
 
 ```text
-POST https://admiroia.uboost.lat/api/license/release
+POST https://admiraia.uboost.lat/api/license/release
 ```
 
 ## API ya desplegada en Vercel
@@ -69,7 +69,7 @@ BLOB_READ_WRITE_TOKEN=agregado-por-vercel-blob
 Endpoint publicado:
 
 ```text
-https://admiroia.uboost.lat
+https://admiraia.uboost.lat
 ```
 
 ## Publicar una release protegida
@@ -85,7 +85,7 @@ Luego subes `MetaAdsAgent-source.zip` a tu storage privado o a tu dominio.
 Despues registras esa version en el servidor:
 
 ```bash
-curl -X POST "https://admiroia.uboost.lat/api/admin/releases" \
+curl -X POST "https://admiraia.uboost.lat/api/admin/releases" \
   -H "Authorization: Bearer TU_CLAVE_ADMIN_PRIVADA" \
   -H "Content-Type: application/json" \
   -d '{
@@ -115,7 +115,7 @@ Esas `improvements` son las tarjetas que el comprador ve antes de confirmar la a
 Consulta administrativa:
 
 ```bash
-curl "https://admiroia.uboost.lat/api/admin/releases" \
+curl "https://admiraia.uboost.lat/api/admin/releases" \
   -H "Authorization: Bearer TU_CLAVE_ADMIN_PRIVADA"
 ```
 
@@ -149,7 +149,7 @@ curl "https://admiroia.uboost.lat/api/admin/releases" \
 Pega esta URL en Hotmart como `URL para envio de datos`:
 
 ```text
-https://admiroia.uboost.lat/api/webhooks/hotmart
+https://admiraia.uboost.lat/api/webhooks/hotmart
 ```
 
 Configura en Vercel:
@@ -157,8 +157,8 @@ Configura en Vercel:
 - `HOTMART_HOTTOK`: el token que Hotmart manda en el header `X-HOTMART-HOTTOK`.
 - `BUYER_EMAIL_PROVIDER=resend`: envia el correo de acceso con Resend.
 - `RESEND_API_KEY`: API key de Resend.
-- `BUYER_EMAIL_FROM`: remitente con dominio/sender verificado en Resend, por ejemplo `Admira IA <licenses@admiroia.uboost.lat>`.
-- `BUYER_ACCESS_URL=https://admiroia.uboost.lat/access`.
+- `BUYER_EMAIL_FROM`: remitente con dominio/sender verificado en Resend, por ejemplo `Admira IA <licenses@admiraia.uboost.lat>`.
+- `BUYER_ACCESS_URL=https://admiraia.uboost.lat/access`.
 
 Cuando Hotmart confirma una compra con `PURCHASE_APPROVED` / `APPROVED`:
 

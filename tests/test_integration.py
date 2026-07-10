@@ -5577,7 +5577,7 @@ class IntegrationTestSuite:
         self.assert_true(agent_chat.reply_uses_unverified_performance("Empezaria con Retargeting - Warm Leads porque ROAS 8.0, CTR 4.79% y CPA 4.", sample), "Demo performance claims are blocked even if Hermes remembers them")
         test_dir = Path(tempfile.mkdtemp(prefix="demo_metrics_blocked_"))
         original_metrics_file = dashboard.METRICS_FILE
-        original_demo_env = os.environ.pop("ADMIRO_ALLOW_DEMO_METRICS", None)
+        original_demo_env = os.environ.pop("ADMIRA_ALLOW_DEMO_METRICS", None)
         try:
             dashboard.METRICS_FILE = test_dir / "metrics.json"
             missing = dashboard.load_metrics()
@@ -5585,15 +5585,15 @@ class IntegrationTestSuite:
             dashboard.write_json(dashboard.METRICS_FILE, legacy)
             blocked = dashboard.load_metrics()
             self.assert_true(blocked["source"] == "missing" and blocked["campaigns"] == [], "Legacy demo caches are hidden in buyer mode")
-            os.environ["ADMIRO_ALLOW_DEMO_METRICS"] = "true"
+            os.environ["ADMIRA_ALLOW_DEMO_METRICS"] = "true"
             allowed = dashboard.load_metrics()
             self.assert_true(allowed["source"] == "demo" and allowed["campaigns"], "Explicit internal demo mode can still show sample campaigns")
         finally:
             dashboard.METRICS_FILE = original_metrics_file
             if original_demo_env is None:
-                os.environ.pop("ADMIRO_ALLOW_DEMO_METRICS", None)
+                os.environ.pop("ADMIRA_ALLOW_DEMO_METRICS", None)
             else:
-                os.environ["ADMIRO_ALLOW_DEMO_METRICS"] = original_demo_env
+                os.environ["ADMIRA_ALLOW_DEMO_METRICS"] = original_demo_env
             shutil.rmtree(test_dir, ignore_errors=True)
 
     def test_explicit_approval_executes_only_with_valid_license_and_retries_failures(self):
@@ -9149,7 +9149,7 @@ class IntegrationTestSuite:
         self.assert_true("HERMES_DISABLED_TOOLSETS=terminal,code_execution,image_gen" in dockerfile and "HERMES_DISABLED_TOOLSETS: terminal,code_execution,image_gen" in compose and "HERMES_ENABLED_TOOLSETS=memory,skills,session_search,vision,file" in dockerfile, "Docker disables Hermes internal image generation so Codex/Image owns final creatives")
         self.assert_true("seller/" in dockerignore, "Docker build context excludes seller secrets")
         self.assert_true("forced = {" in docker_entrypoint and "\"DASHBOARD_HOST\": \"0.0.0.0\"" in docker_entrypoint, "Docker entrypoint forces reachable dashboard bind values")
-        self.assert_true("LAN_ACCESS_ENABLED" in env_example and "LAN_ACCESS_ENABLED" in docker_entrypoint and "ADMIRO_HOST_LAN_IP" in compose, "Phone LAN access is off by default and Docker receives the host LAN IP when available")
+        self.assert_true("LAN_ACCESS_ENABLED" in env_example and "LAN_ACCESS_ENABLED" in docker_entrypoint and "ADMIRA_HOST_LAN_IP" in compose, "Phone LAN access is off by default and Docker receives the host LAN IP when available")
         self.assert_true("meta_ads_config" in compose and "meta_ads_brand_guides" in compose, "Docker Compose persists config and brand guides")
         self.assert_true("HERMES_HOME: /app/runtime/hermes" in compose and "mkdir -p /app/runtime/hermes" in docker_entrypoint and '"HERMES_HOME": "/app/runtime/hermes"' in docker_entrypoint and "replaced_blank" in docker_entrypoint, "Docker installs persist Hermes ChatGPT/Codex auth across rebuilds")
         self.assert_true("HERMES_STATUS_TIMEOUT_SECONDS=20" in env_example and "HERMES_RESPONSE_TIMEOUT_SECONDS=300" in env_example and '"HERMES_RESPONSE_TIMEOUT_SECONDS": "300"' in docker_entrypoint, "Hermes real replies get a longer timeout than quick status checks")
@@ -9160,12 +9160,12 @@ class IntegrationTestSuite:
         self.assert_true("pkgbuild" in mac_pkg_builder and "productbuild" in mac_pkg_builder, "Mac PKG builder uses native package tools")
         self.assert_true("MAC_PKG_SIGN_IDENTITY" in mac_pkg_builder and "notarytool submit" in mac_pkg_builder and "stapler staple" in mac_pkg_builder, "Mac PKG builder supports Developer ID signing and notarization")
         self.assert_true("hdiutil create" in mac_dmg_builder and ".app" in mac_dmg_builder and "MAC_APP_SIGN_IDENTITY" in mac_dmg_builder, "Mac DMG builder creates a signed app launcher experience")
-        self.assert_true("ADMIRO_DOCKER_DETACHED=true" in mac_dmg_builder and "$HOME/Applications/Admira IA" in mac_dmg_builder and "mac-docker-launcher.log" in mac_dmg_builder, "Mac DMG launcher runs Docker directly without asking the buyer to open the command file")
+        self.assert_true("ADMIRA_DOCKER_DETACHED=true" in mac_dmg_builder and "$HOME/Applications/Admira IA" in mac_dmg_builder and "mac-docker-launcher.log" in mac_dmg_builder, "Mac DMG launcher runs Docker directly without asking the buyer to open the command file")
         self.assert_true('DASHBOARD_URL="http://127.0.0.1:7871/"' in mac_dmg_builder and 'open "$DASHBOARD_URL"' in mac_dmg_builder, "Mac DMG launcher opens the dashboard after Docker starts")
         self.assert_true("ensure_docker_ready" in mac_dmg_builder and "Docker Desktop" in mac_dmg_builder and "https://www.docker.com/products/docker-desktop/" in mac_dmg_builder, "Mac DMG launcher checks Docker before running the technical install command")
         self.assert_true("No arrastres nada a Aplicaciones" in mac_dmg_builder and ".background/background.png" in mac_dmg_builder and "set background picture" in mac_dmg_builder, "Mac DMG gives one-click visual instructions instead of an Applications drag workflow")
         self.assert_true("Privacidad y seguridad" in mac_dmg_builder and "Abrir de todos modos" in mac_dmg_builder and "aun no esta firmada por Apple" in mac_dmg_builder, "Mac DMG README explains the temporary unsigned-app security prompt")
-        self.assert_true("ADMIRO_DOCKER_SKIP_BUILD" in run_docker and "up)" in run_docker and "--build" in run_docker, "Docker runner can start an existing container without rebuilding every time")
+        self.assert_true("ADMIRA_DOCKER_SKIP_BUILD" in run_docker and "up)" in run_docker and "--build" in run_docker, "Docker runner can start an existing container without rebuilding every time")
         self.assert_true("candle" in windows_msi_builder and "light" in windows_msi_builder and "MetaAdsAgent-" in windows_msi_builder and "windows.msi" in windows_msi_builder, "Windows MSI builder uses WiX Toolset when available")
         self.assert_true("WINDOWS_SIGN_MSI" in windows_msi_builder and "signtool" in windows_msi_builder and "/fd SHA256" in windows_msi_builder, "Windows MSI builder supports Authenticode signing")
         self.assert_true('Source="{esc(source_ref)}"' in windows_msi_builder and "MetaAdsAgent\\\\" in windows_msi_builder, "Windows MSI source package uses relative file paths for VPS compilation")
@@ -9173,7 +9173,7 @@ class IntegrationTestSuite:
         self.assert_true("WINDOWS_SIGN_EXE" in windows_exe_builder and "signtool" in windows_exe_builder and "/fd SHA256" in windows_exe_builder, "Windows EXE builder supports Authenticode signing")
         self.assert_true("CreateShortcut" in nsis_template and "Instalar en Windows.bat" in nsis_template, "Windows NSIS installer creates a buyer shortcut")
         env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
-        self.assert_true("https://admiroia.uboost.lat" in env_example, "Buyer release uses deployed license server")
+        self.assert_true("https://admiraia.uboost.lat" in env_example, "Buyer release uses deployed license server")
         self.assert_true("LICENSE_PUBLIC_KEY=" in env_example, "Buyer release includes only license verification key")
         self.assert_true("AGENT_CHAT_BASE_URL=https://api.minimax.io/v1" in env_example and "AGENT_CHAT_MODEL=MiniMax-M3" in env_example and "AGENT_CHAT_PROVIDER=hermes" in env_example and "AGENT_BRAIN_PROVIDER=openai_codex" in env_example, "Buyer release documents Hermes runtime plus MiniMax M3/OpenAI-compatible brain support")
         self.assert_true("HERMES_MODEL=gpt-5.5" in env_example, "Buyer release defaults ChatGPT/Codex to gpt-5.5 instead of auto")
@@ -9303,10 +9303,10 @@ class IntegrationTestSuite:
         self.assert_true('if (estimated.ready)' in portal_digitalocean_api and 'progress: 100' in portal_digitalocean_api and "cloudPollFailures" in portal_page and "handleCloudProgressError" in portal_page, "Cloud progress does not freeze at the first preview when the saved install state is ready or polling has a transient failure")
         self.assert_true("cloudDisplayedProgress = Math.max" in portal_page and "stopCloudProgressPolling(true)" in portal_page and "cache:'no-store'" in portal_page, "Cloud progress cannot regress or let stale polling responses overwrite the ready state")
         self.assert_true("Boolean(openUrl && (cloud.dashboard_available" in portal_page and "Boolean(openUrl && (data.ready" in portal_page, "Download portal requires a real dashboard URL before showing cloud as ready")
-        self.assert_true("runtimeStageFromLog" in portal_digitalocean_api and "ADMIRO_STAGE verifying_dashboard" in portal_digitalocean_api, "DigitalOcean status recovers the verifying-dashboard stage from older access gates")
+        self.assert_true("runtimeStageFromLog" in portal_digitalocean_api and 'currentPrefix = "ADMIRA_STAGE"' in portal_digitalocean_api and 'legacyPrefix = "ADMI" + "RO_STAGE"' in portal_digitalocean_api and "verifying_dashboard" in portal_digitalocean_api, "DigitalOcean status recovers the verifying-dashboard stage from older access gates")
         self.assert_true("docker_ps" in portal_digitalocean_api and "docker_logs_tail" in portal_digitalocean_api, "DigitalOcean cloud status preserves safe Docker diagnostics")
         self.assert_true("Could not resolve host" in portal_digitalocean_api and "No pudo descargar el producto por DNS de arranque" in portal_digitalocean_api, "DigitalOcean cloud status recognizes first-boot DNS download failures instead of freezing progress")
-        self.assert_true("Tardando mas de lo normal" in portal_page and "tail -n 80 /var/log/admiro-cloud-install.log" in portal_page, "Download portal explains when DigitalOcean is active but dashboard is not ready")
+        self.assert_true("Tardando mas de lo normal" in portal_page and "tail -n 80 /var/log/admira-cloud-install.log" in portal_page, "Download portal explains when DigitalOcean is active but dashboard is not ready")
         self.assert_true("Abrir mi dashboard" in portal_page and "cloud_open_url" in portal_page and "prepara tu red automaticamente" in portal_page, "Download portal exposes a one-click cloud dashboard opener")
         self.assert_true("data-cloud-open-url" in portal_page and "openCloudDashboard" in portal_page and "action: 'refresh_access'" in portal_page and "data.dashboard_url || data.dashboard_https_url || data.dashboard_http_url || data.cloud_open_url" in portal_page, "Cloud dashboard opener refreshes access through the portal and opens the direct dashboard URL after success")
         self.assert_true("showPendingWindowMessage(pendingWindow, 'No pude preparar el acceso'" in portal_page and "shouldAskForFreshDigitalOceanToken(data)" in portal_page and "refresh_access_failed" in portal_page, "Cloud dashboard opener keeps the helper tab open, shows portal refresh errors, and asks for a fresh token instead of hiding them behind the Droplet access gate")
@@ -9352,7 +9352,7 @@ class IntegrationTestSuite:
         )
         self.assert_true("clearIfDigitalOceanDropletMissing" in portal_digitalocean_api and "digitalOceanResourceMissing" in portal_digitalocean_api and "cleared_deleted_cloud" in portal_digitalocean_api, "DigitalOcean status clears zombie installs when the Droplet no longer exists")
         self.assert_true("cloudStateVersion" in portal_page and "expectedVersion !== cloudStateVersion" in portal_page and "data.cleared_deleted_cloud" in portal_page, "Download portal ignores stale cloud polling after a reset")
-        self.assert_true("abre Terminal" in portal_page and "~/.ssh/admiro_ai.pub" in portal_page and "solo tu computador" in portal_page and "La parte privada queda guardada en tu PC" in portal_page and "parte publica, que es segura de compartir" in portal_page and "No compartas la llave privada" in portal_page, "DigitalOcean SSH key step explains public/private key safety in buyer-friendly language")
+        self.assert_true("abre Terminal" in portal_page and "~/.ssh/admira_ia.pub" in portal_page and "solo tu computador" in portal_page and "La parte privada queda guardada en tu PC" in portal_page and "parte publica, que es segura de compartir" in portal_page and "No compartas la llave privada" in portal_page, "DigitalOcean SSH key step explains public/private key safety in buyer-friendly language")
         self.assert_true("signedPortalSession" in license_lib and "verifyPortalSession" in license_lib and "PORTAL_SESSION_MINUTES" in license_lib, "License server can issue short-lived portal sessions")
         self.assert_true("minutes: rawMinutes" in license_lib and "Math.min(Math.floor(requestedMinutes), 360)" in license_lib, "License server can issue longer signed release grants for cloud-init installs")
         self.assert_true("readLicense" in portal_session_api and "releaseWithDiscoveredAssets" in portal_session_api and "validFormat" in portal_session_api, "Portal session validates purchase email and access key server-side")
@@ -9371,14 +9371,14 @@ class IntegrationTestSuite:
         self.assert_true("buildDigitalOceanCloudInit" in digitalocean_cloud_lib and "DIGITALOCEAN_TOKEN" in digitalocean_cloud_lib and "docker compose up -d --build" in digitalocean_cloud_lib, "DigitalOcean cloud-init installs the app and starts Docker in detached mode")
         self.assert_true("download.docker.com/linux/ubuntu" in digitalocean_cloud_lib and "docker-compose-linux-$compose_arch" in digitalocean_cloud_lib and "docker compose version" in digitalocean_cloud_lib, "DigitalOcean cloud-init installs Docker Compose reliably on fresh Ubuntu droplets")
         self.assert_true("currentClientIp" in digitalocean_cloud_lib and "addresses: [clientCidr]" in digitalocean_cloud_lib and "DASHBOARD_PORT" in digitalocean_cloud_lib, "DigitalOcean cloud helper restricts firewall to current buyer IP and dashboard port")
-        self.assert_true("admiro-cloud-access-gate.service" in digitalocean_cloud_lib and "CLOUD_ACCESS_SECRET" in digitalocean_cloud_lib and "/open/" in digitalocean_cloud_lib, "DigitalOcean cloud install creates a secret one-click dashboard access gate")
+        self.assert_true("admira-cloud-access-gate.service" in digitalocean_cloud_lib and "CLOUD_ACCESS_SECRET" in digitalocean_cloud_lib and "/open/" in digitalocean_cloud_lib, "DigitalOcean cloud install creates a secret one-click dashboard access gate")
         self.assert_true("hostname_resolves" in digitalocean_cloud_lib and "socket.getaddrinfo" in digitalocean_cloud_lib and 'f"http://{host}:{DASHBOARD_PORT}/?cloud_access=ok"' in digitalocean_cloud_lib, "DigitalOcean access gate avoids NXDOMAIN by falling back to the direct IP dashboard URL when HTTPS DNS is not ready")
         self.assert_true("/status/" in digitalocean_cloud_lib and "dashboard_ready" in digitalocean_cloud_lib and "cloud install complete" in digitalocean_cloud_lib, "DigitalOcean access gate reports install readiness for the portal progress bar")
         self.assert_true("dashboard_ready=false" in digitalocean_cloud_lib and 'report_cloud_runtime "dashboard_ready" "100" "true"' in digitalocean_cloud_lib and 'report_cloud_runtime "verificando_dashboard" "98" "false"' in digitalocean_cloud_lib, "DigitalOcean cloud-init only reports 100 percent after the dashboard responds")
-        self.assert_true('("ADMIRO_STAGE verifying_dashboard", "verificando_dashboard", 98)' in digitalocean_cloud_lib, "DigitalOcean access gate recognizes the verifying-dashboard marker")
+        self.assert_true('current_prefix = "ADMIRA_STAGE"' in digitalocean_cloud_lib and 'legacy_prefix = "ADMI" + "RO_STAGE"' in digitalocean_cloud_lib and '"verifying_dashboard", "verificando_dashboard", 98' in digitalocean_cloud_lib, "DigitalOcean access gate recognizes the verifying-dashboard marker")
         self.assert_true("docker_snapshot" in digitalocean_cloud_lib and '\"docker\", \"ps\", \"-a\"' in digitalocean_cloud_lib and '"docker_ps": docker_snapshot()' in digitalocean_cloud_lib, "DigitalOcean access gate reports safe Docker container status")
         self.assert_true("docker_logs_tail" in digitalocean_cloud_lib and '"docker", "logs", "--tail", "80"' in digitalocean_cloud_lib, "DigitalOcean access gate reports safe dashboard container logs")
-        self.assert_true("install_cloud_status_gate_early" in digitalocean_cloud_lib and "ADMIRO_STAGE running_installer" in digitalocean_cloud_lib and "systemctl restart admiro-cloud-access-gate.service" in digitalocean_cloud_lib, "DigitalOcean cloud-init starts the status gate early and reports real install stages")
+        self.assert_true("install_cloud_status_gate_early" in digitalocean_cloud_lib and "ADMIRA_STAGE running_installer" in digitalocean_cloud_lib and "systemctl restart admira-cloud-access-gate.service" in digitalocean_cloud_lib, "DigitalOcean cloud-init starts the status gate early and reports real install stages")
         self.assert_true('"7870"' in digitalocean_cloud_lib and "DO_STRICT_ACCESS_GATE_PORT" in do_firewall_script and "access_gate_port" in do_firewall_script, "DigitalOcean firewall refresh preserves the dashboard access gate")
         self.assert_true("CLOUD_DASHBOARD_BASE_DOMAIN" in portal_digitalocean_api and "DNS_PROVIDER" in portal_digitalocean_api and "VERCEL_DNS_TOKEN" in portal_digitalocean_api and "/v2/domains/" in portal_digitalocean_api and "/v4/domains/" in portal_digitalocean_api, "DigitalOcean cloud install can create per-install DNS records through Vercel DNS")
         self.assert_true("CLOUDFLARE_API_TOKEN" in portal_digitalocean_api and "dns_records" in portal_digitalocean_api, "DigitalOcean cloud install keeps Cloudflare DNS as an optional fallback provider")

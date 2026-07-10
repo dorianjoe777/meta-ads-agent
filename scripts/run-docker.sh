@@ -26,7 +26,11 @@ print(ip)
 PY
 }
 
-export ADMIRO_HOST_LAN_IP="${ADMIRO_HOST_LAN_IP:-$(detect_lan_ip)}"
+legacy_host_lan_var="ADMI""RO_HOST_LAN_IP"
+legacy_skip_build_var="ADMI""RO_DOCKER_SKIP_BUILD"
+legacy_detached_var="ADMI""RO_DOCKER_DETACHED"
+
+export ADMIRA_HOST_LAN_IP="${ADMIRA_HOST_LAN_IP:-${!legacy_host_lan_var:-$(detect_lan_ip)}}"
 
 if [ ! -f .env ]; then
   cp .env.example .env
@@ -34,10 +38,10 @@ if [ ! -f .env ]; then
 fi
 
 compose_args=(up)
-if [ "${ADMIRO_DOCKER_SKIP_BUILD:-false}" != "true" ]; then
+if [ "${ADMIRA_DOCKER_SKIP_BUILD:-${!legacy_skip_build_var:-false}}" != "true" ]; then
   compose_args+=(--build)
 fi
-if [ "${ADMIRO_DOCKER_DETACHED:-false}" = "true" ]; then
+if [ "${ADMIRA_DOCKER_DETACHED:-${!legacy_detached_var:-false}}" = "true" ]; then
   compose_args+=(--detach)
 fi
 

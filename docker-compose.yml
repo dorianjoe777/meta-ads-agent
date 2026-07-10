@@ -10,7 +10,7 @@ services:
       DASHBOARD_HOST: 0.0.0.0
       DASHBOARD_PORT: 7871
       ALLOW_PUBLIC_DASHBOARD: "true"
-      ADMIRO_HOST_LAN_IP: ${ADMIRO_HOST_LAN_IP:-}
+      ADMIRA_HOST_LAN_IP: ${ADMIRA_HOST_LAN_IP:-}
       CODEX_CREATIVE_ENABLED: "true"
       CODEX_CLI: codex
       CODEX_HOME: /app/runtime/codex

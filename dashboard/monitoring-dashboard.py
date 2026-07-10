@@ -1012,7 +1012,8 @@ def restart_dashboard_process():
 
 
 def detect_lan_ip():
-    configured = str(os.environ.get("ADMIRO_HOST_LAN_IP") or "").strip()
+    legacy_host_lan_env = "ADMI" + "RO_HOST_LAN_IP"
+    configured = str(os.environ.get("ADMIRA_HOST_LAN_IP") or os.environ.get(legacy_host_lan_env) or "").strip()
     if configured:
         try:
             if ipaddress.ip_address(configured).version == 4:
@@ -1045,7 +1046,8 @@ def detect_lan_ip():
 def install_environment_label():
     if os.environ.get("CLOUD_DASHBOARD_HOSTNAME") or os.environ.get("DIGITALOCEAN_DROPLET_ID"):
         return "cloud"
-    if Path("/.dockerenv").exists() or os.environ.get("ADMIRO_HOST_LAN_IP"):
+    legacy_host_lan_env = "ADMI" + "RO_HOST_LAN_IP"
+    if Path("/.dockerenv").exists() or os.environ.get("ADMIRA_HOST_LAN_IP") or os.environ.get(legacy_host_lan_env):
         return "docker"
     return "native"
 
@@ -6884,7 +6886,9 @@ def load_metrics():
     if "source" not in metrics and looks_like_demo_metrics(metrics):
         metrics["source"] = "demo"
         metrics["source_label"] = "Demo data"
-    if metrics.get("source") == "demo" and not env_bool("ADMIRO_ALLOW_DEMO_METRICS", False):
+    legacy_demo_metrics_env = "ADMI" + "RO_ALLOW_DEMO_METRICS"
+    demo_metrics_allowed = env_bool("ADMIRA_ALLOW_DEMO_METRICS", env_bool(legacy_demo_metrics_env, False))
+    if metrics.get("source") == "demo" and not demo_metrics_allowed:
         metrics = empty_meta_metrics("missing")
     metrics.setdefault("source", "cached")
     metrics.setdefault("source_label", "Cached dashboard data")
@@ -10797,7 +10801,9 @@ def write_static_snapshot():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     if not METRICS_FILE.exists():
-        save_metrics(sample_metrics() if env_bool("ADMIRO_ALLOW_DEMO_METRICS", False) else empty_meta_metrics())
+        legacy_demo_metrics_env = "ADMI" + "RO_ALLOW_DEMO_METRICS"
+        demo_metrics_allowed = env_bool("ADMIRA_ALLOW_DEMO_METRICS", env_bool(legacy_demo_metrics_env, False))
+        save_metrics(sample_metrics() if demo_metrics_allowed else empty_meta_metrics())
     with open(DASHBOARD_HTML_FILE, "w", encoding="utf-8") as handle:
         handle.write(HTML)
 

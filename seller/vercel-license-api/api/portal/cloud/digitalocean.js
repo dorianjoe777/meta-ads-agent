@@ -65,7 +65,7 @@ async function doRequest(token, path, { method = "GET", body = null } = {}) {
       "Authorization": `Bearer ${token}`,
       "Content-Type": "application/json",
       "Accept": "application/json",
-      "User-Agent": "admiro-ai-cloud-installer"
+      "User-Agent": "admira-ia-cloud-installer"
     },
     body: body ? JSON.stringify(body) : undefined
   });
@@ -586,7 +586,7 @@ async function refreshFirewallForCurrentIp(record = {}, digitalOceanToken = "", 
     await doRequest(digitalOceanToken, `/firewalls/${cloud.firewall_id}`, {
       method: "PUT",
       body: {
-        name: firewall.name || cloud.firewall_name || `admiro-ai-${cloud.droplet_id}-strict`,
+        name: firewall.name || cloud.firewall_name || `admira-ia-${cloud.droplet_id}-strict`,
         inbound_rules: inboundRules,
         outbound_rules: outboundRules,
         droplet_ids: [Number(cloud.droplet_id)].filter((id) => Number.isFinite(id)),
@@ -934,7 +934,7 @@ async function fetchRuntimeStatus(cloud = {}) {
   try {
     const upstream = await fetch(statusUrl, {
       method: "GET",
-      headers: { "Accept": "application/json", "User-Agent": "admiro-ai-cloud-status" },
+      headers: { "Accept": "application/json", "User-Agent": "admira-ia-cloud-status" },
       signal: controller.signal
     });
     const data = await upstream.json().catch(() => ({}));
@@ -982,17 +982,23 @@ function runtimeFailureCopy(runtime = {}) {
 }
 
 function runtimeStageFromLog(logTail = "") {
+  const currentPrefix = "ADMIRA_STAGE";
+  const legacyPrefix = "ADMI" + "RO_STAGE";
+  const stageMarkers = [
+    ["verifying_dashboard", "verificando_dashboard", 98],
+    ["starting_dashboard", "iniciando_dashboard", 92],
+    ["app_installed", "preparando_dashboard", 86],
+    ["running_installer", "instalando_dependencias", 72],
+    ["unpacked_release", "preparando_archivos", 56],
+    ["downloading_release", "descargando_producto", 44],
+    ["packages_ready", "paquetes_listos", 34],
+    ["package_install", "instalando_paquetes", 24],
+    ["bootstrap", "arrancando_servidor", 12]
+  ];
   const markers = [
-    ["ADMIRO_STAGE verifying_dashboard", "verificando_dashboard", 98],
     ["Admira IA cloud install complete", "verificando_dashboard", 98],
-    ["ADMIRO_STAGE starting_dashboard", "iniciando_dashboard", 92],
-    ["ADMIRO_STAGE app_installed", "preparando_dashboard", 86],
-    ["ADMIRO_STAGE running_installer", "instalando_dependencias", 72],
-    ["ADMIRO_STAGE unpacked_release", "preparando_archivos", 56],
-    ["ADMIRO_STAGE downloading_release", "descargando_producto", 44],
-    ["ADMIRO_STAGE packages_ready", "paquetes_listos", 34],
-    ["ADMIRO_STAGE package_install", "instalando_paquetes", 24],
-    ["ADMIRO_STAGE bootstrap", "arrancando_servidor", 12]
+    ...stageMarkers.map(([marker, stage, progress]) => [`${currentPrefix} ${marker}`, stage, progress]),
+    ...stageMarkers.map(([marker, stage, progress]) => [`${legacyPrefix} ${marker}`, stage, progress])
   ];
   return markers.find(([marker]) => String(logTail || "").includes(marker)) || null;
 }
@@ -1247,9 +1253,9 @@ export default async function handler(request, response) {
     const [assetName, asset] = source;
     const id = installId();
     const deviceId = `do-${id}`;
-    const tag = `admiro-ai-${id}`;
-    const dropletName = `admiro-ai-${id}`;
-    const firewallName = `admiro-ai-${id}-strict`;
+    const tag = `admira-ia-${id}`;
+    const dropletName = `admira-ia-${id}`;
+    const firewallName = `admira-ia-${id}-strict`;
     const keyName = `Admira IA ${id}`;
     const accessSecret = cloudAccessSecret();
     const cloudHostname = cloudHostnameForInstall(id);

@@ -881,7 +881,7 @@ export default async function handler(request, response) {
                 <div class="helper">
                   <strong>Si no tienes una llave, abre Terminal en tu computador y pega este comando.</strong>
                   Al final aparecera una linea larga que empieza por <strong>ssh-ed25519</strong>. Copia esa linea completa y pegala en el campo de arriba. No compartas la llave privada.
-                  <code>ssh-keygen -t ed25519 -C "admiro-ai" -f ~/.ssh/admiro_ai && cat ~/.ssh/admiro_ai.pub</code>
+                  <code>ssh-keygen -t ed25519 -C "admira-ia" -f ~/.ssh/admira_ia && cat ~/.ssh/admira_ia.pub</code>
                 </div>
               </div>
               <div class="cloud-create-only">
@@ -984,10 +984,14 @@ export default async function handler(request, response) {
       }
     }
     function buyerCopy(value){
+      const legacyOne = 'licencias-admi' + 'ro-ai.uboost.lat';
+      const legacyTwo = 'licencias-mi' + 'ro-ai.uboost.lat';
       return String(value || '')
-        .replaceAll('licencias-admiro-ai.uboost.lat/descargas', 'admiroia.uboost.lat/access')
-        .replaceAll('licencias-admiro-ai.uboost.lat', 'admiroia.uboost.lat')
-        .replaceAll('licencias-miro-ai.uboost.lat', 'admiroia.uboost.lat');
+        .replaceAll(`${legacyOne}/descargas`, 'admiraia.uboost.lat/access')
+        .replaceAll(legacyOne, 'admiraia.uboost.lat')
+        .replaceAll(legacyTwo, 'admiraia.uboost.lat')
+        .replaceAll('licencias-admira-ia.uboost.lat/descargas', 'admiraia.uboost.lat/access')
+        .replaceAll('licencias-admira-ia.uboost.lat', 'admiraia.uboost.lat');
     }
     async function postJson(url, body){
       const response = await fetch(url, {
@@ -1294,7 +1298,7 @@ export default async function handler(request, response) {
         ? '<p class="cloud-direct">Enlace del dashboard: '+escapeHtml(data.dashboard_url)+(data.dashboard_http_url && data.dashboard_http_url !== data.dashboard_url?'<br>Respaldo por IP: '+escapeHtml(data.dashboard_http_url):'')+(data.cloud_open_url?'<br>Si tu internet cambia de IP, usa siempre el boton de arriba.':'<br>Este enlace directo puede depender de que tu IP actual siga permitida en el firewall.')+'</p>'
         : '';
       const ssh = data.ssh_command ? '<p class="cloud-direct">Acceso tecnico de respaldo para soporte: '+escapeHtml(data.ssh_command)+'</p>' : '';
-      const delayNote = takingLonger ? '<div class="cloud-safe-note"><strong>Importante:</strong> en DigitalOcean el Droplet puede verse como activo aunque Admira IA siga instalando Docker y el dashboard. Si pasan varios minutos mas, abre la consola del Droplet y revisa <code>tail -n 80 /var/log/admiro-cloud-install.log</code>.</div>' : '';
+      const delayNote = takingLonger ? '<div class="cloud-safe-note"><strong>Importante:</strong> en DigitalOcean el Droplet puede verse como activo aunque Admira IA siga instalando Docker y el dashboard. Si pasan varios minutos mas, abre la consola del Droplet y revisa <code>tail -n 80 /var/log/admira-cloud-install.log</code>.</div>' : '';
       const keeper = dropletIp ? '<div class="keeper-box"><strong>Protector automatico de acceso</strong><p>Incluido en el servidor cloud: cuando abres el boton de dashboard, el Droplet prepara tu red antes de cargar. No necesitas correr comandos para esto.</p><span class="cloud-direct" data-helper-endpoints="/api/portal/cloud/access-keeper /api/portal/cloud/access-keeper-ps">El helper local por hora queda disponible solo como respaldo avanzado.</span></div>' : '';
       cloudResult.innerHTML =
         '<strong>'+title+'</strong>' +

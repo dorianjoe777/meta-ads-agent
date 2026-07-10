@@ -59,7 +59,7 @@ La clave queda guardada localmente en `.env` y no vuelve a aparecer en el dashbo
 
 ## La instalacion cloud se queda trabada
 
-Si instalas desde `admiroia.uboost.lat/access` y DigitalOcean parece quedarse instalando, revisa la guia tecnica:
+Si instalas desde `admiraia.uboost.lat/access` y DigitalOcean parece quedarse instalando, revisa la guia tecnica:
 
 ```text
 docs/es-debug-instalacion-cloud.md

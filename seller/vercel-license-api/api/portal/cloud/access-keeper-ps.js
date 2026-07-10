@@ -1,6 +1,6 @@
 const WINDOWS_INSTALLER = `param([switch]$RunKeeper)
 
-function Invoke-AdmiroAccessKeeper {
+function Invoke-AdmiraAccessKeeper {
   $ConfigPath = Join-Path $env:USERPROFILE ".meta-ads-agent\\\\cloud-access-keeper.json"
   if (!(Test-Path $ConfigPath)) { throw "Missing config: $ConfigPath" }
   $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
@@ -45,22 +45,27 @@ function Invoke-AdmiroAccessKeeper {
   Write-KeeperLog "Dashboard access refreshed for $CurrentIp"
 }
 
-function Install-AdmiroAccessKeeper {
+function Install-AdmiraAccessKeeper {
   param(
     [Parameter(Mandatory=$true)][string]$DropletHost,
     [string]$SshUser = "root",
     [int]$SshPort = 22,
-    [string]$IdentityPath = "$env:USERPROFILE\\\\.ssh\\\\admiro_ai",
+    [string]$IdentityPath = "$env:USERPROFILE\\\\.ssh\\\\admira_ia",
     [int]$IntervalMinutes = 60,
     [switch]$RunNow
   )
   if ($DropletHost -notmatch '^[A-Za-z0-9.-]+$') { throw "Invalid Droplet host." }
+  $LegacyIdentityPath = Join-Path (Join-Path $env:USERPROFILE ".ssh") ("admi" + "ro_ai")
+  $DefaultIdentityPath = Join-Path (Join-Path $env:USERPROFILE ".ssh") "admira_ia"
+  if ($IdentityPath -eq $DefaultIdentityPath -and !(Test-Path $IdentityPath) -and (Test-Path $LegacyIdentityPath)) {
+    $IdentityPath = $LegacyIdentityPath
+  }
   $BaseDir = Join-Path $env:USERPROFILE ".meta-ads-agent"
   $BinDir = Join-Path $BaseDir "bin"
   New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
-  $ScriptPath = Join-Path $BinDir "AdmiroCloudAccessKeeper.ps1"
+  $ScriptPath = Join-Path $BinDir "AdmiraCloudAccessKeeper.ps1"
   $ConfigPath = Join-Path $BaseDir "cloud-access-keeper.json"
-  Invoke-WebRequest -UseBasicParsing -Uri "https://admiroia.uboost.lat/api/portal/cloud/access-keeper-ps" -OutFile $ScriptPath
+  Invoke-WebRequest -UseBasicParsing -Uri "https://admiraia.uboost.lat/api/portal/cloud/access-keeper-ps" -OutFile $ScriptPath
   @{
     droplet_host = $DropletHost
     ssh_user = $SshUser
@@ -71,12 +76,12 @@ function Install-AdmiroAccessKeeper {
   $TaskName = "Admira IA Cloud Access Keeper"
   $TaskCommand = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + $ScriptPath + '" -RunKeeper'
   schtasks /Create /F /SC MINUTE /MO $IntervalMinutes /TN "$TaskName" /TR "$TaskCommand" | Out-Null
-  if ($RunNow) { Invoke-AdmiroAccessKeeper }
+  if ($RunNow) { Invoke-AdmiraAccessKeeper }
   Write-Host "Admira IA access keeper installed. It checks this PC public IP every $IntervalMinutes minutes."
 }
 
 if ($RunKeeper) {
-  Invoke-AdmiroAccessKeeper
+  Invoke-AdmiraAccessKeeper
 }
 `;
 

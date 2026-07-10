@@ -1,7 +1,7 @@
 import nodemailer from "nodemailer";
 
-const DEFAULT_ACCESS_URL = "https://admiroia.uboost.lat/access";
-const DEFAULT_FROM = "Admira IA <no-reply@admiroia.uboost.lat>";
+const DEFAULT_ACCESS_URL = "https://admiraia.uboost.lat/access";
+const DEFAULT_FROM = "Admira IA <no-reply@admiraia.uboost.lat>";
 const DEFAULT_SMTP_HOST = "mail.spacemail.com";
 const DEFAULT_SMTP_PORT = 465;
 

@@ -1,6 +1,6 @@
 # Debug de instalacion cloud en DigitalOcean
 
-Esta nota existe para futuras sesiones de Codex y para soporte tecnico. Resume que puede romperse cuando un comprador instala desde `https://admiroia.uboost.lat/access`, como diagnosticarlo rapido y que relacion tiene cada pieza con el flujo completo.
+Esta nota existe para futuras sesiones de Codex y para soporte tecnico. Resume que puede romperse cuando un comprador instala desde `https://admiraia.uboost.lat/access`, como diagnosticarlo rapido y que relacion tiene cada pieza con el flujo completo.
 
 Para publicar cambios de producto, primero revisar la checklist especifica:
 
@@ -30,7 +30,7 @@ Si un enlace cambia, puede fallar esa parte aunque el resto este bien.
 
 - Canal estable: `v1.0.4`.
 - Release privado: `MetaAdsAgent-source.zip`.
-- Dominio de comprador: `https://admiroia.uboost.lat/access`.
+- Dominio de comprador: `https://admiraia.uboost.lat/access`.
 - Dashboard cloud: puerto `7871`.
 - Dashboard cloud HTTPS: puerto `443`, cuando DNS esta configurado.
 - Certificados: Caddy + Let's Encrypt, sin servidor adicional.
@@ -128,7 +128,7 @@ El HTTPS cloud depende de estas variables en el servidor de licencias:
 
 ```text
 DNS_PROVIDER=vercel
-CLOUD_DASHBOARD_BASE_DOMAIN=cloud.admiroia.uboost.lat
+CLOUD_DASHBOARD_BASE_DOMAIN=cloud.admiraia.uboost.lat
 VERCEL_DNS_DOMAIN=uboost.lat
 VERCEL_DNS_TOKEN=...
 VERCEL_DNS_TEAM_ID=...       # opcional
@@ -139,7 +139,7 @@ Cloudflare queda disponible solo si el DNS se mueve a Cloudflare:
 
 ```text
 DNS_PROVIDER=cloudflare
-CLOUD_DASHBOARD_BASE_DOMAIN=cloud.admiroia.uboost.lat
+CLOUD_DASHBOARD_BASE_DOMAIN=cloud.admiraia.uboost.lat
 CLOUDFLARE_ZONE_ID=...
 CLOUDFLARE_API_TOKEN=...
 CLOUDFLARE_DNS_PROXIED=false

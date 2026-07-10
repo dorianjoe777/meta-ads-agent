@@ -2,7 +2,7 @@ import { normalizeEntitlements, signedPortalSession, validFormat, verifyPortalSe
 import { buyerFacingImprovements, platformCards, releaseWithDiscoveredAssets } from "../../lib/download-portal.js";
 import { deviceRegistrations, readLicense, readReleases } from "../../lib/store.js";
 
-const PORTAL_COOKIE = "admiro_portal_session";
+const PORTAL_COOKIE = "admira_portal_session";
 
 function json(response, status, payload) {
   response.setHeader("Cache-Control", "private, no-store");

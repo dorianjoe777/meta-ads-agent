@@ -2,7 +2,7 @@
 
 Esta opcion es para compradores que quieren dejar Admira IA encendido aunque su PC este apagado.
 
-El comprador entra a `https://admiroia.uboost.lat/access`, valida su email de compra y clave de acceso, y puede elegir `Instalar en la nube`.
+El comprador entra a `https://admiraia.uboost.lat/access`, valida su email de compra y clave de acceso, y puede elegir `Instalar en la nube`.
 
 Recomendamos DigitalOcean para esta opcion porque es un proveedor cloud confiable, simple de usar y con precios previsibles. Sus Droplets basicos suelen empezar cerca de US$4 a US$6 al mes, segun el tamano elegido. Las cuentas nuevas pueden ver credito inicial o promociones; el comprador siempre debe revisar el precio final en DigitalOcean antes de crear el servidor.
 
@@ -53,7 +53,7 @@ DigitalOcean Marketplace puede ser una buena version futura, pero requiere empaq
 
 ## Flujo para soporte
 
-1. Pedir al comprador que entre a `https://admiroia.uboost.lat/access`.
+1. Pedir al comprador que entre a `https://admiraia.uboost.lat/access`.
 2. Validar email y clave de acceso.
 3. Abrir `Instalar en la nube`.
 4. Pegar token de DigitalOcean.
@@ -99,7 +99,7 @@ En palabras simples para el comprador:
 Si HTTPS esta configurado, ese boton termina abriendo un enlace normal y seguro, por ejemplo:
 
 ```text
-https://tu-servidor.cloud.admiroia.uboost.lat
+https://tu-servidor.cloud.admiraia.uboost.lat
 ```
 
 Esto quita el aviso de `No seguro` del navegador. No cambia la propiedad del servidor: el Droplet sigue estando en la cuenta de DigitalOcean del comprador.

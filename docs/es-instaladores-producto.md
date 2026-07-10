@@ -7,7 +7,7 @@ Desde esta version, la forma recomendada de entrega es:
 1. Mantener el codigo fuente en un repo privado.
 2. Publicar un paquete fuente interno en GitHub Releases o en tu infraestructura privada.
 3. Enviar al comprador email + clave de acceso despues de la compra.
-4. El comprador entra a `https://admiroia.uboost.lat/access`.
+4. El comprador entra a `https://admiraia.uboost.lat/access`.
 5. Elige Mac, Windows o Linux y descarga el launcher de instalacion Docker desde una URL temporal segura.
 
 Asi separas dos cosas:
@@ -25,7 +25,7 @@ Valores clave:
 
 ```text
 BOOTSTRAP_PROVIDER=license_server
-LICENSE_SERVER_URL=https://admiroia.uboost.lat
+LICENSE_SERVER_URL=https://admiraia.uboost.lat
 LICENSE_RELEASE_ENDPOINT=/api/license/release
 RELEASE_CHANNEL=stable
 RELEASE_ASSET_NAME=MetaAdsAgent-source.zip
@@ -41,7 +41,7 @@ GitHub puede ser el origen tecnico del paquete, pero no es la experiencia que ve
 URL recomendada para compradores:
 
 ```text
-https://admiroia.uboost.lat/access
+https://admiraia.uboost.lat/access
 ```
 
 El comprador ve una landing simple:
@@ -144,7 +144,7 @@ En Mac, launcher Docker:
 MAC_APP_SIGN_IDENTITY="Developer ID Application: TU EMPRESA (TEAMID)" \
 MAC_NOTARIZE=true \
 APPLE_NOTARY_KEYCHAIN_PROFILE="meta-ads-agent-notary" \
-META_ADS_LICENSE_SERVER_URL=https://admiroia.uboost.lat \
+META_ADS_LICENSE_SERVER_URL=https://admiraia.uboost.lat \
 ./scripts/build-mac-dmg.sh v1
 ```
 
@@ -154,7 +154,7 @@ Fallback PKG:
 MAC_PKG_SIGN_IDENTITY="Developer ID Installer: TU EMPRESA (TEAMID)" \
 MAC_NOTARIZE=true \
 APPLE_NOTARY_KEYCHAIN_PROFILE="meta-ads-agent-notary" \
-META_ADS_LICENSE_SERVER_URL=https://admiroia.uboost.lat \
+META_ADS_LICENSE_SERVER_URL=https://admiraia.uboost.lat \
 ./scripts/build-mac-pkg.sh v1
 ```
 
@@ -162,7 +162,7 @@ En Windows, launcher MSI/WiX:
 
 ```bash
 WINDOWS_SIGN_MSI=true \
-META_ADS_LICENSE_SERVER_URL=https://admiroia.uboost.lat \
+META_ADS_LICENSE_SERVER_URL=https://admiraia.uboost.lat \
 ./scripts/build-windows-msi.sh v1
 ```
 
@@ -172,7 +172,7 @@ Launcher EXE con NSIS:
 
 ```bash
 WINDOWS_SIGN_EXE=true \
-META_ADS_LICENSE_SERVER_URL=https://admiroia.uboost.lat \
+META_ADS_LICENSE_SERVER_URL=https://admiraia.uboost.lat \
 ./scripts/build-windows-exe.sh v1
 ```
 
@@ -181,19 +181,19 @@ Si `makensis` no esta instalado, el script deja listo un paquete fuente para com
 En Linux:
 
 ```bash
-META_ADS_LICENSE_SERVER_URL=https://admiroia.uboost.lat ./scripts/build-linux-bundle.sh v1
+META_ADS_LICENSE_SERVER_URL=https://admiraia.uboost.lat ./scripts/build-linux-bundle.sh v1
 ```
 
 El script genera checksum. Si tienes llave GPG de publicacion:
 
 ```bash
-LINUX_GPG_SIGN=true META_ADS_LICENSE_SERVER_URL=https://admiroia.uboost.lat ./scripts/build-linux-bundle.sh v1
+LINUX_GPG_SIGN=true META_ADS_LICENSE_SERVER_URL=https://admiraia.uboost.lat ./scripts/build-linux-bundle.sh v1
 ```
 
 Para generar el paquete fuente interno que descargan los instaladores:
 
 ```bash
-META_ADS_LICENSE_SERVER_URL=https://admiroia.uboost.lat ./scripts/package-release.sh v1
+META_ADS_LICENSE_SERVER_URL=https://admiraia.uboost.lat ./scripts/package-release.sh v1
 ```
 
 ## Asset tecnico recomendado para publicar
@@ -218,7 +218,7 @@ MetaAdsAgent-v1.0.2-source.zip
 4. Registras esa release en tu servidor:
 
 ```bash
-curl -X POST "https://admiroia.uboost.lat/api/admin/releases" \
+curl -X POST "https://admiraia.uboost.lat/api/admin/releases" \
   -H "Authorization: Bearer TU_CLAVE_ADMIN_PRIVADA" \
   -H "Content-Type: application/json" \
   -d '{

@@ -381,8 +381,8 @@ try {
     Write-Host $InstallDir
     Write-Host ""
     Write-Host "Construyendo y abriendo el dashboard..."
-    if ([string]::IsNullOrWhiteSpace($env:ADMIRO_HOST_LAN_IP)) {
-        $env:ADMIRO_HOST_LAN_IP = Get-HostLanIp
+    if ([string]::IsNullOrWhiteSpace($env:ADMIRA_HOST_LAN_IP)) {
+        $env:ADMIRA_HOST_LAN_IP = Get-HostLanIp
     }
     Push-Location $InstallDir
     try {

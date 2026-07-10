@@ -136,7 +136,7 @@ export async function releaseWithDiscoveredAssets(release = {}) {
       headers: {
         "Accept": "application/vnd.github+json",
         "Authorization": `Bearer ${token}`,
-        "User-Agent": "admiro-ai-download-portal",
+        "User-Agent": "admira-ia-download-portal",
         "X-GitHub-Api-Version": "2022-11-28"
       }
     });

@@ -1,6 +1,6 @@
 # Admira IA License API
 
-Seller-only Vercel API for `admiroia.uboost.lat`.
+Seller-only Vercel API for `admiraia.uboost.lat`.
 
 Required environment variables:
 
@@ -18,11 +18,11 @@ Optional environment variables:
 
 - `BLOB_READ_WRITE_TOKEN` supports legacy Vercel Blob license records and release assets. It is not required when license state is in Upstash and installers are served from GitHub Releases.
 - `RELEASE_SOURCE_ALLOWLIST=downloads.example.com,cdn.example.com`
-- `BUYER_ACCESS_URL=https://admiroia.uboost.lat/access` is the buyer portal link included in purchase emails.
+- `BUYER_ACCESS_URL=https://admiraia.uboost.lat/access` is the buyer portal link included in purchase emails.
 - `BUYER_EMAIL_PROVIDER=resend` sends buyer emails through Resend. This is the default.
 - `RESEND_API_KEY` is required when buyer email delivery is requested.
-- `BUYER_EMAIL_FROM="Admira IA <licenses@admiroia.uboost.lat>"` must use a Resend-verified domain or sender.
-- `BUYER_EMAIL_REPLY_TO=support@admiroia.uboost.lat` is optional.
+- `BUYER_EMAIL_FROM="Admira IA <licenses@admiraia.uboost.lat>"` must use a Resend-verified domain or sender.
+- `BUYER_EMAIL_REPLY_TO=support@admiraia.uboost.lat` is optional.
 - `BUYER_EMAIL_PRODUCT_NAME="Admira IA"` is optional email copy branding.
 - `BUYER_EMAIL_AUTO_SEND=true` sends the buyer access email automatically for every newly created license. Leave unset/false if the checkout webhook will pass `send_buyer_email: true` explicitly.
 - `HOTMART_SEND_BUYER_EMAIL=false` is an emergency pause switch for Hotmart-triggered buyer emails. By default, the webhook sends the transactional license/access email after the Upstash license write succeeds.
@@ -33,8 +33,8 @@ Optional environment variables:
 - `HOTMART_AGENCY_OFFER_CODES=AGENCY2026` maps specific Hotmart offer codes to the agency plan.
 - `GITHUB_RELEASE_TOKEN` for private GitHub release assets registered as `https://api.github.com/repos/OWNER/REPO/releases/assets/ASSET_ID`
 - `RELEASE_PROXY_DOWNLOADS=true` to proxy every release source instead of redirecting public storage URLs. Private GitHub asset URLs are always proxied.
-- `CLOUD_DASHBOARD_BASE_DOMAIN=cloud.admiroia.uboost.lat` to create one HTTPS subdomain per DigitalOcean install.
-- `CLOUD_BOOTSTRAP_BASE_URL=https://miro-ai-license-api.vercel.app` lets fresh Droplets download the release and report progress through Vercel's stable project URL instead of depending on custom-domain DNS during first boot.
+- `CLOUD_DASHBOARD_BASE_DOMAIN=cloud.admiraia.uboost.lat` to create one HTTPS subdomain per DigitalOcean install.
+- `CLOUD_BOOTSTRAP_BASE_URL=https://admiraia.uboost.lat` lets fresh Droplets download the release and report progress through the stable Admira IA portal URL.
 - `DNS_PROVIDER=vercel` is recommended when the domain is managed in Vercel DNS.
 - `VERCEL_DNS_TOKEN` and `VERCEL_DNS_DOMAIN=uboost.lat` let the portal create those DNS records automatically while Vercel keeps hosting the access portal.
 - `VERCEL_DNS_TEAM_ID` or `VERCEL_DNS_TEAM_SLUG` is optional when the domain belongs to a Vercel team.
@@ -88,7 +88,7 @@ Buyer purchase email:
 - Create a license and send the buyer email in one protected admin call:
 
 ```bash
-curl -X POST "https://admiroia.uboost.lat/api/admin/licenses" \
+curl -X POST "https://admiraia.uboost.lat/api/admin/licenses" \
   -H "Authorization: Bearer $LICENSE_ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -102,7 +102,7 @@ curl -X POST "https://admiroia.uboost.lat/api/admin/licenses" \
 - Resend an existing buyer access email with the same license key:
 
 ```bash
-curl -X POST "https://admiroia.uboost.lat/api/admin/licenses" \
+curl -X POST "https://admiraia.uboost.lat/api/admin/licenses" \
   -H "Authorization: Bearer $LICENSE_ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -112,7 +112,7 @@ curl -X POST "https://admiroia.uboost.lat/api/admin/licenses" \
   }'
 ```
 
-- The email includes the purchase email, license/access key, plan, and `https://admiroia.uboost.lat/access`.
+- The email includes the purchase email, license/access key, plan, and `https://admiraia.uboost.lat/access`.
 - If email delivery fails, the API returns `502 buyer_email_send_failed` and still includes the created license in the response so the buyer can be recovered manually.
 - Resend is the recommended production path for this project because delivery uses HTTPS from Vercel and gives clearer delivery logs.
 - If using the SMTP fallback on Vercel, use authenticated submission on port `465` or `587`, never port `25`, and the function waits for the send to finish before responding.
@@ -126,7 +126,7 @@ Owner commercial purchase email test pipeline:
 - Sends the Spanish purchase/access email every time the action is called, so repeated email tests are allowed without creating duplicate licenses.
 
 ```bash
-curl -X POST "https://admiroia.uboost.lat/api/admin/licenses" \
+curl -X POST "https://admiraia.uboost.lat/api/admin/licenses" \
   -H "Authorization: Bearer $LICENSE_ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -142,7 +142,7 @@ Hotmart webhook:
 - Paste this URL into Hotmart's `URL para envio de dados` field:
 
 ```text
-https://admiroia.uboost.lat/api/webhooks/hotmart
+https://admiraia.uboost.lat/api/webhooks/hotmart
 ```
 
 - Configure Hotmart to send purchase events, especially `PURCHASE_APPROVED`.
@@ -155,7 +155,7 @@ https://admiroia.uboost.lat/api/webhooks/hotmart
 - After an external workflow sends a pending license email, use the protected admin API to send/record delivery rather than exposing `LICENSE_ADMIN_KEY` in a browser or client-side automation.
 
 ```bash
-curl -X POST "https://admiroia.uboost.lat/api/admin/licenses" \
+curl -X POST "https://admiraia.uboost.lat/api/admin/licenses" \
   -H "Authorization: Bearer $LICENSE_ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{

@@ -8,7 +8,10 @@ function vaultKey() {
   if (!secret) {
     return null;
   }
-  return createHash("sha256").update("admiro-portal-secret-vault:").update(secret).digest();
+  // Keep the original v1 salt stable so already encrypted buyer/cloud secrets
+  // remain decryptable after the public brand rename.
+  const legacyStableSalt = "admi" + "ro-portal-secret-vault:";
+  return createHash("sha256").update(legacyStableSalt).update(secret).digest();
 }
 
 export function encryptPortalSecret(value = "") {

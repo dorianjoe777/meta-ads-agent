@@ -89,7 +89,7 @@ def bot_multipart_request(config, method, fields, file_field, file_path, timeout
     path = Path(file_path)
     if not path.exists() or not path.is_file():
         raise ValueError("No encontré el archivo para enviar por Telegram.")
-    boundary = f"----admiro-telegram-{int(time.time() * 1000)}"
+    boundary = f"----admira-telegram-{int(time.time() * 1000)}"
     body = bytearray()
     for key, value in (fields or {}).items():
         body.extend(f"--{boundary}\r\n".encode("utf-8"))
