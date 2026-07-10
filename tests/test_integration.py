@@ -9130,6 +9130,7 @@ class IntegrationTestSuite:
         required_excludes = [
             '.env',
             'ad-config.json',
+            'brand_guides/Offer map.md',
             'dashboard/data/*',
             'dashboard/data/update-snapshots/*',
             'seller/*',

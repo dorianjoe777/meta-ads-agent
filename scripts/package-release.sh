@@ -18,6 +18,7 @@ rm -f "$RELEASE_DIR/$ZIP_STABLE_NAME" "$RELEASE_DIR/$ZIP_VERSIONED_NAME" "$RELEA
 rsync -a "$ROOT_DIR/" "$STAGING_DIR/" \
   --exclude ".env" \
   --exclude "ad-config.json" \
+  --exclude "brand_guides/Offer map.md" \
   --exclude ".git" \
   --exclude ".git/*" \
   --exclude ".DS_Store" \
