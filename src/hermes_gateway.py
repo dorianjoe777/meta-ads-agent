@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -112,6 +113,65 @@ def _gateway_media_allow_dirs():
     return [
         str((ROOT_DIR / "output").resolve()),
     ]
+
+
+def _safe_dashboard_url(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = urllib.parse.urlsplit(text)
+    except ValueError:
+        return ""
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+        return ""
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path or "/", parsed.query, ""))
+
+
+def dashboard_recovery_link(config):
+    """Return the safest buyer-facing route back to model settings."""
+    explicit = _safe_dashboard_url(
+        os.environ.get("ADMIRA_DASHBOARD_URL")
+        or os.environ.get("CLOUD_DASHBOARD_HTTPS_URL")
+    )
+    if not explicit:
+        hostname = str(os.environ.get("CLOUD_DASHBOARD_HOSTNAME") or "").strip().lower().rstrip(".")
+        hostname_is_valid = bool(
+            hostname
+            and len(hostname) <= 253
+            and "." in hostname
+            and all(
+                label
+                and len(label) <= 63
+                and re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label)
+                for label in hostname.split(".")
+            )
+        )
+        if hostname_is_valid:
+            explicit = f"https://{hostname}/"
+    if explicit:
+        parsed = urllib.parse.urlsplit(explicit)
+        query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+        query = [(key, value) for key, value in query if key != "reconnect_model"]
+        query.append(("reconnect_model", "1"))
+        return {
+            "url": urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path or "/", urllib.parse.urlencode(query), "")),
+            "kind": "dashboard",
+        }
+    cloud_install = bool(
+        os.environ.get("CLOUD_ACCESS_SECRET")
+        or os.environ.get("DIGITALOCEAN_TOKEN")
+        or os.environ.get("DIGITALOCEAN_DROPLET_ID")
+    )
+    if cloud_install:
+        return {"url": "https://admiraia.uboost.lat/access", "kind": "portal"}
+    try:
+        port = int(getattr(config, "dashboard_port", 0) or os.environ.get("DASHBOARD_PORT") or 7871)
+    except (TypeError, ValueError):
+        port = 7871
+    if port < 1 or port > 65535:
+        port = 7871
+    return {"url": f"http://127.0.0.1:{port}/?reconnect_model=1", "kind": "dashboard"}
 
 
 def _telegram_model_provider_for_brain(brain):
@@ -352,7 +412,7 @@ def write_gateway_files(config):
     if env_path.exists():
         for line in env_path.read_text(encoding="utf-8").splitlines():
             key = line.split("=", 1)[0].strip() if "=" in line else ""
-            if key not in {"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS", "TELEGRAM_HOME_CHANNEL", "HERMES_TIMEZONE", "HERMES_MEDIA_ALLOW_DIRS", "ADMIRA_PRODUCT_ROOT", "ADMIRA_TELEGRAM_RECENT_TURNS_FILE"}:
+            if key not in {"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS", "TELEGRAM_HOME_CHANNEL", "HERMES_TIMEZONE", "HERMES_MEDIA_ALLOW_DIRS", "ADMIRA_PRODUCT_ROOT", "ADMIRA_TELEGRAM_RECENT_TURNS_FILE", "ADMIRA_DASHBOARD_RECOVERY_URL", "ADMIRA_DASHBOARD_RECOVERY_KIND", "ADMIRA_GATEWAY_PROVIDER"}:
                 env_lines.append(line)
     if config.telegram_bot_token:
         env_lines.append(f"TELEGRAM_BOT_TOKEN={_env_value(config.telegram_bot_token)}")
@@ -363,6 +423,10 @@ def write_gateway_files(config):
     env_lines.append(f"HERMES_MEDIA_ALLOW_DIRS={_env_value(os.pathsep.join(_gateway_media_allow_dirs()))}")
     env_lines.append(f"ADMIRA_PRODUCT_ROOT={_env_value(str(ROOT_DIR))}")
     env_lines.append(f"ADMIRA_TELEGRAM_RECENT_TURNS_FILE={_env_value(str(TELEGRAM_RECENT_TURNS_FILE))}")
+    recovery_link = dashboard_recovery_link(config)
+    env_lines.append(f"ADMIRA_DASHBOARD_RECOVERY_URL={_env_value(recovery_link['url'])}")
+    env_lines.append(f"ADMIRA_DASHBOARD_RECOVERY_KIND={_env_value(recovery_link['kind'])}")
+    env_lines.append(f"ADMIRA_GATEWAY_PROVIDER={_env_value(_telegram_model_provider_for_brain(hermes_brain_settings(config)))}")
     env_path.write_text("\n".join(env_lines).rstrip() + "\n", encoding="utf-8")
     env_path.chmod(0o600)
 
@@ -621,6 +685,10 @@ def start_gateway(config):
     env["ADMIRA_PRODUCT_ROOT"] = str(ROOT_DIR)
     env["ADMIRA_TELEGRAM_MODEL_STATE_FILE"] = str(TELEGRAM_MODEL_STATE_FILE)
     env["ADMIRA_TELEGRAM_RECENT_TURNS_FILE"] = str(TELEGRAM_RECENT_TURNS_FILE)
+    recovery_link = dashboard_recovery_link(config)
+    env["ADMIRA_DASHBOARD_RECOVERY_URL"] = recovery_link["url"]
+    env["ADMIRA_DASHBOARD_RECOVERY_KIND"] = recovery_link["kind"]
+    env["ADMIRA_GATEWAY_PROVIDER"] = _telegram_model_provider_for_brain(hermes_brain_settings(config))
     write_configured_telegram_model_state(config)
     try:
         with log_path.open("a", encoding="utf-8") as log_file:

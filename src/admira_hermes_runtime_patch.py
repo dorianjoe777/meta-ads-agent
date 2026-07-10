@@ -9,6 +9,7 @@ provider-error formatter that can otherwise leak raw English provider text.
 import json
 import os
 import re
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -174,6 +175,21 @@ def is_authentication_error_text(text):
     )
 
 
+def _dashboard_recovery_link():
+    raw = str(os.environ.get("ADMIRA_DASHBOARD_RECOVERY_URL") or "").strip()
+    if not raw:
+        return "", ""
+    try:
+        parsed = urllib.parse.urlsplit(raw)
+    except ValueError:
+        return "", ""
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+        return "", ""
+    safe = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path or "/", parsed.query, ""))
+    kind = "portal" if str(os.environ.get("ADMIRA_DASHBOARD_RECOVERY_KIND") or "").lower() == "portal" else "dashboard"
+    return safe, kind
+
+
 def gateway_authentication_reply(text, language=None):
     language = str(language or os.environ.get("ADMIRA_GATEWAY_LANGUAGE", "es")).lower()
     lowered = str(text or "").lower()
@@ -186,21 +202,35 @@ def gateway_authentication_reply(text, language=None):
             "chatgpt.com/backend-api/codex",
         )
     )
+    codex_session = codex_session or "codex" in str(os.environ.get("ADMIRA_GATEWAY_PROVIDER") or "").lower()
+    recovery_url, recovery_kind = _dashboard_recovery_link()
     if language.startswith("en"):
         if codex_session:
-            return (
-                "🔐 The ChatGPT/Codex connection expired or was closed. Open Settings → Agent model → "
-                "ChatGPT subscription and reconnect the account. Your saved business memory and work are safe."
-            )
+            intro = "🔐 The ChatGPT/Codex connection expired or was closed."
+            if recovery_url:
+                first_step = f"1. Open your Admira access page and then open the dashboard: {recovery_url}" if recovery_kind == "portal" else f"1. Open the dashboard: {recovery_url}"
+                return (
+                    f"{intro}\n\nTo reconnect it:\n{first_step}\n"
+                    "2. Open Setup.\n3. Find Agent model.\n4. Open ChatGPT subscription.\n"
+                    "5. Click connect/reconnect and finish the secure ChatGPT login.\n\n"
+                    "Your saved business memory and work are safe."
+                )
+            return f"{intro} Open Setup → Agent model → ChatGPT subscription and reconnect the account. Your saved business memory and work are safe."
         return (
             "🔐 The agent model connection is no longer valid. Open Settings → Agent model and reconnect "
             "the selected provider. Your saved business memory and work are safe."
         )
     if codex_session:
-        return (
-            "🔐 La conexión de ChatGPT/Codex venció o fue cerrada. Abre Configuración → Modelo del agente → "
-            "ChatGPT suscripción y vuelve a conectar la cuenta. La memoria y el trabajo guardado no se pierden."
-        )
+        intro = "🔐 La conexión de ChatGPT/Codex venció o fue cerrada."
+        if recovery_url:
+            first_step = f"1. Abre tu acceso de Admira y luego abre el dashboard: {recovery_url}" if recovery_kind == "portal" else f"1. Abre el dashboard: {recovery_url}"
+            return (
+                f"{intro}\n\nPara reconectarla:\n{first_step}\n"
+                "2. Entra a Configuración.\n3. Busca Modelo del agente.\n4. Abre ChatGPT suscripción.\n"
+                "5. Toca conectar/reconectar y completa el login seguro de ChatGPT.\n\n"
+                "La memoria y el trabajo guardado no se pierden."
+            )
+        return f"{intro} Abre Configuración → Modelo del agente → ChatGPT suscripción y vuelve a conectar la cuenta. La memoria y el trabajo guardado no se pierden."
     return (
         "🔐 La conexión del modelo dejó de ser válida. Abre Configuración → Modelo del agente y vuelve a "
         "conectar el proveedor seleccionado. La memoria y el trabajo guardado no se pierden."

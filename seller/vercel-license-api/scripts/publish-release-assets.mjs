@@ -43,19 +43,19 @@ const ASSETS = [
 
 const improvements = [
   {
-    title: "Limpieza diaria silenciosa",
-    body: "La limpieza programada del contexto sigue protegiendo sesiones largas, pero ya no muestra avisos tecnicos ni instrucciones internas al comprador.",
-    impact: "Telegram"
+    title: "Guía automática para reconectar",
+    body: "Si la cuenta del modelo pierde autorización, Telegram muestra pasos simples para volver a conectarla desde el dashboard.",
+    impact: "Recuperación"
   },
   {
-    title: "Reconexión clara de la cuenta",
-    body: "Si la autorización de la cuenta vence o es cerrada, el panel lo detecta y ofrece volver a conectarla sin perder memoria ni trabajo guardado.",
-    impact: "Configuración"
+    title: "Enlace directo a la configuración",
+    body: "Cuando la instalación conoce su dirección, el aviso incluye un enlace que abre Configuración y resalta la tarjeta correcta.",
+    impact: "Rapidez"
   },
   {
-    title: "Estado de conexión más preciso",
-    body: "Un archivo de autorización viejo ya no aparece falsamente como cuenta conectada cuando el proveedor informó que la sesión fue invalidada.",
-    impact: "Confiabilidad"
+    title: "Alternativa segura para instalaciones cloud",
+    body: "Si no hay una dirección directa disponible, la recuperación lleva al portal de acceso oficial sin mostrar datos internos.",
+    impact: "DigitalOcean"
   }
 ];
 

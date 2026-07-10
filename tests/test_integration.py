@@ -1277,6 +1277,38 @@ class IntegrationTestSuite:
         self.assert_true("vuelve a conectar" in invalidated.lower() and "token_invalidated" not in invalidated, "Gateway converts invalidated Codex OAuth into a clear Spanish reconnect message")
         self.assert_true("reconnect" in invalidated_en.lower() and "saved business memory" in invalidated_en.lower(), "Gateway provides the same safe authentication recovery in English")
 
+        old_recovery_url = os.environ.get("ADMIRA_DASHBOARD_RECOVERY_URL")
+        old_recovery_kind = os.environ.get("ADMIRA_DASHBOARD_RECOVERY_KIND")
+        old_gateway_provider = os.environ.get("ADMIRA_GATEWAY_PROVIDER")
+        try:
+            os.environ["ADMIRA_DASHBOARD_RECOVERY_URL"] = "https://buyer.example.test/?reconnect_model=1"
+            os.environ["ADMIRA_DASHBOARD_RECOVERY_KIND"] = "dashboard"
+            os.environ["ADMIRA_GATEWAY_PROVIDER"] = "openai-codex"
+            guided = admira_hermes_runtime_patch.provider_error_reply(
+                "HTTP 401 token_invalidated provider=openai-codex",
+                "es",
+                lambda text: f"ORIGINAL:{text}",
+            )
+            self.assert_true("https://buyer.example.test/?reconnect_model=1" in guided and "2. Entra a Configuración" in guided and "5. Toca conectar/reconectar" in guided, "Invalidated Codex OAuth sends a numbered dashboard reconnection guide with the detected URL")
+            generic_guided = admira_hermes_runtime_patch.provider_error_reply("Provider authentication failed.", "es", str)
+            self.assert_true("https://buyer.example.test/?reconnect_model=1" in generic_guided and "ChatGPT/Codex" in generic_guided, "Generic provider auth failures still use Codex recovery when the active gateway provider is Codex")
+            os.environ["ADMIRA_DASHBOARD_RECOVERY_URL"] = "javascript:alert(1)"
+            unsafe = admira_hermes_runtime_patch.provider_error_reply("HTTP 401 token_invalidated provider=openai-codex", "es", str)
+            self.assert_true("javascript:" not in unsafe and "Configuración → Modelo del agente" in unsafe, "Authentication recovery never echoes an unsafe dashboard URL")
+        finally:
+            if old_recovery_url is None:
+                os.environ.pop("ADMIRA_DASHBOARD_RECOVERY_URL", None)
+            else:
+                os.environ["ADMIRA_DASHBOARD_RECOVERY_URL"] = old_recovery_url
+            if old_recovery_kind is None:
+                os.environ.pop("ADMIRA_DASHBOARD_RECOVERY_KIND", None)
+            else:
+                os.environ["ADMIRA_DASHBOARD_RECOVERY_KIND"] = old_recovery_kind
+            if old_gateway_provider is None:
+                os.environ.pop("ADMIRA_GATEWAY_PROVIDER", None)
+            else:
+                os.environ["ADMIRA_GATEWAY_PROVIDER"] = old_gateway_provider
+
     def test_hermes_gateway_runtime_patch_always_attaches_generated_creatives(self):
         """Test generated Codex/Image files are attached even when small models omit MEDIA in the reply."""
         print("\nTesting Hermes Gateway Generated Media Runtime Patch...")
@@ -2258,7 +2290,7 @@ class IntegrationTestSuite:
         workspace = test_dir / "workspace"
         home = test_dir / "hermes-home"
         original_prepare = hermes_gateway.prepare_hermes_workspace
-        original_env = {key: os.environ.get(key) for key in ["TELEGRAM_AGENT_MODE", "TELEGRAM_AGENT_ENABLED", "TELEGRAM_LANGUAGE", "AGENT_COMMUNICATION_STYLE", "AGENT_AD_EXPERIENCE_LEVEL"]}
+        original_env = {key: os.environ.get(key) for key in ["TELEGRAM_AGENT_MODE", "TELEGRAM_AGENT_ENABLED", "TELEGRAM_LANGUAGE", "AGENT_COMMUNICATION_STYLE", "AGENT_AD_EXPERIENCE_LEVEL", "ADMIRA_DASHBOARD_URL", "CLOUD_DASHBOARD_HTTPS_URL", "CLOUD_DASHBOARD_HOSTNAME", "CLOUD_ACCESS_SECRET", "DIGITALOCEAN_TOKEN", "DIGITALOCEAN_DROPLET_ID", "DASHBOARD_PORT"]}
 
         class FakeConfig:
             telegram_bot_token = "123456:fake-token"
@@ -2283,6 +2315,8 @@ class IntegrationTestSuite:
             os.environ["TELEGRAM_LANGUAGE"] = "es"
             os.environ["AGENT_COMMUNICATION_STYLE"] = "technical"
             os.environ["AGENT_AD_EXPERIENCE_LEVEL"] = "advanced"
+            for key in ["ADMIRA_DASHBOARD_URL", "CLOUD_DASHBOARD_HTTPS_URL", "CLOUD_DASHBOARD_HOSTNAME", "CLOUD_ACCESS_SECRET", "DIGITALOCEAN_TOKEN", "DIGITALOCEAN_DROPLET_ID", "DASHBOARD_PORT"]:
+                os.environ.pop(key, None)
             hermes_gateway.prepare_hermes_workspace = lambda payload: {"path": str(workspace)}
 
             files = hermes_gateway.write_gateway_files(FakeConfig())
@@ -2292,6 +2326,7 @@ class IntegrationTestSuite:
 
             self.assert_true(str(home) == files["hermes_home"] and ".hermes" not in files["hermes_home"], "Hermes Gateway uses an isolated product HERMES_HOME")
             self.assert_true("TELEGRAM_BOT_TOKEN=123456:fake-token" in env_text and "TELEGRAM_ALLOWED_USERS=12345" in env_text, "Hermes Gateway stores Telegram credentials only in the isolated Hermes env")
+            self.assert_true("ADMIRA_DASHBOARD_RECOVERY_URL=http://127.0.0.1:7871/?reconnect_model=1" in env_text and "ADMIRA_DASHBOARD_RECOVERY_KIND=dashboard" in env_text and "ADMIRA_GATEWAY_PROVIDER=openai-codex" in env_text, "Gateway gives local buyers a direct model-reconnect dashboard link and provider context")
             self.assert_true("platform_toolsets:" in config_yaml and "telegram:" in config_yaml and "hermes-telegram" in config_yaml, "Hermes Gateway config enables native Telegram toolsets")
             self.assert_true("rich_messages: false" in config_yaml, "Hermes Gateway disables Telegram rich rendering so tables cannot become empty bubbles")
             self.assert_true("gateway_restart_notification: false" in config_yaml, "Hermes Gateway suppresses buyer-facing shutdown notices during planned dashboard restarts")
@@ -2315,6 +2350,14 @@ class IntegrationTestSuite:
             self.assert_true("Sé proactivo globalmente" in config_yaml and "evento correcto" in config_yaml, "Hermes Gateway applies the global expert configurator posture beyond placements")
             self.assert_true("no uses tablas Markdown" in config_yaml, "Hermes Gateway prompt keeps Telegram replies in mobile-safe bullet formatting")
             self.assert_true("Preferencia de comunicación: técnica" in config_yaml and "detalles de implementación" in config_yaml, "Hermes Gateway applies the global technical communication preference")
+            os.environ["CLOUD_DASHBOARD_HTTPS_URL"] = "https://buyer.cloud.admiraia.uboost.lat"
+            cloud_recovery = hermes_gateway.dashboard_recovery_link(FakeConfig())
+            self.assert_true(cloud_recovery == {"url": "https://buyer.cloud.admiraia.uboost.lat/?reconnect_model=1", "kind": "dashboard"}, "Cloud installs detect their HTTPS dashboard and deep-link model recovery")
+            os.environ.pop("CLOUD_DASHBOARD_HTTPS_URL", None)
+            os.environ["DIGITALOCEAN_TOKEN"] = "configured"
+            portal_recovery = hermes_gateway.dashboard_recovery_link(FakeConfig())
+            self.assert_true(portal_recovery == {"url": "https://admiraia.uboost.lat/access", "kind": "portal"}, "Cloud installs without a hostname fall back to the safe buyer access portal")
+            os.environ.pop("DIGITALOCEAN_TOKEN", None)
             self.assert_true("¿Tienes alguna pregunta?" in prompt and "No uses datos demo" in prompt, "Daily brief prompt ends with the buyer question and blocks demo data")
             minimax_files = hermes_gateway.write_gateway_files(MiniMaxConfig())
             minimax_yaml = Path(minimax_files["config"]).read_text(encoding="utf-8")
@@ -8210,6 +8253,7 @@ class IntegrationTestSuite:
         self.assert_true("connectChatGpt(event)" in html and "saveChatGptModel(event)" in html and "/api/agent-model/connect" in html and "Ya lo hice, conectar a ChatGPT ahora" in html, "ChatGPT/Codex connection saves model choice before connecting and uses a buyer-friendly CTA")
         self.assert_true("chatgptConnected=Boolean(model.chatgpt_connected)" in html and "runtime.status==='ok'&&String(model.chatgpt_session_detail" not in html, "ChatGPT/Codex card trusts the backend connection boolean instead of treating diagnostic text as a live account")
         self.assert_true("chatgpt_reauth_required" in dashboard_source and "chatgptReconnectRequired" in html and "La sesión de ChatGPT venció" in html, "Dashboard detects invalidated OAuth and offers a clear ChatGPT reconnect path")
+        self.assert_true("openModelReconnectFromUrl()" in html and "urlParams.get('reconnect_model')!=='1'" in html and "activateDashboardTab('setup')" in html and "recovery-focus" in html, "Dashboard recovery URLs open Setup and highlight the ChatGPT reconnect card")
         self.assert_true("Copiar comando" not in html and ".agent-model-option .route-icon" in html and ".agent-route-panel.active" in html, "ChatGPT/Codex setup hides command-copy UI and keeps route choices readable")
         self.assert_true("Copiar paso" not in html and "Copy step" not in html, "ChatGPT/Codex connection no longer presents copy-only wording")
         self.assert_true("Abrir configuración de ChatGPT" in html and "chatgpt-settings-link" in html and "chatgpt-settings-actions" in html, "ChatGPT/Codex setup gives buyers a direct button to the ChatGPT security settings")
