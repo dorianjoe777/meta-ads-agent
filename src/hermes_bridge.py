@@ -1566,6 +1566,55 @@ def codex_auth_line_from_status(output):
     return provider_line if codex_auth_line_is_logged_in(provider_line) else ""
 
 
+def codex_credential_health(config):
+    """Detect a revoked OAuth session that Hermes status still calls logged in.
+
+    Hermes' status command currently treats the presence of ``auth.json`` as a
+    positive login signal. The credential pool, however, records the real 401
+    returned by OpenAI. Only permanent OAuth failures force reconnection here;
+    temporary 429 usage limits remain connected.
+    """
+    home = Path(str(getattr(config, "hermes_home", "") or DATA_DIR / "hermes-home")).expanduser()
+    if not home.is_absolute():
+        home = ROOT_DIR / home
+    auth_path = home / "auth.json"
+    try:
+        payload = json.loads(auth_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return {"state": "unknown", "reauth_required": False, "auth_path_exists": auth_path.exists()}
+
+    pool = (payload.get("credential_pool") or {}).get("openai-codex") or []
+    if not isinstance(pool, list):
+        pool = []
+    permanent_patterns = (
+        "token_invalidated",
+        "authentication token has been invalidated",
+        "invalid_grant",
+        "refresh token is invalid",
+        "refresh token has been revoked",
+        "oauth token has been revoked",
+    )
+    for entry in pool:
+        if not isinstance(entry, dict):
+            continue
+        status = str(entry.get("last_status") or "").strip().lower()
+        message = str(entry.get("last_error_message") or "").strip().lower()
+        try:
+            error_code = int(entry.get("last_error_code") or 0)
+        except (TypeError, ValueError):
+            error_code = 0
+        permanently_invalid = any(pattern in message for pattern in permanent_patterns)
+        permanently_invalid = permanently_invalid or (error_code == 401 and status in {"dead", "invalid", "revoked"})
+        if permanently_invalid:
+            return {
+                "state": "reauth_required",
+                "reauth_required": True,
+                "auth_path_exists": True,
+                "last_error_code": error_code or 401,
+            }
+    return {"state": "stored", "reauth_required": False, "auth_path_exists": True}
+
+
 def hermes_codex_session_status(config, timeout=None):
     hermes_cli = shutil.which(getattr(config, "hermes_cli", "hermes") or "hermes")
     if not hermes_cli:
@@ -1596,11 +1645,18 @@ def hermes_codex_session_status(config, timeout=None):
     codex_line = codex_auth_line_from_status(output)
     provider_ok = "codex" in provider_line.lower() or "openai codex" in provider_line.lower()
     codex_ok = codex_auth_line_is_logged_in(codex_line)
-    detail = f"{provider_line or 'Provider unknown'}; {codex_line or 'OpenAI Codex auth unknown'}"
+    credential_health = codex_credential_health(config)
+    reauth_required = bool(credential_health.get("reauth_required"))
+    if reauth_required:
+        codex_ok = False
+    auth_detail = "OpenAI Codex session invalidated; reconnect required" if reauth_required else (codex_line or "OpenAI Codex auth unknown")
+    detail = f"{provider_line or 'Provider unknown'}; {auth_detail}"
     return {
         "ready": provider_ok and codex_ok,
         "authenticated": codex_ok,
         "provider_ready": provider_ok and codex_ok,
+        "reauth_required": reauth_required,
+        "auth_state": credential_health.get("state", "unknown"),
         "detail": detail,
         "identity": extract_codex_account_identity(output or detail),
         "returncode": completed.returncode,

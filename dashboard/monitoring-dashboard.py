@@ -10183,6 +10183,8 @@ def dashboard_payload():
                 "hermes_model": config.hermes_model,
                 "hermes_require_codex_auth": config.hermes_require_codex_auth,
                 "chatgpt_connected": bool(main_codex_session.get("authenticated", main_codex_session.get("ready"))),
+                "chatgpt_reauth_required": bool(main_codex_session.get("reauth_required")),
+                "chatgpt_auth_state": main_codex_session.get("auth_state", "unknown"),
                 "chatgpt_account": main_codex_session.get("identity", {}),
                 "chatgpt_session_detail": main_codex_session.get("detail", ""),
                 "primary_brain": getattr(config, "agent_brain_provider", "openai_codex"),

@@ -43,19 +43,19 @@ const ASSETS = [
 
 const improvements = [
   {
-    title: "Login de ChatGPT/Codex mas confiable",
-    body: "El login en DigitalOcean ya no se queda congelado en Preparando login cuando se reintenta la conexion o cuando falta autorizacion.",
-    impact: "Onboarding"
+    title: "Limpieza diaria silenciosa",
+    body: "La limpieza programada del contexto sigue protegiendo sesiones largas, pero ya no muestra avisos tecnicos ni instrucciones internas al comprador.",
+    impact: "Telegram"
   },
   {
-    title: "Primer onboarding mas fluido",
-    body: "La instalacion inicial puede iniciar, revisar y responder el login de ChatGPT/Codex antes de terminar la contraseña del dashboard.",
-    impact: "Instalacion cloud"
+    title: "Reconexión clara de la cuenta",
+    body: "Si la autorización de la cuenta vence o es cerrada, el panel lo detecta y ofrece volver a conectarla sin perder memoria ni trabajo guardado.",
+    impact: "Configuración"
   },
   {
-    title: "Errores visibles en la pestaña de login",
-    body: "Si el servidor no puede abrir el enlace seguro, la pestaña de espera muestra una accion para volver al dashboard en vez de quedarse girando.",
-    impact: "Claridad"
+    title: "Estado de conexión más preciso",
+    body: "Un archivo de autorización viejo ya no aparece falsamente como cuenta conectada cuando el proveedor informó que la sesión fue invalidada.",
+    impact: "Confiabilidad"
   }
 ];
 

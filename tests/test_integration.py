@@ -1132,6 +1132,73 @@ class IntegrationTestSuite:
             setup_status.subprocess.run = original_setup_run
             setup_status.shutil.which = original_setup_which
 
+    def test_hermes_codex_invalidated_token_requires_reconnect(self):
+        """Test a stored-but-revoked OAuth token is not shown as connected."""
+        print("\nTesting Hermes Codex Invalidated Token Recovery...")
+
+        auth_home = Path(tempfile.mkdtemp(prefix="codex-invalidated-", dir=str(ROOT_DIR / "output")))
+
+        class FakeConfig:
+            hermes_cli = "hermes"
+            hermes_status_timeout_seconds = 1
+            hermes_home = str(auth_home)
+            daily_brief_timezone = "UTC"
+
+        class Completed:
+            returncode = 0
+            stdout = "Provider:     OpenAI Codex\nOpenAI Codex  ✓ logged in\n"
+            stderr = ""
+
+        original_run = hermes_bridge.subprocess.run
+        original_which = hermes_bridge.shutil.which
+        try:
+            auth_home.mkdir(parents=True, exist_ok=True)
+            (auth_home / "auth.json").write_text(
+                json.dumps(
+                    {
+                        "credential_pool": {
+                            "openai-codex": [
+                                {
+                                    "last_status": "exhausted",
+                                    "last_error_code": 401,
+                                    "last_error_message": "Your authentication token has been invalidated. token_invalidated",
+                                }
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            hermes_bridge.shutil.which = lambda _cmd: "/usr/local/bin/hermes"
+            hermes_bridge.subprocess.run = lambda *_args, **_kwargs: Completed()
+
+            invalidated = hermes_bridge.hermes_codex_session_status(FakeConfig())
+            self.assert_true(invalidated.get("ready") is False and invalidated.get("authenticated") is False, "Revoked Codex OAuth overrides Hermes' stale logged-in line")
+            self.assert_true(invalidated.get("reauth_required") is True and invalidated.get("auth_state") == "reauth_required", "Revoked Codex OAuth explicitly asks the dashboard for reconnection")
+
+            (auth_home / "auth.json").write_text(
+                json.dumps(
+                    {
+                        "credential_pool": {
+                            "openai-codex": [
+                                {
+                                    "last_status": "exhausted",
+                                    "last_error_code": 429,
+                                    "last_error_message": "The usage limit has been reached",
+                                }
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            limited = hermes_bridge.hermes_codex_session_status(FakeConfig())
+            self.assert_true(limited.get("authenticated") is True and limited.get("reauth_required") is False, "Temporary Codex usage limits remain connected and do not force OAuth login")
+        finally:
+            hermes_bridge.subprocess.run = original_run
+            hermes_bridge.shutil.which = original_which
+            shutil.rmtree(auth_home, ignore_errors=True)
+
     def test_hermes_model_usage_limit_keeps_connection_state_clear(self):
         """Test ChatGPT/Codex usage limits are not reported as missing setup."""
         print("\nTesting Hermes Model Usage Limit Messaging...")
@@ -1196,6 +1263,19 @@ class IntegrationTestSuite:
         passthrough = admira_hermes_runtime_patch.provider_error_reply("Some unrelated provider failure", "es", lambda text: f"ORIGINAL:{text}")
         self.assert_true("un momento" in unknown and "rate-limiting" not in unknown.lower(), "Gateway keeps a Spanish fallback when only a vague wait hint exists")
         self.assert_true(passthrough.startswith("ORIGINAL:"), "Runtime patch delegates unrelated provider failures to Hermes")
+
+        invalidated = admira_hermes_runtime_patch.provider_error_reply(
+            "HTTP 401: Your authentication token has been invalidated. code=token_invalidated provider=openai-codex",
+            "es",
+            lambda text: f"ORIGINAL:{text}",
+        )
+        invalidated_en = admira_hermes_runtime_patch.provider_error_reply(
+            "HTTP 401: Your authentication token has been invalidated. code=token_invalidated provider=openai-codex",
+            "en",
+            lambda text: f"ORIGINAL:{text}",
+        )
+        self.assert_true("vuelve a conectar" in invalidated.lower() and "token_invalidated" not in invalidated, "Gateway converts invalidated Codex OAuth into a clear Spanish reconnect message")
+        self.assert_true("reconnect" in invalidated_en.lower() and "saved business memory" in invalidated_en.lower(), "Gateway provides the same safe authentication recovery in English")
 
     def test_hermes_gateway_runtime_patch_always_attaches_generated_creatives(self):
         """Test generated Codex/Image files are attached even when small models omit MEDIA in the reply."""
@@ -2215,6 +2295,7 @@ class IntegrationTestSuite:
             self.assert_true("platform_toolsets:" in config_yaml and "telegram:" in config_yaml and "hermes-telegram" in config_yaml, "Hermes Gateway config enables native Telegram toolsets")
             self.assert_true("rich_messages: false" in config_yaml, "Hermes Gateway disables Telegram rich rendering so tables cannot become empty bubbles")
             self.assert_true("gateway_restart_notification: false" in config_yaml, "Hermes Gateway suppresses buyer-facing shutdown notices during planned dashboard restarts")
+            self.assert_true("session_reset:" in config_yaml and "  notify: false" in config_yaml and "  at_hour: 4" in config_yaml, "Hermes daily session cleanup stays enabled at 4:00 but its technical notice is hidden from buyers")
             self.assert_true("threshold: 0.85" in config_yaml and "codex_gpt55_autoraise: false" in config_yaml, "Hermes Gateway keeps the larger Codex context threshold without replaying the auto-compaction notice to buyers")
             self.assert_true("HERMES_MEDIA_ALLOW_DIRS=" in env_text and "/output" in env_text, "Hermes Gateway allows generated output files to be delivered as native media attachments")
             self.assert_true("mcp_servers:" in config_yaml and "admira:" in config_yaml and "admira_mcp_server.py" in config_yaml, "Hermes Gateway registers the Admira MCP product-tool bridge")
@@ -8128,6 +8209,7 @@ class IntegrationTestSuite:
         self.assert_true("telegram_runtime_model" in dashboard_source and "Telegram ahora usa" in html and "En uso en Telegram" in html, "Agent model panel shows the live Telegram /model runtime state separately from the saved primary model")
         self.assert_true("connectChatGpt(event)" in html and "saveChatGptModel(event)" in html and "/api/agent-model/connect" in html and "Ya lo hice, conectar a ChatGPT ahora" in html, "ChatGPT/Codex connection saves model choice before connecting and uses a buyer-friendly CTA")
         self.assert_true("chatgptConnected=Boolean(model.chatgpt_connected)" in html and "runtime.status==='ok'&&String(model.chatgpt_session_detail" not in html, "ChatGPT/Codex card trusts the backend connection boolean instead of treating diagnostic text as a live account")
+        self.assert_true("chatgpt_reauth_required" in dashboard_source and "chatgptReconnectRequired" in html and "La sesión de ChatGPT venció" in html, "Dashboard detects invalidated OAuth and offers a clear ChatGPT reconnect path")
         self.assert_true("Copiar comando" not in html and ".agent-model-option .route-icon" in html and ".agent-route-panel.active" in html, "ChatGPT/Codex setup hides command-copy UI and keeps route choices readable")
         self.assert_true("Copiar paso" not in html and "Copy step" not in html, "ChatGPT/Codex connection no longer presents copy-only wording")
         self.assert_true("Abrir configuración de ChatGPT" in html and "chatgpt-settings-link" in html and "chatgpt-settings-actions" in html, "ChatGPT/Codex setup gives buyers a direct button to the ChatGPT security settings")
@@ -9543,6 +9625,7 @@ class IntegrationTestSuite:
             self.test_hermes_creative_image_request_routes_to_codex_tool,
             self.test_hermes_missing_runtime_gives_chatgpt_setup_guidance,
             self.test_hermes_codex_status_requires_positive_login_signal,
+            self.test_hermes_codex_invalidated_token_requires_reconnect,
             self.test_hermes_model_usage_limit_keeps_connection_state_clear,
             self.test_hermes_gateway_rate_limit_runtime_patch_localizes_reset_time,
             self.test_hermes_gateway_runtime_patch_always_attaches_generated_creatives,

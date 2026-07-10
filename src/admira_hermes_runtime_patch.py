@@ -48,6 +48,14 @@ ADMIRA_GENERATED_MEDIA_KEYS = {
     "creative_image_path",
 }
 ADMIRA_RECENT_TURNS_LIMIT = 80
+ADMIRA_AUTH_INVALID_PATTERNS = (
+    "token_invalidated",
+    "authentication token has been invalidated",
+    "invalid_grant",
+    "refresh token is invalid",
+    "refresh token has been revoked",
+    "oauth token has been revoked",
+)
 
 
 def _recent_turns_path():
@@ -151,9 +159,59 @@ def _write_runtime_model_state(provider, model, base_url="", source="telegram_mo
         return False
 
 
+def is_authentication_error_text(text):
+    lowered = str(text or "").lower()
+    if any(pattern in lowered for pattern in ADMIRA_AUTH_INVALID_PATTERNS):
+        return True
+    return any(
+        pattern in lowered
+        for pattern in (
+            "provider authentication failed",
+            "authentication failed",
+            "authenticationerror",
+            "unauthorized provider",
+        )
+    )
+
+
+def gateway_authentication_reply(text, language=None):
+    language = str(language or os.environ.get("ADMIRA_GATEWAY_LANGUAGE", "es")).lower()
+    lowered = str(text or "").lower()
+    codex_session = any(
+        marker in lowered
+        for marker in (
+            "token_invalidated",
+            "authentication token has been invalidated",
+            "openai-codex",
+            "chatgpt.com/backend-api/codex",
+        )
+    )
+    if language.startswith("en"):
+        if codex_session:
+            return (
+                "🔐 The ChatGPT/Codex connection expired or was closed. Open Settings → Agent model → "
+                "ChatGPT subscription and reconnect the account. Your saved business memory and work are safe."
+            )
+        return (
+            "🔐 The agent model connection is no longer valid. Open Settings → Agent model and reconnect "
+            "the selected provider. Your saved business memory and work are safe."
+        )
+    if codex_session:
+        return (
+            "🔐 La conexión de ChatGPT/Codex venció o fue cerrada. Abre Configuración → Modelo del agente → "
+            "ChatGPT suscripción y vuelve a conectar la cuenta. La memoria y el trabajo guardado no se pierden."
+        )
+    return (
+        "🔐 La conexión del modelo dejó de ser válida. Abre Configuración → Modelo del agente y vuelve a "
+        "conectar el proveedor seleccionado. La memoria y el trabajo guardado no se pierden."
+    )
+
+
 def provider_error_reply(text, language=None, original=None):
     if is_rate_limit_text(text):
         return gateway_rate_limit_reply(text, language or os.environ.get("ADMIRA_GATEWAY_LANGUAGE", "es"))
+    if is_authentication_error_text(text):
+        return gateway_authentication_reply(text, language)
     if callable(original):
         return original(text)
     return str(text or "")
