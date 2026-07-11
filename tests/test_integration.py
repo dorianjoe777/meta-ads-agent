@@ -1823,14 +1823,14 @@ class IntegrationTestSuite:
             dashboard.start_hermes_browserless_login = lambda _config: {
                 "ok": True,
                 "status": "browser_login_started",
-                "command": "hermes model --no-browser",
+                "command": "hermes auth add openai-codex --no-browser --timeout 30",
                 "running": True,
-                "needs_input": True,
+                "needs_input": False,
             }
             dashboard.log_action = lambda *_args, **_kwargs: None
             result = dashboard.connect_agent_model({})
             self.assert_true(result["status"] == "browser_login_started", "Headless installs start the browserless Hermes login bridge")
-            self.assert_true(result["command"] == "hermes model --no-browser", "VPS bridge uses Hermes no-browser mode")
+            self.assert_true(result["command"] == "hermes auth add openai-codex --no-browser --timeout 30", "VPS bridge uses the explicit stable OpenAI Codex provider id instead of driving picker labels")
             self.assert_true(captured.get("AGENT_CHAT_PROVIDER") == "hermes", "VPS bridge still selects Hermes")
             self.assert_true(captured.get("HERMES_REQUIRE_CODEX_AUTH") == "true", "VPS bridge keeps Codex auth required")
         finally:
@@ -1847,7 +1847,32 @@ class IntegrationTestSuite:
         dashboard = load_dashboard_module()
         writes = []
         original_write = dashboard.os.write
+        original_explicit_support = dashboard.hermes_explicit_codex_auth_supported
         try:
+            cfg = type("Cfg", (), {"hermes_cli": "hermes"})()
+            dashboard.hermes_explicit_codex_auth_supported = lambda _config: True
+            self.assert_true(dashboard.hermes_browserless_command(cfg) == ["hermes", "auth", "add", "openai-codex", "--no-browser", "--timeout", "30"], "Modern Hermes uses the explicit OpenAI Codex auth command without provider menus")
+            dashboard.hermes_explicit_codex_auth_supported = lambda _config: False
+            self.assert_true(dashboard.hermes_browserless_command(cfg) == ["hermes", "model", "--no-browser"], "Older Hermes keeps the legacy picker as a compatibility fallback")
+            original_catalog_file = dashboard.CODEX_MODEL_CATALOG_FILE
+            original_subprocess_run = dashboard.subprocess.run
+            original_hermes_environment = dashboard.hermes_environment
+            try:
+                with tempfile.TemporaryDirectory() as catalog_tmp:
+                    dashboard.CODEX_MODEL_CATALOG_FILE = Path(catalog_tmp) / "codex-models.json"
+                    dashboard.hermes_environment = lambda _config: {}
+                    dashboard.subprocess.run = lambda *_args, **_kwargs: type("Result", (), {"returncode": 0, "stdout": '["gpt-6", "gpt-5.5", "gpt-5.4-mini"]\n', "stderr": ""})()
+                    catalog_cfg = type("CatalogCfg", (), {"hermes_model": "gpt-5.5"})()
+                    catalog = dashboard.codex_model_catalog(catalog_cfg, force_refresh=True)
+                    self.assert_true(catalog["models"] == ["gpt-6", "gpt-5.5", "gpt-5.4-mini"] and catalog["recommended"] == "gpt-6", "Dashboard model picker consumes the installed Hermes live Codex catalog instead of a fixed product list")
+                    dashboard.subprocess.run = lambda *_args, **_kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired("catalog", 1))
+                    stale = dashboard.codex_model_catalog(catalog_cfg, force_refresh=True)
+                    self.assert_true(stale["models"] == catalog["models"] and stale["source"] == "last_known_catalog", "A transient catalog failure preserves the last valid model list")
+                    self.assert_true(dashboard.resolve_codex_model_choice("retired-model", catalog_cfg) == "gpt-5.5", "A retired model falls back to a still-supported saved model without breaking setup")
+            finally:
+                dashboard.CODEX_MODEL_CATALOG_FILE = original_catalog_file
+                dashboard.subprocess.run = original_subprocess_run
+                dashboard.hermes_environment = original_hermes_environment
             dashboard.os.write = lambda fd, data: writes.append((fd, data)) or len(data)
             provider_output = (
                 "Select provider:\n"
@@ -2089,6 +2114,7 @@ class IntegrationTestSuite:
             self.assert_true(prompt["phase"] == "device_auth_settings" and "Ajustes > Seguridad" in prompt["detail"], "Disabled Codex device-code auth is turned into buyer-friendly ChatGPT settings guidance")
         finally:
             dashboard.os.write = original_write
+            dashboard.hermes_explicit_codex_auth_supported = original_explicit_support
 
     def test_hermes_blocks_non_codex_runtime_by_default(self):
         """Test buyer default does not silently chat through a non-Codex Hermes provider."""
@@ -8302,7 +8328,7 @@ class IntegrationTestSuite:
         self.assert_true("Copiar comando" not in html and ".agent-model-option .route-icon" in html and ".agent-route-panel.active" in html, "ChatGPT/Codex setup hides command-copy UI and keeps route choices readable")
         self.assert_true("Copiar paso" not in html and "Copy step" not in html, "ChatGPT/Codex connection no longer presents copy-only wording")
         self.assert_true("Abrir configuración de ChatGPT" in html and "chatgpt-settings-link" in html and "chatgpt-settings-actions" in html, "ChatGPT/Codex setup gives buyers a direct button to the ChatGPT security settings")
-        self.assert_true("Modelo para ChatGPT/Codex" in html and "<select name=\"hermes_model\">" in html and "gpt-5.5" in html and "Recomendado automático" not in html and "agentModelFormPayload()" in html, "ChatGPT/Codex setup exposes gpt-5.5 as the clear default model selector")
+        self.assert_true("Modelo para ChatGPT/Codex" in html and "<select name=\"hermes_model\">" in html and "hermes_model_options" in html and "recommendedCodexModel" in html and "refreshCodexModelCatalog" in html and "/api/agent-model/catalog" in html, "ChatGPT/Codex setup renders and refreshes the account-aware Hermes model catalog instead of a fixed list")
         self.assert_true("Image 2 con ChatGPT/Codex" in html and "connectImageChatGpt(event)" in html and "codex_image_source" in html and "imageChatGptPayload()" in html, "Agent model setup can connect a separate ChatGPT/Codex session only for Image 2")
         self.assert_true("imageSessionConnected" in html and "imageConnected=imageDedicated?imageSessionConnected:chatgptConnected" in html and "imageDedicatedAllowed=apiBrain" in html, "Image 2 card treats auth connection separately and only offers a dedicated account when the primary brain is API-based")
         self.assert_true("Modelo para imágenes" not in html and "Image model" not in html and "Usar sesión principal" not in html and "Use main session" not in html, "Image 2 connection no longer exposes image model or confusing routing controls")
@@ -9315,6 +9341,8 @@ class IntegrationTestSuite:
         install_local = (ROOT_DIR / "scripts" / "install-local.sh").read_text(encoding="utf-8")
         env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
         self.assert_true("@openai/codex" in dockerfile and "node:22" in dockerfile, "Docker image installs Node and Codex CLI")
+        self.assert_true("CODEX_CLI_VERSION=0.142.5" in dockerfile and "HERMES_AGENT_REF=a6b9597d5fb92969d605a858d5f14536e805553a" in dockerfile and "@openai/codex@${CODEX_CLI_VERSION}" in dockerfile and "hermes-agent.git@${HERMES_AGENT_REF}" in dockerfile, "Fresh Docker installs pin the smoke-tested Hermes and Codex builds instead of pulling main/latest drift")
+        self.assert_true('CODEX_CLI_VERSION="${CODEX_CLI_VERSION:-0.142.5}"' in install_local and 'HERMES_AGENT_REF="${HERMES_AGENT_REF:-a6b9597d5fb92969d605a858d5f14536e805553a}"' in install_local, "Native installs use the same tested dependency pins with explicit override support")
         self.assert_true("python-telegram-bot>=21,<22" in dockerfile and "python-telegram-bot>=21,<22" in install_local, "Docker/native installs include the Telegram adapter required by Hermes Gateway")
         self.assert_true("CODEX_CREATIVE_ENABLED=true" in dockerfile and 'CODEX_CREATIVE_ENABLED: "true"' in compose and '"CODEX_CREATIVE_ENABLED": "true"' in docker_entrypoint, "Buyer Docker installs enable Codex/Image creative generation by default")
         self.assert_true("CODEX_HOME=/app/runtime/codex" in dockerfile and "CODEX_HOME: /app/runtime/codex" in compose and "/app/runtime/codex/generated_images" in docker_entrypoint, "Docker persists the buyer's ChatGPT/Codex login and generated images across updates")

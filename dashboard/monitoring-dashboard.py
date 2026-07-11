@@ -238,6 +238,10 @@ TELEGRAM_THREAD = None
 TELEGRAM_STOP = None
 TELEGRAM_FINGERPRINT = None
 HERMES_LOGIN_OUTPUT_LIMIT = 12000
+CODEX_MODEL_CATALOG_FILE = DATA_DIR / "codex_model_catalog.json"
+CODEX_MODEL_CATALOG_TTL_SECONDS = 6 * 60 * 60
+_HERMES_AUTH_CAPABILITY_CACHE = {}
+_RUNTIME_VERSION_CACHE = {"checked_at": 0.0, "value": {}}
 DASHBOARD_SESSION_PREFIX = "das_"
 DASHBOARD_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60
 HERMES_LOGIN_LOCK = threading.Lock()
@@ -3180,13 +3184,144 @@ def hermes_shell_command(config):
     return f"{prefix}{shlex.quote(cli)} model"
 
 
+def hermes_explicit_codex_auth_supported(config):
+    cli = shutil.which(str(getattr(config, "hermes_cli", "") or "hermes").strip() or "hermes")
+    if not cli:
+        return False
+    cached = _HERMES_AUTH_CAPABILITY_CACHE.get(cli)
+    if cached is not None:
+        return bool(cached)
+    try:
+        result = subprocess.run(
+            [cli, "auth", "add", "--help"],
+            cwd=str(ROOT_DIR),
+            env=hermes_environment(config),
+            text=True,
+            capture_output=True,
+            timeout=6,
+            check=False,
+        )
+        output = "\n".join([result.stdout or "", result.stderr or ""]).lower()
+        supported = result.returncode == 0 and "openai-codex" in output and "--no-browser" in output
+    except (OSError, subprocess.TimeoutExpired):
+        supported = False
+    _HERMES_AUTH_CAPABILITY_CACHE[cli] = supported
+    return supported
+
+
 def hermes_browserless_command(config):
     cli = str(getattr(config, "hermes_cli", "") or "hermes").strip() or "hermes"
+    if hermes_explicit_codex_auth_supported(config):
+        return [cli, "auth", "add", "openai-codex", "--no-browser", "--timeout", "30"]
     return [cli, "model", "--no-browser"]
 
 
 def hermes_browserless_shell_command(config):
     return " ".join(shlex.quote(part) for part in hermes_browserless_command(config))
+
+
+def _clean_codex_model_ids(values):
+    cleaned = []
+    for value in values or []:
+        model = str(value or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{1,100}", model):
+            continue
+        if model not in cleaned:
+            cleaned.append(model)
+        if len(cleaned) >= 40:
+            break
+    return cleaned
+
+
+def codex_model_catalog(config=None, force_refresh=False):
+    """Return the installed Hermes account-aware Codex catalog with a stale-safe cache."""
+    config = config or load_config()
+    cached = read_json(CODEX_MODEL_CATALOG_FILE, {})
+    cached_models = _clean_codex_model_ids(cached.get("models") if isinstance(cached, dict) else [])
+    cached_at = float((cached or {}).get("checked_epoch") or 0) if isinstance(cached, dict) else 0
+    if cached_models and not force_refresh and time.time() - cached_at < CODEX_MODEL_CATALOG_TTL_SECONDS:
+        return {**cached, "models": cached_models, "stale": False}
+
+    code = (
+        "import json\n"
+        "models=[]\n"
+        "try:\n"
+        " from hermes_cli.models import provider_model_ids\n"
+        " try: models=provider_model_ids('openai-codex', force_refresh=" + ("True" if force_refresh else "False") + ")\n"
+        " except TypeError: models=provider_model_ids('openai-codex')\n"
+        "except Exception:\n"
+        " try:\n"
+        "  from hermes_cli.codex_models import get_codex_model_ids\n"
+        "  models=get_codex_model_ids()\n"
+        " except Exception: models=[]\n"
+        "print(json.dumps(models))\n"
+    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=str(ROOT_DIR),
+            env=hermes_environment(config),
+            text=True,
+            capture_output=True,
+            timeout=18,
+            check=False,
+        )
+        output_lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+        discovered = _clean_codex_model_ids(json.loads(output_lines[-1])) if result.returncode == 0 and output_lines else []
+    except (OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired):
+        discovered = []
+
+    models = discovered or cached_models
+    source = "hermes_live_catalog" if discovered else ("last_known_catalog" if cached_models else "safe_fallback")
+    if not models:
+        current = str(getattr(config, "hermes_model", "") or "").strip()
+        models = _clean_codex_model_ids([current, "gpt-5.5", "gpt-5.4-mini", "gpt-5.4"])
+    payload = {
+        "models": models,
+        "recommended": models[0] if models else normalize_hermes_model(""),
+        "source": source,
+        "checked_at": now_iso(),
+        "checked_epoch": time.time(),
+        "stale": not bool(discovered),
+    }
+    if discovered:
+        write_private_json(CODEX_MODEL_CATALOG_FILE, payload)
+    return payload
+
+
+def resolve_codex_model_choice(value, config=None):
+    config = config or load_config()
+    raw = str(value or "").strip()
+    catalog = codex_model_catalog(config=config)
+    models = catalog.get("models") or []
+    if raw and raw.lower() not in {"auto", "recommended", "recomendado", "default"} and raw in models:
+        return raw
+    current = str(getattr(config, "hermes_model", "") or "").strip()
+    if current in models:
+        return current
+    return str(catalog.get("recommended") or normalize_hermes_model(raw)).strip()
+
+
+def runtime_dependency_versions(config=None):
+    config = config or load_config()
+    now = time.time()
+    if now - float(_RUNTIME_VERSION_CACHE.get("checked_at") or 0) < 10 * 60:
+        return dict(_RUNTIME_VERSION_CACHE.get("value") or {})
+
+    def first_line(command):
+        try:
+            result = subprocess.run(command, cwd=str(ROOT_DIR), env=hermes_environment(config), text=True, capture_output=True, timeout=5, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        return clean_terminal_text("\n".join([result.stdout or "", result.stderr or ""])).splitlines()[0] if (result.stdout or result.stderr) else ""
+
+    value = {
+        "hermes": first_line([str(getattr(config, "hermes_cli", "") or "hermes"), "--version"]),
+        "codex": first_line([str(getattr(config, "codex_cli", "") or "codex"), "--version"]),
+        "explicit_codex_auth": hermes_explicit_codex_auth_supported(config),
+    }
+    _RUNTIME_VERSION_CACHE.update({"checked_at": now, "value": value})
+    return dict(value)
 
 
 def clean_terminal_text(value):
@@ -4038,6 +4173,11 @@ def finish_hermes_browserless_session(session_id, returncode):
         purpose = HERMES_LOGIN_STATE.get("purpose") or "agent"
     config = config_for_connect_purpose(purpose)
     ready, auth_detail = hermes_codex_ready(config)
+    if ready and purpose == "agent":
+        try:
+            codex_model_catalog(config=config, force_refresh=True)
+        except Exception:
+            pass
     with HERMES_LOGIN_LOCK:
         if HERMES_LOGIN_STATE.get("id") != session_id:
             return
@@ -4115,6 +4255,7 @@ def start_hermes_browserless_login(config, purpose="agent"):
 
         master_fd, slave_fd = pty.openpty()
         command = hermes_browserless_command(config)
+        explicit_auth = "auth" in command and "openai-codex" in command
         command[0] = cli_path
         env = hermes_environment(config)
         env["PYTHONUNBUFFERED"] = "1"
@@ -4138,7 +4279,7 @@ def start_hermes_browserless_login(config, purpose="agent"):
                     "detail": "Sesion segura abierta dentro de este servidor.",
                     "output": "",
                     "phase": "starting",
-                    "auto_note": "Estoy preparando el agente para usar OpenAI Codex.",
+                    "auto_note": "Estoy abriendo el login directo de OpenAI Codex." if explicit_auth else "Estoy preparando el agente para usar OpenAI Codex.",
                     "auto_provider_sent": False,
                     "auto_codex_subprovider_sent": False,
                     "auto_model_sent": False,
@@ -4148,14 +4289,15 @@ def start_hermes_browserless_login(config, purpose="agent"):
                     "updated_at": now_iso(),
                     "proc": proc,
                     "fd": master_fd,
-                    "command": hermes_browserless_shell_command(config),
+                    "command": " ".join(shlex.quote(part) for part in command),
+                    "auth_mode": "explicit_openai_codex" if explicit_auth else "legacy_picker",
                 }
             )
         threading.Thread(target=read_hermes_browserless_output, args=(session_id, master_fd, proc), name="hermes-browserless-login", daemon=True).start()
         return hermes_connect_response(
             "browser_login_started",
             "Conecta ChatGPT desde este navegador",
-            f"Abrí la sesión segura dentro de este servidor. Voy a elegir OpenAI Codex y el modelo {normalize_hermes_model(config.hermes_model)} automáticamente. Si aparece un enlace, ábrelo aquí.",
+            "Abrí directamente el login seguro de OpenAI Codex. Cuando aparezcan el enlace y el código, los mostraré aquí." if explicit_auth else f"Abrí la sesión segura dentro de este servidor. Voy a elegir OpenAI Codex y el modelo {normalize_hermes_model(config.hermes_model)} automáticamente. Si aparece un enlace, ábrelo aquí.",
             mode="browserless_started",
             command=hermes_browserless_shell_command(config),
             running=True,
@@ -4163,7 +4305,8 @@ def start_hermes_browserless_login(config, purpose="agent"):
             connection_purpose=purpose,
             needs_input=False,
             phase="starting",
-            auto_note="Estoy preparando el agente para usar OpenAI Codex.",
+            auto_note="Estoy abriendo el login directo de OpenAI Codex." if explicit_auth else "Estoy preparando el agente para usar OpenAI Codex.",
+            auth_mode="explicit_openai_codex" if explicit_auth else "legacy_picker",
         )
     except Exception as exc:
         return hermes_connect_response(
@@ -4180,6 +4323,10 @@ def agent_model_connect_status(payload=None):
     payload = payload or {}
     purpose = normalize_connect_purpose(payload.get("connection_purpose") or payload.get("purpose"))
     return hermes_browserless_snapshot(config_for_connect_purpose(purpose), purpose=purpose)
+
+
+def refresh_agent_model_catalog(_payload=None):
+    return codex_model_catalog(config=load_config(), force_refresh=True)
 
 
 def agent_model_connect_input(payload=None):
@@ -4305,7 +4452,7 @@ def connect_agent_model(payload=None):
             )
         return start_hermes_browserless_login(config, purpose="image")
     env_updates = {"AGENT_CHAT_PROVIDER": "hermes", "AGENT_BRAIN_PROVIDER": "openai_codex", "HERMES_REQUIRE_CODEX_AUTH": "true"}
-    env_updates["HERMES_MODEL"] = normalize_hermes_model(payload.get("hermes_model") if "hermes_model" in payload else "")
+    env_updates["HERMES_MODEL"] = resolve_codex_model_choice(payload.get("hermes_model") if "hermes_model" in payload else "", config=load_config())
     update_env_values(env_updates)
     config = load_config()
     ready, auth_detail = hermes_codex_ready(config)
@@ -4409,7 +4556,7 @@ def save_setup_config(payload):
         if api_key:
             env_updates["AGENT_CHAT_API_KEY"] = api_key
     if "hermes_model" in payload:
-        hermes_model = normalize_hermes_model(payload.get("hermes_model"))
+        hermes_model = resolve_codex_model_choice(payload.get("hermes_model"), config=load_config())
         env_updates["HERMES_MODEL"] = hermes_model
     if "codex_image_source" in payload:
         image_source = normalize_codex_image_source(payload.get("codex_image_source"))
@@ -10093,6 +10240,8 @@ def dashboard_payload():
     image_home = resolved_codex_image_hermes_home(config)
     image_model = getattr(config, "codex_image_hermes_model", config.hermes_model) if codex_image_source == "dedicated_chatgpt" else config.hermes_model
     runtime_model_state = telegram_runtime_model_state(config)
+    model_catalog = codex_model_catalog(config=config)
+    dependency_versions = runtime_dependency_versions(config=config)
     return {
         "metrics": metrics,
         "recommendations": recommendations,
@@ -10182,6 +10331,11 @@ def dashboard_payload():
                 "model": config.agent_chat_model,
                 "temperature": config.agent_chat_temperature,
                 "hermes_model": config.hermes_model,
+                "hermes_model_options": model_catalog.get("models", []),
+                "hermes_model_recommended": model_catalog.get("recommended", ""),
+                "hermes_model_catalog_source": model_catalog.get("source", ""),
+                "hermes_model_catalog_updated_at": model_catalog.get("checked_at", ""),
+                "runtime_versions": dependency_versions,
                 "hermes_require_codex_auth": config.hermes_require_codex_auth,
                 "chatgpt_connected": bool(main_codex_session.get("authenticated", main_codex_session.get("ready"))),
                 "chatgpt_reauth_required": bool(main_codex_session.get("reauth_required")),
@@ -10430,7 +10584,7 @@ HTML = r"""<!DOCTYPE html>
 class DashboardHandler(BaseHTTPRequestHandler):
     HTML_PATHS = {"/", "/dashboard"}
     PROTECTED_GET_PATHS = {"/api/dashboard", "/api/export", "/api/report", "/api/setup", "/api/social/auth-status", "/api/social/accounts", "/api/update/snapshots", "/api/creative-asset", "/api/brand-asset"}
-    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/publishing/config", "/api/publishing/test", "/api/agent-model/connect", "/api/agent-model/disconnect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/logo", "/api/brand-guides/product", "/api/ad-briefs", "/api/codex/creative-plan", "/api/codex/image-generate", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/optimization/settings", "/api/optimization/unlock", "/api/shopify/config", "/api/shopify/test", "/api/shopify/sync", "/api/daily-brief/schedule", "/api/daily-social-content/settings", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/communication-style", "/api/onboarding/complete", "/api/onboarding/skip", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/local-network-access", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
+    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/publishing/config", "/api/publishing/test", "/api/agent-model/connect", "/api/agent-model/disconnect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/agent-model/catalog", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/logo", "/api/brand-guides/product", "/api/ad-briefs", "/api/codex/creative-plan", "/api/codex/image-generate", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/optimization/settings", "/api/optimization/unlock", "/api/shopify/config", "/api/shopify/test", "/api/shopify/sync", "/api/daily-brief/schedule", "/api/daily-social-content/settings", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/communication-style", "/api/onboarding/complete", "/api/onboarding/skip", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/local-network-access", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
     ONBOARDING_OPEN_GETS = {"/api/dashboard", "/api/setup"}
     ONBOARDING_OPEN_POSTS = {"/api/dashboard-password", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/license/activate", "/api/agent-model/connect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/onboarding/communication-style", "/api/onboarding/complete"}
     GET_JSON_ROUTES = {
@@ -10455,6 +10609,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         "/api/agent-model/disconnect": disconnect_agent_model,
         "/api/agent-model/connect-status": agent_model_connect_status,
         "/api/agent-model/connect-input": agent_model_connect_input,
+        "/api/agent-model/catalog": refresh_agent_model_catalog,
         "/api/targeting/search": meta_targeting_search,
         "/api/audience-strategy": lambda payload: create_audience_strategy(payload, payload.get("language", "es")),
         "/api/business-profile": save_business_context,

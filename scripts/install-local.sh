@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CODEX_CLI_VERSION="${CODEX_CLI_VERSION:-0.142.5}"
+HERMES_AGENT_REF="${HERMES_AGENT_REF:-a6b9597d5fb92969d605a858d5f14536e805553a}"
 cd "$ROOT_DIR"
 
 echo "Self-Hosted Meta Ads Agent installer"
@@ -97,7 +99,7 @@ else
   echo "Creative strategy still works with saved brand guides, but Codex-powered plans and image prompts need Codex CLI configured."
   if [ "${INSTALL_CODEX_CLI:-false}" = "true" ] && command -v npm >/dev/null 2>&1; then
     echo "INSTALL_CODEX_CLI=true detected; attempting Codex CLI install with npm."
-    npm install -g @openai/codex || echo "Codex CLI install failed. Install it manually after setup."
+    npm install -g "@openai/codex@${CODEX_CLI_VERSION}" || echo "Codex CLI install failed. Install it manually after setup."
   fi
 fi
 
@@ -106,7 +108,7 @@ if command -v hermes >/dev/null 2>&1; then
 else
   echo "Hermes Agent was not found."
   echo "Attempting to install Hermes Agent so the manager can use ChatGPT/Codex OAuth through Hermes."
-  python3 -m pip install --user "mcp>=1.0.0" "python-telegram-bot>=21,<22" "git+https://github.com/NousResearch/hermes-agent.git" || echo "Hermes install failed. Install it manually, then run: hermes model"
+  python3 -m pip install --user "mcp>=1.0.0" "python-telegram-bot>=21,<22" "git+https://github.com/NousResearch/hermes-agent.git@${HERMES_AGENT_REF}" || echo "Hermes install failed. Install it manually, then run: hermes auth add openai-codex --no-browser"
 fi
 
 python3 - <<'PY' || python3 -m pip install --user "mcp>=1.0.0" "python-telegram-bot>=21,<22" || echo "MCP/Telegram package install failed. Hermes Telegram tools may need: python3 -m pip install --user mcp python-telegram-bot"
@@ -123,6 +125,6 @@ echo
 echo "Install complete."
 echo "Next:"
 echo "  1. Edit .env"
-echo "  2. Run hermes model and choose OpenAI Codex to use the buyer's ChatGPT subscription"
+echo "  2. Run hermes auth add openai-codex --no-browser to use the buyer's ChatGPT subscription"
 echo "  3. Run ./scripts/run-dashboard.sh"
 echo "  4. Open http://127.0.0.1:7871"

@@ -1,5 +1,8 @@
 FROM node:22-bookworm-slim
 
+ARG CODEX_CLI_VERSION=0.142.5
+ARG HERMES_AGENT_REF=a6b9597d5fb92969d605a858d5f14536e805553a
+
 ENV PYTHONUNBUFFERED=1 \
     DASHBOARD_HOST=0.0.0.0 \
     DASHBOARD_PORT=7871 \
@@ -21,11 +24,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python3 /usr/local/bin/python3
 
-RUN npm install -g @openai/codex
+RUN npm install -g "@openai/codex@${CODEX_CLI_VERSION}"
 RUN python3 -m pip install --break-system-packages --no-cache-dir \
     "mcp>=1.0.0" \
     "python-telegram-bot>=21,<22" \
-    "git+https://github.com/NousResearch/hermes-agent.git"
+    "git+https://github.com/NousResearch/hermes-agent.git@${HERMES_AGENT_REF}"
 
 COPY . .
 RUN chmod +x scripts/*.sh \

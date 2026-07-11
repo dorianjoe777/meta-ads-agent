@@ -43,19 +43,19 @@ const ASSETS = [
 
 const improvements = [
   {
-    title: "Login directo desde Telegram",
-    body: "Si vence la autorización de ChatGPT/Codex, el agente inicia una conexión nueva y envía el enlace oficial y el código temporal directamente en el chat.",
-    impact: "Telegram"
+    title: "Login sin menús frágiles",
+    body: "La conexión usa directamente el proveedor estable openai-codex y deja el selector interactivo solo como compatibilidad para Hermes antiguos.",
+    impact: "ChatGPT"
   },
   {
-    title: "Sin repetir pasos del dashboard",
-    body: "El comprador puede completar el login inmediatamente; la guía anterior queda disponible solo como alternativa si OpenAI no entrega un código a tiempo.",
-    impact: "Rapidez"
+    title: "Modelos siempre sincronizados",
+    body: "El dashboard obtiene la lista disponible desde Hermes y la cuenta ChatGPT, la renueva periódicamente y conserva la última lista válida si hay una caída temporal.",
+    impact: "Modelos"
   },
   {
-    title: "Código temporal protegido",
-    body: "La recuperación usa un canal local privado y excluye el código temporal de la memoria durable y los registros del agente.",
-    impact: "Seguridad"
+    title: "Instalaciones reproducibles",
+    body: "Hermes y Codex quedan fijados a versiones probadas en instalaciones nuevas, evitando que main/latest cambien el onboarding sin una actualización de Admira.",
+    impact: "Estabilidad"
   }
 ];
 
