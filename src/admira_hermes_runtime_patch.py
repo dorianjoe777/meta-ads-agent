@@ -92,6 +92,9 @@ def _redact_turn_text(value):
     if "código temporal para conectar chatgpt" in lower or "temporary code to connect chatgpt" in lower:
         return "Se inició una reconexión segura de ChatGPT/Codex. Los datos temporales de acceso no se guardaron."
     clean = re.sub(r"MEDIA:\s*(?:/|~/)\S+", "MEDIA:[attached]", text)
+    product_root = str(os.environ.get("ADMIRA_PRODUCT_ROOT") or "").strip().rstrip("/")
+    if product_root:
+        clean = clean.replace(product_root, "[internal-path]")
     clean = re.sub(r"(?:/app|/Users|/root)(?:/[^\s\"'`]+)+", "[internal-path]", clean)
     clean = re.sub(r"\b(?:EA[A-Za-z0-9_-]{40,}|EAA[A-Za-z0-9_-]{40,})\b", "[redacted-token]", clean)
     clean = re.sub(r"\bdop_v1_[A-Za-z0-9_-]{40,}\b", "[redacted-token]", clean)
@@ -515,7 +518,19 @@ def _has_confirmed_durable_save(response):
     except (TypeError, ValueError):
         text = str(sources).lower()
     has_save_tool = any(marker in text for marker in ADMIRA_DURABLE_TOOL_MARKERS)
-    has_success = any(marker in text for marker in ('"saved": true', '"ok": true', '"executed": true', '"status": "completed"'))
+    has_success = any(
+        marker in text
+        for marker in (
+            '"saved": true',
+            '"saved":true',
+            '"ok": true',
+            '"ok":true',
+            '"executed": true',
+            '"executed":true',
+            '"status": "completed"',
+            '"status":"completed"',
+        )
+    )
     return has_save_tool and has_success
 
 

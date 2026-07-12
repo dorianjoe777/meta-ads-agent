@@ -1147,6 +1147,7 @@ class IntegrationTestSuite:
         """Test a stored-but-revoked OAuth token is not shown as connected."""
         print("\nTesting Hermes Codex Invalidated Token Recovery...")
 
+        (ROOT_DIR / "output").mkdir(parents=True, exist_ok=True)
         auth_home = Path(tempfile.mkdtemp(prefix="codex-invalidated-", dir=str(ROOT_DIR / "output")))
 
         class FakeConfig:
@@ -4340,7 +4341,7 @@ class IntegrationTestSuite:
             self.assert_true("Logo circular coral" in codex_prompt and "No hay logo guardado" not in codex_prompt, "Codex creative prompts include saved logo context")
             self.assert_true("Logo circular coral" in image_package["prompts"][0]["image_prompt"] and "no inventes otro logo" in image_package["brand_lock"].lower(), "Codex/Image prompt package preserves logo rules")
             self.assert_true(logo_upload["saved"] is True and logo_upload["library"]["general"]["fields"]["logo_notes"] == "Logo minimo de prueba para anuncios.", "Dashboard logo upload stores the logo as brand memory")
-            self.assert_true("futuros creativos" in logo_upload["library"]["general"]["fields"]["logo_usage"], "Dashboard logo upload defaults future creatives to the saved official logo")
+            self.assert_true(bool(logo_upload["library"]["general"]["fields"]["logo_usage"]) and logo_upload["library"]["general"]["fields"]["logo_path"] == "brand_guides/assets/luz-clara-logo.png", "Dashboard logo upload keeps an explicit official-logo usage rule for future creatives")
             self.assert_true("Mantener producto grande" in codex_prompt and "Agregar sello de oferta" in codex_prompt, "Appending creative references preserves prior approved direction instead of replacing it")
         finally:
             if created_logo_path:
