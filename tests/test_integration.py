@@ -1505,6 +1505,11 @@ class IntegrationTestSuite:
             self.assert_true(patched is event, "Inbound video frame patch mutates the existing Hermes event")
             self.assert_true(len(event.media_urls) == 4 and event.media_types.count("image/jpeg") == 3, "Inbound video attachments are expanded with extracted frame images")
             self.assert_true("representative frames" in event.text and "uploaded video" in event.text, "Inbound video frame patch adds agent-only context about frame review")
+            self.assert_true(admira_hermes_runtime_patch._message_requires_live_meta_sync("¿Qué campañas están activas en Ads Manager?") and not admira_hermes_runtime_patch._message_requires_live_meta_sync("Ayúdame con los colores de mi logo"), "Gateway identifies current Meta account questions that require automatic live synchronization")
+            live_prompt = admira_hermes_runtime_patch._append_live_meta_context("¿Cómo va la campaña?", {"ok": True, "campaigns": [{"id": "120250188043050096", "status": "active"}]})
+            self.assert_true("ADMIRA LIVE META CONTEXT" in live_prompt and "120250188043050096" in live_prompt, "Gateway injects authoritative live Meta inventory into the same model turn")
+            redacted_live_prompt = admira_hermes_runtime_patch._redact_turn_text(live_prompt)
+            self.assert_true("120250188043050096" not in redacted_live_prompt and "live Meta context synchronized" in redacted_live_prompt, "Automatic live context is not persisted later as stale conversation memory")
         finally:
             public_asset_fetcher.extract_video_preview_frames = original_extract
             shutil.rmtree(video_dir, ignore_errors=True)
@@ -7995,6 +8000,7 @@ class IntegrationTestSuite:
         original_require = dashboard.require_cloud_license
         original_create = dashboard.create_campaign
         original_pending = dashboard.PENDING_FILE
+        original_refresh = dashboard.refresh_managed_real_metrics
         test_dir = ROOT_DIR / "output" / "test-dashboard-chat-router"
 
         class FakeSelf:
@@ -8025,6 +8031,8 @@ class IntegrationTestSuite:
             dashboard.agent_chat = lambda config, payload: generic_calls.append(payload) or {"reply": "No puedo usar CLI ni terminal desde aquí.", "tool_request": None}
             dashboard.require_cloud_license = lambda *args, **kwargs: None
             dashboard.create_campaign = lambda payload: {"status": "pending", "id": "approval_test", "payload": payload}
+            live_refreshes = []
+            dashboard.refresh_managed_real_metrics = lambda reason="manual": live_refreshes.append(reason) or {"ok": True, "rows": 1}
 
             fake = FakeSelf()
             dashboard.DashboardHandler.post_chat(
@@ -8039,6 +8047,7 @@ class IntegrationTestSuite:
             self.assert_true(not generic_calls, "Dashboard chat uses local product action router before generic agent for campaign creation")
             self.assert_true(result["routed_action"]["type"] == "create_campaign_stack" and result["routed_action"]["staged"] is True, "Dashboard chat stages campaign creation from natural language")
             self.assert_true("terminal" not in result["reply"].lower() and "aprobación" in result["reply"].lower(), "Dashboard chat reply does not expose CLI/terminal as a blocker")
+            self.assert_true(live_refreshes == ["dashboard_chat_live_context"], "Dashboard chat synchronizes Meta before routing an account or campaign request")
         finally:
             dashboard.dashboard_payload = original_dashboard_payload
             dashboard.load_chat_history = original_load_history
@@ -8047,6 +8056,7 @@ class IntegrationTestSuite:
             dashboard.agent_chat = original_agent_chat
             dashboard.require_cloud_license = original_require
             dashboard.create_campaign = original_create
+            dashboard.refresh_managed_real_metrics = original_refresh
             dashboard.PENDING_FILE = original_pending
             shutil.rmtree(test_dir, ignore_errors=True)
 

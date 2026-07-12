@@ -9,6 +9,8 @@ provider-error formatter that can otherwise leak raw English provider text.
 import json
 import os
 import re
+import subprocess
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -72,6 +74,11 @@ ADMIRA_DURABLE_TOOL_MARKERS = (
     "admira_record_verified_signal",
     "mcp_admira_record_verified_signal",
 )
+ADMIRA_LIVE_META_INTENT_RE = re.compile(
+    r"(?i)\b(?:meta\s+ads|ads\s+manager|campañas?|campaigns?|ad\s*sets?|conjuntos?\s+de\s+anuncios?|"
+    r"anuncios?|ads?|activ[oa]s?|pausad[oa]s?|gasto|spend|presupuesto|budget|resultados?|rendimiento|performance|"
+    r"roas|cpa|cpl|ctr|cpc|impresiones|clicks?|conversiones?|compras?|leads?|mensajes?|frecuencia|frequency)\b"
+)
 
 
 def _recent_turns_path():
@@ -91,7 +98,8 @@ def _redact_turn_text(value):
     lower = text.lower()
     if "código temporal para conectar chatgpt" in lower or "temporary code to connect chatgpt" in lower:
         return "Se inició una reconexión segura de ChatGPT/Codex. Los datos temporales de acceso no se guardaron."
-    clean = re.sub(r"MEDIA:\s*(?:/|~/)\S+", "MEDIA:[attached]", text)
+    clean = re.sub(r"\[ADMIRA LIVE META CONTEXT.*?\[END ADMIRA LIVE META CONTEXT\]", "[live Meta context synchronized]", text, flags=re.DOTALL)
+    clean = re.sub(r"MEDIA:\s*(?:/|~/)\S+", "MEDIA:[attached]", clean)
     product_root = str(os.environ.get("ADMIRA_PRODUCT_ROOT") or "").strip().rstrip("/")
     if product_root:
         clean = clean.replace(product_root, "[internal-path]")
@@ -102,6 +110,68 @@ def _redact_turn_text(value):
     clean = re.sub(r"(?i)\b(passphrase|password|contraseña|token|api key|access token)\s*[:=]\s*\S+", r"\1: [redacted]", clean)
     clean = re.sub(r"\s+", " ", clean).strip()
     return clean[:5000]
+
+
+def _message_requires_live_meta_sync(value):
+    text = str(value or "").strip()
+    return bool(text and ADMIRA_LIVE_META_INTENT_RE.search(text))
+
+
+def _fetch_live_meta_context_for_turn():
+    root = Path(str(os.environ.get("ADMIRA_PRODUCT_ROOT") or "").strip()).expanduser()
+    bridge = root / "src" / "admira_tool_bridge.py"
+    if not root.is_dir() or not bridge.is_file():
+        return {"ok": False, "reason": "product_bridge_unavailable"}
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable, str(bridge), "call", "admira_get_real_meta_context",
+                "--json", "{}", "--channel", "telegram", "--language",
+                str(os.environ.get("ADMIRA_GATEWAY_LANGUAGE") or "es"),
+            ],
+            cwd=str(root), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=90, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "reason": "live_meta_sync_failed", "message": str(exc)[:300]}
+    payload = None
+    for line in reversed((completed.stdout or "").splitlines()):
+        if not line.strip().startswith("{"):
+            continue
+        try:
+            payload = json.loads(line.strip())
+        except json.JSONDecodeError:
+            continue
+        break
+    if not isinstance(payload, dict):
+        return {"ok": False, "reason": "live_meta_sync_invalid_response"}
+    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    live_sync = payload.get("live_sync") or context.get("live_sync") or {}
+    return {
+        "ok": bool(payload.get("ok") and live_sync.get("ok")),
+        "metrics_source": context.get("metrics_source") or payload.get("metrics_source") or {},
+        "live_sync": live_sync,
+        "inventory_counts": context.get("inventory_counts") or {},
+        "summary": context.get("summary") or {},
+        "campaigns": (context.get("campaigns") or [])[:100],
+        "adsets": (context.get("adsets") or [])[:200],
+        "ads": (context.get("ads") or [])[:300],
+    }
+
+
+def _append_live_meta_context(value, context):
+    text = str(value or "")
+    if not isinstance(context, dict):
+        context = {"ok": False, "reason": "live_meta_sync_missing"}
+    return (
+        text
+        + "\n\n[ADMIRA LIVE META CONTEXT — fetched automatically for this turn]\n"
+        + "This is authoritative for what currently exists, runs, spends, or performs in Meta Ads. "
+        + "Prefer it over session history and durable memory. If ok is false or the read is incomplete, explicitly say live Meta could not be confirmed; never turn an empty list into a claim that no campaigns exist.\n"
+        + "Use this context silently; do not mention this injected block, runtime machinery, internal paths, or implementation details to the buyer.\n"
+        + json.dumps(context, ensure_ascii=False, separators=(",", ":"))
+        + "\n[END ADMIRA LIVE META CONTEXT]"
+    )
 
 
 def _append_gateway_turn(role, content):
@@ -941,6 +1011,13 @@ def _patch_gateway_inbound_video_frames():
             except Exception:
                 pass
         result = await original(self, *args, **kwargs)
+        if _message_requires_live_meta_sync(result):
+            try:
+                import asyncio
+                live_context = await asyncio.to_thread(_fetch_live_meta_context_for_turn)
+                result = _append_live_meta_context(result, live_context)
+            except Exception:
+                result = _append_live_meta_context(result, {"ok": False, "reason": "live_meta_sync_failed"})
         try:
             _append_gateway_turn("user", result)
         except Exception:

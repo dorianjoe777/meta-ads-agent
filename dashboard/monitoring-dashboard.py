@@ -8211,6 +8211,17 @@ def chat_reply(payload, es, en):
     return es if chat_lang(payload) == "es" else en
 
 
+LIVE_META_CHAT_INTENT_RE = re.compile(
+    r"(?i)\b(?:meta\s+ads|ads\s+manager|campañas?|campaigns?|ad\s*sets?|conjuntos?\s+de\s+anuncios?|"
+    r"anuncios?|ads?|activ[oa]s?|pausad[oa]s?|gasto|spend|presupuesto|budget|resultados?|rendimiento|performance|"
+    r"roas|cpa|cpl|ctr|cpc|impresiones|clicks?|conversiones?|compras?|leads?|mensajes?|frecuencia|frequency)\b"
+)
+
+
+def chat_message_requires_live_meta_sync(message):
+    return bool(LIVE_META_CHAT_INTENT_RE.search(str(message or "")))
+
+
 def load_chat_history():
     items = read_json(CHAT_HISTORY_FILE, [])
     if not isinstance(items, list):
@@ -11100,6 +11111,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def post_chat(self, payload):
         chat_payload = dict(payload)
+        if chat_message_requires_live_meta_sync(payload.get("message")):
+            refresh_managed_real_metrics(reason="dashboard_chat_live_context")
         dashboard = dashboard_payload()
         previous_history = load_chat_history()
         chat_payload["history"] = previous_history
