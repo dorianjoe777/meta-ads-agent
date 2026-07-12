@@ -1596,9 +1596,9 @@ class IntegrationTestSuite:
         """Test the dashboard ChatGPT/Codex connection endpoint prefers an automatic terminal action."""
         print("\nTesting Dashboard ChatGPT/Codex Connect Action...")
 
-        self.assert_true(normalize_hermes_model("") == "gpt-5.5", "Empty Hermes model uses gpt-5.5")
-        self.assert_true(normalize_hermes_model("auto") == "gpt-5.5", "Legacy auto Hermes model uses gpt-5.5")
-        self.assert_true(normalize_hermes_model("recommended") == "gpt-5.5", "Legacy recommended Hermes model uses gpt-5.5")
+        self.assert_true(normalize_hermes_model("") == "gpt-5.6-terra", "Empty Hermes model uses GPT-5.6 Terra")
+        self.assert_true(normalize_hermes_model("auto") == "gpt-5.6-terra", "Legacy auto Hermes model uses GPT-5.6 Terra")
+        self.assert_true(normalize_hermes_model("recommended") == "gpt-5.6-terra", "Legacy recommended Hermes model uses GPT-5.6 Terra")
 
         dashboard = load_dashboard_module()
         captured = {}
@@ -1615,7 +1615,7 @@ class IntegrationTestSuite:
             self.assert_true(result["status"] == "terminal_opened", "Connect action opens the terminal when the environment allows it")
             self.assert_true(captured.get("AGENT_CHAT_PROVIDER") == "hermes", "Connect action selects Hermes as the agent provider")
             self.assert_true(captured.get("HERMES_REQUIRE_CODEX_AUTH") == "true", "Connect action keeps Codex auth required by default")
-            self.assert_true(captured.get("HERMES_MODEL") == "gpt-5.5", "ChatGPT/Codex connection pins gpt-5.5 by default instead of an unavailable auto option")
+            self.assert_true(captured.get("HERMES_MODEL") == "gpt-5.6-terra", "ChatGPT/Codex connection defaults to GPT-5.6 Terra instead of an unavailable auto option")
         finally:
             dashboard.update_env_values = original_update
             dashboard.launch_hermes_terminal = original_launch
@@ -2409,7 +2409,7 @@ class IntegrationTestSuite:
             self.assert_true("    keepalive_interval: 1200" in config_yaml, "Hermes Gateway avoids MCP keepalive reconnects while a long creative tool call is still running")
             self.assert_true("    - admira" in config_yaml, "Hermes Gateway explicitly enables Admira MCP tools for Telegram")
             self.assert_true("disabled_toolsets:" in config_yaml and "code_execution" in config_yaml and str(workspace) in config_yaml, "Hermes Gateway config keeps Telegram in the curated workspace")
-            self.assert_true('default: "gpt-5.5"' in config_yaml and 'default: "auto"' not in config_yaml, "Hermes Gateway normalizes legacy auto model to gpt-5.5")
+            self.assert_true('default: "gpt-5.6-terra"' in config_yaml and 'default: "auto"' not in config_yaml, "Hermes Gateway normalizes legacy auto model to GPT-5.6 Terra")
             self.assert_true("entrevista del negocio" in config_yaml and "no bloquean la configuración inicial" in config_yaml, "Hermes Gateway tells Telegram that agent interviews are not dashboard blockers")
             self.assert_true("primero entenderemos el negocio" in config_yaml and "marca visual" in config_yaml and "ofertas, briefs, estrategia y campañas" in config_yaml, "Hermes Gateway introduction explains the three-step onboarding journey")
             self.assert_true("Tu identidad de cara al cliente es solo Admira IA" in config_yaml and "comandos como `/help`" in config_yaml, "Telegram prompt blocks buyer-facing Hermes/runtime command branding")
@@ -9376,8 +9376,8 @@ class IntegrationTestSuite:
         self.assert_true("https://admiraia.uboost.lat" in env_example, "Buyer release uses deployed license server")
         self.assert_true("LICENSE_PUBLIC_KEY=" in env_example, "Buyer release includes only license verification key")
         self.assert_true("AGENT_CHAT_BASE_URL=https://api.minimax.io/v1" in env_example and "AGENT_CHAT_MODEL=MiniMax-M3" in env_example and "AGENT_CHAT_PROVIDER=hermes" in env_example and "AGENT_BRAIN_PROVIDER=openai_codex" in env_example, "Buyer release documents Hermes runtime plus MiniMax M3/OpenAI-compatible brain support")
-        self.assert_true("HERMES_MODEL=gpt-5.5" in env_example, "Buyer release defaults ChatGPT/Codex to gpt-5.5 instead of auto")
-        self.assert_true("except ImportError" in hermes_gateway_source and "gpt-5.5" in hermes_gateway_source and "except ImportError" in hermes_bridge_source and "gpt-5.5" in hermes_bridge_source and "except ImportError" in dashboard_server_source and "gpt-5.5" in dashboard_server_source, "Hermes and dashboard tolerate mixed-version installs when model normalization is missing")
+        self.assert_true("HERMES_MODEL=gpt-5.6-terra" in env_example, "Buyer release defaults ChatGPT/Codex to GPT-5.6 Terra instead of auto")
+        self.assert_true("except ImportError" in hermes_gateway_source and "gpt-5.6-terra" in hermes_gateway_source and "except ImportError" in hermes_bridge_source and "gpt-5.6-terra" in hermes_bridge_source and "except ImportError" in dashboard_server_source and "gpt-5.6-terra" in dashboard_server_source, "Hermes and dashboard tolerate mixed-version installs when model normalization is missing")
         product_version = (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()
         self.assert_true(f"META_ADS_AGENT_VERSION={product_version}" in env_example, "Buyer release exposes the installed product version")
         bootstrap_config = (ROOT_DIR / "installer" / "release-bootstrap.env").read_text(encoding="utf-8")
@@ -9440,6 +9440,11 @@ class IntegrationTestSuite:
         self.assert_true("Content-Security-Policy" in dashboard_source and "frame-ancestors 'none'" in dashboard_source and "object-src 'none'" in dashboard_source, "Dashboard sends a content security policy that reduces browser injection impact")
         dashboard_html_block = dashboard_server_source.split('HTML = r"""', 1)[1].split('"""\n\n\nclass DashboardHandler', 1)[0]
         self.assert_true("/assets/dashboard/dashboard.css" in dashboard_html_block and "/assets/dashboard/dashboard.js" in dashboard_html_block, "Dashboard HTML loads first-party CSS and JS assets instead of embedding the large app inline")
+        self.assert_true('<html lang="es">' in dashboard_html_block and "Preparando tu dashboard" in dashboard_html_block and "dashboard-boot-screen" in dashboard_css_source, "Dashboard paints a Spanish loading state before any API request can expose the English source labels")
+        self.assert_true(dashboard_js_source.rfind("applyTranslations();") < dashboard_js_source.rfind("load();"), "Dashboard applies the saved language before starting its first data request")
+        dashboard_payload_source = dashboard_server_source.split("def dashboard_payload():", 1)[1].split("\n\nHTML =", 1)[0]
+        self.assert_true("cached_agent_runtime_status(config)" in dashboard_payload_source and "build_setup_status(runtime_status=runtime_status)" in dashboard_payload_source and "hermes_codex_session_status(" not in dashboard_payload_source and "hermes_codex_image_status(" not in dashboard_payload_source, "Initial dashboard payload uses cached runtime health instead of blocking on Hermes/Codex subprocesses")
+        self.assert_true('/api/agent-model/runtime' in dashboard_server_source and "refreshAgentRuntimeStatus(false)" in dashboard_js_source and "ThreadPoolExecutor" in dashboard_server_source, "Dashboard refreshes agent health in parallel after the interface becomes usable")
         self.assert_true("<style>" not in dashboard_html_block and "<script>" not in dashboard_html_block, "Dashboard HTML no longer embeds inline style or script blocks")
         self.assert_true(not any(token in dashboard_html_block for token in ["onclick=", "onsubmit=", "onchange=", "oninput=", "onpaste=", " style="]), "Dashboard HTML does not ship inline handlers or style attributes")
         self.assert_true(not any(token in dashboard_js_source for token in ["onclick=", "onsubmit=", "onchange=", "oninput=", "onpaste=", " style=", "<style>"]), "Dashboard JS templates do not generate inline handlers, style attributes, or style blocks")

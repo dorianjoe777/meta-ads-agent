@@ -40,7 +40,7 @@ except ImportError:
     def normalize_hermes_model(value):
         model = str(value or "").strip()
         if not model or model.lower() in {"auto", "recommended", "recomendado", "default"}:
-            return "gpt-5.5"
+            return "gpt-5.6-terra"
         return model
 
 

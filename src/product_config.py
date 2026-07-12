@@ -13,7 +13,7 @@ from communication_style import ad_experience_from_environment, communication_st
 ROOT_DIR = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT_DIR / ".env"
 DASHBOARD_IDENTITY_FILE = ROOT_DIR / "dashboard" / "data" / "dashboard_identity.json"
-DEFAULT_HERMES_CODEX_MODEL = "gpt-5.5"
+DEFAULT_HERMES_CODEX_MODEL = "gpt-5.6-terra"
 DEFAULT_CODEX_IMAGE_SOURCE = "main_chatgpt"
 
 

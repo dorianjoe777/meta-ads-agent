@@ -150,6 +150,13 @@ function applyTranslations(){
  syncDashboardView();
  syncPanels();
 }
+function setDashboardBooting(active){
+ const title=qs('#dashboard-boot-title'),detail=qs('#dashboard-boot-detail');
+ if(title)title.textContent=lang==='es'?'Preparando tu dashboard':'Preparing your dashboard';
+ if(detail)detail.textContent=lang==='es'?'Cargando tus datos guardados…':'Loading your saved data…';
+ document.body.classList.toggle('dashboard-booting',Boolean(active));
+ document.body.setAttribute('aria-busy',active?'true':'false');
+}
 function viewLabels(){return lang==='es'?{control:'Control',timeline:'En el tiempo',analytics:'Vista total',idle:'Producto',aurora:'Aurora',sapphire:'Sapphire',ember:'Ember'}:{control:'Control',timeline:'Timeline',analytics:'Total view',idle:'Showcase',aurora:'Aurora',sapphire:'Sapphire',ember:'Ember'}}
 function applyDashboardTheme(){
  dashboardTheme=normalizeDashboardTheme(dashboardTheme);
@@ -572,7 +579,41 @@ function openOnboardingPasswordStep(){const steps=onboardingSteps();const idx=st
 async function requestUnlock(message=''){if(!dashboardPasswordIsSet()){hideUnlock();openOnboardingPasswordStep();return ''}return showUnlock(message||t('unlock_needed'),'unlock')}
 async function responseErrorMessage(res){const text=await res.text();try{const data=JSON.parse(text);return data.error||data.detail||text}catch{return text}}
 async function api(path,opts={}){const headers={'Content-Type':'application/json',...(opts.headers||{})};const password=dashboardPassword();if(password)headers['X-Dashboard-Token']=password;let res=await fetch(path,{...opts,headers});if(res.status===401){clearStoredDashboardSecrets();const entered=await requestUnlock();if(entered){headers['X-Dashboard-Token']=entered;res=await fetch(path,{...opts,headers});if(res.status===401){clearStoredDashboardSecrets();await requestUnlock(t('unlock_failed'));throw new Error(t('unlock_failed'))}}}if(!res.ok)throw new Error(await responseErrorMessage(res));return res.json()}
-async function load(){state=await api('/api/dashboard');render();if(!uiWorkbenchPreview&&state.config.dashboard_password_required&&!state.config.dashboard_password_set){clearStoredDashboardSecrets();hideUnlock()}else if(!uiWorkbenchPreview&&state.config.dashboard_password_required&&state.config.dashboard_password_set&&!dashboardPassword()&&state.onboarding&&state.onboarding.completed)showUnlock(t('unlock_needed'),'unlock');else if(!uiWorkbenchPreview&&state.onboarding?.completed)syncBrowserBriefTimezone();openModelReconnectFromUrl();checkForUpdates(false);startUpdateAutoCheck();setTimeout(startDashboardIntroTourIfPending,350)}
+async function load(){const firstLoad=!state;if(firstLoad)setDashboardBooting(true);try{state=await api('/api/dashboard');render();if(!uiWorkbenchPreview&&state.config.dashboard_password_required&&!state.config.dashboard_password_set){clearStoredDashboardSecrets();hideUnlock()}else if(!uiWorkbenchPreview&&state.config.dashboard_password_required&&state.config.dashboard_password_set&&!dashboardPassword()&&state.onboarding&&state.onboarding.completed)showUnlock(t('unlock_needed'),'unlock');else if(!uiWorkbenchPreview&&state.onboarding?.completed)syncBrowserBriefTimezone();openModelReconnectFromUrl();checkForUpdates(false);startUpdateAutoCheck();setTimeout(startDashboardIntroTourIfPending,350)}finally{if(firstLoad)setDashboardBooting(false)}if(firstLoad)refreshAgentRuntimeStatus(false)}
+
+let agentRuntimeRefreshInFlight=false;
+function mergeAgentRuntimeStatus(runtime={}){
+ if(!state?.config)return;
+ const main=runtime.main_codex_session||{},image=runtime.image_codex_session||main,imageStatus=runtime.codex_image_status||{},catalog=runtime.model_catalog||{},versions=runtime.runtime_versions||{};
+ const model=state.config.agent_model||{};
+ Object.assign(model,{
+  hermes_model_options:Array.isArray(catalog.models)?catalog.models:model.hermes_model_options,
+  hermes_model_recommended:catalog.recommended||model.hermes_model_recommended,
+  hermes_model_catalog_source:catalog.source||model.hermes_model_catalog_source,
+  hermes_model_catalog_updated_at:catalog.checked_at||model.hermes_model_catalog_updated_at,
+  runtime_versions:versions,
+  chatgpt_connected:Boolean(main.authenticated??main.ready),
+  chatgpt_reauth_required:Boolean(main.reauth_required),
+  chatgpt_auth_state:main.auth_state||'unknown',
+  chatgpt_account:main.identity||{},
+  chatgpt_session_detail:main.detail||'',
+  codex_image_ready:Boolean(imageStatus.ok),
+  codex_image_error:imageStatus.ok?'':(imageStatus.error||imageStatus.detail||''),
+  codex_image_connected:Boolean(image.authenticated??image.ready),
+  codex_image_account:image.identity||{},
+  codex_image_session_detail:image.detail||''
+ });
+ state.config.agent_model=model;
+ const studio=state.config.creative_studio||{};
+ Object.assign(studio,{image_generation_ready:Boolean(imageStatus.ok),image_generation_provider:imageStatus.ok?'codex_image':'',codex_image_ready:Boolean(imageStatus.ok),codex_image_error:imageStatus.ok?'':(imageStatus.error||imageStatus.detail||''),codex_image_account:image.identity||{},codex_image_session_detail:image.detail||'',codex_image_connected:Boolean(image.authenticated??image.ready)});
+ state.config.creative_studio=studio;
+ renderChatGptPanel();
+}
+async function refreshAgentRuntimeStatus(force=false){
+ if(agentRuntimeRefreshInFlight)return;
+ agentRuntimeRefreshInFlight=true;
+ try{const res=await api('/api/agent-model/runtime',{method:'POST',body:JSON.stringify({force:Boolean(force)})});mergeAgentRuntimeStatus(res.result||res||{})}catch(_err){}finally{agentRuntimeRefreshInFlight=false}
+}
 
 function browserTimezone(){try{return Intl.DateTimeFormat().resolvedOptions().timeZone||''}catch{return ''}}
 function dailyBriefTimeLabel(value){
@@ -1692,7 +1733,7 @@ function chatGptConnectMarkup(onboarding=false){
  const telegramRuntimeNotice=runtimeModelLabel?`<div class="telegram-runtime-note ${runtimeChanged?'changed':''}"><b>${lang==='es'?'Telegram ahora usa':'Telegram is using now'}</b><span>${escapeHtml(runtimeModelLabel)}</span>${runtimeChanged?`<small>${lang==='es'?'Cambiado desde Telegram con /model. Si quieres que sea el principal fijo, guárdalo aquí también.':'Changed from Telegram with /model. To make it the permanent primary model, save it here too.'}</small>`:''}</div>`:'';
  const base=model.base_url||(selectedRoute==='openai_api'?'https://api.openai.com/v1':(selectedRoute==='custom_api'?'':'https://api.minimax.io/v1'));
  const modelName=model.model||(selectedRoute==='openai_api'?'gpt-4.1-mini':(selectedRoute==='custom_api'?'':'MiniMax-M3'));
- const codexModel=model.hermes_model||model.hermes_model_recommended||'gpt-5.5';
+ const codexModel=model.hermes_model||model.hermes_model_recommended||'gpt-5.6-terra';
  const imageSource=model.codex_image_source||studio.codex_image_source||'main_chatgpt';
  const imageDedicated=imageSource==='dedicated_chatgpt';
  const imageDedicatedAllowed=apiBrain;
@@ -1720,7 +1761,7 @@ function chatGptConnectMarkup(onboarding=false){
  const providerValue=brain;
  const liveCodexModels=(Array.isArray(model.hermes_model_options)?model.hermes_model_options:[]).map(value=>String(value||'').trim()).filter(Boolean);
  if(codexModel&&!liveCodexModels.includes(codexModel))liveCodexModels.unshift(codexModel);
- if(!liveCodexModels.length)liveCodexModels.push(codexModel||'gpt-5.5');
+ if(!liveCodexModels.length)liveCodexModels.push(codexModel||'gpt-5.6-terra');
  const recommendedCodexModel=String(model.hermes_model_recommended||liveCodexModels[0]||'').trim();
  const codexModelOptions=liveCodexModels.map(value=>`<option value="${escapeHtml(value)}" ${codexModel===value?'selected':''}>${escapeHtml(value+(value===recommendedCodexModel?(lang==='es'?' · recomendado':' · recommended'):''))}</option>`).join('');
  const runtimeVersions=model.runtime_versions||{};
@@ -1943,7 +1984,7 @@ async function pollChatGptConnection(purpose='agent',targetId='chatgpt-connect-r
   const steps=onboardingSteps();const idx=steps.findIndex(s=>s.id==='chatgpt');if(idx>=0){onboardingFlowTouched=true;onboardingFlowStep=idx}
   const res=await api('/api/agent-model/connect-status',{method:'POST',body:JSON.stringify({connection_purpose:chatGptConnectPurpose})});
   renderChatGptConnectResult(res,chatGptConnectTarget);
-  if((res.result?.status||res.status)==='completed'){await load();if(chatGptConnectPurpose!=='image')advanceOnboardingAfterChatGptConnected()}
+  if((res.result?.status||res.status)==='completed'){await load();await refreshAgentRuntimeStatus(true);if(chatGptConnectPurpose!=='image')advanceOnboardingAfterChatGptConnected()}
  }catch(_err){
   if(chatGptConnectPollTimer)clearTimeout(chatGptConnectPollTimer);
   updateChatGptAuthWindow(
@@ -2064,7 +2105,7 @@ async function connectChatGpt(event){
    chatGptAuthWindow=null;
   }
   if(status==='terminal_opened')toast(lang==='es'?'Abrí la terminal para conectar ChatGPT/Codex.':'Opened the terminal to connect ChatGPT/Codex.');
-  else if(status==='completed'){toast(lang==='es'?'Agente conectado correctamente.':'Agent connected successfully.');await load();advanceOnboardingAfterChatGptConnected()}
+  else if(status==='completed'){toast(lang==='es'?'Agente conectado correctamente.':'Agent connected successfully.');await load();await refreshAgentRuntimeStatus(true);advanceOnboardingAfterChatGptConnected()}
   else if(String(status).startsWith('browser_login'))toast(lang==='es'?'Login del agente abierto aquí.':'Agent login opened here.');
  }catch(err){
   if(box){box.classList.remove('hidden');box.innerHTML=`<b>${lang==='es'?'No pude abrirlo todavía':'Could not open it yet'}</b><p>${escapeHtml(err.message||String(err))}</p>`}
@@ -2098,7 +2139,7 @@ async function connectImageChatGpt(event){
    try{chatGptAuthWindow.close()}catch(_err){}
    chatGptAuthWindow=null;
   }
-  if(status==='completed'){toast(lang==='es'?'Image 2 conectado.':'Image 2 connected.');await load()}
+  if(status==='completed'){toast(lang==='es'?'Image 2 conectado.':'Image 2 connected.');await load();await refreshAgentRuntimeStatus(true)}
   else if(String(status).startsWith('browser_login'))toast(lang==='es'?'Login de imágenes abierto aquí.':'Image login opened here.');
  }catch(err){
   if(box){box.classList.remove('hidden');box.innerHTML=`<b>${lang==='es'?'No pude abrirlo todavía':'Could not open it yet'}</b><p>${escapeHtml(err.message||String(err))}</p>`}
@@ -2116,6 +2157,7 @@ async function disconnectAgentModel(purpose='agent'){
   if(box){box.classList.remove('hidden');box.innerHTML=`<b>${escapeHtml(res.title||(lang==='es'?'Desconectado':'Disconnected'))}</b><p>${escapeHtml(res.detail||'')}</p>`}
   toast(target==='image'?(lang==='es'?'Cuenta de imágenes desconectada.':'Image account disconnected.'):(lang==='es'?'ChatGPT/Codex desconectado.':'ChatGPT/Codex disconnected.'));
   await load();
+  await refreshAgentRuntimeStatus(true);
  }catch(err){
   if(box){box.classList.remove('hidden');box.innerHTML=`<b>${lang==='es'?'No pude desconectar':'Could not disconnect'}</b><p>${escapeHtml(err.message||String(err))}</p>`}
  }
@@ -2779,6 +2821,7 @@ document.querySelectorAll('.tab').forEach(btn=>btn.addEventListener('click',()=>
 qs('#campaign-form').addEventListener('submit',async e=>{e.preventDefault();syncTargetingHidden('location');syncTargetingHidden('interest');const payload=Object.fromEntries(new FormData(e.target).entries());await api('/api/campaigns',{method:'POST',body:JSON.stringify(payload)});toast(lang==='es'?'Campaña enviada para tu aprobación':'Campaign sent for your approval');await load()})
 qs('#audience-form').addEventListener('submit',async e=>{e.preventDefault();const payload=Object.fromEntries(new FormData(e.target).entries());payload.consent=e.target.elements.consent.checked?'yes':'no';await buildAudienceStrategy(payload)})
 installDelegatedActions();
+applyTranslations();
 applyDashboardTheme();
 syncDashboardView();
 syncPanels();

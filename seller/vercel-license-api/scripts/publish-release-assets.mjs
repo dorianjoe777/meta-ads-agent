@@ -43,19 +43,19 @@ const ASSETS = [
 
 const improvements = [
   {
-    title: "Login sin menús frágiles",
-    body: "La conexión usa directamente el proveedor estable openai-codex y deja el selector interactivo solo como compatibilidad para Hermes antiguos.",
-    impact: "ChatGPT"
+    title: "Dashboard listo mucho más rápido",
+    body: "La interfaz muestra tus datos guardados de inmediato y revisa el estado del agente en segundo plano, sin congelar el panel varios segundos.",
+    impact: "Velocidad"
   },
   {
-    title: "Modelos siempre sincronizados",
-    body: "El dashboard obtiene la lista disponible desde Hermes y la cuenta ChatGPT, la renueva periódicamente y conserva la última lista válida si hay una caída temporal.",
-    impact: "Modelos"
+    title: "Español desde el primer instante",
+    body: "La pantalla inicial y los controles aparecen en español desde el primer fotograma, sin mostrar primero textos en inglés.",
+    impact: "Experiencia"
   },
   {
-    title: "Instalaciones reproducibles",
-    body: "Hermes y Codex quedan fijados a versiones probadas en instalaciones nuevas, evitando que main/latest cambien el onboarding sin una actualización de Admira.",
-    impact: "Estabilidad"
+    title: "GPT-5.6 Terra por defecto",
+    body: "Las instalaciones nuevas usan el modelo equilibrado GPT-5.6 Terra, con selección dinámica y respaldo automático si todavía no aparece en una cuenta.",
+    impact: "Inteligencia"
   }
 ];
 

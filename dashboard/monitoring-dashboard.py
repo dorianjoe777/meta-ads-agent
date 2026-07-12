@@ -31,6 +31,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import datetime
 from html.parser import HTMLParser
@@ -181,7 +182,7 @@ except ImportError:
     def normalize_hermes_model(value):
         model = str(value or "").strip()
         if not model or model.lower() in {"auto", "recommended", "recomendado", "default"}:
-            return "gpt-5.5"
+            return "gpt-5.6-terra"
         return model
 
 
@@ -239,9 +240,12 @@ TELEGRAM_STOP = None
 TELEGRAM_FINGERPRINT = None
 HERMES_LOGIN_OUTPUT_LIMIT = 12000
 CODEX_MODEL_CATALOG_FILE = DATA_DIR / "codex_model_catalog.json"
+AGENT_RUNTIME_STATUS_FILE = DATA_DIR / "agent_runtime_status.json"
 CODEX_MODEL_CATALOG_TTL_SECONDS = 6 * 60 * 60
+AGENT_RUNTIME_STATUS_TTL_SECONDS = 60
 _HERMES_AUTH_CAPABILITY_CACHE = {}
 _RUNTIME_VERSION_CACHE = {"checked_at": 0.0, "value": {}}
+AGENT_RUNTIME_STATUS_LOCK = threading.Lock()
 DASHBOARD_SESSION_PREFIX = "das_"
 DASHBOARD_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60
 HERMES_LOGIN_LOCK = threading.Lock()
@@ -3275,7 +3279,7 @@ def codex_model_catalog(config=None, force_refresh=False):
     source = "hermes_live_catalog" if discovered else ("last_known_catalog" if cached_models else "safe_fallback")
     if not models:
         current = str(getattr(config, "hermes_model", "") or "").strip()
-        models = _clean_codex_model_ids([current, "gpt-5.5", "gpt-5.4-mini", "gpt-5.4"])
+        models = _clean_codex_model_ids([current, "gpt-5.6-terra", "gpt-5.5", "gpt-5.4-mini", "gpt-5.4"])
     payload = {
         "models": models,
         "recommended": models[0] if models else normalize_hermes_model(""),
@@ -3322,6 +3326,101 @@ def runtime_dependency_versions(config=None):
     }
     _RUNTIME_VERSION_CACHE.update({"checked_at": now, "value": value})
     return dict(value)
+
+
+def cached_codex_model_catalog(config=None):
+    """Return the last model catalog without starting Hermes or Codex."""
+    config = config or load_config()
+    cached = read_json(CODEX_MODEL_CATALOG_FILE, {})
+    models = _clean_codex_model_ids(cached.get("models") if isinstance(cached, dict) else [])
+    if not models:
+        current = str(getattr(config, "hermes_model", "") or "").strip()
+        models = _clean_codex_model_ids([current, "gpt-5.6-terra", "gpt-5.5", "gpt-5.4-mini", "gpt-5.4"])
+    return {
+        **(cached if isinstance(cached, dict) else {}),
+        "models": models,
+        "recommended": str((cached or {}).get("recommended") or (models[0] if models else normalize_hermes_model(""))),
+        "source": str((cached or {}).get("source") or "safe_fallback"),
+        "checked_at": str((cached or {}).get("checked_at") or ""),
+        "stale": True,
+    }
+
+
+def empty_codex_session_status():
+    return {
+        "authenticated": False,
+        "ready": False,
+        "reauth_required": False,
+        "auth_state": "checking",
+        "identity": {},
+        "detail": "",
+    }
+
+
+def cached_agent_runtime_status(config=None):
+    """Read the last safe runtime diagnosis; never launch a subprocess here."""
+    config = config or load_config()
+    cached = read_json(AGENT_RUNTIME_STATUS_FILE, {})
+    if not isinstance(cached, dict):
+        cached = {}
+    checked_epoch = float(cached.get("checked_epoch") or 0)
+    return {
+        **cached,
+        "main_codex_session": cached.get("main_codex_session") or empty_codex_session_status(),
+        "image_codex_session": cached.get("image_codex_session") or cached.get("main_codex_session") or empty_codex_session_status(),
+        "codex_image_status": cached.get("codex_image_status") or {"ok": False, "error": "", "detail": ""},
+        "model_catalog": cached.get("model_catalog") or cached_codex_model_catalog(config),
+        "runtime_versions": cached.get("runtime_versions") or dict(_RUNTIME_VERSION_CACHE.get("value") or {}),
+        "checked_epoch": checked_epoch,
+        "stale": not checked_epoch or time.time() - checked_epoch >= AGENT_RUNTIME_STATUS_TTL_SECONDS,
+    }
+
+
+def invalidate_agent_runtime_status_cache():
+    try:
+        AGENT_RUNTIME_STATUS_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def refresh_agent_runtime_status(payload=None):
+    """Refresh slow Hermes/Codex probes outside the initial dashboard request."""
+    payload = payload or {}
+    config = load_config()
+    cached = cached_agent_runtime_status(config)
+    if not bool(payload.get("force")) and not cached.get("stale"):
+        return cached
+    if not AGENT_RUNTIME_STATUS_LOCK.acquire(blocking=False):
+        return cached
+    try:
+        codex_image_source = effective_codex_image_source(config)
+        with ThreadPoolExecutor(max_workers=5, thread_name_prefix="admira-runtime") as executor:
+            main_future = executor.submit(hermes_codex_session_status, config, 3)
+            image_future = (
+                executor.submit(hermes_codex_session_status, image_codex_config(config), 3)
+                if codex_image_source == "dedicated_chatgpt"
+                else None
+            )
+            image_status_future = executor.submit(hermes_codex_image_status, timeout=2, config=config)
+            catalog_future = executor.submit(codex_model_catalog, config=config)
+            versions_future = executor.submit(runtime_dependency_versions, config=config)
+            main_session = main_future.result()
+            image_session = image_future.result() if image_future else main_session
+            result = {
+                "main_codex_session": main_session,
+                "image_codex_session": image_session,
+                "codex_image_status": image_status_future.result(),
+                "model_catalog": catalog_future.result(),
+                "runtime_versions": versions_future.result(),
+                "checked_at": now_iso(),
+                "checked_epoch": time.time(),
+                "stale": False,
+            }
+        safe_result = redact_payload(result)
+        write_private_json(AGENT_RUNTIME_STATUS_FILE, safe_result)
+        return safe_result
+    finally:
+        AGENT_RUNTIME_STATUS_LOCK.release()
 
 
 def clean_terminal_text(value):
@@ -10214,11 +10313,12 @@ def dashboard_payload():
     decisions = decision_memory_payload(metrics, recommendations, fatigue)
     experiment_reviews = experiment_review_payload(metrics)
     config = load_config()
+    runtime_status = cached_agent_runtime_status(config)
     ensure_dashboard_identity_backup(config)
     optimization_state = load_optimization_state()
     if not RESEARCH_FILE.exists():
         seed_current_research()
-    setup = build_setup_status()
+    setup = build_setup_status(runtime_status=runtime_status)
     current_license_status = license_status(config)
     ad_config = read_json(AD_CONFIG_FILE, {})
     destination = ad_config.get("creative", {}).get("destination", {})
@@ -10228,20 +10328,16 @@ def dashboard_payload():
     business_spaces = agency_spaces_payload()
     managed_accounts = managed_ad_accounts_payload()
     business_snapshot = business_context_snapshot(business_profile)
-    main_codex_session = hermes_codex_session_status(config, timeout=3)
+    main_codex_session = runtime_status.get("main_codex_session") or empty_codex_session_status()
     codex_image_source = effective_codex_image_source(config)
-    image_codex_session = (
-        hermes_codex_session_status(image_codex_config(config), timeout=3)
-        if codex_image_source == "dedicated_chatgpt"
-        else main_codex_session
-    )
-    codex_image_status = hermes_codex_image_status(timeout=2, config=config)
+    image_codex_session = runtime_status.get("image_codex_session") or main_codex_session
+    codex_image_status = runtime_status.get("codex_image_status") or {"ok": False, "error": "", "detail": ""}
     codex_image_ready = bool(codex_image_status.get("ok"))
     image_home = resolved_codex_image_hermes_home(config)
     image_model = getattr(config, "codex_image_hermes_model", config.hermes_model) if codex_image_source == "dedicated_chatgpt" else config.hermes_model
     runtime_model_state = telegram_runtime_model_state(config)
-    model_catalog = codex_model_catalog(config=config)
-    dependency_versions = runtime_dependency_versions(config=config)
+    model_catalog = runtime_status.get("model_catalog") or cached_codex_model_catalog(config)
+    dependency_versions = runtime_status.get("runtime_versions") or {}
     return {
         "metrics": metrics,
         "recommendations": recommendations,
@@ -10402,14 +10498,18 @@ def dashboard_payload():
 
 
 HTML = r"""<!DOCTYPE html>
-<html lang="en">
+<html lang="es">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Admira IA</title>
 <link rel="stylesheet" href="/assets/dashboard/dashboard.css?v=1">
 </head>
-<body>
+<body class="dashboard-booting" aria-busy="true">
+<div class="dashboard-boot-screen" id="dashboard-boot-screen" role="status" aria-live="polite">
+<div class="dashboard-boot-mark">AI</div>
+<div><b id="dashboard-boot-title">Preparando tu dashboard</b><span id="dashboard-boot-detail">Cargando tus datos guardados…</span></div>
+</div>
 <section class="onboarding-flow" id="onboarding-flow" aria-modal="true" role="dialog"></section>
 <header>
 <div class="brand"><h1>Admira <span>IA</span></h1><div data-i18n="brand_subtitle">Self-hosted local/VPS operator for Meta Ads</div></div>
@@ -10584,9 +10684,9 @@ HTML = r"""<!DOCTYPE html>
 class DashboardHandler(BaseHTTPRequestHandler):
     HTML_PATHS = {"/", "/dashboard"}
     PROTECTED_GET_PATHS = {"/api/dashboard", "/api/export", "/api/report", "/api/setup", "/api/social/auth-status", "/api/social/accounts", "/api/update/snapshots", "/api/creative-asset", "/api/brand-asset"}
-    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/publishing/config", "/api/publishing/test", "/api/agent-model/connect", "/api/agent-model/disconnect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/agent-model/catalog", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/logo", "/api/brand-guides/product", "/api/ad-briefs", "/api/codex/creative-plan", "/api/codex/image-generate", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/optimization/settings", "/api/optimization/unlock", "/api/shopify/config", "/api/shopify/test", "/api/shopify/sync", "/api/daily-brief/schedule", "/api/daily-social-content/settings", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/communication-style", "/api/onboarding/complete", "/api/onboarding/skip", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/local-network-access", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
+    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/publishing/config", "/api/publishing/test", "/api/agent-model/connect", "/api/agent-model/disconnect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/agent-model/catalog", "/api/agent-model/runtime", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/logo", "/api/brand-guides/product", "/api/ad-briefs", "/api/codex/creative-plan", "/api/codex/image-generate", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/optimization/settings", "/api/optimization/unlock", "/api/shopify/config", "/api/shopify/test", "/api/shopify/sync", "/api/daily-brief/schedule", "/api/daily-social-content/settings", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/communication-style", "/api/onboarding/complete", "/api/onboarding/skip", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/local-network-access", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
     ONBOARDING_OPEN_GETS = {"/api/dashboard", "/api/setup"}
-    ONBOARDING_OPEN_POSTS = {"/api/dashboard-password", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/license/activate", "/api/agent-model/connect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/onboarding/communication-style", "/api/onboarding/complete"}
+    ONBOARDING_OPEN_POSTS = {"/api/dashboard-password", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/license/activate", "/api/agent-model/connect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/agent-model/runtime", "/api/onboarding/communication-style", "/api/onboarding/complete"}
     GET_JSON_ROUTES = {
         "/api/dashboard": dashboard_payload,
         "/api/export": export_csv,
@@ -10610,6 +10710,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         "/api/agent-model/connect-status": agent_model_connect_status,
         "/api/agent-model/connect-input": agent_model_connect_input,
         "/api/agent-model/catalog": refresh_agent_model_catalog,
+        "/api/agent-model/runtime": refresh_agent_runtime_status,
         "/api/targeting/search": meta_targeting_search,
         "/api/audience-strategy": lambda payload: create_audience_strategy(payload, payload.get("language", "es")),
         "/api/business-profile": save_business_context,

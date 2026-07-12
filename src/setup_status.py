@@ -180,8 +180,8 @@ def meta_section(config, destination):
     ]
 
 
-def creative_section(config, codex_path):
-    image_status = hermes_codex_image_status(timeout=5, config=config)
+def creative_section(config, codex_path, image_status=None):
+    image_status = image_status if isinstance(image_status, dict) else hermes_codex_image_status(timeout=5, config=config)
     image_ready = bool(image_status.get("ok"))
     return [
         item("creative_enabled", "Creative refresh enabled", "ok" if config.creative_refresh_enabled else "warn", str(config.creative_refresh_enabled)),
@@ -194,12 +194,16 @@ def creative_section(config, codex_path):
     ]
 
 
-def agent_chat_section(config, agent_profile):
+def agent_chat_section(config, agent_profile, brain_status=None):
     hermes_cli = shutil.which(config.hermes_cli)
     hermes_library = importlib.util.find_spec("run_agent") is not None
     brain = hermes_brain_settings(config)
     direct_ready = direct_model_ready(config)
-    brain_ready, brain_detail = hermes_brain_ready(config)
+    if isinstance(brain_status, dict):
+        brain_ready = bool(brain_status.get("authenticated", brain_status.get("ready")))
+        brain_detail = str(brain_status.get("detail") or "")
+    else:
+        brain_ready, brain_detail = hermes_brain_ready(config)
     hermes_auth = {"ready": brain_ready, "detail": brain_detail}
     hermes_runtime_status = "ok" if (hermes_cli or hermes_library) else "blocked"
     hermes_auth_status = "ok" if hermes_auth["ready"] else "blocked"
@@ -274,7 +278,7 @@ def setup_summary(config, sections, context):
     }
 
 
-def build_setup_status():
+def build_setup_status(runtime_status=None):
     config = load_config()
     ad_config = load_ad_config()
     creative_cfg = ad_config.get("creative", {})
@@ -290,8 +294,9 @@ def build_setup_status():
     runtime = runtime_section(config, latest_daily_report(), latest_action())
     security = security_section(config, license_status)
     meta = meta_section(config, destination)
-    creative = creative_section(config, codex_path)
-    agent_chat, agent_context = agent_chat_section(config, agent_profile)
+    runtime_status = runtime_status if isinstance(runtime_status, dict) else {}
+    creative = creative_section(config, codex_path, runtime_status.get("codex_image_status"))
+    agent_chat, agent_context = agent_chat_section(config, agent_profile, runtime_status.get("main_codex_session"))
     telegram_access = telegram_access_section(telegram)
     uploads = upload_readiness_section(latest_upload)
     scheduler = scheduler_section()
