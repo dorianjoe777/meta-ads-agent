@@ -517,6 +517,8 @@ def _has_confirmed_durable_save(response):
         text = json.dumps(sources, ensure_ascii=False, default=str).lower()
     except (TypeError, ValueError):
         text = str(sources).lower()
+    # Tool content may itself be a JSON string inside the outer response JSON.
+    text = text.replace('\\"', '"')
     has_save_tool = any(marker in text for marker in ADMIRA_DURABLE_TOOL_MARKERS)
     has_success = any(
         marker in text
