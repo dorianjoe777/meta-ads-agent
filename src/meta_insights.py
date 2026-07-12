@@ -194,6 +194,40 @@ def fetch_campaign_statuses(account_id, token, version="v24.0"):
     return result
 
 
+def fetch_campaign_status(campaign_id, token, version="v24.0"):
+    """Read one campaign directly, used to reconcile incomplete account listings."""
+    campaign_id = str(campaign_id or "").strip()
+    if not campaign_id:
+        return {"ok": False, "error": {"type": "validation", "message": "Missing campaign id"}}
+    result = graph_get(
+        f"/{campaign_id}",
+        {"fields": "id,account_id,name,status,effective_status,objective,start_time,stop_time,created_time,updated_time,daily_budget,lifetime_budget,budget_remaining"},
+        token,
+        version,
+    )
+    if not result.get("ok") or not isinstance(result.get("data"), dict):
+        return result
+    row = result["data"]
+    return {
+        "ok": True,
+        "row": {
+            "id": str(row.get("id") or ""),
+            "account_id": str(row.get("account_id") or ""),
+            "name": row.get("name") or "",
+            "status": str(row.get("status") or "").lower(),
+            "effective_status": str(row.get("effective_status") or "").lower(),
+            "objective": str(row.get("objective") or "").lower(),
+            "start_time": row.get("start_time") or "",
+            "stop_time": row.get("stop_time") or "",
+            "created_time": row.get("created_time") or "",
+            "updated_time": row.get("updated_time") or "",
+            "daily_budget": round(number(row.get("daily_budget")) / 100, 2),
+            "lifetime_budget": round(number(row.get("lifetime_budget")) / 100, 2),
+            "budget_remaining": round(number(row.get("budget_remaining")) / 100, 2),
+        },
+    }
+
+
 def fetch_adset_statuses(account_id, token, version="v24.0"):
     account = str(account_id or "").strip()
     if account and not account.startswith("act_"):
@@ -257,7 +291,7 @@ def fetch_ad_statuses(account_id, token, version="v24.0"):
     return result
 
 
-def collect_meta_snapshot(account_id, token, version="v24.0", date_preset="last_30d"):
+def collect_meta_snapshot(account_id, token, version="v24.0", date_preset="last_30d", known_campaign_ids=None):
     levels = {}
     unavailable = []
     for level in ("campaign", "adset", "ad"):
@@ -280,7 +314,6 @@ def collect_meta_snapshot(account_id, token, version="v24.0", date_preset="last_
     statuses = fetch_campaign_statuses(account_id, token, version)
     if not statuses.get("ok"):
         unavailable.append({"view": "delivery_status", "reason": statuses.get("error")})
-    status_by_id = {item["id"]: item for item in statuses.get("rows", [])}
     adset_statuses = fetch_adset_statuses(account_id, token, version)
     if not adset_statuses.get("ok"):
         unavailable.append({"view": "adset_signal_status", "reason": adset_statuses.get("error")})
@@ -289,6 +322,33 @@ def collect_meta_snapshot(account_id, token, version="v24.0", date_preset="last_
     if not ad_statuses.get("ok"):
         unavailable.append({"view": "ad_delivery_status", "reason": ad_statuses.get("error")})
     ad_status_by_id = {item["id"]: item for item in ad_statuses.get("rows", [])}
+
+    status_by_id = {item["id"]: item for item in statuses.get("rows", [])}
+    candidate_ids = []
+    candidate_sources = {}
+    for value in list(known_campaign_ids or []):
+        value = str(value or "").strip()
+        if value.isdigit() and 12 <= len(value) <= 24 and value not in candidate_ids:
+            candidate_ids.append(value)
+            candidate_sources[value] = "memory"
+    for item in [*adset_status_by_id.values(), *ad_status_by_id.values()]:
+        value = str(item.get("campaign_id") or "").strip()
+        if value.isdigit() and value not in candidate_ids:
+            candidate_ids.append(value)
+            candidate_sources[value] = "live_child"
+    verified_direct = []
+    for campaign_id in candidate_ids[:50]:
+        if campaign_id in status_by_id:
+            continue
+        direct = fetch_campaign_status(campaign_id, token, version)
+        row = direct.get("row") if direct.get("ok") else None
+        expected_account = str(account_id or "").removeprefix("act_")
+        row_account = str((row or {}).get("account_id") or "").removeprefix("act_")
+        if candidate_sources.get(campaign_id) == "memory" and row_account != expected_account:
+            continue
+        if isinstance(row, dict) and row.get("id"):
+            status_by_id[row["id"]] = row
+            verified_direct.append(row["id"])
     return {
         "generated_at": now_iso(),
         "account_id": str(account_id or ""),
@@ -302,6 +362,7 @@ def collect_meta_snapshot(account_id, token, version="v24.0", date_preset="last_
             "complete": not unavailable,
             "unavailable": unavailable,
             "source": "meta_graph_read_only",
+            "direct_campaign_reconciliation": verified_direct,
         },
     }
 

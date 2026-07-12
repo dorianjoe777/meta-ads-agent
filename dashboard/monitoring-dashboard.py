@@ -2637,11 +2637,35 @@ def fetch_real_metrics(account_id="", persist_snapshot=True):
         return {"ok": False, "reason": "missing_account", "message": "Missing Meta ad account."}
     if not config.meta_access_token:
         return {"ok": False, "reason": "missing_token", "message": "Missing Meta access token."}
+    def collect_known_campaign_ids():
+        found = []
+        def visit(value, key=""):
+            if isinstance(value, dict):
+                for nested_key, nested in value.items():
+                    visit(nested, str(nested_key or ""))
+            elif isinstance(value, list):
+                for nested in value:
+                    visit(nested, key)
+            elif key in {"campaign_id", "campaignId"}:
+                candidate = str(value or "").strip()
+                if candidate.isdigit() and 12 <= len(candidate) <= 24 and candidate not in found:
+                    found.append(candidate)
+        for path, default in (
+            (METRICS_FILE, {}),
+            (ACTIONS_FILE, []),
+            (PENDING_FILE, []),
+            (CREATED_FILE, []),
+            (DATA_DIR / "scheduled_campaign_actions.json", {}),
+        ):
+            visit(read_json(path, default))
+        return found[:50]
+
     snapshot = collect_meta_snapshot(
         account_id,
         config.meta_access_token,
         config.meta_graph_api_version or "v24.0",
         date_preset="last_30d",
+        known_campaign_ids=collect_known_campaign_ids(),
     )
     campaigns = aggregate_meta_campaigns(snapshot)
     adsets = list((snapshot.get("adset_statuses") or {}).values())

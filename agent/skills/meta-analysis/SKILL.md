@@ -9,9 +9,13 @@ Use this skill when the buyer asks what is happening in the Meta Ads account, as
 
 ## Rules
 
-- First call `mcp_admira_get_real_meta_context`.
+- First call `mcp_admira_get_real_meta_context`. This tool performs a live synchronization; do not answer current-state questions from workspace memory alone.
+- Meta is the source of truth for current existence, status, budget, delivery, spend, ad sets, ads and live configuration. Durable/local memory is only context and may be stale, incomplete, or missing because a prior turn did not persist correctly.
+- Compare the live inventory with saved campaigns, recent actions, approvals and experiments. If they disagree, state the discrepancy and prefer the object currently verified by Meta.
+- Never interpret an empty campaign list as “there are no campaigns” unless `live_sync.ok` is true and the inventory/data-quality response is complete. If synchronization failed or is partial, say the live read is incomplete and inspect the campaign, ad-set and ad inventories plus directly verified known campaign IDs before reaching a conclusion.
+- Do not require the buyer to remember or type an exact campaign name merely to inspect the account. Enumerate live objects and identify the likely campaign from ID, status, update time, ads/creatives and the current conversation.
 - If `metrics_source.is_real_meta_data` is not true, do not cite campaign names, ROAS, CPA, CTR, winners, losers, budgets, or fatigue.
-- If there is no real Meta data, say clearly that Meta is not connected or the data has not been refreshed yet, then guide the buyer to update real data.
+- If there is no real Meta data, distinguish “not connected” from “live synchronization failed”; never turn a backend read failure into a claim that the account is empty.
 - If real Meta inventory exists but insights are empty or all delivery metrics are zero, you may enumerate the created campaigns/ad sets/ads and their statuses. Say clearly that there is not enough delivery/performance data yet to judge winners, losers, CPA, ROAS, fatigue, or scaling.
 - Explain in beginner-friendly Latin American Spanish.
 - End with one clear next step.

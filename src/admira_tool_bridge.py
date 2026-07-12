@@ -237,13 +237,28 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
         payload["image_paths"] = reference_paths[:4]
 
     if tool == "admira_get_real_meta_context":
+        live_sync = dashboard.refresh_managed_real_metrics(reason="agent_live_context")
         dashboard_data = dashboard.dashboard_payload()
         context = account_context(dashboard_data)
+        context["live_sync"] = {
+            "ok": bool(live_sync.get("ok")),
+            "rows": int(live_sync.get("rows") or 0),
+            "accounts": live_sync.get("accounts") or [],
+            "errors": live_sync.get("errors") or [],
+            "reason": live_sync.get("reason") or "",
+            "message": live_sync.get("message") or "",
+        }
+        if not live_sync.get("ok"):
+            context["metrics_source"]["notice"] = (
+                "La sincronización live con Meta falló o quedó incompleta. No interpretes una lista vacía como ausencia de campañas. "
+                "Explica la falla y contrasta campañas, ad sets, ads y IDs previamente conocidos que Meta pueda verificar."
+            )
         return redact_payload(
             {
                 "ok": True,
                 "tool": tool,
                 "metrics_source": context.get("metrics_source", {}),
+                "live_sync": context.get("live_sync", {}),
                 "context": context,
             }
         )

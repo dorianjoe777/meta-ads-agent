@@ -25,7 +25,7 @@ DEFAULT_HEAVY_TOOL_TIMEOUT_SECONDS = 600
 
 
 TOOL_DEFINITIONS = [
-    ("get_real_meta_context", "Read the safe real Meta Ads context. Never returns demo metrics as real."),
+    ("get_real_meta_context", "Synchronize directly with Meta and read the live campaign/ad set/ad inventory plus performance context. Treat local memory only as candidate context and never interpret a failed or incomplete empty response as proof that no campaigns exist."),
     ("run_daily_brief", "Run the daily Meta Ads brief and return the safe result."),
     ("schedule_experiment_review", "Schedule adaptive delivery and evidence checkpoints for a real creative test. Requires test budget, target CPA/CPL, and at least two variants with real Meta IDs."),
     ("list_experiment_reviews", "List active creative experiments, current evidence, provisional leaders, and next review dates."),

@@ -87,6 +87,14 @@ def account_context(payload):
         "agent_onboarding_phase": agent_onboarding_phase if isinstance(agent_onboarding_phase, dict) else {},
         "business_profile": business_profile if isinstance(business_profile, dict) else {},
         "metrics_source": source_context,
+        "inventory_counts": {
+            "campaigns": len(campaigns) if isinstance(campaigns, list) else 0,
+            "adsets": len(adsets) if isinstance(adsets, list) else 0,
+            "ads": len(ads) if isinstance(ads, list) else 0,
+            "campaigns_returned": min(len(campaigns), 100) if isinstance(campaigns, list) and has_real_metrics else 0,
+            "adsets_returned": min(len(adsets), 300) if isinstance(adsets, list) and has_real_metrics else 0,
+            "ads_returned": min(len(ads), 500) if isinstance(ads, list) and has_real_metrics else 0,
+        },
         "summary": summary if has_real_metrics else {},
         "campaigns": [
             {
@@ -101,7 +109,7 @@ def account_context(payload):
                 "frequency": c.get("frequency"),
                 "daily_budget": c.get("daily_budget"),
             }
-            for c in (campaigns[:8] if has_real_metrics else [])
+            for c in (campaigns[:100] if has_real_metrics else [])
         ],
         "adsets": [
             {
@@ -114,7 +122,7 @@ def account_context(payload):
                 "billing_event": item.get("billing_event"),
                 "daily_budget": item.get("daily_budget"),
             }
-            for item in (adsets[:20] if has_real_metrics and isinstance(adsets, list) else [])
+            for item in (adsets[:300] if has_real_metrics and isinstance(adsets, list) else [])
         ],
         "ads": [
             {
@@ -127,7 +135,7 @@ def account_context(payload):
                 "creative_id": (item.get("creative") or {}).get("id") if isinstance(item.get("creative"), dict) else None,
                 "object_story_id": (item.get("creative") or {}).get("object_story_id") if isinstance(item.get("creative"), dict) else None,
             }
-            for item in (ads[:30] if has_real_metrics and isinstance(ads, list) else [])
+            for item in (ads[:500] if has_real_metrics and isinstance(ads, list) else [])
         ],
         "campaign_tree": [
             {
@@ -166,7 +174,7 @@ def account_context(payload):
                     if isinstance(ad, dict)
                 ],
             }
-            for c in (campaign_tree[:8] if has_real_metrics and isinstance(campaign_tree, list) else [])
+            for c in (campaign_tree[:100] if has_real_metrics and isinstance(campaign_tree, list) else [])
             if isinstance(c, dict)
         ],
         "recommendations": recommendations[:6] if has_real_metrics else [],

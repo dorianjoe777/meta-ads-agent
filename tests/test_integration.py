@@ -2573,6 +2573,10 @@ class IntegrationTestSuite:
         class FakeDashboard:
             PENDING_FILE = "pending.json"
 
+            def refresh_managed_real_metrics(self, reason="manual"):
+                calls.append(({"tool": "live_meta_sync", "reason": reason}, {}))
+                return {"ok": True, "rows": 1, "accounts": [{"id": "act_1", "rows": 1}]}
+
             def dashboard_payload(self):
                 return {
                     "metrics": {
@@ -2647,6 +2651,7 @@ class IntegrationTestSuite:
             called_tools = [call[0]["tool"] for call in calls]
 
             self.assert_true(context["ok"] and context["metrics_source"]["is_real_meta_data"], "Tool bridge returns safe real Meta context")
+            self.assert_true(context["live_sync"]["ok"] and context["live_sync"]["rows"] == 1 and called_tools[0] == "live_meta_sync", "Real Meta context forces a live inventory synchronization before reading cached dashboard context")
             self.assert_true(image["product_tool"] == "codex_image_generate" and "codex_image_generate" in called_tools, "Tool bridge maps Codex/Image MCP calls to dashboard action handlers")
             self.assert_true(image.get("media_attachment") == f"MEDIA:{generated_image.resolve()}" and "Do not paste MEDIA" in image.get("buyer_delivery_instruction", ""), "Tool bridge gives Hermes a native media attachment directive for generated creative images")
             self.assert_true(review["product_tool"] == "review_signal_quality" and "review_signal_quality" in called_tools, "Tool bridge maps signal-quality MCP review to dashboard action handlers")
@@ -5700,6 +5705,41 @@ class IntegrationTestSuite:
             self.assert_true(context["campaigns"][0]["id"] == "camp_1" and context["campaign_tree"][0]["adsets"][0]["ads"][0]["id"] == "ad_1", "Agent context exposes real Meta inventory even without spend insights")
         finally:
             meta_insights.graph_rows = original_graph_rows
+
+    def test_meta_snapshot_reconciles_empty_campaign_listing_from_live_children(self):
+        """An empty account campaign edge is not proof of no campaigns when live child objects identify one."""
+        print("\nTesting Meta Campaign Inventory Reconciliation...")
+
+        original_graph_rows = meta_insights.graph_rows
+        original_graph_get = meta_insights.graph_get
+        campaign_id = "120250293867690096"
+
+        def fake_graph_rows(path, params, token, version, max_pages=5):
+            if path.endswith("/campaigns") or path.endswith("/insights"):
+                return {"ok": True, "rows": []}
+            if path.endswith("/adsets"):
+                return {"ok": True, "rows": [{"id": "120250293867880096", "name": "Ad set", "campaign_id": campaign_id, "status": "ACTIVE", "effective_status": "ACTIVE"}]}
+            if path.endswith("/ads"):
+                return {"ok": True, "rows": [{"id": "120250293871940096", "name": "Ad", "campaign_id": campaign_id, "adset_id": "120250293867880096", "status": "ACTIVE", "effective_status": "ACTIVE"}]}
+            return {"ok": False, "rows": [], "error": {"message": "unexpected"}}
+
+        def fake_graph_get(path, params, token, version="v24.0", timeout=25):
+            if str(path).strip("/") == campaign_id:
+                return {"ok": True, "data": {"id": campaign_id, "account_id": "966537272116878", "name": "AdMira IA - LATAM v3", "status": "ACTIVE", "effective_status": "ACTIVE", "objective": "OUTCOME_SALES"}}
+            return {"ok": False, "error": {"message": "not found"}}
+
+        try:
+            meta_insights.graph_rows = fake_graph_rows
+            meta_insights.graph_get = fake_graph_get
+            snapshot = meta_insights.collect_meta_snapshot("act_966537272116878", "token", known_campaign_ids=[campaign_id])
+            campaigns = meta_insights.aggregate_campaigns(snapshot)
+            tree = meta_insights.campaign_inventory_tree(snapshot)
+            self.assert_true(len(campaigns) == 1 and campaigns[0]["id"] == campaign_id and campaigns[0]["status"] == "active", "Direct live lookup restores a campaign when the account campaign edge is unexpectedly empty")
+            self.assert_true(tree[0]["adsets"][0]["ads"][0]["id"] == "120250293871940096", "Reconciled live inventory still includes the campaign's ad set and ad hierarchy")
+            self.assert_true(snapshot["data_quality"]["direct_campaign_reconciliation"] == [campaign_id], "Snapshot records that direct Meta reconciliation was required")
+        finally:
+            meta_insights.graph_rows = original_graph_rows
+            meta_insights.graph_get = original_graph_get
 
     def test_daily_reads_real_data_and_keeps_risky_pauses_as_proposals(self):
         """Test scheduled reports read Meta without inventing executed account mutations."""
@@ -8791,7 +8831,7 @@ class IntegrationTestSuite:
             self.assert_true("META_AD_ACCOUNT_ID=act_101" in env_path.read_text(encoding="utf-8"), "Same-BM account switch updates the active Meta account")
             dashboard.update_env_values({"META_AD_ACCOUNT_ID": "act_100"})
 
-            def fake_snapshot(account_id, token, version="v24.0", date_preset="last_30d"):
+            def fake_snapshot(account_id, token, version="v24.0", date_preset="last_30d", known_campaign_ids=None):
                 return {"generated_at": dashboard.now_iso(), "account_id": account_id, "date_preset": date_preset, "data_quality": {"complete": True, "unavailable": []}}
 
             def fake_campaigns(snapshot):
@@ -9866,6 +9906,8 @@ class IntegrationTestSuite:
             self.test_chat_history_persists_and_resets,
             self.test_creative_memory_wizard_collects_and_saves_guides,
             self.test_meta_asset_discovery_saves_connected_assets,
+            self.test_meta_snapshot_collects_adset_signal_configuration,
+            self.test_meta_snapshot_reconciles_empty_campaign_listing_from_live_children,
             self.test_live_insights_normalize_into_dashboard_metrics,
             self.test_daily_reads_real_data_and_keeps_risky_pauses_as_proposals,
             self.test_demo_metrics_are_labeled,

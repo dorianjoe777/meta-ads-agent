@@ -5,6 +5,7 @@ These are the capabilities the agent may discuss or request through the product.
 ## Read-Only Tools
 
 - Dashboard metrics: account summary, campaigns, spend, CPA, ROAS, CTR, frequency, and budgets.
+- Live Meta inventory: `mcp_admira_get_real_meta_context` synchronizes campaigns, ad sets, ads, statuses and available insights directly from Meta before answering. Local memory supplies candidate IDs/context only; every current-state claim must be verified live, and an incomplete empty response is never proof that the account is empty.
 - Daily brief: what changed, where attention is needed, and pending decisions.
 - Setup status: local configuration, security status, connector readiness, creative generation readiness, and chat readiness.
 - Signal quality review: checks Pixel/Dataset, Conversions API, Event Match Quality, AEM/event eligibility, event prioritization, correct optimization event, and recent event volume before launch or scaling.
