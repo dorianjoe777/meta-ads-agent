@@ -112,6 +112,59 @@ def split_csv(value):
     return [item.strip() for item in str(value or "").split(",") if item.strip()]
 
 
+def controlled_hermes_toolsets(values):
+    """Keep Hermes' runtime skill library out of the buyer-facing product.
+
+    Admira ships its official skills as versioned workspace files. Hermes'
+    personal `skills` toolset can create or patch a separate per-installation
+    library, which makes two buyers drift into different behavior. Keep the
+    useful runtime tools, but never expose that mutable skill manager.
+    """
+    return [item for item in values if str(item or "").strip() != "skills"]
+
+
+def enforce_official_skill_catalog(home):
+    """Quarantine legacy Hermes-created skills without deleting buyer data."""
+    home = Path(home)
+    skills_dir = home / "skills"
+    archive_dir = home / "disabled-agent-skills"
+    moved = []
+    if skills_dir.exists():
+        entries = []
+        for entry in skills_dir.iterdir():
+            if entry.name == "README.md":
+                try:
+                    if "Hermes personal skill creation and patching are disabled" in entry.read_text(encoding="utf-8"):
+                        continue
+                except OSError:
+                    pass
+            entries.append(entry)
+        if entries:
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            for entry in entries:
+                target = archive_dir / entry.name
+                if target.exists():
+                    suffix = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                    target = archive_dir / f"{entry.name}.{suffix}"
+                try:
+                    shutil.move(str(entry), str(target))
+                    moved.append(str(target))
+                except OSError:
+                    # A read-only legacy skill must not prevent the agent from
+                    # starting; the disabled toolset still blocks mutation/use.
+                    continue
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        (skills_dir / "README.md").write_text(
+            "Admira IA uses only the versioned official skills copied into the current workspace.\n"
+            "Hermes personal skill creation and patching are disabled for this product.\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+    return moved
+
+
 def _quote_yaml(value):
     return json.dumps(str(value or ""), ensure_ascii=False)
 
@@ -190,7 +243,7 @@ def hermes_cli_provider(brain):
 
 def cli_toolsets(config, payload=None):
     configured = split_csv(getattr(config, "hermes_enabled_toolsets", ""))
-    toolsets = configured or ["memory", "skills", "session_search", "vision", "file", "web", "browser"]
+    toolsets = controlled_hermes_toolsets(configured or ["memory", "session_search", "vision", "file", "web", "browser"])
     channel = str((payload or {}).get("channel") or "").strip().lower()
     if channel in {"dashboard", "telegram"} or not channel:
         toolsets.append("admira")
@@ -207,6 +260,10 @@ def cli_toolsets(config, payload=None):
 def _cli_hermes_config_needs_write(config_text, brain):
     if "mcp_servers:" not in config_text or "admira_mcp_server.py" not in config_text:
         return True
+    if "creation_nudge_interval: 0" not in config_text or "memory_notifications: off" not in config_text:
+        return True
+    if re.search(r"(?m)^\s*-\s+skills\s*$", config_text):
+        return True
     if brain.get("brain") == "minimax":
         lowered = config_text.lower()
         return "admira-minimax" not in config_text or "providers:" not in config_text or "api.minimax.io/v1" not in config_text or "openrouter" in lowered or "custom:admira-minimax" in config_text
@@ -222,6 +279,7 @@ def write_cli_hermes_config(config, workspace_info, payload=None):
     has the Admira MCP server, it leaves that richer config untouched.
     """
     home = hermes_home_path(config)
+    enforce_official_skill_catalog(home)
     config_path = home / "config.yaml"
     brain = hermes_brain_settings(config)
     existing = ""
@@ -237,7 +295,7 @@ def write_cli_hermes_config(config, workspace_info, payload=None):
     workspace_path = str(workspace_info.get("path") or HERMES_WORKSPACE_DIR)
     mcp_server_path = ROOT_DIR / "src" / "admira_mcp_server.py"
     disabled = split_csv(getattr(config, "hermes_disabled_toolsets", ""))
-    for protected in ("terminal", "code_execution", "image_gen"):
+    for protected in ("terminal", "code_execution", "image_gen", "skills"):
         if protected not in disabled:
             disabled.append(protected)
     dashboard_toolsets = cli_toolsets(config, {"channel": "dashboard"})
@@ -249,6 +307,10 @@ def write_cli_hermes_config(config, workspace_info, payload=None):
         f"  max_turns: {max(1, int(getattr(config, 'hermes_max_iterations', 12) or 12))}",
         "  disabled_toolsets:",
         *[f"    - {toolset}" for toolset in disabled],
+        "skills:",
+        "  creation_nudge_interval: 0",
+        "display:",
+        "  memory_notifications: off",
         "compression:",
         "  enabled: true",
         "  threshold: 0.85",
@@ -440,6 +502,7 @@ For each turn, read the buyer message normally. If you need live account context
 - `memory/creative_experiments.json`: adaptive creative-test checkpoints, evidence, provisional leaders, and next review dates.
 - `memory/content_asset_library.json`: buyer-shared logos, photos, videos, references, offers, and other assets categorized by intended use.
 - `memory/content_strategy.md`: organic content strategy, pillars, cadence, and daily-post preferences when present.
+- `memory/durable_conversation_memory.json`: confirmed decisions, preferences, blockers, next steps, and workflow agreements that did not fit a narrower specialist store.
 - `brand_guides/Offer map.md`: parent-brand/child-offer index. Use it to avoid mixing products/services/offers under the same brand.
 - `brand_guides/`: brand, product, ad brief, and creative reference memory.
 - `skills/`: focused product skills. Read `core-agent-behavior` before every reply, `session-continuity` after cleanup/restart/update/fresh sessions, and the relevant specialist skill before taking product actions.
@@ -483,6 +546,7 @@ Use these MCP tools for real product actions instead of inventing results, runni
 - `mcp_admira_get_verified_signal_summary`
 - `mcp_admira_verified_signal_feedback_prompt`
 - `mcp_admira_save_business_memory`
+- `mcp_admira_save_durable_memory`
 - `mcp_admira_save_ads_onboarding`
 - `mcp_admira_save_brand_memory`
 - `mcp_admira_save_product_memory`
@@ -492,6 +556,10 @@ Use these MCP tools for real product actions instead of inventing results, runni
 - `mcp_admira_save_content_asset`
 
 If the MCP tool is unavailable, say the action cannot be executed yet and explain what must be connected. Do not fall back to fake campaign data or uncontrolled terminal commands.
+
+# Official Skills and Durable Persistence
+
+Use only the official versioned skills under this workspace's `skills/` directory. Never use, create, patch, or consult Hermes personal/global skills. Before ending every turn, decide whether the buyer confirmed a fact, decision, preference, outcome, blocker, next step, or workflow agreement that must survive reset. Persist it with the narrowest `mcp_admira_save_*` tool; use `mcp_admira_save_durable_memory` only as fallback. Never say “lo guardé”, “lo recordaré”, or “ya quedó en mis indicaciones” unless the save tool confirmed success.
 
 Dashboard chat and Telegram are buyer-facing product surfaces, not terminals. Never tell the buyer you cannot create, prepare, or stage a campaign because you lack CLI/terminal access. Product actions must go through MCP tools in Telegram or the JSON tool-request contract in dashboard chat. If details are missing, ask the next missing business detail; if a protected action is ready, prepare it for approval.
 
@@ -567,7 +635,7 @@ def write_product_skill_workspace_files():
             write_workspace_file(
                 "skills/README.md",
                 "# Admira IA Product Skills\n\n"
-                "Use the most relevant skill before taking product actions.\n"
+                "Use only these official, versioned workspace skills. Hermes personal/global skill creation, patching, and routing are disabled. Use the most relevant official skill before taking product actions.\n"
                 + "\n".join(routing)
                 + "\n".join(f"- `{name}/SKILL.md`" for name in skill_names)
                 + "\n",
@@ -614,6 +682,7 @@ def business_memory_files():
         "creative_references": BRAND_GUIDES_DIR / "creative_references.md",
         "content_asset_library": DATA_DIR / "content_asset_library.json",
         "content_strategy": DATA_DIR / "content_strategy.md",
+        "durable_conversation_memory": DATA_DIR / "durable_conversation_memory.json",
     }
     product_guides = []
     products_dir = BRAND_GUIDES_DIR / "products"
@@ -645,6 +714,7 @@ def business_memory_context():
         "creative_references": read_text(files["creative_references"]),
         "content_asset_library": scrub_memory(redact_payload(read_json(files["content_asset_library"], {"items": []}))),
         "content_strategy": read_text(files["content_strategy"]),
+        "durable_conversation_memory": scrub_memory(redact_payload(read_json(files["durable_conversation_memory"], {"items": []}))),
         "brand_guides": {
             "general_branding": read_text(files["general_branding"]),
             "offer_map": read_text(files["offer_map"]),
@@ -1015,6 +1085,7 @@ def conversation_continuity_status(memory):
         "creative_references": has_meaningful_memory(memory.get("creative_references")),
         "content_asset_library": has_meaningful_memory(memory.get("content_asset_library")),
         "content_strategy": has_meaningful_memory(memory.get("content_strategy")),
+        "durable_conversation_memory": has_meaningful_memory(memory.get("durable_conversation_memory")),
         "product_guides": has_meaningful_memory(brand.get("products")),
         "ad_briefs": has_meaningful_memory(brand.get("ad_briefs")),
         "latest_day_context": bool(latest_context.get("selected_date")),
@@ -1200,6 +1271,8 @@ def prepare_hermes_workspace(payload):
 This folder is the only workspace Hermes should read for this product turn.
 It contains curated business memory, brand guides, recent activity, and uploaded reference images.
 
+The only operational skills allowed in Admira IA are the official, versioned files under this workspace's `skills/` directory. Never consult, create, patch, or route through Hermes personal/global skills. Product-wide behavior changes must arrive through an official Admira update; buyer facts, decisions, preferences, and action history belong in durable memory through the product's save tools.
+
 Hermes owns the conversation and should use its own session memory. The backend does not paste the whole chat history into the prompt.
 Before every buyer-facing turn, read `skills/core-agent-behavior/SKILL.md`. If session memory was cleaned, the gateway restarted, or an update created a fresh runtime session, also read `skills/session-continuity/SKILL.md`, `memory/Conversation continuity.md`, `memory/continuity_status.json`, `memory/latest_day_context.md`, `memory/active_workflow.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Branding onboarding.md`, `memory/Ads campaign onboarding.md`, `brand_guides/Offer map.md`, and relevant `brand_guides/` files before greeting.
 
@@ -1247,6 +1320,7 @@ Read `skills/README.md`, then the relevant `skills/*/SKILL.md` file before actin
     written.append(write_workspace_file("memory/creative_experiments.json", memory["creative_experiments"]))
     written.append(write_workspace_file("memory/content_asset_library.json", memory.get("content_asset_library", {"items": []})))
     written.append(write_workspace_file("memory/content_strategy.md", memory.get("content_strategy", "")))
+    written.append(write_workspace_file("memory/durable_conversation_memory.json", memory.get("durable_conversation_memory", {"items": []})))
     written.append(write_workspace_file("memory/optimization_state.json", memory["optimization_state"]))
     written.append(write_workspace_file("memory/business_outcomes.json", memory["business_outcomes"]))
     written.append(write_workspace_file("memory/optimization_research.json", memory["optimization_research"]))
@@ -1723,8 +1797,10 @@ def library_chat(config, payload):
         kwargs["api_key"] = brain["api_key"]
     if brain.get("model"):
         kwargs["model"] = brain["model"]
-    enabled = split_csv(getattr(config, "hermes_enabled_toolsets", ""))
+    enabled = controlled_hermes_toolsets(split_csv(getattr(config, "hermes_enabled_toolsets", "")))
     disabled = split_csv(getattr(config, "hermes_disabled_toolsets", ""))
+    if "skills" not in disabled:
+        disabled.append("skills")
     if enabled:
         kwargs["enabled_toolsets"] = enabled
     if disabled:

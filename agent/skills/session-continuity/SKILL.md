@@ -25,6 +25,7 @@ Read these workspace files when present:
 - `memory/creative_refreshes.json`
 - `memory/content_asset_library.json`
 - `memory/content_strategy.md`
+- `memory/durable_conversation_memory.json`
 - `brand_guides/Offer map.md`
 - relevant `brand_guides/` files
 

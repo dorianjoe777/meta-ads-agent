@@ -1439,6 +1439,18 @@ class IntegrationTestSuite:
                     ],
                 }
             )
+            unsupported_memory_claim = admira_hermes_runtime_patch._guard_unconfirmed_persistence_claim(
+                {"final_response": "Perfecto, ya lo guardé en mis indicaciones.", "messages": [{"role": "user", "content": "Usaremos LATAM"}]}
+            )
+            confirmed_memory_claim = admira_hermes_runtime_patch._guard_unconfirmed_persistence_claim(
+                {
+                    "final_response": "Perfecto, ya lo guardé para futuras conversaciones.",
+                    "messages": [
+                        {"role": "user", "content": "Usaremos LATAM"},
+                        {"role": "tool", "content": '{"tool":"admira_save_durable_memory","ok":true,"result":{"saved":true}}'},
+                    ],
+                }
+            )
             self.assert_true(f"MEDIA:{generated_image.resolve()}" in patched["final_response"], "Runtime patch appends generated image MEDIA directive from non-tool message results")
             self.assert_true(patched_again["final_response"].count("MEDIA:") == 1, "Runtime patch does not duplicate generated media attachments")
             self.assert_true("MEDIA:" not in unsafe["final_response"], "Runtime patch does not attach unsafe paths outside product output")
@@ -1446,6 +1458,8 @@ class IntegrationTestSuite:
             self.assert_true("MEDIA:" not in history_only_response["final_response"], "Runtime patch does not reattach media from older session messages")
             self.assert_true(f"MEDIA:{current_image.resolve()}" in current_turn_response["final_response"], "Runtime patch attaches media from the newest assistant result")
             self.assert_true(f"MEDIA:{old_image.resolve()}" not in current_turn_response["final_response"], "Runtime patch does not attach older generated media when a newer image exists")
+            self.assert_true("No pude confirmar un guardado durable" in unsupported_memory_claim["final_response"] and "ya lo guardé" not in unsupported_memory_claim["final_response"].lower(), "Runtime patch blocks unsupported claims that buyer memory was saved")
+            self.assert_true("ya lo guardé" in confirmed_memory_claim["final_response"].lower() and "No pude confirmar" not in confirmed_memory_claim["final_response"], "Runtime patch preserves persistence claims only after a save tool confirms success")
             admira_hermes_runtime_patch._append_gateway_turn("user", f"Mi token es EAARZCS9BuvSwBR3CyhVZCZCLT5aAnjoKNuCFwbrVEUNV8q5Gojivo0rBA8HMhWuHddbCS52ZCZCLQ2LZBLLtymDbr6plcexfeDdi7hqLY8pAPVNE4CIVhZAvcZAXQH5UvG8ndWZBVjT4wpH9N8BFDrYp04eBWq47Oifrsb2hss4e9p3NwN63VAVxXqRRWPdJe y la ruta es {generated_image.resolve()}")
             turn_log_text = turn_log.read_text(encoding="utf-8")
             self.assert_true("redacted-token" in turn_log_text and "EAARZCS9Buv" not in turn_log_text and str(generated_image.resolve()) not in turn_log_text, "Gateway recent-turn log stores redacted conversation context")
@@ -2196,7 +2210,7 @@ class IntegrationTestSuite:
             self.assert_true(str(unsafe_image.resolve()) not in command, "Unsafe local file is not attached as an image")
             toolset_arg = command[command.index("--toolsets") + 1]
             toolsets = toolset_arg.split(",")
-            self.assert_true(all(toolset in toolsets for toolset in ["memory", "skills", "session_search", "vision", "file", "web", "browser", "admira"]), "Creative-friendly Hermes toolsets include scoped file, website access, and Admira product tools")
+            self.assert_true(all(toolset in toolsets for toolset in ["memory", "session_search", "vision", "file", "web", "browser", "admira"]) and "skills" not in toolsets, "Creative-friendly Hermes toolsets include scoped file, website access, and Admira product tools without mutable Hermes skills")
             self.assert_true("image_gen" not in toolset_arg, "Hermes internal image generation stays disabled so Codex/Image bridge owns final creatives")
         finally:
             hermes_bridge.subprocess.run = original_run
@@ -2401,6 +2415,7 @@ class IntegrationTestSuite:
             self.assert_true("platform_toolsets:" in config_yaml and "telegram:" in config_yaml and "hermes-telegram" in config_yaml, "Hermes Gateway config enables native Telegram toolsets")
             self.assert_true("rich_messages: false" in config_yaml, "Hermes Gateway disables Telegram rich rendering so tables cannot become empty bubbles")
             self.assert_true("gateway_restart_notification: false" in config_yaml, "Hermes Gateway suppresses buyer-facing shutdown notices during planned dashboard restarts")
+            self.assert_true("creation_nudge_interval: 0" in config_yaml and "memory_notifications: off" in config_yaml and "    - skills" in config_yaml, "Hermes Gateway disables personal skill creation, patch reviews, and buyer-facing skill notices")
             self.assert_true("session_reset:" in config_yaml and "  notify: false" in config_yaml and "  at_hour: 4" in config_yaml, "Hermes daily session cleanup stays enabled at 4:00 but its technical notice is hidden from buyers")
             self.assert_true("threshold: 0.85" in config_yaml and "codex_gpt55_autoraise: false" in config_yaml, "Hermes Gateway keeps the larger Codex context threshold without replaying the auto-compaction notice to buyers")
             self.assert_true("HERMES_MEDIA_ALLOW_DIRS=" in env_text and "/output" in env_text, "Hermes Gateway allows generated output files to be delivered as native media attachments")
@@ -2458,6 +2473,7 @@ class IntegrationTestSuite:
         original_workspace = hermes_bridge.HERMES_WORKSPACE_DIR
         try:
             shutil.rmtree(test_dir, ignore_errors=True)
+
             hermes_bridge.HERMES_WORKSPACE_DIR = test_dir / "workspace"
             workspace = hermes_bridge.prepare_hermes_workspace({"channel": "telegram", "language": "es", "account_context": {}})
             workspace_path = Path(workspace["path"])
@@ -2499,6 +2515,8 @@ class IntegrationTestSuite:
             self.assert_true("mcp_admira_approve_action" in approvals_skill.read_text(encoding="utf-8"), "Approval skill points Hermes to exact approval MCP tools")
             self.assert_true("Native Product Tools" in agents_text and "mcp_admira_stage_campaign" in agents_text and "mcp_admira_review_signal_quality" in agents_text and "mcp_admira_preflight_campaign" in agents_text, "Combined Hermes rules document the MCP product bridge and preflight review")
             self.assert_true("latest_day_context" in agents_text and "active_workflow" in agents_text and "core-agent-behavior" in agents_text, "Combined Hermes rules force modular behavior and continuity memory")
+            self.assert_true("official versioned skills" in agents_text.lower() and "mcp_admira_save_durable_memory" in agents_text and "Never say “lo guardé”" in agents_text, "Hermes uses only official product skills and cannot claim persistence without a confirmed durable save")
+            self.assert_true((workspace_path / "memory" / "durable_conversation_memory.json").exists(), "Hermes workspace includes fallback durable conversation decisions")
             self.assert_true((workspace_path / "memory" / "Branding onboarding.md").exists() and (workspace_path / "brand_guides" / "Offer map.md").exists(), "Hermes workspace includes separate branding onboarding and offer-map memory files")
             self.assert_true("child offer" in agents_text and "Offer map" in agents_text and "active child offer" in core_skill.read_text(encoding="utf-8"), "Hermes rules teach parent-brand versus child-offer separation")
             self.assert_true("interval_days" in organic_content_text and "cada X días" in organic_content_text, "Organic content skill supports daily or every-X-days cadence")
@@ -2506,6 +2524,39 @@ class IntegrationTestSuite:
             self.assert_true((workspace_path / "skills" / "README.md").exists(), "Hermes workspace includes a product skill index")
         finally:
             hermes_bridge.HERMES_WORKSPACE_DIR = original_workspace
+            shutil.rmtree(test_dir, ignore_errors=True)
+
+    def test_hermes_uses_only_official_skills_and_persists_confirmed_memory(self):
+        """Test mutable Hermes skills are quarantined and durable facts survive separately."""
+        print("\nTesting Official Skill Catalog And Durable Memory...")
+
+        test_dir = ROOT_DIR / "output" / "test-official-skill-catalog"
+        home = test_dir / "hermes-home"
+        personal_skill = home / "skills" / "marketing" / "marketing-creative-iteration"
+        dashboard = load_dashboard_module()
+        original_memory_file = dashboard.DURABLE_CONVERSATION_MEMORY_FILE
+        original_actions_file = dashboard.ACTIONS_FILE
+        try:
+            shutil.rmtree(test_dir, ignore_errors=True)
+            personal_skill.mkdir(parents=True, exist_ok=True)
+            (personal_skill / "SKILL.md").write_text("---\nname: marketing-creative-iteration\n---\n", encoding="utf-8")
+            (home / "skills" / ".usage.json").write_text('{"marketing-creative-iteration":{"created_by":"agent"}}', encoding="utf-8")
+
+            moved = hermes_bridge.enforce_official_skill_catalog(home)
+            second = hermes_bridge.enforce_official_skill_catalog(home)
+            self.assert_true(bool(moved) and not list((home / "skills").rglob("SKILL.md")), "Existing Hermes-created skills are quarantined outside the active catalog")
+            self.assert_true((home / "disabled-agent-skills").exists() and second == [], "Official skill enforcement preserves legacy files and is idempotent")
+
+            dashboard.DURABLE_CONVERSATION_MEMORY_FILE = test_dir / "durable_conversation_memory.json"
+            dashboard.ACTIONS_FILE = test_dir / "actions.json"
+            first = dashboard.save_durable_memory({"category": "decision", "scope": "campaign", "summary": "Usar LATAM y no US para esta prueba", "details": "Decisión confirmada por el comprador"})
+            updated = dashboard.save_durable_memory({"category": "decision", "scope": "campaign", "summary": "Usar LATAM y no US para esta prueba", "details": "Confirmado nuevamente"})
+            stored = json.loads(dashboard.DURABLE_CONVERSATION_MEMORY_FILE.read_text(encoding="utf-8"))
+            self.assert_true(first["saved"] and updated["saved"] and len(stored["items"]) == 1, "Confirmed fallback decisions persist durably without duplicating repeated saves")
+            self.assert_true(stored["items"][0]["details"] == "Confirmado nuevamente", "A later confirmation updates the same durable decision")
+        finally:
+            dashboard.DURABLE_CONVERSATION_MEMORY_FILE = original_memory_file
+            dashboard.ACTIONS_FILE = original_actions_file
             shutil.rmtree(test_dir, ignore_errors=True)
 
     def test_admira_tool_bridge_maps_mcp_tools_to_dashboard_actions(self):
@@ -2587,6 +2638,7 @@ class IntegrationTestSuite:
             ads_onboarding = admira_tool_bridge.call_tool("mcp_admira_save_ads_onboarding", {"success_metrics": ["ROAS", "cost per purchase", "cost per initiate checkout"]})
             daily_content = admira_tool_bridge.call_tool("mcp_admira_save_daily_social_content_settings", {"enabled": True, "time": "10:00", "posts_per_day": 1})
             content_asset = admira_tool_bridge.call_tool("mcp_admira_save_content_asset", {"category": "location", "purpose": "usar como fondo real del local"})
+            durable_memory = admira_tool_bridge.call_tool("mcp_admira_save_durable_memory", {"category": "decision", "scope": "campaign", "summary": "Usar LATAM"})
             approval = admira_tool_bridge.call_tool("mcp_admira_approve_action", {"approval_id": "approval_1"})
             pending = admira_tool_bridge.call_tool("list_pending_approvals", {})
             unknown = admira_tool_bridge.call_tool("delete_everything", {})
@@ -2607,6 +2659,7 @@ class IntegrationTestSuite:
             self.assert_true(ads_onboarding["product_tool"] == "save_ads_onboarding" and "save_ads_onboarding" in called_tools, "Tool bridge maps ads onboarding memory so Hermes can persist campaign KPIs")
             self.assert_true(daily_content["product_tool"] == "save_daily_social_content_settings" and "save_daily_social_content_settings" in called_tools, "Tool bridge maps daily organic content settings to the dashboard handler")
             self.assert_true(content_asset["product_tool"] == "save_content_asset" and "save_content_asset" in called_tools, "Tool bridge maps buyer-shared content assets to the dashboard handler")
+            self.assert_true(durable_memory["product_tool"] == "save_durable_memory" and "save_durable_memory" in called_tools, "Tool bridge maps confirmed fallback decisions to durable product memory")
             approval_call = next(call for call in calls if call[0]["tool"] == "approval_decision")
             self.assert_true(approval["product_tool"] == "approval_decision" and approval_call[0]["arguments"]["decision"] == "approve", "Tool bridge converts approval MCP calls to exact approval decisions")
             verified = admira_tool_bridge.call_tool("mcp_admira_record_verified_signal", {"stage": "booked", "person_label": "Maria"})
@@ -2635,7 +2688,7 @@ class IntegrationTestSuite:
             tool_names = [tool["name"] for tool in captured[1]["result"]["tools"]]
             call_text = captured[2]["result"]["content"][0]["text"]
             self.assert_true(captured[0]["result"]["serverInfo"]["name"] == "admira", "MCP server initializes as Admira")
-            self.assert_true("codex_image_generate" in tool_names and "stage_campaign" in tool_names and "stage_lead_form" in tool_names and "list_lead_forms" in tool_names and "approve_action" in tool_names and "review_signal_quality" in tool_names and "preflight_campaign" in tool_names and "fetch_public_asset" in tool_names and "record_verified_signal" in tool_names and "save_ads_onboarding" in tool_names and "save_daily_social_content_settings" in tool_names and "save_content_asset" in tool_names, "MCP server lists product tools for Hermes")
+            self.assert_true("codex_image_generate" in tool_names and "stage_campaign" in tool_names and "stage_lead_form" in tool_names and "list_lead_forms" in tool_names and "approve_action" in tool_names and "review_signal_quality" in tool_names and "preflight_campaign" in tool_names and "fetch_public_asset" in tool_names and "record_verified_signal" in tool_names and "save_ads_onboarding" in tool_names and "save_daily_social_content_settings" in tool_names and "save_content_asset" in tool_names and "save_durable_memory" in tool_names, "MCP server lists product tools for Hermes")
             self.assert_true('"tool": "admira_codex_image_generate"' in call_text and '"request": "imagen"' in call_text, "MCP server calls the product bridge with Admira-prefixed tool names")
         finally:
             admira_mcp_server.write_message = original_write
@@ -9346,7 +9399,7 @@ class IntegrationTestSuite:
         self.assert_true("python-telegram-bot>=21,<22" in dockerfile and "python-telegram-bot>=21,<22" in install_local, "Docker/native installs include the Telegram adapter required by Hermes Gateway")
         self.assert_true("CODEX_CREATIVE_ENABLED=true" in dockerfile and 'CODEX_CREATIVE_ENABLED: "true"' in compose and '"CODEX_CREATIVE_ENABLED": "true"' in docker_entrypoint, "Buyer Docker installs enable Codex/Image creative generation by default")
         self.assert_true("CODEX_HOME=/app/runtime/codex" in dockerfile and "CODEX_HOME: /app/runtime/codex" in compose and "/app/runtime/codex/generated_images" in docker_entrypoint, "Docker persists the buyer's ChatGPT/Codex login and generated images across updates")
-        self.assert_true("HERMES_DISABLED_TOOLSETS=terminal,code_execution,image_gen" in dockerfile and "HERMES_DISABLED_TOOLSETS: terminal,code_execution,image_gen" in compose and "HERMES_ENABLED_TOOLSETS=memory,skills,session_search,vision,file" in dockerfile, "Docker disables Hermes internal image generation so Codex/Image owns final creatives")
+        self.assert_true("HERMES_DISABLED_TOOLSETS=terminal,code_execution,image_gen,skills" in dockerfile and "HERMES_DISABLED_TOOLSETS: terminal,code_execution,image_gen,skills" in compose and "HERMES_ENABLED_TOOLSETS=memory,session_search,vision,file" in dockerfile, "Docker disables Hermes internal image generation and mutable personal skills so official Admira tools own the experience")
         self.assert_true("seller/" in dockerignore, "Docker build context excludes seller secrets")
         self.assert_true("forced = {" in docker_entrypoint and "\"DASHBOARD_HOST\": \"0.0.0.0\"" in docker_entrypoint, "Docker entrypoint forces reachable dashboard bind values")
         self.assert_true("LAN_ACCESS_ENABLED" in env_example and "LAN_ACCESS_ENABLED" in docker_entrypoint and "ADMIRA_HOST_LAN_IP" in compose, "Phone LAN access is off by default and Docker receives the host LAN IP when available")
@@ -9767,6 +9820,7 @@ class IntegrationTestSuite:
             self.test_telegram_defaults_to_direct_hermes_gateway,
             self.test_hermes_gateway_uses_isolated_home_and_daily_cron_prompt,
             self.test_hermes_product_skills_are_copied_to_workspace,
+            self.test_hermes_uses_only_official_skills_and_persists_confirmed_memory,
             self.test_admira_tool_bridge_maps_mcp_tools_to_dashboard_actions,
             self.test_admira_mcp_server_lists_and_calls_product_tools,
             self.test_content_asset_library_persists_buyer_files,

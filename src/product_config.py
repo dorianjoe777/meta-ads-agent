@@ -327,8 +327,8 @@ class AgentConfig:
     hermes_status_timeout_seconds: int = 20
     hermes_response_timeout_seconds: int = 300
     hermes_max_iterations: int = 12
-    hermes_enabled_toolsets: str = "memory,skills,session_search,vision,file,web,browser"
-    hermes_disabled_toolsets: str = "terminal,code_execution,image_gen"
+    hermes_enabled_toolsets: str = "memory,session_search,vision,file,web,browser"
+    hermes_disabled_toolsets: str = "terminal,code_execution,image_gen,skills"
     hermes_use_python_library: bool = True
     hermes_require_codex_auth: bool = True
     meta_access_token_kind: str = ""
@@ -440,8 +440,8 @@ def load_config():
         hermes_status_timeout_seconds=env_int("HERMES_STATUS_TIMEOUT_SECONDS", 20),
         hermes_response_timeout_seconds=env_int("HERMES_RESPONSE_TIMEOUT_SECONDS", env_int("HERMES_TIMEOUT_SECONDS", 300)),
         hermes_max_iterations=env_int("HERMES_MAX_ITERATIONS", 12),
-        hermes_enabled_toolsets=os.environ.get("HERMES_ENABLED_TOOLSETS", "memory,skills,session_search,vision,file,web,browser"),
-        hermes_disabled_toolsets=os.environ.get("HERMES_DISABLED_TOOLSETS", "terminal,code_execution,image_gen"),
+        hermes_enabled_toolsets=os.environ.get("HERMES_ENABLED_TOOLSETS", "memory,session_search,vision,file,web,browser"),
+        hermes_disabled_toolsets=os.environ.get("HERMES_DISABLED_TOOLSETS", "terminal,code_execution,image_gen,skills"),
         hermes_use_python_library=env_bool("HERMES_USE_PYTHON_LIBRARY", True),
         hermes_require_codex_auth=env_bool("HERMES_REQUIRE_CODEX_AUTH", True),
         shopify_shop_domain=os.environ.get("SHOPIFY_SHOP_DOMAIN", "").strip().lower(),

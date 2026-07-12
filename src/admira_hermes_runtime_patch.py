@@ -60,6 +60,18 @@ ADMIRA_AUTH_INVALID_PATTERNS = (
     "refresh token has been revoked",
     "oauth token has been revoked",
 )
+ADMIRA_PERSISTENCE_CLAIM_RE = re.compile(
+    r"(?i)(?:\b(?:ya\s+)?(?:lo|la|esto|eso)?\s*(?:he\s+)?guard(?:é|ado|ada)\b|"
+    r"\b(?:ya\s+)?qued[oó]\s+guardad[oa]\b|\blo\s+recordar[eé]\b|"
+    r"\b(?:ya\s+)?qued[oó]\s+en\s+mis\s+indicaciones\b|"
+    r"\b(?:i(?:'ve| have)?\s+)?saved\s+(?:it|that|this)\b|\bi(?:'ll| will)\s+remember\s+(?:it|that|this)\b)"
+)
+ADMIRA_DURABLE_TOOL_MARKERS = (
+    "admira_save_",
+    "mcp_admira_save_",
+    "admira_record_verified_signal",
+    "mcp_admira_record_verified_signal",
+)
 
 
 def _recent_turns_path():
@@ -480,6 +492,54 @@ def _current_generated_media_sources(response):
     return sources
 
 
+def _current_turn_messages(messages):
+    if not isinstance(messages, list):
+        return []
+    start = 0
+    for index, message in enumerate(messages):
+        if isinstance(message, dict) and str(message.get("role") or "").strip().lower() == "user":
+            start = index + 1
+    return messages[start:]
+
+
+def _has_confirmed_durable_save(response):
+    if not isinstance(response, dict):
+        return False
+    sources = []
+    for key in ("tool_result", "tool_results", "tool_response", "tool_responses", "result", "results", "action_result", "action_results", "mcp_result", "mcp_results"):
+        if key in response:
+            sources.append(response.get(key))
+    sources.extend(_current_turn_messages(response.get("messages")))
+    try:
+        text = json.dumps(sources, ensure_ascii=False, default=str).lower()
+    except (TypeError, ValueError):
+        text = str(sources).lower()
+    has_save_tool = any(marker in text for marker in ADMIRA_DURABLE_TOOL_MARKERS)
+    has_success = any(marker in text for marker in ('"saved": true', '"ok": true', '"executed": true', '"status": "completed"'))
+    return has_save_tool and has_success
+
+
+def _guard_unconfirmed_persistence_claim(response):
+    """Prevent a model from promising memory when no save tool succeeded."""
+    if not isinstance(response, dict):
+        return response
+    final_response = str(response.get("final_response") or "")
+    if not final_response or not ADMIRA_PERSISTENCE_CLAIM_RE.search(final_response):
+        return response
+    if _has_confirmed_durable_save(response):
+        return response
+    language = str(os.environ.get("ADMIRA_GATEWAY_LANGUAGE") or "es").lower()
+    correction = (
+        "I could not confirm a durable save in this turn, so I will not claim that it will survive a reset yet."
+        if language.startswith("en")
+        else "No pude confirmar un guardado durable en este turno, así que todavía no voy a afirmar que esto sobrevivirá un reinicio."
+    )
+    cleaned = ADMIRA_PERSISTENCE_CLAIM_RE.sub("", final_response)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip(" \n-—:;,.\t")
+    response["final_response"] = (cleaned + "\n\n" + correction).strip()
+    return response
+
+
 def _append_generated_media_attachments(response):
     """Append native MEDIA directives for generated images in any result shape."""
     if not isinstance(response, dict):
@@ -817,6 +877,10 @@ def _patch_gateway_generated_media_delivery():
 
     async def patched_run_agent(self, *args, **kwargs):
         result = await original(self, *args, **kwargs)
+        try:
+            result = _guard_unconfirmed_persistence_claim(result)
+        except Exception:
+            pass
         try:
             result = _append_generated_media_attachments(result)
         except Exception:

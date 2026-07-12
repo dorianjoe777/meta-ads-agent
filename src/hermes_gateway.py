@@ -27,6 +27,7 @@ from hermes_bridge import (
     ADMIRA_MINIMAX_PROVIDER,
     ADMIRA_MINIMAX_PROVIDER_NAME,
     admira_minimax_credentials,
+    enforce_official_skill_catalog,
     hermes_brain_settings,
     hermes_environment,
     prepare_hermes_workspace,
@@ -368,6 +369,7 @@ def gateway_prompt(language="es", communication_style="simple", ad_experience_le
             "After an image or creative tool succeeds, never paste `MEDIA:/...` or a local path as the deliverable. If a native attachment directive is needed, use `MEDIA:<local_path>` only as internal delivery syntax at the end of the response, while the visible message says the image is attached and summarizes what is ready. "
             "If the buyer asks for a prompt, copy, plan, script, diagnosis, or useful content, paste it directly in the chat; do not reply only with “I saved it in this file” or ask them to open an internal path. "
             "Internal workspace files are your private memory/tooling; the buyer's usable workspace is the conversation. You may say you saved something internally only after giving the requested content in the same reply. "
+            "Use only the official versioned skills under this workspace's `skills/` directory. Never use, create, patch, or consult Hermes personal/global skills. Before ending every turn, check whether the buyer confirmed a durable fact, decision, preference, outcome, blocker, next step, or workflow agreement; save it with the narrowest `mcp_admira_save_*` tool, using `mcp_admira_save_durable_memory` only as fallback. Never claim something was saved unless that tool confirmed success. "
             "Before every buyer-facing reply, read `skills/core-agent-behavior/SKILL.md`. Before any first-time greeting or onboarding question, also read `skills/session-continuity/SKILL.md`, `memory/Conversation continuity.md`, `memory/continuity_status.json`, `memory/latest_day_context.md`, `memory/active_workflow.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/pending_approvals.json`, `memory/creative_experiments.json`, and relevant `brand_guides/` files in the workspace. "
             "If the continuity status says persistent memory exists or active_workflow says work is active, treat history cleanup, gateway restart, updates, or a fresh runtime session as a resume event: do not introduce yourself as first time, do not restart onboarding, and do not repeat the initial ads-experience/technical-detail question unless those files prove it is still missing. "
             "Resume with a short continuation message that mentions one concrete remembered item and continue from the next useful step. Use session search for prior Telegram sessions only as a helper; durable workspace files are enough to keep moving. "
@@ -401,6 +403,7 @@ def gateway_prompt(language="es", communication_style="simple", ad_experience_le
         "Después de que una herramienta de imagen o creativo genere un archivo, nunca pegues `MEDIA:/...` ni una ruta local como entregable. Si necesitas adjuntar el archivo, usa `MEDIA:<ruta_local>` solo como sintaxis interna de entrega al final de la respuesta; el mensaje visible debe decir que la imagen va adjunta y resumir qué quedó listo. "
         "Si el comprador pide un prompt, copy, plan, guion, diagnóstico o contenido útil, entrégalo directamente en el chat; no respondas solo “lo guardé en este archivo” ni le pidas abrir una ruta interna. "
         "Los archivos internos son tu memoria/herramienta privada; el workspace útil del comprador es la conversación. Puedes decir que algo quedó guardado internamente solo después de dar el contenido solicitado en el mismo mensaje. "
+        "Usa únicamente las skills oficiales versionadas dentro de `skills/` en este workspace. Nunca uses, crees, parches ni consultes skills personales/globales de Hermes. Antes de terminar cada turno, revisa si el comprador confirmó un hecho, decisión, preferencia, resultado, bloqueo, siguiente paso o acuerdo de trabajo que deba sobrevivir un reset; guárdalo con la herramienta `mcp_admira_save_*` más específica y usa `mcp_admira_save_durable_memory` solo como respaldo. Nunca digas que algo quedó guardado si la herramienta no confirmó éxito. "
         "Antes de cada respuesta al comprador, lee `skills/core-agent-behavior/SKILL.md`. Antes de saludar como si fuera la primera vez o hacer preguntas de onboarding, lee también `skills/session-continuity/SKILL.md`, `memory/Conversation continuity.md`, `memory/continuity_status.json`, `memory/latest_day_context.md`, `memory/active_workflow.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/pending_approvals.json`, `memory/creative_experiments.json` y los archivos relevantes de `brand_guides/` en el workspace. "
         "Si el estado de continuidad dice que existe memoria persistente o active_workflow dice que hay trabajo activo, trata una limpieza de historial, reinicio del gateway, actualización o sesión nueva del runtime como una reanudación: no te presentes como primera vez, no reinicies el onboarding y no repitas la pregunta inicial de experiencia en anuncios/detalle técnico salvo que esos archivos demuestren que todavía falta. "
         "Retoma con un mensaje corto que mencione un dato concreto recordado y sigue con el siguiente paso útil. Usa búsqueda de sesiones anteriores de Telegram solo como ayuda; los archivos durables del workspace bastan para continuar. "
@@ -432,6 +435,7 @@ def gateway_prompt(language="es", communication_style="simple", ad_experience_le
 
 def write_gateway_files(config):
     home = hermes_home(config)
+    enforce_official_skill_catalog(home)
     workspace = gateway_workspace(config)
     status = telegram_settings(config)
     timezone_name = str(getattr(config, "daily_brief_timezone", "UTC") or "UTC")
@@ -465,7 +469,7 @@ def write_gateway_files(config):
     ad_experience = ad_experience_from_environment()
     prompt = gateway_prompt(status["language"], communication_style, ad_experience)
     brain = hermes_brain_settings(config)
-    toolsets = ["hermes-telegram", "memory", "skills", "session_search", "vision", "file", "web", "browser", "admira"]
+    toolsets = ["hermes-telegram", "memory", "session_search", "vision", "file", "web", "browser", "admira"]
     mcp_server_path = ROOT_DIR / "src" / "admira_mcp_server.py"
     config_yaml = [
         f"timezone: {_quote_yaml(timezone_name)}",
@@ -479,6 +483,11 @@ def write_gateway_files(config):
         "    - terminal",
         "    - code_execution",
         "    - image_gen",
+        "    - skills",
+        "skills:",
+        "  creation_nudge_interval: 0",
+        "display:",
+        "  memory_notifications: off",
         "session_reset:",
         "  mode: both",
         "  at_hour: 4",

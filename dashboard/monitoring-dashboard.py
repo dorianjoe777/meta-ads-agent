@@ -206,6 +206,7 @@ BRANDING_ONBOARDING_FILE = DATA_DIR / "Branding onboarding.md"
 ADS_ONBOARDING_FILE = DATA_DIR / "Ads campaign onboarding.md"
 CONTENT_ASSET_LIBRARY_FILE = DATA_DIR / "content_asset_library.json"
 CONTENT_STRATEGY_FILE = DATA_DIR / "content_strategy.md"
+DURABLE_CONVERSATION_MEMORY_FILE = DATA_DIR / "durable_conversation_memory.json"
 INDIVIDUAL_BINDING_FILE = DATA_DIR / "individual_business_binding.json"
 MANAGED_AD_ACCOUNTS_FILE = DATA_DIR / "managed_ad_accounts.json"
 AGENCY_SPACES_FILE = DATA_DIR / "agency_spaces.json"
@@ -287,6 +288,7 @@ BUSINESS_DATA_FILES = [
     "shopify_sync_state.json",
     "optimization_research.json",
     "business_profile.json",
+    "durable_conversation_memory.json",
     "managed_ad_accounts.json",
     "Onboarding questions.md",
     "Agent onboarding plan.md",
@@ -6172,6 +6174,55 @@ def save_business_context(payload):
     return {"saved": True, "profile": profile}
 
 
+def save_durable_memory(payload):
+    """Persist a confirmed conversational fact that does not fit a specialist store."""
+    category = str(payload.get("category") or "fact").strip().lower()[:48]
+    scope = str(payload.get("scope") or "business").strip().lower()[:80]
+    summary = str(payload.get("summary") or payload.get("fact") or payload.get("decision") or "").strip()[:800]
+    details = str(payload.get("details") or payload.get("context") or "").strip()[:2400]
+    status = str(payload.get("status") or "active").strip().lower()[:32]
+    if not summary:
+        return {"saved": False, "reason": "missing_summary"}
+    clean = redact_payload(
+        {
+            "category": category,
+            "scope": scope,
+            "summary": summary,
+            "details": details,
+            "status": status,
+        }
+    )
+    library = read_json(DURABLE_CONVERSATION_MEMORY_FILE, {"items": []})
+    if not isinstance(library, dict):
+        library = {"items": []}
+    items = [item for item in library.get("items", []) if isinstance(item, dict)]
+    key = (category, scope, re.sub(r"\s+", " ", str(clean.get("summary") or "")).strip().lower())
+    now = now_iso()
+    existing = next(
+        (
+            item
+            for item in items
+            if (
+                str(item.get("category") or "").lower(),
+                str(item.get("scope") or "").lower(),
+                re.sub(r"\s+", " ", str(item.get("summary") or "")).strip().lower(),
+            )
+            == key
+        ),
+        None,
+    )
+    if existing is not None:
+        existing.update({**clean, "updated_at": now})
+        record = existing
+    else:
+        record = {"id": f"mem_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}", **clean, "created_at": now, "updated_at": now}
+        items.append(record)
+    library = {"updated_at": now, "items": items[-200:]}
+    write_private_json(DURABLE_CONVERSATION_MEMORY_FILE, library, ensure_ascii=False)
+    log_action("durable_memory_save", {"category": category, "scope": scope, "memory_id": record.get("id")}, "completed")
+    return {"saved": True, "memory": record}
+
+
 def save_ads_campaign_onboarding(payload):
     profile = read_json(BUSINESS_PROFILE_FILE, {})
     if not isinstance(profile, dict):
@@ -9966,6 +10017,24 @@ def handle_save_business_context_tool(arguments, chat_payload, tool):
     )
 
 
+def handle_save_durable_memory_tool(arguments, chat_payload, tool):
+    result = save_durable_memory(arguments)
+    if not result.get("saved"):
+        return agent_action_result(
+            tool,
+            False,
+            chat_reply(chat_payload, "No pude guardarlo porque falta el dato concreto.", "I could not save it because the concrete fact is missing."),
+            blocked=True,
+            reason=result.get("reason") or "durable_memory_not_saved",
+        )
+    return agent_action_result(
+        tool,
+        True,
+        chat_reply(chat_payload, "Quedó guardado para futuras conversaciones.", "It is saved for future conversations."),
+        result=result,
+    )
+
+
 def handle_save_brand_guide_tool(arguments, chat_payload, tool):
     raw_arguments = dict(arguments or {})
     arguments = normalize_general_payload(raw_arguments)
@@ -10214,6 +10283,7 @@ AGENT_TOOL_HANDLERS = {
     "get_verified_signal_summary": handle_get_verified_signal_summary_tool,
     "verified_signal_feedback_prompt": handle_verified_signal_feedback_prompt_tool,
     "save_business_context": handle_save_business_context_tool,
+    "save_durable_memory": handle_save_durable_memory_tool,
     "save_brand_guide": handle_save_brand_guide_tool,
     "save_product_guide": handle_save_product_guide_tool,
     "save_creative_references": handle_save_creative_references_tool,
