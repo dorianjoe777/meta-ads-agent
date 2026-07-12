@@ -2640,6 +2640,7 @@ class IntegrationTestSuite:
             daily_content = admira_tool_bridge.call_tool("mcp_admira_save_daily_social_content_settings", {"enabled": True, "time": "10:00", "posts_per_day": 1})
             content_asset = admira_tool_bridge.call_tool("mcp_admira_save_content_asset", {"category": "location", "purpose": "usar como fondo real del local"})
             durable_memory = admira_tool_bridge.call_tool("mcp_admira_save_durable_memory", {"category": "decision", "scope": "campaign", "summary": "Usar LATAM"})
+            scheduled_activation = admira_tool_bridge.call_tool("mcp_admira_schedule_campaign_activation", {"campaign_id": "120250293867690096", "scheduled_at": "2026-07-13T07:00:00-05:00", "buyer_authorized": True, "creative_ready_confirmed": True})
             approval = admira_tool_bridge.call_tool("mcp_admira_approve_action", {"approval_id": "approval_1"})
             pending = admira_tool_bridge.call_tool("list_pending_approvals", {})
             unknown = admira_tool_bridge.call_tool("delete_everything", {})
@@ -2661,6 +2662,7 @@ class IntegrationTestSuite:
             self.assert_true(daily_content["product_tool"] == "save_daily_social_content_settings" and "save_daily_social_content_settings" in called_tools, "Tool bridge maps daily organic content settings to the dashboard handler")
             self.assert_true(content_asset["product_tool"] == "save_content_asset" and "save_content_asset" in called_tools, "Tool bridge maps buyer-shared content assets to the dashboard handler")
             self.assert_true(durable_memory["product_tool"] == "save_durable_memory" and "save_durable_memory" in called_tools, "Tool bridge maps confirmed fallback decisions to durable product memory")
+            self.assert_true(scheduled_activation["product_tool"] == "schedule_campaign_activation" and "schedule_campaign_activation" in called_tools, "Tool bridge maps exact future campaign activation to the deterministic scheduler")
             approval_call = next(call for call in calls if call[0]["tool"] == "approval_decision")
             self.assert_true(approval["product_tool"] == "approval_decision" and approval_call[0]["arguments"]["decision"] == "approve", "Tool bridge converts approval MCP calls to exact approval decisions")
             verified = admira_tool_bridge.call_tool("mcp_admira_record_verified_signal", {"stage": "booked", "person_label": "Maria"})
@@ -2689,7 +2691,7 @@ class IntegrationTestSuite:
             tool_names = [tool["name"] for tool in captured[1]["result"]["tools"]]
             call_text = captured[2]["result"]["content"][0]["text"]
             self.assert_true(captured[0]["result"]["serverInfo"]["name"] == "admira", "MCP server initializes as Admira")
-            self.assert_true("codex_image_generate" in tool_names and "stage_campaign" in tool_names and "stage_lead_form" in tool_names and "list_lead_forms" in tool_names and "approve_action" in tool_names and "review_signal_quality" in tool_names and "preflight_campaign" in tool_names and "fetch_public_asset" in tool_names and "record_verified_signal" in tool_names and "save_ads_onboarding" in tool_names and "save_daily_social_content_settings" in tool_names and "save_content_asset" in tool_names and "save_durable_memory" in tool_names, "MCP server lists product tools for Hermes")
+            self.assert_true("codex_image_generate" in tool_names and "stage_campaign" in tool_names and "schedule_campaign_activation" in tool_names and "stage_lead_form" in tool_names and "list_lead_forms" in tool_names and "approve_action" in tool_names and "review_signal_quality" in tool_names and "preflight_campaign" in tool_names and "fetch_public_asset" in tool_names and "record_verified_signal" in tool_names and "save_ads_onboarding" in tool_names and "save_daily_social_content_settings" in tool_names and "save_content_asset" in tool_names and "save_durable_memory" in tool_names, "MCP server lists product tools for Hermes")
             self.assert_true('"tool": "admira_codex_image_generate"' in call_text and '"request": "imagen"' in call_text, "MCP server calls the product bridge with Admira-prefixed tool names")
         finally:
             admira_mcp_server.write_message = original_write
@@ -2984,8 +2986,12 @@ class IntegrationTestSuite:
             status = hermes_gateway.gateway_status(FakeConfig())
             env_text = Path(started["env"]).read_text(encoding="utf-8")
             serialized_status = json.dumps(status, ensure_ascii=False)
-            start_command = " ".join(popen_calls[0][0][0])
-            start_kwargs = popen_calls[0][1]
+            gateway_start_call = next(
+                call for call in popen_calls
+                if call[0] and call[0][0] and "admira_hermes_gateway_supervisor" in " ".join(call[0][0])
+            )
+            start_command = " ".join(gateway_start_call[0][0])
+            start_kwargs = gateway_start_call[1]
             gateway_process_env = start_kwargs.get("env") or {}
 
             self.assert_true(started["started"] is True, "Hermes Gateway can start through the configured isolated runtime")
@@ -3000,7 +3006,8 @@ class IntegrationTestSuite:
             popen_calls.clear()
             minimax_started = hermes_gateway.start_gateway(MiniMaxConfig())
             minimax_config = Path(minimax_started["config"]).read_text(encoding="utf-8")
-            minimax_process_env = popen_calls[0][1].get("env") or {}
+            minimax_gateway_call = next(call for call in popen_calls if call[0] and call[0][0] and "admira_hermes_gateway_supervisor" in " ".join(call[0][0]))
+            minimax_process_env = minimax_gateway_call[1].get("env") or {}
             minimax_runtime_state = hermes_gateway.telegram_runtime_model_state(MiniMaxConfig())
             self.assert_true(minimax_started["started"] is True, "Hermes Gateway restarts cleanly after switching the primary brain to MiniMax")
             self.assert_true(minimax_process_env.get("ADMIRA_MINIMAX_API_KEY") == "direct-model-key" and minimax_process_env.get("ADMIRA_MINIMAX_BASE_URL") == "https://api.minimax.io/v1" and "MINIMAX_API_KEY" not in minimax_process_env, "Hermes Gateway passes MiniMax API credentials only through the live process environment without activating Hermes' native MiniMax provider")
@@ -3012,7 +3019,8 @@ class IntegrationTestSuite:
             popen_calls.clear()
             secondary_started = hermes_gateway.start_gateway(CodexWithMiniMaxCredentialConfig())
             secondary_config = Path(secondary_started["config"]).read_text(encoding="utf-8")
-            secondary_process_env = popen_calls[0][1].get("env") or {}
+            secondary_gateway_call = next(call for call in popen_calls if call[0] and call[0][0] and "admira_hermes_gateway_supervisor" in " ".join(call[0][0]))
+            secondary_process_env = secondary_gateway_call[1].get("env") or {}
             self.assert_true(secondary_started["started"] is True, "Hermes Gateway starts when ChatGPT/Codex is primary and MiniMax is only a manual /model option")
             self.assert_true(secondary_process_env.get("ADMIRA_MINIMAX_API_KEY") == "secondary-minimax-key" and secondary_process_env.get("ADMIRA_MINIMAX_BASE_URL") == "https://api.minimax.io/v1", "Hermes Gateway still passes MiniMax credentials for manual Telegram /model switches")
             self.assert_true("MINIMAX_API_KEY" not in secondary_process_env, "Manual MiniMax support still avoids Hermes' native MiniMax credential path")

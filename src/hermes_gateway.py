@@ -694,6 +694,55 @@ def stop_gateway():
     _GATEWAY_FINGERPRINT = None
 
 
+def reconcile_cron_inference_pins(config, files=None):
+    """Pin agent cron jobs to the currently selected brain.
+
+    Hermes intentionally skips unpinned jobs when the global model changes. Admira
+    treats a dashboard model change as an intentional migration, so existing
+    non-script jobs must move with that selection instead of silently stopping.
+    """
+    files = files or write_gateway_files(config)
+    brain = hermes_brain_settings(config)
+    provider = _telegram_model_provider_for_brain(brain)
+    model = str(brain.get("model") or "").strip()
+    if not provider or not model:
+        return {"ok": False, "updated": 0, "reason": "model_not_configured"}
+    env = hermes_environment(config)
+    env["HERMES_HOME"] = files["hermes_home"]
+    env["ADMIRA_CRON_PIN_PROVIDER"] = provider
+    env["ADMIRA_CRON_PIN_MODEL"] = model
+    code = """
+import json, os
+from cron.jobs import list_jobs, update_job
+provider = os.environ['ADMIRA_CRON_PIN_PROVIDER']
+model = os.environ['ADMIRA_CRON_PIN_MODEL']
+updated = []
+for job in list_jobs(include_disabled=True):
+    if getattr(job, 'no_agent', False):
+        continue
+    if getattr(job, 'provider', None) == provider and getattr(job, 'model', None) == model:
+        continue
+    update_job(job.id, {'provider': provider, 'model': model})
+    updated.append(job.id)
+print(json.dumps({'ok': True, 'updated': len(updated), 'job_ids': updated}))
+"""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=files["workspace"], env=env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=20, check=False,
+        )
+    except Exception as exc:
+        return {"ok": False, "updated": 0, "reason": "cron_pin_reconciliation_failed", "error": str(exc)}
+    if result.returncode != 0:
+        return {"ok": False, "updated": 0, "reason": "cron_pin_reconciliation_failed", "error": (result.stderr or result.stdout or "")[-500:]}
+    try:
+        return json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        return {"ok": True, "updated": 0}
+
+
 def start_gateway(config):
     global _GATEWAY_PROCESS, _GATEWAY_FINGERPRINT
     status = telegram_settings(config)
@@ -708,6 +757,7 @@ def start_gateway(config):
     files = write_gateway_files(config)
     fingerprint = _gateway_fingerprint(config, status, files)
     if _GATEWAY_PROCESS and _GATEWAY_PROCESS.poll() is None and _GATEWAY_FINGERPRINT == fingerprint:
+        reconcile_cron_inference_pins(config, files)
         return {"started": True, "mode": "hermes_gateway", "pid": _GATEWAY_PROCESS.pid, **files}
     stop_gateway()
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -767,6 +817,7 @@ def start_gateway(config):
     state = {"started_at": now_iso(), "pid": _GATEWAY_PROCESS.pid, "process_kind": _GATEWAY_PROCESS_KIND, "mode": "hermes_gateway", **files}
     GATEWAY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     GATEWAY_STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    reconcile_cron_inference_pins(config, files)
     time.sleep(0.3)
     started = _GATEWAY_PROCESS.poll() is None
     response = {"started": started, "mode": "hermes_gateway", "pid": _GATEWAY_PROCESS.pid, "log": str(log_path), **files}

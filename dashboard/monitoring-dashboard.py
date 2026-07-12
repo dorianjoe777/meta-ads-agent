@@ -129,6 +129,7 @@ from optimization_engine import (
     unlock_status as optimization_unlock_status,
 )
 from optimization_research import RESEARCH_FILE, load_research, save_research_item, seed_current_research
+from scheduled_campaign_actions import schedule_campaign_activation
 from product_config import (
     ENV_FILE,
     agent_brain_uses_chatgpt_codex,
@@ -276,6 +277,7 @@ BUSINESS_DATA_FILES = [
     "metrics.json",
     "actions.json",
     "pending_approvals.json",
+    "scheduled_campaign_actions.json",
     "created_campaigns.json",
     "audience_strategy.json",
     "onboarding_state.json",
@@ -10257,6 +10259,34 @@ def handle_campaign_mutation_tool(arguments, chat_payload, tool):
     return None
 
 
+def handle_schedule_campaign_activation_tool(arguments, chat_payload, tool):
+    config = load_config()
+    status = telegram_settings(config)
+    chat_id = str(status.get("chat_id") or "").strip()
+    if not chat_id:
+        return agent_action_result(tool, False, "Necesito que Telegram esté conectado para enviarte el resultado de la activación programada.", blocked=True, reason="telegram_not_ready")
+    hermes_home = status.get("hermes_home") or str(Path(__file__).parent / "data" / "hermes-home")
+    result = schedule_campaign_activation(
+        arguments,
+        hermes_home=hermes_home,
+        telegram_chat_id=chat_id,
+        hermes_cli=getattr(config, "hermes_cli", "hermes") or "hermes",
+    )
+    if result.get("ok"):
+        reply = f"Listo. Dejé programada la activación de {result.get('campaign_name')} para {result.get('scheduled_at')}. Guardé y verifiqué su ID exacto de Meta; a esa hora se ejecutará sin depender del modelo del agente."
+        return agent_action_result(tool, True, reply, result=result)
+    reason = result.get("reason") or "scheduled_activation_failed"
+    messages = {
+        "activation_authorization_required": "Antes de programarla necesito tu autorización explícita para que empiece a gastar a esa hora.",
+        "creative_readiness_confirmation_required": "Antes de programarla necesito confirmar que los creativos finales ya están puestos; no activaré placeholders temporales.",
+        "missing_exact_meta_campaign_id": "No encontré un ID numérico único de Meta para esa campaña. Primero consultaré la campaña real y usaré su ID exacto.",
+        "ambiguous_campaign": "Encontré más de una campaña con esa referencia. Necesito identificar una sola por su ID real de Meta.",
+        "campaign_name_mismatch": "El nombre que devuelve Meta no coincide con la campaña autorizada, así que no la programé.",
+        "scheduled_time_is_past": "Esa hora ya pasó. Dime una nueva hora o autoriza que la active ahora.",
+    }
+    return agent_action_result(tool, False, messages.get(reason, "No pude dejar la activación programada de forma segura. No hice cambios ni activé gasto."), blocked=True, reason=reason, result=result)
+
+
 AGENT_TOOL_HANDLERS = {
     "approval_guardrail": handle_agent_approval_tool,
     "approval_decision": handle_agent_approval_tool,
@@ -10294,6 +10324,7 @@ AGENT_TOOL_HANDLERS = {
     "save_existing_adset": handle_save_existing_adset_tool,
     "pause_campaign": handle_campaign_mutation_tool,
     "resume_campaign": handle_campaign_mutation_tool,
+    "schedule_campaign_activation": handle_schedule_campaign_activation_tool,
     "delete_campaign": handle_campaign_mutation_tool,
     "set_budget": handle_campaign_mutation_tool,
     "generate_creatives": handle_campaign_mutation_tool,

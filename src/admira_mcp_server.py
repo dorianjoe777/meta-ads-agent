@@ -43,6 +43,7 @@ TOOL_DEFINITIONS = [
     ("stage_budget_change", "Stage or execute a guarded budget change."),
     ("pause_campaign", "Stage or execute a guarded campaign pause."),
     ("resume_campaign", "Stage or execute a guarded campaign resume."),
+    ("schedule_campaign_activation", "Schedule one exact PAUSED Meta campaign to become ACTIVE at an authorized local date/time. Requires the real numeric Meta campaign_id, buyer authorization to spend, confirmation that final creatives are ready, timezone, and scheduled_at. The due action runs deterministically without an inference/model call."),
     ("delete_campaign", "Stage deletion/archival of an exact Meta campaign ID. Use for buyer-approved cleanup of incomplete paused campaigns; never delete active or external campaigns silently."),
     ("list_pending_approvals", "List pending approval cards."),
     ("approve_action", "Approve one exact pending action."),

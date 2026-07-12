@@ -953,10 +953,40 @@ def _patch_gateway_inbound_video_frames():
     return True
 
 
+def _patch_cron_job_creation():
+    """Make newly-created reasoning crons explicitly follow the active model."""
+    try:
+        import cron.jobs as cron_jobs
+    except ImportError:
+        return False
+    original = getattr(cron_jobs, "create_job", None)
+    if not callable(original) or getattr(original, "_admira_cron_pin_patch", False):
+        return False
+
+    def patched_create_job(*args, **kwargs):
+        if not kwargs.get("no_agent") and not kwargs.get("provider") and not kwargs.get("model"):
+            resolver = getattr(cron_jobs, "_compute_provider_model_snapshots", None)
+            if callable(resolver):
+                try:
+                    provider, model = resolver(None, None)
+                    if provider and model:
+                        kwargs["provider"] = provider
+                        kwargs["model"] = model
+                except Exception:
+                    pass
+        return original(*args, **kwargs)
+
+    patched_create_job._admira_cron_pin_patch = True
+    patched_create_job._admira_original_create_job = original
+    cron_jobs.create_job = patched_create_job
+    return True
+
+
 def apply():
     rate_limit_patched = _patch_gateway_rate_limit_reply()
     minimax_patched = _patch_minimax_model_switch()
     runtime_patched = _patch_minimax_runtime_provider()
     media_patched = _patch_gateway_generated_media_delivery()
     video_patched = _patch_gateway_inbound_video_frames()
-    return bool(rate_limit_patched or minimax_patched or runtime_patched or media_patched or video_patched)
+    cron_patched = _patch_cron_job_creation()
+    return bool(rate_limit_patched or minimax_patched or runtime_patched or media_patched or video_patched or cron_patched)

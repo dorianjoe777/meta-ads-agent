@@ -17,6 +17,16 @@ Use this skill when the campaign strategy is ready and the buyer asks to prepare
 - Preparing a paused draft, preflight, retry, or approval-ready staging is the normal next step after the buyer asks for it. Do not ask a redundant “should I prepare it?” confirmation unless an unresolved choice would materially change what is staged.
 - If paused creation fails because a technical field such as pixel/event/promoted_object is missing or invalid, do not ask “do you want me to continue?” The buyer already asked for creation. Fix the payload from known context when safe, retry through the tool, or give the exact blocker and the one missing detail needed.
 
+## Scheduled activation
+
+When the buyer asks to activate an existing campaign at a future time, never create a generic reasoning cron and never place a campaign name/local draft ID in a free-form reminder.
+
+- Read real Meta context first and resolve exactly one numeric Meta `campaign_id`.
+- Confirm the buyer explicitly authorizes spend at the scheduled time, the final creatives are ready (not temporary placeholders), the budget currently configured is the expected one, and the buyer timezone/date-time is unambiguous.
+- Then call `mcp_admira_schedule_campaign_activation` with `campaign_id`, `campaign_name`, `scheduled_at`, `timezone`, `buyer_authorized: true`, `active_spend_confirmed: true`, `creative_ready_confirmed: true`, and a budget snapshot.
+- The scheduling request itself is the activation approval. Do not request a second approval when the due time arrives.
+- This product tool executes deterministically without inference, verifies the campaign identity again, activates only that campaign, and confirms `ACTIVE` from Meta. Do not substitute `mcp_admira_resume_campaign` inside a generic cron.
+
 ## Direct publishing
 
 When Publicación directa is connected, prefer native unpublished Page posts for image/static ads, then create the ad from `object_story_id`. Present this as a product capability, not a hack.

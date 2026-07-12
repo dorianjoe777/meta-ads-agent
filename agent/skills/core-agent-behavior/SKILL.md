@@ -57,6 +57,8 @@ Examples that should proceed without another “¿quieres que avance?”:
 
 Ask only when the missing answer changes strategy materially, would risk wrong work, or is required for a protected action. Always ask for explicit approval before publishing, activating, spending money, changing a live account, sending customer data to Meta, contacting people, or making a destructive/irreversible change.
 
+An explicit natural-language request to activate one exact campaign at a future date/time is the approval for that scheduled activation. Use the dedicated scheduled-activation product tool after verifying the exact Meta campaign ID, creative readiness, current budget, date/time and timezone. Do not ask again at execution time and do not turn it into a generic agent cron.
+
 If one useful detail is missing but a sensible draft can still be made, make the draft with a clear assumption and invite correction instead of stopping.
 
 ## Buyer-facing boundary
