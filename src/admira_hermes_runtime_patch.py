@@ -6,12 +6,14 @@ Admira should not edit site-packages in place, so this module is loaded through
 PYTHONPATH/sitecustomize only for the gateway process and wraps the narrow
 provider-error formatter that can otherwise leak raw English provider text.
 """
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -79,6 +81,164 @@ ADMIRA_LIVE_META_INTENT_RE = re.compile(
     r"anuncios?|ads?|activ[oa]s?|pausad[oa]s?|gasto|spend|presupuesto|budget|resultados?|rendimiento|performance|"
     r"roas|cpa|cpl|ctr|cpc|impresiones|clicks?|conversiones?|compras?|leads?|mensajes?|frecuencia|frequency)\b"
 )
+ADMIRA_TELEGRAM_INVISIBLE_RE = re.compile(r"[\u200b\u200c\u2060\ufeff\u202a-\u202e\u2066-\u2069]")
+ADMIRA_MARKDOWN_ONLY_RE = re.compile(r"[\s*_~`#>|:\-=+\\/.,;!?()\[\]{}]+")
+ADMIRA_TABLE_SEPARATOR_CELL_RE = re.compile(r"^:?-{3,}:?$")
+
+
+def _telegram_delivery_diagnostics_path():
+    configured = str(os.environ.get("ADMIRA_TELEGRAM_DELIVERY_DIAGNOSTICS_FILE") or "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    root = str(os.environ.get("ADMIRA_PRODUCT_ROOT") or "").strip()
+    if not root:
+        return None
+    return Path(root).expanduser() / "logs" / "hermes-telegram-delivery.jsonl"
+
+
+def _markdown_table_cells(line):
+    value = str(line or "").strip()
+    if "|" not in value:
+        return []
+    if value.startswith("|"):
+        value = value[1:]
+    if value.endswith("|"):
+        value = value[:-1]
+    return [cell.strip() for cell in value.split("|")]
+
+
+def _is_markdown_table_separator(line):
+    cells = _markdown_table_cells(line)
+    return len(cells) >= 2 and all(ADMIRA_TABLE_SEPARATOR_CELL_RE.fullmatch(cell.replace(" ", "")) for cell in cells)
+
+
+def _render_markdown_tables_as_text(value):
+    """Turn Markdown tables into Telegram-safe, readable bullets.
+
+    Hermes' Telegram renderer can evolve independently from Admira. Converting
+    tables before platform rendering keeps projections readable even when a
+    model ignores the buyer-facing instruction to avoid Markdown tables.
+    """
+    lines = str(value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    rendered = []
+    index = 0
+    in_code_fence = False
+    changed = False
+    while index < len(lines):
+        line = lines[index]
+        if line.strip().startswith("```"):
+            in_code_fence = not in_code_fence
+            rendered.append(line)
+            index += 1
+            continue
+        if (
+            not in_code_fence
+            and index + 1 < len(lines)
+            and len(_markdown_table_cells(line)) >= 2
+            and _is_markdown_table_separator(lines[index + 1])
+        ):
+            headers = _markdown_table_cells(line)
+            row_index = index + 2
+            rows = []
+            while row_index < len(lines):
+                cells = _markdown_table_cells(lines[row_index])
+                if len(cells) < 2 or _is_markdown_table_separator(lines[row_index]):
+                    break
+                rows.append(cells)
+                row_index += 1
+            if rows:
+                for number, cells in enumerate(rows, start=1):
+                    padded = cells + [""] * max(0, len(headers) - len(cells))
+                    first = padded[0].strip() or f"Fila {number}"
+                    rendered.append(f"• {first}")
+                    for column, header in enumerate(headers[1:], start=1):
+                        cell = padded[column].strip() if column < len(padded) else ""
+                        if cell:
+                            rendered.append(f"  - {(header or f'Columna {column + 1}').strip()}: {cell}")
+                changed = True
+                index = row_index
+                continue
+        rendered.append(line)
+        index += 1
+    return "\n".join(rendered), changed
+
+
+def _has_visible_telegram_content(value):
+    text = str(value or "")
+    if ADMIRA_MEDIA_TAG_RE.search(text):
+        return True
+    candidate = ADMIRA_MARKDOWN_ONLY_RE.sub("", text)
+    return any(character.isalnum() or unicodedata.category(character).startswith("S") for character in candidate)
+
+
+def normalize_telegram_outbound_text(value, language=None):
+    """Return non-empty Telegram-safe text plus delivery diagnostics metadata."""
+    original = str(value or "")
+    cleaned = ADMIRA_TELEGRAM_INVISIBLE_RE.sub("", original)
+    cleaned, table_changed = _render_markdown_tables_as_text(cleaned)
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned).strip()
+    fallback = False
+    if not _has_visible_telegram_content(cleaned):
+        fallback = True
+        language = str(language or os.environ.get("ADMIRA_GATEWAY_LANGUAGE", "es")).lower()
+        cleaned = (
+            "I could not display the previous answer correctly. Ask me to repeat the last analysis and I will send it as plain text."
+            if language.startswith("en")
+            else "No pude mostrar correctamente la respuesta anterior. Pídeme repetir el último análisis y lo enviaré en texto simple."
+        )
+    reasons = []
+    if table_changed:
+        reasons.append("markdown_table_converted")
+    if ADMIRA_TELEGRAM_INVISIBLE_RE.search(original):
+        reasons.append("invisible_characters_removed")
+    if fallback:
+        reasons.append("empty_or_format_only_fallback")
+    return cleaned, {
+        "original_length": len(original),
+        "delivered_length": len(cleaned),
+        "changed": cleaned != original,
+        "fallback": fallback,
+        "reasons": reasons,
+        "content_sha256": hashlib.sha256(original.encode("utf-8", errors="replace")).hexdigest()[:16],
+    }
+
+
+def _record_telegram_delivery_diagnostic(metadata, delivered_text):
+    path = _telegram_delivery_diagnostics_path()
+    if not path or not isinstance(metadata, dict):
+        return False
+    event = {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        **metadata,
+        "safe_preview": _redact_turn_text(delivered_text)[:300],
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+        return True
+    except OSError:
+        return False
+
+
+def _normalize_gateway_outbound_response(response):
+    if isinstance(response, str):
+        cleaned, metadata = normalize_telegram_outbound_text(response)
+        _record_telegram_delivery_diagnostic(metadata, cleaned)
+        return cleaned
+    if not isinstance(response, dict):
+        return response
+    response_key = next((key for key in ("final_response", "response", "message") if key in response), None)
+    if response_key is None:
+        return response
+    cleaned, metadata = normalize_telegram_outbound_text(response.get(response_key))
+    response[response_key] = cleaned
+    _record_telegram_delivery_diagnostic({**metadata, "response_key": response_key}, cleaned)
+    return response
 
 
 def _recent_turns_path():
@@ -970,6 +1130,10 @@ def _patch_gateway_generated_media_delivery():
             pass
         try:
             result = _append_generated_media_attachments(result)
+        except Exception:
+            pass
+        try:
+            result = _normalize_gateway_outbound_response(result)
         except Exception:
             pass
         try:

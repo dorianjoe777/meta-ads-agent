@@ -21,6 +21,7 @@ from pathlib import Path
 
 from agent_chat import chat as agent_chat
 from agent_chat import clean_reply
+from admira_hermes_runtime_patch import normalize_telegram_outbound_text
 from local_store import read_json, utc_iso, write_json as write_json_file
 from product_config import ROOT_DIR, env_bool, env_int, load_config
 from public_asset_fetcher import VIDEO_EXTENSIONS, extract_video_preview_frames
@@ -154,7 +155,8 @@ def message_text(text):
     cleaned = clean_reply(text)
     cleaned = re.sub(r"\*\*(.*?)\*\*", r"\1", str(cleaned or ""), flags=re.DOTALL)
     cleaned = re.sub(r"^#{1,4}\s*", "", cleaned, flags=re.MULTILINE)
-    return cleaned.strip()
+    normalized, _metadata = normalize_telegram_outbound_text(cleaned)
+    return normalized.strip()
 
 
 def send_message(config, chat_id, text):
@@ -174,7 +176,7 @@ def send_message_with_keyboard(config, chat_id, text, keyboard):
 
 def send_photo(config, chat_id, image_path, caption=""):
     fields = {"chat_id": chat_id}
-    clean_caption = message_text(caption)
+    clean_caption = message_text(caption) if str(caption or "").strip() else ""
     if clean_caption:
         fields["caption"] = clean_caption[:1000]
     return bot_multipart_request(config, "sendPhoto", fields, "photo", image_path)

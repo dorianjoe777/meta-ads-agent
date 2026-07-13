@@ -1371,12 +1371,15 @@ class IntegrationTestSuite:
             "ADMIRA_PRODUCT_ROOT": os.environ.get("ADMIRA_PRODUCT_ROOT"),
             "HERMES_MEDIA_ALLOW_DIRS": os.environ.get("HERMES_MEDIA_ALLOW_DIRS"),
             "ADMIRA_TELEGRAM_RECENT_TURNS_FILE": os.environ.get("ADMIRA_TELEGRAM_RECENT_TURNS_FILE"),
+            "ADMIRA_TELEGRAM_DELIVERY_DIAGNOSTICS_FILE": os.environ.get("ADMIRA_TELEGRAM_DELIVERY_DIAGNOSTICS_FILE"),
         }
         try:
             os.environ["ADMIRA_PRODUCT_ROOT"] = str(ROOT_DIR)
             os.environ["HERMES_MEDIA_ALLOW_DIRS"] = str((ROOT_DIR / "output").resolve())
             turn_log = image_dir / "gateway-turns.json"
+            delivery_log = image_dir / "gateway-delivery.jsonl"
             os.environ["ADMIRA_TELEGRAM_RECENT_TURNS_FILE"] = str(turn_log)
+            os.environ["ADMIRA_TELEGRAM_DELIVERY_DIAGNOSTICS_FILE"] = str(delivery_log)
             response = {
                 "final_response": "Listo, ya quedó generada. La imagen salió fuerte y editorial.",
                 "messages": [
@@ -1462,6 +1465,17 @@ class IntegrationTestSuite:
             self.assert_true(f"MEDIA:{old_image.resolve()}" not in current_turn_response["final_response"], "Runtime patch does not attach older generated media when a newer image exists")
             self.assert_true("No pude confirmar un guardado durable" in unsupported_memory_claim["final_response"] and "ya lo guardé" not in unsupported_memory_claim["final_response"].lower(), "Runtime patch blocks unsupported claims that buyer memory was saved")
             self.assert_true("ya lo guardé" in confirmed_memory_claim["final_response"].lower() and "No pude confirmar" not in confirmed_memory_claim["final_response"], "Runtime patch preserves persistence claims only after a save tool confirms success")
+            table_reply = """Proyección inicial\n\n| Escenario | Ventas | ROAS |\n|---|---:|---:|\n| Conservador | 2 | 1.4 |\n| Base | 5 | 2.2 |"""
+            normalized_table, table_metadata = admira_hermes_runtime_patch.normalize_telegram_outbound_text(table_reply, "es")
+            invisible_fallback, fallback_metadata = admira_hermes_runtime_patch.normalize_telegram_outbound_text("\u200b ** --- ||", "es")
+            normalized_response = admira_hermes_runtime_patch._normalize_gateway_outbound_response({"final_response": table_reply})
+            self.assert_true("• Conservador" in normalized_table and "- Ventas: 2" in normalized_table and "|---|" not in normalized_table, "Gateway converts Markdown projection tables into readable Telegram bullets")
+            self.assert_true("markdown_table_converted" in table_metadata["reasons"] and not table_metadata["fallback"], "Gateway records why a Markdown table was normalized")
+            self.assert_true("No pude mostrar correctamente" in invisible_fallback and fallback_metadata["fallback"], "Gateway never delivers an invisible or format-only Telegram message")
+            self.assert_true("• Base" in normalized_response["final_response"], "Gateway response normalization runs on the final response shape Hermes delivers")
+            self.assert_true("• Conservador" in telegram_agent.message_text(table_reply), "Legacy Telegram delivery receives the same table and empty-message protection")
+            delivery_event = json.loads(delivery_log.read_text(encoding="utf-8").splitlines()[-1])
+            self.assert_true(delivery_event["content_sha256"] and delivery_event["original_length"] > 0 and "markdown_table_converted" in delivery_event["reasons"], "Gateway records safe delivery metadata so future empty-message incidents can be diagnosed")
             admira_hermes_runtime_patch._append_gateway_turn("user", f"Mi token es EAARZCS9BuvSwBR3CyhVZCZCLT5aAnjoKNuCFwbrVEUNV8q5Gojivo0rBA8HMhWuHddbCS52ZCZCLQ2LZBLLtymDbr6plcexfeDdi7hqLY8pAPVNE4CIVhZAvcZAXQH5UvG8ndWZBVjT4wpH9N8BFDrYp04eBWq47Oifrsb2hss4e9p3NwN63VAVxXqRRWPdJe y la ruta es {generated_image.resolve()}")
             turn_log_text = turn_log.read_text(encoding="utf-8")
             self.assert_true("redacted-token" in turn_log_text and "EAARZCS9Buv" not in turn_log_text and str(generated_image.resolve()) not in turn_log_text, "Gateway recent-turn log stores redacted conversation context")
