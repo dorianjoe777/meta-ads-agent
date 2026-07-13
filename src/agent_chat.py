@@ -59,7 +59,7 @@ def metrics_source_context(metrics):
     }
 
 
-def account_context(payload):
+def account_context(payload, include_pending_approvals=False):
     metrics = payload.get("metrics", {})
     source_context = metrics_source_context(metrics)
     has_real_metrics = source_context["is_real_meta_data"]
@@ -70,7 +70,12 @@ def account_context(payload):
     campaign_tree = metrics.get("campaign_tree", [])
     recommendations = payload.get("recommendations", [])
     fatigue = payload.get("fatigue", [])
-    pending = payload.get("pending", [])
+    # Pending approvals are operational inbox items, not evidence of what
+    # currently exists or runs in Meta. Keep them out of ambient model context
+    # so an abandoned local request cannot displace the live account state.
+    # Exact approval flows can opt in explicitly after the buyer asks to
+    # approve/reject a concrete action.
+    pending = payload.get("pending", []) if include_pending_approvals else []
     audience_strategy = payload.get("audience_strategy", {})
     business_profile = payload.get("business_profile", {})
     brand_guides = payload.get("brand_guides", {})
@@ -96,6 +101,8 @@ def account_context(payload):
             "ads_returned": min(len(ads), 500) if isinstance(ads, list) and has_real_metrics else 0,
         },
         "summary": summary if has_real_metrics else {},
+        "metrics_range": metrics.get("metrics_range", {}) if has_real_metrics else {},
+        "data_quality": metrics.get("data_quality", {}) if has_real_metrics else {},
         "campaigns": [
             {
                 "id": c.get("id"),
@@ -103,9 +110,15 @@ def account_context(payload):
                 "health": c.get("health"),
                 "status": c.get("status"),
                 "spend": c.get("spend"),
+                "impressions": c.get("impressions"),
+                "reach": c.get("reach"),
+                "clicks": c.get("clicks"),
+                "conversions": c.get("conversions"),
+                "revenue": c.get("revenue"),
                 "roas": c.get("roas"),
                 "cpa": c.get("cpa"),
                 "ctr": c.get("ctr"),
+                "cpc": c.get("cpc"),
                 "frequency": c.get("frequency"),
                 "daily_budget": c.get("daily_budget"),
                 "objective": c.get("objective"),
@@ -125,6 +138,21 @@ def account_context(payload):
                 "optimization_goal": item.get("optimization_goal"),
                 "billing_event": item.get("billing_event"),
                 "daily_budget": item.get("daily_budget"),
+                "lifetime_budget": item.get("lifetime_budget"),
+                "budget_remaining": item.get("budget_remaining"),
+                "spend": item.get("spend"),
+                "impressions": item.get("impressions"),
+                "reach": item.get("reach"),
+                "clicks": item.get("clicks"),
+                "conversions": item.get("conversions"),
+                "revenue": item.get("revenue"),
+                "ctr": item.get("ctr"),
+                "cpc": item.get("cpc"),
+                "cpa": item.get("cpa"),
+                "roas": item.get("roas"),
+                "frequency": item.get("frequency"),
+                "funnel": item.get("funnel") if isinstance(item.get("funnel"), dict) else {},
+                "promoted_object": item.get("promoted_object") if isinstance(item.get("promoted_object"), dict) else {},
             }
             for item in (adsets[:300] if has_real_metrics and isinstance(adsets, list) else [])
         ],
@@ -138,6 +166,18 @@ def account_context(payload):
                 "effective_status": item.get("effective_status"),
                 "creative_id": (item.get("creative") or {}).get("id") if isinstance(item.get("creative"), dict) else None,
                 "object_story_id": (item.get("creative") or {}).get("object_story_id") if isinstance(item.get("creative"), dict) else None,
+                "spend": item.get("spend"),
+                "impressions": item.get("impressions"),
+                "reach": item.get("reach"),
+                "clicks": item.get("clicks"),
+                "conversions": item.get("conversions"),
+                "revenue": item.get("revenue"),
+                "ctr": item.get("ctr"),
+                "cpc": item.get("cpc"),
+                "cpa": item.get("cpa"),
+                "roas": item.get("roas"),
+                "frequency": item.get("frequency"),
+                "funnel": item.get("funnel") if isinstance(item.get("funnel"), dict) else {},
             }
             for item in (ads[:500] if has_real_metrics and isinstance(ads, list) else [])
         ],
@@ -208,7 +248,6 @@ def fallback_reply(message, payload):
     roas = float(summary.get("overall_roas") or 0)
     cpa = float(summary.get("overall_cpa") or 0)
     budget = float(summary.get("active_budget") or 0)
-    pending = len(payload.get("pending", []))
     text = (message or "").lower()
     if any(word in text for word in ["presupuesto", "budget"]):
         return "Hice una lectura rápida del presupuesto. Mi sugerencia es escalar solo lo que ya está ganando y proteger presupuesto donde haya fatiga o CPA alto. Lo puedo preparar ahora para aprobación si me dices qué campaña quieres mover."
@@ -216,7 +255,8 @@ def fallback_reply(message, payload):
         return "La fatiga se debe revisar por frecuencia alta, caída de CTR o subida de CPC. Si aparece, lo más sano es crear nuevos ángulos creativos antes de subir presupuesto."
     if any(word in text for word in ["audiencia", "segmentación", "segmentacion", "targeting", "lookalike", "retargeting"]):
         return "Para segmentación, empezaría simple: una campaña amplia/Advantage+, una prueba de intereses si el nicho es claro, y retargeting separado si ya hay tráfico. Lookalike solo cuando exista una fuente semilla limpia, como pixel, engagement o lista de clientes con consentimiento."
-    return f"Catch-up rápido: ROAS {roas:.2f}x, CPA ${cpa:,.2f}, presupuesto activo ${budget:,.2f} y {pending} aprobación(es) pendiente(s). Mi sugerencia es revisar presupuesto y fatiga antes de escalar. Lo puedo preparar ahora; dime qué acción quieres que deje lista."
+    live_count = len(metrics.get("campaigns", [])) if isinstance(metrics.get("campaigns"), list) else 0
+    return f"Catch-up live de Meta: {live_count} campaña(s) verificadas, ROAS {roas:.2f}x, CPA ${cpa:,.2f} y presupuesto activo ${budget:,.2f}. Mi sugerencia es revisar primero la campaña activa, su embudo y la fatiga antes de escalar."
 
 
 def reply_uses_unverified_performance(reply, metrics):

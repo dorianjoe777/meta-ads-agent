@@ -238,8 +238,23 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
         payload["image_paths"] = reference_paths[:4]
 
     if tool == "admira_get_real_meta_context":
-        live_sync = dashboard.refresh_managed_real_metrics(reason="agent_live_context")
+        date_preset = str(args.get("date_preset") or args.get("range") or "maximum").strip().lower()
+        detail_level = str(args.get("detail_level") or "deep").strip().lower()
+        include_breakdowns = detail_level in {"deep", "full", "breakdowns"}
+        live_sync = dashboard.refresh_managed_real_metrics(
+            reason="agent_live_context",
+            date_preset=date_preset,
+            since=str(args.get("since") or "").strip(),
+            until=str(args.get("until") or "").strip(),
+            persist=False,
+            include_breakdowns=include_breakdowns,
+        )
         dashboard_data = dashboard.dashboard_payload()
+        if isinstance(live_sync.get("metrics"), dict):
+            # The model sees the just-fetched read-only snapshot. The dashboard
+            # keeps its own buyer-selected date range and is not silently reset
+            # by background Telegram synchronization.
+            dashboard_data["metrics"] = live_sync["metrics"]
         context = account_context(dashboard_data)
         context["live_sync"] = {
             "ok": bool(live_sync.get("ok")),
@@ -248,7 +263,21 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
             "errors": live_sync.get("errors") or [],
             "reason": live_sync.get("reason") or "",
             "message": live_sync.get("message") or "",
+            "fetched_at": (live_sync.get("metrics") or {}).get("timestamp") or "",
+            "date_preset": date_preset,
+            "detail_level": detail_level,
         }
+        live_metrics = live_sync.get("metrics") if isinstance(live_sync.get("metrics"), dict) else {}
+        context["breakdowns"] = {
+            name: rows[:300]
+            for name, rows in (live_metrics.get("breakdowns") or {}).items()
+            if isinstance(rows, list)
+        }
+        context["approval_context_policy"] = (
+            "Pending approvals are intentionally excluded from ambient account state. "
+            "Read them only after an explicit buyer approval/rejection/activation request; "
+            "they never prove what currently exists or runs in Meta."
+        )
         if not live_sync.get("ok"):
             context["metrics_source"]["notice"] = (
                 "La sincronización live con Meta falló o quedó incompleta. No interpretes una lista vacía como ausencia de campañas. "

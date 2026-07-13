@@ -21,7 +21,6 @@ Read these workspace files when present:
 - `memory/Branding onboarding.md`
 - `memory/Ads campaign onboarding.md`
 - `memory/recent_actions.json`
-- `memory/pending_approvals.json`
 - `memory/creative_refreshes.json`
 - `memory/content_asset_library.json`
 - `memory/content_strategy.md`
@@ -43,4 +42,6 @@ Read these workspace files when present:
 
 `memory/latest_day_context.md` summarizes the most recent local day with activity, checking today first and then the most recent day within the last 7 days. Treat it as the best short-term memory after Hermes session cleanup.
 
-`memory/active_workflow.json` is the machine-readable state. Prefer its `next_step`, `last_user_message`, `last_agent_message`, pending approvals, recent blockers, and workflow phase before asking a repeated question.
+`memory/active_workflow.json` is the machine-readable state. Prefer its `next_step`, `last_user_message`, `last_agent_message`, recent blockers, and workflow phase before asking a repeated question.
+
+Pending approvals are intentionally excluded from ambient continuity and are not copied into the continuity workspace. They are not conversation memory and not Meta truth. Query the exact approval tool only after the buyer explicitly asks to approve, reject, or activate one exact current action.

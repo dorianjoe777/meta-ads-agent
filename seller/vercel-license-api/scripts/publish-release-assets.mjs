@@ -43,19 +43,19 @@ const ASSETS = [
 
 const improvements = [
   {
-    title: "Dashboard listo mucho más rápido",
-    body: "La interfaz muestra tus datos guardados de inmediato y revisa el estado del agente en segundo plano, sin congelar el panel varios segundos.",
-    impact: "Velocidad"
+    title: "Siempre orientado por Meta en vivo",
+    body: "El agente revisa silenciosamente campañas, conjuntos y anuncios reales antes de cada conversación, aunque estés hablando de otro tema.",
+    impact: "Precisión"
   },
   {
-    title: "Español desde el primer instante",
-    body: "La pantalla inicial y los controles aparecen en español desde el primer fotograma, sin mostrar primero textos en inglés.",
-    impact: "Experiencia"
+    title: "Sin confundir borradores con campañas",
+    body: "Planes, memorias y aprobaciones antiguas ya no desplazan el estado actual de Ads Manager ni aparecen como trabajo activo.",
+    impact: "Claridad"
   },
   {
-    title: "GPT-5.6 Terra por defecto",
-    body: "Las instalaciones nuevas usan el modelo equilibrado GPT-5.6 Terra, con selección dinámica y respaldo automático si todavía no aparece en una cuenta.",
-    impact: "Inteligencia"
+    title: "Lectura más profunda del rendimiento",
+    body: "El agente puede consultar métricas por campaña, conjunto y anuncio, además de desgloses detallados cuando necesita investigar mejor.",
+    impact: "Análisis"
   }
 ];
 

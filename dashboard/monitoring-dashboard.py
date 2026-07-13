@@ -2656,7 +2656,66 @@ def current_dashboard_metrics_range(date_preset=None, since="", until=""):
         return normalize_insight_range("maximum")
 
 
-def fetch_real_metrics(account_id="", persist_snapshot=True, live_dashboard=False, date_preset=None, since="", until=""):
+def _inventory_insight_totals(rows):
+    """Aggregate read-only insight rows by their Meta object ID."""
+    totals = {}
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        object_id = str(row.get("id") or "").strip()
+        if not object_id:
+            continue
+        item = totals.setdefault(
+            object_id,
+            {
+                "spend": 0.0,
+                "impressions": 0,
+                "reach": 0,
+                "clicks": 0,
+                "conversions": 0.0,
+                "revenue": 0.0,
+                "funnel": {},
+                "date_start": "",
+                "date_stop": "",
+            },
+        )
+        item["spend"] += float(row.get("spend") or 0)
+        item["impressions"] += int(float(row.get("impressions") or 0))
+        item["reach"] += int(float(row.get("reach") or 0))
+        item["clicks"] += int(float(row.get("clicks") or 0))
+        item["conversions"] += float(row.get("conversions") or 0)
+        item["revenue"] += float(row.get("revenue") or 0)
+        item["date_start"] = min(filter(None, [item.get("date_start"), str(row.get("date_start") or "")]), default="")
+        item["date_stop"] = max(item.get("date_stop") or "", str(row.get("date_stop") or ""))
+        for key, value in (row.get("funnel") or {}).items():
+            item["funnel"][key] = round(float(item["funnel"].get(key) or 0) + float(value or 0), 2)
+    for item in totals.values():
+        spend = item["spend"]
+        impressions = item["impressions"]
+        clicks = item["clicks"]
+        conversions = item["conversions"]
+        revenue = item["revenue"]
+        item.update(
+            {
+                "spend": round(spend, 2),
+                "conversions": round(conversions, 2),
+                "revenue": round(revenue, 2),
+                "ctr": round(clicks / impressions * 100, 3) if impressions else 0,
+                "cpc": round(spend / clicks, 2) if clicks else 0,
+                "cpa": round(spend / conversions, 2) if conversions else 0,
+                "roas": round(revenue / spend, 3) if spend else 0,
+                "frequency": round(impressions / item["reach"], 2) if item["reach"] else 0,
+            }
+        )
+    return totals
+
+
+def _attach_inventory_insights(items, rows):
+    totals = _inventory_insight_totals(rows)
+    return [{**item, **totals.get(str(item.get("id") or ""), {})} for item in items or []]
+
+
+def fetch_real_metrics(account_id="", persist_snapshot=True, live_dashboard=False, date_preset=None, since="", until="", include_breakdowns=True):
     config = load_config()
     account_id = str(account_id or config.ad_account_id or "").strip()
     if account_id and not account_id.startswith("act_"):
@@ -2678,13 +2737,11 @@ def fetch_real_metrics(account_id="", persist_snapshot=True, live_dashboard=Fals
                 candidate = str(value or "").strip()
                 if candidate.isdigit() and 12 <= len(candidate) <= 24 and candidate not in found:
                     found.append(candidate)
-        for path, default in (
-            (METRICS_FILE, {}),
-            (ACTIONS_FILE, []),
-            (PENDING_FILE, []),
-            (CREATED_FILE, []),
-            (DATA_DIR / "scheduled_campaign_actions.json", {}),
-        ):
+        # A stored live snapshot can provide IDs for direct verification when
+        # an account edge is temporarily incomplete. Local plans, action logs,
+        # created-campaign drafts and approvals are deliberately excluded:
+        # none of them proves that an object currently exists in Meta.
+        for path, default in ((METRICS_FILE, {}),):
             visit(read_json(path, default))
         return found[:50]
 
@@ -2697,20 +2754,20 @@ def fetch_real_metrics(account_id="", persist_snapshot=True, live_dashboard=Fals
         time_range=metrics_range.get("time_range"),
         known_campaign_ids=collect_known_campaign_ids(),
         insight_levels=("campaign",) if live_dashboard else None,
-        include_breakdowns=not live_dashboard,
+        include_breakdowns=bool(include_breakdowns and not live_dashboard),
     )
     campaigns = aggregate_meta_campaigns(snapshot)
     visible_campaign_ids = {str(campaign.get("id") or "") for campaign in campaigns}
-    adsets = [
+    adsets = _attach_inventory_insights([
         item for item in (snapshot.get("adset_statuses") or {}).values()
         if str(item.get("campaign_id") or "") in visible_campaign_ids
-    ]
+    ], (snapshot.get("levels") or {}).get("adset", []))
     visible_adset_ids = {str(item.get("id") or "") for item in adsets}
-    ads = [
+    ads = _attach_inventory_insights([
         item for item in (snapshot.get("ad_statuses") or {}).values()
         if str(item.get("campaign_id") or "") in visible_campaign_ids
         and (not item.get("adset_id") or str(item.get("adset_id")) in visible_adset_ids)
-    ]
+    ], (snapshot.get("levels") or {}).get("ad", []))
     campaign_tree = meta_campaign_inventory_tree(snapshot)
     if not campaigns and snapshot.get("data_quality", {}).get("unavailable"):
         first_error = snapshot["data_quality"]["unavailable"][0].get("reason") or {}
@@ -2745,13 +2802,14 @@ def fetch_real_metrics(account_id="", persist_snapshot=True, live_dashboard=Fals
         "campaign_tree": campaign_tree,
         "summary": {},
         "data_quality": snapshot.get("data_quality"),
+        "breakdowns": snapshot.get("breakdowns") or {},
     }
     if persist_snapshot:
         save_meta_snapshot(snapshot)
     return {"ok": True, "metrics": metrics, "rows": len(campaigns), "account_id": account_id, "data_quality": snapshot.get("data_quality")}
 
 
-def refresh_managed_real_metrics(reason="manual", live_dashboard=False, date_preset=None, since="", until=""):
+def refresh_managed_real_metrics(reason="manual", live_dashboard=False, date_preset=None, since="", until="", persist=True, include_breakdowns=True):
     accounts = managed_metric_accounts()
     if len(accounts) <= 1:
         return refresh_real_metrics(
@@ -2761,11 +2819,14 @@ def refresh_managed_real_metrics(reason="manual", live_dashboard=False, date_pre
             date_preset=date_preset,
             since=since,
             until=until,
+            persist=persist,
+            include_breakdowns=include_breakdowns,
         )
     campaigns = []
     adsets = []
     ads = []
     campaign_tree = []
+    breakdowns = {}
     account_results = []
     errors = []
     selected_metrics_range = current_dashboard_metrics_range(date_preset, since, until)
@@ -2778,6 +2839,7 @@ def refresh_managed_real_metrics(reason="manual", live_dashboard=False, date_pre
             date_preset=selected_metrics_range["preset"],
             since=selected_metrics_range.get("since", ""),
             until=selected_metrics_range.get("until", ""),
+            include_breakdowns=include_breakdowns,
         )
         if result.get("ok"):
             rows = result.get("rows", 0)
@@ -2787,6 +2849,8 @@ def refresh_managed_real_metrics(reason="manual", live_dashboard=False, date_pre
             adsets.extend(metrics_result.get("adsets", []))
             ads.extend(metrics_result.get("ads", []))
             campaign_tree.extend(metrics_result.get("campaign_tree", []))
+            for name, rows in (metrics_result.get("breakdowns") or {}).items():
+                breakdowns.setdefault(name, []).extend(rows or [])
         else:
             errors.append({"id": account_id, "name": account.get("name") or account_id, "reason": result.get("reason"), "message": result.get("message")})
     if campaigns or account_results:
@@ -2808,32 +2872,40 @@ def refresh_managed_real_metrics(reason="manual", live_dashboard=False, date_pre
             "adsets": adsets,
             "ads": ads,
             "campaign_tree": campaign_tree,
+            "breakdowns": breakdowns,
             "summary": {},
             "data_quality": {"complete": not errors, "unavailable": errors, "source": "meta_graph_read_only_multi_account"},
         }
-        save_metrics(metrics)
-        status = "completed" if not errors else "partial"
-        log_action("live_insights_pull", {"account_ids": [item.get("id") for item in accounts], "rows": len(campaigns), "errors": len(errors), "reason": reason}, status)
-        return {"ok": True, "saved": True, "source": "meta_graph", "rows": len(campaigns), "accounts": account_results, "errors": errors, "account_id": metrics["account_id"]}
+        metrics = apply_campaign_metric_profiles(metrics)
+        if persist:
+            save_metrics(metrics)
+            status = "completed" if not errors else "partial"
+            log_action("live_insights_pull", {"account_ids": [item.get("id") for item in accounts], "rows": len(campaigns), "errors": len(errors), "reason": reason}, status)
+        return {"ok": True, "saved": bool(persist), "source": "meta_graph", "rows": len(campaigns), "accounts": account_results, "errors": errors, "account_id": metrics["account_id"], "metrics": metrics}
     message = errors[0]["message"] if errors else "Missing Meta ad account."
-    log_action("live_insights_pull", {"account_ids": [item.get("id") for item in accounts], "reason": reason, "errors": errors}, "blocked")
+    if persist:
+        log_action("live_insights_pull", {"account_ids": [item.get("id") for item in accounts], "reason": reason, "errors": errors}, "blocked")
     return {"ok": False, "saved": False, "reason": errors[0]["reason"] if errors else "missing_account", "message": message, "errors": errors}
 
 
-def refresh_real_metrics(account_id="", reason="manual", live_dashboard=False, date_preset=None, since="", until=""):
+def refresh_real_metrics(account_id="", reason="manual", live_dashboard=False, date_preset=None, since="", until="", persist=True, include_breakdowns=True):
     result = fetch_real_metrics(
         account_id,
-        persist_snapshot=not live_dashboard,
+        persist_snapshot=bool(persist and not live_dashboard),
         live_dashboard=live_dashboard,
         date_preset=date_preset,
         since=since,
         until=until,
+        include_breakdowns=include_breakdowns,
     )
     if result.get("ok"):
-        save_metrics(result["metrics"])
-        log_action("live_insights_pull", {"account_id": result.get("account_id"), "rows": result.get("rows"), "reason": reason}, "completed")
-        return {"ok": True, "saved": True, "source": "meta_graph", "rows": result.get("rows"), "account_id": result.get("account_id")}
-    log_action("live_insights_pull", {"account_id": account_id or load_config().ad_account_id, "reason": reason, "error": result.get("message"), "code": result.get("reason")}, "blocked")
+        metrics = apply_campaign_metric_profiles(result["metrics"])
+        if persist:
+            save_metrics(metrics)
+            log_action("live_insights_pull", {"account_id": result.get("account_id"), "rows": result.get("rows"), "reason": reason}, "completed")
+        return {"ok": True, "saved": bool(persist), "source": "meta_graph", "rows": result.get("rows"), "account_id": result.get("account_id"), "metrics": metrics}
+    if persist:
+        log_action("live_insights_pull", {"account_id": account_id or load_config().ad_account_id, "reason": reason, "error": result.get("message"), "code": result.get("reason")}, "blocked")
     return {**result, "saved": False}
 
 
@@ -8346,15 +8418,15 @@ def chat_reply(payload, es, en):
     return es if chat_lang(payload) == "es" else en
 
 
-LIVE_META_CHAT_INTENT_RE = re.compile(
-    r"(?i)\b(?:meta\s+ads|ads\s+manager|campañas?|campaigns?|ad\s*sets?|conjuntos?\s+de\s+anuncios?|"
-    r"anuncios?|ads?|activ[oa]s?|pausad[oa]s?|gasto|spend|presupuesto|budget|resultados?|rendimiento|performance|"
-    r"roas|cpa|cpl|ctr|cpc|impresiones|clicks?|conversiones?|compras?|leads?|mensajes?|frecuencia|frequency)\b"
-)
-
-
 def chat_message_requires_live_meta_sync(message):
-    return bool(LIVE_META_CHAT_INTENT_RE.search(str(message or "")))
+    text = str(message or "").strip()
+    if not text:
+        return False
+    if re.match(r"^/(?:start|help|model|reset|resume|stop|status|new)(?:\s|$)", text, re.IGNORECASE):
+        return False
+    # Dashboard chat follows the same manager contract as Telegram: every
+    # ordinary buyer turn starts from current Meta state, regardless of topic.
+    return True
 
 
 def load_chat_history():
@@ -10692,6 +10764,10 @@ def dashboard_payload():
     runtime_model_state = telegram_runtime_model_state(config)
     model_catalog = runtime_status.get("model_catalog") or cached_codex_model_catalog(config)
     dependency_versions = runtime_status.get("runtime_versions") or {}
+    pending_items = [
+        item for item in read_json(PENDING_FILE, [])
+        if isinstance(item, dict) and item.get("status", "pending") == "pending"
+    ]
     return {
         "metrics": metrics,
         "recommendations": recommendations,
@@ -10707,7 +10783,9 @@ def dashboard_payload():
             "research": load_research(),
         },
         "actions": read_json(ACTIONS_FILE, [])[:20],
-        "pending": read_json(PENDING_FILE, [])[:20],
+        # This inbox is used by exact approval UI/actions only. It is excluded
+        # from ambient agent context by account_context().
+        "pending": pending_items[:20],
         "created_campaigns": read_json(CREATED_FILE, [])[:10],
         "audience_strategy": read_json(AUDIENCE_FILE, {}),
         "brand_guides": guide_library(),

@@ -497,7 +497,7 @@ For each turn, read the buyer message normally. If you need live account context
 - `memory/Branding onboarding.md`: visual-branding checklist after general business discovery.
 - `memory/Ads campaign onboarding.md`: prior ads/campaign context.
 - `memory/recent_actions.json`: recent protected actions and tool outcomes when present.
-- `memory/pending_approvals.json`: pending protected decisions when present.
+- Pending approvals are not copied into ambient workspace memory. After an explicit request to approve, reject, or activate one exact action, query the exact product approval tool.
 - `memory/profitability_rules.json`, `memory/decision_memory.json`, `memory/learning_log.md`: decision memory.
 - `memory/creative_experiments.json`: adaptive creative-test checkpoints, evidence, provisional leaders, and next review dates.
 - `memory/campaign_metric_profiles.json`: dashboard KPI priorities chosen for each real campaign; audit these against the live objective/event and update them with the product tool when needed.
@@ -508,11 +508,15 @@ For each turn, read the buyer message normally. If you need live account context
 - `brand_guides/`: brand, product, ad brief, and creative reference memory.
 - `skills/`: focused product skills. Read `core-agent-behavior` before every reply, `session-continuity` after cleanup/restart/update/fresh sessions, and the relevant specialist skill before taking product actions.
 
-Do not expect the backend to paste the whole conversation history into the prompt. Hermes session memory is useful, but it is cache; durable workspace files are the source of truth. At the start of a fresh/restarted Telegram session, after a history cleanup, or after an update/gateway restart, first read `skills/session-continuity/SKILL.md`, `memory/Conversation continuity.md`, `memory/continuity_status.json`, `memory/latest_day_context.md`, `memory/active_workflow.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Branding onboarding.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/pending_approvals.json`, `memory/creative_experiments.json`, `memory/content_asset_library.json`, `memory/content_strategy.md`, `brand_guides/Offer map.md`, and relevant `brand_guides/` files. If `has_persistent_memory` or `has_active_workflow` is true, do not introduce yourself as first time, do not restart onboarding, and do not repeat the initial ads-experience/technical-style question unless the files prove it is still missing. Resume with a short "retomo donde quedamos" style message when natural, mention one concrete remembered item, and continue from the next missing/actionable step. If needed, use session search to inspect previous Telegram sessions, but do not block the buyer when durable workspace memory is enough. If the buyer's short answer is still ambiguous, ask one clear follow-up.
+Do not expect the backend to paste the whole conversation history into the prompt. Hermes session memory is useful, but it is cache; durable workspace files are the source of truth. At the start of a fresh/restarted Telegram session, after a history cleanup, or after an update/gateway restart, first read `skills/session-continuity/SKILL.md`, `memory/Conversation continuity.md`, `memory/continuity_status.json`, `memory/latest_day_context.md`, `memory/active_workflow.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Branding onboarding.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/creative_experiments.json`, `memory/content_asset_library.json`, `memory/content_strategy.md`, `brand_guides/Offer map.md`, and relevant `brand_guides/` files. Do not read pending approvals as ambient continuity. If `has_persistent_memory` or `has_active_workflow` is true, do not introduce yourself as first time, do not restart onboarding, and do not repeat the initial ads-experience/technical-style question unless the files prove it is still missing. Resume with a short "retomo donde quedamos" style message when natural, mention one concrete remembered item, and continue from the next missing/actionable step. If needed, use session search to inspect previous Telegram sessions, but do not block the buyer when durable workspace memory is enough. If the buyer's short answer is still ambiguous, ask one clear follow-up.
 
 # Turn Orientation Before Every Reply
 
 Read `skills/core-agent-behavior/SKILL.md`. Before answering, silently determine the buyer's immediate goal, the current workflow phase, the active child offer/product/service when relevant, what is already done/saved/created/attempted, what remains missing or blocked, and the next safest useful action. Do not respond as if the latest message is disconnected from the ongoing setup, creative, campaign, or optimization work. Keep this checklist private; in the visible reply, continue naturally and move the work forward.
+
+# Live Meta First On Every Turn
+
+Every ordinary buyer turn receives an automatically fetched `[ADMIRA LIVE META CONTEXT]` block before reasoning. Read it silently before answering, even when the visible topic is branding, content, onboarding, or another unrelated matter. It is the authority for which campaigns, ad sets and ads currently exist, their status, budgets and performance. Memory, recent actions, drafts, created-campaign plans and pending approvals are never evidence of current Meta state. If they disagree, follow the live snapshot. Do not mention old approvals unless the buyer explicitly asks to approve/reject/activate one exact current action. If the automatic read is failed or incomplete, say live status could not be confirmed only when that matters to the answer; never invent or replace it with memory.
 
 # Buyer-facing content boundary
 
@@ -737,7 +741,6 @@ def business_memory_context():
             "telegram_legacy": scrub_memory(redact_payload(read_json(DATA_DIR / "telegram_chat_history.json", {}))),
             "telegram_gateway": scrub_memory(redact_payload(read_json(DATA_DIR / "hermes_gateway_recent_turns.json", [])[-(MEMORY_ITEM_LIMIT * 4):])),
             "actions": scrub_memory(redact_payload(read_json(DATA_DIR / "actions.json", [])[-MEMORY_ITEM_LIMIT:])),
-            "pending_approvals": scrub_memory(redact_payload(read_json(DATA_DIR / "pending_approvals.json", [])[-MEMORY_ITEM_LIMIT:])),
             "creative_refreshes": scrub_memory(redact_payload(read_json(ROOT_DIR / "output" / "creatives" / "index.json", [])[-MEMORY_ITEM_LIMIT:])),
         },
         "profitability_memory": scrub_memory(redact_payload(decision_memory_payload())),
@@ -906,17 +909,9 @@ def _activity_items(memory):
             content=_json_excerpt(summary, 1200),
             created_at=action.get("created_at") or action.get("timestamp") or action.get("updated_at"),
         )
-    for approval in recent.get("pending_approvals") or []:
-        if not isinstance(approval, dict):
-            continue
-        _append_timeline_item(
-            items,
-            source="pending_approvals",
-            role="system",
-            kind="approval",
-            content=_json_excerpt(approval, 1200),
-            created_at=approval.get("created_at") or approval.get("updated_at") or approval.get("timestamp"),
-        )
+    # Pending approvals are an operational inbox, not conversation memory and
+    # not Meta inventory. They are intentionally excluded from the ambient
+    # timeline so abandoned local requests cannot become the resumed workflow.
     for creative in recent.get("creative_refreshes") or []:
         if not isinstance(creative, dict):
             continue
@@ -962,7 +957,6 @@ def latest_day_context_payload(memory, lookback_days=RECENT_CONTEXT_LOOKBACK_DAY
             "telegram_legacy": sum(len(value) for value in (recent.get("telegram_legacy") or {}).values()) if isinstance(recent.get("telegram_legacy"), dict) else len(recent.get("telegram_legacy") or []),
             "telegram_gateway": len(recent.get("telegram_gateway") or []),
             "actions": len(recent.get("actions") or []),
-            "pending_approvals": len(recent.get("pending_approvals") or []),
             "creative_outputs": len(recent.get("creative_refreshes") or []),
         },
     }
@@ -976,11 +970,7 @@ def _latest_by_role(items, role):
 
 
 def _infer_next_step(memory, latest_context, blocker=""):
-    recent = memory.get("recent_history") or {}
-    pending = recent.get("pending_approvals") or []
     onboarding_plan = str(memory.get("onboarding_plan") or "")
-    if pending:
-        return "Revisar la aprobación pendiente más reciente y permitir aprobar/rechazar desde Telegram."
     if blocker:
         return "Retomar el bloqueo técnico o de datos más reciente y explicar el siguiente intento seguro."
     match = re.search(r"Siguiente paso\s*:\s*([^\n.]+)", onboarding_plan, re.IGNORECASE)
@@ -1001,7 +991,6 @@ def _infer_next_step(memory, latest_context, blocker=""):
 def active_workflow_payload(memory, latest_context):
     items = latest_context.get("items") or []
     recent = memory.get("recent_history") or {}
-    pending = recent.get("pending_approvals") or []
     blockers = [
         item
         for item in reversed(items)
@@ -1009,9 +998,7 @@ def active_workflow_payload(memory, latest_context):
     ]
     blocker = blockers[0] if blockers else {}
     brand = memory.get("brand_guides") or {}
-    if pending:
-        phase = "approval"
-    elif blocker:
+    if blocker:
         phase = "blocked_or_retrying"
     elif recent.get("creative_refreshes"):
         phase = "creative_review"
@@ -1025,13 +1012,13 @@ def active_workflow_payload(memory, latest_context):
         phase = ""
     next_step = _infer_next_step(memory, latest_context, blocker.get("content", ""))
     return {
-        "has_active_workflow": bool(phase or items or pending),
+        "has_active_workflow": bool(phase or items),
         "phase": phase,
         "last_day_context_date": latest_context.get("selected_date", ""),
         "last_user_message": _latest_by_role(items, "user"),
         "last_agent_message": _latest_by_role(items, "agent"),
         "recent_blocker": blocker,
-        "pending_approval_count": len(pending),
+        "approval_context_policy": "excluded from ambient continuity; query the exact approval tool only after an explicit buyer request",
         "next_step": next_step,
         "resume_instruction": "If has_active_workflow is true, resume this workflow before greeting or restarting onboarding.",
     }
@@ -1062,7 +1049,6 @@ def build_latest_day_context(latest_context, active_workflow):
             "## Active workflow",
             "",
             f"- Phase: {active_workflow.get('phase') or 'none'}",
-            f"- Pending approvals: {active_workflow.get('pending_approval_count', 0)}",
             f"- Next step: {active_workflow.get('next_step') or 'Use durable business/brand memory and ask one necessary question.'}",
             "",
         ]
@@ -1098,7 +1084,6 @@ def conversation_continuity_status(memory):
         "telegram_gateway_turns": has_meaningful_memory(recent.get("telegram_gateway")),
         "telegram_legacy_history": has_meaningful_memory(recent.get("telegram_legacy")),
         "recent_actions": has_meaningful_memory(recent.get("actions")),
-        "pending_approvals": has_meaningful_memory(recent.get("pending_approvals")),
         "recent_creative_outputs": has_meaningful_memory(recent.get("creative_refreshes")),
         "creative_experiments": has_meaningful_memory(memory.get("creative_experiments")),
         "business_outcomes": has_meaningful_memory(memory.get("business_outcomes")),
@@ -1122,7 +1107,6 @@ def conversation_continuity_status(memory):
             "ad_briefs": len(brand.get("ad_briefs") or []),
             "recent_actions": len(recent.get("actions") or []),
             "telegram_gateway_turns": len(recent.get("telegram_gateway") or []),
-            "pending_approvals": len(recent.get("pending_approvals") or []),
             "recent_creative_outputs": len(recent.get("creative_refreshes") or []),
             "content_assets": len((memory.get("content_asset_library") or {}).get("items") or []),
         },
@@ -1162,7 +1146,8 @@ def build_conversation_continuity(memory, status=None):
                 "## Resume behavior",
                 "",
                 "- Treat Telegram/Hermes session history as cache. These durable workspace files are the source of truth after cleanup or updates.",
-                "- Before sending a first message, read this file plus `memory/latest_day_context.md`, `memory/active_workflow.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/pending_approvals.json`, `memory/creative_experiments.json`, `memory/content_asset_library.json`, `memory/content_strategy.md`, and relevant `brand_guides/` files.",
+                "- Before sending a first message, read this file plus `memory/latest_day_context.md`, `memory/active_workflow.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/creative_experiments.json`, `memory/content_asset_library.json`, `memory/content_strategy.md`, and relevant `brand_guides/` files.",
+                "- Pending approvals are intentionally absent from ambient continuity. Query the exact product approval tool only after an explicit buyer request to approve, reject, or activate one exact action.",
                 "- Do not restart onboarding, do not introduce yourself as if this were the first conversation, and do not repeat the initial ads-experience/technical-style question if it is already configured or implied by saved memory.",
                 "- If the current Hermes session is empty but this file says memory exists, say briefly that you are resuming and continue from the next missing or active item.",
                 "- If needed, use session search to look for the previous Telegram session, but never block the buyer on that search when durable workspace memory is enough to continue.",
@@ -1244,8 +1229,6 @@ def build_conversation_continuity(memory, status=None):
         lines.append("")
     if has_meaningful_memory(recent.get("actions")):
         lines.extend(["## Recent protected actions", "", "```json", _json_excerpt(recent.get("actions"), 2200), "```", ""])
-    if has_meaningful_memory(recent.get("pending_approvals")):
-        lines.extend(["## Pending approvals", "", "```json", _json_excerpt(recent.get("pending_approvals"), 1800), "```", ""])
     if has_meaningful_memory(recent.get("creative_refreshes")):
         lines.extend(["## Recent creative outputs", "", "```json", _json_excerpt(recent.get("creative_refreshes"), 2200), "```", ""])
     if has_meaningful_memory(memory.get("creative_experiments")):
@@ -1280,6 +1263,8 @@ The only operational skills allowed in Admira IA are the official, versioned fil
 
 Hermes owns the conversation and should use its own session memory. The backend does not paste the whole chat history into the prompt.
 Before every buyer-facing turn, read `skills/core-agent-behavior/SKILL.md`. If session memory was cleaned, the gateway restarted, or an update created a fresh runtime session, also read `skills/session-continuity/SKILL.md`, `memory/Conversation continuity.md`, `memory/continuity_status.json`, `memory/latest_day_context.md`, `memory/active_workflow.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Branding onboarding.md`, `memory/Ads campaign onboarding.md`, `brand_guides/Offer map.md`, and relevant `brand_guides/` files before greeting.
+
+Every ordinary buyer message is accompanied by an automatically fetched live Meta context. Read it silently first on every turn. It overrides memory, plans, action logs, created-campaign drafts, and pending approvals for the current campaign/ad set/ad inventory and performance. Pending approvals are absent from ambient workspace memory; query the exact product approval tool only after an explicit request to approve, reject, or activate one exact action.
 
 Never expose this workspace's internal paths to the buyer. If the buyer asks for a prompt, plan, script, copy, or diagnosis, paste the useful content directly in the chat instead of pointing them to `/app/...`, `dashboard/data/...`, `hermes-workspace/...`, `brand_guides/...`, `memory/...`, or `CURRENT_CONTEXT.json`.
 
@@ -1318,7 +1303,6 @@ Read `skills/README.md`, then the relevant `skills/*/SKILL.md` file before actin
     written.append(write_workspace_file("data/business_binding.json", memory["business_binding"]))
     written.append(write_workspace_file("memory/recent_actions.json", memory["recent_history"]["actions"]))
     written.append(write_workspace_file("memory/recent_telegram_gateway_turns.json", memory["recent_history"].get("telegram_gateway", [])))
-    written.append(write_workspace_file("memory/pending_approvals.json", memory["recent_history"].get("pending_approvals", [])))
     written.append(write_workspace_file("memory/creative_refreshes.json", memory["recent_history"]["creative_refreshes"]))
     written.append(write_workspace_file("memory/profitability_rules.json", memory["profitability_memory"].get("profitability_rules", {})))
     written.append(write_workspace_file("memory/decision_memory.json", memory["profitability_memory"]))
@@ -1770,7 +1754,7 @@ def hermes_prompt(config, payload, workspace_info=None):
         + "\n".join(f"- {path}" for path in workspace_info.get("files", []))
         + "\n\nRead product rules from AGENTS.md/SOUL.md and business files only inside this workspace. Do not read arbitrary local files. If a needed file is missing, ask the buyer or request a backend tool."
         + "\n\nTurn orientation before every reply: read `skills/core-agent-behavior/SKILL.md`, then silently identify the buyer's immediate goal, where we were in the current workflow, what has already been done/saved/attempted, what is still missing or blocked, and the next safest useful action. Do not answer isolated from the previous context; continue the active work unless the buyer clearly changes topic."
-        + "\n\nBefore treating this as a new conversation, read `skills/session-continuity/SKILL.md`, `memory/Conversation continuity.md`, `memory/continuity_status.json`, `memory/latest_day_context.md`, `memory/active_workflow.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Branding onboarding.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `memory/pending_approvals.json`, `brand_guides/Offer map.md`, and relevant `brand_guides/` files. If persistent memory or active workflow exists, resume from durable business/brand/ad memory and latest-day context instead of restarting onboarding or repeating first-time preference questions."
+        + "\n\nBefore treating this as a new conversation, read `skills/session-continuity/SKILL.md`, `memory/Conversation continuity.md`, `memory/continuity_status.json`, `memory/latest_day_context.md`, `memory/active_workflow.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Branding onboarding.md`, `memory/Ads campaign onboarding.md`, `memory/recent_actions.json`, `brand_guides/Offer map.md`, and relevant `brand_guides/` files. Do not use pending approvals as ambient continuity. If persistent memory or active workflow exists, resume from durable business/brand/ad memory and latest-day context instead of restarting onboarding or repeating first-time preference questions."
         + "\n\nNever expose internal workspace paths to the buyer. Do not present `MEDIA:/...` as a link or address. If a generated image/file must be delivered, use `MEDIA:<local_path>` only as a native attachment directive and keep the visible reply focused on the attached file. If the buyer asks for a prompt, plan, script, copy, or diagnosis, paste it directly in the chat instead of pointing them to `/app/...`, `dashboard/data/...`, `hermes-workspace/...`, `brand_guides/...`, `memory/...`, or `CURRENT_CONTEXT.json`."
         + "\n\nDashboard action boundary: do not say you need CLI or terminal access to create or prepare campaigns. If MCP tools are available, use the `mcp_admira_*` tools directly. If MCP is unavailable in the current runtime, use the JSON tool_request contract below or ask the next missing detail. In dashboard chat, the backend executes supported product actions and keeps spend behind approval."
         + "\n\nPublic URL/video handling: if the buyer provides a public URL, especially a Google Drive/video/image link for a creative, call mcp_admira_fetch_public_asset first. If it returns a video asset, use its video_url/direct_url for video creative staging. If it returns video_frame_paths/video_preview_frame_paths, inspect those extracted image frames with vision to understand the video visually; do not try to inspect the MP4 directly and do not say you cannot review video merely because one viewer accepts only images. Use web/browser retrieval as a secondary path for general research. If access fails because of login, private URL, robots, timeout, private/local network, size limit, or tool unavailability, say that precise reason and ask the buyer to make it public, upload it directly, or paste page text/screenshots."

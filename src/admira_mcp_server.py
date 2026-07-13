@@ -25,7 +25,7 @@ DEFAULT_HEAVY_TOOL_TIMEOUT_SECONDS = 600
 
 
 TOOL_DEFINITIONS = [
-    ("get_real_meta_context", "Synchronize directly with Meta and read the live campaign/ad set/ad inventory plus performance context. Treat local memory only as candidate context and never interpret a failed or incomplete empty response as proof that no campaigns exist."),
+    ("get_real_meta_context", "Synchronize directly with Meta and read the current campaign/ad set/ad inventory plus performance context. Supports date_preset=maximum|today|last_7d|custom, custom since/until dates, and detail_level=standard|deep; deep includes placement/device, age/gender and country breakdowns. Treat local memory and approvals only as candidate workflow context: they never prove what currently exists or runs in Meta, and a failed/incomplete empty response never proves the account has no campaigns."),
     ("run_daily_brief", "Run the daily Meta Ads brief and return the safe result."),
     ("schedule_experiment_review", "Schedule adaptive delivery and evidence checkpoints for a real creative test. Requires test budget, target CPA/CPL, and at least two variants with real Meta IDs."),
     ("list_experiment_reviews", "List active creative experiments, current evidence, provisional leaders, and next review dates."),

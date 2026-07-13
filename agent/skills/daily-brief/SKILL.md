@@ -1,6 +1,6 @@
 ---
 name: daily-brief
-description: Build the Telegram-friendly daily Meta Ads brief from real data, approvals, and adaptive creative-experiment checkpoints. Use for morning briefs, daily readings, summaries, or what to watch today.
+description: Build the Telegram-friendly daily Meta Ads brief from current live Meta data and adaptive creative-experiment checkpoints. Use for morning briefs, daily readings, summaries, or what to watch today.
 ---
 
 # Daily Brief Skill
@@ -19,7 +19,7 @@ Write a short Telegram-friendly brief:
 1. What changed in the last few days.
 2. What campaign, ad set, or creative needs attention.
 3. What still looks healthy.
-4. What action you would prepare for approval.
+4. What safe paused work you already prepared, or what exact protected live action needs the buyer's confirmation now.
 5. Which creative test is still collecting evidence, its provisional leader only when supported, and the exact next review date.
 6. Data quality, Shopify/Meta reconciliation, signal quality, learning or cooldown holds, anomalies, and shadow-mode unlock progress when present.
 
@@ -30,6 +30,8 @@ Always end exactly with:
 ## Data Rules
 
 - Only use real Meta data from `mcp_admira_get_real_meta_context` or the daily brief tool result.
+- Treat the current Meta inventory and insights as authoritative. Never infer what is active from memory, local campaign plans, created-campaign records, action logs, or old approvals.
+- Do not list approvals as a routine daily section. Mention one only when it is the exact current activation or protected change the buyer is already discussing.
 - If real Meta data is missing, say that clearly and do not use demo examples.
 - Never turn an early delivery signal into a winner. Say "evidencia insuficiente" when the experiment tool does.
 - A review recommendation is not an executed Meta change. Scaling, pausing, or budget changes still use the normal approval tools.

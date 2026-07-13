@@ -14,7 +14,7 @@ Use this skill when the buyer asks to create, launch, prepare, or publish a Meta
 
 ## Safety Rules
 
-- New campaigns always require approval.
+- A complete campaign/ad set/ad structure that will remain `PAUSED` may be created after the buyer asks for it; do not add a second approval ceremony for no-spend creation. The important approval is activation or another spend-capable live change.
 - If the buyer wants the final ad active and able to spend, require explicit active-spend confirmation.
 - Chat can stage a campaign but cannot silently approve it.
 - If information is truly blocking, ask one clear question at a time.

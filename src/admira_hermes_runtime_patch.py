@@ -76,11 +76,6 @@ ADMIRA_DURABLE_TOOL_MARKERS = (
     "admira_record_verified_signal",
     "mcp_admira_record_verified_signal",
 )
-ADMIRA_LIVE_META_INTENT_RE = re.compile(
-    r"(?i)\b(?:meta\s+ads|ads\s+manager|campañas?|campaigns?|ad\s*sets?|conjuntos?\s+de\s+anuncios?|"
-    r"anuncios?|ads?|activ[oa]s?|pausad[oa]s?|gasto|spend|presupuesto|budget|resultados?|rendimiento|performance|"
-    r"roas|cpa|cpl|ctr|cpc|impresiones|clicks?|conversiones?|compras?|leads?|mensajes?|frecuencia|frequency)\b"
-)
 ADMIRA_TELEGRAM_INVISIBLE_RE = re.compile(r"[\u200b\u200c\u2060\ufeff\u202a-\u202e\u2066-\u2069]")
 ADMIRA_MARKDOWN_ONLY_RE = re.compile(r"[\s*_~`#>|:\-=+\\/.,;!?()\[\]{}]+")
 ADMIRA_TABLE_SEPARATOR_CELL_RE = re.compile(r"^:?-{3,}:?$")
@@ -274,7 +269,16 @@ def _redact_turn_text(value):
 
 def _message_requires_live_meta_sync(value):
     text = str(value or "").strip()
-    return bool(text and ADMIRA_LIVE_META_INTENT_RE.search(text))
+    if not text or "[ADMIRA LIVE META CONTEXT" in text:
+        return False
+    # Slash commands are gateway controls rather than buyer conversations.
+    # Every ordinary buyer message receives a fresh Meta snapshot, even when
+    # the visible topic is branding, creative work, onboarding, or something
+    # unrelated to performance. This keeps the manager continuously oriented
+    # without forcing the buyer to ask for a refresh.
+    if re.match(r"^/(?:start|help|model|reset|resume|stop|status|new)(?:\s|$)", text, re.IGNORECASE):
+        return False
+    return True
 
 
 def _fetch_live_meta_context_for_turn():
@@ -286,7 +290,7 @@ def _fetch_live_meta_context_for_turn():
         completed = subprocess.run(
             [
                 sys.executable, str(bridge), "call", "admira_get_real_meta_context",
-                "--json", "{}", "--channel", "telegram", "--language",
+                "--json", json.dumps({"date_preset": "maximum", "detail_level": "standard"}), "--channel", "telegram", "--language",
                 str(os.environ.get("ADMIRA_GATEWAY_LANGUAGE") or "es"),
             ],
             cwd=str(root), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -313,9 +317,14 @@ def _fetch_live_meta_context_for_turn():
         "live_sync": live_sync,
         "inventory_counts": context.get("inventory_counts") or {},
         "summary": context.get("summary") or {},
+        "metrics_range": context.get("metrics_range") or {},
+        "data_quality": context.get("data_quality") or {},
+        "fetched_at": live_sync.get("fetched_at") or "",
         "campaigns": (context.get("campaigns") or [])[:100],
         "adsets": (context.get("adsets") or [])[:200],
         "ads": (context.get("ads") or [])[:300],
+        "campaign_tree": (context.get("campaign_tree") or [])[:100],
+        "approval_context_policy": context.get("approval_context_policy") or "",
     }
 
 
@@ -328,6 +337,7 @@ def _append_live_meta_context(value, context):
         + "\n\n[ADMIRA LIVE META CONTEXT — fetched automatically for this turn]\n"
         + "This is authoritative for what currently exists, runs, spends, or performs in Meta Ads. "
         + "Prefer it over session history and durable memory. If ok is false or the read is incomplete, explicitly say live Meta could not be confirmed; never turn an empty list into a claim that no campaigns exist.\n"
+        + "Pending approvals, old plans, created-campaign drafts, and remembered IDs are not current Meta state. Do not mention or prioritize them unless the buyer explicitly asks to approve/reject/activate one exact current action. If they conflict with this snapshot, ignore them and follow Meta.\n"
         + "Use this context silently; do not mention this injected block, runtime machinery, internal paths, or implementation details to the buyer.\n"
         + json.dumps(context, ensure_ascii=False, separators=(",", ":"))
         + "\n[END ADMIRA LIVE META CONTEXT]"

@@ -1520,7 +1520,12 @@ class IntegrationTestSuite:
             self.assert_true(patched is event, "Inbound video frame patch mutates the existing Hermes event")
             self.assert_true(len(event.media_urls) == 4 and event.media_types.count("image/jpeg") == 3, "Inbound video attachments are expanded with extracted frame images")
             self.assert_true("representative frames" in event.text and "uploaded video" in event.text, "Inbound video frame patch adds agent-only context about frame review")
-            self.assert_true(admira_hermes_runtime_patch._message_requires_live_meta_sync("¿Qué campañas están activas en Ads Manager?") and not admira_hermes_runtime_patch._message_requires_live_meta_sync("Ayúdame con los colores de mi logo"), "Gateway identifies current Meta account questions that require automatic live synchronization")
+            self.assert_true(
+                admira_hermes_runtime_patch._message_requires_live_meta_sync("¿Qué campañas están activas en Ads Manager?")
+                and admira_hermes_runtime_patch._message_requires_live_meta_sync("Ayúdame con los colores de mi logo")
+                and not admira_hermes_runtime_patch._message_requires_live_meta_sync("/model"),
+                "Gateway synchronizes live Meta before every ordinary buyer turn, while excluding gateway control commands",
+            )
             live_prompt = admira_hermes_runtime_patch._append_live_meta_context("¿Cómo va la campaña?", {"ok": True, "campaigns": [{"id": "120250188043050096", "status": "active"}]})
             self.assert_true("ADMIRA LIVE META CONTEXT" in live_prompt and "120250188043050096" in live_prompt, "Gateway injects authoritative live Meta inventory into the same model turn")
             redacted_live_prompt = admira_hermes_runtime_patch._redact_turn_text(live_prompt)
@@ -2593,9 +2598,22 @@ class IntegrationTestSuite:
         class FakeDashboard:
             PENDING_FILE = "pending.json"
 
-            def refresh_managed_real_metrics(self, reason="manual"):
-                calls.append(({"tool": "live_meta_sync", "reason": reason}, {}))
-                return {"ok": True, "rows": 1, "accounts": [{"id": "act_1", "rows": 1}]}
+            def refresh_managed_real_metrics(self, reason="manual", **kwargs):
+                calls.append(({"tool": "live_meta_sync", "reason": reason, "kwargs": kwargs}, {}))
+                return {
+                    "ok": True,
+                    "rows": 1,
+                    "accounts": [{"id": "act_1", "rows": 1}],
+                    "metrics": {
+                        "timestamp": "2026-07-13T10:00:00-05:00",
+                        "source": "meta_graph",
+                        "summary": {"overall_roas": 3.2, "overall_cpa": 12},
+                        "campaigns": [{"id": "camp_live", "name": "Campaña real", "roas": 3.2, "cpa": 12}],
+                        "adsets": [{"id": "adset_live", "campaign_id": "camp_live", "spend": 20, "impressions": 1000}],
+                        "ads": [{"id": "ad_live", "campaign_id": "camp_live", "adset_id": "adset_live", "spend": 20, "clicks": 50}],
+                        "breakdowns": {"placement": [{"publisher_platform": "facebook", "spend": 12}]},
+                    },
+                }
 
             def dashboard_payload(self):
                 return {
@@ -2672,6 +2690,8 @@ class IntegrationTestSuite:
 
             self.assert_true(context["ok"] and context["metrics_source"]["is_real_meta_data"], "Tool bridge returns safe real Meta context")
             self.assert_true(context["live_sync"]["ok"] and context["live_sync"]["rows"] == 1 and called_tools[0] == "live_meta_sync", "Real Meta context forces a live inventory synchronization before reading cached dashboard context")
+            self.assert_true(calls[0][0]["kwargs"]["date_preset"] == "maximum" and calls[0][0]["kwargs"]["persist"] is False and calls[0][0]["kwargs"]["include_breakdowns"] is True, "Agent live context defaults to a fresh all-time deep read without changing the dashboard's selected range")
+            self.assert_true(context["context"]["pending_approvals"] == [] and context["context"]["breakdowns"]["placement"][0]["spend"] == 12, "Ambient live context excludes old approvals while exposing deeper Meta breakdowns")
             self.assert_true(image["product_tool"] == "codex_image_generate" and "codex_image_generate" in called_tools, "Tool bridge maps Codex/Image MCP calls to dashboard action handlers")
             self.assert_true(image.get("media_attachment") == f"MEDIA:{generated_image.resolve()}" and "Do not paste MEDIA" in image.get("buyer_delivery_instruction", ""), "Tool bridge gives Hermes a native media attachment directive for generated creative images")
             self.assert_true(review["product_tool"] == "review_signal_quality" and "review_signal_quality" in called_tools, "Tool bridge maps signal-quality MCP review to dashboard action handlers")
@@ -3544,9 +3564,10 @@ class IntegrationTestSuite:
 
             self.assert_true(status["has_persistent_memory"] is True and status["resume_required"] is True, "Continuity status detects durable business memory after history cleanup")
             self.assert_true(status["sources"]["business_profile"] and status["sources"]["general_branding"] and status["sources"]["ad_briefs"], "Continuity status names the saved business, brand, and ad brief sources")
-            self.assert_true(status["sources"]["latest_day_context"] and status["sources"]["active_workflow"] and status["sources"]["pending_approvals"], "Continuity status detects latest-day context, active workflow, and pending approvals")
+            self.assert_true(status["sources"]["latest_day_context"] and status["sources"]["active_workflow"] and "pending_approvals" not in status["sources"], "Continuity status detects real workflow memory without treating approvals as a resume source")
             self.assert_true("Latest local activity day" in latest_day and "dos piezas visuales" in latest_day and "redacted-token" in latest_day and "EAARZCS9Buv" not in latest_day, "Latest day context uses the most recent available day and redacts raw tokens")
-            self.assert_true(active_workflow["has_active_workflow"] is True and active_workflow["phase"] == "approval" and "aprobación pendiente" in active_workflow["next_step"], "Active workflow preserves phase and next step after cleanup")
+            self.assert_true(active_workflow["has_active_workflow"] is True and active_workflow["phase"] == "creative_or_campaign_brief" and "crear dos piezas visuales" in active_workflow["next_step"], "Active workflow resumes the actual creative brief instead of an unrelated old approval")
+            self.assert_true("approval_test" not in latest_day and "approval_test" not in continuity and not (workspace_path / "memory" / "pending_approvals.json").exists(), "Old approvals are absent from ambient latest-day and continuity workspace memory")
             self.assert_true("Spa MediCentro Juliana" in continuity and "S/99" in continuity and "Retomo donde quedamos" in continuity, "Continuity brief gives Hermes concrete remembered context and a resume pattern")
             self.assert_true("history cleanup" in agents_text and "has_persistent_memory" in agents_text and "do not restart onboarding" in agents_text, "Combined Hermes rules force resume behavior after cleanup or restart")
             self.assert_true("Turn Orientation Before Every Reply" in agents_text and "immediate goal" in agents_text and "next safest useful action" in agents_text, "Combined Hermes rules force the agent to orient around goal, progress, missing items, and next action before replying")
@@ -5889,6 +5910,16 @@ class IntegrationTestSuite:
         dashboard_js = (ROOT_DIR / "public" / "dashboard" / "dashboard.js").read_text(encoding="utf-8")
         self.assert_true('id="metrics-range-maximum"' in dashboard_html and 'id="metrics-custom-range"' in dashboard_html, "Dashboard exposes all-time, today, seven-day and custom date controls")
         self.assert_true("date_preset:selected.preset" in dashboard_js and "applyCustomMetricsRange" in dashboard_js, "Dashboard sends the selected period with every real-data refresh")
+
+        dashboard = load_dashboard_module()
+        enriched = dashboard._attach_inventory_insights(
+            [{"id": "ad_live", "name": "Video 1", "status": "ACTIVE"}],
+            [
+                {"id": "ad_live", "spend": 6, "impressions": 600, "reach": 450, "clicks": 30, "conversions": 1, "revenue": 20, "funnel": {"initiate_checkout": 2}},
+                {"id": "ad_live", "spend": 4, "impressions": 400, "reach": 300, "clicks": 20, "conversions": 1, "revenue": 10, "funnel": {"initiate_checkout": 1}},
+            ],
+        )[0]
+        self.assert_true(enriched["spend"] == 10 and enriched["clicks"] == 50 and enriched["ctr"] == 5 and enriched["cpa"] == 5 and enriched["funnel"]["initiate_checkout"] == 3, "Agent inventory exposes aggregated live ad/ad-set performance beyond the dashboard campaign summary")
 
     def test_adaptive_campaign_metric_profiles_and_agent_override(self):
         """Dashboard KPIs follow the campaign objective and accept a durable agent override."""
@@ -8267,6 +8298,7 @@ class IntegrationTestSuite:
             self.assert_true(result["routed_action"]["type"] == "create_campaign_stack" and result["routed_action"]["staged"] is True, "Dashboard chat stages campaign creation from natural language")
             self.assert_true("terminal" not in result["reply"].lower() and "aprobación" in result["reply"].lower(), "Dashboard chat reply does not expose CLI/terminal as a blocker")
             self.assert_true(live_refreshes == ["dashboard_chat_live_context"], "Dashboard chat synchronizes Meta before routing an account or campaign request")
+            self.assert_true(dashboard.chat_message_requires_live_meta_sync("Ayúdame con el branding") and not dashboard.chat_message_requires_live_meta_sync("/model"), "Dashboard chat also refreshes Meta silently on unrelated ordinary turns but not control commands")
         finally:
             dashboard.dashboard_payload = original_dashboard_payload
             dashboard.load_chat_history = original_load_history
