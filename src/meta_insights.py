@@ -291,14 +291,35 @@ def fetch_ad_statuses(account_id, token, version="v24.0"):
     return result
 
 
+def merge_insight_rows(*collections):
+    """Combine complete historical days with today's delivery without double counting."""
+    merged = {}
+    for rows in collections:
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            key = (
+                str(row.get("level") or ""), str(row.get("id") or ""),
+                str(row.get("date_start") or ""), str(row.get("date_stop") or ""),
+                str(row.get("publisher_platform") or ""), str(row.get("platform_position") or ""),
+                str(row.get("impression_device") or ""), str(row.get("country") or ""),
+                str(row.get("age") or ""), str(row.get("gender") or ""),
+            )
+            merged[key] = row
+    return list(merged.values())
+
+
 def collect_meta_snapshot(account_id, token, version="v24.0", date_preset="last_30d", known_campaign_ids=None):
     levels = {}
     unavailable = []
     for level in ("campaign", "adset", "ad"):
         result = fetch_insights(account_id, token, version, date_preset, level, 1)
-        levels[level] = result.get("rows", [])
+        today = fetch_insights(account_id, token, version, "today", level, 1) if date_preset != "today" else {"ok": True, "rows": []}
+        levels[level] = merge_insight_rows(result.get("rows", []), today.get("rows", []))
         if not result.get("ok"):
             unavailable.append({"view": level, "reason": result.get("error")})
+        if not today.get("ok"):
+            unavailable.append({"view": f"{level}_today", "reason": today.get("error")})
 
     breakdowns = {}
     for name, fields in {
@@ -307,9 +328,12 @@ def collect_meta_snapshot(account_id, token, version="v24.0", date_preset="last_
         "country": "country",
     }.items():
         result = fetch_insights(account_id, token, version, date_preset, "ad", 1, fields)
-        breakdowns[name] = result.get("rows", [])
+        today = fetch_insights(account_id, token, version, "today", "ad", 1, fields) if date_preset != "today" else {"ok": True, "rows": []}
+        breakdowns[name] = merge_insight_rows(result.get("rows", []), today.get("rows", []))
         if not result.get("ok"):
             unavailable.append({"view": name, "reason": result.get("error")})
+        if not today.get("ok"):
+            unavailable.append({"view": f"{name}_today", "reason": today.get("error")})
 
     statuses = fetch_campaign_statuses(account_id, token, version)
     if not statuses.get("ok"):
@@ -352,7 +376,7 @@ def collect_meta_snapshot(account_id, token, version="v24.0", date_preset="last_
     return {
         "generated_at": now_iso(),
         "account_id": str(account_id or ""),
-        "date_preset": date_preset,
+        "date_preset": f"{date_preset}+today" if date_preset != "today" else date_preset,
         "levels": levels,
         "breakdowns": breakdowns,
         "campaign_statuses": status_by_id,

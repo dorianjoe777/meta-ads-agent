@@ -5746,6 +5746,51 @@ class IntegrationTestSuite:
             meta_insights.graph_rows = original_graph_rows
             meta_insights.graph_get = original_graph_get
 
+    def test_meta_snapshot_combines_today_with_completed_history(self):
+        """Current-day delivery remains visible when Meta's historical preset excludes today."""
+        print("\nTesting Meta Current-Day Insights Merge...")
+
+        original_graph_rows = meta_insights.graph_rows
+        campaign_id = "120250188043050096"
+
+        def fake_graph_rows(path, params, token, version, max_pages=5):
+            if path.endswith("/campaigns"):
+                return {"ok": True, "rows": [{"id": campaign_id, "name": "AdMira IA - LATAM v3", "status": "ACTIVE", "effective_status": "ACTIVE"}]}
+            if path.endswith("/adsets") or path.endswith("/ads"):
+                return {"ok": True, "rows": []}
+            if path.endswith("/insights"):
+                if params.get("date_preset") == "today" and params.get("level") == "campaign":
+                    return {
+                        "ok": True,
+                        "rows": [{
+                            "id": campaign_id,
+                            "campaign_id": campaign_id,
+                            "name": "AdMira IA - LATAM v3",
+                            "date_start": "2026-07-12",
+                            "date_stop": "2026-07-12",
+                            "spend": "2.15",
+                            "impressions": "328",
+                            "clicks": "18",
+                            "ctr": "5.488",
+                            "cpc": "0.1194",
+                        }],
+                    }
+                return {"ok": True, "rows": []}
+            return {"ok": False, "rows": [], "error": {"message": "unexpected"}}
+
+        try:
+            meta_insights.graph_rows = fake_graph_rows
+            snapshot = meta_insights.collect_meta_snapshot("act_966537272116878", "token", date_preset="last_30d")
+            campaigns = meta_insights.aggregate_campaigns(snapshot)
+            self.assert_true(snapshot["date_preset"] == "last_30d+today", "Meta snapshot records that current-day delivery was merged with historical data")
+            self.assert_true(len(campaigns) == 1 and campaigns[0]["id"] == campaign_id, "Current-day active campaign remains in the dashboard inventory")
+            self.assert_true(campaigns[0]["spend"] == 2.15 and campaigns[0]["impressions"] == 328, "Current-day spend and impressions are not lost when last_30d is empty")
+
+            duplicate = meta_insights.merge_insight_rows(snapshot["levels"]["campaign"], snapshot["levels"]["campaign"])
+            self.assert_true(len(duplicate) == 1, "Overlapping current-day insight rows are deduplicated before aggregation")
+        finally:
+            meta_insights.graph_rows = original_graph_rows
+
     def test_daily_reads_real_data_and_keeps_risky_pauses_as_proposals(self):
         """Test scheduled reports read Meta without inventing executed account mutations."""
         print("\nTesting Approval-Based Scheduled Daily Safety...")
@@ -9557,6 +9602,7 @@ class IntegrationTestSuite:
         dashboard_payload_source = dashboard_server_source.split("def dashboard_payload():", 1)[1].split("\n\nHTML =", 1)[0]
         self.assert_true("cached_agent_runtime_status(config)" in dashboard_payload_source and "build_setup_status(runtime_status=runtime_status)" in dashboard_payload_source and "hermes_codex_session_status(" not in dashboard_payload_source and "hermes_codex_image_status(" not in dashboard_payload_source, "Initial dashboard payload uses cached runtime health instead of blocking on Hermes/Codex subprocesses")
         self.assert_true('/api/agent-model/runtime' in dashboard_server_source and "refreshAgentRuntimeStatus(false)" in dashboard_js_source and "ThreadPoolExecutor" in dashboard_server_source, "Dashboard refreshes agent health in parallel after the interface becomes usable")
+        self.assert_true("refreshInsights({silent:true})" in dashboard_js_source and "startLiveMetricsAutoRefresh" in dashboard_js_source and "10*60*1000" in dashboard_js_source, "Dashboard silently syncs live Meta inventory on open and every ten minutes")
         self.assert_true("<style>" not in dashboard_html_block and "<script>" not in dashboard_html_block, "Dashboard HTML no longer embeds inline style or script blocks")
         self.assert_true(not any(token in dashboard_html_block for token in ["onclick=", "onsubmit=", "onchange=", "oninput=", "onpaste=", " style="]), "Dashboard HTML does not ship inline handlers or style attributes")
         self.assert_true(not any(token in dashboard_js_source for token in ["onclick=", "onsubmit=", "onchange=", "oninput=", "onpaste=", " style=", "<style>"]), "Dashboard JS templates do not generate inline handlers, style attributes, or style blocks")
@@ -9918,6 +9964,7 @@ class IntegrationTestSuite:
             self.test_meta_asset_discovery_saves_connected_assets,
             self.test_meta_snapshot_collects_adset_signal_configuration,
             self.test_meta_snapshot_reconciles_empty_campaign_listing_from_live_children,
+            self.test_meta_snapshot_combines_today_with_completed_history,
             self.test_live_insights_normalize_into_dashboard_metrics,
             self.test_daily_reads_real_data_and_keeps_risky_pauses_as_proposals,
             self.test_demo_metrics_are_labeled,
