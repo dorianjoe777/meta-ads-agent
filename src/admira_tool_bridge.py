@@ -27,6 +27,7 @@ TOOL_MAP = {
     "admira_save_optimization_research": "save_optimization_research",
     "admira_list_optimization_research": "list_optimization_research",
     "admira_review_signal_quality": "review_signal_quality",
+    "admira_set_campaign_metric_priorities": "set_campaign_metric_priorities",
     "admira_preflight_campaign": "preflight_campaign",
     "admira_fetch_public_asset": "fetch_public_asset",
     "admira_codex_image_generate": "codex_image_generate",

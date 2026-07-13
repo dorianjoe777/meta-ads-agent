@@ -26,6 +26,11 @@ FUNNEL_ACTIONS = {
     "purchase": PURCHASE_VALUE_ACTIONS,
     "lead": {"lead", "offsite_conversion.fb_pixel_lead", "onsite_conversion.lead_grouped"},
     "conversation": {"onsite_conversion.messaging_conversation_started_7d"},
+    "thruplay": {"video_thruplay_watched_actions", "video_thruplay_watched_action"},
+    "video_3s_views": {"video_view", "video_3_sec_watched_actions"},
+    "completed_video_views": {"video_p100_watched_actions"},
+    "app_install": {"app_install", "mobile_app_install", "omni_app_install"},
+    "post_engagement": {"post_engagement", "page_engagement"},
 }
 
 
@@ -120,6 +125,7 @@ def normalize_insight_row(row, level):
         "date_stop": str(row.get("date_stop") or ""),
         "spend": round(spend, 2),
         "impressions": impressions,
+        "reach": int(number(row.get("reach"))),
         "clicks": clicks,
         "conversions": round(conversions, 2),
         "revenue": round(revenue, 2),
@@ -149,7 +155,7 @@ def fetch_insights(account_id, token, version="v24.0", date_preset="last_30d", l
         "level": level,
         "date_preset": date_preset,
         "time_increment": time_increment,
-        "fields": f"{identity_fields},date_start,date_stop,spend,impressions,clicks,inline_link_clicks,frequency,actions,action_values",
+        "fields": f"{identity_fields},date_start,date_stop,spend,impressions,reach,clicks,inline_link_clicks,frequency,actions,action_values",
         "action_report_time": "conversion",
         "limit": 500,
     }
@@ -309,10 +315,22 @@ def merge_insight_rows(*collections):
     return list(merged.values())
 
 
-def collect_meta_snapshot(account_id, token, version="v24.0", date_preset="last_30d", known_campaign_ids=None):
+def collect_meta_snapshot(
+    account_id,
+    token,
+    version="v24.0",
+    date_preset="last_30d",
+    known_campaign_ids=None,
+    insight_levels=None,
+    include_breakdowns=True,
+):
     levels = {}
     unavailable = []
+    requested_levels = tuple(insight_levels or ("campaign", "adset", "ad"))
     for level in ("campaign", "adset", "ad"):
+        if level not in requested_levels:
+            levels[level] = []
+            continue
         result = fetch_insights(account_id, token, version, date_preset, level, 1)
         today = fetch_insights(account_id, token, version, "today", level, 1) if date_preset != "today" else {"ok": True, "rows": []}
         levels[level] = merge_insight_rows(result.get("rows", []), today.get("rows", []))
@@ -322,11 +340,12 @@ def collect_meta_snapshot(account_id, token, version="v24.0", date_preset="last_
             unavailable.append({"view": f"{level}_today", "reason": today.get("error")})
 
     breakdowns = {}
-    for name, fields in {
+    breakdown_requests = {
         "placement_device": "publisher_platform,platform_position,impression_device",
         "age_gender": "age,gender",
         "country": "country",
-    }.items():
+    } if include_breakdowns else {}
+    for name, fields in breakdown_requests.items():
         result = fetch_insights(account_id, token, version, date_preset, "ad", 1, fields)
         today = fetch_insights(account_id, token, version, "today", "ad", 1, fields) if date_preset != "today" else {"ok": True, "rows": []}
         breakdowns[name] = merge_insight_rows(result.get("rows", []), today.get("rows", []))
@@ -398,12 +417,15 @@ def aggregate_campaigns(snapshot):
         campaign_id = str(row.get("id") or row.get("campaign_id") or "")
         item = totals.setdefault(campaign_id, {
             "id": campaign_id, "campaign_id": campaign_id, "name": row.get("name") or campaign_id,
-            "spend": 0.0, "impressions": 0, "clicks": 0, "conversions": 0.0, "revenue": 0.0,
+            "spend": 0.0, "impressions": 0, "reach": 0, "clicks": 0, "conversions": 0.0, "revenue": 0.0,
+            "funnel": {},
         })
         for key in ("spend", "conversions", "revenue"):
             item[key] += number(row.get(key))
-        for key in ("impressions", "clicks"):
+        for key in ("impressions", "reach", "clicks"):
             item[key] += int(number(row.get(key)))
+        for key, value in (row.get("funnel") or {}).items():
+            item["funnel"][key] = round(number(item["funnel"].get(key)) + number(value), 2)
     for campaign_id, status in status_by_id.items():
         if not campaign_id:
             continue
@@ -413,9 +435,11 @@ def aggregate_campaigns(snapshot):
             "name": status.get("name") or campaign_id,
             "spend": 0.0,
             "impressions": 0,
+            "reach": 0,
             "clicks": 0,
             "conversions": 0.0,
             "revenue": 0.0,
+            "funnel": {},
         })
     for campaign_id, item in totals.items():
         status = status_by_id.get(campaign_id, {})

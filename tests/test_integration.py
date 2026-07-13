@@ -39,6 +39,7 @@ import experiment_scheduler
 import graph_executor
 import meta_upload
 import meta_insights
+import campaign_metric_profiles
 import optimization_engine
 import optimization_research
 import public_asset_fetcher
@@ -5791,6 +5792,81 @@ class IntegrationTestSuite:
         finally:
             meta_insights.graph_rows = original_graph_rows
 
+    def test_adaptive_campaign_metric_profiles_and_agent_override(self):
+        """Dashboard KPIs follow the campaign objective and accept a durable agent override."""
+        print("\nTesting Adaptive Campaign Metric Profiles...")
+
+        sales = {
+            "id": "120250188043050096",
+            "name": "Sales",
+            "status": "active",
+            "objective": "OUTCOME_SALES",
+            "spend": 100,
+            "revenue": 300,
+            "impressions": 10000,
+            "reach": 7000,
+            "clicks": 400,
+            "funnel": {"purchase": 2, "initiate_checkout": 8},
+        }
+        messages = {
+            "id": "120250188043050097",
+            "name": "WhatsApp",
+            "status": "active",
+            "objective": "OUTCOME_ENGAGEMENT",
+            "spend": 50,
+            "impressions": 5000,
+            "reach": 4000,
+            "clicks": 100,
+            "funnel": {"conversation": 10},
+        }
+        adsets = [
+            {"campaign_id": sales["id"], "optimization_goal": "OFFSITE_CONVERSIONS", "promoted_object": {"custom_event_type": "PURCHASE"}},
+            {"campaign_id": messages["id"], "optimization_goal": "CONVERSATIONS", "promoted_object": {}},
+        ]
+        profiled = campaign_metric_profiles.attach_campaign_metric_profiles([sales, messages], adsets)
+        sales_profile, message_profile = profiled
+        self.assert_true(sales_profile["metric_profile"]["objective_type"] == "sales", "Sales objective receives a sales KPI scorecard")
+        self.assert_true(sales_profile["priority_metrics"][2]["key"] == "cost_per_purchase" and sales_profile["priority_metrics"][2]["value"] == 50, "Sales scorecard calculates cost per purchase from real funnel actions")
+        self.assert_true(message_profile["metric_profile"]["objective_type"] == "messages", "Conversation optimization receives a messaging KPI scorecard")
+        self.assert_true("roas" not in message_profile["metric_profile"]["metric_keys"] and message_profile["priority_metrics"][2]["value"] == 5, "Messaging scorecard prioritizes cost per conversation instead of ROAS")
+        mcp_names = {name for name, _ in admira_mcp_server.TOOL_DEFINITIONS}
+        self.assert_true("set_campaign_metric_priorities" in mcp_names and admira_tool_bridge.TOOL_MAP.get("admira_set_campaign_metric_priorities") == "set_campaign_metric_priorities", "Hermes receives the official safe tool for campaign-specific dashboard KPIs")
+        measurement_skill = (ROOT_DIR / "agent" / "skills" / "measurement-optimization" / "SKILL.md").read_text(encoding="utf-8")
+        self.assert_true("mandatory audit" in measurement_skill.lower() and "mcp_admira_set_campaign_metric_priorities" in measurement_skill, "Measurement skill obligates the agent to audit and persist useful campaign scorecards")
+
+        dashboard = load_dashboard_module()
+        original_paths = {
+            "METRICS_FILE": dashboard.METRICS_FILE,
+            "ACTIONS_FILE": dashboard.ACTIONS_FILE,
+            "CAMPAIGN_METRIC_PROFILES_FILE": dashboard.CAMPAIGN_METRIC_PROFILES_FILE,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            try:
+                dashboard.METRICS_FILE = tmp_path / "metrics.json"
+                dashboard.ACTIONS_FILE = tmp_path / "actions.json"
+                dashboard.CAMPAIGN_METRIC_PROFILES_FILE = tmp_path / "campaign_metric_profiles.json"
+                dashboard.write_json(dashboard.METRICS_FILE, {"source": "meta_graph", "campaigns": [sales], "adsets": adsets[:1]})
+                result = dashboard.execute_agent_tool(
+                    {
+                        "tool": "set_campaign_metric_priorities",
+                        "arguments": {
+                            "campaign_id": sales["id"],
+                            "objective_type": "sales",
+                            "metric_keys": ["spend", "initiate_checkout", "cost_per_initiate_checkout", "purchase", "cost_per_purchase"],
+                            "rationale": "El checkout es la primera señal útil con este presupuesto.",
+                        },
+                    },
+                    {"language": "es", "channel": "telegram"},
+                )
+                saved = dashboard.read_json(dashboard.CAMPAIGN_METRIC_PROFILES_FILE, {})
+                self.assert_true(result.get("executed") is True, "Agent can safely persist campaign dashboard priorities without spend approval")
+                self.assert_true(saved["campaigns"][sales["id"]]["metric_keys"][1] == "initiate_checkout", "Agent override is stored per real campaign ID")
+                self.assert_true((dashboard.load_metrics()["campaigns"][0]["metric_profile"] or {}).get("source") == "agent", "Saved agent scorecard is applied when the dashboard reloads")
+            finally:
+                for key, value in original_paths.items():
+                    setattr(dashboard, key, value)
+
     def test_daily_reads_real_data_and_keeps_risky_pauses_as_proposals(self):
         """Test scheduled reports read Meta without inventing executed account mutations."""
         print("\nTesting Approval-Based Scheduled Daily Safety...")
@@ -8886,7 +8962,7 @@ class IntegrationTestSuite:
             self.assert_true("META_AD_ACCOUNT_ID=act_101" in env_path.read_text(encoding="utf-8"), "Same-BM account switch updates the active Meta account")
             dashboard.update_env_values({"META_AD_ACCOUNT_ID": "act_100"})
 
-            def fake_snapshot(account_id, token, version="v24.0", date_preset="last_30d", known_campaign_ids=None):
+            def fake_snapshot(account_id, token, version="v24.0", date_preset="last_30d", known_campaign_ids=None, **kwargs):
                 return {"generated_at": dashboard.now_iso(), "account_id": account_id, "date_preset": date_preset, "data_quality": {"complete": True, "unavailable": []}}
 
             def fake_campaigns(snapshot):
@@ -9602,7 +9678,7 @@ class IntegrationTestSuite:
         dashboard_payload_source = dashboard_server_source.split("def dashboard_payload():", 1)[1].split("\n\nHTML =", 1)[0]
         self.assert_true("cached_agent_runtime_status(config)" in dashboard_payload_source and "build_setup_status(runtime_status=runtime_status)" in dashboard_payload_source and "hermes_codex_session_status(" not in dashboard_payload_source and "hermes_codex_image_status(" not in dashboard_payload_source, "Initial dashboard payload uses cached runtime health instead of blocking on Hermes/Codex subprocesses")
         self.assert_true('/api/agent-model/runtime' in dashboard_server_source and "refreshAgentRuntimeStatus(false)" in dashboard_js_source and "ThreadPoolExecutor" in dashboard_server_source, "Dashboard refreshes agent health in parallel after the interface becomes usable")
-        self.assert_true("refreshInsights({silent:true})" in dashboard_js_source and "startLiveMetricsAutoRefresh" in dashboard_js_source and "10*60*1000" in dashboard_js_source, "Dashboard silently syncs live Meta inventory on open and every ten minutes")
+        self.assert_true("refreshInsights({silent:true})" in dashboard_js_source and "startLiveMetricsAutoRefresh" in dashboard_js_source and "LIVE_METRICS_REFRESH_MS=2*60*1000" in dashboard_js_source and "refresh_scope:refreshScope" in dashboard_js_source, "Dashboard silently syncs a lightweight live Meta view on open and every two visible minutes")
         self.assert_true("<style>" not in dashboard_html_block and "<script>" not in dashboard_html_block, "Dashboard HTML no longer embeds inline style or script blocks")
         self.assert_true(not any(token in dashboard_html_block for token in ["onclick=", "onsubmit=", "onchange=", "oninput=", "onpaste=", " style="]), "Dashboard HTML does not ship inline handlers or style attributes")
         self.assert_true(not any(token in dashboard_js_source for token in ["onclick=", "onsubmit=", "onchange=", "oninput=", "onpaste=", " style=", "<style>"]), "Dashboard JS templates do not generate inline handlers, style attributes, or style blocks")
@@ -9965,6 +10041,7 @@ class IntegrationTestSuite:
             self.test_meta_snapshot_collects_adset_signal_configuration,
             self.test_meta_snapshot_reconciles_empty_campaign_listing_from_live_children,
             self.test_meta_snapshot_combines_today_with_completed_history,
+            self.test_adaptive_campaign_metric_profiles_and_agent_override,
             self.test_live_insights_normalize_into_dashboard_metrics,
             self.test_daily_reads_real_data_and_keeps_risky_pauses_as_proposals,
             self.test_demo_metrics_are_labeled,

@@ -10,6 +10,7 @@ Use this skill when the buyer asks what is happening in the Meta Ads account, as
 ## Rules
 
 - First call `mcp_admira_get_real_meta_context`. This tool performs a live synchronization; do not answer current-state questions from workspace memory alone.
+- During that live read, verify that each active campaign's dashboard `metric_profile` matches the real objective/event. If it is generic, wrong, or missing a business-important outcome, call `mcp_admira_set_campaign_metric_priorities` before finishing the analysis.
 - Meta is the source of truth for current existence, status, budget, delivery, spend, ad sets, ads and live configuration. Durable/local memory is only context and may be stale, incomplete, or missing because a prior turn did not persist correctly.
 - Compare the live inventory with saved campaigns, recent actions, approvals and experiments. If they disagree, state the discrepancy and prefer the object currently verified by Meta.
 - Never interpret an empty campaign list as “there are no campaigns” unless `live_sync.ok` is true and the inventory/data-quality response is complete. If synchronization failed or is partial, say the live read is incomplete and inspect the campaign, ad-set and ad inventories plus directly verified known campaign IDs before reaching a conclusion.

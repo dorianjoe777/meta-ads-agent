@@ -46,6 +46,12 @@ from agent_chat import chat as agent_chat
 from audience_builder import build_audience_strategy
 from budget_optimizer import BudgetOptimizer, OptimizationStrategy, PerformanceMetrics
 from campaign_creator import CampaignCreator
+from campaign_metric_profiles import (
+    account_priority_metrics,
+    attach_campaign_metric_profiles,
+    normalize_metric_keys,
+    public_metric_catalog,
+)
 from communication_style import (
     ad_experience_from_environment,
     ad_experience_instruction,
@@ -208,6 +214,7 @@ ADS_ONBOARDING_FILE = DATA_DIR / "Ads campaign onboarding.md"
 CONTENT_ASSET_LIBRARY_FILE = DATA_DIR / "content_asset_library.json"
 CONTENT_STRATEGY_FILE = DATA_DIR / "content_strategy.md"
 DURABLE_CONVERSATION_MEMORY_FILE = DATA_DIR / "durable_conversation_memory.json"
+CAMPAIGN_METRIC_PROFILES_FILE = DATA_DIR / "campaign_metric_profiles.json"
 INDIVIDUAL_BINDING_FILE = DATA_DIR / "individual_business_binding.json"
 MANAGED_AD_ACCOUNTS_FILE = DATA_DIR / "managed_ad_accounts.json"
 AGENCY_SPACES_FILE = DATA_DIR / "agency_spaces.json"
@@ -275,6 +282,7 @@ CHAT_HISTORY_LIMIT = 40
 CREATIVE_MEMORY_WIZARD_FILE = DATA_DIR / "creative_memory_wizard.json"
 BUSINESS_DATA_FILES = [
     "metrics.json",
+    "campaign_metric_profiles.json",
     "actions.json",
     "pending_approvals.json",
     "scheduled_campaign_actions.json",
@@ -2628,7 +2636,7 @@ def normalize_insights_rows(rows, account_id=""):
     }
 
 
-def fetch_real_metrics(account_id="", persist_snapshot=True):
+def fetch_real_metrics(account_id="", persist_snapshot=True, live_dashboard=False):
     config = load_config()
     account_id = str(account_id or config.ad_account_id or "").strip()
     if account_id and not account_id.startswith("act_"):
@@ -2664,8 +2672,10 @@ def fetch_real_metrics(account_id="", persist_snapshot=True):
         account_id,
         config.meta_access_token,
         config.meta_graph_api_version or "v24.0",
-        date_preset="last_30d",
+        date_preset="today" if live_dashboard else "last_30d",
         known_campaign_ids=collect_known_campaign_ids(),
+        insight_levels=("campaign",) if live_dashboard else None,
+        include_breakdowns=not live_dashboard,
     )
     campaigns = aggregate_meta_campaigns(snapshot)
     adsets = list((snapshot.get("adset_statuses") or {}).values())
@@ -2692,7 +2702,7 @@ def fetch_real_metrics(account_id="", persist_snapshot=True):
         "source": "meta_graph",
         "source_label": "Meta Ads real data",
         "account_id": account_id,
-        "date_preset": "last_30d",
+        "date_preset": snapshot.get("date_preset") or "last_30d+today",
         "campaigns": campaigns,
         "adsets": adsets,
         "ads": ads,
@@ -2705,10 +2715,10 @@ def fetch_real_metrics(account_id="", persist_snapshot=True):
     return {"ok": True, "metrics": metrics, "rows": len(campaigns), "account_id": account_id, "data_quality": snapshot.get("data_quality")}
 
 
-def refresh_managed_real_metrics(reason="manual"):
+def refresh_managed_real_metrics(reason="manual", live_dashboard=False):
     accounts = managed_metric_accounts()
     if len(accounts) <= 1:
-        return refresh_real_metrics(accounts[0]["id"] if accounts else "", reason=reason)
+        return refresh_real_metrics(accounts[0]["id"] if accounts else "", reason=reason, live_dashboard=live_dashboard)
     campaigns = []
     adsets = []
     ads = []
@@ -2717,7 +2727,7 @@ def refresh_managed_real_metrics(reason="manual"):
     errors = []
     for account in accounts:
         account_id = account.get("id")
-        result = fetch_real_metrics(account_id, persist_snapshot=False)
+        result = fetch_real_metrics(account_id, persist_snapshot=False, live_dashboard=live_dashboard)
         if result.get("ok"):
             rows = result.get("rows", 0)
             account_results.append({"id": account_id, "name": account.get("name") or account_id, "rows": rows})
@@ -2735,7 +2745,7 @@ def refresh_managed_real_metrics(reason="manual"):
             "source": "meta_graph",
             "source_label": "Meta Ads real data · multiple accounts",
             "account_id": managed.get("active_ad_account_id") or (accounts[0].get("id") if accounts else ""),
-            "date_preset": "last_30d",
+            "date_preset": "today" if live_dashboard else "last_30d+today",
             "business_manager": managed.get("business_manager", {}),
             "accounts": account_results,
             "campaigns": campaigns,
@@ -2754,8 +2764,8 @@ def refresh_managed_real_metrics(reason="manual"):
     return {"ok": False, "saved": False, "reason": errors[0]["reason"] if errors else "missing_account", "message": message, "errors": errors}
 
 
-def refresh_real_metrics(account_id="", reason="manual"):
-    result = fetch_real_metrics(account_id)
+def refresh_real_metrics(account_id="", reason="manual", live_dashboard=False):
+    result = fetch_real_metrics(account_id, persist_snapshot=not live_dashboard, live_dashboard=live_dashboard)
     if result.get("ok"):
         save_metrics(result["metrics"])
         log_action("live_insights_pull", {"account_id": result.get("account_id"), "rows": result.get("rows"), "reason": reason}, "completed")
@@ -7203,6 +7213,27 @@ def classify_campaign(campaign):
     return "neutral"
 
 
+def load_campaign_metric_profiles():
+    payload = read_json(CAMPAIGN_METRIC_PROFILES_FILE, {"campaigns": {}})
+    if not isinstance(payload, dict):
+        return {}
+    campaigns = payload.get("campaigns", payload)
+    return campaigns if isinstance(campaigns, dict) else {}
+
+
+def apply_campaign_metric_profiles(metrics):
+    metrics = dict(metrics or {})
+    campaigns = attach_campaign_metric_profiles(
+        metrics.get("campaigns", []),
+        metrics.get("adsets", []),
+        load_campaign_metric_profiles(),
+    )
+    metrics["campaigns"] = campaigns
+    metrics["account_priority_metrics"] = account_priority_metrics(campaigns)
+    metrics["metric_catalog"] = public_metric_catalog()
+    return metrics
+
+
 def load_metrics():
     metrics = read_json(METRICS_FILE, None)
     if metrics is None:
@@ -7218,7 +7249,7 @@ def load_metrics():
     metrics.setdefault("source_label", "Cached dashboard data")
     metrics["campaigns"] = [enrich_campaign({**c, "data_source": c.get("data_source") or metrics.get("source", "")}) for c in metrics.get("campaigns", [])]
     metrics["summary"] = build_summary(metrics["campaigns"])
-    return metrics
+    return apply_campaign_metric_profiles(metrics)
 
 
 def save_metrics(metrics):
@@ -7227,6 +7258,7 @@ def save_metrics(metrics):
     metrics.setdefault("source_label", "Dashboard data")
     metrics["campaigns"] = [enrich_campaign({**c, "data_source": c.get("data_source") or metrics.get("source", "")}) for c in metrics.get("campaigns", [])]
     metrics["summary"] = build_summary(metrics["campaigns"])
+    metrics = apply_campaign_metric_profiles(metrics)
     write_json(METRICS_FILE, metrics)
 
 
@@ -7557,7 +7589,8 @@ def apply_action(payload):
     config = load_config()
     action = payload.get("action")
     if action == "refresh_insights":
-        return refresh_managed_real_metrics(reason="dashboard_action")
+        live_dashboard = str(payload.get("refresh_scope") or "").strip().lower() == "dashboard_live"
+        return refresh_managed_real_metrics(reason="dashboard_live" if live_dashboard else "dashboard_action", live_dashboard=live_dashboard)
     metrics = load_metrics()
     campaign_id = payload.get("campaign_id")
     campaign = campaign_by_id(metrics, campaign_id)
@@ -9492,6 +9525,88 @@ def handle_review_signal_quality_tool(arguments, chat_payload, tool):
     )
 
 
+def handle_set_campaign_metric_priorities_tool(arguments, chat_payload, tool):
+    campaign_id = str(arguments.get("campaign_id") or arguments.get("campaignId") or "").strip()
+    metrics = load_metrics()
+    campaign = campaign_by_id(metrics, campaign_id)
+    if not campaign_id or not campaign:
+        return agent_action_result(
+            tool,
+            False,
+            chat_reply(
+                chat_payload,
+                "Primero necesito identificar una campaña real de Meta antes de elegir sus métricas prioritarias.",
+                "I need to identify a real Meta campaign before choosing its priority metrics.",
+            ),
+            blocked=True,
+            reason="unknown_campaign",
+        )
+    if boolish(arguments.get("reset_to_inferred") or arguments.get("reset")) is True:
+        stored = read_json(CAMPAIGN_METRIC_PROFILES_FILE, {"campaigns": {}})
+        profiles = stored.get("campaigns", {}) if isinstance(stored, dict) else {}
+        if isinstance(profiles, dict):
+            profiles.pop(campaign_id, None)
+        write_json(CAMPAIGN_METRIC_PROFILES_FILE, {"updated_at": now_iso(), "campaigns": profiles})
+        refreshed = campaign_by_id(load_metrics(), campaign_id) or {}
+        return agent_action_result(
+            tool,
+            True,
+            chat_reply(chat_payload, "Volví a la selección automática de métricas para esta campaña.", "I restored automatic metric selection for this campaign."),
+            campaign_id=campaign_id,
+            metric_profile=refreshed.get("metric_profile", {}),
+            priority_metrics=refreshed.get("priority_metrics", []),
+        )
+    keys = normalize_metric_keys(
+        arguments.get("metric_keys")
+        or arguments.get("metrics")
+        or arguments.get("priority_metrics")
+        or arguments.get("kpis")
+    )
+    if not keys:
+        return agent_action_result(
+            tool,
+            False,
+            chat_reply(
+                chat_payload,
+                "No guardé el cambio porque no reconocí métricas válidas. Elige entre las métricas disponibles del dashboard.",
+                "I did not save the change because no valid metrics were recognized. Choose from the dashboard metric catalog.",
+            ),
+            blocked=True,
+            reason="invalid_metric_keys",
+            metric_catalog=public_metric_catalog(),
+        )
+    objective_type = str(arguments.get("objective_type") or arguments.get("campaign_type") or "").strip().lower()
+    record = {
+        "campaign_id": campaign_id,
+        "campaign_name": campaign.get("name") or campaign_id,
+        "objective_type": objective_type,
+        "metric_keys": keys,
+        "rationale": str(arguments.get("rationale") or arguments.get("reason") or "")[:600],
+        "updated_at": now_iso(),
+        "updated_by": "agent",
+    }
+    stored = read_json(CAMPAIGN_METRIC_PROFILES_FILE, {"campaigns": {}})
+    profiles = stored.get("campaigns", {}) if isinstance(stored, dict) else {}
+    if not isinstance(profiles, dict):
+        profiles = {}
+    profiles[campaign_id] = record
+    write_json(CAMPAIGN_METRIC_PROFILES_FILE, {"updated_at": now_iso(), "campaigns": profiles})
+    refreshed = campaign_by_id(load_metrics(), campaign_id) or {}
+    log_action("campaign_metric_priorities", {"campaign_id": campaign_id, "metric_keys": keys, "objective_type": objective_type}, "completed")
+    return agent_action_result(
+        tool,
+        True,
+        chat_reply(
+            chat_payload,
+            f"Listo. El dashboard de {campaign.get('name') or 'esta campaña'} priorizará las métricas que mejor explican su objetivo.",
+            f"Done. The dashboard for {campaign.get('name') or 'this campaign'} will prioritize the metrics that best explain its objective.",
+        ),
+        campaign_id=campaign_id,
+        metric_profile=refreshed.get("metric_profile", {}),
+        priority_metrics=refreshed.get("priority_metrics", []),
+    )
+
+
 def summarize_cli_result(result, max_items=8):
     result = result or {}
     parsed = None
@@ -10333,6 +10448,7 @@ AGENT_TOOL_HANDLERS = {
     "save_optimization_research": handle_save_optimization_research_tool,
     "list_optimization_research": handle_list_optimization_research_tool,
     "review_signal_quality": handle_review_signal_quality_tool,
+    "set_campaign_metric_priorities": handle_set_campaign_metric_priorities_tool,
     "preflight_campaign": handle_preflight_campaign_tool,
     "fetch_public_asset": handle_fetch_public_asset_tool,
     "export_report": handle_export_report_tool,

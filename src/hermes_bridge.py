@@ -500,6 +500,7 @@ For each turn, read the buyer message normally. If you need live account context
 - `memory/pending_approvals.json`: pending protected decisions when present.
 - `memory/profitability_rules.json`, `memory/decision_memory.json`, `memory/learning_log.md`: decision memory.
 - `memory/creative_experiments.json`: adaptive creative-test checkpoints, evidence, provisional leaders, and next review dates.
+- `memory/campaign_metric_profiles.json`: dashboard KPI priorities chosen for each real campaign; audit these against the live objective/event and update them with the product tool when needed.
 - `memory/content_asset_library.json`: buyer-shared logos, photos, videos, references, offers, and other assets categorized by intended use.
 - `memory/content_strategy.md`: organic content strategy, pillars, cadence, and daily-post preferences when present.
 - `memory/durable_conversation_memory.json`: confirmed decisions, preferences, blockers, next steps, and workflow agreements that did not fit a narrower specialist store.
@@ -555,6 +556,7 @@ Use these MCP tools for real product actions instead of inventing results, runni
 - `mcp_admira_save_creative_references`
 - `mcp_admira_save_daily_social_content_settings`
 - `mcp_admira_save_content_asset`
+- `mcp_admira_set_campaign_metric_priorities`
 
 If the MCP tool is unavailable, say the action cannot be executed yet and explain what must be connected. Do not fall back to fake campaign data or uncontrolled terminal commands.
 
@@ -684,6 +686,7 @@ def business_memory_files():
         "content_asset_library": DATA_DIR / "content_asset_library.json",
         "content_strategy": DATA_DIR / "content_strategy.md",
         "durable_conversation_memory": DATA_DIR / "durable_conversation_memory.json",
+        "campaign_metric_profiles": DATA_DIR / "campaign_metric_profiles.json",
     }
     product_guides = []
     products_dir = BRAND_GUIDES_DIR / "products"
@@ -716,6 +719,7 @@ def business_memory_context():
         "content_asset_library": scrub_memory(redact_payload(read_json(files["content_asset_library"], {"items": []}))),
         "content_strategy": read_text(files["content_strategy"]),
         "durable_conversation_memory": scrub_memory(redact_payload(read_json(files["durable_conversation_memory"], {"items": []}))),
+        "campaign_metric_profiles": scrub_memory(redact_payload(read_json(files["campaign_metric_profiles"], {"campaigns": {}}))),
         "brand_guides": {
             "general_branding": read_text(files["general_branding"]),
             "offer_map": read_text(files["offer_map"]),
@@ -1319,6 +1323,7 @@ Read `skills/README.md`, then the relevant `skills/*/SKILL.md` file before actin
     written.append(write_workspace_file("memory/profitability_rules.json", memory["profitability_memory"].get("profitability_rules", {})))
     written.append(write_workspace_file("memory/decision_memory.json", memory["profitability_memory"]))
     written.append(write_workspace_file("memory/creative_experiments.json", memory["creative_experiments"]))
+    written.append(write_workspace_file("memory/campaign_metric_profiles.json", memory.get("campaign_metric_profiles", {"campaigns": {}})))
     written.append(write_workspace_file("memory/content_asset_library.json", memory.get("content_asset_library", {"items": []})))
     written.append(write_workspace_file("memory/content_strategy.md", memory.get("content_strategy", "")))
     written.append(write_workspace_file("memory/durable_conversation_memory.json", memory.get("durable_conversation_memory", {"items": []})))

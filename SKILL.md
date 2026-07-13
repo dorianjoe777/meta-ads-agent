@@ -30,3 +30,5 @@ Buyer message
 3. What is risky or wasting money?
 4. What exact action should be prepared, executed, or watched?
 5. What should Admira IA remember for the next 24 hours, 3 days, and 7 days?
+
+For every real campaign, the agent must keep the dashboard scorecard aligned with the campaign objective: sales, leads, messages, traffic, awareness, video, app installs, or engagement. Automatic inference is the fallback; the agent can persist a better campaign-specific KPI profile through the official product tool without changing spend or delivery.

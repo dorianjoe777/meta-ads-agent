@@ -108,6 +108,10 @@ def account_context(payload):
                 "ctr": c.get("ctr"),
                 "frequency": c.get("frequency"),
                 "daily_budget": c.get("daily_budget"),
+                "objective": c.get("objective"),
+                "funnel": c.get("funnel") if isinstance(c.get("funnel"), dict) else {},
+                "metric_profile": c.get("metric_profile") if isinstance(c.get("metric_profile"), dict) else {},
+                "priority_metrics": c.get("priority_metrics") if isinstance(c.get("priority_metrics"), list) else [],
             }
             for c in (campaigns[:100] if has_real_metrics else [])
         ],

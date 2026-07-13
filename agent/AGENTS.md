@@ -28,6 +28,8 @@ Current-research rule: when a recommendation depends on recent market conditions
 
 Reads campaign metrics and detects patterns:
 
+- Audits every active campaign's adaptive dashboard scorecard after live Meta synchronization. Automatic objective inference is the fallback; when the real event or buyer context calls for a better view, it persists up to six KPIs with `mcp_admira_set_campaign_metric_priorities` instead of editing UI files.
+
 - Winners worth scaling
 - Losers to pause or investigate
 - CPA or ROAS changes
