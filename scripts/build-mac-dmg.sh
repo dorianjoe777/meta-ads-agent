@@ -30,6 +30,7 @@ mkdir -p "$APP_MACOS" "$APP_PAYLOAD" "$RELEASE_DIR"
 rsync -a "$ROOT_DIR/" "$APP_PAYLOAD/" \
   --exclude ".env" \
   --exclude "ad-config.json" \
+  --exclude "brand_guides/Offer map.md" \
   --exclude ".git" \
   --exclude ".DS_Store" \
   --exclude "release" \

@@ -29,6 +29,7 @@ mkdir -p "$STAGING_DIR" "$RELEASE_DIR"
 rsync -a "$ROOT_DIR/" "$STAGING_DIR/" \
   --exclude ".env" \
   --exclude "ad-config.json" \
+  --exclude "brand_guides/Offer map.md" \
   --exclude ".git" \
   --exclude ".DS_Store" \
   --exclude "release" \

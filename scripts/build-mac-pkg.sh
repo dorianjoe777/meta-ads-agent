@@ -23,6 +23,7 @@ mkdir -p "$APP_DIR" "$RELEASE_DIR"
 rsync -a "$ROOT_DIR/" "$APP_DIR/" \
   --exclude ".env" \
   --exclude "ad-config.json" \
+  --exclude "brand_guides/Offer map.md" \
   --exclude ".git" \
   --exclude ".DS_Store" \
   --exclude "release" \
