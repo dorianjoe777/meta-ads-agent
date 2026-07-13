@@ -121,7 +121,7 @@ from hermes_gateway import (
 from hermes_gateway import telegram_settings
 from license import activate_license, default_device_id, license_status, mark_license_install_state, normalize_license_entitlements, validate_license_key
 from local_store import now_iso, read_json, write_json, write_private_json
-from meta_insights import aggregate_campaigns as aggregate_meta_campaigns, campaign_inventory_tree as meta_campaign_inventory_tree, campaign_is_dashboard_visible, collect_meta_snapshot, save_meta_snapshot
+from meta_insights import aggregate_campaigns as aggregate_meta_campaigns, campaign_inventory_tree as meta_campaign_inventory_tree, campaign_is_dashboard_visible, collect_meta_snapshot, normalize_insight_range, save_meta_snapshot
 from meta_upload import recent_uploads, stage_upload
 from optimization_engine import (
     anomaly_diagnostics,
@@ -2636,7 +2636,27 @@ def normalize_insights_rows(rows, account_id=""):
     }
 
 
-def fetch_real_metrics(account_id="", persist_snapshot=True, live_dashboard=False):
+def current_dashboard_metrics_range(date_preset=None, since="", until=""):
+    """Resolve the dashboard period, defaulting new installs to all-time.
+
+    A previously selected period is stored alongside the real metrics so
+    automatic refreshes, account switches and browser reloads do not silently
+    jump back to a different date range.
+    """
+    if date_preset is not None:
+        return normalize_insight_range(date_preset, since, until)
+    stored = read_json(METRICS_FILE, {})
+    selected = stored.get("metrics_range") if isinstance(stored, dict) else {}
+    if not isinstance(selected, dict):
+        selected = {}
+    preset = str(selected.get("preset") or "maximum").strip().lower()
+    try:
+        return normalize_insight_range(preset, selected.get("since"), selected.get("until"))
+    except ValueError:
+        return normalize_insight_range("maximum")
+
+
+def fetch_real_metrics(account_id="", persist_snapshot=True, live_dashboard=False, date_preset=None, since="", until=""):
     config = load_config()
     account_id = str(account_id or config.ad_account_id or "").strip()
     if account_id and not account_id.startswith("act_"):
@@ -2668,11 +2688,13 @@ def fetch_real_metrics(account_id="", persist_snapshot=True, live_dashboard=Fals
             visit(read_json(path, default))
         return found[:50]
 
+    metrics_range = current_dashboard_metrics_range(date_preset, since, until)
     snapshot = collect_meta_snapshot(
         account_id,
         config.meta_access_token,
         config.meta_graph_api_version or "v24.0",
-        date_preset="today" if live_dashboard else "last_30d",
+        date_preset=metrics_range["preset"],
+        time_range=metrics_range.get("time_range"),
         known_campaign_ids=collect_known_campaign_ids(),
         insight_levels=("campaign",) if live_dashboard else None,
         include_breakdowns=not live_dashboard,
@@ -2711,7 +2733,12 @@ def fetch_real_metrics(account_id="", persist_snapshot=True, live_dashboard=Fals
         "source": "meta_graph",
         "source_label": "Meta Ads real data",
         "account_id": account_id,
-        "date_preset": snapshot.get("date_preset") or "last_30d+today",
+        "date_preset": snapshot.get("date_preset") or metrics_range["preset"],
+        "metrics_range": snapshot.get("metrics_range") or {
+            "preset": metrics_range["preset"],
+            "since": metrics_range.get("since", ""),
+            "until": metrics_range.get("until", ""),
+        },
         "campaigns": campaigns,
         "adsets": adsets,
         "ads": ads,
@@ -2724,19 +2751,34 @@ def fetch_real_metrics(account_id="", persist_snapshot=True, live_dashboard=Fals
     return {"ok": True, "metrics": metrics, "rows": len(campaigns), "account_id": account_id, "data_quality": snapshot.get("data_quality")}
 
 
-def refresh_managed_real_metrics(reason="manual", live_dashboard=False):
+def refresh_managed_real_metrics(reason="manual", live_dashboard=False, date_preset=None, since="", until=""):
     accounts = managed_metric_accounts()
     if len(accounts) <= 1:
-        return refresh_real_metrics(accounts[0]["id"] if accounts else "", reason=reason, live_dashboard=live_dashboard)
+        return refresh_real_metrics(
+            accounts[0]["id"] if accounts else "",
+            reason=reason,
+            live_dashboard=live_dashboard,
+            date_preset=date_preset,
+            since=since,
+            until=until,
+        )
     campaigns = []
     adsets = []
     ads = []
     campaign_tree = []
     account_results = []
     errors = []
+    selected_metrics_range = current_dashboard_metrics_range(date_preset, since, until)
     for account in accounts:
         account_id = account.get("id")
-        result = fetch_real_metrics(account_id, persist_snapshot=False, live_dashboard=live_dashboard)
+        result = fetch_real_metrics(
+            account_id,
+            persist_snapshot=False,
+            live_dashboard=live_dashboard,
+            date_preset=selected_metrics_range["preset"],
+            since=selected_metrics_range.get("since", ""),
+            until=selected_metrics_range.get("until", ""),
+        )
         if result.get("ok"):
             rows = result.get("rows", 0)
             account_results.append({"id": account_id, "name": account.get("name") or account_id, "rows": rows})
@@ -2754,7 +2796,12 @@ def refresh_managed_real_metrics(reason="manual", live_dashboard=False):
             "source": "meta_graph",
             "source_label": "Meta Ads real data · multiple accounts",
             "account_id": managed.get("active_ad_account_id") or (accounts[0].get("id") if accounts else ""),
-            "date_preset": "today" if live_dashboard else "last_30d+today",
+            "date_preset": metrics_result.get("date_preset") or selected_metrics_range["preset"],
+            "metrics_range": metrics_result.get("metrics_range") or {
+                "preset": selected_metrics_range["preset"],
+                "since": selected_metrics_range.get("since", ""),
+                "until": selected_metrics_range.get("until", ""),
+            },
             "business_manager": managed.get("business_manager", {}),
             "accounts": account_results,
             "campaigns": campaigns,
@@ -2773,8 +2820,15 @@ def refresh_managed_real_metrics(reason="manual", live_dashboard=False):
     return {"ok": False, "saved": False, "reason": errors[0]["reason"] if errors else "missing_account", "message": message, "errors": errors}
 
 
-def refresh_real_metrics(account_id="", reason="manual", live_dashboard=False):
-    result = fetch_real_metrics(account_id, persist_snapshot=not live_dashboard, live_dashboard=live_dashboard)
+def refresh_real_metrics(account_id="", reason="manual", live_dashboard=False, date_preset=None, since="", until=""):
+    result = fetch_real_metrics(
+        account_id,
+        persist_snapshot=not live_dashboard,
+        live_dashboard=live_dashboard,
+        date_preset=date_preset,
+        since=since,
+        until=until,
+    )
     if result.get("ok"):
         save_metrics(result["metrics"])
         log_action("live_insights_pull", {"account_id": result.get("account_id"), "rows": result.get("rows"), "reason": reason}, "completed")
@@ -7169,6 +7223,8 @@ def empty_meta_metrics(reason="missing"):
         "timestamp": now_iso(),
         "source": reason,
         "source_label": "Sin datos reales de Meta",
+        "date_preset": "maximum+today",
+        "metrics_range": {"preset": "maximum", "since": "", "until": ""},
         "campaigns": [],
         "summary": {},
     }
@@ -7256,6 +7312,22 @@ def load_metrics():
         metrics = empty_meta_metrics("missing")
     metrics.setdefault("source", "cached")
     metrics.setdefault("source_label", "Cached dashboard data")
+    selected_range = metrics.get("metrics_range")
+    if not isinstance(selected_range, dict):
+        selected_range = {"preset": "maximum", "since": "", "until": ""}
+    try:
+        selected_range = normalize_insight_range(
+            selected_range.get("preset") or "maximum",
+            selected_range.get("since"),
+            selected_range.get("until"),
+        )
+    except ValueError:
+        selected_range = normalize_insight_range("maximum")
+    metrics["metrics_range"] = {
+        "preset": selected_range["preset"],
+        "since": selected_range.get("since", ""),
+        "until": selected_range.get("until", ""),
+    }
     raw_campaigns = [c for c in metrics.get("campaigns", []) if isinstance(c, dict)]
     visible_campaigns = raw_campaigns if metrics.get("source") == "demo" and demo_metrics_allowed else [c for c in raw_campaigns if campaign_is_dashboard_visible(c)]
     metrics["hidden_campaigns_count"] = max(0, len(raw_campaigns) - len(visible_campaigns))
@@ -7609,7 +7681,18 @@ def apply_action(payload):
     action = payload.get("action")
     if action == "refresh_insights":
         live_dashboard = str(payload.get("refresh_scope") or "").strip().lower() == "dashboard_live"
-        return refresh_managed_real_metrics(reason="dashboard_live" if live_dashboard else "dashboard_action", live_dashboard=live_dashboard)
+        selected = current_dashboard_metrics_range(
+            payload.get("date_preset") if "date_preset" in payload else None,
+            payload.get("since", ""),
+            payload.get("until", ""),
+        )
+        return refresh_managed_real_metrics(
+            reason="dashboard_live" if live_dashboard else "dashboard_action",
+            live_dashboard=live_dashboard,
+            date_preset=selected["preset"],
+            since=selected.get("since", ""),
+            until=selected.get("until", ""),
+        )
     metrics = load_metrics()
     campaign_id = payload.get("campaign_id")
     campaign = campaign_by_id(metrics, campaign_id)
@@ -10816,6 +10899,20 @@ HTML = r"""<!DOCTYPE html>
 <div class="zone-label" data-i18n="zone_work">Campaign workspace</div>
 <div id="tab-overview">
 <div class="page-title"><div><h2 data-i18n="control_center">Control Center</h2><p data-i18n="control_subtitle">Daily decisions, risk signals, and ad account health in one place.</p></div><div class="dashboard-toolbar"><div class="view-switcher" role="group" aria-label="Vistas del dashboard"><button class="view-chip active" type="button" data-view="control" data-action-code="setDashboardView('control')">Control</button><button class="view-chip" type="button" data-view="timeline" data-action-code="setDashboardView('timeline')">Timeline</button><button class="view-chip" type="button" data-view="analytics" data-action-code="setDashboardView('analytics')">Overview</button><button class="view-chip" type="button" data-view="idle" data-action-code="setDashboardView('idle')">Showcase</button></div><button class="btn ask-btn" data-action-code="openChat(t('draft_where_are_we'))" data-i18n="ask_manager">Ask manager</button><button class="btn primary hidden" id="real-data-refresh" data-action-code="refreshInsights()">Actualizar datos reales</button><div class="signal" id="data-source-signal">--</div><div class="signal" data-i18n="safe_mode">Safe mode active</div></div></div>
+<section class="metrics-range-bar" aria-labelledby="metrics-range-title">
+<div class="metrics-range-summary"><span id="metrics-range-title">Período de métricas</span><strong id="metrics-range-label">Desde siempre</strong></div>
+<div class="metrics-range-options" role="group" aria-label="Período de métricas">
+<button class="metrics-range-chip active" id="metrics-range-maximum" type="button" data-range="maximum" data-action-code="setMetricsRange('maximum')">Desde siempre</button>
+<button class="metrics-range-chip" id="metrics-range-today" type="button" data-range="today" data-action-code="setMetricsRange('today')">Hoy</button>
+<button class="metrics-range-chip" id="metrics-range-last-7d" type="button" data-range="last_7d" data-action-code="setMetricsRange('last_7d')">Últimos 7 días</button>
+<button class="metrics-range-chip" id="metrics-range-custom" type="button" data-range="custom" data-action-code="openCustomMetricsRange()">Personalizado</button>
+</div>
+<form class="metrics-custom-range hidden" id="metrics-custom-range" data-submit-code="applyCustomMetricsRange(event)">
+<label><span>Desde</span><input id="metrics-range-since" type="date" required></label>
+<label><span>Hasta</span><input id="metrics-range-until" type="date" required></label>
+<button class="btn primary" type="submit">Aplicar</button>
+</form>
+</section>
 <div class="dashboard-view" id="view-control">
 <div class="kpis" id="kpis"></div>
 <div class="campaign-grid" id="campaigns"></div>

@@ -5840,6 +5840,56 @@ class IntegrationTestSuite:
         finally:
             meta_insights.graph_rows = original_graph_rows
 
+    def test_dashboard_metrics_range_queries_meta_and_defaults_to_all_time(self):
+        """Dashboard periods must change the real Graph request, not a local slice."""
+        print("\nTesting Dashboard Meta Metrics Date Ranges...")
+
+        self.assert_true(meta_insights.normalize_insight_range()["preset"] == "maximum", "New dashboards default to Meta all-time metrics")
+        custom = meta_insights.normalize_insight_range("custom", "2026-07-01", "2026-07-12")
+        self.assert_true(custom["time_range"] == {"since": "2026-07-01", "until": "2026-07-12"}, "Custom dates normalize to an explicit Meta time_range")
+        trailing_week = meta_insights.normalize_insight_range("last_7d")
+        week_since = datetime.fromisoformat(trailing_week["since"]).date()
+        week_until = datetime.fromisoformat(trailing_week["until"]).date()
+        self.assert_true((week_until - week_since).days == 6, "Last seven days means today plus the preceding six days, without an eighth day")
+        try:
+            meta_insights.normalize_insight_range("custom", "2026-07-12", "2026-07-01")
+            self.assert_true(False, "Reversed custom dates should be rejected")
+        except ValueError:
+            self.assert_true(True, "Reversed custom dates are rejected before a Meta request")
+
+        original_graph_rows = meta_insights.graph_rows
+        requests = []
+
+        def fake_graph_rows(path, params, token, version, max_pages=5):
+            requests.append((path, dict(params)))
+            if path.endswith("/campaigns"):
+                return {"ok": True, "rows": [{"id": "camp_live", "name": "Live", "status": "ACTIVE", "effective_status": "ACTIVE"}]}
+            if path.endswith("/adsets") or path.endswith("/ads"):
+                return {"ok": True, "rows": []}
+            return {"ok": True, "rows": []}
+
+        try:
+            meta_insights.graph_rows = fake_graph_rows
+            snapshot = meta_insights.collect_meta_snapshot(
+                "act_1",
+                "token",
+                date_preset="custom",
+                time_range={"since": "2026-07-01", "until": "2026-07-12"},
+                insight_levels=("campaign",),
+                include_breakdowns=False,
+            )
+            insight_request = next(params for path, params in requests if path.endswith("/insights"))
+            self.assert_true("date_preset" not in insight_request and json.loads(insight_request["time_range"])["since"] == "2026-07-01", "Custom dashboard refresh sends time_range directly to Meta Graph")
+            self.assert_true(insight_request["time_increment"] == "all_days", "Historical dashboard totals use an efficient all-days aggregation")
+            self.assert_true(snapshot["metrics_range"]["preset"] == "custom" and snapshot["date_preset"] == "custom", "The selected custom period is returned for UI persistence")
+        finally:
+            meta_insights.graph_rows = original_graph_rows
+
+        dashboard_html = (ROOT_DIR / "dashboard" / "monitoring-dashboard.py").read_text(encoding="utf-8")
+        dashboard_js = (ROOT_DIR / "public" / "dashboard" / "dashboard.js").read_text(encoding="utf-8")
+        self.assert_true('id="metrics-range-maximum"' in dashboard_html and 'id="metrics-custom-range"' in dashboard_html, "Dashboard exposes all-time, today, seven-day and custom date controls")
+        self.assert_true("date_preset:selected.preset" in dashboard_js and "applyCustomMetricsRange" in dashboard_js, "Dashboard sends the selected period with every real-data refresh")
+
     def test_adaptive_campaign_metric_profiles_and_agent_override(self):
         """Dashboard KPIs follow the campaign objective and accept a durable agent override."""
         print("\nTesting Adaptive Campaign Metric Profiles...")
@@ -10090,6 +10140,7 @@ class IntegrationTestSuite:
             self.test_meta_snapshot_reconciles_empty_campaign_listing_from_live_children,
             self.test_meta_dashboard_hides_deleted_archived_and_local_plan_campaigns,
             self.test_meta_snapshot_combines_today_with_completed_history,
+            self.test_dashboard_metrics_range_queries_meta_and_defaults_to_all_time,
             self.test_adaptive_campaign_metric_profiles_and_agent_override,
             self.test_live_insights_normalize_into_dashboard_metrics,
             self.test_daily_reads_real_data_and_keeps_risky_pauses_as_proposals,

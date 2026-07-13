@@ -4,7 +4,7 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from local_store import now_iso, read_json, write_json
 from optimization_engine import PERFORMANCE_HISTORY_FILE, MAX_HISTORY_DAYS
@@ -42,6 +42,55 @@ HIDDEN_CAMPAIGN_STATUSES = {
     "blocked",
     "ready_for_approval",
 }
+INSIGHT_DATE_PRESETS = {"maximum", "today", "last_7d", "last_30d"}
+
+
+def normalize_insight_range(date_preset="maximum", since="", until=""):
+    """Validate the buyer-facing dashboard period before calling Meta.
+
+    ``maximum`` is the product default. Custom periods use Meta's explicit
+    ``time_range`` contract so the selected start/end dates affect the real
+    Graph request rather than filtering an already-truncated local cache.
+    """
+    raw_preset = str(date_preset or "maximum").strip().lower()
+    aliases = {
+        "all": "maximum",
+        "all_time": "maximum",
+        "lifetime": "maximum",
+        "last_7_days": "last_7d",
+        "custom_range": "custom",
+    }
+    preset = aliases.get(raw_preset, raw_preset)
+    if preset == "custom":
+        since_text = str(since or "").strip()
+        until_text = str(until or "").strip()
+        try:
+            since_date = date.fromisoformat(since_text)
+            until_date = date.fromisoformat(until_text)
+        except ValueError as exc:
+            raise ValueError("Custom insight dates must use YYYY-MM-DD.") from exc
+        if since_date > until_date:
+            raise ValueError("The insight start date cannot be after the end date.")
+        if until_date > date.today():
+            raise ValueError("The insight end date cannot be in the future.")
+        return {
+            "preset": "custom",
+            "since": since_text,
+            "until": until_text,
+            "time_range": {"since": since_text, "until": until_text},
+        }
+    if preset not in INSIGHT_DATE_PRESETS:
+        raise ValueError("Unsupported Meta insight date range.")
+    if preset == "last_7d":
+        until_date = date.today()
+        since_date = until_date - timedelta(days=6)
+        return {
+            "preset": preset,
+            "since": since_date.isoformat(),
+            "until": until_date.isoformat(),
+            "time_range": {"since": since_date.isoformat(), "until": until_date.isoformat()},
+        }
+    return {"preset": preset, "since": "", "until": "", "time_range": None}
 
 
 def campaign_is_dashboard_visible(campaign):
@@ -168,7 +217,16 @@ def normalize_insight_row(row, level):
     return item
 
 
-def fetch_insights(account_id, token, version="v24.0", date_preset="last_30d", level="campaign", time_increment=1, breakdowns=""):
+def fetch_insights(
+    account_id,
+    token,
+    version="v24.0",
+    date_preset="last_30d",
+    level="campaign",
+    time_increment="all_days",
+    breakdowns="",
+    time_range=None,
+):
     account = str(account_id or "").strip()
     if account and not account.startswith("act_"):
         account = f"act_{account}"
@@ -179,12 +237,15 @@ def fetch_insights(account_id, token, version="v24.0", date_preset="last_30d", l
     }.get(level, "campaign_id,campaign_name")
     params = {
         "level": level,
-        "date_preset": date_preset,
         "time_increment": time_increment,
         "fields": f"{identity_fields},date_start,date_stop,spend,impressions,reach,clicks,inline_link_clicks,frequency,actions,action_values",
         "action_report_time": "conversion",
         "limit": 500,
     }
+    if isinstance(time_range, dict) and time_range.get("since") and time_range.get("until"):
+        params["time_range"] = json.dumps({"since": time_range["since"], "until": time_range["until"]}, separators=(",", ":"))
+    else:
+        params["date_preset"] = date_preset
     if breakdowns:
         params["breakdowns"] = breakdowns
     result = graph_rows(f"/{account}/insights", params, token, version)
@@ -341,15 +402,63 @@ def merge_insight_rows(*collections):
     return list(merged.values())
 
 
+def insight_dimension_key(row):
+    return (
+        str(row.get("level") or ""), str(row.get("id") or ""),
+        str(row.get("publisher_platform") or ""), str(row.get("platform_position") or ""),
+        str(row.get("impression_device") or ""), str(row.get("device_platform") or ""),
+        str(row.get("country") or ""), str(row.get("region") or ""),
+        str(row.get("age") or ""), str(row.get("gender") or ""),
+    )
+
+
+def merge_historical_and_today_rows(historical, today):
+    """Merge today's totals without double-counting presets that include it."""
+    historical_rows = [row for row in historical or [] if isinstance(row, dict)]
+    merged_today = []
+    by_dimension = {}
+    for row in historical_rows:
+        by_dimension.setdefault(insight_dimension_key(row), []).append(row)
+    for row in today or []:
+        if not isinstance(row, dict):
+            continue
+        today_start = str(row.get("date_start") or "")
+        today_stop = str(row.get("date_stop") or today_start)
+        already_included = any(
+            str(candidate.get("date_start") or "") <= today_start
+            and str(candidate.get("date_stop") or "") >= today_stop
+            for candidate in by_dimension.get(insight_dimension_key(row), [])
+        )
+        if not already_included:
+            merged_today.append(row)
+    return merge_insight_rows(historical_rows, merged_today)
+
+
 def collect_meta_snapshot(
     account_id,
     token,
     version="v24.0",
     date_preset="last_30d",
+    time_range=None,
     known_campaign_ids=None,
     insight_levels=None,
     include_breakdowns=True,
 ):
+    if isinstance(time_range, dict):
+        validated_time_range = normalize_insight_range(
+            "custom",
+            time_range.get("since"),
+            time_range.get("until"),
+        )
+        requested_preset = str(date_preset or "custom").strip().lower()
+        range_config = {
+            **validated_time_range,
+            "preset": requested_preset if requested_preset in INSIGHT_DATE_PRESETS else "custom",
+        }
+    else:
+        range_config = normalize_insight_range(date_preset)
+    effective_preset = range_config["preset"]
+    effective_time_range = range_config.get("time_range")
     levels = {}
     unavailable = []
     requested_levels = tuple(insight_levels or ("campaign", "adset", "ad"))
@@ -357,9 +466,9 @@ def collect_meta_snapshot(
         if level not in requested_levels:
             levels[level] = []
             continue
-        result = fetch_insights(account_id, token, version, date_preset, level, 1)
-        today = fetch_insights(account_id, token, version, "today", level, 1) if date_preset != "today" else {"ok": True, "rows": []}
-        levels[level] = merge_insight_rows(result.get("rows", []), today.get("rows", []))
+        result = fetch_insights(account_id, token, version, effective_preset, level, "all_days", time_range=effective_time_range)
+        today = fetch_insights(account_id, token, version, "today", level, "all_days") if not effective_time_range and effective_preset != "today" else {"ok": True, "rows": []}
+        levels[level] = merge_historical_and_today_rows(result.get("rows", []), today.get("rows", []))
         if not result.get("ok"):
             unavailable.append({"view": level, "reason": result.get("error")})
         if not today.get("ok"):
@@ -372,9 +481,9 @@ def collect_meta_snapshot(
         "country": "country",
     } if include_breakdowns else {}
     for name, fields in breakdown_requests.items():
-        result = fetch_insights(account_id, token, version, date_preset, "ad", 1, fields)
-        today = fetch_insights(account_id, token, version, "today", "ad", 1, fields) if date_preset != "today" else {"ok": True, "rows": []}
-        breakdowns[name] = merge_insight_rows(result.get("rows", []), today.get("rows", []))
+        result = fetch_insights(account_id, token, version, effective_preset, "ad", "all_days", fields, effective_time_range)
+        today = fetch_insights(account_id, token, version, "today", "ad", "all_days", fields) if not effective_time_range and effective_preset != "today" else {"ok": True, "rows": []}
+        breakdowns[name] = merge_historical_and_today_rows(result.get("rows", []), today.get("rows", []))
         if not result.get("ok"):
             unavailable.append({"view": name, "reason": result.get("error")})
         if not today.get("ok"):
@@ -426,7 +535,17 @@ def collect_meta_snapshot(
     return {
         "generated_at": now_iso(),
         "account_id": str(account_id or ""),
-        "date_preset": f"{date_preset}+today" if date_preset != "today" else date_preset,
+        "date_preset": (
+            "custom" if effective_time_range and effective_preset == "custom"
+            else effective_preset if effective_time_range
+            else f"{effective_preset}+today" if effective_preset != "today"
+            else effective_preset
+        ),
+        "metrics_range": {
+            "preset": effective_preset,
+            "since": range_config.get("since", ""),
+            "until": range_config.get("until", ""),
+        },
         "levels": levels,
         "breakdowns": breakdowns,
         "campaign_statuses": status_by_id,
