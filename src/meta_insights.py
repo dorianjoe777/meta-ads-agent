@@ -32,6 +32,32 @@ FUNNEL_ACTIONS = {
     "app_install": {"app_install", "mobile_app_install", "omni_app_install"},
     "post_engagement": {"post_engagement", "page_engagement"},
 }
+HIDDEN_CAMPAIGN_STATUSES = {
+    "archived",
+    "deleted",
+    "planned",
+    "draft",
+    "pending",
+    "failed",
+    "blocked",
+    "ready_for_approval",
+}
+
+
+def campaign_is_dashboard_visible(campaign):
+    """Keep the operational dashboard aligned with Meta's current inventory.
+
+    Meta can still resolve deleted or archived campaign IDs for a long time.
+    They remain useful for an audit trail, but they must not be presented as
+    campaigns the buyer can currently manage in the main dashboard.
+    """
+    if not isinstance(campaign, dict) or not str(campaign.get("id") or campaign.get("campaign_id") or "").strip():
+        return False
+    configured = str(campaign.get("status") or "").strip().lower()
+    effective = str(campaign.get("effective_status") or "").strip().lower()
+    if configured in HIDDEN_CAMPAIGN_STATUSES or effective in HIDDEN_CAMPAIGN_STATUSES:
+        return False
+    return bool(configured or effective)
 
 
 def number(value, default=0.0):
@@ -392,6 +418,11 @@ def collect_meta_snapshot(
         if isinstance(row, dict) and row.get("id"):
             status_by_id[row["id"]] = row
             verified_direct.append(row["id"])
+    hidden_terminal_campaigns = [
+        campaign_id
+        for campaign_id, campaign in status_by_id.items()
+        if not campaign_is_dashboard_visible(campaign)
+    ]
     return {
         "generated_at": now_iso(),
         "account_id": str(account_id or ""),
@@ -406,15 +437,24 @@ def collect_meta_snapshot(
             "unavailable": unavailable,
             "source": "meta_graph_read_only",
             "direct_campaign_reconciliation": verified_direct,
+            "hidden_terminal_campaigns": hidden_terminal_campaigns,
         },
     }
 
 
 def aggregate_campaigns(snapshot):
-    status_by_id = snapshot.get("campaign_statuses") or {}
+    status_by_id = {
+        campaign_id: campaign
+        for campaign_id, campaign in (snapshot.get("campaign_statuses") or {}).items()
+        if campaign_is_dashboard_visible(campaign)
+    }
     totals = {}
     for row in (snapshot.get("levels") or {}).get("campaign", []):
         campaign_id = str(row.get("id") or row.get("campaign_id") or "")
+        # Insights are historical. A current campaign-status confirmation is
+        # required before a row can appear as a manageable campaign.
+        if campaign_id not in status_by_id:
+            continue
         item = totals.setdefault(campaign_id, {
             "id": campaign_id, "campaign_id": campaign_id, "name": row.get("name") or campaign_id,
             "spend": 0.0, "impressions": 0, "reach": 0, "clicks": 0, "conversions": 0.0, "revenue": 0.0,
@@ -459,8 +499,16 @@ def inventory_rows(mapping):
 
 
 def campaign_inventory_tree(snapshot):
-    campaigns = {item["id"]: {**item, "adsets": [], "ads": []} for item in inventory_rows(snapshot.get("campaign_statuses")) if item.get("id")}
-    adsets = {item["id"]: {**item, "ads": []} for item in inventory_rows(snapshot.get("adset_statuses")) if item.get("id")}
+    campaigns = {
+        item["id"]: {**item, "adsets": [], "ads": []}
+        for item in inventory_rows(snapshot.get("campaign_statuses"))
+        if item.get("id") and campaign_is_dashboard_visible(item)
+    }
+    adsets = {
+        item["id"]: {**item, "ads": []}
+        for item in inventory_rows(snapshot.get("adset_statuses"))
+        if item.get("id") and item.get("campaign_id") in campaigns
+    }
     for ad in inventory_rows(snapshot.get("ad_statuses")):
         adset_id = ad.get("adset_id")
         campaign_id = ad.get("campaign_id")

@@ -121,7 +121,7 @@ from hermes_gateway import (
 from hermes_gateway import telegram_settings
 from license import activate_license, default_device_id, license_status, mark_license_install_state, normalize_license_entitlements, validate_license_key
 from local_store import now_iso, read_json, write_json, write_private_json
-from meta_insights import aggregate_campaigns as aggregate_meta_campaigns, campaign_inventory_tree as meta_campaign_inventory_tree, collect_meta_snapshot, save_meta_snapshot
+from meta_insights import aggregate_campaigns as aggregate_meta_campaigns, campaign_inventory_tree as meta_campaign_inventory_tree, campaign_is_dashboard_visible, collect_meta_snapshot, save_meta_snapshot
 from meta_upload import recent_uploads, stage_upload
 from optimization_engine import (
     anomaly_diagnostics,
@@ -2678,8 +2678,17 @@ def fetch_real_metrics(account_id="", persist_snapshot=True, live_dashboard=Fals
         include_breakdowns=not live_dashboard,
     )
     campaigns = aggregate_meta_campaigns(snapshot)
-    adsets = list((snapshot.get("adset_statuses") or {}).values())
-    ads = list((snapshot.get("ad_statuses") or {}).values())
+    visible_campaign_ids = {str(campaign.get("id") or "") for campaign in campaigns}
+    adsets = [
+        item for item in (snapshot.get("adset_statuses") or {}).values()
+        if str(item.get("campaign_id") or "") in visible_campaign_ids
+    ]
+    visible_adset_ids = {str(item.get("id") or "") for item in adsets}
+    ads = [
+        item for item in (snapshot.get("ad_statuses") or {}).values()
+        if str(item.get("campaign_id") or "") in visible_campaign_ids
+        and (not item.get("adset_id") or str(item.get("adset_id")) in visible_adset_ids)
+    ]
     campaign_tree = meta_campaign_inventory_tree(snapshot)
     if not campaigns and snapshot.get("data_quality", {}).get("unavailable"):
         first_error = snapshot["data_quality"]["unavailable"][0].get("reason") or {}
@@ -7247,7 +7256,17 @@ def load_metrics():
         metrics = empty_meta_metrics("missing")
     metrics.setdefault("source", "cached")
     metrics.setdefault("source_label", "Cached dashboard data")
-    metrics["campaigns"] = [enrich_campaign({**c, "data_source": c.get("data_source") or metrics.get("source", "")}) for c in metrics.get("campaigns", [])]
+    raw_campaigns = [c for c in metrics.get("campaigns", []) if isinstance(c, dict)]
+    visible_campaigns = raw_campaigns if metrics.get("source") == "demo" and demo_metrics_allowed else [c for c in raw_campaigns if campaign_is_dashboard_visible(c)]
+    metrics["hidden_campaigns_count"] = max(0, len(raw_campaigns) - len(visible_campaigns))
+    metrics["campaigns"] = [enrich_campaign({**c, "data_source": c.get("data_source") or metrics.get("source", "")}) for c in visible_campaigns]
+    visible_campaign_ids = {str(c.get("id") or c.get("campaign_id") or "") for c in metrics["campaigns"]}
+    if "adsets" in metrics:
+        metrics["adsets"] = [item for item in metrics.get("adsets", []) if str(item.get("campaign_id") or "") in visible_campaign_ids]
+    if "ads" in metrics:
+        metrics["ads"] = [item for item in metrics.get("ads", []) if str(item.get("campaign_id") or "") in visible_campaign_ids]
+    if "campaign_tree" in metrics:
+        metrics["campaign_tree"] = [item for item in metrics.get("campaign_tree", []) if str(item.get("id") or item.get("campaign_id") or "") in visible_campaign_ids]
     metrics["summary"] = build_summary(metrics["campaigns"])
     return apply_campaign_metric_profiles(metrics)
 

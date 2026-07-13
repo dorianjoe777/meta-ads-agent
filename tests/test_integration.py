@@ -5761,6 +5761,40 @@ class IntegrationTestSuite:
             meta_insights.graph_rows = original_graph_rows
             meta_insights.graph_get = original_graph_get
 
+    def test_meta_dashboard_hides_deleted_archived_and_local_plan_campaigns(self):
+        """Only current Meta campaigns may appear in the operational dashboard."""
+        print("\nTesting Meta Dashboard Current Campaign Filter...")
+
+        snapshot = {
+            "generated_at": "2026-07-13T02:21:27+00:00",
+            "levels": {
+                "campaign": [
+                    {"id": "camp_active", "name": "Campaña real", "spend": 5.37, "impressions": 756},
+                    {"id": "camp_deleted", "name": "Intento viejo", "spend": 0, "impressions": 0},
+                    {"id": "camp_archived", "name": "Intento archivado", "spend": 0, "impressions": 0},
+                    {"id": "camp_history_only", "name": "Histórica sin confirmación", "spend": 10, "impressions": 100},
+                ]
+            },
+            "campaign_statuses": {
+                "camp_active": {"id": "camp_active", "name": "Campaña real", "status": "active", "effective_status": "active"},
+                "camp_deleted": {"id": "camp_deleted", "name": "Intento viejo", "status": "deleted", "effective_status": "deleted"},
+                "camp_archived": {"id": "camp_archived", "name": "Intento archivado", "status": "archived", "effective_status": "archived"},
+            },
+            "adset_statuses": {
+                "adset_active": {"id": "adset_active", "campaign_id": "camp_active", "status": "active"},
+                "adset_deleted": {"id": "adset_deleted", "campaign_id": "camp_deleted", "status": "deleted"},
+            },
+            "ad_statuses": {
+                "ad_active": {"id": "ad_active", "campaign_id": "camp_active", "adset_id": "adset_active", "status": "active"},
+                "ad_deleted": {"id": "ad_deleted", "campaign_id": "camp_deleted", "adset_id": "adset_deleted", "status": "deleted"},
+            },
+        }
+        campaigns = meta_insights.aggregate_campaigns(snapshot)
+        tree = meta_insights.campaign_inventory_tree(snapshot)
+        self.assert_true([item["id"] for item in campaigns] == ["camp_active"], "Deleted, archived, and history-only campaigns are excluded from dashboard metrics")
+        self.assert_true(len(tree) == 1 and tree[0]["id"] == "camp_active" and tree[0]["adsets"][0]["id"] == "adset_active", "Campaign tree excludes children of hidden terminal campaigns")
+        self.assert_true(meta_insights.campaign_is_dashboard_visible({"id": "plan_1", "status": "planned"}) is False, "Local plan states can never masquerade as live Meta campaigns")
+
     def test_meta_snapshot_combines_today_with_completed_history(self):
         """Current-day delivery remains visible when Meta's historical preset excludes today."""
         print("\nTesting Meta Current-Day Insights Merge...")
@@ -10054,6 +10088,7 @@ class IntegrationTestSuite:
             self.test_meta_asset_discovery_saves_connected_assets,
             self.test_meta_snapshot_collects_adset_signal_configuration,
             self.test_meta_snapshot_reconciles_empty_campaign_listing_from_live_children,
+            self.test_meta_dashboard_hides_deleted_archived_and_local_plan_campaigns,
             self.test_meta_snapshot_combines_today_with_completed_history,
             self.test_adaptive_campaign_metric_profiles_and_agent_override,
             self.test_live_insights_normalize_into_dashboard_metrics,
