@@ -43,19 +43,19 @@ const ASSETS = [
 
 const improvements = [
   {
-    title: "Siempre orientado por Meta en vivo",
-    body: "El agente revisa silenciosamente campañas, conjuntos y anuncios reales antes de cada conversación, aunque estés hablando de otro tema.",
-    impact: "Precisión"
+    title: "Contenido orgánico listo cada día",
+    body: "Admira puede acordar pilares, ofertas, frecuencia y hora para preparar posts de marca con Image 2 y enviarlos por Telegram.",
+    impact: "Contenido"
   },
   {
-    title: "Sin confundir borradores con campañas",
-    body: "Planes, memorias y aprobaciones antiguas ya no desplazan el estado actual de Ads Manager ni aparecen como trabajo activo.",
-    impact: "Claridad"
+    title: "Revisión exacta antes de publicar",
+    body: "Cada imagen y texto queda como un borrador identificable: puedes aprobar, pedir cambios o descartarlo sin publicar nada por accidente.",
+    impact: "Control"
   },
   {
-    title: "Lectura más profunda del rendimiento",
-    body: "El agente puede consultar métricas por campaña, conjunto y anuncio, además de desgloses detallados cuando necesita investigar mejor.",
-    impact: "Análisis"
+    title: "Publicación directa en Facebook",
+    body: "Con Publicación directa conectada, tu aprobación publica la pieza visible en tu Página y guarda el ID real para continuar la estrategia.",
+    impact: "Ahorro de tiempo"
   }
 ];
 

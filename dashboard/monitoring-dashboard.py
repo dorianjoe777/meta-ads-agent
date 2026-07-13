@@ -213,6 +213,7 @@ BRANDING_ONBOARDING_FILE = DATA_DIR / "Branding onboarding.md"
 ADS_ONBOARDING_FILE = DATA_DIR / "Ads campaign onboarding.md"
 CONTENT_ASSET_LIBRARY_FILE = DATA_DIR / "content_asset_library.json"
 CONTENT_STRATEGY_FILE = DATA_DIR / "content_strategy.md"
+ORGANIC_CONTENT_POSTS_FILE = DATA_DIR / "organic_content_posts.json"
 DURABLE_CONVERSATION_MEMORY_FILE = DATA_DIR / "durable_conversation_memory.json"
 CAMPAIGN_METRIC_PROFILES_FILE = DATA_DIR / "campaign_metric_profiles.json"
 INDIVIDUAL_BINDING_FILE = DATA_DIR / "individual_business_binding.json"
@@ -298,6 +299,9 @@ BUSINESS_DATA_FILES = [
     "shopify_sync_state.json",
     "optimization_research.json",
     "business_profile.json",
+    "content_asset_library.json",
+    "content_strategy.md",
+    "organic_content_posts.json",
     "durable_conversation_memory.json",
     "managed_ad_accounts.json",
     "Onboarding questions.md",
@@ -318,6 +322,11 @@ BUSINESS_ENV_KEYS = [
     "TELEGRAM_BOT_TOKEN",
     "TELEGRAM_CHAT_ID",
     "TELEGRAM_LANGUAGE",
+    "DAILY_SOCIAL_CONTENT_ENABLED",
+    "DAILY_SOCIAL_CONTENT_DECISION",
+    "DAILY_SOCIAL_CONTENT_TIME",
+    "DAILY_SOCIAL_CONTENT_POSTS_PER_DAY",
+    "DAILY_SOCIAL_CONTENT_INTERVAL_DAYS",
     "SHOPIFY_SHOP_DOMAIN",
     "SHOPIFY_ADMIN_API_TOKEN",
     "SHOPIFY_API_VERSION",
@@ -1633,6 +1642,11 @@ def snapshot_workspace(space_id):
         "TELEGRAM_BOT_TOKEN": config.telegram_bot_token,
         "TELEGRAM_CHAT_ID": config.telegram_chat_id,
         "TELEGRAM_LANGUAGE": telegram_settings(config)["language"],
+        "DAILY_SOCIAL_CONTENT_ENABLED": "true" if getattr(config, "daily_social_content_enabled", False) else "false",
+        "DAILY_SOCIAL_CONTENT_DECISION": getattr(config, "daily_social_content_decision", ""),
+        "DAILY_SOCIAL_CONTENT_TIME": getattr(config, "daily_social_content_time", "10:00"),
+        "DAILY_SOCIAL_CONTENT_POSTS_PER_DAY": str(getattr(config, "daily_social_content_posts_per_day", 1)),
+        "DAILY_SOCIAL_CONTENT_INTERVAL_DAYS": str(getattr(config, "daily_social_content_interval_days", 1)),
         "SHOPIFY_SHOP_DOMAIN": getattr(config, "shopify_shop_domain", ""),
         "SHOPIFY_ADMIN_API_TOKEN": getattr(config, "shopify_admin_token", ""),
         "SHOPIFY_API_VERSION": getattr(config, "shopify_api_version", "2026-04"),
@@ -1666,6 +1680,11 @@ def restore_workspace(space_id):
         "TELEGRAM_BOT_TOKEN": "",
         "TELEGRAM_CHAT_ID": "",
         "TELEGRAM_LANGUAGE": "es",
+        "DAILY_SOCIAL_CONTENT_ENABLED": "false",
+        "DAILY_SOCIAL_CONTENT_DECISION": "",
+        "DAILY_SOCIAL_CONTENT_TIME": "10:00",
+        "DAILY_SOCIAL_CONTENT_POSTS_PER_DAY": "1",
+        "DAILY_SOCIAL_CONTENT_INTERVAL_DAYS": "1",
         "SHOPIFY_SHOP_DOMAIN": "",
         "SHOPIFY_ADMIN_API_TOKEN": "",
         "SHOPIFY_API_VERSION": "2026-04",
@@ -1841,9 +1860,50 @@ def _truthy_payload_value(payload, key, default=False):
     return str(value).strip().lower() in {"1", "true", "yes", "si", "sí", "on", "enabled", "activar", "activo"}
 
 
+def meaningful_content_strategy_text(payload=None):
+    payload = payload or {}
+    incoming = str(payload.get("content_strategy") or payload.get("strategy") or "").strip()
+    if incoming:
+        return incoming
+    try:
+        stored = CONTENT_STRATEGY_FILE.read_text(encoding="utf-8") if CONTENT_STRATEGY_FILE.exists() else ""
+    except (OSError, UnicodeDecodeError):
+        stored = ""
+    lines = [
+        line.strip()
+        for line in stored.splitlines()
+        if line.strip()
+        and not line.lstrip().startswith("#")
+        and "Buyer-approved or agent-proposed direction" not in line
+    ]
+    return "\n".join(lines).strip()
+
+
+def organic_content_readiness(payload=None):
+    payload = payload or {}
+    branding = branding_creative_readiness(require_product=True, payload=payload)
+    missing = list(branding.get("missing") or [])
+    strategy = meaningful_content_strategy_text(payload)
+    if not strategy:
+        missing.append(
+            {
+                "key": "content_strategy",
+                "question": "Antes de programar los posts, definamos los pilares, ofertas/temas, frecuencia, CTA y si se publicarán en Facebook después de tu aprobación.",
+            }
+        )
+    return {
+        "ready": not missing,
+        "missing": missing,
+        "next_question": missing[0].get("question", "") if missing else "",
+        "branding_ready": bool(branding.get("ready")),
+        "strategy_ready": bool(strategy),
+        "strategy": strategy,
+    }
+
+
 def save_daily_social_content_settings(payload):
     payload = payload or {}
-    enabled = _truthy_payload_value(payload, "enabled", _truthy_payload_value(payload, "daily_social_content_enabled", False))
+    requested_enabled = _truthy_payload_value(payload, "enabled", _truthy_payload_value(payload, "daily_social_content_enabled", False))
     raw_time = str(payload.get("time") or payload.get("daily_social_content_time") or "10:00").strip()
     normalized_time = normalize_daily_time(raw_time, default="")
     if not normalized_time or normalized_time != raw_time:
@@ -1858,9 +1918,12 @@ def save_daily_social_content_settings(payload):
     except (TypeError, ValueError):
         interval_days = 1
     interval_days = max(1, min(30, interval_days))
+    readiness = organic_content_readiness(payload) if requested_enabled else {"ready": True, "missing": [], "next_question": "", "strategy_ready": False, "branding_ready": False}
+    enabled = bool(requested_enabled and readiness.get("ready"))
+    decision = "enabled" if enabled else ("accepted_pending_setup" if requested_enabled else "declined")
     updates = {
         "DAILY_SOCIAL_CONTENT_ENABLED": "true" if enabled else "false",
-        "DAILY_SOCIAL_CONTENT_DECISION": "enabled" if enabled else "declined",
+        "DAILY_SOCIAL_CONTENT_DECISION": decision,
         "DAILY_SOCIAL_CONTENT_TIME": normalized_time,
         "DAILY_SOCIAL_CONTENT_POSTS_PER_DAY": str(posts_per_day),
         "DAILY_SOCIAL_CONTENT_INTERVAL_DAYS": str(interval_days),
@@ -1880,18 +1943,106 @@ def save_daily_social_content_settings(payload):
     cron = ensure_daily_social_content_cron(config)
     log_action(
         "daily_social_content_settings_update",
-        {"enabled": enabled, "time": normalized_time, "posts_per_day": posts_per_day, "interval_days": interval_days, "cron_configured": bool(cron.get("configured"))},
-        "completed" if (not enabled or cron.get("configured")) else "blocked",
+        {
+            "requested_enabled": requested_enabled,
+            "enabled": enabled,
+            "decision": decision,
+            "time": normalized_time,
+            "posts_per_day": posts_per_day,
+            "interval_days": interval_days,
+            "cron_configured": bool(cron.get("configured")),
+            "missing": [item.get("key") for item in readiness.get("missing", []) if isinstance(item, dict)],
+        },
+        "completed" if (not requested_enabled or cron.get("configured")) else "blocked",
     )
     return {
         "saved": True,
+        "requested_enabled": requested_enabled,
         "enabled": enabled,
+        "decision": decision,
+        "pending_setup": bool(requested_enabled and not enabled),
+        "readiness": readiness,
         "time": normalized_time,
         "timezone": config.daily_brief_timezone,
         "posts_per_day": posts_per_day,
         "interval_days": interval_days,
         "gateway": gateway,
         "cron": cron,
+    }
+
+
+def stage_organic_social_post(payload):
+    payload = dict(payload or {})
+    caption = str(payload.get("caption") or payload.get("message") or payload.get("copy") or "").strip()
+    if not caption:
+        raise ValueError("Antes de pedir aprobación, necesito el texto/caption exacto que se publicará.")
+    image_paths = safe_image_paths(payload)
+    image_path = image_paths[0] if image_paths else ""
+    image_url = str(payload.get("image_url") or "").strip()
+    if image_url:
+        parsed = urlparse(image_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            image_url = ""
+    if not image_path and not image_url:
+        raise ValueError("Antes de pedir aprobación, necesito la imagen final generada o una URL pública de imagen.")
+    identity = business_identity(payload)
+    page_id = str(payload.get("page_id") or payload.get("facebook_page_id") or identity.get("page_id") or "").strip()
+    status = publishing_status(load_config(), {"page_id": page_id})
+    missing = []
+    if not page_id:
+        missing.append("Facebook Page")
+    if not status.get("token_set"):
+        missing.append("Publicación directa")
+    if missing:
+        return {
+            "ok": False,
+            "blocked": True,
+            "reason": "social_publishing_not_ready",
+            "missing": missing,
+            "reply": "La pieza está lista, pero antes de publicarla conecta la Página y Publicación directa en Configuración.",
+        }
+    link = str(payload.get("link") or payload.get("landing_url") or "").strip()
+    cta = str(payload.get("cta") or "LEARN_MORE").strip().upper().replace(" ", "_")
+    fingerprint_source = json.dumps(
+        {"page_id": page_id, "caption": caption, "image_path": image_path, "image_url": image_url, "link": link, "cta": cta},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    draft_id = hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest()[:20]
+    approval_id = f"approval_social_{draft_id}"
+    approval_payload = {
+        "approval_id": approval_id,
+        "draft_id": draft_id,
+        "name": str(payload.get("name") or payload.get("title") or "Post orgánico para Facebook").strip(),
+        "page_id": page_id,
+        "destination": "facebook",
+        "message": caption,
+        "image_path": image_path,
+        "image_url": image_url,
+        "link": link,
+        "cta": cta,
+        "pillar": str(payload.get("pillar") or "").strip(),
+        "objective": str(payload.get("objective") or "").strip(),
+        "why_it_fits": str(payload.get("why_it_fits") or payload.get("rationale") or "").strip(),
+        "requested": "Publicar este post visible en la Página de Facebook después de aprobación explícita.",
+    }
+    approval = add_pending("publish_social_post", approval_payload)
+    log_action(
+        "organic_social_post_stage",
+        {"approval_id": approval_id, "draft_id": draft_id, "page_id": page_id, "pillar": approval_payload["pillar"]},
+        "pending_approval",
+    )
+    return {
+        "ok": True,
+        "executed": False,
+        "staged": True,
+        "approval_required": True,
+        "approval": approval,
+        "approval_id": approval_id,
+        "draft_id": draft_id,
+        "caption": caption,
+        "image_path": image_path,
+        "reply": f"Post listo para revisar. Si te gusta, aprueba {approval_id} y lo publicaré en Facebook; si quieres cambios, dímelos y no publicaré esta versión.",
     }
 
 
@@ -7686,7 +7837,11 @@ def log_action(action_type, payload, status="completed"):
 
 def add_pending(action_type, payload):
     pending = read_json(PENDING_FILE, [])
-    record = {"id": f"approval_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}", "type": action_type, "status": "pending", "payload": payload, "created_at": now_iso()}
+    approval_id = str((payload or {}).get("approval_id") or f"approval_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}").strip()
+    existing = next((item for item in pending if isinstance(item, dict) and item.get("id") == approval_id and item.get("status", "pending") == "pending"), None)
+    if existing:
+        return existing
+    record = {"id": approval_id, "type": action_type, "status": "pending", "payload": payload, "created_at": now_iso()}
     pending.insert(0, record)
     write_json(PENDING_FILE, pending[:100])
     log_action(action_type, payload, "pending_approval")
@@ -10247,6 +10402,9 @@ def handle_save_daily_social_content_settings_tool(arguments, chat_payload, tool
             )
             if not result.get("cron", {}).get("configured"):
                 message += " Guardé la preferencia, pero el horario todavía necesita que Telegram/Hermes quede completo."
+        elif result.get("pending_setup"):
+            next_question = (result.get("readiness") or {}).get("next_question") or "Primero terminemos marca y estrategia de contenido."
+            message = f"Perfecto. Guardé que sí quieres contenido recurrente, pero todavía no activé el horario: {next_question}"
         else:
             message = "Listo. Dejé desactivados los posts diarios automáticos."
     else:
@@ -10254,9 +10412,47 @@ def handle_save_daily_social_content_settings_tool(arguments, chat_payload, tool
             message = f"Done. Daily posts are enabled: I will prepare {result.get('posts_per_day', 1)} piece(s) per day at {result.get('time')} for your review/approval."
             if not result.get("cron", {}).get("configured"):
                 message += " I saved the preference, but the schedule still needs Telegram/Hermes to be ready."
+        elif result.get("pending_setup"):
+            next_question = (result.get("readiness") or {}).get("next_question") or "First, let's finish the brand and content strategy."
+            message = f"Great. I saved that you want recurring content, but I did not enable the schedule yet: {next_question}"
         else:
             message = "Done. Daily automatic posts are disabled."
     return agent_action_result(tool, True, message, result=result)
+
+
+def handle_stage_organic_social_post_tool(arguments, chat_payload, tool):
+    result = stage_organic_social_post(arguments)
+    if result.get("blocked"):
+        return agent_action_result(
+            tool,
+            False,
+            result.get("reply") or "La pieza quedó lista, pero falta conectar Publicación directa antes de poder aprobar su publicación.",
+            blocked=True,
+            reason=result.get("reason") or "social_publishing_not_ready",
+            result=result,
+        )
+    approval = result.get("approval") or {}
+    if chat_lang(chat_payload) == "es":
+        message = (
+            "Listo: dejé esta pieza como borrador, sin publicarla. "
+            f"Si apruebas {approval.get('id')}, publicaré exactamente esta imagen y este texto en Facebook; si pides cambios, esta versión no se publica."
+        )
+    else:
+        message = (
+            "Done: I saved this piece as a draft without publishing it. "
+            f"If you approve {approval.get('id')}, I will publish exactly this image and caption to Facebook; if you request changes, this version stays unpublished."
+        )
+    return agent_action_result(
+        tool,
+        False,
+        message,
+        staged=True,
+        approval_required=True,
+        approval_id=approval.get("id"),
+        approval=approval,
+        result=approval,
+        draft=result,
+    )
 
 
 def handle_save_content_asset_tool(arguments, chat_payload, tool):
@@ -10633,6 +10829,7 @@ AGENT_TOOL_HANDLERS = {
     "init_brand_guides": handle_init_brand_guides_tool,
     "save_agent_preferences": handle_save_agent_preferences_tool,
     "save_daily_social_content_settings": handle_save_daily_social_content_settings_tool,
+    "stage_organic_social_post": handle_stage_organic_social_post_tool,
     "save_content_asset": handle_save_content_asset_tool,
     "record_verified_signal": handle_record_verified_signal_tool,
     "get_verified_signal_summary": handle_get_verified_signal_summary_tool,

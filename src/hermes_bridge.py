@@ -503,6 +503,7 @@ For each turn, read the buyer message normally. If you need live account context
 - `memory/campaign_metric_profiles.json`: dashboard KPI priorities chosen for each real campaign; audit these against the live objective/event and update them with the product tool when needed.
 - `memory/content_asset_library.json`: buyer-shared logos, photos, videos, references, offers, and other assets categorized by intended use.
 - `memory/content_strategy.md`: organic content strategy, pillars, cadence, and daily-post preferences when present.
+- `memory/organic_content_posts.json`: exact organic drafts that were approved and really published, including their Meta post IDs. Pending approvals are still not ambient continuity.
 - `memory/durable_conversation_memory.json`: confirmed decisions, preferences, blockers, next steps, and workflow agreements that did not fit a narrower specialist store.
 - `brand_guides/Offer map.md`: parent-brand/child-offer index. Use it to avoid mixing products/services/offers under the same brand.
 - `brand_guides/`: brand, product, ad brief, and creative reference memory.
@@ -559,6 +560,7 @@ Use these MCP tools for real product actions instead of inventing results, runni
 - `mcp_admira_save_ad_brief`
 - `mcp_admira_save_creative_references`
 - `mcp_admira_save_daily_social_content_settings`
+- `mcp_admira_stage_organic_social_post`
 - `mcp_admira_save_content_asset`
 - `mcp_admira_set_campaign_metric_priorities`
 
@@ -572,7 +574,7 @@ Dashboard chat and Telegram are buyer-facing product surfaces, not terminals. Ne
 
 When the buyer shares a public URL and asks you to review, understand, use, or create ads from it, first use `mcp_admira_fetch_public_asset` for buyer-shared assets/pages, especially Google Drive videos/images or creative references. It safely inspects public pages and downloads public image/video assets to the product workspace. If it returns a video asset, use its returned `video_url`/`direct_url` when staging a video creative. If it returns `video_frame_paths`/`video_preview_frame_paths`, use those extracted image frames with vision to understand the MP4/MOV visually; do not try to inspect the raw video file directly and do not tell the buyer you cannot review video merely because a low-level viewer only accepts images. If frame extraction fails, explain that precise limitation and ask for public access, a direct upload, or 2-4 key screenshots. Use the available `web`/`browser` retrieval tools as a secondary path for general research. Do not immediately claim you cannot access links. If access fails because the link is private, requires login, is too large, times out, or resolves to a private/local network, explain that specific limitation in simple words and ask the buyer to make it public or upload the file directly in Telegram.
 
-Brand, product, ad-brief, creative-reference, and content-asset files are backend-owned memory. The `brand_guides/` and `memory/content_*` files inside the Hermes workspace are read-only context snapshots, not the source of truth for production readiness. Never manually create, edit, or write `brand_guides/*.md`, `/app/brand_guides/*.md`, or workspace brand-guide files to unblock creative production. Use `mcp_admira_save_brand_memory`, `mcp_admira_save_product_memory`, `mcp_admira_save_ad_brief`, `mcp_admira_save_creative_references`, `mcp_admira_save_daily_social_content_settings`, and `mcp_admira_save_content_asset`. If a save tool rejects natural wording, retry once with canonical fields such as `brand_name`, `offer`, `colors`, `visual_style`, `tone`, `logo_notes`, `references`, `asset_notes`, `name`, `product_guide`, `variation_count`, `concurrent_variations`, `formats`, `creative_hypothesis`, `category`, `purpose`, `file_path`, `url`, `enabled`, `time`, and `posts_per_day`.
+Brand, product, ad-brief, creative-reference, and content-asset files are backend-owned memory. The `brand_guides/` and `memory/content_*` files inside the Hermes workspace are read-only context snapshots, not the source of truth for production readiness. Never manually create, edit, or write `brand_guides/*.md`, `/app/brand_guides/*.md`, or workspace brand-guide files to unblock creative production. Use `mcp_admira_save_brand_memory`, `mcp_admira_save_product_memory`, `mcp_admira_save_ad_brief`, `mcp_admira_save_creative_references`, `mcp_admira_save_daily_social_content_settings`, and `mcp_admira_save_content_asset`. After generating an exact recurring organic piece, use `mcp_admira_stage_organic_social_post`; only its exact approval may publish the visible Facebook post. If a save tool rejects natural wording, retry once with canonical fields such as `brand_name`, `offer`, `colors`, `visual_style`, `tone`, `logo_notes`, `references`, `asset_notes`, `name`, `product_guide`, `variation_count`, `concurrent_variations`, `formats`, `creative_hypothesis`, `category`, `purpose`, `file_path`, `url`, `enabled`, `time`, and `posts_per_day`.
 
 Parent-brand / child-offer rule: do not keep re-saving every new product/service/promotion into onboarding or the general brand guide. Save parent-brand identity with `mcp_admira_save_brand_memory`. Save each concrete offer as a separate child with `mcp_admira_save_product_memory`, and save ad-test/campaign specifics with `mcp_admira_save_ad_brief`. The current request or selected child offer wins for promise, audience, CTA, price, benefit, and conversion intent; the parent brand supplies style, tone, logo, colors, and restrictions.
 
@@ -689,6 +691,7 @@ def business_memory_files():
         "creative_references": BRAND_GUIDES_DIR / "creative_references.md",
         "content_asset_library": DATA_DIR / "content_asset_library.json",
         "content_strategy": DATA_DIR / "content_strategy.md",
+        "organic_content_posts": DATA_DIR / "organic_content_posts.json",
         "durable_conversation_memory": DATA_DIR / "durable_conversation_memory.json",
         "campaign_metric_profiles": DATA_DIR / "campaign_metric_profiles.json",
     }
@@ -722,6 +725,7 @@ def business_memory_context():
         "creative_references": read_text(files["creative_references"]),
         "content_asset_library": scrub_memory(redact_payload(read_json(files["content_asset_library"], {"items": []}))),
         "content_strategy": read_text(files["content_strategy"]),
+        "organic_content_posts": scrub_memory(redact_payload(read_json(files["organic_content_posts"], {"items": []}))),
         "durable_conversation_memory": scrub_memory(redact_payload(read_json(files["durable_conversation_memory"], {"items": []}))),
         "campaign_metric_profiles": scrub_memory(redact_payload(read_json(files["campaign_metric_profiles"], {"campaigns": {}}))),
         "brand_guides": {
@@ -1310,6 +1314,7 @@ Read `skills/README.md`, then the relevant `skills/*/SKILL.md` file before actin
     written.append(write_workspace_file("memory/campaign_metric_profiles.json", memory.get("campaign_metric_profiles", {"campaigns": {}})))
     written.append(write_workspace_file("memory/content_asset_library.json", memory.get("content_asset_library", {"items": []})))
     written.append(write_workspace_file("memory/content_strategy.md", memory.get("content_strategy", "")))
+    written.append(write_workspace_file("memory/organic_content_posts.json", memory.get("organic_content_posts", {"items": []})))
     written.append(write_workspace_file("memory/durable_conversation_memory.json", memory.get("durable_conversation_memory", {"items": []})))
     written.append(write_workspace_file("memory/optimization_state.json", memory["optimization_state"]))
     written.append(write_workspace_file("memory/business_outcomes.json", memory["business_outcomes"]))

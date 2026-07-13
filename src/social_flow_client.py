@@ -676,13 +676,25 @@ class SocialFlowClient:
             ensure_ascii=False,
         )
 
-    def create_linked_image_page_post(self, page_id, page_token, message, link, image_id, cta, unpublished_type, message_destination=""):
+    def create_linked_image_page_post(
+        self,
+        page_id,
+        page_token,
+        message,
+        link,
+        image_id,
+        cta,
+        unpublished_type,
+        message_destination="",
+        published=False,
+    ):
         fields = {
             "access_token": page_token,
-            "published": "false",
-            "unpublished_content_type": unpublished_type,
+            "published": "true" if published else "false",
             "attached_media": json.dumps([{"media_fbid": image_id}], ensure_ascii=False),
         }
+        if not published and unpublished_type:
+            fields["unpublished_content_type"] = unpublished_type
         if link:
             fields["link"] = link
         if message:
@@ -806,12 +818,16 @@ class SocialFlowClient:
                 if message_destination and not link:
                     link = self.default_message_destination_link(message_destination, page_id)
                 unpublished_type = self.flag(args, "--unpublished-content-type", "ADS_POST") or "ADS_POST"
+                published = str(self.flag(args, "--published", "false") or "false").strip().lower() in {"1", "true", "yes", "si", "sí", "on"}
+                published_value = "true" if published else "false"
                 is_video_post = bool(video_path or video_url)
                 if video_path:
                     if not Path(video_path).exists():
                         return self.graph_local_record(record, "local/meta-page-post", {"ok": False, "error": "video_file_missing", "path": video_path}, ok=False, status=1)
                     endpoint = f"{page_id}/videos"
-                    fields = {"access_token": page_token, "published": "false", "unpublished_content_type": unpublished_type}
+                    fields = {"access_token": page_token, "published": published_value}
+                    if not published and unpublished_type:
+                        fields["unpublished_content_type"] = unpublished_type
                     if message:
                         fields["description"] = message
                     call_to_action = self.page_post_call_to_action(cta, link, message_destination)
@@ -820,7 +836,9 @@ class SocialFlowClient:
                     result = self.post_graph_multipart(endpoint, fields, {"source": video_path})
                 elif video_url:
                     endpoint = f"{page_id}/videos"
-                    fields = {"access_token": page_token, "published": "false", "unpublished_content_type": unpublished_type, "file_url": video_url}
+                    fields = {"access_token": page_token, "published": published_value, "file_url": video_url}
+                    if not published and unpublished_type:
+                        fields["unpublished_content_type"] = unpublished_type
                     if message:
                         fields["description"] = message
                     call_to_action = self.page_post_call_to_action(cta, link, message_destination)
@@ -831,7 +849,13 @@ class SocialFlowClient:
                     if not Path(image_path).exists():
                         return self.graph_local_record(record, "local/meta-page-post", {"ok": False, "error": "image_file_missing", "path": image_path}, ok=False, status=1)
                     endpoint = f"{page_id}/photos"
-                    fields = {"access_token": page_token, "published": "false", "unpublished_content_type": unpublished_type}
+                    # When a visible post also includes a destination link, upload the
+                    # photo as an unpublished media object first. The following /feed
+                    # request is the single buyer-visible post and attaches this image.
+                    photo_published = published and not (link or message_destination)
+                    fields = {"access_token": page_token, "published": "true" if photo_published else "false"}
+                    if not published and unpublished_type:
+                        fields["unpublished_content_type"] = unpublished_type
                     if message:
                         fields["caption"] = message
                     photo_result = self.post_graph_multipart(endpoint, fields, {"source": image_path})
@@ -839,12 +863,15 @@ class SocialFlowClient:
                     image_id = str(photo_body.get("id") or "").strip()
                     if (link or message_destination) and photo_result.get("ok") and image_id:
                         endpoint = f"{page_id}/feed"
-                        result = self.create_linked_image_page_post(page_id, page_token, message, link, image_id, cta, unpublished_type, message_destination)
+                        result = self.create_linked_image_page_post(page_id, page_token, message, link, image_id, cta, unpublished_type, message_destination, published=published)
                     else:
                         result = photo_result
                 elif image_url:
                     endpoint = f"{page_id}/photos"
-                    fields = {"access_token": page_token, "published": "false", "unpublished_content_type": unpublished_type, "url": image_url}
+                    photo_published = published and not (link or message_destination)
+                    fields = {"access_token": page_token, "published": "true" if photo_published else "false", "url": image_url}
+                    if not published and unpublished_type:
+                        fields["unpublished_content_type"] = unpublished_type
                     if message:
                         fields["caption"] = message
                     photo_result = self.post_graph_form(endpoint, fields)
@@ -852,12 +879,14 @@ class SocialFlowClient:
                     image_id = str(photo_body.get("id") or "").strip()
                     if (link or message_destination) and photo_result.get("ok") and image_id:
                         endpoint = f"{page_id}/feed"
-                        result = self.create_linked_image_page_post(page_id, page_token, message, link, image_id, cta, unpublished_type, message_destination)
+                        result = self.create_linked_image_page_post(page_id, page_token, message, link, image_id, cta, unpublished_type, message_destination, published=published)
                     else:
                         result = photo_result
                 else:
                     endpoint = f"{page_id}/feed"
-                    fields = {"access_token": page_token, "published": "false", "unpublished_content_type": unpublished_type}
+                    fields = {"access_token": page_token, "published": published_value}
+                    if not published and unpublished_type:
+                        fields["unpublished_content_type"] = unpublished_type
                     if message:
                         fields["message"] = message
                     if link:
@@ -868,7 +897,7 @@ class SocialFlowClient:
                     result = self.post_graph_form(endpoint, fields)
                 body = result.get("body") if isinstance(result.get("body"), dict) else {}
                 if result.get("ok"):
-                    if is_video_post:
+                    if is_video_post and not published:
                         video_id = str(body.get("id") or body.get("video_id") or "").strip()
                         details = self.page_video_ad_post_details(page_id, video_id, page_token)
                         object_story_id = str(details.get("object_story_id") or "").strip()
@@ -1386,7 +1415,21 @@ class SocialFlowClient:
         args.extend(["--json", "--yes"])
         return self.run(args, live_required=True, mutation=True, approved=approved)
 
-    def create_page_post(self, page_id, message="", link="", image_path="", image_url="", video_path="", video_url="", unpublished_content_type="ADS_POST", cta="LEARN_MORE", message_destination="", approved=False):
+    def create_page_post(
+        self,
+        page_id,
+        message="",
+        link="",
+        image_path="",
+        image_url="",
+        video_path="",
+        video_url="",
+        unpublished_content_type="ADS_POST",
+        cta="LEARN_MORE",
+        message_destination="",
+        published=False,
+        approved=False,
+    ):
         args = ["marketing", "create-page-post", "--page-id", page_id]
         if message:
             args.extend(["--message", message])
@@ -1406,6 +1449,8 @@ class SocialFlowClient:
             args.extend(["--video-url", video_url])
         if unpublished_content_type:
             args.extend(["--unpublished-content-type", unpublished_content_type])
+        if published:
+            args.extend(["--published", "true"])
         args.extend(["--json", "--yes"])
         return self.run(args, live_required=True, mutation=True, approved=approved)
 

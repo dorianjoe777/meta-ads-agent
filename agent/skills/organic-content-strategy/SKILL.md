@@ -9,7 +9,7 @@ Use this skill when the buyer asks for social posts, daily content, content cale
 
 ## Optional onboarding offer
 
-After business basics and brand/logo/assets are reasonably clear, ask once:
+After business basics and brand/logo/assets are reasonably clear, ask once only when no durable decision exists:
 
 “¿Quieres que también te prepare posts con tu marca, diarios o cada X días, para revisar y aprobar?”
 
@@ -17,7 +17,7 @@ Explain it simply: Admira can use the saved brand, logo, photos, videos, referen
 
 If brand/logo/colors/references/assets are not clear, do not jump into a content calendar. Start or continue `memory/Branding onboarding.md` first: logo decision, colors, style references, tone, real photos/videos/assets, and font/style direction.
 
-If yes, ask the preferred time, rough quantity, and cadence, defaulting to 1 post at 10:00 every 1 day in the buyer timezone. Save with `mcp_admira_save_daily_social_content_settings`:
+If yes, save the acceptance immediately so resets do not cause the same offer again. Then finish the brand and content strategy, ask the preferred time, rough quantity, and cadence, defaulting to 1 post at 10:00 every 1 day in the buyer timezone. Save again with `mcp_admira_save_daily_social_content_settings` once the strategy is concrete:
 
 ```json
 {
@@ -30,6 +30,8 @@ If yes, ask the preferred time, rough quantity, and cadence, defaulting to 1 pos
 ```
 
 If no, save the decision with `enabled: false` so future resets do not re-ask immediately.
+
+The product will not start the recurring cron until both branding and the content strategy are ready. An early yes is stored as `accepted_pending_setup`; continue with the next missing branding/strategy question instead of pretending the schedule is active.
 
 ## Buyer-shared files/assets
 
@@ -97,8 +99,14 @@ For final daily post visuals, use `mcp_admira_codex_image_generate` through `cre
 Daily content is draft-first:
 
 - generate or propose;
-- send media/caption;
-- ask approve/change/publish;
-- publish or schedule only through protected product tools and explicit buyer approval.
+- send media/caption directly in Telegram;
+- call `mcp_admira_stage_organic_social_post` once for each exact final image/caption pair;
+- show its exact approval ID and ask approve/change/discard;
+- if the buyer approves that exact piece, call `mcp_admira_approve_action` with its approval ID;
+- publish only through that protected approval. Never call a raw Page-post action or claim publication before the approval result contains the real Meta post ID.
+
+If the buyer requests changes, generate/revise the piece and stage a new exact draft. The previous draft remains unpublished and must not be silently reused.
+
+The first supported direct destination is the connected Facebook Page. Do not promise Instagram direct publishing unless a product tool explicitly confirms it.
 
 Present the feature as “posts listos para aprobar” or “tu calendario de contenido diario”, not as a technical cron job.

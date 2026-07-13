@@ -859,7 +859,7 @@ Objetivo: dejar {count} {plural} visual(es) listo(s) para que el comprador los r
 Antes de crear nada:
 1. Lee `skills/core-agent-behavior/SKILL.md`, `skills/session-continuity/SKILL.md`, `skills/brand-and-assets/SKILL.md`, `skills/organic-content-strategy/SKILL.md`, `skills/creative-strategy/SKILL.md` y `skills/creative-production-codex-image/SKILL.md`.
 2. Lee `memory/content_asset_library.json`, `memory/content_strategy.md`, `brand_guides/general_branding.md`, `brand_guides/creative_references.md`, productos/briefs y memoria reciente.
-3. Si no existe una estrategia de contenido clara, propón primero 3 pilares simples de contenido por marca/oferta y pide confirmación; no generes una tanda grande sin estrategia.
+3. Confirma que `memory/content_strategy.md` contiene una estrategia aceptada y que marca/logo/colores/tono/assets ya están claros. Si no, no improvises una tanda: continúa el onboarding que falta y vuelve a guardar la configuración con `mcp_admira_save_daily_social_content_settings` cuando quede lista.
 
 Cuando haya marca suficiente:
 - Usa Codex/Image mediante `mcp_admira_codex_image_generate`.
@@ -872,7 +872,10 @@ Cuando haya marca suficiente:
 Entrega en Telegram:
 - Adjunta/envía las imágenes generadas; no pegues rutas internas.
 - Incluye copy/caption sugerido, objetivo del post, pilar de contenido y por qué encaja.
-- Pregunta si aprueba, quiere cambios o quiere publicar/programar después con Publicación directa si está conectada.
+- Después de cada imagen final, llama `mcp_admira_stage_organic_social_post` con su ruta final segura, caption exacto, pilar, objetivo y la Página guardada. Esa herramienta debe devolver una aprobación exacta; no inventes un ID.
+- Presenta tres decisiones simples: aprobar y publicar, pedir cambios o descartar. Incluye el ID exacto devuelto para que, si hay varias piezas, se sepa cuál aprobó.
+- Si el comprador aprueba una pieza exacta, llama `mcp_admira_approve_action` con ese approval_id. Solo esa aprobación puede publicar el post visible en Facebook.
+- Si Publicación directa no está conectada, envía igualmente la pieza para revisión y explica el paso de conexión; nunca afirmes que quedó publicada.
 """
 
 
@@ -909,6 +912,15 @@ def _parse_state_datetime(value):
 
 
 def ensure_post_install_organic_intro_cron(config):
+    decision = str(getattr(config, "daily_social_content_decision", "") or "").strip().lower()
+    if decision in {"enabled", "declined", "accepted_pending_setup"}:
+        return {
+            "configured": False,
+            "needed": False,
+            "exists": False,
+            "state": decision,
+            "detail": "La decisión sobre contenido orgánico ya fue guardada; no se repetirá la invitación.",
+        }
     status = telegram_settings(config)
     if not (status["enabled"] and status["bot_configured"] and status["chat_id"]):
         return {"configured": False, "needed": False, "detail": "Telegram no está completo todavía."}
@@ -1082,7 +1094,31 @@ def ensure_weekly_research_cron(config):
 
 def ensure_daily_social_content_cron(config):
     if not bool(getattr(config, "daily_social_content_enabled", False)):
-        return {"configured": False, "needed": False, "detail": "La generación diaria de posts está desactivada."}
+        hermes_cli = shutil.which(getattr(config, "hermes_cli", "hermes") or "hermes")
+        if not hermes_cli:
+            return {"configured": False, "needed": False, "detail": "La generación diaria de posts está desactivada."}
+        files = write_gateway_files(config)
+        env = hermes_environment(config)
+        env["HERMES_HOME"] = files["hermes_home"]
+        name = "Admira IA - posts diarios"
+        try:
+            listed = subprocess.run([hermes_cli, "cron", "list"], cwd=files["workspace"], env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20, check=False)
+            output = (listed.stdout or "") + (listed.stderr or "")
+            existing = _cron_job(output, name)
+            if existing and existing.get("id"):
+                removed = subprocess.run([hermes_cli, "cron", "remove", existing["id"]], cwd=files["workspace"], env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20, check=False)
+                return {
+                    "configured": False,
+                    "needed": False,
+                    "removed": removed.returncode == 0,
+                    "name": name,
+                    "job_id": existing["id"],
+                    "detail": "La generación recurrente de posts está desactivada y su horario fue eliminado." if removed.returncode == 0 else "La preferencia está desactivada, pero no pude eliminar el horario anterior.",
+                    **files,
+                }
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {"configured": False, "needed": False, "detail": "La generación diaria de posts está desactivada.", "error": str(exc), **files}
+        return {"configured": False, "needed": False, "detail": "La generación diaria de posts está desactivada.", **files}
     status = telegram_settings(config)
     if not (status["enabled"] and status["bot_configured"] and status["chat_id"]):
         return {"configured": False, "needed": True, "detail": "Telegram no está completo todavía."}

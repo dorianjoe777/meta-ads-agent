@@ -56,6 +56,7 @@ AD_CONFIG_FILE = ROOT_DIR / "ad-config.json"
 METRICS_FILE = DATA_DIR / "metrics.json"
 ACTIONS_FILE = DATA_DIR / "actions.json"
 PENDING_FILE = DATA_DIR / "pending_approvals.json"
+ORGANIC_CONTENT_POSTS_FILE = DATA_DIR / "organic_content_posts.json"
 FATIGUE_LOG = OUTPUT_DIR / "fatigue-log.md"
 
 def money(value):
@@ -265,6 +266,8 @@ def command_for_pending(item):
         return ["create_lead_form", payload.get("path")]
     if item.get("type") == "creative_upload":
         return ["creative_upload", payload.get("payload_path")]
+    if item.get("type") == "publish_social_post":
+        return ["publish_social_post", payload]
     return None
 
 
@@ -294,6 +297,93 @@ def social_body_from_result(result):
     except (TypeError, json.JSONDecodeError):
         body = {}
     return body if isinstance(body, dict) else {}
+
+
+def published_social_post_for_approval(approval_id):
+    ledger = read_json(ORGANIC_CONTENT_POSTS_FILE, {"items": []})
+    items = ledger.get("items", []) if isinstance(ledger, dict) else []
+    return next(
+        (
+            item
+            for item in items
+            if isinstance(item, dict)
+            and item.get("approval_id") == approval_id
+            and item.get("status") == "published"
+            and item.get("post_id")
+        ),
+        None,
+    )
+
+
+def record_social_post_publication(payload, result):
+    ledger = read_json(ORGANIC_CONTENT_POSTS_FILE, {"items": [], "updated_at": ""})
+    if not isinstance(ledger, dict):
+        ledger = {"items": [], "updated_at": ""}
+    items = [item for item in ledger.get("items", []) if isinstance(item, dict)]
+    approval_id = str(payload.get("approval_id") or "").strip()
+    record = {
+        "approval_id": approval_id,
+        "draft_id": str(payload.get("draft_id") or "").strip(),
+        "name": str(payload.get("name") or "Post orgánico").strip(),
+        "page_id": str(payload.get("page_id") or "").strip(),
+        "post_id": str(result.get("post_id") or "").strip(),
+        "pillar": str(payload.get("pillar") or "").strip(),
+        "objective": str(payload.get("objective") or "").strip(),
+        "caption": str(payload.get("message") or payload.get("caption") or "").strip()[:4000],
+        "image_path": str(payload.get("image_path") or "").strip(),
+        "image_url": str(payload.get("image_url") or "").strip(),
+        "status": "published" if result.get("ok") else "failed",
+        "published_at": now_iso() if result.get("ok") else "",
+        "updated_at": now_iso(),
+    }
+    items = [item for item in items if item.get("approval_id") != approval_id]
+    items.insert(0, record)
+    write_json(ORGANIC_CONTENT_POSTS_FILE, {"items": items[:250], "updated_at": now_iso()})
+    return record
+
+
+def publish_approved_social_post(payload, client):
+    approval_id = str(payload.get("approval_id") or "").strip()
+    previous = published_social_post_for_approval(approval_id) if approval_id else None
+    if previous:
+        return {
+            "ok": True,
+            "executed": True,
+            "idempotent": True,
+            "post_id": previous.get("post_id"),
+            "page_id": previous.get("page_id"),
+            "message": "Este post ya había sido publicado con esta aprobación.",
+        }
+    result = client.create_page_post(
+        str(payload.get("page_id") or "").strip(),
+        message=str(payload.get("message") or payload.get("caption") or "").strip(),
+        link=str(payload.get("link") or "").strip(),
+        image_path=str(payload.get("image_path") or "").strip(),
+        image_url=str(payload.get("image_url") or "").strip(),
+        unpublished_content_type="",
+        cta=str(payload.get("cta") or "LEARN_MORE").strip(),
+        published=True,
+        approved=True,
+    )
+    body = social_body_from_result(result)
+    ok = bool(result.get("executed") and result.get("returncode") == 0)
+    publication = {
+        "ok": ok,
+        "executed": ok,
+        "connector": result.get("connector") or "graph_api",
+        "post_id": body.get("post_id") or body.get("id") or "",
+        "page_id": body.get("page_id") or payload.get("page_id") or "",
+        "page_name": body.get("page_name") or "",
+        "provider_result": result,
+    }
+    record_social_post_publication(payload, publication)
+    if ok and payload.get("image_path"):
+        mark_asset_files_retained(
+            [payload.get("image_path")],
+            reason="organic_social_post_published",
+            meta={"post_id": publication.get("post_id"), "page_id": publication.get("page_id")},
+        )
+    return publication
 
 
 def result_debug_text(result):
@@ -1318,6 +1408,8 @@ def execute_pending(item, client):
         result = execute_lead_form_creation(command[1], client, approved=True)
     elif command[0] == "creative_upload":
         result = execute_upload_payload(command[1], approved=True)
+    elif command[0] == "publish_social_post":
+        result = publish_approved_social_post(command[1], client)
     else:
         result = {"ok": False, "error": "Unsupported command"}
     return result

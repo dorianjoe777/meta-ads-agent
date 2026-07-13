@@ -25,7 +25,7 @@ These are the capabilities the agent may discuss or request through the product.
 - Video website completion: Meta does not support creating empty ads without creatives. For video ads that should be finalized in Ads Manager, use `manual_creative_completion: true` to create campaign/ad set paused only, or `create_placeholder_ad: true` with `placeholder_ad_count` and `placeholder_ad_names` to create paused ads with a temporary static placeholder, copy, CTA, URL, and names already filled from the real creative concepts. If no provisional image exists, the backend may create a plain temporary placeholder. The buyer must replace the placeholder with the video and review previews before activation.
 - Partial campaign cleanup: if paused campaign creation fails after Admira creates Meta objects, the backend should roll back the incomplete campaign when it is safe. For older or manual cleanup, use `mcp_admira_delete_campaign` only with an exact campaign ID and buyer approval.
 - Scheduled activation: when the buyer authorizes activation of an exact ready campaign at a future date/time, use `mcp_admira_schedule_campaign_activation`. Resolve the numeric Meta campaign ID first and pass explicit spend authorization, creative readiness, timezone/date-time and budget snapshot. This is a deterministic one-shot action without model inference; never use a generic reasoning cron or a local campaign draft ID for scheduled spend.
-- Daily organic content: when the buyer opts in, save the schedule with `mcp_admira_save_daily_social_content_settings`. The daily job prepares Image 2 post drafts, captions, and content-pillar notes for approval; it never auto-publishes unless a later protected publishing action is approved.
+- Daily organic content: when the buyer opts in, save the decision/schedule with `mcp_admira_save_daily_social_content_settings`. The backend only enables the recurring job after branding and a concrete content strategy are ready. The daily job prepares Image 2 post drafts and captions, then calls `mcp_admira_stage_organic_social_post` for each exact piece. It never auto-publishes; `mcp_admira_approve_action` on that exact draft publishes the visible Facebook Page post.
 - Content asset library: save buyer-shared files, photos, videos, links, logo uses, references, testimonials, offers, and “do not use” restrictions with `mcp_admira_save_content_asset`. Categorize assets by purpose so future daily posts, creatives, and strategy reuse the right material without asking again.
 - Direct publishing token rule: it is okay to reuse the same Business/System User, but the saved publishing token must be generated while selecting the second Live publishing app. Do not imply that the first ads token can “also use” the second app just because assets were assigned; Meta tokens are issued for the selected app and permissions.
 - Approval queue: records actions that should be reviewed before execution.
@@ -47,6 +47,7 @@ These may mutate Meta Ads state and must respect backend gates:
 - Set budget
 - Upload image
 - Create unpublished/native Page post for direct publishing
+- Publish one exact approved organic post visibly on the connected Facebook Page
 - Create creative
 - Create ad
 

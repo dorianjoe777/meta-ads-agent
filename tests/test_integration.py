@@ -2530,7 +2530,7 @@ class IntegrationTestSuite:
             self.assert_true("Meta Ad Library" in branding_text and "not private CPA, ROAS, or conversions" in branding_text, "Branding skill supports evidence-labeled competitor creative research without claiming public conversion data")
             self.assert_true("ElevenLabs" in branding_text and "photorealism" in branding_text and "reference_image_paths" in branding_text, "Branding skill covers UGC guidance, real-world photorealism, and uploaded references")
             self.assert_true("pixel-level accurate" in brand_assets_text and "Image 2 is a production tool" in creative_strategy_text, "New brand/creative strategy skills split exact logo assets from creative portfolio strategy")
-            self.assert_true("mcp_admira_save_daily_social_content_settings" in organic_content_text and "mcp_admira_save_content_asset" in organic_content_text and "daily_social_post" in organic_content_text, "Organic content skill teaches opt-in daily posts, asset categorization, and Image 2 post production")
+            self.assert_true("mcp_admira_save_daily_social_content_settings" in organic_content_text and "mcp_admira_stage_organic_social_post" in organic_content_text and "mcp_admira_save_content_asset" in organic_content_text and "daily_social_post" in organic_content_text, "Organic content skill teaches opt-in daily posts, exact approval drafts, asset categorization, and Image 2 post production")
             self.assert_true("likely placements" in branding_text and "vertical Reels version" in campaign_text and "Expert Configuration Posture" in campaign_text, "Skills teach proactive expert placement strategy instead of rigid placement defaults")
             self.assert_true("mcp_admira_preflight_campaign" in campaign_text and "object_story_spec" in campaign_text and "custom_audiences" in campaign_text, "Campaign skill teaches preflight and expert campaign controls")
             self.assert_true("three most important success metrics" in campaign_text and "success_metrics" in campaign_text and "mcp_admira_save_ads_onboarding" in agents_text, "Hermes workspace teaches campaign scorecards and exposes ads onboarding memory")
@@ -2546,7 +2546,7 @@ class IntegrationTestSuite:
             self.assert_true((workspace_path / "memory" / "Branding onboarding.md").exists() and (workspace_path / "brand_guides" / "Offer map.md").exists(), "Hermes workspace includes separate branding onboarding and offer-map memory files")
             self.assert_true("child offer" in agents_text and "Offer map" in agents_text and "active child offer" in core_skill.read_text(encoding="utf-8"), "Hermes rules teach parent-brand versus child-offer separation")
             self.assert_true("interval_days" in organic_content_text and "cada X días" in organic_content_text, "Organic content skill supports daily or every-X-days cadence")
-            self.assert_true((workspace_path / "memory" / "content_asset_library.json").exists() and (workspace_path / "memory" / "content_strategy.md").exists(), "Hermes workspace includes durable organic content memory files")
+            self.assert_true((workspace_path / "memory" / "content_asset_library.json").exists() and (workspace_path / "memory" / "content_strategy.md").exists() and (workspace_path / "memory" / "organic_content_posts.json").exists(), "Hermes workspace includes durable organic content strategy, asset, and real-publication memory files")
             self.assert_true((workspace_path / "skills" / "README.md").exists(), "Hermes workspace includes a product skill index")
         finally:
             hermes_bridge.HERMES_WORKSPACE_DIR = original_workspace
@@ -2680,6 +2680,7 @@ class IntegrationTestSuite:
             )
             ads_onboarding = admira_tool_bridge.call_tool("mcp_admira_save_ads_onboarding", {"success_metrics": ["ROAS", "cost per purchase", "cost per initiate checkout"]})
             daily_content = admira_tool_bridge.call_tool("mcp_admira_save_daily_social_content_settings", {"enabled": True, "time": "10:00", "posts_per_day": 1})
+            staged_social_post = admira_tool_bridge.call_tool("mcp_admira_stage_organic_social_post", {"page_id": "page_1", "caption": "Post aprobado", "image_path": str(generated_image)})
             content_asset = admira_tool_bridge.call_tool("mcp_admira_save_content_asset", {"category": "location", "purpose": "usar como fondo real del local"})
             durable_memory = admira_tool_bridge.call_tool("mcp_admira_save_durable_memory", {"category": "decision", "scope": "campaign", "summary": "Usar LATAM"})
             scheduled_activation = admira_tool_bridge.call_tool("mcp_admira_schedule_campaign_activation", {"campaign_id": "120250293867690096", "scheduled_at": "2026-07-13T07:00:00-05:00", "buyer_authorized": True, "creative_ready_confirmed": True})
@@ -2705,6 +2706,7 @@ class IntegrationTestSuite:
             self.assert_true(staged_campaign["product_tool"] == "create_campaign_stack" and staged_campaign_call[0]["arguments"]["creative_image_path"] == str(generated_image.resolve()), "Tool bridge resolves safe campaign creative aliases before staging")
             self.assert_true(ads_onboarding["product_tool"] == "save_ads_onboarding" and "save_ads_onboarding" in called_tools, "Tool bridge maps ads onboarding memory so Hermes can persist campaign KPIs")
             self.assert_true(daily_content["product_tool"] == "save_daily_social_content_settings" and "save_daily_social_content_settings" in called_tools, "Tool bridge maps daily organic content settings to the dashboard handler")
+            self.assert_true(staged_social_post["product_tool"] == "stage_organic_social_post" and "stage_organic_social_post" in called_tools, "Tool bridge maps each exact organic image/caption into a protected publication draft")
             self.assert_true(content_asset["product_tool"] == "save_content_asset" and "save_content_asset" in called_tools, "Tool bridge maps buyer-shared content assets to the dashboard handler")
             self.assert_true(durable_memory["product_tool"] == "save_durable_memory" and "save_durable_memory" in called_tools, "Tool bridge maps confirmed fallback decisions to durable product memory")
             self.assert_true(scheduled_activation["product_tool"] == "schedule_campaign_activation" and "schedule_campaign_activation" in called_tools, "Tool bridge maps exact future campaign activation to the deterministic scheduler")
@@ -2736,7 +2738,7 @@ class IntegrationTestSuite:
             tool_names = [tool["name"] for tool in captured[1]["result"]["tools"]]
             call_text = captured[2]["result"]["content"][0]["text"]
             self.assert_true(captured[0]["result"]["serverInfo"]["name"] == "admira", "MCP server initializes as Admira")
-            self.assert_true("codex_image_generate" in tool_names and "stage_campaign" in tool_names and "schedule_campaign_activation" in tool_names and "stage_lead_form" in tool_names and "list_lead_forms" in tool_names and "approve_action" in tool_names and "review_signal_quality" in tool_names and "preflight_campaign" in tool_names and "fetch_public_asset" in tool_names and "record_verified_signal" in tool_names and "save_ads_onboarding" in tool_names and "save_daily_social_content_settings" in tool_names and "save_content_asset" in tool_names and "save_durable_memory" in tool_names, "MCP server lists product tools for Hermes")
+            self.assert_true("codex_image_generate" in tool_names and "stage_campaign" in tool_names and "schedule_campaign_activation" in tool_names and "stage_lead_form" in tool_names and "list_lead_forms" in tool_names and "approve_action" in tool_names and "review_signal_quality" in tool_names and "preflight_campaign" in tool_names and "fetch_public_asset" in tool_names and "record_verified_signal" in tool_names and "save_ads_onboarding" in tool_names and "save_daily_social_content_settings" in tool_names and "stage_organic_social_post" in tool_names and "save_content_asset" in tool_names and "save_durable_memory" in tool_names, "MCP server lists product tools for Hermes")
             self.assert_true('"tool": "admira_codex_image_generate"' in call_text and '"request": "imagen"' in call_text, "MCP server calls the product bridge with Admira-prefixed tool names")
         finally:
             admira_mcp_server.write_message = original_write
@@ -3251,8 +3253,21 @@ class IntegrationTestSuite:
             social_command, social_env = next((command, env) for command, env in social_calls if command[:3] == ["/usr/local/bin/hermes", "cron", "create"])
             social_prompt = social_command[-1]
             self.assert_true(social_created["configured"] and social_created["schedule"] == "15 10 * * *" and social_created["posts_per_day"] == 2, "Hermes creates the optional daily social content cron at the buyer's chosen time")
-            self.assert_true("Admira IA - posts diarios" in social_command and "telegram:12345" in social_command and "mcp_admira_codex_image_generate" in social_prompt and "memory/content_asset_library.json" in social_prompt and "pixel-level accurate" in social_prompt, "Daily social content cron uses Image 2 with brand assets and direct media delivery")
+            self.assert_true("Admira IA - posts diarios" in social_command and "telegram:12345" in social_command and "mcp_admira_codex_image_generate" in social_prompt and "mcp_admira_stage_organic_social_post" in social_prompt and "mcp_admira_approve_action" in social_prompt and "memory/content_asset_library.json" in social_prompt and "pixel-level accurate" in social_prompt, "Daily social content cron uses Image 2, direct media delivery, exact approval drafts, and protected publishing")
             self.assert_true(social_env.get("HERMES_TIMEZONE") == "America/Bogota" and social_env.get("TZ") == "America/Bogota", "Daily social content cron inherits the buyer timezone")
+            removal_calls = []
+            FakeConfig.daily_social_content_enabled = False
+
+            def fake_social_removal_run(command, **kwargs):
+                removal_calls.append(command)
+                if command[:3] == ["/usr/local/bin/hermes", "cron", "list"]:
+                    return Completed(stdout="""  feedbeef1234 [active]\n    Name:      Admira IA - posts diarios\n    Schedule:  15 10 * * *\n    Deliver:   telegram:12345\n""")
+                return Completed(stdout="removed")
+
+            hermes_gateway.subprocess.run = fake_social_removal_run
+            social_removed = hermes_gateway.ensure_daily_social_content_cron(FakeConfig())
+            self.assert_true(social_removed.get("removed") is True and ["/usr/local/bin/hermes", "cron", "remove", "feedbeef1234"] in removal_calls, "Disabling organic content removes an existing recurring job instead of letting it keep generating")
+            FakeConfig.daily_social_content_enabled = True
 
             intro_calls = []
 
@@ -3275,6 +3290,10 @@ class IntegrationTestSuite:
             self.assert_true(2.9 * 3600 <= delta_seconds <= 3.1 * 3600 and intro_state.get("scheduled") is True, "Post-install organic invitation is scheduled about three hours after first setup and marked scheduled")
             self.assert_true("Branding onboarding" in intro_prompt and "cada X días" in intro_prompt and intro_env.get("HERMES_TIMEZONE") == "America/Bogota", "Post-install organic invitation asks for branding first and content cadence in buyer timezone")
             self.assert_true(duplicate_intro.get("needed") is False and not [command for command, _env in intro_calls if command[:3] == ["/usr/local/bin/hermes", "cron", "create"]][1:], "Post-install organic invitation is not scheduled twice once state is marked")
+            FakeConfig.daily_social_content_decision = "declined"
+            calls_before_decision_check = len(intro_calls)
+            decided_intro = hermes_gateway.ensure_post_install_organic_intro_cron(FakeConfig())
+            self.assert_true(decided_intro.get("needed") is False and decided_intro.get("state") == "declined" and len(intro_calls) == calls_before_decision_check, "A saved yes/no organic-content decision prevents the one-time invitation from asking again")
 
             hermes_gateway.subprocess.run = lambda *args, **kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired(args[0], 20))
             failed = hermes_gateway.ensure_daily_brief_cron(FakeConfig())
@@ -7161,6 +7180,126 @@ class IntegrationTestSuite:
             dashboard.require_cloud_license = original["require_cloud_license"]
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_organic_content_opt_in_stages_and_publishes_only_after_approval(self):
+        """Test organic content is gated by readiness and exact approval publishes one visible post."""
+        print("\nTesting Organic Content Opt-in, Draft Approval, And Publishing...")
+
+        dashboard = load_dashboard_module()
+        test_dir = ROOT_DIR / "output" / "test-organic-content-approval"
+        image_path = test_dir / "daily-post.png"
+        original = {
+            "env_file": dashboard.ENV_FILE,
+            "content_strategy": dashboard.CONTENT_STRATEGY_FILE,
+            "pending": dashboard.PENDING_FILE,
+            "actions": dashboard.ACTIONS_FILE,
+            "load_config": dashboard.load_config,
+            "start_gateway": dashboard.start_hermes_gateway,
+            "ensure_cron": dashboard.ensure_daily_social_content_cron,
+            "readiness": dashboard.organic_content_readiness,
+            "daily_pending": daily_agent.PENDING_FILE,
+            "daily_actions": daily_agent.ACTIONS_FILE,
+            "daily_ledger": daily_agent.ORGANIC_CONTENT_POSTS_FILE,
+            "daily_load_config": daily_agent.load_config,
+            "daily_client": daily_agent.SocialFlowClient,
+            "retain": daily_agent.mark_asset_files_retained,
+        }
+
+        class FakeConfig:
+            daily_brief_timezone = "America/Bogota"
+            daily_social_content_enabled = False
+            meta_publishing_access_token = "publishing-token"
+            ad_account_id = "act_999"
+            license_required_for_live = False
+
+        class FakePublishingClient:
+            calls = []
+
+            def __init__(self, _config=None):
+                self.config = FakeConfig()
+
+            def create_page_post(self, page_id, **kwargs):
+                self.calls.append({"page_id": page_id, **kwargs})
+                return {
+                    "executed": True,
+                    "returncode": 0,
+                    "connector": "graph_api",
+                    "stdout": json.dumps({"post_id": f"{page_id}_post_approved", "page_id": page_id, "page_name": "Página Test"}),
+                    "stderr": "",
+                }
+
+        try:
+            shutil.rmtree(test_dir, ignore_errors=True)
+            test_dir.mkdir(parents=True, exist_ok=True)
+            image_path.write_bytes(b"fake-png")
+            dashboard.ENV_FILE = test_dir / ".env"
+            dashboard.CONTENT_STRATEGY_FILE = test_dir / "content_strategy.md"
+            dashboard.PENDING_FILE = test_dir / "pending.json"
+            dashboard.ACTIONS_FILE = test_dir / "actions.json"
+            dashboard.load_config = lambda: FakeConfig()
+            dashboard.start_hermes_gateway = lambda _config: {"started": True}
+            dashboard.ensure_daily_social_content_cron = lambda config: {"configured": bool(getattr(config, "daily_social_content_enabled", False))}
+            dashboard.organic_content_readiness = lambda payload=None: {
+                "ready": False,
+                "missing": [{"key": "colors", "question": "¿Qué colores debemos respetar?"}],
+                "next_question": "¿Qué colores debemos respetar?",
+            }
+            pending_setup = dashboard.save_daily_social_content_settings({"enabled": True, "time": "10:00", "content_strategy": "Educación, prueba y oferta"})
+            env_text = dashboard.ENV_FILE.read_text(encoding="utf-8")
+            self.assert_true(pending_setup["pending_setup"] and pending_setup["decision"] == "accepted_pending_setup", "An early organic-content yes is saved without starting an unprepared recurring job")
+            self.assert_true("DAILY_SOCIAL_CONTENT_ENABLED=false" in env_text and "DAILY_SOCIAL_CONTENT_DECISION=accepted_pending_setup" in env_text, "Pending organic setup survives reset without enabling generation")
+
+            dashboard.organic_content_readiness = lambda payload=None: {"ready": True, "missing": [], "next_question": "", "branding_ready": True, "strategy_ready": True}
+            FakeConfig.daily_social_content_enabled = True
+            enabled = dashboard.save_daily_social_content_settings({"enabled": True, "time": "09:30", "posts_per_day": 1, "interval_days": 1, "content_strategy": "Educación, prueba social y oferta; CTA a conversar; Facebook tras aprobación."})
+            self.assert_true(enabled["enabled"] and enabled["cron"]["configured"], "Recurring organic content starts only after brand and strategy readiness")
+
+            draft = dashboard.stage_organic_social_post({
+                "page_id": "page_1",
+                "caption": "Consejo útil del día.",
+                "image_path": str(image_path),
+                "pillar": "educación",
+                "objective": "confianza",
+            })
+            duplicate = dashboard.stage_organic_social_post({
+                "page_id": "page_1",
+                "caption": "Consejo útil del día.",
+                "image_path": str(image_path),
+                "pillar": "educación",
+                "objective": "confianza",
+            })
+            pending_rows = json.loads(dashboard.PENDING_FILE.read_text(encoding="utf-8"))
+            self.assert_true(draft["staged"] and draft["approval_required"] and len(pending_rows) == 1, "A final organic image/caption becomes one exact pending approval and is not published immediately")
+            self.assert_true(duplicate["approval_id"] == draft["approval_id"] and len(pending_rows) == 1, "Retrying the same organic draft is idempotent and does not create duplicate approvals")
+
+            daily_agent.PENDING_FILE = dashboard.PENDING_FILE
+            daily_agent.ACTIONS_FILE = dashboard.ACTIONS_FILE
+            daily_agent.ORGANIC_CONTENT_POSTS_FILE = test_dir / "organic_content_posts.json"
+            daily_agent.load_config = lambda: FakeConfig()
+            daily_agent.SocialFlowClient = FakePublishingClient
+            daily_agent.mark_asset_files_retained = lambda *args, **kwargs: None
+            approved = daily_agent.approve(draft["approval_id"])
+            ledger = json.loads(daily_agent.ORGANIC_CONTENT_POSTS_FILE.read_text(encoding="utf-8"))
+            publish_call = FakePublishingClient.calls[0]
+            self.assert_true(approved[0]["status"] == "approved" and publish_call["published"] is True and publish_call["approved"] is True, "Exact buyer approval publishes the reviewed post visibly through the protected Page connection")
+            self.assert_true(ledger["items"][0]["post_id"] == "page_1_post_approved" and not json.loads(dashboard.PENDING_FILE.read_text(encoding="utf-8")), "Published organic posts keep the real Meta post ID and leave no stale pending draft")
+        finally:
+            dashboard.ENV_FILE = original["env_file"]
+            dashboard.CONTENT_STRATEGY_FILE = original["content_strategy"]
+            dashboard.PENDING_FILE = original["pending"]
+            dashboard.ACTIONS_FILE = original["actions"]
+            dashboard.load_config = original["load_config"]
+            dashboard.start_hermes_gateway = original["start_gateway"]
+            dashboard.ensure_daily_social_content_cron = original["ensure_cron"]
+            dashboard.organic_content_readiness = original["readiness"]
+            daily_agent.PENDING_FILE = original["daily_pending"]
+            daily_agent.ACTIONS_FILE = original["daily_actions"]
+            daily_agent.ORGANIC_CONTENT_POSTS_FILE = original["daily_ledger"]
+            daily_agent.load_config = original["daily_load_config"]
+            daily_agent.SocialFlowClient = original["daily_client"]
+            daily_agent.mark_asset_files_retained = original["retain"]
+            FakePublishingClient.calls = []
+            shutil.rmtree(test_dir, ignore_errors=True)
+
     def test_social_flow_creates_native_page_post_for_direct_publishing(self):
         """Test direct publishing creates unpublished native Page posts with the publishing token."""
         print("\nTesting Meta Graph Direct Publishing Page Posts...")
@@ -7263,6 +7402,20 @@ class IntegrationTestSuite:
             self.assert_true(b'published' in post_body and b'false' in post_body and b'ADS_POST' in post_body, "Direct publishing creates an unpublished ads-ready Page post")
             self.assert_true(feed_fields["link"][0] == "https://uboost.lat" and attached_media[0]["media_fbid"] == "photo_1", "Static direct publishing creates a linked feed post with the uploaded image attached")
             self.assert_true(image_cta["type"] == "LEARN_MORE" and image_cta["value"]["link"] == "https://uboost.lat", "Static direct publishing includes a website URL CTA")
+            requests.clear()
+            organic_result = client.create_page_post("page_1", message="Contenido orgánico aprobado", image_path=str(image_path), published=True, approved=True)
+            organic_body = json.loads(organic_result.get("stdout") or "{}")
+            organic_request = requests[-1]
+            self.assert_true(organic_body.get("post_id") == "page_1_post_1", "Approved organic publishing returns the real visible Facebook post ID")
+            self.assert_true(b'name="published"\r\n\r\ntrue' in organic_request.data and b"unpublished_content_type" not in organic_request.data, "Approved organic publishing creates a visible Page post instead of an ads-only dark post")
+            requests.clear()
+            linked_organic_result = client.create_page_post("page_1", message="Contenido con enlace", link="https://uboost.lat", image_path=str(image_path), published=True, approved=True)
+            linked_organic_body = json.loads(linked_organic_result.get("stdout") or "{}")
+            linked_photo_request, linked_feed_request = requests[-2], requests[-1]
+            linked_feed_fields = urllib.parse.parse_qs(linked_feed_request.data.decode("utf-8"))
+            self.assert_true(linked_organic_body.get("post_id") == "page_1_link_post_1", "Approved linked organic publishing returns the final visible feed post ID")
+            self.assert_true(b'name="published"\r\n\r\nfalse' in linked_photo_request.data and b"unpublished_content_type" not in linked_photo_request.data, "Linked organic publishing uploads media without exposing a duplicate photo post")
+            self.assert_true(linked_feed_fields["published"][0] == "true" and linked_feed_fields["link"][0] == "https://uboost.lat", "Only the final linked organic post is buyer-visible")
             requests.clear()
             whatsapp_result = client.create_page_post("page_1", message="Escríbenos por WhatsApp", image_url="https://cdn.example/ad.jpg", message_destination="WHATSAPP", approved=True)
             whatsapp_body = json.loads(whatsapp_result.get("stdout") or "{}")
@@ -10186,6 +10339,7 @@ class IntegrationTestSuite:
             self.test_live_account_actions_stage_for_approval_instead_of_auto_mutating,
             self.test_social_flow_graph_api_lists_and_creates_lead_forms,
             self.test_chat_stages_and_executes_native_lead_form_creation,
+            self.test_organic_content_opt_in_stages_and_publishes_only_after_approval,
             self.test_social_flow_creates_native_page_post_for_direct_publishing,
             self.test_campaign_stack_execution_creates_full_ad_order,
             self.test_chat_stages_campaign_creation_and_requires_exact_approval,
