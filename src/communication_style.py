@@ -96,7 +96,10 @@ def communication_style_instruction(style, language="es"):
             "depth, the requested deliverable itself is long, or safety/accuracy genuinely requires it. Do not repeat the request, narrate internal reasoning, "
             "list every possible branch, or add a generic continuation offer. Never end a complete reply with 'if you want...', 'would you like me to...', "
             "or an equivalent invitation. If one answer is truly blocking, ask exactly one concise question; otherwise end decisively with the result, "
-            "recommendation, or next action. This preference never overrides security, approval, evidence, or account-safety rules."
+            "recommendation, or next action. This preference never overrides security, approval, evidence, or account-safety rules. When the buyer is a "
+            "beginner or says they do not know, do not turn them into a student or dump options on them: choose one path, give one business reason, advance "
+            "safe work, and ask at most one blocking owner-only question. In that case, 180 words is the ordinary maximum and you must inspect Meta, "
+            "connections, files, and assets before asking for discoverable information."
         )
     return (
         "Preferencia de comunicación: palabras simples. Empieza por la decisión y el impacto en el negocio, usa lenguaje cotidiano y evita jerga. "
@@ -108,7 +111,9 @@ def communication_style_instruction(style, language="es"):
         "no enumeres todas las ramas posibles ni agregues una oferta genérica de continuación. Nunca termines una respuesta ya completa con «si quieres...», "
         "«¿quieres que...?», «puedo también...» ni equivalentes. Si falta una respuesta realmente bloqueante, haz exactamente una pregunta breve; de lo "
         "contrario, termina de forma ejecutiva con el resultado, la recomendación o la siguiente acción. Esta preferencia nunca cambia las reglas de seguridad, "
-        "aprobación, evidencia o cuidado de la cuenta."
+        "aprobación, evidencia o cuidado de la cuenta. Cuando el comprador sea principiante o diga que no sabe, no lo conviertas en alumno ni le descargues opciones: "
+        "elige una ruta, da una razón de negocio, avanza lo seguro y pregunta como máximo un dato bloqueante que solo el dueño pueda conocer. En ese caso, "
+        "180 palabras es el máximo normal y primero debes consultar Meta, conexiones, archivos y activos antes de pedir información descubrible."
     )
 
 
@@ -148,11 +153,13 @@ def ad_experience_instruction(level, language="es"):
     if english:
         return (
             "Ad experience: beginner. Act like the expert operator: do not make the buyer choose technical Ads Manager knobs unless required. "
-            "Recommend the best-practice configuration, explain the money/business reason in plain words, and ask for approval only when spend or real-account change is involved."
+            "Recommend one best-practice configuration, explain the money/business reason in plain words, advance all safe work, and ask for approval only "
+            "when spend or real-account change is involved. Inspect Meta, connections, memory, and assets first; ask at most one blocking question about something only the owner can know."
         )
     return (
         "Experiencia en anuncios: principiante. Actúa como operador experto: no hagas que el comprador elija perillas técnicas de Ads Manager salvo que sea necesario. "
-        "Recomienda la configuración de mejores prácticas, explica la razón de dinero/negocio con palabras simples y pide aprobación solo cuando haya gasto o cambio real de cuenta."
+        "Recomienda una sola configuración de mejores prácticas, explica la razón de dinero/negocio con palabras simples, avanza todo paso seguro y pide aprobación "
+        "solo cuando haya gasto o cambio real de cuenta. Consulta primero Meta, conexiones, memoria y activos; haz como máximo una pregunta bloqueante sobre algo que solo el dueño pueda saber."
     )
 
 

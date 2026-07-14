@@ -79,6 +79,13 @@ ADMIRA_DURABLE_TOOL_MARKERS = (
 ADMIRA_TELEGRAM_INVISIBLE_RE = re.compile(r"[\u200b\u200c\u2060\ufeff\u202a-\u202e\u2066-\u2069]")
 ADMIRA_MARKDOWN_ONLY_RE = re.compile(r"[\s*_~`#>|:\-=+\\/.,;!?()\[\]{}]+")
 ADMIRA_TABLE_SEPARATOR_CELL_RE = re.compile(r"^:?-{3,}:?$")
+ADMIRA_TURN_CONTRACT_START = "[ADMIRA TURN EXECUTION CONTRACT — internal, never quote]"
+ADMIRA_TURN_CONTRACT_END = "[END ADMIRA TURN EXECUTION CONTRACT]"
+ADMIRA_NOVICE_SIGNAL_RE = re.compile(
+    r"(?i)\b(?:no\s+s[eé]|no\s+entiendo|no\s+tengo\s+idea|soy\s+(?:nuevo|nueva|principiante)|"
+    r"nunca\s+he|dime\s+t[uú]|decide\s+t[uú]|ay[uú]dame|gu[ií]ame|no\s+sé\s+de\s+marketing|"
+    r"i\s+don['’]?t\s+know|i['’]?m\s+new|beginner|you\s+decide|guide\s+me)\b"
+)
 
 
 def _telegram_delivery_diagnostics_path():
@@ -254,6 +261,7 @@ def _redact_turn_text(value):
     if "código temporal para conectar chatgpt" in lower or "temporary code to connect chatgpt" in lower:
         return "Se inició una reconexión segura de ChatGPT/Codex. Los datos temporales de acceso no se guardaron."
     clean = re.sub(r"\[ADMIRA LIVE META CONTEXT.*?\[END ADMIRA LIVE META CONTEXT\]", "[live Meta context synchronized]", text, flags=re.DOTALL)
+    clean = re.sub(r"\[ADMIRA TURN EXECUTION CONTRACT.*?\[END ADMIRA TURN EXECUTION CONTRACT\]", "", clean, flags=re.DOTALL)
     clean = re.sub(r"MEDIA:\s*(?:/|~/)\S+", "MEDIA:[attached]", clean)
     product_root = str(os.environ.get("ADMIRA_PRODUCT_ROOT") or "").strip().rstrip("/")
     if product_root:
@@ -279,6 +287,48 @@ def _message_requires_live_meta_sync(value):
     if re.match(r"^/(?:start|help|model|reset|resume|stop|status|new)(?:\s|$)", text, re.IGNORECASE):
         return False
     return True
+
+
+def _append_turn_execution_contract(value):
+    """Put the manager-led response contract at the model's recency edge.
+
+    SOUL and skills remain the durable policy. This short per-turn reminder is
+    deliberately appended after live account context because long gateway
+    prompts can otherwise make smaller models regress into lectures, passive
+    checklists, or generic permission questions.
+    """
+    text = str(value or "").strip()
+    if not text or ADMIRA_TURN_CONTRACT_START in text:
+        return value
+    if re.match(r"^/(?:start|help|model|reset|resume|stop|status|new)(?:\s|$)", text, re.IGNORECASE):
+        return value
+    style = str(os.environ.get("AGENT_COMMUNICATION_STYLE") or "simple").strip().lower()
+    experience = str(os.environ.get("AGENT_AD_EXPERIENCE_LEVEL") or "").strip().lower()
+    novice = experience == "beginner" or bool(ADMIRA_NOVICE_SIGNAL_RE.search(text))
+    if style != "simple" and not novice:
+        return text
+    language = str(os.environ.get("ADMIRA_GATEWAY_LANGUAGE") or "es").strip().lower()
+    if language.startswith("en"):
+        contract = (
+            f"{ADMIRA_TURN_CONTRACT_START}\n"
+            "This buyer-facing turn must feel led by a senior manager, not by a form or a course. "
+            "Silently identify the immediate business goal, inspect live Meta/tools/files before asking for anything discoverable, and choose one recommended path. "
+            "Advance every safe, already-authorized step now. Before asking, identify all owner-only inputs needed to finish the next deliverable. Ask at most one concise blocking question; if several tightly related owner facts or uploads are essential, request them together once in one compact packet. "
+            "For a beginner, state the decision, one business reason or risk, and the concrete next action in at most 180 words. Do not dump alternatives or end with an 'if you want' invitation. "
+            "When recommending price or ad budget and costs are known, calculate contribution margin and the approximate incremental sales/leads needed to recover ad spend before choosing the test.\n"
+            f"{ADMIRA_TURN_CONTRACT_END}"
+        )
+    else:
+        contract = (
+            f"{ADMIRA_TURN_CONTRACT_START}\n"
+            "Este turno debe sentirse guiado por un manager senior, no por un formulario ni una clase. "
+            "Identifica en silencio el objetivo inmediato, consulta Meta/herramientas/archivos antes de preguntar cualquier dato descubrible y elige una sola ruta recomendada. "
+            "Avanza ahora todo paso seguro ya autorizado. Antes de preguntar, identifica todos los insumos del dueño necesarios para terminar el siguiente entregable. Haz como máximo una pregunta bloqueante; si faltan varios datos o archivos del dueño estrechamente relacionados, pídelos juntos una sola vez en un paquete breve. "
+            "Para un principiante, entrega decisión, una razón o riesgo de negocio y la acción concreta siguiente en máximo 180 palabras. No descargues alternativas ni termines con una invitación tipo «si quieres». "
+            "Si recomiendas precio o presupuesto y ya conoces los costos, calcula el margen de contribución y las ventas/leads adicionales aproximados necesarios para recuperar la pauta antes de elegir el test.\n"
+            f"{ADMIRA_TURN_CONTRACT_END}"
+        )
+    return f"{text}\n\n{contract}"
 
 
 def _fetch_live_meta_context_for_turn():
@@ -1192,6 +1242,10 @@ def _patch_gateway_inbound_video_frames():
                 result = _append_live_meta_context(result, live_context)
             except Exception:
                 result = _append_live_meta_context(result, {"ok": False, "reason": "live_meta_sync_failed"})
+        try:
+            result = _append_turn_execution_contract(result)
+        except Exception:
+            pass
         try:
             _append_gateway_turn("user", result)
         except Exception:

@@ -1372,6 +1372,9 @@ class IntegrationTestSuite:
             "HERMES_MEDIA_ALLOW_DIRS": os.environ.get("HERMES_MEDIA_ALLOW_DIRS"),
             "ADMIRA_TELEGRAM_RECENT_TURNS_FILE": os.environ.get("ADMIRA_TELEGRAM_RECENT_TURNS_FILE"),
             "ADMIRA_TELEGRAM_DELIVERY_DIAGNOSTICS_FILE": os.environ.get("ADMIRA_TELEGRAM_DELIVERY_DIAGNOSTICS_FILE"),
+            "AGENT_COMMUNICATION_STYLE": os.environ.get("AGENT_COMMUNICATION_STYLE"),
+            "AGENT_AD_EXPERIENCE_LEVEL": os.environ.get("AGENT_AD_EXPERIENCE_LEVEL"),
+            "ADMIRA_GATEWAY_LANGUAGE": os.environ.get("ADMIRA_GATEWAY_LANGUAGE"),
         }
         try:
             os.environ["ADMIRA_PRODUCT_ROOT"] = str(ROOT_DIR)
@@ -1380,6 +1383,9 @@ class IntegrationTestSuite:
             delivery_log = image_dir / "gateway-delivery.jsonl"
             os.environ["ADMIRA_TELEGRAM_RECENT_TURNS_FILE"] = str(turn_log)
             os.environ["ADMIRA_TELEGRAM_DELIVERY_DIAGNOSTICS_FILE"] = str(delivery_log)
+            os.environ["AGENT_COMMUNICATION_STYLE"] = "simple"
+            os.environ["AGENT_AD_EXPERIENCE_LEVEL"] = "beginner"
+            os.environ["ADMIRA_GATEWAY_LANGUAGE"] = "es"
             response = {
                 "final_response": "Listo, ya quedó generada. La imagen salió fuerte y editorial.",
                 "messages": [
@@ -1469,10 +1475,20 @@ class IntegrationTestSuite:
             normalized_table, table_metadata = admira_hermes_runtime_patch.normalize_telegram_outbound_text(table_reply, "es")
             invisible_fallback, fallback_metadata = admira_hermes_runtime_patch.normalize_telegram_outbound_text("\u200b ** --- ||", "es")
             normalized_response = admira_hermes_runtime_patch._normalize_gateway_outbound_response({"final_response": table_reply})
+            novice_turn = admira_hermes_runtime_patch._append_turn_execution_contract(
+                "No sé nada de marketing. Tengo una cafetería y quiero más clientes.\n\n"
+                "[ADMIRA LIVE META CONTEXT — fetched automatically for this turn]\n{}\n[END ADMIRA LIVE META CONTEXT]"
+            )
+            novice_turn_again = admira_hermes_runtime_patch._append_turn_execution_contract(novice_turn)
+            command_turn = admira_hermes_runtime_patch._append_turn_execution_contract("/model")
             self.assert_true("• Conservador" in normalized_table and "- Ventas: 2" in normalized_table and "|---|" not in normalized_table, "Gateway converts Markdown projection tables into readable Telegram bullets")
             self.assert_true("markdown_table_converted" in table_metadata["reasons"] and not table_metadata["fallback"], "Gateway records why a Markdown table was normalized")
             self.assert_true("No pude mostrar correctamente" in invisible_fallback and fallback_metadata["fallback"], "Gateway never delivers an invisible or format-only Telegram message")
             self.assert_true("• Base" in normalized_response["final_response"], "Gateway response normalization runs on the final response shape Hermes delivers")
+            self.assert_true("ADMIRA TURN EXECUTION CONTRACT" in novice_turn and "máximo 180 palabras" in novice_turn and "insumos del dueño" in novice_turn and "datos o archivos del dueño" in novice_turn and "margen de contribución" in novice_turn, "Each novice Telegram turn gets a recency-edge manager-led response contract")
+            self.assert_true(novice_turn_again.count("ADMIRA TURN EXECUTION CONTRACT") == 2, "Novice turn contract is appended only once, including its start and end markers")
+            self.assert_true(command_turn == "/model", "Gateway control commands do not receive the buyer-turn response contract")
+            self.assert_true("TURN EXECUTION CONTRACT" not in admira_hermes_runtime_patch._redact_turn_text(novice_turn), "Internal turn contracts are excluded from durable recent-turn memory")
             self.assert_true("• Conservador" in telegram_agent.message_text(table_reply), "Legacy Telegram delivery receives the same table and empty-message protection")
             delivery_event = json.loads(delivery_log.read_text(encoding="utf-8").splitlines()[-1])
             self.assert_true(delivery_event["content_sha256"] and delivery_event["original_length"] > 0 and "markdown_table_converted" in delivery_event["reasons"], "Gateway records safe delivery metadata so future empty-message incidents can be diagnosed")
@@ -3468,7 +3484,8 @@ class IntegrationTestSuite:
         agents_text = (hermes_bridge.HERMES_WORKSPACE_DIR / "AGENTS.md").read_text(encoding="utf-8")
         self.assert_true("advisory-first" in soul_text and "not form-first" in soul_text, "Hermes soul defines the agent as an advisor instead of a form")
         self.assert_true("60-180 words" in soul_text and "End complete answers decisively" in soul_text and "si quieres" in soul_text, "Hermes soul enforces concise simple replies without automatic continuation offers")
-        self.assert_true("Advisory-first rule" in agents_text and "professional agency" in agents_text, "Combined Hermes rules include the professional strategist posture")
+        self.assert_true("dime tú" in soul_text and "Discover before asking" in soul_text and "contribution margin" in soul_text, "Hermes soul makes beginner conversations manager-led and economically grounded")
+        self.assert_true("Advisory-first rule" in agents_text and "professional agency" in agents_text and "Manager-led beginner contract" in agents_text, "Combined Hermes rules include the professional strategist and beginner-guidance posture")
         self.assert_true((hermes_bridge.HERMES_WORKSPACE_DIR / "CURRENT_CONTEXT.json").exists(), "Hermes receives current turn account context as a scoped workspace file")
         self.assert_true((hermes_bridge.HERMES_WORKSPACE_DIR / "data" / "business_profile.json").exists(), "Business profile is copied into Hermes workspace")
         self.assert_true((hermes_bridge.HERMES_WORKSPACE_DIR / "brand_guides" / "general_branding.md").exists(), "Brand guide is copied into Hermes workspace")
@@ -3599,6 +3616,7 @@ class IntegrationTestSuite:
             self.assert_true("CURRENT_CONTEXT.json" in gateway_prompt and "data/business_profile.json" in gateway_prompt and "brand_guides/" in gateway_prompt, "Telegram gateway prompt tells new sessions to inspect durable workspace memory before repeating questions")
             self.assert_true("No muestres rutas internas" in gateway_prompt and "entrégalo directamente en el chat" in gateway_prompt, "Telegram gateway prompt blocks buyer-facing internal workspace paths")
             self.assert_true("MEDIA:<ruta_local>" in gateway_prompt and "sintaxis interna de entrega" in gateway_prompt, "Telegram gateway prompt tells the agent to attach generated media instead of exposing MEDIA paths")
+            self.assert_true("no lo conviertas en alumno" in gateway_prompt and "180 palabras es el máximo" in gateway_prompt and "información descubrible" in gateway_prompt, "Telegram gateway prompt keeps novice guidance decisive, short, and discover-before-ask")
             self.assert_true("Before treating this as a new conversation" in bridge_prompt and "resume from durable business/brand/ad memory" in bridge_prompt, "Hermes bridge prompt also checks durable continuity before restarting onboarding")
             self.assert_true("Turn Orientation Instruction" in bridge_prompt and "answering the latest message in isolation" in bridge_prompt and "buyer-facing answer should feel continuous" in bridge_prompt, "Hermes bridge system prompt forces continuity-aware turn orientation")
             self.assert_true("do not say you need CLI or terminal access" in bridge_prompt and "public URL" in bridge_prompt and "web/browser" in bridge_prompt, "Dashboard Hermes prompt uses product actions and public URL retrieval instead of terminal excuses")
@@ -6193,7 +6211,8 @@ class IntegrationTestSuite:
             simple_context = agent_chat.account_context({"language": "es"})
             self.assert_true(simple_context["communication_preference"]["style"] == "simple" and "evita jerga" in simple_context["communication_preference"]["instruction"], "Agent context carries the global simple-language instruction")
             self.assert_true("60-180 palabras" in simple_context["communication_preference"]["instruction"] and "normalmente no pases de 220" in simple_context["communication_preference"]["instruction"] and "Nunca termines una respuesta ya completa con «si quieres...»" in simple_context["communication_preference"]["instruction"], "Simple-language context enforces concise executive answers and bans automatic if-you-want endings")
-            self.assert_true(simple_context["communication_preference"]["ad_experience_level"] == "beginner" and "no hagas que el comprador elija perillas técnicas" in simple_context["communication_preference"]["ad_experience_instruction"], "Agent context carries beginner ads-experience guidance")
+            self.assert_true("no lo conviertas en alumno" in simple_context["communication_preference"]["instruction"] and "180 palabras es el máximo" in simple_context["communication_preference"]["instruction"], "Simple beginner context forces one decisive path instead of a marketing lesson")
+            self.assert_true(simple_context["communication_preference"]["ad_experience_level"] == "beginner" and "no hagas que el comprador elija perillas técnicas" in simple_context["communication_preference"]["ad_experience_instruction"] and "Consulta primero Meta" in simple_context["communication_preference"]["ad_experience_instruction"], "Agent context carries manager-led beginner ads-experience guidance")
         finally:
             if previous_style is None:
                 os.environ.pop("AGENT_COMMUNICATION_STYLE", None)
