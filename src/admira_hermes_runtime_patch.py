@@ -908,6 +908,52 @@ def _event_image_paths(event):
     return image_paths[:24]
 
 
+ADMIRA_PRODUCT_DOCUMENT_EXTENSIONS = {".pdf", ".xlsx", ".xls", ".csv", ".tsv", ".json"}
+
+
+def _event_product_document_paths(event):
+    document_paths = []
+    media_urls = list(getattr(event, "media_urls", None) or [])
+    media_types = list(getattr(event, "media_types", None) or [])
+    for index, raw_path in enumerate(media_urls):
+        media_type = str(media_types[index] if index < len(media_types) else "").lower()
+        try:
+            path = Path(str(raw_path or "")).expanduser().resolve(strict=True)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if path.suffix.lower() in ADMIRA_PRODUCT_DOCUMENT_EXTENSIONS or media_type in {
+            "application/pdf",
+            "application/json",
+            "text/csv",
+            "text/tab-separated-values",
+            "application/vnd.ms-excel",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }:
+            document_paths.append(str(path))
+    return document_paths[:10]
+
+
+def _append_product_document_contract(event):
+    document_paths = _event_product_document_paths(event)
+    if not document_paths:
+        return event
+    internal_paths = "\n".join(f"- {path}" for path in document_paths)
+    note = (
+        "[ADMIRA PRODUCT DOCUMENT — internal, never quote paths to the buyer]\n"
+        "The buyer attached one or more PDF/Excel/CSV/JSON documents. If they contain products, services, offers, prices, "
+        "catalog details, bundles, or inventory, call mcp_admira_import_product_catalog in this turn with these file_paths. "
+        "Do not summarize the file and leave it ephemeral. Import every identifiable product as its own child guide, preserve "
+        "unmapped details, and keep combinations/bundles as separate offers linked through components. If the tool returns "
+        "needs_agent_structuring=true, use the extracted text and call the importer again with a structured products array before "
+        "claiming the catalog is ready. For later recall, call mcp_admira_search_product_catalog rather than relying on chat memory.\n"
+        f"Document paths:\n{internal_paths}\n"
+        "[END ADMIRA PRODUCT DOCUMENT]"
+    )
+    original_text = str(getattr(event, "text", "") or "")
+    event.text = (note + ("\n\n" + original_text if original_text else "")).strip()
+    return event
+
+
 def _persist_inbound_image_batch(image_paths):
     """Persist buyer images before inference so a reset cannot lose the batch."""
     root = Path(str(os.environ.get("ADMIRA_PRODUCT_ROOT") or "").strip()).expanduser()
@@ -1340,6 +1386,10 @@ def _patch_gateway_inbound_video_frames():
             # but this makes the patch tolerant if the signature changes.
             event = args[0]
         if event is not None:
+            try:
+                _append_product_document_contract(event)
+            except Exception:
+                pass
             try:
                 _archive_inbound_image_batch_for_agent(event)
             except Exception:

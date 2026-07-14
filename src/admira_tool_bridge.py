@@ -54,6 +54,8 @@ TOOL_MAP = {
     "admira_save_ads_onboarding": "save_ads_onboarding",
     "admira_save_brand_memory": "save_brand_guide",
     "admira_save_product_memory": "save_product_guide",
+    "admira_import_product_catalog": "import_product_catalog",
+    "admira_search_product_catalog": "search_product_catalog",
     "admira_save_ad_brief": "save_ad_brief",
     "admira_save_creative_references": "save_creative_references",
 }

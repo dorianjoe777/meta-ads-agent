@@ -79,6 +79,7 @@ from codex_brand_guides import (
     official_logo_prompt_lock,
     official_brand_logo_path,
     product_reference,
+    refresh_offer_map,
     save_creative_references,
     save_ad_brief,
     save_general_guide,
@@ -119,6 +120,7 @@ from hermes_gateway import (
     stop_gateway as stop_hermes_gateway,
     telegram_runtime_model_state,
 )
+from product_catalog import import_product_catalog, refresh_catalog_index, search_product_catalog
 from hermes_gateway import telegram_settings
 from license import activate_license, default_device_id, license_status, mark_license_install_state, normalize_license_entitlements, validate_license_key
 from local_store import now_iso, read_json, write_json, write_private_json
@@ -214,6 +216,7 @@ BRANDING_ONBOARDING_FILE = DATA_DIR / "Branding onboarding.md"
 ADS_ONBOARDING_FILE = DATA_DIR / "Ads campaign onboarding.md"
 CONTENT_ASSET_LIBRARY_FILE = DATA_DIR / "content_asset_library.json"
 CONTENT_ASSET_FILES_DIR = DATA_DIR / "content-assets"
+PRODUCT_DATA_SCHEMA_FILE = DATA_DIR / "product_data_schema.json"
 CONTENT_STRATEGY_FILE = DATA_DIR / "content_strategy.md"
 ORGANIC_CONTENT_POSTS_FILE = DATA_DIR / "organic_content_posts.json"
 DURABLE_CONVERSATION_MEMORY_FILE = DATA_DIR / "durable_conversation_memory.json"
@@ -246,6 +249,7 @@ CREATIVE_ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 PUBLIC_ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".svg", ".css", ".js", ".mp4", ".mov"}
 MAX_BRAND_LOGO_BYTES = 1 * 1024 * 1024
 MAX_CONTENT_ASSET_IMAGE_BYTES = 25 * 1024 * 1024
+CURRENT_PRODUCT_DATA_SCHEMA_VERSION = 3
 PORT = 7871
 TARGET_CPA = 50.0
 TELEGRAM_THREAD = None
@@ -793,12 +797,19 @@ def restore_update_snapshot(payload):
             else:
                 restore_path(child, ROOT_DIR / child.name)
             restored.append(child.name)
+    restored_version = str(manifest.get("version") or "").strip()
+    if payload.get("restore_version_marker") and restored_version:
+        # Local secrets/config stay buyer-owned, but an automatic failed-update
+        # rollback must make .env/UI report the version of the restored code.
+        update_env_values({"META_ADS_AGENT_VERSION": restored_version})
+        os.environ["META_ADS_AGENT_VERSION"] = restored_version
     log_action("official_update_rollback", {"snapshot_id": snapshot_id, "version": manifest.get("version"), "rescue_snapshot_id": rescue.get("id")}, "completed")
     threading.Timer(1.2, restart_dashboard_process).start()
     return {
         "restored": restored,
         "snapshot": manifest,
         "rescue_snapshot_id": rescue.get("id"),
+        "version_marker_restored": bool(payload.get("restore_version_marker") and restored_version),
         "message": "Version anterior restaurada. El dashboard se reiniciara automaticamente.",
     }
 
@@ -998,7 +1009,11 @@ def safe_copytree_contents(source, target, base=None):
             continue
         destination = target / item.name
         if item.is_dir():
-            if item.name in {"dashboard", "brand_guides"}:
+            top_level = relative.split("/", 1)[0]
+            if top_level in {"dashboard", "brand_guides"}:
+                # These trees contain buyer-owned durable data alongside shipped
+                # code/templates. Merge every nested directory recursively; never
+                # replace brand_guides/products with the package examples.
                 destination.mkdir(parents=True, exist_ok=True)
                 safe_copytree_contents(item, destination, base)
             else:
@@ -1030,11 +1045,51 @@ def validate_update_package_source(source_root, expected_version):
     expected = str(expected_version or "").strip()
     if expected and package_version != expected:
         raise ValueError(f"La descarga oficial no coincide con la version esperada ({package_version} != {expected}). Intenta actualizar de nuevo en unos minutos.")
-    required = [source_root / "dashboard" / "monitoring-dashboard.py", source_root / "src", source_root / "scripts"]
+    example_env = source_root / ".env.example"
+    if not example_env.exists():
+        raise ValueError("La actualizacion oficial no incluye .env.example; no voy a instalar un paquete incompleto.")
+    packaged_env_version = ""
+    for line in example_env.read_text(encoding="utf-8").splitlines():
+        if line.startswith("META_ADS_AGENT_VERSION="):
+            packaged_env_version = line.split("=", 1)[1].strip()
+            break
+    if packaged_env_version != package_version:
+        raise ValueError(f"La actualizacion tiene versiones internas inconsistentes ({package_version} != {packaged_env_version or 'sin version'}).")
+    required = [source_root / "dashboard" / "monitoring-dashboard.py", source_root / "src", source_root / "src" / "product_catalog.py", source_root / "scripts"]
     missing = [str(path.relative_to(source_root)) for path in required if not path.exists()]
     if missing:
         raise ValueError("La actualizacion oficial esta incompleta. Faltan: " + ", ".join(missing))
     return {"ok": True, "package_version": package_version}
+
+
+def run_product_data_migrations():
+    """Apply every durable data migration in order; safe across skipped releases."""
+    state = read_json(PRODUCT_DATA_SCHEMA_FILE, {})
+    try:
+        current = max(0, int(state.get("schema_version") or 0))
+    except (TypeError, ValueError):
+        current = 0
+    applied = list(state.get("applied") or []) if isinstance(state.get("applied"), list) else []
+    while current < CURRENT_PRODUCT_DATA_SCHEMA_VERSION:
+        target = current + 1
+        if target == 1:
+            (BRAND_GUIDES_DIR / "products").mkdir(parents=True, exist_ok=True)
+            (BRAND_GUIDES_DIR / "ad_briefs").mkdir(parents=True, exist_ok=True)
+            (DATA_DIR / "product-imports").mkdir(parents=True, exist_ok=True)
+        elif target == 2:
+            # Rebuild a deterministic compact index from every legacy Markdown guide.
+            refresh_catalog_index()
+        elif target == 3:
+            # Existing product guides remain the source of truth; regenerate only derived maps.
+            refresh_offer_map()
+            refresh_catalog_index()
+        applied.append({"schema_version": target, "applied_at": now_iso()})
+        current = target
+        write_private_json(
+            PRODUCT_DATA_SCHEMA_FILE,
+            {"schema_version": current, "applied": applied, "updated_at": now_iso()},
+        )
+    return {"schema_version": current, "applied": applied}
 
 
 def restart_dashboard_process():
@@ -1150,8 +1205,10 @@ def set_local_network_access(payload):
 def run_update_health_checks(expected_version=""):
     dashboard_file = ROOT_DIR / "dashboard" / "monitoring-dashboard.py"
     py_compile.compile(str(dashboard_file), doraise=True)
+    py_compile.compile(str(ROOT_DIR / "src" / "product_catalog.py"), doraise=True)
     config = load_config()
     ensure_dashboard_identity_backup(config)
+    migration = run_product_data_migrations()
     required = [ROOT_DIR / ".env", ROOT_DIR / "ad-config.json", VERSION_FILE, dashboard_file]
     missing = [str(path.relative_to(ROOT_DIR)) for path in required if not path.exists()]
     if missing:
@@ -1160,7 +1217,7 @@ def run_update_health_checks(expected_version=""):
         raise ValueError("La actualizacion no quedo aplicada realmente. Version instalada: " + current_product_version())
     if "</html>" not in dashboard_file.read_text(encoding="utf-8").lower():
         raise ValueError("La interfaz del dashboard no pudo validarse despues de actualizar.")
-    return {"ok": True, "checked": ["python", "config", "required_files", "version", "dashboard_html"]}
+    return {"ok": True, "package_version": current_product_version(), "data_schema_version": migration.get("schema_version"), "checked": ["python", "config", "required_files", "version", "dashboard_html", "data_migrations"]}
 
 
 def apply_official_update():
@@ -1172,36 +1229,43 @@ def apply_official_update():
     if not download_url or not official_download_url_allowed(download_url, settings):
         raise ValueError("El servidor oficial no devolvio una descarga valida.")
     snapshot = create_update_snapshot(reason="pre_update", release=release)
-    with tempfile.TemporaryDirectory(prefix="meta-ads-update-") as tmp_name:
-        tmp_root = Path(tmp_name)
-        archive_path = tmp_root / "release.zip"
+    try:
+        with tempfile.TemporaryDirectory(prefix="meta-ads-update-") as tmp_name:
+            tmp_root = Path(tmp_name)
+            archive_path = tmp_root / "release.zip"
+            try:
+                download_limited(download_url, archive_path, MAX_UPDATE_ARCHIVE_BYTES)
+            except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+                raise ValueError("No pude descargar la actualizacion oficial. Intenta mas tarde.") from exc
+            unpack_dir = tmp_root / "unpack"
+            unpack_dir.mkdir()
+            with zipfile.ZipFile(archive_path) as archive:
+                total_size = 0
+                for member in archive.infolist():
+                    total_size += int(member.file_size or 0)
+                    if total_size > MAX_UPDATE_UNPACKED_BYTES:
+                        raise ValueError("La actualizacion oficial es demasiado grande.")
+                    if not is_safe_extract_member(unpack_dir, member.filename) or not zip_member_is_safe(member):
+                        raise ValueError("La actualizacion contiene rutas no seguras.")
+                archive.extractall(unpack_dir)
+            source_root = update_package_source_root(unpack_dir)
+            package_validation = validate_update_package_source(source_root, release["latest_version"])
+            safe_copytree_contents(source_root, ROOT_DIR)
+            installed_version = str(package_validation["package_version"]).strip()
+            update_env_values({"META_ADS_AGENT_VERSION": installed_version})
+            os.environ["META_ADS_AGENT_VERSION"] = installed_version
+            try:
+                for script in (ROOT_DIR / "scripts").glob("*.sh"):
+                    script.chmod(0o755)
+            except OSError:
+                pass
+        health = run_update_health_checks(str(release["latest_version"]).strip())
+    except Exception as exc:
         try:
-            download_limited(download_url, archive_path, MAX_UPDATE_ARCHIVE_BYTES)
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
-            raise ValueError("No pude descargar la actualizacion oficial. Intenta mas tarde.") from exc
-        unpack_dir = tmp_root / "unpack"
-        unpack_dir.mkdir()
-        with zipfile.ZipFile(archive_path) as archive:
-            total_size = 0
-            for member in archive.infolist():
-                total_size += int(member.file_size or 0)
-                if total_size > MAX_UPDATE_UNPACKED_BYTES:
-                    raise ValueError("La actualizacion oficial es demasiado grande.")
-                if not is_safe_extract_member(unpack_dir, member.filename) or not zip_member_is_safe(member):
-                    raise ValueError("La actualizacion contiene rutas no seguras.")
-            archive.extractall(unpack_dir)
-        source_root = update_package_source_root(unpack_dir)
-        package_validation = validate_update_package_source(source_root, release["latest_version"])
-        safe_copytree_contents(source_root, ROOT_DIR)
-        installed_version = str(package_validation["package_version"]).strip()
-        update_env_values({"META_ADS_AGENT_VERSION": installed_version})
-        os.environ["META_ADS_AGENT_VERSION"] = installed_version
-        try:
-            for script in (ROOT_DIR / "scripts").glob("*.sh"):
-                script.chmod(0o755)
-        except OSError:
-            pass
-    health = run_update_health_checks(str(release["latest_version"]).strip())
+            restore_update_snapshot({"snapshot_id": snapshot.get("id"), "restore_version_marker": True})
+        except Exception as rollback_exc:
+            raise ValueError("La actualizacion fallo y tampoco pude restaurar automaticamente el punto anterior.") from rollback_exc
+        raise ValueError("La actualizacion no paso las verificaciones y restaure automaticamente la version anterior.") from exc
     log_action("official_update_apply", {"from": release["current_version"], "to": release["latest_version"], "channel": release["channel"], "snapshot_id": snapshot.get("id"), "package_version": health.get("package_version", installed_version)}, "completed")
     threading.Timer(1.2, restart_dashboard_process).start()
     return {**release, "installed": True, "snapshot": snapshot, "health": health, "message": "Actualizacion instalada. El dashboard se reiniciara automaticamente."}
@@ -7018,6 +7082,32 @@ def save_product_brand_memory(payload):
     return result
 
 
+def import_product_catalog_memory(payload):
+    result = import_product_catalog(payload)
+    write_agent_onboarding_plan()
+    log_action(
+        "product_catalog_import",
+        {
+            "imported_count": result.get("imported_count", 0),
+            "product_count": result.get("product_count", 0),
+            "needs_agent_structuring": bool(result.get("needs_agent_structuring")),
+            "document_count": len(result.get("documents") or []),
+        },
+        "completed" if result.get("imported_count") or result.get("documents") else "blocked",
+    )
+    return result
+
+
+def search_product_catalog_memory(payload):
+    result = search_product_catalog(payload)
+    log_action(
+        "product_catalog_search",
+        {"query": str((payload or {}).get("query") or "")[:120], "matches": len(result.get("matches") or [])},
+        "completed",
+    )
+    return result
+
+
 def save_ad_brief_memory(payload):
     result = save_ad_brief(payload)
     write_agent_onboarding_plan()
@@ -11019,6 +11109,42 @@ def handle_save_product_guide_tool(arguments, chat_payload, tool):
     )
 
 
+def handle_import_product_catalog_tool(arguments, chat_payload, tool):
+    if not any((arguments or {}).get(key) for key in ["file_path", "file_paths", "document_path", "document_paths", "products", "productos"]):
+        return agent_action_result(
+            tool,
+            False,
+            chat_reply(chat_payload, "Adjunta el PDF, Excel, CSV o JSON del catálogo, o envía una lista estructurada de productos.", "Attach the PDF, Excel, CSV, or JSON catalog, or provide a structured product list."),
+            blocked=True,
+            reason="missing_product_catalog_source",
+        )
+    result = import_product_catalog_memory(arguments)
+    if result.get("needs_agent_structuring"):
+        reply = chat_reply(
+            chat_payload,
+            "Guardé y leí el PDF. Ahora estructuraré sus productos desde el texto extraído antes de confirmar la importación.",
+            "I saved and read the PDF. I will now structure its products from the extracted text before confirming the import.",
+        )
+    else:
+        reply = chat_reply(
+            chat_payload,
+            f"Catálogo actualizado: {result.get('imported_count', 0)} ficha(s) procesada(s) y {result.get('product_count', 0)} producto(s) disponibles.",
+            f"Catalog updated: {result.get('imported_count', 0)} record(s) processed and {result.get('product_count', 0)} product(s) available.",
+        )
+    return agent_action_result(tool, True, reply, result=result)
+
+
+def handle_search_product_catalog_tool(arguments, chat_payload, tool):
+    result = search_product_catalog_memory(arguments)
+    matches = result.get("matches") or []
+    reply = chat_reply(
+        chat_payload,
+        f"Encontré {len(matches)} coincidencia(s) relevantes en {result.get('total_products', 0)} productos guardados.",
+        f"I found {len(matches)} relevant match(es) across {result.get('total_products', 0)} saved products.",
+    )
+    return agent_action_result(tool, True, reply, result=result)
+
+
 def handle_save_creative_references_tool(arguments, chat_payload, tool):
     image_paths = safe_image_paths(chat_payload)
     if image_paths and not arguments.get("generated_references"):
@@ -11246,6 +11372,8 @@ AGENT_TOOL_HANDLERS = {
     "save_durable_memory": handle_save_durable_memory_tool,
     "save_brand_guide": handle_save_brand_guide_tool,
     "save_product_guide": handle_save_product_guide_tool,
+    "import_product_catalog": handle_import_product_catalog_tool,
+    "search_product_catalog": handle_search_product_catalog_tool,
     "save_creative_references": handle_save_creative_references_tool,
     "save_ads_onboarding": handle_save_ads_onboarding_tool,
     "save_ad_brief": handle_save_ad_brief_tool,
@@ -11735,7 +11863,7 @@ HTML = r"""<!DOCTYPE html>
 class DashboardHandler(BaseHTTPRequestHandler):
     HTML_PATHS = {"/", "/dashboard"}
     PROTECTED_GET_PATHS = {"/api/dashboard", "/api/export", "/api/report", "/api/setup", "/api/social/auth-status", "/api/social/accounts", "/api/update/snapshots", "/api/creative-asset", "/api/brand-asset"}
-    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/publishing/config", "/api/publishing/test", "/api/agent-model/connect", "/api/agent-model/disconnect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/agent-model/catalog", "/api/agent-model/runtime", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/logo", "/api/brand-guides/product", "/api/ad-briefs", "/api/codex/creative-plan", "/api/codex/image-generate", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/optimization/settings", "/api/optimization/unlock", "/api/shopify/config", "/api/shopify/test", "/api/shopify/sync", "/api/daily-brief/schedule", "/api/daily-social-content/settings", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/communication-style", "/api/onboarding/complete", "/api/onboarding/skip", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/local-network-access", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
+    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/publishing/config", "/api/publishing/test", "/api/agent-model/connect", "/api/agent-model/disconnect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/agent-model/catalog", "/api/agent-model/runtime", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/logo", "/api/brand-guides/product", "/api/product-catalog/import", "/api/product-catalog/search", "/api/ad-briefs", "/api/codex/creative-plan", "/api/codex/image-generate", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/optimization/settings", "/api/optimization/unlock", "/api/shopify/config", "/api/shopify/test", "/api/shopify/sync", "/api/daily-brief/schedule", "/api/daily-social-content/settings", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/communication-style", "/api/onboarding/complete", "/api/onboarding/skip", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/local-network-access", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
     ONBOARDING_OPEN_GETS = {"/api/dashboard", "/api/setup"}
     ONBOARDING_OPEN_POSTS = {"/api/dashboard-password", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/license/activate", "/api/agent-model/connect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/agent-model/runtime", "/api/onboarding/communication-style", "/api/onboarding/complete"}
     GET_JSON_ROUTES = {
@@ -11772,6 +11900,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         "/api/brand-guides/general": save_general_brand_memory,
         "/api/brand-guides/logo": save_brand_logo_asset,
         "/api/brand-guides/product": save_product_brand_memory,
+        "/api/product-catalog/import": import_product_catalog_memory,
+        "/api/product-catalog/search": search_product_catalog_memory,
         "/api/ad-briefs": save_ad_brief_memory,
         "/api/codex/creative-plan": codex_creative_plan,
         "/api/codex/image-generate": codex_image_generate,
@@ -12147,6 +12277,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 def write_static_snapshot():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    run_product_data_migrations()
     if not METRICS_FILE.exists():
         legacy_demo_metrics_env = "ADMI" + "RO_ALLOW_DEMO_METRICS"
         demo_metrics_allowed = env_bool("ADMIRA_ALLOW_DEMO_METRICS", env_bool(legacy_demo_metrics_env, False))

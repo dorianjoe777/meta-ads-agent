@@ -32,7 +32,10 @@ GENERAL_EXAMPLE = BRAND_DIR / "general_branding.example.md"
 PRODUCT_EXAMPLE = PRODUCT_DIR / "product.example.md"
 AD_BRIEF_EXAMPLE = AD_BRIEF_DIR / "ad_brief.example.md"
 BUSINESS_PROFILE_FILE = ROOT_DIR / "dashboard" / "data" / "business_profile.json"
-MAX_GUIDE_FIELD_CHARS = 1600
+MAX_GUIDE_FIELD_CHARS = 8000
+MAX_BASE_PRODUCTS = 50
+MAX_PRODUCT_GUIDES = 100
+MAX_AD_BRIEFS = 100
 GENERAL_FIELD_LABELS = {
     "brand_name": "Nombre de marca",
     "category": "Categoria",
@@ -139,9 +142,20 @@ GENERAL_FIELD_ALIASES = {
 }
 PRODUCT_FIELD_LABELS = {
     "name": "Nombre",
+    "sku": "SKU o codigo",
+    "kind": "Tipo de producto",
+    "category": "Categoria del producto",
+    "status": "Estado del producto",
     "url": "Link",
     "price": "Precio o rango",
+    "cost": "Costo",
+    "margin": "Margen",
+    "short_description": "Resumen corto",
+    "description": "Descripcion detallada",
     "includes": "Que incluye",
+    "features": "Caracteristicas",
+    "variants": "Variantes",
+    "availability": "Disponibilidad",
     "audience": "Para quien es",
     "not_for": "Para quien no es",
     "pain": "Dolor principal",
@@ -158,6 +172,13 @@ PRODUCT_FIELD_LABELS = {
     "avoid": "No mostrar",
     "strong_phrases": "Frases fuertes permitidas",
     "avoid_phrases": "Frases que evitar",
+    "assets": "Fotos o activos del producto",
+    "tags": "Etiquetas",
+    "components": "Productos incluidos en el conjunto",
+    "cross_sell": "Venta cruzada sugerida",
+    "upsell": "Upsell sugerido",
+    "source": "Fuente de informacion",
+    "additional_details": "Detalles adicionales",
 }
 AD_BRIEF_FIELD_LABELS = {
     "name": "Nombre del brief",
@@ -191,15 +212,33 @@ AD_BRIEF_FIELD_LABELS = {
 
 PRODUCT_FIELD_ALIASES = {
     "name": ("Nombre del producto", "Producto", "Oferta", "Product", "Product name", "product_name", "main_offer"),
+    "sku": ("SKU", "Codigo", "Código", "ID producto", "Product ID", "Referencia"),
+    "kind": ("Tipo", "Product type", "Clase", "Tipo de oferta"),
+    "category": ("Categoria", "Categoría", "Category", "Coleccion", "Colección"),
+    "status": ("Estado", "Status", "Activo", "Disponibilidad comercial"),
     "url": ("URL", "Website", "Landing", "Link del producto"),
     "price": ("Precio", "Rango de precio", "Price"),
+    "cost": ("Costo", "Cost", "Coste"),
+    "margin": ("Margen", "Margin", "Margen bruto"),
+    "short_description": ("Resumen", "Descripcion corta", "Descripción corta", "Short description"),
+    "description": ("Descripcion", "Descripción", "Descripcion completa", "Detailed description", "Description"),
     "includes": ("Incluye", "Inclusiones", "Inclusions"),
+    "features": ("Caracteristicas", "Características", "Features", "Atributos"),
+    "variants": ("Variantes", "Variants", "Opciones", "Tallas", "Sabores"),
+    "availability": ("Disponibilidad", "Availability", "Stock", "Inventario"),
     "audience": ("Audiencia", "Publico", "Público", "Cliente ideal", "Comprador ideal", "Buyer", "Target audience", "target_audience", "Para quién es"),
     "pain": ("Problema", "Problema que resuelve", "Dolor", "Necesidad", "Pain", "Pain point", "problem_solved"),
     "desire": ("Beneficio", "Beneficio principal", "Deseo", "Resultado deseado", "Resultado", "Value prop", "main_benefit"),
     "objections": ("Objeciones", "Objeciones comunes", "Objections"),
     "show": ("Mostrar visualmente", "Debe mostrar", "Must show"),
     "avoid": ("Evitar", "No usar", "Must avoid"),
+    "assets": ("Fotos", "Imagenes", "Imágenes", "Assets", "Media", "Product images"),
+    "tags": ("Etiquetas", "Tags", "Keywords", "Palabras clave"),
+    "components": ("Componentes", "Productos incluidos", "Bundle products", "Pack", "Conjunto"),
+    "cross_sell": ("Venta cruzada", "Cross sell", "Cross-sell", "Complementos"),
+    "upsell": ("Upsell", "Mejora sugerida", "Upgrade"),
+    "source": ("Fuente", "Source", "Documento origen"),
+    "additional_details": ("Detalles adicionales", "Otros datos", "Additional details", "Notas"),
 }
 
 AD_BRIEF_FIELD_ALIASES = {
@@ -227,14 +266,32 @@ AD_BRIEF_FIELD_ALIASES = {
 
 PRODUCT_PAYLOAD_ALIASES = {
     "name": ("product_name", "product", "offer", "offer_name", "main_offer"),
+    "sku": ("product_id", "code", "codigo", "reference"),
+    "kind": ("type", "product_type", "offer_type"),
+    "category": ("product_category", "collection"),
+    "status": ("product_status", "active"),
     "url": ("website", "website_url", "landing_url", "link"),
     "price": ("price_range",),
+    "cost": ("unit_cost", "product_cost"),
+    "margin": ("gross_margin",),
+    "short_description": ("summary", "short_desc"),
+    "description": ("detailed_description", "long_description", "details"),
     "includes": ("inclusions", "included"),
+    "features": ("attributes", "specifications"),
+    "variants": ("options",),
+    "availability": ("stock", "inventory"),
     "audience": ("target_audience", "buyer", "ideal_customer", "customer", "audience_slice"),
     "pain": ("problem", "problem_solved", "pain_point", "need", "needs"),
     "desire": ("benefit", "benefits", "main_benefit", "desired_outcome", "value_prop"),
     "show": ("must_show", "visual_must_show"),
     "avoid": ("must_avoid", "visual_must_avoid"),
+    "assets": ("images", "photos", "media", "asset_paths"),
+    "tags": ("keywords", "labels"),
+    "components": ("component_products", "bundle_products", "included_products"),
+    "cross_sell": ("cross_sell_products", "related_products"),
+    "upsell": ("upsell_product", "upgrade_product"),
+    "source": ("source_document", "import_source"),
+    "additional_details": ("extra", "extra_fields", "notes"),
 }
 
 GENERAL_PAYLOAD_ALIASES = {
@@ -694,17 +751,22 @@ def build_offer_map_markdown():
         "",
     ]
     product_lines = []
-    for path in products[:30]:
+    for path in products[:MAX_PRODUCT_GUIDES]:
         fields = product_fields(read_text(path))
         product_lines.extend(
             [
                 f"### {fields.get('name') or path.stem.replace('-', ' ').title()}",
                 "",
                 f"- Archivo: `brand_guides/products/{path.name}`",
+                _offer_map_line("SKU/código", fields.get("sku")),
+                _offer_map_line("Tipo", fields.get("kind")),
+                _offer_map_line("Categoría", fields.get("category")),
                 _offer_map_line("Audiencia", fields.get("audience")),
                 _offer_map_line("Problema", fields.get("pain")),
                 _offer_map_line("Deseo/beneficio", fields.get("desire")),
                 _offer_map_line("Precio", fields.get("price")),
+                _offer_map_line("Productos incluidos", fields.get("components")),
+                _offer_map_line("Etiquetas", fields.get("tags")),
                 _offer_map_line("Debe mostrar", fields.get("show")),
                 _offer_map_line("Evitar", fields.get("avoid")),
                 "",
@@ -713,7 +775,7 @@ def build_offer_map_markdown():
     lines.extend(product_lines or ["- Todavía no hay ofertas hijas guardadas. Cuando aparezca una oferta específica, guárdala como producto/oferta separada.", ""])
     lines.extend(["## Briefs publicitarios guardados", ""])
     brief_lines = []
-    for path in ad_briefs[:30]:
+    for path in ad_briefs[:MAX_AD_BRIEFS]:
         fields = ad_brief_fields(read_text(path))
         brief_lines.extend(
             [
@@ -765,9 +827,9 @@ def brand_guide_status():
         "creative_references_exists": CREATIVE_REFERENCES_FILE.exists(),
         "creative_references": str(CREATIVE_REFERENCES_FILE),
         "product_count": len(products),
-        "product_guides": [str(path) for path in products[:20]],
+        "product_guides": [str(path) for path in products[:MAX_PRODUCT_GUIDES]],
         "ad_brief_count": len(ad_briefs),
-        "ad_briefs": [str(path) for path in ad_briefs[:20]],
+        "ad_briefs": [str(path) for path in ad_briefs[:MAX_AD_BRIEFS]],
         "codex_cli": getattr(load_config(), "codex_cli", "codex"),
     }
 
@@ -777,7 +839,7 @@ def guide_library():
     products = sorted(path for path in PRODUCT_DIR.glob("*.md") if path.name != "product.example.md") if PRODUCT_DIR.exists() else []
     ad_briefs = sorted(path for path in AD_BRIEF_DIR.glob("*.md") if path.name != "ad_brief.example.md") if AD_BRIEF_DIR.exists() else []
     product_cards = []
-    for path in products[:20]:
+    for path in products[:MAX_PRODUCT_GUIDES]:
         fields = product_fields(read_text(path))
         product_ready = bool(fields.get("name") and fields.get("audience") and (fields.get("pain") or fields.get("desire") or fields.get("includes") or fields.get("show")))
         product_cards.append(
@@ -791,7 +853,7 @@ def guide_library():
             }
         )
     brief_cards = []
-    for path in ad_briefs[:30]:
+    for path in ad_briefs[:MAX_AD_BRIEFS]:
         fields = ad_brief_fields(read_text(path))
         product_id = ""
         if fields.get("product_guide"):
@@ -886,9 +948,20 @@ def render_product_guide(fields):
 ## Producto
 
 - Nombre: {fields.get('name', '')}
+- SKU o codigo: {fields.get('sku', '')}
+- Tipo de producto: {fields.get('kind', '')}
+- Categoria del producto: {fields.get('category', '')}
+- Estado del producto: {fields.get('status', '')}
 - Link: {fields.get('url', '')}
 - Precio o rango: {fields.get('price', '')}
+- Costo: {fields.get('cost', '')}
+- Margen: {fields.get('margin', '')}
+- Resumen corto: {fields.get('short_description', '')}
+- Descripcion detallada: {fields.get('description', '')}
 - Que incluye: {fields.get('includes', '')}
+- Caracteristicas: {fields.get('features', '')}
+- Variantes: {fields.get('variants', '')}
+- Disponibilidad: {fields.get('availability', '')}
 - Para quien es: {fields.get('audience', '')}
 - Para quien no es: {fields.get('not_for', '')}
 
@@ -914,6 +987,16 @@ def render_product_guide(fields):
 - No mostrar: {fields.get('avoid', '')}
 - Frases fuertes permitidas: {fields.get('strong_phrases', '')}
 - Frases que evitar: {fields.get('avoid_phrases', '')}
+- Fotos o activos del producto: {fields.get('assets', '')}
+
+## Relacion con el catalogo
+
+- Etiquetas: {fields.get('tags', '')}
+- Productos incluidos en el conjunto: {fields.get('components', '')}
+- Venta cruzada sugerida: {fields.get('cross_sell', '')}
+- Upsell sugerido: {fields.get('upsell', '')}
+- Fuente de informacion: {fields.get('source', '')}
+- Detalles adicionales: {fields.get('additional_details', '')}
 
 ## Prompt base del producto
 
@@ -1041,7 +1124,7 @@ def save_general_guide(payload):
     return guide_library()
 
 
-def save_product_guide(payload):
+def save_product_guide(payload, refresh=True):
     payload = normalize_product_payload(payload)
     existing_id = product_slug(payload.get("id")) if payload.get("id") else ""
     current_path = PRODUCT_DIR / f"{existing_id}.md" if existing_id else None
@@ -1054,7 +1137,8 @@ def save_product_guide(payload):
         raise ValueError("Elige otro nombre de producto.")
     path = PRODUCT_DIR / f"{product_id}.md"
     write_text(path, render_product_guide(fields))
-    refresh_offer_map()
+    if refresh:
+        refresh_offer_map()
     return {"library": guide_library(), "product_id": product_id, "guide": product_reference(path)}
 
 

@@ -108,12 +108,12 @@ if command -v hermes >/dev/null 2>&1; then
 else
   echo "Hermes Agent was not found."
   echo "Attempting to install Hermes Agent so the manager can use ChatGPT/Codex OAuth through Hermes."
-  python3 -m pip install --user "mcp>=1.0.0" "python-telegram-bot>=21,<22" "git+https://github.com/NousResearch/hermes-agent.git@${HERMES_AGENT_REF}" || echo "Hermes install failed. Install it manually, then run: hermes auth add openai-codex --no-browser"
+  python3 -m pip install --user --break-system-packages "mcp>=1.0.0" "python-telegram-bot>=21,<22" "openpyxl>=3.1,<4" "pypdf>=5,<7" "xlrd>=2,<3" "git+https://github.com/NousResearch/hermes-agent.git@${HERMES_AGENT_REF}" || echo "Hermes install failed. Install it manually, then run: hermes auth add openai-codex --no-browser"
 fi
 
-python3 - <<'PY' || python3 -m pip install --user "mcp>=1.0.0" "python-telegram-bot>=21,<22" || echo "MCP/Telegram package install failed. Hermes Telegram tools may need: python3 -m pip install --user mcp python-telegram-bot"
+python3 - <<'PY' || python3 -m pip install --user --break-system-packages "mcp>=1.0.0" "python-telegram-bot>=21,<22" "openpyxl>=3.1,<4" "pypdf>=5,<7" "xlrd>=2,<3" || echo "Required package install failed. Product catalog documents may need: python3 -m pip install --user openpyxl pypdf xlrd"
 import importlib.util
-required = ("mcp", "telegram")
+required = ("mcp", "telegram", "openpyxl", "pypdf", "xlrd")
 raise SystemExit(0 if all(importlib.util.find_spec(name) for name in required) else 1)
 PY
 

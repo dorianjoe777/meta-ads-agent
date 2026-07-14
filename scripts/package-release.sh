@@ -66,6 +66,30 @@ rsync -a "$ROOT_DIR/" "$STAGING_DIR/" \
   --exclude "*.pyc" \
   --exclude "*.log"
 
+python3 - "$STAGING_DIR" <<'PY'
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+version = (root / "VERSION").read_text(encoding="utf-8").strip()
+env_version = ""
+for line in (root / ".env.example").read_text(encoding="utf-8").splitlines():
+    if line.startswith("META_ADS_AGENT_VERSION="):
+        env_version = line.split("=", 1)[1].strip()
+        break
+if not version or env_version != version:
+    raise SystemExit(f"Release blocked: VERSION/.env.example mismatch ({version!r} != {env_version!r})")
+required = [
+    "dashboard/monitoring-dashboard.py",
+    "src/product_catalog.py",
+    "agent/skills/product-catalog-management/SKILL.md",
+    "scripts/install-local.sh",
+]
+missing = [item for item in required if not (root / item).exists()]
+if missing:
+    raise SystemExit("Release blocked: missing required files: " + ", ".join(missing))
+PY
+
 python3 - "$STAGING_DIR/installer/release-bootstrap.env" <<'PY'
 import os
 import sys

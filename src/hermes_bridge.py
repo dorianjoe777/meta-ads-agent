@@ -635,6 +635,7 @@ def write_product_skill_workspace_files():
             "",
             "- Business discovery: `business-onboarding/SKILL.md`.",
             "- Brand/logo/assets: `brand-and-assets/SKILL.md`.",
+            "- Product catalogs, exact SKU recall, bundles, and cross-sells: `product-catalog-management/SKILL.md`.",
             "- Organic posts/content calendar: `organic-content-strategy/SKILL.md`.",
             "- Creative ideas/tests: `creative-strategy/SKILL.md`.",
             "- Codex/Image production: `creative-production-codex-image/SKILL.md`.",

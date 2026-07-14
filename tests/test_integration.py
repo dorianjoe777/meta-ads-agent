@@ -47,6 +47,7 @@ import signal_quality
 import shopify_connector
 import verified_signal_ledger
 import admira_hermes_runtime_patch
+import product_catalog
 from audience_builder import build_audience_strategy
 from codex_brand_guides import build_codex_creative_prompt, build_codex_image_prompt_package
 import codex_brand_guides
@@ -2553,12 +2554,13 @@ class IntegrationTestSuite:
             organic_content_skill = workspace_path / "skills" / "organic-content-strategy" / "SKILL.md"
             creative_strategy_skill = workspace_path / "skills" / "creative-strategy" / "SKILL.md"
             meta_execution_skill = workspace_path / "skills" / "meta-campaign-execution" / "SKILL.md"
+            product_catalog_skill = workspace_path / "skills" / "product-catalog-management" / "SKILL.md"
             skills_readme = (workspace_path / "skills" / "README.md").read_text(encoding="utf-8")
             agents_text = (workspace_path / "AGENTS.md").read_text(encoding="utf-8")
 
             self.assert_true(creative_skill.exists() and branding_skill.exists() and campaign_skill.exists() and approvals_skill.exists(), "Focused product skill files are copied into the Hermes workspace")
-            self.assert_true(core_skill.exists() and continuity_skill.exists() and brand_assets_skill.exists() and organic_content_skill.exists() and creative_strategy_skill.exists() and meta_execution_skill.exists(), "Modular product skills are copied into the Hermes workspace")
-            self.assert_true("Mandatory first reads" in skills_readme and "core-agent-behavior" in skills_readme and "session-continuity" in skills_readme and "organic-content-strategy" in skills_readme and "Legacy compatibility shims" in skills_readme, "Skills README routes Hermes through mandatory behavior/continuity, organic content, and legacy shims")
+            self.assert_true(core_skill.exists() and continuity_skill.exists() and brand_assets_skill.exists() and organic_content_skill.exists() and creative_strategy_skill.exists() and meta_execution_skill.exists() and product_catalog_skill.exists(), "Modular product and catalog skills are copied into the Hermes workspace")
+            self.assert_true("Mandatory first reads" in skills_readme and "core-agent-behavior" in skills_readme and "session-continuity" in skills_readme and "product-catalog-management" in skills_readme and "organic-content-strategy" in skills_readme and "Legacy compatibility shims" in skills_readme, "Skills README routes Hermes through mandatory behavior/continuity, product catalogs, organic content, and legacy shims")
             self.assert_true("mcp_admira_codex_image_generate" in creative_skill.read_text(encoding="utf-8"), "Creative skill points Hermes to the Codex/Image MCP tool")
             self.assert_true("logo" in branding_skill.read_text(encoding="utf-8").lower() and "mcp_admira_save_brand_memory" in branding_skill.read_text(encoding="utf-8"), "Branding skill teaches Hermes to save logo-aware creative memory")
             branding_text = branding_skill.read_text(encoding="utf-8")
@@ -2566,6 +2568,7 @@ class IntegrationTestSuite:
             brand_assets_text = brand_assets_skill.read_text(encoding="utf-8")
             organic_content_text = organic_content_skill.read_text(encoding="utf-8")
             creative_strategy_text = creative_strategy_skill.read_text(encoding="utf-8")
+            product_catalog_text = product_catalog_skill.read_text(encoding="utf-8")
             self.assert_true("Image 2 is one production tool; it is never the strategy" in branding_text and "Budget informs testing and launch planning, but it does not block draft image generation" in branding_text, "Branding skill separates creative strategy from the available image tool without making budget block drafts")
             self.assert_true("Meta Ad Library" in branding_text and "not private CPA, ROAS, or conversions" in branding_text, "Branding skill supports evidence-labeled competitor creative research without claiming public conversion data")
             self.assert_true("ElevenLabs" in branding_text and "photorealism" in branding_text and "reference_image_paths" in branding_text, "Branding skill covers UGC guidance, real-world photorealism, and uploaded references")
@@ -2576,6 +2579,8 @@ class IntegrationTestSuite:
             self.assert_true("self-contained `request`" in organic_content_text and "generic call" in organic_content_text and "Do not turn every organic post" in organic_content_text and "most recently approved reference" in organic_content_text, "Organic skill prevents stale-offer contamination and keeps educational content distinct from direct-response ads")
             self.assert_true("likely placements" in branding_text and "vertical Reels version" in campaign_text and "Expert Configuration Posture" in campaign_text, "Skills teach proactive expert placement strategy instead of rigid placement defaults")
             self.assert_true("mcp_admira_preflight_campaign" in campaign_text and "object_story_spec" in campaign_text and "custom_audiences" in campaign_text, "Campaign skill teaches preflight and expert campaign controls")
+            self.assert_true("mcp_admira_import_product_catalog" in product_catalog_text and "mcp_admira_search_product_catalog" in product_catalog_text and "50 products" in product_catalog_text and "separate child offer" in product_catalog_text, "Catalog skill imports, retrieves, and isolates large catalogs and bundle offers")
+            self.assert_true("mcp_admira_import_product_catalog" in agents_text and "mcp_admira_search_product_catalog" in agents_text and "multi-product" in agents_text.lower(), "Top-level Hermes rules require catalog retrieval instead of relying on the last discussed product")
             self.assert_true("three most important success metrics" in campaign_text and "success_metrics" in campaign_text and "mcp_admira_save_ads_onboarding" in agents_text, "Hermes workspace teaches campaign scorecards and exposes ads onboarding memory")
             self.assert_true("prefilled_message" in campaign_text and "welcome_message" in campaign_text and "quick_replies" in campaign_text and "unsolicited first messages" in agents_text, "Hermes workspace teaches click-to-message initial-message setup without implying unsolicited outreach")
             self.assert_true("mcp_admira_fetch_public_asset" in agents_text and "Google Drive" in campaign_text and "public video" in branding_text, "Hermes workspace teaches public link and Drive creative retrieval")
@@ -2728,6 +2733,8 @@ class IntegrationTestSuite:
             staged_social_post = admira_tool_bridge.call_tool("mcp_admira_stage_organic_social_post", {"page_id": "page_1", "caption": "Post aprobado", "image_path": str(generated_image)})
             content_asset = admira_tool_bridge.call_tool("mcp_admira_save_content_asset", {"category": "location", "purpose": "usar como fondo real del local"})
             durable_memory = admira_tool_bridge.call_tool("mcp_admira_save_durable_memory", {"category": "decision", "scope": "campaign", "summary": "Usar LATAM"})
+            catalog_import = admira_tool_bridge.call_tool("mcp_admira_import_product_catalog", {"products": [{"name": "Producto A", "sku": "A-1"}]})
+            catalog_search = admira_tool_bridge.call_tool("mcp_admira_search_product_catalog", {"query": "A-1"})
             scheduled_activation = admira_tool_bridge.call_tool("mcp_admira_schedule_campaign_activation", {"campaign_id": "120250293867690096", "scheduled_at": "2026-07-13T07:00:00-05:00", "buyer_authorized": True, "creative_ready_confirmed": True})
             approval = admira_tool_bridge.call_tool("mcp_admira_approve_action", {"approval_id": "approval_1"})
             pending = admira_tool_bridge.call_tool("list_pending_approvals", {})
@@ -2754,6 +2761,7 @@ class IntegrationTestSuite:
             self.assert_true(staged_social_post["product_tool"] == "stage_organic_social_post" and "stage_organic_social_post" in called_tools, "Tool bridge maps each exact organic image/caption into a protected publication draft")
             self.assert_true(content_asset["product_tool"] == "save_content_asset" and "save_content_asset" in called_tools, "Tool bridge maps buyer-shared content assets to the dashboard handler")
             self.assert_true(durable_memory["product_tool"] == "save_durable_memory" and "save_durable_memory" in called_tools, "Tool bridge maps confirmed fallback decisions to durable product memory")
+            self.assert_true(catalog_import["product_tool"] == "import_product_catalog" and catalog_search["product_tool"] == "search_product_catalog" and "import_product_catalog" in called_tools and "search_product_catalog" in called_tools, "Tool bridge maps catalog import and exact retrieval into the protected dashboard handlers")
             self.assert_true(scheduled_activation["product_tool"] == "schedule_campaign_activation" and "schedule_campaign_activation" in called_tools, "Tool bridge maps exact future campaign activation to the deterministic scheduler")
             approval_call = next(call for call in calls if call[0]["tool"] == "approval_decision")
             self.assert_true(approval["product_tool"] == "approval_decision" and approval_call[0]["arguments"]["decision"] == "approve", "Tool bridge converts approval MCP calls to exact approval decisions")
@@ -2783,7 +2791,7 @@ class IntegrationTestSuite:
             tool_names = [tool["name"] for tool in captured[1]["result"]["tools"]]
             call_text = captured[2]["result"]["content"][0]["text"]
             self.assert_true(captured[0]["result"]["serverInfo"]["name"] == "admira", "MCP server initializes as Admira")
-            self.assert_true("codex_image_generate" in tool_names and "stage_campaign" in tool_names and "schedule_campaign_activation" in tool_names and "stage_lead_form" in tool_names and "list_lead_forms" in tool_names and "approve_action" in tool_names and "review_signal_quality" in tool_names and "preflight_campaign" in tool_names and "fetch_public_asset" in tool_names and "record_verified_signal" in tool_names and "save_ads_onboarding" in tool_names and "save_daily_social_content_settings" in tool_names and "stage_organic_social_post" in tool_names and "save_content_asset" in tool_names and "save_durable_memory" in tool_names, "MCP server lists product tools for Hermes")
+            self.assert_true("codex_image_generate" in tool_names and "stage_campaign" in tool_names and "schedule_campaign_activation" in tool_names and "stage_lead_form" in tool_names and "list_lead_forms" in tool_names and "approve_action" in tool_names and "review_signal_quality" in tool_names and "preflight_campaign" in tool_names and "fetch_public_asset" in tool_names and "record_verified_signal" in tool_names and "save_ads_onboarding" in tool_names and "save_daily_social_content_settings" in tool_names and "stage_organic_social_post" in tool_names and "save_content_asset" in tool_names and "save_durable_memory" in tool_names and "import_product_catalog" in tool_names and "search_product_catalog" in tool_names, "MCP server lists product and multi-product catalog tools for Hermes")
             self.assert_true('"tool": "admira_codex_image_generate"' in call_text and '"request": "imagen"' in call_text, "MCP server calls the product bridge with Admira-prefixed tool names")
         finally:
             admira_mcp_server.write_message = original_write
@@ -4460,6 +4468,126 @@ class IntegrationTestSuite:
             dashboard.recent_creative_refreshes = original_recent
             shutil.rmtree(refresh_dir, ignore_errors=True)
             outside_path.unlink(missing_ok=True)
+
+    def test_product_catalog_imports_fifty_products_and_recalls_exact_offers(self):
+        """A 50-product spreadsheet stays searchable and supports separate bundle offers."""
+        print("\nTesting 50-product Catalog Import and Recall...")
+
+        from openpyxl import Workbook
+
+        codex_names = [
+            "ROOT_DIR", "BRAND_DIR", "PRODUCT_DIR", "AD_BRIEF_DIR", "BRAND_ASSET_DIR", "GENERAL_GUIDE",
+            "CREATIVE_REFERENCES_FILE", "OFFER_MAP_FILENAME", "GENERAL_EXAMPLE", "PRODUCT_EXAMPLE",
+            "AD_BRIEF_EXAMPLE", "BUSINESS_PROFILE_FILE",
+        ]
+        catalog_names = ["ROOT_DIR", "PRODUCT_DIR", "PRODUCT_IMPORT_DIR", "CATALOG_INDEX_FILE"]
+        codex_original = {name: getattr(codex_brand_guides, name) for name in codex_names}
+        catalog_original = {name: getattr(product_catalog, name) for name in catalog_names}
+        prior_pypdf = sys.modules.get("pypdf")
+        with tempfile.TemporaryDirectory() as tmp_name:
+            root = Path(tmp_name)
+            brand = root / "brand_guides"
+            products_dir = brand / "products"
+            briefs_dir = brand / "ad_briefs"
+            data_dir = root / "dashboard" / "data"
+            documents_dir = data_dir / "hermes-home" / "cache" / "documents"
+            products_dir.mkdir(parents=True)
+            briefs_dir.mkdir(parents=True)
+            documents_dir.mkdir(parents=True)
+            try:
+                codex_brand_guides.ROOT_DIR = root
+                codex_brand_guides.BRAND_DIR = brand
+                codex_brand_guides.PRODUCT_DIR = products_dir
+                codex_brand_guides.AD_BRIEF_DIR = briefs_dir
+                codex_brand_guides.BRAND_ASSET_DIR = brand / "assets"
+                codex_brand_guides.GENERAL_GUIDE = brand / "general_branding.md"
+                codex_brand_guides.CREATIVE_REFERENCES_FILE = brand / "creative_references.md"
+                codex_brand_guides.GENERAL_EXAMPLE = brand / "general_branding.example.md"
+                codex_brand_guides.PRODUCT_EXAMPLE = products_dir / "product.example.md"
+                codex_brand_guides.AD_BRIEF_EXAMPLE = briefs_dir / "ad_brief.example.md"
+                codex_brand_guides.BUSINESS_PROFILE_FILE = data_dir / "business_profile.json"
+                product_catalog.ROOT_DIR = root
+                product_catalog.PRODUCT_DIR = products_dir
+                product_catalog.PRODUCT_IMPORT_DIR = data_dir / "product-imports"
+                product_catalog.CATALOG_INDEX_FILE = brand / "catalog-index.json"
+                codex_brand_guides.GENERAL_GUIDE.write_text(
+                    "# Guia general de marca\n\n- Nombre de marca: Catálogo Grande\n- Que vende: productos de bienestar\n",
+                    encoding="utf-8",
+                )
+
+                workbook_path = documents_dir / "catalogo-50.xlsx"
+                workbook = Workbook()
+                sheet = workbook.active
+                sheet.title = "Productos"
+                sheet.append(["SKU", "Nombre", "Categoria", "Precio", "Descripcion", "Beneficio", "Tags", "Dato interno especial"])
+                for index in range(1, 51):
+                    sheet.append([
+                        f"SKU-{index:03}", f"Producto {index}", f"Categoría {index % 5}", f"USD {index * 3}",
+                        f"Descripción detallada y exclusiva del producto {index}", f"Beneficio específico {index}",
+                        f"tag-{index}, bienestar", f"detalle no mapeado {index}",
+                    ])
+                workbook.save(workbook_path)
+
+                imported = product_catalog.import_product_catalog({"file_paths": [str(workbook_path)]})
+                exact = product_catalog.search_product_catalog({"query": "SKU-037"})
+                category = product_catalog.search_product_catalog({"query": "Categoría 3", "limit": 20})
+                self.assert_true(imported["imported_count"] == 50 and imported["product_count"] == 50, "Excel imports all 50 products without truncating the catalog")
+                self.assert_true(exact["matches"][0]["name"] == "Producto 37" and exact["matches"][0]["sku"] == "SKU-037", "Catalog recall resolves an exact product by SKU")
+                self.assert_true(len(category["matches"]) >= 10, "Catalog search retrieves a whole relevant product category")
+                product_37 = codex_brand_guides.product_fields((products_dir / exact["matches"][0]["guide"].split("/")[-1]).read_text(encoding="utf-8"))
+                self.assert_true("detalle no mapeado 37" in product_37["additional_details"] and "Descripción detallada" in product_37["description"], "Import preserves mapped and previously unknown product details")
+
+                bundle = product_catalog.import_product_catalog({
+                    "products": [{
+                        "nombre": "Kit Inicio Bienestar",
+                        "tipo": "bundle",
+                        "componentes": "SKU-001, SKU-002, SKU-003",
+                        "precio": "USD 15",
+                        "público": "personas que comienzan una rutina",
+                        "beneficio": "empezar con una combinación sencilla",
+                    }]
+                })
+                bundle_match = product_catalog.search_product_catalog({"query": "Kit Inicio Bienestar"})["matches"][0]
+                bundle_prompt = codex_brand_guides.build_codex_creative_prompt(product_guide=bundle_match["guide"], request="Crea contenido para este kit")
+                self.assert_true(bundle["product_count"] == 51 and "SKU-001, SKU-002, SKU-003" in bundle_prompt, "Spanish structured input becomes a separate bundle offer and keeps exact component relationships")
+                self.assert_true(len(codex_brand_guides.guide_library()["products"]) == 51, "Product library no longer truncates multi-product recall at 20 records")
+
+                overflow_path = documents_dir / "producto-51.csv"
+                overflow_path.write_text("SKU,Nombre\nSKU-051,Producto 51\n", encoding="utf-8")
+                try:
+                    product_catalog.import_product_catalog({"file_paths": [str(overflow_path)]})
+                    overflow_blocked = False
+                except ValueError as exc:
+                    overflow_blocked = "50 productos base" in str(exc)
+                self.assert_true(overflow_blocked, "Catalog blocks a 51st base product while still allowing separate derived bundles")
+
+                class FakePage:
+                    def extract_text(self):
+                        return "Producto: Producto 1\nSKU: SKU-001\nPrecio: USD 99\nDescripcion: Descripción ampliada desde PDF\nBeneficio: plan claro"
+
+                class FakeReader:
+                    def __init__(self, _path):
+                        self.pages = [FakePage()]
+
+                sys.modules["pypdf"] = types.SimpleNamespace(PdfReader=FakeReader)
+                pdf_path = documents_dir / "servicios.pdf"
+                pdf_path.write_bytes(b"%PDF-1.4 fake test fixture")
+                pdf_result = product_catalog.import_product_catalog({"file_paths": [str(pdf_path)]})
+                pdf_match = product_catalog.search_product_catalog({"query": "SKU-001"})["matches"][0]
+                self.assert_true(pdf_result["imported_count"] == 1 and pdf_match["name"] == "Producto 1" and pdf_match["price"] == "USD 99", "Text PDF records update the exact existing product by SKU and remain searchable")
+
+                event = types.SimpleNamespace(media_urls=[str(workbook_path)], media_types=["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"], text="Aquí está mi catálogo")
+                admira_hermes_runtime_patch._append_product_document_contract(event)
+                self.assert_true("mcp_admira_import_product_catalog" in event.text and "mcp_admira_search_product_catalog" in event.text, "Telegram document edge forces catalog import and durable retrieval instead of ephemeral summarization")
+            finally:
+                for name, value in codex_original.items():
+                    setattr(codex_brand_guides, name, value)
+                for name, value in catalog_original.items():
+                    setattr(product_catalog, name, value)
+                if prior_pypdf is None:
+                    sys.modules.pop("pypdf", None)
+                else:
+                    sys.modules["pypdf"] = prior_pypdf
 
     def test_brand_memory_documents_feed_creative_generation(self):
         """Test visual brand/product memory is persisted as Markdown and actually used for creative output."""
@@ -9853,6 +9981,7 @@ class IntegrationTestSuite:
             "OUTPUT_DIR": dashboard.OUTPUT_DIR,
             "UPDATE_SNAPSHOTS_DIR": dashboard.UPDATE_SNAPSHOTS_DIR,
             "VERSION_FILE": dashboard.VERSION_FILE,
+            "ENV_FILE": dashboard.ENV_FILE,
             "ACTIONS_FILE": dashboard.ACTIONS_FILE,
             "METRICS_FILE": dashboard.METRICS_FILE,
             "threading_Timer": dashboard.threading.Timer,
@@ -9880,6 +10009,7 @@ class IntegrationTestSuite:
                 dashboard.OUTPUT_DIR = root / "output"
                 dashboard.UPDATE_SNAPSHOTS_DIR = dashboard.DATA_DIR / "update-snapshots"
                 dashboard.VERSION_FILE = root / "VERSION"
+                dashboard.ENV_FILE = root / ".env"
                 dashboard.ACTIONS_FILE = dashboard.DATA_DIR / "actions.json"
                 dashboard.METRICS_FILE = dashboard.DATA_DIR / "metrics.json"
                 dashboard.threading.Timer = NoopTimer
@@ -9896,7 +10026,9 @@ class IntegrationTestSuite:
                 (release_root / "dashboard" / "monitoring-dashboard.py").write_text("print('new dashboard')\n", encoding="utf-8")
                 (release_root / "src").mkdir()
                 (release_root / "src" / "agent.py").write_text("VERSION='new'\n", encoding="utf-8")
+                (release_root / "src" / "product_catalog.py").write_text("MAX_BASE_PRODUCTS=50\n", encoding="utf-8")
                 (release_root / "scripts").mkdir()
+                (release_root / ".env.example").write_text("META_ADS_AGENT_VERSION=v1.0.2\n", encoding="utf-8")
                 (release_root / ".env").write_text("DASHBOARD_PASSWORD_HASH=release-should-not-win\n", encoding="utf-8")
                 (release_root / "ad-config.json").write_text('{"url":"release-should-not-win"}\n', encoding="utf-8")
                 (release_root / "dashboard" / "data" / "onboarding_state.json").write_text('{"completed":false,"source":"release"}\n', encoding="utf-8")
@@ -9912,6 +10044,14 @@ class IntegrationTestSuite:
                 except ValueError as exc:
                     mismatch_blocked = "no coincide" in str(exc)
                 self.assert_true(mismatch_blocked, "Updater blocks mismatched release ZIPs instead of stamping the expected VERSION over old code")
+                (release_root / ".env.example").write_text("META_ADS_AGENT_VERSION=v1.0.1\n", encoding="utf-8")
+                try:
+                    dashboard.validate_update_package_source(release_root, "v1.0.2")
+                    internal_version_blocked = False
+                except ValueError as exc:
+                    internal_version_blocked = "versiones internas inconsistentes" in str(exc)
+                self.assert_true(internal_version_blocked, "Updater blocks a VERSION/.env.example mismatch before touching an installation")
+                (release_root / ".env.example").write_text("META_ADS_AGENT_VERSION=v1.0.2\n", encoding="utf-8")
                 dashboard.safe_copytree_contents(release_root, root)
                 self.assert_true("DASHBOARD_PASSWORD=old" in (root / ".env").read_text(encoding="utf-8"), "Official update copy preserves buyer .env and dashboard password")
                 self.assert_true('"old"' in (root / "ad-config.json").read_text(encoding="utf-8"), "Official update copy preserves buyer ad-config")
@@ -9928,6 +10068,9 @@ class IntegrationTestSuite:
                 self.assert_true('"new"' in (root / "dashboard" / "data" / "chat_history.json").read_text(encoding="utf-8"), "Rollback preserves current dashboard local memory")
                 self.assert_true((dashboard.UPDATE_SNAPSHOTS_DIR / first["id"]).exists(), "Rollback preserves snapshot storage while restoring code")
                 self.assert_true(result.get("rescue_snapshot_id"), "Rollback creates a rescue snapshot before restoring")
+                automatic = dashboard.restore_update_snapshot({"snapshot_id": first["id"], "restore_version_marker": True})
+                restored_env = (root / ".env").read_text(encoding="utf-8")
+                self.assert_true("DASHBOARD_PASSWORD=new" in restored_env and "META_ADS_AGENT_VERSION=v1.0.0" in restored_env and automatic.get("version_marker_restored"), "Automatic failed-update rollback preserves buyer secrets while restoring the real code version marker")
                 for index in range(4):
                     (root / "VERSION").write_text(f"v1.0.{index + 1}\n", encoding="utf-8")
                     dashboard.create_update_snapshot(release={"channel": "stable", "latest_version": f"v1.0.{index + 2}"})
@@ -9940,6 +10083,106 @@ class IntegrationTestSuite:
                         dashboard.threading.Timer = value
                     else:
                         setattr(dashboard, key, value)
+
+    def test_cumulative_upgrade_matrix_preserves_catalog_and_applies_all_migrations(self):
+        """Skipped releases still install the complete latest snapshot and every data migration."""
+        print("\nTesting Cumulative Upgrade Matrix...")
+
+        dashboard = load_dashboard_module()
+        target_version = (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()
+        upgrade_origins = [("v1.0.141", 0), ("v1.0.147", 1), ("v1.0.149", 2)]
+        dashboard_names = ["ROOT_DIR", "DATA_DIR", "VERSION_FILE", "ENV_FILE", "BRAND_GUIDES_DIR", "PRODUCT_DATA_SCHEMA_FILE"]
+        codex_names = [
+            "ROOT_DIR", "BRAND_DIR", "PRODUCT_DIR", "AD_BRIEF_DIR", "BRAND_ASSET_DIR", "GENERAL_GUIDE",
+            "CREATIVE_REFERENCES_FILE", "GENERAL_EXAMPLE", "PRODUCT_EXAMPLE", "AD_BRIEF_EXAMPLE", "BUSINESS_PROFILE_FILE",
+        ]
+        catalog_names = ["ROOT_DIR", "PRODUCT_DIR", "PRODUCT_IMPORT_DIR", "CATALOG_INDEX_FILE"]
+        dashboard_original = {name: getattr(dashboard, name) for name in dashboard_names}
+        codex_original = {name: getattr(codex_brand_guides, name) for name in codex_names}
+        catalog_original = {name: getattr(product_catalog, name) for name in catalog_names}
+        try:
+            for old_version, old_schema in upgrade_origins:
+                with tempfile.TemporaryDirectory() as tmp_name:
+                    root = Path(tmp_name) / "installation"
+                    release_root = Path(tmp_name) / "latest-release"
+                    products_dir = root / "brand_guides" / "products"
+                    briefs_dir = root / "brand_guides" / "ad_briefs"
+                    data_dir = root / "dashboard" / "data"
+                    products_dir.mkdir(parents=True)
+                    briefs_dir.mkdir(parents=True)
+                    data_dir.mkdir(parents=True)
+                    (root / "dashboard" / "monitoring-dashboard.py").write_text("print('legacy dashboard')\n", encoding="utf-8")
+                    (root / "src").mkdir()
+                    (root / "scripts").mkdir()
+                    (root / "VERSION").write_text(old_version + "\n", encoding="utf-8")
+                    (root / ".env").write_text(f"DASHBOARD_PASSWORD=buyer-secret\nMETA_ADS_AGENT_VERSION={old_version}\n", encoding="utf-8")
+                    (root / "ad-config.json").write_text('{"account":"buyer-account"}\n', encoding="utf-8")
+                    (data_dir / "durable_conversation_memory.json").write_text('{"items":[{"summary":"buyer memory"}]}\n', encoding="utf-8")
+
+                    dashboard.ROOT_DIR = root
+                    dashboard.DATA_DIR = data_dir
+                    dashboard.VERSION_FILE = root / "VERSION"
+                    dashboard.ENV_FILE = root / ".env"
+                    dashboard.BRAND_GUIDES_DIR = root / "brand_guides"
+                    dashboard.PRODUCT_DATA_SCHEMA_FILE = data_dir / "product_data_schema.json"
+                    codex_brand_guides.ROOT_DIR = root
+                    codex_brand_guides.BRAND_DIR = root / "brand_guides"
+                    codex_brand_guides.PRODUCT_DIR = products_dir
+                    codex_brand_guides.AD_BRIEF_DIR = briefs_dir
+                    codex_brand_guides.BRAND_ASSET_DIR = root / "brand_guides" / "assets"
+                    codex_brand_guides.GENERAL_GUIDE = root / "brand_guides" / "general_branding.md"
+                    codex_brand_guides.CREATIVE_REFERENCES_FILE = root / "brand_guides" / "creative_references.md"
+                    codex_brand_guides.GENERAL_EXAMPLE = root / "brand_guides" / "general_branding.example.md"
+                    codex_brand_guides.PRODUCT_EXAMPLE = products_dir / "product.example.md"
+                    codex_brand_guides.AD_BRIEF_EXAMPLE = briefs_dir / "ad_brief.example.md"
+                    codex_brand_guides.BUSINESS_PROFILE_FILE = data_dir / "business_profile.json"
+                    product_catalog.ROOT_DIR = root
+                    product_catalog.PRODUCT_DIR = products_dir
+                    product_catalog.PRODUCT_IMPORT_DIR = data_dir / "product-imports"
+                    product_catalog.CATALOG_INDEX_FILE = root / "brand_guides" / "catalog-index.json"
+
+                    legacy_guide = codex_brand_guides.render_product_guide({
+                        "name": "Producto legado exacto",
+                        "sku": "LEGACY-001",
+                        "category": "Catálogo preservado",
+                        "audience": "compradores existentes",
+                        "desire": "mantener toda su información después de actualizar",
+                        "additional_details": f"origin={old_version}",
+                    })
+                    (products_dir / "producto-legado-exacto.md").write_text(legacy_guide, encoding="utf-8")
+                    if old_schema:
+                        dashboard.write_private_json(dashboard.PRODUCT_DATA_SCHEMA_FILE, {"schema_version": old_schema, "applied": []})
+
+                    (release_root / "dashboard").mkdir(parents=True)
+                    (release_root / "dashboard" / "monitoring-dashboard.py").write_text("print('latest dashboard')\n", encoding="utf-8")
+                    (release_root / "src").mkdir()
+                    (release_root / "src" / "product_catalog.py").write_text("MAX_BASE_PRODUCTS=50\n", encoding="utf-8")
+                    (release_root / "scripts").mkdir()
+                    (release_root / "brand_guides" / "products").mkdir(parents=True)
+                    (release_root / "brand_guides" / "products" / "product.example.md").write_text("# Template only\n", encoding="utf-8")
+                    (release_root / "VERSION").write_text(target_version + "\n", encoding="utf-8")
+                    (release_root / ".env.example").write_text(f"META_ADS_AGENT_VERSION={target_version}\n", encoding="utf-8")
+                    (release_root / ".env").write_text("DASHBOARD_PASSWORD=release-must-not-win\n", encoding="utf-8")
+                    (release_root / "ad-config.json").write_text('{"account":"release-must-not-win"}\n', encoding="utf-8")
+
+                    validation = dashboard.validate_update_package_source(release_root, target_version)
+                    dashboard.safe_copytree_contents(release_root, root)
+                    dashboard.update_env_values({"META_ADS_AGENT_VERSION": target_version})
+                    migration = dashboard.run_product_data_migrations()
+                    recalled = product_catalog.search_product_catalog({"query": "LEGACY-001"})
+                    env_text = (root / ".env").read_text(encoding="utf-8")
+                    self.assert_true(validation["package_version"] == target_version and (root / "VERSION").read_text(encoding="utf-8").strip() == target_version, f"{old_version} can jump directly to the complete latest code snapshot")
+                    self.assert_true("DASHBOARD_PASSWORD=buyer-secret" in env_text and f"META_ADS_AGENT_VERSION={target_version}" in env_text and "buyer-account" in (root / "ad-config.json").read_text(encoding="utf-8"), f"{old_version} preserves buyer secrets/config while updating only the version marker")
+                    self.assert_true((data_dir / "durable_conversation_memory.json").exists() and "buyer memory" in (data_dir / "durable_conversation_memory.json").read_text(encoding="utf-8"), f"{old_version} preserves durable conversation memory")
+                    self.assert_true(migration["schema_version"] == dashboard.CURRENT_PRODUCT_DATA_SCHEMA_VERSION and recalled["matches"][0]["sku"] == "LEGACY-001", f"{old_version} runs every missing idempotent migration and retains exact product recall")
+                    self.assert_true((root / "brand_guides" / "catalog-index.json").exists() and (root / "brand_guides" / "Offer map.md").exists(), f"{old_version} rebuilds derived catalog indexes without replacing buyer product guides")
+        finally:
+            for name, value in dashboard_original.items():
+                setattr(dashboard, name, value)
+            for name, value in codex_original.items():
+                setattr(codex_brand_guides, name, value)
+            for name, value in catalog_original.items():
+                setattr(product_catalog, name, value)
 
     def test_release_package_excludes_runtime_data_and_includes_buyer_docs(self):
         """Test release script is buyer-safe and docs are included in source package."""
@@ -10013,6 +10256,8 @@ class IntegrationTestSuite:
             "scripts/import-migration.sh",
             "scripts/export-migration.ps1",
             "scripts/import-migration.ps1",
+            "src/product_catalog.py",
+            "agent/skills/product-catalog-management/SKILL.md",
             "deploy/digitalocean/cloud-init-strict-access.yaml",
             "installer/release-bootstrap.env",
             "installer/windows/MetaAdsAgentInstaller.nsi",
@@ -10048,6 +10293,7 @@ class IntegrationTestSuite:
         self.assert_true("CODEX_CLI_VERSION=0.142.5" in dockerfile and "HERMES_AGENT_REF=a6b9597d5fb92969d605a858d5f14536e805553a" in dockerfile and "@openai/codex@${CODEX_CLI_VERSION}" in dockerfile and "hermes-agent.git@${HERMES_AGENT_REF}" in dockerfile, "Fresh Docker installs pin the smoke-tested Hermes and Codex builds instead of pulling main/latest drift")
         self.assert_true('CODEX_CLI_VERSION="${CODEX_CLI_VERSION:-0.142.5}"' in install_local and 'HERMES_AGENT_REF="${HERMES_AGENT_REF:-a6b9597d5fb92969d605a858d5f14536e805553a}"' in install_local, "Native installs use the same tested dependency pins with explicit override support")
         self.assert_true("python-telegram-bot>=21,<22" in dockerfile and "python-telegram-bot>=21,<22" in install_local, "Docker/native installs include the Telegram adapter required by Hermes Gateway")
+        self.assert_true("openpyxl>=3.1,<4" in dockerfile and "pypdf>=5,<7" in dockerfile and "xlrd>=2,<3" in dockerfile and "openpyxl>=3.1,<4" in install_local and "pypdf>=5,<7" in install_local and "xlrd>=2,<3" in install_local, "Fresh Docker/native installs can ingest modern Excel, legacy Excel, and PDF product catalogs")
         self.assert_true("CODEX_CREATIVE_ENABLED=true" in dockerfile and 'CODEX_CREATIVE_ENABLED: "true"' in compose and '"CODEX_CREATIVE_ENABLED": "true"' in docker_entrypoint, "Buyer Docker installs enable Codex/Image creative generation by default")
         self.assert_true("CODEX_HOME=/app/runtime/codex" in dockerfile and "CODEX_HOME: /app/runtime/codex" in compose and "/app/runtime/codex/generated_images" in docker_entrypoint, "Docker persists the buyer's ChatGPT/Codex login and generated images across updates")
         self.assert_true("HERMES_DISABLED_TOOLSETS=terminal,code_execution,image_gen,skills" in dockerfile and "HERMES_DISABLED_TOOLSETS: terminal,code_execution,image_gen,skills" in compose and "HERMES_ENABLED_TOOLSETS=memory,session_search,vision,file" in dockerfile, "Docker disables Hermes internal image generation and mutable personal skills so official Admira tools own the experience")
@@ -10059,6 +10305,7 @@ class IntegrationTestSuite:
         self.assert_true("HERMES_STATUS_TIMEOUT_SECONDS=20" in env_example and "HERMES_RESPONSE_TIMEOUT_SECONDS=300" in env_example and '"HERMES_RESPONSE_TIMEOUT_SECONDS": "300"' in docker_entrypoint, "Hermes real replies get a longer timeout than quick status checks")
         self.assert_true("meta_ads_update_snapshots" in compose and "/app/dashboard/data/update-snapshots" in compose, "Docker Compose keeps update rollback snapshots in a named volume")
         self.assert_true("MetaAdsAgent-source.zip" in script, "Release ZIP includes a stable asset name for bootstrap installers")
+        self.assert_true("Release blocked: VERSION/.env.example mismatch" in script and "src/product_catalog.py" in script and "agent/skills/product-catalog-management/SKILL.md" in script, "Release packaging aborts before ZIP creation when versions disagree or required catalog files are absent")
         self.assert_true("install-from-github.ps1" in windows_installer and "install-from-github.sh" in mac_installer and "install-from-github.sh" in linux_installer, "Double-click installers use the shared bootstrap scripts")
         self.assert_true("docker compose up --build" in windows_installer and "./scripts/run-docker.sh" in mac_installer, "Double-click installers launch Docker setup")
         self.assert_true("pkgbuild" in mac_pkg_builder and "productbuild" in mac_pkg_builder, "Mac PKG builder uses native package tools")
@@ -10495,6 +10742,7 @@ class IntegrationTestSuite:
             self.test_codex_image_cli_bridge_copies_generated_asset,
             self.test_agent_codex_image_creative_request_result,
             self.test_creative_studio_protects_and_previews_generated_assets,
+            self.test_product_catalog_imports_fifty_products_and_recalls_exact_offers,
             self.test_brand_memory_documents_feed_creative_generation,
             self.test_agent_onboarding_phase_tools_create_durable_memory,
             self.test_creative_strategy_gate_and_exact_logo_pipeline,
@@ -10545,6 +10793,7 @@ class IntegrationTestSuite:
             self.test_onboarding_state_persists,
             self.test_onboarding_requires_real_meta_data,
             self.test_update_snapshot_retention_and_restore,
+            self.test_cumulative_upgrade_matrix_preserves_catalog_and_applies_all_migrations,
             self.test_release_package_excludes_runtime_data_and_includes_buyer_docs,
         ]
         

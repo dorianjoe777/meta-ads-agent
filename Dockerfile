@@ -28,6 +28,9 @@ RUN npm install -g "@openai/codex@${CODEX_CLI_VERSION}"
 RUN python3 -m pip install --break-system-packages --no-cache-dir \
     "mcp>=1.0.0" \
     "python-telegram-bot>=21,<22" \
+    "openpyxl>=3.1,<4" \
+    "pypdf>=5,<7" \
+    "xlrd>=2,<3" \
     "git+https://github.com/NousResearch/hermes-agent.git@${HERMES_AGENT_REF}"
 
 COPY . .

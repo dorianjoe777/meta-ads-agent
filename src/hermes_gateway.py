@@ -857,7 +857,7 @@ def daily_social_content_prompt(posts_per_day=1, interval_days=1):
 Objetivo: dejar {count} {plural} visual(es) listo(s) para que el comprador los revise/apruebe desde Telegram. No publiques automáticamente.
 
 Antes de crear nada:
-1. Lee `skills/core-agent-behavior/SKILL.md`, `skills/session-continuity/SKILL.md`, `skills/brand-and-assets/SKILL.md`, `skills/organic-content-strategy/SKILL.md`, `skills/creative-strategy/SKILL.md` y `skills/creative-production-codex-image/SKILL.md`.
+1. Lee `skills/core-agent-behavior/SKILL.md`, `skills/session-continuity/SKILL.md`, `skills/brand-and-assets/SKILL.md`, `skills/product-catalog-management/SKILL.md`, `skills/organic-content-strategy/SKILL.md`, `skills/creative-strategy/SKILL.md` y `skills/creative-production-codex-image/SKILL.md`.
 2. Lee `memory/content_asset_library.json`, `memory/content_strategy.md`, `brand_guides/general_branding.md`, `brand_guides/creative_references.md`, productos/briefs y memoria reciente.
 3. Confirma que `memory/content_strategy.md` contiene una estrategia aceptada y que marca/logo/colores/tono/assets ya están claros. Si no, no improvises una tanda: continúa el onboarding que falta y vuelve a guardar la configuración con `mcp_admira_save_daily_social_content_settings` cuando quede lista.
 
@@ -865,6 +865,7 @@ Cuando haya marca suficiente:
 - Usa Codex/Image mediante `mcp_admira_codex_image_generate`.
 - Usa propósito `daily_social_post` o `organic_social_post`, no `standalone_creative` ni campaña pagada.
 - En cada llamada envía un `request` autosuficiente con: tema/oferta activa exacta, pilar (educación, prueba, comunidad, objeción, detrás de cámaras o promoción), objetivo, texto principal visible, formato 4:5, decisión de CTA y referencia aprobada que debe seguir. Está prohibido enviar solo “usa las guías guardadas”.
+- Si hay varios productos, llama `mcp_admira_search_product_catalog` y selecciona deliberadamente el producto, categoría o combinación que corresponde a la estrategia. No uses por defecto el último producto recordado ni mezcles detalles entre fichas.
 - No conviertas automáticamente cada post en anuncio de respuesta directa. Precio, descuento, urgencia y CTA comercial solo aparecen si el pilar elegido es promoción.
 - Si hay varias referencias, prioriza la aprobada más recientemente sobre notas genéricas antiguas cuando exista conflicto.
 - Usa el logo oficial cuando exista y exige `pixel-level accurate` para no alterarlo.
