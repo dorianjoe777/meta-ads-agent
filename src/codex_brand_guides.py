@@ -452,6 +452,7 @@ def creative_reference_allowed_roots():
         BRAND_ASSET_DIR,
         ROOT_DIR / "output",
         ROOT_DIR / "dashboard" / "data" / "uploads",
+        ROOT_DIR / "dashboard" / "data" / "content-assets",
         ROOT_DIR / "dashboard" / "data" / "hermes-workspace" / "current" / "uploads",
         ROOT_DIR / "dashboard" / "data" / "hermes-home" / "cache" / "images",
     ]
@@ -474,7 +475,7 @@ def safe_creative_reference_paths(paths):
             continue
         if any(_path_is_within(path, root) for root in allowed_roots):
             safe.append(path)
-    return safe[:4]
+    return safe[:8]
 
 
 def _path_is_within(path, root):
@@ -2050,6 +2051,7 @@ def publish_generated_image(generated, output_root=None, output_name="creative",
 def codex_image_generation_prompt(prompt, has_references=False, purpose="ad_creative"):
     reference_rules = (
         "- Usa las imágenes adjuntas como referencias visuales reales. Conserva fielmente el producto, persona, empaque o diseño que muestran.\n"
+        "- Si el pedido marca una o más imágenes como ACTIVOS REALES PROTEGIDOS / pixel_locked, no son inspiración: cualquier parte usada debe conservarse con pixel by pixel accuracy, pixel-level accurate reproduction y forma pixel-faithful. Solo recorta, escala, posiciona, enmarca, enmascara bordes o agrega capas encima/alrededor; no regeneres, retoques, reilumines, recolorees, embellezcas ni cambies su contenido.\n"
         "- Si el pedido identifica una imagen adjunta como logo oficial, esa imagen adjunta es la única fuente de verdad del logo. Sigue su contrato de logo protegido: intégrala exactamente como un activo bloqueado, con pixel by pixel accuracy, pixel-level accurate reproduction y reproducción pixel-faithful (fiel píxel por píxel), sin redibujarla, aproximarla ni cambiar texto, símbolos, geometría, proporciones, colores o distribución interna.\n"
         "- Si el pedido indica que el logo se aplicará después, no dibujes ningún logo en la imagen base y deja la zona solicitada limpia.\n"
         if has_references else ""

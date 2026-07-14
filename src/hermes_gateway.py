@@ -868,8 +868,10 @@ Cuando haya marca suficiente:
 - No conviertas automáticamente cada post en anuncio de respuesta directa. Precio, descuento, urgencia y CTA comercial solo aparecen si el pilar elegido es promoción.
 - Si hay varias referencias, prioriza la aprobada más recientemente sobre notas genéricas antiguas cuando exista conflicto.
 - Usa el logo oficial cuando exista y exige `pixel-level accurate` para no alterarlo.
-- Si hay fotos/videos/assets compartidos por el cliente, respeta su categoría y propósito: logo oficial, producto, local, equipo/fundador, cliente/testimonio, referencia de estilo, UGC, oferta, prueba social o no usar.
-- Si un asset no tiene propósito claro, pregunta para qué quiere usarlo antes de basar la estrategia en él.
+- Si hay fotos/videos/assets compartidos por el cliente, selecciona solo items `classified` y aprobados para contenido diario. Nunca uses `pending_agent_review`, `pending_classification`, `do_not_use` o `prohibited`.
+- Para fotos reales del comprador con `preservation_mode=pixel_locked`, pasa sus rutas en `protected_reference_image_paths` o sus IDs en `content_asset_ids`. El request debe exigir literalmente `pixel by pixel accuracy`, `pixel-level accurate reproduction` y `pixel-faithful`: puede recortar, escalar, posicionar, enmarcar, enmascarar bordes o superponer diseño, pero no retocar, embellecer, reiluminar, recolorear, regenerar ni cambiar personas, productos, textos, objetos, arquitectura o fondo.
+- Las `style_reference` con `preservation_mode=style_only` van como referencias normales y solo guían el estilo; no las mezcles con fotos reales protegidas.
+- Si un asset sigue sin propósito claro, haz una sola pregunta agrupada para clasificar la tanda antes de basar la estrategia en ella.
 - Mantén los diseños alineados con colores, tono, referencias y restricciones de marca.
 
 Entrega en Telegram:

@@ -57,6 +57,7 @@ ADMIRA_MINIMAX_PROVIDER_NAME = "MiniMax M3 oficial"
 BASE_ALLOWED_IMAGE_DIRS = (
     ROOT_DIR / "output",
     ROOT_DIR / "dashboard" / "data" / "uploads",
+    ROOT_DIR / "dashboard" / "data" / "content-assets",
     ROOT_DIR / "dashboard" / "data" / "hermes-home" / "cache" / "images",
 )
 IMAGE_PATH_TEXT_KEYS = {
@@ -391,7 +392,7 @@ def image_path_candidates(value, scan_all_strings=False):
     return candidates
 
 
-def safe_image_paths(payload):
+def safe_image_paths(payload, limit=4):
     safe = []
     seen = set()
     for raw_path in image_path_candidates(payload):
@@ -414,7 +415,13 @@ def safe_image_paths(payload):
         if allowed:
             seen.add(str(path))
             safe.append(str(path))
-    return safe[:4]
+    if limit is None:
+        return safe
+    try:
+        bounded = max(0, int(limit))
+    except (TypeError, ValueError):
+        bounded = 4
+    return safe[:bounded]
 
 def read_text(path, limit=MEMORY_TEXT_LIMIT):
     try:

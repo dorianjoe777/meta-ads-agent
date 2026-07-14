@@ -212,7 +212,7 @@ def latest_workspace_image_paths(limit=4):
         except OSError:
             files = []
         candidates.extend(str(path) for path in files)
-    safe = safe_image_paths({"image_paths": candidates})
+    safe = safe_image_paths({"image_paths": candidates}, limit=max(1, int(limit or 4)))
     return safe[:limit]
 
 
@@ -230,13 +230,13 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
 
     dashboard = load_dashboard()
     payload = chat_payload(channel, language)
-    reference_paths = safe_image_paths(args)
+    reference_paths = safe_image_paths(args, limit=8 if tool in CREATIVE_IMAGE_TOOLS else 4)
     if not reference_paths and tool in CREATIVE_IMAGE_TOOLS and creative_args_mentions_uploaded_image(args):
         reference_paths = latest_workspace_image_paths()
     if not reference_paths and tool in CAMPAIGN_STAGE_TOOLS and creative_args_mentions_uploaded_image(args):
         reference_paths = latest_workspace_image_paths(limit=1)
     if reference_paths:
-        payload["image_paths"] = reference_paths[:4]
+        payload["image_paths"] = reference_paths[:8]
 
     if tool == "admira_get_real_meta_context":
         date_preset = str(args.get("date_preset") or args.get("range") or "maximum").strip().lower()

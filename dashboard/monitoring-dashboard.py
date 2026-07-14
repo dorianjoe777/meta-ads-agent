@@ -213,6 +213,7 @@ AGENT_ONBOARDING_PLAN_FILE = DATA_DIR / "Agent onboarding plan.md"
 BRANDING_ONBOARDING_FILE = DATA_DIR / "Branding onboarding.md"
 ADS_ONBOARDING_FILE = DATA_DIR / "Ads campaign onboarding.md"
 CONTENT_ASSET_LIBRARY_FILE = DATA_DIR / "content_asset_library.json"
+CONTENT_ASSET_FILES_DIR = DATA_DIR / "content-assets"
 CONTENT_STRATEGY_FILE = DATA_DIR / "content_strategy.md"
 ORGANIC_CONTENT_POSTS_FILE = DATA_DIR / "organic_content_posts.json"
 DURABLE_CONVERSATION_MEMORY_FILE = DATA_DIR / "durable_conversation_memory.json"
@@ -244,6 +245,7 @@ CREATIVE_ASSET_ROOT = OUTPUT_DIR / "creatives"
 CREATIVE_ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 PUBLIC_ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".svg", ".css", ".js", ".mp4", ".mov"}
 MAX_BRAND_LOGO_BYTES = 1 * 1024 * 1024
+MAX_CONTENT_ASSET_IMAGE_BYTES = 25 * 1024 * 1024
 PORT = 7871
 TARGET_CPA = 50.0
 TELEGRAM_THREAD = None
@@ -2061,6 +2063,23 @@ CONTENT_ASSET_CATEGORIES = {
     "other": {"other", "otro", "misc"},
 }
 
+PIXEL_LOCKED_CONTENT_ASSET_CATEGORIES = {
+    "official_logo",
+    "product",
+    "location",
+    "team_founder",
+    "customer_testimonial",
+    "ugc",
+    "offer_promo",
+    "social_proof",
+}
+CONTENT_ASSET_PRESERVATION_MODES = {
+    "pixel_locked",
+    "style_only",
+    "pending_classification",
+    "prohibited",
+}
+
 
 def normalize_content_asset_category(value):
     raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
@@ -2076,14 +2095,200 @@ def load_content_asset_library():
         library = {"items": [], "updated_at": ""}
     if not isinstance(library.get("items"), list):
         library["items"] = []
+    changed = False
+    for item in library["items"]:
+        if not isinstance(item, dict):
+            continue
+        category = normalize_content_asset_category(item.get("category"))
+        if item.get("category") != category:
+            item["category"] = category
+            changed = True
+        if not item.get("preservation_mode"):
+            item["preservation_mode"] = normalize_content_asset_preservation_mode(
+                "", category, has_file=bool(item.get("file_paths"))
+            )
+            changed = True
+        if not item.get("classification_status"):
+            item["classification_status"] = (
+                "pending_agent_review"
+                if item.get("preservation_mode") == "pending_classification"
+                else "classified"
+            )
+            changed = True
+        if "approved_for_daily_content" not in item:
+            item["approved_for_daily_content"] = item.get("classification_status") == "classified" and item.get("preservation_mode") != "prohibited"
+            changed = True
+        if "approved_for_ads" not in item:
+            item["approved_for_ads"] = False
+            changed = True
+        safe_existing_paths = safe_image_paths({"image_paths": item.get("file_paths") or []}, limit=32)
+        durable_records = []
+        for path in safe_existing_paths:
+            try:
+                durable_records.append(persist_content_asset_image(path))
+            except (OSError, ValueError):
+                continue
+        durable_paths = [record["file_path"] for record in durable_records]
+        if durable_paths and durable_paths != (item.get("file_paths") or []):
+            item["file_paths"] = durable_paths
+            if len(durable_records) == 1:
+                item["source_sha256"] = durable_records[0]["sha256"]
+                item["source_file_name"] = durable_records[0]["source_file_name"]
+                item["size_bytes"] = durable_records[0]["size_bytes"]
+            changed = True
+    if changed:
+        library["updated_at"] = now_iso()
+        write_json(CONTENT_ASSET_LIBRARY_FILE, redact_payload(library), ensure_ascii=False)
     return library
+
+
+def normalize_content_asset_preservation_mode(value, category, has_file=True):
+    raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "exact": "pixel_locked",
+        "immutable": "pixel_locked",
+        "pixel_perfect": "pixel_locked",
+        "pixel_by_pixel": "pixel_locked",
+        "real_photo": "pixel_locked",
+        "reference_only": "style_only",
+        "inspiration": "style_only",
+        "pending": "pending_classification",
+        "unclassified": "pending_classification",
+        "do_not_use": "prohibited",
+    }
+    raw = aliases.get(raw, raw)
+    if raw in CONTENT_ASSET_PRESERVATION_MODES:
+        return raw
+    if category == "style_reference":
+        return "style_only"
+    if category == "do_not_use":
+        return "prohibited"
+    if has_file and category in PIXEL_LOCKED_CONTENT_ASSET_CATEGORIES:
+        return "pixel_locked"
+    return "pending_classification" if category == "other" else "style_only"
+
+
+def content_asset_sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def persist_content_asset_image(source_path):
+    source = Path(source_path).expanduser().resolve()
+    size = source.stat().st_size
+    if size > MAX_CONTENT_ASSET_IMAGE_BYTES:
+        raise ValueError(f"La imagen {source.name} supera el límite de 25 MB para la biblioteca de contenido.")
+    digest = content_asset_sha256(source)
+    safe_stem = re.sub(r"[^a-zA-Z0-9_-]+", "-", source.stem).strip("-")[:48] or "imagen"
+    suffix = source.suffix.lower()
+    CONTENT_ASSET_FILES_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        source.relative_to(CONTENT_ASSET_FILES_DIR.resolve())
+        return {
+            "file_path": str(source),
+            "sha256": digest,
+            "source_file_name": source.name,
+            "size_bytes": size,
+        }
+    except ValueError:
+        pass
+    target = CONTENT_ASSET_FILES_DIR / f"{digest[:16]}-{safe_stem}{suffix}"
+    if not target.exists():
+        shutil.copy2(source, target)
+    return {
+        "file_path": str(target.resolve()),
+        "sha256": digest,
+        "source_file_name": source.name,
+        "size_bytes": size,
+    }
+
+
+def _content_asset_existing_by_key(items, source_hash="", url=""):
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if source_hash and str(item.get("source_sha256") or "") == source_hash:
+            return item
+        if url and url in (item.get("urls") or []):
+            return item
+    return None
+
+
+def _content_asset_item_id(source_hash, category, index):
+    suffix = source_hash[:12] if source_hash else hashlib.sha256(
+        f"{category}:{index}:{now_iso()}".encode("utf-8")
+    ).hexdigest()[:12]
+    return f"asset_{suffix}_{re.sub(r'[^a-z0-9]+', '-', category.lower()).strip('-')}"
+
+
+def _upsert_content_asset_item(library, *, category, purpose, notes, file_record=None, url="", payload=None):
+    payload = payload or {}
+    items = library.setdefault("items", [])
+    source_hash = str((file_record or {}).get("sha256") or "")
+    item = _content_asset_existing_by_key(items, source_hash=source_hash, url=url)
+    preservation_mode = normalize_content_asset_preservation_mode(
+        payload.get("preservation_mode") or payload.get("asset_preservation") or payload.get("usage_mode"),
+        category,
+        has_file=bool(file_record),
+    )
+    classification_status = str(payload.get("classification_status") or "").strip().lower()
+    if not classification_status:
+        classification_status = "pending_agent_review" if preservation_mode == "pending_classification" else "classified"
+    approved_daily_default = classification_status == "classified" and preservation_mode not in {"prohibited", "pending_classification"}
+    approved_daily = _truthy_payload_value(payload, "approved_for_daily_content", approved_daily_default)
+    approved_ads = _truthy_payload_value(payload, "approved_for_ads", False)
+    now = now_iso()
+    if item is None:
+        item = {
+            "id": _content_asset_item_id(source_hash, category, len(items) + 1),
+            "created_at": now,
+        }
+        items.insert(0, item)
+    elif classification_status == "pending_agent_review" and item.get("classification_status") == "classified":
+        # Automatic Telegram ingestion must never downgrade a classification
+        # the agent/buyer already confirmed for this exact file.
+        return item
+    item.update(
+        {
+            "category": category,
+            "purpose": purpose or str(item.get("purpose") or ""),
+            "notes": notes or str(item.get("notes") or ""),
+            "preservation_mode": preservation_mode,
+            "classification_status": classification_status,
+            "approved_for_daily_content": bool(approved_daily),
+            "approved_for_ads": bool(approved_ads),
+            "source": str(payload.get("source") or item.get("source") or "buyer_shared"),
+            "updated_at": now,
+        }
+    )
+    if file_record:
+        item["file_paths"] = [file_record["file_path"]]
+        item["source_sha256"] = source_hash
+        item["source_file_name"] = file_record["source_file_name"]
+        item["size_bytes"] = file_record["size_bytes"]
+    else:
+        item.setdefault("file_paths", [])
+    if url:
+        item["urls"] = [url]
+    else:
+        item.setdefault("urls", [])
+    return item
 
 
 def save_content_asset_memory(payload, chat_payload=None):
     payload = payload or {}
     image_paths = []
-    image_paths.extend(safe_image_paths(payload))
-    image_paths.extend(safe_image_paths(chat_payload or {}))
+    image_paths.extend(safe_image_paths(payload, limit=32))
+    image_paths.extend(safe_image_paths(chat_payload or {}, limit=32))
+    raw_frame_paths = [
+        str(item)
+        for item in (payload.get("video_frame_paths") or payload.get("video_preview_frame_paths") or [])
+        if str(item).strip()
+    ]
+    image_paths.extend(safe_image_paths({"image_paths": raw_frame_paths}, limit=32))
     deduped_paths = []
     seen = set()
     for path in image_paths:
@@ -2095,32 +2300,69 @@ def save_content_asset_memory(payload, chat_payload=None):
         for key in ("url", "asset_url", "source_url", "public_url", "video_url", "direct_url")
         if str(payload.get(key) or "").strip()
     ]
-    frame_paths = [str(item) for item in (payload.get("video_frame_paths") or payload.get("video_preview_frame_paths") or []) if str(item).strip()]
     purpose = str(payload.get("purpose") or payload.get("usage") or payload.get("what_is_it_for") or payload.get("para_que_es") or "").strip()
     notes = str(payload.get("notes") or payload.get("description") or payload.get("context") or "").strip()
-    if not (deduped_paths or urls or frame_paths or purpose or notes):
+    if not (deduped_paths or urls or purpose or notes):
         raise ValueError("Necesito al menos un archivo, link, propósito o nota para guardar este asset.")
     category = normalize_content_asset_category(payload.get("category") or payload.get("asset_type") or payload.get("tipo"))
-    item = {
-        "id": f"asset_{len(load_content_asset_library().get('items', [])) + 1}_{re.sub(r'[^a-z0-9]+', '-', category.lower()).strip('-')}",
-        "category": category,
-        "purpose": purpose,
-        "notes": notes,
-        "file_paths": deduped_paths[:8],
-        "urls": urls[:4],
-        "video_frame_paths": frame_paths[:8],
-        "approved_for_daily_content": _truthy_payload_value(payload, "approved_for_daily_content", True),
-        "approved_for_ads": _truthy_payload_value(payload, "approved_for_ads", False),
-        "created_at": now_iso(),
-    }
     library = load_content_asset_library()
-    library["items"].insert(0, item)
+    saved_items = []
+    for path in deduped_paths:
+        file_record = persist_content_asset_image(path)
+        saved_items.append(
+            _upsert_content_asset_item(
+                library,
+                category=category,
+                purpose=purpose,
+                notes=notes,
+                file_record=file_record,
+                payload=payload,
+            )
+        )
+    for url in urls[:8]:
+        saved_items.append(
+            _upsert_content_asset_item(
+                library,
+                category=category,
+                purpose=purpose,
+                notes=notes,
+                url=url,
+                payload=payload,
+            )
+        )
+    if not saved_items:
+        saved_items.append(
+            _upsert_content_asset_item(
+                library,
+                category=category,
+                purpose=purpose,
+                notes=notes,
+                payload=payload,
+            )
+        )
     library["items"] = library["items"][:200]
     library["updated_at"] = now_iso()
     write_json(CONTENT_ASSET_LIBRARY_FILE, redact_payload(library), ensure_ascii=False)
     write_agent_onboarding_plan()
-    log_action("content_asset_save", {"category": category, "file_count": len(deduped_paths), "url_count": len(urls)}, "completed")
-    return {"saved": True, "asset": item, "library_file": "dashboard/data/content_asset_library.json", "count": len(library["items"])}
+    log_action(
+        "content_asset_save",
+        {
+            "category": category,
+            "file_count": len(deduped_paths),
+            "url_count": len(urls),
+            "preservation_mode": saved_items[0].get("preservation_mode") if saved_items else "",
+            "classification_status": saved_items[0].get("classification_status") if saved_items else "",
+        },
+        "completed",
+    )
+    return {
+        "saved": True,
+        "asset": saved_items[0],
+        "assets": saved_items,
+        "saved_asset_count": len(saved_items),
+        "library_file": "dashboard/data/content_asset_library.json",
+        "count": len(library["items"]),
+    }
 
 
 def save_profitability_rule_settings(payload):
@@ -6050,24 +6292,13 @@ REFERENCE_AS_BACKGROUND_TEXT = (
     "base visual",
     "como base",
     "como fondo",
-    "conservar la foto",
-    "conservar mi foto",
-    "conserva la foto",
-    "conserva mi foto",
-    "foto real",
     "fondo real",
     "imagen de fondo",
     "no cambies el fondo",
     "no cambies el local",
-    "no reemplaces",
-    "pixel por pixel",
-    "píxel por píxel",
-    "recepcion",
-    "recepción",
     "same background",
     "use as background",
     "use as base",
-    "use the real photo",
 )
 
 
@@ -6087,18 +6318,111 @@ def reference_as_background_requested(payload, request=""):
     return any(phrase in text for phrase in REFERENCE_AS_BACKGROUND_TEXT)
 
 
+PROTECTED_REFERENCE_PATH_KEYS = (
+    "protected_reference_image_paths",
+    "protected_image_paths",
+    "immutable_reference_image_paths",
+    "pixel_locked_image_paths",
+)
+
+
+def requested_content_asset_ids(payload):
+    payload = payload or {}
+    raw = payload.get("content_asset_ids") or payload.get("asset_ids") or []
+    if isinstance(raw, str):
+        raw = [item.strip() for item in raw.split(",") if item.strip()]
+    if not isinstance(raw, (list, tuple, set)):
+        return []
+    return [str(item).strip() for item in raw if str(item).strip()][:12]
+
+
+def selected_content_asset_references(payload, purpose="ad_creative"):
+    selected_ids = set(requested_content_asset_ids(payload))
+    if not selected_ids:
+        return {"all": [], "protected": [], "style": [], "items": []}
+    organic = image_purpose_is_organic(purpose)
+    selected_items = []
+    all_paths = []
+    protected = []
+    style = []
+    for item in load_content_asset_library().get("items", []):
+        if not isinstance(item, dict) or str(item.get("id") or "") not in selected_ids:
+            continue
+        if item.get("category") == "do_not_use" or item.get("preservation_mode") == "prohibited":
+            continue
+        if item.get("classification_status") != "classified":
+            continue
+        if organic and not bool(item.get("approved_for_daily_content")):
+            continue
+        if not organic and not bool(item.get("approved_for_ads")):
+            continue
+        paths = safe_image_paths({"image_paths": item.get("file_paths") or []}, limit=8)
+        if not paths:
+            continue
+        selected_items.append(item)
+        for path in paths:
+            if path not in all_paths:
+                all_paths.append(path)
+            if item.get("preservation_mode") == "pixel_locked" and path not in protected:
+                protected.append(path)
+            elif item.get("preservation_mode") == "style_only" and path not in style:
+                style.append(path)
+    return {"all": all_paths[:8], "protected": protected[:8], "style": style[:8], "items": selected_items}
+
+
+def explicit_protected_reference_paths(payload):
+    candidates = []
+    for key in PROTECTED_REFERENCE_PATH_KEYS:
+        candidates.extend(safe_image_paths({"image_paths": (payload or {}).get(key) or []}, limit=8))
+    if str((payload or {}).get("preservation_mode") or "").strip().lower().replace("-", "_") in {
+        "pixel_locked",
+        "pixel_by_pixel",
+        "pixel_perfect",
+        "immutable",
+        "exact",
+    }:
+        candidates.extend(safe_image_paths(payload or {}, limit=8))
+    deduped = []
+    for path in candidates:
+        if path not in deduped:
+            deduped.append(path)
+    return deduped[:8]
+
+
+def protected_real_asset_prompt_lock(protected_paths, use_as_background=False):
+    count = len(protected_paths or [])
+    if not count:
+        return ""
+    position = "primera imagen adjunta" if count == 1 else f"primeras {count} imágenes adjuntas"
+    base_rule = (
+        "Úsalas como la base visual real obligatoria del diseño. "
+        if use_as_background
+        else "Puedes recortarlas, escalarlas, ubicarlas, enmarcarlas o integrarlas como elementos reales del diseño. "
+    )
+    return (
+        "\nACTIVOS REALES PROTEGIDOS — CONTRATO PIXEL LOCKED PARA IMAGE 2:\n"
+        f"- La {position} pertenece al comprador y está marcada como foto real protegida, no como inspiración de estilo.\n"
+        f"- {base_rule}\n"
+        "- Cualquier parte de esas fotos que aparezca en el resultado debe conservar el contenido original con pixel by pixel accuracy, "
+        "pixel-level accurate reproduction y de forma pixel-faithful (fiel píxel por píxel).\n"
+        "- No redibujes, regeneres, reinterpretes, retoques, embellezcas, reilumines, recolorees, limpies ni reconstruyas los píxeles de la foto.\n"
+        "- No cambies caras, cuerpos, piel, ropa, productos, empaques, textos, letreros, muebles, arquitectura, objetos, fondo, perspectiva ni detalles visibles.\n"
+        "- Sí se permite recortar, escalar, posicionar, enmarcar o enmascarar el borde de la foto e incluir tipografía/gráficos/CTA por encima o alrededor; "
+        "esas capas nuevas no autorizan alterar el contenido de la foto subyacente.\n"
+        "- Si no puedes conservar una foto protegida con esta precisión, no inventes una versión parecida ni la reemplaces por una escena generada.\n"
+    )
+
+
 def reference_background_prompt_lock(reference_paths, payload=None, request=""):
     if not reference_paths or not reference_as_background_requested(payload, request):
         return ""
     return (
         "\nMODO FOTO REAL COMO BASE OBLIGATORIA PARA IMAGE 2:\n"
         "- La primera imagen adjunta es la foto real/base/fondo del anuncio. No es solo inspiración.\n"
-        "- Usa esa foto real como la base visual principal y conserva fielmente la recepción/local/escena real.\n"
-        "- Mantén la composición, perspectiva, arquitectura, distribución, muebles, paredes, suelo, iluminación base, encuadre y proporciones de la foto original.\n"
-        "- No reemplaces el local por otra escena, no inventes otra recepción, no cambies el negocio visible ni conviertas la foto en una escena genérica de spa.\n"
-        "- Preserva el fondo de forma pixel-faithful / fiel píxel por píxel tanto como Image 2 lo permita.\n"
-        "- Sí puedes hacer mejoras globales sutiles para que se vea publicitario y bonito: luz, color, contraste, limpieza visual, nitidez y jerarquía de texto.\n"
-        "- Agrega el texto/oferta/CTA del anuncio encima de forma profesional, legible y elegante, sin tapar las partes importantes del local.\n"
+        "- Usa esa foto real como base principal y conserva exactamente su contenido original.\n"
+        "- Preserva el fondo y cualquier parte usada de forma pixel-faithful, fiel píxel por píxel.\n"
+        "- No reemplaces el local ni la escena; no reconstruyas, embellezcas, retoques, reilumines ni recolorees. No inventes otro local, producto, persona u objeto.\n"
+        "- Solo puedes recortar, escalar, posicionar o enmarcar la foto y agregar texto/oferta/CTA como capas encima o alrededor.\n"
     )
 
 
@@ -6826,10 +7150,35 @@ def codex_image_generate(payload):
         )
         if payload.get("reference_image_summary"):
             image_prompt += f"\nReferencia visual descrita por el agente: {payload.get('reference_image_summary')}\n"
-        reference_paths = safe_image_paths(payload)
+        reference_paths = safe_image_paths(payload, limit=8)
+        library_references = selected_content_asset_references(payload, purpose=purpose)
+        for path in library_references["all"]:
+            if path not in reference_paths:
+                reference_paths.append(path)
+        protected_reference_paths = explicit_protected_reference_paths(payload)
+        for path in library_references["protected"]:
+            if path not in protected_reference_paths:
+                protected_reference_paths.append(path)
+        background_requested = bool(reference_paths and reference_as_background_requested(payload, request))
+        if background_requested and reference_paths[0] not in protected_reference_paths:
+            protected_reference_paths.insert(0, reference_paths[0])
+        # Keep one input slot available for an official logo when the brand
+        # requires it. A daily generation should select the most relevant
+        # photos from the durable batch instead of attaching the whole archive.
+        protected_reference_paths = [path for path in protected_reference_paths if path in reference_paths][:7]
+        reference_paths = [
+            *protected_reference_paths,
+            *[path for path in reference_paths if path not in protected_reference_paths],
+        ][:8]
         background_prompt_lock = reference_background_prompt_lock(reference_paths, payload, request)
         if background_prompt_lock:
             image_prompt += background_prompt_lock
+        protected_asset_lock = protected_real_asset_prompt_lock(
+            protected_reference_paths,
+            use_as_background=background_requested,
+        )
+        if protected_asset_lock:
+            image_prompt += protected_asset_lock
         official_logo = official_brand_logo_path()
         brand_fields = (guide_library().get("general") or {}).get("fields") or {}
         include_logo_value = payload.get("include_logo")
@@ -6856,7 +7205,7 @@ def codex_image_generate(payload):
             raise ValueError("El brief pide usar el logo, pero todavía no hay un archivo oficial guardado. Pide al comprador que lo suba; no generes uno parecido.")
         if include_logo and official_logo:
             if str(official_logo) not in reference_paths:
-                reference_paths = [*reference_paths, str(official_logo)]
+                reference_paths = [*reference_paths[:7], str(official_logo)]
             if logo_render_mode == "protected_context":
                 image_prompt += f"\n{official_logo_prompt_lock(logo_position)}\n"
             else:
@@ -6897,7 +7246,10 @@ def codex_image_generate(payload):
             "include_logo": bool(include_logo and official_logo),
             "logo_render_mode": logo_render_mode if include_logo and official_logo else "none",
             "logo_protection": "exact_prompt_lock" if include_logo and official_logo and logo_render_mode == "protected_context" else ("deterministic_composite" if include_logo and official_logo else "none"),
-            "reference_image_role": "real_photo_background" if background_prompt_lock else ("reference" if reference_paths else "none"),
+            "reference_image_role": "real_photo_background" if background_prompt_lock else ("protected_real_asset" if protected_reference_paths else ("reference" if reference_paths else "none")),
+            "protected_reference_image_count": len(protected_reference_paths),
+            "protected_asset_preservation": "pixel_locked" if protected_reference_paths else "none",
+            "selected_content_asset_ids": [item.get("id") for item in library_references.get("items", [])],
             "requires_full_ad_brief": require_brief,
         }
         if result.get("asset_id"):
@@ -10505,10 +10857,20 @@ def handle_save_content_asset_tool(arguments, chat_payload, tool):
     payload = dict(arguments or {})
     result = save_content_asset_memory(payload, chat_payload)
     category = result.get("asset", {}).get("category") or "other"
+    saved_count = int(result.get("saved_asset_count") or 1)
+    preservation_mode = result.get("asset", {}).get("preservation_mode") or ""
     if chat_lang(chat_payload) == "es":
-        message = f"Listo. Guardé ese asset como {category} para usarlo en estrategia de contenido, posts o anuncios cuando corresponda."
+        message = f"Listo. Guardé {saved_count} asset(s) como {category} para usarlos en estrategia de contenido, posts o anuncios cuando corresponda."
+        if preservation_mode == "pixel_locked":
+            message += " Quedaron protegidos para conservar la foto real píxel por píxel cuando se use en Image 2."
+        elif preservation_mode == "pending_classification":
+            message += " Quedaron a salvo, pendientes de que confirme su categoría antes de reutilizarlos."
     else:
-        message = f"Done. I saved that asset as {category} for content strategy, posts, or ads when relevant."
+        message = f"Done. I saved {saved_count} asset(s) as {category} for content strategy, posts, or ads when relevant."
+        if preservation_mode == "pixel_locked":
+            message += " They are protected for pixel-by-pixel real-photo preservation when used in Image 2."
+        elif preservation_mode == "pending_classification":
+            message += " They are safely stored pending classification before reuse."
     return agent_action_result(tool, True, message, result=result)
 
 

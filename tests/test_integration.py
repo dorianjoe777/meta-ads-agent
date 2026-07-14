@@ -1536,6 +1536,28 @@ class IntegrationTestSuite:
             self.assert_true(patched is event, "Inbound video frame patch mutates the existing Hermes event")
             self.assert_true(len(event.media_urls) == 4 and event.media_types.count("image/jpeg") == 3, "Inbound video attachments are expanded with extracted frame images")
             self.assert_true("representative frames" in event.text and "uploaded video" in event.text, "Inbound video frame patch adds agent-only context about frame review")
+            buyer_photo_1 = video_dir / "local-real.jpg"
+            buyer_photo_2 = video_dir / "producto-real.png"
+            buyer_photo_1.write_bytes(b"buyer photo one")
+            buyer_photo_2.write_bytes(b"buyer photo two")
+
+            class ImageBatchEvent:
+                text = "Estas son fotos reales de mi local y producto"
+                media_urls = [str(buyer_photo_1), str(buyer_photo_2)]
+                media_types = ["image/jpeg", "image/png"]
+
+            original_persist_batch = admira_hermes_runtime_patch._persist_inbound_image_batch
+            admira_hermes_runtime_patch._persist_inbound_image_batch = lambda paths: {
+                "ok": True,
+                "saved_asset_count": len(paths),
+                "stored_paths": [str(video_dir / f"durable-{Path(path).name}") for path in paths],
+                "asset_ids": ["asset_1", "asset_2"],
+            }
+            image_event = admira_hermes_runtime_patch._archive_inbound_image_batch_for_agent(ImageBatchEvent())
+            self.assert_true("durably archived 2 buyer image(s)" in image_event.text, "Gateway archives the entire inbound photo batch before model inference")
+            self.assert_true("preservation_mode=pixel_locked" in image_event.text and "style_only" in image_event.text, "Gateway tells the agent to classify real photos separately from style references")
+            self.assert_true("pixel by pixel accurate" in image_event.text, "Gateway enforces the pixel-locked real-photo contract at the attachment edge")
+            admira_hermes_runtime_patch._persist_inbound_image_batch = original_persist_batch
             self.assert_true(
                 admira_hermes_runtime_patch._message_requires_live_meta_sync("¿Qué campañas están activas en Ads Manager?")
                 and admira_hermes_runtime_patch._message_requires_live_meta_sync("Ayúdame con los colores de mi logo")
@@ -1547,6 +1569,8 @@ class IntegrationTestSuite:
             redacted_live_prompt = admira_hermes_runtime_patch._redact_turn_text(live_prompt)
             self.assert_true("120250188043050096" not in redacted_live_prompt and "live Meta context synchronized" in redacted_live_prompt, "Automatic live context is not persisted later as stale conversation memory")
         finally:
+            if "original_persist_batch" in locals():
+                admira_hermes_runtime_patch._persist_inbound_image_batch = original_persist_batch
             public_asset_fetcher.extract_video_preview_frames = original_extract
             shutil.rmtree(video_dir, ignore_errors=True)
 
@@ -2547,6 +2571,8 @@ class IntegrationTestSuite:
             self.assert_true("ElevenLabs" in branding_text and "photorealism" in branding_text and "reference_image_paths" in branding_text, "Branding skill covers UGC guidance, real-world photorealism, and uploaded references")
             self.assert_true("pixel-level accurate" in brand_assets_text and "Image 2 is a production tool" in creative_strategy_text, "New brand/creative strategy skills split exact logo assets from creative portfolio strategy")
             self.assert_true("mcp_admira_save_daily_social_content_settings" in organic_content_text and "mcp_admira_stage_organic_social_post" in organic_content_text and "mcp_admira_save_content_asset" in organic_content_text and "daily_social_post" in organic_content_text, "Organic content skill teaches opt-in daily posts, exact approval drafts, asset categorization, and Image 2 post production")
+            production_text = (workspace_path / "skills" / "creative-production-codex-image" / "SKILL.md").read_text(encoding="utf-8")
+            self.assert_true("pixel_locked" in brand_assets_text and "pending_agent_review" in brand_assets_text and "protected_reference_image_paths" in production_text and "pixel by pixel accuracy" in production_text and "style_only" in organic_content_text, "Official skills archive/classify image batches and keep pixel-locked real photos separate from style references")
             self.assert_true("self-contained `request`" in organic_content_text and "generic call" in organic_content_text and "Do not turn every organic post" in organic_content_text and "most recently approved reference" in organic_content_text, "Organic skill prevents stale-offer contamination and keeps educational content distinct from direct-response ads")
             self.assert_true("likely placements" in branding_text and "vertical Reels version" in campaign_text and "Expert Configuration Posture" in campaign_text, "Skills teach proactive expert placement strategy instead of rigid placement defaults")
             self.assert_true("mcp_admira_preflight_campaign" in campaign_text and "object_story_spec" in campaign_text and "custom_audiences" in campaign_text, "Campaign skill teaches preflight and expert campaign controls")
@@ -2764,36 +2790,106 @@ class IntegrationTestSuite:
             admira_mcp_server.call_tool = original_call
 
     def test_content_asset_library_persists_buyer_files(self):
-        """Test buyer-shared content assets are categorized and saved for future posts/ads."""
+        """Test buyer image batches are durable, deduped, classified, and protected."""
         print("\nTesting Content Asset Library...")
 
         dashboard = load_dashboard_module()
         test_dir = ROOT_DIR / "output" / "test-content-assets"
-        image_path = test_dir / "local.png"
+        source_dir = test_dir / "incoming"
+        image_paths = [source_dir / "local.png", source_dir / "producto.jpg", source_dir / "equipo.webp"]
         library_path = test_dir / "content_asset_library.json"
+        asset_files_dir = test_dir / "durable-content-assets"
         original_library_file = dashboard.CONTENT_ASSET_LIBRARY_FILE
+        original_asset_files_dir = dashboard.CONTENT_ASSET_FILES_DIR
         original_plan_writer = dashboard.write_agent_onboarding_plan
         try:
             shutil.rmtree(test_dir, ignore_errors=True)
-            test_dir.mkdir(parents=True, exist_ok=True)
-            image_path.write_bytes(b"fake png")
+            source_dir.mkdir(parents=True, exist_ok=True)
+            for index, image_path in enumerate(image_paths, start=1):
+                image_path.write_bytes(f"fake image {index}".encode("utf-8"))
             dashboard.CONTENT_ASSET_LIBRARY_FILE = library_path
+            dashboard.CONTENT_ASSET_FILES_DIR = asset_files_dir
             dashboard.write_agent_onboarding_plan = lambda *args, **kwargs: {"path": "test"}
             result = dashboard.save_content_asset_memory(
                 {
                     "category": "local",
                     "purpose": "usar como fondo real del spa para posts diarios",
                     "notes": "recepción del negocio",
-                    "image_paths": [str(image_path)],
+                    "image_paths": [str(path) for path in image_paths],
                 }
             )
             library = json.loads(library_path.read_text(encoding="utf-8"))
-            item = library["items"][0]
-            self.assert_true(result["saved"] and result["count"] == 1, "Content asset memory reports a saved asset")
-            self.assert_true(item["category"] == "location" and item["purpose"] == "usar como fondo real del spa para posts diarios", "Content asset category and purpose are stored for strategy reuse")
-            self.assert_true(str(image_path.resolve()) in item["file_paths"], "Content asset memory stores safe uploaded image paths")
+            self.assert_true(result["saved"] and result["saved_asset_count"] == 3 and result["count"] == 3, "Content asset memory archives every image in a buyer batch")
+            self.assert_true(all(item["category"] == "location" and item["purpose"] == "usar como fondo real del spa para posts diarios" for item in library["items"]), "Every batch item stores the classified purpose for strategy reuse")
+            self.assert_true(all(item["preservation_mode"] == "pixel_locked" and item["classification_status"] == "classified" for item in library["items"]), "Buyer-owned real photos default to classified pixel-locked assets")
+            durable_paths = [Path(item["file_paths"][0]) for item in library["items"]]
+            self.assert_true(all(path.parent == asset_files_dir.resolve() and path.exists() for path in durable_paths), "Every uploaded photo is copied into durable product storage instead of referencing ephemeral Telegram cache")
+            duplicate = dashboard.save_content_asset_memory(
+                {
+                    "category": "location",
+                    "purpose": "usar como fondo real del spa para posts diarios",
+                    "image_paths": [str(image_paths[0])],
+                }
+            )
+            self.assert_true(duplicate["count"] == 3 and len(json.loads(library_path.read_text(encoding="utf-8"))["items"]) == 3, "Content asset hashes prevent duplicate library rows when Telegram retries an image")
+            style_path = source_dir / "inspiracion.png"
+            pending_path = source_dir / "sin-clasificar.jpg"
+            style_path.write_bytes(b"style inspiration")
+            pending_path.write_bytes(b"unclassified buyer upload")
+            style_result = dashboard.save_content_asset_memory(
+                {
+                    "category": "style_reference",
+                    "purpose": "usar solo como inspiración editorial",
+                    "image_paths": [str(style_path)],
+                }
+            )
+            pending_result = dashboard.save_content_asset_memory(
+                {
+                    "category": "other",
+                    "purpose": "pendiente de revisión visual",
+                    "image_paths": [str(pending_path)],
+                    "classification_status": "pending_agent_review",
+                    "preservation_mode": "pending_classification",
+                    "approved_for_daily_content": False,
+                }
+            )
+            self.assert_true(style_result["asset"]["preservation_mode"] == "style_only", "Inspiration references stay style-only instead of receiving a false pixel lock")
+            self.assert_true(pending_result["asset"]["classification_status"] == "pending_agent_review" and not pending_result["asset"]["approved_for_daily_content"], "Unclear inbound photos remain archived but unavailable to the daily cron until classified")
+            chosen = dashboard.selected_content_asset_references(
+                {
+                    "content_asset_ids": [
+                        result["assets"][0]["id"],
+                        style_result["asset"]["id"],
+                        pending_result["asset"]["id"],
+                    ]
+                },
+                purpose="daily_social_post",
+            )
+            self.assert_true(len(chosen["protected"]) == 1 and len(chosen["style"]) == 1 and len(chosen["all"]) == 2, "Daily generation resolves protected and style assets separately while excluding pending photos")
+            legacy_path = source_dir / "legacy-product.jpg"
+            legacy_path.write_bytes(b"legacy real product photo")
+            library_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "id": "legacy_product",
+                                "category": "product",
+                                "purpose": "foto real del producto",
+                                "file_paths": [str(legacy_path.resolve())],
+                                "created_at": "2026-07-01T10:00:00Z",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            migrated = dashboard.load_content_asset_library()["items"][0]
+            self.assert_true(migrated["preservation_mode"] == "pixel_locked" and migrated["classification_status"] == "classified", "Existing pre-update real-photo library rows migrate into the protected schema")
+            self.assert_true(Path(migrated["file_paths"][0]).parent == asset_files_dir.resolve(), "Existing safe real photos are migrated from ephemeral paths into durable storage")
         finally:
             dashboard.CONTENT_ASSET_LIBRARY_FILE = original_library_file
+            dashboard.CONTENT_ASSET_FILES_DIR = original_asset_files_dir
             dashboard.write_agent_onboarding_plan = original_plan_writer
             shutil.rmtree(test_dir, ignore_errors=True)
 
@@ -3272,7 +3368,7 @@ class IntegrationTestSuite:
             social_command, social_env = next((command, env) for command, env in social_calls if command[:3] == ["/usr/local/bin/hermes", "cron", "create"])
             social_prompt = social_command[-1]
             self.assert_true(social_created["configured"] and social_created["schedule"] == "15 10 * * *" and social_created["posts_per_day"] == 2, "Hermes creates the optional daily social content cron at the buyer's chosen time")
-            self.assert_true("Admira IA - posts diarios" in social_command and "telegram:12345" in social_command and "mcp_admira_codex_image_generate" in social_prompt and "mcp_admira_stage_organic_social_post" in social_prompt and "mcp_admira_approve_action" in social_prompt and "memory/content_asset_library.json" in social_prompt and "pixel-level accurate" in social_prompt, "Daily social content cron uses Image 2, direct media delivery, exact approval drafts, and protected publishing")
+            self.assert_true("Admira IA - posts diarios" in social_command and "telegram:12345" in social_command and "mcp_admira_codex_image_generate" in social_prompt and "mcp_admira_stage_organic_social_post" in social_prompt and "mcp_admira_approve_action" in social_prompt and "memory/content_asset_library.json" in social_prompt and "pixel-level accurate" in social_prompt and "protected_reference_image_paths" in social_prompt and "pending_agent_review" in social_prompt, "Daily social content cron uses Image 2, classified protected assets, direct media delivery, exact approval drafts, and protected publishing")
             self.assert_true("request` autosuficiente" in social_prompt and "Está prohibido enviar solo" in social_prompt and "No conviertas automáticamente cada post" in social_prompt and "aprobada más recientemente" in social_prompt, "Daily organic cron sends a complete active brief, separates organic from paid ads, and prioritizes the latest approved reference")
             self.assert_true(social_env.get("HERMES_TIMEZONE") == "America/Bogota" and social_env.get("TZ") == "America/Bogota", "Daily social content cron inherits the buyer timezone")
             removal_calls = []
@@ -4806,6 +4902,19 @@ class IntegrationTestSuite:
                 {"language": "es", "image_paths": [str(reference)]},
             )
             self.assert_true(ready["executed"] is True and str(reference) in [str(path) for path in captured["kwargs"]["reference_image_paths"]], "Ready production forwards the buyer's real reference image to Codex")
+
+            protected_photo = dashboard.codex_image_generate(
+                {
+                    "request": "Integra la foto real del producto dentro de un diseño editorial 4:5 y coloca el texto alrededor.",
+                    "purpose": "ad_creative",
+                    "protected_reference_image_paths": [str(reference)],
+                    "preservation_mode": "pixel_locked",
+                }
+            )
+            protected_photo_prompt = captured["prompt"]
+            self.assert_true(protected_photo["prompt_package"]["reference_image_role"] == "protected_real_asset" and protected_photo["prompt_package"]["protected_reference_image_count"] == 1, "Image 2 distinguishes a protected real photo from an ordinary style reference")
+            self.assert_true("ACTIVOS REALES PROTEGIDOS" in protected_photo_prompt and "pixel by pixel accuracy" in protected_photo_prompt and "pixel-level accurate reproduction" in protected_photo_prompt and "pixel-faithful" in protected_photo_prompt, "Protected real-photo prompt explicitly requires pixel-by-pixel fidelity")
+            self.assert_true("No redibujes, regeneres" in protected_photo_prompt and "recortar, escalar, posicionar, enmarcar" in protected_photo_prompt, "Protected real-photo prompt forbids content changes while allowing layout and overlays")
 
             organic_ready = dashboard.codex_image_generate(
                 {

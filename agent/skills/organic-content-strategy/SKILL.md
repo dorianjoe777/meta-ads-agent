@@ -41,6 +41,8 @@ When the buyer uploads or links a file, image, video, logo, reference, testimoni
 2. Ask or infer what it is for. If unclear, ask: “¿Esto lo uso como logo oficial, foto real, referencia de estilo, prueba social, oferta, UGC o prefieres que no lo use?”
 3. Categorize it and call `mcp_admira_save_content_asset`.
 
+Telegram first archives every inbound image batch durably as pending. Analyze every attached image with vision, then call the save tool with the durable path(s) grouped by their real category and purpose. Use `preservation_mode: "pixel_locked"` for buyer-owned real photos/logos, `style_only` for inspiration, `pending_classification` only while a grouped clarification is still needed, and `prohibited` for do-not-use assets. A pending asset is stored safely but must not be selected by the daily content cron.
+
 Recommended categories:
 
 - `official_logo`
@@ -93,7 +95,9 @@ For final daily post visuals, use `mcp_admira_codex_image_generate` through `cre
 - Explicitly classify the post as education, proof/testimonial, community, objection handling, behind-the-scenes, or promotion. Do not turn every organic post into a direct-response ad. Prices, discounts, urgency, and commercial CTAs appear only for an explicitly promotional pillar.
 - When approved references contain several directions, the most recently approved reference is the active visual direction. It overrides older generic style notes where they conflict; preserve non-conflicting brand colors, logo, typography, and restrictions.
 - Use the official logo when appropriate and require `pixel-level accurate`.
-- If using a buyer photo/video frame as the base, pass it as a real reference/input and ask Image 2 to preserve the underlying asset as closely as possible.
+- Select only classified assets approved for daily content; never use `do_not_use`, `prohibited`, or `pending_agent_review` items.
+- If using a buyer-owned real photo/video frame, pass it in `protected_reference_image_paths` or select its `content_asset_ids`. The prompt must say `pixel by pixel accuracy`, `pixel-level accurate reproduction`, and `pixel-faithful`. Any used part of the real image must remain unchanged: no regeneration, retouching, relighting, recoloring, beautification, changed faces/products/text/objects, or reconstructed background. Cropping, scaling, positioning, framing, boundary masks, and overlays above/around the unchanged photo are allowed.
+- Pass `style_reference` assets only as ordinary `reference_image_paths`; they guide style and are not required to preserve their exact content.
 - Do not invent access to private links; ask the buyer to make them public or upload directly.
 - Deliver the media directly in chat and avoid internal paths.
 

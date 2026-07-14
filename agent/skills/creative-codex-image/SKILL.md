@@ -48,7 +48,7 @@ If an uploaded image is relevant, summarize what you see and include that summar
 
 Also pass its safe workspace path in `reference_image_paths`. Ask proactively whether the buyer has a real product, founder, customer, location, packaging, or design-reference image to upload.
 
-If the buyer confirms that an uploaded real photo should be the actual background/base of the creative, not merely inspiration, call `mcp_admira_codex_image_generate` with `use_reference_as_background: true`. The backend will still use Image 2, attach the real photo as an input/reference image, and add a strict prompt to preserve the real background pixel-faithfully as much as Image 2 allows while permitting only subtle global beautification and ad text/CTA.
+If the buyer confirms that an uploaded real photo should appear in the creative, not merely inspire it, call `mcp_admira_codex_image_generate` with that photo in `protected_reference_image_paths` (or its saved `content_asset_ids`). If it is the actual background/base, also set `use_reference_as_background: true`. The backend still uses Image 2 and attaches the real file as an input, but its content is locked: pixel by pixel accuracy, pixel-level accurate reproduction, and pixel-faithful use. Cropping, scaling, positioning, framing, boundary masks, and overlays are allowed; global beautification, retouching, relighting, recoloring, redrawing, regeneration, object/person/product/text changes, or replacement scenery are forbidden.
 
 ## Arguments
 
@@ -62,6 +62,8 @@ For `mcp_admira_codex_image_generate`, include:
 - `ad_brief`: campaign/ad brief when known.
 - `reference_image_summary`: only if the buyer uploaded a useful image.
 - `reference_image_paths`: safe uploaded images that must guide the result.
+- `protected_reference_image_paths`: buyer-owned real photos whose used content must remain pixel locked, not merely guide the style.
+- `content_asset_ids`: classified durable asset IDs from the content library; the backend resolves protected versus style-only roles.
 - `use_reference_as_background`: true when the buyer says yes to using the uploaded real photo as the actual background/base. Use this for real locations/receptions/products that must remain recognizably the same.
 - `purpose`: use `standalone_creative` for asset-only/draft images, `ad_creative` for normal ad creative, and `logo` or `brand_exploration` only when that is truly the buyer's request.
 - `asset_only`: true when the buyer wants an image/creative to keep, review, or use later without launching or sizing a Meta test yet.

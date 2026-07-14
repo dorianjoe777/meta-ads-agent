@@ -33,14 +33,25 @@ If a generated creative visibly alters the official logo, retry with the exact-c
 
 ## Real assets
 
-Ask if the buyer has real photos/videos that should be used. If they provide a public link, use `mcp_admira_fetch_public_asset`. If a real photo should be the base/background, pass it as an input/reference and preserve it pixel-faithfully as much as Image 2 allows.
+Ask if the buyer has real photos/videos that should be used. If they provide a public link, use `mcp_admira_fetch_public_asset`.
+
+Treat buyer-owned real photos as protected source material, not style inspiration. Save them with `preservation_mode: "pixel_locked"`. When any protected photo is used in Image 2, pass its durable file path in `protected_reference_image_paths` (or select it by `content_asset_ids`) and explicitly require `pixel by pixel accuracy`, `pixel-level accurate reproduction`, and `pixel-faithful` use. Image 2 may crop, scale, position, frame, mask the boundary, or add typography/graphics above or around it, but it must not redraw, regenerate, retouch, relight, recolor, beautify, remove/add objects, change people/products/text, or otherwise alter the photo content that appears in the design.
+
+`style_reference` is different: it may guide composition, colors, typography, or mood and must be saved with `preservation_mode: "style_only"`. Never treat a protected real photo as style-only merely because it is attached alongside design references.
 
 ## Asset library
 
-When the buyer uploads or links a reusable asset, save its purpose with `mcp_admira_save_content_asset` so future posts/ads can reuse it correctly after history cleanup.
+When the buyer uploads or links a reusable asset, save its purpose with `mcp_admira_save_content_asset` so future posts/ads can reuse it correctly after history cleanup. Telegram archives every inbound image to durable product storage first as `pending_agent_review`; analyze the entire batch with vision and then classify every file. Group files only when they truly share the same category/purpose. Do not leave a batch pending after telling the buyer it was organized.
 
 Categories to use: `official_logo`, `product`, `location`, `team_founder`, `customer_testimonial`, `ugc`, `style_reference`, `offer_promo`, `social_proof`, `do_not_use`, or `other`.
 
 If the purpose is unclear, ask one short question before saving: “¿Esto lo uso como logo oficial, foto real, referencia de estilo, prueba social, UGC, oferta, o prefieres que no lo use?”
+
+For a batch, ask that as one grouped question, not once per image. Use these preservation modes:
+
+- buyer-owned real photo or official logo: `pixel_locked`;
+- inspiration/design reference: `style_only`;
+- not yet understood: `pending_classification` and not approved for reuse;
+- buyer says not to use it: `prohibited`.
 
 For videos, use any extracted frames to understand the footage visually, save the video/link/frame set with `mcp_admira_save_content_asset`, and note whether it is for ads, organic posts, UGC review, or “reference only.”

@@ -591,13 +591,34 @@ def handle_update(config, update):
     video, video_filename = telegram_video_payload(message)
     if photos:
         target = download_photo(config, photos[-1].get("file_id"))
-        image_paths.append(str(target))
+        archived = load_dashboard_module().save_content_asset_memory(
+            {
+                "category": "other",
+                "purpose": "Imagen enviada por el comprador; pendiente de clasificación visual y propósito confirmado.",
+                "image_paths": [str(target)],
+                "classification_status": "pending_agent_review",
+                "preservation_mode": "pending_classification",
+                "approved_for_daily_content": False,
+                "approved_for_ads": False,
+                "source": "telegram_legacy_upload",
+            }
+        )
+        stored_paths = [
+            str(path)
+            for asset in (archived.get("assets") or [])
+            for path in (asset.get("file_paths") or [])
+            if str(path).strip()
+        ]
+        image_paths.extend(stored_paths or [str(target)])
+        internal_note = (
+            "[Admira ya archivó esta imagen de forma durable, pendiente de clasificación. "
+            "Analízala con visión y guarda su categoría/propósito con save_content_asset. "
+            "Si es una foto real del comprador, usa preservation_mode=pixel_locked; si es solo inspiración, style_only.]"
+        )
         if text:
-            text = f"{text}\nImagen de referencia adjunta para creativos."
+            text = f"{internal_note}\n{text}"
         else:
-            reply = f"Imagen recibida y guardada. Para usarla, dime que campaña quieres preparar con esta imagen:\n{target}"
-            send_message(config, chat_id, reply)
-            return {"handled": True, "type": "photo_saved", "path": str(target)}
+            text = f"{internal_note}\nEl comprador envió esta imagen sin texto. Identifica qué muestra y pregunta solo su uso si no puede inferirse con seguridad."
     if video:
         target = download_video(config, video.get("file_id"), video_filename)
         frames = extract_video_preview_frames(target, output_dir=UPLOAD_DIR / f"{target.stem}_frames").get("frames") or []

@@ -21,7 +21,10 @@ Use this skill when the buyer asks to generate, revise, or deliver image creativ
 
 - Pass safe uploaded images in `reference_image_paths`.
 - Use `memory/content_asset_library.json` to choose only assets approved for the requested purpose.
-- When the buyer wants a real photo as the base/background, set `use_reference_as_background: true`.
+- For buyer-owned real photos that must appear, pass their paths in `protected_reference_image_paths` or their IDs in `content_asset_ids`. These are `pixel_locked`, not inspiration.
+- When the buyer wants a real photo as the base/background, set `use_reference_as_background: true`; this automatically makes the base a protected real asset.
+- For every protected real asset, the request must require `pixel by pixel accuracy`, `pixel-level accurate reproduction`, and `pixel-faithful` use. Allowed operations are crop, scale, position, frame, boundary mask, and text/graphic overlays above or around the source. Never permit Image 2 to redraw, regenerate, retouch, relight, recolor, beautify, remove/add objects, or change people, products, packaging, text, architecture, or other visible photo content.
+- Pass inspiration-only material as ordinary `reference_image_paths` and classify it as `style_only`; do not confuse it with protected buyer photography.
 - When an official logo is saved and should appear, set `include_logo: true` and require `pixel-level accurate` reproduction.
 - If the logo is altered, retry with `logo_render_mode: "exact_composite"`.
 

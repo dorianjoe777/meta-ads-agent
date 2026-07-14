@@ -40,6 +40,7 @@ ADMIRA_MINIMAX_ALIASES = {
     ADMIRA_MINIMAX_MODEL.lower(),
 }
 ADMIRA_MEDIA_EXTENSIONS = "png|jpe?g|gif|webp"
+ADMIRA_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 ADMIRA_VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"}
 ADMIRA_MEDIA_TAG_RE = re.compile(
     rf"MEDIA:\s*(?P<path>(?:/|~/)\S+?\.(?:{ADMIRA_MEDIA_EXTENSIONS})(?=[\s\"'`,;:)\]]|$))",
@@ -892,6 +893,115 @@ def _event_video_paths(event):
     return video_paths
 
 
+def _event_image_paths(event):
+    image_paths = []
+    media_urls = list(getattr(event, "media_urls", None) or [])
+    media_types = list(getattr(event, "media_types", None) or [])
+    for index, raw_path in enumerate(media_urls):
+        media_type = str(media_types[index] if index < len(media_types) else "").lower()
+        try:
+            path = Path(str(raw_path or "")).expanduser().resolve(strict=True)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if media_type.startswith("image/") or path.suffix.lower() in ADMIRA_IMAGE_EXTENSIONS:
+            image_paths.append(str(path))
+    return image_paths[:24]
+
+
+def _persist_inbound_image_batch(image_paths):
+    """Persist buyer images before inference so a reset cannot lose the batch."""
+    root = Path(str(os.environ.get("ADMIRA_PRODUCT_ROOT") or "").strip()).expanduser()
+    bridge = root / "src" / "admira_tool_bridge.py"
+    if not image_paths or not root.is_dir() or not bridge.is_file():
+        return {"ok": False, "reason": "product_bridge_unavailable"}
+    payload = {
+        "category": "other",
+        "purpose": "Tanda de imágenes enviada por el comprador; pendiente de clasificación visual y propósito confirmado.",
+        "image_paths": list(image_paths)[:24],
+        "classification_status": "pending_agent_review",
+        "preservation_mode": "pending_classification",
+        "approved_for_daily_content": False,
+        "approved_for_ads": False,
+        "source": "telegram_upload_batch",
+    }
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(bridge),
+                "call",
+                "admira_save_content_asset",
+                "--json",
+                json.dumps(payload, ensure_ascii=False),
+                "--channel",
+                "telegram",
+                "--language",
+                str(os.environ.get("ADMIRA_GATEWAY_LANGUAGE") or "es"),
+            ],
+            cwd=str(root),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "reason": "asset_ingest_failed", "message": str(exc)[:300]}
+    result = None
+    for line in reversed((completed.stdout or "").splitlines()):
+        if not line.strip().startswith("{"):
+            continue
+        try:
+            result = json.loads(line.strip())
+        except json.JSONDecodeError:
+            continue
+        break
+    if not isinstance(result, dict):
+        return {"ok": False, "reason": "asset_ingest_invalid_response"}
+    nested = result.get("result") if isinstance(result.get("result"), dict) else {}
+    tool_result = nested.get("result") if isinstance(nested.get("result"), dict) else nested
+    assets = tool_result.get("assets") if isinstance(tool_result, dict) else []
+    stored_paths = []
+    asset_ids = []
+    for asset in assets or []:
+        if not isinstance(asset, dict):
+            continue
+        asset_ids.append(str(asset.get("id") or ""))
+        stored_paths.extend(str(path) for path in (asset.get("file_paths") or []) if str(path).strip())
+    complete = len(stored_paths) == len(image_paths)
+    return {
+        "ok": bool(result.get("ok") and complete),
+        "saved_asset_count": len(asset_ids),
+        "asset_ids": asset_ids,
+        "stored_paths": stored_paths,
+        "reason": (result.get("reason") or "") if complete else "asset_batch_incomplete",
+    }
+
+
+def _archive_inbound_image_batch_for_agent(event):
+    image_paths = _event_image_paths(event)
+    if not image_paths:
+        return event
+    result = _persist_inbound_image_batch(image_paths)
+    if not result.get("ok"):
+        return event
+    stored_paths = result.get("stored_paths") or []
+    internal_paths = "\n".join(f"- {path}" for path in stored_paths)
+    note = (
+        "[ADMIRA INBOUND ASSET BATCH — internal, never quote paths to the buyer]\n"
+        f"Admira durably archived {int(result.get('saved_asset_count') or len(stored_paths))} buyer image(s) before this reply.\n"
+        "Analyze every attached image with vision now. Infer its purpose from the buyer's caption when clear; otherwise ask one short grouped question. "
+        "Then call mcp_admira_save_content_asset with the stored path(s), grouped by the correct category. "
+        "Use preservation_mode=pixel_locked for buyer-owned real photos or the official logo, style_only only for inspiration/reference images, "
+        "and prohibited for do-not-use assets. A pixel_locked photo may be cropped/positioned/framed or receive overlays, but any used photo content must remain pixel by pixel accurate in Image 2.\n"
+        f"Stored paths for the classification tool call:\n{internal_paths}\n"
+        "[END ADMIRA INBOUND ASSET BATCH]"
+    )
+    original_text = str(getattr(event, "text", "") or "")
+    event.text = (note + ("\n\n" + original_text if original_text else "")).strip()
+    return event
+
+
 def _append_video_frame_inputs_to_event(event):
     """Convert cached inbound videos into frame image inputs before Hermes processes them."""
     video_paths = _event_video_paths(event)
@@ -1230,6 +1340,10 @@ def _patch_gateway_inbound_video_frames():
             # but this makes the patch tolerant if the signature changes.
             event = args[0]
         if event is not None:
+            try:
+                _archive_inbound_image_batch_for_agent(event)
+            except Exception:
+                pass
             try:
                 _append_video_frame_inputs_to_event(event)
             except Exception:
