@@ -13,7 +13,8 @@ function normalizeAsset(body = {}) {
     filename: String(body.filename || assetName).trim(),
     content_type: String(body.content_type || "application/octet-stream").trim(),
     blob_path: blobPath,
-    source_url: sourceUrl
+    source_url: sourceUrl,
+    sha256: String(body.sha256 || "").trim().toLowerCase()
   };
 }
 

@@ -17,7 +17,8 @@ test("discovered GitHub release assets override stale registry entries with the 
             {
               name: "MetaAdsAgent-source.zip",
               url: "https://api.github.com/repos/dorianjoe777/meta-ads-agent/releases/assets/999",
-              content_type: "application/zip"
+              content_type: "application/zip",
+              digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
             }
           ]
         };
@@ -31,11 +32,13 @@ test("discovered GitHub release assets override stale registry entries with the 
         "MetaAdsAgent-source.zip": {
           asset_name: "MetaAdsAgent-source.zip",
           filename: "MetaAdsAgent-source.zip",
-          source_url: "https://api.github.com/repos/dorianjoe777/meta-ads-agent/releases/assets/111"
+          source_url: "https://api.github.com/repos/dorianjoe777/meta-ads-agent/releases/assets/111",
+          sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         }
       }
     });
     assert.equal(release.assets["MetaAdsAgent-source.zip"].source_url, "https://api.github.com/repos/dorianjoe777/meta-ads-agent/releases/assets/999");
+    assert.equal(release.assets["MetaAdsAgent-source.zip"].sha256, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
   } finally {
     globalThis.fetch = originalFetch;
     if (originalToken === undefined) delete process.env.GITHUB_RELEASE_TOKEN;

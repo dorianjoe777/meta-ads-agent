@@ -149,11 +149,15 @@ export async function releaseWithDiscoveredAssets(release = {}) {
       const name = String(asset.name || "").trim();
       const sourceUrl = String(asset.url || "").trim();
       if (!name || !sourceUrl) continue;
+      const registered = release.assets?.[name] || {};
+      const discoveredSha256 = String(asset.digest || "").trim().toLowerCase().replace(/^sha256:/, "");
       discovered[name] = {
+        ...registered,
         asset_name: name,
         filename: name,
         content_type: String(asset.content_type || "application/octet-stream"),
-        source_url: sourceUrl
+        source_url: sourceUrl,
+        sha256: String(registered.sha256 || discoveredSha256 || "").trim().toLowerCase()
       };
     }
     return {
