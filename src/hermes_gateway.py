@@ -863,7 +863,10 @@ Antes de crear nada:
 
 Cuando haya marca suficiente:
 - Usa Codex/Image mediante `mcp_admira_codex_image_generate`.
-- Usa propósito `daily_social_post` o `standalone_creative`, no campaña pagada.
+- Usa propósito `daily_social_post` o `organic_social_post`, no `standalone_creative` ni campaña pagada.
+- En cada llamada envía un `request` autosuficiente con: tema/oferta activa exacta, pilar (educación, prueba, comunidad, objeción, detrás de cámaras o promoción), objetivo, texto principal visible, formato 4:5, decisión de CTA y referencia aprobada que debe seguir. Está prohibido enviar solo “usa las guías guardadas”.
+- No conviertas automáticamente cada post en anuncio de respuesta directa. Precio, descuento, urgencia y CTA comercial solo aparecen si el pilar elegido es promoción.
+- Si hay varias referencias, prioriza la aprobada más recientemente sobre notas genéricas antiguas cuando exista conflicto.
 - Usa el logo oficial cuando exista y exige `pixel-level accurate` para no alterarlo.
 - Si hay fotos/videos/assets compartidos por el cliente, respeta su categoría y propósito: logo oficial, producto, local, equipo/fundador, cliente/testimonio, referencia de estilo, UGC, oferta, prueba social o no usar.
 - Si un asset no tiene propósito claro, pregunta para qué quiere usarlo antes de basar la estrategia en él.

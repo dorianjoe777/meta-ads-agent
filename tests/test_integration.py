@@ -2531,6 +2531,7 @@ class IntegrationTestSuite:
             self.assert_true("ElevenLabs" in branding_text and "photorealism" in branding_text and "reference_image_paths" in branding_text, "Branding skill covers UGC guidance, real-world photorealism, and uploaded references")
             self.assert_true("pixel-level accurate" in brand_assets_text and "Image 2 is a production tool" in creative_strategy_text, "New brand/creative strategy skills split exact logo assets from creative portfolio strategy")
             self.assert_true("mcp_admira_save_daily_social_content_settings" in organic_content_text and "mcp_admira_stage_organic_social_post" in organic_content_text and "mcp_admira_save_content_asset" in organic_content_text and "daily_social_post" in organic_content_text, "Organic content skill teaches opt-in daily posts, exact approval drafts, asset categorization, and Image 2 post production")
+            self.assert_true("self-contained `request`" in organic_content_text and "generic call" in organic_content_text and "Do not turn every organic post" in organic_content_text and "most recently approved reference" in organic_content_text, "Organic skill prevents stale-offer contamination and keeps educational content distinct from direct-response ads")
             self.assert_true("likely placements" in branding_text and "vertical Reels version" in campaign_text and "Expert Configuration Posture" in campaign_text, "Skills teach proactive expert placement strategy instead of rigid placement defaults")
             self.assert_true("mcp_admira_preflight_campaign" in campaign_text and "object_story_spec" in campaign_text and "custom_audiences" in campaign_text, "Campaign skill teaches preflight and expert campaign controls")
             self.assert_true("three most important success metrics" in campaign_text and "success_metrics" in campaign_text and "mcp_admira_save_ads_onboarding" in agents_text, "Hermes workspace teaches campaign scorecards and exposes ads onboarding memory")
@@ -3256,6 +3257,7 @@ class IntegrationTestSuite:
             social_prompt = social_command[-1]
             self.assert_true(social_created["configured"] and social_created["schedule"] == "15 10 * * *" and social_created["posts_per_day"] == 2, "Hermes creates the optional daily social content cron at the buyer's chosen time")
             self.assert_true("Admira IA - posts diarios" in social_command and "telegram:12345" in social_command and "mcp_admira_codex_image_generate" in social_prompt and "mcp_admira_stage_organic_social_post" in social_prompt and "mcp_admira_approve_action" in social_prompt and "memory/content_asset_library.json" in social_prompt and "pixel-level accurate" in social_prompt, "Daily social content cron uses Image 2, direct media delivery, exact approval drafts, and protected publishing")
+            self.assert_true("request` autosuficiente" in social_prompt and "Está prohibido enviar solo" in social_prompt and "No conviertas automáticamente cada post" in social_prompt and "aprobada más recientemente" in social_prompt, "Daily organic cron sends a complete active brief, separates organic from paid ads, and prioritizes the latest approved reference")
             self.assert_true(social_env.get("HERMES_TIMEZONE") == "America/Bogota" and social_env.get("TZ") == "America/Bogota", "Daily social content cron inherits the buyer timezone")
             removal_calls = []
             FakeConfig.daily_social_content_enabled = False
@@ -3855,6 +3857,13 @@ class IntegrationTestSuite:
                 variations=5,
                 seed="variety",
             )
+            organic = build_codex_image_prompt_package(
+                product_guide="serum",
+                request="Post educativo: tres señales de una rutina facial demasiado complicada. Sin precio ni CTA comercial.",
+                mode="fixed",
+                variations=1,
+                purpose="daily_social_post",
+            )
             free_axes = [item["design_axis"] for item in free["variation_ledger"]]
             self.assert_true(fixed["mode"] == "fixed" and fixed["variation_count"] == 2, "Fixed image package uses requested mode and count")
             self.assert_true("MODO FIJO" in fixed["codex_prompt"] and "azul profundo" in fixed["codex_prompt"], "Fixed package includes strict brand context")
@@ -3864,6 +3873,8 @@ class IntegrationTestSuite:
             self.assert_true("Crear rutas muy distintas para probar" in free["prompts"][0]["image_prompt"], "Final image prompts include the buyer's concrete request")
             self.assert_true("No escribas 'faltan datos'" in free["prompts"][0]["image_prompt"] and "placeholders" in free["brand_lock"], "Final image prompts do not turn missing brand data into placeholder images")
             self.assert_true("oferta, descuento, 2x1" in free["prompts"][0]["image_prompt"] and "no escondas la promocion principal" in free["prompts"][0]["image_prompt"], "Final image prompts force buyer promotions to appear visibly")
+            self.assert_true(organic["purpose"] == "daily_social_post" and "contenido orgánico" in organic["prompts"][0]["image_prompt"] and "no un anuncio pagado" in organic["prompts"][0]["image_prompt"], "Organic image packages are explicitly separated from paid-ad creative prompts")
+            self.assert_true("no necesariamente como anuncio" in organic["prompts"][0]["image_prompt"] and "No la conviertas automáticamente en anuncio pagado" in organic["codex_prompt"], "Educational organic posts do not inherit forced offers or direct-response CTAs")
             try:
                 build_codex_image_prompt_package(product_guide="../../.env", request="malicious", mode="free")
                 self.assert_true(False, "Image prompt package should reject escaped product guides")
@@ -3916,12 +3927,14 @@ class IntegrationTestSuite:
         original_bridge = codex_brand_guides.run_hermes_image_bridge
         original_load_config = codex_brand_guides.load_config
         original_run = codex_brand_guides.subprocess.run
+        original_wait_for_image = codex_brand_guides.wait_for_generated_image
         reference_dir = ROOT_DIR / "output" / "test-codex-direct-reference"
         try:
             codex_brand_guides.load_config = lambda: type("Cfg", (), {"codex_cli": "codex", "codex_creative_model": "gpt-5.5", "hermes_model": "", "hermes_cli": "hermes", "hermes_home": str(test_root / "hermes_home")})()
 
             def fake_bridge(payload, **kwargs):
                 captured["payload"] = payload
+                captured["bridge_kwargs"] = kwargs
                 generated_file.parent.mkdir(parents=True, exist_ok=True)
                 generated_file.write_bytes(b"fake png")
                 return {"success": True, "image": str(generated_file), "model": "gpt-image-2-medium", "provider": "openai-codex", "returncode": 0}
@@ -3933,6 +3946,20 @@ class IntegrationTestSuite:
             self.assert_true(result.get("backend") == "hermes-openai-codex" and result.get("provider") == "openai-codex", "Codex/Image bridge uses Hermes OpenAI-Codex provider")
             self.assert_true(captured["payload"]["aspect_ratio"] == "portrait", "Codex/Image bridge infers vertical Meta creative aspect ratio")
             self.assert_true("Genera un anuncio" in captured["payload"]["prompt"], "Codex/Image bridge sends the buyer prompt to Hermes")
+            self.assert_true(captured["bridge_kwargs"].get("timeout") == 540, "Codex/Image gives the authenticated image provider enough time before reporting a timeout")
+
+            late_file = generated_root / "run-late" / "image.png"
+            codex_brand_guides.run_hermes_image_bridge = lambda payload, **kwargs: {"success": False, "error": "timeout", "error_type": "timeout"}
+
+            def fake_wait_for_image(**kwargs):
+                late_file.parent.mkdir(parents=True, exist_ok=True)
+                late_file.write_bytes(b"late png")
+                return late_file
+
+            codex_brand_guides.wait_for_generated_image = fake_wait_for_image
+            recovered = codex_brand_guides.call_codex_image_cli("Genera un post orgánico 4:5", output_root=output_root, output_name="post-recuperado", purpose="daily_social_post")
+            self.assert_true(recovered["ok"] is True and recovered.get("backend") == "hermes-openai-codex-late-recovery", "A finished image is recovered instead of being falsely reported as a timeout")
+            codex_brand_guides.wait_for_generated_image = original_wait_for_image
 
             def fake_unauth_bridge(payload, **kwargs):
                 return {"success": False, "error": "No Codex/ChatGPT OAuth credentials available.", "error_type": "auth_required"}
@@ -3944,6 +3971,12 @@ class IntegrationTestSuite:
             codex_brand_guides.subprocess.run = fake_not_logged_codex_run
             unauth = codex_brand_guides.call_codex_image_cli("Genera un anuncio", output_root=output_root)
             self.assert_true(unauth["ok"] is False and "ChatGPT/Codex" in unauth["error"], "Missing Hermes image auth gives a buyer-friendly image error")
+
+            codex_brand_guides.load_config = lambda: type("Cfg", (), {"codex_cli": "/bin/true", "codex_creative_model": "gpt-5.5", "hermes_model": "", "hermes_cli": "hermes", "hermes_home": str(test_root / "hermes_home")})()
+            codex_brand_guides.subprocess.run = lambda command, **kwargs: type("Result", (), {"returncode": 0, "stdout": "Authentication cache valid", "stderr": ""})()
+            flexible_auth = codex_brand_guides.codex_cli_auth_status()
+            self.assert_true(flexible_auth["ok"] is True, "Codex auth trusts a successful status exit without depending on one English success phrase")
+            codex_brand_guides.load_config = lambda: type("Cfg", (), {"codex_cli": "codex", "codex_creative_model": "gpt-5.5", "hermes_model": "", "hermes_cli": "hermes", "hermes_home": str(test_root / "hermes_home")})()
 
             def fake_rate_limit_bridge(payload, **kwargs):
                 return {"success": False, "error": "The model provider is rate-limiting requests. Please wait a moment and try again.", "error_type": "rate_limit"}
@@ -4113,6 +4146,7 @@ class IntegrationTestSuite:
             codex_brand_guides.run_hermes_image_bridge = original_bridge
             codex_brand_guides.load_config = original_load_config
             codex_brand_guides.subprocess.run = original_run
+            codex_brand_guides.wait_for_generated_image = original_wait_for_image
             shutil.rmtree(test_root, ignore_errors=True)
             shutil.rmtree(reference_dir, ignore_errors=True)
 
@@ -4630,6 +4664,10 @@ class IntegrationTestSuite:
             dashboard.read_json = lambda path, default=None: {} if path == dashboard.BUSINESS_PROFILE_FILE else original_read_json(path, default)
             dashboard.call_codex_cli = lambda prompt, **kwargs: plan_calls.append(prompt) or {"ok": True}
             dashboard.call_codex_image_cli = lambda prompt, **kwargs: image_calls.append(prompt) or {"ok": True}
+            missing_organic_request = dashboard.codex_image_generate({"purpose": "daily_social_post"})
+            self.assert_true(missing_organic_request["blocked"] is True and missing_organic_request["reason"] == "missing_organic_post_request", "Organic generation refuses a generic memory-only call that could reuse a stale offer")
+            generic_organic_request = dashboard.codex_image_generate({"purpose": "daily_social_post", "request": "Crea un post usando el branding y las guías guardadas."})
+            self.assert_true(generic_organic_request["blocked"] is True and generic_organic_request["reason"] == "missing_organic_post_request", "Organic generation also rejects a non-empty but generic saved-brand request")
             plan_blocked = dashboard.codex_creative_plan({"request": "Prepara una idea visual", "purpose": "ad_creative"})
             direct_image_blocked = dashboard.codex_image_generate({"request": "Crea un anuncio final", "purpose": "ad_creative"})
             self.assert_true(plan_blocked["blocked"] is True and plan_blocked["reason"] == "creative_strategy_not_ready", "Low-level creative planning is blocked before brand discovery")
@@ -4686,6 +4724,13 @@ class IntegrationTestSuite:
 
             dashboard.guide_library = lambda: library(full_general)
             dashboard.read_json = lambda path, default=None: ({} if path == dashboard.BUSINESS_PROFILE_FILE else original_read_json(path, default))
+            brand_only_library = library(full_general)
+            brand_only_library["product_count"] = 0
+            brand_only_library["products"] = []
+            dashboard.guide_library = lambda: brand_only_library
+            organic_brand_only = dashboard.creative_strategy_readiness(require_brief=False, purpose="daily_social_post")
+            self.assert_true(organic_brand_only["ready"] is True, "Brand-level organic content does not require an unrelated paid-offer product guide")
+            dashboard.guide_library = lambda: library(full_general)
             standalone_no_brief = dashboard.execute_agent_tool(
                 {
                     "tool": "codex_image_generate",
@@ -4743,6 +4788,15 @@ class IntegrationTestSuite:
                 {"language": "es", "image_paths": [str(reference)]},
             )
             self.assert_true(ready["executed"] is True and str(reference) in [str(path) for path in captured["kwargs"]["reference_image_paths"]], "Ready production forwards the buyer's real reference image to Codex")
+
+            organic_ready = dashboard.codex_image_generate(
+                {
+                    "request": "Post educativo sobre tres tareas de Meta Ads que el usuario puede resolver desde Telegram. Sin precio ni CTA comercial. Formato 4:5.",
+                    "purpose": "daily_social_post",
+                }
+            )
+            self.assert_true(organic_ready["prompt_package"]["purpose"] == "daily_social_post" and captured["kwargs"].get("purpose") == "daily_social_post", "Organic purpose reaches both the prompt package and the real Image 2 bridge")
+            self.assert_true("pieza de contenido orgánico" in captured["prompt"] and "no un anuncio pagado" in captured["prompt"], "Organic generation does not inherit the paid-ad prompt contract")
 
             Image.new("RGB", (600, 750), "white").save(output_image)
             logo_image = Image.new("RGBA", (180, 70), (0, 0, 0, 0))
@@ -4806,6 +4860,8 @@ class IntegrationTestSuite:
             self.assert_true("No dibujes, imites ni incluyas ningún logo" in captured["prompt"] and fallback["official_logo"]["applied"] is True, "Exact-composite fallback keeps the generated base logo-free and applies the saved file afterward")
             wrapped_prompt = codex_brand_guides.codex_image_generation_prompt(protected_prompt, has_references=True)
             self.assert_true("contrato de logo protegido" in wrapped_prompt and "sin redibujarla" in wrapped_prompt, "Codex image wrapper preserves the exact-logo contract instead of contradicting it")
+            organic_wrapper = codex_brand_guides.codex_image_generation_prompt("Post educativo sin venta", purpose="daily_social_post")
+            self.assert_true("contenido orgánico" in organic_wrapper and "no lo conviertas en anuncio pagado" in organic_wrapper, "Final Image 2 wrapper keeps organic posts out of the paid-ad path")
         finally:
             dashboard.guide_library = original_library
             dashboard.read_json = original_read_json

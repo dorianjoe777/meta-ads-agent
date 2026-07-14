@@ -88,7 +88,10 @@ For each proposed post, include:
 
 For final daily post visuals, use `mcp_admira_codex_image_generate` through `creative-production-codex-image`.
 
-- Use purpose `daily_social_post` or `standalone_creative`, not a launch-ready campaign unless the buyer asks for an ad.
+- Use purpose `daily_social_post` or `organic_social_post`, not `standalone_creative` or a launch-ready campaign unless the buyer asks for an ad.
+- Every image call must include one self-contained `request` with the exact active offer/topic, content pillar, objective, intended on-image message, 4:5 format, CTA decision, and the approved reference/style to follow. A generic call such as “usa las guías guardadas” or “crea un post con el branding” is forbidden: saved memory can contain older offers and must never replace the current post brief.
+- Explicitly classify the post as education, proof/testimonial, community, objection handling, behind-the-scenes, or promotion. Do not turn every organic post into a direct-response ad. Prices, discounts, urgency, and commercial CTAs appear only for an explicitly promotional pillar.
+- When approved references contain several directions, the most recently approved reference is the active visual direction. It overrides older generic style notes where they conflict; preserve non-conflicting brand colors, logo, typography, and restrictions.
 - Use the official logo when appropriate and require `pixel-level accurate`.
 - If using a buyer photo/video frame as the base, pass it as a real reference/input and ask Image 2 to preserve the underlying asset as closely as possible.
 - Do not invent access to private links; ask the buyer to make them public or upload directly.

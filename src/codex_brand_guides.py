@@ -1424,7 +1424,24 @@ def _text_excerpt(text, limit=6000):
     return text[:limit]
 
 
-def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", mode="fixed", variations=3, seed=None):
+ORGANIC_IMAGE_PURPOSES = {
+    "daily_social_post",
+    "organic_content",
+    "organic_social_post",
+    "social_post",
+    "standalone_organic",
+}
+
+
+def normalized_image_purpose(value):
+    return str(value or "ad_creative").strip().lower().replace("-", "_") or "ad_creative"
+
+
+def image_purpose_is_organic(value):
+    return normalized_image_purpose(value) in ORGANIC_IMAGE_PURPOSES
+
+
+def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", mode="fixed", variations=3, seed=None, purpose="ad_creative"):
     """Build an image-prompt package for Codex/Image using brand, product and ad brief memory."""
     selected_mode = str(mode or "fixed").strip().lower()
     if selected_mode not in {"fixed", "free"}:
@@ -1442,6 +1459,8 @@ def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", 
     used_seed = seed or uuid.uuid4().hex
     routes = list(FIXED_IMAGE_ROUTES[:count]) if selected_mode == "fixed" else _seeded_routes(FREE_IMAGE_ROUTES, count, used_seed)
     request_text = str(request or "").strip()
+    selected_purpose = normalized_image_purpose(purpose)
+    organic = image_purpose_is_organic(selected_purpose)
     prompt_context = "\n".join(
         part
         for part in [
@@ -1478,9 +1497,24 @@ def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", 
         "La variedad es obligatoria, pero conserva colores, tipografias, promesa, publico, oferta y reglas de marca."
     )
     visible_offer_rule = (
-        "Si el comprador o brief menciona una oferta, descuento, 2x1, precio, fecha limite o CTA, "
-        "debe aparecer como texto visible, grande y facil de leer dentro del anuncio. Usa poco texto, "
-        "pero no escondas la promocion principal."
+        (
+            "Esta es una pieza orgánica, no un anuncio pagado. Solo muestra precio, descuento, fecha límite o CTA comercial "
+            "si el pedido puntual define explícitamente un pilar promocional. No inventes una oferta ni conviertas una pieza "
+            "educativa, de confianza o comunidad en venta directa."
+        )
+        if organic
+        else (
+            "Si el comprador o brief menciona una oferta, descuento, 2x1, precio, fecha limite o CTA, "
+            "debe aparecer como texto visible, grande y facil de leer dentro del anuncio. Usa poco texto, "
+            "pero no escondas la promocion principal."
+        )
+    )
+    visual_kind = "pieza de contenido orgánico para Facebook/Instagram" if organic else "imagen para Meta Ads"
+    context_kind = "pieza orgánica" if organic else "anuncio"
+    quality_rule = (
+        "Debe verse como publicación orgánica profesional y útil para el feed, no necesariamente como anuncio. "
+        if organic
+        else "Debe verse como anuncio profesional, claro en menos de 2 segundos, sin claims irreales. "
     )
     prompts = []
     for idx, route in enumerate(routes, start=1):
@@ -1492,11 +1526,11 @@ def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", 
                 "experiment": route["experiment"],
                 "brand_lock": brand_lock,
                 "image_prompt": (
-                    f"Crear imagen para Meta Ads en formato 4:5. Ruta creativa: {route['axis']}. "
+                    f"Crear {visual_kind} en formato 4:5. Ruta creativa: {route['axis']}. "
                     f"Composicion: {route['composition']} Objetivo del experimento: {route['experiment']} "
-                    f"Contexto que debe aparecer en el anuncio: {prompt_context or request_text or 'producto u oferta descrita por el comprador'}. "
+                    f"Contexto que debe aparecer en la {context_kind}: {prompt_context or request_text or 'tema u oferta descrita por el comprador'}. "
                     f"{brand_lock} {visible_offer_rule} Texto dentro de la imagen: corto, grande y legible. "
-                    "Debe verse como anuncio profesional, claro en menos de 2 segundos, sin claims irreales. "
+                    f"{quality_rule}"
                     "No escribas 'faltan datos', 'datos clave' ni mensajes de configuracion dentro de la imagen."
                 ),
                 "negative_prompt": (
@@ -1514,7 +1548,7 @@ def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", 
         }
         for item in prompts
     ]
-    codex_prompt = f"""Actua como prompt engineer senior para ChatGPT Image / Image 2 y Meta Ads.
+    codex_prompt = f"""Actua como prompt engineer senior para ChatGPT Image / Image 2 y {'contenido orgánico de redes sociales' if organic else 'Meta Ads'}.
 
 Tu tarea es convertir memoria de marca, producto y brief en prompts finales de imagen.
 
@@ -1522,6 +1556,7 @@ Tu tarea es convertir memoria de marca, producto y brief en prompts finales de i
 
 Reglas no negociables:
 - Usa solo el contexto incluido abajo.
+- El propósito de esta pieza es `{selected_purpose}`. {'No la conviertas automáticamente en anuncio pagado ni inventes un CTA de venta.' if organic else 'Trátala como creativo publicitario salvo que el pedido diga lo contrario.'}
 - Identifica la oferta activa antes de escribir el prompt final. La oferta activa viene del pedido puntual, del brief elegido o de la ficha de producto elegida; no mezcles beneficios, CTA, audiencia, precios ni promesas de otras ofertas bajo la misma marca.
 - Trata la guía general como marca madre: identidad visual, tono, logo, colores y restricciones. No la uses para reemplazar la oferta activa si el comprador está hablando de otro producto/servicio.
 - No leas archivos, credenciales, tokens ni configuracion local.
@@ -1569,6 +1604,7 @@ Reglas no negociables:
 """
     return {
         "mode": selected_mode,
+        "purpose": selected_purpose,
         "seed": used_seed,
         "variation_count": count,
         "general_guide": str(GENERAL_GUIDE),
@@ -1673,7 +1709,19 @@ def codex_cli_auth_status(timeout=15, env=None):
     except subprocess.TimeoutExpired:
         return {"ok": False, "reason": "codex_cli_timeout", "error": "Codex CLI tardó demasiado en confirmar la sesión.", "command": command}
     combined = f"{completed.stdout}\n{completed.stderr}".lower()
-    ok = completed.returncode == 0 and "logged in" in combined and "not logged" not in combined
+    explicit_negative = any(
+        marker in combined
+        for marker in (
+            "not logged in",
+            "not authenticated",
+            "login required",
+            "authentication required",
+            "no credentials",
+        )
+    )
+    # Codex guarantees exit status 0 for an authenticated session, but its
+    # human-readable success text can change between CLI versions.
+    ok = completed.returncode == 0 and not explicit_negative
     runtime_broken = "enoent" in combined or ("no such file or directory" in combined and "spawn" in combined)
     return {
         "ok": ok,
@@ -1840,7 +1888,7 @@ except Exception as exc:
 """
 
 
-def run_hermes_image_bridge(payload, timeout=360, config=None, image_model=""):
+def run_hermes_image_bridge(payload, timeout=540, config=None, image_model=""):
     config = config or load_config()
     python = hermes_python_executable(config)
     env = hermes_image_environment(config, image_model=image_model)
@@ -1946,6 +1994,26 @@ def newest_generated_image(before=None, started_at=0, root=None):
     return max(candidates, key=lambda item: item[0])[1]
 
 
+def wait_for_generated_image(before=None, started_at=0, root=None, timeout=40, interval=2):
+    """Briefly recover an image that finishes just after the provider times out."""
+    before = before or {}
+    deadline = time.time() + max(0, float(timeout or 0))
+    while time.time() <= deadline:
+        candidates = [
+            Path(path_text)
+            for path_text, mtime in generated_image_index(root).items()
+            if path_text not in before or mtime >= started_at - 2
+        ]
+        if len(candidates) == 1:
+            return candidates[0]
+        if len(candidates) > 1:
+            # Never guess between simultaneous creative jobs and risk sending
+            # the wrong buyer's image.
+            return None
+        time.sleep(max(0.2, float(interval or 2)))
+    return None
+
+
 def safe_codex_asset_name(value):
     slug = "".join(ch.lower() if ch.isalnum() else "-" for ch in str(value or "creative"))
     slug = "-".join(part for part in slug.split("-") if part)
@@ -1979,16 +2047,23 @@ def publish_generated_image(generated, output_root=None, output_name="creative",
     }
 
 
-def codex_image_generation_prompt(prompt, has_references=False):
+def codex_image_generation_prompt(prompt, has_references=False, purpose="ad_creative"):
     reference_rules = (
         "- Usa las imágenes adjuntas como referencias visuales reales. Conserva fielmente el producto, persona, empaque o diseño que muestran.\n"
         "- Si el pedido identifica una imagen adjunta como logo oficial, esa imagen adjunta es la única fuente de verdad del logo. Sigue su contrato de logo protegido: intégrala exactamente como un activo bloqueado, con pixel by pixel accuracy, pixel-level accurate reproduction y reproducción pixel-faithful (fiel píxel por píxel), sin redibujarla, aproximarla ni cambiar texto, símbolos, geometría, proporciones, colores o distribución interna.\n"
         "- Si el pedido indica que el logo se aplicará después, no dibujes ningún logo en la imagen base y deja la zona solicitada limpia.\n"
         if has_references else ""
     )
+    organic = image_purpose_is_organic(purpose)
+    output_kind = "una pieza de contenido orgánico para Facebook/Instagram" if organic else "un creativo de Meta Ads"
+    commercial_rule = (
+        "- Es contenido orgánico: no lo conviertas en anuncio pagado ni inventes precio, descuento, urgencia o CTA comercial salvo que el pedido lo exija.\n"
+        if organic
+        else ""
+    )
     return f"""$imagegen
 
-Genera una imagen real para usar como creativo de Meta Ads.
+Genera una imagen real para usar como {output_kind}.
 
 Reglas:
 - Usa la herramienta de imagen disponible en Codex/ChatGPT.
@@ -1996,7 +2071,8 @@ Reglas:
 - No respondas solo con ideas ni solo con un prompt: la salida principal debe ser la imagen.
 - No ejecutes comandos de terminal ni intentes copiar archivos; el producto copiara automaticamente la imagen generada por Codex.
 - Texto dentro de la imagen: corto, grande y legible.
-- Debe verse como anuncio profesional, claro en menos de 2 segundos y sin promesas falsas.
+- Debe verse profesional, claro en menos de 2 segundos y sin promesas falsas.
+{commercial_rule}- Respeta primero el tema, pilar, oferta activa y objetivo descritos en el pedido puntual; no los reemplaces con memoria antigua.
 - Usa el pedido del comprador como fuente principal. Si faltan reglas de marca, usa un estilo neutral y profesional.
 - No generes placeholders ni imagenes sobre "faltan datos", "datos clave", configuracion, dashboard o errores.
 {reference_rules}- Para personas, productos, lugares, comida, interiores u otras escenas reales, usa acabado fotorealista salvo que el pedido apruebe explícitamente una ilustración.
@@ -2006,7 +2082,7 @@ Pedido del comprador:
 """
 
 
-def call_codex_image_cli_direct(prompt, timeout=360, model=None, output_root=None, output_name="creative", reference_image_paths=None):
+def call_codex_image_cli_direct(prompt, timeout=540, model=None, output_root=None, output_name="creative", reference_image_paths=None, purpose="ad_creative"):
     """Legacy fallback: generate a real image through a direct Codex CLI session."""
     request = str(prompt or "").strip()
     if not request:
@@ -2057,7 +2133,7 @@ def call_codex_image_cli_direct(prompt, timeout=360, model=None, output_root=Non
             attached = isolated / f"reference-{index}{reference.suffix.lower()}"
             shutil.copy2(reference, attached)
             command.extend(["--image", str(attached)])
-        command.append(codex_image_generation_prompt(request, has_references=bool(safe_references)))
+        command.append(codex_image_generation_prompt(request, has_references=bool(safe_references), purpose=purpose))
         try:
             completed = subprocess.run(command, cwd=isolated, env=env, capture_output=True, text=True, timeout=timeout, check=False)
         except FileNotFoundError:
@@ -2095,13 +2171,18 @@ def call_codex_image_cli_direct(prompt, timeout=360, model=None, output_root=Non
     }
 
 
-def call_codex_image_cli(prompt, timeout=360, model=None, output_root=None, output_name="creative", reference_image_paths=None):
+def call_codex_image_cli(prompt, timeout=540, model=None, output_root=None, output_name="creative", reference_image_paths=None, purpose="ad_creative"):
     """Generate a real image through Hermes' ChatGPT/Codex image provider."""
     request = str(prompt or "").strip()
     if not request:
         return {"ok": False, "error": "Necesito una descripcion del creativo antes de generar la imagen."}
     safe_references = safe_creative_reference_paths(reference_image_paths)
     config = load_config()
+    image_config = image_codex_config(config)
+    hermes_home = str(getattr(image_config, "hermes_home", "") or "").strip()
+    late_image_root = Path(hermes_home).expanduser() / "cache" / "images" if hermes_home else None
+    late_image_before = generated_image_index(late_image_root) if late_image_root else {}
+    bridge_started_at = time.time()
     image_model = str(model or "").strip() if str(model or "").strip().startswith("gpt-image-2") else ""
     bridge = run_hermes_image_bridge(
         {
@@ -2134,6 +2215,30 @@ def call_codex_image_cli(prompt, timeout=360, model=None, output_root=None, outp
         }
     error_type = str(bridge.get("error_type") or "").lower()
     raw_error = bridge.get("error") or "No pude usar la herramienta de imagen de ChatGPT/Codex."
+    if error_type == "timeout" and late_image_root:
+        late_image = wait_for_generated_image(
+            before=late_image_before,
+            started_at=bridge_started_at,
+            root=late_image_root,
+            timeout=min(40, max(0, 590 - int(timeout or 0))),
+        )
+        if late_image:
+            published = publish_generated_image(late_image, output_root=output_root, output_name=output_name, batch_prefix="codex")
+            if published.get("ok"):
+                return {
+                    "ok": True,
+                    **published,
+                    "returncode": 0,
+                    "stdout": "",
+                    "stderr": "",
+                    "last_message": "",
+                    "warning": "La imagen terminó durante la recuperación posterior al tiempo de espera.",
+                    "command": bridge.get("command", ["hermes", "image_generate"]),
+                    "model": bridge.get("model", "gpt-image-2-medium"),
+                    "provider": bridge.get("provider", "openai-codex"),
+                    "reference_image_count": len(safe_references),
+                    "backend": "hermes-openai-codex-late-recovery",
+                }
     if error_type in CODEX_IMAGE_DIRECT_FALLBACK_ERROR_TYPES:
         fallback = call_codex_image_cli_direct(
             prompt,
@@ -2142,6 +2247,7 @@ def call_codex_image_cli(prompt, timeout=360, model=None, output_root=None, outp
             output_root=output_root,
             output_name=output_name,
             reference_image_paths=safe_references,
+            purpose=purpose,
         )
         fallback.setdefault("bridge_warning", raw_error)
         fallback.setdefault("bridge_error_type", error_type)

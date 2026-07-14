@@ -72,6 +72,7 @@ from codex_brand_guides import (
     ensure_brand_guides,
     guide_library,
     hermes_codex_image_status,
+    image_purpose_is_organic,
     normalize_ad_brief_payload,
     normalize_general_payload,
     normalize_product_payload,
@@ -5802,7 +5803,7 @@ def creative_strategy_readiness(require_brief=False, purpose="ad_creative", payl
     purpose = str(purpose or "ad_creative").strip().lower()
     is_ad = purpose not in {"logo", "brand_exploration", "moodboard"}
     payload = normalize_ad_brief_payload(payload or {})
-    branding = branding_creative_readiness(require_product=is_ad, payload=payload)
+    branding = branding_creative_readiness(require_product=is_ad and not image_purpose_is_organic(purpose), payload=payload)
     missing = list(branding["missing"])
     library = branding["library"]
     profile = read_json(BUSINESS_PROFILE_FILE, {})
@@ -6003,6 +6004,37 @@ def selected_product_guide_for_creative(payload):
     if profile_context:
         return profile_context, "business_profile"
     return "", "library_default"
+
+
+def organic_image_request_is_specific(value):
+    text = re.sub(r"\s+", " ", str(value or "").strip()).lower()
+    if len(text) < 20:
+        return False
+    topic_markers = (
+        " sobre ",
+        "tema",
+        "pilar",
+        "educativ",
+        "promoc",
+        "testimoni",
+        "prueba",
+        "comunidad",
+        "objeci",
+        "detrás",
+        "detras",
+        "beneficio",
+        "texto principal",
+        "headline",
+        "sin cta",
+        "cta ",
+        "oferta",
+        "producto",
+        "servicio",
+    )
+    if any(marker in text for marker in topic_markers):
+        return True
+    generic_memory_markers = ("branding", "guías guardadas", "guias guardadas", "marca guardada", "usa la marca", "usa las guías", "usa las guias")
+    return not any(marker in text for marker in generic_memory_markers)
 
 
 REFERENCE_AS_BACKGROUND_FLAGS = (
@@ -6719,6 +6751,7 @@ def codex_creative_plan(payload):
             mode=mode,
             variations=variations,
             seed=str(payload.get("seed") or "").strip() or None,
+            purpose=purpose,
         )
         result = call_codex_cli(prompt_package["codex_prompt"], model=getattr(config, "codex_creative_model", ""))
         result["prompt_package"] = {
@@ -6741,17 +6774,27 @@ def codex_image_generate(payload):
     """Generate a raster creative through the Codex/Image bridge."""
     payload = payload or {}
     brief_payload = normalize_ad_brief_payload(payload)
-    product_guide, product_context_source = selected_product_guide_for_creative(payload)
     ad_brief = str(payload.get("ad_brief") or "").strip()
     mode = str(payload.get("mode") or payload.get("image_mode") or "fixed").strip().lower()
     variations = payload.get("variations") or brief_payload.get("variation_count") or 1
     request = str(payload.get("request") or payload.get("image_prompt") or payload.get("prompt") or "").strip()
+    purpose = str(payload.get("purpose") or "ad_creative").strip().lower()
+    if image_purpose_is_organic(purpose) and not organic_image_request_is_specific(request):
+        result = {
+            "ok": False,
+            "blocked": True,
+            "reason": "missing_organic_post_request",
+            "error": "Antes de generar el post, incluye el tema activo, pilar, objetivo, texto principal, formato y decisión de CTA en esta misma solicitud.",
+            "missing": ["organic_post_request"],
+        }
+        log_action("codex_image_generate", {"purpose": purpose, "ok": False, "reason": result["reason"]}, "blocked")
+        return result
     if not request:
         request = "Crear una imagen final para Meta Ads usando las guias de marca disponibles."
+    product_guide, product_context_source = selected_product_guide_for_creative(payload)
     context = creative_direct_context(payload)
     if context and context not in request:
         request = f"{request}\n\n{context}"
-    purpose = str(payload.get("purpose") or "ad_creative").strip().lower()
     require_brief = creative_image_requires_brief(payload, purpose)
     readiness = creative_strategy_readiness(require_brief=require_brief, purpose=purpose, payload=payload)
     if not readiness["ready"]:
@@ -6770,6 +6813,7 @@ def codex_image_generate(payload):
             mode=mode,
             variations=variations,
             seed=str(payload.get("seed") or "").strip() or None,
+            purpose=purpose,
         )
         selected_prompt = (prompt_package.get("prompts") or [{}])[0]
         image_prompt = (
@@ -6827,6 +6871,7 @@ def codex_image_generate(payload):
             output_root=CREATIVE_ASSET_ROOT,
             output_name=payload.get("output_name") or selected_prompt.get("variant_id") or "meta-ad-creative",
             reference_image_paths=reference_paths,
+            purpose=purpose,
         )
         if result.get("ok") and include_logo and official_logo and logo_render_mode == "exact_composite" and result.get("image_path"):
             result["official_logo"] = composite_official_logo(
@@ -6839,6 +6884,7 @@ def codex_image_generate(payload):
                 result["warning"] = result["official_logo"].get("error") or "No pude aplicar el logo oficial exacto."
         result["prompt_package"] = {
             "mode": prompt_package["mode"],
+            "purpose": prompt_package.get("purpose", purpose),
             "seed": prompt_package["seed"],
             "variation_count": prompt_package["variation_count"],
             "variation_ledger": prompt_package["variation_ledger"],
