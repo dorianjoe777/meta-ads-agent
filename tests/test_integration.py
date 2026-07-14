@@ -3,12 +3,14 @@
 Integration tests for Meta Ads Agent modules.
 """
 import json
+import hashlib
 import os
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import types
 import importlib.util
 import urllib.parse
@@ -4510,6 +4512,8 @@ class IntegrationTestSuite:
                 product_catalog.PRODUCT_DIR = products_dir
                 product_catalog.PRODUCT_IMPORT_DIR = data_dir / "product-imports"
                 product_catalog.CATALOG_INDEX_FILE = brand / "catalog-index.json"
+                fallback_general = codex_brand_guides.default_general_guide()
+                self.assert_true("# Guia general de marca" in fallback_general and "Nombre de marca" in fallback_general, "Fresh installs can generate the complete branding template even when update packages omit brand_guides")
                 codex_brand_guides.GENERAL_GUIDE.write_text(
                     "# Guia general de marca\n\n- Nombre de marca: Catálogo Grande\n- Que vende: productos de bienestar\n",
                     encoding="utf-8",
@@ -9992,7 +9996,9 @@ class IntegrationTestSuite:
             (root / "dashboard" / "monitoring-dashboard.py").write_text("print('old dashboard')\n", encoding="utf-8")
             (root / "src").mkdir()
             (root / "src" / "agent.py").write_text("VERSION='old'\n", encoding="utf-8")
-            (root / "brand_guides").mkdir()
+            (root / "brand_guides" / "products").mkdir(parents=True)
+            buyer_product = root / "brand_guides" / "products" / "buyer-product.md"
+            buyer_product.write_text("# Buyer product\n\n- SKU: BUYER-001\n", encoding="utf-8")
             (root / "output").mkdir()
             (root / "runtime").mkdir()
             (root / ".env").write_text("DASHBOARD_PASSWORD=old\n", encoding="utf-8")
@@ -10021,6 +10027,17 @@ class IntegrationTestSuite:
                 self.assert_true(not (payload / "dashboard" / "data").exists(), "Snapshot does not duplicate runtime dashboard data")
                 self.assert_true(not (payload / "output").exists(), "Snapshot does not duplicate generated output")
                 self.assert_true(not (payload / "runtime").exists(), "Snapshot does not duplicate runtime auth/session data")
+                self.assert_true(not (payload / "brand_guides").exists(), "Code rollback snapshots never duplicate or later overwrite buyer brand/product memory")
+                checksum_file = root / "official-update.bin"
+                checksum_file.write_bytes(b"official update bytes")
+                checksum = hashlib.sha256(checksum_file.read_bytes()).hexdigest()
+                self.assert_true(dashboard.validate_update_archive_sha256(checksum_file, checksum).get("verified") is True, "Updater verifies a matching official SHA-256 before extraction")
+                try:
+                    dashboard.validate_update_archive_sha256(checksum_file, "0" * 64)
+                    checksum_blocked = False
+                except ValueError as exc:
+                    checksum_blocked = "no coincide" in str(exc)
+                self.assert_true(checksum_blocked, "Updater rejects altered downloads before copying any release file")
                 release_root = root / "release-unpack"
                 (release_root / "dashboard" / "data").mkdir(parents=True)
                 (release_root / "dashboard" / "monitoring-dashboard.py").write_text("print('new dashboard')\n", encoding="utf-8")
@@ -10062,10 +10079,12 @@ class IntegrationTestSuite:
                 (root / "ad-config.json").write_text('{"url":"new"}\n', encoding="utf-8")
                 (root / "VERSION").write_text("v9.9.9\n", encoding="utf-8")
                 (root / "dashboard" / "data" / "chat_history.json").write_text('{"turns":["new"]}\n', encoding="utf-8")
+                buyer_product.write_text("# Buyer product updated after snapshot\n\n- SKU: BUYER-001\n", encoding="utf-8")
                 result = dashboard.restore_update_snapshot({"snapshot_id": first["id"]})
                 self.assert_true((root / "VERSION").read_text(encoding="utf-8").strip() == "v1.0.0", "Rollback restores previous VERSION")
                 self.assert_true("DASHBOARD_PASSWORD=new" in (root / ".env").read_text(encoding="utf-8"), "Rollback preserves current local .env")
                 self.assert_true('"new"' in (root / "dashboard" / "data" / "chat_history.json").read_text(encoding="utf-8"), "Rollback preserves current dashboard local memory")
+                self.assert_true("updated after snapshot" in buyer_product.read_text(encoding="utf-8"), "Rollback preserves product edits made after the code snapshot")
                 self.assert_true((dashboard.UPDATE_SNAPSHOTS_DIR / first["id"]).exists(), "Rollback preserves snapshot storage while restoring code")
                 self.assert_true(result.get("rescue_snapshot_id"), "Rollback creates a rescue snapshot before restoring")
                 automatic = dashboard.restore_update_snapshot({"snapshot_id": first["id"], "restore_version_marker": True})
@@ -10077,6 +10096,32 @@ class IntegrationTestSuite:
                 snapshots = dashboard.list_update_snapshots()
                 self.assert_true(len(snapshots) == 3, "Update snapshots retain only the latest three pre-update points")
                 self.assert_true(all(item.get("reason") == "pre_update" for item in snapshots), "Rollback list excludes rescue snapshots")
+
+                lock_started = threading.Event()
+                lock_release = threading.Event()
+                def hold_update_lock():
+                    dashboard.UPDATE_OPERATION_LOCK.acquire()
+                    lock_started.set()
+                    lock_release.wait(timeout=5)
+                    dashboard.UPDATE_OPERATION_LOCK.release()
+
+                holder = threading.Thread(target=hold_update_lock, daemon=True)
+                holder.start()
+                lock_started.wait(timeout=2)
+                try:
+                    dashboard.apply_official_update()
+                    parallel_apply_blocked = False
+                except ValueError as exc:
+                    parallel_apply_blocked = "en curso" in str(exc)
+                try:
+                    dashboard.restore_update_snapshot({"snapshot_id": first["id"]})
+                    parallel_restore_blocked = False
+                except ValueError as exc:
+                    parallel_restore_blocked = "en curso" in str(exc)
+                finally:
+                    lock_release.set()
+                    holder.join(timeout=2)
+                self.assert_true(parallel_apply_blocked and parallel_restore_blocked, "A second update or rollback click is rejected while one update operation is already running")
             finally:
                 for key, value in original_values.items():
                     if key == "threading_Timer":
@@ -10176,6 +10221,11 @@ class IntegrationTestSuite:
                     self.assert_true((data_dir / "durable_conversation_memory.json").exists() and "buyer memory" in (data_dir / "durable_conversation_memory.json").read_text(encoding="utf-8"), f"{old_version} preserves durable conversation memory")
                     self.assert_true(migration["schema_version"] == dashboard.CURRENT_PRODUCT_DATA_SCHEMA_VERSION and recalled["matches"][0]["sku"] == "LEGACY-001", f"{old_version} runs every missing idempotent migration and retains exact product recall")
                     self.assert_true((root / "brand_guides" / "catalog-index.json").exists() and (root / "brand_guides" / "Offer map.md").exists(), f"{old_version} rebuilds derived catalog indexes without replacing buyer product guides")
+                    applied_count = len(migration["applied"])
+                    dashboard.safe_copytree_contents(release_root, root)
+                    second_migration = dashboard.run_product_data_migrations()
+                    second_recall = product_catalog.search_product_catalog({"query": "LEGACY-001"})
+                    self.assert_true(len(second_migration["applied"]) == applied_count and len(second_recall["matches"]) == 1 and second_recall["total_products"] == 1, f"{old_version} remains idempotent when the same latest release is applied twice")
         finally:
             for name, value in dashboard_original.items():
                 setattr(dashboard, name, value)
@@ -10183,6 +10233,64 @@ class IntegrationTestSuite:
                 setattr(codex_brand_guides, name, value)
             for name, value in catalog_original.items():
                 setattr(product_catalog, name, value)
+
+    def test_legacy_updater_can_apply_latest_package_without_touching_nested_buyer_guides(self):
+        """The release layout must remain safe even when v1.0.149/v1.0.150 code performs the copy."""
+        print("\nTesting Legacy Updater Compatibility Contract...")
+        latest_version = (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()
+
+        def legacy_safe_copytree_contents(source, target, base=None):
+            base = base or source
+            preserved = {".env", "ad-config.json", "dashboard/data", "output", "runtime"}
+            for item in source.iterdir():
+                relative = item.relative_to(base).as_posix()
+                if relative in preserved or any(relative.startswith(prefix + "/") for prefix in preserved):
+                    continue
+                destination = target / item.name
+                if item.is_dir():
+                    if item.name in {"dashboard", "brand_guides"}:
+                        destination.mkdir(parents=True, exist_ok=True)
+                        legacy_safe_copytree_contents(item, destination, base)
+                    else:
+                        if destination.exists():
+                            shutil.rmtree(destination)
+                        shutil.copytree(item, destination)
+                else:
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(item, destination)
+
+        with tempfile.TemporaryDirectory() as tmp_name:
+            root = Path(tmp_name)
+            install = root / "installation"
+            release_root = root / "latest-release"
+            products = install / "brand_guides" / "products"
+            assets = install / "brand_guides" / "assets"
+            briefs = install / "brand_guides" / "ad_briefs"
+            products.mkdir(parents=True)
+            assets.mkdir(parents=True)
+            briefs.mkdir(parents=True)
+            expected = {}
+            for index in range(1, 51):
+                path = products / f"producto-{index:02d}.md"
+                content = f"# Producto comprador {index}\n\n- SKU: SKU-{index:03d}\n"
+                path.write_text(content, encoding="utf-8")
+                expected[path.name] = content
+            (assets / "logo.png").write_bytes(b"buyer-logo")
+            (briefs / "campana-activa.md").write_text("# Brief del comprador\n", encoding="utf-8")
+            (install / ".env").write_text("DASHBOARD_PASSWORD=buyer-secret\n", encoding="utf-8")
+            (install / "VERSION").write_text("v1.0.149\n", encoding="utf-8")
+
+            (release_root / "dashboard").mkdir(parents=True)
+            (release_root / "dashboard" / "monitoring-dashboard.py").write_text("# latest updater\n", encoding="utf-8")
+            (release_root / "VERSION").write_text(latest_version + "\n", encoding="utf-8")
+            self.assert_true(not (release_root / "brand_guides").exists(), "Latest update package intentionally contains no buyer-owned brand guide tree")
+
+            legacy_safe_copytree_contents(release_root, install)
+            legacy_safe_copytree_contents(release_root, install)
+            self.assert_true((install / "VERSION").read_text(encoding="utf-8").strip() == latest_version, "Legacy updater still installs the latest code snapshot")
+            self.assert_true(all((products / name).read_text(encoding="utf-8") == content for name, content in expected.items()), "Legacy updater preserves all 50 nested product guides across repeated installs")
+            self.assert_true((assets / "logo.png").read_bytes() == b"buyer-logo" and "comprador" in (briefs / "campana-activa.md").read_text(encoding="utf-8"), "Legacy updater preserves nested logos and ad briefs")
+            self.assert_true("buyer-secret" in (install / ".env").read_text(encoding="utf-8"), "Legacy updater preserves buyer secrets")
 
     def test_release_package_excludes_runtime_data_and_includes_buyer_docs(self):
         """Test release script is buyer-safe and docs are included in source package."""
@@ -10192,7 +10300,7 @@ class IntegrationTestSuite:
         required_excludes = [
             '.env',
             'ad-config.json',
-            'brand_guides/Offer map.md',
+            'brand_guides',
             'dashboard/data/*',
             'dashboard/data/update-snapshots/*',
             'seller/*',
@@ -10291,6 +10399,7 @@ class IntegrationTestSuite:
         env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
         self.assert_true("@openai/codex" in dockerfile and "node:22" in dockerfile, "Docker image installs Node and Codex CLI")
         self.assert_true("CODEX_CLI_VERSION=0.142.5" in dockerfile and "HERMES_AGENT_REF=a6b9597d5fb92969d605a858d5f14536e805553a" in dockerfile and "@openai/codex@${CODEX_CLI_VERSION}" in dockerfile and "hermes-agent.git@${HERMES_AGENT_REF}" in dockerfile, "Fresh Docker installs pin the smoke-tested Hermes and Codex builds instead of pulling main/latest drift")
+        self.assert_true('mkdir -p brand_guides' in dockerfile and '--exclude "brand_guides"' in script, "Source/update packages omit buyer-owned brand guides while fresh Docker builds create an empty durable mount safely")
         self.assert_true('CODEX_CLI_VERSION="${CODEX_CLI_VERSION:-0.142.5}"' in install_local and 'HERMES_AGENT_REF="${HERMES_AGENT_REF:-a6b9597d5fb92969d605a858d5f14536e805553a}"' in install_local, "Native installs use the same tested dependency pins with explicit override support")
         self.assert_true("python-telegram-bot>=21,<22" in dockerfile and "python-telegram-bot>=21,<22" in install_local, "Docker/native installs include the Telegram adapter required by Hermes Gateway")
         self.assert_true("openpyxl>=3.1,<4" in dockerfile and "pypdf>=5,<7" in dockerfile and "xlrd>=2,<3" in dockerfile and "openpyxl>=3.1,<4" in install_local and "pypdf>=5,<7" in install_local and "xlrd>=2,<3" in install_local, "Fresh Docker/native installs can ingest modern Excel, legacy Excel, and PDF product catalogs")
@@ -10405,7 +10514,7 @@ class IntegrationTestSuite:
         self.assert_true("script-src 'self';" in dashboard_server_source and "script-src-elem 'self';" in dashboard_server_source and "style-src 'self';" in dashboard_server_source, "Dashboard CSP blocks inline script/style elements on the main app")
         self.assert_true("script-src-attr 'none'" in dashboard_server_source and "style-src-attr 'none'" in dashboard_server_source and "unsafe-inline" not in dashboard_server_source, "Dashboard CSP blocks inline script/style attributes without unsafe-inline")
         self.assert_true("relative_to(ROOT_DIR)" in content_dashboard_source and "from html import escape" in content_dashboard_source, "Secondary content dashboard avoids path-prefix checks and escapes generated content")
-        self.assert_true("official_download_url_allowed" in dashboard_source and "MAX_UPDATE_UNPACKED_BYTES" in dashboard_source and "zip_member_is_safe" in dashboard_source, "Dashboard update and restore paths guard against unsafe archives")
+        self.assert_true("official_download_url_allowed" in dashboard_source and "MAX_UPDATE_UNPACKED_BYTES" in dashboard_source and "zip_member_is_safe" in dashboard_source and "validate_update_archive_sha256" in dashboard_source and "UPDATE_OPERATION_LOCK" in dashboard_source, "Dashboard update and restore paths guard against unsafe archives, altered downloads, and concurrent update clicks")
         self.assert_true(not (ROOT_DIR / "Actualizar acceso DigitalOcean.command").exists() and not (ROOT_DIR / "Crear respaldo para cambiar de equipo.command").exists(), "Buyer folder avoids scary top-level maintenance launchers")
         self.assert_true("Abrir mi dashboard" in do_doc and "La recuperacion tecnica es por SSH" in do_doc and "DO_STRICT_ALLOW_SSH_FROM_ANYWHERE=true" in do_doc, "DigitalOcean strict access docs explain IP changes and recovery")
         self.assert_true("Docker ayuda, pero no reemplaza CSP" in security_next_doc and "public/dashboard/dashboard.css" in security_next_doc and "script-src-attr 'none'" in security_next_doc and "no expongas tu dashboard local a internet" in security_next_doc, "Security next-steps doc records Docker, strict CSP, and public exposure follow-ups")
@@ -10422,6 +10531,7 @@ class IntegrationTestSuite:
         self.assert_true("Tu licencia Individual cuida un solo negocio activo" in dashboard_source and "otra licencia separada" in dashboard_source, "Dashboard explains Individual one-business limit in buyer-friendly copy")
         self.assert_true("Licencia Agencia" not in dashboard_source and "Agregar cliente" not in dashboard_source and "Clientes de agencia" not in dashboard_source, "Dashboard does not expose paused agency workspace copy")
         self.assert_true("improvements" in license_releases_admin and "improvements" in license_release_api, "Official release metadata includes buyer-facing improvement cards")
+        self.assert_true("sha256: String(asset.sha256 || release.sha256" in license_release_api, "Official release metadata gives the dashboard the exact SHA-256 to verify before installation")
         self.assert_true("buyerFacingImprovements" in portal_lib and "INTERNAL_RELEASE_WORDS" in portal_lib and "Instalacion en contenedor" in portal_lib, "Download portal filters internal release notes before buyers see them")
         for technical_release_word in ['"hermes"', '"chatgpt"', '"codex"', '"ssh"', '"vps"', '"minimax"', '"comando"']:
             self.assert_true(technical_release_word in portal_lib, f"Download portal hides technical release note word {technical_release_word} from buyers")

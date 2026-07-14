@@ -266,6 +266,7 @@ AGENT_RUNTIME_STATUS_LOCK = threading.Lock()
 DASHBOARD_SESSION_PREFIX = "das_"
 DASHBOARD_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60
 HERMES_LOGIN_LOCK = threading.Lock()
+UPDATE_OPERATION_LOCK = threading.RLock()
 HERMES_LOGIN_STATE = {
     "id": "",
     "status": "idle",
@@ -634,7 +635,7 @@ def is_skipped_snapshot_path(relative, source):
         return True
     if source.name.endswith((".pyc", ".log", ".zip", ".tar.gz", ".dmg", ".exe", ".pkg", ".msi")):
         return True
-    if relative.parts and relative.parts[0] in {"release", "node_modules", ".git", "logs", "output", "runtime", "dist", "build"}:
+    if relative.parts and relative.parts[0] in {"release", "node_modules", ".git", "logs", "output", "runtime", "brand_guides", "dist", "build"}:
         return True
     if relative.parts[:2] == ("dashboard", "data"):
         return True
@@ -779,7 +780,7 @@ def restore_path(source, destination):
     shutil.copy2(source, destination)
 
 
-def restore_update_snapshot(payload):
+def _restore_update_snapshot_unlocked(payload):
     snapshot_id = safe_snapshot_id(payload.get("snapshot_id"))
     snapshot_dir = UPDATE_SNAPSHOTS_DIR / snapshot_id
     manifest = read_update_snapshot_manifest(snapshot_dir)
@@ -812,6 +813,15 @@ def restore_update_snapshot(payload):
         "version_marker_restored": bool(payload.get("restore_version_marker") and restored_version),
         "message": "Version anterior restaurada. El dashboard se reiniciara automaticamente.",
     }
+
+
+def restore_update_snapshot(payload):
+    if not UPDATE_OPERATION_LOCK.acquire(blocking=False):
+        raise ValueError("Ya hay una actualización o restauración en curso. Espera a que termine antes de intentarlo otra vez.")
+    try:
+        return _restore_update_snapshot_unlocked(payload)
+    finally:
+        UPDATE_OPERATION_LOCK.release()
 
 
 def public_client_ip(handler):
@@ -920,6 +930,22 @@ def download_limited(url, target_path, max_bytes):
                 handle.write(chunk)
 
 
+def validate_update_archive_sha256(archive_path, expected_sha256):
+    expected = str(expected_sha256 or "").strip().lower()
+    if not expected:
+        return {"verified": False, "reason": "checksum_not_provided"}
+    if not re.fullmatch(r"[0-9a-f]{64}", expected):
+        raise ValueError("El servidor oficial devolvió una firma de actualización inválida.")
+    digest = hashlib.sha256()
+    with open(archive_path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    actual = digest.hexdigest()
+    if actual != expected:
+        raise ValueError("La descarga no coincide con la actualización oficial; no se instaló ningún archivo.")
+    return {"verified": True, "sha256": actual}
+
+
 def normalize_improvements(items):
     if not isinstance(items, list):
         return []
@@ -994,6 +1020,7 @@ def request_update_release():
         "channel": settings["channel"],
         "asset_name": settings["asset_name"],
         "download_url": data.get("download_url", ""),
+        "sha256": str(data.get("sha256") or "").strip().lower(),
         "expires_at": data.get("expires_at", ""),
         "improvements": improvements,
         "warnings": update_safety_warnings(),
@@ -1220,7 +1247,7 @@ def run_update_health_checks(expected_version=""):
     return {"ok": True, "package_version": current_product_version(), "data_schema_version": migration.get("schema_version"), "checked": ["python", "config", "required_files", "version", "dashboard_html", "data_migrations"]}
 
 
-def apply_official_update():
+def _apply_official_update_unlocked():
     release = request_update_release()
     if not release["available"]:
         return {**release, "installed": False, "message": "Ya tienes la version mas reciente."}
@@ -1237,6 +1264,7 @@ def apply_official_update():
                 download_limited(download_url, archive_path, MAX_UPDATE_ARCHIVE_BYTES)
             except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
                 raise ValueError("No pude descargar la actualizacion oficial. Intenta mas tarde.") from exc
+            archive_integrity = validate_update_archive_sha256(archive_path, release.get("sha256"))
             unpack_dir = tmp_root / "unpack"
             unpack_dir.mkdir()
             with zipfile.ZipFile(archive_path) as archive:
@@ -1266,9 +1294,18 @@ def apply_official_update():
         except Exception as rollback_exc:
             raise ValueError("La actualizacion fallo y tampoco pude restaurar automaticamente el punto anterior.") from rollback_exc
         raise ValueError("La actualizacion no paso las verificaciones y restaure automaticamente la version anterior.") from exc
-    log_action("official_update_apply", {"from": release["current_version"], "to": release["latest_version"], "channel": release["channel"], "snapshot_id": snapshot.get("id"), "package_version": health.get("package_version", installed_version)}, "completed")
+    log_action("official_update_apply", {"from": release["current_version"], "to": release["latest_version"], "channel": release["channel"], "snapshot_id": snapshot.get("id"), "package_version": health.get("package_version", installed_version), "archive_sha256_verified": bool(archive_integrity.get("verified"))}, "completed")
     threading.Timer(1.2, restart_dashboard_process).start()
-    return {**release, "installed": True, "snapshot": snapshot, "health": health, "message": "Actualizacion instalada. El dashboard se reiniciara automaticamente."}
+    return {**release, "installed": True, "snapshot": snapshot, "health": health, "archive_integrity": archive_integrity, "message": "Actualizacion instalada. El dashboard se reiniciara automaticamente."}
+
+
+def apply_official_update():
+    if not UPDATE_OPERATION_LOCK.acquire(blocking=False):
+        raise ValueError("Ya hay una actualización o restauración en curso. Espera a que termine antes de intentarlo otra vez.")
+    try:
+        return _apply_official_update_unlocked()
+    finally:
+        UPDATE_OPERATION_LOCK.release()
 
 
 def update_env_values(values):

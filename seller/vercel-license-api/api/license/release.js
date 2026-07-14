@@ -110,6 +110,7 @@ export default async function handler(request, response) {
       version: release.version,
       asset_name: assetName,
       filename: asset.filename,
+      sha256: String(asset.sha256 || release.sha256 || "").trim().toLowerCase(),
       improvements: buyerFacingImprovements(release.improvements || []),
       expires_at: grant.expires_at,
       download_url: `${baseUrl(request)}/api/download/release?token=${encodeURIComponent(grant.token)}`

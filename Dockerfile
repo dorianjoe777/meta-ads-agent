@@ -35,6 +35,7 @@ RUN python3 -m pip install --break-system-packages --no-cache-dir \
 
 COPY . .
 RUN chmod +x scripts/*.sh \
+    && mkdir -p brand_guides \
     && cp -R brand_guides /app/brand_guides_seed \
     && mkdir -p /app/runtime /app/dashboard/data /app/output /app/logs
 
