@@ -2537,6 +2537,8 @@ class IntegrationTestSuite:
             self.assert_true("prefilled_message" in campaign_text and "welcome_message" in campaign_text and "quick_replies" in campaign_text and "unsolicited first messages" in agents_text, "Hermes workspace teaches click-to-message initial-message setup without implying unsolicited outreach")
             self.assert_true("mcp_admira_fetch_public_asset" in agents_text and "Google Drive" in campaign_text and "public video" in branding_text, "Hermes workspace teaches public link and Drive creative retrieval")
             self.assert_true("Default initiative" in core_skill.read_text(encoding="utf-8") and "redundant" in campaign_text and "quieres que la genere ahora" in (workspace_path / "skills" / "creative-production-codex-image" / "SKILL.md").read_text(encoding="utf-8"), "Hermes workspace teaches the agent to advance safe obvious next steps instead of asking redundant permission")
+            core_text = core_skill.read_text(encoding="utf-8")
+            self.assert_true("Executive response contract" in core_text and "60-180 words" in core_text and "must usually stay under 220 words" in core_text and "Never append a generic engagement hook" in core_text, "Simple-word replies have a concrete concise response budget and decisive ending")
             self.assert_true("Critical video-only fallback" in agents_text and "temporary static dark/placeholder" in meta_execution_skill.read_text(encoding="utf-8") and "normal static-image ads" in campaign_text, "Hermes workspace makes the video-only placeholder workaround explicit at top-level and execution levels")
             self.assert_true("mcp_admira_approve_action" in approvals_skill.read_text(encoding="utf-8"), "Approval skill points Hermes to exact approval MCP tools")
             self.assert_true("Native Product Tools" in agents_text and "mcp_admira_stage_campaign" in agents_text and "mcp_admira_review_signal_quality" in agents_text and "mcp_admira_preflight_campaign" in agents_text, "Combined Hermes rules document the MCP product bridge and preflight review")
@@ -3463,6 +3465,7 @@ class IntegrationTestSuite:
         soul_text = (hermes_bridge.HERMES_WORKSPACE_DIR / "SOUL.md").read_text(encoding="utf-8")
         agents_text = (hermes_bridge.HERMES_WORKSPACE_DIR / "AGENTS.md").read_text(encoding="utf-8")
         self.assert_true("advisory-first" in soul_text and "not form-first" in soul_text, "Hermes soul defines the agent as an advisor instead of a form")
+        self.assert_true("60-180 words" in soul_text and "End complete answers decisively" in soul_text and "si quieres" in soul_text, "Hermes soul enforces concise simple replies without automatic continuation offers")
         self.assert_true("Advisory-first rule" in agents_text and "professional agency" in agents_text, "Combined Hermes rules include the professional strategist posture")
         self.assert_true((hermes_bridge.HERMES_WORKSPACE_DIR / "CURRENT_CONTEXT.json").exists(), "Hermes receives current turn account context as a scoped workspace file")
         self.assert_true((hermes_bridge.HERMES_WORKSPACE_DIR / "data" / "business_profile.json").exists(), "Business profile is copied into Hermes workspace")
@@ -6133,6 +6136,7 @@ class IntegrationTestSuite:
             os.environ["AGENT_AD_EXPERIENCE_LEVEL"] = "beginner"
             simple_context = agent_chat.account_context({"language": "es"})
             self.assert_true(simple_context["communication_preference"]["style"] == "simple" and "evita jerga" in simple_context["communication_preference"]["instruction"], "Agent context carries the global simple-language instruction")
+            self.assert_true("60-180 palabras" in simple_context["communication_preference"]["instruction"] and "normalmente no pases de 220" in simple_context["communication_preference"]["instruction"] and "Nunca termines una respuesta ya completa con «si quieres...»" in simple_context["communication_preference"]["instruction"], "Simple-language context enforces concise executive answers and bans automatic if-you-want endings")
             self.assert_true(simple_context["communication_preference"]["ad_experience_level"] == "beginner" and "no hagas que el comprador elija perillas técnicas" in simple_context["communication_preference"]["ad_experience_instruction"], "Agent context carries beginner ads-experience guidance")
         finally:
             if previous_style is None:

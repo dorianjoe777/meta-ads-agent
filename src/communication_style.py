@@ -91,13 +91,24 @@ def communication_style_instruction(style, language="es"):
             "Communication preference: simple words. Lead with the decision and business impact, use everyday language, and avoid jargon. "
             "If a technical term is necessary, explain it immediately in one plain sentence. Do not show code, commands, or internal implementation "
             "details unless the buyer asks for them. Still make expert best-practice recommendations proactively; simply explain the business impact "
-            "instead of the machinery. This preference never overrides security, approval, evidence, or account-safety rules."
+            "instead of the machinery. For an ordinary status, recommendation, diagnosis, or next-step reply, target 60-180 words and normally stay "
+            "under 220 words. Use no more than one short heading and 3-6 bullets when bullets help. Exceed that only when the buyer explicitly asks for "
+            "depth, the requested deliverable itself is long, or safety/accuracy genuinely requires it. Do not repeat the request, narrate internal reasoning, "
+            "list every possible branch, or add a generic continuation offer. Never end a complete reply with 'if you want...', 'would you like me to...', "
+            "or an equivalent invitation. If one answer is truly blocking, ask exactly one concise question; otherwise end decisively with the result, "
+            "recommendation, or next action. This preference never overrides security, approval, evidence, or account-safety rules."
         )
     return (
         "Preferencia de comunicación: palabras simples. Empieza por la decisión y el impacto en el negocio, usa lenguaje cotidiano y evita jerga. "
         "Si un término técnico es necesario, explícalo de inmediato en una frase sencilla. No muestres código, comandos ni detalles internos de "
         "implementación salvo que el comprador los pida. Aun así, recomienda de forma proactiva las mejores prácticas; solo explica el impacto en negocio "
-        "en vez de toda la maquinaria. Esta preferencia nunca cambia las reglas de seguridad, aprobación, evidencia o cuidado de la cuenta."
+        "en vez de toda la maquinaria. Para una respuesta normal de estado, recomendación, diagnóstico o siguiente paso, apunta a 60-180 palabras y "
+        "normalmente no pases de 220. Usa como máximo un título corto y entre 3 y 6 viñetas cuando ayuden. Supera ese tamaño solo si el comprador pide "
+        "profundidad, el entregable solicitado es largo o la seguridad/precisión realmente lo exige. No repitas la solicitud, no narres tu razonamiento interno, "
+        "no enumeres todas las ramas posibles ni agregues una oferta genérica de continuación. Nunca termines una respuesta ya completa con «si quieres...», "
+        "«¿quieres que...?», «puedo también...» ni equivalentes. Si falta una respuesta realmente bloqueante, haz exactamente una pregunta breve; de lo "
+        "contrario, termina de forma ejecutiva con el resultado, la recomendación o la siguiente acción. Esta preferencia nunca cambia las reglas de seguridad, "
+        "aprobación, evidencia o cuidado de la cuenta."
     )
 
 
