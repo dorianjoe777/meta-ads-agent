@@ -605,9 +605,11 @@ function mergeAgentRuntimeStatus(runtime={}){
  const model=state.config.agent_model||{};
  Object.assign(model,{
   hermes_model_options:Array.isArray(catalog.models)?catalog.models:model.hermes_model_options,
-  hermes_model_recommended:catalog.recommended||model.hermes_model_recommended,
-  hermes_model_catalog_source:catalog.source||model.hermes_model_catalog_source,
-  hermes_model_catalog_updated_at:catalog.checked_at||model.hermes_model_catalog_updated_at,
+ hermes_model_recommended:catalog.recommended||model.hermes_model_recommended,
+ hermes_model_catalog_source:catalog.source||model.hermes_model_catalog_source,
+ hermes_model_catalog_updated_at:catalog.checked_at||model.hermes_model_catalog_updated_at,
+  hermes_model_catalog_account_verified:Boolean(catalog.account_verified),
+  hermes_model_catalog_auth_resolved:Boolean(catalog.auth_resolved),
   runtime_versions:versions,
   chatgpt_connected:Boolean(main.authenticated??main.ready),
   chatgpt_reauth_required:Boolean(main.reauth_required),
@@ -1751,7 +1753,8 @@ function chatGptConnectMarkup(onboarding=false){
  const telegramRuntimeNotice=runtimeModelLabel?`<div class="telegram-runtime-note ${runtimeChanged?'changed':''}"><b>${lang==='es'?'Telegram ahora usa':'Telegram is using now'}</b><span>${escapeHtml(runtimeModelLabel)}</span>${runtimeChanged?`<small>${lang==='es'?'Cambiado desde Telegram con /model. Si quieres que sea el principal fijo, guárdalo aquí también.':'Changed from Telegram with /model. To make it the permanent primary model, save it here too.'}</small>`:''}</div>`:'';
  const base=model.base_url||(selectedRoute==='openai_api'?'https://api.openai.com/v1':(selectedRoute==='custom_api'?'':'https://api.minimax.io/v1'));
  const modelName=model.model||(selectedRoute==='openai_api'?'gpt-4.1-mini':(selectedRoute==='custom_api'?'':'MiniMax-M3'));
- const codexModel=model.hermes_model||model.hermes_model_recommended||'gpt-5.6-terra';
+ const catalogVerified=Boolean(model.hermes_model_catalog_account_verified);
+ const catalogAuthResolved=Boolean(model.hermes_model_catalog_auth_resolved);
  const imageSource=model.codex_image_source||studio.codex_image_source||'main_chatgpt';
  const imageDedicated=imageSource==='dedicated_chatgpt';
  const imageDedicatedAllowed=apiBrain;
@@ -1778,12 +1781,24 @@ function chatGptConnectMarkup(onboarding=false){
  const apiPanelHelp=selectedRoute==='chatgpt_subscription'?routeCopy.minimax_m3.panel:routeCopy[selectedRoute].panel;
  const providerValue=brain;
  const liveCodexModels=(Array.isArray(model.hermes_model_options)?model.hermes_model_options:[]).map(value=>String(value||'').trim()).filter(Boolean);
- if(codexModel&&!liveCodexModels.includes(codexModel))liveCodexModels.unshift(codexModel);
+ const configuredCodexModel=String(model.hermes_model||'').trim();
+ const codexModel=catalogVerified
+  ? (liveCodexModels.includes(configuredCodexModel)?configuredCodexModel:(liveCodexModels.includes(String(model.hermes_model_recommended||''))?String(model.hermes_model_recommended):liveCodexModels[0]||''))
+  : (configuredCodexModel||model.hermes_model_recommended||'gpt-5.6-terra');
+ if(!catalogVerified&&codexModel&&!liveCodexModels.includes(codexModel))liveCodexModels.unshift(codexModel);
  if(!liveCodexModels.length)liveCodexModels.push(codexModel||'gpt-5.6-terra');
  const recommendedCodexModel=String(model.hermes_model_recommended||liveCodexModels[0]||'').trim();
  const codexModelOptions=liveCodexModels.map(value=>`<option value="${escapeHtml(value)}" ${codexModel===value?'selected':''}>${escapeHtml(value+(value===recommendedCodexModel?(lang==='es'?' · recomendado':' · recommended'):''))}</option>`).join('');
  const runtimeVersions=model.runtime_versions||{};
- const runtimeVersionNote=`<p class="notice">${lang==='es'?'Lista obtenida de la cuenta/Hermes instalada y renovada automáticamente.':'List obtained from the installed account/Hermes and refreshed automatically.'}${runtimeVersions.hermes?` Hermes: ${escapeHtml(runtimeVersions.hermes)}`:''}${runtimeVersions.codex?` · Codex: ${escapeHtml(runtimeVersions.codex)}`:''}</p>`;
+ const catalogHas56=liveCodexModels.some(value=>/^gpt-5\.6(?:[-.:]|$)/i.test(value));
+ const catalogStateNote=catalogVerified
+  ? (catalogHas56
+    ? (lang==='es'?'Lista verificada con esta cuenta; muestra los modelos que realmente puede usar.':'Verified with this account; showing the models it can actually use.')
+    : (lang==='es'?'Lista verificada con esta cuenta: GPT‑5.6 no aparece como disponible para esta cuenta o plan.':'Verified with this account: GPT‑5.6 is not available to this account or plan.'))
+  : (catalogAuthResolved
+    ? (lang==='es'?'No pude validar todavía el catálogo de esta cuenta; muestro la última lista conocida. Actualiza después de conectar.':'I could not validate this account catalog yet; showing the last known list. Refresh after connecting.')
+    : (lang==='es'?'Catálogo provisional: conecta o actualiza para confirmar los modelos disponibles en tu cuenta.':'Provisional catalog: connect or refresh to confirm the models available to your account.'));
+ const runtimeVersionNote=`<p class="notice">${catalogStateNote}${runtimeVersions.hermes?` Hermes: ${escapeHtml(runtimeVersions.hermes)}`:''}${runtimeVersions.codex?` · Codex: ${escapeHtml(runtimeVersions.codex)}`:''}</p>`;
  const chatgptSettingsButton=`<a class="btn chatgpt-settings-link" href="https://chatgpt.com/#settings/Security" target="_blank" rel="noopener noreferrer">${lang==='es'?'Abrir configuración de ChatGPT':'Open ChatGPT settings'}</a>`;
  const chatgptActions=chatgptConnected
   ? `<button class="btn primary" type="button" data-action-code="saveChatGptModel(event)">${chatgptReady?(lang==='es'?'Guardar modelo principal':'Save primary model'):(lang==='es'?'Usar como principal':'Use as primary')}</button><button class="btn danger" type="button" data-action-code="disconnectAgentModel('agent')">${lang==='es'?'Desconectar para cambiar cuenta':'Disconnect to change account'}</button>`
@@ -2098,8 +2113,12 @@ async function refreshCodexModelCatalog(event){
  const btn=event?.currentTarget||event?.target;if(btn)btn.disabled=true;
  try{
   const res=await api('/api/agent-model/catalog',{method:'POST',body:'{}'});
-  const count=Array.isArray(res.result?.models)?res.result.models.length:0;
-  toast(lang==='es'?`Lista actualizada: ${count} modelos`:`Model list refreshed: ${count} models`);
+  const catalog=res.result||res||{};
+  const count=Array.isArray(catalog.models)?catalog.models.length:0;
+  const verified=Boolean(catalog.account_verified);
+  toast(lang==='es'
+   ? (verified?`Lista verificada con esta cuenta: ${count} modelos`:`Lista provisional actualizada: ${count} modelos; revisa la cuenta conectada`)
+   : (verified?`List verified with this account: ${count} models`:`Provisional list refreshed: ${count} models; check the connected account`));
   await load();
  }catch(err){toast(lang==='es'?'No pude renovar la lista; mantuve la última lista válida.':'Could not refresh the list; kept the last known valid list.')}finally{if(btn)btn.disabled=false}
 }

@@ -3905,6 +3905,34 @@ def _clean_codex_model_ids(values):
     return cleaned
 
 
+def _hermes_python_candidates(config):
+    """Find Python runtimes that can import the installed Hermes package.
+
+    Docker installs normally share ``sys.executable`` with Hermes. Native
+    installs may keep Hermes in its own managed venv, so using only the
+    dashboard Python silently falls back to an old product catalog.
+    """
+    candidates = [Path(sys.executable)]
+    environment = hermes_environment(config)
+    hermes_home = Path(str(environment.get("HERMES_HOME") or Path.home() / ".hermes")).expanduser()
+    for home in (hermes_home, Path.home() / ".hermes"):
+        candidates.extend([
+            home / "hermes-agent" / "venv" / "bin" / "python",
+            home / "hermes-agent" / ".venv" / "bin" / "python",
+        ])
+    cli = str(getattr(config, "hermes_cli", "") or "hermes").strip() or "hermes"
+    cli_path = shutil.which(cli, path=environment.get("PATH"))
+    if cli_path:
+        resolved = Path(cli_path).expanduser().resolve()
+        candidates.extend([resolved.parent / "python", resolved.parent / "python3"])
+    result = []
+    for candidate in candidates:
+        value = str(candidate)
+        if value not in result and candidate.exists() and os.access(candidate, os.X_OK):
+            result.append(value)
+    return result or [sys.executable]
+
+
 def codex_model_catalog(config=None, force_refresh=False):
     """Return the installed Hermes account-aware Codex catalog with a stale-safe cache."""
     config = config or load_config()
@@ -3916,35 +3944,69 @@ def codex_model_catalog(config=None, force_refresh=False):
 
     code = (
         "import json\n"
-        "models=[]\n"
+        "result={'models': [], 'account_verified': False, 'auth_resolved': False}\n"
         "try:\n"
+        " from hermes_cli.auth import resolve_codex_runtime_credentials\n"
         " from hermes_cli.models import provider_model_ids\n"
-        " try: models=provider_model_ids('openai-codex', force_refresh=" + ("True" if force_refresh else "False") + ")\n"
-        " except TypeError: models=provider_model_ids('openai-codex')\n"
-        "except Exception:\n"
+        " token=''\n"
         " try:\n"
-        "  from hermes_cli.codex_models import get_codex_model_ids\n"
-        "  models=get_codex_model_ids()\n"
-        " except Exception: models=[]\n"
-        "print(json.dumps(models))\n"
+        "  creds=resolve_codex_runtime_credentials(refresh_if_expiring=True) or {}\n"
+        "  token=str(creds.get('api_key') or '')\n"
+        "  result['auth_resolved']=bool(token)\n"
+        " except Exception: token=''\n"
+        " if token:\n"
+        "  try:\n"
+        "   from hermes_cli.codex_models import _fetch_models_from_api\n"
+        "   live=_fetch_models_from_api(token) or []\n"
+        "   if live:\n"
+        "    result['models']=live\n"
+        "    result['account_verified']=True\n"
+        "  except Exception: pass\n"
+        " if not result['models']:\n"
+        "  try: result['models']=provider_model_ids('openai-codex', force_refresh=" + ("True" if force_refresh else "False") + ")\n"
+        "  except TypeError: result['models']=provider_model_ids('openai-codex')\n"
+        "except Exception: pass\n"
+        "print(json.dumps(result))\n"
     )
-    try:
-        result = subprocess.run(
-            [sys.executable, "-c", code],
-            cwd=str(ROOT_DIR),
-            env=hermes_environment(config),
-            text=True,
-            capture_output=True,
-            timeout=18,
-            check=False,
-        )
-        output_lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
-        discovered = _clean_codex_model_ids(json.loads(output_lines[-1])) if result.returncode == 0 and output_lines else []
-    except (OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired):
-        discovered = []
+    discovered = []
+    account_verified = False
+    auth_resolved = False
+    for python_cli in _hermes_python_candidates(config):
+        try:
+            result = subprocess.run(
+                [python_cli, "-c", code],
+                cwd=str(ROOT_DIR),
+                env=hermes_environment(config),
+                text=True,
+                capture_output=True,
+                timeout=18,
+                check=False,
+            )
+            output_lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+            parsed = json.loads(output_lines[-1]) if result.returncode == 0 and output_lines else {}
+            # Older probes returned a bare list; keep that compatible.
+            if isinstance(parsed, list):
+                discovered = _clean_codex_model_ids(parsed)
+                account_verified = bool(discovered)
+            elif isinstance(parsed, dict):
+                discovered = _clean_codex_model_ids(parsed.get("models"))
+                account_verified = bool(parsed.get("account_verified") and discovered)
+                auth_resolved = bool(parsed.get("auth_resolved"))
+            if discovered:
+                break
+        except (OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired):
+            continue
 
     models = discovered or cached_models
-    source = "hermes_live_catalog" if discovered else ("last_known_catalog" if cached_models else "safe_fallback")
+    source = (
+        "account_codex_catalog"
+        if account_verified
+        else "hermes_runtime_catalog"
+        if discovered
+        else "last_known_catalog"
+        if cached_models
+        else "safe_fallback"
+    )
     if not models:
         current = str(getattr(config, "hermes_model", "") or "").strip()
         models = _clean_codex_model_ids([current, "gpt-5.6-terra", "gpt-5.5", "gpt-5.4-mini", "gpt-5.4"])
@@ -3952,6 +4014,8 @@ def codex_model_catalog(config=None, force_refresh=False):
         "models": models,
         "recommended": models[0] if models else normalize_hermes_model(""),
         "source": source,
+        "account_verified": account_verified,
+        "auth_resolved": auth_resolved,
         "checked_at": now_iso(),
         "checked_epoch": time.time(),
         "stale": not bool(discovered),
@@ -3971,7 +4035,14 @@ def resolve_codex_model_choice(value, config=None):
     current = str(getattr(config, "hermes_model", "") or "").strip()
     if current in models:
         return current
-    return str(catalog.get("recommended") or normalize_hermes_model(raw)).strip()
+    # A curated/runtime catalog is useful for display but is not entitlement
+    # proof. Until the connected account API has answered, keep the stable
+    # product default instead of silently switching a buyer to an older
+    # catalog entry. Once the account is verified, its recommended model is
+    # authoritative (and may legitimately be an older model on that plan).
+    if catalog.get("account_verified"):
+        return str(catalog.get("recommended") or normalize_hermes_model(raw)).strip()
+    return str(normalize_hermes_model(raw)).strip()
 
 
 def runtime_dependency_versions(config=None):

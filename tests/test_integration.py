@@ -1948,9 +1948,12 @@ class IntegrationTestSuite:
                     catalog_cfg = type("CatalogCfg", (), {"hermes_model": "gpt-5.5"})()
                     catalog = dashboard.codex_model_catalog(catalog_cfg, force_refresh=True)
                     self.assert_true(catalog["models"] == ["gpt-6", "gpt-5.5", "gpt-5.4-mini"] and catalog["recommended"] == "gpt-6", "Dashboard model picker consumes the installed Hermes live Codex catalog instead of a fixed product list")
+                    dashboard.subprocess.run = lambda *_args, **_kwargs: type("Result", (), {"returncode": 0, "stdout": '{"models": ["gpt-5.5", "gpt-5.4-mini"], "account_verified": true, "auth_resolved": true}\n', "stderr": ""})()
+                    verified_catalog = dashboard.codex_model_catalog(catalog_cfg, force_refresh=True)
+                    self.assert_true(verified_catalog["account_verified"] is True and verified_catalog["auth_resolved"] is True and verified_catalog["models"] == ["gpt-5.5", "gpt-5.4-mini"] and "gpt-5.6-terra" not in verified_catalog["models"], "Verified account catalogs never invent GPT-5.6 models that the connected account did not return")
                     dashboard.subprocess.run = lambda *_args, **_kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired("catalog", 1))
                     stale = dashboard.codex_model_catalog(catalog_cfg, force_refresh=True)
-                    self.assert_true(stale["models"] == catalog["models"] and stale["source"] == "last_known_catalog", "A transient catalog failure preserves the last valid model list")
+                    self.assert_true(stale["models"] == verified_catalog["models"] and stale["source"] == "last_known_catalog", "A transient catalog failure preserves the last valid model list")
                     self.assert_true(dashboard.resolve_codex_model_choice("retired-model", catalog_cfg) == "gpt-5.5", "A retired model falls back to a still-supported saved model without breaking setup")
             finally:
                 dashboard.CODEX_MODEL_CATALOG_FILE = original_catalog_file
@@ -9164,7 +9167,7 @@ class IntegrationTestSuite:
         self.assert_true("Copiar comando" not in html and ".agent-model-option .route-icon" in html and ".agent-route-panel.active" in html, "ChatGPT/Codex setup hides command-copy UI and keeps route choices readable")
         self.assert_true("Copiar paso" not in html and "Copy step" not in html, "ChatGPT/Codex connection no longer presents copy-only wording")
         self.assert_true("Abrir configuración de ChatGPT" in html and "chatgpt-settings-link" in html and "chatgpt-settings-actions" in html, "ChatGPT/Codex setup gives buyers a direct button to the ChatGPT security settings")
-        self.assert_true("Modelo para ChatGPT/Codex" in html and "<select name=\"hermes_model\">" in html and "hermes_model_options" in html and "recommendedCodexModel" in html and "refreshCodexModelCatalog" in html and "/api/agent-model/catalog" in html, "ChatGPT/Codex setup renders and refreshes the account-aware Hermes model catalog instead of a fixed list")
+        self.assert_true("Modelo para ChatGPT/Codex" in html and "<select name=\"hermes_model\">" in html and "hermes_model_options" in html and "recommendedCodexModel" in html and "refreshCodexModelCatalog" in html and "/api/agent-model/catalog" in html and "hermes_model_catalog_account_verified" in html and "Lista verificada con esta cuenta" in html, "ChatGPT/Codex setup renders an account-aware catalog and explains verified versus provisional model availability")
         self.assert_true("Image 2 con ChatGPT/Codex" in html and "connectImageChatGpt(event)" in html and "codex_image_source" in html and "imageChatGptPayload()" in html, "Agent model setup can connect a separate ChatGPT/Codex session only for Image 2")
         self.assert_true("imageSessionConnected" in html and "imageConnected=imageDedicated?imageSessionConnected:chatgptConnected" in html and "imageDedicatedAllowed=apiBrain" in html, "Image 2 card treats auth connection separately and only offers a dedicated account when the primary brain is API-based")
         self.assert_true("Modelo para imágenes" not in html and "Image model" not in html and "Usar sesión principal" not in html and "Use main session" not in html, "Image 2 connection no longer exposes image model or confusing routing controls")
