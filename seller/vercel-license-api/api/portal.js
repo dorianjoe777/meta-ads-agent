@@ -884,7 +884,7 @@ export default async function handler(request, response) {
                   <strong>Mac o Linux:</strong>
                   <code>mkdir -p "$HOME/.ssh" &amp;&amp; chmod 700 "$HOME/.ssh" &amp;&amp; ssh-keygen -t ed25519 -C "admira-ia" -f "$HOME/.ssh/admira_ia" &amp;&amp; cat "$HOME/.ssh/admira_ia.pub"</code>
                   <strong>Windows CMD:</strong>
-                  <code>if not exist "%USERPROFILE%\.ssh" mkdir "%USERPROFILE%\.ssh"<br>ssh-keygen -t ed25519 -C "admira-ia" -f "%USERPROFILE%\.ssh\admira_ia"<br>type "%USERPROFILE%\.ssh\admira_ia.pub"</code>
+                  <code>if not exist "%USERPROFILE%\\.ssh" mkdir "%USERPROFILE%\\.ssh"<br>ssh-keygen -t ed25519 -C "admira-ia" -f "%USERPROFILE%\\.ssh\\admira_ia"<br>type "%USERPROFILE%\\.ssh\\admira_ia.pub"</code>
                 </div>
               </div>
               <div class="cloud-create-only">
