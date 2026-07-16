@@ -538,6 +538,33 @@ def merge_expert_targeting(audience, payload):
     flexible_spec = parse_jsonish(payload.get("flexible_spec") or payload.get("flexible_spec_json"), [])
     if isinstance(flexible_spec, list) and flexible_spec:
         targeting["flexible_spec"] = flexible_spec
+    targeting_automation = parse_jsonish(
+        payload.get("targeting_automation") or payload.get("targeting_automation_json"),
+        {},
+    )
+    if isinstance(targeting_automation, dict) and "advantage_audience" in targeting_automation:
+        enabled = boolish(targeting_automation.get("advantage_audience"))
+        if enabled is not None:
+            targeting["targeting_automation"] = {"advantage_audience": 1 if enabled else 0}
+    targeting_mode = str(
+        payload.get("targeting_mode")
+        or payload.get("audience_mode")
+        or payload.get("detailed_targeting_mode")
+        or ""
+    ).strip().lower()
+    if targeting_mode:
+        targeting["targeting_mode"] = targeting_mode
+        if targeting_mode in {
+            "advantage",
+            "advantage+",
+            "advantage_plus",
+            "advantage_plus_audience",
+            "suggested",
+            "suggestions",
+        }:
+            targeting["targeting_automation"] = {"advantage_audience": 1}
+        elif targeting_mode in {"manual", "strict", "detailed", "detailed_targeting"}:
+            targeting["targeting_automation"] = {"advantage_audience": 0}
     genders = string_list(payload.get("genders"))
     if genders:
         numeric = [int(item) for item in genders if str(item).isdigit()]

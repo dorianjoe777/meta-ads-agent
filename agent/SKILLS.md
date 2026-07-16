@@ -167,6 +167,34 @@ If the real Meta inventory contains campaigns/ad sets/ads but spend/impressions/
 
 ## Available Tools
 
+### `mcp_admira_search_meta_targeting`
+
+Use before staging any explicit Meta interest or when validating whether a remembered/researched audience idea still exists in Meta's live catalog.
+
+```json
+{
+  "kind": "interest",
+  "q": "ecommerce",
+  "limit": 8
+}
+```
+
+For places, use `kind: "location"` and optionally `country_code`. Preserve the returned IDs exactly. A name from memory, the web, or `build_audience_strategy` remains only an idea until this tool resolves it.
+
+### `mcp_admira_inspect_adset_targeting`
+
+Use after creation or for an existing ad set before saying interests or Advantage+ suggestions are applied.
+
+```json
+{
+  "adset_id": "120250000000000001",
+  "requested_interest_ids": ["6003139266461"],
+  "advantage_audience": true
+}
+```
+
+The result is a live Graph read. It confirms persisted targeting but not the exact wording or visual location used by the current Ads Manager UI.
+
 ### `save_agent_preferences`
 
 Use during onboarding or whenever the buyer changes how they want the agent to communicate/advise.
@@ -695,6 +723,8 @@ Arguments:
 If the user asks for lookalikes, explain that lookalikes need a source audience such as customer list, pixel/conversion events, app events, engagement, or another Custom Audience. Do not recommend uploading emails/phones unless consent is clear.
 
 If the request is missing the product, buyer, and location, ask one short question instead of guessing.
+
+This strategy tool proposes audience directions only. If the resulting campaign will use interests, resolve every final phrase through `mcp_admira_search_meta_targeting`; never pass these free-form ideas directly to campaign staging.
 
 ### `save_existing_adset`
 

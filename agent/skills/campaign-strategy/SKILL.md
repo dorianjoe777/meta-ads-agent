@@ -7,6 +7,13 @@ description: Choose the right Meta Ads campaign strategy for Admira IA: objectiv
 
 Use this skill before staging or launching a campaign.
 
+## Live Meta audience discovery
+
+- Treat remembered interest names, web research, competitor language, and buyer wording as strategy ideas only. Meta's available interest catalog changes and each real selection needs a current Meta ID.
+- Before recommending or staging explicit interests, call `mcp_admira_search_meta_targeting` with `kind: interest` and a useful search phrase. Choose from the live results and preserve both the returned `id` and `name`; never invent IDs or silently convert a phrase into an assumed interest.
+- Decide whether those interests should be strict detailed targeting or Advantage+ audience suggestions. For Advantage+ suggestions, pass `targeting_mode: advantage_plus` (equivalent to `targeting_automation: {"advantage_audience": 1}`) plus the exact `targeting_interests` returned by Meta.
+- Explain the strategic effect correctly: with Advantage+ audience, interests guide Meta but delivery may expand beyond them. Do not describe them as a hard audience restriction.
+
 ## Minimum strategy
 
 Collect or infer:

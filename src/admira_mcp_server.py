@@ -26,6 +26,8 @@ DEFAULT_HEAVY_TOOL_TIMEOUT_SECONDS = 600
 
 TOOL_DEFINITIONS = [
     ("get_real_meta_context", "Synchronize directly with Meta and read the current campaign/ad set/ad inventory plus performance context. Supports date_preset=maximum|today|last_7d|custom, custom since/until dates, and detail_level=standard|deep; deep includes placement/device, age/gender and country breakdowns. Treat local memory and approvals only as candidate workflow context: they never prove what currently exists or runs in Meta, and a failed/incomplete empty response never proves the account has no campaigns."),
+    ("search_meta_targeting", "Search Meta's live targeting catalog for current interest or location IDs. Use kind=interest with q=<term>, or kind=location. Interest names from memory or web research are only ideas: call this tool and use the returned Meta IDs before staging a targeted audience. Never invent an interest ID."),
+    ("inspect_adset_targeting", "Read one exact ad set directly from Meta and verify its persisted interest IDs and Advantage+ audience flag. Pass the numeric adset_id and optionally requested_interest_ids plus advantage_audience. Call this before claiming suggested interests or Advantage+ targeting were applied. It confirms Graph state, not the exact Ads Manager UI wording or placement."),
     ("run_daily_brief", "Run the daily Meta Ads brief and return the safe result."),
     ("schedule_experiment_review", "Schedule adaptive delivery and evidence checkpoints for a real creative test. Requires test budget, target CPA/CPL, and at least two variants with real Meta IDs."),
     ("list_experiment_reviews", "List active creative experiments, current evidence, provisional leaders, and next review dates."),

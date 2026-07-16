@@ -3017,6 +3017,119 @@ def meta_targeting_search(payload):
     return {"ok": True, "kind": kind, "query": query, "items": items}
 
 
+def meta_targeting_interest_ids(targeting):
+    if not isinstance(targeting, dict):
+        return []
+    values = []
+    for item in targeting.get("interests") or []:
+        if isinstance(item, dict) and item.get("id"):
+            values.append(str(item.get("id")))
+    for group in targeting.get("flexible_spec") or []:
+        if not isinstance(group, dict):
+            continue
+        for item in group.get("interests") or []:
+            if isinstance(item, dict) and item.get("id"):
+                values.append(str(item.get("id")))
+    return list(dict.fromkeys(values))
+
+
+def meta_targeting_advantage_value(targeting):
+    automation = targeting.get("targeting_automation") if isinstance(targeting, dict) else {}
+    if not isinstance(automation, dict) or "advantage_audience" not in automation:
+        return None
+    enabled = boolish(automation.get("advantage_audience"))
+    return (1 if enabled else 0) if enabled is not None else None
+
+
+def meta_adset_targeting_status(payload):
+    """Read the persisted ad-set audience directly from Meta Graph.
+
+    This proves the live Graph object contains the requested interest IDs and
+    Advantage+ audience flag. It deliberately does not claim where or under
+    which wording Ads Manager renders those values in its current UI.
+    """
+    adset_id = str(payload.get("adset_id") or payload.get("id") or "").strip()
+    if not adset_id.isdigit():
+        raise ValueError("Necesito el ID numérico exacto del conjunto de anuncios.")
+    result = graph_get(
+        adset_id,
+        {
+            "fields": (
+                "id,name,status,effective_status,configured_status,targeting,"
+                "optimization_goal,promoted_object,destination_type"
+            )
+        },
+    )
+    if not result.get("ok"):
+        return {
+            "ok": False,
+            "source": "meta_live",
+            "adset_id": adset_id,
+            "confirmed": False,
+            "error": graph_error_message(result) or "No pude leer este conjunto directamente desde Meta.",
+        }
+    body = result.get("data") if isinstance(result.get("data"), dict) else {}
+    targeting = body.get("targeting") or {}
+    if isinstance(targeting, str):
+        try:
+            targeting = json.loads(targeting)
+        except json.JSONDecodeError:
+            targeting = {}
+    if not isinstance(targeting, dict):
+        targeting = {}
+    interests = []
+    for item in targeting.get("interests") or []:
+        if isinstance(item, dict) and item.get("id"):
+            interests.append({"id": str(item.get("id")), "name": str(item.get("name") or "")})
+    for group in targeting.get("flexible_spec") or []:
+        if not isinstance(group, dict):
+            continue
+        for item in group.get("interests") or []:
+            if isinstance(item, dict) and item.get("id"):
+                interests.append({"id": str(item.get("id")), "name": str(item.get("name") or "")})
+    interest_ids = list(dict.fromkeys(item["id"] for item in interests))
+    requested = payload.get("requested_interest_ids") or payload.get("interest_ids") or []
+    if isinstance(requested, str):
+        requested = [part.strip() for part in requested.split(",") if part.strip()]
+    requested_ids = list(dict.fromkeys(str(value) for value in requested if str(value or "").strip())) if isinstance(requested, list) else []
+    missing_ids = [value for value in requested_ids if value not in interest_ids]
+    advantage = meta_targeting_advantage_value(targeting)
+    requested_advantage = None
+    if "advantage_audience" in payload:
+        enabled = boolish(payload.get("advantage_audience"))
+        requested_advantage = (1 if enabled else 0) if enabled is not None else None
+    advantage_matches = requested_advantage is None or requested_advantage == advantage
+    confirmed = not missing_ids and advantage_matches
+    if advantage == 1 and interest_ids:
+        mode = "advantage_plus_suggestions"
+    elif interest_ids:
+        mode = "manual_detailed_targeting"
+    elif advantage == 1:
+        mode = "advantage_plus_broad"
+    else:
+        mode = "broad_or_unspecified"
+    return {
+        "ok": True,
+        "source": "meta_live",
+        "adset_id": adset_id,
+        "name": body.get("name") or "",
+        "status": body.get("status") or "",
+        "effective_status": body.get("effective_status") or "",
+        "targeting": targeting,
+        "interests": interests,
+        "interest_ids": interest_ids,
+        "advantage_audience": advantage,
+        "targeting_mode": mode,
+        "requested_interest_ids": requested_ids,
+        "missing_interest_ids": missing_ids,
+        "requested_advantage_audience": requested_advantage,
+        "advantage_audience_matches": advantage_matches,
+        "confirmed": confirmed,
+        "ui_confirmation": False,
+        "ui_note": "Esto confirma el estado persistido en Meta Graph, no la ubicación o el texto exacto de la interfaz de Ads Manager.",
+    }
+
+
 def parse_targeting_items(value, kind):
     if not value:
         return []
@@ -8668,6 +8781,11 @@ def create_campaign(payload):
     selected_interests = parse_targeting_items(payload.get("targeting_interests_json") or payload.get("targeting_interests"), "interest")
     selected_locations = parse_targeting_items(payload.get("targeting_locations_json") or payload.get("targeting_locations"), "location")
     manual_interests = [item.strip() for item in str(payload.get("interests", "")).split(",") if item.strip()]
+    if manual_interests and not selected_interests:
+        raise ValueError(
+            "Los intereses escritos son ideas, no IDs vigentes de Meta. "
+            "Busca cada uno con search_meta_targeting y vuelve a enviar targeting_interests con los IDs devueltos por Meta."
+        )
     manual_locations = normalize_location_codes(payload.get("locations"), default=[])
     if not manual_locations:
         manual_locations = infer_location_codes_from_context(

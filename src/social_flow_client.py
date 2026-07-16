@@ -1068,6 +1068,22 @@ class SocialFlowClient:
                 campaign_id = self.positional(args, 2, "")
                 endpoint = campaign_id
                 return self.graph_record(record, endpoint, self.get_graph(endpoint, {"fields": "id,name,status,effective_status,configured_status,daily_budget,lifetime_budget,bid_strategy"}))
+            if action == "adset-details":
+                adset_id = self.positional(args, 2, "")
+                endpoint = adset_id
+                return self.graph_record(
+                    record,
+                    endpoint,
+                    self.get_graph(
+                        endpoint,
+                        {
+                            "fields": (
+                                "id,name,status,effective_status,configured_status,targeting,"
+                                "optimization_goal,promoted_object,destination_type"
+                            )
+                        },
+                    ),
+                )
             if action == "update-campaign":
                 campaign_id = self.positional(args, 2, "")
                 endpoint = campaign_id
@@ -1331,6 +1347,9 @@ class SocialFlowClient:
 
     def campaign_details(self, campaign_id):
         return self.run(["marketing", "campaign-details", campaign_id, "--json"], live_required=False)
+
+    def adset_details(self, adset_id):
+        return self.run(["marketing", "adset-details", adset_id, "--json"], live_required=False)
 
     def update_campaign_bid_strategy(self, campaign_id, bid_strategy="LOWEST_COST_WITHOUT_CAP", approved=False):
         return self.run(["marketing", "update-campaign", campaign_id, "--bid-strategy", bid_strategy, "--json", "--yes"], live_required=True, mutation=True, approved=approved)

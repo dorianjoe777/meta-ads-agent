@@ -2847,6 +2847,12 @@ class IntegrationTestSuite:
         class FakeDashboard:
             PENDING_FILE = "pending.json"
 
+            def meta_targeting_search(self, payload):
+                return {"ok": True, "kind": payload.get("kind"), "query": payload.get("q"), "items": [{"id": "6001", "name": "Ecommerce"}]}
+
+            def meta_adset_targeting_status(self, payload):
+                return {"ok": True, "source": "meta_live", "adset_id": payload.get("adset_id"), "interest_ids": ["6001"], "advantage_audience": 1, "confirmed": True}
+
             def refresh_managed_real_metrics(self, reason="manual", **kwargs):
                 calls.append(({"tool": "live_meta_sync", "reason": reason, "kwargs": kwargs}, {}))
                 return {
@@ -2902,6 +2908,8 @@ class IntegrationTestSuite:
         try:
             admira_tool_bridge.load_dashboard = lambda: FakeDashboard()
             context = admira_tool_bridge.call_tool("mcp_admira_get_real_meta_context", {})
+            targeting_search = admira_tool_bridge.call_tool("mcp_admira_search_meta_targeting", {"kind": "interest", "q": "ecommerce"})
+            targeting_inspection = admira_tool_bridge.call_tool("mcp_admira_inspect_adset_targeting", {"adset_id": "120250000000000001", "requested_interest_ids": ["6001"], "advantage_audience": True})
             image = admira_tool_bridge.call_tool("codex_image_generate", {"request": "haz una imagen"})
             review = admira_tool_bridge.call_tool("mcp_admira_review_signal_quality", {"objective": "PURCHASES", "pixel_id": "123"})
             preflight = admira_tool_bridge.call_tool("mcp_admira_preflight_campaign", {"objective": "PURCHASES", "pixel_id": "123"})
@@ -2941,6 +2949,8 @@ class IntegrationTestSuite:
             called_tools = [call[0]["tool"] for call in calls]
 
             self.assert_true(context["ok"] and context["metrics_source"]["is_real_meta_data"], "Tool bridge returns safe real Meta context")
+            self.assert_true(targeting_search["ok"] and targeting_search["result"]["items"][0]["id"] == "6001", "Tool bridge exposes Meta's live interest catalog to Hermes")
+            self.assert_true(targeting_inspection["ok"] and targeting_inspection["result"]["confirmed"], "Tool bridge exposes live ad-set targeting verification to Hermes")
             self.assert_true(context["live_sync"]["ok"] and context["live_sync"]["rows"] == 1 and called_tools[0] == "live_meta_sync", "Real Meta context forces a live inventory synchronization before reading cached dashboard context")
             self.assert_true(calls[0][0]["kwargs"]["date_preset"] == "maximum" and calls[0][0]["kwargs"]["persist"] is False and calls[0][0]["kwargs"]["include_breakdowns"] is True, "Agent live context defaults to a fresh all-time deep read without changing the dashboard's selected range")
             self.assert_true(context["context"]["pending_approvals"] == [] and context["context"]["breakdowns"]["placement"][0]["spend"] == 12, "Ambient live context excludes old approvals while exposing deeper Meta breakdowns")
@@ -2990,7 +3000,7 @@ class IntegrationTestSuite:
             tool_names = [tool["name"] for tool in captured[1]["result"]["tools"]]
             call_text = captured[2]["result"]["content"][0]["text"]
             self.assert_true(captured[0]["result"]["serverInfo"]["name"] == "admira", "MCP server initializes as Admira")
-            self.assert_true("codex_image_generate" in tool_names and "stage_campaign" in tool_names and "schedule_campaign_activation" in tool_names and "stage_lead_form" in tool_names and "list_lead_forms" in tool_names and "approve_action" in tool_names and "review_signal_quality" in tool_names and "preflight_campaign" in tool_names and "fetch_public_asset" in tool_names and "record_verified_signal" in tool_names and "save_ads_onboarding" in tool_names and "save_daily_social_content_settings" in tool_names and "stage_organic_social_post" in tool_names and "save_content_asset" in tool_names and "save_durable_memory" in tool_names and "import_product_catalog" in tool_names and "search_product_catalog" in tool_names, "MCP server lists product and multi-product catalog tools for Hermes")
+            self.assert_true("codex_image_generate" in tool_names and "stage_campaign" in tool_names and "search_meta_targeting" in tool_names and "inspect_adset_targeting" in tool_names and "schedule_campaign_activation" in tool_names and "stage_lead_form" in tool_names and "list_lead_forms" in tool_names and "approve_action" in tool_names and "review_signal_quality" in tool_names and "preflight_campaign" in tool_names and "fetch_public_asset" in tool_names and "record_verified_signal" in tool_names and "save_ads_onboarding" in tool_names and "save_daily_social_content_settings" in tool_names and "stage_organic_social_post" in tool_names and "save_content_asset" in tool_names and "save_durable_memory" in tool_names and "import_product_catalog" in tool_names and "search_product_catalog" in tool_names, "MCP server lists product, live audience, and multi-product catalog tools for Hermes")
             self.assert_true('"tool": "admira_codex_image_generate"' in call_text and '"request": "imagen"' in call_text, "MCP server calls the product bridge with Admira-prefixed tool names")
         finally:
             admira_mcp_server.write_message = original_write
@@ -5824,6 +5834,23 @@ class IntegrationTestSuite:
             dashboard.graph_get = lambda *args, **kwargs: {"ok": False, "error": {"error": {"message": "Error validating access token: Session has expired"}}}
             expired = dashboard.meta_targeting_search({"kind": "interest", "q": "fitness"})
             self.assert_true("clave nueva" in expired["message"] and "OAuth" not in expired["message"], "Expired Meta key audience-search error is buyer-friendly")
+            dashboard.graph_get = lambda path, params=None, page_token="": {
+                "ok": True,
+                "data": {
+                    "id": path,
+                    "name": "Prospecting Advantage+",
+                    "status": "PAUSED",
+                    "effective_status": "PAUSED",
+                    "targeting": {
+                        "geo_locations": {"countries": ["CO"]},
+                        "interests": [{"id": "6001", "name": "Ecommerce"}],
+                        "targeting_automation": {"advantage_audience": 1},
+                    },
+                },
+            }
+            status = dashboard.meta_adset_targeting_status({"adset_id": "120250000000000001", "requested_interest_ids": ["6001"], "advantage_audience": True})
+            self.assert_true(status["confirmed"] and status["targeting_mode"] == "advantage_plus_suggestions", "Live ad-set inspection confirms persisted Meta interest IDs and Advantage+ audience")
+            self.assert_true(status["ui_confirmation"] is False and "interfaz" in status["ui_note"], "Live ad-set inspection never overclaims exact Ads Manager UI rendering")
         finally:
             dashboard.graph_get = original_graph_get
 
@@ -7235,6 +7262,7 @@ class IntegrationTestSuite:
                 "user_os": "iOS,Android",
                 "targeting_locations_json": json.dumps([{"kind": "location", "key": "CO", "name": "Colombia", "type": "country", "country_code": "CO"}]),
                 "targeting_interests_json": json.dumps([{"kind": "interest", "id": "6001", "name": "Ecommerce"}]),
+                "targeting_mode": "advantage_plus",
                 "success_metrics_json": json.dumps([
                     {"metric": "ROAS", "target": "2.5x"},
                     "cost per purchase",
@@ -7248,6 +7276,7 @@ class IntegrationTestSuite:
             self.assert_true(result["payload"]["requested"]["targeting"]["source"] == "meta_search", "Approval card marks targeting as Meta search")
             self.assert_true(targeting["meta_targeting"]["locations"][0]["key"] == "CO", "Campaign stores selected Meta location")
             self.assert_true(targeting["meta_targeting"]["interests"][0]["id"] == "6001", "Campaign stores selected Meta interest ID")
+            self.assert_true(targeting["targeting_automation"] == {"advantage_audience": 1}, "Campaign stores Advantage+ audience automation alongside Meta-selected suggestions")
             self.assert_true(campaign["signal_quality_review"]["status"] == "blocked", "Staged conversion campaign stores a signal-quality review")
             self.assert_true(campaign["ad_sets"][0]["optimization_event"] == campaign["signal_quality_review"]["recommended_event"], "Signal review applies the recommended optimization event to the ad set draft")
             self.assert_true(result["payload"]["requested"]["signal_quality"]["status"] == campaign["signal_quality_review"]["status"], "Approval card exposes signal-quality readiness")
@@ -7267,6 +7296,21 @@ class IntegrationTestSuite:
             self.assert_true(result["payload"]["requested"]["adset_controls"]["schedule"]["start_time"].startswith("2026-07-01"), "Approval card exposes expert ad set controls")
             self.assert_true(result["payload"]["requested"]["adset_controls"]["is_adset_budget_sharing_enabled"] is False, "Approval card exposes ad set budget sharing control")
             self.assert_true(result["payload"]["dry_run_preview"]["creative"]["has_image_hash"], "Approval payload includes a dry-run preview of creative inputs")
+
+            try:
+                dashboard.create_campaign({
+                    "name": "Unsafe Name-only Interest",
+                    "objective": "PURCHASES",
+                    "daily_budget": 25,
+                    "final_status": "PAUSED",
+                    "image_hash": "hash_existing",
+                    "cta_link": "https://buyer.example/offer",
+                    "interests": "Ecommerce",
+                })
+                name_only_blocked = False
+            except ValueError as exc:
+                name_only_blocked = "search_meta_targeting" in str(exc)
+            self.assert_true(name_only_blocked, "Campaign staging rejects name-only interests until the live Meta catalog resolves exact IDs")
 
             class PublishingConfig:
                 live = False
@@ -7340,6 +7384,7 @@ class IntegrationTestSuite:
                     "locations": [{"key": "2420605", "name": "Bogotá", "type": "city", "country_code": "CO"}],
                     "interests": [{"id": "6001", "name": "Ecommerce"}],
                 },
+                "targeting_mode": "advantage_plus",
                 "custom_audiences": [{"id": "ca_1", "name": "Compradores"}],
                 "excluded_custom_audiences": [{"id": "ca_2", "name": "Clientes recientes"}],
                 "device_platforms": ["mobile"],
@@ -7348,6 +7393,7 @@ class IntegrationTestSuite:
         )
         self.assert_true(spec["geo_locations"]["cities"][0]["key"] == "2420605", "Social targeting sends selected city key")
         self.assert_true(spec["interests"][0] == {"id": "6001", "name": "Ecommerce"}, "Social targeting sends selected interest ID")
+        self.assert_true(spec["targeting_automation"] == {"advantage_audience": 1}, "Social targeting sends Advantage+ audience automation with suggested interests")
         self.assert_true(spec["custom_audiences"][0]["id"] == "ca_1" and spec["excluded_custom_audiences"][0]["id"] == "ca_2", "Social targeting sends custom audiences and exclusions")
         self.assert_true(spec["device_platforms"] == ["mobile"] and spec["user_os"] == ["iOS", "Android"], "Social targeting sends device and OS fields")
         self.assert_true(spec["age_min"] == 25 and spec["age_max"] == 44, "Social targeting preserves age range")
@@ -7365,6 +7411,26 @@ class IntegrationTestSuite:
 
         latam = daily_agent.targeting_for_social({"locations": "LATAM"})
         self.assert_true("MX" in latam["geo_locations"]["countries"] and "CO" in latam["geo_locations"]["countries"], "LATAM shorthand expands to valid Meta country codes")
+
+        verification = daily_agent.verify_adset_targeting_result(
+            spec,
+            {
+                "returncode": 0,
+                "stdout": json.dumps({
+                    "id": "120250000000000001",
+                    "targeting": {
+                        "interests": [{"id": "6001", "name": "Ecommerce"}],
+                        "targeting_automation": {"advantage_audience": 1},
+                    },
+                }),
+            },
+        )
+        self.assert_true(verification["confirmed"] and verification["persisted_interest_ids"] == ["6001"], "Post-create targeting verification reads the exact persisted Meta IDs")
+        mismatch = daily_agent.verify_adset_targeting_result(
+            spec,
+            {"returncode": 0, "stdout": json.dumps({"id": "120250000000000001", "targeting": {"geo_locations": {"countries": ["CO"]}}})},
+        )
+        self.assert_true(not mismatch["confirmed"] and mismatch["missing_interest_ids"] == ["6001"], "Post-create targeting verification rejects HTTP success when Meta omitted the requested interest")
 
     def test_social_flow_adset_sends_promoted_object(self):
         """Test Meta Graph ad set creation receives the selected optimization event object."""
@@ -7535,7 +7601,11 @@ class IntegrationTestSuite:
             client.create_adset(
                 "camp_graph_1",
                 "Ad Set",
-                {"geo_locations": {"countries": ["MX"]}},
+                {
+                    "geo_locations": {"countries": ["MX"]},
+                    "interests": [{"id": "6001", "name": "Ecommerce"}],
+                    "targeting_automation": {"advantage_audience": 1},
+                },
                 2000,
                 "PAUSED",
                 "OFFSITE_CONVERSIONS",
@@ -7545,6 +7615,12 @@ class IntegrationTestSuite:
             )
             self.assert_true(requests and b"bid_strategy=LOWEST_COST_WITHOUT_CAP" in requests[-1].data and b"bid_amount=" not in requests[-1].data, "Graph execution sends safe default bidding without bid_amount for old pending approvals")
             self.assert_true(requests and b"is_adset_budget_sharing_enabled=false" in requests[-1].data, "Graph execution sends explicit ad set budget sharing false when ad set budgets are used")
+            decoded_adset_fields = urllib.parse.parse_qs(requests[-1].data.decode("utf-8"))
+            decoded_targeting = json.loads(decoded_adset_fields["targeting"][0])
+            self.assert_true(decoded_targeting["interests"][0]["id"] == "6001" and decoded_targeting["targeting_automation"]["advantage_audience"] == 1, "Direct Graph request carries exact Meta interest IDs and Advantage+ audience automation")
+            requests.clear()
+            client.adset_details("120250000000000001")
+            self.assert_true(requests[-1].get_method() == "GET" and "/120250000000000001?" in requests[-1].full_url and "targeting" in urllib.parse.unquote(requests[-1].full_url), "Ad-set verification rereads persisted targeting directly from Meta Graph")
             requests.clear()
             client.create_adset(
                 "camp_graph_1",
@@ -8363,6 +8439,68 @@ class IntegrationTestSuite:
             self.assert_true(all(call[2].get("approved") is True for call in client.calls), "Full campaign execution is explicitly marked as approved")
             saved_campaign = json.loads(campaign_path.read_text(encoding="utf-8"))
             self.assert_true(saved_campaign.get("execution_state", {}).get("campaign_id") == "cmp_1", "Campaign execution stores the created Meta campaign ID for safe retries")
+
+            class VerifiedTargetingClient(FakeClient):
+                def adset_details(self, adset_id):
+                    self.calls.append(("adset_details", (adset_id,), {}))
+                    return {
+                        "returncode": 0,
+                        "stdout": json.dumps({
+                            "id": adset_id,
+                            "targeting": {
+                                "interests": [{"id": "6001", "name": "Ecommerce"}],
+                                "targeting_automation": {"advantage_audience": 1},
+                            },
+                        }),
+                    }
+
+            campaign_path.write_text(
+                json.dumps(
+                    {
+                        "name": "Verified Advantage Targeting Stack",
+                        "objective": "PURCHASES",
+                        "budget": {"daily": 25},
+                        "status_plan": {"campaign": "PAUSED", "adset": "PAUSED", "ad": "PAUSED"},
+                        "ad_sets": [{
+                            "name": "Verified Advantage Targeting Stack - Core",
+                            "targeting": {
+                                "locations": ["CO"],
+                                "meta_targeting": {"interests": [{"id": "6001", "name": "Ecommerce"}]},
+                                "targeting_automation": {"advantage_audience": 1},
+                            },
+                            "budget": 25,
+                        }],
+                        "ad": {
+                            "primary_text": "Texto",
+                            "headline": "Titular",
+                            "creative_image_path": str(image_path),
+                            "landing_url": "https://buyer.example",
+                            "final_status": "PAUSED",
+                            "active_spend_confirmed": False,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            verified_targeting_client = VerifiedTargetingClient()
+            verified_targeting_result = execute_campaign_creation(str(campaign_path), verified_targeting_client, approved=True)
+            verified_targeting_calls = [call[0] for call in verified_targeting_client.calls]
+            self.assert_true(verified_targeting_result["ok"] and verified_targeting_calls[:3] == ["create_campaign", "create_adset", "adset_details"], "Campaign creation rereads Meta targeting before continuing to creative creation")
+            self.assert_true(any(step.get("step") == "verify_adset_targeting" and step.get("ok") for step in verified_targeting_result["steps"]), "Campaign result records confirmed live targeting instead of inferring it from HTTP create success")
+
+            class MissingTargetingClient(VerifiedTargetingClient):
+                def adset_details(self, adset_id):
+                    self.calls.append(("adset_details", (adset_id,), {}))
+                    return {"returncode": 0, "stdout": json.dumps({"id": adset_id, "targeting": {"geo_locations": {"countries": ["CO"]}}})}
+
+            target_payload = json.loads(campaign_path.read_text(encoding="utf-8"))
+            target_payload.pop("execution_state", None)
+            campaign_path.write_text(json.dumps(target_payload), encoding="utf-8")
+            missing_targeting_client = MissingTargetingClient()
+            missing_targeting_result = execute_campaign_creation(str(campaign_path), missing_targeting_client, approved=True)
+            missing_targeting_calls = [call[0] for call in missing_targeting_client.calls]
+            self.assert_true(missing_targeting_result["failed_step"] == "verify_adset_targeting" and missing_targeting_result.get("partial_campaign_deleted") is True, "Paused campaign creation fails and cleans up when Meta omits requested interests after returning create success")
+            self.assert_true(missing_targeting_calls == ["create_campaign", "create_adset", "adset_details", "delete"], "Targeting mismatch stops before creative creation and cleans the incomplete paused campaign")
 
             class FailingAdsetClient(FakeClient):
                 def create_adset(self, *args, **kwargs):

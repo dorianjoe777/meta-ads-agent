@@ -60,7 +60,13 @@ TOOL_MAP = {
     "admira_save_creative_references": "save_creative_references",
 }
 
-PUBLIC_TOOLS = sorted(["admira_get_real_meta_context", "admira_list_pending_approvals", *TOOL_MAP.keys()])
+PUBLIC_TOOLS = sorted([
+    "admira_get_real_meta_context",
+    "admira_search_meta_targeting",
+    "admira_inspect_adset_targeting",
+    "admira_list_pending_approvals",
+    *TOOL_MAP.keys(),
+])
 ARGUMENT_WRAPPER_KEYS = {"arguments", "args", "kwargs", "payload", "fields", "data", "input"}
 CREATIVE_IMAGE_TOOLS = {"admira_codex_image_generate", "admira_codex_creative_plan"}
 CAMPAIGN_STAGE_TOOLS = {"admira_stage_campaign"}
@@ -300,6 +306,14 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
         pending = dashboard.read_json(dashboard.PENDING_FILE, [])
         pending = [item for item in pending if isinstance(item, dict) and item.get("status", "pending") == "pending"]
         return redact_payload({"ok": True, "tool": tool, "pending": pending[:20]})
+
+    if tool == "admira_search_meta_targeting":
+        result = dashboard.meta_targeting_search(args)
+        return redact_payload({"ok": bool(result.get("ok")), "tool": tool, "source": "meta_live", "result": result})
+
+    if tool == "admira_inspect_adset_targeting":
+        result = dashboard.meta_adset_targeting_status(args)
+        return redact_payload({"ok": bool(result.get("ok")), "tool": tool, "source": "meta_live", "result": result})
 
     product_tool = TOOL_MAP[tool]
     product_args = dict(args)

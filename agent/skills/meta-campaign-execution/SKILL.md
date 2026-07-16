@@ -57,4 +57,11 @@ Use placeholder ads only for video creative completion, when the buyer wants thi
 
 Pass justified fields only: objective, budget level, daily/lifetime budgets, statuses, placements, promoted object, optimization goal/event, billing event, bid strategy, image/video/story fields, CTA/link, message starter fields, lead form ID, direct publishing flag, and video completion fields (`manual_creative_completion`, `create_placeholder_ad`, `placeholder_ad_count`, `placeholder_ad_names`) when appropriate.
 
+## Interest and Advantage+ verification
+
+- Never send free-form interest names as if they were valid targeting. Search first with `mcp_admira_search_meta_targeting`, then pass `targeting_interests` as objects containing the exact live Meta `id` and `name`.
+- For Advantage+ audience with interest suggestions, pass `targeting_mode: advantage_plus` or `targeting_automation: {"advantage_audience": 1}`. For intentionally strict/manual detailed targeting, pass `targeting_mode: manual` only when that strategy is supported and justified.
+- Campaign/ad-set creation success is not targeting verification. After the ad set is created, the backend rereads it from Meta. If the result does not confirm all requested interest IDs and the requested Advantage+ flag, treat creation as incomplete; do not claim it worked. For an existing ad set, call `mcp_admira_inspect_adset_targeting` with its numeric ID.
+- Describe confirmed state precisely: “Meta returned these interest IDs in the live ad-set targeting, with Advantage+ audience enabled/disabled.” Never claim a value is visible under a particular Ads Manager UI heading unless it was actually observed there; UI labels and placement can change independently of Graph state.
+
 Budgets are interpreted in the connected ad account currency; do not assume USD.

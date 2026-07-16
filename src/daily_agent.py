@@ -900,6 +900,10 @@ def targeting_for_social(targeting):
         "age_max": int(age_range.get("max", 65)),
     }
     selected_interests = meta_targeting.get("interests") if isinstance(meta_targeting, dict) else []
+    if not selected_interests and isinstance(targeting.get("interests"), list):
+        # Only structured Meta catalog selections are authoritative here. A
+        # free-form interest name is an idea, not a current Meta interest ID.
+        selected_interests = targeting.get("interests")
     if isinstance(selected_interests, list):
         interests = []
         for item in selected_interests:
@@ -907,10 +911,28 @@ def targeting_for_social(targeting):
                 continue
             interest_id = str(item.get("id") or "").strip()
             name = str(item.get("name") or "").strip()
-            if interest_id and name:
-                interests.append({"id": interest_id, "name": name})
+            if interest_id:
+                normalized = {"id": interest_id}
+                if name:
+                    normalized["name"] = name
+                interests.append(normalized)
         if interests:
             spec["interests"] = interests
+    automation = targeting.get("targeting_automation")
+    if not isinstance(automation, dict) and isinstance(meta_targeting, dict):
+        automation = meta_targeting.get("targeting_automation")
+    targeting_mode = str(targeting.get("targeting_mode") or "").strip().lower()
+    advantage_value = None
+    if isinstance(automation, dict) and "advantage_audience" in automation:
+        enabled = boolish(automation.get("advantage_audience"))
+        if enabled is not None:
+            advantage_value = 1 if enabled else 0
+    if targeting_mode in {"advantage", "advantage+", "advantage_plus", "advantage_plus_audience", "suggested", "suggestions"}:
+        advantage_value = 1
+    elif targeting_mode in {"manual", "strict", "detailed", "detailed_targeting"}:
+        advantage_value = 0
+    if advantage_value is not None:
+        spec["targeting_automation"] = {"advantage_audience": advantage_value}
     for key in ("publisher_platforms", "facebook_positions", "instagram_positions", "messenger_positions", "audience_network_positions", "threads_positions"):
         if targeting.get(key):
             spec[key] = targeting.get(key)
@@ -929,6 +951,69 @@ def targeting_for_social(targeting):
         if targeting.get(key):
             spec[key] = targeting.get(key)
     return apply_placement_targeting(spec, targeting.get("placements") or targeting.get("placement_preset"))
+
+
+def targeting_interest_ids(targeting):
+    """Return persisted interest IDs from direct or flexible targeting."""
+    if not isinstance(targeting, dict):
+        return []
+    values = []
+    for item in targeting.get("interests") or []:
+        if isinstance(item, dict) and item.get("id"):
+            values.append(str(item.get("id")))
+    for group in targeting.get("flexible_spec") or []:
+        if not isinstance(group, dict):
+            continue
+        for item in group.get("interests") or []:
+            if isinstance(item, dict) and item.get("id"):
+                values.append(str(item.get("id")))
+    return list(dict.fromkeys(values))
+
+
+def targeting_advantage_value(targeting):
+    automation = targeting.get("targeting_automation") if isinstance(targeting, dict) else {}
+    if not isinstance(automation, dict) or "advantage_audience" not in automation:
+        return None
+    enabled = boolish(automation.get("advantage_audience"))
+    return (1 if enabled else 0) if enabled is not None else None
+
+
+def targeting_needs_live_verification(targeting):
+    return bool(targeting_interest_ids(targeting)) or targeting_advantage_value(targeting) is not None
+
+
+def verify_adset_targeting_result(requested_targeting, result):
+    body = social_body_from_result(result)
+    actual = body.get("targeting") or {}
+    if isinstance(actual, str):
+        try:
+            actual = json.loads(actual)
+        except json.JSONDecodeError:
+            actual = {}
+    if not isinstance(actual, dict):
+        actual = {}
+    requested_ids = targeting_interest_ids(requested_targeting)
+    actual_ids = targeting_interest_ids(actual)
+    missing_ids = [value for value in requested_ids if value not in actual_ids]
+    requested_advantage = targeting_advantage_value(requested_targeting)
+    actual_advantage = targeting_advantage_value(actual)
+    read_ok = result.get("returncode") in {0, None} and bool(body.get("id") or actual)
+    advantage_matches = requested_advantage is None or requested_advantage == actual_advantage
+    confirmed = bool(read_ok and not missing_ids and advantage_matches)
+    return {
+        "ok": confirmed,
+        "confirmed": confirmed,
+        "source": "meta_live",
+        "requested_interest_ids": requested_ids,
+        "persisted_interest_ids": actual_ids,
+        "missing_interest_ids": missing_ids,
+        "requested_advantage_audience": requested_advantage,
+        "persisted_advantage_audience": actual_advantage,
+        "advantage_audience_matches": advantage_matches,
+        "ui_confirmation": False,
+        "ui_note": "Confirma el targeting persistido por Graph; no garantiza la ubicación o el texto exacto mostrado por Ads Manager.",
+        "result": result,
+    }
 
 
 def execute_lead_form_creation(path, client, approved=False):
@@ -1095,10 +1180,11 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         promoted_object = SocialFlowClient.normalize_promoted_object(adset.get("promoted_object") or {})
         if lead_gen_form_id and destination.get("page_id") and not promoted_object.get("page_id"):
             promoted_object = {**promoted_object, "page_id": destination.get("page_id")}
+        requested_targeting = targeting_for_social(adset_targeting)
         result = client.create_adset(
             campaign_id,
             adset.get("name", "Ad Set"),
-            targeting_for_social(adset_targeting),
+            requested_targeting,
             daily_budget,
             status_plan.get("adset", adset.get("status", "PAUSED")),
             adset_optimization_goal_for_campaign(adset, campaign, lead_gen_form_id, message_destination),
@@ -1119,6 +1205,36 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
             persist_campaign_execution_state(path, campaign, {"campaign_id": campaign_id, "adset_ids": [value for value in adset_ids if value]})
         if not adset_id:
             return campaign_creation_failure_result(path, campaign, client, campaign_id, "create_adset", steps, status_plan, active_confirmed, approved, allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed))
+        if targeting_needs_live_verification(requested_targeting):
+            if hasattr(client, "adset_details"):
+                verification_result = client.adset_details(adset_id)
+                verification = verify_adset_targeting_result(requested_targeting, verification_result)
+            else:
+                verification = {
+                    "ok": False,
+                    "confirmed": False,
+                    "source": "meta_live",
+                    "reason": "adset_targeting_read_not_supported",
+                    "requested_interest_ids": targeting_interest_ids(requested_targeting),
+                    "requested_advantage_audience": targeting_advantage_value(requested_targeting),
+                    "ui_confirmation": False,
+                }
+            steps.append({"step": "verify_adset_targeting", "ok": bool(verification.get("confirmed")), "adset_id": adset_id, "verification": verification})
+            if not verification.get("confirmed"):
+                return campaign_creation_failure_result(
+                    path,
+                    campaign,
+                    client,
+                    campaign_id,
+                    "verify_adset_targeting",
+                    steps,
+                    status_plan,
+                    active_confirmed,
+                    approved,
+                    allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed),
+                    adset_ids=[value for value in adset_ids if value],
+                    targeting_verification=verification,
+                )
     target_adset_id = adset_ids[0] if adset_ids else ""
     image_hash = ad_plan.get("image_hash") or ""
     video_id = ad_plan.get("video_id") or ""

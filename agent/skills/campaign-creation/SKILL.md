@@ -44,6 +44,7 @@ Collect:
 - video website completion strategy: when a video ad sends people to a website and full API creative creation is not reliable, do not invent an empty ad. Meta requires a creative before an ad can exist. Offer either `manual_creative_completion: true` to create campaign/ad set paused only, or `create_placeholder_ad: true` with `placeholder_ad_count` and `placeholder_ad_names` to create paused static temporary dark/placeholder ads with copy, URL, CTA, targeting, and names already filled so the buyer only replaces each placeholder image with the matching real video and verifies/adjusts the link in Ads Manager. If no provisional image exists, the backend may create a plain temporary placeholder. This applies only to video creatives, not normal static-image ads. Never activate placeholder ads.
 - budget/schedule strategy: daily vs lifetime budget, ad set budget, start/end time, active/paused status for campaign, ad set, and ad, and whether the budget can support the proposed number of concurrent variants.
 - audience strategy: geo, age, interests, custom audiences, exclusions, lookalikes/retargeting audiences when available, device/platform fields when they materially help, and placements.
+- live interest discovery and confirmation: use `mcp_admira_search_meta_targeting` to resolve every proposed interest to a current Meta ID; for Advantage+ suggestions pass `targeting_mode: advantage_plus` with those structured selections. A successful create response alone never proves targeting applied. Use the backend verification result or `mcp_admira_inspect_adset_targeting` before saying the interests/Advantage+ suggestions are present.
 - saved creative test brief with distinct hypotheses, formats, and variation count
 - approved creative assets or a production plan
 - final status: paused draft or active after approval
@@ -106,6 +107,7 @@ When staging, pass the expert fields that are justified by the conversation:
 - `manual_creative_completion: true` for video website ads that should be finished in Ads Manager after the campaign/ad set is prepared
 - `create_placeholder_ad: true`, `placeholder_ad_count`, and `placeholder_ad_names` when the buyer wants paused placeholder ads created to save setup clicks before replacing the media with final video. Use names from the actual concepts/angles discussed with the buyer.
 - `custom_audiences`, `excluded_custom_audiences`, `excluded_interests`, `device_platforms`, `user_os`, `user_device`, and `flexible_spec` only when the buyer/context supports them
+- `targeting_interests` as exact `{id, name}` objects returned by `mcp_admira_search_meta_targeting`; add `targeting_mode: "advantage_plus"` when the interests are suggestions rather than strict restrictions
 
 Budgets are always interpreted in the connected Meta ad account currency. Do not assume USD. Accept buyer wording like `S/20`, `COP 40.000`, `MXN 300`, `€15`, or `$20`, and pass the numeric amount plus any known `account_currency`/`ad_account_currency` context. If the buyer mentions a different currency from the account currency, explain simply that Meta will use the ad account currency and do not invent currency conversion.
 
