@@ -694,6 +694,46 @@ def stop_gateway():
     _GATEWAY_FINGERPRINT = None
 
 
+def reset_openai_codex_credential_status(config, files=None):
+    """Clear stale Hermes cooldown metadata without disconnecting ChatGPT.
+
+    Hermes stores OAuth credentials and their local exhausted/dead status in
+    the same auth store. ``auth reset`` changes only the status metadata; it
+    does not remove the account or its refresh token.
+    """
+    brain = hermes_brain_settings(config)
+    if _telegram_model_provider_for_brain(brain) != "openai-codex":
+        return {"ok": True, "reset": 0, "skipped": True, "reason": "provider_not_codex"}
+    hermes_cli = shutil.which(getattr(config, "hermes_cli", "hermes") or "hermes")
+    if not hermes_cli:
+        return {"ok": False, "reset": 0, "reason": "hermes_not_installed"}
+    files = files or write_gateway_files(config)
+    env = hermes_environment(config)
+    env["HERMES_HOME"] = files["hermes_home"]
+    try:
+        result = subprocess.run(
+            [hermes_cli, "auth", "reset", "openai-codex"],
+            cwd=files["workspace"],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "reset": 0, "reason": "codex_status_reset_failed", "error": str(exc)}
+    output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+    match = re.search(r"Reset status on\s+(\d+)\s+openai-codex", output, flags=re.IGNORECASE)
+    reset_count = int(match.group(1)) if match else 0
+    return {
+        "ok": result.returncode == 0,
+        "reset": reset_count,
+        "reason": "codex_status_reset" if result.returncode == 0 else "codex_status_reset_failed",
+        "error": "" if result.returncode == 0 else output[-500:],
+    }
+
+
 def reconcile_cron_inference_pins(config, files=None):
     """Pin agent cron jobs to the currently selected brain.
 
@@ -755,10 +795,16 @@ def start_gateway(config):
     if not hermes_cli:
         return {"started": False, "mode": "hermes_gateway", "detail": "Hermes no está instalado en esta instalación."}
     files = write_gateway_files(config)
+    credential_status_reset = reset_openai_codex_credential_status(config, files)
     fingerprint = _gateway_fingerprint(config, status, files)
-    if _GATEWAY_PROCESS and _GATEWAY_PROCESS.poll() is None and _GATEWAY_FINGERPRINT == fingerprint:
+    if (
+        _GATEWAY_PROCESS
+        and _GATEWAY_PROCESS.poll() is None
+        and _GATEWAY_FINGERPRINT == fingerprint
+        and not credential_status_reset.get("reset")
+    ):
         reconcile_cron_inference_pins(config, files)
-        return {"started": True, "mode": "hermes_gateway", "pid": _GATEWAY_PROCESS.pid, **files}
+        return {"started": True, "mode": "hermes_gateway", "pid": _GATEWAY_PROCESS.pid, "credential_status_reset": credential_status_reset, **files}
     stop_gateway()
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOGS_DIR / "hermes-gateway.log"
@@ -820,7 +866,7 @@ def start_gateway(config):
     reconcile_cron_inference_pins(config, files)
     time.sleep(0.3)
     started = _GATEWAY_PROCESS.poll() is None
-    response = {"started": started, "mode": "hermes_gateway", "pid": _GATEWAY_PROCESS.pid, "log": str(log_path), **files}
+    response = {"started": started, "mode": "hermes_gateway", "pid": _GATEWAY_PROCESS.pid, "log": str(log_path), "credential_status_reset": credential_status_reset, **files}
     if not started:
         response["detail"] = "Hermes Gateway se cerró al iniciar. Revisa el diagnóstico técnico."
     return response

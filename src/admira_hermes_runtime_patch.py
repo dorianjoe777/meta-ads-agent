@@ -17,6 +17,7 @@ import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -87,6 +88,37 @@ ADMIRA_NOVICE_SIGNAL_RE = re.compile(
     r"nunca\s+he|dime\s+t[uú]|decide\s+t[uú]|ay[uú]dame|gu[ií]ame|no\s+sé\s+de\s+marketing|"
     r"i\s+don['’]?t\s+know|i['’]?m\s+new|beginner|you\s+decide|guide\s+me)\b"
 )
+
+# Hermes versions pinned by existing Admira releases can mark the wrong
+# OpenAI/Codex pool entry as exhausted after a 429. Keep the exact key that
+# actually failed in task-local state so concurrent Telegram turns cannot
+# contaminate one another while the upstream recovery helper rotates entries.
+_ADMIRA_FAILED_CREDENTIAL_API_KEY = ContextVar("admira_failed_credential_api_key", default="")
+
+
+def _is_codex_pool_quota_error(text):
+    value = str(text or "").lower()
+    return (
+        "openai codex" in value or "openai-codex" in value
+    ) and (
+        "could not resolve credentials" in value
+        or "credentials are still valid" in value
+    ) and (
+        "quota exhausted" in value
+        or "usage_limit_reached" in value
+        or "rate limit" in value
+        or "429" in value
+    )
+
+
+def _reset_openai_codex_pool_statuses():
+    """Clear only local cooldown flags; never remove OAuth credentials."""
+    try:
+        from agent.credential_pool import load_pool
+
+        return int(load_pool("openai-codex").reset_statuses() or 0)
+    except Exception:
+        return 0
 
 
 def _telegram_delivery_diagnostics_path():
@@ -649,6 +681,18 @@ def gateway_authentication_reply(text, language=None):
 
 
 def provider_error_reply(text, language=None, original=None):
+    if _is_codex_pool_quota_error(text):
+        _reset_openai_codex_pool_statuses()
+        english = str(language or os.environ.get("ADMIRA_GATEWAY_LANGUAGE", "es")).lower().startswith("en")
+        if english:
+            return (
+                "♻️ Admira cleared a stale local ChatGPT/Codex limit state. "
+                "Send your message again. If it persists, open /model and select the model once more."
+            )
+        return (
+            "♻️ Admira limpió un estado local desactualizado del límite de ChatGPT/Codex. "
+            "Envía tu mensaje otra vez. Si persiste, abre /model y elige el modelo una vez más."
+        )
     if is_rate_limit_text(text):
         return gateway_rate_limit_reply(text, language or os.environ.get("ADMIRA_GATEWAY_LANGUAGE", "es"))
     if is_authentication_error_text(text):
@@ -656,6 +700,55 @@ def provider_error_reply(text, language=None, original=None):
     if callable(original):
         return original(text)
     return str(text or "")
+
+
+def _patch_credential_pool_failure_assignment():
+    """Ensure Hermes marks the credential that actually produced the error.
+
+    Older Hermes recovery code calls ``mark_exhausted_and_rotate`` without the
+    available ``api_key_hint``. If another process already rotated the pool,
+    Hermes can therefore mark the next healthy account as exhausted and report
+    a bogus multi-week cooldown. This narrow runtime patch mirrors the upstream
+    fix while keeping the vendored dependency untouched.
+    """
+    try:
+        import agent.agent_runtime_helpers as runtime_helpers
+        import agent.credential_pool as credential_pool
+    except Exception:
+        return False
+
+    patched_any = False
+    pool_class = getattr(credential_pool, "CredentialPool", None)
+    original_mark = getattr(pool_class, "mark_exhausted_and_rotate", None) if pool_class else None
+    if callable(original_mark) and not getattr(pool_class, "_admira_exact_failure_assignment_patch", False):
+        def patched_mark_exhausted_and_rotate(self, *args, **kwargs):
+            if not kwargs.get("api_key_hint"):
+                hint = str(_ADMIRA_FAILED_CREDENTIAL_API_KEY.get() or "").strip()
+                if hint:
+                    kwargs["api_key_hint"] = hint
+            return original_mark(self, *args, **kwargs)
+
+        pool_class._admira_original_mark_exhausted_and_rotate = original_mark
+        pool_class.mark_exhausted_and_rotate = patched_mark_exhausted_and_rotate
+        pool_class._admira_exact_failure_assignment_patch = True
+        patched_any = True
+
+    original_recover = getattr(runtime_helpers, "recover_with_credential_pool", None)
+    if callable(original_recover) and not getattr(runtime_helpers, "_admira_exact_failure_assignment_patch", False):
+        def patched_recover_with_credential_pool(agent, *args, **kwargs):
+            failed_key = str(getattr(agent, "api_key", "") or "").strip()
+            token = _ADMIRA_FAILED_CREDENTIAL_API_KEY.set(failed_key)
+            try:
+                return original_recover(agent, *args, **kwargs)
+            finally:
+                _ADMIRA_FAILED_CREDENTIAL_API_KEY.reset(token)
+
+        runtime_helpers._admira_original_recover_with_credential_pool = original_recover
+        runtime_helpers.recover_with_credential_pool = patched_recover_with_credential_pool
+        runtime_helpers._admira_exact_failure_assignment_patch = True
+        patched_any = True
+
+    return patched_any or bool(getattr(runtime_helpers, "_admira_exact_failure_assignment_patch", False))
 
 
 def _path_within(path, root):
@@ -1239,6 +1332,10 @@ def _patch_minimax_model_switch():
     original_list_authenticated = getattr(model_switch, "list_authenticated_providers", None)
     if callable(original_list_authenticated):
         def patched_list_authenticated_providers(*args, **kwargs):
+            # Opening /model is also an explicit recovery action. Clear only
+            # Hermes' local cooldown flags so a healthy newly-connected Codex
+            # account remains selectable even after another account hit 429.
+            _reset_openai_codex_pool_statuses()
             rows = list(original_list_authenticated(*args, **kwargs) or [])
             # Hide Hermes' native MiniMax row in Admira installs. MiniMax M3 is
             # intentionally exposed through the official OpenAI-compatible
@@ -1257,6 +1354,7 @@ def _patch_minimax_model_switch():
     original_list_picker = getattr(model_switch, "list_picker_providers", None)
     if callable(original_list_picker):
         def patched_list_picker_providers(*args, **kwargs):
+            _reset_openai_codex_pool_statuses()
             rows = list(original_list_picker(*args, **kwargs) or [])
             if os.environ.get(ADMIRA_MINIMAX_KEY_ENV):
                 rows = [row for row in rows if str((row or {}).get("slug") or "").strip().lower() != "minimax"]
@@ -1453,9 +1551,10 @@ def _patch_cron_job_creation():
 
 def apply():
     rate_limit_patched = _patch_gateway_rate_limit_reply()
+    credential_pool_patched = _patch_credential_pool_failure_assignment()
     minimax_patched = _patch_minimax_model_switch()
     runtime_patched = _patch_minimax_runtime_provider()
     media_patched = _patch_gateway_generated_media_delivery()
     video_patched = _patch_gateway_inbound_video_frames()
     cron_patched = _patch_cron_job_creation()
-    return bool(rate_limit_patched or minimax_patched or runtime_patched or media_patched or video_patched or cron_patched)
+    return bool(rate_limit_patched or credential_pool_patched or minimax_patched or runtime_patched or media_patched or video_patched or cron_patched)

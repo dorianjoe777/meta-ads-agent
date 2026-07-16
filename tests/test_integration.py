@@ -1358,6 +1358,114 @@ class IntegrationTestSuite:
             else:
                 os.environ["ADMIRA_INTERNAL_MODEL_RECOVERY_TOKEN_FILE"] = old_internal_token_file
 
+    def test_codex_pool_recovery_clears_stale_status_and_marks_exact_account(self):
+        """Regression for Hermes marking a healthy newly-connected Codex account exhausted."""
+        print("\nTesting Codex Credential Pool Exact Failure Recovery...")
+
+        original_modules = {
+            "agent": sys.modules.get("agent"),
+            "agent.agent_runtime_helpers": sys.modules.get("agent.agent_runtime_helpers"),
+            "agent.credential_pool": sys.modules.get("agent.credential_pool"),
+        }
+        fake_agent_parent = types.ModuleType("agent")
+        fake_agent_parent.__path__ = []
+        fake_helpers = types.ModuleType("agent.agent_runtime_helpers")
+        fake_pool_module = types.ModuleType("agent.credential_pool")
+        observed = {}
+
+        class FakeCredentialPool:
+            def mark_exhausted_and_rotate(self, *args, **kwargs):
+                observed["api_key_hint"] = kwargs.get("api_key_hint")
+                return None
+
+        def original_recover(agent, *args, **kwargs):
+            agent._credential_pool.mark_exhausted_and_rotate(status_code=429, error_context={"reason": "usage_limit_reached"})
+            return False, True
+
+        fake_pool_module.CredentialPool = FakeCredentialPool
+        fake_helpers.recover_with_credential_pool = original_recover
+        try:
+            sys.modules["agent"] = fake_agent_parent
+            sys.modules["agent.agent_runtime_helpers"] = fake_helpers
+            sys.modules["agent.credential_pool"] = fake_pool_module
+            applied = admira_hermes_runtime_patch._patch_credential_pool_failure_assignment()
+            active_agent = types.SimpleNamespace(api_key="account-that-actually-failed", _credential_pool=FakeCredentialPool())
+            result = fake_helpers.recover_with_credential_pool(active_agent, status_code=429, has_retried_429=True)
+            self.assert_true(applied and result == (False, True), "Admira installs the narrow Hermes credential recovery patch")
+            self.assert_true(observed.get("api_key_hint") == "account-that-actually-failed", "Only the Codex account that produced the 429 is marked exhausted")
+        finally:
+            for key, value in original_modules.items():
+                if value is None:
+                    sys.modules.pop(key, None)
+                else:
+                    sys.modules[key] = value
+
+        original_reset = admira_hermes_runtime_patch._reset_openai_codex_pool_statuses
+        reset_calls = []
+        try:
+            admira_hermes_runtime_patch._reset_openai_codex_pool_statuses = lambda: reset_calls.append(True) or 1
+            raw = "Could not resolve credentials for provider 'OpenAI Codex': Codex provider quota exhausted (429); retry after 2508722s. Credentials are still valid."
+            reply = admira_hermes_runtime_patch.provider_error_reply(raw, "es", str)
+            self.assert_true(bool(reset_calls), "A stale pool-only Codex quota error automatically clears local cooldown metadata")
+            self.assert_true("29 días" not in reply and "estado local desactualizado" in reply and "Envía tu mensaje otra vez" in reply, "Buyer is not shown the bogus 29-day cooldown after automatic local recovery")
+        finally:
+            admira_hermes_runtime_patch._reset_openai_codex_pool_statuses = original_reset
+
+    def test_gateway_codex_status_reset_preserves_oauth_and_model_change_restarts(self):
+        """The status reset is non-destructive and dashboard model changes restart Telegram."""
+        print("\nTesting Gateway Codex Status Reset And Model Restart...")
+
+        class FakeConfig:
+            hermes_cli = "hermes"
+
+        original_brain = hermes_gateway.hermes_brain_settings
+        original_provider = hermes_gateway._telegram_model_provider_for_brain
+        original_which = hermes_gateway.shutil.which
+        original_files = hermes_gateway.write_gateway_files
+        original_environment = hermes_gateway.hermes_environment
+        original_run = hermes_gateway.subprocess.run
+        try:
+            hermes_gateway.hermes_brain_settings = lambda _config: {"provider": "openai-codex", "model": "gpt-5.4-mini"}
+            hermes_gateway._telegram_model_provider_for_brain = lambda _brain: "openai-codex"
+            hermes_gateway.shutil.which = lambda _name: "/usr/local/bin/hermes"
+            hermes_gateway.write_gateway_files = lambda _config: {"workspace": "/tmp/workspace", "hermes_home": "/tmp/hermes-home"}
+            hermes_gateway.hermes_environment = lambda _config: {"KEEP_OAUTH": "yes"}
+            captured = {}
+
+            def fake_run(command, **kwargs):
+                captured["command"] = command
+                captured["env"] = kwargs.get("env")
+                return types.SimpleNamespace(returncode=0, stdout="Reset status on 1 openai-codex credentials\n", stderr="")
+
+            hermes_gateway.subprocess.run = fake_run
+            reset = hermes_gateway.reset_openai_codex_credential_status(FakeConfig())
+            self.assert_true(reset.get("ok") and reset.get("reset") == 1, "Gateway clears exactly the stale Codex status entry")
+            self.assert_true(captured.get("command") == ["/usr/local/bin/hermes", "auth", "reset", "openai-codex"], "Recovery uses Hermes' non-destructive auth status reset command")
+            self.assert_true(captured.get("env", {}).get("KEEP_OAUTH") == "yes" and captured.get("env", {}).get("HERMES_HOME") == "/tmp/hermes-home", "Recovery preserves the OAuth environment and targets the installed Hermes home")
+        finally:
+            hermes_gateway.hermes_brain_settings = original_brain
+            hermes_gateway._telegram_model_provider_for_brain = original_provider
+            hermes_gateway.shutil.which = original_which
+            hermes_gateway.write_gateway_files = original_files
+            hermes_gateway.hermes_environment = original_environment
+            hermes_gateway.subprocess.run = original_run
+
+        dashboard = load_dashboard_module()
+        original_load = dashboard.load_config
+        original_stop = dashboard.stop_hermes_gateway
+        original_start = dashboard.start_hermes_gateway
+        calls = []
+        try:
+            dashboard.load_config = lambda: FakeConfig()
+            dashboard.stop_hermes_gateway = lambda: calls.append("stop")
+            dashboard.start_hermes_gateway = lambda _config: calls.append("start") or {"started": True}
+            refreshed = dashboard.refresh_telegram_gateway_after_agent_model_change({"HERMES_MODEL": "gpt-5.4-mini"})
+            self.assert_true(calls == ["stop", "start"] and refreshed.get("started"), "A dashboard model change force-restarts Telegram so it cannot retain the previous session model")
+        finally:
+            dashboard.load_config = original_load
+            dashboard.stop_hermes_gateway = original_stop
+            dashboard.start_hermes_gateway = original_start
+
     def test_hermes_gateway_runtime_patch_always_attaches_generated_creatives(self):
         """Test generated Codex/Image files are attached even when small models omit MEDIA in the reply."""
         print("\nTesting Hermes Gateway Generated Media Runtime Patch...")
@@ -3099,6 +3207,7 @@ class IntegrationTestSuite:
         original_prepare = hermes_gateway.prepare_hermes_workspace
         original_which = hermes_gateway.shutil.which
         original_popen = hermes_gateway.subprocess.Popen
+        original_status_reset = hermes_gateway.reset_openai_codex_credential_status
         original_stale_terminate = hermes_gateway._terminate_stale_gateway_from_state
         original_env = {key: os.environ.get(key) for key in ["TELEGRAM_AGENT_MODE", "TELEGRAM_AGENT_ENABLED", "TELEGRAM_LANGUAGE"]}
         model_state_before = hermes_gateway.TELEGRAM_MODEL_STATE_FILE.read_bytes() if hermes_gateway.TELEGRAM_MODEL_STATE_FILE.exists() else None
@@ -3159,6 +3268,7 @@ class IntegrationTestSuite:
             hermes_gateway.prepare_hermes_workspace = lambda payload: {"path": str(workspace)}
             hermes_gateway.shutil.which = lambda command: "/usr/local/bin/hermes" if command == "hermes" else command
             hermes_gateway.subprocess.Popen = fake_popen
+            hermes_gateway.reset_openai_codex_credential_status = lambda _config, files=None: {"ok": True, "reset": 0}
             hermes_gateway._terminate_stale_gateway_from_state = lambda skip_pid=None: None
 
             started = hermes_gateway.start_gateway(FakeConfig())
@@ -3215,6 +3325,7 @@ class IntegrationTestSuite:
             hermes_gateway.prepare_hermes_workspace = original_prepare
             hermes_gateway.shutil.which = original_which
             hermes_gateway.subprocess.Popen = original_popen
+            hermes_gateway.reset_openai_codex_credential_status = original_status_reset
             hermes_gateway._terminate_stale_gateway_from_state = original_stale_terminate
             for key, value in original_env.items():
                 if value is None:
@@ -10820,6 +10931,8 @@ class IntegrationTestSuite:
             self.test_hermes_codex_invalidated_token_requires_reconnect,
             self.test_hermes_model_usage_limit_keeps_connection_state_clear,
             self.test_hermes_gateway_rate_limit_runtime_patch_localizes_reset_time,
+            self.test_codex_pool_recovery_clears_stale_status_and_marks_exact_account,
+            self.test_gateway_codex_status_reset_preserves_oauth_and_model_change_restarts,
             self.test_hermes_gateway_runtime_patch_always_attaches_generated_creatives,
             self.test_hermes_gateway_runtime_patch_extracts_inbound_video_frames,
             self.test_hermes_gateway_minimax_runtime_patch_forces_official_provider,

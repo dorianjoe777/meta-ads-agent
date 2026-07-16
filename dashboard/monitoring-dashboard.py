@@ -5346,9 +5346,16 @@ def refresh_telegram_gateway_after_agent_model_change(env_updates, force_restart
     if not changed:
         return None
     try:
-        if force_restart:
+        config = load_config()
+        # Dashboard model changes are authoritative for Telegram. A real
+        # restart avoids retaining an older per-session model or an in-memory
+        # credential-pool cooldown after the UI already shows the new model.
+        effective_force_restart = force_restart or bool(
+            set(changed) & {"HERMES_MODEL", "AGENT_BRAIN_PROVIDER", "AGENT_CHAT_PROVIDER"}
+        )
+        if effective_force_restart:
             stop_hermes_gateway()
-        gateway = start_hermes_gateway(load_config())
+        gateway = start_hermes_gateway(config)
     except Exception as exc:
         return {"started": False, "mode": "hermes_gateway", "detail": "No pude refrescar Telegram con el modelo nuevo.", "error": str(exc), "changed": changed}
     if isinstance(gateway, dict):
