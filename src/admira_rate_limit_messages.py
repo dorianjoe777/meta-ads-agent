@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Buyer-safe rate-limit messages for Admira IA provider errors."""
 import math
+import os
 import re
 import time
 
@@ -214,9 +215,18 @@ def lighter_model_switch_hint(language="es"):
 def gateway_rate_limit_reply(text, language="es"):
     """Return a concise Telegram-safe gateway notification for provider limits."""
     english = str(language or "es").lower().startswith("en")
+    provider = str(os.environ.get("ADMIRA_GATEWAY_PROVIDER") or "").strip().lower().replace("_", "-")
+    hint = retry_delay_hint(text, "en" if english else "es")
+    if "nvidia" in provider:
+        if english:
+            base = "⏱️ NVIDIA NIM reached a temporary hosted-API limit."
+            reset = f" Try again in about {hint}." if hint else " Try again later; NVIDIA did not send an exact reset time."
+            return base + reset + " Your memory and work are safe; you can choose another NVIDIA model or another provider in Settings."
+        base = "⏱️ NVIDIA NIM alcanzó un límite temporal de su API alojada."
+        reset = f" Intenta de nuevo en aprox. {hint}." if hint else " Intenta de nuevo más tarde; NVIDIA no indicó una hora exacta."
+        return base + reset + " Tu memoria y trabajo están seguros; puedes elegir otro modelo NVIDIA u otro proveedor en Configuración."
     if codex_plan_type_from_text(text) == "go":
         return codex_go_limit_reply(text, "en" if english else "es")
-    hint = retry_delay_hint(text, "en" if english else "es")
     model_hint = lighter_model_switch_hint("en" if english else "es")
     if english:
         base = "⏱️ ChatGPT/Codex hit a temporary usage limit."

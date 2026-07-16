@@ -1731,7 +1731,7 @@ function chatGptConnectMarkup(onboarding=false){
  const model=state.config.agent_model||{};
  const studio=state.config.creative_studio||{};
  const brain=model.brain_provider||'openai_codex';
- const apiBrain=['openai_api','minimax','custom_api'].includes(brain);
+ const apiBrain=['openai_api','minimax','nvidia_nim','custom_api'].includes(brain);
  const apiReady=apiBrain&&model.api_key_set&&Boolean(model.base_url)&&Boolean(model.model);
  const chatgptConnected=Boolean(model.chatgpt_connected);
  const chatgptReconnectRequired=Boolean(model.chatgpt_reauth_required);
@@ -1739,21 +1739,21 @@ function chatGptConnectMarkup(onboarding=false){
  const ready=chatgptReady||apiReady;
  const hermesMissing=runtime.status==='blocked';
  const title=ready?(lang==='es'?'Modelo del agente conectado':'Agent model connected'):(lang==='es'?'Conecta el cerebro del agente':'Connect the agent brain');
- const body=ready?(apiReady?(lang==='es'?`El manager ya puede pensar con ${model.model||'el modelo configurado'} sin perder memoria, herramientas ni aprobaciones.`:`The manager can now think with ${model.model||'the configured model'} while keeping memory, tools, and approvals.`):(lang==='es'?'El manager ya puede conversar usando tu sesion de ChatGPT/Codex. El chat, Telegram y las herramientas quedan sobre esta conexión.':'The manager can now talk through your ChatGPT/Codex session. Chat, Telegram, and agent tools use this connection.')):(onboarding?(lang==='es'?'Elige qué modelo usará el agente. Toca una opción y solo verás lo necesario.':'Choose which model the agent will use. Click an option and only the needed steps will open.'):(lang==='es'?'Elige cómo pensará el manager: OpenAI, tu suscripción de ChatGPT, MiniMax M3 u otra API compatible.':'Choose how the manager thinks: OpenAI, your ChatGPT subscription, MiniMax M3, or another compatible API.'));
+ const body=ready?(apiReady?(lang==='es'?`El manager ya puede pensar con ${model.model||'el modelo configurado'} sin perder memoria, herramientas ni aprobaciones.`:`The manager can now think with ${model.model||'the configured model'} while keeping memory, tools, and approvals.`):(lang==='es'?'El manager ya puede conversar usando tu sesion de ChatGPT/Codex. El chat, Telegram y las herramientas quedan sobre esta conexión.':'The manager can now talk through your ChatGPT/Codex session. Chat, Telegram, and agent tools use this connection.')):(onboarding?(lang==='es'?'Elige qué modelo usará el agente. Toca una opción y solo verás lo necesario.':'Choose which model the agent will use. Click an option and only the needed steps will open.'):(lang==='es'?'Elige cómo pensará el manager: NVIDIA NIM, OpenAI, tu suscripción de ChatGPT, MiniMax M3 u otra API compatible.':'Choose how the manager thinks: NVIDIA NIM, OpenAI, your ChatGPT subscription, MiniMax M3, or another compatible API.'));
  const badge=ready?(lang==='es'?'Listo':'Ready'):(hermesMissing?(lang==='es'?'Falta base del agente':'Agent base missing'):(lang==='es'?'Falta conectar':'Needs connection'));
  const detail=[runtime.detail,auth.detail,codex.detail].filter(Boolean).map(localText).join(' · ');
- const draft=lang==='es'?'Ayúdame a elegir el cerebro del agente. Explícame en palabras simples si me conviene ChatGPT/Codex, MiniMax M3 u otra API.':'Help me choose the agent brain. Explain simply whether ChatGPT/Codex, MiniMax M3, or another API is better for me.';
+ const draft=lang==='es'?'Ayúdame a elegir el cerebro del agente. Explícame en palabras simples si me conviene ChatGPT/Codex, NVIDIA NIM, MiniMax M3 u otra API.':'Help me choose the agent brain. Explain simply whether ChatGPT/Codex, NVIDIA NIM, MiniMax M3, or another API is better for me.';
  const savedBase=model.base_url||'';
- const selectedRoute=brain==='openai_codex'?'chatgpt_subscription':(brain==='minimax'||savedBase.includes('minimax')?'minimax_m3':(brain==='openai_api'||savedBase.includes('api.openai.com')?'openai_api':'custom_api'));
+ const selectedRoute=brain==='openai_codex'?'chatgpt_subscription':(brain==='nvidia_nim'||savedBase.includes('api.nvidia.com')?'nvidia_nim':(brain==='minimax'||savedBase.includes('minimax')?'minimax_m3':(brain==='openai_api'||savedBase.includes('api.openai.com')?'openai_api':'custom_api')));
  const telegramRuntime=model.telegram_runtime_model||{};
  const runtimeProvider=String(telegramRuntime.provider||'').toLowerCase().replace(/_/g,'-');
  const runtimeBase=String(telegramRuntime.base_url||'').toLowerCase();
- const runtimeRoute=runtimeProvider.includes('minimax')?'minimax_m3':((runtimeProvider.includes('openai-codex')||runtimeProvider.includes('codex'))?'chatgpt_subscription':((runtimeProvider.includes('openai')||runtimeBase.includes('api.openai.com'))?'openai_api':(runtimeProvider.includes('custom')?'custom_api':'')));
+ const runtimeRoute=(runtimeProvider.includes('nvidia')||runtimeBase.includes('api.nvidia.com'))?'nvidia_nim':(runtimeProvider.includes('minimax')?'minimax_m3':((runtimeProvider.includes('openai-codex')||runtimeProvider.includes('codex'))?'chatgpt_subscription':((runtimeProvider.includes('openai')||runtimeBase.includes('api.openai.com'))?'openai_api':(runtimeProvider.includes('custom')?'custom_api':''))));
  const runtimeModelLabel=telegramRuntime.label||[telegramRuntime.provider,telegramRuntime.model].filter(Boolean).join(' · ');
  const runtimeChanged=Boolean(runtimeModelLabel&&(telegramRuntime.source==='telegram_model_command'||telegramRuntime.is_configured_primary===false));
  const telegramRuntimeNotice=runtimeModelLabel?`<div class="telegram-runtime-note ${runtimeChanged?'changed':''}"><b>${lang==='es'?'Telegram ahora usa':'Telegram is using now'}</b><span>${escapeHtml(runtimeModelLabel)}</span>${runtimeChanged?`<small>${lang==='es'?'Cambiado desde Telegram con /model. Si quieres que sea el principal fijo, guárdalo aquí también.':'Changed from Telegram with /model. To make it the permanent primary model, save it here too.'}</small>`:''}</div>`:'';
- const base=model.base_url||(selectedRoute==='openai_api'?'https://api.openai.com/v1':(selectedRoute==='custom_api'?'':'https://api.minimax.io/v1'));
- const modelName=model.model||(selectedRoute==='openai_api'?'gpt-4.1-mini':(selectedRoute==='custom_api'?'':'MiniMax-M3'));
+ const base=model.base_url||(selectedRoute==='nvidia_nim'?'https://integrate.api.nvidia.com/v1':(selectedRoute==='openai_api'?'https://api.openai.com/v1':(selectedRoute==='custom_api'?'':'https://api.minimax.io/v1')));
+ const modelName=model.model||(selectedRoute==='nvidia_nim'?'z-ai/glm-5.2':(selectedRoute==='openai_api'?'gpt-4.1-mini':(selectedRoute==='custom_api'?'':'MiniMax-M3')));
  const catalogVerified=Boolean(model.hermes_model_catalog_account_verified);
  const catalogAuthResolved=Boolean(model.hermes_model_catalog_auth_resolved);
  const imageSource=model.codex_image_source||studio.codex_image_source||'main_chatgpt';
@@ -1774,13 +1774,21 @@ function chatGptConnectMarkup(onboarding=false){
   openai_api:{icon:'OA',title:lang==='es'?'OpenAI API':'OpenAI API',desc:lang==='es'?'Si tienes una clave API de OpenAI.':'If you have an OpenAI API key.',panel:lang==='es'?'Pega tu clave API de OpenAI. El agente seguirá usando su memoria, herramientas y aprobaciones.':'Paste your OpenAI API key. The agent still keeps its memory, tools, and approvals.'},
   chatgpt_subscription:{icon:'CG',title:lang==='es'?'ChatGPT suscripción':'ChatGPT subscription',desc:lang==='es'?'Login OAuth con ChatGPT/Codex.':'OAuth login with ChatGPT/Codex.',panel:lang==='es'?'Primero, en ChatGPT abre Ajustes > Seguridad y activa el login por código para Codex. Después toca Conectar ahora; en PC/Mac abriré la terminal y en DigitalOcean mostraré aquí el enlace seguro.':'First, in ChatGPT open Settings > Security and enable device-code login for Codex. Then click Connect now; on PC/Mac I open the terminal and on DigitalOcean I show the secure link here.'},
   minimax_m3:{icon:'M3',title:'MiniMax M3',desc:lang==='es'?'Con clave de MiniMax.':'With a MiniMax key.',panel:lang==='es'?'Pega tu clave de MiniMax. Ya dejé URL y modelo listos para M3. El agente seguirá usando su memoria y herramientas.':'Paste your MiniMax key. URL and model are already set for M3. The agent still keeps memory and tools.'},
+  nvidia_nim:{icon:'NV',title:'NVIDIA NIM',desc:lang==='es'?'Modelos alojados del API Catalog.':'Hosted API Catalog models.',panel:lang==='es'?'Pega una API key de build.nvidia.com y carga la lista actual de modelos. El acceso alojado está sujeto a las cuotas y límites de NVIDIA.':'Paste an API key from build.nvidia.com and load the current model list. Hosted access is subject to NVIDIA quotas and limits.'},
   custom_api:{icon:'{}',title:lang==='es'?'Otra API compatible':'Other compatible API',desc:lang==='es'?'Para proveedores tipo OpenAI.':'For OpenAI-style providers.',panel:lang==='es'?'Pega la URL, el nombre del modelo y la clave del proveedor. El agente la usará como cerebro.':'Paste the provider URL, model name, and key. The agent will use it as its brain.'}
  };
- const routeConnected={chatgpt_subscription:chatgptConnected,openai_api:brain==='openai_api'&&apiReady,minimax_m3:brain==='minimax'&&apiReady,custom_api:brain==='custom_api'&&apiReady};
+ const routeConnected={chatgpt_subscription:chatgptConnected,openai_api:brain==='openai_api'&&apiReady,minimax_m3:brain==='minimax'&&apiReady,nvidia_nim:brain==='nvidia_nim'&&apiReady,custom_api:brain==='custom_api'&&apiReady};
  const routeButton=kind=>{const primary=selectedRoute===kind;const connected=Boolean(routeConnected[kind]);const runtimeActive=Boolean(runtimeRoute===kind&&runtimeModelLabel&&!primary);const state=primary?(lang==='es'?'Principal':'Primary'):(runtimeActive?(lang==='es'?'En uso en Telegram':'In use on Telegram'):(connected?(lang==='es'?'Conectado':'Connected'):''));return `<button class="agent-model-option ${primary?'active primary-route':''} ${(connected||runtimeActive)?'connected':''}" type="button" data-agent-route="${kind}" aria-expanded="${primary?'true':'false'}" data-action-code="selectAgentModelRoute('${kind}')"><span class="route-icon">${routeCopy[kind].icon}</span><span><b>${routeCopy[kind].title}</b><p>${routeCopy[kind].desc}</p>${state?`<em class="route-state">${state}</em>`:''}</span></button>`};
  const apiPanelTitle=selectedRoute==='chatgpt_subscription'?routeCopy.minimax_m3.title:routeCopy[selectedRoute].title;
  const apiPanelHelp=selectedRoute==='chatgpt_subscription'?routeCopy.minimax_m3.panel:routeCopy[selectedRoute].panel;
  const providerValue=brain;
+ const liveNvidiaModels=(Array.isArray(model.nvidia_model_options)?model.nvidia_model_options:[]).map(value=>String(value||'').trim()).filter(Boolean);
+ const recommendedNvidiaModel=String(model.nvidia_model_recommended||'z-ai/glm-5.2').trim();
+ const nvidiaModels=liveNvidiaModels.length?[...liveNvidiaModels]:[recommendedNvidiaModel];
+ if(selectedRoute==='nvidia_nim'&&modelName&&!nvidiaModels.includes(modelName))nvidiaModels.unshift(modelName);
+ const nvidiaModelOptions=nvidiaModels.map(value=>`<option value="${escapeHtml(value)}">${escapeHtml(value===recommendedNvidiaModel?(lang==='es'?'Recomendado':'Recommended'):'')}</option>`).join('');
+ const apiModelField=`<input name="agent_chat_model" value="${escapeHtml(modelName)}" placeholder="${lang==='es'?'Nombre del modelo':'Model name'}" ${selectedRoute==='nvidia_nim'?'list="nvidia-model-options"':''}><datalist id="nvidia-model-options">${nvidiaModelOptions}</datalist>`;
+ const nvidiaCatalogAction=selectedRoute==='nvidia_nim'?`<button class="btn" type="button" data-action-code="refreshNvidiaModelCatalog(event)">${lang==='es'?'Cargar modelos de NVIDIA':'Load NVIDIA models'}</button><a class="btn" href="https://build.nvidia.com/" target="_blank" rel="noopener noreferrer">${lang==='es'?'Obtener API key':'Get API key'}</a>`:'';
  const liveCodexModels=(Array.isArray(model.hermes_model_options)?model.hermes_model_options:[]).map(value=>String(value||'').trim()).filter(Boolean);
  const configuredCodexModel=String(model.hermes_model||'').trim();
  const userSelectedCodexModel=Boolean(model.hermes_model_user_selected);
@@ -1817,16 +1825,16 @@ function chatGptConnectMarkup(onboarding=false){
   <div id="image-chatgpt-connect-result" class="chatgpt-connect-result hidden"></div>
   <div class="agent-route-actions">${imageConnectButton}${imageDisconnectButton}</div>
  </div>`;
- return `<section class="chatgpt-connect-card ${ready?'ready':''}"><div class="chatgpt-connect-head"><div><h3>${title}</h3><p>${body}</p></div><span class="badge ${ready?'ok':'warn'}">${badge}</span></div><div class="agent-model-picker" role="tablist" aria-label="${lang==='es'?'Opciones de modelo del agente':'Agent model options'}">${routeButton('openai_api')}${routeButton('chatgpt_subscription')}${routeButton('minimax_m3')}${routeButton('custom_api')}</div>${telegramRuntimeNotice}<form id="agent-model-form" class="model-provider-form" data-submit-code="saveSetupConfig(event)">
+ return `<section class="chatgpt-connect-card ${ready?'ready':''}"><div class="chatgpt-connect-head"><div><h3>${title}</h3><p>${body}</p></div><span class="badge ${ready?'ok':'warn'}">${badge}</span></div><div class="agent-model-picker" role="tablist" aria-label="${lang==='es'?'Opciones de modelo del agente':'Agent model options'}">${routeButton('nvidia_nim')}${routeButton('openai_api')}${routeButton('chatgpt_subscription')}${routeButton('minimax_m3')}${routeButton('custom_api')}</div>${telegramRuntimeNotice}<form id="agent-model-form" class="model-provider-form" data-submit-code="saveSetupConfig(event)">
  <input type="hidden" name="agent_chat_provider" value="${escapeHtml(providerValue)}">
  <input type="hidden" name="agent_chat_api" value="${escapeHtml(api)}">
  <div class="agent-route-panels">
   <div class="agent-route-panel ${selectedRoute==='chatgpt_subscription'?'active':''}" data-agent-route-panel="chatgpt_subscription"><h4>${routeCopy.chatgpt_subscription.title}</h4><p>${routeCopy.chatgpt_subscription.panel}</p>${chatgptReconnectNotice}<div class="chatgpt-preflight"><b>${chatgptConnected?(chatgptReady?(lang==='es'?'Conectado y principal':'Connected and primary'):(lang==='es'?'Conectado, no principal':'Connected, not primary')):(lang==='es'?'Antes de conectar':'Before connecting')}</b><div class="connected-account"><b>${lang==='es'?'Cuenta':'Account'}</b><span>${mainAccountLabel}</span></div><ol><li>${lang==='es'?'Usa el modelo marcado como recomendado; la lista se actualiza desde ChatGPT/Hermes.':'Use the model marked as recommended; the list refreshes from ChatGPT/Hermes.'}</li>${chatgptConnected?'':`<li>${lang==='es'?'Toca el botón de abajo para abrir la configuración de tu cuenta ChatGPT.':'Click the button below to open your ChatGPT account settings.'}</li><li>${lang==='es'?'Entra a Seguridad, ve al final y activa “Activar autorización con códigos de dispositivo para Codex”.':'Open Security, go to the bottom, and turn on “Enable device code authorization for Codex”.'}</li><li>${lang==='es'?'Vuelve aquí y toca el botón “Ya lo hice, conectar a ChatGPT ahora”.':'Come back here and click “I did it, connect to ChatGPT now”.'}</li>`}</ol>${chatgptConnected?'':`<div class="chatgpt-settings-actions">${chatgptSettingsButton}</div>`}</div><div class="form-grid codex-model-choice"><div class="field wide"><label>${lang==='es'?'Modelo para ChatGPT/Codex':'ChatGPT/Codex model'}</label><span class="field-help">${lang==='es'?'Modelos disponibles para esta instalación/cuenta.':'Models available for this installation/account.'}</span><select name="hermes_model">${codexModelOptions}</select></div></div>${runtimeVersionNote}<div class="agent-route-actions">${chatgptActions}<button class="btn" type="button" data-action-code="refreshCodexModelCatalog(event)">${lang==='es'?'Actualizar lista de modelos':'Refresh model list'}</button></div><div id="chatgpt-connect-result" class="chatgpt-connect-result hidden"></div></div>
   <div class="agent-route-panel ${selectedRoute!=='chatgpt_subscription'?'active':''}" data-agent-route-panel="api"><h4 id="agent-api-route-title">${apiPanelTitle}</h4><p id="agent-api-route-help">${apiPanelHelp}</p><div class="form-grid">
-   <div class="field"><label>${lang==='es'?'Modelo':'Model'}</label><input name="agent_chat_model" value="${escapeHtml(modelName)}" placeholder="${lang==='es'?'Nombre del modelo':'Model name'}"></div>
-   <div class="field"><label>${lang==='es'?'URL compatible OpenAI':'OpenAI-compatible URL'}</label><span class="field-help">${lang==='es'?'Debe usar https://. Solo se permite http:// para modelos locales como 127.0.0.1.':'Must use https://. http:// is allowed only for local models such as 127.0.0.1.'}</span><input name="agent_chat_base_url" value="${escapeHtml(base)}" placeholder="https://api.ejemplo.com/v1"></div>
+   <div class="field"><label>${lang==='es'?'Modelo':'Model'}</label>${apiModelField}</div>
+   <div class="field"><label>${lang==='es'?'URL compatible OpenAI':'OpenAI-compatible URL'}</label><span class="field-help">${selectedRoute==='nvidia_nim'?(lang==='es'?'Endpoint oficial fijo de NVIDIA NIM.':'Fixed official NVIDIA NIM endpoint.'):(lang==='es'?'Debe usar https://. Solo se permite http:// para modelos locales como 127.0.0.1.':'Must use https://. http:// is allowed only for local models such as 127.0.0.1.')}</span><input name="agent_chat_base_url" value="${escapeHtml(base)}" placeholder="https://api.ejemplo.com/v1" ${selectedRoute==='nvidia_nim'?'readonly':''}></div>
    <div class="field wide"><label>${lang==='es'?'Clave API del modelo':'Model API key'}</label><span class="field-help">${lang==='es'?'Se guarda dentro de este PC/VPS. No aparece de vuelta en el dashboard.':'Stored on this PC/VPS. It is never shown back in the dashboard.'}</span><input type="password" name="agent_chat_api_key" value="" placeholder="${escapeHtml(keyPlaceholder)}"></div>
-   <div class="field wide"><button class="btn primary" type="submit">${lang==='es'?'Guardar modelo del agente':'Save agent model'}</button></div>
+   <div class="field wide"><div class="agent-route-actions"><button class="btn primary" type="submit">${lang==='es'?'Guardar modelo del agente':'Save agent model'}</button>${nvidiaCatalogAction}</div></div>
   </div></div>
  </div>
  ${imageChatgptCard}
@@ -2125,6 +2133,25 @@ async function refreshCodexModelCatalog(event){
   await load();
  }catch(err){toast(lang==='es'?'No pude renovar la lista; mantuve la última lista válida.':'Could not refresh the list; kept the last known valid list.')}finally{if(btn)btn.disabled=false}
 }
+async function refreshNvidiaModelCatalog(event){
+ const btn=event?.currentTarget||event?.target;
+ const form=qs('#agent-model-form');
+ if(btn)btn.disabled=true;
+ try{
+  const payload=agentModelFormPayload();
+  const res=await api('/api/agent-model/nvidia-catalog',{method:'POST',body:JSON.stringify({agent_chat_api_key:payload.agent_chat_api_key||''})});
+  const catalog=res.result||res||{};
+  const models=Array.isArray(catalog.models)?catalog.models:[];
+  const count=models.length;
+  const datalist=qs('#nvidia-model-options');
+  if(datalist)datalist.innerHTML=models.map(value=>`<option value="${escapeHtml(value)}">${escapeHtml(value===catalog.recommended?(lang==='es'?'Recomendado':'Recommended'):'')}</option>`).join('');
+  const modelInput=form?.elements?.agent_chat_model;
+  if(modelInput){modelInput.setAttribute('list','nvidia-model-options');if(!models.includes(modelInput.value))modelInput.value=catalog.recommended||models[0]||'z-ai/glm-5.2'}
+  toast(lang==='es'?`NVIDIA confirmó ${count} modelos de conversación disponibles.`:`NVIDIA confirmed ${count} available chat models.`);
+ }catch(err){
+  toast(err.message||String(err));
+ }finally{if(btn)btn.disabled=false}
+}
 async function connectChatGpt(event){
  const btn=event?.currentTarget||event?.target;
  const box=qs('#chatgpt-connect-result');
@@ -2229,15 +2256,26 @@ function applyAgentModelPreset(kind){
   fields.agent_chat_model.value='MiniMax-M3';
   return;
  }
+ if(route==='nvidia_nim'){
+  fields.agent_chat_provider.value='nvidia_nim';
+  fields.agent_chat_base_url.value='https://integrate.api.nvidia.com/v1';
+  if(!fields.agent_chat_model.value||fields.agent_chat_model.value.includes('MiniMax')||fields.agent_chat_model.value.startsWith('gpt-'))fields.agent_chat_model.value='z-ai/glm-5.2';
+  return;
+ }
  if(route==='custom_api'){
   fields.agent_chat_provider.value='custom_api';
-  if(fields.agent_chat_base_url.value.includes('api.minimax.io')||fields.agent_chat_base_url.value.includes('api.openai.com'))fields.agent_chat_base_url.value='';
+  if(fields.agent_chat_base_url.value.includes('api.minimax.io')||fields.agent_chat_base_url.value.includes('api.openai.com')||fields.agent_chat_base_url.value.includes('api.nvidia.com'))fields.agent_chat_base_url.value='';
   if(fields.agent_chat_model.value.includes('MiniMax')||fields.agent_chat_model.value.includes('gpt-'))fields.agent_chat_model.value='';
  }
 }
 function selectAgentModelRoute(kind){
  const route=kind==='hermes'?'chatgpt_subscription':(kind==='custom'?'custom_api':kind);
  applyAgentModelPreset(route);
+ const form=qs('#agent-model-form');
+ const modelInput=form?.elements?.agent_chat_model;
+ const baseInput=form?.elements?.agent_chat_base_url;
+ if(modelInput){if(route==='nvidia_nim')modelInput.setAttribute('list','nvidia-model-options');else modelInput.removeAttribute('list')}
+ if(baseInput)baseInput.readOnly=route==='nvidia_nim';
  document.querySelectorAll('[data-agent-route]').forEach(btn=>{
   const active=btn.dataset.agentRoute===route;
   btn.classList.toggle('active',active);
@@ -2250,6 +2288,7 @@ function selectAgentModelRoute(kind){
  const copy={
   openai_api:{title:lang==='es'?'OpenAI API':'OpenAI API',help:lang==='es'?'Pega tu clave API de OpenAI. El agente la usará como cerebro sin perder memoria, herramientas ni aprobaciones.':'Paste your OpenAI API key. The agent will use it as its brain while keeping memory, tools, and approvals.'},
   minimax_m3:{title:'MiniMax M3',help:lang==='es'?'Pega tu clave de MiniMax. Ya dejé URL y modelo listos para M3. El agente seguirá usando su memoria y herramientas.':'Paste your MiniMax key. URL and model are already set for M3. The agent still keeps memory and tools.'},
+  nvidia_nim:{title:'NVIDIA NIM',help:lang==='es'?'Pega tu API key de NVIDIA y carga los modelos disponibles ahora. El endpoint alojado puede aplicar cuotas o límites temporales.':'Paste your NVIDIA API key and load the models currently available. The hosted endpoint may apply quotas or temporary limits.'},
   custom_api:{title:lang==='es'?'Otra API compatible':'Other compatible API',help:lang==='es'?'Pega la URL, el nombre del modelo y la clave del proveedor. El agente la usará como cerebro.':'Paste the provider URL, model name, and key. The agent will use it as its brain.'}
  };
  if(copy[route]){

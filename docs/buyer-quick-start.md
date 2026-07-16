@@ -77,6 +77,7 @@ Tambien puedes usar Graph API Explorer si quieres avanzar mas rapido o si todavi
 Durante el onboarding veras `Conectar el modelo del agente`. Tienes varias formas de darle cerebro al manager, pero la infraestructura del agente siempre es la misma: memoria, herramientas y aprobaciones.
 
 - `ChatGPT/Codex`: recomendado para usar una suscripcion de ChatGPT/Codex sin pegar una clave de OpenAI en el dashboard.
+- `NVIDIA NIM`: usa una API key de build.nvidia.com y carga automaticamente los modelos disponibles en esa cuenta mediante el catalogo oficial.
 - `MiniMax M3` u otra `API compatible OpenAI`: recomendado si prefieres pagar por tokens de un proveedor externo.
 
 Para la ruta recomendada, toca `Conectar ahora`. El dashboard intentara abrir la terminal y guiar el login de ChatGPT/Codex. Si esta instalado en DigitalOcean o Docker y no puede abrir una terminal visual, veras un plan B claro para hacerlo en el servidor.
@@ -87,6 +88,8 @@ Para MiniMax M3, el preset usa:
 URL: https://api.minimax.io/v1
 Modelo: MiniMax-M3
 ```
+
+Para NVIDIA NIM, el endpoint queda fijo en `https://integrate.api.nvidia.com/v1`. Toca `Cargar modelos de NVIDIA` despues de pegar la clave para consultar el catalogo vivo; la clave no se guarda dentro del cache del catalogo. El acceso alojado gratuito o promocional depende de las cuotas vigentes de NVIDIA y puede devolver limites 429.
 
 Si tu proveedor usa otro nombre de modelo, cambia ese campo por el nombre exacto que te muestre su panel. La clave API queda guardada localmente en esta instalacion y no se muestra de vuelta en el dashboard.
 

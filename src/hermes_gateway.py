@@ -26,6 +26,10 @@ from hermes_bridge import (
     ADMIRA_MINIMAX_KEY_ENV,
     ADMIRA_MINIMAX_PROVIDER,
     ADMIRA_MINIMAX_PROVIDER_NAME,
+    ADMIRA_NVIDIA_DEFAULT_BASE_URL,
+    ADMIRA_NVIDIA_KEY_ENV,
+    ADMIRA_NVIDIA_PROVIDER,
+    ADMIRA_NVIDIA_PROVIDER_NAME,
     admira_minimax_credentials,
     enforce_official_skill_catalog,
     hermes_brain_settings,
@@ -206,6 +210,8 @@ def dashboard_recovery_link(config):
 def _telegram_model_provider_for_brain(brain):
     if (brain or {}).get("brain") == "minimax":
         return ADMIRA_MINIMAX_PROVIDER
+    if (brain or {}).get("brain") == "nvidia_nim":
+        return ADMIRA_NVIDIA_PROVIDER
     return str((brain or {}).get("provider") or "openai-codex").strip() or "openai-codex"
 
 
@@ -215,6 +221,8 @@ def _telegram_model_label(provider, model):
     model_name = str(model or "").strip()
     if provider_key in {"admira-minimax", "minimax"}:
         return f"MiniMax M3 · {model_name or 'MiniMax-M3'}"
+    if provider_key in {"admira-nvidia", "nvidia", "nvidia-nim"}:
+        return f"NVIDIA NIM · {model_name or 'z-ai/glm-5.2'}"
     if provider_key in {"openai-codex", "openai_codex", "codex"}:
         return f"ChatGPT/Codex · {model_name or 'gpt-5.4-mini'}"
     if provider_key in {"custom", "openai", "openai-api"}:
@@ -332,6 +340,36 @@ def _gateway_model_config_lines(brain):
             f"    model: {_quote_yaml(model_default)}",
             f"    provider: {_quote_yaml(provider_slug)}",
             f"    base_url: {_quote_yaml(base_url or 'https://api.minimax.io/v1')}",
+        ]
+    elif brain.get("brain") == "nvidia_nim":
+        provider_slug = ADMIRA_NVIDIA_PROVIDER
+        official_base_url = base_url or ADMIRA_NVIDIA_DEFAULT_BASE_URL
+        lines = [
+            "model:",
+            f"  provider: {_quote_yaml(provider_slug)}",
+            f"  default: {_quote_yaml(model_default)}",
+            "providers:",
+            f"  {provider_slug}:",
+            f"    name: {_quote_yaml(ADMIRA_NVIDIA_PROVIDER_NAME)}",
+            f"    base_url: {_quote_yaml(official_base_url)}",
+            f"    key_env: {_quote_yaml(ADMIRA_NVIDIA_KEY_ENV)}",
+            "    api_mode: \"chat_completions\"",
+            f"    model: {_quote_yaml(model_default)}",
+            "    models:",
+            f"      {_quote_yaml(model_default)}: {{}}",
+            "model_aliases:",
+            f"  {_quote_yaml(model_default)}:",
+            f"    model: {_quote_yaml(model_default)}",
+            f"    provider: {_quote_yaml(provider_slug)}",
+            f"    base_url: {_quote_yaml(official_base_url)}",
+            "  \"nvidia\":",
+            f"    model: {_quote_yaml(model_default)}",
+            f"    provider: {_quote_yaml(provider_slug)}",
+            f"    base_url: {_quote_yaml(official_base_url)}",
+            "  \"nvidia nim\":",
+            f"    model: {_quote_yaml(model_default)}",
+            f"    provider: {_quote_yaml(provider_slug)}",
+            f"    base_url: {_quote_yaml(official_base_url)}",
         ]
     return lines
 

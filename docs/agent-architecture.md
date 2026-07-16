@@ -14,7 +14,7 @@ The agent now uses Hermes as the main reasoning/runtime layer. The product still
 1. The dashboard sends the user's chat message plus current account context to `/api/chat`.
 2. `src/agent_runtime.py` loads the profile files and builds one combined system prompt.
 3. `src/agent_chat.py` sends the profile and account context through `src/hermes_bridge.py`.
-4. Hermes runs the conversation using the buyer's configured brain model. The buyer-facing default is `OpenAI Codex` through Hermes, which uses the buyer's ChatGPT/Codex OAuth session. Advanced installs can set `AGENT_BRAIN_PROVIDER=minimax`, `openai_api`, or `custom_api` to use MiniMax M3, OpenAI API, OpenRouter, Groq, Together, LM Studio, or another OpenAI-compatible `/chat/completions` URL inside Hermes.
+4. Hermes runs the conversation using the buyer's configured brain model. The buyer-facing default is `OpenAI Codex` through Hermes, which uses the buyer's ChatGPT/Codex OAuth session. Advanced installs can set `AGENT_BRAIN_PROVIDER=nvidia_nim`, `minimax`, `openai_api`, or `custom_api` to use NVIDIA NIM API Catalog, MiniMax M3, OpenAI API, OpenRouter, Groq, Together, LM Studio, or another OpenAI-compatible `/chat/completions` URL inside Hermes.
 5. In dashboard chat, if Hermes returns a tool request, the dashboard executes it through `execute_agent_tool()` and the normal approval queue.
 6. In Telegram, Hermes Gateway talks directly to the buyer and calls product tools through the local `admira` MCP server. Hermes still cannot bypass backend approvals, license checks, live-action rules, or logs.
 7. The backend returns the final manager reply to the chat bubble when the dashboard channel is used.
@@ -130,6 +130,18 @@ The buyer sees the Hermes output inside the dashboard, opens any ChatGPT login l
 ### API Brain Inside Hermes
 
 For buyers who prefer token-based providers, the setup card can save:
+
+```text
+AGENT_CHAT_PROVIDER=hermes
+AGENT_BRAIN_PROVIDER=nvidia_nim
+AGENT_CHAT_BASE_URL=https://integrate.api.nvidia.com/v1
+AGENT_CHAT_MODEL=z-ai/glm-5.2
+AGENT_CHAT_API_KEY=...
+```
+
+The NVIDIA preset discovers the buyer's current `/v1/models` catalog and registers a named `admira-nvidia` provider in Hermes. The API key is passed only through the live process environment and is never written into Hermes YAML or the model-catalog cache. NVIDIA hosted access remains subject to provider quotas.
+
+For MiniMax:
 
 ```text
 AGENT_CHAT_PROVIDER=hermes

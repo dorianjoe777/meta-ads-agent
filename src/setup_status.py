@@ -80,7 +80,7 @@ def meta_token_renewal_item(config):
 def direct_model_ready(config):
     brain = hermes_brain_settings(config)
     return (
-        brain.get("brain") in {"minimax", "openai_api", "custom_api"}
+        brain.get("brain") in {"minimax", "nvidia_nim", "openai_api", "custom_api"}
         and configured(brain.get("model"))
         and configured(brain.get("api_key"))
         and (brain.get("provider") != "custom" or configured(brain.get("base_url")))
@@ -208,10 +208,10 @@ def agent_chat_section(config, agent_profile, brain_status=None):
     hermes_runtime_status = "ok" if (hermes_cli or hermes_library) else "blocked"
     hermes_auth_status = "ok" if hermes_auth["ready"] else "blocked"
     hermes_runtime_detail = hermes_cli or ("Agent base installed" if hermes_library else "Agent base not installed")
-    api_brain_selected = brain.get("brain") in {"minimax", "openai_api", "custom_api"}
+    api_brain_selected = brain.get("brain") in {"minimax", "nvidia_nim", "openai_api", "custom_api"}
     direct_detail = "configured inside the agent" if direct_ready else "Missing AGENT_CHAT_API_KEY, AGENT_CHAT_BASE_URL, or AGENT_CHAT_MODEL"
     if not api_brain_selected:
-        direct_detail = "Opcional: solo si eliges MiniMax M3, OpenAI API u otra API compatible como cerebro del agente."
+        direct_detail = "Opcional: solo si eliges NVIDIA NIM, MiniMax M3, OpenAI API u otra API compatible como cerebro del agente."
     entries = [
         item("chat_provider", "Agent base", "ok" if config.agent_chat_provider == "hermes" else "blocked", "fixed", "The agent base is fixed; you only choose the brain/model."),
         item("hermes_runtime", "Agent base installed", hermes_runtime_status, hermes_runtime_detail, "Use the dashboard ChatGPT/Codex connection step."),

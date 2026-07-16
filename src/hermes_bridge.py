@@ -56,6 +56,12 @@ ADMIRA_MINIMAX_KEY_ENV = "ADMIRA_MINIMAX_API_KEY"
 ADMIRA_MINIMAX_BASE_URL_ENV = "ADMIRA_MINIMAX_BASE_URL"
 ADMIRA_MINIMAX_PROVIDER = "admira-minimax"
 ADMIRA_MINIMAX_PROVIDER_NAME = "MiniMax M3 oficial"
+ADMIRA_NVIDIA_KEY_ENV = "ADMIRA_NVIDIA_API_KEY"
+ADMIRA_NVIDIA_BASE_URL_ENV = "ADMIRA_NVIDIA_BASE_URL"
+ADMIRA_NVIDIA_PROVIDER = "admira-nvidia"
+ADMIRA_NVIDIA_PROVIDER_NAME = "NVIDIA NIM API"
+ADMIRA_NVIDIA_DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
+ADMIRA_NVIDIA_DEFAULT_MODEL = "z-ai/glm-5.2"
 BASE_ALLOWED_IMAGE_DIRS = (
     ROOT_DIR / "output",
     ROOT_DIR / "dashboard" / "data" / "uploads",
@@ -235,12 +241,44 @@ def _hermes_model_config_lines(brain):
             f"    provider: {_quote_yaml(provider_slug)}",
             f"    base_url: {_quote_yaml(official_base_url)}",
         ]
+    elif brain.get("brain") == "nvidia_nim":
+        provider_slug = ADMIRA_NVIDIA_PROVIDER
+        official_base_url = base_url or ADMIRA_NVIDIA_DEFAULT_BASE_URL
+        lines = [
+            "model:",
+            f"  provider: {_quote_yaml(provider_slug)}",
+            f"  default: {_quote_yaml(model_default)}",
+            "providers:",
+            f"  {provider_slug}:",
+            f"    name: {_quote_yaml(ADMIRA_NVIDIA_PROVIDER_NAME)}",
+            f"    base_url: {_quote_yaml(official_base_url)}",
+            f"    key_env: {_quote_yaml(ADMIRA_NVIDIA_KEY_ENV)}",
+            "    api_mode: \"chat_completions\"",
+            f"    model: {_quote_yaml(model_default)}",
+            "    models:",
+            f"      {_quote_yaml(model_default)}: {{}}",
+            "model_aliases:",
+            f"  {_quote_yaml(model_default)}:",
+            f"    model: {_quote_yaml(model_default)}",
+            f"    provider: {_quote_yaml(provider_slug)}",
+            f"    base_url: {_quote_yaml(official_base_url)}",
+            "  \"nvidia\":",
+            f"    model: {_quote_yaml(model_default)}",
+            f"    provider: {_quote_yaml(provider_slug)}",
+            f"    base_url: {_quote_yaml(official_base_url)}",
+            "  \"nvidia nim\":",
+            f"    model: {_quote_yaml(model_default)}",
+            f"    provider: {_quote_yaml(provider_slug)}",
+            f"    base_url: {_quote_yaml(official_base_url)}",
+        ]
     return lines
 
 
 def hermes_cli_provider(brain):
     if brain.get("brain") == "minimax":
         return ADMIRA_MINIMAX_PROVIDER
+    if brain.get("brain") == "nvidia_nim":
+        return ADMIRA_NVIDIA_PROVIDER
     return brain.get("provider") or ""
 
 
@@ -270,6 +308,9 @@ def _cli_hermes_config_needs_write(config_text, brain):
     if brain.get("brain") == "minimax":
         lowered = config_text.lower()
         return "admira-minimax" not in config_text or "providers:" not in config_text or "api.minimax.io/v1" not in config_text or "openrouter" in lowered or "custom:admira-minimax" in config_text
+    if brain.get("brain") == "nvidia_nim":
+        lowered = config_text.lower()
+        return "admira-nvidia" not in lowered or "integrate.api.nvidia.com/v1" not in lowered or "providers:" not in lowered
     return False
 
 
@@ -1428,6 +1469,11 @@ def hermes_environment(config):
             env[ADMIRA_MINIMAX_BASE_URL_ENV] = minimax_settings["base_url"]
         env["ADMIRA_MINIMAX_PROVIDER"] = ADMIRA_MINIMAX_PROVIDER
         env["ADMIRA_MINIMAX_MODEL"] = minimax_settings.get("model") or "MiniMax-M3"
+    if settings.get("brain") == "nvidia_nim" and settings.get("api_key"):
+        env[ADMIRA_NVIDIA_KEY_ENV] = settings["api_key"]
+        env[ADMIRA_NVIDIA_BASE_URL_ENV] = settings.get("base_url") or ADMIRA_NVIDIA_DEFAULT_BASE_URL
+        env["ADMIRA_NVIDIA_PROVIDER"] = ADMIRA_NVIDIA_PROVIDER
+        env["ADMIRA_NVIDIA_MODEL"] = settings.get("model") or ADMIRA_NVIDIA_DEFAULT_MODEL
     if settings.get("provider") == "custom" and settings.get("api_key"):
         env["OPENAI_API_KEY"] = settings["api_key"]
         if settings.get("base_url"):
@@ -1501,6 +1547,15 @@ def hermes_brain_settings(config):
             "provider": "minimax",
             "model": str(getattr(config, "agent_chat_model", "") or "MiniMax-M3").strip(),
             "base_url": str(getattr(config, "agent_chat_base_url", "") or "https://api.minimax.io/v1").strip().rstrip("/"),
+            "api_key": str(getattr(config, "agent_chat_api_key", "") or "").strip(),
+            "requires_codex_auth": False,
+        }
+    if brain in {"nvidia", "nvidia_api", "nvidia_nim"}:
+        return {
+            "brain": "nvidia_nim",
+            "provider": "nvidia_nim",
+            "model": str(getattr(config, "agent_chat_model", "") or ADMIRA_NVIDIA_DEFAULT_MODEL).strip(),
+            "base_url": str(getattr(config, "agent_chat_base_url", "") or ADMIRA_NVIDIA_DEFAULT_BASE_URL).strip().rstrip("/"),
             "api_key": str(getattr(config, "agent_chat_api_key", "") or "").strip(),
             "requires_codex_auth": False,
         }

@@ -850,6 +850,72 @@ class IntegrationTestSuite:
         finally:
             agent_chat.hermes_chat = original_hermes_chat
 
+    def test_nvidia_nim_agent_provider_and_live_catalog(self):
+        """Test NVIDIA NIM is named in Hermes and discovers models without persisting its key."""
+        print("\nTesting NVIDIA NIM Agent Provider...")
+
+        class FakeConfig:
+            agent_chat_provider = "hermes"
+            agent_brain_provider = "nvidia_nim"
+            agent_chat_base_url = "https://integrate.api.nvidia.com/v1"
+            agent_chat_api_key = "nvapi-test-secret"
+            agent_chat_model = "z-ai/glm-5.2"
+            agent_chat_temperature = 0.42
+            agent_profile_dir = "agent"
+            hermes_model = "gpt-5.4-mini"
+            hermes_home = ""
+            daily_brief_timezone = "UTC"
+
+        settings = hermes_bridge.hermes_brain_settings(FakeConfig())
+        env = hermes_bridge.hermes_environment(FakeConfig())
+        cli_yaml = "\n".join(hermes_bridge._hermes_model_config_lines(settings))
+        gateway_yaml = "\n".join(hermes_gateway._gateway_model_config_lines(settings))
+        self.assert_true(settings["brain"] == "nvidia_nim" and settings["model"] == "z-ai/glm-5.2", "NVIDIA is preserved as an explicit agent brain")
+        self.assert_true(env.get("ADMIRA_NVIDIA_API_KEY") == "nvapi-test-secret" and "OPENAI_API_KEY" not in env, "NVIDIA key stays in its provider-specific process variable")
+        self.assert_true("admira-nvidia" in cli_yaml and "integrate.api.nvidia.com/v1" in cli_yaml and "nvapi-test-secret" not in cli_yaml, "Dashboard Hermes config registers named NVIDIA without persisting its key")
+        self.assert_true("admira-nvidia" in gateway_yaml and "ADMIRA_NVIDIA_API_KEY" in gateway_yaml, "Telegram Hermes config uses the same named NVIDIA provider")
+        previous_gateway_provider = os.environ.get("ADMIRA_GATEWAY_PROVIDER")
+        try:
+            os.environ["ADMIRA_GATEWAY_PROVIDER"] = "admira-nvidia"
+            limited = admira_hermes_runtime_patch.provider_error_reply("HTTP 429 rate limit exceeded", "es", str)
+            self.assert_true("NVIDIA NIM" in limited and "ChatGPT/Codex" not in limited, "NVIDIA 429 errors produce provider-correct buyer guidance")
+        finally:
+            if previous_gateway_provider is None:
+                os.environ.pop("ADMIRA_GATEWAY_PROVIDER", None)
+            else:
+                os.environ["ADMIRA_GATEWAY_PROVIDER"] = previous_gateway_provider
+
+        dashboard = load_dashboard_module()
+        original_urlopen = dashboard.urllib.request.urlopen
+        original_catalog_file = dashboard.NVIDIA_MODEL_CATALOG_FILE
+        temp_dir = Path(tempfile.mkdtemp(prefix="admira-nvidia-catalog-"))
+
+        class FakeResponse:
+            status = 200
+            def __enter__(self):
+                return self
+            def __exit__(self, *_args):
+                return False
+            def read(self):
+                return json.dumps({"data": [
+                    {"id": "z-ai/glm-5.2"},
+                    {"id": "openai/gpt-oss-20b"},
+                    {"id": "baai/bge-m3"},
+                ]}).encode("utf-8")
+
+        try:
+            dashboard.NVIDIA_MODEL_CATALOG_FILE = temp_dir / "catalog.json"
+            dashboard.urllib.request.urlopen = lambda request, timeout=30: FakeResponse()
+            catalog = dashboard.nvidia_model_catalog(api_key="nvapi-test-secret", config=FakeConfig(), force_refresh=True)
+            cached_text = dashboard.NVIDIA_MODEL_CATALOG_FILE.read_text(encoding="utf-8")
+            self.assert_true(catalog["account_verified"] is True and catalog["recommended"] == "z-ai/glm-5.2", "Live NVIDIA catalog chooses a supported recommended chat model")
+            self.assert_true("openai/gpt-oss-20b" in catalog["models"] and "baai/bge-m3" not in catalog["models"], "Catalog filters obvious non-chat endpoints from the brain picker")
+            self.assert_true("nvapi-test-secret" not in cached_text, "NVIDIA catalog cache never stores the API key")
+        finally:
+            dashboard.urllib.request.urlopen = original_urlopen
+            dashboard.NVIDIA_MODEL_CATALOG_FILE = original_catalog_file
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_agent_setup_status_accepts_direct_model_provider(self):
         """Test setup status treats MiniMax/OpenAI-compatible mode as a valid agent brain."""
         print("\nTesting Direct Agent Model Setup Status...")
@@ -9519,8 +9585,9 @@ class IntegrationTestSuite:
         self.assert_true('id="local-network-panel"' in html and "Ver desde mi teléfono" in html and "/api/local-network-access" in html, "Setup includes same-Wi-Fi phone access as an explicit opt-in")
         self.assert_true("/api/local-network-access" in dashboard.DashboardHandler.PROTECTED_POST_PATHS and "/api/local-network-access" in dashboard.DashboardHandler.POST_JSON_ROUTES, "Phone LAN access changes require dashboard password and have a handler")
         self.assert_true("Conecta el cerebro del agente" in html and "MiniMax M3" in html and "Guardar modelo del agente" in html, "Agent model setup supports MiniMax M3 as a Hermes brain")
-        self.assert_true("OpenAI API" in html and "ChatGPT suscripción" in html and "Otra API compatible" in html and "OAuth" in html, "Onboarding shows four simple model choices immediately")
-        self.assert_true("routeButton('openai_api')" in html and "routeButton('chatgpt_subscription')" in html and "routeButton('minimax_m3')" in html and "routeButton('custom_api')" in html and "selectAgentModelRoute('${kind}')" in html, "Agent model setup uses four collapsible route buttons")
+        self.assert_true("NVIDIA NIM" in html and "OpenAI API" in html and "ChatGPT suscripción" in html and "Otra API compatible" in html and "OAuth" in html, "Onboarding shows five simple model choices immediately")
+        self.assert_true("routeButton('nvidia_nim')" in html and "routeButton('openai_api')" in html and "routeButton('chatgpt_subscription')" in html and "routeButton('minimax_m3')" in html and "routeButton('custom_api')" in html and "selectAgentModelRoute('${kind}')" in html, "Agent model setup uses five collapsible route buttons")
+        self.assert_true("refreshNvidiaModelCatalog" in html and "/api/agent-model/nvidia-catalog" in html and "https://integrate.api.nvidia.com/v1" in html and "build.nvidia.com" in html, "NVIDIA setup discovers the buyer's live model catalog through the official fixed endpoint")
         self.assert_true("telegram_runtime_model" in dashboard_source and "Telegram ahora usa" in html and "En uso en Telegram" in html, "Agent model panel shows the live Telegram /model runtime state separately from the saved primary model")
         self.assert_true("connectChatGpt(event)" in html and "saveChatGptModel(event)" in html and "/api/agent-model/connect" in html and "Ya lo hice, conectar a ChatGPT ahora" in html, "ChatGPT/Codex connection saves model choice before connecting and uses a buyer-friendly CTA")
         self.assert_true("chatgptConnected=Boolean(model.chatgpt_connected)" in html and "runtime.status==='ok'&&String(model.chatgpt_session_detail" not in html, "ChatGPT/Codex card trusts the backend connection boolean instead of treating diagnostic text as a live account")
@@ -11169,6 +11236,7 @@ class IntegrationTestSuite:
             self.test_website_scanner_blocks_private_urls,
             self.test_skill_response_parsing,
             self.test_openai_compatible_agent_provider,
+            self.test_nvidia_nim_agent_provider_and_live_catalog,
             self.test_agent_setup_status_accepts_direct_model_provider,
             self.test_hermes_provider_parses_tool_request,
             self.test_hermes_empty_library_reply_falls_back_to_cli,

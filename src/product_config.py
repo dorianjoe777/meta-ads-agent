@@ -145,6 +145,9 @@ def normalize_chat_provider(value):
         "custom_api": "openai_compatible",
         "minimax": "minimax",
         "minimax_m3": "minimax",
+        "nvidia": "nvidia_nim",
+        "nvidia_nim": "nvidia_nim",
+        "nvidia_api": "nvidia_nim",
     }
     return aliases.get(raw, "hermes")
 

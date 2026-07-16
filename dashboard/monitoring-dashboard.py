@@ -269,6 +269,7 @@ TELEGRAM_STOP = None
 TELEGRAM_FINGERPRINT = None
 HERMES_LOGIN_OUTPUT_LIMIT = 12000
 CODEX_MODEL_CATALOG_FILE = DATA_DIR / "codex_model_catalog.json"
+NVIDIA_MODEL_CATALOG_FILE = DATA_DIR / "nvidia_model_catalog.json"
 AGENT_RUNTIME_STATUS_FILE = DATA_DIR / "agent_runtime_status.json"
 CODEX_MODEL_CATALOG_TTL_SECONDS = 6 * 60 * 60
 AGENT_RUNTIME_STATUS_TTL_SECONDS = 60
@@ -3954,6 +3955,9 @@ def normalize_agent_chat_provider(value):
         "custom_api": "custom_api",
         "minimax": "minimax",
         "minimax_m3": "minimax",
+        "nvidia": "nvidia_nim",
+        "nvidia_api": "nvidia_nim",
+        "nvidia_nim": "nvidia_nim",
     }
     return aliases.get(raw, "")
 
@@ -4209,6 +4213,124 @@ def cached_codex_model_catalog(config=None):
         "checked_at": str((cached or {}).get("checked_at") or ""),
         "stale": True,
     }
+
+
+NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
+NVIDIA_NIM_DEFAULT_MODEL = "z-ai/glm-5.2"
+NVIDIA_NIM_MODEL_PREFERENCE = (
+    "z-ai/glm-5.2",
+    "openai/gpt-oss-20b",
+    "nvidia/nemotron-3-nano-30b-a3b",
+    "minimaxai/minimax-m2.7",
+    "deepseek-ai/deepseek-v4-flash",
+)
+NVIDIA_NIM_NON_CHAT_MARKERS = (
+    "embed", "rerank", "retriev", "diffusion", "grounding", "segmentation",
+    "detection", "nemoguard", "safety", "gliner", "parse", "ocr", "deplot",
+    "whisper", "speech", "audio", "tts", "translate", "molmim", "protein",
+    "sparsedrive", "streampetr", "nvclip", "/bge-",
+)
+
+
+def _clean_nvidia_model_ids(values):
+    cleaned = []
+    for value in values or []:
+        model = str(value or "").strip()
+        lowered = model.lower()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{1,160}", model):
+            continue
+        if any(marker in lowered for marker in NVIDIA_NIM_NON_CHAT_MARKERS):
+            continue
+        if model not in cleaned:
+            cleaned.append(model)
+        if len(cleaned) >= 160:
+            break
+    return sorted(cleaned, key=lambda item: item.lower())
+
+
+def preferred_nvidia_model(models):
+    cleaned = _clean_nvidia_model_ids(models)
+    by_key = {item.lower(): item for item in cleaned}
+    for preferred in NVIDIA_NIM_MODEL_PREFERENCE:
+        if preferred in by_key:
+            return by_key[preferred]
+    return cleaned[0] if cleaned else NVIDIA_NIM_DEFAULT_MODEL
+
+
+def cached_nvidia_model_catalog():
+    cached = read_json(NVIDIA_MODEL_CATALOG_FILE, {})
+    models = _clean_nvidia_model_ids((cached or {}).get("models") if isinstance(cached, dict) else [])
+    if not models:
+        models = [NVIDIA_NIM_DEFAULT_MODEL]
+    return {
+        **(cached if isinstance(cached, dict) else {}),
+        "models": models,
+        "recommended": preferred_nvidia_model(models),
+        "source": str((cached or {}).get("source") or "safe_fallback"),
+        "checked_at": str((cached or {}).get("checked_at") or ""),
+        "account_verified": bool((cached or {}).get("account_verified")),
+        "stale": True,
+    }
+
+
+def nvidia_model_catalog(api_key="", config=None, force_refresh=False):
+    """Read the buyer's current NVIDIA API Catalog without persisting its key."""
+    config = config or load_config()
+    cached = cached_nvidia_model_catalog()
+    key = str(api_key or "").strip()
+    brain = str(getattr(config, "agent_brain_provider", "") or "").strip().lower().replace("-", "_")
+    base_url = str(getattr(config, "agent_chat_base_url", "") or "").strip().lower()
+    if not key and (brain == "nvidia_nim" or "api.nvidia.com" in base_url):
+        key = str(getattr(config, "agent_chat_api_key", "") or "").strip()
+    if not key:
+        return cached
+    if not force_refresh and cached.get("account_verified"):
+        checked_epoch = float(cached.get("checked_epoch") or 0)
+        if time.time() - checked_epoch < CODEX_MODEL_CATALOG_TTL_SECONDS:
+            return {**cached, "stale": False}
+    request = urllib.request.Request(
+        f"{NVIDIA_NIM_BASE_URL}/models",
+        headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code in {401, 403}:
+            raise ValueError("La clave de NVIDIA no fue aceptada. Crea o copia una API key desde build.nvidia.com.") from None
+        if exc.code == 429:
+            raise ValueError("NVIDIA alcanzó temporalmente su cuota. Conservé la última lista válida; intenta actualizar más tarde.") from None
+        raise ValueError(f"NVIDIA no pudo entregar el catálogo ahora (HTTP {exc.code}).") from None
+    except (OSError, TimeoutError, json.JSONDecodeError):
+        raise ValueError("No pude consultar NVIDIA ahora. Conservé la última lista válida.") from None
+    entries = data.get("data") if isinstance(data, dict) else []
+    models = _clean_nvidia_model_ids(item.get("id") for item in (entries or []) if isinstance(item, dict))
+    if not models:
+        raise ValueError("NVIDIA respondió, pero no devolvió modelos de conversación utilizables.")
+    payload = {
+        "models": models,
+        "recommended": preferred_nvidia_model(models),
+        "source": "nvidia_live_catalog",
+        "account_verified": True,
+        "checked_at": now_iso(),
+        "checked_epoch": time.time(),
+        "stale": False,
+    }
+    write_private_json(NVIDIA_MODEL_CATALOG_FILE, payload)
+    return payload
+
+
+def refresh_nvidia_model_catalog(payload=None):
+    payload = payload or {}
+    catalog = nvidia_model_catalog(
+        api_key=payload.get("agent_chat_api_key"),
+        config=load_config(),
+        force_refresh=True,
+    )
+    if not catalog.get("account_verified"):
+        raise ValueError("Pega primero tu API key de NVIDIA para cargar los modelos disponibles.")
+    return catalog
 
 
 def empty_codex_session_status():
@@ -5571,13 +5693,18 @@ def save_setup_config(payload):
         env_updates["AGENT_CHAT_PROVIDER"] = "hermes"
         env_updates["AGENT_BRAIN_PROVIDER"] = provider
         env_updates["HERMES_REQUIRE_CODEX_AUTH"] = "true" if provider == "openai_codex" else "false"
+        if provider == "nvidia_nim":
+            env_updates["AGENT_CHAT_BASE_URL"] = NVIDIA_NIM_BASE_URL
+            env_updates["AGENT_CHAT_API"] = "openai-chat-completions"
     if "agent_chat_base_url" in payload:
         base_url = validate_agent_chat_base_url(payload.get("agent_chat_base_url"))
-        if base_url:
+        if base_url and provider != "nvidia_nim":
             env_updates["AGENT_CHAT_BASE_URL"] = base_url
     if "agent_chat_model" in payload:
         model = str(payload.get("agent_chat_model") or "").strip()
         if model:
+            if provider == "nvidia_nim" and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{1,160}", model):
+                raise ValueError("El nombre del modelo NVIDIA no es válido.")
             env_updates["AGENT_CHAT_MODEL"] = model
     if "agent_chat_api" in payload:
         api = str(payload.get("agent_chat_api") or "").strip().lower()
@@ -11807,6 +11934,7 @@ def dashboard_payload():
     image_model = getattr(config, "codex_image_hermes_model", config.hermes_model) if codex_image_source == "dedicated_chatgpt" else config.hermes_model
     runtime_model_state = telegram_runtime_model_state(config)
     model_catalog = runtime_status.get("model_catalog") or cached_codex_model_catalog(config)
+    nvidia_catalog = cached_nvidia_model_catalog()
     dependency_versions = runtime_status.get("runtime_versions") or {}
     runtime_override = str(runtime_model_state.get("source") or "").strip() == "telegram_model_command"
     if model_catalog.get("account_verified") and not getattr(config, "hermes_model_user_selected", False) and not runtime_override:
@@ -11920,6 +12048,11 @@ def dashboard_payload():
                 "hermes_model_recommended": model_catalog.get("recommended", ""),
                 "hermes_model_catalog_source": model_catalog.get("source", ""),
                 "hermes_model_catalog_updated_at": model_catalog.get("checked_at", ""),
+                "nvidia_model_options": nvidia_catalog.get("models", []),
+                "nvidia_model_recommended": nvidia_catalog.get("recommended", NVIDIA_NIM_DEFAULT_MODEL),
+                "nvidia_model_catalog_source": nvidia_catalog.get("source", ""),
+                "nvidia_model_catalog_updated_at": nvidia_catalog.get("checked_at", ""),
+                "nvidia_model_catalog_account_verified": bool(nvidia_catalog.get("account_verified")),
                 "runtime_versions": dependency_versions,
                 "hermes_require_codex_auth": config.hermes_require_codex_auth,
                 "chatgpt_connected": bool(main_codex_session.get("authenticated", main_codex_session.get("ready"))),
@@ -12187,9 +12320,9 @@ HTML = r"""<!DOCTYPE html>
 class DashboardHandler(BaseHTTPRequestHandler):
     HTML_PATHS = {"/", "/dashboard"}
     PROTECTED_GET_PATHS = {"/api/dashboard", "/api/export", "/api/report", "/api/setup", "/api/social/auth-status", "/api/social/accounts", "/api/update/snapshots", "/api/creative-asset", "/api/brand-asset"}
-    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/publishing/config", "/api/publishing/test", "/api/agent-model/connect", "/api/agent-model/disconnect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/agent-model/catalog", "/api/agent-model/runtime", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/logo", "/api/brand-guides/product", "/api/product-catalog/import", "/api/product-catalog/search", "/api/ad-briefs", "/api/codex/creative-plan", "/api/codex/image-generate", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/optimization/settings", "/api/optimization/unlock", "/api/shopify/config", "/api/shopify/test", "/api/shopify/sync", "/api/daily-brief/schedule", "/api/daily-social-content/settings", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/communication-style", "/api/onboarding/complete", "/api/onboarding/skip", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/local-network-access", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
+    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/publishing/config", "/api/publishing/test", "/api/agent-model/connect", "/api/agent-model/disconnect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/agent-model/catalog", "/api/agent-model/nvidia-catalog", "/api/agent-model/runtime", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/logo", "/api/brand-guides/product", "/api/product-catalog/import", "/api/product-catalog/search", "/api/ad-briefs", "/api/codex/creative-plan", "/api/codex/image-generate", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/optimization/settings", "/api/optimization/unlock", "/api/shopify/config", "/api/shopify/test", "/api/shopify/sync", "/api/daily-brief/schedule", "/api/daily-social-content/settings", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/communication-style", "/api/onboarding/complete", "/api/onboarding/skip", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/local-network-access", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
     ONBOARDING_OPEN_GETS = {"/api/dashboard", "/api/setup"}
-    ONBOARDING_OPEN_POSTS = {"/api/dashboard-password", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/license/activate", "/api/agent-model/connect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/agent-model/runtime", "/api/onboarding/communication-style", "/api/onboarding/complete"}
+    ONBOARDING_OPEN_POSTS = {"/api/dashboard-password", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/license/activate", "/api/agent-model/connect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/agent-model/nvidia-catalog", "/api/agent-model/runtime", "/api/onboarding/communication-style", "/api/onboarding/complete"}
     GET_JSON_ROUTES = {
         "/api/dashboard": dashboard_payload,
         "/api/export": export_csv,
@@ -12213,6 +12346,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         "/api/agent-model/connect-status": agent_model_connect_status,
         "/api/agent-model/connect-input": agent_model_connect_input,
         "/api/agent-model/catalog": refresh_agent_model_catalog,
+        "/api/agent-model/nvidia-catalog": refresh_nvidia_model_catalog,
         "/api/agent-model/runtime": refresh_agent_runtime_status,
         "/api/targeting/search": meta_targeting_search,
         "/api/audience-strategy": lambda payload: create_audience_strategy(payload, payload.get("language", "es")),
