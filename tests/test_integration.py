@@ -1275,6 +1275,16 @@ class IntegrationTestSuite:
         long_spanish = admira_hermes_runtime_patch.provider_error_reply(raw_long_reset, "es", lambda text: "ORIGINAL")
         self.assert_true("2 días y 8 horas" in long_spanish, "Long provider reset windows are formatted as days plus hours")
 
+        raw_go_reset = (
+            "HTTP 429: {'error': {'type': 'usage_limit_reached', 'plan_type': 'go', "
+            "'resets_in_seconds': 2507380}}"
+        )
+        go_spanish = admira_hermes_runtime_patch.provider_error_reply(raw_go_reset, "es", lambda text: "ORIGINAL")
+        go_bridge = hermes_bridge.model_usage_limit_reply("es", raw_go_reset)
+        self.assert_true("ChatGPT Go" in go_spanish and "MiniMax" in go_spanish, "Gateway identifies exhausted ChatGPT Go allowance and recommends a viable provider")
+        self.assert_true("Cambiar entre modelos" in go_spanish and "/model" not in go_spanish, "Go allowance message does not falsely suggest that switching ChatGPT models resets quota")
+        self.assert_true("ChatGPT Go" in go_bridge and "API oficial" in go_bridge, "Hermes bridge uses the same accurate ChatGPT Go guidance")
+
         unknown = admira_hermes_runtime_patch.provider_error_reply("The model provider is rate-limiting requests. Please wait a moment and try again.", "es", lambda text: "ORIGINAL")
         passthrough = admira_hermes_runtime_patch.provider_error_reply("Some unrelated provider failure", "es", lambda text: f"ORIGINAL:{text}")
         self.assert_true("un momento" in unknown and "rate-limiting" not in unknown.lower(), "Gateway keeps a Spanish fallback when only a vague wait hint exists")
@@ -1844,6 +1854,78 @@ class IntegrationTestSuite:
             dashboard.start_hermes_browserless_login = original_start
             dashboard.hermes_codex_ready = original_ready
             dashboard.log_action = original_log
+
+    def test_dashboard_codex_runtime_cache_matches_verified_connection(self):
+        """A verified login/disconnect is reflected immediately in the settings card."""
+        print("\nTesting Dashboard Codex Runtime Cache Synchronization...")
+
+        dashboard = load_dashboard_module()
+        original_file = dashboard.AGENT_RUNTIME_STATUS_FILE
+        original_source = dashboard.effective_codex_image_source
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                dashboard.AGENT_RUNTIME_STATUS_FILE = Path(temp_dir) / "agent_runtime_status.json"
+                dashboard.effective_codex_image_source = lambda _config: "main_chatgpt"
+                cfg = type("Cfg", (), {"hermes_status_timeout_seconds": 20})()
+
+                connected = dashboard.cache_codex_session_status(
+                    cfg,
+                    purpose="agent",
+                    authenticated=True,
+                    detail="Provider: OpenAI Codex; OpenAI Codex ✓ logged in",
+                )
+                cached = dashboard.cached_agent_runtime_status(cfg)
+                self.assert_true(connected["authenticated"] is True, "Verified login creates an authenticated cache record")
+                self.assert_true(cached["main_codex_session"]["authenticated"] is True and cached["image_codex_session"]["authenticated"] is True, "Main ChatGPT connection immediately powers both the agent and Image 2 cards")
+
+                dashboard.cache_codex_session_status(cfg, purpose="agent", authenticated=False)
+                disconnected = dashboard.cached_agent_runtime_status(cfg)
+                self.assert_true(disconnected["main_codex_session"]["authenticated"] is False and disconnected["image_codex_session"]["authenticated"] is False, "Disconnect immediately clears the connected state shown by the UI")
+        finally:
+            dashboard.AGENT_RUNTIME_STATUS_FILE = original_file
+            dashboard.effective_codex_image_source = original_source
+
+    def test_dashboard_codex_runtime_probe_allows_small_vps_startup_time(self):
+        """The async runtime card must not contradict login with a three-second timeout."""
+        print("\nTesting Dashboard Codex Runtime VPS Timeout...")
+
+        dashboard = load_dashboard_module()
+        original_file = dashboard.AGENT_RUNTIME_STATUS_FILE
+        original_load = dashboard.load_config
+        original_session = dashboard.hermes_codex_session_status
+        original_image = dashboard.hermes_codex_image_status
+        original_catalog = dashboard.codex_model_catalog
+        original_versions = dashboard.runtime_dependency_versions
+        original_source = dashboard.effective_codex_image_source
+        observed_timeouts = []
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                cfg = type("Cfg", (), {"hermes_status_timeout_seconds": 20})()
+                dashboard.AGENT_RUNTIME_STATUS_FILE = Path(temp_dir) / "agent_runtime_status.json"
+                dashboard.load_config = lambda: cfg
+                dashboard.effective_codex_image_source = lambda _config: "main_chatgpt"
+                dashboard.hermes_codex_session_status = lambda _config, timeout=None: observed_timeouts.append(timeout) or {
+                    "ready": True,
+                    "authenticated": True,
+                    "detail": "OpenAI Codex ✓ logged in",
+                    "identity": {},
+                }
+                dashboard.hermes_codex_image_status = lambda **_kwargs: {"ok": True}
+                dashboard.codex_model_catalog = lambda **_kwargs: {"models": ["gpt-5.4-mini"], "recommended": "gpt-5.4-mini"}
+                dashboard.runtime_dependency_versions = lambda config=None: {}
+
+                result = dashboard.refresh_agent_runtime_status({"force": True})
+                self.assert_true(result["main_codex_session"]["authenticated"] is True, "Runtime refresh keeps a verified ChatGPT/Codex session connected")
+                self.assert_true(observed_timeouts and min(observed_timeouts) >= 8, "Runtime refresh gives Hermes at least eight seconds instead of the broken three-second VPS probe")
+                self.assert_true(dashboard.runtime_codex_status_timeout(type("Cfg", (), {"hermes_status_timeout_seconds": 2})()) == 8, "Even an old low timeout is raised to the VPS-safe floor")
+        finally:
+            dashboard.AGENT_RUNTIME_STATUS_FILE = original_file
+            dashboard.load_config = original_load
+            dashboard.hermes_codex_session_status = original_session
+            dashboard.hermes_codex_image_status = original_image
+            dashboard.codex_model_catalog = original_catalog
+            dashboard.runtime_dependency_versions = original_versions
+            dashboard.effective_codex_image_source = original_source
 
     def test_dashboard_image_only_chatgpt_connect_preserves_text_brain(self):
         """Test a dedicated ChatGPT/Codex image login does not replace MiniMax/API as the text brain."""
@@ -6088,6 +6170,33 @@ class IntegrationTestSuite:
         self.assert_true(campaign["conversions"] == 5, "Purchase actions become conversions")
         self.assert_true(campaign["revenue"] == 750.0, "Purchase values become revenue")
         self.assert_true(round(enriched["roas"], 2) == 7.46, "ROAS is calculated from real spend/revenue")
+
+        duplicate_alias_row = meta_insights.normalize_insight_row(
+            {
+                "campaign_id": "123",
+                "campaign_name": "Hotmart Campaign",
+                "spend": "47.28",
+                "actions": [
+                    {"action_type": "initiate_checkout", "value": "13"},
+                    {"action_type": "offsite_conversion.fb_pixel_initiate_checkout", "value": "13"},
+                    {"action_type": "onsite_web_initiate_checkout", "value": "13"},
+                    {"action_type": "omni_initiated_checkout", "value": "13"},
+                    {"action_type": "purchase", "value": "1"},
+                    {"action_type": "offsite_conversion.fb_pixel_purchase", "value": "1"},
+                    {"action_type": "omni_purchase", "value": "1"},
+                ],
+                "action_values": [
+                    {"action_type": "purchase", "value": "41.89"},
+                    {"action_type": "offsite_conversion.fb_pixel_purchase", "value": "41.89"},
+                    {"action_type": "omni_purchase", "value": "41.89"},
+                ],
+            },
+            "campaign",
+        )
+        self.assert_true(duplicate_alias_row["funnel"]["initiate_checkout"] == 13, "Equivalent Meta checkout aliases are counted once")
+        self.assert_true(duplicate_alias_row["funnel"]["purchase"] == 1, "Equivalent Meta purchase aliases are counted once")
+        self.assert_true(duplicate_alias_row["conversions"] == 1, "Conversion totals deduplicate Meta reporting aliases")
+        self.assert_true(duplicate_alias_row["revenue"] == 41.89, "Purchase value aliases do not inflate revenue")
 
     def test_signal_quality_review_event_setup(self):
         """Test campaign signal review catches event mismatch and weak measurement setup."""
@@ -10533,6 +10642,7 @@ class IntegrationTestSuite:
         self.assert_true("meta_ads_update_snapshots" in compose and "/app/dashboard/data/update-snapshots" in compose, "Docker Compose keeps update rollback snapshots in a named volume")
         self.assert_true("MetaAdsAgent-source.zip" in script, "Release ZIP includes a stable asset name for bootstrap installers")
         self.assert_true("Release blocked: VERSION/.env.example mismatch" in script and "src/product_catalog.py" in script and "agent/skills/product-catalog-management/SKILL.md" in script, "Release packaging aborts before ZIP creation when versions disagree or required catalog files are absent")
+        self.assert_true("tracked source has uncommitted changes" in script and "untracked source files would enter the package" in script, "Release packaging cannot publish source that differs from the committed Git version")
         self.assert_true("install-from-github.ps1" in windows_installer and "install-from-github.sh" in mac_installer and "install-from-github.sh" in linux_installer, "Double-click installers use the shared bootstrap scripts")
         self.assert_true("docker compose up --build" in windows_installer and "./scripts/run-docker.sh" in mac_installer, "Double-click installers launch Docker setup")
         self.assert_true("pkgbuild" in mac_pkg_builder and "productbuild" in mac_pkg_builder, "Mac PKG builder uses native package tools")
@@ -10937,6 +11047,9 @@ class IntegrationTestSuite:
             self.test_hermes_gateway_runtime_patch_extracts_inbound_video_frames,
             self.test_hermes_gateway_minimax_runtime_patch_forces_official_provider,
             self.test_dashboard_chatgpt_connect_action_opens_terminal,
+            self.test_dashboard_chatgpt_connect_does_not_reopen_login_when_ready,
+            self.test_dashboard_codex_runtime_cache_matches_verified_connection,
+            self.test_dashboard_codex_runtime_probe_allows_small_vps_startup_time,
             self.test_dashboard_image_only_chatgpt_connect_preserves_text_brain,
             self.test_dashboard_image_connect_reuses_main_chatgpt_brain,
             self.test_dashboard_chatgpt_disconnect_clears_only_auth_artifacts,

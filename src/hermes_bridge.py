@@ -25,6 +25,8 @@ from local_store import read_json
 from optimization_engine import load_optimization_state
 from optimization_research import load_research
 from admira_rate_limit_messages import (
+    codex_go_limit_reply,
+    codex_plan_type_from_text,
     is_rate_limit_text,
     lighter_model_switch_hint,
     localized_textual_hint,
@@ -1568,6 +1570,8 @@ def localized_retry_hint(hint, language="es"):
 
 
 def model_usage_limit_reply(language="es", error_text=""):
+    if codex_plan_type_from_text(error_text) == "go":
+        return codex_go_limit_reply(error_text, language)
     hint = retry_delay_hint(error_text, language)
     if language == "en":
         base = (

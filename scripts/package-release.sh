@@ -10,6 +10,51 @@ ZIP_VERSIONED_NAME="MetaAdsAgent-${VERSION}-source.zip"
 ZIP_LEGACY_NAME="meta-ads-operator-${VERSION}.zip"
 STAGING_DIR="$BUILD_DIR/MetaAdsAgent"
 
+# A buyer release must be reproducible from the committed source. Building
+# from a dirty tree previously allowed a package to contain fixes that never
+# reached Git, so later updates could silently lose them.
+if git -C "$ROOT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  if ! git -C "$ROOT_DIR" diff --quiet --ignore-submodules -- || \
+     ! git -C "$ROOT_DIR" diff --cached --quiet --ignore-submodules --; then
+    echo "Release blocked: tracked source has uncommitted changes. Commit and push the exact release source first." >&2
+    exit 1
+  fi
+  python3 - "$ROOT_DIR" <<'PY'
+import subprocess
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+raw = subprocess.check_output(
+    ["git", "-C", str(root), "ls-files", "--others", "--exclude-standard", "-z"]
+)
+allowed_prefixes = (
+    "brand_guides/",
+    "dashboard/data/",
+    "logs/",
+    "output/",
+    "release/",
+)
+allowed_names = {".DS_Store"}
+unexpected = []
+for item in raw.split(b"\0"):
+    if not item:
+        continue
+    path = item.decode("utf-8", errors="replace")
+    name = Path(path).name
+    if path.startswith(allowed_prefixes) or name in allowed_names or name.endswith((".pyc", ".log")):
+        continue
+    if "node_modules/" in path or "__pycache__/" in path or ".pytest_cache/" in path:
+        continue
+    unexpected.append(path)
+if unexpected:
+    raise SystemExit(
+        "Release blocked: untracked source files would enter the package: "
+        + ", ".join(unexpected)
+    )
+PY
+fi
+
 mkdir -p "$RELEASE_DIR"
 rm -rf "$BUILD_DIR"
 mkdir -p "$STAGING_DIR"

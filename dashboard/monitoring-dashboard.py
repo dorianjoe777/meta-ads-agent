@@ -106,7 +106,7 @@ from experiment_scheduler import (
     schedule_experiment,
 )
 from graph_executor import execute_upload_payload
-from hermes_bridge import hermes_codex_ready, hermes_codex_session_status, hermes_environment, safe_image_paths
+from hermes_bridge import extract_codex_account_identity, hermes_codex_ready, hermes_codex_session_status, hermes_environment, safe_image_paths
 from hermes_gateway import (
     ensure_internal_model_recovery_token,
     ensure_daily_brief_cron,
@@ -4109,6 +4109,58 @@ def empty_codex_session_status():
     }
 
 
+def runtime_codex_status_timeout(config):
+    """Use a VPS-safe timeout for the asynchronous Hermes status probe.
+
+    ``hermes status`` commonly needs more than three seconds while the small
+    DigitalOcean container is also checking the model catalog and image
+    bridge. The connect endpoint already waits for the configured Hermes
+    timeout, so the dashboard must not contradict that successful check with
+    a shorter probe.
+    """
+    try:
+        configured = int(getattr(config, "hermes_status_timeout_seconds", 20) or 20)
+    except (TypeError, ValueError):
+        configured = 20
+    return max(8, min(30, configured))
+
+
+def cache_codex_session_status(config, purpose="agent", authenticated=False, detail=""):
+    """Immediately mirror a verified connect/disconnect result into the UI cache.
+
+    The dashboard payload is intentionally cache-only so it can paint fast.
+    Without this write, a successful login can still render as disconnected
+    until a later slow runtime probe finishes. This cache never manufactures a
+    login: callers invoke it only after Hermes verified the session or after
+    the product removed the auth artifacts and restarted the gateway.
+    """
+    purpose = normalize_connect_purpose(purpose)
+    cached = read_json(AGENT_RUNTIME_STATUS_FILE, {})
+    if not isinstance(cached, dict):
+        cached = {}
+    authenticated = bool(authenticated)
+    status_detail = str(detail or ("OpenAI Codex session connected" if authenticated else "OpenAI Codex disconnected"))
+    session = {
+        "ready": authenticated,
+        "authenticated": authenticated,
+        "provider_ready": authenticated,
+        "reauth_required": False,
+        "auth_state": "stored" if authenticated else "disconnected",
+        "detail": status_detail,
+        "identity": extract_codex_account_identity(status_detail) if authenticated else {},
+        "returncode": 0 if authenticated else None,
+    }
+    if purpose == "image":
+        cached["image_codex_session"] = session
+    else:
+        cached["main_codex_session"] = session
+        if effective_codex_image_source(config) != "dedicated_chatgpt":
+            cached["image_codex_session"] = session
+    cached.update({"checked_at": now_iso(), "checked_epoch": time.time(), "stale": False})
+    write_private_json(AGENT_RUNTIME_STATUS_FILE, redact_payload(cached))
+    return session
+
+
 def cached_agent_runtime_status(config=None):
     """Read the last safe runtime diagnosis; never launch a subprocess here."""
     config = config or load_config()
@@ -4146,10 +4198,11 @@ def refresh_agent_runtime_status(payload=None):
         return cached
     try:
         codex_image_source = effective_codex_image_source(config)
+        status_timeout = runtime_codex_status_timeout(config)
         with ThreadPoolExecutor(max_workers=5, thread_name_prefix="admira-runtime") as executor:
-            main_future = executor.submit(hermes_codex_session_status, config, 3)
+            main_future = executor.submit(hermes_codex_session_status, config, status_timeout)
             image_future = (
-                executor.submit(hermes_codex_session_status, image_codex_config(config), 3)
+                executor.submit(hermes_codex_session_status, image_codex_config(config), status_timeout)
                 if codex_image_source == "dedicated_chatgpt"
                 else None
             )
@@ -4900,6 +4953,7 @@ def disconnect_agent_model(payload=None):
             "CODEX_IMAGE_HERMES_MODEL": normalize_hermes_model(getattr(config, "codex_image_hermes_model", "") or getattr(config, "hermes_model", "")),
         }
         update_env_values(env_updates)
+    cache_codex_session_status(config, purpose=purpose, authenticated=False, detail="OpenAI Codex disconnected by the buyer")
     log_action("agent_model_disconnect", {"purpose": purpose, "removed": len(cleared.get("removed", []))}, "completed")
     label = "ChatGPT/Codex de imágenes" if purpose == "image" else "ChatGPT/Codex"
     return {
@@ -4931,6 +4985,7 @@ def hermes_browserless_snapshot(config=None, purpose="agent"):
         gateway = refresh_telegram_gateway_after_agent_model_change(
             {"AGENT_BRAIN_PROVIDER": "openai_codex", "HERMES_MODEL": getattr(config, "hermes_model", "")}
         ) if purpose == "agent" else None
+        cache_codex_session_status(config, purpose=purpose, authenticated=True, detail=auth_detail)
         return hermes_connect_response(
             "completed",
             "ChatGPT/Codex conectado",
@@ -5029,6 +5084,8 @@ def finish_hermes_browserless_session(session_id, returncode):
             codex_model_catalog(config=config, force_refresh=True)
         except Exception:
             pass
+    if ready:
+        cache_codex_session_status(config, purpose=purpose, authenticated=True, detail=auth_detail)
     with HERMES_LOGIN_LOCK:
         if HERMES_LOGIN_STATE.get("id") != session_id:
             return
@@ -5083,6 +5140,7 @@ def start_hermes_browserless_login(config, purpose="agent"):
         gateway = refresh_telegram_gateway_after_agent_model_change(
             {"AGENT_BRAIN_PROVIDER": "openai_codex", "HERMES_MODEL": getattr(config, "hermes_model", "")}
         ) if purpose == "agent" else None
+        cache_codex_session_status(config, purpose=purpose, authenticated=True, detail=auth_detail)
         return hermes_connect_response(
             "completed",
             "ChatGPT/Codex conectado",
@@ -5252,6 +5310,7 @@ def connect_agent_model(payload=None):
         if agent_brain_uses_chatgpt_codex(base_config):
             ready, auth_detail = hermes_codex_ready(base_config)
             if ready:
+                cache_codex_session_status(base_config, purpose="agent", authenticated=True, detail=auth_detail)
                 return hermes_connect_response(
                     "completed",
                     "Image 2 listo con la cuenta principal",
@@ -5283,6 +5342,7 @@ def connect_agent_model(payload=None):
         config = image_codex_config(load_config())
         ready, auth_detail = hermes_codex_ready(config)
         if ready:
+            cache_codex_session_status(config, purpose="image", authenticated=True, detail=auth_detail)
             return hermes_connect_response(
                 "completed",
                 "ChatGPT/Codex para imágenes conectado",
@@ -5309,6 +5369,7 @@ def connect_agent_model(payload=None):
     ready, auth_detail = hermes_codex_ready(config)
     if ready:
         gateway = refresh_telegram_gateway_after_agent_model_change(env_updates)
+        cache_codex_session_status(config, purpose="agent", authenticated=True, detail=auth_detail)
         return hermes_connect_response(
             "completed",
             "ChatGPT/Codex conectado",

@@ -169,6 +169,34 @@ def retry_delay_hint(text, language="es"):
     return ""
 
 
+def codex_plan_type_from_text(text):
+    """Return the ChatGPT plan reported by the Codex backend, when present."""
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    match = re.search(r"['\"]?plan_type['\"]?\s*[:=]\s*['\"]?([a-z0-9_-]+)", value, re.IGNORECASE)
+    return match.group(1).strip().lower() if match else ""
+
+
+def codex_go_limit_reply(text, language="es"):
+    """Explain an account-wide ChatGPT Go Codex limit without false model advice."""
+    english = str(language or "es").lower().startswith("en")
+    hint = retry_delay_hint(text, "en" if english else "es")
+    if english:
+        reset = f" The account reports a reset in about {hint}." if hint else ""
+        return (
+            "⏱️ The Codex allowance included with ChatGPT Go has been used up."
+            f"{reset} Switching between ChatGPT models will not reset this account allowance. "
+            "To continue now, open Settings > Agent model and connect a ChatGPT Plus account, "
+            "or use MiniMax or another official API for higher text volume."
+        )
+    reset = f" La cuenta indica que se reinicia en aprox. {hint}." if hint else ""
+    return (
+        "⏱️ Se agotó la cuota de Codex incluida en ChatGPT Go."
+        f"{reset} Cambiar entre modelos de ChatGPT no restablece esta cuota de la cuenta. "
+        "Para continuar ahora, abre Configuración > Modelo del agente y conecta una cuenta ChatGPT Plus, "
+        "o usa MiniMax u otra API oficial si necesitas más volumen de texto."
+    )
+
+
 def lighter_model_switch_hint(language="es"):
     """Short buyer-facing hint for repeated ChatGPT/Codex text-model limits."""
     english = str(language or "es").lower().startswith("en")
@@ -186,6 +214,8 @@ def lighter_model_switch_hint(language="es"):
 def gateway_rate_limit_reply(text, language="es"):
     """Return a concise Telegram-safe gateway notification for provider limits."""
     english = str(language or "es").lower().startswith("en")
+    if codex_plan_type_from_text(text) == "go":
+        return codex_go_limit_reply(text, "en" if english else "es")
     hint = retry_delay_hint(text, "en" if english else "es")
     model_hint = lighter_model_switch_hint("en" if english else "es")
     if english:
