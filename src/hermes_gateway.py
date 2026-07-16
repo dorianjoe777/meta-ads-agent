@@ -30,6 +30,8 @@ from hermes_bridge import (
     ADMIRA_NVIDIA_KEY_ENV,
     ADMIRA_NVIDIA_PROVIDER,
     ADMIRA_NVIDIA_PROVIDER_NAME,
+    HERMES_CONTEXT_FILE_SAFE_MAX_CHARS,
+    admira_fallback_config_lines,
     admira_minimax_credentials,
     enforce_official_skill_catalog,
     hermes_brain_settings,
@@ -482,7 +484,7 @@ def write_gateway_files(config):
     if env_path.exists():
         for line in env_path.read_text(encoding="utf-8").splitlines():
             key = line.split("=", 1)[0].strip() if "=" in line else ""
-            if key not in {"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS", "TELEGRAM_HOME_CHANNEL", "HERMES_TIMEZONE", "HERMES_MEDIA_ALLOW_DIRS", "ADMIRA_PRODUCT_ROOT", "ADMIRA_TELEGRAM_RECENT_TURNS_FILE", "ADMIRA_DASHBOARD_RECOVERY_URL", "ADMIRA_DASHBOARD_RECOVERY_KIND", "ADMIRA_GATEWAY_PROVIDER", "ADMIRA_INTERNAL_MODEL_RECOVERY_URL", "ADMIRA_INTERNAL_MODEL_RECOVERY_TOKEN_FILE"}:
+            if key not in {"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS", "TELEGRAM_HOME_CHANNEL", "HERMES_TIMEZONE", "HERMES_MEDIA_ALLOW_DIRS", "ADMIRA_PRODUCT_ROOT", "ADMIRA_TELEGRAM_RECENT_TURNS_FILE", "ADMIRA_DASHBOARD_RECOVERY_URL", "ADMIRA_DASHBOARD_RECOVERY_KIND", "ADMIRA_GATEWAY_PROVIDER", "ADMIRA_CRON_PIN_PROVIDER", "ADMIRA_CRON_PIN_MODEL", "ADMIRA_INTERNAL_MODEL_RECOVERY_URL", "ADMIRA_INTERNAL_MODEL_RECOVERY_TOKEN_FILE"}:
                 env_lines.append(line)
     if config.telegram_bot_token:
         env_lines.append(f"TELEGRAM_BOT_TOKEN={_env_value(config.telegram_bot_token)}")
@@ -496,7 +498,12 @@ def write_gateway_files(config):
     recovery_link = dashboard_recovery_link(config)
     env_lines.append(f"ADMIRA_DASHBOARD_RECOVERY_URL={_env_value(recovery_link['url'])}")
     env_lines.append(f"ADMIRA_DASHBOARD_RECOVERY_KIND={_env_value(recovery_link['kind'])}")
-    env_lines.append(f"ADMIRA_GATEWAY_PROVIDER={_env_value(_telegram_model_provider_for_brain(hermes_brain_settings(config)))}")
+    active_brain = hermes_brain_settings(config)
+    active_provider = _telegram_model_provider_for_brain(active_brain)
+    active_model = str(active_brain.get("model") or "").strip()
+    env_lines.append(f"ADMIRA_GATEWAY_PROVIDER={_env_value(active_provider)}")
+    env_lines.append(f"ADMIRA_CRON_PIN_PROVIDER={_env_value(active_provider)}")
+    env_lines.append(f"ADMIRA_CRON_PIN_MODEL={_env_value(active_model)}")
     env_lines.append(f"ADMIRA_INTERNAL_MODEL_RECOVERY_URL={_env_value(internal_model_recovery_url(config))}")
     env_lines.append(f"ADMIRA_INTERNAL_MODEL_RECOVERY_TOKEN_FILE={_env_value(str(INTERNAL_MODEL_RECOVERY_TOKEN_FILE))}")
     env_path.write_text("\n".join(env_lines).rstrip() + "\n", encoding="utf-8")
@@ -512,6 +519,8 @@ def write_gateway_files(config):
     config_yaml = [
         f"timezone: {_quote_yaml(timezone_name)}",
         *_gateway_model_config_lines(brain),
+        *admira_fallback_config_lines(config, brain),
+        f"context_file_max_chars: {HERMES_CONTEXT_FILE_SAFE_MAX_CHARS}",
         "agent:",
         "  max_turns: 60",
         "  gateway_timeout: 1800",
@@ -862,6 +871,9 @@ def start_gateway(config):
     env["ADMIRA_DASHBOARD_RECOVERY_URL"] = recovery_link["url"]
     env["ADMIRA_DASHBOARD_RECOVERY_KIND"] = recovery_link["kind"]
     env["ADMIRA_GATEWAY_PROVIDER"] = _telegram_model_provider_for_brain(hermes_brain_settings(config))
+    active_brain = hermes_brain_settings(config)
+    env["ADMIRA_CRON_PIN_PROVIDER"] = _telegram_model_provider_for_brain(active_brain)
+    env["ADMIRA_CRON_PIN_MODEL"] = str(active_brain.get("model") or "").strip()
     ensure_internal_model_recovery_token()
     env["ADMIRA_INTERNAL_MODEL_RECOVERY_URL"] = internal_model_recovery_url(config)
     env["ADMIRA_INTERNAL_MODEL_RECOVERY_TOKEN_FILE"] = str(INTERNAL_MODEL_RECOVERY_TOKEN_FILE)

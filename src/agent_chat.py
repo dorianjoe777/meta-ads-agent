@@ -379,6 +379,8 @@ def strip_technical_preamble(text):
         internal_runtime_notice = (
             ("codex" in lowered and "caps context at" in lowered and "auto-compaction" in lowered)
             or "compression.codex_gpt55_autoraise" in lowered
+            or ("context file" in lowered and "truncated" in lowered)
+            or lowered.startswith("opt back out: hermes config set compression.")
         )
         if internal_runtime_notice:
             continue

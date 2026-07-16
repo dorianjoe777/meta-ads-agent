@@ -969,6 +969,8 @@ class IntegrationTestSuite:
             compaction_notice = "ℹ Codex gpt-5.5 caps context at 272K, so auto-compaction was raised to 85% (from 50%) to use more of the window before summarizing.\n  Opt back out: hermes config set compression.codex_gpt55_autoraise false\nSeguimos con la guía de marca."
             compaction_clean = agent_chat.clean_reply(compaction_notice)
             self.assert_true(compaction_clean == "Seguimos con la guía de marca.", "Internal Codex context-compression notices are stripped before reaching buyers")
+            truncation_notice = "⚠️ Context file AGENTS.md TRUNCATED: 68472 chars exceeds limit of 65280 — trim the file, pin a larger context_file_max_chars, or use a larger-context model!\nSeguimos con la campaña."
+            self.assert_true(agent_chat.clean_reply(truncation_notice) == "Seguimos con la campaña.", "Dashboard chat never exposes internal context-file truncation indicators")
             agent_chat.hermes_chat = lambda config, payload: {"ok": True, "provider": "hermes", "reply": noisy}
             clean_result = agent_chat.chat(FakeConfig(), {"message": "Hola", "metrics": {}, "language": "es"})
             self.assert_true(clean_result["reply"].startswith("Tenés razón") and "tirith" not in clean_result["reply"].lower(), "Plain Hermes replies are cleaned before any channel sends them")
@@ -1661,6 +1663,14 @@ class IntegrationTestSuite:
             table_reply = """Proyección inicial\n\n| Escenario | Ventas | ROAS |\n|---|---:|---:|\n| Conservador | 2 | 1.4 |\n| Base | 5 | 2.2 |"""
             normalized_table, table_metadata = admira_hermes_runtime_patch.normalize_telegram_outbound_text(table_reply, "es")
             invisible_fallback, fallback_metadata = admira_hermes_runtime_patch.normalize_telegram_outbound_text("\u200b ** --- ||", "es")
+            context_clean, context_metadata = admira_hermes_runtime_patch.normalize_telegram_outbound_text(
+                "⚠️  Context file AGENTS.md TRUNCATED: 68472 chars exceeds limit of 65280 — trim the file, pin a larger context_file_max_chars, or use a larger-context model!\nListo, continúo con el anuncio.",
+                "es",
+            )
+            context_only, context_only_metadata = admira_hermes_runtime_patch.normalize_telegram_outbound_text(
+                "⚠️ Context file AGENTS.md TRUNCATED: 68472 chars exceeds limit of 65280",
+                "es",
+            )
             normalized_response = admira_hermes_runtime_patch._normalize_gateway_outbound_response({"final_response": table_reply})
             novice_turn = admira_hermes_runtime_patch._append_turn_execution_contract(
                 "No sé nada de marketing. Tengo una cafetería y quiero más clientes.\n\n"
@@ -1671,6 +1681,8 @@ class IntegrationTestSuite:
             self.assert_true("• Conservador" in normalized_table and "- Ventas: 2" in normalized_table and "|---|" not in normalized_table, "Gateway converts Markdown projection tables into readable Telegram bullets")
             self.assert_true("markdown_table_converted" in table_metadata["reasons"] and not table_metadata["fallback"], "Gateway records why a Markdown table was normalized")
             self.assert_true("No pude mostrar correctamente" in invisible_fallback and fallback_metadata["fallback"], "Gateway never delivers an invisible or format-only Telegram message")
+            self.assert_true(context_clean == "Listo, continúo con el anuncio." and "internal_context_notice_removed" in context_metadata["reasons"], "Telegram strips context diagnostics while preserving the buyer answer")
+            self.assert_true(context_only == "NO_REPLY" and context_only_metadata["suppressed"] and not context_only_metadata["fallback"], "A context-only diagnostic becomes Hermes intentional silence instead of another scary message")
             self.assert_true("• Base" in normalized_response["final_response"], "Gateway response normalization runs on the final response shape Hermes delivers")
             self.assert_true("ADMIRA TURN EXECUTION CONTRACT" in novice_turn and "máximo 180 palabras" in novice_turn and "insumos del dueño" in novice_turn and "datos o archivos del dueño" in novice_turn and "margen de contribución" in novice_turn, "Each novice Telegram turn gets a recency-edge manager-led response contract")
             self.assert_true(novice_turn_again.count("ADMIRA TURN EXECUTION CONTRACT") == 2, "Novice turn contract is appended only once, including its start and end markers")
@@ -2750,6 +2762,9 @@ class IntegrationTestSuite:
             self.assert_true("creation_nudge_interval: 0" in config_yaml and "memory_notifications: off" in config_yaml and "    - skills" in config_yaml, "Hermes Gateway disables personal skill creation, patch reviews, and buyer-facing skill notices")
             self.assert_true("session_reset:" in config_yaml and "  notify: false" in config_yaml and "  at_hour: 4" in config_yaml, "Hermes daily session cleanup stays enabled at 4:00 but its technical notice is hidden from buyers")
             self.assert_true("threshold: 0.85" in config_yaml and "codex_gpt55_autoraise: false" in config_yaml, "Hermes Gateway keeps the larger Codex context threshold without replaying the auto-compaction notice to buyers")
+            self.assert_true("context_file_max_chars: 60000" in config_yaml, "Hermes Gateway pins a safe context-file budget below the smallest supported buyer model cap")
+            self.assert_true("fallback_providers:" in config_yaml and '- provider: "openai-codex"' in config_yaml, "Hermes Gateway config includes a light-model fallback chain for reasoning jobs")
+            self.assert_true("ADMIRA_CRON_PIN_PROVIDER=openai-codex" in env_text and "ADMIRA_CRON_PIN_MODEL=gpt-5.4-mini" in env_text, "Hermes reasoning crons receive the current buyer-selected brain at execution time")
             self.assert_true("HERMES_MEDIA_ALLOW_DIRS=" in env_text and "/output" in env_text, "Hermes Gateway allows generated output files to be delivered as native media attachments")
             self.assert_true("mcp_servers:" in config_yaml and "admira:" in config_yaml and "admira_mcp_server.py" in config_yaml, "Hermes Gateway registers the Admira MCP product-tool bridge")
             self.assert_true("    timeout: 900" in config_yaml, "Hermes Gateway lets long Codex/Image MCP calls finish instead of cutting them off at 300 seconds")
@@ -2822,6 +2837,7 @@ class IntegrationTestSuite:
             product_catalog_skill = workspace_path / "skills" / "product-catalog-management" / "SKILL.md"
             skills_readme = (workspace_path / "skills" / "README.md").read_text(encoding="utf-8")
             agents_text = (workspace_path / "AGENTS.md").read_text(encoding="utf-8")
+            standalone_skills_text = (workspace_path / "SKILLS.md").read_text(encoding="utf-8")
 
             self.assert_true(creative_skill.exists() and branding_skill.exists() and campaign_skill.exists() and approvals_skill.exists(), "Focused product skill files are copied into the Hermes workspace")
             self.assert_true(core_skill.exists() and continuity_skill.exists() and brand_assets_skill.exists() and organic_content_skill.exists() and creative_strategy_skill.exists() and meta_execution_skill.exists() and product_catalog_skill.exists(), "Modular product and catalog skills are copied into the Hermes workspace")
@@ -2846,8 +2862,10 @@ class IntegrationTestSuite:
             self.assert_true("mcp_admira_preflight_campaign" in campaign_text and "object_story_spec" in campaign_text and "custom_audiences" in campaign_text, "Campaign skill teaches preflight and expert campaign controls")
             self.assert_true("mcp_admira_import_product_catalog" in product_catalog_text and "mcp_admira_search_product_catalog" in product_catalog_text and "50 products" in product_catalog_text and "separate child offer" in product_catalog_text, "Catalog skill imports, retrieves, and isolates large catalogs and bundle offers")
             self.assert_true("mcp_admira_import_product_catalog" in agents_text and "mcp_admira_search_product_catalog" in agents_text and "multi-product" in agents_text.lower(), "Top-level Hermes rules require catalog retrieval instead of relying on the last discussed product")
+            self.assert_true(len(agents_text) <= hermes_bridge.HERMES_CONTEXT_FILE_SAFE_MAX_CHARS and "# Product Agent File: SKILLS.md" not in agents_text, "Root AGENTS stays below Hermes' context cap without duplicating the complete skill catalog")
+            self.assert_true(len(standalone_skills_text) > 40000 and "Product Skill Catalog" in agents_text, "The complete standalone skill catalog remains available on demand after removing its duplicate from AGENTS")
             self.assert_true("three most important success metrics" in campaign_text and "success_metrics" in campaign_text and "mcp_admira_save_ads_onboarding" in agents_text, "Hermes workspace teaches campaign scorecards and exposes ads onboarding memory")
-            self.assert_true("prefilled_message" in campaign_text and "welcome_message" in campaign_text and "quick_replies" in campaign_text and "unsolicited first messages" in agents_text, "Hermes workspace teaches click-to-message initial-message setup without implying unsolicited outreach")
+            self.assert_true("prefilled_message" in campaign_text and "welcome_message" in campaign_text and "quick_replies" in campaign_text and "unsolicited first" in campaign_text, "Hermes workspace teaches click-to-message initial-message setup without implying unsolicited outreach")
             self.assert_true("mcp_admira_fetch_public_asset" in agents_text and "Google Drive" in campaign_text and "public video" in branding_text, "Hermes workspace teaches public link and Drive creative retrieval")
             self.assert_true("Default initiative" in core_skill.read_text(encoding="utf-8") and "redundant" in campaign_text and "quieres que la genere ahora" in (workspace_path / "skills" / "creative-production-codex-image" / "SKILL.md").read_text(encoding="utf-8"), "Hermes workspace teaches the agent to advance safe obvious next steps instead of asking redundant permission")
             core_text = core_skill.read_text(encoding="utf-8")

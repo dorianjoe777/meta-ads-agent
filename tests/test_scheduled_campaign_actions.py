@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 import scheduled_campaign_actions as scheduled
 import hermes_gateway
+import admira_hermes_runtime_patch
 
 
 class ScheduledCampaignActionsTest(unittest.TestCase):
@@ -133,6 +134,53 @@ class ScheduledCampaignActionsTest(unittest.TestCase):
         self.assertEqual(captured["env"]["ADMIRA_CRON_PIN_MODEL"], "gpt-5.6-luna")
         self.assertEqual(captured["env"]["ADMIRA_CRON_PIN_PROVIDER"], "openai-codex")
         self.assertIn("update_job", captured["command"][-1])
+
+    def test_cron_execution_uses_current_brain_and_bypasses_stale_snapshots(self):
+        captured = {}
+
+        def original_run_job(job):
+            captured["job"] = job
+            return True, "ok", "", None
+
+        fake_scheduler = SimpleNamespace(run_job=original_run_job)
+        fake_cron = SimpleNamespace(scheduler=fake_scheduler)
+        stale_job = {
+            "id": "job-stale-model",
+            "provider_snapshot": "openai-codex",
+            "model_snapshot": "gpt-5.5",
+            "provider": "",
+            "model": "",
+            "no_agent": False,
+        }
+        with patch.dict(sys.modules, {"cron": fake_cron, "cron.scheduler": fake_scheduler}), \
+             patch.dict(os.environ, {"ADMIRA_CRON_PIN_PROVIDER": "openai-codex", "ADMIRA_CRON_PIN_MODEL": "gpt-5.4-mini"}, clear=False):
+            self.assertTrue(admira_hermes_runtime_patch._patch_cron_job_execution())
+            result = fake_scheduler.run_job(stale_job)
+
+        self.assertEqual(result[0], True)
+        self.assertEqual(captured["job"]["provider"], "openai-codex")
+        self.assertEqual(captured["job"]["model"], "gpt-5.4-mini")
+        self.assertNotIn("provider_snapshot", captured["job"])
+        self.assertNotIn("model_snapshot", captured["job"])
+        self.assertEqual(stale_job["model_snapshot"], "gpt-5.5")
+
+    def test_no_agent_cron_keeps_deterministic_job_payload(self):
+        captured = {}
+
+        def original_run_job(job):
+            captured["job"] = job
+            return True, "ok", "", None
+
+        fake_scheduler = SimpleNamespace(run_job=original_run_job)
+        fake_cron = SimpleNamespace(scheduler=fake_scheduler)
+        job = {"id": "spend-safe-script", "no_agent": True, "provider_snapshot": "old", "model_snapshot": "old"}
+        with patch.dict(sys.modules, {"cron": fake_cron, "cron.scheduler": fake_scheduler}), \
+             patch.dict(os.environ, {"ADMIRA_CRON_PIN_PROVIDER": "openai-codex", "ADMIRA_CRON_PIN_MODEL": "gpt-5.4-mini"}, clear=False):
+            self.assertTrue(admira_hermes_runtime_patch._patch_cron_job_execution())
+            fake_scheduler.run_job(job)
+
+        self.assertIs(captured["job"], job)
+        self.assertEqual(captured["job"]["model_snapshot"], "old")
 
 
 if __name__ == "__main__":

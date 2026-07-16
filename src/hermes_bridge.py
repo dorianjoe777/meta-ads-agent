@@ -37,13 +37,16 @@ from admira_rate_limit_messages import (
 from security import redact_payload
 
 try:
-    from product_config import normalize_hermes_model
+    from product_config import normalize_hermes_model, preferred_hermes_model
 except ImportError:
     def normalize_hermes_model(value):
         model = str(value or "").strip()
         if not model or model.lower() in {"auto", "recommended", "recomendado", "default"}:
             return "gpt-5.4-mini"
         return model
+
+    def preferred_hermes_model(models):
+        return next((str(model).strip() for model in models or [] if str(model).strip()), "gpt-5.4-mini")
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -89,7 +92,11 @@ RECENT_CONTEXT_LOOKBACK_DAYS = 7
 RECENT_CONTEXT_ITEM_LIMIT = 12
 BLOCKED_MEMORY_TOKENS = {".env", "license_unlock.json"}
 PROFILE_FILES = ("SOUL.md", "USER.md", "AGENTS.md", "TOOLS.md", "SKILLS.md")
+COMBINED_AGENT_PROFILE_FILES = ("SOUL.md", "USER.md", "AGENTS.md", "TOOLS.md")
 SKILL_FILE_NAME = "SKILL.md"
+HERMES_CONTEXT_FILE_SAFE_MAX_CHARS = 60000
+CODEX_MODEL_CATALOG_FILE = DATA_DIR / "codex_model_catalog.json"
+NVIDIA_MODEL_CATALOG_FILE = DATA_DIR / "nvidia_model_catalog.json"
 MODEL_USAGE_LIMIT_PATTERNS = (
     r"\b429\b",
     r"too many requests",
@@ -274,6 +281,122 @@ def _hermes_model_config_lines(brain):
     return lines
 
 
+def _runtime_provider_for_brain(brain):
+    if (brain or {}).get("brain") == "minimax":
+        return ADMIRA_MINIMAX_PROVIDER
+    if (brain or {}).get("brain") == "nvidia_nim":
+        return ADMIRA_NVIDIA_PROVIDER
+    return str((brain or {}).get("provider") or "openai-codex").strip() or "openai-codex"
+
+
+def _cached_model_ids(path):
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return []
+    values = payload.get("models") if isinstance(payload, dict) else []
+    models = []
+    seen = set()
+    for value in values or []:
+        model = str(value or "").strip()
+        key = model.lower()
+        if not model or key in seen or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{1,100}", model):
+            continue
+        seen.add(key)
+        models.append(model)
+    return models[:40]
+
+
+def _light_model_order(models):
+    cleaned = [str(model or "").strip() for model in models or [] if str(model or "").strip()]
+    if not cleaned:
+        return []
+    preferred = preferred_hermes_model(cleaned)
+    small_markers = ("mini", "nano", "small", "lite", "flash", "20b")
+    ordered = []
+    for model in [preferred, *[item for item in cleaned if any(marker in item.lower() for marker in small_markers)], *cleaned]:
+        if model and model not in ordered:
+            ordered.append(model)
+    return ordered
+
+
+def admira_inference_fallback_chain(config, primary_settings=None):
+    """Build a secret-free fallback chain from models/providers actually configured.
+
+    Hermes can fail over within the connected ChatGPT/Codex account when one
+    model is unavailable, and can then use another configured provider such as
+    MiniMax. Catalog files are only hints from the installed runtime; no model
+    that is absent from the cached catalog is invented here.
+    """
+    brain = dict(primary_settings or hermes_brain_settings(config))
+    primary_provider = _runtime_provider_for_brain(brain)
+    primary_model = str(brain.get("model") or "").strip()
+    entries = []
+    seen = {(primary_provider.lower(), primary_model.lower(), str(brain.get("base_url") or "").strip().rstrip("/").lower())}
+
+    def append(provider, model, base_url="", key_env=""):
+        provider = str(provider or "").strip()
+        model = str(model or "").strip()
+        base_url = str(base_url or "").strip().rstrip("/")
+        identity = (provider.lower(), model.lower(), base_url.lower())
+        if not provider or not model or identity in seen:
+            return
+        seen.add(identity)
+        entry = {"provider": provider, "model": model}
+        if base_url:
+            entry["base_url"] = base_url
+        if key_env:
+            entry["key_env"] = str(key_env).strip()
+        entries.append(entry)
+
+    if primary_provider == "openai-codex":
+        codex_models = _light_model_order(_cached_model_ids(CODEX_MODEL_CATALOG_FILE))
+        for model in codex_models[:3]:
+            append("openai-codex", model)
+    elif primary_provider == ADMIRA_NVIDIA_PROVIDER:
+        nvidia_models = _light_model_order(_cached_model_ids(NVIDIA_MODEL_CATALOG_FILE))
+        for model in nvidia_models[:3]:
+            append(ADMIRA_NVIDIA_PROVIDER, model, brain.get("base_url") or ADMIRA_NVIDIA_DEFAULT_BASE_URL, ADMIRA_NVIDIA_KEY_ENV)
+
+    minimax = admira_minimax_credentials(config, brain)
+    if primary_provider != ADMIRA_MINIMAX_PROVIDER and minimax.get("api_key"):
+        append(
+            ADMIRA_MINIMAX_PROVIDER,
+            minimax.get("model") or "MiniMax-M3",
+            minimax.get("base_url") or "https://api.minimax.io/v1",
+            ADMIRA_MINIMAX_KEY_ENV,
+        )
+
+    if primary_provider != "openai-codex":
+        codex_models = _light_model_order(_cached_model_ids(CODEX_MODEL_CATALOG_FILE))
+        if codex_models:
+            append("openai-codex", codex_models[0])
+
+    if primary_provider != ADMIRA_NVIDIA_PROVIDER and os.environ.get(ADMIRA_NVIDIA_KEY_ENV, "").strip():
+        nvidia_models = _light_model_order(_cached_model_ids(NVIDIA_MODEL_CATALOG_FILE))
+        if nvidia_models:
+            append(ADMIRA_NVIDIA_PROVIDER, nvidia_models[0], ADMIRA_NVIDIA_DEFAULT_BASE_URL, ADMIRA_NVIDIA_KEY_ENV)
+
+    return entries[:6]
+
+
+def admira_fallback_config_lines(config, primary_settings=None):
+    chain = admira_inference_fallback_chain(config, primary_settings)
+    if not chain:
+        return ["fallback_providers: []"]
+    lines = ["fallback_providers:"]
+    for entry in chain:
+        lines.extend([
+            f"  - provider: {_quote_yaml(entry['provider'])}",
+            f"    model: {_quote_yaml(entry['model'])}",
+        ])
+        if entry.get("base_url"):
+            lines.append(f"    base_url: {_quote_yaml(entry['base_url'])}")
+        if entry.get("key_env"):
+            lines.append(f"    key_env: {_quote_yaml(entry['key_env'])}")
+    return lines
+
+
 def hermes_cli_provider(brain):
     if brain.get("brain") == "minimax":
         return ADMIRA_MINIMAX_PROVIDER
@@ -302,6 +425,8 @@ def _cli_hermes_config_needs_write(config_text, brain):
     if "mcp_servers:" not in config_text or "admira_mcp_server.py" not in config_text:
         return True
     if "creation_nudge_interval: 0" not in config_text or "memory_notifications: off" not in config_text:
+        return True
+    if f"context_file_max_chars: {HERMES_CONTEXT_FILE_SAFE_MAX_CHARS}" not in config_text or "fallback_providers:" not in config_text:
         return True
     if re.search(r"(?m)^\s*-\s+skills\s*$", config_text):
         return True
@@ -347,6 +472,8 @@ def write_cli_hermes_config(config, workspace_info, payload=None):
     config_yaml = [
         f"timezone: {_quote_yaml(timezone_name)}",
         *_hermes_model_config_lines(brain),
+        *admira_fallback_config_lines(config, brain),
+        f"context_file_max_chars: {HERMES_CONTEXT_FILE_SAFE_MAX_CHARS}",
         "agent:",
         f"  max_turns: {max(1, int(getattr(config, 'hermes_max_iterations', 12) or 12))}",
         "  disabled_toolsets:",
@@ -506,9 +633,9 @@ def write_workspace_file(relative_path, content):
     return str(target.relative_to(workspace_root))
 
 
-def read_agent_profile_file(name):
+def read_agent_profile_file(name, limit=MEMORY_TEXT_LIMIT):
     path = ROOT_DIR / "agent" / name
-    return read_text(path, MEMORY_TEXT_LIMIT)
+    return read_text(path, limit)
 
 
 def memory_display_path(path):
@@ -523,10 +650,16 @@ def memory_display_path(path):
 
 def combined_agent_rules():
     sections = []
-    for name in PROFILE_FILES:
+    for name in COMBINED_AGENT_PROFILE_FILES:
         content = read_agent_profile_file(name)
         if content:
             sections.append(f"\n\n# Product Agent File: {name}\n\n{content.strip()}")
+    sections.append(
+        "\n\n# Product Skill Catalog\n\n"
+        "The complete product skill catalog is intentionally kept outside this root file. "
+        "Read `SKILLS.md`, `skills/README.md`, and the relevant `skills/<name>/SKILL.md` on demand. "
+        "Do not duplicate the full catalog into AGENTS.md."
+    )
     sections.append(
         """
 
@@ -648,7 +781,16 @@ When the buyer provides lead-quality or outcome feedback, save it with `mcp_admi
         + ad_experience_instruction(ad_experience, "en")
         + "\nTreat these explicit preferences as overriding the default buyer-profile wording level, but never as overriding product safety rules."
     )
-    return "\n".join(sections).strip() + "\n"
+    combined = "\n".join(sections).strip() + "\n"
+    if len(combined) > HERMES_CONTEXT_FILE_SAFE_MAX_CHARS:
+        head_limit = HERMES_CONTEXT_FILE_SAFE_MAX_CHARS - 5000
+        combined = (
+            combined[:head_limit].rstrip()
+            + "\n\n# Internal context size guard\n\n"
+            + "The omitted middle repeats material available in the standalone profile and skill files. Read those files on demand.\n\n"
+            + combined[-4700:].lstrip()
+        )[:HERMES_CONTEXT_FILE_SAFE_MAX_CHARS]
+    return combined
 
 
 def write_product_skill_workspace_files():
@@ -707,7 +849,7 @@ def write_product_skill_workspace_files():
 def write_agent_profile_workspace_files():
     written = []
     for name in PROFILE_FILES:
-        content = read_agent_profile_file(name)
+        content = read_agent_profile_file(name, HERMES_CONTEXT_FILE_SAFE_MAX_CHARS)
         if content:
             if name == "AGENTS.md":
                 written.append(write_workspace_file("profile/AGENTS.source.md", content))

@@ -96,6 +96,25 @@ ADMIRA_NOVICE_SIGNAL_RE = re.compile(
 _ADMIRA_FAILED_CREDENTIAL_API_KEY = ContextVar("admira_failed_credential_api_key", default="")
 
 
+def _strip_internal_context_notices(value):
+    """Remove Hermes/Codex context housekeeping that buyers must never see."""
+    kept = []
+    removed = False
+    for line in str(value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        lowered = line.strip().lower()
+        internal = (
+            ("context file" in lowered and "truncated" in lowered)
+            or ("codex" in lowered and "caps context at" in lowered and "auto-compaction" in lowered)
+            or "compression.codex_gpt55_autoraise" in lowered
+            or lowered.startswith("opt back out: hermes config set compression.")
+        )
+        if internal:
+            removed = True
+            continue
+        kept.append(line)
+    return "\n".join(kept), removed
+
+
 def _is_codex_pool_quota_error(text):
     value = str(text or "").lower()
     return (
@@ -210,10 +229,16 @@ def normalize_telegram_outbound_text(value, language=None):
     """Return non-empty Telegram-safe text plus delivery diagnostics metadata."""
     original = str(value or "")
     cleaned = ADMIRA_TELEGRAM_INVISIBLE_RE.sub("", original)
+    cleaned, context_notice_removed = _strip_internal_context_notices(cleaned)
     cleaned, table_changed = _render_markdown_tables_as_text(cleaned)
     cleaned = re.sub(r"[ \t]+\n", "\n", cleaned).strip()
     fallback = False
-    if not _has_visible_telegram_content(cleaned):
+    suppressed = context_notice_removed and not _has_visible_telegram_content(cleaned)
+    if suppressed:
+        # Hermes recognizes this exact marker as intentional silence and will
+        # not replace it with its generic empty-response warning.
+        cleaned = "NO_REPLY"
+    if not suppressed and not _has_visible_telegram_content(cleaned):
         fallback = True
         language = str(language or os.environ.get("ADMIRA_GATEWAY_LANGUAGE", "es")).lower()
         cleaned = (
@@ -224,6 +249,8 @@ def normalize_telegram_outbound_text(value, language=None):
     reasons = []
     if table_changed:
         reasons.append("markdown_table_converted")
+    if context_notice_removed:
+        reasons.append("internal_context_notice_removed")
     if ADMIRA_TELEGRAM_INVISIBLE_RE.search(original):
         reasons.append("invisible_characters_removed")
     if fallback:
@@ -233,6 +260,7 @@ def normalize_telegram_outbound_text(value, language=None):
         "delivered_length": len(cleaned),
         "changed": cleaned != original,
         "fallback": fallback,
+        "suppressed": suppressed,
         "reasons": reasons,
         "content_sha256": hashlib.sha256(original.encode("utf-8", errors="replace")).hexdigest()[:16],
     }
@@ -1532,8 +1560,13 @@ def _patch_cron_job_creation():
 
     def patched_create_job(*args, **kwargs):
         if not kwargs.get("no_agent") and not kwargs.get("provider") and not kwargs.get("model"):
+            active_provider = str(os.environ.get("ADMIRA_CRON_PIN_PROVIDER") or "").strip()
+            active_model = str(os.environ.get("ADMIRA_CRON_PIN_MODEL") or "").strip()
+            if active_provider and active_model:
+                kwargs["provider"] = active_provider
+                kwargs["model"] = active_model
             resolver = getattr(cron_jobs, "_compute_provider_model_snapshots", None)
-            if callable(resolver):
+            if not kwargs.get("provider") and not kwargs.get("model") and callable(resolver):
                 try:
                     provider, model = resolver(None, None)
                     if provider and model:
@@ -1549,6 +1582,60 @@ def _patch_cron_job_creation():
     return True
 
 
+def _patch_cron_job_execution():
+    """Make every Admira reasoning cron follow the buyer's current brain.
+
+    Hermes' upstream drift guard is correct for generic autonomous jobs. In
+    Admira, changing the primary brain in the dashboard is an explicit buyer
+    choice and should migrate all reasoning crons. Script-only/no-agent jobs
+    remain untouched.
+    """
+    try:
+        import cron.scheduler as cron_scheduler
+    except ImportError:
+        return False
+    original = getattr(cron_scheduler, "run_job", None)
+    if not callable(original) or getattr(original, "_admira_current_brain_patch", False):
+        return bool(getattr(original, "_admira_current_brain_patch", False))
+
+    def patched_run_job(job, *args, **kwargs):
+        provider = str(os.environ.get("ADMIRA_CRON_PIN_PROVIDER") or "").strip()
+        model = str(os.environ.get("ADMIRA_CRON_PIN_MODEL") or "").strip()
+        effective_job = job
+        if isinstance(job, dict) and not job.get("no_agent") and provider and model:
+            effective_job = dict(job)
+            effective_job["provider"] = provider
+            effective_job["model"] = model
+            effective_job.pop("provider_snapshot", None)
+            effective_job.pop("model_snapshot", None)
+        return original(effective_job, *args, **kwargs)
+
+    patched_run_job._admira_current_brain_patch = True
+    patched_run_job._admira_original_run_job = original
+    cron_scheduler.run_job = patched_run_job
+    return True
+
+
+def _patch_context_truncation_notifications():
+    """Keep context-size diagnostics in logs and out of buyer conversations."""
+    try:
+        import agent.prompt_builder as prompt_builder
+    except ImportError:
+        return False
+    original = getattr(prompt_builder, "drain_truncation_warnings", None)
+    if not callable(original) or getattr(original, "_admira_silent_context_patch", False):
+        return bool(getattr(original, "_admira_silent_context_patch", False))
+
+    def patched_drain_truncation_warnings():
+        original()
+        return []
+
+    patched_drain_truncation_warnings._admira_silent_context_patch = True
+    patched_drain_truncation_warnings._admira_original_drain = original
+    prompt_builder.drain_truncation_warnings = patched_drain_truncation_warnings
+    return True
+
+
 def apply():
     rate_limit_patched = _patch_gateway_rate_limit_reply()
     credential_pool_patched = _patch_credential_pool_failure_assignment()
@@ -1556,5 +1643,7 @@ def apply():
     runtime_patched = _patch_minimax_runtime_provider()
     media_patched = _patch_gateway_generated_media_delivery()
     video_patched = _patch_gateway_inbound_video_frames()
-    cron_patched = _patch_cron_job_creation()
-    return bool(rate_limit_patched or credential_pool_patched or minimax_patched or runtime_patched or media_patched or video_patched or cron_patched)
+    cron_create_patched = _patch_cron_job_creation()
+    cron_run_patched = _patch_cron_job_execution()
+    context_patched = _patch_context_truncation_notifications()
+    return bool(rate_limit_patched or credential_pool_patched or minimax_patched or runtime_patched or media_patched or video_patched or cron_create_patched or cron_run_patched or context_patched)
