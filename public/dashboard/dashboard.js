@@ -608,6 +608,7 @@ function mergeAgentRuntimeStatus(runtime={}){
  hermes_model_recommended:catalog.recommended||model.hermes_model_recommended,
  hermes_model_catalog_source:catalog.source||model.hermes_model_catalog_source,
  hermes_model_catalog_updated_at:catalog.checked_at||model.hermes_model_catalog_updated_at,
+  hermes_model_user_selected:Boolean(catalog.user_selected??model.hermes_model_user_selected),
   hermes_model_catalog_account_verified:Boolean(catalog.account_verified),
   hermes_model_catalog_auth_resolved:Boolean(catalog.auth_resolved),
   runtime_versions:versions,
@@ -1782,11 +1783,13 @@ function chatGptConnectMarkup(onboarding=false){
  const providerValue=brain;
  const liveCodexModels=(Array.isArray(model.hermes_model_options)?model.hermes_model_options:[]).map(value=>String(value||'').trim()).filter(Boolean);
  const configuredCodexModel=String(model.hermes_model||'').trim();
+ const userSelectedCodexModel=Boolean(model.hermes_model_user_selected);
+ const recommendedCodexModelFromCatalog=String(model.hermes_model_recommended||liveCodexModels[0]||'').trim();
  const codexModel=catalogVerified
-  ? (liveCodexModels.includes(configuredCodexModel)?configuredCodexModel:(liveCodexModels.includes(String(model.hermes_model_recommended||''))?String(model.hermes_model_recommended):liveCodexModels[0]||''))
-  : (configuredCodexModel||model.hermes_model_recommended||'gpt-5.6-terra');
+  ? (userSelectedCodexModel&&liveCodexModels.includes(configuredCodexModel)?configuredCodexModel:(liveCodexModels.includes(recommendedCodexModelFromCatalog)?recommendedCodexModelFromCatalog:liveCodexModels[0]||''))
+  : (userSelectedCodexModel?(configuredCodexModel||recommendedCodexModelFromCatalog):recommendedCodexModelFromCatalog||configuredCodexModel||'gpt-5.4-mini');
  if(!catalogVerified&&codexModel&&!liveCodexModels.includes(codexModel))liveCodexModels.unshift(codexModel);
- if(!liveCodexModels.length)liveCodexModels.push(codexModel||'gpt-5.6-terra');
+ if(!liveCodexModels.length)liveCodexModels.push(codexModel||'gpt-5.4-mini');
  const recommendedCodexModel=String(model.hermes_model_recommended||liveCodexModels[0]||'').trim();
  const codexModelOptions=liveCodexModels.map(value=>`<option value="${escapeHtml(value)}" ${codexModel===value?'selected':''}>${escapeHtml(value+(value===recommendedCodexModel?(lang==='es'?' · recomendado':' · recommended'):''))}</option>`).join('');
  const runtimeVersions=model.runtime_versions||{};

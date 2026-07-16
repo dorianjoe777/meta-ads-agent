@@ -41,7 +41,7 @@ except ImportError:
     def normalize_hermes_model(value):
         model = str(value or "").strip()
         if not model or model.lower() in {"auto", "recommended", "recomendado", "default"}:
-            return "gpt-5.6-terra"
+            return "gpt-5.4-mini"
         return model
 
 
@@ -216,7 +216,7 @@ def _telegram_model_label(provider, model):
     if provider_key in {"admira-minimax", "minimax"}:
         return f"MiniMax M3 · {model_name or 'MiniMax-M3'}"
     if provider_key in {"openai-codex", "openai_codex", "codex"}:
-        return f"ChatGPT/Codex · {model_name or 'gpt-5.6-terra'}"
+        return f"ChatGPT/Codex · {model_name or 'gpt-5.4-mini'}"
     if provider_key in {"custom", "openai", "openai-api"}:
         return model_name or provider_raw or "API compatible"
     return model_name or provider_raw or "Modelo configurado"

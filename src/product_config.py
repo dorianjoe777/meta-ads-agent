@@ -13,8 +13,25 @@ from communication_style import ad_experience_from_environment, communication_st
 ROOT_DIR = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT_DIR / ".env"
 DASHBOARD_IDENTITY_FILE = ROOT_DIR / "dashboard" / "data" / "dashboard_identity.json"
-DEFAULT_HERMES_CODEX_MODEL = "gpt-5.6-terra"
+DEFAULT_HERMES_CODEX_MODEL = "gpt-5.4-mini"
 DEFAULT_CODEX_IMAGE_SOURCE = "main_chatgpt"
+
+# The account catalog is authoritative, but the provider does not guarantee a
+# stable ordering. Keep a small, buyer-safe preference order so new installs
+# do not silently default to the heaviest model. Luna is the preferred GPT-5.6
+# option when it is actually available; Go accounts commonly expose the
+# smaller GPT-5.4 mini model instead.
+_HERMES_DEFAULT_MODEL_PREFERENCE = (
+    "gpt-5.6-luna",
+    "gpt-5.6-mini",
+    "gpt-5.4-mini",
+    "gpt-5.6-terra",
+    "gpt-5.6-sol",
+    "gpt-5.5-mini",
+    "gpt-5.5",
+    "gpt-5.4",
+)
+_SMALL_MODEL_MARKERS = ("mini", "small", "lite", "nano", "flash", "haiku")
 
 
 def normalize_hermes_model(value):
@@ -22,6 +39,36 @@ def normalize_hermes_model(value):
     if not model or model.lower() in {"auto", "recommended", "recomendado", "default"}:
         return DEFAULT_HERMES_CODEX_MODEL
     return model
+
+
+def preferred_hermes_model(models):
+    """Choose the lightest sensible model from a real account catalog.
+
+    The returned value is always one of ``models`` (after whitespace cleanup),
+    so this helper never invents a model an account did not advertise.
+    """
+    cleaned = []
+    seen = set()
+    for item in models or []:
+        model = str(item or "").strip()
+        key = model.lower()
+        if model and key not in seen:
+            cleaned.append(model)
+            seen.add(key)
+    if not cleaned:
+        return DEFAULT_HERMES_CODEX_MODEL
+
+    by_key = {model.lower(): model for model in cleaned}
+    for preferred in _HERMES_DEFAULT_MODEL_PREFERENCE:
+        if preferred in by_key:
+            return by_key[preferred]
+
+    # Graceful fallback for future provider names (for example, a new
+    # ``gpt-5.7-mini``) while still favoring explicitly lightweight models.
+    small = [model for model in cleaned if any(marker in model.lower() for marker in _SMALL_MODEL_MARKERS)]
+    if small:
+        return sorted(small, key=lambda value: (len(value), value.lower()))[0]
+    return cleaned[0]
 
 
 def load_dotenv(path=None):
@@ -323,6 +370,7 @@ class AgentConfig:
     hermes_cli: str = "hermes"
     hermes_home: str = ""
     hermes_model: str = DEFAULT_HERMES_CODEX_MODEL
+    hermes_model_user_selected: bool = False
     hermes_timeout_seconds: int = 300
     hermes_status_timeout_seconds: int = 20
     hermes_response_timeout_seconds: int = 300
@@ -436,6 +484,7 @@ def load_config():
         hermes_cli=os.environ.get("HERMES_CLI", "hermes"),
         hermes_home=normalize_local_path(os.environ.get("HERMES_HOME", ""), ROOT_DIR / "dashboard" / "data" / "hermes-home"),
         hermes_model=normalize_hermes_model(os.environ.get("HERMES_MODEL", "")),
+        hermes_model_user_selected=env_bool("HERMES_MODEL_USER_SELECTED", False),
         hermes_timeout_seconds=env_int("HERMES_TIMEOUT_SECONDS", 300),
         hermes_status_timeout_seconds=env_int("HERMES_STATUS_TIMEOUT_SECONDS", 20),
         hermes_response_timeout_seconds=env_int("HERMES_RESPONSE_TIMEOUT_SECONDS", env_int("HERMES_TIMEOUT_SECONDS", 300)),

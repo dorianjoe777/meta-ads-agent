@@ -187,13 +187,25 @@ from verified_signal_ledger import record_signal as record_verified_signal
 from verified_signal_ledger import record_signal_batch as record_verified_signal_batch
 
 try:
-    from product_config import normalize_hermes_model
+    from product_config import normalize_hermes_model, preferred_hermes_model
 except ImportError:
     def normalize_hermes_model(value):
         model = str(value or "").strip()
         if not model or model.lower() in {"auto", "recommended", "recomendado", "default"}:
-            return "gpt-5.6-terra"
+            return "gpt-5.4-mini"
         return model
+
+    def preferred_hermes_model(models):
+        models = [str(item or "").strip() for item in (models or []) if str(item or "").strip()]
+        if not models:
+            return "gpt-5.4-mini"
+        priority = ("gpt-5.6-luna", "gpt-5.6-mini", "gpt-5.4-mini", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.5-mini", "gpt-5.5", "gpt-5.4")
+        lowered = {item.lower(): item for item in models}
+        for candidate in priority:
+            if candidate in lowered:
+                return lowered[candidate]
+        small = [item for item in models if any(marker in item.lower() for marker in ("mini", "small", "lite", "nano", "flash", "haiku"))]
+        return sorted(small, key=lambda item: (len(item), item.lower()))[0] if small else models[0]
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -3940,7 +3952,7 @@ def codex_model_catalog(config=None, force_refresh=False):
     cached_models = _clean_codex_model_ids(cached.get("models") if isinstance(cached, dict) else [])
     cached_at = float((cached or {}).get("checked_epoch") or 0) if isinstance(cached, dict) else 0
     if cached_models and not force_refresh and time.time() - cached_at < CODEX_MODEL_CATALOG_TTL_SECONDS:
-        return {**cached, "models": cached_models, "stale": False}
+        return {**cached, "models": cached_models, "recommended": preferred_hermes_model(cached_models), "stale": False}
 
     code = (
         "import json\n"
@@ -4009,10 +4021,10 @@ def codex_model_catalog(config=None, force_refresh=False):
     )
     if not models:
         current = str(getattr(config, "hermes_model", "") or "").strip()
-        models = _clean_codex_model_ids([current, "gpt-5.6-terra", "gpt-5.5", "gpt-5.4-mini", "gpt-5.4"])
+        models = _clean_codex_model_ids([current, "gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.5", "gpt-5.4"])
     payload = {
         "models": models,
-        "recommended": models[0] if models else normalize_hermes_model(""),
+        "recommended": preferred_hermes_model(models),
         "source": source,
         "account_verified": account_verified,
         "auth_resolved": auth_resolved,
@@ -4033,7 +4045,8 @@ def resolve_codex_model_choice(value, config=None):
     if raw and raw.lower() not in {"auto", "recommended", "recomendado", "default"} and raw in models:
         return raw
     current = str(getattr(config, "hermes_model", "") or "").strip()
-    if current in models:
+    user_selected = bool(getattr(config, "hermes_model_user_selected", False))
+    if user_selected and current in models:
         return current
     # A curated/runtime catalog is useful for display but is not entitlement
     # proof. Until the connected account API has answered, keep the stable
@@ -4041,8 +4054,8 @@ def resolve_codex_model_choice(value, config=None):
     # catalog entry. Once the account is verified, its recommended model is
     # authoritative (and may legitimately be an older model on that plan).
     if catalog.get("account_verified"):
-        return str(catalog.get("recommended") or normalize_hermes_model(raw)).strip()
-    return str(normalize_hermes_model(raw)).strip()
+        return str(preferred_hermes_model(models) or normalize_hermes_model(raw)).strip()
+    return str(normalize_hermes_model(raw or current)).strip()
 
 
 def runtime_dependency_versions(config=None):
@@ -4074,11 +4087,11 @@ def cached_codex_model_catalog(config=None):
     models = _clean_codex_model_ids(cached.get("models") if isinstance(cached, dict) else [])
     if not models:
         current = str(getattr(config, "hermes_model", "") or "").strip()
-        models = _clean_codex_model_ids([current, "gpt-5.6-terra", "gpt-5.5", "gpt-5.4-mini", "gpt-5.4"])
+        models = _clean_codex_model_ids([current, "gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.5", "gpt-5.4"])
     return {
         **(cached if isinstance(cached, dict) else {}),
         "models": models,
-        "recommended": str((cached or {}).get("recommended") or (models[0] if models else normalize_hermes_model(""))),
+        "recommended": preferred_hermes_model(models),
         "source": str((cached or {}).get("source") or "safe_fallback"),
         "checked_at": str((cached or {}).get("checked_at") or ""),
         "stale": True,
@@ -5396,6 +5409,10 @@ def save_setup_config(payload):
     if "hermes_model" in payload:
         hermes_model = resolve_codex_model_choice(payload.get("hermes_model"), config=load_config())
         env_updates["HERMES_MODEL"] = hermes_model
+        # A model selected and saved from the dashboard is an intentional
+        # override. New installs without this marker continue to follow the
+        # smallest model returned by the connected account catalog.
+        env_updates["HERMES_MODEL_USER_SELECTED"] = "true"
     if "codex_image_source" in payload:
         image_source = normalize_codex_image_source(payload.get("codex_image_source"))
         env_updates["CODEX_IMAGE_SOURCE"] = image_source
@@ -11605,6 +11622,18 @@ def dashboard_payload():
     runtime_model_state = telegram_runtime_model_state(config)
     model_catalog = runtime_status.get("model_catalog") or cached_codex_model_catalog(config)
     dependency_versions = runtime_status.get("runtime_versions") or {}
+    runtime_override = str(runtime_model_state.get("source") or "").strip() == "telegram_model_command"
+    if model_catalog.get("account_verified") and not getattr(config, "hermes_model_user_selected", False) and not runtime_override:
+        preferred = preferred_hermes_model(model_catalog.get("models") or [])
+        if preferred and preferred != config.hermes_model:
+            # Migrate an untouched legacy default on the first verified read.
+            # Explicit dashboard choices and Telegram /model selections remain
+            # untouched.
+            update_env_values({"HERMES_MODEL": preferred, "HERMES_MODEL_USER_SELECTED": "false"})
+            os.environ["HERMES_MODEL"] = preferred
+            os.environ["HERMES_MODEL_USER_SELECTED"] = "false"
+            refresh_telegram_gateway_after_agent_model_change({"HERMES_MODEL": preferred})
+            config = load_config()
     pending_items = [
         item for item in read_json(PENDING_FILE, [])
         if isinstance(item, dict) and item.get("status", "pending") == "pending"
@@ -11700,6 +11729,7 @@ def dashboard_payload():
                 "model": config.agent_chat_model,
                 "temperature": config.agent_chat_temperature,
                 "hermes_model": config.hermes_model,
+                "hermes_model_user_selected": bool(getattr(config, "hermes_model_user_selected", False)),
                 "hermes_model_options": model_catalog.get("models", []),
                 "hermes_model_recommended": model_catalog.get("recommended", ""),
                 "hermes_model_catalog_source": model_catalog.get("source", ""),

@@ -28,7 +28,7 @@ from pause_logic import PauseManager, AdPerformance
 from auto_warmup import AutoWarmupManager
 from license import activate_license, format_license, license_status, normalize_license_entitlements, validate_license_key
 from security import dashboard_token_valid, hash_dashboard_password, redact_payload
-from product_config import AgentConfig, normalize_hermes_model, normalize_timezone
+from product_config import AgentConfig, normalize_hermes_model, normalize_timezone, preferred_hermes_model
 import product_config
 from agent_chat import account_context, parse_skill_response
 import agent_chat
@@ -1679,9 +1679,11 @@ class IntegrationTestSuite:
         """Test the dashboard ChatGPT/Codex connection endpoint prefers an automatic terminal action."""
         print("\nTesting Dashboard ChatGPT/Codex Connect Action...")
 
-        self.assert_true(normalize_hermes_model("") == "gpt-5.6-terra", "Empty Hermes model uses GPT-5.6 Terra")
-        self.assert_true(normalize_hermes_model("auto") == "gpt-5.6-terra", "Legacy auto Hermes model uses GPT-5.6 Terra")
-        self.assert_true(normalize_hermes_model("recommended") == "gpt-5.6-terra", "Legacy recommended Hermes model uses GPT-5.6 Terra")
+        self.assert_true(normalize_hermes_model("") == "gpt-5.4-mini", "Empty Hermes model uses the lightweight GPT-5.4 mini fallback")
+        self.assert_true(normalize_hermes_model("auto") == "gpt-5.4-mini", "Legacy auto Hermes model uses the lightweight GPT-5.4 mini fallback")
+        self.assert_true(normalize_hermes_model("recommended") == "gpt-5.4-mini", "Legacy recommended Hermes model uses the lightweight GPT-5.4 mini fallback")
+        self.assert_true(preferred_hermes_model(["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.5"]) == "gpt-5.6-luna", "The default prefers GPT-5.6 Luna over the heavier GPT-5.6 variants")
+        self.assert_true(preferred_hermes_model(["gpt-5.5", "gpt-5.4-mini"]) == "gpt-5.4-mini", "The default prefers GPT-5.4 mini when it is the smaller account model")
 
         dashboard = load_dashboard_module()
         captured = {}
@@ -1698,7 +1700,7 @@ class IntegrationTestSuite:
             self.assert_true(result["status"] == "terminal_opened", "Connect action opens the terminal when the environment allows it")
             self.assert_true(captured.get("AGENT_CHAT_PROVIDER") == "hermes", "Connect action selects Hermes as the agent provider")
             self.assert_true(captured.get("HERMES_REQUIRE_CODEX_AUTH") == "true", "Connect action keeps Codex auth required by default")
-            self.assert_true(captured.get("HERMES_MODEL") == "gpt-5.6-terra", "ChatGPT/Codex connection defaults to GPT-5.6 Terra instead of an unavailable auto option")
+            self.assert_true(captured.get("HERMES_MODEL") == "gpt-5.4-mini", "ChatGPT/Codex connection defaults to the lightweight GPT-5.4 mini instead of an unavailable auto option")
         finally:
             dashboard.update_env_values = original_update
             dashboard.launch_hermes_terminal = original_launch
@@ -1945,16 +1947,18 @@ class IntegrationTestSuite:
                     dashboard.CODEX_MODEL_CATALOG_FILE = Path(catalog_tmp) / "codex-models.json"
                     dashboard.hermes_environment = lambda _config: {}
                     dashboard.subprocess.run = lambda *_args, **_kwargs: type("Result", (), {"returncode": 0, "stdout": '["gpt-6", "gpt-5.5", "gpt-5.4-mini"]\n', "stderr": ""})()
-                    catalog_cfg = type("CatalogCfg", (), {"hermes_model": "gpt-5.5"})()
+                    catalog_cfg = type("CatalogCfg", (), {"hermes_model": "gpt-5.5", "hermes_model_user_selected": False})()
                     catalog = dashboard.codex_model_catalog(catalog_cfg, force_refresh=True)
-                    self.assert_true(catalog["models"] == ["gpt-6", "gpt-5.5", "gpt-5.4-mini"] and catalog["recommended"] == "gpt-6", "Dashboard model picker consumes the installed Hermes live Codex catalog instead of a fixed product list")
+                    self.assert_true(catalog["models"] == ["gpt-6", "gpt-5.5", "gpt-5.4-mini"] and catalog["recommended"] == "gpt-5.4-mini", "Dashboard model picker consumes the installed Hermes live Codex catalog and prefers its lightest model")
                     dashboard.subprocess.run = lambda *_args, **_kwargs: type("Result", (), {"returncode": 0, "stdout": '{"models": ["gpt-5.5", "gpt-5.4-mini"], "account_verified": true, "auth_resolved": true}\n', "stderr": ""})()
                     verified_catalog = dashboard.codex_model_catalog(catalog_cfg, force_refresh=True)
                     self.assert_true(verified_catalog["account_verified"] is True and verified_catalog["auth_resolved"] is True and verified_catalog["models"] == ["gpt-5.5", "gpt-5.4-mini"] and "gpt-5.6-terra" not in verified_catalog["models"], "Verified account catalogs never invent GPT-5.6 models that the connected account did not return")
                     dashboard.subprocess.run = lambda *_args, **_kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired("catalog", 1))
                     stale = dashboard.codex_model_catalog(catalog_cfg, force_refresh=True)
                     self.assert_true(stale["models"] == verified_catalog["models"] and stale["source"] == "last_known_catalog", "A transient catalog failure preserves the last valid model list")
-                    self.assert_true(dashboard.resolve_codex_model_choice("retired-model", catalog_cfg) == "gpt-5.5", "A retired model falls back to a still-supported saved model without breaking setup")
+                    self.assert_true(dashboard.resolve_codex_model_choice("retired-model", catalog_cfg) == "gpt-5.4-mini", "A retired model falls back to the lightest supported account model without breaking setup")
+                    selected_cfg = type("CatalogCfg", (), {"hermes_model": "gpt-5.5", "hermes_model_user_selected": True})()
+                    self.assert_true(dashboard.resolve_codex_model_choice("retired-model", selected_cfg) == "gpt-5.5", "A manually selected model remains respected when another model becomes unavailable")
             finally:
                 dashboard.CODEX_MODEL_CATALOG_FILE = original_catalog_file
                 dashboard.subprocess.run = original_subprocess_run
@@ -2496,7 +2500,7 @@ class IntegrationTestSuite:
             self.assert_true("    keepalive_interval: 1200" in config_yaml, "Hermes Gateway avoids MCP keepalive reconnects while a long creative tool call is still running")
             self.assert_true("    - admira" in config_yaml, "Hermes Gateway explicitly enables Admira MCP tools for Telegram")
             self.assert_true("disabled_toolsets:" in config_yaml and "code_execution" in config_yaml and str(workspace) in config_yaml, "Hermes Gateway config keeps Telegram in the curated workspace")
-            self.assert_true('default: "gpt-5.6-terra"' in config_yaml and 'default: "auto"' not in config_yaml, "Hermes Gateway normalizes legacy auto model to GPT-5.6 Terra")
+            self.assert_true('default: "gpt-5.4-mini"' in config_yaml and 'default: "auto"' not in config_yaml, "Hermes Gateway normalizes legacy auto model to the lightweight GPT-5.4 mini")
             self.assert_true("entrevista del negocio" in config_yaml and "no bloquean la configuración inicial" in config_yaml, "Hermes Gateway tells Telegram that agent interviews are not dashboard blockers")
             self.assert_true("primero entenderemos el negocio" in config_yaml and "marca visual" in config_yaml and "ofertas, briefs, estrategia y campañas" in config_yaml, "Hermes Gateway introduction explains the three-step onboarding journey")
             self.assert_true("Tu identidad de cara al cliente es solo Admira IA" in config_yaml and "comandos como `/help`" in config_yaml, "Telegram prompt blocks buyer-facing Hermes/runtime command branding")
@@ -10439,8 +10443,8 @@ class IntegrationTestSuite:
         self.assert_true("https://admiraia.uboost.lat" in env_example, "Buyer release uses deployed license server")
         self.assert_true("LICENSE_PUBLIC_KEY=" in env_example, "Buyer release includes only license verification key")
         self.assert_true("AGENT_CHAT_BASE_URL=https://api.minimax.io/v1" in env_example and "AGENT_CHAT_MODEL=MiniMax-M3" in env_example and "AGENT_CHAT_PROVIDER=hermes" in env_example and "AGENT_BRAIN_PROVIDER=openai_codex" in env_example, "Buyer release documents Hermes runtime plus MiniMax M3/OpenAI-compatible brain support")
-        self.assert_true("HERMES_MODEL=gpt-5.6-terra" in env_example, "Buyer release defaults ChatGPT/Codex to GPT-5.6 Terra instead of auto")
-        self.assert_true("except ImportError" in hermes_gateway_source and "gpt-5.6-terra" in hermes_gateway_source and "except ImportError" in hermes_bridge_source and "gpt-5.6-terra" in hermes_bridge_source and "except ImportError" in dashboard_server_source and "gpt-5.6-terra" in dashboard_server_source, "Hermes and dashboard tolerate mixed-version installs when model normalization is missing")
+        self.assert_true("HERMES_MODEL=gpt-5.4-mini" in env_example, "Buyer release defaults ChatGPT/Codex to the lightweight GPT-5.4 mini instead of auto")
+        self.assert_true("except ImportError" in hermes_gateway_source and "gpt-5.4-mini" in hermes_gateway_source and "except ImportError" in hermes_bridge_source and "gpt-5.4-mini" in hermes_bridge_source and "except ImportError" in dashboard_server_source and "gpt-5.4-mini" in dashboard_server_source, "Hermes and dashboard tolerate mixed-version installs when model normalization is missing")
         product_version = (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()
         self.assert_true(f"META_ADS_AGENT_VERSION={product_version}" in env_example, "Buyer release exposes the installed product version")
         bootstrap_config = (ROOT_DIR / "installer" / "release-bootstrap.env").read_text(encoding="utf-8")
