@@ -108,6 +108,7 @@ from experiment_scheduler import (
 from graph_executor import execute_upload_payload
 from hermes_bridge import extract_codex_account_identity, hermes_codex_ready, hermes_codex_session_status, hermes_environment, safe_image_paths
 from hermes_gateway import (
+    dashboard_recovery_link,
     dashboard_update_link,
     ensure_internal_model_recovery_token,
     ensure_daily_brief_cron,
@@ -117,10 +118,12 @@ from hermes_gateway import (
     ensure_post_install_organic_intro_cron,
     ensure_weekly_research_cron,
     gateway_status as hermes_gateway_status,
+    reconcile_cron_inference_pins,
     start_gateway as start_hermes_gateway,
     stop_gateway as stop_hermes_gateway,
     telegram_runtime_model_state,
 )
+from model_health_watchdog import run_model_health_check
 from product_catalog import import_product_catalog, refresh_catalog_index, search_product_catalog
 from hermes_gateway import telegram_settings
 from license import activate_license, default_device_id, license_status, mark_license_install_state, normalize_license_entitlements, validate_license_key
@@ -274,6 +277,7 @@ HERMES_LOGIN_OUTPUT_LIMIT = 12000
 CODEX_MODEL_CATALOG_FILE = DATA_DIR / "codex_model_catalog.json"
 NVIDIA_MODEL_CATALOG_FILE = DATA_DIR / "nvidia_model_catalog.json"
 AGENT_RUNTIME_STATUS_FILE = DATA_DIR / "agent_runtime_status.json"
+MODEL_HEALTH_WATCHDOG_FILE = DATA_DIR / "model_health_watchdog.json"
 CODEX_MODEL_CATALOG_TTL_SECONDS = 6 * 60 * 60
 AGENT_RUNTIME_STATUS_TTL_SECONDS = 60
 _HERMES_AUTH_CAPABILITY_CACHE = {}
@@ -288,6 +292,11 @@ UPDATE_NOTIFICATION_MONITOR_STOP = None
 UPDATE_NOTIFICATION_MONITOR_LOCK = threading.Lock()
 UPDATE_NOTIFICATION_INITIAL_DELAY_SECONDS = 90
 UPDATE_NOTIFICATION_INTERVAL_SECONDS = 60 * 60
+MODEL_HEALTH_WATCHDOG_THREAD = None
+MODEL_HEALTH_WATCHDOG_STOP = None
+MODEL_HEALTH_WATCHDOG_LOCK = threading.Lock()
+MODEL_HEALTH_WATCHDOG_INITIAL_DELAY_SECONDS = 120
+MODEL_HEALTH_WATCHDOG_INTERVAL_SECONDS = 5 * 60
 HERMES_LOGIN_STATE = {
     "id": "",
     "status": "idle",
@@ -1124,6 +1133,146 @@ def stop_telegram_update_notification_monitor():
             UPDATE_NOTIFICATION_MONITOR_STOP.set()
         UPDATE_NOTIFICATION_MONITOR_THREAD = None
         UPDATE_NOTIFICATION_MONITOR_STOP = None
+
+
+def notify_model_health_issue(config, issue, _context=None):
+    """Send one buyer-safe recovery notice without invoking the agent."""
+    status = telegram_settings(config)
+    chat_id = str(status.get("chat_id") or "").strip()
+    if not (status.get("bot_configured") and chat_id):
+        return False
+    language = str(status.get("language") or "es").lower()
+    recovery = dashboard_recovery_link(config)
+    if language == "en":
+        if issue == "credential_reconnect_required":
+            text = (
+                "The agent's model connection needs to be renewed. "
+                "Open Settings, reconnect the model account, and Admira IA will resume automatically."
+            )
+        elif issue == "provider_config_missing":
+            text = (
+                "The agent model is missing a required connection setting. "
+                "Open Settings and review the selected provider, model, and credential."
+            )
+        else:
+            text = (
+                "Admira IA detected that the model runtime is still unhealthy after safe automatic recovery. "
+                "Open Settings to review the connection; your saved business information was not removed."
+            )
+        button_label = "Review model connection"
+    else:
+        if issue == "credential_reconnect_required":
+            text = (
+                "La conexión del modelo necesita renovarse. Abre Configuración y vuelve a conectar la cuenta; "
+                "Admira IA retomará automáticamente cuando quede lista."
+            )
+        elif issue == "provider_config_missing":
+            text = (
+                "Falta un dato necesario en la conexión del modelo. Abre Configuración y revisa el proveedor, "
+                "el modelo y su credencial."
+            )
+        else:
+            text = (
+                "Admira IA detectó que el modelo sigue sin responder después de una recuperación automática segura. "
+                "Abre Configuración para revisar la conexión; la información guardada de tu negocio sigue intacta."
+            )
+        button_label = "Revisar conexión del modelo"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "disable_web_page_preview": "true",
+    }
+    url = str(recovery.get("url") or "").strip()
+    if url.startswith(("https://", "http://")):
+        payload["reply_markup"] = json.dumps(
+            {"inline_keyboard": [[{"text": button_label, "url": url}]]},
+            ensure_ascii=False,
+        )
+    try:
+        telegram_bot_request(config, "sendMessage", payload, timeout=15)
+    except Exception:
+        return False
+    return True
+
+
+def check_model_health_watchdog():
+    """Run one deterministic model/Gateway health and repair pass."""
+    config = load_config()
+    result = run_model_health_check(
+        config,
+        state_file=MODEL_HEALTH_WATCHDOG_FILE,
+        log_path=ROOT_DIR / "logs" / "hermes-gateway.log",
+        telegram_status=telegram_settings,
+        gateway_status=hermes_gateway_status,
+        runtime_model_state=telegram_runtime_model_state,
+        codex_session_status=hermes_codex_session_status,
+        start_gateway=start_hermes_gateway,
+        stop_gateway=stop_hermes_gateway,
+        reconcile_crons=reconcile_cron_inference_pins,
+        notify=lambda issue, context: notify_model_health_issue(config, issue, context),
+    )
+    action = str(result.get("action") or "")
+    if action not in {"none", "observe_once", "fallback_left_running", "waiting_for_buyer"}:
+        log_action(
+            "model_health_watchdog",
+            {
+                "status": result.get("status"),
+                "issue": result.get("issue"),
+                "action": action,
+                "consecutive_failures": result.get("consecutive_failures"),
+            },
+            "completed" if result.get("ok") else "attention",
+        )
+    return result
+
+
+def _model_health_watchdog_loop(stop_event):
+    initial_delay = max(
+        10,
+        min(30 * 60, env_int("ADMIRA_MODEL_HEALTH_INITIAL_DELAY_SECONDS", MODEL_HEALTH_WATCHDOG_INITIAL_DELAY_SECONDS)),
+    )
+    interval = max(
+        60,
+        min(60 * 60, env_int("ADMIRA_MODEL_HEALTH_INTERVAL_SECONDS", MODEL_HEALTH_WATCHDOG_INTERVAL_SECONDS)),
+    )
+    if stop_event.wait(initial_delay):
+        return
+    while not stop_event.is_set():
+        try:
+            check_model_health_watchdog()
+        except Exception as exc:
+            try:
+                log_action("model_health_watchdog", {"error": str(exc)[:240]}, "failed")
+            except Exception:
+                pass
+        if stop_event.wait(interval):
+            return
+
+
+def ensure_model_health_watchdog():
+    """Start exactly one no-AI self-healing monitor for this dashboard."""
+    global MODEL_HEALTH_WATCHDOG_THREAD, MODEL_HEALTH_WATCHDOG_STOP
+    with MODEL_HEALTH_WATCHDOG_LOCK:
+        if MODEL_HEALTH_WATCHDOG_THREAD and MODEL_HEALTH_WATCHDOG_THREAD.is_alive():
+            return {"started": True, "already_running": True}
+        MODEL_HEALTH_WATCHDOG_STOP = threading.Event()
+        MODEL_HEALTH_WATCHDOG_THREAD = threading.Thread(
+            target=_model_health_watchdog_loop,
+            args=(MODEL_HEALTH_WATCHDOG_STOP,),
+            name="admira-model-health-watchdog",
+            daemon=True,
+        )
+        MODEL_HEALTH_WATCHDOG_THREAD.start()
+        return {"started": True, "already_running": False}
+
+
+def stop_model_health_watchdog():
+    global MODEL_HEALTH_WATCHDOG_THREAD, MODEL_HEALTH_WATCHDOG_STOP
+    with MODEL_HEALTH_WATCHDOG_LOCK:
+        if MODEL_HEALTH_WATCHDOG_STOP:
+            MODEL_HEALTH_WATCHDOG_STOP.set()
+        MODEL_HEALTH_WATCHDOG_THREAD = None
+        MODEL_HEALTH_WATCHDOG_STOP = None
 
 
 def safe_copytree_contents(source, target, base=None):
@@ -12844,6 +12993,7 @@ def main():
     write_static_snapshot()
     ensure_telegram_listener()
     ensure_telegram_update_notification_monitor()
+    ensure_model_health_watchdog()
     server = ThreadingHTTPServer((host, port), DashboardHandler)
     CURRENT_DASHBOARD_BIND_HOST = host
     CURRENT_DASHBOARD_BIND_PORT = port
@@ -12857,6 +13007,7 @@ def main():
     except KeyboardInterrupt:
         print("\nStopping dashboard.")
     finally:
+        stop_model_health_watchdog()
         stop_telegram_update_notification_monitor()
         server.server_close()
     return 0

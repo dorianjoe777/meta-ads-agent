@@ -1925,6 +1925,19 @@ def hermes_codex_session_status(config, timeout=None):
     codex_ok = codex_auth_line_is_logged_in(codex_line)
     credential_health = codex_credential_health(config)
     reauth_required = bool(credential_health.get("reauth_required"))
+    explicit_negative = any(part in output.lower() for part in CODEX_AUTH_NEGATIVE_PARTS)
+    # Hermes/Codex wording changes over time. A successful ``hermes status``
+    # for the Codex provider plus a stored, non-revoked credential is a valid
+    # auth signal even when the output no longer contains the literal phrase
+    # "logged in". Explicit negative markers and revoked OAuth still win.
+    if (
+        not codex_ok
+        and completed.returncode == 0
+        and provider_ok
+        and credential_health.get("state") == "stored"
+        and not explicit_negative
+    ):
+        codex_ok = True
     if reauth_required:
         codex_ok = False
     auth_detail = "OpenAI Codex session invalidated; reconnect required" if reauth_required else (codex_line or "OpenAI Codex auth unknown")
