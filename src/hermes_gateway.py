@@ -163,8 +163,10 @@ def internal_model_recovery_url(config):
     return f"http://127.0.0.1:{port}/api/internal/model-recovery"
 
 
-def dashboard_recovery_link(config):
-    """Return the safest buyer-facing route back to model settings."""
+def dashboard_action_link(config, action=""):
+    """Return the safest buyer-facing dashboard/portal route for an action."""
+    action = str(action or "").strip().lower()
+    query_key = "open_update" if action == "update" else "reconnect_model"
     explicit = _safe_dashboard_url(
         os.environ.get("ADMIRA_DASHBOARD_URL")
         or os.environ.get("CLOUD_DASHBOARD_HTTPS_URL")
@@ -187,8 +189,8 @@ def dashboard_recovery_link(config):
     if explicit:
         parsed = urllib.parse.urlsplit(explicit)
         query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-        query = [(key, value) for key, value in query if key != "reconnect_model"]
-        query.append(("reconnect_model", "1"))
+        query = [(key, value) for key, value in query if key not in {"reconnect_model", "open_update"}]
+        query.append((query_key, "1"))
         return {
             "url": urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path or "/", urllib.parse.urlencode(query), "")),
             "kind": "dashboard",
@@ -206,7 +208,17 @@ def dashboard_recovery_link(config):
         port = 7871
     if port < 1 or port > 65535:
         port = 7871
-    return {"url": f"http://127.0.0.1:{port}/?reconnect_model=1", "kind": "dashboard"}
+    return {"url": f"http://127.0.0.1:{port}/?{query_key}=1", "kind": "dashboard"}
+
+
+def dashboard_recovery_link(config):
+    """Return the safest buyer-facing route back to model settings."""
+    return dashboard_action_link(config, "reconnect_model")
+
+
+def dashboard_update_link(config):
+    """Return the safest buyer-facing route to the update review."""
+    return dashboard_action_link(config, "update")
 
 
 def _telegram_model_provider_for_brain(brain):

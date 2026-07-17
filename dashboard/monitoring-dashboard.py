@@ -108,6 +108,7 @@ from experiment_scheduler import (
 from graph_executor import execute_upload_payload
 from hermes_bridge import extract_codex_account_identity, hermes_codex_ready, hermes_codex_session_status, hermes_environment, safe_image_paths
 from hermes_gateway import (
+    dashboard_update_link,
     ensure_internal_model_recovery_token,
     ensure_daily_brief_cron,
     ensure_daily_social_content_cron,
@@ -181,6 +182,7 @@ from signal_quality import apply_signal_quality_to_adset, review_signal_quality,
 from social_flow_client import SocialFlowClient
 from telegram_agent import bot_request as telegram_bot_request
 from telegram_agent import reset_polling_state as reset_telegram_polling_state
+from update_notifier import check_and_notify_update
 from verified_signal_ledger import feedback_prompt as verified_signal_feedback_prompt
 from verified_signal_ledger import ledger_summary as verified_signal_ledger_summary
 from verified_signal_ledger import record_signal as record_verified_signal
@@ -246,6 +248,7 @@ MIGRATION_ROOT_NAME = "MetaAdsAgent-migracion"
 VERSION_FILE = ROOT_DIR / "VERSION"
 BOOTSTRAP_CONFIG_FILE = ROOT_DIR / "installer" / "release-bootstrap.env"
 UPDATE_SNAPSHOTS_DIR = DATA_DIR / "update-snapshots"
+TELEGRAM_UPDATE_NOTIFICATION_FILE = DATA_DIR / "telegram_update_notifications.json"
 UPDATE_SNAPSHOT_ROOT_NAME = "MetaAdsAgent-rollback"
 MAX_UPDATE_SNAPSHOTS = 3
 DEFAULT_POST_LIMIT_BYTES = 2 * 1024 * 1024
@@ -280,6 +283,11 @@ DASHBOARD_SESSION_PREFIX = "das_"
 DASHBOARD_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60
 HERMES_LOGIN_LOCK = threading.Lock()
 UPDATE_OPERATION_LOCK = threading.RLock()
+UPDATE_NOTIFICATION_MONITOR_THREAD = None
+UPDATE_NOTIFICATION_MONITOR_STOP = None
+UPDATE_NOTIFICATION_MONITOR_LOCK = threading.Lock()
+UPDATE_NOTIFICATION_INITIAL_DELAY_SECONDS = 90
+UPDATE_NOTIFICATION_INTERVAL_SECONDS = 60 * 60
 HERMES_LOGIN_STATE = {
     "id": "",
     "status": "idle",
@@ -1039,6 +1047,83 @@ def request_update_release():
         "warnings": update_safety_warnings(),
         "snapshot_policy": {"automatic": True, "keep": MAX_UPDATE_SNAPSHOTS},
     }
+
+
+def check_telegram_update_notification():
+    """Check the official release and notify Telegram without invoking AI."""
+    config = load_config()
+    status = telegram_settings(config)
+    if not (status.get("enabled") and status.get("bot_configured") and status.get("chat_id")):
+        return {"ok": True, "notified": False, "reason": "telegram_not_ready"}
+    update_link = dashboard_update_link(config)
+    result = check_and_notify_update(
+        config,
+        request_release=request_update_release,
+        bot_request=telegram_bot_request,
+        state_file=TELEGRAM_UPDATE_NOTIFICATION_FILE,
+        update_url=update_link.get("url", ""),
+        language=status.get("language") or "es",
+    )
+    if result.get("notified"):
+        log_action(
+            "telegram_update_notification",
+            {"version": result.get("version"), "link_kind": update_link.get("kind")},
+            "completed",
+        )
+    return result
+
+
+def _telegram_update_notification_loop(stop_event):
+    initial_delay = max(
+        5,
+        min(30 * 60, env_int("ADMIRA_UPDATE_CHECK_INITIAL_DELAY_SECONDS", UPDATE_NOTIFICATION_INITIAL_DELAY_SECONDS)),
+    )
+    interval = max(
+        5 * 60,
+        min(24 * 60 * 60, env_int("ADMIRA_UPDATE_CHECK_INTERVAL_SECONDS", UPDATE_NOTIFICATION_INTERVAL_SECONDS)),
+    )
+    if stop_event.wait(initial_delay):
+        return
+    while not stop_event.is_set():
+        try:
+            check_telegram_update_notification()
+        except Exception as exc:
+            try:
+                log_action(
+                    "telegram_update_notification",
+                    {"error": str(exc)[:240]},
+                    "failed",
+                )
+            except Exception:
+                pass
+        if stop_event.wait(interval):
+            return
+
+
+def ensure_telegram_update_notification_monitor():
+    """Start exactly one deterministic release monitor for this dashboard."""
+    global UPDATE_NOTIFICATION_MONITOR_THREAD, UPDATE_NOTIFICATION_MONITOR_STOP
+    with UPDATE_NOTIFICATION_MONITOR_LOCK:
+        if UPDATE_NOTIFICATION_MONITOR_THREAD and UPDATE_NOTIFICATION_MONITOR_THREAD.is_alive():
+            return {"started": True, "already_running": True}
+        UPDATE_NOTIFICATION_MONITOR_STOP = threading.Event()
+        UPDATE_NOTIFICATION_MONITOR_THREAD = threading.Thread(
+            target=_telegram_update_notification_loop,
+            args=(UPDATE_NOTIFICATION_MONITOR_STOP,),
+            name="admira-update-notifier",
+            daemon=True,
+        )
+        UPDATE_NOTIFICATION_MONITOR_THREAD.start()
+        return {"started": True, "already_running": False}
+
+
+def stop_telegram_update_notification_monitor():
+    global UPDATE_NOTIFICATION_MONITOR_THREAD, UPDATE_NOTIFICATION_MONITOR_STOP
+    with UPDATE_NOTIFICATION_MONITOR_LOCK:
+        if UPDATE_NOTIFICATION_MONITOR_STOP:
+            UPDATE_NOTIFICATION_MONITOR_STOP.set()
+        UPDATE_NOTIFICATION_MONITOR_THREAD = None
+        UPDATE_NOTIFICATION_MONITOR_STOP = None
 
 
 def safe_copytree_contents(source, target, base=None):
@@ -12758,6 +12843,7 @@ def main():
     ensure_internal_model_recovery_token()
     write_static_snapshot()
     ensure_telegram_listener()
+    ensure_telegram_update_notification_monitor()
     server = ThreadingHTTPServer((host, port), DashboardHandler)
     CURRENT_DASHBOARD_BIND_HOST = host
     CURRENT_DASHBOARD_BIND_PORT = port
@@ -12771,6 +12857,7 @@ def main():
     except KeyboardInterrupt:
         print("\nStopping dashboard.")
     finally:
+        stop_telegram_update_notification_monitor()
         server.server_close()
     return 0
 
