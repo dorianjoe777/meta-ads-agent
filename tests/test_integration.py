@@ -40,6 +40,7 @@ import decision_memory
 import experiment_scheduler
 import graph_executor
 import meta_upload
+import meta_action_metrics
 import meta_insights
 import campaign_metric_profiles
 import optimization_engine
@@ -6309,6 +6310,42 @@ class IntegrationTestSuite:
         self.assert_true(duplicate_alias_row["conversions"] == 1, "Conversion totals deduplicate Meta reporting aliases")
         self.assert_true(duplicate_alias_row["revenue"] == 41.89, "Purchase value aliases do not inflate revenue")
 
+        contract = meta_action_metrics.assert_reporting_contract()
+        self.assert_true(contract["every_family_once"], "Every supported Meta objective family deduplicates all known reporting aliases")
+        self.assert_true(contract["repeated_fragments"] == 3, "Repeated fragments of one exact Meta action type are preserved")
+        self.assert_true(contract["distinct_results"] == 5, "Different business results remain additive after alias deduplication")
+
+        full_purchase_aliases = [
+            {"action_type": alias, "value": "1"}
+            for alias in meta_action_metrics.ACTION_ALIASES["purchase"]
+        ]
+        full_purchase_values = [
+            {"action_type": alias, "value": "41.89"}
+            for alias in meta_action_metrics.ACTION_ALIASES["purchase"]
+        ]
+        legacy_metrics = dashboard.normalize_insights_rows(
+            [{
+                "campaign_id": "legacy-123",
+                "campaign_name": "Legacy Fallback Campaign",
+                "actions": full_purchase_aliases,
+                "action_values": full_purchase_values,
+            }],
+            "act_999",
+        )
+        self.assert_true(legacy_metrics["campaigns"][0]["conversions"] == 1, "Legacy dashboard fallback shares canonical Meta event deduplication")
+        self.assert_true(legacy_metrics["campaigns"][0]["revenue"] == 41.89, "Legacy dashboard fallback does not multiply revenue aliases")
+
+        daily_metrics = daily_agent.normalize_social_insights(
+            {"data": [{"campaign_id": "daily-123", "actions": full_purchase_aliases}]},
+            {"campaigns": []},
+        )
+        self.assert_true(daily_metrics["campaigns"][0]["conversions"] == 1, "Daily-agent fallback deduplicates Meta purchase aliases")
+        experiment_rows = experiment_scheduler.normalize_insight_rows(
+            {"data": [{"ad_id": "ad-123", "actions": full_purchase_aliases}]},
+            level="ad",
+        )
+        self.assert_true(experiment_rows[0]["conversions"] == 1, "Experiment review fallback deduplicates Meta purchase aliases")
+
     def test_signal_quality_review_event_setup(self):
         """Test campaign signal review catches event mismatch and weak measurement setup."""
         print("\nTesting Signal Quality Event Review...")
@@ -10814,6 +10851,7 @@ class IntegrationTestSuite:
             "scripts/import-migration.sh",
             "scripts/export-migration.ps1",
             "scripts/import-migration.ps1",
+            "src/meta_action_metrics.py",
             "src/product_catalog.py",
             "agent/skills/product-catalog-management/SKILL.md",
             "deploy/digitalocean/cloud-init-strict-access.yaml",
@@ -10864,7 +10902,7 @@ class IntegrationTestSuite:
         self.assert_true("HERMES_STATUS_TIMEOUT_SECONDS=20" in env_example and "HERMES_RESPONSE_TIMEOUT_SECONDS=300" in env_example and '"HERMES_RESPONSE_TIMEOUT_SECONDS": "300"' in docker_entrypoint, "Hermes real replies get a longer timeout than quick status checks")
         self.assert_true("meta_ads_update_snapshots" in compose and "/app/dashboard/data/update-snapshots" in compose, "Docker Compose keeps update rollback snapshots in a named volume")
         self.assert_true("MetaAdsAgent-source.zip" in script, "Release ZIP includes a stable asset name for bootstrap installers")
-        self.assert_true("Release blocked: VERSION/.env.example mismatch" in script and "src/product_catalog.py" in script and "agent/skills/product-catalog-management/SKILL.md" in script, "Release packaging aborts before ZIP creation when versions disagree or required catalog files are absent")
+        self.assert_true("Release blocked: VERSION/.env.example mismatch" in script and "src/meta_action_metrics.py" in script and "assert_reporting_contract" in script and "src/product_catalog.py" in script and "agent/skills/product-catalog-management/SKILL.md" in script, "Release packaging aborts before ZIP creation when versions disagree, reporting deduplication regresses, or required files are absent")
         self.assert_true("tracked source has uncommitted changes" in script and "untracked source files would enter the package" in script, "Release packaging cannot publish source that differs from the committed Git version")
         self.assert_true("install-from-github.ps1" in windows_installer and "install-from-github.sh" in mac_installer and "install-from-github.sh" in linux_installer, "Double-click installers use the shared bootstrap scripts")
         self.assert_true("docker compose up --build" in windows_installer and "./scripts/run-docker.sh" in mac_installer, "Double-click installers launch Docker setup")

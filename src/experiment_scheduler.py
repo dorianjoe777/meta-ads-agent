@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from decision_memory import load_profitability_rules
 from local_store import now_iso, read_json, write_json
+from meta_action_metrics import deduplicated_alias_value
 from product_config import ROOT_DIR
 
 
@@ -66,15 +67,7 @@ def action_value(row, names):
     actions = row.get("actions") or row.get("conversions") or []
     if not isinstance(actions, list):
         return 0.0
-    wanted = {str(name).lower() for name in names}
-    total = 0.0
-    for item in actions:
-        if not isinstance(item, dict):
-            continue
-        action_type = str(item.get("action_type") or item.get("type") or "").lower()
-        if action_type in wanted:
-            total += number(item.get("value"))
-    return total
+    return deduplicated_alias_value(actions, names)
 
 
 def normalize_insight_rows(data, level="ad"):

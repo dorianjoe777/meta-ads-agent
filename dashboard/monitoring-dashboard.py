@@ -3413,18 +3413,12 @@ def targeting_summary(audience):
 
 
 def action_metric_value(rows, names):
-    names = {str(name).lower() for name in names}
-    total = 0.0
-    for row in rows or []:
-        if not isinstance(row, dict):
-            continue
-        action_type = str(row.get("action_type") or row.get("type") or "").lower()
-        if action_type in names or any(action_type.endswith(f".{name}") for name in names):
-            try:
-                total += float(row.get("value") or 0)
-            except (TypeError, ValueError):
-                continue
-    return total
+    # Keep the legacy dashboard fallback aligned with the primary collector.
+    # Import locally so old installations can still load this module while an
+    # official update is copying the new shared reporting module into place.
+    from meta_action_metrics import deduplicated_alias_value
+
+    return deduplicated_alias_value(rows, names)
 
 
 def normalize_insights_rows(rows, account_id=""):

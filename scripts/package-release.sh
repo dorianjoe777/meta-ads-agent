@@ -126,6 +126,7 @@ if not version or env_version != version:
     raise SystemExit(f"Release blocked: VERSION/.env.example mismatch ({version!r} != {env_version!r})")
 required = [
     "dashboard/monitoring-dashboard.py",
+    "src/meta_action_metrics.py",
     "src/product_catalog.py",
     "agent/skills/product-catalog-management/SKILL.md",
     "scripts/install-local.sh",
@@ -133,6 +134,12 @@ required = [
 missing = [item for item in required if not (root / item).exists()]
 if missing:
     raise SystemExit("Release blocked: missing required files: " + ", ".join(missing))
+PY
+
+PYTHONPATH="$STAGING_DIR/src" python3 - <<'PY'
+from meta_action_metrics import assert_reporting_contract
+
+assert_reporting_contract()
 PY
 
 python3 - "$STAGING_DIR/installer/release-bootstrap.env" <<'PY'

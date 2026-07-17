@@ -18,6 +18,7 @@ from experiment_scheduler import experiment_review_payload
 from graph_executor import execute_upload_payload
 from license import license_status
 from local_store import now_iso, read_json, write_json
+from meta_action_metrics import deduplicated_alias_value
 from meta_insights import aggregate_campaigns as aggregate_meta_campaigns, collect_meta_snapshot, save_meta_snapshot
 from meta_upload import recent_uploads, stage_upload
 from optimization_engine import (
@@ -1631,18 +1632,7 @@ def action_value(row, action_names):
     values = row.get("actions") or row.get("conversions") or []
     if not isinstance(values, list):
         return 0
-    wanted = {str(name).lower() for name in action_names}
-    total = 0
-    for item in values:
-        if not isinstance(item, dict):
-            continue
-        action_type = str(item.get("action_type") or item.get("type") or "").lower()
-        if action_type in wanted:
-            try:
-                total += float(item.get("value", 0))
-            except (TypeError, ValueError):
-                pass
-    return total
+    return deduplicated_alias_value(values, action_names)
 
 
 def normalize_social_insights(data, previous_metrics):

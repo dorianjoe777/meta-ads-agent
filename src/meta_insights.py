@@ -7,37 +7,18 @@ import urllib.request
 from datetime import date, datetime, timedelta, timezone
 
 from local_store import now_iso, read_json, write_json
+from meta_action_metrics import (
+    CONVERSION_RESULT_KEYS,
+    FUNNEL_ACTIONS,
+    PURCHASE_VALUE_ACTIONS,
+    conversion_result_value,
+    deduplicated_alias_value,
+)
 from optimization_engine import PERFORMANCE_HISTORY_FILE, MAX_HISTORY_DAYS
 
 
-CONVERSION_ACTIONS = {
-    "purchase", "omni_purchase", "offsite_conversion.fb_pixel_purchase",
-    "onsite_conversion.purchase", "lead", "onsite_conversion.lead_grouped",
-    "offsite_conversion.fb_pixel_lead", "onsite_conversion.messaging_conversation_started_7d",
-}
-PURCHASE_VALUE_ACTIONS = {
-    "purchase", "omni_purchase", "offsite_conversion.fb_pixel_purchase", "onsite_conversion.purchase",
-}
-FUNNEL_ACTIONS = {
-    "landing_page_views": {"landing_page_view", "omni_landing_page_view"},
-    "view_content": {"view_content", "offsite_conversion.fb_pixel_view_content"},
-    "add_to_cart": {"add_to_cart", "offsite_conversion.fb_pixel_add_to_cart"},
-    "initiate_checkout": {
-        "initiate_checkout",
-        "offsite_conversion.fb_pixel_initiate_checkout",
-        "onsite_web_initiate_checkout",
-        "omni_initiated_checkout",
-    },
-    "purchase": PURCHASE_VALUE_ACTIONS,
-    "lead": {"lead", "offsite_conversion.fb_pixel_lead", "onsite_conversion.lead_grouped"},
-    "conversation": {"onsite_conversion.messaging_conversation_started_7d"},
-    "thruplay": {"video_thruplay_watched_actions", "video_thruplay_watched_action"},
-    "video_3s_views": {"video_view", "video_3_sec_watched_actions"},
-    "completed_video_views": {"video_p100_watched_actions"},
-    "app_install": {"app_install", "mobile_app_install", "omni_app_install"},
-    "post_engagement": {"post_engagement", "page_engagement"},
-}
-CONVERSION_FUNNEL_KEYS = ("purchase", "lead", "conversation")
+CONVERSION_ACTIONS = frozenset().union(*(FUNNEL_ACTIONS[key] for key in CONVERSION_RESULT_KEYS))
+CONVERSION_FUNNEL_KEYS = CONVERSION_RESULT_KEYS
 HIDDEN_CAMPAIGN_STATUSES = {
     "archived",
     "deleted",
@@ -123,34 +104,11 @@ def number(value, default=0.0):
 
 
 def action_value(rows, names):
-    wanted = {str(name).lower() for name in names}
-    total = 0.0
-    for row in rows or []:
-        if not isinstance(row, dict):
-            continue
-        action_type = str(row.get("action_type") or row.get("type") or "").lower()
-        if action_type in wanted or any(action_type.endswith(f".{name}") for name in wanted):
-            total += number(row.get("value"))
-    return total
+    return deduplicated_alias_value(rows, names)
 
 
 def deduplicated_action_value(rows, names):
-    """Return one logical Meta result without summing reporting aliases.
-
-    Meta Insights can report the same conversion under generic, offsite, onsite,
-    and omni action types in a single row. Those values are alternate views of
-    the same result, not independent conversions. Sum repeated rows of the same
-    exact action type, then take the largest alias total as the canonical value.
-    """
-    wanted = {str(name).lower() for name in names}
-    totals = {}
-    for row in rows or []:
-        if not isinstance(row, dict):
-            continue
-        action_type = str(row.get("action_type") or row.get("type") or "").lower()
-        if action_type in wanted or any(action_type.endswith(f".{name}") for name in wanted):
-            totals[action_type] = totals.get(action_type, 0.0) + number(row.get("value"))
-    return max(totals.values(), default=0.0)
+    return deduplicated_alias_value(rows, names)
 
 
 def safe_graph_error(payload):
@@ -212,10 +170,7 @@ def normalize_insight_row(row, level):
     spend = number(row.get("spend"))
     impressions = int(number(row.get("impressions")))
     clicks = int(number(row.get("clicks") or row.get("inline_link_clicks")))
-    conversions = sum(
-        deduplicated_action_value(row.get("actions"), FUNNEL_ACTIONS[key])
-        for key in CONVERSION_FUNNEL_KEYS
-    )
+    conversions = conversion_result_value(row.get("actions"))
     revenue = deduplicated_action_value(row.get("action_values"), PURCHASE_VALUE_ACTIONS)
     item = {
         "level": level,
