@@ -1,6 +1,6 @@
 ---
 name: campaign-strategy
-description: Choose the right Meta Ads campaign strategy for Admira IA: objective, three success metrics, optimization event, budget mode, placements, audience, click-to-message starter, lead form needs, and test structure.
+description: "Choose the right Meta Ads campaign strategy for Admira IA: objective, three success metrics, optimization event, budget mode, placements, audience, click-to-message starter, lead form needs, and test structure."
 ---
 
 # Campaign Strategy Skill
@@ -31,13 +31,19 @@ Do not over-question. Infer safe defaults from the business, offer, budget, dest
 Do not ask broad campaign questions as a blank form. For each important lever, first give the professional recommendation and why:
 
 - geography/market: infer from language, offer, payment platform, shipping/service area, page, website, and previous conversation; never default silently to US;
-- objective and optimization event: recommend the closest event Meta can learn from with enough volume, not just the final dream event;
+- objective and optimization event: recommend the deepest reliably tracked business outcome; use volume to explain confidence and volatility, not to automatically replace the real outcome with an easier proxy;
 - budget mode and test size: recommend ad set budget or campaign budget based on budget, number of ad sets, and need for control;
 - placements: recommend from the creative format and buyer behavior, not from a rigid default;
 - creative portfolio: recommend the number and types of creatives that the budget can realistically test;
 - destination: recommend website, WhatsApp/Messenger, Instagram DM, lead form, or booking flow based on friction and buyer intent.
 
 If recent market context could improve the choice, use available web/browser/search tools before finalizing. Then summarize the recommendation in buyer language and ask only for a correction or one strategic confirmation.
+
+## Optimization event
+
+- For sales, prefer `Purchase` when it is tracked correctly. The often-cited ~50 weekly events is learning guidance, not a binary minimum; below it Meta still optimizes, but results may fluctuate or show Learning Limited.
+- Do not choose `InitiateCheckout` merely to obtain more events or avoid Learning Limited. Check checkout-to-purchase quality: if many checkouts rarely buy, that proxy teaches Meta to find checkout starters, not buyers.
+- Use an intermediate proxy event such as `InitiateCheckout` as primary only when the final event is broken, duplicated, unavailable, or cannot be attributed reliably. Keep checkout and other funnel events as secondary diagnostics.
 
 ## Message campaigns
 
