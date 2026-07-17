@@ -3421,17 +3421,22 @@ def action_metric_value(rows, names):
     return deduplicated_alias_value(rows, names)
 
 
+def conversion_metric_value(rows):
+    # Generic "results" must select one outcome family rather than adding
+    # sequential funnel events such as Lead + Contact + Purchase.
+    from meta_action_metrics import conversion_result_value
+
+    return conversion_result_value(rows)
+
+
+def funnel_metric_values(rows):
+    from meta_action_metrics import canonical_funnel_values
+
+    return canonical_funnel_values(rows)
+
+
 def normalize_insights_rows(rows, account_id=""):
     campaigns = []
-    conversion_actions = {
-        "purchase",
-        "omni_purchase",
-        "offsite_conversion.fb_pixel_purchase",
-        "onsite_conversion.purchase",
-        "lead",
-        "onsite_conversion.lead_grouped",
-        "offsite_conversion.fb_pixel_lead",
-    }
     purchase_value_actions = {
         "purchase",
         "omni_purchase",
@@ -3448,8 +3453,9 @@ def normalize_insights_rows(rows, account_id=""):
         impressions = int(float(row.get("impressions") or 0))
         actions = row.get("actions") or []
         action_values = row.get("action_values") or []
-        conversions = int(round(action_metric_value(actions, conversion_actions)))
+        conversions = int(round(conversion_metric_value(actions)))
         revenue = money(action_metric_value(action_values, purchase_value_actions))
+        funnel = funnel_metric_values(actions)
         ctr = float(row.get("ctr") or 0)
         cpc = float(row.get("cpc") or 0)
         frequency = float(row.get("frequency") or 1.0)
@@ -3466,6 +3472,7 @@ def normalize_insights_rows(rows, account_id=""):
             "clicks": clicks,
             "conversions": conversions,
             "revenue": revenue,
+            "funnel": funnel,
             "frequency": frequency,
             "ctr": ctr,
             "cpc": cpc,

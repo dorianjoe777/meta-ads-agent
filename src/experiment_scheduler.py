@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from decision_memory import load_profitability_rules
 from local_store import now_iso, read_json, write_json
-from meta_action_metrics import deduplicated_alias_value
+from meta_action_metrics import PURCHASE_VALUE_ACTIONS, conversion_result_value, deduplicated_alias_value
 from product_config import ROOT_DIR
 
 
@@ -63,13 +63,6 @@ def save_experiments(state):
     return state
 
 
-def action_value(row, names):
-    actions = row.get("actions") or row.get("conversions") or []
-    if not isinstance(actions, list):
-        return 0.0
-    return deduplicated_alias_value(actions, names)
-
-
 def normalize_insight_rows(data, level="ad"):
     rows = data.get("data") if isinstance(data, dict) else data
     if isinstance(rows, dict):
@@ -81,10 +74,20 @@ def normalize_insight_rows(data, level="ad"):
         if not isinstance(row, dict):
             continue
         spend = number(row.get("spend") or row.get("amount_spent"))
-        conversions = number(row.get("conversions") or row.get("purchases") or row.get("results"))
-        if not conversions:
-            conversions = action_value(row, ["purchase", "lead", "complete_registration", "omni_purchase"])
-        revenue = number(row.get("revenue") or row.get("conversion_value") or row.get("value") or row.get("purchase_roas_value"))
+        actions = row.get("actions") if isinstance(row.get("actions"), list) else []
+        if not actions and isinstance(row.get("conversions"), list):
+            actions = row.get("conversions")
+        action_values = row.get("action_values") if isinstance(row.get("action_values"), list) else []
+        conversions = (
+            conversion_result_value(actions)
+            if actions
+            else number(row.get("conversions") or row.get("purchases") or row.get("results"))
+        )
+        revenue = (
+            deduplicated_alias_value(action_values, PURCHASE_VALUE_ACTIONS)
+            if action_values
+            else number(row.get("revenue") or row.get("conversion_value") or row.get("value") or row.get("purchase_roas_value"))
+        )
         impressions = whole(row.get("impressions"))
         clicks = whole(row.get("clicks") or row.get("inline_link_clicks"))
         normalized.append({

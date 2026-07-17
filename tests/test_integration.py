@@ -6313,7 +6313,33 @@ class IntegrationTestSuite:
         contract = meta_action_metrics.assert_reporting_contract()
         self.assert_true(contract["every_family_once"], "Every supported Meta objective family deduplicates all known reporting aliases")
         self.assert_true(contract["repeated_fragments"] == 3, "Repeated fragments of one exact Meta action type are preserved")
-        self.assert_true(contract["distinct_results"] == 5, "Different business results remain additive after alias deduplication")
+        self.assert_true(contract["disjoint_sources"] == 10, "Distinct web, app, and store sources remain additive")
+        self.assert_true(contract["rollup_plus_app"] == 8, "A web/store rollup can be combined with a disjoint app source")
+        self.assert_true(contract["zero_rollup_fallback"] == 5, "A stale zero rollup does not erase positive source detail")
+        self.assert_true(contract["generic_result"] == 4, "Generic results do not add sequential funnel outcomes")
+        self.assert_true(contract["explicit_distinct_results"] == 5, "Explicitly requested business results remain additive")
+
+        source_rows = [
+            {"action_type": "offsite_conversion.fb_pixel_purchase", "value": "3"},
+            {"action_type": "onsite_web_purchase", "value": "2"},
+            {"action_type": "mobile_app_purchase", "value": "4"},
+            {"action_type": "offline_conversion.purchase", "value": "1"},
+        ]
+        aggregate_rows = source_rows + [{"action_type": "omni_purchase", "value": "7"}]
+        self.assert_true(meta_action_metrics.canonical_action_value(source_rows, "purchase") == 10, "Separate conversion sources are summed when no rollup exists")
+        self.assert_true(meta_action_metrics.canonical_action_value(aggregate_rows, "purchase") == 7, "An aggregate rollup supersedes overlapping source details")
+        self.assert_true(meta_action_metrics.canonical_action_value([
+            {"action_type": "offsite_conversion.fb_pixel_purchase", "value": "2"},
+            {"action_type": "offsite_purchase", "value": "3"},
+        ], "purchase") == 3, "Aliases for the same source use one authoritative total")
+        self.assert_true(meta_action_metrics.canonical_action_value([
+            {"action_type": "purchase", "value": "1"},
+            {"action_type": "purchase", "value": "2"},
+        ], "purchase") == 3, "Fragments with the same exact action type remain additive")
+        self.assert_true(meta_action_metrics.canonical_action_value([
+            {"action_type": "post_engagement", "value": "3"},
+            {"action_type": "page_engagement", "value": "8"},
+        ], "post_engagement") == 3, "Post engagement is not replaced by broader page engagement")
 
         full_purchase_aliases = [
             {"action_type": alias, "value": "1"}
@@ -6334,17 +6360,40 @@ class IntegrationTestSuite:
         )
         self.assert_true(legacy_metrics["campaigns"][0]["conversions"] == 1, "Legacy dashboard fallback shares canonical Meta event deduplication")
         self.assert_true(legacy_metrics["campaigns"][0]["revenue"] == 41.89, "Legacy dashboard fallback does not multiply revenue aliases")
+        self.assert_true(legacy_metrics["campaigns"][0]["funnel"]["purchase"] == 1, "Legacy dashboard fallback exposes the canonical purchase funnel")
 
         daily_metrics = daily_agent.normalize_social_insights(
-            {"data": [{"campaign_id": "daily-123", "actions": full_purchase_aliases}]},
+            {"data": [{"campaign_id": "daily-123", "conversions": "99", "actions": full_purchase_aliases, "action_values": full_purchase_values}]},
             {"campaigns": []},
         )
-        self.assert_true(daily_metrics["campaigns"][0]["conversions"] == 1, "Daily-agent fallback deduplicates Meta purchase aliases")
+        self.assert_true(daily_metrics["campaigns"][0]["conversions"] == 1, "Daily-agent fallback prefers canonical raw events over an inflated numeric total")
+        self.assert_true(daily_metrics["campaigns"][0]["revenue"] == 41.89, "Daily-agent fallback deduplicates purchase value aliases")
+        self.assert_true(daily_metrics["campaigns"][0]["funnel"]["purchase"] == 1, "Daily-agent fallback exposes the canonical purchase funnel")
         experiment_rows = experiment_scheduler.normalize_insight_rows(
-            {"data": [{"ad_id": "ad-123", "actions": full_purchase_aliases}]},
+            {"data": [{"ad_id": "ad-123", "conversions": "99", "actions": full_purchase_aliases, "action_values": full_purchase_values}]},
             level="ad",
         )
-        self.assert_true(experiment_rows[0]["conversions"] == 1, "Experiment review fallback deduplicates Meta purchase aliases")
+        self.assert_true(experiment_rows[0]["conversions"] == 1, "Experiment review fallback prefers canonical raw events over an inflated numeric total")
+        self.assert_true(experiment_rows[0]["revenue"] == 41.89, "Experiment review fallback deduplicates purchase value aliases")
+
+        mixed_outcomes = [
+            {"action_type": "purchase", "value": "1"},
+            {"action_type": "lead", "value": "4"},
+        ]
+        mixed_primary = meta_insights.normalize_insight_row({"campaign_id": "mixed", "actions": mixed_outcomes}, "campaign")
+        mixed_legacy = dashboard.normalize_insights_rows([{"campaign_id": "mixed", "actions": mixed_outcomes}], "act_999")
+        mixed_daily = daily_agent.normalize_social_insights(
+            {"data": [{"campaign_id": "mixed", "actions": mixed_outcomes}]},
+            {"campaigns": []},
+        )
+        mixed_experiment = experiment_scheduler.normalize_insight_rows(
+            {"data": [{"ad_id": "mixed", "actions": mixed_outcomes}]},
+            level="ad",
+        )
+        self.assert_true(mixed_primary["conversions"] == 4, "Primary collector selects one generic result family")
+        self.assert_true(mixed_legacy["campaigns"][0]["conversions"] == 4, "Legacy dashboard uses the same generic result contract")
+        self.assert_true(mixed_daily["campaigns"][0]["conversions"] == 4, "Daily agent uses the same generic result contract")
+        self.assert_true(mixed_experiment[0]["conversions"] == 4, "Experiment scheduler uses the same generic result contract")
 
     def test_signal_quality_review_event_setup(self):
         """Test campaign signal review catches event mismatch and weak measurement setup."""

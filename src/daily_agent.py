@@ -18,7 +18,12 @@ from experiment_scheduler import experiment_review_payload
 from graph_executor import execute_upload_payload
 from license import license_status
 from local_store import now_iso, read_json, write_json
-from meta_action_metrics import deduplicated_alias_value
+from meta_action_metrics import (
+    PURCHASE_VALUE_ACTIONS,
+    canonical_funnel_values,
+    conversion_result_value,
+    deduplicated_alias_value,
+)
 from meta_insights import aggregate_campaigns as aggregate_meta_campaigns, collect_meta_snapshot, save_meta_snapshot
 from meta_upload import recent_uploads, stage_upload
 from optimization_engine import (
@@ -1628,13 +1633,6 @@ def nested_number(payload, keys, default=0):
     return default
 
 
-def action_value(row, action_names):
-    values = row.get("actions") or row.get("conversions") or []
-    if not isinstance(values, list):
-        return 0
-    return deduplicated_alias_value(values, action_names)
-
-
 def normalize_social_insights(data, previous_metrics):
     rows = data.get("data") if isinstance(data, dict) else data
     if isinstance(rows, dict):
@@ -1654,8 +1652,19 @@ def normalize_social_insights(data, previous_metrics):
         spend = nested_number(row, ["spend", "amount_spent"])
         impressions = int(nested_number(row, ["impressions"]))
         clicks = int(nested_number(row, ["clicks", "inline_link_clicks"]))
-        conversions = int(nested_number(row, ["conversions", "purchases", "results"]) or action_value(row, ["purchase", "lead", "complete_registration", "omni_purchase"]))
-        revenue = nested_number(row, ["revenue", "purchase_roas_value", "conversion_value", "value"]) or float(prev.get("revenue", 0) or 0)
+        actions = row.get("actions") if isinstance(row.get("actions"), list) else []
+        if not actions and isinstance(row.get("conversions"), list):
+            actions = row.get("conversions")
+        action_values = row.get("action_values") if isinstance(row.get("action_values"), list) else []
+        explicit_conversions = nested_number(row, ["conversions", "purchases", "results"])
+        conversions = int(conversion_result_value(actions) if actions else explicit_conversions)
+        explicit_revenue = nested_number(row, ["revenue", "purchase_roas_value", "conversion_value", "value"])
+        revenue = (
+            deduplicated_alias_value(action_values, PURCHASE_VALUE_ACTIONS)
+            if action_values
+            else explicit_revenue or float(prev.get("revenue", 0) or 0)
+        )
+        funnel = canonical_funnel_values(actions) if actions else prev.get("funnel", {})
         campaign = {
             **prev,
             "id": campaign_id,
@@ -1667,6 +1676,7 @@ def normalize_social_insights(data, previous_metrics):
             "clicks": clicks,
             "conversions": conversions,
             "revenue": revenue,
+            "funnel": funnel,
             "frequency": nested_number(row, ["frequency"], prev.get("frequency", 1.0)),
             "target_type": prev.get("target_type", "campaign"),
             "target_id": prev.get("target_id", campaign_id),
