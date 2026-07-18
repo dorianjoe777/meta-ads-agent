@@ -5,6 +5,7 @@ Integration tests for Meta Ads Agent modules.
 import json
 import hashlib
 import os
+import stat
 import shutil
 import signal
 import subprocess
@@ -1692,9 +1693,9 @@ class IntegrationTestSuite:
             self.assert_true("• Conservador" in telegram_agent.message_text(table_reply), "Legacy Telegram delivery receives the same table and empty-message protection")
             delivery_event = json.loads(delivery_log.read_text(encoding="utf-8").splitlines()[-1])
             self.assert_true(delivery_event["content_sha256"] and delivery_event["original_length"] > 0 and "markdown_table_converted" in delivery_event["reasons"], "Gateway records safe delivery metadata so future empty-message incidents can be diagnosed")
-            admira_hermes_runtime_patch._append_gateway_turn("user", f"Mi token es EAARZCS9BuvSwBR3CyhVZCZCLT5aAnjoKNuCFwbrVEUNV8q5Gojivo0rBA8HMhWuHddbCS52ZCZCLQ2LZBLLtymDbr6plcexfeDdi7hqLY8pAPVNE4CIVhZAvcZAXQH5UvG8ndWZBVjT4wpH9N8BFDrYp04eBWq47Oifrsb2hss4e9p3NwN63VAVxXqRRWPdJe y la ruta es {generated_image.resolve()}")
+            admira_hermes_runtime_patch._append_gateway_turn("user", f"Mi token es EAARTESTTOKENAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA y la ruta es {generated_image.resolve()}")
             turn_log_text = turn_log.read_text(encoding="utf-8")
-            self.assert_true("redacted-token" in turn_log_text and "EAARZCS9Buv" not in turn_log_text and str(generated_image.resolve()) not in turn_log_text, "Gateway recent-turn log stores redacted conversation context")
+            self.assert_true("redacted-token" in turn_log_text and "EAARTESTTOKEN" not in turn_log_text and str(generated_image.resolve()) not in turn_log_text, "Gateway recent-turn log stores redacted conversation context")
         finally:
             for key, value in original_env.items():
                 if value is None:
@@ -2864,7 +2865,7 @@ class IntegrationTestSuite:
             self.assert_true("mcp_admira_import_product_catalog" in product_catalog_text and "mcp_admira_search_product_catalog" in product_catalog_text and "50 products" in product_catalog_text and "separate child offer" in product_catalog_text, "Catalog skill imports, retrieves, and isolates large catalogs and bundle offers")
             self.assert_true("mcp_admira_import_product_catalog" in agents_text and "mcp_admira_search_product_catalog" in agents_text and "multi-product" in agents_text.lower(), "Top-level Hermes rules require catalog retrieval instead of relying on the last discussed product")
             self.assert_true(len(agents_text) <= hermes_bridge.HERMES_CONTEXT_FILE_SAFE_MAX_CHARS and "# Product Agent File: SKILLS.md" not in agents_text, "Root AGENTS stays below Hermes' context cap without duplicating the complete skill catalog")
-            self.assert_true(len(standalone_skills_text) > 40000 and "Product Skill Catalog" in agents_text, "The complete standalone skill catalog remains available on demand after removing its duplicate from AGENTS")
+            self.assert_true(len(standalone_skills_text) > 40000 and "Product Skill Catalog" in agents_text and "memory/currently-decided" in standalone_skills_text and "immutable" in standalone_skills_text, "The standalone action catalog preserves the immutable-policy versus buyer-state contract")
             self.assert_true("three most important success metrics" in campaign_text and "success_metrics" in campaign_text and "mcp_admira_save_ads_onboarding" in agents_text, "Hermes workspace teaches campaign scorecards and exposes ads onboarding memory")
             campaign_strategy_text = (workspace_path / "skills" / "campaign-strategy" / "SKILL.md").read_text(encoding="utf-8")
             self.assert_true("purpose is direct revenue" in campaign_strategy_text and "final economic outcome" in campaign_strategy_text and "not a binary minimum" in campaign_strategy_text and "checkout-to-purchase" in campaign_strategy_text and "secondary diagnostics" in campaign_strategy_text, "Campaign strategy uses the real economic/purpose event instead of chasing proxy-event volume")
@@ -2884,7 +2885,41 @@ class IntegrationTestSuite:
             self.assert_true("interval_days" in organic_content_text and "cada X días" in organic_content_text, "Organic content skill supports daily or every-X-days cadence")
             self.assert_true((workspace_path / "memory" / "content_asset_library.json").exists() and (workspace_path / "memory" / "content_strategy.md").exists() and (workspace_path / "memory" / "organic_content_posts.json").exists(), "Hermes workspace includes durable organic content strategy, asset, and real-publication memory files")
             self.assert_true((workspace_path / "skills" / "README.md").exists(), "Hermes workspace includes a product skill index")
+            current_state_dir = workspace_path / "memory" / "currently-decided"
+            campaign_state = current_state_dir / "campaign-strategy-currently-decided.md"
+            expected_state_files = {
+                "README.md",
+                "business-onboarding-currently-decided.md",
+                "brand-and-assets-currently-decided.md",
+                "product-catalog-management-currently-decided.md",
+                "creative-strategy-currently-decided.md",
+                "creative-production-codex-image-currently-decided.md",
+                "organic-content-strategy-currently-decided.md",
+                "campaign-strategy-currently-decided.md",
+                "meta-campaign-execution-currently-decided.md",
+                "measurement-optimization-currently-decided.md",
+                "support-recovery-currently-decided.md",
+            }
+            self.assert_true(expected_state_files.issubset({path.name for path in current_state_dir.glob("*.md")}), "Every stateful official skill has a generated currently-decided companion")
+            self.assert_true("immutable skill" in skills_readme.lower() and "currently-decided" in skills_readme and "Never write decisions or events into a `SKILL.md`" in skills_readme, "Skill routing clearly separates universal policy from buyer state")
+            self.assert_true(bool(campaign_strategy_text), "Campaign strategy remains readable after workspace protection")
+            self.assert_true(not (workspace_path.stat().st_mode & stat.S_IWUSR) and not ((workspace_path / "AGENTS.md").stat().st_mode & stat.S_IWUSR) and not (campaign_state.stat().st_mode & stat.S_IWUSR) and not ((workspace_path / "skills" / "campaign-strategy" / "SKILL.md").stat().st_mode & stat.S_IWUSR), "The complete curated policy/state workspace is physically read-only")
+            self.assert_true((workspace_path / "uploads").stat().st_mode & stat.S_IWUSR, "Only the bounded uploads inbox remains writable for new Telegram/dashboard attachments")
+            synthetic_state = hermes_bridge.build_currently_decided_state(
+                {
+                    "durable_conversation_memory": {"items": [{"category": "decision", "scope": "campaign", "summary": "Promover LATAM", "details": "Decisión del comprador", "status": "active"}]},
+                    "brand_guides": {"general_branding": "Marca Azul", "offer_map": "Oferta A", "products": [], "ad_briefs": []},
+                    "recent_history": {"actions": [], "creative_refreshes": []},
+                    "active_workflow": {},
+                    "ads_onboarding": "Evento Purchase",
+                }
+            )
+            self.assert_true("Promover LATAM" in synthetic_state["campaign-strategy-currently-decided.md"] and "Evento Purchase" in synthetic_state["campaign-strategy-currently-decided.md"] and "Promover LATAM" not in campaign_strategy_text, "Buyer campaign choices render in the companion without contaminating the immutable skill")
+            refreshed = hermes_bridge.prepare_hermes_workspace({"channel": "telegram", "language": "es", "account_context": {}})
+            self.assert_true((Path(refreshed["path"]) / "memory" / "currently-decided" / "README.md").exists(), "A later turn can safely rebuild a workspace whose policy/state layers were protected read-only")
         finally:
+            if hermes_bridge.HERMES_WORKSPACE_DIR == test_dir / "workspace":
+                hermes_bridge.make_workspace_tree_writable()
             hermes_bridge.HERMES_WORKSPACE_DIR = original_workspace
             shutil.rmtree(test_dir, ignore_errors=True)
 
@@ -3964,7 +3999,7 @@ class IntegrationTestSuite:
                 json.dumps(
                     [
                         {"role": "user", "content": "Hace dos días hablamos de otra cosa.", "created_at": two_days_ago},
-                        {"role": "user", "content": "Quiero retomar las dos piezas visuales. Mi token es EAARZCS9BuvSwBR3CyhVZCZCLT5aAnjoKNuCFwbrVEUNV8q5Gojivo0rBA8HMhWuHddbCS52ZCZCLQ2LZBLLtymDbr6plcexfeDdi7hqLY8pAPVNE4CIVhZAvcZAXQH5UvG8ndWZBVjT4wpH9N8BFDrYp04eBWq47Oifrsb2hss4e9p3NwN63VAVxXqRRWPdJe", "created_at": yesterday},
+                        {"role": "user", "content": "Quiero retomar las dos piezas visuales. Mi token es EAARTESTTOKENAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "created_at": yesterday},
                         {"role": "agent", "content": "Perfecto, el siguiente paso es generar las dos piezas visuales para WhatsApp.", "created_at": yesterday},
                     ],
                     ensure_ascii=False,
@@ -4009,7 +4044,7 @@ class IntegrationTestSuite:
             self.assert_true(status["has_persistent_memory"] is True and status["resume_required"] is True, "Continuity status detects durable business memory after history cleanup")
             self.assert_true(status["sources"]["business_profile"] and status["sources"]["general_branding"] and status["sources"]["ad_briefs"], "Continuity status names the saved business, brand, and ad brief sources")
             self.assert_true(status["sources"]["latest_day_context"] and status["sources"]["active_workflow"] and "pending_approvals" not in status["sources"], "Continuity status detects real workflow memory without treating approvals as a resume source")
-            self.assert_true("Latest local activity day" in latest_day and "dos piezas visuales" in latest_day and "redacted-token" in latest_day and "EAARZCS9Buv" not in latest_day, "Latest day context uses the most recent available day and redacts raw tokens")
+            self.assert_true("Latest local activity day" in latest_day and "dos piezas visuales" in latest_day and "redacted-token" in latest_day and "EAARTESTTOKEN" not in latest_day, "Latest day context uses the most recent available day and redacts raw tokens")
             self.assert_true(active_workflow["has_active_workflow"] is True and active_workflow["phase"] == "creative_or_campaign_brief" and "crear dos piezas visuales" in active_workflow["next_step"], "Active workflow resumes the actual creative brief instead of an unrelated old approval")
             self.assert_true("approval_test" not in latest_day and "approval_test" not in continuity and not (workspace_path / "memory" / "pending_approvals.json").exists(), "Old approvals are absent from ambient latest-day and continuity workspace memory")
             self.assert_true("Spa MediCentro Juliana" in continuity and "S/99" in continuity and "Retomo donde quedamos" in continuity, "Continuity brief gives Hermes concrete remembered context and a resume pattern")
@@ -5792,6 +5827,7 @@ class IntegrationTestSuite:
         print("\nTesting Codex/Image Latest Workspace Upload Fallback...")
 
         dashboard = load_dashboard_module()
+        hermes_bridge.make_workspace_tree_writable()
         workspace_uploads = ROOT_DIR / "dashboard" / "data" / "hermes-workspace" / "current" / "uploads"
         workspace_uploads.mkdir(parents=True, exist_ok=True)
         workspace_photo = workspace_uploads / "recepcion-real-test.jpg"
@@ -5854,6 +5890,9 @@ class IntegrationTestSuite:
                 context_file.unlink(missing_ok=True)
             else:
                 context_file.write_bytes(original_context)
+            hermes_bridge.protect_workspace_tree(".")
+            workspace_uploads.mkdir(parents=True, exist_ok=True)
+            workspace_uploads.chmod(0o755)
 
     def test_audience_builder_readiness(self):
         """Test audience builder creates safe targeting strategy and lookalike readiness."""

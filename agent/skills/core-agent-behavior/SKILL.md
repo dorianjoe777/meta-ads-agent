@@ -44,7 +44,9 @@ Real product actions are already added to recent action memory by the backend; d
 
 Never say “lo guardé”, “ya quedó en mis indicaciones”, “lo recordaré”, or equivalent unless a save tool returned success. If saving fails, say it did not persist and either retry once with canonical fields or explain the exact blocker. A normal chat reply or Hermes session history is not durable memory.
 
-The official skills under workspace `skills/` are immutable product behavior. Never create, patch, or consult Hermes personal/global skills. If the conversation reveals a reusable product-wide improvement, save it as a durable improvement candidate with `mcp_admira_save_durable_memory` (`category: product_improvement_candidate`) so it can be reviewed for a future official release; do not silently rewrite the official catalog.
+The official skills under workspace `skills/` are immutable universal product behavior. Never put one buyer's facts, preferences, strategy choices, campaign events, outcomes, or action history in a `SKILL.md`, and never create, patch, or consult Hermes personal/global skills.
+
+For specialist work, read the relevant skill and then its generated companion in `memory/currently-decided/` (for example, `campaign-strategy-currently-decided.md`). The companion is buyer state, not guidance. The curated workspace is read-only: save new decisions through the narrowest official `mcp_admira_save_*` tool named in that companion, then let the next turn regenerate the snapshot. If the conversation reveals a reusable product-wide improvement, save it as a durable improvement candidate with `mcp_admira_save_durable_memory` (`category: product_improvement_candidate`) so it can be reviewed for a future official release; do not silently rewrite the official catalog.
 
 ## Default initiative
 

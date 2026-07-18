@@ -633,6 +633,43 @@ def write_workspace_file(relative_path, content):
     return str(target.relative_to(workspace_root))
 
 
+def make_workspace_tree_writable():
+    """Restore permissions before replacing the curated ephemeral workspace."""
+    if not HERMES_WORKSPACE_DIR.exists():
+        return
+    for path in sorted(HERMES_WORKSPACE_DIR.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+        if path.is_symlink():
+            continue
+        try:
+            path.chmod(0o755 if path.is_dir() else 0o644)
+        except OSError:
+            continue
+    try:
+        HERMES_WORKSPACE_DIR.chmod(0o755)
+    except OSError:
+        pass
+
+
+def protect_workspace_tree(relative_path):
+    """Make official policy or generated state snapshots read-only to Hermes."""
+    workspace_root = HERMES_WORKSPACE_DIR.resolve()
+    target = (HERMES_WORKSPACE_DIR / relative_path).resolve()
+    target.relative_to(workspace_root)
+    if not target.exists():
+        return []
+    protected = []
+    paths = [target, *target.rglob("*")] if target.is_dir() else [target]
+    for path in sorted(paths, key=lambda item: len(item.parts), reverse=True):
+        if path.is_symlink():
+            continue
+        try:
+            path.chmod(0o555 if path.is_dir() else 0o444)
+            protected.append(str(path.relative_to(workspace_root)))
+        except OSError:
+            continue
+    return protected
+
+
 def read_agent_profile_file(name, limit=MEMORY_TEXT_LIMIT):
     path = ROOT_DIR / "agent" / name
     return read_text(path, limit)
@@ -688,6 +725,7 @@ For each turn, read the buyer message normally. If you need live account context
 - `memory/content_strategy.md`: organic content strategy, pillars, cadence, and daily-post preferences when present.
 - `memory/organic_content_posts.json`: exact organic drafts that were approved and really published, including their Meta post IDs. Pending approvals are still not ambient continuity.
 - `memory/durable_conversation_memory.json`: confirmed decisions, preferences, blockers, next steps, and workflow agreements that did not fit a narrower specialist store.
+- `memory/currently-decided/`: generated buyer-specific companion state for each specialist skill. Read the relevant immutable skill first, then its companion; update state only through official save tools.
 - `brand_guides/Offer map.md`: parent-brand/child-offer index. Use it to avoid mixing products/services/offers under the same brand.
 - `brand_guides/`: brand, product, ad brief, and creative reference memory.
 - `skills/`: focused product skills. Read `core-agent-behavior` before every reply, `session-continuity` after cleanup/restart/update/fresh sessions, and the relevant specialist skill before taking product actions.
@@ -751,7 +789,7 @@ If the MCP tool is unavailable, say the action cannot be executed yet and explai
 
 # Official Skills and Durable Persistence
 
-Use only the official versioned skills under this workspace's `skills/` directory. Never use, create, patch, or consult Hermes personal/global skills. Before ending every turn, decide whether the buyer confirmed a fact, decision, preference, outcome, blocker, next step, or workflow agreement that must survive reset. Persist it with the narrowest `mcp_admira_save_*` tool; use `mcp_admira_save_durable_memory` only as fallback. Never say “lo guardé”, “lo recordaré”, or “ya quedó en mis indicaciones” unless the save tool confirmed success.
+Use only the official versioned skills under this workspace's `skills/` directory. Those files are immutable universal product guidance and never hold buyer facts, choices, action history, outcomes, or self-improvement patches. Read buyer-specific state from the matching `memory/currently-decided/*-currently-decided.md` companion. Never edit either layer directly and never use, create, patch, or consult Hermes personal/global skills. Before ending every turn, decide whether the buyer confirmed a fact, decision, preference, outcome, blocker, next step, or workflow agreement that must survive reset. Persist it with the narrowest `mcp_admira_save_*` tool named in the companion; use `mcp_admira_save_durable_memory` only as fallback. Never say “lo guardé”, “lo recordaré”, or “ya quedó en mis indicaciones” unless the save tool confirmed success.
 
 Dashboard chat and Telegram are buyer-facing product surfaces, not terminals. Never tell the buyer you cannot create, prepare, or stage a campaign because you lack CLI/terminal access. Product actions must go through MCP tools in Telegram or the JSON tool-request contract in dashboard chat. If details are missing, ask the next missing business detail; if a protected action is ready, prepare it for approval.
 
@@ -818,16 +856,18 @@ def write_product_skill_workspace_files():
             "",
             "## Routing",
             "",
-            "- Business discovery: `business-onboarding/SKILL.md`.",
-            "- Brand/logo/assets: `brand-and-assets/SKILL.md`.",
-            "- Product catalogs, exact SKU recall, bundles, and cross-sells: `product-catalog-management/SKILL.md`.",
-            "- Organic posts/content calendar: `organic-content-strategy/SKILL.md`.",
-            "- Creative ideas/tests: `creative-strategy/SKILL.md`.",
-            "- Codex/Image production: `creative-production-codex-image/SKILL.md`.",
-            "- Campaign planning: `campaign-strategy/SKILL.md`.",
-            "- Meta Graph execution, direct publishing, lead forms: `meta-campaign-execution/SKILL.md`.",
-            "- Results, budgets, experiments, daily brief, feedback loop: `measurement-optimization/SKILL.md`.",
-            "- Failures, rate limits, access/update issues: `support-recovery/SKILL.md`.",
+            "For every routed domain, read the immutable skill and then its buyer-specific companion under `memory/currently-decided/`. Never write decisions or events into a `SKILL.md`.",
+            "",
+            "- Business discovery: `business-onboarding/SKILL.md` + `memory/currently-decided/business-onboarding-currently-decided.md`.",
+            "- Brand/logo/assets: `brand-and-assets/SKILL.md` + `memory/currently-decided/brand-and-assets-currently-decided.md`.",
+            "- Product catalogs, exact SKU recall, bundles, and cross-sells: `product-catalog-management/SKILL.md` + `memory/currently-decided/product-catalog-management-currently-decided.md`.",
+            "- Organic posts/content calendar: `organic-content-strategy/SKILL.md` + `memory/currently-decided/organic-content-strategy-currently-decided.md`.",
+            "- Creative ideas/tests: `creative-strategy/SKILL.md` + `memory/currently-decided/creative-strategy-currently-decided.md`.",
+            "- Codex/Image production: `creative-production-codex-image/SKILL.md` + `memory/currently-decided/creative-production-codex-image-currently-decided.md`.",
+            "- Campaign planning: `campaign-strategy/SKILL.md` + `memory/currently-decided/campaign-strategy-currently-decided.md`.",
+            "- Meta Graph execution, direct publishing, lead forms: `meta-campaign-execution/SKILL.md` + `memory/currently-decided/meta-campaign-execution-currently-decided.md`.",
+            "- Results, budgets, experiments, daily brief, feedback loop: `measurement-optimization/SKILL.md` + `memory/currently-decided/measurement-optimization-currently-decided.md`.",
+            "- Failures, rate limits, access/update issues: `support-recovery/SKILL.md` + `memory/currently-decided/support-recovery-currently-decided.md`.",
             "- Legacy compatibility shims: `branding-creatives-creation`, `campaign-creation`, `creative-codex-image`.",
             "",
             "## Available skill files",
@@ -837,7 +877,7 @@ def write_product_skill_workspace_files():
             write_workspace_file(
                 "skills/README.md",
                 "# Admira IA Product Skills\n\n"
-                "Use only these official, versioned workspace skills. Hermes personal/global skill creation, patching, and routing are disabled. Use the most relevant official skill before taking product actions.\n"
+                "Use only these official, versioned workspace skills. They are immutable product policy: never store buyer facts, decisions, action history, or self-improvement patches in them. Hermes personal/global skill creation, patching, and routing are disabled. Buyer state belongs in the official backend stores and appears under `memory/currently-decided/` after a confirmed `mcp_admira_save_*` call.\n"
                 + "\n".join(routing)
                 + "\n".join(f"- `{name}/SKILL.md`" for name in skill_names)
                 + "\n",
@@ -981,6 +1021,222 @@ def _json_excerpt(value, limit=1600):
     except TypeError:
         text = str(clean)
     return _text_excerpt(text, limit)
+
+
+def _current_decision_items(memory, scope_terms):
+    """Return active fallback decisions relevant to one specialist domain."""
+    library = memory.get("durable_conversation_memory") or {}
+    items = library.get("items") if isinstance(library, dict) else []
+    terms = {str(term or "").strip().lower() for term in scope_terms if str(term or "").strip()}
+    selected = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("status") or "active").strip().lower() in {"inactive", "resolved", "archived", "deleted", "superseded"}:
+            continue
+        scope = str(item.get("scope") or "business").strip().lower()
+        category = str(item.get("category") or "fact").strip().lower()
+        if terms and not any(term in scope or term in category for term in terms):
+            continue
+        selected.append(
+            {
+                "category": category,
+                "scope": scope,
+                "summary": item.get("summary") or "",
+                "details": item.get("details") or "",
+                "updated_at": item.get("updated_at") or item.get("created_at") or "",
+            }
+        )
+    return selected[-40:]
+
+
+def _current_decision_document(title, skill_name, save_tools, sections, *, live_meta_first=False):
+    lines = [
+        f"# {title} — currently decided",
+        "",
+        "This is buyer-specific operational state, not a product skill. It is regenerated from Admira's durable backend memory on every workspace refresh.",
+        "",
+        f"- Immutable guidance: `skills/{skill_name}/SKILL.md`.",
+        "- Do not edit this snapshot or any `SKILL.md` directly.",
+        f"- Relevant official tools: {', '.join(f'`{tool}`' for tool in save_tools)}.",
+        "- Persist confirmed choices with the narrowest save tool; action tools persist their own confirmed outcomes automatically.",
+        "- A decision is saved only after the official tool confirms success.",
+    ]
+    if live_meta_first:
+        lines.append("- Current Meta inventory, status, budget, delivery, and performance are intentionally excluded here; `CURRENT_CONTEXT.json` and a fresh Meta read always override this memory.")
+    found = False
+    for heading, value, kind, limit in sections:
+        if not has_meaningful_memory(value):
+            continue
+        found = True
+        lines.extend(["", f"## {heading}", ""])
+        if kind == "json":
+            lines.extend(["```json", _json_excerpt(value, limit), "```"])
+        else:
+            text = _redact_text(str(value or "")).strip()
+            if len(text) > limit:
+                text = text[: limit - 1].rstrip() + "…"
+            lines.append(text)
+    if not found:
+        lines.extend(["", "## Confirmed state", "", "- No confirmed buyer-specific decision has been saved for this domain yet."])
+    return "\n".join(lines).strip() + "\n"
+
+
+def build_currently_decided_state(memory):
+    """Build read-only per-skill views from the real durable stores."""
+    brand = memory.get("brand_guides") or {}
+    products = brand.get("products") or []
+    ad_briefs = brand.get("ad_briefs") or []
+    product_index = [
+        {
+            "guide": item.get("path") or "",
+            "summary": _text_excerpt(item.get("content"), 900),
+        }
+        for item in products[:MEMORY_ITEM_LIMIT]
+        if isinstance(item, dict)
+    ]
+    brief_index = [
+        {
+            "brief": item.get("path") or "",
+            "summary": _text_excerpt(item.get("content"), 900),
+        }
+        for item in ad_briefs[:MEMORY_ITEM_LIMIT]
+        if isinstance(item, dict)
+    ]
+    recent = memory.get("recent_history") or {}
+    active_workflow = memory.get("active_workflow") or {}
+    files = {
+        "business-onboarding-currently-decided.md": _current_decision_document(
+            "Business onboarding",
+            "business-onboarding",
+            ["mcp_admira_save_business_memory", "mcp_admira_save_agent_preferences", "mcp_admira_save_durable_memory"],
+            [
+                ("Business profile", memory.get("business_profile"), "json", 5000),
+                ("Current onboarding plan", memory.get("onboarding_plan"), "text", 3500),
+                ("Other confirmed business/operator decisions", _current_decision_items(memory, {"business", "operator", "onboarding"}), "json", 3500),
+            ],
+        ),
+        "brand-and-assets-currently-decided.md": _current_decision_document(
+            "Brand and assets",
+            "brand-and-assets",
+            ["mcp_admira_save_brand_memory", "mcp_admira_save_creative_references", "mcp_admira_save_content_asset"],
+            [
+                ("Parent brand", brand.get("general_branding"), "text", 5000),
+                ("Offer map", brand.get("offer_map"), "text", 4000),
+                ("Creative references", memory.get("creative_references"), "text", 3500),
+                ("Classified asset library", memory.get("content_asset_library"), "json", 5000),
+                ("Other confirmed brand decisions", _current_decision_items(memory, {"brand", "asset", "logo", "reference"}), "json", 3000),
+            ],
+        ),
+        "product-catalog-management-currently-decided.md": _current_decision_document(
+            "Product catalog management",
+            "product-catalog-management",
+            ["mcp_admira_import_product_catalog", "mcp_admira_save_product_memory", "mcp_admira_search_product_catalog"],
+            [
+                ("Parent/child offer map", brand.get("offer_map"), "text", 4000),
+                ("Saved product and offer index", product_index, "json", 10000),
+                ("Other confirmed catalog decisions", _current_decision_items(memory, {"product", "offer", "catalog", "bundle"}), "json", 3500),
+            ],
+        ),
+        "creative-strategy-currently-decided.md": _current_decision_document(
+            "Creative strategy",
+            "creative-strategy",
+            ["mcp_admira_save_product_memory", "mcp_admira_save_ad_brief", "mcp_admira_save_creative_references", "mcp_admira_save_durable_memory"],
+            [
+                ("Active offer candidates", product_index, "json", 7000),
+                ("Saved creative/ad briefs", brief_index, "json", 9000),
+                ("Creative experiments", memory.get("creative_experiments"), "json", 6000),
+                ("Other confirmed creative decisions", _current_decision_items(memory, {"creative", "brief", "hypothesis", "ugc"}), "json", 3500),
+            ],
+        ),
+        "creative-production-codex-image-currently-decided.md": _current_decision_document(
+            "Creative production and Codex Image",
+            "creative-production-codex-image",
+            ["mcp_admira_save_brand_memory", "mcp_admira_save_creative_references", "mcp_admira_save_content_asset", "mcp_admira_save_ad_brief"],
+            [
+                ("Brand production rules", brand.get("general_branding"), "text", 4500),
+                ("Protected and classified assets", memory.get("content_asset_library"), "json", 5500),
+                ("Production briefs", brief_index, "json", 7500),
+                ("Recent generated outputs", recent.get("creative_refreshes"), "json", 5000),
+                ("Other confirmed production decisions", _current_decision_items(memory, {"image", "production", "logo", "photo", "asset"}), "json", 3000),
+            ],
+        ),
+        "organic-content-strategy-currently-decided.md": _current_decision_document(
+            "Organic content strategy",
+            "organic-content-strategy",
+            ["mcp_admira_save_daily_social_content_settings", "mcp_admira_save_content_asset", "mcp_admira_stage_organic_social_post", "mcp_admira_save_durable_memory"],
+            [
+                ("Accepted content strategy and cadence", memory.get("content_strategy"), "text", 7000),
+                ("Content asset library", memory.get("content_asset_library"), "json", 5500),
+                ("Approved and published organic posts", memory.get("organic_content_posts"), "json", 5500),
+                ("Other confirmed organic-content decisions", _current_decision_items(memory, {"organic", "content", "social", "post"}), "json", 3500),
+            ],
+        ),
+        "campaign-strategy-currently-decided.md": _current_decision_document(
+            "Campaign strategy",
+            "campaign-strategy",
+            ["mcp_admira_save_ads_onboarding", "mcp_admira_save_ad_brief", "mcp_admira_save_durable_memory"],
+            [
+                ("Campaign onboarding and strategic choices", memory.get("ads_onboarding"), "text", 6000),
+                ("Audience strategy", memory.get("audience_strategy"), "json", 4500),
+                ("Campaign/ad briefs", brief_index, "json", 8000),
+                ("Active workflow", active_workflow, "json", 3500),
+                ("Other confirmed campaign decisions", _current_decision_items(memory, {"campaign", "ads", "targeting", "budget", "placement"}), "json", 5000),
+            ],
+            live_meta_first=True,
+        ),
+        "meta-campaign-execution-currently-decided.md": _current_decision_document(
+            "Meta campaign execution",
+            "meta-campaign-execution",
+            ["mcp_admira_stage_campaign", "mcp_admira_save_durable_memory"],
+            [
+                ("Active workflow", active_workflow, "json", 3500),
+                ("Recent confirmed backend actions", recent.get("actions"), "json", 7000),
+                ("Other confirmed execution decisions", _current_decision_items(memory, {"execution", "campaign", "meta", "activation"}), "json", 4500),
+            ],
+            live_meta_first=True,
+        ),
+        "measurement-optimization-currently-decided.md": _current_decision_document(
+            "Measurement and optimization",
+            "measurement-optimization",
+            ["mcp_admira_set_campaign_metric_priorities", "mcp_admira_record_verified_signal", "mcp_admira_save_durable_memory"],
+            [
+                ("Profitability and decision rules", memory.get("profitability_memory"), "json", 7500),
+                ("Campaign metric profiles", memory.get("campaign_metric_profiles"), "json", 5500),
+                ("Creative experiments", memory.get("creative_experiments"), "json", 5500),
+                ("Business outcomes", memory.get("business_outcomes"), "json", 4500),
+                ("Other confirmed measurement decisions", _current_decision_items(memory, {"measurement", "optimization", "metric", "signal", "profit"}), "json", 4500),
+            ],
+            live_meta_first=True,
+        ),
+        "support-recovery-currently-decided.md": _current_decision_document(
+            "Support and recovery",
+            "support-recovery",
+            ["mcp_admira_save_durable_memory"],
+            [
+                ("Current workflow or blocker", active_workflow, "json", 4000),
+                ("Recent recovery-relevant actions", recent.get("actions"), "json", 5500),
+                ("Confirmed support/recovery decisions", _current_decision_items(memory, {"support", "recovery", "blocker", "connection", "update"}), "json", 4500),
+            ],
+        ),
+    }
+    index_lines = [
+        "# Currently decided state index",
+        "",
+        "Admira has two strictly separated layers:",
+        "",
+        "1. `skills/*/SKILL.md` contains universal product guidance. It is versioned, immutable, and never stores one buyer's facts, decisions, or action history.",
+        "2. `memory/currently-decided/*.md` contains generated buyer-specific state. Save changes through the official `mcp_admira_save_*` tools; never edit these files directly.",
+        "",
+        "Read the relevant skill first, then its companion state file. Current live Meta data always overrides campaign/execution/measurement memory.",
+        "",
+        "## Companions",
+        "",
+    ]
+    for filename in files:
+        index_lines.append(f"- `{filename}`")
+    files = {"README.md": "\n".join(index_lines).strip() + "\n", **files}
+    return files
 
 
 def _redact_text(value):
@@ -1445,6 +1701,7 @@ def prepare_hermes_workspace(payload):
     memory = business_memory_context()
     continuity_status = conversation_continuity_status(memory)
     if HERMES_WORKSPACE_DIR.exists():
+        make_workspace_tree_writable()
         shutil.rmtree(HERMES_WORKSPACE_DIR)
     HERMES_WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
     written = write_agent_profile_workspace_files()
@@ -1457,6 +1714,8 @@ This folder is the only workspace Hermes should read for this product turn.
 It contains curated business memory, brand guides, recent activity, and uploaded reference images.
 
 The only operational skills allowed in Admira IA are the official, versioned files under this workspace's `skills/` directory. Never consult, create, patch, or route through Hermes personal/global skills. Product-wide behavior changes must arrive through an official Admira update; buyer facts, decisions, preferences, and action history belong in durable memory through the product's save tools.
+
+Skills are immutable guidance. They never hold one buyer's current choices. Read the relevant companion under `memory/currently-decided/` for buyer-specific state, and persist updates only through the named `mcp_admira_save_*` tool. This entire curated workspace is read-only to Hermes; official tools update backend-owned stores and the next turn regenerates the snapshots.
 
 Hermes owns the conversation and should use its own session memory. The backend does not paste the whole chat history into the prompt.
 Before every buyer-facing turn, read `skills/core-agent-behavior/SKILL.md`. If session memory was cleaned, the gateway restarted, or an update created a fresh runtime session, also read `skills/session-continuity/SKILL.md`, `memory/Conversation continuity.md`, `memory/continuity_status.json`, `memory/latest_day_context.md`, `memory/active_workflow.json`, `CURRENT_CONTEXT.json`, `data/business_profile.json`, `memory/Agent onboarding plan.md`, `memory/Branding onboarding.md`, `memory/Ads campaign onboarding.md`, `brand_guides/Offer map.md`, and relevant `brand_guides/` files before greeting.
@@ -1509,6 +1768,8 @@ Read `skills/README.md`, then the relevant `skills/*/SKILL.md` file before actin
     written.append(write_workspace_file("memory/content_strategy.md", memory.get("content_strategy", "")))
     written.append(write_workspace_file("memory/organic_content_posts.json", memory.get("organic_content_posts", {"items": []})))
     written.append(write_workspace_file("memory/durable_conversation_memory.json", memory.get("durable_conversation_memory", {"items": []})))
+    for name, content in build_currently_decided_state(memory).items():
+        written.append(write_workspace_file(f"memory/currently-decided/{name}", content))
     written.append(write_workspace_file("memory/optimization_state.json", memory["optimization_state"]))
     written.append(write_workspace_file("memory/business_outcomes.json", memory["business_outcomes"]))
     written.append(write_workspace_file("memory/optimization_research.json", memory["optimization_research"]))
@@ -1523,12 +1784,23 @@ Read `skills/README.md`, then the relevant `skills/*/SKILL.md` file before actin
         name = Path(ad_brief["path"]).name
         written.append(write_workspace_file(f"brand_guides/ad_briefs/{name}", ad_brief["content"]))
     workspace_images = []
+    uploads_dir = HERMES_WORKSPACE_DIR / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
     for image_path in safe_image_paths(payload):
         workspace_images.append(copy_workspace_file(image_path, "uploads"))
+    # Hermes reads this curated workspace but never writes policy or buyer
+    # state into it. Official MCP tools update backend-owned stores; the next
+    # turn rebuilds this complete snapshot from those confirmed stores.
+    protected_files = protect_workspace_tree(".")
+    # Telegram/dashboard may receive another attachment after the curated
+    # snapshot was built. Keep only this bounded inbox writable; it contains
+    # assets, never policy or durable buyer-state source files.
+    uploads_dir.chmod(0o755)
     return {
         "path": str(HERMES_WORKSPACE_DIR),
         "files": written,
         "image_paths": workspace_images,
+        "protected_files": protected_files,
         "memory": memory,
         "continuity_status": continuity_status,
         "active_workflow": memory["active_workflow"],
