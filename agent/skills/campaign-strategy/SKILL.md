@@ -42,8 +42,7 @@ If recent market context could improve the choice, use available web/browser/sea
 ## Optimization event
 
 - For sales, prefer `Purchase` when it is tracked correctly. The often-cited ~50 weekly events is learning guidance, not a binary minimum; below it Meta still optimizes, but results may fluctuate or show Learning Limited.
-- Do not choose `InitiateCheckout` merely to obtain more events or avoid Learning Limited. Check checkout-to-purchase quality: if many checkouts rarely buy, that proxy teaches Meta to find checkout starters, not buyers.
-- Use an intermediate proxy event such as `InitiateCheckout` as primary only when the final event is broken, duplicated, unavailable, or cannot be attributed reliably. Keep checkout and other funnel events as secondary diagnostics.
+- Do not choose `InitiateCheckout` merely to obtain more events or avoid Learning Limited. Check checkout-to-purchase quality: if many checkouts rarely buy, that proxy teaches Meta to find checkout starters, not buyers. Keep checkout and other funnel events as secondary diagnostics.
 
 ## Message campaigns
 
