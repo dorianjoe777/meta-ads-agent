@@ -856,6 +856,13 @@ class IntegrationTestSuite:
         """Test NVIDIA NIM is named in Hermes and discovers models without persisting its key."""
         print("\nTesting NVIDIA NIM Agent Provider...")
 
+        self.assert_true(
+            product_config.normalize_agent_brain_provider("nvidia_nim") == "nvidia_nim"
+            and product_config.normalize_agent_brain_provider("nvidia-api") == "nvidia_nim"
+            and product_config.normalize_agent_brain_provider("nvidia") == "nvidia_nim",
+            "NVIDIA brain aliases survive a config reload instead of falling back to ChatGPT/Codex",
+        )
+
         class FakeConfig:
             agent_chat_provider = "hermes"
             agent_brain_provider = "nvidia_nim"
@@ -3446,6 +3453,13 @@ class IntegrationTestSuite:
             agent_chat_model = "MiniMax-M3"
             hermes_require_codex_auth = False
 
+        class NvidiaConfig(FakeConfig):
+            agent_brain_provider = "nvidia_nim"
+            agent_chat_base_url = "https://integrate.api.nvidia.com/v1"
+            agent_chat_api_key = "nvapi-direct-model-key"
+            agent_chat_model = "z-ai/glm-5.2"
+            hermes_require_codex_auth = False
+
         class CodexWithMiniMaxCredentialConfig(FakeConfig):
             agent_brain_provider = "openai_codex"
             agent_chat_base_url = "https://api.minimax.io/v1"
@@ -3518,6 +3532,18 @@ class IntegrationTestSuite:
             self.assert_true(minimax_runtime_state["provider"] == "admira-minimax" and minimax_runtime_state["is_configured_primary"] is True, "Gateway start records the configured primary model for dashboard sync")
             self.assert_true("model_aliases:" in minimax_config and '"minimax m3":' in minimax_config and '"minimax":' in minimax_config, "Hermes Gateway keeps manual Telegram /model MiniMax M3 switches on the configured MiniMax API")
             self.assert_true("direct-model-key" not in minimax_config, "Hermes Gateway never serializes MiniMax API keys into config.yaml")
+
+            popen_calls.clear()
+            nvidia_started = hermes_gateway.start_gateway(NvidiaConfig())
+            nvidia_config = Path(nvidia_started["config"]).read_text(encoding="utf-8")
+            nvidia_gateway_call = next(call for call in popen_calls if call[0] and call[0][0] and "admira_hermes_gateway_supervisor" in " ".join(call[0][0]))
+            nvidia_process_env = nvidia_gateway_call[1].get("env") or {}
+            nvidia_runtime_state = hermes_gateway.telegram_runtime_model_state(NvidiaConfig())
+            self.assert_true(nvidia_started["started"] is True, "Hermes Gateway starts after NVIDIA becomes the primary brain")
+            self.assert_true(nvidia_process_env.get("ADMIRA_NVIDIA_API_KEY") == "nvapi-direct-model-key", "Telegram receives the saved NVIDIA credential in process memory")
+            self.assert_true('provider: "admira-nvidia"' in nvidia_config and 'key_env: "ADMIRA_NVIDIA_API_KEY"' in nvidia_config and '"nvidia nim":' in nvidia_config, "Telegram /model receives the NVIDIA provider and its friendly aliases")
+            self.assert_true(nvidia_runtime_state["provider"] == "admira-nvidia" and nvidia_runtime_state["is_configured_primary"] is True, "Dashboard and Telegram agree that NVIDIA is the configured primary")
+            self.assert_true("nvapi-direct-model-key" not in nvidia_config, "NVIDIA API keys are never serialized into Telegram config.yaml")
 
             popen_calls.clear()
             secondary_started = hermes_gateway.start_gateway(CodexWithMiniMaxCredentialConfig())
@@ -9729,7 +9755,7 @@ class IntegrationTestSuite:
         self.assert_true('id="chatgpt-panel"' in html and "renderChatGptPanel()" in html, "Setup includes a dedicated agent model connection panel")
         self.assert_true('id="local-network-panel"' in html and "Ver desde mi teléfono" in html and "/api/local-network-access" in html, "Setup includes same-Wi-Fi phone access as an explicit opt-in")
         self.assert_true("/api/local-network-access" in dashboard.DashboardHandler.PROTECTED_POST_PATHS and "/api/local-network-access" in dashboard.DashboardHandler.POST_JSON_ROUTES, "Phone LAN access changes require dashboard password and have a handler")
-        self.assert_true("Conecta el cerebro del agente" in html and "MiniMax M3" in html and "Guardar modelo del agente" in html, "Agent model setup supports MiniMax M3 as a Hermes brain")
+        self.assert_true("Conecta el cerebro del agente" in html and "MiniMax M3" in html and "Guardar y usar" in html and "como principal" in html, "Agent model setup makes the primary-provider action explicit for API brains")
         self.assert_true("NVIDIA NIM" in html and "OpenAI API" in html and "ChatGPT suscripción" in html and "Otra API compatible" in html and "OAuth" in html, "Onboarding shows five simple model choices immediately")
         self.assert_true("routeButton('nvidia_nim')" in html and "routeButton('openai_api')" in html and "routeButton('chatgpt_subscription')" in html and "routeButton('minimax_m3')" in html and "routeButton('custom_api')" in html and "selectAgentModelRoute('${kind}')" in html, "Agent model setup uses five collapsible route buttons")
         self.assert_true("refreshNvidiaModelCatalog" in html and "/api/agent-model/nvidia-catalog" in html and "https://integrate.api.nvidia.com/v1" in html and "build.nvidia.com" in html, "NVIDIA setup discovers the buyer's live model catalog through the official fixed endpoint")
@@ -9997,6 +10023,21 @@ class IntegrationTestSuite:
             self.assert_true(saved["creative"]["destination"]["page_id"] == "12345", "Page ID saved to ad-config")
             self.assert_true(saved["creative"]["destination"]["default_adset_id"] == "67890", "Default ad set saved to ad-config")
             self.assert_true(saved["creative"]["destination"]["url"] == "https://buyer.example", "Landing URL saved to ad-config")
+
+            nvidia_result = dashboard.save_setup_config(
+                {
+                    "agent_chat_provider": "nvidia_nim",
+                    "agent_chat_base_url": "https://integrate.api.nvidia.com/v1",
+                    "agent_chat_model": "z-ai/glm-5.2",
+                    "agent_chat_api": "openai-chat-completions",
+                    "agent_chat_api_key": "nvapi-direct-model-key",
+                }
+            )
+            nvidia_env = env_path.read_text(encoding="utf-8")
+            reloaded = dashboard.load_config()
+            self.assert_true("AGENT_BRAIN_PROVIDER=nvidia_nim" in nvidia_env, "NVIDIA can be saved as the primary brain from Setup")
+            self.assert_true(reloaded.agent_brain_provider == "nvidia_nim", "A saved NVIDIA primary survives the same config reload used by dashboard and Telegram")
+            self.assert_true(gateway_refreshes == ["minimax", "nvidia_nim"] and nvidia_result.get("gateway", {}).get("started") is True, "Switching the primary to NVIDIA restarts Telegram with NVIDIA instead of falling back to ChatGPT")
         finally:
             env_path.write_text(env_before, encoding="utf-8")
             ad_path.write_text(ad_before, encoding="utf-8")

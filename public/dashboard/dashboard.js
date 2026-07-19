@@ -1834,7 +1834,7 @@ function chatGptConnectMarkup(onboarding=false){
    <div class="field"><label>${lang==='es'?'Modelo':'Model'}</label>${apiModelField}</div>
    <div class="field"><label>${lang==='es'?'URL compatible OpenAI':'OpenAI-compatible URL'}</label><span class="field-help">${selectedRoute==='nvidia_nim'?(lang==='es'?'Endpoint oficial fijo de NVIDIA NIM.':'Fixed official NVIDIA NIM endpoint.'):(lang==='es'?'Debe usar https://. Solo se permite http:// para modelos locales como 127.0.0.1.':'Must use https://. http:// is allowed only for local models such as 127.0.0.1.')}</span><input name="agent_chat_base_url" value="${escapeHtml(base)}" placeholder="https://api.ejemplo.com/v1" ${selectedRoute==='nvidia_nim'?'readonly':''}></div>
    <div class="field wide"><label>${lang==='es'?'Clave API del modelo':'Model API key'}</label><span class="field-help">${lang==='es'?'Se guarda dentro de este PC/VPS. No aparece de vuelta en el dashboard.':'Stored on this PC/VPS. It is never shown back in the dashboard.'}</span><input type="password" name="agent_chat_api_key" value="" placeholder="${escapeHtml(keyPlaceholder)}"></div>
-   <div class="field wide"><div class="agent-route-actions"><button class="btn primary" type="submit">${lang==='es'?'Guardar modelo del agente':'Save agent model'}</button>${nvidiaCatalogAction}</div></div>
+   <div class="field wide"><div class="agent-route-actions"><button class="btn primary" type="submit">${lang==='es'?`Guardar y usar ${escapeHtml(routeCopy[selectedRoute]?.title||'este modelo')} como principal`:`Save and use ${escapeHtml(routeCopy[selectedRoute]?.title||'this model')} as primary`}</button>${nvidiaCatalogAction}</div></div>
   </div></div>
  </div>
  ${imageChatgptCard}
