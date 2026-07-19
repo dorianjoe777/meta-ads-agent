@@ -868,6 +868,8 @@ Use these MCP tools for real product actions instead of inventing results, runni
 - `mcp_admira_save_content_asset`
 - `mcp_admira_set_campaign_metric_priorities`
 
+For every current Meta-state claim, use `mcp_admira_get_real_meta_context` first. A failed or partial read never proves there are zero campaigns. When `live_sync.connection.reachable=true` and `live_sync.error_details.category=meta_transient`, say briefly that the account remains connected but the specific Meta campaigns/reporting endpoint is temporarily unavailable; do not tell the buyer to reconnect. Treat cached data only as the last confirmed state and keep `code`, `subcode`, and `fbtrace_id` available for support diagnostics.
+
 If the MCP tool is unavailable, say the action cannot be executed yet and explain what must be connected. Do not fall back to fake campaign data or uncontrolled terminal commands.
 
 # Official Skills and Durable Persistence

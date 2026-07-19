@@ -14,6 +14,8 @@ import tempfile
 import threading
 import types
 import importlib.util
+import io
+import urllib.error
 import urllib.parse
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -6483,6 +6485,7 @@ class IntegrationTestSuite:
 
         contract = meta_action_metrics.assert_reporting_contract()
         self.assert_true(contract["every_family_once"], "Every supported Meta objective family deduplicates all known reporting aliases")
+
         self.assert_true(contract["repeated_fragments"] == 3, "Repeated fragments of one exact Meta action type are preserved")
         self.assert_true(contract["disjoint_sources"] == 10, "Distinct web, app, and store sources remain additive")
         self.assert_true(contract["rollup_plus_app"] == 8, "A web/store rollup can be combined with a disjoint app source")
@@ -6565,6 +6568,128 @@ class IntegrationTestSuite:
         self.assert_true(mixed_legacy["campaigns"][0]["conversions"] == 4, "Legacy dashboard uses the same generic result contract")
         self.assert_true(mixed_daily["campaigns"][0]["conversions"] == 4, "Daily agent uses the same generic result contract")
         self.assert_true(mixed_experiment[0]["conversions"] == 4, "Experiment scheduler uses the same generic result contract")
+
+    def test_meta_transient_reads_retry_and_preserve_graph_diagnostics(self):
+        """Transient Graph reads retry once and retain Meta's support evidence."""
+        print("\nTesting Meta Transient Read Diagnostics...")
+
+        original_urlopen = meta_insights.urllib.request.urlopen
+        original_sleep = meta_insights.time.sleep
+        calls = []
+        sleeps = []
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return b'{"id":"act_123","account_status":1}'
+
+        def transient_error(trace="trace-123"):
+            body = json.dumps({
+                "error": {
+                    "message": "Service temporarily unavailable",
+                    "type": "OAuthException",
+                    "code": 2,
+                    "error_subcode": 1504044,
+                    "is_transient": False,
+                    "fbtrace_id": trace,
+                    "error_user_title": "Service temporarily unavailable",
+                    "error_user_msg": "Please try again later.",
+                }
+            }).encode("utf-8")
+            return urllib.error.HTTPError("https://graph.facebook.com/redacted", 500, "Internal Server Error", {}, io.BytesIO(body))
+
+        sequence = [transient_error(), FakeResponse()]
+
+        def fake_urlopen(request, timeout=25):
+            calls.append(request)
+            value = sequence.pop(0)
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        try:
+            meta_insights.urllib.request.urlopen = fake_urlopen
+            meta_insights.time.sleep = lambda seconds: sleeps.append(seconds)
+            recovered = meta_insights.graph_get("act_123", {"fields": "id"}, "secret-token")
+            self.assert_true(recovered["ok"] and recovered["attempts"] == 2 and len(calls) == 2, "Transient Meta GET is retried once and can recover")
+            self.assert_true(len(sleeps) == 1 and sleeps[0] <= 3, "Transient Meta retry uses a short bounded delay")
+
+            calls.clear()
+            sequence[:] = [transient_error("trace-final"), transient_error("trace-final")]
+            failed = meta_insights.graph_get("act_123/campaigns", {"fields": "id"}, "secret-token")
+            error = failed["error"]
+            self.assert_true(not failed["ok"] and error["attempts"] == 2 and error["category"] == "meta_transient", "Persistent Meta code 2 remains classified as a transient endpoint failure")
+            self.assert_true(error["http_status"] == 500 and error["subcode"] == 1504044 and error["fbtrace_id"] == "trace-final", "HTTP status, subcode and fbtrace_id survive for support diagnostics")
+            self.assert_true("secret-token" not in json.dumps(failed), "Graph diagnostics never expose the access token")
+
+            calls.clear()
+            auth_body = json.dumps({"error": {"message": "Error validating access token", "type": "OAuthException", "code": 190}}).encode("utf-8")
+            sequence[:] = [urllib.error.HTTPError("https://graph.facebook.com/redacted", 400, "Bad Request", {}, io.BytesIO(auth_body))]
+            auth = meta_insights.graph_get("me", {"fields": "id"}, "secret-token")
+            self.assert_true(auth["error"]["category"] == "authentication" and len(calls) == 1, "Invalid credentials are classified separately and are not pointlessly retried")
+        finally:
+            meta_insights.urllib.request.urlopen = original_urlopen
+            meta_insights.time.sleep = original_sleep
+
+    def test_live_meta_failure_keeps_cached_state_and_connection_evidence(self):
+        """Hermes receives stale-state labeling plus exact Graph diagnostics."""
+        print("\nTesting Live Meta Failure Context...")
+
+        class FailingDashboard:
+            def refresh_managed_real_metrics(self, reason="manual", **kwargs):
+                return {
+                    "ok": False,
+                    "reason": "meta_endpoint_temporarily_unavailable",
+                    "category": "meta_transient",
+                    "message": "Meta responde y la cuenta está conectada, pero el endpoint falló.",
+                    "raw": {
+                        "type": "OAuthException",
+                        "code": 2,
+                        "subcode": 1504044,
+                        "http_status": 500,
+                        "fbtrace_id": "trace-live",
+                        "category": "meta_transient",
+                        "attempts": 2,
+                    },
+                    "connection": {"reachable": True, "identity_ok": True, "account_ok": True, "account_status": 1},
+                }
+
+            def dashboard_payload(self):
+                return {
+                    "metrics": {
+                        "timestamp": "2026-07-16T12:00:00+00:00",
+                        "source": "meta_graph",
+                        "campaigns": [{"id": "camp_cached", "name": "Último estado confirmado", "status": "paused"}],
+                        "adsets": [],
+                        "ads": [],
+                        "campaign_tree": [],
+                        "summary": {},
+                    },
+                    "recommendations": [],
+                    "fatigue": [],
+                    "pending": [],
+                    "audience_strategy": {},
+                    "business_profile": {},
+                    "brand_guides": {},
+                    "agent_onboarding_phase": {},
+                }
+
+        original_loader = admira_tool_bridge.load_dashboard
+        try:
+            admira_tool_bridge.load_dashboard = lambda: FailingDashboard()
+            result = admira_tool_bridge.call_tool("mcp_admira_get_real_meta_context", {})
+            self.assert_true(result["live_sync"]["connection"]["reachable"] and result["live_sync"]["error_details"]["fbtrace_id"] == "trace-live", "Hermes sees proof that Meta is connected plus the exact support trace")
+            self.assert_true(result["metrics_source"]["fresh"] is False and result["metrics_source"]["last_confirmed_at"] == "2026-07-16T12:00:00+00:00", "Cached Meta state is explicitly labeled as last confirmed rather than current")
+            self.assert_true(result["context"]["campaigns"][0]["id"] == "camp_cached" and "último estado confirmado" in result["metrics_source"]["notice"].lower(), "A transient empty response does not erase the last confirmed campaign")
+        finally:
+            admira_tool_bridge.load_dashboard = original_loader
 
     def test_signal_quality_review_event_setup(self):
         """Test campaign signal review catches event mismatch and weak measurement setup."""
@@ -11646,6 +11771,8 @@ class IntegrationTestSuite:
             self.test_dashboard_metrics_range_queries_meta_and_defaults_to_all_time,
             self.test_adaptive_campaign_metric_profiles_and_agent_override,
             self.test_live_insights_normalize_into_dashboard_metrics,
+            self.test_meta_transient_reads_retry_and_preserve_graph_diagnostics,
+            self.test_live_meta_failure_keeps_cached_state_and_connection_evidence,
             self.test_daily_reads_real_data_and_keeps_risky_pauses_as_proposals,
             self.test_demo_metrics_are_labeled,
             self.test_explicit_approval_executes_only_with_valid_license_and_retries_failures,

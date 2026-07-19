@@ -4,6 +4,7 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
+import time
 from datetime import date, datetime, timedelta, timezone
 
 from local_store import now_iso, read_json, write_json
@@ -111,35 +112,112 @@ def deduplicated_action_value(rows, names):
     return deduplicated_alias_value(rows, names)
 
 
-def safe_graph_error(payload):
+TRANSIENT_GRAPH_CODES = {1, 2, 4, 17, 32, 341, 613}
+GRAPH_READ_RETRY_DELAY_SECONDS = 0.6
+
+
+def graph_error_retryable(error):
+    """Return whether a read-only Meta request is safe to retry once."""
+    error = error if isinstance(error, dict) else {}
+    message = str(error.get("message") or "").lower()
+    return bool(
+        error.get("retryable")
+        or error.get("is_transient")
+        or error.get("type") == "network"
+        or int(number(error.get("http_status"))) >= 500
+        or int(number(error.get("code"))) in TRANSIENT_GRAPH_CODES
+        or "temporarily unavailable" in message
+        or "unexpected error has occurred" in message
+    )
+
+
+def graph_error_category(error):
+    error = error if isinstance(error, dict) else {}
+    code = int(number(error.get("code")))
+    http_status = int(number(error.get("http_status")))
+    message = str(error.get("message") or "").lower()
+    if code == 190 or any(term in message for term in ("invalid oauth", "access token has expired", "validating access token")):
+        return "authentication"
+    if code in {10, 200, 299} or "permission" in message:
+        return "permission"
+    if http_status == 429 or code in {4, 17, 32, 341, 613}:
+        return "rate_limit"
+    if graph_error_retryable(error):
+        return "meta_transient"
+    if error.get("type") == "network":
+        return "network"
+    return "meta_error"
+
+
+def safe_graph_error(payload, http_status=0, headers=None, attempts=1):
     error = payload.get("error") if isinstance(payload, dict) else payload
     if isinstance(error, dict):
-        return {
+        result = {
             "type": str(error.get("type") or "GraphAPIError")[:80],
             "code": int(number(error.get("code"))),
             "subcode": int(number(error.get("error_subcode"))),
             "message": str(error.get("message") or "Meta Graph request failed")[:300],
         }
-    return {"type": "GraphAPIError", "code": 0, "subcode": 0, "message": str(error or "Meta Graph request failed")[:300]}
+        if http_status:
+            result["http_status"] = int(number(http_status))
+        if error.get("is_transient") is not None:
+            result["is_transient"] = bool(error.get("is_transient"))
+        if error.get("fbtrace_id"):
+            result["fbtrace_id"] = str(error.get("fbtrace_id"))[:160]
+        if error.get("error_user_title"):
+            result["user_title"] = str(error.get("error_user_title"))[:160]
+        if error.get("error_user_msg"):
+            result["user_message"] = str(error.get("error_user_msg"))[:300]
+    else:
+        result = {"type": "GraphAPIError", "code": 0, "subcode": 0, "message": str(error or "Meta Graph request failed")[:300]}
+        if http_status:
+            result["http_status"] = int(number(http_status))
+    headers = headers or {}
+    trace_header = str(headers.get("x-fb-trace-id") or headers.get("X-FB-Trace-ID") or "").strip()
+    if trace_header:
+        result["trace_header"] = trace_header[:160]
+    retry_after = str(headers.get("retry-after") or headers.get("Retry-After") or "").strip()
+    if retry_after.isdigit():
+        result["retry_after_seconds"] = min(int(retry_after), 3600)
+    result["attempts"] = max(1, int(number(attempts, 1)))
+    result["retryable"] = graph_error_retryable(result)
+    result["category"] = graph_error_category(result)
+    return result
 
 
-def graph_get(path, params, token, version="v24.0", timeout=25):
+def graph_get(path, params, token, version="v24.0", timeout=25, max_attempts=2):
     if not token:
         return {"ok": False, "error": {"type": "configuration", "message": "Missing Meta access token"}}
     query = urllib.parse.urlencode({**(params or {}), "access_token": token})
     url = f"https://graph.facebook.com/{version}/{str(path).lstrip('/')}?{query}"
     request = urllib.request.Request(url, headers={"User-Agent": "AdmiraIA/1.0", "Accept": "application/json"})
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return {"ok": True, "data": json.loads(response.read().decode("utf-8"))}
-    except urllib.error.HTTPError as exc:
+    attempts_allowed = max(1, min(int(max_attempts or 1), 3))
+    last_error = None
+    for attempt in range(1, attempts_allowed + 1):
         try:
-            payload = json.loads(exc.read().decode("utf-8"))
-        except Exception:
-            payload = {"error": {"message": f"Meta Graph HTTP {exc.code}"}}
-        return {"ok": False, "error": safe_graph_error(payload)}
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        return {"ok": False, "error": {"type": "network", "code": 0, "subcode": 0, "message": str(exc)[:300]}}
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return {"ok": True, "data": json.loads(response.read().decode("utf-8")), "attempts": attempt, "http_status": int(getattr(response, "status", 200) or 200)}
+        except urllib.error.HTTPError as exc:
+            try:
+                payload = json.loads(exc.read().decode("utf-8"))
+            except Exception:
+                payload = {"error": {"message": f"Meta Graph HTTP {exc.code}"}}
+            last_error = safe_graph_error(payload, http_status=exc.code, headers=exc.headers, attempts=attempt)
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last_error = {
+                "type": "network",
+                "code": 0,
+                "subcode": 0,
+                "message": str(exc)[:300],
+                "attempts": attempt,
+                "retryable": True,
+                "category": "network",
+            }
+        if not graph_error_retryable(last_error) or attempt >= attempts_allowed:
+            break
+        retry_after = int(number((last_error or {}).get("retry_after_seconds")))
+        time.sleep(min(max(retry_after, GRAPH_READ_RETRY_DELAY_SECONDS), 3.0))
+    return {"ok": False, "error": last_error or safe_graph_error(None, attempts=attempts_allowed)}
 
 
 def graph_rows(path, params, token, version="v24.0", max_pages=5):

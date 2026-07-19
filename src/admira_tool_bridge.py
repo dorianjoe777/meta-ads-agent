@@ -259,6 +259,8 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
             include_breakdowns=include_breakdowns,
         )
         dashboard_data = dashboard.dashboard_payload()
+        cached_metrics = dashboard_data.get("metrics") if isinstance(dashboard_data.get("metrics"), dict) else {}
+        cached_confirmed_at = str(cached_metrics.get("timestamp") or "")
         if isinstance(live_sync.get("metrics"), dict):
             # The model sees the just-fetched read-only snapshot. The dashboard
             # keeps its own buyer-selected date range and is not silently reset
@@ -270,9 +272,15 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
             "rows": int(live_sync.get("rows") or 0),
             "accounts": live_sync.get("accounts") or [],
             "errors": live_sync.get("errors") or [],
+            "partial": bool(live_sync.get("partial")),
             "reason": live_sync.get("reason") or "",
+            "category": live_sync.get("category") or "",
             "message": live_sync.get("message") or "",
+            "error_details": live_sync.get("raw") or live_sync.get("errors") or [],
+            "connection": live_sync.get("connection") or {},
+            "data_quality": live_sync.get("data_quality") or (live_sync.get("metrics") or {}).get("data_quality") or {},
             "fetched_at": (live_sync.get("metrics") or {}).get("timestamp") or "",
+            "cached_confirmed_at": cached_confirmed_at,
             "date_preset": date_preset,
             "detail_level": detail_level,
         }
@@ -288,10 +296,32 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
             "they never prove what currently exists or runs in Meta."
         )
         if not live_sync.get("ok"):
-            context["metrics_source"]["notice"] = (
-                "La sincronización live con Meta falló o quedó incompleta. No interpretes una lista vacía como ausencia de campañas. "
-                "Explica la falla y contrasta campañas, ad sets, ads y IDs previamente conocidos que Meta pueda verificar."
-            )
+            context["metrics_source"].update({
+                "fresh": False,
+                "live_sync_ok": False,
+                "last_confirmed_at": cached_confirmed_at,
+                "notice": (
+                    "La sincronización live con Meta falló. Los datos mostrados son el último estado confirmado, no el estado actual. "
+                    "No interpretes una lista vacía como ausencia de campañas ni culpes a la credencial cuando connection.reachable sea true."
+                ),
+            })
+        elif live_sync.get("partial"):
+            context["metrics_source"].update({
+                "fresh": False,
+                "live_sync_ok": True,
+                "partial": True,
+                "last_confirmed_at": context["live_sync"].get("fetched_at") or cached_confirmed_at,
+                "notice": (
+                    "Meta respondió parcialmente. Usa solamente los objetos que sí fueron verificados; una sección faltante no equivale a cero."
+                ),
+            })
+        else:
+            context["metrics_source"].update({
+                "fresh": True,
+                "live_sync_ok": True,
+                "partial": False,
+                "last_confirmed_at": context["live_sync"].get("fetched_at"),
+            })
         return redact_payload(
             {
                 "ok": True,

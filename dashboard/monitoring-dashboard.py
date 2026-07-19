@@ -128,7 +128,7 @@ from product_catalog import import_product_catalog, refresh_catalog_index, searc
 from hermes_gateway import telegram_settings
 from license import activate_license, default_device_id, license_status, mark_license_install_state, normalize_license_entitlements, validate_license_key
 from local_store import now_iso, read_json, write_json, write_private_json
-from meta_insights import aggregate_campaigns as aggregate_meta_campaigns, campaign_inventory_tree as meta_campaign_inventory_tree, campaign_is_dashboard_visible, collect_meta_snapshot, normalize_insight_range, save_meta_snapshot
+from meta_insights import aggregate_campaigns as aggregate_meta_campaigns, campaign_inventory_tree as meta_campaign_inventory_tree, campaign_is_dashboard_visible, collect_meta_snapshot, graph_error_category as meta_graph_error_category, graph_get as meta_graph_get, normalize_insight_range, save_meta_snapshot
 from meta_upload import recent_uploads, stage_upload
 from optimization_engine import (
     anomaly_diagnostics,
@@ -3574,6 +3574,66 @@ def _attach_inventory_insights(items, rows):
     return [{**item, **totals.get(str(item.get("id") or ""), {})} for item in items or []]
 
 
+def _meta_connection_probe(account_id, token, version):
+    """Separate a broken Meta edge from a broken credential/account connection."""
+    identity = meta_graph_get("me", {"fields": "id"}, token, version, max_attempts=1)
+    account = meta_graph_get(
+        account_id,
+        {"fields": "id,name,account_status,disable_reason"},
+        token,
+        version,
+        max_attempts=1,
+    )
+    account_data = account.get("data") if isinstance(account.get("data"), dict) else {}
+    return {
+        "reachable": bool(identity.get("ok") or account.get("ok")),
+        "identity_ok": bool(identity.get("ok")),
+        "account_ok": bool(account.get("ok")),
+        "account_id": str(account_data.get("id") or account_id),
+        "account_status": account_data.get("account_status"),
+        "disable_reason": account_data.get("disable_reason"),
+        "identity_error": identity.get("error") if not identity.get("ok") else None,
+        "account_error": account.get("error") if not account.get("ok") else None,
+    }
+
+
+def _classify_meta_read_failure(error, connection=None):
+    error = error if isinstance(error, dict) else {}
+    connection = connection if isinstance(connection, dict) else {}
+    category = str(error.get("category") or meta_graph_error_category(error))
+    connected = bool(connection.get("reachable"))
+    if category == "authentication":
+        return {
+            "reason": "meta_auth_error",
+            "message": "La credencial de Meta no fue aceptada. Reconecta Meta desde Configuración.",
+            "category": category,
+        }
+    if category == "permission":
+        return {
+            "reason": "meta_permission_error",
+            "message": "Meta respondió, pero esta credencial no tiene acceso suficiente a ese recurso.",
+            "category": category,
+        }
+    if category in {"meta_transient", "network", "rate_limit"}:
+        if connected:
+            message = (
+                "Meta responde y la cuenta está conectada, pero su servicio de campañas o reportes está "
+                "temporalmente no disponible. Se reintentó la lectura; una lista vacía no significa que no haya campañas."
+            )
+        else:
+            message = "La lectura de Meta falló temporalmente. Se reintentó sin asumir que la cuenta está vacía."
+        return {
+            "reason": "meta_endpoint_temporarily_unavailable",
+            "message": message,
+            "category": category,
+        }
+    return {
+        "reason": "graph_error",
+        "message": str(error.get("message") or "Meta Graph request failed"),
+        "category": category,
+    }
+
+
 def fetch_real_metrics(account_id="", persist_snapshot=True, live_dashboard=False, date_preset=None, since="", until="", include_breakdowns=True):
     config = load_config()
     account_id = str(account_id or config.ad_account_id or "").strip()
@@ -3630,7 +3690,15 @@ def fetch_real_metrics(account_id="", persist_snapshot=True, live_dashboard=Fals
     campaign_tree = meta_campaign_inventory_tree(snapshot)
     if not campaigns and snapshot.get("data_quality", {}).get("unavailable"):
         first_error = snapshot["data_quality"]["unavailable"][0].get("reason") or {}
-        return {"ok": False, "reason": "graph_error", "message": str(first_error.get("message") or "Meta Graph request failed"), "raw": first_error}
+        connection = _meta_connection_probe(account_id, config.meta_access_token, config.meta_graph_api_version or "v24.0")
+        diagnosis = _classify_meta_read_failure(first_error, connection)
+        return {
+            "ok": False,
+            **diagnosis,
+            "raw": first_error,
+            "connection": connection,
+            "data_quality": snapshot.get("data_quality"),
+        }
     account = managed_account_context(account_id)
     for campaign in campaigns:
         campaign["account_id"] = account_id
@@ -3665,7 +3733,17 @@ def fetch_real_metrics(account_id="", persist_snapshot=True, live_dashboard=Fals
     }
     if persist_snapshot:
         save_meta_snapshot(snapshot)
-    return {"ok": True, "metrics": metrics, "rows": len(campaigns), "account_id": account_id, "data_quality": snapshot.get("data_quality")}
+    data_quality = snapshot.get("data_quality") or {}
+    errors = data_quality.get("unavailable") or []
+    return {
+        "ok": True,
+        "partial": bool(errors),
+        "metrics": metrics,
+        "rows": len(campaigns),
+        "account_id": account_id,
+        "errors": errors,
+        "data_quality": data_quality,
+    }
 
 
 def refresh_managed_real_metrics(reason="manual", live_dashboard=False, date_preset=None, since="", until="", persist=True, include_breakdowns=True):
@@ -3688,6 +3766,7 @@ def refresh_managed_real_metrics(reason="manual", live_dashboard=False, date_pre
     breakdowns = {}
     account_results = []
     errors = []
+    partial = False
     selected_metrics_range = current_dashboard_metrics_range(date_preset, since, until)
     for account in accounts:
         account_id = account.get("id")
@@ -3701,8 +3780,17 @@ def refresh_managed_real_metrics(reason="manual", live_dashboard=False, date_pre
             include_breakdowns=include_breakdowns,
         )
         if result.get("ok"):
+            partial = bool(partial or result.get("partial"))
             rows = result.get("rows", 0)
             account_results.append({"id": account_id, "name": account.get("name") or account_id, "rows": rows})
+            for item in result.get("errors") or []:
+                item = item if isinstance(item, dict) else {"reason": item}
+                errors.append({
+                    "id": account_id,
+                    "name": account.get("name") or account_id,
+                    "view": item.get("view"),
+                    "reason": item.get("reason") or item,
+                })
             metrics_result = result.get("metrics", {})
             campaigns.extend(metrics_result.get("campaigns", []))
             adsets.extend(metrics_result.get("adsets", []))
@@ -3711,7 +3799,15 @@ def refresh_managed_real_metrics(reason="manual", live_dashboard=False, date_pre
             for name, rows in (metrics_result.get("breakdowns") or {}).items():
                 breakdowns.setdefault(name, []).extend(rows or [])
         else:
-            errors.append({"id": account_id, "name": account.get("name") or account_id, "reason": result.get("reason"), "message": result.get("message")})
+            errors.append({
+                "id": account_id,
+                "name": account.get("name") or account_id,
+                "reason": result.get("reason"),
+                "message": result.get("message"),
+                "category": result.get("category"),
+                "raw": result.get("raw"),
+                "connection": result.get("connection"),
+            })
     if campaigns or account_results:
         managed = normalize_managed_accounts_state()
         metrics = {
@@ -3733,18 +3829,28 @@ def refresh_managed_real_metrics(reason="manual", live_dashboard=False, date_pre
             "campaign_tree": campaign_tree,
             "breakdowns": breakdowns,
             "summary": {},
-            "data_quality": {"complete": not errors, "unavailable": errors, "source": "meta_graph_read_only_multi_account"},
+            "data_quality": {"complete": not errors and not partial, "unavailable": errors, "source": "meta_graph_read_only_multi_account"},
         }
         metrics = apply_campaign_metric_profiles(metrics)
         if persist:
             save_metrics(metrics)
             status = "completed" if not errors else "partial"
             log_action("live_insights_pull", {"account_ids": [item.get("id") for item in accounts], "rows": len(campaigns), "errors": len(errors), "reason": reason}, status)
-        return {"ok": True, "saved": bool(persist), "source": "meta_graph", "rows": len(campaigns), "accounts": account_results, "errors": errors, "account_id": metrics["account_id"], "metrics": metrics}
+        return {"ok": True, "partial": bool(errors or partial), "saved": bool(persist), "source": "meta_graph", "rows": len(campaigns), "accounts": account_results, "errors": errors, "account_id": metrics["account_id"], "metrics": metrics}
     message = errors[0]["message"] if errors else "Missing Meta ad account."
     if persist:
         log_action("live_insights_pull", {"account_ids": [item.get("id") for item in accounts], "reason": reason, "errors": errors}, "blocked")
-    return {"ok": False, "saved": False, "reason": errors[0]["reason"] if errors else "missing_account", "message": message, "errors": errors}
+    first_error = errors[0] if errors else {}
+    return {
+        "ok": False,
+        "saved": False,
+        "reason": first_error.get("reason") or "missing_account",
+        "message": message,
+        "category": first_error.get("category"),
+        "raw": first_error.get("raw"),
+        "connection": first_error.get("connection"),
+        "errors": errors,
+    }
 
 
 def refresh_real_metrics(account_id="", reason="manual", live_dashboard=False, date_preset=None, since="", until="", persist=True, include_breakdowns=True):
@@ -3762,7 +3868,17 @@ def refresh_real_metrics(account_id="", reason="manual", live_dashboard=False, d
         if persist:
             save_metrics(metrics)
             log_action("live_insights_pull", {"account_id": result.get("account_id"), "rows": result.get("rows"), "reason": reason}, "completed")
-        return {"ok": True, "saved": bool(persist), "source": "meta_graph", "rows": result.get("rows"), "account_id": result.get("account_id"), "metrics": metrics}
+        return {
+            "ok": True,
+            "partial": bool(result.get("partial")),
+            "saved": bool(persist),
+            "source": "meta_graph",
+            "rows": result.get("rows"),
+            "account_id": result.get("account_id"),
+            "errors": result.get("errors") or [],
+            "data_quality": result.get("data_quality") or {},
+            "metrics": metrics,
+        }
     if persist:
         log_action("live_insights_pull", {"account_id": account_id or load_config().ad_account_id, "reason": reason, "error": result.get("message"), "code": result.get("reason")}, "blocked")
     return {**result, "saved": False}
