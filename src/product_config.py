@@ -15,6 +15,32 @@ ENV_FILE = ROOT_DIR / ".env"
 DASHBOARD_IDENTITY_FILE = ROOT_DIR / "dashboard" / "data" / "dashboard_identity.json"
 DEFAULT_HERMES_CODEX_MODEL = "gpt-5.4-mini"
 DEFAULT_CODEX_IMAGE_SOURCE = "main_chatgpt"
+AGENT_MODEL_CONNECTION_SPECS = {
+    "openai_api": {
+        "env_prefix": "ADMIRA_OPENAI",
+        "base_url": "https://api.openai.com/v1",
+        "model": "gpt-4.1-mini",
+        "api": "openai-chat-completions",
+    },
+    "minimax": {
+        "env_prefix": "ADMIRA_MINIMAX",
+        "base_url": "https://api.minimax.io/v1",
+        "model": "MiniMax-M3",
+        "api": "openai-chat-completions",
+    },
+    "nvidia_nim": {
+        "env_prefix": "ADMIRA_NVIDIA",
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "model": "z-ai/glm-5.2",
+        "api": "openai-chat-completions",
+    },
+    "custom_api": {
+        "env_prefix": "ADMIRA_CUSTOM",
+        "base_url": "",
+        "model": "",
+        "api": "openai-chat-completions",
+    },
+}
 
 # The account catalog is authoritative, but the provider does not guarantee a
 # stable ordering. Keep a small, buyer-safe preference order so new installs
@@ -181,6 +207,87 @@ def normalize_agent_brain_provider(value, legacy_chat_provider="hermes", base_ur
     if legacy in {"openai_compatible", "openai"}:
         return "openai_api" if "api.openai.com" in str(base_url or "") else "custom_api"
     return "openai_codex"
+
+
+def agent_model_connection_env_keys(provider):
+    """Return the private env keys owned by one saved API connection."""
+    normalized = normalize_agent_brain_provider(provider)
+    spec = AGENT_MODEL_CONNECTION_SPECS.get(normalized)
+    if not spec:
+        return {}
+    prefix = spec["env_prefix"]
+    return {
+        "api_key": f"{prefix}_API_KEY",
+        "base_url": f"{prefix}_BASE_URL",
+        "model": f"{prefix}_MODEL",
+        "api": f"{prefix}_API",
+    }
+
+
+def agent_model_connections(config=None, include_secrets=False):
+    """Return every independently saved API brain without exposing keys by default.
+
+    Older installs only have the generic ``AGENT_CHAT_*`` fields. When that
+    connection is the active brain, treat it as the matching saved profile so
+    an update migrates it without asking the buyer to paste the key again.
+    """
+    active_provider = normalize_agent_brain_provider(
+        getattr(config, "agent_brain_provider", "") if config is not None else os.environ.get("AGENT_BRAIN_PROVIDER", ""),
+        legacy_chat_provider=getattr(config, "agent_chat_provider", "hermes") if config is not None else os.environ.get("AGENT_CHAT_PROVIDER", "hermes"),
+        base_url=getattr(config, "agent_chat_base_url", "") if config is not None else os.environ.get("AGENT_CHAT_BASE_URL", ""),
+    )
+    legacy_key = str(
+        getattr(config, "agent_chat_api_key", "") if config is not None else os.environ.get("AGENT_CHAT_API_KEY", "")
+    ).strip()
+    legacy_base = str(
+        getattr(config, "agent_chat_base_url", "") if config is not None else os.environ.get("AGENT_CHAT_BASE_URL", "")
+    ).strip().rstrip("/")
+    legacy_model = str(
+        getattr(config, "agent_chat_model", "") if config is not None else os.environ.get("AGENT_CHAT_MODEL", "")
+    ).strip()
+    legacy_api = str(
+        getattr(config, "agent_chat_api", "") if config is not None else os.environ.get("AGENT_CHAT_API", "")
+    ).strip().lower()
+    legacy_provider = active_provider if active_provider in AGENT_MODEL_CONNECTION_SPECS else ""
+    if legacy_key and not legacy_provider:
+        legacy_url = legacy_base.lower()
+        if "integrate.api.nvidia.com" in legacy_url:
+            legacy_provider = "nvidia_nim"
+        elif "minimax" in legacy_url:
+            legacy_provider = "minimax"
+        elif "api.openai.com" in legacy_url:
+            legacy_provider = "openai_api"
+        else:
+            legacy_provider = "custom_api"
+    result = {}
+    for provider, spec in AGENT_MODEL_CONNECTION_SPECS.items():
+        keys = agent_model_connection_env_keys(provider)
+        saved_key = str(os.environ.get(keys["api_key"], "") or "").strip()
+        saved_base = str(os.environ.get(keys["base_url"], "") or "").strip().rstrip("/")
+        saved_model = str(os.environ.get(keys["model"], "") or "").strip()
+        saved_api = str(os.environ.get(keys["api"], "") or "").strip().lower()
+        if provider == legacy_provider:
+            saved_key = saved_key or legacy_key
+            saved_base = saved_base or legacy_base
+            saved_model = saved_model or legacy_model
+            saved_api = saved_api or legacy_api
+        base_url = saved_base or spec["base_url"]
+        model = saved_model or spec["model"]
+        api = saved_api or spec["api"]
+        configured = bool(saved_key and base_url and model)
+        connection = {
+            "provider": provider,
+            "configured": configured,
+            "base_url": base_url,
+            "model": model,
+            "api": api,
+            "api_key_set": bool(saved_key),
+            "primary": provider == active_provider,
+        }
+        if include_secrets:
+            connection["api_key"] = saved_key
+        result[provider] = connection
+    return result
 
 
 def normalize_daily_time(value, default="08:00"):

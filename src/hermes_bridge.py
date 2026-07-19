@@ -37,7 +37,7 @@ from admira_rate_limit_messages import (
 from security import redact_payload
 
 try:
-    from product_config import normalize_hermes_model, preferred_hermes_model
+    from product_config import agent_model_connections, normalize_hermes_model, preferred_hermes_model
 except ImportError:
     def normalize_hermes_model(value):
         model = str(value or "").strip()
@@ -47,6 +47,9 @@ except ImportError:
 
     def preferred_hermes_model(models):
         return next((str(model).strip() for model in models or [] if str(model).strip()), "gpt-5.4-mini")
+
+    def agent_model_connections(config=None, include_secrets=False):
+        return {}
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -65,6 +68,10 @@ ADMIRA_NVIDIA_PROVIDER = "admira-nvidia"
 ADMIRA_NVIDIA_PROVIDER_NAME = "NVIDIA NIM API"
 ADMIRA_NVIDIA_DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
 ADMIRA_NVIDIA_DEFAULT_MODEL = "z-ai/glm-5.2"
+ADMIRA_OPENAI_KEY_ENV = "ADMIRA_OPENAI_API_KEY"
+ADMIRA_OPENAI_PROVIDER = "admira-openai"
+ADMIRA_CUSTOM_KEY_ENV = "ADMIRA_CUSTOM_API_KEY"
+ADMIRA_CUSTOM_PROVIDER = "admira-custom"
 BASE_ALLOWED_IMAGE_DIRS = (
     ROOT_DIR / "output",
     ROOT_DIR / "dashboard" / "data" / "uploads",
@@ -281,11 +288,88 @@ def _hermes_model_config_lines(brain):
     return lines
 
 
+def _admira_provider_metadata(provider, connection):
+    metadata = {
+        "minimax": (ADMIRA_MINIMAX_PROVIDER, ADMIRA_MINIMAX_PROVIDER_NAME, ADMIRA_MINIMAX_KEY_ENV, ("minimax", "minimax m3", "minimax-m3")),
+        "nvidia_nim": (ADMIRA_NVIDIA_PROVIDER, ADMIRA_NVIDIA_PROVIDER_NAME, ADMIRA_NVIDIA_KEY_ENV, ("nvidia", "nvidia nim")),
+        "openai_api": (ADMIRA_OPENAI_PROVIDER, "OpenAI API", ADMIRA_OPENAI_KEY_ENV, ("openai api",)),
+        "custom_api": (ADMIRA_CUSTOM_PROVIDER, "API compatible guardada", ADMIRA_CUSTOM_KEY_ENV, ("api compatible", "custom api")),
+    }
+    slug, name, key_env, aliases = metadata[provider]
+    return {
+        "provider": provider,
+        "slug": slug,
+        "name": name,
+        "key_env": key_env,
+        "aliases": aliases,
+        "base_url": str(connection.get("base_url") or "").strip().rstrip("/"),
+        "model": str(connection.get("model") or "").strip(),
+    }
+
+
+def admira_connected_model_config_lines(config, primary_settings=None):
+    """Build one Hermes catalog containing every saved buyer connection."""
+    brain = dict(primary_settings or hermes_brain_settings(config))
+    connections = agent_model_connections(config, include_secrets=True)
+    configured = [
+        _admira_provider_metadata(provider, connection)
+        for provider, connection in connections.items()
+        if connection.get("configured")
+    ]
+    primary_brain = str(brain.get("brain") or "openai_codex")
+    primary_slugs = {
+        "minimax": ADMIRA_MINIMAX_PROVIDER,
+        "nvidia_nim": ADMIRA_NVIDIA_PROVIDER,
+        "openai_api": ADMIRA_OPENAI_PROVIDER,
+        "custom_api": ADMIRA_CUSTOM_PROVIDER,
+    }
+    primary_provider = primary_slugs.get(primary_brain, str(brain.get("provider") or "openai-codex"))
+    primary_model = str(brain.get("model") or normalize_hermes_model("")).strip()
+    lines = [
+        "model:",
+        f"  provider: {_quote_yaml(primary_provider)}",
+        f"  default: {_quote_yaml(primary_model)}",
+    ]
+    if not configured:
+        return lines
+    lines.append("providers:")
+    for item in configured:
+        lines.extend([
+            f"  {item['slug']}:",
+            f"    name: {_quote_yaml(item['name'])}",
+            f"    base_url: {_quote_yaml(item['base_url'])}",
+            f"    key_env: {_quote_yaml(item['key_env'])}",
+            "    api_mode: \"chat_completions\"",
+            f"    model: {_quote_yaml(item['model'])}",
+            "    models:",
+            f"      {_quote_yaml(item['model'])}: {{}}",
+        ])
+    lines.append("model_aliases:")
+    seen = set()
+    for item in configured:
+        for alias in (item["model"], *item["aliases"]):
+            alias_key = str(alias or "").strip()
+            if not alias_key or alias_key in seen:
+                continue
+            seen.add(alias_key)
+            lines.extend([
+                f"  {_quote_yaml(alias)}:",
+                f"    model: {_quote_yaml(item['model'])}",
+                f"    provider: {_quote_yaml(item['slug'])}",
+                f"    base_url: {_quote_yaml(item['base_url'])}",
+            ])
+    return lines
+
+
 def _runtime_provider_for_brain(brain):
     if (brain or {}).get("brain") == "minimax":
         return ADMIRA_MINIMAX_PROVIDER
     if (brain or {}).get("brain") == "nvidia_nim":
         return ADMIRA_NVIDIA_PROVIDER
+    if (brain or {}).get("brain") == "openai_api":
+        return ADMIRA_OPENAI_PROVIDER
+    if (brain or {}).get("brain") == "custom_api":
+        return ADMIRA_CUSTOM_PROVIDER
     return str((brain or {}).get("provider") or "openai-codex").strip() or "openai-codex"
 
 
@@ -358,24 +442,19 @@ def admira_inference_fallback_chain(config, primary_settings=None):
         for model in nvidia_models[:3]:
             append(ADMIRA_NVIDIA_PROVIDER, model, brain.get("base_url") or ADMIRA_NVIDIA_DEFAULT_BASE_URL, ADMIRA_NVIDIA_KEY_ENV)
 
-    minimax = admira_minimax_credentials(config, brain)
-    if primary_provider != ADMIRA_MINIMAX_PROVIDER and minimax.get("api_key"):
-        append(
-            ADMIRA_MINIMAX_PROVIDER,
-            minimax.get("model") or "MiniMax-M3",
-            minimax.get("base_url") or "https://api.minimax.io/v1",
-            ADMIRA_MINIMAX_KEY_ENV,
-        )
+    connections = agent_model_connections(config, include_secrets=True)
+    for provider, connection in connections.items():
+        if not connection.get("configured"):
+            continue
+        metadata = _admira_provider_metadata(provider, connection)
+        if primary_provider == metadata["slug"]:
+            continue
+        append(metadata["slug"], metadata["model"], metadata["base_url"], metadata["key_env"])
 
     if primary_provider != "openai-codex":
         codex_models = _light_model_order(_cached_model_ids(CODEX_MODEL_CATALOG_FILE))
         if codex_models:
             append("openai-codex", codex_models[0])
-
-    if primary_provider != ADMIRA_NVIDIA_PROVIDER and os.environ.get(ADMIRA_NVIDIA_KEY_ENV, "").strip():
-        nvidia_models = _light_model_order(_cached_model_ids(NVIDIA_MODEL_CATALOG_FILE))
-        if nvidia_models:
-            append(ADMIRA_NVIDIA_PROVIDER, nvidia_models[0], ADMIRA_NVIDIA_DEFAULT_BASE_URL, ADMIRA_NVIDIA_KEY_ENV)
 
     return entries[:6]
 
@@ -402,6 +481,10 @@ def hermes_cli_provider(brain):
         return ADMIRA_MINIMAX_PROVIDER
     if brain.get("brain") == "nvidia_nim":
         return ADMIRA_NVIDIA_PROVIDER
+    if brain.get("brain") == "openai_api":
+        return ADMIRA_OPENAI_PROVIDER
+    if brain.get("brain") == "custom_api":
+        return ADMIRA_CUSTOM_PROVIDER
     return brain.get("provider") or ""
 
 
@@ -471,7 +554,7 @@ def write_cli_hermes_config(config, workspace_info, payload=None):
     telegram_toolsets = ["hermes-telegram", *cli_toolsets(config, {"channel": "telegram"})]
     config_yaml = [
         f"timezone: {_quote_yaml(timezone_name)}",
-        *_hermes_model_config_lines(brain),
+        *admira_connected_model_config_lines(config, brain),
         *admira_fallback_config_lines(config, brain),
         f"context_file_max_chars: {HERMES_CONTEXT_FILE_SAFE_MAX_CHARS}",
         "agent:",
@@ -1870,6 +1953,20 @@ def hermes_environment(config):
         # was disconnected.
         env["CODEX_HOME"] = str(path)
     settings = hermes_brain_settings(config)
+    connections = agent_model_connections(config, include_secrets=True)
+    provider_env = {
+        "minimax": (ADMIRA_MINIMAX_KEY_ENV, "ADMIRA_MINIMAX_BASE_URL", "ADMIRA_MINIMAX_MODEL"),
+        "nvidia_nim": (ADMIRA_NVIDIA_KEY_ENV, "ADMIRA_NVIDIA_BASE_URL", "ADMIRA_NVIDIA_MODEL"),
+        "openai_api": (ADMIRA_OPENAI_KEY_ENV, "ADMIRA_OPENAI_BASE_URL", "ADMIRA_OPENAI_MODEL"),
+        "custom_api": (ADMIRA_CUSTOM_KEY_ENV, "ADMIRA_CUSTOM_BASE_URL", "ADMIRA_CUSTOM_MODEL"),
+    }
+    for provider, connection in connections.items():
+        if not connection.get("configured"):
+            continue
+        key_env, base_env, model_env = provider_env[provider]
+        env[key_env] = str(connection.get("api_key") or "").strip()
+        env[base_env] = str(connection.get("base_url") or "").strip()
+        env[model_env] = str(connection.get("model") or "").strip()
     minimax_settings = admira_minimax_credentials(config, settings)
     if minimax_settings.get("api_key"):
         # Do not expose Admira's official MiniMax key as MINIMAX_API_KEY.

@@ -145,12 +145,15 @@ from optimization_research import RESEARCH_FILE, load_research, save_research_it
 from scheduled_campaign_actions import schedule_campaign_activation
 from product_config import (
     ENV_FILE,
+    agent_model_connection_env_keys,
+    agent_model_connections,
     agent_brain_uses_chatgpt_codex,
     default_codex_image_hermes_home,
     effective_codex_image_source,
     env_bool,
     image_codex_config,
     load_config,
+    normalize_agent_brain_provider,
     normalize_codex_image_source,
     normalize_daily_time,
     normalize_timezone,
@@ -4558,9 +4561,11 @@ def nvidia_model_catalog(api_key="", config=None, force_refresh=False):
 
 def refresh_nvidia_model_catalog(payload=None):
     payload = payload or {}
+    config = load_config()
+    saved_nvidia = agent_model_connections(config, include_secrets=True).get("nvidia_nim", {})
     catalog = nvidia_model_catalog(
-        api_key=payload.get("agent_chat_api_key"),
-        config=load_config(),
+        api_key=payload.get("agent_chat_api_key") or saved_nvidia.get("api_key"),
+        config=config,
         force_refresh=True,
     )
     if not catalog.get("account_verified"):
@@ -5410,7 +5415,9 @@ def disconnect_agent_model(payload=None):
     env_updates = {}
     gateway = None
     if purpose == "agent":
-        env_updates = {"HERMES_REQUIRE_CODEX_AUTH": "true"}
+        env_updates = {
+            "HERMES_REQUIRE_CODEX_AUTH": "true" if agent_brain_uses_chatgpt_codex(config) else "false"
+        }
         update_env_values(env_updates)
         gateway = refresh_telegram_gateway_after_agent_model_change(
             {"HERMES_MODEL": getattr(config, "hermes_model", "")},
@@ -5453,7 +5460,7 @@ def hermes_browserless_snapshot(config=None, purpose="agent"):
         output = state.get("output", "")
     if ready:
         gateway = refresh_telegram_gateway_after_agent_model_change(
-            {"AGENT_BRAIN_PROVIDER": "openai_codex", "HERMES_MODEL": getattr(config, "hermes_model", "")}
+            {"HERMES_MODEL": getattr(config, "hermes_model", "")}
         ) if purpose == "agent" else None
         cache_codex_session_status(config, purpose=purpose, authenticated=True, detail=auth_detail)
         return hermes_connect_response(
@@ -5608,7 +5615,7 @@ def start_hermes_browserless_login(config, purpose="agent"):
     ready, auth_detail = hermes_codex_ready(config)
     if ready:
         gateway = refresh_telegram_gateway_after_agent_model_change(
-            {"AGENT_BRAIN_PROVIDER": "openai_codex", "HERMES_MODEL": getattr(config, "hermes_model", "")}
+            {"HERMES_MODEL": getattr(config, "hermes_model", "")}
         ) if purpose == "agent" else None
         cache_codex_session_status(config, purpose=purpose, authenticated=True, detail=auth_detail)
         return hermes_connect_response(
@@ -5832,8 +5839,19 @@ def connect_agent_model(payload=None):
                 connection_purpose="image",
             )
         return start_hermes_browserless_login(config, purpose="image")
-    env_updates = {"AGENT_CHAT_PROVIDER": "hermes", "AGENT_BRAIN_PROVIDER": "openai_codex", "HERMES_REQUIRE_CODEX_AUTH": "true"}
-    env_updates["HERMES_MODEL"] = resolve_codex_model_choice(payload.get("hermes_model") if "hermes_model" in payload else "", config=load_config())
+    current_config = load_config()
+    env_updates = {
+        "HERMES_MODEL": resolve_codex_model_choice(
+            payload.get("hermes_model") if "hermes_model" in payload else "",
+            config=current_config,
+        )
+    }
+    if str(payload.get("agent_model_action") or "").strip().lower() == "set_primary":
+        env_updates.update({
+            "AGENT_CHAT_PROVIDER": "hermes",
+            "AGENT_BRAIN_PROVIDER": "openai_codex",
+            "HERMES_REQUIRE_CODEX_AUTH": "true",
+        })
     update_env_values(env_updates)
     config = load_config()
     ready, auth_detail = hermes_codex_ready(config)
@@ -5869,6 +5887,22 @@ AGENT_MODEL_GATEWAY_ENV_KEYS = {
     "AGENT_CHAT_API_KEY",
     "HERMES_MODEL",
     "HERMES_REQUIRE_CODEX_AUTH",
+    "ADMIRA_OPENAI_API_KEY",
+    "ADMIRA_OPENAI_BASE_URL",
+    "ADMIRA_OPENAI_MODEL",
+    "ADMIRA_OPENAI_API",
+    "ADMIRA_MINIMAX_API_KEY",
+    "ADMIRA_MINIMAX_BASE_URL",
+    "ADMIRA_MINIMAX_MODEL",
+    "ADMIRA_MINIMAX_API",
+    "ADMIRA_NVIDIA_API_KEY",
+    "ADMIRA_NVIDIA_BASE_URL",
+    "ADMIRA_NVIDIA_MODEL",
+    "ADMIRA_NVIDIA_API",
+    "ADMIRA_CUSTOM_API_KEY",
+    "ADMIRA_CUSTOM_BASE_URL",
+    "ADMIRA_CUSTOM_MODEL",
+    "ADMIRA_CUSTOM_API",
 }
 
 
@@ -5883,7 +5917,7 @@ def refresh_telegram_gateway_after_agent_model_change(env_updates, force_restart
         # credential-pool cooldown after the UI already shows the new model.
         effective_force_restart = force_restart or bool(
             set(changed) & {"HERMES_MODEL", "AGENT_BRAIN_PROVIDER", "AGENT_CHAT_PROVIDER"}
-        )
+        ) or any(key.startswith("ADMIRA_") for key in changed)
         if effective_force_restart:
             stop_hermes_gateway()
         gateway = start_hermes_gateway(config)
@@ -5924,32 +5958,55 @@ def save_setup_config(payload):
             continue
         env_updates[env_key] = value
     provider = normalize_agent_chat_provider(payload.get("agent_chat_provider")) if "agent_chat_provider" in payload else ""
+    model_action = str(payload.get("agent_model_action") or ("set_primary" if provider else "")).strip().lower()
+    if model_action not in {"", "save_connection", "set_primary"}:
+        raise ValueError("La acción del modelo no es válida.")
     if provider:
-        env_updates["AGENT_CHAT_PROVIDER"] = "hermes"
-        env_updates["AGENT_BRAIN_PROVIDER"] = provider
-        env_updates["HERMES_REQUIRE_CODEX_AUTH"] = "true" if provider == "openai_codex" else "false"
-        if provider == "nvidia_nim":
-            env_updates["AGENT_CHAT_BASE_URL"] = NVIDIA_NIM_BASE_URL
-            env_updates["AGENT_CHAT_API"] = "openai-chat-completions"
-    if "agent_chat_base_url" in payload:
-        base_url = validate_agent_chat_base_url(payload.get("agent_chat_base_url"))
-        if base_url and provider != "nvidia_nim":
-            env_updates["AGENT_CHAT_BASE_URL"] = base_url
-    if "agent_chat_model" in payload:
-        model = str(payload.get("agent_chat_model") or "").strip()
-        if model:
+        if provider == "openai_codex":
+            if model_action == "set_primary":
+                env_updates["AGENT_CHAT_PROVIDER"] = "hermes"
+                env_updates["AGENT_BRAIN_PROVIDER"] = provider
+                env_updates["HERMES_REQUIRE_CODEX_AUTH"] = "true"
+        else:
+            current_config = load_config()
+            current_primary = normalize_agent_brain_provider(
+                getattr(current_config, "agent_brain_provider", ""),
+                legacy_chat_provider=getattr(current_config, "agent_chat_provider", "hermes"),
+                base_url=getattr(current_config, "agent_chat_base_url", ""),
+            )
+            stored = agent_model_connections(current_config, include_secrets=True).get(provider, {})
+            base_url = str(payload.get("agent_chat_base_url") or stored.get("base_url") or "").strip().rstrip("/")
+            if provider == "nvidia_nim":
+                base_url = NVIDIA_NIM_BASE_URL
+            base_url = validate_agent_chat_base_url(base_url)
+            model = str(payload.get("agent_chat_model") or stored.get("model") or "").strip()
+            api = str(payload.get("agent_chat_api") or stored.get("api") or "openai-chat-completions").strip().lower()
+            api_key = str(payload.get("agent_chat_api_key") or stored.get("api_key") or "").strip()
             if provider == "nvidia_nim" and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{1,160}", model):
                 raise ValueError("El nombre del modelo NVIDIA no es válido.")
-            env_updates["AGENT_CHAT_MODEL"] = model
-    if "agent_chat_api" in payload:
-        api = str(payload.get("agent_chat_api") or "").strip().lower()
-        if api:
-            env_updates["AGENT_CHAT_API"] = api
-    if "agent_chat_api_key" in payload:
-        api_key = str(payload.get("agent_chat_api_key") or "").strip()
-        if api_key:
-            env_updates["AGENT_CHAT_API_KEY"] = api_key
-    if "hermes_model" in payload:
+            if not base_url or not model or not api_key:
+                raise ValueError("Completa la URL, el modelo y la API key antes de guardar esta conexión.")
+            profile_keys = agent_model_connection_env_keys(provider)
+            env_updates.update({
+                profile_keys["base_url"]: base_url,
+                profile_keys["model"]: model,
+                profile_keys["api"]: api,
+                profile_keys["api_key"]: api_key,
+            })
+            # Updating the profile that is already primary must update the live
+            # compatibility fields too, without changing which provider owns
+            # the single primary marker.
+            if model_action == "set_primary" or provider == current_primary:
+                env_updates.update({
+                    "AGENT_CHAT_PROVIDER": "hermes",
+                    "AGENT_BRAIN_PROVIDER": provider,
+                    "HERMES_REQUIRE_CODEX_AUTH": "false",
+                    "AGENT_CHAT_BASE_URL": base_url,
+                    "AGENT_CHAT_MODEL": model,
+                    "AGENT_CHAT_API": api,
+                    "AGENT_CHAT_API_KEY": api_key,
+                })
+    if "hermes_model" in payload and (not provider or provider == "openai_codex"):
         hermes_model = resolve_codex_model_choice(payload.get("hermes_model"), config=load_config())
         env_updates["HERMES_MODEL"] = hermes_model
         # A model selected and saved from the dashboard is an intentional
@@ -12305,6 +12362,7 @@ def dashboard_payload():
                 "codex_image_account": image_codex_session.get("identity", {}),
                 "codex_image_session_detail": image_codex_session.get("detail", ""),
                 "telegram_runtime_model": runtime_model_state,
+                "connections": agent_model_connections(config),
             },
             "guardrails": {
                 "autonomy_mode": "approval",
@@ -12342,6 +12400,7 @@ def dashboard_payload():
                 "agent_chat_model": config.agent_chat_model,
                 "agent_chat_api": config.agent_chat_api,
                 "agent_chat_api_key_set": bool(config.agent_chat_api_key),
+                "agent_model_connections": agent_model_connections(config),
                 "codex_image_source": codex_image_source,
                 "codex_image_source_configured": getattr(config, "codex_image_source", "main_chatgpt"),
                 "codex_image_hermes_model": image_model,

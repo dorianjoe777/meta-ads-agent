@@ -31,6 +31,9 @@ from hermes_bridge import (
     ADMIRA_NVIDIA_PROVIDER,
     ADMIRA_NVIDIA_PROVIDER_NAME,
     HERMES_CONTEXT_FILE_SAFE_MAX_CHARS,
+    ADMIRA_CUSTOM_PROVIDER,
+    ADMIRA_OPENAI_PROVIDER,
+    admira_connected_model_config_lines,
     admira_fallback_config_lines,
     admira_minimax_credentials,
     enforce_official_skill_catalog,
@@ -39,7 +42,7 @@ from hermes_bridge import (
     prepare_hermes_workspace,
 )
 from local_store import now_iso, read_json, write_private_json
-from product_config import ROOT_DIR, env_bool, env_int
+from product_config import ROOT_DIR, agent_model_connections, env_bool, env_int
 
 try:
     from product_config import normalize_hermes_model
@@ -226,6 +229,10 @@ def _telegram_model_provider_for_brain(brain):
         return ADMIRA_MINIMAX_PROVIDER
     if (brain or {}).get("brain") == "nvidia_nim":
         return ADMIRA_NVIDIA_PROVIDER
+    if (brain or {}).get("brain") == "openai_api":
+        return ADMIRA_OPENAI_PROVIDER
+    if (brain or {}).get("brain") == "custom_api":
+        return ADMIRA_CUSTOM_PROVIDER
     return str((brain or {}).get("provider") or "openai-codex").strip() or "openai-codex"
 
 
@@ -239,6 +246,10 @@ def _telegram_model_label(provider, model):
         return f"NVIDIA NIM · {model_name or 'z-ai/glm-5.2'}"
     if provider_key in {"openai-codex", "openai_codex", "codex"}:
         return f"ChatGPT/Codex · {model_name or 'gpt-5.4-mini'}"
+    if provider_key in {"admira-openai", "openai", "openai-api"}:
+        return f"OpenAI API · {model_name or 'modelo configurado'}"
+    if provider_key in {"admira-custom", "custom", "custom-api"}:
+        return f"API compatible · {model_name or 'modelo configurado'}"
     if provider_key in {"custom", "openai", "openai-api"}:
         return model_name or provider_raw or "API compatible"
     return model_name or provider_raw or "Modelo configurado"
@@ -395,6 +406,7 @@ def _gateway_fingerprint(config, status, files):
     ad_experience = ad_experience_from_environment()
     brain = hermes_brain_settings(config)
     minimax_credentials = admira_minimax_credentials(config, brain)
+    connections = agent_model_connections(config, include_secrets=True)
     brain_fingerprint = {
         "brain": brain.get("brain", ""),
         "provider": brain.get("provider", ""),
@@ -404,6 +416,14 @@ def _gateway_fingerprint(config, status, files):
         "minimax_api_key_set": bool(minimax_credentials.get("api_key")),
         "minimax_model": minimax_credentials.get("model", ""),
         "minimax_base_url": minimax_credentials.get("base_url", ""),
+        "saved_connections": {
+            provider: {
+                "configured": bool(connection.get("configured")),
+                "model": connection.get("model", ""),
+                "base_url": connection.get("base_url", ""),
+            }
+            for provider, connection in connections.items()
+        },
         "requires_codex_auth": bool(brain.get("requires_codex_auth")),
     }
     brain_hash = hashlib.sha256(json.dumps(brain_fingerprint, sort_keys=True).encode("utf-8")).hexdigest()[:16]
@@ -530,7 +550,7 @@ def write_gateway_files(config):
     mcp_server_path = ROOT_DIR / "src" / "admira_mcp_server.py"
     config_yaml = [
         f"timezone: {_quote_yaml(timezone_name)}",
-        *_gateway_model_config_lines(brain),
+        *admira_connected_model_config_lines(config, brain),
         *admira_fallback_config_lines(config, brain),
         f"context_file_max_chars: {HERMES_CONTEXT_FILE_SAFE_MAX_CHARS}",
         "agent:",
