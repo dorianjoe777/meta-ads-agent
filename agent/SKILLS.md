@@ -675,13 +675,13 @@ Arguments:
 }
 ```
 
-If the user wants the campaign active, ask for explicit confirmation before requesting the tool:
+If the user wants an already prepared campaign activated, ask for explicit confirmation before requesting the protected activation:
 
-> Sí, crear y dejar activo
+> Sí, activar
 
 In English mode, use:
 
-> Yes, create and leave active
+> Yes, activate
 
 If the campaign will be created fully paused, do not add another approval step merely to create it. After the buyer asks for creation and the required details are available, request `create_campaign_stack` with `final_status: "PAUSED"` and `active_spend_confirmed: false`. The backend may create the Meta campaign/ad set/ad objects in paused status immediately. Explain that nothing is spending; the protected approval is turning it active later.
 
@@ -742,7 +742,7 @@ If the user asks what an ad set is or where to find the ID, explain in simple la
 
 ### `approval_decision`
 
-Use when the buyer asks to approve or reject one exact pending approval already visible in context.
+Use when the buyer asks to approve or reject one exact pending decision already visible in context.
 
 Arguments:
 
@@ -750,19 +750,19 @@ Arguments:
 {"approval_id": "approval_...", "decision": "approve"}
 ```
 
-Allowed decisions are `approve` and `reject`. Never invent approval IDs. If the request is ambiguous, ask which pending decision they mean and do not request the tool.
+Allowed decisions are `approve` and `reject`. Approval IDs are internal routing metadata: never invent them and never show them to the buyer. A plain `aprobado` refers to the most recent proposal/card presented; internally resolve and pass its exact ID. If an older intended decision is genuinely ambiguous, show human-readable names without IDs and ask which one.
 
 If the approval can leave a campaign or ad active, ask for the exact buyer phrase before requesting approval:
 
-> Sí, crear y dejar activo
+> Sí, activar
 
 In English mode, use:
 
-> Yes, create and leave active
+> Yes, activate
 
 ### `approval_guardrail`
 
-Legacy fallback when the user asks to approve but the exact approval ID is missing.
+Legacy fallback when the buyer asks to approve but no exact pending decision can be resolved from hidden context.
 
 Arguments:
 
@@ -770,13 +770,13 @@ Arguments:
 {}
 ```
 
-Tell the buyer you need the exact decision and show/mention the pending choices.
+Show the pending choices by human-readable name only. Never request or expose an internal approval ID.
 
 ## Safety Rules
 
 - The chat may request an action, but it cannot bypass backend protection.
-- Chat and Telegram may approve pending approvals only through an exact approval button, an exact approval ID, or the approved active-campaign phrase when required.
-- Telegram natural-language approval is allowed only when it resolves to one exact pending decision: a reply to a decision card, one single pending approval, or a message containing the approval ID.
+- Chat and Telegram keep approval IDs internal. A normal pending decision can be approved with its exact button or a natural `aprobado` resolved from the latest proposal/card context.
+- Activating or resuming a campaign that can spend requires the exact short phrase `Sí, activar` or its exact button. The backend still receives the hidden approval ID.
 
 ## Codex Creative Skill
 

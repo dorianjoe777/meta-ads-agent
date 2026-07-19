@@ -153,6 +153,21 @@ class TypingIndicator:
 
 def message_text(text):
     cleaned = clean_reply(text)
+    # Approval IDs are routing metadata. Telegram buttons and local pending
+    # context retain them, but buyers approve with natural language.
+    cleaned = re.sub(
+        r"(?i)\b(?:aprueba|aprobar)\s+approval_[A-Za-z0-9_\-]+\b",
+        "responde “aprobado”",
+        str(cleaned or ""),
+    )
+    cleaned = re.sub(
+        r"(?i)\bapprove\s+approval_[A-Za-z0-9_\-]+\b",
+        "reply “approved”",
+        str(cleaned or ""),
+    )
+    cleaned = re.sub(r"\bapproval_[A-Za-z0-9_\-]+\b", "", str(cleaned or ""))
+    cleaned = re.sub(r"(?im)^\s*(?:approval\s+)?id\s*:\s*$", "", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
     cleaned = re.sub(r"\*\*(.*?)\*\*", r"\1", str(cleaned or ""), flags=re.DOTALL)
     cleaned = re.sub(r"^#{1,4}\s*", "", cleaned, flags=re.MULTILINE)
     normalized, _metadata = normalize_telegram_outbound_text(cleaned)
@@ -232,7 +247,7 @@ def append_turn(chat_id, user_message, reply):
     history.extend(
         [
             {"role": "user", "content": str(user_message)[:5000], "created_at": utc_iso()},
-            {"role": "agent", "content": clean_reply(reply)[:5000], "created_at": utc_iso()},
+            {"role": "agent", "content": message_text(reply)[:5000], "created_at": utc_iso()},
         ]
     )
     histories[str(chat_id)] = history[-MAX_HISTORY_ITEMS:]
@@ -268,8 +283,8 @@ def help_message():
         "/pendientes - ver decisiones esperando aprobacion\n"
         "/ayuda - ver esta guia\n\n"
         "Cuando te muestre una decision pendiente, puedes tocar Aprobar/No aprobar. "
-        "Tambien puedes responder 'aprobar' a esa tarjeta si es una decision normal. "
-        "Si puede quedar activa y gastar dinero, te pedire la frase exacta: Si, crear y dejar activo."
+        "Tambien puedes responder 'aprobado' si es una decision normal. "
+        "Si puede quedar activa y gastar dinero, te pedire la frase exacta: Si, activar."
     )
 
 
@@ -291,17 +306,17 @@ def approval_title(item):
 
 def approval_body(item):
     payload = item.get("payload", {}) if isinstance(item, dict) else {}
-    lines = [f"Decision pendiente: {approval_title(item)}", f"ID: {item.get('id', '')}", f"Tipo: {item.get('type', 'accion')}"]
+    lines = [f"Decisión pendiente: {approval_title(item)}"]
     if payload.get("requested"):
         lines.append(f"Pedido: {payload.get('requested')}")
     if payload.get("connector"):
         lines.append(f"Conector: {payload.get('connector')}")
     if payload.get("recommended_budget") or payload.get("new_budget"):
         lines.append(f"Presupuesto: {payload.get('recommended_budget') or payload.get('new_budget')}")
-    if payload.get("final_status") == "ACTIVE":
+    if approval_requires_active_confirmation(item):
         lines.append("")
-        lines.append("ATENCION: si apruebas, el anuncio puede quedar ACTIVO y gastar presupuesto real.")
-        lines.append("Para aprobar por texto, responde exactamente: Si, crear y dejar activo")
+        lines.append("ATENCIÓN: al aprobar, la campaña puede empezar a gastar presupuesto real.")
+        lines.append("Para confirmar por texto, responde exactamente: Sí, activar")
     elif item.get("type") == "delete_campaign":
         lines.append("")
         lines.append("ATENCION: si apruebas, eliminaré/archivaré esta campaña en Meta. Usa esto solo para limpiar campañas incompletas o claramente elegidas.")
@@ -318,7 +333,12 @@ def approval_keyboard(item):
     payload = item.get("payload", {}) if isinstance(item, dict) else {}
     if item.get("type") == "create_campaign" and payload.get("final_status") == "ACTIVE":
         return [
-            [{"text": "Si, crear y dejar activo", "callback_data": f"approve_active:{approval_id}"}],
+            [{"text": "Sí, activar", "callback_data": f"approve_active:{approval_id}"}],
+            [{"text": "No aprobar", "callback_data": f"reject:{approval_id}"}],
+        ]
+    if item.get("type") in {"resume_campaign", "activate_campaign"}:
+        return [
+            [{"text": "Sí, activar", "callback_data": f"approve_active:{approval_id}"}],
             [{"text": "No aprobar", "callback_data": f"reject:{approval_id}"}],
         ]
     return [[{"text": "Aprobar", "callback_data": f"approve:{approval_id}"}, {"text": "No aprobar", "callback_data": f"reject:{approval_id}"}]]
@@ -363,13 +383,18 @@ def text_approval_decision(text):
     lowered = str(text or "").strip().lower()
     if re.search(r"\b(rechaza|rechazar|rechazalo|recházalo|no aprobar|no apruebo|reject|deny)\b", lowered):
         return "reject"
-    if re.search(r"\b(aprueba|aprobar|aprobalo|apruébalo|approve)\b", lowered):
+    if re.search(r"\b(aprueba|aprobar|aprobalo|apruébalo|aprobado|aprobada|approve|approved)\b", lowered):
         return "approve"
     if lowered in {
         "si, crear y dejar activo",
         "sí, crear y dejar activo",
         "si crear y dejar activo",
         "sí crear y dejar activo",
+        "si, activar",
+        "sí, activar",
+        "si activar",
+        "sí activar",
+        "activar ahora",
         "yes, create and leave active",
         "yes create and leave active",
         "yes, create and keep active",
@@ -390,6 +415,11 @@ def text_confirms_active(text):
         "si crear y dejar activo",
         "sí crear y dejar activo",
         "aprobar activo",
+        "si, activar",
+        "sí, activar",
+        "si activar",
+        "sí activar",
+        "activar ahora",
         "yes, create and leave active",
         "yes create and leave active",
         "yes, create and keep active",
@@ -402,7 +432,10 @@ def text_confirms_active(text):
 
 def approval_requires_active_confirmation(item):
     payload = item.get("payload", {}) if isinstance(item, dict) else {}
-    return item.get("type") == "create_campaign" and str(payload.get("final_status") or "").upper() == "ACTIVE"
+    return bool(
+        item.get("type") in {"resume_campaign", "activate_campaign"}
+        or (item.get("type") == "create_campaign" and str(payload.get("final_status") or "").upper() == "ACTIVE")
+    )
 
 
 def resolve_pending_from_text(chat_id, text, pending, reply_approval_id=""):
@@ -414,11 +447,13 @@ def resolve_pending_from_text(chat_id, text, pending, reply_approval_id=""):
     if len(pending) == 1:
         return pending[0], "single"
     context_id = last_approval_context(chat_id)
-    if context_id and re.search(r"\b(esta|esa|this|that)\b", str(text or "").lower()):
+    if context_id:
         for item in pending:
             if item.get("id") == context_id:
                 return item, "context"
-    return None, "ambiguous"
+    # Pending items are newest-first. Natural “aprobado” refers to the latest
+    # decision just presented when there is no explicit reply/card context.
+    return pending[0], "latest"
 
 
 def handle_text_approval(config, chat_id, text, dashboard, send=True, reply_approval_id=""):
@@ -446,7 +481,7 @@ def handle_text_approval(config, chat_id, text, dashboard, send=True, reply_appr
             send_message(config, chat_id, reply)
         return reply
     if approval_requires_active_confirmation(item) and not text_confirms_active(text):
-        reply = "Esta decision puede dejar anuncios activos y gastar dinero real. Para aprobar por texto, responde exactamente: Si, crear y dejar activo"
+        reply = "Esta decisión activará anuncios y puede gastar dinero real. Para confirmar por texto, responde exactamente: Sí, activar"
         if send:
             send_message(config, chat_id, reply)
             send_approval_card(config, chat_id, item)

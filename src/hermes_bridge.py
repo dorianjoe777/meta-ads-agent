@@ -2361,8 +2361,8 @@ def hermes_prompt(config, payload, workspace_info=None):
         + image_note
         + "\n\nDo not expect full conversation history here. Hermes session memory helps continuity, but durable workspace memory is the fallback after cleanup/update/restart. Return normal helpful text for explanations. If the user asks for a product action, return this JSON contract only:\n"
         + '{"assistant_message":"short user-facing reply","tool_request":{"tool":"tool_name","arguments":{}}}\n'
-        + "Approvals are allowed only when the buyer asks to approve or reject one exact pending approval ID already present in context. Use `approval_decision` with that exact ID. If ambiguous, ask which decision or show choices; never invent approval IDs.\n"
-        + "If a tool stages an action for approval, tell the buyer they can approve/reject directly in Telegram with the exact approval ID or the buttons shown there. Do not say the dashboard Approvals UI is required; it is only a backup. For actions that can leave ads active and spend real money, preserve the exact active-spend confirmation phrase required by the backend.\n\n"
+        + "Approvals must target one exact pending decision, but approval IDs are internal routing metadata and must never appear in the buyer-facing reply. After staging, ask the buyer to reply `aprobado` or use the buttons; internally use the exact ID returned by the tool. If an older intended decision is genuinely unclear, show human-readable choices without IDs. Never invent IDs.\n"
+        + "For campaign activation/resume that can spend real money, ask for the short exact phrase `Sí, activar` without appending an ID. Do not say the dashboard Approvals UI is required; it is only a backup.\n\n"
         + f"User message:\n{str(payload.get('message') or '')[:5000]}"
     )
 

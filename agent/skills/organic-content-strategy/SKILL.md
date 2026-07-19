@@ -108,8 +108,8 @@ Daily content is draft-first:
 - generate or propose;
 - send media/caption directly in Telegram;
 - call `mcp_admira_stage_organic_social_post` once for each exact final image/caption pair;
-- show its exact approval ID and ask approve/change/discard;
-- if the buyer approves that exact piece, call `mcp_admira_approve_action` with its approval ID;
+- ask the buyer to reply simply `aprobado`, request changes, or discard; never expose the internal approval ID;
+- internally retain the exact approval returned by the tool and, when the buyer approves that piece, call `mcp_admira_approve_action` with that hidden approval ID;
 - publish only through that protected approval. Never call a raw Page-post action or claim publication before the approval result contains the real Meta post ID.
 
 If the buyer requests changes, generate/revise the piece and stage a new exact draft. The previous draft remains unpublished and must not be silently reused.

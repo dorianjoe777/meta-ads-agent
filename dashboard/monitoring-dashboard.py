@@ -2396,7 +2396,7 @@ def stage_organic_social_post(payload):
         "draft_id": draft_id,
         "caption": caption,
         "image_path": image_path,
-        "reply": f"Post listo para revisar. Si te gusta, aprueba {approval_id} y lo publicaré en Facebook; si quieres cambios, dímelos y no publicaré esta versión.",
+        "reply": "Post listo para revisar. Si te gusta, responde “aprobado” y lo publicaré en Facebook; si quieres cambios, dímelos y no publicaré esta versión.",
     }
 
 
@@ -10525,7 +10525,10 @@ def approval_public_payload(item):
 
 def approval_requires_active_confirmation(item):
     payload = item.get("payload", {}) if isinstance(item, dict) else {}
-    return item.get("type") == "create_campaign" and str(payload.get("final_status") or "").upper() == "ACTIVE"
+    return bool(
+        item.get("type") in {"resume_campaign", "activate_campaign"}
+        or (item.get("type") == "create_campaign" and str(payload.get("final_status") or "").upper() == "ACTIVE")
+    )
 
 
 def approval_text_decision(text):
@@ -10534,7 +10537,7 @@ def approval_text_decision(text):
         return "approve"
     if text_has_any(normalized, ["rechaza", "rechazar", "recházalo", "rechazalo", "no aprobar", "no apruebo", "deny", "reject"]):
         return "reject"
-    if text_has_any(normalized, ["aprueba", "aprobar", "apruébalo", "aprobalo", "approve"]):
+    if text_has_any(normalized, ["aprueba", "aprobar", "apruébalo", "aprobalo", "aprobado", "aprobada", "approve", "approved"]):
         return "approve"
     return ""
 
@@ -10549,6 +10552,11 @@ def text_confirms_active_approval(text):
             "si crear y dejar activo",
             "sí crear y dejar activo",
             "aprobar activo",
+            "sí, activar",
+            "si, activar",
+            "sí activar",
+            "si activar",
+            "activar ahora",
             "crear y dejar activo",
             "yes, create and leave active",
             "yes create and leave active",
@@ -10580,7 +10588,11 @@ def find_pending_approval_for_text(text, pending):
             title_matches.append(item)
     if len(title_matches) == 1:
         return title_matches[0], "title"
-    return None, "ambiguous"
+    # Pending approvals are newest-first. The buyer-facing flow deliberately
+    # hides internal IDs, so a bare “aprobado” naturally refers to the most
+    # recent decision the agent just presented. Older decisions still require
+    # their visible name/card or button.
+    return pending[0], "latest"
 
 
 def route_chat_approval_decision(payload):
@@ -10630,8 +10642,8 @@ def route_chat_approval_decision(payload):
             "routed_action": {"type": "approval_decision", "executed": False, "blocked": True, "reason": "active_confirmation_required", "approval_id": approval_id, "approval_choices": [choice]},
             "reply": chat_reply(
                 payload,
-                "Esta aprobación puede dejar anuncios activos y gastar presupuesto real. Para aprobarla por chat, escribe exactamente: Sí, crear y dejar activo.",
-                "This approval can leave ads active and spend real budget. To approve it in chat, type exactly: Yes, create and leave active.",
+                "Esta aprobación activará anuncios y puede gastar presupuesto real. Para confirmarla por chat, escribe exactamente: Sí, activar.",
+                "This approval activates ads and may spend real budget. To confirm it in chat, type exactly: Yes, activate.",
             ),
         }
 
@@ -10663,25 +10675,24 @@ def agent_action_result(action_type, executed=False, reply_text="", **fields):
 def staged_approval_chat_instruction(payload, approval):
     if not isinstance(approval, dict) or approval.get("status") != "pending" or not approval.get("id"):
         return ""
-    approval_id = approval.get("id", "")
     if chat_lang(payload) == "es":
         if approval_requires_active_confirmation(approval):
             return (
-                f"Para aprobar desde Telegram, responde exactamente: Sí, crear y dejar activo {approval_id}. "
-                f"Para rechazar: rechazar {approval_id}. El panel de Aprobaciones queda solo como respaldo."
+                "Para activarla desde Telegram, responde exactamente: Sí, activar. "
+                "Para rechazarla, responde: no aprobar."
             )
         return (
-            f"Puedes aprobar aquí mismo respondiendo: aprobar {approval_id}. "
-            f"Para rechazar: rechazar {approval_id}. El panel de Aprobaciones queda solo como respaldo."
+            "Puedes aprobar aquí mismo respondiendo: aprobado. "
+            "Para rechazarla, responde: no aprobar."
         )
     if approval_requires_active_confirmation(approval):
         return (
-            f"To approve from Telegram, type exactly: Yes, create and leave active {approval_id}. "
-            f"To reject: reject {approval_id}. The Approvals panel is only a backup."
+            "To activate it from Telegram, reply exactly: Yes, activate. "
+            "To reject it, reply: do not approve."
         )
     return (
-        f"You can approve right here by replying: approve {approval_id}. "
-        f"To reject: reject {approval_id}. The Approvals panel is only a backup."
+        "You can approve right here by replying: approved. "
+        "To reject it, reply: do not approve."
     )
 
 
@@ -10899,7 +10910,7 @@ def route_chat_action(payload):
     wants_creative = text_has_any(text, ["creativo", "creativa", "creative", "imagen", "refresh", "renovar"])
     wants_daily = text_has_any(text, ["ejecuta el agente", "corre el agente", "run daily", "daily check", "revisión diaria", "revision diaria"])
     wants_export = text_has_any(text, ["exporta", "exportar", "csv", "reporte csv", "export"])
-    wants_approve = text_has_any(text, ["aprueba", "aprobar", "approve"])
+    wants_approve = text_has_any(text, ["aprueba", "aprobar", "aprobado", "aprobada", "approve", "approved", "sí activar", "si activar"])
     wants_create_campaign = text_has_any(text, ["crea una campaña", "crear una campaña", "crea campaña", "crear campaña", "lanzar anuncios", "lanza anuncios", "prepara una campaña", "campaña de ventas", "haz una campaña", "create campaign", "launch ads"])
     wants_live_gap = any(phrase in text for phrase in ["qué falta para pasar a live", "que falta para pasar a live", "qué falta para pasar live", "que falta para pasar live", "what is missing to go live", "what blocks live"])
     mentions_adset = text_has_any(text, ["adset", "ad set", "grupo de anuncios", "conjunto de anuncios"])
@@ -11042,8 +11053,8 @@ def handle_agent_approval_tool(arguments, chat_payload, tool):
         False,
         chat_reply(
             chat_payload,
-            "Puedo ayudarte a aprobar, pero necesito una decisión exacta. Usa el botón de la aprobación o dime el ID que aparece en la tarjeta.",
-            "I can help you approve, but I need an exact decision. Use the approval button or tell me the ID shown on the card.",
+            "Puedo ayudarte a aprobar, pero necesito una decisión exacta. Responde a la propuesta correspondiente o usa su botón.",
+            "I can help you approve, but I need an exact decision. Reply to the corresponding proposal or use its button.",
         ),
         blocked=True,
         approval_choices=choices,
@@ -11769,12 +11780,12 @@ def handle_stage_organic_social_post_tool(arguments, chat_payload, tool):
     if chat_lang(chat_payload) == "es":
         message = (
             "Listo: dejé esta pieza como borrador, sin publicarla. "
-            f"Si apruebas {approval.get('id')}, publicaré exactamente esta imagen y este texto en Facebook; si pides cambios, esta versión no se publica."
+            "Si respondes “aprobado”, publicaré exactamente esta imagen y este texto en Facebook; si pides cambios, esta versión no se publica."
         )
     else:
         message = (
             "Done: I saved this piece as a draft without publishing it. "
-            f"If you approve {approval.get('id')}, I will publish exactly this image and caption to Facebook; if you request changes, this version stays unpublished."
+            "If you reply “approved”, I will publish exactly this image and caption to Facebook; if you request changes, this version stays unpublished."
         )
     return agent_action_result(
         tool,

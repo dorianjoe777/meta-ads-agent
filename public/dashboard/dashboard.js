@@ -263,7 +263,8 @@ function formatChatContent(text){
  flushList();
  return blocks.join('');
 }
-function setMessageContent(node,text){const content=fillTemplate(text);node.classList.remove('thinking');node.innerHTML=formatChatContent(content);node.dataset.rawContent=content;return content}
+function buyerSafeChatContent(value){let text=String(value??'');text=text.replace(/\b(?:aprueba|aprobar)\s+approval_[A-Za-z0-9_-]+\b/gi,'responde “aprobado”');text=text.replace(/\bapprove\s+approval_[A-Za-z0-9_-]+\b/gi,'reply “approved”');text=text.replace(/\bapproval_[A-Za-z0-9_-]+\b/g,'').replace(/[ \t]{2,}/g,' ');return text}
+function setMessageContent(node,text){const raw=fillTemplate(text);const content=node.classList.contains('agent')?buyerSafeChatContent(raw):raw;node.classList.remove('thinking');node.innerHTML=formatChatContent(content);node.dataset.rawContent=content;return content}
 function addMessage(role,text,store=true){const log=qs('#chat-log');const node=document.createElement('div');node.className=`msg ${role}`;const content=setMessageContent(node,text);log.appendChild(node);log.scrollTop=log.scrollHeight;if(store)chatHistory.push({role,content});return node}
 function chatApprovalItems(result){
  const routed=result?.routed_action||{};const items=[];
@@ -278,7 +279,7 @@ function approvalItemName(item){return escapeHtml(item.name||item.payload?.name|
 function appendChatApprovalActions(node,result){
  const items=chatApprovalItems(result);if(!items.length)return;
  const wrap=document.createElement('div');wrap.className='msg-actions approval-chat-actions';
- wrap.innerHTML=items.map(item=>{const active=item.requires_active_confirmation||item.final_status==='ACTIVE'||item.payload?.final_status==='ACTIVE';const approveLabel=active?(lang==='es'?'Sí, crear y dejar activo':'Yes, create and leave active'):(lang==='es'?'Aprobar':'Approve');return `<div class="msg-approval-card"><b>${approvalItemName(item)}</b><span>${escapeHtml(item.type||'approval')} · ${escapeHtml(item.id)}</span><div class="msg-approval-buttons"><button class="btn primary" type="button" data-action-code="chatApproveDecision('${escapeHtml(item.id)}')">${approveLabel}</button><button class="btn danger" type="button" data-action-code="chatRejectDecision('${escapeHtml(item.id)}')">${lang==='es'?'No aprobar':'Reject'}</button></div></div>`}).join('');
+ wrap.innerHTML=items.map(item=>{const active=item.requires_active_confirmation||item.type==='resume_campaign'||item.type==='activate_campaign'||item.final_status==='ACTIVE'||item.payload?.final_status==='ACTIVE';const approveLabel=active?(lang==='es'?'Sí, activar':'Yes, activate'):(lang==='es'?'Aprobar':'Approve');return `<div class="msg-approval-card"><b>${approvalItemName(item)}</b><span>${escapeHtml(item.type||'approval')}</span><div class="msg-approval-buttons"><button class="btn primary" type="button" data-action-code="chatApproveDecision('${escapeHtml(item.id)}')">${approveLabel}</button><button class="btn danger" type="button" data-action-code="chatRejectDecision('${escapeHtml(item.id)}')">${lang==='es'?'No aprobar':'Reject'}</button></div></div>`}).join('');
  node.appendChild(wrap);qs('#chat-log').scrollTop=qs('#chat-log').scrollHeight;
 }
 async function chatApproveDecision(id){const attempted=await approvePending(id);const done=Array.isArray(attempted)&&attempted[0]?.status==='approved';addMessage('agent',done?(lang==='es'?'Listo. Aprobé y ejecuté esa decisión.':'Done. I approved and executed that decision.'):(lang==='es'?'Intenté aprobarla, pero quedó pendiente para reintentar. Revisa el detalle en Aprobaciones.':'I tried to approve it, but it remains pending for retry. Check the detail in Approvals.'))}
@@ -293,7 +294,8 @@ function hydrateChatHistory(force=false){
  chatHydrated=true;
 }
 function streamMessageContent(node,text){
- const content=fillTemplate(text);
+ const raw=fillTemplate(text);
+ const content=node.classList.contains('agent')?buyerSafeChatContent(raw):raw;
  node.dataset.rawContent='';
  node.classList.remove('thinking');
  node.classList.add('streaming');

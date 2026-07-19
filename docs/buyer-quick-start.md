@@ -145,7 +145,7 @@ Crea una campana para vender mi curso de reposteria con $20 diarios, para mujere
 
 El agente te preguntara solo lo que falte. Cuando este lista, dejara una tarjeta de aprobacion con lo que se va a crear: campana, conjunto, creativo y anuncio.
 
-Si quieres que el anuncio quede activo y pueda gastar, la tarjeta debe decirlo claro y debes confirmar: `Si, crear y dejar activo`.
+Si quieres activar el anuncio para que pueda gastar, la tarjeta debe decirlo claro y debes confirmar: `Si, activar`.
 
 ## 9. Con supervision vs Piloto automatico
 

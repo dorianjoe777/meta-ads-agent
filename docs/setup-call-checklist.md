@@ -23,7 +23,7 @@
 12. Mostrar la cola de aprobaciones.
 13. Explicar que el chat prepara acciones, pero no aprueba.
 14. Crear una campana de prueba en pausa.
-15. Si el comprador quiere anuncios activos, mostrar la segunda confirmacion: `Si, crear y dejar activo`.
+15. Si el comprador quiere activar anuncios, mostrar la confirmacion corta: `Si, activar`.
 16. Activar Piloto automatico solo si el comprador entiende reglas, limites y aprobaciones.
 17. Hacer una prueba pequena y reversible.
 

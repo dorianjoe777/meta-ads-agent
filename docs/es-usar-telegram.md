@@ -64,16 +64,16 @@ El bot mostrara cada accion con botones:
 Si una campana quedara activa y podria gastar presupuesto real, el boton dira claramente:
 
 ```text
-Si, crear y dejar activo
+Si, activar
 ```
 
-El agente no aprueba una orden vaga como "hazlo todo". Por seguridad, solo acepta texto cuando la decision queda clara: respondes a la tarjeta exacta, escribes el ID de aprobacion o solo hay una decision pendiente. Si hay varias opciones, te pedira usar el boton correcto.
+Para una decisión normal también puedes responder simplemente `aprobado`. Los identificadores técnicos se mantienen ocultos. Si quieres aprobar una decisión anterior y no está claro cuál, el agente te mostrará sus nombres sin códigos internos.
 
 ## Proteccion importante
 
 - Solo el chat privado elegido puede hablar con el agente.
 - El bot usa el mismo manager, memoria y reglas del dashboard.
-- Telegram puede preparar acciones y aprobar solo cuando eliges una decision exacta: boton, respuesta a la tarjeta, ID de aprobacion o una sola decision pendiente.
+- Telegram puede preparar acciones y aprobar cuando eliges la decisión mediante su botón o respondes `aprobado` a la propuesta presentada.
 - Campanas activas y cambios que pueden gastar muestran una confirmacion especial antes de ejecutar.
 
 ## Mantenerlo encendido

@@ -11,6 +11,6 @@ Antes de aprobar una campana activa, confirma:
 - Presupuesto diario correcto.
 - Creativo correcto.
 - La tarjeta dice `ACTIVE` y entiendes que puede gastar dinero.
-- Confirmaste `Si, crear y dejar activo`.
+- Confirmaste `Si, activar`.
 
 Si tienes duda, crea primero en pausa y revisa todo dentro de Meta Ads Manager.

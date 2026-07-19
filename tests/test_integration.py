@@ -2867,6 +2867,7 @@ class IntegrationTestSuite:
             self.assert_true("entrevista del negocio" in config_yaml and "no bloquean la configuración inicial" in config_yaml, "Hermes Gateway tells Telegram that agent interviews are not dashboard blockers")
             self.assert_true("primero entenderemos el negocio" in config_yaml and "marca visual" in config_yaml and "ofertas, briefs, estrategia y campañas" in config_yaml, "Hermes Gateway introduction explains the three-step onboarding journey")
             self.assert_true("Tu identidad de cara al cliente es solo Admira IA" in config_yaml and "comandos como `/help`" in config_yaml, "Telegram prompt blocks buyer-facing Hermes/runtime command branding")
+            self.assert_true("nunca los muestres al comprador" in config_yaml and "`aprobado`" in config_yaml and "`Sí, activar`" in config_yaml, "Telegram prompt keeps approval IDs private and uses natural approval phrases")
             self.assert_true("Estás hablando directamente desde Hermes Telegram Gateway" not in config_yaml and "Usa tu memoria de Hermes" not in config_yaml, "Telegram prompt does not teach the buyer-facing agent to introduce itself as Hermes")
             english_prompt = hermes_gateway.gateway_prompt("en", "simple", "")
             self.assert_true("customer-facing identity is only Admira IA" in english_prompt and "Never mention Hermes" in english_prompt and "`/help` command suggestions" in english_prompt, "English Telegram prompt also hides Hermes/runtime branding from buyers")
@@ -2966,6 +2967,8 @@ class IntegrationTestSuite:
             self.assert_true("Executive response contract" in core_text and "60-180 words" in core_text and "must usually stay under 220 words" in core_text and "Never append a generic engagement hook" in core_text, "Simple-word replies have a concrete concise response budget and decisive ending")
             self.assert_true("Critical video-only fallback" in agents_text and "temporary static dark/placeholder" in meta_execution_skill.read_text(encoding="utf-8") and "normal static-image ads" in campaign_text, "Hermes workspace makes the video-only placeholder workaround explicit at top-level and execution levels")
             self.assert_true("mcp_admira_approve_action" in approvals_skill.read_text(encoding="utf-8"), "Approval skill points Hermes to exact approval MCP tools")
+            self.assert_true("Never show them in buyer-facing text" in approvals_skill.read_text(encoding="utf-8") and "`aprobado`" in approvals_skill.read_text(encoding="utf-8") and "`Sí, activar`" in approvals_skill.read_text(encoding="utf-8"), "Approval skill keeps internal IDs hidden and teaches natural approval/activation language")
+            self.assert_true("never expose the internal approval ID" in organic_content_text and "reply simply `aprobado`" in organic_content_text, "Organic content approvals ask for a simple buyer reply while retaining exact routing internally")
             self.assert_true("Native Product Tools" in agents_text and "mcp_admira_stage_campaign" in agents_text and "mcp_admira_review_signal_quality" in agents_text and "mcp_admira_preflight_campaign" in agents_text, "Combined Hermes rules document the MCP product bridge and preflight review")
             self.assert_true("latest_day_context" in agents_text and "active_workflow" in agents_text and "core-agent-behavior" in agents_text, "Combined Hermes rules force modular behavior and continuity memory")
             self.assert_true("official versioned skills" in agents_text.lower() and "mcp_admira_save_durable_memory" in agents_text and "Never say “lo guardé”" in agents_text, "Hermes uses only official product skills and cannot claim persistence without a confirmed durable save")
@@ -4283,10 +4286,10 @@ class IntegrationTestSuite:
             dashboard.approve_pending = lambda approval_id: [{"id": approval_id, "status": "approved", "result": {"ok": True}}]
             dashboard.reject_pending = lambda approval_id, reason="": [{"id": approval_id, "status": "rejected"}]
             exact = dashboard.execute_agent_tool({"tool": "approval_decision", "arguments": {"approval_id": "approval_exact", "decision": "approve"}}, {"language": "es"})
-            ambiguous = dashboard.execute_agent_tool({"tool": "approval_guardrail", "arguments": {}}, {"language": "es", "message": "aprueba"})
+            natural_latest = dashboard.execute_agent_tool({"tool": "approval_guardrail", "arguments": {}}, {"language": "es", "message": "aprobado"})
             self.assert_true(exact["type"] == "approval_decision", "Approval intent is routed locally")
             self.assert_true(exact["executed"] is True, "Exact chat approval can execute")
-            self.assert_true("approval_choices" in ambiguous, "Ambiguous approval shows exact choices")
+            self.assert_true(natural_latest["executed"] is True and natural_latest["result"][0]["id"] == "approval_exact", "Natural approved resolves to the latest hidden pending decision")
             dashboard.write_json(
                 dashboard.PENDING_FILE,
                 [
@@ -4295,9 +4298,11 @@ class IntegrationTestSuite:
             )
             blocked_active = dashboard.route_chat_approval_decision({"language": "en", "message": "approve approval_active"})
             approved_active = dashboard.route_chat_approval_decision({"language": "en", "message": "Yes, create and leave active approval_active"})
+            approved_active_short = dashboard.route_chat_approval_decision({"language": "es", "message": "Sí, activar"})
             parsed_active = dashboard.parse_campaign_creation_payload("create ads for coffee active yes, create and leave active", {"message": ""})
             self.assert_true(blocked_active["routed_action"]["reason"] == "active_confirmation_required", "Active approval needs exact confirmation")
             self.assert_true(approved_active["routed_action"]["executed"] is True, "English active confirmation is accepted")
+            self.assert_true(approved_active_short["routed_action"]["executed"] is True, "Short natural activation confirmation is accepted without exposing an approval ID")
             self.assert_true(parsed_active["active_spend_confirmed"] is True, "English active confirmation is accepted in campaign parsing")
         finally:
             for key, value in original.items():
@@ -8359,6 +8364,7 @@ class IntegrationTestSuite:
             pending_rows = json.loads(dashboard.PENDING_FILE.read_text(encoding="utf-8"))
             self.assert_true(draft["staged"] and draft["approval_required"] and len(pending_rows) == 1, "A final organic image/caption becomes one exact pending approval and is not published immediately")
             self.assert_true(duplicate["approval_id"] == draft["approval_id"] and len(pending_rows) == 1, "Retrying the same organic draft is idempotent and does not create duplicate approvals")
+            self.assert_true("aprobado" in draft["reply"].lower() and draft["approval_id"] not in draft["reply"], "Organic draft asks for a natural approval while keeping its routing ID hidden")
 
             daily_agent.PENDING_FILE = dashboard.PENDING_FILE
             daily_agent.ACTIONS_FILE = dashboard.ACTIONS_FILE
@@ -9530,7 +9536,7 @@ class IntegrationTestSuite:
             approve = dashboard.route_chat_action({"language": "es", "message": "aprueba esa campaña"})
             self.assert_true(routed["routed_action"]["type"] == "create_campaign_stack", "Chat routes campaign creation")
             self.assert_true(routed["routed_action"]["staged"] is True, "Chat stages campaign creation for approval")
-            self.assert_true("aprobar approval_test" in routed["reply"], "Staged campaigns can be approved directly by Telegram text")
+            self.assert_true("aprobado" in routed["reply"].lower() and "approval_test" not in routed["reply"], "Staged campaigns request natural approval without exposing routing IDs")
             self.assert_true("Revísala en Aprobaciones" not in routed["reply"], "Staged campaigns do not force the buyer into the Approvals UI")
             self.assert_true(routed["routed_action"]["approval_choices"][0]["id"] == "approval_test", "Staged campaigns expose exact approval choices to chat clients")
             self.assert_true(approve["routed_action"]["type"] == "approval_decision", "Chat approval requests route through exact approval logic")
@@ -9673,7 +9679,7 @@ class IntegrationTestSuite:
             telegram_agent.reject_pending = lambda approval_id, reason="": [{"id": approval_id}]
             telegram_agent.handle_text(FakeConfig(), "12345", "Prepara una campaña", send=True)
             reply = telegram_agent.handle_text(FakeConfig(), "12345", "Prepara una campaña", send=False)
-            approved_text = telegram_agent.handle_text(FakeConfig(), "12345", "Aprueba esa campaña", send=False)
+            approved_text = telegram_agent.handle_text(FakeConfig(), "12345", "aprobado", send=False)
             pending_reply = telegram_agent.handle_text(FakeConfig(), "12345", "/pendientes", send=True)
             callback = telegram_agent.handle_update(FakeConfig(), {"callback_query": {"id": "cb_1", "data": "approve:approval_test", "message": {"chat": {"id": "12345"}}}})
             telegram_agent.agent_chat = lambda config, payload: {"reply": "", "tool_request": None}
@@ -9683,16 +9689,18 @@ class IntegrationTestSuite:
             noisy_reply = "⚠ tirith security scanner enabled but not available\n  ┊ review diff\na/data/business_profile.json → b/data/business_profile.json\n@@ -1 +1 @@\n- old\n+ new\nGracias, sigo con una pregunta."
             telegram_agent.append_turn("12345", "respuesta corta", noisy_reply)
             stored_history = json.loads(history_path.read_text(encoding="utf-8"))
+            visible_cards = [item for item in sent if item[0] == "keyboard"]
+            sanitized_approval_prompt = telegram_agent.message_text("Para publicar: aprueba approval_social_secret y sale en la página.")
             fake_dashboard.pending = [
                 {
                     "id": "approval_active",
-                    "type": "create_campaign",
+                    "type": "resume_campaign",
                     "status": "pending",
-                    "payload": {"campaign_name": "Campaña Activa", "final_status": "ACTIVE"},
+                    "payload": {"campaign_name": "Campaña Activa"},
                 }
             ]
-            blocked_active = telegram_agent.handle_text(FakeConfig(), "12345", "approve", send=False)
-            approved_active = telegram_agent.handle_text(FakeConfig(), "12345", "Yes, create and leave active", send=False)
+            blocked_active = telegram_agent.handle_text(FakeConfig(), "12345", "aprobado", send=False)
+            approved_active = telegram_agent.handle_text(FakeConfig(), "12345", "Sí, activar", send=False)
             self.assert_true(telegram_agent.is_allowed_chat(FakeConfig(), "12345"), "Configured Telegram private chat is allowed")
             self.assert_true(not telegram_agent.is_allowed_chat(FakeConfig(), "99999"), "Unknown Telegram chat is rejected")
             self.assert_true("preparada para aprobación" in reply, "Telegram can stage manager actions through backend tools")
@@ -9701,13 +9709,15 @@ class IntegrationTestSuite:
             self.assert_true("límite temporal" in limited_reply and "falta conectar" not in limited_reply.lower(), "Telegram preserves model-limit guidance instead of showing setup fallback")
             self.assert_true("tirith" not in json.dumps(stored_history).lower() and "business_profile" not in json.dumps(stored_history), "Telegram history stores cleaned agent replies")
             self.assert_true("Aprobacion ejecutada" in approved_text, "Telegram text can approve the single exact pending decision")
+            self.assert_true("approval_social_secret" not in sanitized_approval_prompt and "aprobado" in sanitized_approval_prompt.lower(), "Telegram sanitizes accidental model-emitted approval IDs into natural approval wording")
             self.assert_true(received_payloads[0]["business_profile"]["main_offer"] == "Curso Test", "Telegram gives Hermes the selected client's business profile")
             self.assert_true("session_key" in received_payloads[0] and "history" not in received_payloads[0], "Telegram passes a Hermes session key instead of replaying chat history")
             self.assert_true("Decisiones pendientes" in pending_reply, "Telegram lists pending approvals")
             self.assert_true(any(item[0] == "keyboard" for item in sent), "Telegram sends approve/reject buttons")
+            self.assert_true(visible_cards and all("approval_test" not in item[1] for item in visible_cards), "Telegram approval cards keep IDs only in hidden callback data")
             self.assert_true(callback["type"] == "approved", "Telegram button can approve the exact pending action")
             self.assert_true("responde exactamente" in blocked_active, "Telegram blocks active approvals without exact confirmation")
-            self.assert_true("Aprobacion ejecutada" in approved_active, "Telegram accepts English exact active confirmation")
+            self.assert_true("Aprobacion ejecutada" in approved_active, "Telegram accepts the short natural activation confirmation")
         finally:
             telegram_agent.agent_chat = original_agent_chat
             telegram_agent._DASHBOARD = original_dashboard
@@ -9975,6 +9985,7 @@ class IntegrationTestSuite:
         self.assert_true(".approval-card" in html and ".approval-actions" in html and "Preguntar antes" in html, "Approval cards include clear styling and an ask-before-approve path")
         self.assert_true("appendChatApprovalActions" in html and "chatApproveDecision" in html and "chatRejectDecision" in html, "Agent chat can show approve/reject buttons for exact pending approvals")
         self.assert_true("/api/reject" in html and "msg-approval-card" in html, "Chat approval decisions include a reject path and compact action cards")
+        self.assert_true("buyerSafeChatContent" in html and "· ${escapeHtml(item.id)}" not in html and "Sí, activar" in html, "Dashboard chat hides approval IDs while preserving natural approval and activation controls")
         self.assert_true("onboarding-flow" in html, "Dedicated onboarding flow exists")
         self.assert_true("onboarding-security-note" in html and "nada de lo que coloques aquí lo podemos ver nosotros" in html and "más privada que entregar tus credenciales a un SaaS" in html, "Onboarding shows a persistent local/private install reassurance")
         self.assert_true("websiteScanGuide" in html and "/api/business-profile/links" in html and "saveBusinessLinks" in html and "Primer mapa del negocio" in html and "asset-status-grid" in html and "Qué vendes, en pocas palabras" not in html, "Business links remain available for the agent-led interview without becoming a long first-run setup form")

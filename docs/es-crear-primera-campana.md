@@ -22,10 +22,10 @@ El agente debe pedir una sola cosa a la vez si falta informacion.
 
 ## Campanas listas para gastar
 
-Si eliges dejarla activa, la aprobacion debe decir claramente que el anuncio puede gastar dinero. Para eso se requiere una confirmacion adicional:
+La campaña se crea primero en pausa. Cuando decidas activarla, la aprobación debe decir claramente que puede gastar dinero y pedir esta confirmación:
 
 ```text
-Si, crear y dejar activo
+Si, activar
 ```
 
-El chat no aprueba. El chat prepara. La aprobacion final se hace en la cola de aprobaciones del dashboard o con el boton exacto en Telegram.
+Puedes confirmar desde el chat con esa frase o usar el botón exacto en Telegram; el identificador técnico permanece oculto.
