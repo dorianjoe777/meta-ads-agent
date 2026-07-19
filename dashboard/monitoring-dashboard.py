@@ -151,6 +151,7 @@ from product_config import (
     default_codex_image_hermes_home,
     effective_codex_image_source,
     env_bool,
+    env_int,
     image_codex_config,
     load_config,
     normalize_agent_brain_provider,
@@ -2293,7 +2294,19 @@ def save_daily_social_content_settings(payload):
             encoding="utf-8",
         )
     config = load_config()
-    gateway = start_hermes_gateway(config)
+    # This function is also invoked from the Admira MCP process that is owned by
+    # the currently running Hermes Gateway. Restarting the Gateway synchronously
+    # from that child tool call terminates the request that is performing the
+    # save and can leave Telegram offline. Daily-content settings and their cron
+    # are hot-reloadable, so persist/reconcile them without touching the active
+    # Gateway process.
+    gateway = {
+        "mode": "hermes_gateway",
+        "untouched": True,
+        "restart_deferred": True,
+        "restart_required": False,
+        "detail": "Contenido recurrente guardado sin interrumpir Telegram.",
+    }
     cron = ensure_daily_social_content_cron(config)
     log_action(
         "daily_social_content_settings_update",

@@ -7,6 +7,16 @@ description: Plan and run Admira IA organic social content: optional daily Image
 
 Use this skill when the buyer asks for social posts, daily content, content calendars, organic publishing, or shares files/assets that may support future posts.
 
+## Route the request before using tools
+
+First distinguish a one-off content request from a recurring schedule change:
+
+- “crea otro post”, “haz otra imagen”, “cambia el título”, “prueba otro arrangement”, “haz una variante” and similar instructions continue the current one-off creative workflow. Generate/revise with `mcp_admira_codex_image_generate`, send the resulting media, and stage the exact organic post only after the image and caption are final.
+- Call `mcp_admira_save_daily_social_content_settings` only when the buyer explicitly accepts, declines, enables, disables, or changes the recurring cadence, preparation time, quantity, or content strategy. Never call it merely to label, register, save, approve, generate, or revise one organic post.
+- Never register a post as approved before generating and showing its final image/caption. The order is: generate -> deliver -> revise if requested -> stage exact draft -> natural-language approval -> publish.
+
+If Image 2 returns a blocked/error result, explain that specific generation blocker briefly and stop that branch. Do not switch to recurring settings, invent an approval, or claim a post was registered as a workaround.
+
 ## Optional onboarding offer
 
 After business basics and brand/logo/assets are reasonably clear, ask once only when no durable decision exists:

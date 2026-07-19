@@ -2949,6 +2949,7 @@ class IntegrationTestSuite:
             self.assert_true("pixel-level accurate" in brand_assets_text and "Image 2 is a production tool" in creative_strategy_text, "New brand/creative strategy skills split exact logo assets from creative portfolio strategy")
             self.assert_true("mcp_admira_save_daily_social_content_settings" in organic_content_text and "mcp_admira_stage_organic_social_post" in organic_content_text and "mcp_admira_save_content_asset" in organic_content_text and "daily_social_post" in organic_content_text, "Organic content skill teaches opt-in daily posts, exact approval drafts, asset categorization, and Image 2 post production")
             production_text = (workspace_path / "skills" / "creative-production-codex-image" / "SKILL.md").read_text(encoding="utf-8")
+            self.assert_true("Route the request before using tools" in organic_content_text and "Never call it merely" in organic_content_text and "follow-up such as" in production_text and "Do not reroute" in production_text, "One-off organic creative revisions stay in Image 2 instead of mutating recurring settings or approving unseen posts")
             self.assert_true("pixel_locked" in brand_assets_text and "pending_agent_review" in brand_assets_text and "protected_reference_image_paths" in production_text and "pixel by pixel accuracy" in production_text and "style_only" in organic_content_text, "Official skills archive/classify image batches and keep pixel-locked real photos separate from style references")
             self.assert_true("self-contained `request`" in organic_content_text and "generic call" in organic_content_text and "Do not turn every organic post" in organic_content_text and "most recently approved reference" in organic_content_text, "Organic skill prevents stale-offer contamination and keeps educational content distinct from direct-response ads")
             self.assert_true("likely placements" in branding_text and "vertical Reels version" in campaign_text and "Expert Configuration Posture" in campaign_text, "Skills teach proactive expert placement strategy instead of rigid placement defaults")
@@ -8321,6 +8322,7 @@ class IntegrationTestSuite:
                     "stderr": "",
                 }
 
+        gateway_restart_calls = []
         try:
             shutil.rmtree(test_dir, ignore_errors=True)
             test_dir.mkdir(parents=True, exist_ok=True)
@@ -8330,7 +8332,7 @@ class IntegrationTestSuite:
             dashboard.PENDING_FILE = test_dir / "pending.json"
             dashboard.ACTIONS_FILE = test_dir / "actions.json"
             dashboard.load_config = lambda: FakeConfig()
-            dashboard.start_hermes_gateway = lambda _config: {"started": True}
+            dashboard.start_hermes_gateway = lambda _config: gateway_restart_calls.append("restart") or {"started": True}
             dashboard.ensure_daily_social_content_cron = lambda config: {"configured": bool(getattr(config, "daily_social_content_enabled", False))}
             dashboard.organic_content_readiness = lambda payload=None: {
                 "ready": False,
@@ -8346,6 +8348,7 @@ class IntegrationTestSuite:
             FakeConfig.daily_social_content_enabled = True
             enabled = dashboard.save_daily_social_content_settings({"enabled": True, "time": "09:30", "posts_per_day": 1, "interval_days": 1, "content_strategy": "Educación, prueba social y oferta; CTA a conversar; Facebook tras aprobación."})
             self.assert_true(enabled["enabled"] and enabled["cron"]["configured"], "Recurring organic content starts only after brand and strategy readiness")
+            self.assert_true(not gateway_restart_calls and enabled["gateway"].get("restart_required") is False, "Saving recurring organic settings hot-reloads the cron without terminating the active Telegram Gateway")
 
             draft = dashboard.stage_organic_social_post({
                 "page_id": "page_1",
@@ -8394,6 +8397,29 @@ class IntegrationTestSuite:
             daily_agent.mark_asset_files_retained = original["retain"]
             FakePublishingClient.calls = []
             shutil.rmtree(test_dir, ignore_errors=True)
+
+    def test_dashboard_operational_monitor_loops_resolve_env_int(self):
+        """Test the no-AI update and model-health monitors can initialize their intervals."""
+        print("\nTesting Dashboard Operational Monitor Startup...")
+
+        dashboard = load_dashboard_module()
+
+        class StopBeforeWork:
+            def __init__(self):
+                self.wait_calls = []
+
+            def wait(self, seconds):
+                self.wait_calls.append(seconds)
+                return True
+
+            def is_set(self):
+                return True
+
+        update_stop = StopBeforeWork()
+        health_stop = StopBeforeWork()
+        dashboard._telegram_update_notification_loop(update_stop)
+        dashboard._model_health_watchdog_loop(health_stop)
+        self.assert_true(callable(dashboard.env_int) and len(update_stop.wait_calls) == 1 and len(health_stop.wait_calls) == 1, "Update notifier and model-health watchdog start without an env_int NameError")
 
     def test_social_flow_creates_native_page_post_for_direct_publishing(self):
         """Test direct publishing creates unpublished native Page posts with the publishing token."""
@@ -11796,6 +11822,7 @@ class IntegrationTestSuite:
             self.test_social_flow_graph_api_lists_and_creates_lead_forms,
             self.test_chat_stages_and_executes_native_lead_form_creation,
             self.test_organic_content_opt_in_stages_and_publishes_only_after_approval,
+            self.test_dashboard_operational_monitor_loops_resolve_env_int,
             self.test_social_flow_creates_native_page_post_for_direct_publishing,
             self.test_campaign_stack_execution_creates_full_ad_order,
             self.test_chat_stages_campaign_creation_and_requires_exact_approval,

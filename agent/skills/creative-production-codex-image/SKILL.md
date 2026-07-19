@@ -14,6 +14,7 @@ Use this skill when the buyer asks to generate, revise, or deliver image creativ
 - Do not use Hermes internal image generation or mention external image APIs.
 - For organic daily posts, use purpose `daily_social_post` or `standalone_creative`; do not require budget, launch readiness, or a campaign brief unless the buyer is actually creating an ad.
 - If the buyer asks you to create, revise, or show an image, proceed to generate/deliver it once the necessary creative inputs exist. Do not ask a redundant “quieres que la genere ahora?” unless the choice would materially change the design direction or spend/publish something.
+- A follow-up such as “crea otro”, “otro título”, “otro arrangement”, “haz una variante”, or “cámbialo” remains an image-generation/revision request. Do not reroute it into recurring-content settings, content onboarding, or approval before a new final image exists.
 - If a non-blocking detail is missing, make the best safe assumption, state it briefly, and generate a draft the buyer can correct.
 - Before calling the tool, identify the active offer from the latest request, selected product guide, ad brief, or `brand_guides/Offer map.md`. If the buyer is asking about a different/new offer under the same parent brand, pass that active offer in `product_guide` or in the request. Do not let older saved products contaminate the output.
 
@@ -31,5 +32,7 @@ Use this skill when the buyer asks to generate, revise, or deliver image creativ
 ## Output
 
 After generation, inspect the result and send the media to the buyer. Do not reply only with a path, `MEDIA:/...`, or “lo guardé en este archivo.” If a native attachment directive is needed, use it only as internal syntax at the end of the response.
+
+If the generation tool returns blocked/error, report the specific blocker in simple words and keep the current creative request active for retry. Do not call an unrelated save/scheduling tool to manufacture progress, and do not claim the image or organic post was created.
 
 For real-world people, places, food, interiors, products, or locations, request photorealism unless the buyer explicitly wants illustration.

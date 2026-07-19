@@ -43,19 +43,19 @@ const ASSETS = [
 
 const improvements = [
   {
-    title: "Contenido orgánico listo cada día",
-    body: "Admira puede acordar pilares, ofertas, frecuencia y hora para preparar posts de marca con Image 2 y enviarlos por Telegram.",
-    impact: "Contenido"
+    title: "Telegram se recupera automáticamente",
+    body: "El monitor de salud vuelve a levantar el agente si su conexión se detiene inesperadamente, sin borrar la memoria del negocio.",
+    impact: "Estabilidad"
   },
   {
-    title: "Revisión exacta antes de publicar",
-    body: "Cada imagen y texto queda como un borrador identificable: puedes aprobar, pedir cambios o descartarlo sin publicar nada por accidente.",
-    impact: "Control"
+    title: "Contenido orgánico sin interrupciones",
+    body: "Guardar o cambiar el horario de contenido ya no reinicia la conversación activa de Telegram.",
+    impact: "Continuidad"
   },
   {
-    title: "Publicación directa en Facebook",
-    body: "Con Publicación directa conectada, tu aprobación publica la pieza visible en tu Página y guarda el ID real para continuar la estrategia.",
-    impact: "Ahorro de tiempo"
+    title: "Variantes creativas mejor interpretadas",
+    body: "Pedir otra imagen, título o composición continúa la creación actual sin confundirla con una programación recurrente.",
+    impact: "Creativos"
   }
 ];
 
