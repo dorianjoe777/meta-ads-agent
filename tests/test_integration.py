@@ -28,6 +28,7 @@ from scaling_logic import ScalingManager, ScalingMetrics, ScalingStrategy
 from pause_logic import PauseManager, AdPerformance
 from auto_warmup import AutoWarmupManager
 from license import activate_license, format_license, license_status, normalize_license_entitlements, validate_license_key
+import license as license_module
 from security import dashboard_token_valid, hash_dashboard_password, redact_payload
 from product_config import AgentConfig, normalize_hermes_model, normalize_timezone, preferred_hermes_model
 import product_config
@@ -451,6 +452,88 @@ class IntegrationTestSuite:
         demo_config.license_key = "DEMO"
         demo_status = license_status(demo_config)
         self.assert_true(demo_status["valid"], "Internal demo license still works without cloud server")
+
+    def test_lifetime_license_refresh_and_outage_safety(self):
+        """A refresh deadline must never become a lifetime-license expiry."""
+        print("\nTesting Lifetime License Refresh And Outage Safety...")
+
+        fixed_now = datetime(2026, 7, 18, 16, 0, tzinfo=timezone.utc)
+        key = format_license("LIFETIME2026BUYER")
+        config = types.SimpleNamespace(
+            license_key=key,
+            license_buyer_email="buyer@example.com",
+            license_server_url="https://licenses.example.test",
+            license_device_id="device-1",
+            license_public_key="test-public-key",
+            license_grace_hours=72,
+            license_required_for_live=True,
+        )
+        expired_proof = {
+            "license_key": key,
+            "buyer_email": "buyer@example.com",
+            "device_id": "device-1",
+            "issued_at": "2026-07-10T15:25:00+00:00",
+            "expires_at": "2026-07-18T15:25:00+00:00",
+            "features": ["dashboard"],
+            "plan": "individual",
+            "max_devices": 1,
+            "workspace_limit": 1,
+            "signature": "signed",
+        }
+        original_read = license_module.read_unlock_cache
+        original_verify = license_module.verify_signature
+        original_now = license_module.now_utc
+        original_cached = license_module.cached_unlock_status
+        original_activate = license_module.activate_license
+        try:
+            license_module.read_unlock_cache = lambda: dict(expired_proof)
+            license_module.verify_signature = lambda payload, public_key: True
+            license_module.now_utc = lambda: fixed_now
+            cached = license_module.cached_unlock_status(config)
+            self.assert_true(cached["valid"] and cached["status"] == "verification_due", "Expired signed verification proof keeps a validated lifetime license active")
+            self.assert_true(cached.get("license_term") == "lifetime" and cached.get("lifetime") is True, "Lifetime commercial term is explicit in license status")
+            self.assert_true("expires_at" not in cached and "verification_expires_at" not in cached, "Internal refresh date is never exposed to the dashboard or agent")
+
+            license_module.cached_unlock_status = lambda current_config: dict(cached)
+            refresh_calls = []
+            license_module.activate_license = lambda current_config: refresh_calls.append(current_config.license_key) or {
+                "online": True,
+                "valid": True,
+                "status": "active",
+                "license_term": "lifetime",
+                "lifetime": True,
+                "detail": "Lifetime license active",
+            }
+            license_module._LICENSE_REFRESH_ATTEMPTS.clear()
+            refreshed = license_module.license_status(config)
+            self.assert_true(refreshed["valid"] and refreshed["status"] == "active" and len(refresh_calls) == 1, "Due verification refreshes online automatically")
+
+            license_module.activate_license = lambda current_config: {
+                "online": False,
+                "valid": False,
+                "status": "server_unavailable",
+                "detail": "offline",
+            }
+            license_module._LICENSE_REFRESH_ATTEMPTS.clear()
+            outage = license_module.license_status(config)
+            self.assert_true(outage["valid"] and outage["status"] == "verification_due", "Network outage never expires a previously verified lifetime license")
+
+            license_module.activate_license = lambda current_config: {
+                "online": True,
+                "valid": False,
+                "status": "revoked",
+                "detail": "License revoked",
+            }
+            license_module._LICENSE_REFRESH_ATTEMPTS.clear()
+            revoked = license_module.license_status(config)
+            self.assert_true(not revoked["valid"] and revoked["status"] == "revoked", "Authoritative online revocation still takes effect")
+        finally:
+            license_module.read_unlock_cache = original_read
+            license_module.verify_signature = original_verify
+            license_module.now_utc = original_now
+            license_module.cached_unlock_status = original_cached
+            license_module.activate_license = original_activate
+            license_module._LICENSE_REFRESH_ATTEMPTS.clear()
 
     def test_cloud_license_blocks_buyer_live_features(self):
         """Test buyer live features fail closed when cloud license is invalid."""
@@ -9687,6 +9770,8 @@ class IntegrationTestSuite:
         self.assert_true("security-trust" not in html, "Security trust cards are not shown inside setup")
         self.assert_true("header-guide-btn" in html and "openUsageGuide()" in html, "Guide opens from compact header button")
         self.assert_true("version-pill" in html and 'id="s-version"' in html and "product_version" in dashboard_source, "Header exposes the installed product version")
+        self.assert_true("Tu licencia es de por vida" in html and "Activa de por vida" in html and "license_term==='lifetime'" in html, "Dashboard clearly presents the commercial license as lifetime")
+        self.assert_true("expires=status.expires_at" not in html and "?'vence':'expires'" not in html, "Dashboard never presents the internal verification refresh date as a license expiry")
         self.assert_true("Opcional: clave de Publicación directa" in html and "app Live de publicaciones" in html and "savePublishingConfig" in html, "Onboarding exposes optional direct publishing setup without making it required")
         self.assert_true("direct-publishing-shots" in html and "meta-business-24-select-app-token.png" in html and "pages_manage_posts" in html, "Direct publishing guide includes screenshot-based Meta token steps and required Page permissions")
         self.assert_true("testPublishingConnection" in html and "disconnectPublishingConfig" in html, "Direct publishing UI actions are allowed from dashboard/onboarding buttons")
@@ -11225,7 +11310,7 @@ class IntegrationTestSuite:
             "License server can clear prior device registrations",
         )
         self.assert_true("Transferir a este equipo" in dashboard_source, "Dashboard explains and confirms device transfer")
-        self.assert_true("desbloqueo temporal" in device_transfer_doc and "nueva llave SSH" in device_transfer_doc and "Cambiar de equipo sin perder memoria" in device_transfer_doc, "Device transfer docs explain local migration and DigitalOcean recovery")
+        self.assert_true("comprobacion firmada" in device_transfer_doc and "nueva llave SSH" in device_transfer_doc and "Cambiar de equipo sin perder memoria" in device_transfer_doc, "Device transfer docs explain lifetime verification, local migration, and DigitalOcean recovery")
         self.assert_true("RELEASE_DOWNLOAD_SECRET" in license_server_readme and "/api/license/release" in license_server_readme, "Seller license server documents signed release download support")
         self.assert_true("Acceso de comprador" in portal_page and "Email de compra" in portal_page and "Clave de acceso" in portal_page, "Download portal has buyer-friendly email and access key login")
         self.assert_true("/api/portal/session" in portal_page and "/api/portal/download" in portal_page and "Elige tu sistema" in portal_page, "Download portal renders one-click platform downloads")
@@ -11477,6 +11562,7 @@ class IntegrationTestSuite:
             self.test_auto_warmup,
             self.test_license_validation,
             self.test_license_status_and_activation,
+            self.test_lifetime_license_refresh_and_outage_safety,
             self.test_cloud_license_blocks_buyer_live_features,
             self.test_dashboard_password_auth,
             self.test_secret_redaction,

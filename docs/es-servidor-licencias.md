@@ -66,6 +66,8 @@ RELEASE_SOURCE_ALLOWLIST=tu-storage.com,downloads.tudominio.com
 BLOB_READ_WRITE_TOKEN=agregado-por-vercel-blob
 ```
 
+`LICENSE_UNLOCK_HOURS` solo define cada cuanto el equipo renueva su comprobacion firmada. No es una fecha de vencimiento de la compra: las licencias comerciales son de por vida. Si la red o el servidor fallan, una licencia ya validada sigue funcionando y reintenta la comprobacion; una respuesta online de revocacion o transferencia sigue siendo autoritativa.
+
 Endpoint publicado:
 
 ```text

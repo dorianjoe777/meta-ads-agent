@@ -16,9 +16,9 @@ Al confirmar `Transferir a este equipo`, este equipo queda como el equipo activo
 
 ## Que pasa con el equipo anterior
 
-El equipo anterior deja de poder renovar la licencia cuando vuelva a validar online. Si estaba usando un desbloqueo temporal guardado, puede seguir funcionando hasta que esa validacion expire.
+El equipo anterior se desactiva cuando vuelva a validar online y el servidor confirme que la licencia fue transferida. Si permanece completamente offline, conserva la ultima comprobacion firmada para que una caida del servidor nunca convierta una compra de por vida en una licencia vencida.
 
-Esto es intencional para que un comprador no se quede bloqueado si tu servidor de licencias falla por unas horas, pero tambien significa que la transferencia no es un apagado instantaneo si el equipo anterior esta offline.
+Esto es intencional para que un comprador no se quede bloqueado si tu servidor de licencias falla, pero tambien significa que la transferencia no es un apagado instantaneo si el equipo anterior permanece offline.
 
 ## Recomendacion para soporte
 
@@ -29,7 +29,7 @@ Si el comprador cambio de PC:
 3. Confirmar `Transferir a este equipo`.
 4. Pedirle que no use mas el equipo anterior.
 
-Para situaciones de abuso, reduce `LICENSE_UNLOCK_HOURS` y `LICENSE_GRACE_HOURS` en releases futuras para que los equipos antiguos pierdan acceso mas rapido.
+Para situaciones de abuso, el servidor debe responder con revocacion o limite de equipo en la siguiente comprobacion online. `LICENSE_UNLOCK_HOURS` controla cada cuanto se renueva esa comprobacion; no es la duracion comercial de la licencia.
 
 ## Mover tambien la memoria local
 

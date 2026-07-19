@@ -7,6 +7,8 @@ import re
 import socket
 import subprocess
 import tempfile
+import threading
+import time
 import uuid
 import urllib.error
 import urllib.request
@@ -25,6 +27,10 @@ PLAN_DEFAULTS = {
     "individual": {"max_devices": 1, "workspace_limit": 1, "features": INDIVIDUAL_FEATURES},
     "agency": {"max_devices": 4, "workspace_limit": 50, "features": AGENCY_FEATURES},
 }
+LICENSE_REFRESH_WINDOW = timedelta(hours=24)
+LICENSE_REFRESH_RETRY_SECONDS = 300
+_LICENSE_REFRESH_LOCK = threading.Lock()
+_LICENSE_REFRESH_ATTEMPTS = {}
 
 
 def clean_license_key(value):
@@ -174,6 +180,17 @@ def verify_signature(payload, public_key):
         return False
 
 
+def lifetime_license_status(status, detail=""):
+    """Expose the commercial lifetime term without calling refresh dates expiry."""
+    result = dict(status or {})
+    result.pop("expires_at", None)
+    result["license_term"] = "lifetime"
+    result["lifetime"] = True
+    if detail:
+        result["detail"] = detail
+    return result
+
+
 def cached_unlock_status(config):
     cache = read_unlock_cache()
     if not cache:
@@ -185,11 +202,19 @@ def cached_unlock_status(config):
     expires = parse_time(cache.get("expires_at"))
     entitlements = normalize_license_entitlements(cache)
     if expires and expires >= now_utc():
-        return {"online": False, "valid": True, "status": "active", "detail": "Cloud unlock active", "expires_at": cache.get("expires_at"), **entitlements}
-    issued = parse_time(cache.get("issued_at"))
-    if issued and issued + timedelta(hours=int(config.license_grace_hours or 0)) >= now_utc():
-        return {"online": False, "valid": True, "status": "grace", "detail": "Cloud unlock expired; grace period active", "expires_at": cache.get("expires_at"), **entitlements}
-    return {"online": False, "valid": False, "status": "expired", "detail": "Cloud unlock expired"}
+        return lifetime_license_status(
+            {"online": False, "valid": True, "status": "active", "expires_at": cache.get("expires_at"), **entitlements},
+            "Lifetime license active",
+        )
+
+    # `expires_at` is a refresh deadline for the signed verification proof, not
+    # the commercial term of the purchase. A previously verified lifetime
+    # license remains usable during network/server outages. `license_status`
+    # refreshes it online and an authoritative rejection still takes effect.
+    return lifetime_license_status(
+        {"online": False, "valid": True, "status": "verification_due", "expires_at": cache.get("expires_at"), **entitlements},
+        "Lifetime license active; online verification refresh pending",
+    )
 
 
 def activate_license(config, transfer_device=False):
@@ -251,7 +276,10 @@ def activate_license(config, transfer_device=False):
     if not verify_signature(unlock, getattr(config, "license_public_key", "")):
         return {"online": True, "valid": False, "status": "bad_signature", "detail": "License response could not be trusted. Contact support."}
     write_unlock_cache(unlock)
-    return {"online": True, "valid": True, "status": "active", "detail": "Cloud license active", "expires_at": unlock.get("expires_at"), **normalize_license_entitlements(unlock)}
+    return lifetime_license_status(
+        {"online": True, "valid": True, "status": "active", "expires_at": unlock.get("expires_at"), **normalize_license_entitlements(unlock)},
+        "Lifetime license active",
+    )
 
 
 def mark_license_install_state(config, event):
@@ -295,6 +323,31 @@ def license_status(config):
             }
         return {**offline, "online": False, "cloud_required": False}
     cached = cached_unlock_status(config)
-    if cached["valid"]:
+    verification_expires = parse_time(read_unlock_cache().get("expires_at")) if cached.get("valid") else None
+    refresh_due = (
+        not cached.get("valid")
+        or cached.get("status") == "verification_due"
+        or (verification_expires is not None and verification_expires <= now_utc() + LICENSE_REFRESH_WINDOW)
+    )
+    if refresh_due:
+        device_id = config.license_device_id or default_device_id()
+        refresh_key = f"{config.license_key}:{device_id}"
+        should_refresh = False
+        current = time.monotonic()
+        with _LICENSE_REFRESH_LOCK:
+            last_attempt = _LICENSE_REFRESH_ATTEMPTS.get(refresh_key, 0)
+            if current - last_attempt >= LICENSE_REFRESH_RETRY_SECONDS:
+                _LICENSE_REFRESH_ATTEMPTS[refresh_key] = current
+                should_refresh = True
+        if should_refresh:
+            refreshed = activate_license(config)
+            # An online response is authoritative: revocation, refund, transfer,
+            # or device-limit rejection must be respected immediately.
+            if refreshed.get("online"):
+                return {**refreshed, "cloud_required": True, "offline_valid": bool(cached.get("valid"))}
+            if refreshed.get("valid"):
+                return {**refreshed, "cloud_required": True}
+
+    if cached.get("valid"):
         return {**cached, "cloud_required": True}
     return {**cached, "cloud_required": True, "offline_valid": True}

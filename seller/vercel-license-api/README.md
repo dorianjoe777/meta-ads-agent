@@ -81,7 +81,8 @@ Device transfer:
 - Individual licenses have one active device by default.
 - `POST /api/license/activate` and `POST /api/license/release` accept `transfer_device: true`.
 - When the license has `max_devices=1`, transfer clears prior device registrations and registers the new `device_id`.
-- Existing offline unlocks can remain valid until their signed unlock/grace period expires.
+- `LICENSE_UNLOCK_HOURS` is only the refresh interval for the signed verification proof; it is not the commercial license term.
+- A previously verified lifetime license remains usable during network/server outages. The next successful online verification applies authoritative revocation, refund, transfer, or device-limit state.
 
 Buyer purchase email:
 
