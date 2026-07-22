@@ -404,6 +404,24 @@ def _light_model_order(models):
     return ordered
 
 
+def inference_runtime_policy(primary_settings=None):
+    """Return bounded inference settings for the selected product brain.
+
+    Hosted/free NVIDIA NIM capacity is often account-wide rather than
+    model-specific. Retrying the same request several times, or exhausting
+    several NVIDIA models before a separately configured provider, turns one
+    temporary 429 into an avoidable burst. Keep its route intentionally
+    conservative while leaving paid/independent providers at Hermes defaults.
+    """
+    brain = dict(primary_settings or {})
+    is_nvidia = _runtime_provider_for_brain(brain) == ADMIRA_NVIDIA_PROVIDER
+    return {
+        "api_max_retries": 1 if is_nvidia else 3,
+        "max_turns": 24 if is_nvidia else 60,
+        "cron_max_parallel": 1 if is_nvidia else 0,
+    }
+
+
 def admira_inference_fallback_chain(config, primary_settings=None):
     """Build a secret-free fallback chain from models/providers actually configured.
 
@@ -433,14 +451,19 @@ def admira_inference_fallback_chain(config, primary_settings=None):
             entry["key_env"] = str(key_env).strip()
         entries.append(entry)
 
+    nvidia_model_fallbacks = []
     if primary_provider == "openai-codex":
         codex_models = _light_model_order(_cached_model_ids(CODEX_MODEL_CATALOG_FILE))
         for model in codex_models[:3]:
             append("openai-codex", model)
     elif primary_provider == ADMIRA_NVIDIA_PROVIDER:
-        nvidia_models = _light_model_order(_cached_model_ids(NVIDIA_MODEL_CATALOG_FILE))
-        for model in nvidia_models[:3]:
-            append(ADMIRA_NVIDIA_PROVIDER, model, brain.get("base_url") or ADMIRA_NVIDIA_DEFAULT_BASE_URL, ADMIRA_NVIDIA_KEY_ENV)
+        # Keep a single same-account NVIDIA alternative as the last resort.
+        # An NVIDIA 429 commonly applies to the API key itself, so it must not
+        # delay configured providers with independent capacity.
+        nvidia_model_fallbacks = [
+            model for model in _light_model_order(_cached_model_ids(NVIDIA_MODEL_CATALOG_FILE))
+            if model.lower() != primary_model.lower()
+        ][:1]
 
     connections = agent_model_connections(config, include_secrets=True)
     for provider, connection in connections.items():
@@ -455,6 +478,9 @@ def admira_inference_fallback_chain(config, primary_settings=None):
         codex_models = _light_model_order(_cached_model_ids(CODEX_MODEL_CATALOG_FILE))
         if codex_models:
             append("openai-codex", codex_models[0])
+
+    for model in nvidia_model_fallbacks:
+        append(ADMIRA_NVIDIA_PROVIDER, model, brain.get("base_url") or ADMIRA_NVIDIA_DEFAULT_BASE_URL, ADMIRA_NVIDIA_KEY_ENV)
 
     return entries[:6]
 
@@ -534,6 +560,7 @@ def write_cli_hermes_config(config, workspace_info, payload=None):
     enforce_official_skill_catalog(home)
     config_path = home / "config.yaml"
     brain = hermes_brain_settings(config)
+    inference_policy = inference_runtime_policy(brain)
     existing = ""
     if config_path.exists():
         try:
@@ -559,6 +586,7 @@ def write_cli_hermes_config(config, workspace_info, payload=None):
         f"context_file_max_chars: {HERMES_CONTEXT_FILE_SAFE_MAX_CHARS}",
         "agent:",
         f"  max_turns: {max(1, int(getattr(config, 'hermes_max_iterations', 12) or 12))}",
+        f"  api_max_retries: {inference_policy['api_max_retries']}",
         "  disabled_toolsets:",
         *[f"    - {toolset}" for toolset in disabled],
         "skills:",

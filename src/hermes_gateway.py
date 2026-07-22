@@ -35,6 +35,7 @@ from hermes_bridge import (
     ADMIRA_OPENAI_PROVIDER,
     admira_connected_model_config_lines,
     admira_fallback_config_lines,
+    inference_runtime_policy,
     admira_minimax_credentials,
     enforce_official_skill_catalog,
     hermes_brain_settings,
@@ -531,11 +532,17 @@ def write_gateway_files(config):
     env_lines.append(f"ADMIRA_DASHBOARD_RECOVERY_URL={_env_value(recovery_link['url'])}")
     env_lines.append(f"ADMIRA_DASHBOARD_RECOVERY_KIND={_env_value(recovery_link['kind'])}")
     active_brain = hermes_brain_settings(config)
+    inference_policy = inference_runtime_policy(active_brain)
     active_provider = _telegram_model_provider_for_brain(active_brain)
     active_model = str(active_brain.get("model") or "").strip()
     env_lines.append(f"ADMIRA_GATEWAY_PROVIDER={_env_value(active_provider)}")
     env_lines.append(f"ADMIRA_CRON_PIN_PROVIDER={_env_value(active_provider)}")
     env_lines.append(f"ADMIRA_CRON_PIN_MODEL={_env_value(active_model)}")
+    if inference_policy["cron_max_parallel"]:
+        # Prevent several due summaries from consuming a small hosted NVIDIA
+        # allowance at once. Buyer Telegram messages are already sequential
+        # per chat in Hermes; this controls scheduled-job bursts.
+        env_lines.append(f"HERMES_CRON_MAX_PARALLEL={_env_value(inference_policy['cron_max_parallel'])}")
     env_lines.append(f"ADMIRA_INTERNAL_MODEL_RECOVERY_URL={_env_value(internal_model_recovery_url(config))}")
     env_lines.append(f"ADMIRA_INTERNAL_MODEL_RECOVERY_TOKEN_FILE={_env_value(str(INTERNAL_MODEL_RECOVERY_TOKEN_FILE))}")
     env_path.write_text("\n".join(env_lines).rstrip() + "\n", encoding="utf-8")
@@ -554,7 +561,8 @@ def write_gateway_files(config):
         *admira_fallback_config_lines(config, brain),
         f"context_file_max_chars: {HERMES_CONTEXT_FILE_SAFE_MAX_CHARS}",
         "agent:",
-        "  max_turns: 60",
+        f"  max_turns: {inference_policy['max_turns']}",
+        f"  api_max_retries: {inference_policy['api_max_retries']}",
         "  gateway_timeout: 1800",
         "  gateway_timeout_warning: 900",
         "  clarify_timeout: 600",
