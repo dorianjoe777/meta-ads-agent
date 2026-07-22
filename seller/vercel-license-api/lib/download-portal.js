@@ -11,10 +11,10 @@ const PLATFORM_DEFINITIONS = [
   {
     id: "windows",
     label: "Windows",
-    badge: "Launcher Docker para Windows",
+    badge: "Paquete ZIP temporal para Windows",
     formats: [".exe"],
-    allowUniversalFallback: false,
-    description: "Descarga el instalador, abre Docker Desktop y el launcher instala Admira IA en contenedor.",
+    allowUniversalFallback: true,
+    description: "Descarga el instalador y abre Docker Desktop. Si el instalador de Windows aun no esta publicado, descarga el ZIP estable, descomprimelo y abre Instalar en Windows.bat.",
     button: "Descargar para Windows"
   },
   {
@@ -252,7 +252,9 @@ export function platformCards(release = {}) {
         : (!chosen && !platform.allowUniversalFallback
             ? `${platform.description} Este boton se activa cuando el instalador oficial de ${platform.label} esta publicado.`
             : platform.description),
-      button: isUniversal ? `${platform.button}` : platform.button,
+      button: isUniversal && platform.id === "windows"
+        ? "Descargar ZIP para Windows"
+        : platform.button,
       available: Boolean(chosen),
       asset_name: chosen?.asset_name || "",
       filename: chosen?.filename || "",
