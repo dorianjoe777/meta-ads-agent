@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 import hermes_bridge
+import hermes_gateway
 
 
 class NvidiaInferencePolicyTests(unittest.TestCase):
@@ -16,6 +17,23 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         self.assertEqual(policy["api_max_retries"], 1)
         self.assertEqual(policy["max_turns"], 24)
         self.assertEqual(policy["cron_max_parallel"], 1)
+        self.assertEqual(policy["model_context_length"], 80000)
+        self.assertEqual(policy["compression_threshold"], 0.45)
+        self.assertEqual(policy["compression_hard_message_limit"], 24)
+
+    def test_nvidia_model_config_has_operational_context_cap(self):
+        policy = hermes_bridge.inference_runtime_policy({"brain": "nvidia_nim"})
+        brain = {
+            "brain": "nvidia_nim",
+            "provider": hermes_bridge.ADMIRA_NVIDIA_PROVIDER,
+            "model": "z-ai/glm-5.2",
+            "base_url": hermes_bridge.ADMIRA_NVIDIA_DEFAULT_BASE_URL,
+            "context_length": policy["model_context_length"],
+        }
+        bridge_config = "\n".join(hermes_bridge._hermes_model_config_lines(brain))
+        gateway_config = "\n".join(hermes_gateway._gateway_model_config_lines(brain))
+        self.assertIn("context_length: 80000", bridge_config)
+        self.assertIn("context_length: 80000", gateway_config)
 
     def test_independent_provider_precedes_same_nvidia_key(self):
         original_connections = hermes_bridge.agent_model_connections

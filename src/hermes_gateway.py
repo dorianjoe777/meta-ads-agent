@@ -374,6 +374,7 @@ def _gateway_model_config_lines(brain):
             "model:",
             f"  provider: {_quote_yaml(provider_slug)}",
             f"  default: {_quote_yaml(model_default)}",
+            *([f"  context_length: {int(brain['context_length'])}"] if brain.get("context_length") else []),
             "providers:",
             f"  {provider_slug}:",
             f"    name: {_quote_yaml(ADMIRA_NVIDIA_PROVIDER_NAME)}",
@@ -533,6 +534,8 @@ def write_gateway_files(config):
     env_lines.append(f"ADMIRA_DASHBOARD_RECOVERY_KIND={_env_value(recovery_link['kind'])}")
     active_brain = hermes_brain_settings(config)
     inference_policy = inference_runtime_policy(active_brain)
+    if inference_policy["model_context_length"]:
+        active_brain = {**active_brain, "context_length": inference_policy["model_context_length"]}
     active_provider = _telegram_model_provider_for_brain(active_brain)
     active_model = str(active_brain.get("model") or "").strip()
     env_lines.append(f"ADMIRA_GATEWAY_PROVIDER={_env_value(active_provider)}")
@@ -552,14 +555,14 @@ def write_gateway_files(config):
     communication_style = communication_style_from_environment()
     ad_experience = ad_experience_from_environment()
     prompt = gateway_prompt(status["language"], communication_style, ad_experience)
-    brain = hermes_brain_settings(config)
+    brain = active_brain
     toolsets = ["hermes-telegram", "memory", "session_search", "vision", "file", "web", "browser", "admira"]
     mcp_server_path = ROOT_DIR / "src" / "admira_mcp_server.py"
     config_yaml = [
         f"timezone: {_quote_yaml(timezone_name)}",
         *admira_connected_model_config_lines(config, brain),
         *admira_fallback_config_lines(config, brain),
-        f"context_file_max_chars: {HERMES_CONTEXT_FILE_SAFE_MAX_CHARS}",
+        f"context_file_max_chars: {inference_policy['context_file_max_chars']}",
         "agent:",
         f"  max_turns: {inference_policy['max_turns']}",
         f"  api_max_retries: {inference_policy['api_max_retries']}",
@@ -582,7 +585,11 @@ def write_gateway_files(config):
         "  notify: false",
         "compression:",
         "  enabled: true",
-        "  threshold: 0.85",
+        f"  threshold: {inference_policy['compression_threshold']}",
+        f"  target_ratio: {inference_policy['compression_target_ratio']}",
+        f"  protect_first_n: {inference_policy['compression_protect_first_n']}",
+        f"  protect_last_n: {inference_policy['compression_protect_last_n']}",
+        f"  hygiene_hard_message_limit: {inference_policy['compression_hard_message_limit']}",
         "  codex_gpt55_autoraise: false",
         "mcp_servers:",
         "  admira:",

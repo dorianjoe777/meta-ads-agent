@@ -262,6 +262,7 @@ def _hermes_model_config_lines(brain):
             "model:",
             f"  provider: {_quote_yaml(provider_slug)}",
             f"  default: {_quote_yaml(model_default)}",
+            *([f"  context_length: {int(brain['context_length'])}"] if brain.get("context_length") else []),
             "providers:",
             f"  {provider_slug}:",
             f"    name: {_quote_yaml(ADMIRA_NVIDIA_PROVIDER_NAME)}",
@@ -415,11 +416,37 @@ def inference_runtime_policy(primary_settings=None):
     """
     brain = dict(primary_settings or {})
     is_nvidia = _runtime_provider_for_brain(brain) == ADMIRA_NVIDIA_PROVIDER
-    return {
+    policy = {
         "api_max_retries": 1 if is_nvidia else 3,
         "max_turns": 24 if is_nvidia else 60,
         "cron_max_parallel": 1 if is_nvidia else 0,
     }
+    if is_nvidia:
+        # NVIDIA's hosted endpoint can return a generic 5xx well before the
+        # advertised model window.  Treat 80K as the operational ceiling and
+        # summarize at 45%, rather than waiting for a request near 120K to
+        # fail.  Durable Admira memory keeps the business state intact while
+        # Hermes condenses old chat/tool turns.
+        policy.update({
+            "model_context_length": 80000,
+            "context_file_max_chars": 45000,
+            "compression_threshold": 0.45,
+            "compression_target_ratio": 0.20,
+            "compression_protect_first_n": 1,
+            "compression_protect_last_n": 6,
+            "compression_hard_message_limit": 24,
+        })
+    else:
+        policy.update({
+            "model_context_length": 0,
+            "context_file_max_chars": HERMES_CONTEXT_FILE_SAFE_MAX_CHARS,
+            "compression_threshold": 0.85,
+            "compression_target_ratio": 0.20,
+            "compression_protect_first_n": 3,
+            "compression_protect_last_n": 20,
+            "compression_hard_message_limit": 400,
+        })
+    return policy
 
 
 def admira_inference_fallback_chain(config, primary_settings=None):
@@ -544,7 +571,16 @@ def _cli_hermes_config_needs_write(config_text, brain):
         return "admira-minimax" not in config_text or "providers:" not in config_text or "api.minimax.io/v1" not in config_text or "openrouter" in lowered or "custom:admira-minimax" in config_text
     if brain.get("brain") == "nvidia_nim":
         lowered = config_text.lower()
-        return "admira-nvidia" not in lowered or "integrate.api.nvidia.com/v1" not in lowered or "providers:" not in lowered
+        policy = inference_runtime_policy(brain)
+        return (
+            "admira-nvidia" not in lowered
+            or "integrate.api.nvidia.com/v1" not in lowered
+            or "providers:" not in lowered
+            or f"context_file_max_chars: {policy['context_file_max_chars']}" not in config_text
+            or f"  context_length: {policy['model_context_length']}" not in config_text
+            or f"  threshold: {policy['compression_threshold']}" not in config_text
+            or f"  hygiene_hard_message_limit: {policy['compression_hard_message_limit']}" not in config_text
+        )
     return False
 
 
@@ -561,6 +597,8 @@ def write_cli_hermes_config(config, workspace_info, payload=None):
     config_path = home / "config.yaml"
     brain = hermes_brain_settings(config)
     inference_policy = inference_runtime_policy(brain)
+    if inference_policy["model_context_length"]:
+        brain = {**brain, "context_length": inference_policy["model_context_length"]}
     existing = ""
     if config_path.exists():
         try:
@@ -583,7 +621,7 @@ def write_cli_hermes_config(config, workspace_info, payload=None):
         f"timezone: {_quote_yaml(timezone_name)}",
         *admira_connected_model_config_lines(config, brain),
         *admira_fallback_config_lines(config, brain),
-        f"context_file_max_chars: {HERMES_CONTEXT_FILE_SAFE_MAX_CHARS}",
+        f"context_file_max_chars: {inference_policy['context_file_max_chars']}",
         "agent:",
         f"  max_turns: {max(1, int(getattr(config, 'hermes_max_iterations', 12) or 12))}",
         f"  api_max_retries: {inference_policy['api_max_retries']}",
@@ -595,7 +633,11 @@ def write_cli_hermes_config(config, workspace_info, payload=None):
         "  memory_notifications: off",
         "compression:",
         "  enabled: true",
-        "  threshold: 0.85",
+        f"  threshold: {inference_policy['compression_threshold']}",
+        f"  target_ratio: {inference_policy['compression_target_ratio']}",
+        f"  protect_first_n: {inference_policy['compression_protect_first_n']}",
+        f"  protect_last_n: {inference_policy['compression_protect_last_n']}",
+        f"  hygiene_hard_message_limit: {inference_policy['compression_hard_message_limit']}",
         "  codex_gpt55_autoraise: false",
         "mcp_servers:",
         "  admira:",
