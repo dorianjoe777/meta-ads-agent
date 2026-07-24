@@ -20,6 +20,7 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         self.assertEqual(policy["model_context_length"], 80000)
         self.assertEqual(policy["compression_threshold"], 0.45)
         self.assertEqual(policy["compression_hard_message_limit"], 24)
+        self.assertEqual(policy["compression_provider"], "main")
 
     def test_nvidia_model_config_has_operational_context_cap(self):
         policy = hermes_bridge.inference_runtime_policy({"brain": "nvidia_nim"})

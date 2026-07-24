@@ -435,6 +435,11 @@ def inference_runtime_policy(primary_settings=None):
             "compression_protect_first_n": 1,
             "compression_protect_last_n": 6,
             "compression_hard_message_limit": 24,
+            # Do not let Hermes search for unrelated OpenRouter/Nous
+            # credentials when it needs to summarize a NVIDIA session.
+            # "main" is the supported auxiliary alias for the selected
+            # main model/provider and uses the already-configured NVIDIA key.
+            "compression_provider": "main",
         })
     else:
         policy.update({
@@ -445,6 +450,7 @@ def inference_runtime_policy(primary_settings=None):
             "compression_protect_first_n": 3,
             "compression_protect_last_n": 20,
             "compression_hard_message_limit": 400,
+            "compression_provider": "",
         })
     return policy
 
@@ -580,6 +586,7 @@ def _cli_hermes_config_needs_write(config_text, brain):
             or f"  context_length: {policy['model_context_length']}" not in config_text
             or f"  threshold: {policy['compression_threshold']}" not in config_text
             or f"  hygiene_hard_message_limit: {policy['compression_hard_message_limit']}" not in config_text
+            or 'provider: "main"' not in config_text
         )
     return False
 
@@ -639,6 +646,11 @@ def write_cli_hermes_config(config, workspace_info, payload=None):
         f"  protect_last_n: {inference_policy['compression_protect_last_n']}",
         f"  hygiene_hard_message_limit: {inference_policy['compression_hard_message_limit']}",
         "  codex_gpt55_autoraise: false",
+        *([
+            "auxiliary:",
+            "  compression:",
+            f"    provider: {_quote_yaml(inference_policy['compression_provider'])}",
+        ] if inference_policy["compression_provider"] else []),
         "mcp_servers:",
         "  admira:",
         "    enabled: true",

@@ -591,6 +591,11 @@ def write_gateway_files(config):
         f"  protect_last_n: {inference_policy['compression_protect_last_n']}",
         f"  hygiene_hard_message_limit: {inference_policy['compression_hard_message_limit']}",
         "  codex_gpt55_autoraise: false",
+        *([
+            "auxiliary:",
+            "  compression:",
+            f"    provider: {_quote_yaml(inference_policy['compression_provider'])}",
+        ] if inference_policy["compression_provider"] else []),
         "mcp_servers:",
         "  admira:",
         "    enabled: true",
