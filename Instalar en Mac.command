@@ -25,7 +25,9 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 if [ -x "./scripts/install-from-github.sh" ]; then
-  if ./scripts/install-from-github.sh mac "$HOME/Applications/Meta Ads Agent"; then
+  # Some macOS download locations allow scripts to be read but block direct
+  # execution (EPERM), even after chmod. Run through Bash explicitly.
+  if /usr/bin/env bash ./scripts/install-from-github.sh mac "$HOME/Applications/Meta Ads Agent"; then
     echo
     echo "Cuando termine, abre: http://127.0.0.1:7871"
     read -r -p "Presiona Enter para cerrar..."
@@ -48,7 +50,7 @@ echo "Construyendo y abriendo el dashboard..."
 echo "Cuando termine, abre: http://127.0.0.1:7871"
 echo
 
-./scripts/run-docker.sh
+/usr/bin/env bash ./scripts/run-docker.sh
 
 echo
 echo "Si cerraste esta ventana, el dashboard se apago."

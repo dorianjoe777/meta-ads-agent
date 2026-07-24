@@ -398,7 +398,7 @@ echo "Version publicada lista en:"
 echo "$INSTALL_DIR"
 echo
 echo "Preparando tu configuracion local..."
-(cd "$INSTALL_DIR" && ./scripts/install-local.sh)
+(cd "$INSTALL_DIR" && /usr/bin/env bash ./scripts/install-local.sh)
 
 persist_bootstrap_license_values \
   "$INSTALL_DIR/.env" \
@@ -409,4 +409,4 @@ persist_bootstrap_license_values \
 
 echo
 echo "Construyendo y abriendo el dashboard..."
-(cd "$INSTALL_DIR" && ./scripts/run-docker.sh)
+(cd "$INSTALL_DIR" && /usr/bin/env bash ./scripts/run-docker.sh)

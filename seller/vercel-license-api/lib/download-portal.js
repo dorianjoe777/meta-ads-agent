@@ -4,8 +4,8 @@ const PLATFORM_DEFINITIONS = [
     label: "Mac",
     badge: "Launcher Docker para Mac",
     formats: [".dmg"],
-    allowUniversalFallback: false,
-    description: "Descarga el DMG, abre Admira IA y el launcher abre Docker Desktop, prepara el contenedor y abre el dashboard.",
+    allowUniversalFallback: true,
+    description: "Descarga el DMG y abre Admira IA. Si el DMG aun se esta preparando, descarga el ZIP estable, descomprimelo y abre Instalar en Mac.command.",
     button: "Descargar para Mac"
   },
   {
@@ -252,7 +252,9 @@ export function platformCards(release = {}) {
         : (!chosen && !platform.allowUniversalFallback
             ? `${platform.description} Este boton se activa cuando el instalador oficial de ${platform.label} esta publicado.`
             : platform.description),
-      button: isUniversal && platform.id === "windows"
+      button: isUniversal && platform.id === "mac"
+        ? "Descargar ZIP para Mac"
+        : isUniversal && platform.id === "windows"
         ? "Descargar ZIP para Windows"
         : platform.button,
       available: Boolean(chosen),

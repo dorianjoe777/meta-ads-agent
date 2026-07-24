@@ -270,7 +270,10 @@ if [ -n "$docker_cmd" ] && ! "$docker_cmd" image inspect meta-ads-agent:local >/
   skip_build="false"
 fi
 
-if ADMIRA_DOCKER_DETACHED=true ADMIRA_DOCKER_SKIP_BUILD="$skip_build" ./scripts/run-docker.sh >> "$LOG_FILE" 2>&1; then
+# macOS can permit a bundled shell script to be read while rejecting direct
+# execution with EPERM. Invoke Bash explicitly so the launcher remains usable
+# after download, extraction, or translocation.
+if ADMIRA_DOCKER_DETACHED=true ADMIRA_DOCKER_SKIP_BUILD="$skip_build" /usr/bin/env bash ./scripts/run-docker.sh >> "$LOG_FILE" 2>&1; then
   for _ in $(seq 1 90); do
     if curl -fsS "${DASHBOARD_URL}health" >/dev/null 2>&1 || curl -fsS "$DASHBOARD_URL" >/dev/null 2>&1; then
       open "$DASHBOARD_URL"
