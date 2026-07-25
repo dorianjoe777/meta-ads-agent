@@ -4,6 +4,8 @@ import os
 import sys
 import tempfile
 import unittest
+import asyncio
+import types
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -12,6 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 import hermes_gateway
+import admira_hermes_runtime_patch
 import update_notifier
 
 
@@ -61,7 +64,9 @@ class UpdateNotifierTest(unittest.TestCase):
             self.assertEqual(calls[0][0], "sendMessage")
             self.assertIn("Actualización de Admira IA disponible", calls[0][1]["text"])
             keyboard = json.loads(calls[0][1]["reply_markup"])["inline_keyboard"]
-            self.assertEqual(keyboard[0][0]["url"], "https://buyer.example/?open_update=1")
+            self.assertEqual(keyboard[0][0]["text"], "Instalar actualización")
+            self.assertEqual(keyboard[0][0]["callback_data"], "au:v1.0.163")
+            self.assertEqual(keyboard[1][0]["url"], "https://buyer.example/?open_update=1")
             stored = json.loads(state_file.read_text(encoding="utf-8"))
             self.assertEqual(stored["last_notified_version"], "v1.0.163")
 
@@ -113,6 +118,60 @@ class UpdateNotifierTest(unittest.TestCase):
         self.assertIn("showUpdateDetails()", dashboard_js)
         self.assertNotIn("agent_chat", notifier_source)
         self.assertNotIn("hermes", notifier_source.lower())
+
+    def test_install_button_is_optional_when_version_is_not_known(self):
+        keyboard = update_notifier.telegram_update_keyboard(
+            "https://buyer.example/?open_update=1", "es", ""
+        )
+        self.assertEqual(keyboard, [[{"text": "Ver detalles", "url": "https://buyer.example/?open_update=1"}]])
+
+    def test_native_gateway_callback_records_authorized_install_request(self):
+        class FakeAdapter:
+            async def _handle_callback_query(self, _update, _context):
+                raise AssertionError("Admira callback was not intercepted")
+
+        adapter_module = types.ModuleType("plugins.platforms.telegram.adapter")
+        adapter_module.TelegramAdapter = FakeAdapter
+        plugin_modules = {
+            "plugins": types.ModuleType("plugins"),
+            "plugins.platforms": types.ModuleType("plugins.platforms"),
+            "plugins.platforms.telegram": types.ModuleType("plugins.platforms.telegram"),
+            "plugins.platforms.telegram.adapter": adapter_module,
+        }
+
+        class Query:
+            def __init__(self):
+                self.data = "au:v1.0.177"
+                self.from_user = SimpleNamespace(id=123, first_name="Dorian")
+                self.message = SimpleNamespace(
+                    chat_id=456,
+                    chat=SimpleNamespace(type="private"),
+                    message_thread_id=None,
+                )
+                self.answers = []
+                self.edited = False
+
+            async def answer(self, text):
+                self.answers.append(text)
+
+            async def edit_message_text(self, **_kwargs):
+                self.edited = True
+
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(sys.modules, plugin_modules):
+            path = Path(tmp) / "telegram-update.json"
+            with patch.dict(os.environ, {"ADMIRA_TELEGRAM_UPDATE_INSTALL_REQUEST_FILE": str(path)}, clear=False):
+                self.assertTrue(admira_hermes_runtime_patch._patch_telegram_update_install_callback())
+                adapter = FakeAdapter()
+                adapter._is_callback_user_authorized = lambda *_args, **_kwargs: True
+                adapter.format_message = lambda text: text
+                query = Query()
+                asyncio.run(adapter._handle_callback_query(SimpleNamespace(callback_query=query), None))
+            request = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(request["status"], "pending")
+            self.assertEqual(request["version"], "v1.0.177")
+            self.assertEqual(request["chat_id"], "456")
+            self.assertTrue(query.answers)
+            self.assertTrue(query.edited)
 
 
 if __name__ == "__main__":

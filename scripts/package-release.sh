@@ -34,6 +34,7 @@ allowed_prefixes = (
     "logs/",
     "output/",
     "release/",
+    ".vercel/",
 )
 allowed_names = {".DS_Store"}
 unexpected = []
@@ -66,6 +67,8 @@ rsync -a "$ROOT_DIR/" "$STAGING_DIR/" \
   --exclude "brand_guides" \
   --exclude ".git" \
   --exclude ".git/*" \
+  --exclude ".vercel" \
+  --exclude ".vercel/*" \
   --exclude ".DS_Store" \
   --exclude "release" \
   --exclude "seller" \

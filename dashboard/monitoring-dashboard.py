@@ -256,6 +256,7 @@ VERSION_FILE = ROOT_DIR / "VERSION"
 BOOTSTRAP_CONFIG_FILE = ROOT_DIR / "installer" / "release-bootstrap.env"
 UPDATE_SNAPSHOTS_DIR = DATA_DIR / "update-snapshots"
 TELEGRAM_UPDATE_NOTIFICATION_FILE = DATA_DIR / "telegram_update_notifications.json"
+TELEGRAM_UPDATE_INSTALL_REQUEST_FILE = DATA_DIR / "telegram_update_install_request.json"
 UPDATE_SNAPSHOT_ROOT_NAME = "MetaAdsAgent-rollback"
 MAX_UPDATE_SNAPSHOTS = 3
 DEFAULT_POST_LIMIT_BYTES = 2 * 1024 * 1024
@@ -294,6 +295,9 @@ UPDATE_OPERATION_LOCK = threading.RLock()
 UPDATE_NOTIFICATION_MONITOR_THREAD = None
 UPDATE_NOTIFICATION_MONITOR_STOP = None
 UPDATE_NOTIFICATION_MONITOR_LOCK = threading.Lock()
+UPDATE_INSTALL_MONITOR_THREAD = None
+UPDATE_INSTALL_MONITOR_STOP = None
+UPDATE_INSTALL_MONITOR_LOCK = threading.Lock()
 UPDATE_NOTIFICATION_INITIAL_DELAY_SECONDS = 90
 UPDATE_NOTIFICATION_INTERVAL_SECONDS = 60 * 60
 MODEL_HEALTH_WATCHDOG_THREAD = None
@@ -1137,6 +1141,129 @@ def stop_telegram_update_notification_monitor():
             UPDATE_NOTIFICATION_MONITOR_STOP.set()
         UPDATE_NOTIFICATION_MONITOR_THREAD = None
         UPDATE_NOTIFICATION_MONITOR_STOP = None
+
+
+def _telegram_update_install_result_text(request, language="es"):
+    english = str(language or "es").lower().startswith("en")
+    status = str((request or {}).get("status") or "")
+    version = str((request or {}).get("version") or "").strip()
+    if status == "installed":
+        return (
+            f"✅ Admira IA was updated to {version}. Your saved information is intact and the agent is connected again."
+            if english else
+            f"✅ Admira IA se actualizó a {version}. Tu información guardada sigue intacta y el agente ya está conectado de nuevo."
+        )
+    detail = str((request or {}).get("detail") or "").strip()
+    return (
+        f"No pude instalar {version}. No se aplicaron cambios y se conservó la versión anterior. {detail}".strip()
+        if english else
+        f"No pude instalar {version}. No se aplicaron cambios y se conservó la versión anterior. {detail}".strip()
+    )
+
+
+def _send_telegram_update_install_result(config, request):
+    chat_id = str((request or {}).get("chat_id") or "").strip()
+    if not chat_id:
+        return False
+    language = telegram_settings(config).get("language") or "es"
+    try:
+        telegram_bot_request(config, "sendMessage", {
+            "chat_id": chat_id,
+            "text": _telegram_update_install_result_text(request, language),
+            "disable_web_page_preview": "true",
+        }, timeout=15)
+        return True
+    except Exception:
+        return False
+
+
+def process_telegram_update_install_request():
+    """Consume one authorized native-Hermes Telegram update click.
+
+    The gateway only records the callback.  This dashboard worker validates the
+    requested release against the official channel before updating, which keeps
+    a stale/replayed button from installing a different package.
+    """
+    request = read_json(TELEGRAM_UPDATE_INSTALL_REQUEST_FILE, {})
+    if not isinstance(request, dict) or not request:
+        return {"ok": True, "action": "none"}
+    config = load_config()
+    status = str(request.get("status") or "")
+    if status in {"installed", "failed"}:
+        if request.get("notified"):
+            return {"ok": True, "action": "already_notified"}
+        if _send_telegram_update_install_result(config, request):
+            request["notified"] = True
+            request["notified_at"] = now_iso()
+            write_private_json(TELEGRAM_UPDATE_INSTALL_REQUEST_FILE, request, ensure_ascii=False)
+            return {"ok": True, "action": "result_notified"}
+        return {"ok": False, "action": "result_notification_failed"}
+    if status != "pending":
+        return {"ok": True, "action": "ignored"}
+    requested_version = str(request.get("version") or "").strip()
+    request.update({"status": "installing", "started_at": now_iso()})
+    write_private_json(TELEGRAM_UPDATE_INSTALL_REQUEST_FILE, request, ensure_ascii=False)
+    try:
+        release = request_update_release()
+        if not release.get("available") or str(release.get("latest_version") or "").strip() != requested_version:
+            raise ValueError("Esa versión ya no está disponible en el canal oficial.")
+        # Stop the owned gateway before os.execv restarts the dashboard.  The
+        # new dashboard process starts exactly one fresh Gateway from main().
+        stop_hermes_gateway()
+        result = apply_official_update()
+        if not result.get("installed"):
+            raise ValueError(str(result.get("message") or "La actualización no se pudo completar."))
+        request.update({"status": "installed", "completed_at": now_iso(), "detail": "", "notified": False})
+        write_private_json(TELEGRAM_UPDATE_INSTALL_REQUEST_FILE, request, ensure_ascii=False)
+        log_action("telegram_update_install", {"version": requested_version, "source": "inline_button"}, "completed")
+        return {"ok": True, "action": "installed"}
+    except Exception as exc:
+        # A failed package operation must not strand Telegram: the previous
+        # Gateway is still valid and can be started again without exposing the
+        # technical failure to the buyer.
+        try:
+            start_hermes_gateway(config)
+        except Exception:
+            pass
+        request.update({"status": "failed", "completed_at": now_iso(), "detail": str(exc)[:220], "notified": False})
+        write_private_json(TELEGRAM_UPDATE_INSTALL_REQUEST_FILE, request, ensure_ascii=False)
+        log_action("telegram_update_install", {"version": requested_version, "error": str(exc)[:220], "source": "inline_button"}, "failed")
+        return {"ok": False, "action": "failed"}
+
+
+def _telegram_update_install_loop(stop_event):
+    while not stop_event.is_set():
+        try:
+            process_telegram_update_install_request()
+        except Exception:
+            pass
+        if stop_event.wait(1.0):
+            return
+
+
+def ensure_telegram_update_install_monitor():
+    global UPDATE_INSTALL_MONITOR_THREAD, UPDATE_INSTALL_MONITOR_STOP
+    with UPDATE_INSTALL_MONITOR_LOCK:
+        if UPDATE_INSTALL_MONITOR_THREAD and UPDATE_INSTALL_MONITOR_THREAD.is_alive():
+            return {"started": True, "already_running": True}
+        UPDATE_INSTALL_MONITOR_STOP = threading.Event()
+        UPDATE_INSTALL_MONITOR_THREAD = threading.Thread(
+            target=_telegram_update_install_loop,
+            args=(UPDATE_INSTALL_MONITOR_STOP,),
+            name="admira-telegram-update-install",
+            daemon=True,
+        )
+        UPDATE_INSTALL_MONITOR_THREAD.start()
+        return {"started": True, "already_running": False}
+
+
+def stop_telegram_update_install_monitor():
+    global UPDATE_INSTALL_MONITOR_THREAD, UPDATE_INSTALL_MONITOR_STOP
+    with UPDATE_INSTALL_MONITOR_LOCK:
+        if UPDATE_INSTALL_MONITOR_STOP:
+            UPDATE_INSTALL_MONITOR_STOP.set()
+        UPDATE_INSTALL_MONITOR_THREAD = None
+        UPDATE_INSTALL_MONITOR_STOP = None
 
 
 def notify_model_health_issue(config, issue, _context=None):
@@ -13193,6 +13320,7 @@ def main():
     write_static_snapshot()
     ensure_telegram_listener()
     ensure_telegram_update_notification_monitor()
+    ensure_telegram_update_install_monitor()
     ensure_model_health_watchdog()
     server = ThreadingHTTPServer((host, port), DashboardHandler)
     CURRENT_DASHBOARD_BIND_HOST = host
@@ -13208,6 +13336,7 @@ def main():
         print("\nStopping dashboard.")
     finally:
         stop_model_health_watchdog()
+        stop_telegram_update_install_monitor()
         stop_telegram_update_notification_monitor()
         server.server_close()
     return 0

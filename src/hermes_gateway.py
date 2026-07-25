@@ -60,6 +60,7 @@ LOGS_DIR = ROOT_DIR / "logs"
 GATEWAY_STATE_FILE = DATA_DIR / "hermes_gateway_state.json"
 TELEGRAM_MODEL_STATE_FILE = DATA_DIR / "telegram_model_state.json"
 TELEGRAM_RECENT_TURNS_FILE = DATA_DIR / "hermes_gateway_recent_turns.json"
+TELEGRAM_UPDATE_INSTALL_REQUEST_FILE = DATA_DIR / "telegram_update_install_request.json"
 INTERNAL_MODEL_RECOVERY_TOKEN_FILE = DATA_DIR / "internal_model_recovery.token"
 DAILY_BRIEF_PROMPT_FILE = DATA_DIR / "hermes_daily_brief_prompt.md"
 DAILY_SOCIAL_CONTENT_PROMPT_FILE = DATA_DIR / "hermes_daily_social_content_prompt.md"
@@ -518,7 +519,7 @@ def write_gateway_files(config):
     if env_path.exists():
         for line in env_path.read_text(encoding="utf-8").splitlines():
             key = line.split("=", 1)[0].strip() if "=" in line else ""
-            if key not in {"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS", "TELEGRAM_HOME_CHANNEL", "HERMES_TIMEZONE", "HERMES_MEDIA_ALLOW_DIRS", "ADMIRA_PRODUCT_ROOT", "ADMIRA_TELEGRAM_RECENT_TURNS_FILE", "ADMIRA_DASHBOARD_RECOVERY_URL", "ADMIRA_DASHBOARD_RECOVERY_KIND", "ADMIRA_GATEWAY_PROVIDER", "ADMIRA_CRON_PIN_PROVIDER", "ADMIRA_CRON_PIN_MODEL", "ADMIRA_INTERNAL_MODEL_RECOVERY_URL", "ADMIRA_INTERNAL_MODEL_RECOVERY_TOKEN_FILE"}:
+            if key not in {"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS", "TELEGRAM_HOME_CHANNEL", "HERMES_TIMEZONE", "HERMES_MEDIA_ALLOW_DIRS", "ADMIRA_PRODUCT_ROOT", "ADMIRA_TELEGRAM_RECENT_TURNS_FILE", "ADMIRA_TELEGRAM_UPDATE_INSTALL_REQUEST_FILE", "ADMIRA_DASHBOARD_RECOVERY_URL", "ADMIRA_DASHBOARD_RECOVERY_KIND", "ADMIRA_GATEWAY_PROVIDER", "ADMIRA_CRON_PIN_PROVIDER", "ADMIRA_CRON_PIN_MODEL", "ADMIRA_INTERNAL_MODEL_RECOVERY_URL", "ADMIRA_INTERNAL_MODEL_RECOVERY_TOKEN_FILE"}:
                 env_lines.append(line)
     if config.telegram_bot_token:
         env_lines.append(f"TELEGRAM_BOT_TOKEN={_env_value(config.telegram_bot_token)}")
@@ -529,6 +530,7 @@ def write_gateway_files(config):
     env_lines.append(f"HERMES_MEDIA_ALLOW_DIRS={_env_value(os.pathsep.join(_gateway_media_allow_dirs()))}")
     env_lines.append(f"ADMIRA_PRODUCT_ROOT={_env_value(str(ROOT_DIR))}")
     env_lines.append(f"ADMIRA_TELEGRAM_RECENT_TURNS_FILE={_env_value(str(TELEGRAM_RECENT_TURNS_FILE))}")
+    env_lines.append(f"ADMIRA_TELEGRAM_UPDATE_INSTALL_REQUEST_FILE={_env_value(str(TELEGRAM_UPDATE_INSTALL_REQUEST_FILE))}")
     recovery_link = dashboard_recovery_link(config)
     env_lines.append(f"ADMIRA_DASHBOARD_RECOVERY_URL={_env_value(recovery_link['url'])}")
     env_lines.append(f"ADMIRA_DASHBOARD_RECOVERY_KIND={_env_value(recovery_link['kind'])}")
@@ -919,6 +921,7 @@ def start_gateway(config):
     env["ADMIRA_PRODUCT_ROOT"] = str(ROOT_DIR)
     env["ADMIRA_TELEGRAM_MODEL_STATE_FILE"] = str(TELEGRAM_MODEL_STATE_FILE)
     env["ADMIRA_TELEGRAM_RECENT_TURNS_FILE"] = str(TELEGRAM_RECENT_TURNS_FILE)
+    env["ADMIRA_TELEGRAM_UPDATE_INSTALL_REQUEST_FILE"] = str(TELEGRAM_UPDATE_INSTALL_REQUEST_FILE)
     recovery_link = dashboard_recovery_link(config)
     env["ADMIRA_DASHBOARD_RECOVERY_URL"] = recovery_link["url"]
     env["ADMIRA_DASHBOARD_RECOVERY_KIND"] = recovery_link["kind"]

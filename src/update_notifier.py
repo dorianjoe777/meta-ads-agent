@@ -48,12 +48,29 @@ def telegram_update_text(release, language="es"):
     return "\n".join(lines)
 
 
-def telegram_update_keyboard(update_url, language="es"):
+def telegram_update_keyboard(update_url, language="es", version=""):
+    """Render the buyer-safe update controls.
+
+    The install action deliberately uses callback_data instead of a dashboard
+    URL.  The existing gateway owns the bot's update stream and routes ``au:``
+    callbacks through its native Telegram adapter, so Admira never starts a competing
+    Bot API poller just to receive this click.
+    """
+    normalized_version = _safe_text(version, 40)
     url = str(update_url or "").strip()
-    if not url.startswith(("https://", "http://")):
-        return []
-    label = "Open update" if str(language or "es").lower() == "en" else "Abrir actualización"
-    return [[{"text": label, "url": url}]]
+    english = str(language or "es").lower() == "en"
+    rows = []
+    if normalized_version:
+        rows.append([{
+            "text": "Install update" if english else "Instalar actualización",
+            "callback_data": f"au:{normalized_version}",
+        }])
+    if url.startswith(("https://", "http://")):
+        rows.append([{
+            "text": "View details" if english else "Ver detalles",
+            "url": url,
+        }])
+    return rows
 
 
 def check_and_notify_update(
@@ -102,7 +119,7 @@ def check_and_notify_update(
         "text": telegram_update_text(release, language),
         "disable_web_page_preview": "true",
     }
-    keyboard = telegram_update_keyboard(update_url, language)
+    keyboard = telegram_update_keyboard(update_url, language, latest)
     if keyboard:
         payload["reply_markup"] = json.dumps({"inline_keyboard": keyboard}, ensure_ascii=False)
     try:
