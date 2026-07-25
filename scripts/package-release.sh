@@ -90,6 +90,8 @@ rsync -a "$ROOT_DIR/" "$STAGING_DIR/" \
   --exclude "dashboard/content-dashboard.py" \
   --exclude "public/content-keyframes" \
   --exclude "public/content-keyframes/*" \
+  --exclude "public/tutorial-meta/*.mp4" \
+  --exclude "public/tutorial-meta/*.mov" \
   --exclude "scripts/generate-content-batch.sh" \
   --exclude "scripts/plan-keyframes.sh" \
   --exclude "scripts/render-content-video.mjs" \

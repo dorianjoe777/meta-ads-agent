@@ -41,7 +41,7 @@ const ASSETS = [
   }
 ];
 
-const improvements = [
+const defaultImprovements = [
   {
     title: "Telegram se recupera automáticamente",
     body: "El monitor de salud vuelve a levantar el agente si su conexión se detiene inesperadamente, sin borrar la memoria del negocio.",
@@ -58,6 +58,16 @@ const improvements = [
     impact: "Creativos"
   }
 ];
+
+let improvements = defaultImprovements;
+if (process.env.RELEASE_IMPROVEMENTS_JSON) {
+  try {
+    const parsed = JSON.parse(process.env.RELEASE_IMPROVEMENTS_JSON);
+    if (Array.isArray(parsed) && parsed.length) improvements = parsed;
+  } catch {
+    throw new Error("RELEASE_IMPROVEMENTS_JSON must be a JSON array when provided.");
+  }
+}
 
 if (!process.env.BLOB_READ_WRITE_TOKEN) {
   throw new Error("BLOB_READ_WRITE_TOKEN is required to publish private release assets.");
