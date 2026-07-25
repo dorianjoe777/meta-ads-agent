@@ -40,6 +40,7 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         original_connections = hermes_bridge.agent_model_connections
         original_nvidia_catalog = hermes_bridge.NVIDIA_MODEL_CATALOG_FILE
         original_codex_catalog = hermes_bridge.CODEX_MODEL_CATALOG_FILE
+        original_codex_health = hermes_bridge.codex_credential_health
         try:
             with tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -50,6 +51,7 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
                 hermes_bridge.agent_model_connections = lambda _config, include_secrets=False: {
                     "minimax": {"configured": True, "base_url": "https://api.minimax.io/v1", "model": "MiniMax-M3"}
                 }
+                hermes_bridge.codex_credential_health = lambda _config: {"state": "stored", "reauth_required": False}
                 chain = hermes_bridge.admira_inference_fallback_chain(object(), {
                     "brain": "nvidia_nim",
                     "provider": hermes_bridge.ADMIRA_NVIDIA_PROVIDER,
@@ -63,6 +65,29 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
             hermes_bridge.agent_model_connections = original_connections
             hermes_bridge.NVIDIA_MODEL_CATALOG_FILE = original_nvidia_catalog
             hermes_bridge.CODEX_MODEL_CATALOG_FILE = original_codex_catalog
+            hermes_bridge.codex_credential_health = original_codex_health
+
+    def test_unconnected_codex_catalog_is_not_a_cron_fallback(self):
+        original_connections = hermes_bridge.agent_model_connections
+        original_catalog = hermes_bridge.CODEX_MODEL_CATALOG_FILE
+        original_codex_health = hermes_bridge.codex_credential_health
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                catalog = Path(directory) / "codex.json"
+                catalog.write_text(json.dumps({"models": ["gpt-5.4-mini"]}), encoding="utf-8")
+                hermes_bridge.CODEX_MODEL_CATALOG_FILE = catalog
+                hermes_bridge.agent_model_connections = lambda _config, include_secrets=False: {}
+                hermes_bridge.codex_credential_health = lambda _config: {"state": "missing", "reauth_required": False}
+                chain = hermes_bridge.admira_inference_fallback_chain(object(), {
+                    "brain": "nvidia_nim",
+                    "provider": hermes_bridge.ADMIRA_NVIDIA_PROVIDER,
+                    "model": "z-ai/glm-5.2",
+                })
+                self.assertFalse(any(item["provider"] == "openai-codex" for item in chain))
+        finally:
+            hermes_bridge.agent_model_connections = original_connections
+            hermes_bridge.CODEX_MODEL_CATALOG_FILE = original_catalog
+            hermes_bridge.codex_credential_health = original_codex_health
 
 
 if __name__ == "__main__":

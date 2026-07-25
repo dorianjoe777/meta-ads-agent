@@ -507,7 +507,22 @@ def admira_inference_fallback_chain(config, primary_settings=None):
             continue
         append(metadata["slug"], metadata["model"], metadata["base_url"], metadata["key_env"])
 
-    if primary_provider != "openai-codex":
+    # A cached Codex model catalog only says which model names Hermes has seen;
+    # it does not prove that this buyer has a live Codex OAuth session.  Never
+    # place Codex in a fallback chain unless its credential is actually stored
+    # and healthy, otherwise a primary-provider failure becomes a misleading
+    # second failure (notably for unattended cron jobs).
+    codex_fallback_ready = primary_provider == "openai-codex"
+    if not codex_fallback_ready:
+        try:
+            codex_health = codex_credential_health(config)
+            codex_fallback_ready = (
+                str(codex_health.get("state") or "") == "stored"
+                and not bool(codex_health.get("reauth_required"))
+            )
+        except Exception:
+            codex_fallback_ready = False
+    if primary_provider != "openai-codex" and codex_fallback_ready:
         codex_models = _light_model_order(_cached_model_ids(CODEX_MODEL_CATALOG_FILE))
         if codex_models:
             append("openai-codex", codex_models[0])
