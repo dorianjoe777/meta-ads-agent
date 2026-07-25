@@ -41,6 +41,17 @@ export async function writeRegistry(registry) {
 }
 
 export async function readReleases() {
+  // Release assets are published to private Blob storage. Keep their registry
+  // there as the source of truth even when licenses themselves live in Upstash;
+  // otherwise the portal can offer a stale platform installer after a release.
+  if (Boolean(process.env.BLOB_READ_WRITE_TOKEN)) {
+    try {
+      const releases = await blob.readReleases();
+      if (releases?.channels && Object.keys(releases.channels).length > 0) return releases;
+    } catch {
+      // Preserve the configured store as a fallback during a Blob outage.
+    }
+  }
   const backend = selectedBackend();
   if (backend === "blob") return blob.readReleases();
   if (backend === "upstash") return upstash.readReleases();
@@ -50,7 +61,12 @@ export async function readReleases() {
 export async function writeReleases(registry) {
   const backend = selectedBackend();
   if (backend === "blob") return blob.writeReleases(registry);
-  if (backend === "upstash") return upstash.writeReleases(registry);
+  if (backend === "upstash") {
+    if (Boolean(process.env.BLOB_READ_WRITE_TOKEN)) {
+      return dualWrite(() => upstash.writeReleases(registry), () => blob.writeReleases(registry));
+    }
+    return upstash.writeReleases(registry);
+  }
   return dualWrite(() => upstash.writeReleases(registry), () => blob.writeReleases(registry));
 }
 
