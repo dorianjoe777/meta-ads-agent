@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import json
+import os
 import re
 import socket
 import subprocess
@@ -130,6 +131,24 @@ def read_unlock_cache():
         return {}
 
 
+def resolved_device_id(configured="", license_key=""):
+    """Return the durable licensed device identity before deriving a new one.
+
+    Docker container hostnames and MAC addresses can change after a rebuild.
+    The signed unlock cache lives on the persistent dashboard-data volume, so
+    its device id is the stable identity for an already activated install.
+    """
+    explicit = str(configured or os.environ.get("LICENSE_DEVICE_ID", "")).strip()
+    if explicit:
+        return explicit
+    cached = read_unlock_cache()
+    cached_device_id = str(cached.get("device_id") or "").strip()
+    cached_license_key = str(cached.get("license_key") or "").strip()
+    if cached_device_id and (not license_key or cached_license_key == str(license_key).strip()):
+        return cached_device_id
+    return default_device_id()
+
+
 def write_unlock_cache(payload):
     LICENSE_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
     LICENSE_CACHE_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -234,7 +253,7 @@ def activate_license(config, transfer_device=False):
             }
         return {**offline, "online": False, "detail": "Offline license active; no license server configured"}
 
-    device_id = config.license_device_id or default_device_id()
+    device_id = resolved_device_id(config.license_device_id, config.license_key)
     payload = {
         "license_key": config.license_key,
         "buyer_email": config.license_buyer_email,
@@ -286,7 +305,7 @@ def mark_license_install_state(config, event):
     """Best-effort server-side install/onboarding signal for the buyer portal."""
     if not config.license_server_url or not config.license_key or not config.license_buyer_email:
         return {"valid": False, "status": "missing_license_context"}
-    device_id = config.license_device_id or default_device_id()
+    device_id = resolved_device_id(config.license_device_id, config.license_key)
     payload = {
         "license_key": config.license_key,
         "buyer_email": config.license_buyer_email,
@@ -330,7 +349,7 @@ def license_status(config):
         or (verification_expires is not None and verification_expires <= now_utc() + LICENSE_REFRESH_WINDOW)
     )
     if refresh_due:
-        device_id = config.license_device_id or default_device_id()
+        device_id = resolved_device_id(config.license_device_id, config.license_key)
         refresh_key = f"{config.license_key}:{device_id}"
         should_refresh = False
         current = time.monotonic()

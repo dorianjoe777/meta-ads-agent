@@ -26,6 +26,7 @@ ln -sf /app/runtime/ad-config.json /app/ad-config.json
 python3 - <<'PY'
 from pathlib import Path
 import hashlib
+import json
 import socket
 import uuid
 
@@ -83,7 +84,14 @@ for index, line in enumerate(lines):
         disabled.append("image_gen")
         lines[index] = "HERMES_DISABLED_TOOLSETS=" + ",".join(disabled)
 if "LICENSE_DEVICE_ID" not in keys:
-    device_id = hashlib.sha256(f"{socket.gethostname()}:{uuid.getnode()}".encode("utf-8")).hexdigest()[:24]
+    unlock_path = Path("/app/dashboard/data/license_unlock.json")
+    try:
+        unlock = json.loads(unlock_path.read_text(encoding="utf-8")) if unlock_path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        unlock = {}
+    device_id = str(unlock.get("device_id") or "").strip()
+    if not device_id:
+        device_id = hashlib.sha256(f"{socket.gethostname()}:{uuid.getnode()}".encode("utf-8")).hexdigest()[:24]
     lines.append(f"LICENSE_DEVICE_ID={device_id}")
 path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 PY

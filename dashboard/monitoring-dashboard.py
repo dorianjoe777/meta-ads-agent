@@ -126,7 +126,7 @@ from hermes_gateway import (
 from model_health_watchdog import run_model_health_check
 from product_catalog import import_product_catalog, refresh_catalog_index, search_product_catalog
 from hermes_gateway import telegram_settings
-from license import activate_license, default_device_id, license_status, mark_license_install_state, normalize_license_entitlements, validate_license_key
+from license import activate_license, license_status, mark_license_install_state, normalize_license_entitlements, resolved_device_id, validate_license_key
 from local_store import now_iso, read_json, write_json, write_private_json
 from meta_insights import aggregate_campaigns as aggregate_meta_campaigns, campaign_inventory_tree as meta_campaign_inventory_tree, campaign_is_dashboard_visible, collect_meta_snapshot, graph_error_category as meta_graph_error_category, graph_get as meta_graph_get, normalize_insight_range, save_meta_snapshot
 from meta_upload import recent_uploads, stage_upload
@@ -1027,7 +1027,7 @@ def request_update_release():
     settings = release_settings(config)
     if not settings["license_server_url"]:
         raise ValueError("No hay servidor oficial de actualizaciones configurado.")
-    device_id = config.license_device_id or os.environ.get("LICENSE_DEVICE_ID", "") or default_device_id()
+    device_id = resolved_device_id(config.license_device_id, config.license_key)
     payload = {
         "license_key": config.license_key,
         "buyer_email": config.license_buyer_email,

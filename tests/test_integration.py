@@ -537,6 +537,40 @@ class IntegrationTestSuite:
             license_module.activate_license = original_activate
             license_module._LICENSE_REFRESH_ATTEMPTS.clear()
 
+    def test_license_device_identity_survives_container_rebuilds(self):
+        """A persisted signed unlock must outrank an ephemeral Docker identity."""
+        print("\nTesting Durable License Device Identity...")
+        key = format_license("DURABLEDOCKERBUYER")
+        original_read = license_module.read_unlock_cache
+        original_default = license_module.default_device_id
+        original_env = os.environ.get("LICENSE_DEVICE_ID")
+        try:
+            os.environ.pop("LICENSE_DEVICE_ID", None)
+            license_module.default_device_id = lambda: "ephemeral-container-id"
+            license_module.read_unlock_cache = lambda: {
+                "license_key": key,
+                "device_id": "durable-buyer-device-id",
+            }
+            self.assert_true(
+                license_module.resolved_device_id("", key) == "durable-buyer-device-id",
+                "Persisted license identity survives Docker hostname/MAC changes",
+            )
+            self.assert_true(
+                license_module.resolved_device_id("explicit-device-id", key) == "explicit-device-id",
+                "Explicit configured identity remains authoritative",
+            )
+            self.assert_true(
+                license_module.resolved_device_id("", format_license("OTHERBUYER")) == "ephemeral-container-id",
+                "A cached identity is never reused for another license",
+            )
+        finally:
+            license_module.read_unlock_cache = original_read
+            license_module.default_device_id = original_default
+            if original_env is None:
+                os.environ.pop("LICENSE_DEVICE_ID", None)
+            else:
+                os.environ["LICENSE_DEVICE_ID"] = original_env
+
     def test_cloud_license_blocks_buyer_live_features(self):
         """Test buyer live features fail closed when cloud license is invalid."""
         print("\nTesting Cloud License Live Block...")
@@ -11371,6 +11405,7 @@ class IntegrationTestSuite:
         self.assert_true("LAN_ACCESS_ENABLED" in env_example and "LAN_ACCESS_ENABLED" in docker_entrypoint and "ADMIRA_HOST_LAN_IP" in compose, "Phone LAN access is off by default and Docker receives the host LAN IP when available")
         self.assert_true("meta_ads_config" in compose and "meta_ads_brand_guides" in compose, "Docker Compose persists config and brand guides")
         self.assert_true("HERMES_HOME: /app/runtime/hermes" in compose and "mkdir -p /app/runtime/hermes" in docker_entrypoint and '"HERMES_HOME": "/app/runtime/hermes"' in docker_entrypoint and "replaced_blank" in docker_entrypoint, "Docker installs persist Hermes ChatGPT/Codex auth across rebuilds")
+        self.assert_true('Path("/app/dashboard/data/license_unlock.json")' in docker_entrypoint and 'unlock.get("device_id")' in docker_entrypoint, "Docker rebuilds recover the durable licensed device identity before deriving a new one")
         self.assert_true("HERMES_STATUS_TIMEOUT_SECONDS=20" in env_example and "HERMES_RESPONSE_TIMEOUT_SECONDS=300" in env_example and '"HERMES_RESPONSE_TIMEOUT_SECONDS": "300"' in docker_entrypoint, "Hermes real replies get a longer timeout than quick status checks")
         self.assert_true("meta_ads_update_snapshots" in compose and "/app/dashboard/data/update-snapshots" in compose, "Docker Compose keeps update rollback snapshots in a named volume")
         self.assert_true("MetaAdsAgent-source.zip" in script, "Release ZIP includes a stable asset name for bootstrap installers")
@@ -11759,6 +11794,7 @@ class IntegrationTestSuite:
             self.test_license_validation,
             self.test_license_status_and_activation,
             self.test_lifetime_license_refresh_and_outage_safety,
+            self.test_license_device_identity_survives_container_rebuilds,
             self.test_cloud_license_blocks_buyer_live_features,
             self.test_dashboard_password_auth,
             self.test_secret_redaction,
