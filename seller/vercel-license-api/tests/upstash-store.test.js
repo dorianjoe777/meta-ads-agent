@@ -15,6 +15,7 @@ function redisMock() {
     if (command === "MGET") result = [key, ...values].map((item) => strings.has(item) ? strings.get(item) : null);
     if (command === "SET") { strings.set(key, values[0]); result = "OK"; }
     if (command === "SADD") { const set = sets.get(key) || new Set(); const before = set.size; for (const value of values) set.add(value); sets.set(key, set); result = set.size - before; }
+    if (command === "SREM") { const set = sets.get(key) || new Set(); let removed = 0; for (const value of values) removed += Number(set.delete(value)); sets.set(key, set); result = removed; }
     if (command === "SMEMBERS") result = [...(sets.get(key) || [])];
     if (command === "SCARD") result = (sets.get(key) || new Set()).size;
     if (command === "DEL") { const existed = Number(strings.delete(key) || sets.delete(key)); result = existed; }
@@ -71,6 +72,16 @@ test("resets device registrations with set cardinality and delete", async () => 
   await store.registerDevice("MAO-TEST-KEY", "device-b");
   assert.equal(await store.resetDeviceRegistrations("MAO-TEST-KEY"), 2);
   assert.equal((await store.deviceRegistrations("MAO-TEST-KEY")).length, 0);
+});
+
+test("removes only the requested device registration", async () => {
+  const { store } = testStore();
+  await store.registerDevice("MAO-TEST-KEY", "device-a");
+  await store.registerDevice("MAO-TEST-KEY", "device-b");
+  await store.unregisterDevice("MAO-TEST-KEY", "device-a");
+  const devices = await store.deviceRegistrations("MAO-TEST-KEY");
+  assert.equal(devices.length, 1);
+  assert.equal(store.isRegisteredDevice(devices, "MAO-TEST-KEY", "device-b"), true);
 });
 
 test("rejects non-Upstash endpoints before network access", () => {

@@ -227,6 +227,7 @@ PENDING_FILE = DATA_DIR / "pending_approvals.json"
 CREATED_FILE = DATA_DIR / "created_campaigns.json"
 AUDIENCE_FILE = DATA_DIR / "audience_strategy.json"
 ONBOARDING_FILE = DATA_DIR / "onboarding_state.json"
+LICENSE_BINDING_STATE_FILE = DATA_DIR / "license_binding_state.json"
 CHAT_HISTORY_FILE = DATA_DIR / "chat_history.json"
 DASHBOARD_SESSIONS_FILE = DATA_DIR / "dashboard_sessions.json"
 BUSINESS_PROFILE_FILE = DATA_DIR / "business_profile.json"
@@ -3068,10 +3069,57 @@ def activate_license_now(payload=None):
     config = load_config()
     status = activate_license(config, transfer_device=bool(payload.get("transfer_device")))
     if status.get("valid"):
-        mark_license_install_state(config, "local_activated")
-        mark_license_install_state(config, "onboarding_opened")
+        remember_license_binding_state(config, status, "local_activated")
+        if load_onboarding_state().get("completed"):
+            remember_license_binding_state(
+                config,
+                mark_license_install_state(config, "onboarding_completed"),
+                "onboarding_completed",
+            )
+        else:
+            remember_license_binding_state(config, mark_license_install_state(config, "local_activated"), "local_activated")
+            remember_license_binding_state(config, mark_license_install_state(config, "onboarding_opened"), "onboarding_opened")
     log_action("license_activate", {"status": status.get("status"), "valid": bool(status.get("valid")), "online": bool(status.get("online"))}, "completed" if status.get("valid") else "blocked")
     return status
+
+
+def remember_license_binding_state(config, result, event=""):
+    if not isinstance(result, dict) or not result.get("valid"):
+        return False
+    binding = str(result.get("device_binding") or "").strip().lower()
+    if event == "onboarding_completed":
+        binding = "confirmed"
+    if binding not in {"provisional", "confirmed"}:
+        return False
+    write_private_json(
+        LICENSE_BINDING_STATE_FILE,
+        {
+            "device_id": resolved_device_id(config.license_device_id, config.license_key),
+            "status": binding,
+            "event": event or "local_activated",
+            "updated_at": now_iso(),
+        },
+    )
+    return True
+
+
+def sync_completed_onboarding_license_binding(config=None):
+    """Retry final device confirmation after temporary network/server failures."""
+    config = config or load_config()
+    onboarding = load_onboarding_state()
+    if not onboarding.get("completed") or not config.license_key:
+        return {"confirmed": False, "reason": "onboarding_incomplete"}
+    device_id = resolved_device_id(config.license_device_id, config.license_key)
+    cached = read_json(LICENSE_BINDING_STATE_FILE, {})
+    if (
+        isinstance(cached, dict)
+        and cached.get("status") == "confirmed"
+        and cached.get("device_id") == device_id
+    ):
+        return {"confirmed": True, "cached": True}
+    result = mark_license_install_state(config, "onboarding_completed")
+    confirmed = remember_license_binding_state(config, result, "onboarding_completed")
+    return {"confirmed": confirmed, "cached": False, "status": result.get("status", "")}
 
 
 def social_auth_status():
@@ -8791,7 +8839,9 @@ def complete_onboarding(payload=None):
         snapshot_workspace(registry["active_id"])
     else:
         save_individual_binding()
-    mark_license_install_state(config, "onboarding_completed")
+    confirmation = mark_license_install_state(config, "onboarding_completed")
+    remember_license_binding_state(config, confirmation, "onboarding_completed")
+    state["license_device_confirmed"] = bool(confirmation.get("valid"))
     gateway = start_hermes_gateway(config)
     state["communication_gateway_updated"] = bool(gateway.get("started")) if isinstance(gateway, dict) else bool(gateway)
     write_json(ONBOARDING_FILE, state)
@@ -8837,6 +8887,10 @@ def skip_onboarding():
         "setup_snapshot": build_setup_status().get("summary", {}),
         "business_profile_snapshot": redact_payload(business_profile),
     }
+    write_json(ONBOARDING_FILE, state)
+    confirmation = mark_license_install_state(config, "onboarding_completed")
+    remember_license_binding_state(config, confirmation, "onboarding_completed")
+    state["license_device_confirmed"] = bool(confirmation.get("valid"))
     write_json(ONBOARDING_FILE, state)
     start_hermes_gateway(config)
     log_action("onboarding_skip", {"deferred_reasons": missing}, "completed")
@@ -13390,6 +13444,12 @@ def main():
         return 2
     ensure_internal_model_recovery_token()
     write_static_snapshot()
+    threading.Thread(
+        target=sync_completed_onboarding_license_binding,
+        args=(config,),
+        daemon=True,
+        name="admira-license-binding-sync",
+    ).start()
     ensure_telegram_listener()
     ensure_telegram_update_notification_monitor()
     ensure_telegram_update_install_monitor()

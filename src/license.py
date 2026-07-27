@@ -296,7 +296,16 @@ def activate_license(config, transfer_device=False):
         return {"online": True, "valid": False, "status": "bad_signature", "detail": "License response could not be trusted. Contact support."}
     write_unlock_cache(unlock)
     return lifetime_license_status(
-        {"online": True, "valid": True, "status": "active", "expires_at": unlock.get("expires_at"), **normalize_license_entitlements(unlock)},
+        {
+            "online": True,
+            "valid": True,
+            "status": "active",
+            "expires_at": unlock.get("expires_at"),
+            "device_binding": data.get("device_binding", ""),
+            "provisional": bool(data.get("provisional")),
+            "replaced_provisional": bool(data.get("replaced_provisional")),
+            **normalize_license_entitlements(unlock),
+        },
         "Lifetime license active",
     )
 

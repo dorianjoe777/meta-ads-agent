@@ -79,6 +79,11 @@ export async function registerDevice(licenseKey, deviceId) {
   return pathname;
 }
 
+export async function unregisterDevice(licenseKey, deviceId) {
+  await del(devicePath(licenseKey, deviceId));
+  return true;
+}
+
 export async function resetDeviceRegistrations(licenseKey) {
   const registrations = await deviceRegistrations(licenseKey);
   if (!registrations.length) return 0;

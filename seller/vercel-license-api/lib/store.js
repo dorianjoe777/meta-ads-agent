@@ -100,6 +100,17 @@ export async function registerDevice(licenseKey, deviceId) {
   return pathname;
 }
 
+export async function unregisterDevice(licenseKey, deviceId) {
+  const backend = selectedBackend();
+  if (backend === "blob") return blob.unregisterDevice(licenseKey, deviceId);
+  if (backend === "upstash") return upstash.unregisterDevice(licenseKey, deviceId);
+  await dualWrite(
+    () => upstash.unregisterDevice(licenseKey, deviceId),
+    () => blob.unregisterDevice(licenseKey, deviceId)
+  );
+  return true;
+}
+
 export async function resetDeviceRegistrations(licenseKey) {
   const backend = selectedBackend();
   if (backend === "blob") return blob.resetDeviceRegistrations(licenseKey);

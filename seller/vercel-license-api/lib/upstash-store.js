@@ -139,6 +139,11 @@ export function createUpstashStore(options = {}) {
       await command("SADD", deviceKey(licenseKey), pathname);
       return pathname;
     },
+    async unregisterDevice(licenseKey, deviceId) {
+      const pathname = devicePath(licenseKey, deviceId);
+      await command("SREM", deviceKey(licenseKey), pathname);
+      return true;
+    },
     async importDeviceRegistration(licenseKey, pathname) {
       const prefix = `licenses/devices/${licenseId(licenseKey)}/`;
       const normalized = String(pathname || "");
@@ -176,6 +181,7 @@ export const readLicense = (...args) => store().readLicense(...args);
 export const writeLicense = (...args) => store().writeLicense(...args);
 export const deviceRegistrations = (...args) => store().deviceRegistrations(...args);
 export const registerDevice = (...args) => store().registerDevice(...args);
+export const unregisterDevice = (...args) => store().unregisterDevice(...args);
 export const importDeviceRegistration = (...args) => store().importDeviceRegistration(...args);
 export const resetDeviceRegistrations = (...args) => store().resetDeviceRegistrations(...args);
 export const isRegisteredDevice = (...args) => store().isRegisteredDevice(...args);

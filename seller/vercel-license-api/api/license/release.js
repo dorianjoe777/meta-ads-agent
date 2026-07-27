@@ -1,6 +1,16 @@
 import { normalizeEntitlements, signedReleaseGrant, validFormat } from "../../lib/license.js";
 import { buyerFacingImprovements, releaseAssetByName, releaseWithDiscoveredAssets } from "../../lib/download-portal.js";
-import { deviceRegistrations, isRegisteredDevice, readLicense, readReleases, registerDevice, resetDeviceRegistrations, writeLicense } from "../../lib/store.js";
+import { ensureDeviceBinding } from "../../lib/device-binding.js";
+import {
+  deviceRegistrations,
+  isRegisteredDevice,
+  readLicense,
+  readReleases,
+  registerDevice,
+  resetDeviceRegistrations,
+  unregisterDevice,
+  writeLicense
+} from "../../lib/store.js";
 
 function baseUrl(request) {
   const host = String(request.headers["x-forwarded-host"] || request.headers.host || "").trim();
@@ -53,35 +63,21 @@ export default async function handler(request, response) {
     record.max_devices = entitlements.max_devices;
     record.workspace_limit = entitlements.workspace_limit;
     record.features = entitlements.features;
-    const registrations = await deviceRegistrations(licenseKey);
-    if (!isRegisteredDevice(registrations, licenseKey, deviceId)) {
-      if (registrations.length >= entitlements.max_devices) {
-        if (transferDevice && entitlements.plan === "individual" && entitlements.max_devices === 1) {
-          await resetDeviceRegistrations(licenseKey);
-          record.devices = [];
-          record.last_device_transfer_at = new Date().toISOString();
-        } else {
-          return response.status(200).json({
-            valid: false,
-            status: "device_limit",
-            transfer_available: entitlements.plan === "individual" && entitlements.max_devices === 1,
-            detail: entitlements.plan === "individual" && entitlements.max_devices === 1
-              ? "Esta licencia ya esta activa en otro equipo. Puedes transferirla a este equipo si ya no usaras el anterior."
-              : "Esta licencia ya alcanzo el limite de equipos. Contacta soporte."
-          });
-        }
+    const binding = await ensureDeviceBinding({
+      record,
+      licenseKey,
+      deviceId,
+      entitlements,
+      transferDevice,
+      store: {
+        deviceRegistrations,
+        isRegisteredDevice,
+        registerDevice,
+        unregisterDevice,
+        resetDeviceRegistrations
       }
-      await registerDevice(licenseKey, deviceId);
-    }
-    record.devices ||= [];
-    if (!record.devices.includes(deviceId)) record.devices.push(deviceId);
-    record.last_activation_at = new Date().toISOString();
-    const localInstall = { ...(record.install_state?.local || {}) };
-    localInstall.activated_at ||= record.last_activation_at;
-    localInstall.last_activation_seen_at = record.last_activation_at;
-    localInstall.last_event = "local_activated";
-    localInstall.last_event_at = record.last_activation_at;
-    record.install_state = { ...(record.install_state || {}), local: localInstall };
+    });
+    if (!binding.ok) return response.status(200).json({ valid: false, ...binding });
     await writeLicense(record);
 
     const releases = await readReleases();
@@ -117,6 +113,9 @@ export default async function handler(request, response) {
       valid: true,
       status: "active",
       detail: "Descarga lista.",
+      device_binding: binding.device_binding,
+      provisional: binding.provisional,
+      replaced_provisional: binding.replaced_provisional,
       version: release.version,
       asset_name: grantedAssetName,
       filename: asset.filename,

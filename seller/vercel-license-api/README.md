@@ -79,6 +79,9 @@ Routes:
 Device transfer:
 
 - Individual licenses have one active device by default.
+- A brand-new installation reserves its device provisionally until onboarding is completed.
+- If an incomplete install is retried with a different container identity, the new attempt replaces only the provisional reservation instead of consuming another device or requiring support.
+- `install_event: "onboarding_completed"` confirms the device. Confirmed and legacy device registrations keep the normal device-limit protection.
 - `POST /api/license/activate` and `POST /api/license/release` accept `transfer_device: true`.
 - When the license has `max_devices=1`, transfer clears prior device registrations and registers the new `device_id`.
 - `LICENSE_UNLOCK_HOURS` is only the refresh interval for the signed verification proof; it is not the commercial license term.

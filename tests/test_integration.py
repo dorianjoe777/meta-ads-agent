@@ -571,6 +571,42 @@ class IntegrationTestSuite:
             else:
                 os.environ["LICENSE_DEVICE_ID"] = original_env
 
+    def test_completed_onboarding_retries_device_binding_confirmation(self):
+        """A temporary server outage must not leave a completed install provisional forever."""
+        print("\nTesting Completed Onboarding Device Confirmation Retry...")
+        dashboard = load_dashboard_module()
+        test_dir = Path(tempfile.mkdtemp(prefix="license-binding-sync-"))
+        original = {
+            "onboarding": dashboard.ONBOARDING_FILE,
+            "binding": dashboard.LICENSE_BINDING_STATE_FILE,
+            "mark": dashboard.mark_license_install_state,
+        }
+        config = types.SimpleNamespace(
+            license_key=format_license("CONFIRMBINDINGBUYER"),
+            license_device_id="durable-device",
+        )
+        calls = []
+        try:
+            dashboard.ONBOARDING_FILE = test_dir / "onboarding.json"
+            dashboard.LICENSE_BINDING_STATE_FILE = test_dir / "binding.json"
+            dashboard.write_json(dashboard.ONBOARDING_FILE, {"completed": True})
+            dashboard.mark_license_install_state = lambda _config, event: calls.append(event) or {
+                "valid": True,
+                "status": "active",
+                "device_binding": "confirmed",
+            }
+            first = dashboard.sync_completed_onboarding_license_binding(config)
+            second = dashboard.sync_completed_onboarding_license_binding(config)
+            saved = json.loads(dashboard.LICENSE_BINDING_STATE_FILE.read_text(encoding="utf-8"))
+            self.assert_true(first["confirmed"] and not first["cached"], "Completed onboarding confirms a provisional device online")
+            self.assert_true(second["confirmed"] and second["cached"] and calls == ["onboarding_completed"], "Confirmed device binding is cached and avoids repeated server calls")
+            self.assert_true(saved["device_id"] == "durable-device" and saved["status"] == "confirmed", "Durable confirmation is tied to the exact persisted device")
+        finally:
+            dashboard.ONBOARDING_FILE = original["onboarding"]
+            dashboard.LICENSE_BINDING_STATE_FILE = original["binding"]
+            dashboard.mark_license_install_state = original["mark"]
+            shutil.rmtree(test_dir, ignore_errors=True)
+
     def test_cloud_license_blocks_buyer_live_features(self):
         """Test buyer live features fail closed when cloud license is invalid."""
         print("\nTesting Cloud License Live Block...")
@@ -11464,6 +11500,7 @@ class IntegrationTestSuite:
         license_store = (ROOT_DIR / "seller" / "vercel-license-api" / "lib" / "store.js").read_text(encoding="utf-8")
         license_blob_store = (ROOT_DIR / "seller" / "vercel-license-api" / "lib" / "blob-store.js").read_text(encoding="utf-8")
         license_upstash_store = (ROOT_DIR / "seller" / "vercel-license-api" / "lib" / "upstash-store.js").read_text(encoding="utf-8")
+        device_binding_lib = (ROOT_DIR / "seller" / "vercel-license-api" / "lib" / "device-binding.js").read_text(encoding="utf-8")
         blob_publish_script = (ROOT_DIR / "seller" / "vercel-license-api" / "scripts" / "publish-release-assets.mjs").read_text(encoding="utf-8")
         license_server_readme = (ROOT_DIR / "seller" / "vercel-license-api" / "README.md").read_text(encoding="utf-8")
         digitalocean_guided_doc = (ROOT_DIR / "docs" / "es-instalacion-digitalocean-guiada.md").read_text(encoding="utf-8")
@@ -11557,6 +11594,10 @@ class IntegrationTestSuite:
         self.assert_true('request.method === "DELETE"' in portal_session_api and "clearPortalCookie" in portal_session_api, "Portal session endpoint supports safe logout without another function")
         self.assert_true("install_event" in license_activate_api and "onboarding_opened" in license_activate_api and "onboarding_completed" in license_activate_api, "License activation records local onboarding state for the buyer portal")
         self.assert_true("mark_license_install_state" in dashboard_source and "onboarding_completed" in dashboard_source, "Dashboard reports onboarding progress to the license server without blocking local use")
+        self.assert_true("replaced_provisional" in license_activate_api and "replaced_provisional" in license_release_api and "ensureDeviceBinding" in device_binding_lib, "Incomplete installations use replaceable provisional device reservations")
+        self.assert_true('"provisional"' in device_binding_lib and '"confirmed"' in device_binding_lib and "migrated_legacy" in device_binding_lib, "Onboarding confirmation locks the device while legacy activations remain compatible")
+        self.assert_true("unregisterDevice" in license_store and "unregisterDevice" in license_blob_store and 'command("SREM"' in license_upstash_store, "Replacing a failed reservation removes only its provisional device slot")
+        self.assert_true("sync_completed_onboarding_license_binding" in dashboard_source and "admira-license-binding-sync" in dashboard_source, "Dashboard retries final device confirmation after transient outages")
         self.assert_true("Instalar en la nube" in portal_page and "/api/portal/cloud/digitalocean" in portal_page and "Crear mi servidor" in portal_page, "Download portal exposes guided DigitalOcean install after buyer access")
         self.assert_true("Crear cuenta en DigitalOcean" in portal_page and "https://cloud.digitalocean.com/registrations/new" in portal_page and "Haz clic aqui para obtener el token" in portal_page and "cloud-token-cta" in portal_page, "Cloud install gives buyers direct DigitalOcean signup and a clear token action beside the token field")
         self.assert_true("US$12 al mes" in portal_page and "credito inicial" in portal_page and "metodo de pago" in portal_page, "Cloud install explains expected DigitalOcean cost and signup requirements")
@@ -11795,6 +11836,7 @@ class IntegrationTestSuite:
             self.test_license_status_and_activation,
             self.test_lifetime_license_refresh_and_outage_safety,
             self.test_license_device_identity_survives_container_rebuilds,
+            self.test_completed_onboarding_retries_device_binding_confirmation,
             self.test_cloud_license_blocks_buyer_live_features,
             self.test_dashboard_password_auth,
             self.test_secret_redaction,
