@@ -67,6 +67,7 @@ rsync -a "$ROOT_DIR/" "$STAGING_DIR/" \
   --exclude "brand_guides" \
   --exclude ".git" \
   --exclude ".git/*" \
+  --exclude "agents.md" \
   --exclude ".vercel" \
   --exclude ".vercel/*" \
   --exclude ".DS_Store" \

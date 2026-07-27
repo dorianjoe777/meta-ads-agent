@@ -15,10 +15,15 @@ seller/vercel-license-api/node_modules/
 !seller/vercel-license-api/package.json
 !seller/vercel-license-api/package-lock.json
 !seller/vercel-license-api/vercel.json
+!seller/vercel-license-api/deployment-target.json
 !seller/vercel-license-api/api/
 !seller/vercel-license-api/api/**
 !seller/vercel-license-api/lib/
 !seller/vercel-license-api/lib/**
+!seller/vercel-license-api/scripts/
+!seller/vercel-license-api/scripts/**
+!seller/vercel-license-api/tests/
+!seller/vercel-license-api/tests/**
 
 logs/
 output/

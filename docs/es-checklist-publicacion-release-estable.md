@@ -149,24 +149,32 @@ https://api.github.com/repos/dorianjoe777/meta-ads-agent/releases/assets/ASSET_I
 
 ### Proyecto Vercel correcto
 
-`admiraia.uboost.lat` pertenece al proyecto Vercel `miro-ai-license-api`, cuyo
-root es `seller/vercel-license-api`. No desplegar el servidor desde el proyecto
-genérico `product`: ese deployment puede terminar correctamente sin cambiar el
-dominio que consultan las instalaciones.
+`admiraia.uboost.lat` pertenece exclusivamente al proyecto Vercel
+`miro-ai-license-api`, cuyo root es `seller/vercel-license-api`. No desplegar el
+servidor desde el proyecto genérico `product`: ese deployment puede terminar
+correctamente sin cambiar el dominio que consultan las instalaciones.
 
-Antes de publicar cambios del API:
+La identidad completa está fijada en
+`seller/vercel-license-api/deployment-target.json`. Como `.vercel/project.json`
+es local y está ignorado por Git, un checkout limpio no debe depender de ese
+archivo ni permitir que Vercel elija un proyecto automáticamente.
+
+Para comprobar el target sin desplegar:
 
 ```bash
-cd seller/vercel-license-api
-vercel project inspect miro-ai-license-api
-vercel --prod --yes
+./seller/vercel-license-api/scripts/deploy-production-safe.sh --check
 ```
 
-La salida debe terminar indicando:
+Para publicar cambios del API:
 
-```text
-Aliased: https://admiraia.uboost.lat
+```bash
+./seller/vercel-license-api/scripts/deploy-production-safe.sh
 ```
+
+Queda prohibido usar `vercel deploy`, `vercel --prod` o `vercel link`
+directamente para este servicio. El script seguro regenera el enlace local con
+los IDs versionados, bloquea cualquier discrepancia, corre los tests y comprueba
+que `admiraia.uboost.lat` quedó `Ready` en producción con `/api/health` sano.
 
 Después, hacer una llamada real a `/api/license/release` sin imprimir la
 licencia ni la URL firmada. Para probar compatibilidad hacia atrás, usar también

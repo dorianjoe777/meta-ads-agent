@@ -297,8 +297,7 @@ gh release view v1.0.4 --repo dorianjoe777/meta-ads-agent
 Desplegar servidor de licencias:
 
 ```bash
-cd seller/vercel-license-api
-vercel --prod --yes
+./seller/vercel-license-api/scripts/deploy-production-safe.sh
 ```
 
 Verificar tests principales:

@@ -2,6 +2,27 @@
 
 Seller-only Vercel API for `admiraia.uboost.lat`.
 
+## Safe production deployment
+
+The production target is locked in `deployment-target.json`. Do not run a bare
+`vercel deploy`, `vercel --prod`, or `vercel link`, and do not deploy this API
+from the repository root. A clean checkout does not contain the ignored
+`.vercel/project.json`, so the safe script recreates it from the reviewed
+manifest, verifies the exact Vercel project and organization, runs tests, and
+checks the public domain after deployment.
+
+Read-only target and health verification:
+
+```bash
+./seller/vercel-license-api/scripts/deploy-production-safe.sh --check
+```
+
+Production deployment:
+
+```bash
+./seller/vercel-license-api/scripts/deploy-production-safe.sh
+```
+
 Required environment variables:
 
 - `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` store license, registry, and device state in Upstash Redis.
