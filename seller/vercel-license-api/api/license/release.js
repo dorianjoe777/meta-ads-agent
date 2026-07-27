@@ -87,7 +87,17 @@ export default async function handler(request, response) {
     const releases = await readReleases();
     const rawRelease = releases.channels?.[channel];
     const release = rawRelease ? await releaseWithDiscoveredAssets(rawRelease) : null;
-    const asset = releaseAssetByName(release, assetName);
+    const canonicalAssetName = String(release?.asset_name || "MetaAdsAgent-source.zip").trim();
+    // Older installers can keep an asset filename that no longer exists in
+    // the current release registry.  The updater always consumes the
+    // universal source package, so fall back to the channel's canonical
+    // package instead of stranding an otherwise valid lifetime license.
+    const asset = releaseAssetByName(release, assetName)
+      || releaseAssetByName(release, canonicalAssetName)
+      || releaseAssetByName(release, "MetaAdsAgent-source.zip");
+    const grantedAssetName = asset
+      ? String(asset.asset_name || asset.name || canonicalAssetName || assetName).trim()
+      : assetName;
     if (!release || !asset) {
       return friendlyFailure(response, "release_missing", "No encontre la descarga publicada para este instalador. Contacta soporte.");
     }
@@ -96,7 +106,7 @@ export default async function handler(request, response) {
       buyerEmail,
       deviceId,
       channel,
-      assetName,
+      assetName: grantedAssetName,
       version: release.version,
       filename: asset.filename,
       contentType: asset.content_type,
@@ -108,7 +118,7 @@ export default async function handler(request, response) {
       status: "active",
       detail: "Descarga lista.",
       version: release.version,
-      asset_name: assetName,
+      asset_name: grantedAssetName,
       filename: asset.filename,
       sha256: String(asset.sha256 || release.sha256 || "").trim().toLowerCase(),
       improvements: buyerFacingImprovements(release.improvements || []),

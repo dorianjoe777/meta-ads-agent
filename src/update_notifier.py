@@ -7,6 +7,7 @@ Telegram and the UI always agree about the current stable release.
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from local_store import read_json, write_private_json
 
@@ -73,6 +74,51 @@ def telegram_update_keyboard(update_url, language="es", version=""):
     return rows
 
 
+def _versioned_update_url(update_url, version):
+    url = str(update_url or "").strip()
+    if not url.startswith(("https://", "http://")):
+        return url
+    parsed = urlsplit(url)
+    query = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True) if key != "update_version"]
+    if version:
+        query.append(("update_version", str(version)))
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
+
+
+def _telegram_message_id(response):
+    if not isinstance(response, dict):
+        return ""
+    result = response.get("result") if isinstance(response.get("result"), dict) else response
+    return str(result.get("message_id") or "").strip()
+
+
+def _mark_notification_current(config, bot_request, state, latest, language):
+    """Remove stale install controls once the notified version is installed."""
+    message_id = str(state.get("last_notification_message_id") or "").strip()
+    chat_id = str(state.get("last_notification_chat_id") or getattr(config, "telegram_chat_id", "") or "").strip()
+    notified = str(state.get("last_notified_version") or "").strip()
+    if not message_id or not chat_id or not latest or notified != latest:
+        return False
+    english = str(language or "es").lower() == "en"
+    text = (
+        f"Admira IA is up to date: {latest}\n\nThis update is already installed."
+        if english
+        else f"Admira IA está actualizada: {latest}\n\nEsta actualización ya está instalada."
+    )
+    try:
+        bot_request(config, "editMessageText", {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+            "reply_markup": json.dumps({"inline_keyboard": []}),
+        }, timeout=15)
+    except Exception:
+        return False
+    state["last_notification_resolved_at"] = _now_iso()
+    state["last_notification_resolved_version"] = latest
+    return True
+
+
 def check_and_notify_update(
     config,
     *,
@@ -109,6 +155,7 @@ def check_and_notify_update(
         "last_error": "",
     })
     if not release.get("available") or not latest:
+        _mark_notification_current(config, bot_request, state, latest, language)
         write_private_json(path, state, ensure_ascii=False)
         return {"ok": True, "notified": False, "reason": "up_to_date", "version": latest}
     if str(state.get("last_notified_version") or "") == latest:
@@ -119,11 +166,11 @@ def check_and_notify_update(
         "text": telegram_update_text(release, language),
         "disable_web_page_preview": "true",
     }
-    keyboard = telegram_update_keyboard(update_url, language, latest)
+    keyboard = telegram_update_keyboard(_versioned_update_url(update_url, latest), language, latest)
     if keyboard:
         payload["reply_markup"] = json.dumps({"inline_keyboard": keyboard}, ensure_ascii=False)
     try:
-        bot_request(config, "sendMessage", payload, timeout=15)
+        response = bot_request(config, "sendMessage", payload, timeout=15)
     except Exception:
         state["last_error"] = "telegram_send_failed"
         write_private_json(path, state, ensure_ascii=False)
@@ -131,6 +178,8 @@ def check_and_notify_update(
     state.update({
         "last_notified_version": latest,
         "last_notified_at": checked_at,
+        "last_notification_message_id": _telegram_message_id(response),
+        "last_notification_chat_id": chat_id,
         "last_error": "",
     })
     write_private_json(path, state, ensure_ascii=False)

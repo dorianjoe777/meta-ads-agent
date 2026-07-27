@@ -66,9 +66,10 @@ class UpdateNotifierTest(unittest.TestCase):
             keyboard = json.loads(calls[0][1]["reply_markup"])["inline_keyboard"]
             self.assertEqual(keyboard[0][0]["text"], "Instalar actualización")
             self.assertEqual(keyboard[0][0]["callback_data"], "au:v1.0.163")
-            self.assertEqual(keyboard[1][0]["url"], "https://buyer.example/?open_update=1")
+            self.assertEqual(keyboard[1][0]["url"], "https://buyer.example/?open_update=1&update_version=v1.0.163")
             stored = json.loads(state_file.read_text(encoding="utf-8"))
             self.assertEqual(stored["last_notified_version"], "v1.0.163")
+            self.assertEqual(stored["last_notification_message_id"], "1")
 
     def test_retries_failed_delivery_and_skips_when_current(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -100,7 +101,42 @@ class UpdateNotifierTest(unittest.TestCase):
             self.assertEqual(failed["reason"], "telegram_send_failed")
             self.assertTrue(retried["notified"])
             self.assertEqual(current["reason"], "up_to_date")
-            self.assertEqual(len(attempts), 2)
+            self.assertEqual(len(attempts), 3)
+
+    def test_marks_installed_notification_as_resolved_and_removes_buttons(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "update-state.json"
+            calls = []
+
+            def send(_config, method, payload, timeout=0):
+                calls.append((method, payload, timeout))
+                if method == "sendMessage":
+                    return {"ok": True, "result": {"message_id": 41}}
+                return {"ok": True, "result": True}
+
+            first = update_notifier.check_and_notify_update(
+                self.config(),
+                request_release=lambda: self.release(),
+                bot_request=send,
+                state_file=state_file,
+                update_url="https://buyer.example/?open_update=1",
+                language="es",
+            )
+            current = update_notifier.check_and_notify_update(
+                self.config(),
+                request_release=lambda: self.release(available=False),
+                bot_request=send,
+                state_file=state_file,
+                language="es",
+            )
+
+            self.assertTrue(first["notified"])
+            self.assertEqual(current["reason"], "up_to_date")
+            self.assertEqual([call[0] for call in calls], ["sendMessage", "editMessageText"])
+            self.assertEqual(calls[1][1]["message_id"], "41")
+            self.assertEqual(json.loads(calls[1][1]["reply_markup"]), {"inline_keyboard": []})
+            stored = json.loads(state_file.read_text(encoding="utf-8"))
+            self.assertEqual(stored["last_notification_resolved_version"], "v1.0.163")
 
     def test_update_link_opens_update_review_not_model_reconnect(self):
         with patch.dict(os.environ, {"ADMIRA_DASHBOARD_URL": "https://buyer.example/dashboard?keep=1"}, clear=False):
@@ -116,6 +152,7 @@ class UpdateNotifierTest(unittest.TestCase):
         self.assertIn("ensure_telegram_update_notification_monitor()", dashboard_source)
         self.assertIn("openUpdateFromUrl()", dashboard_js)
         self.assertIn("showUpdateDetails()", dashboard_js)
+        self.assertIn("update_version", dashboard_js)
         self.assertNotIn("agent_chat", notifier_source)
         self.assertNotIn("hermes", notifier_source.lower())
 

@@ -58,3 +58,19 @@ test("releaseAssetByName resolves assets by key, asset_name, name, or filename",
   };
   assert.equal(releaseAssetByName(release, "MetaAdsAgent-source.zip").source_url, "https://example.test/source.zip");
 });
+
+test("canonical source asset remains available for legacy updater fallback", () => {
+  const release = {
+    asset_name: "MetaAdsAgent-source.zip",
+    assets: {
+      "MetaAdsAgent-source.zip": {
+        asset_name: "MetaAdsAgent-source.zip",
+        filename: "MetaAdsAgent-source.zip",
+        source_url: "https://example.test/current-source.zip"
+      }
+    }
+  };
+  const requested = releaseAssetByName(release, "meta-ads-operator-v1.0.105.zip");
+  const fallback = requested || releaseAssetByName(release, release.asset_name);
+  assert.equal(fallback.filename, "MetaAdsAgent-source.zip");
+});
