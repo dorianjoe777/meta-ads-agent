@@ -7,6 +7,7 @@ PYTHONPATH/sitecustomize only for the gateway process and wraps the narrow
 provider-error formatter that can otherwise leak raw English provider text.
 """
 import hashlib
+import importlib
 import json
 import os
 import re
@@ -1667,76 +1668,93 @@ def _patch_telegram_update_install_callback():
     second getUpdates consumer.  The gateway acknowledges the tap immediately
     then the dashboard process performs the package update independently.
     """
-    try:
-        from plugins.platforms.telegram.adapter import TelegramAdapter
-    except ImportError:
-        return False
-    original = getattr(TelegramAdapter, "_handle_callback_query", None)
-    if not callable(original) or getattr(original, "_admira_update_install_patch", False):
-        return bool(getattr(original, "_admira_update_install_patch", False))
-
-    async def patched(self, update, context):
-        query = getattr(update, "callback_query", None)
-        data = str(getattr(query, "data", "") or "")
-        if not data.startswith("au:"):
-            return await original(self, update, context)
-        version = data.split(":", 1)[1].strip()
-        if not version or len(version) > 40 or not re.fullmatch(r"v?\d+(?:\.\d+){1,4}(?:[-+][A-Za-z0-9._-]+)?", version):
-            await query.answer(text="Esta actualización ya no es válida.")
-            return
-        message = getattr(query, "message", None)
-        chat = getattr(message, "chat", None)
-        chat_id = getattr(message, "chat_id", None)
-        chat_type = getattr(chat, "type", None)
-        thread_id = getattr(message, "message_thread_id", None)
-        user = getattr(query, "from_user", None)
-        user_id = str(getattr(user, "id", "") or "")
-        user_name = getattr(user, "first_name", None)
-        if not self._is_callback_user_authorized(
-            user_id,
-            chat_id=chat_id,
-            chat_type=str(chat_type) if chat_type is not None else None,
-            thread_id=str(thread_id) if thread_id is not None else None,
-            user_name=user_name,
-        ):
-            await query.answer(text="No tienes permiso para instalar actualizaciones.")
-            return
-        path = _telegram_update_install_request_path()
-        existing = {}
-        if path and path.exists():
-            try:
-                existing = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                existing = {}
-        if existing.get("status") in {"pending", "installing"}:
-            await query.answer(text="La actualización ya se está preparando.")
-            return
-        accepted = _write_telegram_update_install_request({
-            "status": "pending",
-            "version": version,
-            "chat_id": str(chat_id or ""),
-            "user_id": user_id,
-            "requested_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "notified": False,
-        })
-        if not accepted:
-            await query.answer(text="No pude preparar la actualización. Intenta de nuevo.")
-            return
-        await query.answer(text="Actualización confirmada. Preparándola ahora…")
+    adapter_classes = []
+    for module_name in (
+        # Hermes 0.18+ runtime path.
+        "hermes_plugins.telegram_platform.adapter",
+        # Older/compatibility runtime path.
+        "plugins.platforms.telegram.adapter",
+    ):
         try:
-            await query.edit_message_text(
-                text=self.format_message("✅ *Actualización confirmada*\n\nGuardé tu clic y la instalaré ahora con copia de seguridad. El agente se reconectará solo al terminar."),
-                parse_mode="MarkdownV2",
-                reply_markup=None,
-            )
-        except Exception:
-            pass
-        return None
+            module = importlib.import_module(module_name)
+            adapter_class = getattr(module, "TelegramAdapter", None)
+        except ImportError:
+            continue
+        if adapter_class is not None and all(adapter_class is not item for item in adapter_classes):
+            adapter_classes.append(adapter_class)
 
-    patched._admira_update_install_patch = True
-    patched._admira_original_update_callback = original
-    TelegramAdapter._handle_callback_query = patched
-    return True
+    patched_any = False
+    for adapter_class in adapter_classes:
+        original = getattr(adapter_class, "_handle_callback_query", None)
+        if not callable(original):
+            continue
+        if getattr(original, "_admira_update_install_patch", False):
+            patched_any = True
+            continue
+
+        async def patched(self, update, context, _original=original):
+            query = getattr(update, "callback_query", None)
+            data = str(getattr(query, "data", "") or "")
+            if not data.startswith("au:"):
+                return await _original(self, update, context)
+            version = data.split(":", 1)[1].strip()
+            if not version or len(version) > 40 or not re.fullmatch(r"v?\d+(?:\.\d+){1,4}(?:[-+][A-Za-z0-9._-]+)?", version):
+                await query.answer(text="Esta actualización ya no es válida.")
+                return
+            message = getattr(query, "message", None)
+            chat = getattr(message, "chat", None)
+            chat_id = getattr(message, "chat_id", None)
+            chat_type = getattr(chat, "type", None)
+            thread_id = getattr(message, "message_thread_id", None)
+            user = getattr(query, "from_user", None)
+            user_id = str(getattr(user, "id", "") or "")
+            user_name = getattr(user, "first_name", None)
+            if not self._is_callback_user_authorized(
+                user_id,
+                chat_id=chat_id,
+                chat_type=str(chat_type) if chat_type is not None else None,
+                thread_id=str(thread_id) if thread_id is not None else None,
+                user_name=user_name,
+            ):
+                await query.answer(text="No tienes permiso para instalar actualizaciones.")
+                return
+            path = _telegram_update_install_request_path()
+            existing = {}
+            if path and path.exists():
+                try:
+                    existing = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    existing = {}
+            if existing.get("status") in {"pending", "installing"}:
+                await query.answer(text="La actualización ya se está preparando.")
+                return
+            accepted = _write_telegram_update_install_request({
+                "status": "pending",
+                "version": version,
+                "chat_id": str(chat_id or ""),
+                "user_id": user_id,
+                "requested_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "notified": False,
+            })
+            if not accepted:
+                await query.answer(text="No pude preparar la actualización. Intenta de nuevo.")
+                return
+            await query.answer(text="Actualización confirmada. Preparándola ahora…")
+            try:
+                await query.edit_message_text(
+                    text=self.format_message("✅ *Actualización confirmada*\n\nGuardé tu clic y la instalaré ahora con copia de seguridad. El agente se reconectará solo al terminar."),
+                    parse_mode="MarkdownV2",
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+            return None
+
+        patched._admira_update_install_patch = True
+        patched._admira_original_update_callback = original
+        adapter_class._handle_callback_query = patched
+        patched_any = True
+    return patched_any
 
 
 def apply():

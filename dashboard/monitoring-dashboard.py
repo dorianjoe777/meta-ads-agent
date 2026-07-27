@@ -189,7 +189,7 @@ from signal_quality import apply_signal_quality_to_adset, review_signal_quality,
 from social_flow_client import SocialFlowClient
 from telegram_agent import bot_request as telegram_bot_request
 from telegram_agent import reset_polling_state as reset_telegram_polling_state
-from update_notifier import check_and_notify_update
+from update_notifier import check_and_notify_update, install_version_for_request
 from verified_signal_ledger import feedback_prompt as verified_signal_feedback_prompt
 from verified_signal_ledger import ledger_summary as verified_signal_ledger_summary
 from verified_signal_ledger import record_signal as record_verified_signal
@@ -1103,8 +1103,9 @@ def _telegram_update_notification_loop(stop_event):
     if stop_event.wait(initial_delay):
         return
     while not stop_event.is_set():
+        result = {}
         try:
-            check_telegram_update_notification()
+            result = check_telegram_update_notification()
         except Exception as exc:
             try:
                 log_action(
@@ -1114,7 +1115,16 @@ def _telegram_update_notification_loop(stop_event):
                 )
             except Exception:
                 pass
-        if stop_event.wait(interval):
+        # While an update is pending, poll more frequently so a release-registry
+        # cache transition (for example 1.0.182 -> 1.0.183) cannot leave buyers
+        # with an old notice for an hour. This remains deterministic and makes
+        # no inference calls.
+        pending_update = bool(
+            result.get("version")
+            and result.get("reason") in {"update_available", "already_notified"}
+        )
+        wait_seconds = min(interval, 5 * 60) if pending_update else interval
+        if stop_event.wait(wait_seconds):
             return
 
 
@@ -1206,8 +1216,15 @@ def process_telegram_update_install_request():
     write_private_json(TELEGRAM_UPDATE_INSTALL_REQUEST_FILE, request, ensure_ascii=False)
     try:
         release = request_update_release()
-        if not release.get("available") or str(release.get("latest_version") or "").strip() != requested_version:
-            raise ValueError("Esa versión ya no está disponible en el canal oficial.")
+        install_version = install_version_for_request(requested_version, release)
+        if install_version != requested_version:
+            request.update({
+                "requested_version": requested_version,
+                "version": install_version,
+                "upgraded_to_latest": True,
+            })
+            requested_version = install_version
+            write_private_json(TELEGRAM_UPDATE_INSTALL_REQUEST_FILE, request, ensure_ascii=False)
         # Stop the owned gateway before os.execv restarts the dashboard.  The
         # new dashboard process starts exactly one fresh Gateway from main().
         stop_hermes_gateway()

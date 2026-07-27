@@ -162,6 +162,15 @@ class UpdateNotifierTest(unittest.TestCase):
         )
         self.assertEqual(keyboard, [[{"text": "Ver detalles", "url": "https://buyer.example/?open_update=1"}]])
 
+    def test_stale_valid_button_resolves_to_current_stable_release(self):
+        release = self.release(version="v1.0.183", available=True)
+        self.assertEqual(
+            update_notifier.install_version_for_request("v1.0.182", release),
+            "v1.0.183",
+        )
+        with self.assertRaises(ValueError):
+            update_notifier.install_version_for_request("v1.0.184", release)
+
     def test_native_gateway_callback_records_authorized_install_request(self):
         class FakeAdapter:
             async def _handle_callback_query(self, _update, _context):
@@ -207,6 +216,52 @@ class UpdateNotifierTest(unittest.TestCase):
             self.assertEqual(request["status"], "pending")
             self.assertEqual(request["version"], "v1.0.177")
             self.assertEqual(request["chat_id"], "456")
+            self.assertTrue(query.answers)
+            self.assertTrue(query.edited)
+
+    def test_current_hermes_adapter_path_records_authorized_install_request(self):
+        class FakeAdapter:
+            async def _handle_callback_query(self, _update, _context):
+                raise AssertionError("Admira callback was not intercepted")
+
+        adapter_module = types.ModuleType("hermes_plugins.telegram_platform.adapter")
+        adapter_module.TelegramAdapter = FakeAdapter
+        plugin_modules = {
+            "hermes_plugins": types.ModuleType("hermes_plugins"),
+            "hermes_plugins.telegram_platform": types.ModuleType("hermes_plugins.telegram_platform"),
+            "hermes_plugins.telegram_platform.adapter": adapter_module,
+        }
+
+        class Query:
+            def __init__(self):
+                self.data = "au:v1.0.182"
+                self.from_user = SimpleNamespace(id=123, first_name="Dorian")
+                self.message = SimpleNamespace(
+                    chat_id=456,
+                    chat=SimpleNamespace(type="private"),
+                    message_thread_id=None,
+                )
+                self.answers = []
+                self.edited = False
+
+            async def answer(self, text):
+                self.answers.append(text)
+
+            async def edit_message_text(self, **_kwargs):
+                self.edited = True
+
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(sys.modules, plugin_modules):
+            path = Path(tmp) / "telegram-update-current.json"
+            with patch.dict(os.environ, {"ADMIRA_TELEGRAM_UPDATE_INSTALL_REQUEST_FILE": str(path)}, clear=False):
+                self.assertTrue(admira_hermes_runtime_patch._patch_telegram_update_install_callback())
+                adapter = FakeAdapter()
+                adapter._is_callback_user_authorized = lambda *_args, **_kwargs: True
+                adapter.format_message = lambda text: text
+                query = Query()
+                asyncio.run(adapter._handle_callback_query(SimpleNamespace(callback_query=query), None))
+            request = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(request["status"], "pending")
+            self.assertEqual(request["version"], "v1.0.182")
             self.assertTrue(query.answers)
             self.assertTrue(query.edited)
 

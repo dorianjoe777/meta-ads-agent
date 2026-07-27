@@ -20,6 +20,38 @@ def _safe_text(value, limit):
     return " ".join(str(value or "").replace("\r", " ").replace("\n", " ").split())[:limit]
 
 
+def _version_parts(value):
+    parts = []
+    for item in str(value or "").lstrip("vV").split("."):
+        number = ""
+        for character in item:
+            if character.isdigit():
+                number += character
+            else:
+                break
+        if not number:
+            break
+        parts.append(int(number))
+    return tuple(parts or [0])
+
+
+def install_version_for_request(requested_version, release):
+    """Resolve a Telegram button to the newest installable stable release.
+
+    Telegram notifications and the release registry are independent network
+    operations. A buyer may therefore tap a valid button just after a newer
+    stable release supersedes the version shown on that button. That should
+    upgrade to the current stable version, not fail or install an older build.
+    """
+    requested = _safe_text(requested_version, 40)
+    latest = _safe_text((release or {}).get("latest_version"), 40)
+    if not latest or not (release or {}).get("available"):
+        raise ValueError("Ya no hay una actualización pendiente en el canal oficial.")
+    if requested and _version_parts(requested) > _version_parts(latest):
+        raise ValueError("La actualización solicitada no pertenece al canal estable actual.")
+    return latest
+
+
 def telegram_update_text(release, language="es"):
     latest = _safe_text((release or {}).get("latest_version"), 40)
     improvements = (release or {}).get("improvements") or []
