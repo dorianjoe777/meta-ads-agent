@@ -5384,6 +5384,23 @@ class IntegrationTestSuite:
             self.assert_true(missing_organic_request["blocked"] is True and missing_organic_request["reason"] == "missing_organic_post_request", "Organic generation refuses a generic memory-only call that could reuse a stale offer")
             generic_organic_request = dashboard.codex_image_generate({"purpose": "daily_social_post", "request": "Crea un post usando el branding y las guías guardadas."})
             self.assert_true(generic_organic_request["blocked"] is True and generic_organic_request["reason"] == "missing_organic_post_request", "Organic generation also rejects a non-empty but generic saved-brand request")
+            canonical_fields = {
+                "active_topic": "Presentación de la marca Saltodigital360",
+                "content_pillar": "marca y confianza",
+                "objective": "Presentar la marca en Facebook",
+                "desired_on_image_message": "Saltodigital360",
+                "format": "cuadrado 1:1 1080x1080",
+                "cta_decision": "Sin CTA en la imagen",
+            }
+            top_level_request, top_level_missing = dashboard.normalized_organic_image_request(canonical_fields)
+            boolean_wrapper_request, boolean_wrapper_missing = dashboard.normalized_organic_image_request({**canonical_fields, "organic_post_request": True})
+            text_wrapper_request, text_wrapper_missing = dashboard.normalized_organic_image_request(
+                {"organic_post_request": "Post orgánico sobre la presentación de Saltodigital360, pilar marca y confianza, formato cuadrado 1:1, texto principal Saltodigital360 y sin CTA."}
+            )
+            _, incomplete_missing = dashboard.normalized_organic_image_request({"active_topic": "Tema aislado", "organic_post_request": True})
+            self.assert_true(bool(top_level_request) and not top_level_missing and bool(boolean_wrapper_request) and not boolean_wrapper_missing, "Top-level organic fields and organic_post_request=true normalize into the same accepted contract")
+            self.assert_true(bool(text_wrapper_request) and not text_wrapper_missing, "A detailed organic_post_request text value is accepted instead of being ignored")
+            self.assert_true("content_pillar" in incomplete_missing and "format" in incomplete_missing and "cta_decision" in incomplete_missing, "Incomplete organic requests report the exact unrecognized fields")
             plan_blocked = dashboard.codex_creative_plan({"request": "Prepara una idea visual", "purpose": "ad_creative"})
             direct_image_blocked = dashboard.codex_image_generate({"request": "Crea un anuncio final", "purpose": "ad_creative"})
             self.assert_true(plan_blocked["blocked"] is True and plan_blocked["reason"] == "creative_strategy_not_ready", "Low-level creative planning is blocked before brand discovery")
@@ -5526,6 +5543,23 @@ class IntegrationTestSuite:
             )
             self.assert_true(organic_ready["prompt_package"]["purpose"] == "daily_social_post" and captured["kwargs"].get("purpose") == "daily_social_post", "Organic purpose reaches both the prompt package and the real Image 2 bridge")
             self.assert_true("pieza de contenido orgánico" in captured["prompt"] and "no un anuncio pagado" in captured["prompt"], "Organic generation does not inherit the paid-ad prompt contract")
+            structured_organic = dashboard.codex_image_generate(
+                {
+                    "purpose": "daily_social_post",
+                    "organic_post_request": {
+                        "active_topic": "Presentación de la marca Saltodigital360",
+                        "content_pillar": "marca y confianza",
+                        "objective": "Presentar la marca en Facebook",
+                        "desired_on_image_message": "Saltodigital360",
+                        "format": "cuadrado 1:1 1080x1080",
+                        "cta_decision": "Sin CTA en la imagen",
+                    },
+                }
+            )
+            structured_prompt = captured["prompt"]
+            self.assert_true(structured_organic["ok"] is True and structured_organic["prompt_package"]["purpose"] == "daily_social_post", "Structured organic_post_request passes the real organic image gate")
+            self.assert_true("Presentación de la marca Saltodigital360" in structured_prompt and "formato 1:1 cuadrado" in structured_prompt, "Structured organic fields reach Image 2 with the requested square format")
+            self.assert_true("presentacion-editorial-de-marca" in structured_prompt and "Producto u oferta al centro" not in structured_prompt, "Organic generation uses an organic editorial route instead of the paid-ad product/benefit/CTA composition")
 
             Image.new("RGB", (600, 750), "white").save(output_image)
             logo_image = Image.new("RGBA", (180, 70), (0, 0, 0, 0))

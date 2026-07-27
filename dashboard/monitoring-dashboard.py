@@ -7324,6 +7324,75 @@ def organic_image_request_is_specific(value):
     return not any(marker in text for marker in generic_memory_markers)
 
 
+ORGANIC_IMAGE_REQUEST_FIELDS = (
+    ("active_topic", ("active_topic", "topic", "subject")),
+    ("content_pillar", ("content_pillar", "pillar")),
+    ("objective", ("objective", "goal")),
+    ("desired_on_image_message", ("desired_on_image_message", "on_image_text", "main_text", "headline")),
+    ("format", ("format", "creative_format", "image_format", "aspect_ratio")),
+    ("cta_decision", ("cta_decision", "cta", "call_to_action")),
+)
+
+
+def normalized_organic_image_request(payload, direct_request=""):
+    """Build the self-contained request accepted by the organic image gate.
+
+    Hermes may send the contract as top-level fields, as an
+    ``organic_post_request`` mapping, or as a detailed text value.  Older code
+    only inspected ``request`` and therefore rejected every structured call.
+    """
+    payload = payload if isinstance(payload, dict) else {}
+    direct = str(direct_request or "").strip()
+    raw = payload.get("organic_post_request")
+    nested = {}
+    raw_text = ""
+    if isinstance(raw, dict):
+        nested = raw
+    elif isinstance(raw, str):
+        raw_text = raw.strip()
+        if raw_text.startswith("{"):
+            try:
+                parsed = json.loads(raw_text)
+            except json.JSONDecodeError:
+                parsed = {}
+            if isinstance(parsed, dict):
+                nested = parsed
+                raw_text = ""
+    if direct and organic_image_request_is_specific(direct):
+        return direct, []
+    if raw_text and organic_image_request_is_specific(raw_text):
+        return raw_text, []
+
+    combined = {**nested, **payload}
+    values = {}
+    missing = []
+    for canonical, aliases in ORGANIC_IMAGE_REQUEST_FIELDS:
+        value = next(
+            (
+                str(combined.get(alias) or "").strip()
+                for alias in aliases
+                if str(combined.get(alias) or "").strip()
+            ),
+            "",
+        )
+        values[canonical] = value
+        if not value:
+            missing.append(canonical)
+    if missing:
+        return "", missing
+    request = (
+        "Solicitud canónica de post orgánico. "
+        f"Tema activo: {values['active_topic']}. "
+        f"Pilar de contenido: {values['content_pillar']}. "
+        f"Objetivo: {values['objective']}. "
+        f"Texto principal dentro de la imagen: {values['desired_on_image_message']}. "
+        f"Formato final: {values['format']}. "
+        f"Decisión de CTA: {values['cta_decision']}. "
+        "Debe sentirse como contenido orgánico de marca, no como anuncio pagado."
+    )
+    return request, []
+
+
 REFERENCE_AS_BACKGROUND_FLAGS = (
     "use_reference_as_background",
     "use_uploaded_image_as_background",
@@ -8174,13 +8243,16 @@ def codex_image_generate(payload):
     variations = payload.get("variations") or brief_payload.get("variation_count") or 1
     request = str(payload.get("request") or payload.get("image_prompt") or payload.get("prompt") or "").strip()
     purpose = str(payload.get("purpose") or "ad_creative").strip().lower()
+    organic_missing = []
+    if image_purpose_is_organic(purpose):
+        request, organic_missing = normalized_organic_image_request(payload, request)
     if image_purpose_is_organic(purpose) and not organic_image_request_is_specific(request):
         result = {
             "ok": False,
             "blocked": True,
             "reason": "missing_organic_post_request",
             "error": "Antes de generar el post, incluye el tema activo, pilar, objetivo, texto principal, formato y decisión de CTA en esta misma solicitud.",
-            "missing": ["organic_post_request"],
+            "missing": organic_missing or ["organic_post_request"],
         }
         log_action("codex_image_generate", {"purpose": purpose, "ok": False, "reason": result["reason"]}, "blocked")
         return result

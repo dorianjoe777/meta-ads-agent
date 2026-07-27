@@ -1457,6 +1457,24 @@ FIXED_IMAGE_ROUTES = [
     },
 ]
 
+ORGANIC_IMAGE_ROUTES = [
+    {
+        "axis": "presentacion-editorial-de-marca",
+        "composition": "Identidad de marca protagonista, mucho aire, una sola idea visible y jerarquía editorial limpia.",
+        "experiment": "Presentar o reforzar la marca sin precio, urgencia ni estructura de anuncio.",
+    },
+    {
+        "axis": "educacion-visual-util",
+        "composition": "Una idea educativa central con apoyo visual simple, lectura natural de feed y texto mínimo.",
+        "experiment": "Aumentar utilidad y recordación sin convertir la pieza en venta directa.",
+    },
+    {
+        "axis": "comunidad-y-confianza",
+        "composition": "Escena o símbolo humano de comunidad, marca secundaria y mensaje cercano.",
+        "experiment": "Construir familiaridad y confianza con una publicación que se sienta nativa.",
+    },
+]
+
 FREE_IMAGE_ROUTES = [
     {
         "axis": "editorial-premium",
@@ -1551,6 +1569,17 @@ def _seeded_routes(routes, count, seed):
     return selected
 
 
+def requested_image_format_label(value, organic=False):
+    text = str(value or "").lower()
+    if any(token in text for token in ("1:1", "1080x1080", "1024x1024", "square", "cuadrado")):
+        return "1:1 cuadrado"
+    if any(token in text for token in ("9:16", "1080x1920", "story", "stories", "historia", "reel")):
+        return "9:16 vertical"
+    if any(token in text for token in ("4:5", "1080x1350", "portrait", "feed vertical")):
+        return "4:5 vertical"
+    return "1:1 cuadrado" if organic else "4:5 vertical"
+
+
 def _text_excerpt(text, limit=6000):
     text = str(text or "").strip()
     return text[:limit]
@@ -1589,10 +1618,14 @@ def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", 
     references = read_text(CREATIVE_REFERENCES_FILE)
     offer_map = read_text(offer_map_path())
     used_seed = seed or uuid.uuid4().hex
-    routes = list(FIXED_IMAGE_ROUTES[:count]) if selected_mode == "fixed" else _seeded_routes(FREE_IMAGE_ROUTES, count, used_seed)
     request_text = str(request or "").strip()
     selected_purpose = normalized_image_purpose(purpose)
     organic = image_purpose_is_organic(selected_purpose)
+    if organic:
+        routes = list(ORGANIC_IMAGE_ROUTES[:count]) if selected_mode == "fixed" else _seeded_routes(ORGANIC_IMAGE_ROUTES, count, used_seed)
+    else:
+        routes = list(FIXED_IMAGE_ROUTES[:count]) if selected_mode == "fixed" else _seeded_routes(FREE_IMAGE_ROUTES, count, used_seed)
+    requested_format = requested_image_format_label(request_text, organic=organic)
     prompt_context = "\n".join(
         part
         for part in [
@@ -1658,7 +1691,7 @@ def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", 
                 "experiment": route["experiment"],
                 "brand_lock": brand_lock,
                 "image_prompt": (
-                    f"Crear {visual_kind} en formato 4:5. Ruta creativa: {route['axis']}. "
+                    f"Crear {visual_kind} en formato {requested_format}. Ruta creativa: {route['axis']}. "
                     f"Composicion: {route['composition']} Objetivo del experimento: {route['experiment']} "
                     f"Contexto que debe aparecer en la {context_kind}: {prompt_context or request_text or 'tema u oferta descrita por el comprador'}. "
                     f"{brand_lock} {visible_offer_rule} Texto dentro de la imagen: corto, grande y legible. "
