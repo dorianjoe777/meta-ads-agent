@@ -147,6 +147,32 @@ El canal `stable` vive en el registry privado del servidor de licencias. Debe ap
 https://api.github.com/repos/dorianjoe777/meta-ads-agent/releases/assets/ASSET_ID_NUEVO
 ```
 
+### Proyecto Vercel correcto
+
+`admiraia.uboost.lat` pertenece al proyecto Vercel `miro-ai-license-api`, cuyo
+root es `seller/vercel-license-api`. No desplegar el servidor desde el proyecto
+genérico `product`: ese deployment puede terminar correctamente sin cambiar el
+dominio que consultan las instalaciones.
+
+Antes de publicar cambios del API:
+
+```bash
+cd seller/vercel-license-api
+vercel project inspect miro-ai-license-api
+vercel --prod --yes
+```
+
+La salida debe terminar indicando:
+
+```text
+Aliased: https://admiraia.uboost.lat
+```
+
+Después, hacer una llamada real a `/api/license/release` sin imprimir la
+licencia ni la URL firmada. Para probar compatibilidad hacia atrás, usar también
+un `asset_name` antiguo y confirmar que el API devuelve el paquete canónico
+`MetaAdsAgent-source.zip` de la versión estable.
+
 Se puede actualizar por API admin si `LICENSE_ADMIN_KEY` esta disponible, o directamente con `seller/vercel-license-api/lib/store.js` usando `BLOB_READ_WRITE_TOKEN` local de Vercel.
 
 Nota: `vercel env pull` puede dejar algunas variables sensibles vacias en archivos locales aunque existan en Vercel como `Encrypted`. Si `POST /api/admin/releases` responde `401` y `LICENSE_ADMIN_KEY` local esta vacio o desactualizado, usar la ruta directa de Blob con `BLOB_READ_WRITE_TOKEN` y verificar el registry despues de esperar el cache de hasta 60 segundos.
