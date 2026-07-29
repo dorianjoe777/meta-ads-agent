@@ -444,6 +444,7 @@ def _append_live_meta_context(value, context):
     text = str(value or "")
     if not isinstance(context, dict):
         context = {"ok": False, "reason": "live_meta_sync_missing"}
+    context = _compact_live_meta_context(context)
     return (
         text
         + "\n\n[ADMIRA LIVE META CONTEXT — fetched automatically for this turn]\n"
@@ -454,6 +455,100 @@ def _append_live_meta_context(value, context):
         + json.dumps(context, ensure_ascii=False, separators=(",", ":"))
         + "\n[END ADMIRA LIVE META CONTEXT]"
     )
+
+
+def _compact_live_meta_context(context):
+    """Keep the always-on Meta snapshot useful without turning it into history.
+
+    A buyer account can contain hundreds of ads. Injecting every row (plus the
+    duplicated campaign tree) into every Telegram turn made a four-message
+    session exceed NVIDIA's hosted context limit. The agent can pull the full
+    tree with its Meta tools when the conversation needs it; the automatic
+    snapshot only needs current orientation and the active objects.
+    """
+    if not isinstance(context, dict):
+        return {"ok": False, "reason": "live_meta_sync_missing"}
+
+    common = ("id", "name", "status", "effective_status", "campaign_id", "adset_id")
+    metrics = ("spend", "impressions", "reach", "clicks", "ctr", "cpc", "conversions", "cpa", "revenue", "roas", "frequency")
+
+    def active(rows):
+        values = []
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            state = str(row.get("effective_status") or row.get("status") or "").strip().upper()
+            if state in {"ACTIVE", "CAMPAIGN_ACTIVE", "ADSET_ACTIVE"}:
+                values.append(row)
+        return values
+
+    def project(rows, limit, extra=()):
+        projected = []
+        for row in active(rows)[:limit]:
+            keys = (*common, *extra, *metrics)
+            projected.append({key: row.get(key) for key in keys if row.get(key) not in (None, "", [], {})})
+        return projected
+
+    campaigns = project(
+        context.get("campaigns"),
+        20,
+        ("objective", "daily_budget", "priority_metrics", "metric_profile"),
+    )
+    campaign_ids = {str(row.get("id") or "") for row in campaigns}
+    adsets_source = [
+        row for row in (context.get("adsets") or [])
+        if not campaign_ids or str((row or {}).get("campaign_id") or "") in campaign_ids
+    ]
+    adsets = project(
+        adsets_source,
+        40,
+        ("optimization_goal", "billing_event", "daily_budget", "lifetime_budget"),
+    )
+    adset_ids = {str(row.get("id") or "") for row in adsets}
+    ads_source = [
+        row for row in (context.get("ads") or [])
+        if not adset_ids or str((row or {}).get("adset_id") or "") in adset_ids
+    ]
+    ads = project(ads_source, 60, ("creative_id", "object_story_id"))
+    return {
+        "ok": bool(context.get("ok")),
+        "fetched_at": context.get("fetched_at") or "",
+        "metrics_source": context.get("metrics_source") or {},
+        "live_sync": context.get("live_sync") or {},
+        "inventory_counts": context.get("inventory_counts") or {},
+        "summary": context.get("summary") or {},
+        "metrics_range": context.get("metrics_range") or {},
+        "data_quality": context.get("data_quality") or {},
+        "active_campaigns": campaigns,
+        "active_adsets": adsets,
+        "active_ads": ads,
+        "snapshot_scope": {
+            "active_only": True,
+            "campaign_limit": 20,
+            "adset_limit": 40,
+            "ad_limit": 60,
+            "full_live_detail_tool": "mcp_admira_get_real_meta_context",
+        },
+        "reason": context.get("reason") or "",
+    }
+
+
+def _strip_admira_runtime_injections(value):
+    """Return only buyer-authored text for durable Hermes history."""
+    text = str(value or "")
+    text = re.sub(
+        r"\n*\[ADMIRA LIVE META CONTEXT.*?\[END ADMIRA LIVE META CONTEXT\]\s*",
+        "\n",
+        text,
+        flags=re.DOTALL,
+    )
+    text = re.sub(
+        r"\n*\[ADMIRA TURN EXECUTION CONTRACT.*?\[END ADMIRA TURN EXECUTION CONTRACT\]\s*",
+        "\n",
+        text,
+        flags=re.DOTALL,
+    )
+    return text.strip()
 
 
 def _append_gateway_turn(role, content):
@@ -1466,6 +1561,15 @@ def _patch_gateway_generated_media_delivery():
         return True
 
     async def patched_run_agent(self, *args, **kwargs):
+        message = kwargs.get("message")
+        if message is None and args:
+            message = args[0]
+        persisted = kwargs.get("persist_user_message")
+        clean_persisted = _strip_admira_runtime_injections(
+            persisted if persisted is not None else message
+        )
+        if clean_persisted:
+            kwargs["persist_user_message"] = clean_persisted
         result = await original(self, *args, **kwargs)
         try:
             result = _guard_unconfirmed_persistence_claim(result)

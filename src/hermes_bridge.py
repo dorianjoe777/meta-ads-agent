@@ -330,6 +330,7 @@ def admira_connected_model_config_lines(config, primary_settings=None):
         "model:",
         f"  provider: {_quote_yaml(primary_provider)}",
         f"  default: {_quote_yaml(primary_model)}",
+        *([f"  context_length: {int(brain['context_length'])}"] if brain.get("context_length") else []),
     ]
     if not configured:
         return lines
@@ -435,11 +436,10 @@ def inference_runtime_policy(primary_settings=None):
             "compression_protect_first_n": 1,
             "compression_protect_last_n": 6,
             "compression_hard_message_limit": 24,
-            # Do not let Hermes search for unrelated OpenRouter/Nous
-            # credentials when it needs to summarize a NVIDIA session.
-            # "main" is the supported auxiliary alias for the selected
-            # main model/provider and uses the already-configured NVIDIA key.
-            "compression_provider": "main",
+            # Use the explicit named provider. Hermes' generic "main" alias
+            # can fail to resolve named OpenAI-compatible providers, leaving
+            # oversized NVIDIA sessions unable to produce a summary.
+            "compression_provider": ADMIRA_NVIDIA_PROVIDER,
         })
     else:
         policy.update({
@@ -601,7 +601,7 @@ def _cli_hermes_config_needs_write(config_text, brain):
             or f"  context_length: {policy['model_context_length']}" not in config_text
             or f"  threshold: {policy['compression_threshold']}" not in config_text
             or f"  hygiene_hard_message_limit: {policy['compression_hard_message_limit']}" not in config_text
-            or 'provider: "main"' not in config_text
+            or f'provider: "{ADMIRA_NVIDIA_PROVIDER}"' not in config_text
         )
     return False
 
