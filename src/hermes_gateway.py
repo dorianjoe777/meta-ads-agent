@@ -515,11 +515,45 @@ def write_gateway_files(config):
     status = telegram_settings(config)
     timezone_name = str(getattr(config, "daily_brief_timezone", "UTC") or "UTC")
     env_path = home / ".env"
+    # Hermes cron jobs are separate processes. Upstream reloads HERMES_HOME/.env
+    # immediately before every scheduled run, so credentials that only exist in
+    # the long-lived Telegram gateway process are unavailable to cron. Keep a
+    # private (0600), buyer-local copy of saved provider connections here.
+    provider_env = {
+        "minimax": (ADMIRA_MINIMAX_KEY_ENV, "ADMIRA_MINIMAX_BASE_URL", "ADMIRA_MINIMAX_MODEL"),
+        "nvidia_nim": (ADMIRA_NVIDIA_KEY_ENV, "ADMIRA_NVIDIA_BASE_URL", "ADMIRA_NVIDIA_MODEL"),
+        "openai_api": ("ADMIRA_OPENAI_API_KEY", "ADMIRA_OPENAI_BASE_URL", "ADMIRA_OPENAI_MODEL"),
+        "custom_api": ("ADMIRA_CUSTOM_API_KEY", "ADMIRA_CUSTOM_BASE_URL", "ADMIRA_CUSTOM_MODEL"),
+    }
+    managed_provider_keys = {
+        env_key
+        for env_names in provider_env.values()
+        for env_key in env_names
+    }
+    managed_env_keys = {
+        "TELEGRAM_BOT_TOKEN",
+        "TELEGRAM_ALLOWED_USERS",
+        "TELEGRAM_HOME_CHANNEL",
+        "HERMES_TIMEZONE",
+        "HERMES_MEDIA_ALLOW_DIRS",
+        "ADMIRA_PRODUCT_ROOT",
+        "ADMIRA_TELEGRAM_RECENT_TURNS_FILE",
+        "ADMIRA_TELEGRAM_UPDATE_INSTALL_REQUEST_FILE",
+        "ADMIRA_DASHBOARD_RECOVERY_URL",
+        "ADMIRA_DASHBOARD_RECOVERY_KIND",
+        "ADMIRA_GATEWAY_PROVIDER",
+        "ADMIRA_CRON_PIN_PROVIDER",
+        "ADMIRA_CRON_PIN_MODEL",
+        "HERMES_CRON_MAX_PARALLEL",
+        "ADMIRA_INTERNAL_MODEL_RECOVERY_URL",
+        "ADMIRA_INTERNAL_MODEL_RECOVERY_TOKEN_FILE",
+        *managed_provider_keys,
+    }
     env_lines = []
     if env_path.exists():
         for line in env_path.read_text(encoding="utf-8").splitlines():
             key = line.split("=", 1)[0].strip() if "=" in line else ""
-            if key not in {"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS", "TELEGRAM_HOME_CHANNEL", "HERMES_TIMEZONE", "HERMES_MEDIA_ALLOW_DIRS", "ADMIRA_PRODUCT_ROOT", "ADMIRA_TELEGRAM_RECENT_TURNS_FILE", "ADMIRA_TELEGRAM_UPDATE_INSTALL_REQUEST_FILE", "ADMIRA_DASHBOARD_RECOVERY_URL", "ADMIRA_DASHBOARD_RECOVERY_KIND", "ADMIRA_GATEWAY_PROVIDER", "ADMIRA_CRON_PIN_PROVIDER", "ADMIRA_CRON_PIN_MODEL", "ADMIRA_INTERNAL_MODEL_RECOVERY_URL", "ADMIRA_INTERNAL_MODEL_RECOVERY_TOKEN_FILE"}:
+            if key not in managed_env_keys:
                 env_lines.append(line)
     if config.telegram_bot_token:
         env_lines.append(f"TELEGRAM_BOT_TOKEN={_env_value(config.telegram_bot_token)}")
@@ -543,6 +577,13 @@ def write_gateway_files(config):
     env_lines.append(f"ADMIRA_GATEWAY_PROVIDER={_env_value(active_provider)}")
     env_lines.append(f"ADMIRA_CRON_PIN_PROVIDER={_env_value(active_provider)}")
     env_lines.append(f"ADMIRA_CRON_PIN_MODEL={_env_value(active_model)}")
+    for provider, connection in agent_model_connections(config, include_secrets=True).items():
+        if not connection.get("configured"):
+            continue
+        key_env, base_env, model_env = provider_env[provider]
+        env_lines.append(f"{key_env}={_env_value(connection.get('api_key'))}")
+        env_lines.append(f"{base_env}={_env_value(connection.get('base_url'))}")
+        env_lines.append(f"{model_env}={_env_value(connection.get('model'))}")
     if inference_policy["cron_max_parallel"]:
         # Prevent several due summaries from consuming a small hosted NVIDIA
         # allowance at once. Buyer Telegram messages are already sequential

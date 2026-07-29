@@ -2897,6 +2897,13 @@ class IntegrationTestSuite:
             agent_chat_api_key = "direct-model-key"
             hermes_require_codex_auth = False
 
+        class NvidiaConfig(FakeConfig):
+            agent_brain_provider = "nvidia_nim"
+            agent_chat_base_url = "https://integrate.api.nvidia.com/v1"
+            agent_chat_model = "z-ai/glm-5.2"
+            agent_chat_api_key = "nvapi-cron-private-key"
+            hermes_require_codex_auth = False
+
         try:
             shutil.rmtree(test_dir, ignore_errors=True)
             workspace.mkdir(parents=True, exist_ok=True)
@@ -2962,7 +2969,19 @@ class IntegrationTestSuite:
             self.assert_true("providers:" in minimax_yaml and "admira-minimax:" in minimax_yaml and 'name: "MiniMax M3 oficial"' in minimax_yaml and 'key_env: "ADMIRA_MINIMAX_API_KEY"' in minimax_yaml and 'api_mode: "chat_completions"' in minimax_yaml and "custom:admira-minimax" not in minimax_yaml, "Hermes Gateway exposes MiniMax through Hermes' official providers config")
             self.assert_true("model_aliases:" in minimax_yaml and '"minimax m3":' in minimax_yaml and '"minimax-m3":' in minimax_yaml and '"minimax":' in minimax_yaml, "Hermes Gateway pins manual /model MiniMax M3 switches to the Admira MiniMax endpoint")
             self.assert_true("direct-model-key" not in minimax_yaml, "Hermes Gateway config never writes the direct model API key")
-            self.assert_true("direct-model-key" not in minimax_env and "MINIMAX_API_KEY" not in minimax_env and "ADMIRA_MINIMAX_API_KEY" not in minimax_env, "Hermes Gateway env file never persists direct model secrets")
+            self.assert_true("ADMIRA_MINIMAX_API_KEY=direct-model-key" in minimax_env and not any(line.startswith("MINIMAX_API_KEY=") for line in minimax_env.splitlines()), "Hermes cron receives the saved MiniMax credential through its private isolated env")
+            self.assert_true((Path(minimax_files["env"]).stat().st_mode & 0o777) == 0o600, "Hermes cron provider credentials stay in a buyer-local 0600 env file")
+
+            nvidia_files = hermes_gateway.write_gateway_files(NvidiaConfig())
+            nvidia_yaml = Path(nvidia_files["config"]).read_text(encoding="utf-8")
+            nvidia_env_path = Path(nvidia_files["env"])
+            nvidia_env = nvidia_env_path.read_text(encoding="utf-8")
+            self.assert_true("ADMIRA_NVIDIA_API_KEY=nvapi-cron-private-key" in nvidia_env and "ADMIRA_NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1" in nvidia_env and "ADMIRA_NVIDIA_MODEL=z-ai/glm-5.2" in nvidia_env, "A fresh unattended NVIDIA cron reload has all provider credentials it needs")
+            self.assert_true("nvapi-cron-private-key" not in nvidia_yaml and (nvidia_env_path.stat().st_mode & 0o777) == 0o600, "NVIDIA credentials stay out of config.yaml and inside the private env")
+
+            disconnected_files = hermes_gateway.write_gateway_files(FakeConfig())
+            disconnected_env = Path(disconnected_files["env"]).read_text(encoding="utf-8")
+            self.assert_true("ADMIRA_NVIDIA_API_KEY=" not in disconnected_env and "nvapi-cron-private-key" not in disconnected_env, "Disconnecting a provider removes its stale cron credential")
             codex_fp = hermes_gateway._gateway_fingerprint(FakeConfig(), hermes_gateway.telegram_settings(FakeConfig()), files)
             minimax_fp = hermes_gateway._gateway_fingerprint(MiniMaxConfig(), hermes_gateway.telegram_settings(MiniMaxConfig()), minimax_files)
             self.assert_true(codex_fp != minimax_fp and "direct-model-key" not in minimax_fp, "Hermes Gateway fingerprint changes on brain/provider updates without leaking secrets")
