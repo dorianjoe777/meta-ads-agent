@@ -27,6 +27,7 @@ python3 - <<'PY'
 from pathlib import Path
 import hashlib
 import json
+import os
 import socket
 import uuid
 
@@ -34,6 +35,26 @@ path = Path("/app/runtime/.env")
 text = path.read_text(encoding="utf-8")
 lines = text.splitlines()
 keys = {line.split("=", 1)[0] for line in lines if "=" in line and not line.lstrip().startswith("#")}
+bootstrap_license_keys = (
+    "LICENSE_KEY",
+    "LICENSE_BUYER_EMAIL",
+    "LICENSE_DEVICE_ID",
+    "LICENSE_SERVER_URL",
+    "LICENSE_PUBLIC_KEY",
+)
+for key in bootstrap_license_keys:
+    value = str(os.environ.get(key) or "").strip()
+    if not value:
+        continue
+    found = False
+    for index, line in enumerate(lines):
+        if line.startswith(f"{key}="):
+            found = True
+            if not line.split("=", 1)[1].strip():
+                lines[index] = f"{key}={value}"
+            break
+    if not found:
+        lines.append(f"{key}={value}")
 defaults = {
     "REQUIRE_DASHBOARD_TOKEN": "true",
     "LIVE_ACTIONS_ENABLED": "false",
