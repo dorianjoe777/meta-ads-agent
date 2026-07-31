@@ -1117,7 +1117,7 @@ function onboardingSteps(){
 	 const telegramOk=Boolean(telegram.enabled&&telegram.bot_configured&&telegram.chat_id);
  const tokenOk=setupItem('access_token').status==='ok';
  const accountOk=setupItem('ad_account').status==='ok';
- const destinationOk=['page_id','landing_url'].every(k=>setupItem(k).status==='ok');
+ const destinationOk=setupItem('page_id').status==='ok';
  const publishingOk=Boolean(state.config.publishing?.ready);
  return [
   {id:'password',status:passwordOk?'ok':'blocked'},
@@ -1512,7 +1512,6 @@ function compactMetaSetup(){
  const publishingTokenSet=Boolean(v.meta_publishing_access_token_set||publishing.token_set);
  const account=v.ad_account_id||'';
  const page=v.page_id||publishing.page_id||'';
- const website=v.landing_url||'';
  const adsPlaceholder=adsTokenSet?(lang==='es'?'Token de anuncios guardado':'Ads token saved'):(lang==='es'?'Pega el token de anuncios':'Paste the ads token');
  const pagePlaceholder=publishingTokenSet?(lang==='es'?'Token de página guardado':'Page token saved'):(lang==='es'?'Pega el token para publicar':'Paste the publishing token');
  return `<div class="activation-form">
@@ -1523,11 +1522,9 @@ function compactMetaSetup(){
   <div class="activation-selection-strip">
    <span class="${account?'ready':''}">${account?'✓ ':''}${lang==='es'?'Cuenta':'Account'}${account?`: ${escapeHtml(account)}`:''}</span>
    <span class="${page?'ready':''}">${page?'✓ ':''}${lang==='es'?'Página':'Page'}${page?`: ${escapeHtml(page)}`:''}</span>
-   <span class="${website?'ready':''}">${website?'✓ ':''}${lang==='es'?'Destino web':'Website'}</span>
   </div>
   <div id="social-account-results" class="activation-results"></div>
   <div id="destination-discovery-results" class="activation-results"></div>
-  ${!website?`<form class="activation-inline-form" data-submit-code="saveOnboardingSetupConfig(event)"><label>${lang==='es'?'Web de destino':'Destination website'}<input name="landing_url" type="url" placeholder="https://..."></label><button class="btn" type="submit">${lang==='es'?'Guardar':'Save'}</button></form>`:''}
  </div>`;
 }
 function compactAgentSetup(){
