@@ -412,7 +412,7 @@ function allowedActionCall(name){
   applyDashboardUpdate,submitBudgetDialog,submitBrandGuideInit,saveOnboardingSetupConfig,saveTelegramConfig,saveCommunicationStyle,saveGeneralMemory,
   saveProductMemory,saveAdBriefMemory,uploadBrandLogo,activateLicenseFromForm,setDashboardPasswordFromOnboarding,saveBusinessLinks,
   saveBusinessContextQuestion,saveGuardrails,saveProfitabilityRules,saveOptimizationSettings,saveShopifyConfig,testShopifyConnection,syncShopifyOutcomes,unlockOptimization,saveSetupConfig,savePublishingConfig,testPublishingConnection,disconnectPublishingConfig,sendChatGptTerminalInput,restoreMigrationBackup,
-  budgetPrompt,campaignAction,detectTelegramChats,setLocalNetworkAccess,showDetails,selectAgentModelRoute,saveChatGptModel,
+  budgetPrompt,campaignAction,detectTelegramChats,setLocalNetworkAccess,showDetails,selectAgentModelRoute,selectCompactAgentProvider,syncCompactAgentBase,saveChatGptModel,schedulePublishingTokenAutoSave,
   connectChatGpt,connectImageChatGpt,disconnectAgentModel,saveImageChatGptRouting,toggleChatGptDeviceAuthHelp,downloadMigrationBackup,refreshCloudAccess,loadUpdateSnapshots,showUpdateDetails,checkForUpdates,
   openDailyBriefSchedule,closeDailyBriefSchedule,saveDailyBriefSchedule,renderOnboardingFlow,setOnboardingFlowStep
  };
@@ -599,7 +599,7 @@ function openOnboardingPasswordStep(){const steps=onboardingSteps();const idx=st
 async function requestUnlock(message=''){if(!dashboardPasswordIsSet()){hideUnlock();openOnboardingPasswordStep();return ''}return showUnlock(message||t('unlock_needed'),'unlock')}
 async function responseErrorMessage(res){const text=await res.text();try{const data=JSON.parse(text);return data.error||data.detail||text}catch{return text}}
 async function api(path,opts={}){const headers={'Content-Type':'application/json',...(opts.headers||{})};const password=dashboardPassword();if(password)headers['X-Dashboard-Token']=password;let res=await fetch(path,{...opts,headers});if(res.status===401){clearStoredDashboardSecrets();const entered=await requestUnlock();if(entered){headers['X-Dashboard-Token']=entered;res=await fetch(path,{...opts,headers});if(res.status===401){clearStoredDashboardSecrets();await requestUnlock(t('unlock_failed'));throw new Error(t('unlock_failed'))}}}if(!res.ok)throw new Error(await responseErrorMessage(res));return res.json()}
-async function load(){const firstLoad=!state;if(firstLoad)setDashboardBooting(true);try{state=await api('/api/dashboard');if(!metricsRangeTouched)metricsRange=normalizeClientMetricsRange(state.metrics?.metrics_range);render();if(!uiWorkbenchPreview&&state.config.dashboard_password_required&&!state.config.dashboard_password_set){clearStoredDashboardSecrets();hideUnlock()}else if(!uiWorkbenchPreview&&state.config.dashboard_password_required&&state.config.dashboard_password_set&&!dashboardPassword()&&state.onboarding&&state.onboarding.completed)showUnlock(t('unlock_needed'),'unlock');else if(!uiWorkbenchPreview&&state.onboarding?.completed)syncBrowserBriefTimezone();openModelReconnectFromUrl();openUpdateFromUrl();checkForUpdates(false);startUpdateAutoCheck();setTimeout(startDashboardIntroTourIfPending,350)}finally{if(firstLoad)setDashboardBooting(false)}if(firstLoad){refreshAgentRuntimeStatus(false);setTimeout(()=>refreshInsights({silent:true}),700);startLiveMetricsAutoRefresh()}}
+async function load(){const firstLoad=!state;if(firstLoad)setDashboardBooting(true);try{state=await api('/api/dashboard');if(!metricsRangeTouched)metricsRange=normalizeClientMetricsRange(state.metrics?.metrics_range);render();const canAccess=Boolean(uiWorkbenchPreview||!state.config.dashboard_password_required||(state.config.dashboard_password_set&&dashboardPassword()));if(!uiWorkbenchPreview&&state.config.dashboard_password_required&&!state.config.dashboard_password_set){clearStoredDashboardSecrets();hideUnlock()}else if(!uiWorkbenchPreview&&state.config.dashboard_password_required&&state.config.dashboard_password_set&&!dashboardPassword()&&state.onboarding&&state.onboarding.completed)showUnlock(t('unlock_needed'),'unlock');else if(!uiWorkbenchPreview&&state.onboarding?.completed)syncBrowserBriefTimezone();if(canAccess){openModelReconnectFromUrl();openUpdateFromUrl();checkForUpdates(false);startUpdateAutoCheck();setTimeout(startDashboardIntroTourIfPending,350)}}finally{if(firstLoad)setDashboardBooting(false)}const canRefresh=Boolean(uiWorkbenchPreview||!state.config.dashboard_password_required||(state.config.dashboard_password_set&&dashboardPassword()));if(firstLoad)refreshAgentRuntimeStatus(false);if(canRefresh&&state.onboarding?.completed){if(firstLoad)setTimeout(()=>refreshInsights({silent:true}),700);startLiveMetricsAutoRefresh()}}
 
 let agentRuntimeRefreshInFlight=false;
 function mergeAgentRuntimeStatus(runtime={}){
@@ -631,6 +631,7 @@ function mergeAgentRuntimeStatus(runtime={}){
  Object.assign(studio,{image_generation_ready:Boolean(imageStatus.ok),image_generation_provider:imageStatus.ok?'codex_image':'',codex_image_ready:Boolean(imageStatus.ok),codex_image_error:imageStatus.ok?'':(imageStatus.error||imageStatus.detail||''),codex_image_account:image.identity||{},codex_image_session_detail:image.detail||'',codex_image_connected:Boolean(image.authenticated??image.ready)});
  state.config.creative_studio=studio;
  renderChatGptPanel();
+ if(qs('#onboarding-flow')?.classList.contains('open'))renderOnboardingFlow();
 }
 async function refreshAgentRuntimeStatus(force=false){
  if(agentRuntimeRefreshInFlight)return;
@@ -1105,32 +1106,25 @@ function stepCopy(key){
 function copyCommand(value){navigator.clipboard?.writeText(value).then(()=>toast(t('copied'))).catch(()=>toast(value))}
 function onboardingSteps(){
  const setup=state.setup, summary=setup.summary;
- const licenseOk=Boolean(summary.license_ready);
  const passwordOk=Boolean(state.config.dashboard_password_set);
  const model=state.config.agent_model||{};
+ const studio=state.config.creative_studio||{};
  const brain=model.brain_provider||'openai_codex';
- const apiBrainOk=['openai_api','minimax','custom_api'].includes(brain)&&model.api_key_set&&Boolean(model.base_url)&&Boolean(model.model);
- const chatgptOk=(setupItem('hermes_runtime').status==='ok'&&setupItem('hermes_auth').status==='ok')||apiBrainOk;
+ const apiBrainOk=['openai_api','minimax','nvidia_nim','custom_api'].includes(brain)&&model.api_key_set&&Boolean(model.base_url)&&Boolean(model.model);
+ const chatgptOk=Boolean(model.chatgpt_connected)||apiBrainOk;
+ const imageOk=Boolean(studio.codex_image_ready||model.codex_image_ready);
  const telegram=state.config.telegram_agent||{};
 	 const telegramOk=Boolean(telegram.enabled&&telegram.bot_configured&&telegram.chat_id);
  const tokenOk=setupItem('access_token').status==='ok';
  const accountOk=setupItem('ad_account').status==='ok';
  const destinationOk=['page_id','landing_url'].every(k=>setupItem(k).status==='ok');
- const destinationStatus=destinationOk?'ok':(accountOk?'warn':'blocked');
- const dryrunOk=setupItem('daily_report').status==='ok';
- const approvalOk=state.pending.length>0||state.actions.some(a=>String(a.status)==='pending_approval'||String(a.status)==='completed');
- const insightsOk=state.metrics?.source==='meta_graph'||state.actions.some(a=>a.type==='live_insights_pull'||a.type==='daily_agent_run')||dryrunOk;
- const steps=[];
- if(!passwordOk)steps.push({id:'password',status:'blocked'});
- if(!licenseOk)steps.push({id:'license',status:'blocked'});
- steps.push(
-	  {id:'meta',status:tokenOk?'ok':'blocked'},
-	  {id:'account',status:accountOk?'ok':'blocked'},
-	  {id:'destination',status:destinationStatus},
-	  {id:'chatgpt',status:chatgptOk?'ok':'warn'},
-	  {id:'telegram',status:telegramOk?'ok':'warn'}
-	 );
- return steps;
+ const publishingOk=Boolean(state.config.publishing?.ready);
+ return [
+  {id:'password',status:passwordOk?'ok':'blocked'},
+  {id:'meta',status:tokenOk&&accountOk&&destinationOk&&publishingOk?'ok':'blocked'},
+  {id:'chatgpt',status:chatgptOk&&imageOk?'ok':'blocked'},
+  {id:'telegram',status:telegramOk?'ok':'blocked'}
+ ];
 	}
 function renderOnboarding(){
  const doneState=state.onboarding||{};
@@ -1497,29 +1491,169 @@ function advanceOnboardingAfterLoad(){
  rememberOnboardingStep((steps[onboardingFlowStep]||{}).id);
  renderOnboardingFlow();
 }
+function compactStepBadge(status){
+ const ready=status==='ok';
+ return `<span class="activation-status ${ready?'ready':'pending'}"><span>${ready?'✓':'·'}</span>${ready?(lang==='es'?'Listo':'Ready'):(lang==='es'?'Pendiente':'Pending')}</span>`;
+}
+function compactPasswordSetup(ready){
+ if(ready)return `<div class="activation-complete-line">${lang==='es'?'Contraseña guardada en este equipo.':'Password saved on this device.'}</div>`;
+ return `<form class="activation-form password-grid" data-submit-code="setDashboardPasswordFromOnboarding(event)">
+  <label>${lang==='es'?'Contraseña':'Password'}<input id="new-dashboard-password" type="password" autocomplete="new-password" minlength="8" placeholder="${lang==='es'?'Mínimo 8 caracteres':'At least 8 characters'}"></label>
+  <label>${lang==='es'?'Repetir contraseña':'Repeat password'}<input id="confirm-dashboard-password" type="password" autocomplete="new-password" minlength="8" placeholder="${lang==='es'?'Escríbela otra vez':'Type it again'}"></label>
+  <label class="activation-check"><input id="new-dashboard-remember" type="checkbox" checked> ${lang==='es'?'Recordar este equipo':'Remember this device'}</label>
+  <div class="unlock-error" id="dashboard-password-error"></div>
+  <button class="btn primary" type="submit">${lang==='es'?'Guardar contraseña':'Save password'}</button>
+ </form>`;
+}
+function compactMetaSetup(){
+ const v=state.config.setup_values||{};
+ const publishing=state.config.publishing||{};
+ const adsTokenSet=Boolean(v.meta_access_token_set);
+ const publishingTokenSet=Boolean(v.meta_publishing_access_token_set||publishing.token_set);
+ const account=v.ad_account_id||'';
+ const page=v.page_id||publishing.page_id||'';
+ const website=v.landing_url||'';
+ const adsPlaceholder=adsTokenSet?(lang==='es'?'Token de anuncios guardado':'Ads token saved'):(lang==='es'?'Pega el token de anuncios':'Paste the ads token');
+ const pagePlaceholder=publishingTokenSet?(lang==='es'?'Token de página guardado':'Page token saved'):(lang==='es'?'Pega el token para publicar':'Paste the publishing token');
+ return `<div class="activation-form">
+  <div class="meta-token-pair">
+   <label><span>${lang==='es'?'Token 1 · Anuncios':'Token 1 · Ads'}</span><input id="meta-token-input" type="password" autocomplete="off" placeholder="${adsPlaceholder}" data-input-code="scheduleMetaTokenAutoSave()" data-paste-code="setTimeout(scheduleMetaTokenAutoSave,0)"><small>${adsTokenSet?'✓ ':''}${lang==='es'?'Busca cuentas publicitarias automáticamente.':'Finds ad accounts automatically.'}</small></label>
+   <label><span>${lang==='es'?'Token 2 · Página':'Token 2 · Page'}</span><input id="meta-publishing-token-input" type="password" autocomplete="off" placeholder="${pagePlaceholder}" data-input-code="schedulePublishingTokenAutoSave()" data-paste-code="schedulePublishingTokenAutoSave(event)"><small>${publishingTokenSet?'✓ ':''}${lang==='es'?'Permite publicar en la página elegida.':'Allows publishing to the selected Page.'}</small></label>
+  </div>
+  <div class="activation-selection-strip">
+   <span class="${account?'ready':''}">${account?'✓ ':''}${lang==='es'?'Cuenta':'Account'}${account?`: ${escapeHtml(account)}`:''}</span>
+   <span class="${page?'ready':''}">${page?'✓ ':''}${lang==='es'?'Página':'Page'}${page?`: ${escapeHtml(page)}`:''}</span>
+   <span class="${website?'ready':''}">${website?'✓ ':''}${lang==='es'?'Destino web':'Website'}</span>
+  </div>
+  <div id="social-account-results" class="activation-results"></div>
+  <div id="destination-discovery-results" class="activation-results"></div>
+  ${!website?`<form class="activation-inline-form" data-submit-code="saveOnboardingSetupConfig(event)"><label>${lang==='es'?'Web de destino':'Destination website'}<input name="landing_url" type="url" placeholder="https://..."></label><button class="btn" type="submit">${lang==='es'?'Guardar':'Save'}</button></form>`:''}
+ </div>`;
+}
+function compactAgentSetup(){
+ const model=state.config.agent_model||{};
+ const studio=state.config.creative_studio||{};
+ const brain=model.brain_provider||'openai_codex';
+ const apiProviders=['nvidia_nim','openai_api','minimax','custom_api'];
+ const provider=apiProviders.includes(brain)?brain:'nvidia_nim';
+ const connections=model.connections||{};
+ const selected=connections[provider]||{};
+ const defaults={
+  nvidia_nim:{base:'https://integrate.api.nvidia.com/v1',model:'z-ai/glm-5.2'},
+  openai_api:{base:'https://api.openai.com/v1',model:'gpt-4.1-mini'},
+  minimax:{base:'https://api.minimax.io/v1',model:'MiniMax-M3'},
+  custom_api:{base:'',model:''}
+ };
+ const base=selected.base_url||model.base_url||defaults[provider].base;
+ const modelName=selected.model||model.model||defaults[provider].model;
+ const keySet=Boolean(selected.api_key_set||(provider===brain&&model.api_key_set));
+ const imageConnected=Boolean(studio.codex_image_connected||model.codex_image_connected);
+ const imageReady=Boolean(studio.codex_image_ready||model.codex_image_ready);
+ const options=(model.nvidia_model_options||[]).map(value=>`<option value="${escapeHtml(value)}"></option>`).join('');
+ return `<form id="agent-model-form" class="activation-form" data-submit-code="saveSetupConfig(event)">
+  <input type="hidden" name="agent_chat_provider" value="${escapeHtml(provider)}">
+  <input type="hidden" name="agent_chat_api" value="openai-chat-completions">
+  <input type="hidden" name="agent_chat_base_url" value="${escapeHtml(base)}">
+  <input type="hidden" name="codex_image_source" value="dedicated_chatgpt">
+  <input type="hidden" name="codex_image_hermes_model" value="gpt-5.5">
+  <div class="activation-model-grid">
+   <label>${lang==='es'?'Proveedor':'Provider'}<select id="compact-agent-provider" data-change-code="selectCompactAgentProvider(event)">
+    <option value="nvidia_nim" ${provider==='nvidia_nim'?'selected':''}>NVIDIA NIM</option>
+    <option value="openai_api" ${provider==='openai_api'?'selected':''}>OpenAI API</option>
+    <option value="minimax" ${provider==='minimax'?'selected':''}>MiniMax</option>
+    <option value="custom_api" ${provider==='custom_api'?'selected':''}>${lang==='es'?'Otra API':'Other API'}</option>
+   </select></label>
+   <label>${lang==='es'?'Modelo':'Model'}<input name="agent_chat_model" value="${escapeHtml(modelName)}" list="${provider==='nvidia_nim'?'nvidia-model-options':''}" placeholder="${lang==='es'?'Nombre del modelo':'Model name'}"><datalist id="nvidia-model-options">${options}</datalist></label>
+   <label class="activation-key-field">${lang==='es'?'API key':'API key'}<input type="password" name="agent_chat_api_key" autocomplete="off" placeholder="${keySet?(lang==='es'?'API key guardada':'API key saved'):(lang==='es'?'Pega la API key':'Paste the API key')}"></label>
+   <label id="compact-agent-base-field" class="${provider==='custom_api'?'':'hidden'}">${lang==='es'?'URL de la API':'API URL'}<input id="compact-agent-base-input" ${provider==='custom_api'?'name="agent_chat_base_url"':''} value="${escapeHtml(base)}" placeholder="https://..." data-input-code="syncCompactAgentBase(event)"></label>
+   <button class="btn primary" type="submit" name="agent_model_action" value="set_primary">${keySet&&provider===brain?(lang==='es'?'Modelo listo':'Model ready'):(lang==='es'?'Guardar modelo':'Save model')}</button>
+  </div>
+  <div class="activation-image-row ${imageReady?'ready':''}">
+   <div><span class="activation-mini-icon">${imageReady?'✓':'IMG'}</span><div><b>${lang==='es'?'ChatGPT para imágenes':'ChatGPT for images'}</b><small>${imageReady?(lang==='es'?'Cuenta conectada':'Account connected'):(lang==='es'?'Conecta una cuenta solo para generar imágenes.':'Connect an account only for image generation.')}</small></div></div>
+   ${imageConnected?`<button class="btn" type="button" data-action-code="disconnectAgentModel('image')">${lang==='es'?'Cambiar cuenta':'Change account'}</button>`:`<button class="btn" type="button" data-action-code="connectImageChatGpt(event)">${lang==='es'?'Conectar ChatGPT':'Connect ChatGPT'}</button>`}
+  </div>
+  <div id="image-chatgpt-connect-result" class="chatgpt-connect-result hidden"></div>
+ </form>`;
+}
+function selectCompactAgentProvider(event){
+ const form=event?.target?.closest?.('form');if(!form)return;
+ const provider=String(event.target.value||'nvidia_nim');
+ const defaults={
+  nvidia_nim:{base:'https://integrate.api.nvidia.com/v1',model:'z-ai/glm-5.2'},
+  openai_api:{base:'https://api.openai.com/v1',model:'gpt-4.1-mini'},
+  minimax:{base:'https://api.minimax.io/v1',model:'MiniMax-M3'},
+  custom_api:{base:'',model:''}
+ };
+ const preset=defaults[provider]||defaults.nvidia_nim;
+ form.elements.agent_chat_provider.value=provider;
+ form.elements.agent_chat_base_url.value=preset.base;
+ form.elements.agent_chat_model.value=preset.model;
+ form.elements.agent_chat_api_key.value='';
+ const baseField=qs('#compact-agent-base-field');const baseInput=qs('#compact-agent-base-input');
+ if(baseField)baseField.classList.toggle('hidden',provider!=='custom_api');
+ if(baseInput){baseInput.value=preset.base;if(provider==='custom_api')baseInput.setAttribute('name','agent_chat_base_url');else baseInput.removeAttribute('name')}
+}
+function syncCompactAgentBase(event){
+ const form=event?.target?.closest?.('form');const hidden=form?.querySelector?.('input[type="hidden"][name="agent_chat_base_url"]');if(hidden)hidden.value=String(event.target.value||'');
+}
+function compactTelegramStatusMarkup(value={}){
+ const v=value||{};
+ const ready=Boolean(v.enabled&&v.bot_configured&&v.chat_id);
+ return `<div class="activation-wait ${ready?'ready':''}"><span>${ready?'✓':'•••'}</span><div><b>${ready?(lang==='es'?'Telegram conectado':'Telegram connected'):(v.bot_configured?(lang==='es'?'Esperando tu “hola”':'Waiting for your “hello”'):(lang==='es'?'Pega el token para empezar':'Paste the token to start'))}</b><small>${ready?(lang==='es'?'Tu agente ya puede responderte.':'Your agent can now reply.'):(v.bot_configured?(lang==='es'?'Abre el bot y envía hola. Esta pantalla lo detectará sola.':'Open the bot and send hello. This screen will detect it automatically.'):'')}</small></div></div>`;
+}
+function compactTelegramSetup(){
+ const v=state.config.telegram_agent||{};
+ return `<form class="activation-form telegram-token-form">
+  <div class="activation-telegram-row">
+   <label class="telegram-token-zone ${v.bot_configured?'saved':''}">${lang==='es'?'Token del bot':'Bot token'}<span class="field-help" data-telegram-token-help>${v.bot_configured?(lang==='es'?'Token guardado. Ahora envía “hola”.':'Token saved. Now send “hello”.'):(lang==='es'?'Pega el token de BotFather.':'Paste the BotFather token.')}</span><input type="password" name="bot_token" autocomplete="off" placeholder="${v.bot_configured?(lang==='es'?'Token guardado':'Token saved'):'123456:ABC...'}" data-input-code="autoSaveTelegramToken(event)" data-paste-code="autoSaveTelegramToken(event)"></label>
+   <input type="hidden" name="language" value="${escapeHtml(v.language||lang||'es')}">
+   <a class="btn" href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer">BotFather</a>
+  </div>
+ </form>
+ <div id="telegram-results" class="activation-results">${compactTelegramStatusMarkup(v)}</div>`;
+}
+function compactActivationSection(number,title,status,body){
+ return `<section class="activation-section ${status==='ok'?'complete':''}" id="activation-${number}"><div class="activation-section-head"><span class="activation-number">${number}</span><h2>${title}</h2>${compactStepBadge(status)}</div><div class="activation-section-body">${body}</div></section>`;
+}
+let compactAccountAutoDiscoveryKey='';
+function maybeAutoDiscoverCompactSetup(){
+ const v=state.config.setup_values||{};
+ if(v.meta_access_token_set&&!v.ad_account_id&&compactAccountAutoDiscoveryKey!=='accounts'){
+  compactAccountAutoDiscoveryKey='accounts';
+  setTimeout(()=>refreshSocialAccounts().catch(()=>{}),100);
+ }else if(v.ad_account_id&&!v.page_id){
+  const key=`page:${v.ad_account_id}`;
+  if(compactAccountAutoDiscoveryKey!==key){
+   compactAccountAutoDiscoveryKey=key;
+   setTimeout(()=>discoverMetaAssets(v.ad_account_id).catch(()=>{}),100);
+  }
+ }
+}
 function renderOnboardingFlow(){
  const flow=qs('#onboarding-flow');if(!flow)return;
  if(uiWorkbenchPreview){flow.classList.remove('open');flow.innerHTML='';return}
  const doneState=state.onboarding||{};
  const needsFirstPassword=Boolean(state.config.dashboard_password_required&&!state.config.dashboard_password_set);
- if(doneState.completed&&!doneState.requires_repair&&!needsFirstPassword){clearRememberedOnboardingStep();flow.classList.remove('open');return}
- const steps=onboardingSteps();if(onboardingFlowStep>=steps.length)onboardingFlowStep=steps.length-1;
- if(!onboardingFlowTouched)restoreOnboardingStepIndex(steps);
- if(!onboardingFlowTouched&&(steps[onboardingFlowStep]||{}).status==='ok')onboardingFlowStep=firstActionableOnboardingIndex(steps);
- const step=steps[onboardingFlowStep]||steps[0];const copyStep=stepCopy(step.id);const doneCount=steps.filter(s=>s.status==='ok').length;
- rememberOnboardingStep(step.id);
- const isLast=onboardingFlowStep===steps.length-1;
- const canGoNext=!isLast&&step.status!=='blocked';
- const nextButton=canGoNext?`<button class="btn" data-action-code="setOnboardingFlowStep(onboardingFlowStep+1)">${lang==='es'?'Siguiente':'Next'}</button>`:'';
-	 const finishButton=isLast&&step.id!=='communication'?`<button class="btn primary" data-action-code="completeOnboarding()">${lang==='es'?'Terminar y abrir dashboard':'Finish and open dashboard'}</button>`:'';
- const skipButton=`<button class="btn" data-action-code="skipOnboarding()">${lang==='es'?'Saltar y completar luego':'Skip and finish later'}</button>`;
- const repairNotice=doneState.requires_repair?`<div class="guide-card"><b>${lang==='es'?'Reconectemos tus datos reales':'Reconnect your real data'}</b><p>${lang==='es'?'Tu configuración anterior quedó incompleta o perdió la conexión con Meta. Completa los pasos que falten para que el dashboard no use información de demostración.':'Your previous setup is incomplete or lost its Meta connection. Complete the missing steps so the dashboard does not use demonstration information.'}</p></div>`:'';
- const securityNotice=`<div class="onboarding-security-note"><div><b>${lang==='es'?'Instalación privada y segura':'Private and secure install'}</b><p>${lang==='es'?'Recuerda: nada de lo que coloques aquí lo podemos ver nosotros. Esta instalación vive en tu propio entorno y solo entra tu dispositivo autorizado. Es más privada que entregar tus credenciales a un SaaS. Si tienes dudas, contáctanos.':'Remember: we cannot see anything you enter here. This install lives in your own environment and only your authorized device can enter. It is more private than handing credentials to a SaaS. Contact us if you have questions.'}</p></div></div>`;
+ if(doneState.completed&&!doneState.requires_repair&&!needsFirstPassword){clearRememberedOnboardingStep();stopTelegramHelloPolling();flow.classList.remove('open');flow.innerHTML='';return}
+ const steps=onboardingSteps();
+ const doneCount=steps.filter(item=>item.status==='ok').length;
+ const licenseReady=Boolean(state.setup?.summary?.license_ready);
  flow.classList.add('open');
- const metaWide=step.id==='meta';
- flow.innerHTML=`<div class="onboarding-shell ${metaWide?'onboarding-shell-wide':''}"><aside class="onboarding-side"><h1>Admira IA</h1><p>${lang==='es'?'Conecta lo esencial. Después hablarás con el agente por Telegram para contarle tu negocio con calma.':'Connect the essentials. Then you talk with the agent through Telegram so it can learn the business calmly.'}</p><div class="onboarding-progress">${steps.map((s,i)=>`<span class="${i<=onboardingFlowStep?'done':''}"></span>`).join('')}</div><p>${doneCount}/${steps.length} ${stepCopy('progress')}</p></aside><main class="onboarding-card ${metaWide?'onboarding-card-wide':''}">${securityNotice}${repairNotice}<h2>${copyStep[0]}</h2><p>${copyStep[1]}</p>${onboardingFormFor(step.id)}<div class="onboarding-step-actions"><button class="btn" ${onboardingFlowStep===0?'disabled':''} data-action-code="setOnboardingFlowStep(onboardingFlowStep-1)">${lang==='es'?'Atrás':'Back'}</button>${nextButton}${skipButton}${finishButton}</div></main></div>`;
- maybeAutoDiscoverDestination(step.id);
- maybeStartMetaFrameCycle(step.id);
+ flow.innerHTML=`<div class="activation-shell">
+  <header class="activation-header"><div><span class="activation-kicker">Admira IA</span><h1>${lang==='es'?'Activa tu agente':'Activate your agent'}</h1><p>${lang==='es'?'Completa esta página de arriba hacia abajo.':'Complete this page from top to bottom.'}</p></div><div class="activation-progress"><strong>${doneCount}/${steps.length}</strong><span>${lang==='es'?'completados':'complete'}</span><div><i data-progress="${doneCount}"></i></div></div></header>
+  ${!licenseReady?`<div class="activation-install-alert"><b>${lang==='es'?'La activación de la instalación necesita revisión.':'Installation activation needs attention.'}</b><span>${lang==='es'?'La licencia se corrige desde el instalador o con soporte; nunca se pega aquí.':'The license is repaired through the installer or support; it is never pasted here.'}</span></div>`:''}
+  <main class="activation-rail">
+   ${compactActivationSection(1,lang==='es'?'Crea tu contraseña':'Create your password',steps[0].status,compactPasswordSetup(steps[0].status==='ok'))}
+   ${compactActivationSection(2,lang==='es'?'Conecta Meta':'Connect Meta',steps[1].status,compactMetaSetup())}
+   ${compactActivationSection(3,lang==='es'?'Elige el modelo':'Choose the model',steps[2].status,compactAgentSetup())}
+   ${compactActivationSection(4,lang==='es'?'Conecta Telegram':'Connect Telegram',steps[3].status,compactTelegramSetup())}
+  </main>
+  <footer class="activation-footer"><span>${lang==='es'?'Tus claves permanecen en esta instalación.':'Your keys stay in this installation.'}</span><button class="btn primary" type="button" data-action-code="completeOnboarding()">${lang==='es'?'Revisar y abrir dashboard':'Review and open dashboard'}</button></footer>
+ </div>`;
+ const width=`${Math.round((doneCount/Math.max(steps.length,1))*100)}%`;
+ const progressBar=flow.querySelector('.activation-progress i');if(progressBar)progressBar.style.width=width;
+ maybeAutoDiscoverCompactSetup();
+ startTelegramHelloPolling();
 }
 function maybeAutoDiscoverDestination(stepId){
  if(stepId!=='destination')return;
@@ -1880,7 +2014,7 @@ function setTelegramTokenZone(input,stateName,message=''){
  if(stateName)zone.classList.add(stateName);
  const help=zone.querySelector('[data-telegram-token-help]');
  if(help&&message)help.textContent=message;
- if(stateName==='saved'&&!zone.querySelector('[data-telegram-saved-card]'))zone.insertAdjacentHTML('beforeend',telegramTokenSavedInline());
+ if(stateName==='saved'&&!qs('.activation-shell')&&!zone.querySelector('[data-telegram-saved-card]'))zone.insertAdjacentHTML('beforeend',telegramTokenSavedInline());
  if(stateName==='saved')setTimeout(()=>zone.querySelector('.telegram-detect-button')?.scrollIntoView({behavior:'smooth',block:'center'}),80);
 }
 async function autoSaveTelegramToken(event){
@@ -1900,8 +2034,9 @@ async function autoSaveTelegramToken(event){
    input.value='';
    input.placeholder=lang==='es'?'Clave guardada. Pega otra solo si quieres cambiarla.':'Key saved. Paste another only if you want to replace it.';
    setTelegramTokenZone(input,'saved',lang==='es'?'Clave guardada. Ahora envía un "hola" al bot que creaste.':'Key saved. Now send "hello" to the bot you created.');
-   const box=qs('#telegram-results');if(box)box.innerHTML=telegramStatusMarkup(state.config.telegram_agent);
+   const box=qs('#telegram-results');if(box)box.innerHTML=qs('.activation-shell')?compactTelegramStatusMarkup(state.config.telegram_agent):telegramStatusMarkup(state.config.telegram_agent);
    toast(lang==='es'?'Clave guardada. Ahora envía "hola" al bot.':'Key saved. Now send "hello" to the bot.');
+   startTelegramHelloPolling();
   }catch(err){
    setTelegramTokenZone(input,'invalid',err.message||String(err));
    const box=qs('#telegram-results');if(box)box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'No pude guardar la clave':'Could not save the key'}</b><p>${escapeHtml(err.message||String(err))}</p></div>`;
@@ -2341,6 +2476,7 @@ function renderCloudAccessPanel(){
  qs('#cloud-access-panel').innerHTML=`<div class="next-step"><div><b>${lang==='es'?'Mantener acceso cuando estás en la nube':'Keep cloud dashboard access'}</b><p>${lang==='es'?'Si este dashboard ya abrió desde tu red actual, este botón autoriza esta red en DigitalOcean. Úsalo cuando cambies de Wi-Fi antes de cerrar la página.':'If this dashboard already opened from your current network, this button authorizes this network in DigitalOcean. Use it when you change Wi-Fi before closing the page.'}</p></div><div class="mode-actions"><button class="btn" type="button" data-action-code="refreshCloudAccess()">${lang==='es'?'Permitir esta red':'Allow this network'}</button></div></div><div id="cloud-access-result"></div><p class="notice">${lang==='es'?'Si el dashboard no carga porque tu IP ya cambió, este botón no puede ayudarte todavía. Recupera entrada desde el portal de DigitalOcean, SSH o la consola web; después vuelve aquí para dejar la nueva red guardada.':'If the dashboard does not load because your IP already changed, this button cannot help yet. Recover access from the DigitalOcean portal, SSH, or web console; then return here to save the new network.'}</p>`;
 }
 function renderUpdateRollbackPanel(){
+ if(!state?.onboarding?.completed){qs('#update-rollback-panel').innerHTML='';return}
  qs('#update-rollback-panel').innerHTML=`<div class="next-step"><div><b>${lang==='es'?'Actualizaciones y copias':'Updates and backups'}</b><p>${lang==='es'?'Antes de instalar una actualización oficial, guardo una copia de seguridad. También puedes buscar updates manualmente si acabamos de publicar una corrección.':'Before installing an official update, I save a backup. You can also check manually if we just published a fix.'}</p></div><div class="mode-actions"><button class="btn primary" type="button" data-action-code="checkForUpdates(true)">${lang==='es'?'Buscar update ahora':'Check for updates now'}</button><button class="btn" type="button" data-action-code="loadUpdateSnapshots(true)">${lang==='es'?'Ver copias guardadas':'View saved copies'}</button></div></div><div id="update-snapshot-list"></div>`;
  loadUpdateSnapshots(false);
 }
@@ -2558,6 +2694,37 @@ async function saveGuardrails(e){e.preventDefault();const form=e.target;const da
 async function saveProfitabilityRules(e){e.preventDefault();const form=e.target;const data=Object.fromEntries(new FormData(form).entries());await api('/api/profitability-rules',{method:'POST',body:JSON.stringify(data)});toast(lang==='es'?'Reglas de rentabilidad guardadas':'Profitability rules saved');await load()}
 async function saveOptimizationSettings(e){e.preventDefault();const data=Object.fromEntries(new FormData(e.target).entries());await api('/api/optimization/settings',{method:'POST',body:JSON.stringify(data)});toast(lang==='es'?'Optimización guardada':'Optimization saved');await load()}
 async function unlockOptimization(){await api('/api/optimization/unlock',{method:'POST',body:JSON.stringify({confirm:true})});toast(lang==='es'?'Optimizador desbloqueado con tus límites':'Optimizer unlocked within your limits');await load()}
+let publishingTokenAutoSaveTimer=null;
+let publishingTokenSaving=false;
+let lastPublishingTokenSaved='';
+function schedulePublishingTokenAutoSave(event){
+ if(event?.type==='paste'){setTimeout(()=>schedulePublishingTokenAutoSave(),0);return}
+ clearTimeout(publishingTokenAutoSaveTimer);
+ const token=(qs('#meta-publishing-token-input')?.value||'').trim();
+ if(token.length<20||token===lastPublishingTokenSaved)return;
+ publishingTokenAutoSaveTimer=setTimeout(()=>savePublishingTokenAutomatically(token),500);
+}
+async function savePublishingTokenAutomatically(token){
+ const input=qs('#meta-publishing-token-input');
+ const value=String(token||input?.value||'').trim();
+ if(value.length<20||publishingTokenSaving||value===lastPublishingTokenSaved)return;
+ publishingTokenSaving=true;
+ lastPublishingTokenSaved=value;
+ if(input){input.disabled=true;input.placeholder=lang==='es'?'Guardando token...':'Saving token...'}
+ try{
+  const result=await api('/api/publishing/config',{method:'POST',body:JSON.stringify({token:value})});
+  if(input){input.value='';input.placeholder=lang==='es'?'Token de página guardado':'Page token saved'}
+  toast(result.message||(lang==='es'?'Token de página guardado.':'Page token saved.'));
+  await load();
+ }catch(err){
+  lastPublishingTokenSaved='';
+  if(input)input.placeholder=lang==='es'?'Revisa el token e intenta otra vez':'Check the token and try again';
+  toast(err.message||String(err));
+ }finally{
+  publishingTokenSaving=false;
+  if(input)input.disabled=false;
+ }
+}
 async function savePublishingConfig(e){e.preventDefault();const data=Object.fromEntries(new FormData(e.target).entries());if(!String(data.token||'').trim()){toast(lang==='es'?'Pega la clave de publicación primero.':'Paste the publishing key first.');return}const res=await api('/api/publishing/config',{method:'POST',body:JSON.stringify(data)});toast(res.message||(res.ok?(lang==='es'?'Publicación directa lista':'Direct publishing ready'):(lang==='es'?'Clave guardada, pero falta revisar permisos':'Key saved, but permissions need review')));await load()}
 async function testPublishingConnection(){const res=await api('/api/publishing/test',{method:'POST',body:'{}'});toast(res.message||(res.ok?(lang==='es'?'Publicación directa lista':'Direct publishing ready'):(lang==='es'?'Publicación directa no está lista':'Direct publishing is not ready')))}
 async function disconnectPublishingConfig(){const ok=await showDecisionConfirm({title:lang==='es'?'Desconectar publicación directa':'Disconnect direct publishing',body:lang==='es'?'El agente dejará de publicar posts o crear creativos nativos hasta conectar otra clave. Las campañas y datos guardados no se borran.':'The agent will stop publishing posts or creating native-post creatives until another key is connected. Saved campaigns and data are not deleted.',confirmLabel:lang==='es'?'Desconectar':'Disconnect'});if(!ok)return;await api('/api/publishing/config',{method:'POST',body:JSON.stringify({disconnect:true})});toast(lang==='es'?'Publicación directa desconectada':'Direct publishing disconnected');await load()}
@@ -2628,11 +2795,16 @@ async function finishOnboardingAndStartTour(reason='manual',communicationStyle='
  try{
   const payload={};if(communicationStyle)payload.communication_style=communicationStyle;
   await api('/api/onboarding/complete',{method:'POST',body:JSON.stringify(payload)});
-  localStorage.setItem('dashboardIntroTourPending','1');
-  localStorage.removeItem('dashboardIntroTourDone');
+  if(reason!=='telegram'){
+   localStorage.setItem('dashboardIntroTourPending','1');
+   localStorage.removeItem('dashboardIntroTourDone');
+  }else{
+   localStorage.removeItem('dashboardIntroTourPending');
+   localStorage.setItem('dashboardIntroTourDone','1');
+  }
   toast(reason==='telegram'?(lang==='es'?'Telegram listo. Te muestro el dashboard.':'Telegram ready. Showing the dashboard.'):(lang==='es'?'Configuración inicial terminada. Te muestro el dashboard.':'Initial setup complete. Showing the dashboard.'));
   await load();
-  setTimeout(startDashboardIntroTourIfPending,500);
+  if(reason!=='telegram')setTimeout(startDashboardIntroTourIfPending,500);
   return true;
  }catch(err){
   toast(err.message||String(err));
@@ -2640,28 +2812,57 @@ async function finishOnboardingAndStartTour(reason='manual',communicationStyle='
   return false;
  }
 }
+let telegramHelloPollTimer=null;
+let telegramHelloPollBusy=false;
+function stopTelegramHelloPolling(){
+ if(telegramHelloPollTimer)clearTimeout(telegramHelloPollTimer);
+ telegramHelloPollTimer=null;
+ telegramHelloPollBusy=false;
+}
+function startTelegramHelloPolling(){
+ const flow=qs('#onboarding-flow');
+ const telegram=state.config?.telegram_agent||{};
+ if(!flow?.classList.contains('open')||!telegram.bot_configured||telegram.chat_id){stopTelegramHelloPolling();return}
+ if(telegramHelloPollTimer||telegramHelloPollBusy)return;
+ telegramHelloPollTimer=setTimeout(async()=>{
+  telegramHelloPollTimer=null;
+  if(telegramHelloPollBusy)return;
+  telegramHelloPollBusy=true;
+  try{await detectTelegramChats({silent:true})}catch(_err){}finally{
+   telegramHelloPollBusy=false;
+   const current=state.config?.telegram_agent||{};
+   if(qs('#onboarding-flow')?.classList.contains('open')&&current.bot_configured&&!current.chat_id)startTelegramHelloPolling();
+  }
+ },2200);
+}
 async function maybeFinishTelegramOnboarding(){
  const telegram=state.config?.telegram_agent||{};
  if(telegram.enabled&&telegram.bot_configured&&telegram.chat_id){
   const steps=onboardingSteps();
-  setOnboardingFlowStep(Math.min(steps.length-1,onboardingFlowStep+1));
+  if(steps.every(step=>step.status==='ok')){
+   stopTelegramHelloPolling();
+   return finishOnboardingAndStartTour('telegram');
+  }
+  renderOnboardingFlow();
  }
  return false;
 }
-async function detectTelegramChats(){
- const box=qs('#telegram-results');if(box)box.innerHTML=`<div class="telegram-next-action"><div class="telegram-orb">...</div><div><b>${lang==='es'?'Buscando tu hola':'Looking for your hello'}</b><p>${lang==='es'?'Estoy revisando los mensajes recientes del bot.':'I am checking the bot recent messages.'}</p></div></div>`;
+async function detectTelegramChats(options={}){
+ const silent=Boolean(options?.silent);
+ const box=qs('#telegram-results');if(box&&!silent)box.innerHTML=`<div class="telegram-next-action"><div class="telegram-orb">...</div><div><b>${lang==='es'?'Buscando tu hola':'Looking for your hello'}</b><p>${lang==='es'?'Estoy revisando los mensajes recientes del bot.':'I am checking the bot recent messages.'}</p></div></div>`;
  const res=await api('/api/telegram/detect',{method:'POST',body:'{}'});const rows=res.result||[];
  if(!box)return;
- if(!rows.length){box.innerHTML=`<div class="telegram-next-action"><div class="telegram-orb">AI</div><div><b>${lang==='es'?'Todavía no veo tu mensaje':'I do not see your message yet'}</b><p>${lang==='es'?'Abre Telegram, entra al bot que creaste, envíale "hola" y vuelve a tocar detectar.':'Open Telegram, enter the bot you created, send "hello", and tap detect again.'}</p></div><button class="btn primary telegram-detect-button" type="button" data-action-code="detectTelegramChats()">${lang==='es'?'Ya envié hola, intentar otra vez':'I sent hello, try again'}</button></div>`;return}
+ if(!rows.length){if(!silent)box.innerHTML=`<div class="telegram-next-action"><div class="telegram-orb">AI</div><div><b>${lang==='es'?'Todavía no veo tu mensaje':'I do not see your message yet'}</b><p>${lang==='es'?'Abre Telegram, entra al bot que creaste, envíale "hola" y vuelve a tocar detectar.':'Open Telegram, enter the bot you created, send "hello", and tap detect again.'}</p></div><button class="btn primary telegram-detect-button" type="button" data-action-code="detectTelegramChats()">${lang==='es'?'Ya envié hola, intentar otra vez':'I sent hello, try again'}</button></div>`;return []}
  const chat=rows[rows.length-1]||rows[0]||{};
  const chatId=String(chat.id||'').trim();
- if(!chatId){box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'No pude leer el chat':'Could not read the chat'}</b><p>${lang==='es'?'Vuelve a enviar "hola" al bot e intenta otra vez.':'Send "hello" to the bot again and try once more.'}</p></div>`;return}
+ if(!chatId){if(!silent)box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'No pude leer el chat':'Could not read the chat'}</b><p>${lang==='es'?'Vuelve a enviar "hola" al bot e intenta otra vez.':'Send "hello" to the bot again and try once more.'}</p></div>`;return []}
  box.innerHTML=`<div class="telegram-next-action ready"><div class="telegram-orb">✓</div><div><b>${lang==='es'?'Detecté tu chat':'I found your chat'}</b><p>${lang==='es'?'Lo estoy conectando y te enviaré el primer mensaje.':'I am connecting it and sending the first message.'}</p></div></div>`;
  try{
   await selectTelegramChat(chatId,qs('#onboarding-flow')?.classList.contains('open'));
  }catch(err){
   box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'No pude guardar el chat':'Could not save the chat'}</b><p>${escapeHtml(err.message||String(err))}</p><button class="btn primary telegram-detect-button" type="button" data-action-code="detectTelegramChats()">${lang==='es'?'Intentar otra vez':'Try again'}</button></div>`;
  }
+ return rows;
 }
 async function selectTelegramChat(id,fromOnboarding=false){
  const payload=fromOnboarding?{chat_id:id,enabled:'true',send_welcome:'true'}:{chat_id:id,send_welcome:'true'};
@@ -2669,7 +2870,7 @@ async function selectTelegramChat(id,fromOnboarding=false){
  const welcomeSent=Boolean(status?.result?.welcome_sent||status?.welcome_sent);
  toast(welcomeSent?(lang==='es'?'Chat guardado. Te envié el primer mensaje.':'Chat saved. I sent you the first message.'):(lang==='es'?'Chat de Telegram guardado':'Telegram chat saved'));
  await load();
- if(fromOnboarding){const finished=await maybeFinishTelegramOnboarding();if(finished)return;const steps=onboardingSteps();const idx=steps.findIndex(s=>s.id==='telegram');onboardingFlowTouched=true;onboardingFlowStep=Math.min(steps.length-1,(idx>=0?idx:onboardingFlowStep)+1);renderOnboardingFlow()}
+ if(fromOnboarding){const finished=await maybeFinishTelegramOnboarding();if(finished)return;renderOnboardingFlow()}
 }
 async function testTelegram(){await api('/api/telegram/test',{method:'POST',body:'{}'});toast(lang==='es'?'Mensaje enviado a Telegram':'Test message sent to Telegram')}
 function showDetails(campaign_id){const c=state.metrics.campaigns.find(item=>item.id===campaign_id);if(c)toast(`${t('details')}: ${demoCampaignName(c.name)} · ${campaignMetricSnapshot(c)}`);else toast(t('toast_details'))}
@@ -2897,9 +3098,19 @@ function showDecisionConfirm(options={}){
   box.classList.add('open');
  });
 }
-function showOnboardingCompleteConfirm(){const box=qs('#confirm-overlay');box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'Terminar configuración inicial':'Finish initial setup'}</h2><p>${lang==='es'?'La guía inicial dejará de aparecer automáticamente en este equipo. Esto no bloquea nada: podrás cambiar todo después desde Configuración.':'The initial guide will stop opening automatically on this device. This does not lock anything: you can change everything later from Setup.'}</p><ul><li>${lang==='es'?'Cuenta publicitaria':'Ad account'}</li><li>${lang==='es'?'Página de Facebook, Instagram y web':'Facebook Page, Instagram, and website'}</li><li>${lang==='es'?'Contraseña del dashboard':'Dashboard password'}</li><li>${lang==='es'?'Reglas de aprobación y seguridad':'Approval and safety rules'}</li></ul><div class="confirm-actions"><button class="btn" type="button" data-action-code="closeConfirm()">${lang==='es'?'Seguir revisando':'Keep reviewing'}</button><button class="btn primary" type="button" data-action-code="finishOnboardingConfirmed()">${lang==='es'?'Terminar y abrir dashboard':'Finish and open dashboard'}</button></div></div>`;box.classList.add('open')}
+function showOnboardingCompleteConfirm(){const box=qs('#confirm-overlay');box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'Todo está listo':'Everything is ready'}</h2><p>${lang==='es'?'Admira IA ya tiene Meta, modelo, imágenes y Telegram. Puedes cambiar estas conexiones después desde Configuración.':'Admira IA now has Meta, model, images, and Telegram. You can change these connections later from Setup.'}</p><div class="confirm-actions"><button class="btn" type="button" data-action-code="closeConfirm()">${lang==='es'?'Seguir revisando':'Keep reviewing'}</button><button class="btn primary" type="button" data-action-code="finishOnboardingConfirmed()">${lang==='es'?'Abrir dashboard':'Open dashboard'}</button></div></div>`;box.classList.add('open')}
 async function finishOnboardingConfirmed(){closeConfirm();await finishOnboardingAndStartTour('manual')}
-async function completeOnboarding(){if(!state.config.dashboard_password_set){toast(lang==='es'?'Primero crea tu contraseña del dashboard.':'Create your dashboard password first.');const steps=onboardingSteps();const passwordIndex=steps.findIndex(s=>s.id==='password');onboardingFlowStep=passwordIndex>=0?passwordIndex:onboardingFlowStep;renderOnboardingFlow();return}showOnboardingCompleteConfirm()}
+async function completeOnboarding(){
+ const steps=onboardingSteps();
+ const missingIndex=steps.findIndex(step=>step.status!=='ok');
+ if(missingIndex>=0){
+  const labels=lang==='es'?['la contraseña','Meta y sus dos tokens','el modelo y ChatGPT para imágenes','Telegram']:['the password','Meta and both tokens','the model and image ChatGPT','Telegram'];
+  toast(`${lang==='es'?'Completa primero':'Complete first'} ${labels[missingIndex]}.`);
+  qs(`#activation-${missingIndex+1}`)?.scrollIntoView({behavior:'smooth',block:'start'});
+  return;
+ }
+ showOnboardingCompleteConfirm();
+}
 async function skipOnboarding(){const ok=await showDecisionConfirm({title:lang==='es'?'Completar después':'Finish later',body:lang==='es'?'Abriré el dashboard ahora. Arriba verás un aviso brillante para volver y terminar lo pendiente cuando quieras.':'I will open the dashboard now. A glowing notice at the top will bring you back to finish the pending parts later.',confirmLabel:lang==='es'?'Abrir dashboard':'Open dashboard'});if(!ok)return;await api('/api/onboarding/skip',{method:'POST',body:JSON.stringify({})});toast(lang==='es'?'Puedes completar la configuración después.':'You can finish setup later.');await load()}
 async function resumeOnboarding(){await api('/api/onboarding/reset',{method:'POST',body:JSON.stringify({})});toast(lang==='es'?'Sigamos con lo pendiente.':'Let us finish the pending setup.');await load()}
 async function resetOnboarding(){const ok=await showDecisionConfirm({title:lang==='es'?'Revisar configuración inicial':'Run initial setup again',body:lang==='es'?'La guía inicial volverá a aparecer para revisar conexión, cuenta, página y reglas. No borra tus datos por sí sola.':'The initial guide will appear again to review connection, account, Page, and rules. It does not delete your data by itself.',confirmLabel:lang==='es'?'Abrir guía inicial':'Open initial guide',agentDraft:lang==='es'?'Ayúdame a revisar si necesito repetir la configuración inicial o solo cambiar una parte.':'Help me decide whether I should rerun initial setup or only change one setup area.'});if(!ok)return;await api('/api/onboarding/reset',{method:'POST',body:JSON.stringify({})});toast(lang==='es'?'Guía inicial abierta':'Initial guide opened');await load()}
