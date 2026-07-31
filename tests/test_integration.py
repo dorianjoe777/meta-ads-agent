@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import types
 import importlib.util
 import io
@@ -3832,6 +3833,135 @@ class IntegrationTestSuite:
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
+
+    def test_hermes_gateway_serializes_concurrent_starts(self):
+        """Test simultaneous onboarding requests cannot create competing gateways."""
+        print("\nTesting Hermes Gateway Concurrent Start Serialization...")
+
+        test_dir = ROOT_DIR / "output" / "test-hermes-gateway-concurrency"
+        workspace = test_dir / "workspace"
+        home = test_dir / "home"
+        files = {
+            "workspace": str(workspace),
+            "hermes_home": str(home),
+            "config": str(home / "config.yaml"),
+            "env": str(home / ".env"),
+        }
+        popen_calls = []
+        results = []
+        errors = []
+        original = {
+            "which": hermes_gateway.shutil.which,
+            "write_gateway_files": hermes_gateway.write_gateway_files,
+            "environment": hermes_gateway.hermes_environment,
+            "fingerprint": hermes_gateway._gateway_fingerprint,
+            "popen": hermes_gateway.subprocess.Popen,
+            "status_reset": hermes_gateway.reset_openai_codex_credential_status,
+            "reconcile": hermes_gateway.reconcile_cron_inference_pins,
+            "stale_terminate": hermes_gateway._terminate_stale_gateway_from_state,
+            "ensure_recovery": hermes_gateway.ensure_internal_model_recovery_token,
+            "write_model_state": hermes_gateway.write_configured_telegram_model_state,
+            "logs_dir": hermes_gateway.LOGS_DIR,
+            "state_file": hermes_gateway.GATEWAY_STATE_FILE,
+        }
+        original_env = {
+            key: os.environ.get(key)
+            for key in ["TELEGRAM_AGENT_MODE", "TELEGRAM_AGENT_ENABLED", "TELEGRAM_LANGUAGE"]
+        }
+
+        class FakeConfig:
+            telegram_bot_token = "123456:concurrency-token"
+            telegram_chat_id = "12345"
+            hermes_home = str(home)
+            hermes_cli = "hermes"
+            hermes_model = "auto"
+            agent_chat_provider = "hermes"
+            agent_brain_provider = "nvidia_nim"
+            agent_chat_base_url = "https://integrate.api.nvidia.com/v1"
+            agent_chat_api_key = "nvapi-concurrency"
+            agent_chat_model = "z-ai/glm-5.2"
+            dashboard_port = 7871
+
+        class FakeProcess:
+            def __init__(self, pid):
+                self.pid = pid
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                return None
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                return None
+
+        def fake_popen(*args, **kwargs):
+            # Leave enough overlap for an unlocked implementation to spawn twice.
+            time.sleep(0.08)
+            popen_calls.append((args, kwargs))
+            return FakeProcess(6000 + len(popen_calls))
+
+        def start_once(barrier):
+            try:
+                barrier.wait()
+                results.append(hermes_gateway.start_gateway(FakeConfig()))
+            except Exception as exc:
+                errors.append(exc)
+
+        try:
+            hermes_gateway.stop_gateway()
+            shutil.rmtree(test_dir, ignore_errors=True)
+            workspace.mkdir(parents=True, exist_ok=True)
+            home.mkdir(parents=True, exist_ok=True)
+            os.environ["TELEGRAM_AGENT_MODE"] = "hermes_gateway"
+            os.environ["TELEGRAM_AGENT_ENABLED"] = "true"
+            os.environ["TELEGRAM_LANGUAGE"] = "es"
+            hermes_gateway.shutil.which = lambda command: "/usr/local/bin/hermes" if command == "hermes" else command
+            hermes_gateway.write_gateway_files = lambda _config: files
+            hermes_gateway.hermes_environment = lambda _config: {}
+            hermes_gateway._gateway_fingerprint = lambda _config, _status, _files: "same-config"
+            hermes_gateway.subprocess.Popen = fake_popen
+            hermes_gateway.reset_openai_codex_credential_status = lambda _config, files=None: {"ok": True, "reset": 0}
+            hermes_gateway.reconcile_cron_inference_pins = lambda _config, files=None: {"ok": True, "updated": 0}
+            hermes_gateway._terminate_stale_gateway_from_state = lambda skip_pid=None: None
+            hermes_gateway.ensure_internal_model_recovery_token = lambda: "test-recovery-token"
+            hermes_gateway.write_configured_telegram_model_state = lambda _config: True
+            hermes_gateway.LOGS_DIR = test_dir / "logs"
+            hermes_gateway.GATEWAY_STATE_FILE = test_dir / "gateway-state.json"
+
+            barrier = threading.Barrier(2)
+            threads = [threading.Thread(target=start_once, args=(barrier,)) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=5)
+
+            self.assert_true(not errors and len(results) == 2, "Both simultaneous onboarding requests receive a Gateway result")
+            self.assert_true(len(popen_calls) == 1, "Concurrent onboarding requests start exactly one Hermes Gateway supervisor")
+            self.assert_true(all(result.get("pid") == 6001 for result in results), "Concurrent callers reuse the same Gateway process")
+        finally:
+            hermes_gateway.stop_gateway()
+            hermes_gateway.shutil.which = original["which"]
+            hermes_gateway.write_gateway_files = original["write_gateway_files"]
+            hermes_gateway.hermes_environment = original["environment"]
+            hermes_gateway._gateway_fingerprint = original["fingerprint"]
+            hermes_gateway.subprocess.Popen = original["popen"]
+            hermes_gateway.reset_openai_codex_credential_status = original["status_reset"]
+            hermes_gateway.reconcile_cron_inference_pins = original["reconcile"]
+            hermes_gateway._terminate_stale_gateway_from_state = original["stale_terminate"]
+            hermes_gateway.ensure_internal_model_recovery_token = original["ensure_recovery"]
+            hermes_gateway.write_configured_telegram_model_state = original["write_model_state"]
+            hermes_gateway.LOGS_DIR = original["logs_dir"]
+            hermes_gateway.GATEWAY_STATE_FILE = original["state_file"]
+            for key, value in original_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            shutil.rmtree(test_dir, ignore_errors=True)
 
     def test_hermes_daily_brief_cron_edge_cases(self):
         """Test daily brief cron handles duplicate, invalid time, and Hermes failures."""
@@ -10187,7 +10317,7 @@ class IntegrationTestSuite:
         self.assert_true("Voy a elegir OpenAI Codex" in dashboard_source and "preferred_model" in dashboard_source and "maybe_auto_drive_hermes_browserless" in dashboard_source, "Hermes browserless setup auto-selects Codex provider and the chosen or recommended model")
         hermes_bridge_source = (ROOT_DIR / "src" / "hermes_bridge.py").read_text(encoding="utf-8")
         self.assert_true("hermes_status_timeout_seconds" in hermes_bridge_source and "hermes_response_timeout_seconds" in hermes_bridge_source, "Hermes status checks and real response timeouts stay separate")
-        self.assert_true("{id:'chatgpt',status:chatgptOk&&imageOk?'ok':'blocked'}" in html and "compactAgentSetup()" in html, "One-page activation includes the main model and image-only ChatGPT connection before Telegram")
+        self.assert_true("{id:'chatgpt',status:modelOk?'ok':'blocked'}" in html and "compactAgentSetup()" in html and "ChatGPT para imágenes · opcional" in html and "no bloquea el modelo ni Telegram" in html, "One-page activation requires the main model while keeping image-only ChatGPT visibly optional")
         self.assert_true("{id:'telegram',status:telegramOk?'ok':'blocked'}" in html and "compactTelegramSetup()" in html, "One-page activation ends with Telegram without duplicating communication preferences")
         self.assert_true("{id:'website',status:websiteOk?'ok':'warn'}" not in html, "Initial onboarding no longer adds a separate website/social links step before Telegram")
         self.assert_true("Habla con tu manager por Telegram" in html and "Descargar Telegram" in html and "Abrir BotFather" in html and "Copiar /newbot" in html and "Ya envié hola, detectar mi chat" in html, "Telegram onboarding explains download, BotFather, command copy, chat detection, and phone-first manager access")
@@ -10247,8 +10377,8 @@ class IntegrationTestSuite:
         self.assert_true("activation-rail" in html and "Siguiente" not in html[html.find('function renderOnboardingFlow()'):html.find('function maybeAutoDiscoverDestination')], "One-page activation removes wizard next/back navigation")
         self.assert_true("confirm-overlay" in html, "Onboarding completion uses in-app confirmation")
         self.assert_true("showOnboardingCompleteConfirm" in html, "Onboarding completion modal is wired")
-        self.assert_true("Puedes cambiar estas conexiones después desde Configuración." in html, "Completion modal explains connections remain editable")
-        self.assert_true("Meta, modelo, imágenes y Telegram" in html, "Completion modal summarizes the compact activation essentials")
+        self.assert_true("ChatGPT para imágenes puede conectarse ahora o después desde Configuración." in html, "Completion modal explains the optional image connection remains editable")
+        self.assert_true("Admira IA ya tiene Meta, modelo y Telegram" in html and "ChatGPT para imágenes puede conectarse ahora o después" in html, "Completion modal summarizes required activation essentials and keeps images optional")
         self.assert_true("steps.findIndex(step=>step.status!=='ok')" in html and "scrollIntoView({behavior:'smooth',block:'start'})" in html, "Final review cannot bypass an incomplete activation section")
         self.assert_true("Esto marcará el onboarding como completado" not in html, "Old browser confirm wording is removed")
         self.assert_true("Solo si no aparecen tus cuentas" in html, "Manual ad account entry is hidden as fallback")
@@ -11910,6 +12040,7 @@ class IntegrationTestSuite:
             self.test_verified_signal_ledger_records_private_deduped_outcomes,
             self.test_hermes_gateway_redacts_token_and_handles_start_failure,
             self.test_hermes_gateway_incomplete_config_stops_existing_process,
+            self.test_hermes_gateway_serializes_concurrent_starts,
             self.test_hermes_daily_brief_cron_edge_cases,
             self.test_adaptive_creative_experiment_reviews_and_cron,
             self.test_evidence_gated_optimization_and_private_business_truth,

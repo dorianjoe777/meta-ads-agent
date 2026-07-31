@@ -1111,8 +1111,7 @@ function onboardingSteps(){
  const studio=state.config.creative_studio||{};
  const brain=model.brain_provider||'openai_codex';
  const apiBrainOk=['openai_api','minimax','nvidia_nim','custom_api'].includes(brain)&&model.api_key_set&&Boolean(model.base_url)&&Boolean(model.model);
- const chatgptOk=Boolean(model.chatgpt_connected)||apiBrainOk;
- const imageOk=Boolean(studio.codex_image_ready||model.codex_image_ready);
+ const modelOk=Boolean(model.chatgpt_connected)||apiBrainOk;
  const telegram=state.config.telegram_agent||{};
 	 const telegramOk=Boolean(telegram.enabled&&telegram.bot_configured&&telegram.chat_id);
  const tokenOk=setupItem('access_token').status==='ok';
@@ -1122,7 +1121,7 @@ function onboardingSteps(){
  return [
   {id:'password',status:passwordOk?'ok':'blocked'},
   {id:'meta',status:tokenOk&&accountOk&&destinationOk&&publishingOk?'ok':'blocked'},
-  {id:'chatgpt',status:chatgptOk&&imageOk?'ok':'blocked'},
+  {id:'chatgpt',status:modelOk?'ok':'blocked'},
   {id:'telegram',status:telegramOk?'ok':'blocked'}
  ];
 	}
@@ -1566,7 +1565,7 @@ function compactAgentSetup(){
    <button class="btn primary" type="submit" name="agent_model_action" value="set_primary">${keySet&&provider===brain?(lang==='es'?'Modelo listo':'Model ready'):(lang==='es'?'Guardar modelo':'Save model')}</button>
   </div>
   <div class="activation-image-row ${imageReady?'ready':''}">
-   <div><span class="activation-mini-icon">${imageReady?'✓':'IMG'}</span><div><b>${lang==='es'?'ChatGPT para imágenes':'ChatGPT for images'}</b><small>${imageReady?(lang==='es'?'Cuenta conectada':'Account connected'):(lang==='es'?'Conecta una cuenta solo para generar imágenes.':'Connect an account only for image generation.')}</small></div></div>
+   <div><span class="activation-mini-icon">${imageReady?'✓':'IMG'}</span><div><b>${lang==='es'?'ChatGPT para imágenes · opcional':'ChatGPT for images · optional'}</b><small>${imageReady?(lang==='es'?'Cuenta conectada':'Account connected'):(lang==='es'?'Puedes conectarlo después; no bloquea el modelo ni Telegram.':'You can connect it later; it does not block the model or Telegram.')}</small></div></div>
    ${imageConnected?`<button class="btn" type="button" data-action-code="disconnectAgentModel('image')">${lang==='es'?'Cambiar cuenta':'Change account'}</button>`:`<button class="btn" type="button" data-action-code="connectImageChatGpt(event)">${lang==='es'?'Conectar ChatGPT':'Connect ChatGPT'}</button>`}
   </div>
   <div id="image-chatgpt-connect-result" class="chatgpt-connect-result hidden"></div>
@@ -3095,13 +3094,13 @@ function showDecisionConfirm(options={}){
   box.classList.add('open');
  });
 }
-function showOnboardingCompleteConfirm(){const box=qs('#confirm-overlay');box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'Todo está listo':'Everything is ready'}</h2><p>${lang==='es'?'Admira IA ya tiene Meta, modelo, imágenes y Telegram. Puedes cambiar estas conexiones después desde Configuración.':'Admira IA now has Meta, model, images, and Telegram. You can change these connections later from Setup.'}</p><div class="confirm-actions"><button class="btn" type="button" data-action-code="closeConfirm()">${lang==='es'?'Seguir revisando':'Keep reviewing'}</button><button class="btn primary" type="button" data-action-code="finishOnboardingConfirmed()">${lang==='es'?'Abrir dashboard':'Open dashboard'}</button></div></div>`;box.classList.add('open')}
+function showOnboardingCompleteConfirm(){const box=qs('#confirm-overlay');box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'Todo está listo':'Everything is ready'}</h2><p>${lang==='es'?'Admira IA ya tiene Meta, modelo y Telegram. ChatGPT para imágenes puede conectarse ahora o después desde Configuración.':'Admira IA now has Meta, a model, and Telegram. ChatGPT for images can be connected now or later from Setup.'}</p><div class="confirm-actions"><button class="btn" type="button" data-action-code="closeConfirm()">${lang==='es'?'Seguir revisando':'Keep reviewing'}</button><button class="btn primary" type="button" data-action-code="finishOnboardingConfirmed()">${lang==='es'?'Abrir dashboard':'Open dashboard'}</button></div></div>`;box.classList.add('open')}
 async function finishOnboardingConfirmed(){closeConfirm();await finishOnboardingAndStartTour('manual')}
 async function completeOnboarding(){
  const steps=onboardingSteps();
  const missingIndex=steps.findIndex(step=>step.status!=='ok');
  if(missingIndex>=0){
-  const labels=lang==='es'?['la contraseña','Meta y sus dos tokens','el modelo y ChatGPT para imágenes','Telegram']:['the password','Meta and both tokens','the model and image ChatGPT','Telegram'];
+  const labels=lang==='es'?['la contraseña','Meta y sus dos tokens','el modelo','Telegram']:['the password','Meta and both tokens','the model','Telegram'];
   toast(`${lang==='es'?'Completa primero':'Complete first'} ${labels[missingIndex]}.`);
   qs(`#activation-${missingIndex+1}`)?.scrollIntoView({behavior:'smooth',block:'start'});
   return;

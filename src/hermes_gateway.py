@@ -10,6 +10,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 from datetime import datetime, timedelta, timezone
@@ -71,6 +72,7 @@ RESEARCH_PROMPT_FILE = DATA_DIR / "hermes_optimization_research_prompt.md"
 _GATEWAY_PROCESS = None
 _GATEWAY_FINGERPRINT = None
 _GATEWAY_PROCESS_KIND = "admira_hermes_gateway_supervisor"
+_GATEWAY_LOCK = threading.RLock()
 
 
 def telegram_settings(config):
@@ -829,11 +831,12 @@ def _terminate_stale_gateway_from_state(skip_pid=None):
 
 def stop_gateway():
     global _GATEWAY_PROCESS, _GATEWAY_FINGERPRINT
-    if _GATEWAY_PROCESS and _GATEWAY_PROCESS.poll() is None:
-        _terminate_process(_GATEWAY_PROCESS)
-    _terminate_stale_gateway_from_state(getattr(_GATEWAY_PROCESS, "pid", None))
-    _GATEWAY_PROCESS = None
-    _GATEWAY_FINGERPRINT = None
+    with _GATEWAY_LOCK:
+        if _GATEWAY_PROCESS and _GATEWAY_PROCESS.poll() is None:
+            _terminate_process(_GATEWAY_PROCESS)
+        _terminate_stale_gateway_from_state(getattr(_GATEWAY_PROCESS, "pid", None))
+        _GATEWAY_PROCESS = None
+        _GATEWAY_FINGERPRINT = None
 
 
 def reset_openai_codex_credential_status(config, files=None):
@@ -925,7 +928,7 @@ print(json.dumps({'ok': True, 'updated': len(updated), 'job_ids': updated}))
         return {"ok": True, "updated": 0}
 
 
-def start_gateway(config):
+def _start_gateway_locked(config):
     global _GATEWAY_PROCESS, _GATEWAY_FINGERPRINT
     status = telegram_settings(config)
     if status["mode"] == "legacy":
@@ -1016,6 +1019,12 @@ def start_gateway(config):
     if not started:
         response["detail"] = "Hermes Gateway se cerró al iniciar. Revisa el diagnóstico técnico."
     return response
+
+
+def start_gateway(config):
+    """Start or reuse exactly one Gateway process across concurrent HTTP requests."""
+    with _GATEWAY_LOCK:
+        return _start_gateway_locked(config)
 
 
 def daily_brief_prompt():
