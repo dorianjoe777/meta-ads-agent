@@ -39,6 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 import zipfile
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
@@ -258,6 +259,7 @@ BOOTSTRAP_CONFIG_FILE = ROOT_DIR / "installer" / "release-bootstrap.env"
 UPDATE_SNAPSHOTS_DIR = DATA_DIR / "update-snapshots"
 TELEGRAM_UPDATE_NOTIFICATION_FILE = DATA_DIR / "telegram_update_notifications.json"
 TELEGRAM_UPDATE_INSTALL_REQUEST_FILE = DATA_DIR / "telegram_update_install_request.json"
+AUTOMATIC_UPDATE_STATE_FILE = DATA_DIR / "automatic_update_state.json"
 UPDATE_SNAPSHOT_ROOT_NAME = "MetaAdsAgent-rollback"
 MAX_UPDATE_SNAPSHOTS = 3
 DEFAULT_POST_LIMIT_BYTES = 2 * 1024 * 1024
@@ -299,6 +301,9 @@ UPDATE_NOTIFICATION_MONITOR_LOCK = threading.Lock()
 UPDATE_INSTALL_MONITOR_THREAD = None
 UPDATE_INSTALL_MONITOR_STOP = None
 UPDATE_INSTALL_MONITOR_LOCK = threading.Lock()
+AUTOMATIC_UPDATE_MONITOR_THREAD = None
+AUTOMATIC_UPDATE_MONITOR_STOP = None
+AUTOMATIC_UPDATE_MONITOR_LOCK = threading.Lock()
 UPDATE_NOTIFICATION_INITIAL_DELAY_SECONDS = 90
 UPDATE_NOTIFICATION_INTERVAL_SECONDS = 60 * 60
 MODEL_HEALTH_WATCHDOG_THREAD = None
@@ -1065,6 +1070,147 @@ def request_update_release():
         "warnings": update_safety_warnings(),
         "snapshot_policy": {"automatic": True, "keep": MAX_UPDATE_SNAPSHOTS},
     }
+
+
+def automatic_update_timezone(config):
+    """Use the buyer's daily-brief timezone, with Bogotá as a safe fallback."""
+    timezone_name = normalize_timezone(getattr(config, "daily_brief_timezone", "") or "America/Bogota")
+    try:
+        return ZoneInfo(timezone_name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return ZoneInfo("America/Bogota")
+
+
+def automatic_update_state():
+    state = read_json(AUTOMATIC_UPDATE_STATE_FILE, {})
+    return state if isinstance(state, dict) else {}
+
+
+def save_automatic_update_state(state):
+    write_private_json(AUTOMATIC_UPDATE_STATE_FILE, state, ensure_ascii=False)
+
+
+def automatic_update_notice_text(state, language="es"):
+    version = str(state.get("version") or "").strip()
+    if str(language or "es").lower().startswith("en"):
+        return f"✅ Admira IA updated automatically to {version} at 3:00 AM. Your saved information was kept and the health checks passed."
+    return f"✅ Admira IA se actualizó automáticamente a {version} a las 3:00 a. m. Tus datos guardados se conservaron y las verificaciones pasaron correctamente."
+
+
+def run_scheduled_automatic_update(config, local_now=None):
+    """Apply at most one verified release per buyer-local calendar day.
+
+    This intentionally uses the same signed-download, SHA-256, snapshot,
+    health-check and automatic rollback path as the former manual button.
+    """
+    zone = automatic_update_timezone(config)
+    local_now = local_now or datetime.now(zone)
+    today = local_now.date().isoformat()
+    state = automatic_update_state()
+    if state.get("attempted_on") == today:
+        return {"action": "already_processed", "state": state}
+    state.update({"attempted_on": today, "attempted_at": now_iso(), "timezone": str(zone), "status": "checking", "notified_on": ""})
+    save_automatic_update_state(state)
+    try:
+        release = request_update_release()
+        if not release.get("available"):
+            state.update({"status": "no_update", "completed_at": now_iso(), "version": str(release.get("current_version") or "")})
+            save_automatic_update_state(state)
+            log_action("automatic_update", {"status": "no_update", "version": state["version"]}, "completed")
+            return {"action": "no_update", "release": release}
+        # The gateway is restarted as part of the dashboard process restart.
+        # Stopping it first avoids duplicate Telegram polling during the swap.
+        stop_hermes_gateway()
+        result = apply_official_update()
+        if not result.get("installed"):
+            raise ValueError(str(result.get("message") or "No se pudo instalar la actualización oficial."))
+        state.update({
+            "status": "installed",
+            "completed_at": now_iso(),
+            "version": str(result.get("latest_version") or ""),
+            "snapshot_id": str((result.get("snapshot") or {}).get("id") or ""),
+            "health": result.get("health") or {},
+        })
+        save_automatic_update_state(state)
+        log_action("automatic_update", {"status": "installed", "version": state["version"], "snapshot_id": state["snapshot_id"]}, "completed")
+        return {"action": "installed", "result": result}
+    except Exception as exc:
+        # A failed update leaves the previous version in place; restore the
+        # gateway so normal buyer messaging keeps working.
+        try:
+            start_hermes_gateway(config)
+        except Exception:
+            pass
+        state.update({"status": "failed", "completed_at": now_iso(), "error": redact_error_text(exc, 220)})
+        save_automatic_update_state(state)
+        log_action("automatic_update", {"status": "failed", "error": state["error"]}, "failed")
+        return {"action": "failed", "error": state["error"]}
+
+
+def send_scheduled_automatic_update_notice(config, local_now=None):
+    zone = automatic_update_timezone(config)
+    local_now = local_now or datetime.now(zone)
+    today = local_now.date().isoformat()
+    state = automatic_update_state()
+    if state.get("attempted_on") != today or state.get("status") != "installed" or state.get("notified_on") == today:
+        return {"sent": False, "reason": "nothing_to_notify"}
+    status = telegram_settings(config)
+    chat_id = str(status.get("chat_id") or "").strip()
+    if not (status.get("enabled") and status.get("bot_configured") and chat_id):
+        return {"sent": False, "reason": "telegram_not_ready"}
+    try:
+        telegram_bot_request(config, "sendMessage", {
+            "chat_id": chat_id,
+            "text": automatic_update_notice_text(state, status.get("language") or "es"),
+            "disable_web_page_preview": "true",
+        }, timeout=15)
+        state["notified_on"] = today
+        state["notified_at"] = now_iso()
+        save_automatic_update_state(state)
+        log_action("automatic_update_notice", {"version": state.get("version"), "scheduled_hour": 9}, "completed")
+        return {"sent": True, "version": state.get("version")}
+    except Exception as exc:
+        log_action("automatic_update_notice", {"error": redact_error_text(exc, 220)}, "failed")
+        return {"sent": False, "reason": "telegram_send_failed"}
+
+
+def _automatic_update_loop(stop_event):
+    while not stop_event.is_set():
+        config = load_config()
+        local_now = datetime.now(automatic_update_timezone(config))
+        # If the machine was asleep at 3:00, run once during the same quiet
+        # maintenance window, never in the client's working day.
+        if 3 <= local_now.hour < 9:
+            run_scheduled_automatic_update(config, local_now)
+        if local_now.hour >= 9:
+            send_scheduled_automatic_update_notice(config, local_now)
+        if stop_event.wait(60):
+            return
+
+
+def ensure_automatic_update_monitor():
+    global AUTOMATIC_UPDATE_MONITOR_THREAD, AUTOMATIC_UPDATE_MONITOR_STOP
+    with AUTOMATIC_UPDATE_MONITOR_LOCK:
+        if AUTOMATIC_UPDATE_MONITOR_THREAD and AUTOMATIC_UPDATE_MONITOR_THREAD.is_alive():
+            return {"started": True, "already_running": True}
+        AUTOMATIC_UPDATE_MONITOR_STOP = threading.Event()
+        AUTOMATIC_UPDATE_MONITOR_THREAD = threading.Thread(
+            target=_automatic_update_loop,
+            args=(AUTOMATIC_UPDATE_MONITOR_STOP,),
+            name="admira-automatic-update",
+            daemon=True,
+        )
+        AUTOMATIC_UPDATE_MONITOR_THREAD.start()
+        return {"started": True, "already_running": False}
+
+
+def stop_automatic_update_monitor():
+    global AUTOMATIC_UPDATE_MONITOR_THREAD, AUTOMATIC_UPDATE_MONITOR_STOP
+    with AUTOMATIC_UPDATE_MONITOR_LOCK:
+        if AUTOMATIC_UPDATE_MONITOR_STOP:
+            AUTOMATIC_UPDATE_MONITOR_STOP.set()
+        AUTOMATIC_UPDATE_MONITOR_THREAD = None
+        AUTOMATIC_UPDATE_MONITOR_STOP = None
 
 
 def check_telegram_update_notification():
@@ -13468,7 +13614,7 @@ def main():
         name="admira-license-binding-sync",
     ).start()
     ensure_telegram_listener()
-    ensure_telegram_update_notification_monitor()
+    ensure_automatic_update_monitor()
     ensure_telegram_update_install_monitor()
     ensure_model_health_watchdog()
     server = ThreadingHTTPServer((host, port), DashboardHandler)
@@ -13486,7 +13632,7 @@ def main():
     finally:
         stop_model_health_watchdog()
         stop_telegram_update_install_monitor()
-        stop_telegram_update_notification_monitor()
+        stop_automatic_update_monitor()
         server.server_close()
     return 0
 
