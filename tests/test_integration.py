@@ -2941,6 +2941,7 @@ class IntegrationTestSuite:
             self.assert_true("    keepalive_interval: 1200" in config_yaml, "Hermes Gateway avoids MCP keepalive reconnects while a long creative tool call is still running")
             self.assert_true("    - admira" in config_yaml, "Hermes Gateway explicitly enables Admira MCP tools for Telegram")
             self.assert_true("disabled_toolsets:" in config_yaml and "code_execution" in config_yaml and str(workspace) in config_yaml, "Hermes Gateway config keeps Telegram in the curated workspace")
+            self.assert_true("    - delegation" not in config_yaml, "Paid/independent primary providers retain Hermes delegation when capacity permits")
             self.assert_true('default: "gpt-5.4-mini"' in config_yaml and 'default: "auto"' not in config_yaml, "Hermes Gateway normalizes legacy auto model to the lightweight GPT-5.4 mini")
             self.assert_true("entrevista del negocio" in config_yaml and "no bloquean la configuración inicial" in config_yaml, "Hermes Gateway tells Telegram that agent interviews are not dashboard blockers")
             self.assert_true("primero entenderemos el negocio" in config_yaml and "marca visual" in config_yaml and "ofertas, briefs, estrategia y campañas" in config_yaml, "Hermes Gateway introduction explains the three-step onboarding journey")
@@ -2979,6 +2980,7 @@ class IntegrationTestSuite:
             nvidia_env = nvidia_env_path.read_text(encoding="utf-8")
             self.assert_true("ADMIRA_NVIDIA_API_KEY=nvapi-cron-private-key" in nvidia_env and "ADMIRA_NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1" in nvidia_env and "ADMIRA_NVIDIA_MODEL=z-ai/glm-5.2" in nvidia_env, "A fresh unattended NVIDIA cron reload has all provider credentials it needs")
             self.assert_true("nvapi-cron-private-key" not in nvidia_yaml and (nvidia_env_path.stat().st_mode & 0o777) == 0o600, "NVIDIA credentials stay out of config.yaml and inside the private env")
+            self.assert_true("  max_turns: 10" in nvidia_yaml and "    - delegation" in nvidia_yaml and "  api_max_retries: 1" in nvidia_yaml, "Hosted NVIDIA conversations cannot spawn subagents or fan one buyer message into an unbounded inference burst")
 
             disconnected_files = hermes_gateway.write_gateway_files(FakeConfig())
             disconnected_env = Path(disconnected_files["env"]).read_text(encoding="utf-8")

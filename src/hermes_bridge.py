@@ -419,8 +419,12 @@ def inference_runtime_policy(primary_settings=None):
     is_nvidia = _runtime_provider_for_brain(brain) == ADMIRA_NVIDIA_PROVIDER
     policy = {
         "api_max_retries": 1 if is_nvidia else 3,
-        "max_turns": 24 if is_nvidia else 60,
+        # One buyer message can consume one inference call per tool turn. Keep
+        # the free hosted NVIDIA route bounded so a normal request cannot fan
+        # out into dozens of calls and exhaust its shared capacity.
+        "max_turns": 10 if is_nvidia else 60,
         "cron_max_parallel": 1 if is_nvidia else 0,
+        "disable_delegation": is_nvidia,
     }
     if is_nvidia:
         # NVIDIA's hosted endpoint can return a generic 5xx well before the
@@ -637,6 +641,8 @@ def write_cli_hermes_config(config, workspace_info, payload=None):
     for protected in ("terminal", "code_execution", "image_gen", "skills"):
         if protected not in disabled:
             disabled.append(protected)
+    if inference_policy["disable_delegation"] and "delegation" not in disabled:
+        disabled.append("delegation")
     dashboard_toolsets = cli_toolsets(config, {"channel": "dashboard"})
     telegram_toolsets = ["hermes-telegram", *cli_toolsets(config, {"channel": "telegram"})]
     config_yaml = [
@@ -645,7 +651,7 @@ def write_cli_hermes_config(config, workspace_info, payload=None):
         *admira_fallback_config_lines(config, brain),
         f"context_file_max_chars: {inference_policy['context_file_max_chars']}",
         "agent:",
-        f"  max_turns: {max(1, int(getattr(config, 'hermes_max_iterations', 12) or 12))}",
+        f"  max_turns: {min(inference_policy['max_turns'], max(1, int(getattr(config, 'hermes_max_iterations', 12) or 12)))}",
         f"  api_max_retries: {inference_policy['api_max_retries']}",
         "  disabled_toolsets:",
         *[f"    - {toolset}" for toolset in disabled],
@@ -2469,10 +2475,14 @@ def library_chat(config, payload):
 
     workspace_info = prepare_hermes_workspace(payload)
     brain = hermes_brain_settings(config)
+    inference_policy = inference_runtime_policy(brain)
     kwargs = {
         "quiet_mode": True,
         "platform": payload.get("channel") or "dashboard",
-        "max_iterations": max(1, int(getattr(config, "hermes_max_iterations", 12) or 12)),
+        "max_iterations": min(
+            inference_policy["max_turns"],
+            max(1, int(getattr(config, "hermes_max_iterations", 12) or 12)),
+        ),
     }
     if brain.get("provider"):
         kwargs["provider"] = brain["provider"]
@@ -2486,6 +2496,8 @@ def library_chat(config, payload):
     disabled = split_csv(getattr(config, "hermes_disabled_toolsets", ""))
     if "skills" not in disabled:
         disabled.append("skills")
+    if inference_policy["disable_delegation"] and "delegation" not in disabled:
+        disabled.append("delegation")
     if enabled:
         kwargs["enabled_toolsets"] = enabled
     if disabled:

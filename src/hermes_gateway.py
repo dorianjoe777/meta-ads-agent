@@ -619,6 +619,7 @@ def write_gateway_files(config):
         "    - code_execution",
         "    - image_gen",
         "    - skills",
+        *(["    - delegation"] if inference_policy["disable_delegation"] else []),
         "skills:",
         "  creation_nudge_interval: 0",
         "display:",
