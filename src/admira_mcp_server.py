@@ -205,6 +205,16 @@ def call_tool_guarded(name, arguments):
 
 
 def create_fastmcp_server():
+    # Hermes versions in the wild do not all agree on the Python MCP result
+    # model.  Recent SDKs expose ``CallToolResult.is_error`` (or no Python
+    # attribute at all), while some Hermes builds still access ``isError``.
+    # The small protocol implementation below speaks both JSON-lines and the
+    # legacy Content-Length framing and emits the wire-level ``isError`` flag
+    # itself.  Prefer it by default so a SDK model mismatch cannot take down
+    # creative generation; retain an explicit opt-in for installations that
+    # intentionally need FastMCP.
+    if os.environ.get("ADMIRA_MCP_USE_FASTMCP", "").strip().lower() not in {"1", "true", "yes"}:
+        return None
     if FastMCP is None:
         return None
     server = FastMCP(

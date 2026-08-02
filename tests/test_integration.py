@@ -3313,7 +3313,9 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         captured = []
         original_write = admira_mcp_server.write_message
         original_call = admira_mcp_server.call_tool
+        original_fastmcp_flag = os.environ.pop("ADMIRA_MCP_USE_FASTMCP", None)
         try:
+            self.assert_true(admira_mcp_server.create_fastmcp_server() is None, "MCP defaults to the compatibility stdio server")
             admira_mcp_server.write_message = lambda payload: captured.append(payload)
             admira_mcp_server.call_tool = lambda name, arguments: {"ok": True, "tool": name, "arguments": arguments}
 
@@ -3352,6 +3354,8 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             )
             self.assert_true(content_length_probe.returncode == 0 and content_length_probe.stdout.startswith("Content-Length:") and '"id":12' in content_length_probe.stdout, "MCP stdio preserves Content-Length framing for older installations")
         finally:
+            if original_fastmcp_flag is not None:
+                os.environ["ADMIRA_MCP_USE_FASTMCP"] = original_fastmcp_flag
             admira_mcp_server.write_message = original_write
             admira_mcp_server.call_tool = original_call
 
