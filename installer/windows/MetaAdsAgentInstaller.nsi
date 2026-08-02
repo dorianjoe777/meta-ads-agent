@@ -15,13 +15,15 @@ Section "Install"
   SetOutPath "$INSTDIR"
   File /r "${INSTALL_SOURCE}\*.*"
 
-  CreateShortcut "$DESKTOP\Meta Ads Agent.lnk" "$INSTDIR\Instalar en Windows.bat" "" "$INSTDIR\Instalar en Windows.bat" 0
-  CreateShortcut "$SMPROGRAMS\Meta Ads Agent.lnk" "$INSTDIR\Instalar en Windows.bat" "" "$INSTDIR\Instalar en Windows.bat" 0
+  CreateShortcut "$DESKTOP\Admira IA.lnk" "$WINDIR\System32\wscript.exe" '"$INSTDIR\Abrir Admira IA.vbs"' "$WINDIR\System32\wscript.exe" 0 SW_SHOWNORMAL
+  CreateShortcut "$SMPROGRAMS\Admira IA.lnk" "$WINDIR\System32\wscript.exe" '"$INSTDIR\Abrir Admira IA.vbs"' "$WINDIR\System32\wscript.exe" 0 SW_SHOWNORMAL
 
   WriteUninstaller "$INSTDIR\Desinstalar Meta Ads Agent.exe"
 SectionEnd
 
 Section "Uninstall"
+  Delete "$DESKTOP\Admira IA.lnk"
+  Delete "$SMPROGRAMS\Admira IA.lnk"
   Delete "$DESKTOP\Meta Ads Agent.lnk"
   Delete "$SMPROGRAMS\Meta Ads Agent.lnk"
   RMDir /r "$INSTDIR"

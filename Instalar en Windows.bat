@@ -30,8 +30,7 @@ if exist "%~dp0scripts\install-from-github.ps1" (
   set "BOOTSTRAP_EXIT=%ERRORLEVEL%"
   if "%BOOTSTRAP_EXIT%"=="0" (
     echo.
-    echo Cuando termine, abre: http://127.0.0.1:7871
-    pause
+    echo Admira IA quedo ejecutandose en segundo plano.
     exit /b 0
   )
   if not "%BOOTSTRAP_EXIT%"=="42" (
@@ -49,8 +48,15 @@ echo Construyendo y abriendo el dashboard...
 echo Cuando termine, abre: http://127.0.0.1:7871
 echo.
 
-docker compose up --build
+docker compose up -d --build
+if errorlevel 1 (
+  echo No pude iniciar Admira IA con Docker.
+  pause
+  exit /b 1
+)
+
+start "" "http://127.0.0.1:7871/"
 
 echo.
-echo Si cerraste esta ventana, el dashboard se apago.
-pause
+echo Admira IA quedo ejecutandose en segundo plano.
+exit /b 0

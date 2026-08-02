@@ -1595,7 +1595,8 @@ function syncCompactAgentBase(event){
 function compactTelegramStatusMarkup(value={}){
  const v=value||{};
  const ready=Boolean(v.enabled&&v.bot_configured&&v.chat_id);
- return `<div class="activation-wait ${ready?'ready':''}"><span>${ready?'✓':'•••'}</span><div><b>${ready?(lang==='es'?'Telegram conectado':'Telegram connected'):(v.bot_configured?(lang==='es'?'Esperando tu “hola”':'Waiting for your “hello”'):(lang==='es'?'Pega el token para empezar':'Paste the token to start'))}</b><small>${ready?(lang==='es'?'Tu agente ya puede responderte.':'Your agent can now reply.'):(v.bot_configured?(lang==='es'?'Abre el bot y envía hola. Esta pantalla lo detectará sola.':'Open the bot and send hello. This screen will detect it automatically.'):'')}</small></div></div>`;
+ const detectButton=!ready&&v.bot_configured?`<button class="btn primary telegram-detect-button" type="button" data-action-code="detectTelegramChats()">${lang==='es'?'Ya envié hola · Detectar mi chat':'I sent hello · Detect my chat'}</button>`:'';
+ return `<div class="activation-wait ${ready?'ready':''}"><span>${ready?'✓':'•••'}</span><div><b>${ready?(lang==='es'?'Telegram conectado':'Telegram connected'):(v.bot_configured?(lang==='es'?'Ahora envía “hola” a tu bot':'Now send “hello” to your bot'):(lang==='es'?'Pega el token para empezar':'Paste the token to start'))}</b><small>${ready?(lang==='es'?'Tu agente ya puede responderte.':'Your agent can now reply.'):(v.bot_configured?(lang==='es'?'Abre Telegram, entra al bot que creaste y envíale “hola”. Después toca Detectar mi chat; también lo buscaré automáticamente.':'Open Telegram, enter the bot you created, and send “hello”. Then click Detect my chat; I will also look for it automatically.'):'')}</small></div>${detectButton}</div>`;
 }
 function compactTelegramSetup(){
  const v=state.config.telegram_agent||{};
@@ -2004,6 +2005,10 @@ function telegramConfigPayloadFromForm(form,tokenValue){
  data.enabled=form.enabled?form.enabled.checked:true;
  return data;
 }
+function telegramStatusFromResponse(response){
+ const status=response?.result&&typeof response.result==='object'?response.result:response;
+ return status&&typeof status==='object'?status:{};
+}
 function setTelegramTokenZone(input,stateName,message=''){
  const zone=input?.closest?.('.telegram-token-zone');if(!zone)return;
  zone.classList.remove('saving','saved','invalid');
@@ -2024,7 +2029,8 @@ async function autoSaveTelegramToken(event){
  setTelegramTokenZone(input,'saving',lang==='es'?'Guardando la clave en esta instalación...':'Saving the key in this install...');
  telegramAutoSaveTimer=setTimeout(async()=>{
   try{
-   const status=await api('/api/telegram/config',{method:'POST',body:JSON.stringify(telegramConfigPayloadFromForm(form,token))});
+	   const response=await api('/api/telegram/config',{method:'POST',body:JSON.stringify(telegramConfigPayloadFromForm(form,token))});
+	   const status=telegramStatusFromResponse(response);
    telegramAutoSaveLast=token;
    state.config.telegram_agent={...(state.config.telegram_agent||{}),...status};
    input.value='';
@@ -2043,7 +2049,7 @@ async function autoSaveTelegramSetting(event){
  const form=event?.target?.closest?.('form');if(!form)return;
  const data=telegramConfigPayloadFromForm(form);
  if(!String(data.bot_token||'').trim())delete data.bot_token;
- try{const status=await api('/api/telegram/config',{method:'POST',body:JSON.stringify(data)});state.config.telegram_agent={...(state.config.telegram_agent||{}),...status};const box=qs('#telegram-results');if(box)box.innerHTML=telegramStatusMarkup(state.config.telegram_agent)}catch(err){toast(err.message||String(err))}
+ try{const response=await api('/api/telegram/config',{method:'POST',body:JSON.stringify(data)});const status=telegramStatusFromResponse(response);state.config.telegram_agent={...(state.config.telegram_agent||{}),...status};const box=qs('#telegram-results');if(box)box.innerHTML=qs('.activation-shell')?compactTelegramStatusMarkup(state.config.telegram_agent):telegramStatusMarkup(state.config.telegram_agent);startTelegramHelloPolling()}catch(err){toast(err.message||String(err))}
 }
 function telegramOnboardingGuide(){
  const v=state.config.telegram_agent||{};

@@ -82,6 +82,25 @@ function Get-HostLanIp {
     }
 }
 
+function Wait-ForDashboard {
+    param(
+        [string]$Url = "http://127.0.0.1:7871/",
+        [int]$TimeoutSeconds = 120
+    )
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 3
+            if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500) {
+                return $true
+            }
+        } catch {
+        }
+        Start-Sleep -Seconds 2
+    }
+    return $false
+}
+
 function Save-BootstrapEnvValues {
     param(
         [string]$EnvFile,
@@ -386,9 +405,21 @@ try {
     }
     Push-Location $InstallDir
     try {
-        docker compose up --build
+        # Run Docker in the background. The old foreground command kept this
+        # installer PowerShell open for the entire lifetime of Admira IA.
+        docker compose up -d --build
+        if ($LASTEXITCODE -ne 0) {
+            throw "Docker no pudo iniciar Admira IA."
+        }
     } finally {
         Pop-Location
+    }
+    $dashboardUrl = "http://127.0.0.1:7871/"
+    if (Wait-ForDashboard -Url $dashboardUrl) {
+        Start-Process $dashboardUrl
+        Write-Host "Admira IA quedo lista. Puedes cerrar esta ventana."
+    } else {
+        Write-Host "Admira IA sigue iniciando en segundo plano. Abre $dashboardUrl en uno o dos minutos."
     }
 } finally {
     if (Test-Path $tmpDir) {

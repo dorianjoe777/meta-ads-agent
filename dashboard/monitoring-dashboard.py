@@ -5645,10 +5645,25 @@ def launch_hermes_terminal(config):
                 f"{ps_home_prefix}"
                 "Write-Host 'Conectando ChatGPT/Codex para Admira IA...'; "
                 "Write-Host 'Si el agente pregunta por proveedor, elige OpenAI Codex / ChatGPT.'; "
-                f"& '{ps_cli}' model; "
-                "Read-Host 'Presiona Enter para cerrar'"
+                f"& '{ps_cli}' model"
             )
-            subprocess.Popen(["cmd", "/c", "start", "powershell", "-NoExit", "-Command", ps_command], cwd=str(ROOT_DIR))
+            # This login really is interactive, so it needs its own console.
+            # Do not use `cmd start`, `-NoExit`, or a final Read-Host: those
+            # leave an empty PowerShell window covering the buyer's browser
+            # after Hermes has already finished or opened the login page.
+            creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+            subprocess.Popen(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    ps_command,
+                ],
+                cwd=str(ROOT_DIR),
+                creationflags=creationflags,
+            )
             return True
         if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
             shell_command = command + "read -n 1 -s -r -p 'Presiona una tecla para cerrar...'"
