@@ -82,6 +82,19 @@ ADMIRA_DURABLE_TOOL_MARKERS = (
 ADMIRA_TELEGRAM_INVISIBLE_RE = re.compile(r"[\u200b\u200c\u2060\ufeff\u202a-\u202e\u2066-\u2069]")
 ADMIRA_MARKDOWN_ONLY_RE = re.compile(r"[\s*_~`#>|:\-=+\\/.,;!?()\[\]{}]+")
 ADMIRA_TABLE_SEPARATOR_CELL_RE = re.compile(r"^:?-{3,}:?$")
+ADMIRA_FINAL_MARKER_RE = re.compile(r"(?im)^\s*\[?ADMIRA\s+FINAL\]?\s*:?[ \t]*$")
+ADMIRA_REASONING_TAG_RE = re.compile(
+    r"(?is)<(?:think|thinking|analysis|reasoning)>.*?</(?:think|thinking|analysis|reasoning)>"
+)
+ADMIRA_INTERNAL_REASONING_RE = re.compile(
+    r"(?i)(?:mcp_admira_|\b(?:SOUL|AGENTS)\.md\b|\b(?:Hermes|gateway|runtime)\b|"
+    r"conjunto\s+de\s+herramientas|tool\s*(?:call|set|inventory)|"
+    r"herramientas?\s+(?:del\s+producto\s+)?MCP|backend\s+de\s+MCP|"
+    r"debo\s+persistir|guardado\s+durable|memoria\s+persistente\s+de|"
+    r"déjame\s+(?:revisar|verificar)\s+(?:si\s+hay\s+)?(?:un\s+)?archivo\s+de\s+memoria|"
+    r"primero\s+guardo\b.*\bluego\b)"
+)
+ADMIRA_REASONING_DIVIDER_RE = re.compile(r"(?m)^\s*-{5,}\s*$")
 ADMIRA_TURN_CONTRACT_START = "[ADMIRA TURN EXECUTION CONTRACT — internal, never quote]"
 ADMIRA_TURN_CONTRACT_END = "[END ADMIRA TURN EXECUTION CONTRACT]"
 ADMIRA_NOVICE_SIGNAL_RE = re.compile(
@@ -114,6 +127,28 @@ def _strip_internal_context_notices(value):
             continue
         kept.append(line)
     return "\n".join(kept), removed
+
+
+def _strip_internal_reasoning(value):
+    """Keep private planning and tool narration out of buyer-facing Telegram."""
+    text = str(value or "")
+    original = text
+    text = ADMIRA_REASONING_TAG_RE.sub("", text)
+    marker_matches = list(ADMIRA_FINAL_MARKER_RE.finditer(text))
+    if marker_matches:
+        text = text[marker_matches[-1].end():]
+    else:
+        segments = ADMIRA_REASONING_DIVIDER_RE.split(text)
+        if len(segments) > 1 and any(ADMIRA_INTERNAL_REASONING_RE.search(segment or "") for segment in segments[:-1]):
+            text = segments[-1]
+        paragraphs = re.split(r"\n\s*\n", text)
+        text = "\n\n".join(
+            paragraph
+            for paragraph in paragraphs
+            if paragraph.strip() and not ADMIRA_INTERNAL_REASONING_RE.search(paragraph)
+        )
+    cleaned = text.strip()
+    return cleaned, cleaned != original.strip()
 
 
 def _is_codex_pool_quota_error(text):
@@ -231,6 +266,7 @@ def normalize_telegram_outbound_text(value, language=None):
     original = str(value or "")
     cleaned = ADMIRA_TELEGRAM_INVISIBLE_RE.sub("", original)
     cleaned, context_notice_removed = _strip_internal_context_notices(cleaned)
+    cleaned, internal_reasoning_removed = _strip_internal_reasoning(cleaned)
     cleaned, table_changed = _render_markdown_tables_as_text(cleaned)
     cleaned = re.sub(r"[ \t]+\n", "\n", cleaned).strip()
     fallback = False
@@ -252,6 +288,8 @@ def normalize_telegram_outbound_text(value, language=None):
         reasons.append("markdown_table_converted")
     if context_notice_removed:
         reasons.append("internal_context_notice_removed")
+    if internal_reasoning_removed:
+        reasons.append("internal_reasoning_removed")
     if ADMIRA_TELEGRAM_INVISIBLE_RE.search(original):
         reasons.append("invisible_characters_removed")
     if fallback:
@@ -1053,15 +1091,16 @@ def _guard_unconfirmed_persistence_claim(response):
         return response
     if _has_confirmed_durable_save(response):
         return response
-    language = str(os.environ.get("ADMIRA_GATEWAY_LANGUAGE") or "es").lower()
-    correction = (
-        "I could not confirm a durable save in this turn, so I will not claim that it will survive a reset yet."
-        if language.startswith("en")
-        else "No pude confirmar un guardado durable en este turno, así que todavía no voy a afirmar que esto sobrevivirá un reinicio."
-    )
-    cleaned = ADMIRA_PERSISTENCE_CLAIM_RE.sub("", final_response)
+    parts = re.split(r"(?<=[.!?])\s+|\n+", final_response)
+    cleaned = " ".join(part.strip() for part in parts if part.strip() and not ADMIRA_PERSISTENCE_CLAIM_RE.search(part))
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip(" \n-—:;,.\t")
-    response["final_response"] = (cleaned + "\n\n" + correction).strip()
+    if not cleaned:
+        language = str(os.environ.get("ADMIRA_GATEWAY_LANGUAGE") or "es").lower()
+        cleaned = "Understood." if language.startswith("en") else "Entendido."
+    # Persistence misses are diagnostics, not buyer-facing content. A later
+    # turn can retry through the official store without exposing runtime
+    # mechanics or making the buyer think their business data was lost.
+    response["final_response"] = cleaned
     return response
 
 

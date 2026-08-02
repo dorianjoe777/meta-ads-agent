@@ -1823,7 +1823,7 @@ class IntegrationTestSuite:
             self.assert_true("MEDIA:" not in history_only_response["final_response"], "Runtime patch does not reattach media from older session messages")
             self.assert_true(f"MEDIA:{current_image.resolve()}" in current_turn_response["final_response"], "Runtime patch attaches media from the newest assistant result")
             self.assert_true(f"MEDIA:{old_image.resolve()}" not in current_turn_response["final_response"], "Runtime patch does not attach older generated media when a newer image exists")
-            self.assert_true("No pude confirmar un guardado durable" in unsupported_memory_claim["final_response"] and "ya lo guardé" not in unsupported_memory_claim["final_response"].lower(), "Runtime patch blocks unsupported claims that buyer memory was saved")
+            self.assert_true("No pude confirmar un guardado durable" not in unsupported_memory_claim["final_response"] and "ya lo guardé" not in unsupported_memory_claim["final_response"].lower(), "Runtime patch silently removes unsupported memory claims without exposing persistence diagnostics")
             self.assert_true("ya lo guardé" in confirmed_memory_claim["final_response"].lower() and "No pude confirmar" not in confirmed_memory_claim["final_response"], "Runtime patch preserves persistence claims only after a save tool confirms success")
             table_reply = """Proyección inicial\n\n| Escenario | Ventas | ROAS |\n|---|---:|---:|\n| Conservador | 2 | 1.4 |\n| Base | 5 | 2.2 |"""
             normalized_table, table_metadata = admira_hermes_runtime_patch.normalize_telegram_outbound_text(table_reply, "es")
@@ -1834,6 +1834,19 @@ class IntegrationTestSuite:
             )
             context_only, context_only_metadata = admira_hermes_runtime_patch.normalize_telegram_outbound_text(
                 "⚠️ Context file AGENTS.md TRUNCATED: 68472 chars exceeds limit of 65280",
+                "es",
+            )
+            leaked_reasoning = """Voy a guardar la preferencia del operador. Para finalizar el turno, debo persistir estos datos.
+
+Las herramientas del producto MCP no están disponibles en mi conjunto de herramientas. Revisaré AGENTS.md y la memoria de Hermes.
+
+---------------------
+
+[ADMIRA FINAL]
+Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuéntame qué vende Singularity X Récords y cuál es su meta principal."""
+            reasoning_clean, reasoning_metadata = admira_hermes_runtime_patch.normalize_telegram_outbound_text(leaked_reasoning, "es")
+            tagged_clean, tagged_metadata = admira_hermes_runtime_patch.normalize_telegram_outbound_text(
+                "<think>Debo revisar SOUL.md y llamar mcp_admira_save_business_memory.</think>\n[ADMIRA FINAL]\nSeguimos con el público principal de la marca.",
                 "es",
             )
             normalized_response = admira_hermes_runtime_patch._normalize_gateway_outbound_response({"final_response": table_reply})
@@ -1848,6 +1861,8 @@ class IntegrationTestSuite:
             self.assert_true("No pude mostrar correctamente" in invisible_fallback and fallback_metadata["fallback"], "Gateway never delivers an invisible or format-only Telegram message")
             self.assert_true(context_clean == "Listo, continúo con el anuncio." and "internal_context_notice_removed" in context_metadata["reasons"], "Telegram strips context diagnostics while preserving the buyer answer")
             self.assert_true(context_only == "NO_REPLY" and context_only_metadata["suppressed"] and not context_only_metadata["fallback"], "A context-only diagnostic becomes Hermes intentional silence instead of another scary message")
+            self.assert_true(reasoning_clean.startswith("Perfecto.") and "MCP" not in reasoning_clean and "Hermes" not in reasoning_clean and "internal_reasoning_removed" in reasoning_metadata["reasons"], "Telegram delivers only the marked final answer when model planning leaks before a divider")
+            self.assert_true(tagged_clean == "Seguimos con el público principal de la marca." and "internal_reasoning_removed" in tagged_metadata["reasons"], "Telegram removes tagged reasoning and the internal final marker")
             self.assert_true("• Base" in normalized_response["final_response"], "Gateway response normalization runs on the final response shape Hermes delivers")
             self.assert_true("ADMIRA TURN EXECUTION CONTRACT" in novice_turn and "máximo 180 palabras" in novice_turn and "insumos del dueño" in novice_turn and "datos o archivos del dueño" in novice_turn and "margen de contribución" in novice_turn, "Each novice Telegram turn gets a recency-edge manager-led response contract")
             self.assert_true(novice_turn_again.count("ADMIRA TURN EXECUTION CONTRACT") == 2, "Novice turn contract is appended only once, including its start and end markers")
@@ -3311,6 +3326,31 @@ class IntegrationTestSuite:
             self.assert_true(captured[0]["result"]["serverInfo"]["name"] == "admira", "MCP server initializes as Admira")
             self.assert_true("codex_image_generate" in tool_names and "stage_campaign" in tool_names and "search_meta_targeting" in tool_names and "inspect_adset_targeting" in tool_names and "schedule_campaign_activation" in tool_names and "stage_lead_form" in tool_names and "list_lead_forms" in tool_names and "approve_action" in tool_names and "review_signal_quality" in tool_names and "preflight_campaign" in tool_names and "fetch_public_asset" in tool_names and "record_verified_signal" in tool_names and "save_ads_onboarding" in tool_names and "save_daily_social_content_settings" in tool_names and "stage_organic_social_post" in tool_names and "save_content_asset" in tool_names and "save_durable_memory" in tool_names and "import_product_catalog" in tool_names and "search_product_catalog" in tool_names, "MCP server lists product, live audience, and multi-product catalog tools for Hermes")
             self.assert_true('"tool": "admira_codex_image_generate"' in call_text and '"request": "imagen"' in call_text, "MCP server calls the product bridge with Admira-prefixed tool names")
+
+            probe_code = "import admira_mcp_server as m; m.FastMCP=None; m.main()"
+            probe_env = {**os.environ, "PYTHONPATH": str(ROOT_DIR / "src")}
+            newline_probe = subprocess.run(
+                [sys.executable, "-c", probe_code],
+                input=json.dumps({"jsonrpc": "2.0", "id": 11, "method": "initialize", "params": {}}) + "\n",
+                text=True,
+                capture_output=True,
+                env=probe_env,
+                timeout=10,
+                check=False,
+            )
+            self.assert_true(newline_probe.returncode == 0 and newline_probe.stdout.lstrip().startswith("{") and '"id":11' in newline_probe.stdout, "MCP stdio supports modern JSON-lines framing used by current Hermes")
+
+            framed_body = json.dumps({"jsonrpc": "2.0", "id": 12, "method": "initialize", "params": {}}, separators=(",", ":"))
+            content_length_probe = subprocess.run(
+                [sys.executable, "-c", probe_code],
+                input=f"Content-Length: {len(framed_body.encode('utf-8'))}\r\n\r\n{framed_body}",
+                text=True,
+                capture_output=True,
+                env=probe_env,
+                timeout=10,
+                check=False,
+            )
+            self.assert_true(content_length_probe.returncode == 0 and content_length_probe.stdout.startswith("Content-Length:") and '"id":12' in content_length_probe.stdout, "MCP stdio preserves Content-Length framing for older installations")
         finally:
             admira_mcp_server.write_message = original_write
             admira_mcp_server.call_tool = original_call

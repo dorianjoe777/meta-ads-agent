@@ -22,6 +22,7 @@ ORIGINAL_CALL_TOOL = call_tool
 BRIDGE_PATH = Path(__file__).resolve().parent / "admira_tool_bridge.py"
 HEAVY_TOOL_NAMES = {"codex_image_generate", "codex_creative_plan", "admira_codex_image_generate", "admira_codex_creative_plan"}
 DEFAULT_HEAVY_TOOL_TIMEOUT_SECONDS = 600
+_STDIO_FRAMING = "content-length"
 
 
 TOOL_DEFINITIONS = [
@@ -235,12 +236,21 @@ def create_fastmcp_server():
 
 
 def read_message():
+    global _STDIO_FRAMING
     headers = {}
     while True:
         line = sys.stdin.buffer.readline()
         if not line:
             return None
         line = line.decode("utf-8", errors="replace").strip()
+        # Current MCP clients (including recent Hermes releases) use one
+        # JSON-RPC object per line on stdio. Older Admira/Hermes installs use
+        # the LSP-style Content-Length envelope. Supporting both keeps tools
+        # available across upgrades instead of silently leaving the model
+        # with instructions that name tools it cannot actually call.
+        if not headers and line.startswith("{"):
+            _STDIO_FRAMING = "json-lines"
+            return json.loads(line)
         if not line:
             break
         if ":" in line:
@@ -257,6 +267,10 @@ def read_message():
 
 def write_message(payload):
     body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if _STDIO_FRAMING == "json-lines":
+        sys.stdout.buffer.write(body + b"\n")
+        sys.stdout.buffer.flush()
+        return
     sys.stdout.buffer.write(f"Content-Length: {len(body)}\r\n\r\n".encode("ascii"))
     sys.stdout.buffer.write(body)
     sys.stdout.buffer.flush()
