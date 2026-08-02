@@ -988,6 +988,11 @@ def _start_gateway_locked(config):
                 [
                     f"# {_GATEWAY_PROCESS_KIND}",
                     "while :; do",
+                    f"  if ! {shlex.quote(hermes_cli)} mcp test admira >/dev/null 2>&1; then",
+                    "    echo \"[$(date -Is)] Admira tool contract unavailable; retrying before Gateway startup\"",
+                    "    sleep 15",
+                    "    continue",
+                    "  fi",
                     f"  {shlex.quote(hermes_cli)} gateway run --replace --accept-hooks",
                     "  code=$?",
                     "  echo \"[$(date -Is)] Hermes Gateway exited with code ${code}; restarting in 3s\"",

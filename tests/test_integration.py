@@ -3984,6 +3984,8 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.assert_true(not errors and len(results) == 2, "Both simultaneous onboarding requests receive a Gateway result")
             self.assert_true(len(popen_calls) == 1, "Concurrent onboarding requests start exactly one Hermes Gateway supervisor")
             self.assert_true(all(result.get("pid") == 6001 for result in results), "Concurrent callers reuse the same Gateway process")
+            supervisor_script = popen_calls[0][0][0][2] if popen_calls else ""
+            self.assert_true("mcp test admira" in supervisor_script and "continue" in supervisor_script, "Gateway refuses to start a degraded agent until the official Admira tool contract passes")
         finally:
             hermes_gateway.stop_gateway()
             hermes_gateway.shutil.which = original["which"]
