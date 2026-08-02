@@ -12,6 +12,7 @@ Use this skill when the buyer asks to generate, revise, or deliver image creativ
 - Use `mcp_admira_codex_image_generate` for actual image files.
 - Use `mcp_admira_codex_creative_plan` only for concept/prompt planning after brand/product context is ready.
 - Do not use Hermes internal image generation or mention external image APIs.
+- When Image 2/Codex is configured, never redirect the buyer to Midjourney, DALL·E, Bing, Canva, or manual generation because the tool is absent from one runtime session. Treat that as an internal product-health fault: keep the image request active, trigger/recommend the Admira update or connection recovery path, and retry the official tool after recovery. Do not turn the fault into placeholder work or another decision for the buyer unless the buyer explicitly requests that workaround.
 - For organic daily posts, use purpose `daily_social_post` or `standalone_creative`; do not require budget, launch readiness, or a campaign brief unless the buyer is actually creating an ad.
 - If the buyer asks you to create, revise, or show an image, proceed to generate/deliver it once the necessary creative inputs exist. Do not ask a redundant “quieres que la genere ahora?” unless the choice would materially change the design direction or spend/publish something.
 - A follow-up such as “crea otro”, “otro título”, “otro arrangement”, “haz una variante”, or “cámbialo” remains an image-generation/revision request. Do not reroute it into recurring-content settings, content onboarding, or approval before a new final image exists.
