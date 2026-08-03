@@ -54,6 +54,7 @@ from expert_campaign import (
     placeholder_ad_count,
     placeholder_ad_names,
     placeholder_static_ad_enabled,
+    validate_detailed_targeting_ids,
     validate_meta_targeting_selection,
 )
 from social_flow_client import SocialFlowClient, config_snapshot, send_notification
@@ -1035,6 +1036,19 @@ def validate_campaign_targeting_before_meta(campaign, client):
     validations = []
     for index, adset in enumerate(campaign.get("ad_sets") or []):
         targeting = dict((adset or {}).get("targeting") or {})
+        detailed_id_validation = validate_detailed_targeting_ids(targeting)
+        if not detailed_id_validation.get("ok"):
+            validations.append({
+                "adset_index": index,
+                "ok": False,
+                "errors": detailed_id_validation.get("errors") or [],
+            })
+            return {
+                "ok": False,
+                "code": "targeting_preflight_failed",
+                "validations": validations,
+                "message": "La segmentación detallada contiene un ID sintético o inválido; no se creó ningún objeto.",
+            }
         meta_targeting = targeting.get("meta_targeting") if isinstance(targeting.get("meta_targeting"), dict) else {}
         interests = meta_targeting.get("interests") or targeting.get("interests") or []
         selected_locations = meta_targeting.get("locations") or []

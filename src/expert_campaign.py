@@ -260,6 +260,48 @@ def validate_meta_targeting_selection(interests=None, locations=None, age_min=18
         "age_min": ages.get("age_min"),
         "age_max": ages.get("age_max"),
     }
+DETAILED_TARGETING_ID_KEYS = {
+    "interests",
+    "behaviors",
+    "demographics",
+    "life_events",
+    "industries",
+    "work_positions",
+    "education_statuses",
+    "family_statuses",
+    "relationship_statuses",
+    "excluded_interests",
+}
+
+
+def validate_detailed_targeting_ids(value):
+    """Reject fabricated IDs in interests/demographic-like targeting fields."""
+    errors = []
+
+    def walk(node, field="targeting"):
+        if isinstance(node, dict):
+            for key, child in node.items():
+                key_text = str(key or "").strip().lower()
+                if key_text in DETAILED_TARGETING_ID_KEYS:
+                    entries = child if isinstance(child, list) else [child]
+                    for entry in entries:
+                        if not isinstance(entry, dict):
+                            continue
+                        item_id = str(entry.get("id") or entry.get("key") or "").strip()
+                        if item_id and not re.fullmatch(r"[0-9]+", item_id):
+                            errors.append({
+                                "field": key_text,
+                                "code": "targeting_detail_invalid_id",
+                                "id": item_id,
+                                "message": "Detailed-targeting IDs must be numeric IDs returned by Meta.",
+                            })
+                walk(child, key_text or field)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child, field)
+
+    walk(value)
+    return {"ok": not errors, "errors": errors}
 
 
 def normalize_location_codes(value, default=None):

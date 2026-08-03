@@ -187,6 +187,7 @@ from expert_campaign import (
     placeholder_ad_names,
     placeholder_static_ad_enabled,
     requires_active_confirmation,
+    validate_detailed_targeting_ids,
     validate_meta_targeting_selection,
 )
 from signal_quality import apply_signal_quality_to_adset, review_signal_quality, signal_quality_reply
@@ -9772,6 +9773,12 @@ def create_campaign(payload):
         raise ValueError(
             "Los intereses escritos son ideas, no IDs vigentes de Meta. "
             "Busca cada uno con search_meta_targeting y vuelve a enviar targeting_interests con los IDs devueltos por Meta."
+        )
+    detailed_id_validation = validate_detailed_targeting_ids(payload)
+    if not detailed_id_validation.get("ok"):
+        first_detail_error = (detailed_id_validation.get("errors") or [{}])[0]
+        raise ValueError(
+            f"{first_detail_error.get('code') or 'targeting_detail_invalid_id'}: la segmentación detallada contiene un ID que no proviene del catálogo actual de Meta."
         )
     manual_locations = normalize_location_codes(payload.get("locations"), default=[])
     explicit_location_source = any(
