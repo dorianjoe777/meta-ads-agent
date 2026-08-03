@@ -304,6 +304,37 @@ def validate_detailed_targeting_ids(value):
     return {"ok": not errors, "errors": errors}
 
 
+def detailed_targeting_items(value):
+    """Extract Meta detailed-targeting IDs with their live catalog type."""
+    items = []
+    seen = set()
+
+    def walk(node):
+        if isinstance(node, dict):
+            for key, child in node.items():
+                key_text = str(key or "").strip().lower()
+                if key_text in DETAILED_TARGETING_ID_KEYS:
+                    entries = child if isinstance(child, list) else [child]
+                    for entry in entries:
+                        if not isinstance(entry, dict):
+                            continue
+                        item_id = str(entry.get("id") or entry.get("key") or "").strip()
+                        if not item_id:
+                            continue
+                        identity = (key_text, item_id)
+                        if identity in seen:
+                            continue
+                        seen.add(identity)
+                        items.append({"id": item_id, "type": key_text})
+                walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child)
+
+    walk(value)
+    return items
+
+
 def normalize_location_codes(value, default=None):
     """Normalize loose country/location input into Meta country codes.
 

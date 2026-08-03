@@ -8387,6 +8387,39 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         )
         self.assert_true(not result["ok"] and result["code"] == "targeting_preflight_failed", "Stale live catalog entries are blocked before Graph mutation")
 
+    def test_live_targeting_validation_rejects_stale_detailed_ids_before_mutation(self):
+        """Behaviors/demographics are validated by Meta, not only by syntax."""
+        class Config:
+            live = True
+            mode = "live"
+
+        class Client:
+            config = Config()
+            created = False
+
+            def search_meta_targeting(self, kind, query, limit=25):
+                return {"ok": True, "items": [{"id": "123", "name": "Current behavior"}]} if kind == "interest" else {"ok": True, "items": []}
+
+            def validate_meta_targeting(self, targeting_list):
+                return {"ok": False, "error": "stale_detailed_targeting_id"}
+
+            def create_campaign(self, *args, **kwargs):
+                self.created = True
+                return {"returncode": 0, "stdout": json.dumps({"id": "must-not-create"})}
+
+        result = daily_agent.validate_campaign_targeting_before_meta(
+            {
+                "ad_sets": [{
+                    "targeting": {
+                        "locations": ["CO"],
+                        "flexible_spec": [{"behaviors": [{"id": "999", "name": "Old behavior"}]}],
+                    }
+                }]
+            },
+            Client(),
+        )
+        self.assert_true(not result["ok"] and result["code"] == "targeting_preflight_failed", "Meta targeting validation blocks stale detailed IDs before Graph mutation")
+
     def test_social_flow_adset_sends_promoted_object(self):
         """Test Meta Graph ad set creation receives the selected optimization event object."""
         print("\nTesting Meta Graph Ad Set Promoted Object...")
@@ -12328,6 +12361,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.test_campaign_creation_uses_meta_targeting_selection,
             self.test_social_targeting_uses_meta_ids,
             self.test_live_targeting_preflight_rejects_stale_catalog_before_mutation,
+            self.test_live_targeting_validation_rejects_stale_detailed_ids_before_mutation,
             self.test_live_account_actions_stage_for_approval_instead_of_auto_mutating,
             self.test_social_flow_graph_api_lists_and_creates_lead_forms,
             self.test_chat_stages_and_executes_native_lead_form_creation,

@@ -46,6 +46,7 @@ from expert_campaign import (
     boolish,
     creative_source_available,
     country_name_for_code,
+    detailed_targeting_items,
     manual_creative_completion_enabled,
     normalize_age_bounds,
     normalize_budget_plan,
@@ -1049,6 +1050,25 @@ def validate_campaign_targeting_before_meta(campaign, client):
                 "validations": validations,
                 "message": "La segmentación detallada contiene un ID sintético o inválido; no se creó ningún objeto.",
             }
+        detailed_items = detailed_targeting_items(targeting)
+        if detailed_items and hasattr(client, "validate_meta_targeting"):
+            live_detail_validation = client.validate_meta_targeting(detailed_items)
+            if not isinstance(live_detail_validation, dict) or not live_detail_validation.get("ok"):
+                validations.append({
+                    "adset_index": index,
+                    "ok": False,
+                    "errors": [{
+                        "field": "detailed_targeting",
+                        "code": "targeting_detail_not_current",
+                        "details": (live_detail_validation or {}).get("error") if isinstance(live_detail_validation, dict) else "targeting_validation_failed",
+                    }],
+                })
+                return {
+                    "ok": False,
+                    "code": "targeting_preflight_failed",
+                    "validations": validations,
+                    "message": "Meta no confirmó la segmentación detallada actual; no se creó ningún objeto.",
+                }
         meta_targeting = targeting.get("meta_targeting") if isinstance(targeting.get("meta_targeting"), dict) else {}
         interests = meta_targeting.get("interests") or targeting.get("interests") or []
         selected_locations = meta_targeting.get("locations") or []

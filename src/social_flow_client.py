@@ -1388,6 +1388,30 @@ class SocialFlowClient:
                 })
         return {"ok": True, "items": items[: params["limit"]]}
 
+    def validate_meta_targeting(self, targeting_list):
+        """Validate detailed-targeting IDs against Meta's live account catalog."""
+        entries = [item for item in (targeting_list or []) if isinstance(item, dict) and item.get("id")]
+        if not entries:
+            return {"ok": True, "items": []}
+        account_id = self.normalize_ad_account_id(getattr(self.config, "ad_account_id", ""))
+        if not account_id:
+            return {"ok": False, "items": [], "error": "missing_ad_account_id"}
+        result = self.get_graph(
+            f"{account_id}/targetingvalidation",
+            {"targeting_list": entries},
+        )
+        body = result.get("body") if isinstance(result, dict) and isinstance(result.get("body"), dict) else {}
+        if not result.get("ok"):
+            return {"ok": False, "items": [], "error": body.get("error") or body}
+        rows = body.get("data") if isinstance(body.get("data"), list) else []
+        if rows:
+            invalid = [row for row in rows if isinstance(row, dict) and row.get("valid") is False]
+            return {"ok": not invalid, "items": rows, "invalid": invalid}
+        if "valid" in body:
+            return {"ok": bool(body.get("valid")), "items": [body] if isinstance(body, dict) else []}
+        # A successful empty response is not proof that the IDs are valid.
+        return {"ok": False, "items": [], "error": "targeting_validation_empty"}
+
     def update_campaign_bid_strategy(self, campaign_id, bid_strategy="LOWEST_COST_WITHOUT_CAP", approved=False):
         return self.run(["marketing", "update-campaign", campaign_id, "--bid-strategy", bid_strategy, "--json", "--yes"], live_required=True, mutation=True, approved=approved)
 
