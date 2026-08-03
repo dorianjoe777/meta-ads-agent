@@ -198,7 +198,7 @@ elif command -v shasum >/dev/null 2>&1; then
   (cd "$RELEASE_DIR" && shasum -a 256 "$ZIP_STABLE_NAME" "$ZIP_VERSIONED_NAME" "$ZIP_LEGACY_NAME" > "SHA256SUMS.txt")
 fi
 
-echo "Release ZIPs created:"
+echo "Candidate release ZIPs created (not yet stable; remote canary is still required):"
 echo "$RELEASE_DIR/$ZIP_STABLE_NAME"
 echo "$RELEASE_DIR/$ZIP_VERSIONED_NAME"
 echo "$RELEASE_DIR/$ZIP_LEGACY_NAME"
