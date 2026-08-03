@@ -36,10 +36,12 @@ out-of-band by the release operator.
      root@CANARY_HOST ~/.ssh/CANARY_IDENTITY CANARY_CONTAINER
    ```
 
-   It verifies the MCP bridge, discovers tools, asks Hermes to call an empty
-   campaign preflight exactly once, and asks it to call empty image validation
-   exactly once. Those checks must not create/edit/delete Meta objects, send a
-   Telegram message, generate media, or restart the Gateway.
+   It verifies the MCP bridge and runs one real Hermes response in a fresh,
+   temporary Hermes home. The response is bounded by a hard timeout and cannot
+   load the buyer's conversation/session cache. Those checks must not
+   create/edit/delete Meta objects, send a Telegram message, generate media,
+   or restart the Gateway. A timeout is a failed gate; never rerun it in a
+   loop on the canary.
 7. Inspect the result and container logs. If any check fails, keep the release
    off the stable registry, write the regression test, and repeat from step 1.
 8. Only after the remote canary passes may the operator publish the package to
@@ -53,6 +55,8 @@ out-of-band by the release operator.
 - A Python/MCP field, transport, SDK, auth, or packaging incompatibility
   appears.
 - Candidate version differs from the artifact version.
+- The bounded agent smoke times out, returns a different response, or leaves
+  a test process alive.
 - A check attempts a buyer-facing action or relies on an unpinned dependency.
 
 Never hot-patch a buyer installation and call that a release fix. A temporary
