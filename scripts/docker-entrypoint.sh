@@ -6,6 +6,18 @@ cd /app
 mkdir -p /app/runtime/hermes /app/runtime/codex /app/runtime/codex/generated_images /app/dashboard/data/update-snapshots /app/output /app/logs /app/brand_guides/products
 chmod 700 /app/runtime /app/runtime/hermes /app/runtime/codex /app/runtime/codex/generated_images /app/dashboard/data /app/dashboard/data/update-snapshots /app/output /app/logs || true
 
+# Older buyer installs stored the connected Hermes model and authentication in
+# dashboard/data/hermes-home. New releases isolate it under /app/runtime, but
+# an empty new home must inherit that durable state before the Gateway starts.
+# Never overwrite an already-initialized runtime home: it is authoritative once
+# the migration has happened.
+legacy_hermes_home="/app/dashboard/data/hermes-home"
+runtime_hermes_home="/app/runtime/hermes"
+if [ ! -f "$runtime_hermes_home/config.yaml" ] && [ -f "$legacy_hermes_home/config.yaml" ]; then
+  cp -a "$legacy_hermes_home/." "$runtime_hermes_home/"
+  echo "Migrated existing Hermes connection into the isolated runtime home"
+fi
+
 if [ ! -f /app/runtime/.env ]; then
   cp /app/.env.example /app/runtime/.env
   echo "Created persistent runtime .env"
