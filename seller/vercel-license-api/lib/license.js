@@ -146,11 +146,16 @@ export function signedUnlock({ licenseKey, buyerEmail, deviceId, features, plan,
 
 export function bearerAllowed(request) {
   const supplied = String(request.headers.authorization || "").replace(/^Bearer\s+/i, "");
-  const expected = String(process.env.LICENSE_ADMIN_KEY || "");
-  if (!supplied || !expected) return false;
+  const expectedValues = [
+    process.env.LICENSE_ADMIN_KEY,
+    process.env.HERMES_INSTALLER_ADMIN_KEY
+  ].map((value) => String(value || "")).filter(Boolean);
+  if (!supplied || !expectedValues.length) return false;
   const suppliedBuffer = Buffer.from(supplied);
-  const expectedBuffer = Buffer.from(expected);
-  return suppliedBuffer.length === expectedBuffer.length && timingSafeEqual(suppliedBuffer, expectedBuffer);
+  return expectedValues.some((expected) => {
+    const expectedBuffer = Buffer.from(expected);
+    return suppliedBuffer.length === expectedBuffer.length && timingSafeEqual(suppliedBuffer, expectedBuffer);
+  });
 }
 
 function canonicalForHmac(payload) {

@@ -74,7 +74,9 @@ function Install-AdmiraAccessKeeper {
     remote_refresh_command = "~/.local/bin/meta-ads-refresh-access"
   } | ConvertTo-Json | Set-Content -Path $ConfigPath -Encoding UTF8
   $TaskName = "Admira IA Cloud Access Keeper"
-  $TaskCommand = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + $ScriptPath + '" -RunKeeper'
+  # This task is a background network refresh. It must never take focus from
+  # the buyer with an empty PowerShell window every time it runs.
+  $TaskCommand = 'powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $ScriptPath + '" -RunKeeper'
   schtasks /Create /F /SC MINUTE /MO $IntervalMinutes /TN "$TaskName" /TR "$TaskCommand" | Out-Null
   if ($RunNow) { Invoke-AdmiraAccessKeeper }
   Write-Host "Admira IA access keeper installed. It checks this PC public IP every $IntervalMinutes minutes."
