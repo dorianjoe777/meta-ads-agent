@@ -1,6 +1,7 @@
 import { normalizeEntitlements, signedPortalSession, validFormat, verifyPortalSession } from "../../lib/license.js";
 import { buyerFacingImprovements, platformCards, releaseWithDiscoveredAssets } from "../../lib/download-portal.js";
-import { deviceRegistrations, readLicense, readReleases } from "../../lib/store.js";
+import { normalizeInstallationLabel, portfolioCard } from "../../lib/buyer-portfolio.js";
+import { deviceRegistrations, readLicense, readRegistry, readReleases, writeLicense } from "../../lib/store.js";
 
 const PORTAL_COOKIE = "admira_portal_session";
 
@@ -52,6 +53,34 @@ function cookieValue(request, name) {
     }
   }
   return "";
+}
+
+async function buyerPortfolio({ buyerEmail, selectedLicenseKey, channel }) {
+  const registry = await readRegistry();
+  const summaries = (Array.isArray(registry?.licenses) ? registry.licenses : [])
+    .filter((item) => String(item?.buyer_email || "").trim().toLowerCase() === buyerEmail);
+  const uniqueKeys = [...new Set(summaries.map((item) => String(item?.license_key || "").trim().toUpperCase()).filter(Boolean))];
+  if (selectedLicenseKey && !uniqueKeys.includes(selectedLicenseKey)) uniqueKeys.unshift(selectedLicenseKey);
+  const records = (await Promise.all(uniqueKeys.map((key) => readLicense(key).catch(() => null))))
+    .filter((record) => record && String(record.buyer_email || "").trim().toLowerCase() === buyerEmail)
+    .sort((left, right) => String(left.created_at || "").localeCompare(String(right.created_at || "")));
+  return records.map((record, position) => {
+    const licenseKey = String(record.license_key || "").trim().toUpperCase();
+    const entitlements = normalizeEntitlements(record);
+    const selection = record.status === "active" ? signedPortalSession({
+      licenseKey,
+      buyerEmail,
+      channel,
+      plan: entitlements.plan,
+      minutes: 30
+    }) : { token: "" };
+    return portfolioCard(record, {
+      id: `installation-${position + 1}`,
+      position,
+      selected: licenseKey === selectedLicenseKey,
+      switchToken: selection.token
+    });
+  });
 }
 
 async function portalPayload({ request, response, licenseKey, buyerEmail, channel, remember = false, detail = "Acceso confirmado." }) {
@@ -114,6 +143,7 @@ async function portalPayload({ request, response, licenseKey, buyerEmail, channe
     } else {
       clearPortalCookie(response);
     }
+    const installations = await buyerPortfolio({ buyerEmail, selectedLicenseKey: licenseKey, channel });
     return json(response, 200, {
       valid: true,
       status: "active",
@@ -126,6 +156,7 @@ async function portalPayload({ request, response, licenseKey, buyerEmail, channe
       platforms: platformCards(fullRelease),
       install_state: installState,
       cloud_installation: cloudInstallation,
+      installations,
       cloud_secrets: {}
     });
 }
@@ -159,6 +190,33 @@ export default async function handler(request, response) {
     return json(response, 405, { valid: false, status: "method_not_allowed", detail: "Metodo no permitido." });
   }
   try {
+    const action = String(request.body?.action || "").trim().toLowerCase();
+    if (action === "select_license" || action === "rename_installation") {
+      const selected = verifyPortalSession(String(request.body?.portal_token || ""));
+      if (!selected) {
+        return friendlyFailure(response, "session_expired", "Tu acceso vencio. Entra de nuevo para continuar.");
+      }
+      const buyerEmail = String(selected.buyer_email || "").trim().toLowerCase();
+      const licenseKey = String(selected.license_key || "").trim().toUpperCase();
+      const record = await readLicense(licenseKey);
+      if (!record || record.status !== "active" || String(record.buyer_email || "").trim().toLowerCase() !== buyerEmail) {
+        return friendlyFailure(response, "license_unavailable", "Esta instalacion ya no esta disponible.");
+      }
+      if (action === "rename_installation") {
+        const label = normalizeInstallationLabel(request.body?.label);
+        if (!label) return friendlyFailure(response, "label_required", "Escribe un nombre para identificar este negocio.");
+        await writeLicense({ ...record, installation_label: label, updated_at: new Date().toISOString() });
+      }
+      return portalPayload({
+        request,
+        response,
+        licenseKey,
+        buyerEmail,
+        channel: selected.channel || "stable",
+        remember: request.body?.remember_access !== false,
+        detail: action === "rename_installation" ? "Nombre guardado." : "Instalacion seleccionada."
+      });
+    }
     const {
       buyer_email: rawEmail = "",
       access_password: rawPassword = "",

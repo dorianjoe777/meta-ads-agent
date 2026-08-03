@@ -27,3 +27,19 @@ test("portal renders usable SSH key commands for Windows CMD and Mac/Linux", asy
   assert.ok(html.includes('type "%USERPROFILE%\\.ssh\\admira_ia.pub"'));
   assert.ok(!html.includes('"%USERPROFILE%.ssh"'));
 });
+
+test("portal renders a multi-license installation selector", async () => {
+  let html = "";
+  const response = {
+    setHeader() {},
+    status() { return this; },
+    send(value) { html = String(value || ""); return value; }
+  };
+  await portalHandler({ method: "GET" }, response);
+
+  assert.ok(html.includes("Mis instalaciones"));
+  assert.ok(html.includes("renderPortfolio"));
+  assert.ok(html.includes("data-installation-token"));
+  assert.ok(html.includes("rename_installation"));
+  assert.ok(!html.includes("data-license-key"));
+});

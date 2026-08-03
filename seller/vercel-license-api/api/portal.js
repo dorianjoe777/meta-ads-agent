@@ -260,6 +260,32 @@ export default async function handler(request, response) {
       background:rgba(255,255,255,.34);
     }
     .downloads.active{display:block}
+    .portfolio{
+      display:none;
+      margin-bottom:18px;
+      border:1px solid rgba(95,53,216,.16);
+      border-radius:22px;
+      padding:18px;
+      background:rgba(255,255,255,.68);
+      box-shadow:0 20px 54px rgba(85,96,132,.11),var(--glow);
+    }
+    .portfolio.active{display:block}
+    .portfolio-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
+    .portfolio h2{margin:0;font-size:25px;line-height:1.08}
+    .portfolio-head p{margin:6px 0 0;color:var(--dim);font-size:13px;line-height:1.45}
+    .portfolio-count{border-radius:999px;padding:7px 11px;background:rgba(95,53,216,.09);color:#5f35d8;font-size:12px;font-weight:950;white-space:nowrap}
+    .portfolio-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:14px}
+    .portfolio-card{border:1px solid var(--line);border-radius:17px;padding:14px;background:rgba(255,255,255,.74);box-shadow:var(--glow)}
+    .portfolio-card.selected{border-color:rgba(48,215,180,.42);box-shadow:0 0 0 3px rgba(48,215,180,.09),var(--glow)}
+    .portfolio-card strong{display:block;font-size:15px;word-break:break-word}
+    .portfolio-meta{display:flex;flex-wrap:wrap;gap:6px;margin:9px 0 11px}
+    .portfolio-meta span{border-radius:999px;padding:5px 8px;background:rgba(95,53,216,.07);color:#626a7f;font-size:11px;font-weight:850}
+    .portfolio-actions{display:flex;flex-wrap:wrap;gap:8px}
+    .portfolio-actions button,.portfolio-actions a{display:inline-flex;align-items:center;justify-content:center;min-height:38px;border-radius:11px;padding:0 11px;font-size:12px;font-weight:900;text-decoration:none}
+    .portfolio-select{flex:1;background:linear-gradient(135deg,var(--accent),var(--cyan));color:#fff}
+    .portfolio-select:disabled{background:rgba(48,215,180,.12);color:#16816f;opacity:1}
+    .portfolio-rename{border:1px solid rgba(95,53,216,.16);background:rgba(255,255,255,.72);color:#5f35d8}
+    .portfolio-open{width:100%;color:#fff;background:#171a22}
     .install-state{
       display:none;
       margin-bottom:18px;
@@ -773,6 +799,8 @@ export default async function handler(request, response) {
       .download-tools{width:100%;justify-content:stretch}
       .docker-download,.logout-btn,.version{width:100%;text-align:center}
       .state-grid{grid-template-columns:1fr}
+      .portfolio-head{flex-direction:column}
+      .portfolio-grid{grid-template-columns:1fr}
       .cloud-top{align-items:start;flex-direction:column}
       .cloud-actions{width:100%;justify-content:stretch}
       .cloud-toggle{width:100%}
@@ -818,6 +846,13 @@ export default async function handler(request, response) {
         </form>
       </div>
       <div class="downloads" id="downloads">
+        <section class="portfolio" id="portfolio" aria-label="Mis instalaciones">
+          <div class="portfolio-head">
+            <div><h2>Mis instalaciones</h2><p>Cada licencia mantiene separado su negocio, sus conexiones y su información.</p></div>
+            <span class="portfolio-count" id="portfolioCount"></span>
+          </div>
+          <div class="portfolio-grid" id="portfolioGrid"></div>
+        </section>
         <section class="install-state" id="installState"></section>
         <div class="download-head">
           <div>
@@ -928,6 +963,9 @@ export default async function handler(request, response) {
     const cloudForm = document.getElementById('cloudForm');
     const cloudResult = document.getElementById('cloudResult');
     const logoutButton = document.getElementById('logoutButton');
+    const portfolio = document.getElementById('portfolio');
+    const portfolioGrid = document.getElementById('portfolioGrid');
+    const portfolioCount = document.getElementById('portfolioCount');
     let portalToken = '';
     let cloudProgressTimer = null;
     let cloudCreatePreviewTimer = null;
@@ -1024,6 +1062,40 @@ export default async function handler(request, response) {
       improvements.innerHTML = (items || []).slice(0,3).map((item) =>
         '<div class="improvement"><strong>'+escapeHtml(buyerCopy(item.title || 'Mejora incluida'))+'</strong><span>'+escapeHtml(buyerCopy(item.body || item.impact || ''))+'</span></div>'
       ).join('');
+    }
+    function installationStatusLabel(value){
+      const labels = {
+        cloud_ready:'Cloud lista',
+        installing:'Instalando',
+        waiting_for_ip:'Conectando IP',
+        local_active:'Local activa',
+        not_started:'Sin instalar',
+        failed:'Necesita atención'
+      };
+      return labels[String(value || '')] || String(value || 'Sin instalar').replaceAll('_',' ');
+    }
+    function renderPortfolio(items){
+      const installations = Array.isArray(items) ? items : [];
+      if(installations.length < 2){
+        portfolio.classList.remove('active');
+        portfolioGrid.innerHTML = '';
+        return;
+      }
+      portfolioCount.textContent = installations.length + ' licencias';
+      portfolioGrid.innerHTML = installations.map((item) => {
+        const openUrl = safeHttpUrl(item.dashboard_url || '');
+        const selectable = Boolean(item.switch_token && item.status === 'active');
+        return '<article class="portfolio-card '+(item.selected?'selected':'')+'">' +
+          '<strong>'+escapeHtml(item.label || 'Negocio')+'</strong>' +
+          '<div class="portfolio-meta"><span>'+escapeHtml(item.license_hint || '')+'</span><span>'+escapeHtml(item.status === 'active' ? installationStatusLabel(item.installation) : 'Licencia '+item.status)+'</span><span>'+escapeHtml(item.plan || 'individual')+'</span></div>' +
+          '<div class="portfolio-actions">' +
+            '<button class="portfolio-select" type="button" data-installation-token="'+escapeHtml(item.switch_token || '')+'" '+((item.selected || !selectable)?'disabled':'')+'>'+(item.selected?'Seleccionada':(selectable?'Administrar':'No disponible'))+'</button>' +
+            (selectable?'<button class="portfolio-rename" type="button" data-rename-token="'+escapeHtml(item.switch_token || '')+'" data-current-label="'+escapeHtml(item.label || '')+'">Renombrar</button>':'') +
+            (openUrl?'<a class="portfolio-open" href="'+escapeHtml(openUrl)+'" target="_blank" rel="noreferrer">Abrir dashboard</a>':'') +
+          '</div>' +
+        '</article>';
+      }).join('');
+      portfolio.classList.add('active');
     }
     function clampProgress(value){
       const number = Number(value || 0);
@@ -1555,6 +1627,7 @@ export default async function handler(request, response) {
     }
     function renderPortalData(data){
       portalToken = data.portal_token;
+      renderPortfolio(data.installations || []);
       updateDigitalOceanTokenUi(data.cloud_secrets || {});
       version.textContent = 'Version ' + (data.version || 'stable');
       renderCards(data.platforms || []);
@@ -1572,6 +1645,36 @@ export default async function handler(request, response) {
       installState.scrollIntoView({behavior:'smooth', block:'start'});
       setStatus(installKind === 'cloud' ? 'Listo. Tu dashboard en la nube aparece abajo.' : (installKind === 'local' ? 'Listo. Detecte una instalacion local activa.' : 'Listo. Elige como instalar abajo.'));
     }
+    portfolioGrid.addEventListener('click', async (event) => {
+      const selectButton = event.target.closest('button[data-installation-token]');
+      const renameButton = event.target.closest('button[data-rename-token]');
+      const button = selectButton || renameButton;
+      if(!button || button.disabled) return;
+      const original = button.textContent;
+      button.disabled = true;
+      try{
+        if(renameButton){
+          const label = window.prompt('Nombre para identificar este negocio', renameButton.dataset.currentLabel || '');
+          if(label === null) return;
+          button.textContent = 'Guardando...';
+          const data = await postJson('/api/portal/session', { action:'rename_installation', portal_token:renameButton.dataset.renameToken, label });
+          if(!data.valid) throw new Error(data.detail || 'No pude guardar el nombre.');
+          renderPortalData(data);
+          setStatus('Nombre del negocio guardado.');
+          return;
+        }
+        button.textContent = 'Abriendo...';
+        stopCloudCreatePreview();
+        stopCloudProgressPolling(true);
+        const data = await postJson('/api/portal/session', { action:'select_license', portal_token:selectButton.dataset.installationToken, remember_access:true });
+        if(!data.valid) throw new Error(data.detail || 'No pude abrir esta instalación.');
+        renderPortalData(data);
+      }catch(error){
+        setStatus(error.message || 'No pude cambiar de instalación.', true);
+      }finally{
+        if(button.isConnected){button.disabled = false;button.textContent = original;}
+      }
+    });
     async function restorePortalSession(){
       setStatus('Revisando si ya tenias acceso guardado...');
       try{
