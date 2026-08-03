@@ -10001,6 +10001,15 @@ CAMPAIGN_CREATIVE_SOURCE_KEYS = (
 )
 
 CAMPAIGN_CREATIVE_ALIAS_KEYS = (
+    # `asset_id` is the durable, product-scoped identifier returned by
+    # codex_image_generate (for example `codex-.../fixed-01.png`).  It is
+    # intentionally not a public URL: the server resolves it to its safe
+    # local file and uploads it to Meta itself.
+    "creative_asset_id",
+    "generated_creative_asset_id",
+    "generated_image_asset_id",
+    "image_asset_id",
+    "asset_id",
     "creative_image_path_or_url_or_story_spec",
     "creative_path",
     "creative_asset",
@@ -10022,6 +10031,14 @@ CAMPAIGN_CREATIVE_ALIAS_KEYS = (
     "page_post_id",
     "post_id",
     "object_story_id",
+)
+
+CAMPAIGN_NESTED_CREATIVE_KEYS = (
+    "ads",
+    "ad_variants",
+    "creative_variants",
+    "creatives",
+    "variants",
 )
 
 CURRENCY_SYMBOL_HINTS = (
@@ -10150,12 +10167,59 @@ def campaign_status_from_text(value):
     return ""
 
 
+def campaign_creative_asset_path(asset_id):
+    """Resolve a generated creative asset ID without exposing a filesystem path.
+
+    Image 2 returns a relative asset ID and a dashboard-only preview endpoint.
+    Neither should be treated as a public CDN URL.  Campaign creation runs in
+    the same product workspace, so it can safely resolve the ID and upload the
+    local file to Meta or use it for direct publishing.
+    """
+    raw = str(asset_id or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("/api/creative-asset?"):
+        raw = (parse_qs(urlparse(raw).query).get("id") or [""])[0]
+    try:
+        return str(creative_asset_path(urllib.parse.unquote(raw)))
+    except ValueError:
+        return ""
+
+
+def nested_campaign_creative_arguments(arguments):
+    """Return the first usable creative fields supplied inside an ads[] shape.
+
+    Hermes may naturally structure a proposed stack as `{ads: [{...}]}`.  The
+    campaign API itself accepts one creative at a time, so normalize the first
+    ad deterministically instead of silently discarding its image/video.
+    """
+    for key in CAMPAIGN_NESTED_CREATIVE_KEYS:
+        entries = arguments.get(key)
+        if isinstance(entries, dict):
+            entries = [entries]
+        if not isinstance(entries, (list, tuple)):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            candidate = normalize_agent_tool_arguments(entry)
+            if any(candidate.get(field) for field in (*CAMPAIGN_CREATIVE_SOURCE_KEYS, *CAMPAIGN_CREATIVE_ALIAS_KEYS)):
+                return candidate
+    return {}
+
+
 def normalize_campaign_stack_arguments(arguments, chat_payload=None):
     """Accept the looser shapes Hermes/Telegram may send for campaign staging."""
     args = dict(arguments or {})
 
+    if not args.get("name"):
+        for key in ("campaign_name", "campaign", "campaign_title", "title"):
+            if args.get(key):
+                args["name"] = args.get(key)
+                break
+
     if not args.get("daily_budget"):
-        for key in ("campaign_daily_budget", "budget", "budget_daily", "daily_budget_usd", "daily_budget_amount", "presupuesto_diario"):
+        for key in ("campaign_daily_budget", "adset_daily_budget", "budget", "budget_daily", "daily_budget_usd", "daily_budget_amount", "presupuesto_diario"):
             if args.get(key):
                 args["daily_budget"] = args.get(key)
                 break
@@ -10260,6 +10324,43 @@ def normalize_campaign_stack_arguments(arguments, chat_payload=None):
             args["object_story_id"] = str(args.get(key) or "").strip()
             break
 
+    # Accept either the explicit Image 2 asset ID or a natural ads[] payload.
+    # This must happen before checking source keys so the local file is treated
+    # as an uploadable Meta asset, never as an inaccessible browser URL.
+    if not any(args.get(key) for key in CAMPAIGN_CREATIVE_SOURCE_KEYS):
+        for key in ("creative_asset_id", "generated_creative_asset_id", "generated_image_asset_id", "image_asset_id", "asset_id"):
+            resolved = campaign_creative_asset_path(args.get(key))
+            if resolved:
+                args["creative_image_path"] = resolved
+                break
+
+    # A dashboard preview URL is private to this installation, not a URL Meta
+    # can fetch.  If a model forwards it, recover the underlying asset ID and
+    # use the local source file instead of attempting a public-URL flow.
+    if not any(args.get(key) for key in CAMPAIGN_CREATIVE_SOURCE_KEYS if key != "image_url"):
+        resolved_preview = campaign_creative_asset_path(args.get("image_url"))
+        if resolved_preview:
+            args["creative_image_path"] = resolved_preview
+            args.pop("image_url", None)
+
+    if not any(args.get(key) for key in CAMPAIGN_CREATIVE_SOURCE_KEYS):
+        nested = nested_campaign_creative_arguments(args)
+        if nested:
+            for key in CAMPAIGN_CREATIVE_SOURCE_KEYS:
+                if nested.get(key):
+                    args[key] = nested[key]
+                    break
+            if not any(args.get(key) for key in CAMPAIGN_CREATIVE_SOURCE_KEYS):
+                for key in ("creative_asset_id", "generated_creative_asset_id", "generated_image_asset_id", "image_asset_id", "asset_id"):
+                    resolved = campaign_creative_asset_path(nested.get(key))
+                    if resolved:
+                        args["creative_image_path"] = resolved
+                        break
+            if not any(args.get(key) for key in CAMPAIGN_CREATIVE_SOURCE_KEYS):
+                nested_paths = safe_image_paths(nested)
+                if nested_paths:
+                    args["creative_image_path"] = nested_paths[0]
+
     if not any(args.get(key) for key in CAMPAIGN_CREATIVE_SOURCE_KEYS):
         safe_from_args = safe_image_paths(args)
         safe_from_chat = safe_image_paths(chat_payload or {})
@@ -10297,6 +10398,15 @@ def normalize_campaign_stack_arguments(arguments, chat_payload=None):
                             args["video_url"] = text
                         else:
                             args["image_url"] = text
+
+    # The ads app is intentionally allowed to stay in development mode.  A
+    # static image therefore always uses the separate live publishing app:
+    # local/static asset -> unpublished Page post -> object_story_id -> ad.
+    # This is not a buyer-facing choice and prevents accidental regression to
+    # the development-app direct creative route.
+    has_static_image = bool(args.get("creative_image_path") or args.get("image_url")) and not bool(args.get("video_url"))
+    if has_static_image and not args.get("object_story_id"):
+        args["use_direct_publishing"] = True
 
     return args
 

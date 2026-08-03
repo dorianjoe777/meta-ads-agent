@@ -7779,6 +7779,8 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         dashboard = load_dashboard_module()
         image_dir = ROOT_DIR / "output" / "test-stage-campaign-attachments"
         image_path = image_dir / "final-creative.png"
+        generated_asset_dir = ROOT_DIR / "output" / "creatives" / "test-stage-campaign-asset-id"
+        generated_asset_path = generated_asset_dir / "image-2-final.png"
         original_require = dashboard.require_cloud_license
         original_create = dashboard.create_campaign
         original_pending = dashboard.PENDING_FILE
@@ -7786,8 +7788,11 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         captured = []
         try:
             shutil.rmtree(image_dir, ignore_errors=True)
+            shutil.rmtree(generated_asset_dir, ignore_errors=True)
             image_dir.mkdir(parents=True, exist_ok=True)
+            generated_asset_dir.mkdir(parents=True, exist_ok=True)
             image_path.write_bytes(b"fake png")
+            generated_asset_path.write_bytes(b"fake generated png")
             dashboard.PENDING_FILE = image_dir / "pending.json"
             dashboard.ACTIONS_FILE = image_dir / "actions.json"
             dashboard.require_cloud_license = lambda *args, **kwargs: None
@@ -7820,6 +7825,45 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.assert_true(captured[0]["active_spend_confirmed"] is False, "False active-spend confirmation is preserved as an intentional paused choice")
             self.assert_true(captured[0]["use_direct_publishing"] is True, "Campaign staging accepts explicit direct-publishing intent")
             self.assert_true("MX" in captured[0]["locations"] and "CO" in captured[0]["locations"] and "US" not in captured[0]["locations"], "Campaign staging infers LATAM countries from campaign context instead of silently defaulting to US")
+
+            captured.clear()
+            image_2_asset_result = dashboard.execute_agent_tool(
+                {
+                    "tool": "create_campaign_stack",
+                    "arguments": {
+                        "campaign_name": "WhatsApp desde Image 2",
+                        "objective": "messages",
+                        "adset_daily_budget": 15,
+                        "landing_url": "https://buyer.example",
+                        "creative_asset_id": "test-stage-campaign-asset-id/image-2-final.png",
+                        "final_status": "paused",
+                        "active_spend_confirmed": False,
+                    },
+                },
+                {"language": "es"},
+            )
+            self.assert_true(image_2_asset_result.get("staged") is True and not image_2_asset_result.get("blocked"), "Campaign staging accepts an Image 2 asset ID without a public URL")
+            self.assert_true(captured[0]["name"] == "WhatsApp desde Image 2" and captured[0]["daily_budget"] == 15, "Campaign staging normalizes campaign_name and adset_daily_budget aliases")
+            self.assert_true(captured[0]["creative_image_path"] == str(generated_asset_path.resolve()), "An Image 2 asset ID resolves to the protected local upload source")
+            self.assert_true(captured[0]["use_direct_publishing"] is True, "Static Image 2 campaigns always select the dark-post publishing route")
+
+            captured.clear()
+            nested_ad_result = dashboard.execute_agent_tool(
+                {
+                    "tool": "create_campaign_stack",
+                    "arguments": {
+                        "campaign_name": "WhatsApp con ads anidados",
+                        "objective": "messages",
+                        "adset_daily_budget": 15,
+                        "landing_url": "https://buyer.example",
+                        "ads": [{"image_path": str(image_path), "headline": "Escríbenos"}],
+                        "final_status": "paused",
+                        "active_spend_confirmed": False,
+                    },
+                },
+                {"language": "es"},
+            )
+            self.assert_true(nested_ad_result.get("staged") is True and captured[0]["creative_image_path"] == str(image_path.resolve()), "Campaign staging finds a local creative inside a natural ads[] payload")
 
             captured.clear()
             campaign_budget_result = dashboard.execute_agent_tool(
@@ -7933,6 +7977,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             dashboard.PENDING_FILE = original_pending
             dashboard.ACTIONS_FILE = original_actions
             shutil.rmtree(image_dir, ignore_errors=True)
+            shutil.rmtree(generated_asset_dir, ignore_errors=True)
 
     def test_signal_quality_tool_reviews_campaign_event_readiness(self):
         """Test dashboard exposes a read-only signal-quality review tool to Hermes."""

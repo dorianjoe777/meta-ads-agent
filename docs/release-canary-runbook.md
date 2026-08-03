@@ -17,6 +17,36 @@ passphrases are stored in the repository. The maintained DigitalOcean Admira
 installation is the real canary target. Its access credentials are supplied
 out-of-band by the release operator.
 
+## Maintainer canary access profile
+
+The release operator has authorized this maintained DigitalOcean installation
+as the default real canary for every future product update. Keep its access
+material in the local operating-system keychain, never in this repository,
+shell history, test fixture, release ZIP, or command output.
+
+- DigitalOcean API-token keychain service: `Admira IA DigitalOcean canary API token`
+- SSH public-key label: `admiro-ai`
+- Expected public-key fingerprint: `SHA256:FZChXLFsPiuKNr+eELAB9s3R4OiWE2YZhw/Sk800Vbw`
+- Canary Droplet ID: `582080576`
+- Expected container: `meta-ads-agent-meta-ads-agent-1`
+
+Before every remote canary, retrieve the API credential only into the current
+process environment, for example on macOS:
+
+```bash
+export DIGITALOCEAN_TOKEN="$(security find-generic-password -a "$USER" -s 'Admira IA DigitalOcean canary API token' -w)"
+```
+
+Use the API to resolve the current public IP at runtime; do not hard-code an IP
+in a release script because Droplets can be rebuilt or reassigned.
+
+The matching **private** SSH identity must be available locally and must match
+the fingerprint above. A public key and its passphrase alone cannot establish
+SSH access. If the private identity is unavailable, stop before promotion and
+restore access through the DigitalOcean web console by re-authorizing the
+approved public key; do not bypass the remote canary or substitute a buyer
+installation.
+
 ## Required sequence
 
 1. Implement the change and add a regression test for the observed failure.
