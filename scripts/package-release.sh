@@ -148,6 +148,11 @@ from meta_action_metrics import assert_reporting_contract
 assert_reporting_contract()
 PY
 
+# A release cannot be marked shippable merely because it zips. Verify the
+# product-owned MCP transport and its compatibility contract before publishing
+# anything to the stable update channel.
+PYTHONPATH="$STAGING_DIR/src" python3 "$STAGING_DIR/scripts/release_canary.py"
+
 python3 - "$STAGING_DIR/installer/release-bootstrap.env" <<'PY'
 import os
 import sys

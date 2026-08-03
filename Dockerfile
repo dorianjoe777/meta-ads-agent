@@ -1,7 +1,8 @@
 FROM node:22-bookworm-slim
 
 ARG CODEX_CLI_VERSION=0.142.5
-ARG HERMES_AGENT_REF=a6b9597d5fb92969d605a858d5f14536e805553a
+ARG HERMES_AGENT_VERSION=0.18.0
+ARG MCP_SDK_VERSION=2.0.0
 
 ENV PYTHONUNBUFFERED=1 \
     DASHBOARD_HOST=0.0.0.0 \
@@ -20,18 +21,19 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 python3-venv python3-pip ca-certificates curl git openssl ffmpeg \
+    && apt-get install -y --no-install-recommends python3 python3-venv python3-pip ca-certificates curl git openssl ffmpeg xz-utils \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python3 /usr/local/bin/python3
 
 RUN npm install -g "@openai/codex@${CODEX_CLI_VERSION}"
 RUN python3 -m pip install --break-system-packages --no-cache-dir \
-    "mcp>=1.0.0" \
+    "mcp==${MCP_SDK_VERSION}" \
     "python-telegram-bot>=21,<22" \
     "openpyxl>=3.1,<4" \
     "pypdf>=5,<7" \
     "xlrd>=2,<3" \
-    "git+https://github.com/NousResearch/hermes-agent.git@${HERMES_AGENT_REF}"
+    "hermes-agent==${HERMES_AGENT_VERSION}" \
+    && hermes --version
 
 COPY . .
 RUN chmod +x scripts/*.sh \
