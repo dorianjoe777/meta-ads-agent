@@ -2051,6 +2051,41 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                     os.environ[key] = value
             shutil.rmtree(state_dir, ignore_errors=True)
 
+    def test_hermes_mcp_call_result_runtime_patch_supports_sdk_field_rename(self):
+        """Test Hermes' stale camelCase read works with current MCP models."""
+        print("\nTesting Hermes MCP CallToolResult Compatibility Patch...")
+
+        original_modules = {
+            "mcp": sys.modules.get("mcp"),
+            "mcp.types": sys.modules.get("mcp.types"),
+        }
+
+        class FakeCallToolResult:
+            def __init__(self, is_error=False):
+                self.is_error = is_error
+
+        fake_mcp = types.ModuleType("mcp")
+        fake_mcp.__path__ = []
+        fake_types = types.ModuleType("mcp.types")
+        fake_types.CallToolResult = FakeCallToolResult
+        try:
+            sys.modules["mcp"] = fake_mcp
+            sys.modules["mcp.types"] = fake_types
+            self.assert_true(
+                admira_hermes_runtime_patch._patch_mcp_call_result_compatibility(),
+                "Runtime patch installs the MCP result compatibility alias",
+            )
+            self.assert_true(
+                FakeCallToolResult().isError is False and FakeCallToolResult(True).isError is True,
+                "Legacy Hermes camelCase reads map to the MCP SDK's is_error field",
+            )
+        finally:
+            for key, value in original_modules.items():
+                if value is None:
+                    sys.modules.pop(key, None)
+                else:
+                    sys.modules[key] = value
+
     def test_dashboard_chatgpt_connect_action_opens_terminal(self):
         """Test the dashboard ChatGPT/Codex connection endpoint prefers an automatic terminal action."""
         print("\nTesting Dashboard ChatGPT/Codex Connect Action...")
@@ -12069,6 +12104,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.test_hermes_gateway_runtime_patch_always_attaches_generated_creatives,
             self.test_hermes_gateway_runtime_patch_extracts_inbound_video_frames,
             self.test_hermes_gateway_minimax_runtime_patch_forces_official_provider,
+            self.test_hermes_mcp_call_result_runtime_patch_supports_sdk_field_rename,
             self.test_dashboard_chatgpt_connect_action_opens_terminal,
             self.test_dashboard_chatgpt_connect_does_not_reopen_login_when_ready,
             self.test_dashboard_codex_runtime_cache_matches_verified_connection,

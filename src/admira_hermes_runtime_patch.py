@@ -1760,6 +1760,32 @@ def _patch_cron_job_execution():
     return True
 
 
+def _patch_mcp_call_result_compatibility():
+    """Bridge the MCP SDK's Python field rename without editing Hermes.
+
+    Recent MCP SDKs expose ``CallToolResult.is_error`` while Hermes 0.18 still
+    reads the old camelCase Python attribute ``isError``.  The wire protocol
+    remains camelCase, so give the installed model a read-only compatibility
+    alias before Hermes imports/uses it.  This keeps every Admira MCP tool
+    usable across the supported SDK range.
+    """
+    try:
+        from mcp.types import CallToolResult
+    except ImportError:
+        return False
+    if hasattr(CallToolResult, "isError"):
+        return True
+
+    def _legacy_is_error(self):
+        return bool(getattr(self, "is_error", False))
+
+    try:
+        setattr(CallToolResult, "isError", property(_legacy_is_error))
+    except (AttributeError, TypeError):
+        return False
+    return hasattr(CallToolResult, "isError")
+
+
 def _patch_context_truncation_notifications():
     """Keep context-size diagnostics in logs and out of buyer conversations."""
     try:
@@ -1903,6 +1929,7 @@ def _patch_telegram_update_install_callback():
 def apply():
     rate_limit_patched = _patch_gateway_rate_limit_reply()
     credential_pool_patched = _patch_credential_pool_failure_assignment()
+    mcp_result_patched = _patch_mcp_call_result_compatibility()
     minimax_patched = _patch_minimax_model_switch()
     runtime_patched = _patch_minimax_runtime_provider()
     media_patched = _patch_gateway_generated_media_delivery()
@@ -1911,4 +1938,4 @@ def apply():
     cron_run_patched = _patch_cron_job_execution()
     context_patched = _patch_context_truncation_notifications()
     telegram_update_patched = _patch_telegram_update_install_callback()
-    return bool(rate_limit_patched or credential_pool_patched or minimax_patched or runtime_patched or media_patched or video_patched or cron_create_patched or cron_run_patched or context_patched or telegram_update_patched)
+    return bool(rate_limit_patched or credential_pool_patched or mcp_result_patched or minimax_patched or runtime_patched or media_patched or video_patched or cron_create_patched or cron_run_patched or context_patched or telegram_update_patched)
