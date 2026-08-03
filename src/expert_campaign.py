@@ -100,6 +100,166 @@ def _ascii_upper(value):
 
 LATAM_ALIAS_KEYS = {_ascii_upper(item) for item in LATAM_ALIASES}
 COUNTRY_ALIAS_KEYS = {_ascii_upper(key): value for key, value in COUNTRY_CODE_ALIASES.items()}
+COUNTRY_NAME_BY_CODE = {}
+for _country_name, _country_code in COUNTRY_CODE_ALIASES.items():
+    COUNTRY_NAME_BY_CODE.setdefault(_country_code, _country_name.title())
+
+
+def country_name_for_code(code):
+    return COUNTRY_NAME_BY_CODE.get(str(code or "").strip().upper(), str(code or "").strip().upper())
+
+
+def normalize_age_bounds(value=None, age_min=None, age_max=None, default_min=18, default_max=65):
+    """Normalize all supported age shapes without silently discarding input.
+
+    Hermes may send ``age_range``, ``targeting_age_range``, ``age`` (``25-54``),
+    or flat ``min_age``/``max_age`` aliases.  Returning one canonical pair
+    prevents the Graph payload from falling back to 18–65 when a valid nested
+    value was supplied.
+    """
+    raw = value
+    if isinstance(raw, str):
+        text = raw.strip()
+        parsed = parse_jsonish(text, None)
+        if parsed is not None:
+            raw = parsed
+        else:
+            match = re.match(r"^\s*(\d{1,3})\s*[-–—]\s*(\d{1,3})\s*$", text)
+            if match:
+                raw = {"min": match.group(1), "max": match.group(2)}
+    if isinstance(raw, dict):
+        age_min = raw.get("min", raw.get("age_min", raw.get("min_age", age_min)))
+        age_max = raw.get("max", raw.get("age_max", raw.get("max_age", age_max)))
+    try:
+        minimum = int(float(default_min if age_min in (None, "") else age_min))
+        maximum = int(float(default_max if age_max in (None, "") else age_max))
+    except (TypeError, ValueError):
+        return {"ok": False, "age_min": None, "age_max": None, "error": "targeting_age_invalid"}
+    if minimum < 13 or maximum > 65 or maximum < minimum:
+        return {
+            "ok": False,
+            "age_min": minimum,
+            "age_max": maximum,
+            "error": "targeting_age_out_of_range",
+        }
+    return {"ok": True, "age_min": minimum, "age_max": maximum}
+
+
+def validate_meta_targeting_selection(interests=None, locations=None, age_min=18, age_max=65, live_search=None, verify_locations=True):
+    """Validate Meta audience selections before any campaign mutation.
+
+    ``live_search`` is optional for dry-run validation and must return either
+    normalized ``{"ok": True, "items": [...]}`` data or a failed result. When
+    present, every selected interest/location is checked against Meta's live
+    catalog immediately before staging/execution. No synthetic IDs, list-shaped
+    country values, or silent US/65 fallbacks are accepted.
+    """
+    errors = []
+    normalized_interests = []
+    normalized_locations = []
+    for item in interests or []:
+        if not isinstance(item, dict):
+            errors.append({"field": "interests", "code": "targeting_interest_invalid_shape"})
+            continue
+        interest_id = str(item.get("id") or item.get("key") or "").strip()
+        name = str(item.get("name") or "").strip()
+        if not re.fullmatch(r"[0-9]+", interest_id):
+            errors.append({
+                "field": "interests",
+                "code": "targeting_interest_invalid_id",
+                "id": interest_id,
+                "message": "Meta interest IDs must be numeric IDs returned by the live catalog.",
+            })
+            continue
+        if live_search and not name:
+            errors.append({
+                "field": "interests",
+                "code": "targeting_interest_missing_name",
+                "id": interest_id,
+                "message": "Re-search this interest in Meta before staging it.",
+            })
+            continue
+        normalized = {"id": interest_id}
+        if name:
+            normalized["name"] = name
+        if live_search:
+            result = live_search("interest", name)
+            if not isinstance(result, dict) or not result.get("ok"):
+                errors.append({"field": "interests", "code": "targeting_catalog_unavailable", "id": interest_id})
+                continue
+            rows = result.get("items") or []
+            match = next((row for row in rows if str(row.get("id") or "").strip() == interest_id), None)
+            if not match:
+                errors.append({
+                    "field": "interests",
+                    "code": "targeting_interest_not_current",
+                    "id": interest_id,
+                    "name": name,
+                    "message": "Meta no longer returned this ID for the selected interest.",
+                })
+                continue
+            normalized["name"] = str(match.get("name") or name).strip()
+        normalized_interests.append(normalized)
+
+    for item in locations or []:
+        if not isinstance(item, dict):
+            errors.append({"field": "locations", "code": "targeting_location_invalid_shape"})
+            continue
+        key = str(item.get("key") or item.get("id") or "").strip()
+        name = str(item.get("name") or item.get("label") or key).strip()
+        location_type = str(item.get("type") or item.get("location_type") or "").strip().lower()
+        country_code = str(item.get("country_code") or item.get("country") or "").strip().upper()
+        if location_type == "country" or (len(key) == 2 and key.isalpha()):
+            country_code = (country_code or key).upper()
+            if not re.fullmatch(r"[A-Z]{2}", country_code):
+                errors.append({"field": "locations", "code": "targeting_country_invalid", "value": country_code})
+                continue
+            key = country_code
+            location_type = "country"
+        elif not key or any(char in key for char in "[]{}'\""):
+            errors.append({"field": "locations", "code": "targeting_location_invalid_id", "value": key})
+            continue
+        normalized = {"key": key, "name": name, "type": location_type or "location"}
+        if country_code:
+            normalized["country_code"] = country_code
+        if live_search and verify_locations:
+            query = name if name and name != key else (country_code or key)
+            result = live_search("location", query)
+            if not isinstance(result, dict) or not result.get("ok"):
+                errors.append({"field": "locations", "code": "targeting_catalog_unavailable", "value": key})
+                continue
+            rows = result.get("items") or []
+            def location_matches(row):
+                row_key = str(row.get("key") or row.get("id") or "").strip()
+                row_country = str(row.get("country_code") or "").strip().upper()
+                return row_key == key or (country_code and row_country == country_code)
+            if not any(location_matches(row) for row in rows):
+                errors.append({
+                    "field": "locations",
+                    "code": "targeting_location_not_current",
+                    "value": key,
+                    "name": name,
+                    "message": "Meta no longer returned this location in the live catalog.",
+                })
+                continue
+        normalized_locations.append(normalized)
+
+    ages = normalize_age_bounds(age_min=age_min, age_max=age_max)
+    if not ages.get("ok"):
+        errors.append({
+            "field": "age_range",
+            "code": ages.get("error") or "targeting_age_invalid",
+            "age_min": ages.get("age_min"),
+            "age_max": ages.get("age_max"),
+        })
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "interests": normalized_interests,
+        "locations": normalized_locations,
+        "age_min": ages.get("age_min"),
+        "age_max": ages.get("age_max"),
+    }
 
 
 def normalize_location_codes(value, default=None):

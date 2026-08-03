@@ -6457,6 +6457,71 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         finally:
             dashboard.graph_get = original_graph_get
 
+    def test_targeting_validation_blocks_stale_ids_and_preserves_explicit_fields(self):
+        """Malformed IDs/default drift must be stopped before a Graph mutation."""
+        print("\nTesting Targeting Validation... ")
+        dashboard = load_dashboard_module()
+        original = {
+            "OUTPUT_DIR": dashboard.OUTPUT_DIR,
+            "CREATED_FILE": dashboard.CREATED_FILE,
+            "PENDING_FILE": dashboard.PENDING_FILE,
+            "AD_CONFIG_FILE": dashboard.AD_CONFIG_FILE,
+            "load_config": dashboard.load_config,
+        }
+        test_dir = ROOT_DIR / "output" / "test-targeting-validation"
+
+        class DryRunConfig:
+            live = False
+            mode = "dry-run"
+            meta_access_token = ""
+            ad_account_id = ""
+            meta_publishing_access_token = ""
+
+        try:
+            shutil.rmtree(test_dir, ignore_errors=True)
+            dashboard.OUTPUT_DIR = test_dir / "campaigns"
+            dashboard.CREATED_FILE = test_dir / "created.json"
+            dashboard.PENDING_FILE = test_dir / "pending.json"
+            dashboard.AD_CONFIG_FILE = test_dir / "ad-config.json"
+            dashboard.load_config = lambda: DryRunConfig()
+
+            try:
+                dashboard.create_campaign({
+                    "name": "Reject synthetic interest",
+                    "objective": "PURCHASES",
+                    "daily_budget": 15,
+                    "final_status": "PAUSED",
+                    "image_hash": "hash_existing",
+                    "targeting_interests_json": json.dumps([{"id": "6003286414oma25a", "name": "Marketing"}]),
+                    "targeting_countries": ["CO"],
+                    "age_range": {"min": 25, "max": 40},
+                })
+                rejected = False
+            except ValueError as exc:
+                rejected = "targeting_interest_invalid_id" in str(exc)
+            self.assert_true(rejected, "Synthetic interest suffix is rejected before any campaign file is created")
+
+            result = dashboard.create_campaign({
+                "name": "Preserve explicit Colombia audience",
+                "objective": "PURCHASES",
+                "daily_budget": 15,
+                "final_status": "PAUSED",
+                "image_hash": "hash_existing",
+                "targeting_countries": ["CO"],
+                "targeting_age_min": 25,
+                "targeting_age_max": 40,
+            })
+            created = dashboard.read_json(dashboard.CREATED_FILE, [])
+            campaign = created[0]["campaign"]
+            targeting = campaign["ad_sets"][0]["targeting"]
+            self.assert_true(result["payload"]["requested"]["targeting"]["locations"] == ["CO"], "Explicit target country is preserved instead of defaulting to US")
+            self.assert_true(targeting["locations"] == ["CO"], "Graph targeting payload contains the requested country code")
+            self.assert_true(targeting["age_range"] == {"min": 25, "max": 40}, "Flat targeting age aliases are preserved")
+        finally:
+            for key, value in original.items():
+                setattr(dashboard, key, value)
+            shutil.rmtree(test_dir, ignore_errors=True)
+
     def test_meta_accounts_use_graph_api_directly(self):
         """Test Meta Graph keys list and save ad accounts without a local CLI connector."""
         print("\nTesting Meta Account Graph Direct...")
@@ -8288,6 +8353,39 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             {"returncode": 0, "stdout": json.dumps({"id": "120250000000000001", "targeting": {"geo_locations": {"countries": ["CO"]}}})},
         )
         self.assert_true(not mismatch["confirmed"] and mismatch["missing_interest_ids"] == ["6001"], "Post-create targeting verification rejects HTTP success when Meta omitted the requested interest")
+
+    def test_live_targeting_preflight_rejects_stale_catalog_before_mutation(self):
+        """A current-catalog mismatch stops before create_campaign is called."""
+        print("\nTesting Live Targeting Preflight... ")
+
+        class Config:
+            live = True
+            mode = "live"
+
+        class Client:
+            config = Config()
+            created = False
+
+            def search_meta_targeting(self, kind, query, limit=25):
+                return {"ok": True, "items": []}
+
+            def create_campaign(self, *args, **kwargs):
+                self.created = True
+                return {"returncode": 0, "stdout": json.dumps({"id": "must-not-create"})}
+
+        result = daily_agent.validate_campaign_targeting_before_meta(
+            {
+                "ad_sets": [{
+                    "targeting": {
+                        "locations": ["CO"],
+                        "age_range": {"min": 25, "max": 40},
+                        "meta_targeting": {"interests": [{"id": "6001", "name": "Ecommerce"}]},
+                    }
+                }]
+            },
+            Client(),
+        )
+        self.assert_true(not result["ok"] and result["code"] == "targeting_preflight_failed", "Stale live catalog entries are blocked before Graph mutation")
 
     def test_social_flow_adset_sends_promoted_object(self):
         """Test Meta Graph ad set creation receives the selected optimization event object."""
@@ -12207,6 +12305,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.test_audience_builder_readiness,
             self.test_chat_audience_tool,
             self.test_meta_targeting_search_normalizes_options,
+            self.test_targeting_validation_blocks_stale_ids_and_preserves_explicit_fields,
             self.test_chat_saves_existing_adset_when_user_provides_it,
             self.test_chat_history_persists_and_resets,
             self.test_creative_memory_wizard_collects_and_saves_guides,
@@ -12228,6 +12327,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.test_campaign_stage_accepts_paused_false_and_attached_creative,
             self.test_campaign_creation_uses_meta_targeting_selection,
             self.test_social_targeting_uses_meta_ids,
+            self.test_live_targeting_preflight_rejects_stale_catalog_before_mutation,
             self.test_live_account_actions_stage_for_approval_instead_of_auto_mutating,
             self.test_social_flow_graph_api_lists_and_creates_lead_forms,
             self.test_chat_stages_and_executes_native_lead_form_creation,

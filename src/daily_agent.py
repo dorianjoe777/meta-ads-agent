@@ -45,13 +45,16 @@ from adset_controls import apply_placement_targeting
 from expert_campaign import (
     boolish,
     creative_source_available,
+    country_name_for_code,
     manual_creative_completion_enabled,
+    normalize_age_bounds,
     normalize_budget_plan,
     normalize_location_codes,
     normalize_status_plan,
     placeholder_ad_count,
     placeholder_ad_names,
     placeholder_static_ad_enabled,
+    validate_meta_targeting_selection,
 )
 from social_flow_client import SocialFlowClient, config_snapshot, send_notification
 
@@ -1022,6 +1025,71 @@ def verify_adset_targeting_result(requested_targeting, result):
     }
 
 
+def validate_campaign_targeting_before_meta(campaign, client):
+    """Resolve and validate every ad-set audience before create_campaign.
+
+    This is deliberately before the first Graph mutation. A stale/synthetic
+    interest ID or a malformed location therefore cannot leave an orphaned
+    campaign behind while the ad set fails later.
+    """
+    validations = []
+    for index, adset in enumerate(campaign.get("ad_sets") or []):
+        targeting = dict((adset or {}).get("targeting") or {})
+        meta_targeting = targeting.get("meta_targeting") if isinstance(targeting.get("meta_targeting"), dict) else {}
+        interests = meta_targeting.get("interests") or targeting.get("interests") or []
+        selected_locations = meta_targeting.get("locations") or []
+        if selected_locations:
+            locations = selected_locations
+        else:
+            raw_locations = targeting.get("locations")
+            normalized_locations = normalize_location_codes(raw_locations, default=[])
+            locations = [
+                {
+                    "key": code,
+                    "name": country_name_for_code(code),
+                    "type": "country",
+                    "country_code": code,
+                }
+                for code in normalized_locations
+            ]
+        age_range = targeting.get("age_range") or {}
+        age_bounds = normalize_age_bounds(
+            age_range,
+            age_min=targeting.get("age_min", targeting.get("min_age", 18)),
+            age_max=targeting.get("age_max", targeting.get("max_age", 65)),
+        )
+        if not age_bounds.get("ok"):
+            validations.append({
+                "adset_index": index,
+                "ok": False,
+                "errors": [{"field": "age_range", "code": age_bounds.get("error") or "targeting_age_invalid"}],
+            })
+            continue
+
+        live_search = None
+        if hasattr(client, "search_meta_targeting"):
+            def live_search(kind, query):
+                return client.search_meta_targeting(kind, query, limit=25)
+
+        checked = validate_meta_targeting_selection(
+            interests,
+            locations,
+            age_min=age_bounds["age_min"],
+            age_max=age_bounds["age_max"],
+            live_search=live_search,
+            verify_locations=bool(selected_locations),
+        )
+        validations.append({"adset_index": index, **checked})
+        if not checked.get("ok"):
+            return {
+                "ok": False,
+                "code": "targeting_preflight_failed",
+                "validations": validations,
+                "message": "La segmentación ya no coincide con el catálogo live de Meta; no se creó ningún objeto.",
+            }
+    return {"ok": True, "code": "targeting_preflight_passed", "validations": validations}
+
+
 def execute_lead_form_creation(path, client, approved=False):
     payload = read_json(Path(path), {})
     if not isinstance(payload, dict) or not payload:
@@ -1104,6 +1172,19 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
                 "create_placeholder_ad": placeholder_static,
                 "status_plan": status_plan,
             },
+        }
+    targeting_preflight = validate_campaign_targeting_before_meta(campaign, client)
+    if not targeting_preflight.get("ok"):
+        return {
+            "ok": False,
+            "mode": client.config.mode,
+            "executed": False,
+            "blocked": True,
+            "failed_step": "validate_targeting",
+            "reason": targeting_preflight.get("code") or "targeting_preflight_failed",
+            "message": targeting_preflight.get("message") or "La segmentación no pasó la verificación previa.",
+            "targeting_preflight": targeting_preflight,
+            "path": path,
         }
     budget_plan = campaign.get("budget_plan") or normalize_budget_plan({}, float(campaign.get("budget", {}).get("daily", 0) or 0))
     budget_level = campaign_budget_level_from_plan(campaign, budget_plan)

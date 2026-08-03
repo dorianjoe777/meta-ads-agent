@@ -1351,6 +1351,43 @@ class SocialFlowClient:
     def adset_details(self, adset_id):
         return self.run(["marketing", "adset-details", adset_id, "--json"], live_required=False)
 
+    def search_meta_targeting(self, kind, query, limit=25):
+        """Resolve a targeting phrase against Meta's current Graph catalog."""
+        normalized_kind = "location" if str(kind or "").strip().lower() in {"location", "locations", "geo", "adgeolocation"} else "interest"
+        params = {
+            "type": "adgeolocation" if normalized_kind == "location" else "adinterest",
+            "q": str(query or "").strip(),
+            "limit": max(1, min(int(limit or 25), 25)),
+        }
+        if normalized_kind == "location":
+            params["location_types"] = ["country", "region", "city"]
+        result = self.get_graph("search", params)
+        body = result.get("body") if isinstance(result, dict) and isinstance(result.get("body"), dict) else {}
+        if not result.get("ok"):
+            return {"ok": False, "items": [], "error": body.get("error") or body}
+        items = []
+        for row in body.get("data") or []:
+            if not isinstance(row, dict):
+                continue
+            if normalized_kind == "location":
+                key = str(row.get("key") or row.get("id") or "").strip()
+                country_code = str(row.get("country_code") or row.get("country") or "").strip().upper()
+                items.append({
+                    "kind": "location",
+                    "id": key,
+                    "key": key,
+                    "name": str(row.get("name") or key).strip(),
+                    "type": str(row.get("type") or row.get("location_type") or "location").strip().lower(),
+                    "country_code": country_code,
+                })
+            else:
+                items.append({
+                    "kind": "interest",
+                    "id": str(row.get("id") or "").strip(),
+                    "name": str(row.get("name") or "").strip(),
+                })
+        return {"ok": True, "items": items[: params["limit"]]}
+
     def update_campaign_bid_strategy(self, campaign_id, bid_strategy="LOWEST_COST_WITHOUT_CAP", approved=False):
         return self.run(["marketing", "update-campaign", campaign_id, "--bid-strategy", bid_strategy, "--json", "--yes"], live_required=True, mutation=True, approved=approved)
 

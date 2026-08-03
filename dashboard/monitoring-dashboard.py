@@ -175,8 +175,10 @@ from expert_campaign import (
     normalize_billing_event,
     normalize_budget_plan,
     normalize_creative_controls,
+    normalize_age_bounds,
     normalize_location_codes,
     infer_location_codes_from_context,
+    country_name_for_code,
     normalize_schedule,
     success_metric_candidates_from_text,
     normalize_success_metrics,
@@ -185,6 +187,7 @@ from expert_campaign import (
     placeholder_ad_names,
     placeholder_static_ad_enabled,
     requires_active_confirmation,
+    validate_meta_targeting_selection,
 )
 from signal_quality import apply_signal_quality_to_adset, review_signal_quality, signal_quality_reply
 from social_flow_client import SocialFlowClient
@@ -3603,6 +3606,11 @@ def meta_targeting_search(payload):
     rows = ((result.get("data") or {}).get("data") or [])[:limit]
     items = [normalize_targeting_item(row, kind) for row in rows]
     items = [item for item in items if item.get("id") or item.get("name")]
+    if kind == "interest":
+        # Meta interest IDs are decimal strings. Never expose malformed or
+        # synthetic values to Hermes/UI where they could be copied into an ad
+        # set and fail after the campaign object was already created.
+        items = [item for item in items if re.fullmatch(r"[0-9]+", str(item.get("id") or ""))]
     return {"ok": True, "kind": kind, "query": query, "items": items}
 
 
@@ -9766,6 +9774,10 @@ def create_campaign(payload):
             "Busca cada uno con search_meta_targeting y vuelve a enviar targeting_interests con los IDs devueltos por Meta."
         )
     manual_locations = normalize_location_codes(payload.get("locations"), default=[])
+    explicit_location_source = any(
+        payload.get(key) not in (None, "", [], ())
+        for key in ("locations", "targeting_countries", "targeting_locations", "countries", "country_codes")
+    )
     if not manual_locations:
         manual_locations = infer_location_codes_from_context(
             payload.get("name"),
@@ -9775,12 +9787,70 @@ def create_campaign(payload):
             payload.get("audience"),
             payload.get("target_audience"),
         )
+    if explicit_location_source and not selected_locations and not manual_locations:
+        raise ValueError(
+            "targeting_location_invalid: no pude convertir la ubicación indicada a códigos de país o selecciones reales de Meta. "
+            "Busca el país con search_meta_targeting y usa el resultado exacto."
+        )
+
+    age_bounds = normalize_age_bounds(
+        payload.get("age_range") or payload.get("targeting_age_range") or payload.get("audience_age_range") or payload.get("age"),
+        age_min=payload.get("age_min", payload.get("min_age", payload.get("targeting_age_min", 18))),
+        age_max=payload.get("age_max", payload.get("max_age", payload.get("targeting_age_max", 65))),
+    )
+    if not age_bounds.get("ok"):
+        raise ValueError(
+            f"{age_bounds.get('error') or 'targeting_age_invalid'}: usa un rango entre 13 y 65 y asegúrate de que la edad máxima no sea menor que la mínima."
+        )
+    payload["age_min"] = age_bounds["age_min"]
+    payload["age_max"] = age_bounds["age_max"]
+
+    validation_locations = selected_locations or [
+        {
+            "key": code,
+            "name": country_name_for_code(code),
+            "type": "country",
+            "country_code": code,
+        }
+        for code in manual_locations
+    ]
+    config_for_targeting = load_config()
+    live_search = None
+    if str(getattr(config_for_targeting, "meta_access_token", "") or "").strip():
+        def live_search(kind, query):
+            # Explicit country codes are stable ISO-3166 inputs and may come
+            # from a buyer rather than the picker. Meta itself validates them
+            # in the ad-set request; only picker selections need a catalog
+            # round-trip here (interest IDs always require one).
+            if kind == "location" and not selected_locations:
+                return {"ok": True, "items": [{"key": str(query or "").strip().upper(), "country_code": str(query or "").strip().upper()}]}
+            return meta_targeting_search({"kind": kind, "q": query, "limit": 25})
+
+    targeting_validation = validate_meta_targeting_selection(
+        selected_interests,
+        validation_locations,
+        age_min=payload["age_min"],
+        age_max=payload["age_max"],
+        live_search=live_search,
+        verify_locations=bool(selected_locations),
+    )
+    if not targeting_validation.get("ok"):
+        first_error = (targeting_validation.get("errors") or [{}])[0]
+        code = first_error.get("code") or "targeting_invalid"
+        raise ValueError(
+            f"{code}: la segmentación no pasó la verificación previa de Meta. "
+            "Vuelve a buscar ubicaciones/intereses en Meta y usa exactamente los resultados devueltos."
+        )
+    if selected_interests:
+        selected_interests = targeting_validation.get("interests") or selected_interests
+    if selected_locations:
+        selected_locations = targeting_validation.get("locations") or selected_locations
     interests = [item.get("name") for item in selected_interests if item.get("name")] or manual_interests
-    locations = targeting_location_values(selected_locations, manual_locations or ["US"])
+    locations = targeting_location_values(selected_locations, manual_locations or [])
     audience = creator.create_audience_targeting(
         locations=locations or ["US"],
-        age_min=int(payload.get("age_min", 18)),
-        age_max=int(payload.get("age_max", 65)),
+        age_min=payload["age_min"],
+        age_max=payload["age_max"],
         interests=interests,
     )
     audience = merge_expert_targeting(audience, payload)
@@ -10266,6 +10336,8 @@ def normalize_campaign_stack_arguments(arguments, chat_payload=None):
 
     location_source = (
         args.get("locations")
+        or args.get("targeting_countries")
+        or args.get("targeting_locations")
         or args.get("countries")
         or args.get("country_codes")
         or args.get("market")
@@ -10287,6 +10359,30 @@ def normalize_campaign_stack_arguments(arguments, chat_payload=None):
         )
     if normalized_locations:
         args["locations"] = normalized_locations
+
+    # Preserve the user's explicit geography intent.  A malformed explicit
+    # value must not disappear and silently turn into the historical US
+    # default; create_campaign will return a field-level validation error.
+    if location_source not in (None, "", [], ()) and not normalized_locations:
+        args["locations"] = []
+
+    age_value = (
+        args.get("age_range")
+        or args.get("targeting_age_range")
+        or args.get("audience_age_range")
+        or args.get("age")
+    )
+    age_bounds = normalize_age_bounds(
+        age_value,
+        age_min=args.get("age_min", args.get("min_age", args.get("targeting_age_min"))),
+        age_max=args.get("age_max", args.get("max_age", args.get("targeting_age_max"))),
+    )
+    if age_bounds.get("age_min") is not None:
+        args["age_min"] = age_bounds["age_min"]
+    if age_bounds.get("age_max") is not None:
+        args["age_max"] = age_bounds["age_max"]
+    if not age_bounds.get("ok"):
+        args["targeting_age_validation_error"] = age_bounds.get("error") or "targeting_age_invalid"
 
     confirmed = boolish(args.get("active_spend_confirmed"))
     if confirmed is not None:
@@ -12021,9 +12117,25 @@ def handle_create_campaign_stack_tool(arguments, chat_payload, tool):
             blocked=True,
             reason="missing_campaign_creation_detail",
             missing=missing,
-    )
+        )
     require_cloud_license("Campaign creation requires an active license")
-    result = create_campaign(arguments)
+    try:
+        result = create_campaign(arguments)
+    except ValueError as exc:
+        detail = str(exc)
+        reason = detail.split(":", 1)[0].strip() if ":" in detail else "campaign_targeting_validation_failed"
+        return agent_action_result(
+            tool,
+            False,
+            chat_reply(
+                chat_payload,
+                f"No creé ningún objeto en Meta porque la segmentación no pasó la verificación previa: {detail}",
+                f"I did not create anything in Meta because targeting failed preflight validation: {detail}",
+            ),
+            blocked=True,
+            reason=reason,
+            error=detail,
+        )
     if result.get("status") == "created_paused":
         reply = chat_reply(
             chat_payload,
