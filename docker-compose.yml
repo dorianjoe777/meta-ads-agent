@@ -1,9 +1,12 @@
+name: admira-ia
+
 services:
   meta-ads-agent:
     build: .
-    image: meta-ads-agent:local
+    image: admira-ia:local
+    container_name: admira-ia
     ports:
-      - "7871:7871"
+      - "0.0.0.0:${DASHBOARD_PORT:-7871}:7871"
     env_file:
       - .env
     environment:
@@ -25,6 +28,10 @@ services:
       - meta_ads_logs:/app/logs
       - meta_ads_brand_guides:/app/brand_guides
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
 volumes:
   meta_ads_config:

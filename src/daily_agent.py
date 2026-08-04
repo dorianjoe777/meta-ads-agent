@@ -451,6 +451,7 @@ def direct_publishing_missing_requirements(ad_plan, destination, client, video_i
 
 
 def create_native_page_post_for_ad(client, destination, ad_plan, link, body_text, headline, approved=False):
+    lead_gen_form_id = lead_gen_form_id_from_plan(ad_plan)
     page_post_result = client.create_page_post(
         destination.get("page_id", ""),
         message="\n\n".join([part for part in [body_text, headline] if part]),
@@ -461,6 +462,7 @@ def create_native_page_post_for_ad(client, destination, ad_plan, link, body_text
         unpublished_content_type="ADS_POST",
         cta=ad_plan.get("cta", "LEARN_MORE"),
         message_destination=message_destination_from_plan(ad_plan),
+        lead_gen_form_id=lead_gen_form_id,
         approved=approved,
     )
     object_story_id = ""
@@ -817,13 +819,16 @@ def campaign_objective_for_social(objective):
         "PURCHASES": "OUTCOME_SALES",
         "CONVERSIONS": "OUTCOME_SALES",
         "SALES": "OUTCOME_SALES",
-        "LEADS": "LEAD_GENERATION",
-        "LEAD_GENERATION": "LEAD_GENERATION",
-        "LEAD_FORM": "LEAD_GENERATION",
-        "LEAD_FORMS": "LEAD_GENERATION",
-        "INSTANT_FORM": "LEAD_GENERATION",
-        "INSTANT_FORMS": "LEAD_GENERATION",
-        "FORMS": "LEAD_GENERATION",
+        # Meta's current campaign objective enum is OUTCOME_LEADS.  The
+        # ad-set optimization goal remains LEAD_GENERATION; these are
+        # different Graph fields and must not be conflated.
+        "LEADS": "OUTCOME_LEADS",
+        "LEAD_GENERATION": "OUTCOME_LEADS",
+        "LEAD_FORM": "OUTCOME_LEADS",
+        "LEAD_FORMS": "OUTCOME_LEADS",
+        "INSTANT_FORM": "OUTCOME_LEADS",
+        "INSTANT_FORMS": "OUTCOME_LEADS",
+        "FORMS": "OUTCOME_LEADS",
         "MESSAGES": "OUTCOME_ENGAGEMENT",
         "MESSAGE": "OUTCOME_ENGAGEMENT",
         "CONVERSATIONS": "OUTCOME_ENGAGEMENT",
@@ -860,15 +865,51 @@ def message_destination_from_plan(ad_plan):
     return ""
 
 
+def whatsapp_phone_number_id_from_plan(*plans):
+    """Return a Meta WhatsApp phone-number ID from campaign context.
+
+    The human-facing phone number (for example ``+57 ...``) is not the ID
+    Meta expects in a promoted object.  Keep this resolver deliberately
+    narrow: it only accepts explicit ID-shaped fields and never mistakes a
+    display phone number for a Graph object ID.
+    """
+    keys = (
+        "whatsapp_phone_number_id",
+        "whatsapp_number_id",
+        "phone_number_id",
+        "whatsapp_phone_id",
+    )
+    for plan in plans:
+        if not isinstance(plan, dict):
+            continue
+        candidates = [plan]
+        for nested_key in ("destination", "whatsapp", "whatsapp_business", "messaging"):
+            nested = plan.get(nested_key)
+            if isinstance(nested, dict):
+                candidates.append(nested)
+        for candidate in candidates:
+            for key in keys:
+                value = str(candidate.get(key) or "").strip()
+                # Phone-number IDs are numeric Graph IDs.  Do not forward a
+                # regular phone number or an arbitrary label as this field.
+                if value.isdigit():
+                    return value
+    return ""
+
+
 def adset_optimization_goal_for_campaign(adset, campaign, lead_gen_form_id="", message_destination=""):
-    explicit = str((adset or {}).get("optimization_goal") or "").strip()
-    if explicit:
-        return SocialFlowClient.normalize_optimization_goal(explicit)
     objective = str((campaign or {}).get("objective") or "").upper()
     if lead_gen_form_id or objective in {"LEADS", "LEAD_GENERATION", "LEAD_FORM", "LEAD_FORMS", "INSTANT_FORM", "INSTANT_FORMS", "FORMS"}:
         return "LEAD_GENERATION"
+    # A stale conversion goal in an old draft must never override a
+    # click-to-message destination. Meta's Graph API uses CONVERSATIONS for
+    # these ad sets; WHATSAPP_MESSAGES is not a valid generic optimization
+    # goal enum for the current Marketing API.
     if message_destination:
         return "CONVERSATIONS"
+    explicit = str((adset or {}).get("optimization_goal") or "").strip()
+    if explicit:
+        return SocialFlowClient.normalize_optimization_goal(explicit)
     return "LINK_CLICKS"
 
 
@@ -915,8 +956,8 @@ def targeting_for_social(targeting):
         # Only structured Meta catalog selections are authoritative here. A
         # free-form interest name is an idea, not a current Meta interest ID.
         selected_interests = targeting.get("interests")
+    interests = []
     if isinstance(selected_interests, list):
-        interests = []
         for item in selected_interests:
             if not isinstance(item, dict):
                 continue
@@ -929,6 +970,20 @@ def targeting_for_social(targeting):
                 interests.append(normalized)
         if interests:
             spec["interests"] = interests
+    flexible_interest_present = False
+    for group in (targeting.get("flexible_spec") or []) if isinstance(targeting.get("flexible_spec"), list) else []:
+        if not isinstance(group, dict):
+            continue
+        if any(isinstance(item, dict) and str(item.get("id") or "").strip() for item in (group.get("interests") or [])):
+            flexible_interest_present = True
+            break
+    if not flexible_interest_present and isinstance(meta_targeting, dict):
+        for group in (meta_targeting.get("flexible_spec") or []) if isinstance(meta_targeting.get("flexible_spec"), list) else []:
+            if not isinstance(group, dict):
+                continue
+            if any(isinstance(item, dict) and str(item.get("id") or "").strip() for item in (group.get("interests") or [])):
+                flexible_interest_present = True
+                break
     automation = targeting.get("targeting_automation")
     if not isinstance(automation, dict) and isinstance(meta_targeting, dict):
         automation = meta_targeting.get("targeting_automation")
@@ -942,6 +997,12 @@ def targeting_for_social(targeting):
         advantage_value = 1
     elif targeting_mode in {"manual", "strict", "detailed", "detailed_targeting"}:
         advantage_value = 0
+    elif advantage_value is None and (interests or flexible_interest_present):
+        # Meta requires an explicit Advantage+ audience flag when detailed
+        # interest targeting is sent. In the absence of an explicit strict
+        # request, treat the interests as suggestions (the better default for
+        # cold prospecting and small tests) and let Meta expand beyond them.
+        advantage_value = 1
     if advantage_value is not None:
         spec["targeting_automation"] = {"advantage_audience": advantage_value}
     for key in ("publisher_platforms", "facebook_positions", "instagram_positions", "messenger_positions", "audience_network_positions", "threads_positions"):
@@ -1163,6 +1224,17 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
     ad_plan = dict(campaign.get("ad") or {})
     lead_gen_form_id = lead_gen_form_id_from_plan(ad_plan)
     message_destination = message_destination_from_plan(ad_plan)
+    if not message_destination:
+        # Older campaign files stored the messaging destination on the ad set
+        # or campaign object. Recover it before choosing the optimization
+        # goal, rather than silently falling back to web conversions.
+        message_destination = message_destination_from_plan(campaign)
+        if not message_destination:
+            for stored_adset in campaign.get("ad_sets", []):
+                message_destination = message_destination_from_plan(stored_adset)
+                if message_destination:
+                    break
+    whatsapp_phone_number_id = whatsapp_phone_number_id_from_plan(ad_plan, campaign, destination)
     manual_completion = manual_creative_completion_enabled(ad_plan)
     placeholder_static = placeholder_static_ad_enabled(ad_plan)
     final_status = str(ad_plan.get("final_status") or "PAUSED").upper()
@@ -1181,7 +1253,14 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         missing.append("META_AD_ACCOUNT_ID")
     if not destination.get("page_id") and not ad_plan.get("object_story_id"):
         missing.append("Facebook Page ID")
-    if not (ad_plan.get("landing_url") or destination.get("url") or ad_plan.get("object_story_spec") or ad_plan.get("object_story_id") or message_destination or lead_gen_form_id):
+    has_external_destination = bool(ad_plan.get("landing_url") or destination.get("url"))
+    if lead_gen_form_id and not has_external_destination:
+        # The development-mode-safe route promotes a native Page post. Meta
+        # rejects that lead-form creative without an external URL, so fail
+        # before creating a partial campaign instead of falling back to the
+        # Page URL and discovering it at create_ad.
+        missing.append("external landing URL for lead form ads")
+    elif not (has_external_destination or ad_plan.get("object_story_spec") or ad_plan.get("object_story_id") or message_destination):
         missing.append("landing URL")
     if not creative_source_available(ad_plan) and not (manual_completion or placeholder_static):
         missing.append("creative image path, image hash, image URL, video URL, object_story_spec, or object_story_id")
@@ -1298,8 +1377,23 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         adset_targeting = dict(adset.get("targeting") or {})
         if adset.get("placements") is not None and not adset_targeting.get("placements"):
             adset_targeting["placements"] = adset.get("placements")
+        adset_message_destination = message_destination_from_plan(adset) or message_destination
+        adset_phone_number_id = whatsapp_phone_number_id_from_plan(adset, ad_plan, campaign, destination) or whatsapp_phone_number_id
         promoted_object = SocialFlowClient.normalize_promoted_object(adset.get("promoted_object") or {})
-        if lead_gen_form_id and destination.get("page_id") and not promoted_object.get("page_id"):
+        if adset_message_destination:
+            # Do not carry a pixel/custom event from a stale web-conversion
+            # draft into a messaging ad set. Preserve only messaging object
+            # fields and add the connected Page/WhatsApp number explicitly.
+            promoted_object = {
+                key: value
+                for key, value in promoted_object.items()
+                if key in {"page_id", "whatsapp_phone_number_id", "instagram_profile_id"}
+            }
+            if destination.get("page_id") and not promoted_object.get("page_id"):
+                promoted_object["page_id"] = destination.get("page_id")
+            if adset_message_destination == "WHATSAPP" and adset_phone_number_id:
+                promoted_object["whatsapp_phone_number_id"] = adset_phone_number_id
+        elif lead_gen_form_id and destination.get("page_id") and not promoted_object.get("page_id"):
             promoted_object = {**promoted_object, "page_id": destination.get("page_id")}
         requested_targeting = targeting_for_social(adset_targeting)
         result = client.create_adset(
@@ -1316,7 +1410,14 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
             start_time=adset.get("start_time") or "",
             end_time=adset.get("end_time") or "",
             is_adset_budget_sharing_enabled=adset_budget_sharing,
-            destination_type=adset.get("destination_type") or ad_plan.get("destination_type") or SocialFlowClient.destination_type_for_message_destination(message_destination),
+            # Meta lead-form creatives are an on-ad destination. If this is
+            # omitted, Meta may create the campaign/ad set and creative but
+            # reject the final ad with "lead form ... ON_AD destination".
+            destination_type=(
+                adset.get("destination_type")
+                or ad_plan.get("destination_type")
+                or ("ON_AD" if lead_gen_form_id else SocialFlowClient.destination_type_for_message_destination(message_destination))
+            ),
             approved=approved,
         )
         adset_id = social_id_from_result(result)
@@ -1361,7 +1462,11 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
     video_id = ad_plan.get("video_id") or ""
     message_destination_link = SocialFlowClient.default_message_destination_link(message_destination, destination.get("page_id", ""))
     lead_form_link = SocialFlowClient.default_lead_form_link(destination.get("page_id", "")) if lead_gen_form_id else ""
-    link = ad_plan.get("landing_url") or message_destination_link or lead_form_link or destination.get("url", "")
+    # A lead form still needs an external destination when the development
+    # mode fallback promotes a native Page post. Prefer the campaign's real
+    # landing URL (or configured destination URL); use the Page URL only as a
+    # last-resort compatibility fallback.
+    link = ad_plan.get("landing_url") or message_destination_link or destination.get("url", "") or lead_form_link
     body_text = ad_plan.get("primary_text") or f"Conoce {campaign.get('name', 'esta oferta')}."
     headline = ad_plan.get("headline") or campaign.get("name", "Nueva oferta")
     if manual_completion and not placeholder_static:

@@ -7901,6 +7901,8 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                         "adset_daily_budget": 15,
                         "landing_url": "https://buyer.example",
                         "creative_asset_id": "test-stage-campaign-asset-id/image-2-final.png",
+                        "message_destination": "WHATSAPP",
+                        "whatsapp_phone_number_id": "573128781168",
                         "final_status": "paused",
                         "active_spend_confirmed": False,
                     },
@@ -7911,6 +7913,26 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.assert_true(captured[0]["name"] == "WhatsApp desde Image 2" and captured[0]["daily_budget"] == 15, "Campaign staging normalizes campaign_name and adset_daily_budget aliases")
             self.assert_true(captured[0]["creative_image_path"] == str(generated_asset_path.resolve()), "An Image 2 asset ID resolves to the protected local upload source")
             self.assert_true(captured[0]["use_direct_publishing"] is True, "Static Image 2 campaigns always select the dark-post publishing route")
+            self.assert_true(captured[0]["message_destination"] == "WHATSAPP" and captured[0]["whatsapp_phone_number_id"] == "573128781168", "WhatsApp staging preserves the destination and numeric phone ID for the promoted object")
+
+            captured.clear()
+            whatsapp_without_url = dashboard.execute_agent_tool(
+                {
+                    "tool": "create_campaign_stack",
+                    "arguments": {
+                        "name": "WhatsApp sin landing",
+                        "objective": "messages",
+                        "daily_budget": 15,
+                        "creative_asset_id": "test-stage-campaign-asset-id/image-2-final.png",
+                        "message_destination": "WHATSAPP",
+                        "whatsapp_phone_number_id": "573128781168",
+                        "final_status": "paused",
+                        "active_spend_confirmed": False,
+                    },
+                },
+                {"language": "es"},
+            )
+            self.assert_true(whatsapp_without_url.get("staged") is True and not whatsapp_without_url.get("blocked"), "WhatsApp staging does not require a website URL")
 
             captured.clear()
             nested_ad_result = dashboard.execute_agent_tool(
@@ -8316,6 +8338,12 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         self.assert_true(spec["geo_locations"]["cities"][0]["key"] == "2420605", "Social targeting sends selected city key")
         self.assert_true(spec["interests"][0] == {"id": "6001", "name": "Ecommerce"}, "Social targeting sends selected interest ID")
         self.assert_true(spec["targeting_automation"] == {"advantage_audience": 1}, "Social targeting sends Advantage+ audience automation with suggested interests")
+        default_interest_spec = daily_agent.targeting_for_social({"locations": ["CO"], "interests": [{"id": "6001", "name": "Ecommerce"}]})
+        strict_interest_spec = daily_agent.targeting_for_social({"locations": ["CO"], "interests": [{"id": "6001", "name": "Ecommerce"}], "targeting_mode": "manual"})
+        flexible_interest_spec = daily_agent.targeting_for_social({"locations": ["CO"], "flexible_spec": [{"interests": [{"id": "6001", "name": "Ecommerce"}]}]})
+        self.assert_true(default_interest_spec["targeting_automation"] == {"advantage_audience": 1}, "Detailed interests default to Meta's required Advantage+ suggestion flag")
+        self.assert_true(strict_interest_spec["targeting_automation"] == {"advantage_audience": 0}, "An explicit strict/manual audience keeps Advantage+ disabled")
+        self.assert_true(flexible_interest_spec["targeting_automation"] == {"advantage_audience": 1}, "Flexible detailed interests also receive Meta's required Advantage+ flag")
         self.assert_true(spec["custom_audiences"][0]["id"] == "ca_1" and spec["excluded_custom_audiences"][0]["id"] == "ca_2", "Social targeting sends custom audiences and exclusions")
         self.assert_true(spec["device_platforms"] == ["mobile"] and spec["user_os"] == ["iOS", "Android"], "Social targeting sends device and OS fields")
         self.assert_true(spec["age_min"] == 25 and spec["age_max"] == 44, "Social targeting preserves age range")
@@ -8720,6 +8748,64 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         finally:
             social_flow_client.urllib.request.urlopen = original_urlopen
 
+    def test_lead_form_listing_prefers_ads_token_when_publishing_token_lacks_permission(self):
+        """A publishing-only token must not mask a capable primary Ads token."""
+        print("\nTesting Lead Form Token Fallback...")
+
+        class FakeConfig:
+            mode = "live"
+            live = True
+            live_actions_enabled = True
+            meta_connector = "graph_api"
+            meta_access_token = "ads-token"
+            meta_publishing_access_token = "publish-token"
+            meta_graph_api_version = "v24.0"
+            ad_account_id = "act_999"
+
+        class FakeResponse:
+            status = 200
+            headers = {}
+
+            def __init__(self, body, status=200):
+                self.body = body
+                self.status = status
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps(self.body).encode("utf-8")
+
+        original_urlopen = social_flow_client.urllib.request.urlopen
+        requests = []
+
+        def fake_urlopen(request, timeout=90):
+            requests.append(request)
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(request.full_url).query)
+            token = query.get("access_token", [""])[0]
+            if "/me/accounts" in request.full_url:
+                page_token = "page-token-ads" if token == "ads-token" else "page-token-publish"
+                return FakeResponse({"data": [{"id": "page_1", "name": "Uboost Marketing", "access_token": page_token}]})
+            if "/page_1/leadgen_forms" in request.full_url:
+                if token == "page-token-publish":
+                    return FakeResponse({"error": {"message": "Requires pages_manage_ads permission", "code": 200}}, status=403)
+                return FakeResponse({"data": [{"id": "form_ads_token", "name": "Ads form"}]})
+            return FakeResponse({"id": "ok"})
+
+        try:
+            social_flow_client.urllib.request.urlopen = fake_urlopen
+            listed = SocialFlowClient(FakeConfig()).lead_forms("page_1", limit=10)
+            body = json.loads(listed.get("stdout") or "{}")
+            lead_form_request = next(request for request in requests if "/page_1/leadgen_forms" in request.full_url)
+            token = urllib.parse.parse_qs(urllib.parse.urlparse(lead_form_request.full_url).query)["access_token"][0]
+            self.assert_true(listed.get("returncode") == 0 and body["data"][0]["id"] == "form_ads_token", "Lead form listing succeeds with the capable primary Ads token")
+            self.assert_true(token == "page-token-ads", "Lead form listing does not send the publishing-only token when Ads token works")
+        finally:
+            social_flow_client.urllib.request.urlopen = original_urlopen
+
     def test_chat_stages_and_executes_native_lead_form_creation(self):
         """Test the agent can stage a native lead form from chat and approval executes it."""
         print("\nTesting Assisted Lead Form Staging and Approval...")
@@ -9039,6 +9125,19 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.assert_true(b'published' in post_body and b'false' in post_body and b'ADS_POST' in post_body, "Direct publishing creates an unpublished ads-ready Page post")
             self.assert_true(feed_fields["link"][0] == "https://uboost.lat" and attached_media[0]["media_fbid"] == "photo_1", "Static direct publishing creates a linked feed post with the uploaded image attached")
             self.assert_true(image_cta["type"] == "LEARN_MORE" and image_cta["value"]["link"] == "https://uboost.lat", "Static direct publishing includes a website URL CTA")
+            requests.clear()
+            lead_form_result = client.create_page_post(
+                "page_1",
+                message="Formulario de prueba",
+                image_path=str(image_path),
+                cta="SIGN_UP",
+                lead_gen_form_id="form_123",
+                approved=True,
+            )
+            lead_form_request = requests[-1]
+            lead_form_fields = urllib.parse.parse_qs(lead_form_request.data.decode("utf-8"))
+            lead_form_cta = json.loads(lead_form_fields["call_to_action"][0])
+            self.assert_true(lead_form_result.get("returncode") == 0 and lead_form_cta["value"]["lead_gen_form_id"] == "form_123", "Lead-form direct publishing embeds the lead_gen_form_id on the native Page post CTA")
             requests.clear()
             organic_result = client.create_page_post("page_1", message="Contenido orgánico aprobado", image_path=str(image_path), published=True, approved=True)
             organic_body = json.loads(organic_result.get("stdout") or "{}")
@@ -9610,6 +9709,8 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                             "headline": "Titular",
                             "creative_image_path": str(image_path),
                             "landing_url": "https://buyer.example",
+                            "lead_gen_form_id": "form_123",
+                            "cta": "SIGN_UP",
                             "use_direct_publishing": False,
                             "final_status": "PAUSED",
                             "active_spend_confirmed": False,
@@ -9622,8 +9723,13 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             fallback_result = execute_campaign_creation(str(campaign_path), fallback_client, approved=True)
             fallback_steps = [step.get("step") for step in fallback_result.get("steps", [])]
             fallback_retry_call = fallback_client.calls[-2]
+            fallback_page_post_call = next(call for call in fallback_client.calls if call[0] == "create_page_post")
+            fallback_adset_call = next(call for call in fallback_client.calls if call[0] == "create_adset")
             self.assert_true(fallback_result["ok"] and "create_page_post_fallback" in fallback_steps and "create_creative_retry_object_story_id" in fallback_steps, "Campaign stack falls back to unpublished Page post when Meta blocks direct creative creation for development-mode apps")
             self.assert_true(fallback_retry_call[2]["object_story_id"] == "111_999", "Development-mode fallback retries the creative with object_story_id")
+            self.assert_true(fallback_page_post_call[2]["lead_gen_form_id"] == "form_123", "Lead-form fallback carries the form ID into the native Page post")
+            self.assert_true(fallback_adset_call[2]["destination_type"] == "ON_AD", "Lead-form ad sets default to Meta's ON_AD destination")
+            self.assert_true(fallback_page_post_call[2]["link"] == "https://buyer.example", "Lead-form fallback preserves the configured external destination URL")
 
             retry_campaign_path.write_text(
                 json.dumps(
@@ -9924,12 +10030,16 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                         "name": "WhatsApp Messages Stack",
                         "objective": "MESSAGES",
                         "budget": {"daily": 20},
-                        "ad_sets": [{"name": "WhatsApp Messages Stack - Core", "targeting": {"locations": ["MX"]}, "budget": 20, "optimization_goal": "MESSAGES"}],
+                        # Deliberately leave the stale web-conversion goal in
+                        # this draft; the message destination must override it
+                        # before the first Graph mutation.
+                        "ad_sets": [{"name": "WhatsApp Messages Stack - Core", "targeting": {"locations": ["MX"]}, "budget": 20, "optimization_goal": "OFFSITE_CONVERSIONS"}],
                         "ad": {
                             "primary_text": "Escríbenos por WhatsApp",
                             "headline": "Reserva hoy",
                             "image_url": "https://cdn.example/whatsapp-ad.jpg",
                             "message_destination": "WHATSAPP",
+                            "whatsapp_phone_number_id": "573128781168",
                             "use_direct_publishing": True,
                             "final_status": "PAUSED",
                             "active_spend_confirmed": False,
@@ -9946,6 +10056,8 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.assert_true(whatsapp_result["ok"], "Click-to-WhatsApp campaign can be created without a website landing URL")
             self.assert_true(whatsapp_campaign[1][2] == "OUTCOME_ENGAGEMENT", "Click-to-WhatsApp campaign uses an engagement-compatible objective")
             self.assert_true(whatsapp_adset[2]["destination_type"] == "WHATSAPP", "Click-to-WhatsApp ad set carries the WhatsApp destination type")
+            self.assert_true(whatsapp_adset[1][5] == "CONVERSATIONS", "Click-to-WhatsApp overrides stale web-conversion optimization with Meta's Graph-valid messaging goal")
+            self.assert_true(whatsapp_adset[2]["promoted_object"] == {"page_id": "111", "whatsapp_phone_number_id": "573128781168"}, "Click-to-WhatsApp ad set carries the Page and numeric WhatsApp promoted object")
             self.assert_true(whatsapp_post[2]["message_destination"] == "WHATSAPP" and whatsapp_post[2]["link"] == "https://api.whatsapp.com/send", "Click-to-WhatsApp hidden post carries the message destination instead of requiring a website URL")
 
             campaign_path.write_text(
@@ -9974,11 +10086,11 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             lead_form_campaign = next(call for call in lead_form_client.calls if call[0] == "create_campaign")
             lead_form_adset = next(call for call in lead_form_client.calls if call[0] == "create_adset")
             lead_form_creative = next(call for call in lead_form_client.calls if call[0] == "create_creative")
-            self.assert_true(lead_form_result["ok"], "Lead form campaign can be created without a website landing URL")
+            self.assert_true(lead_form_result["ok"], "Lead form campaign can use the configured destination URL when the ad plan omits one")
             self.assert_true("create_page_post" not in lead_form_calls, "Lead form campaigns use the native lead form creative path instead of direct publishing")
-            self.assert_true(lead_form_campaign[1][2] == "LEAD_GENERATION", "Lead form campaign uses the Meta lead-generation objective")
+            self.assert_true(lead_form_campaign[1][2] == "OUTCOME_LEADS", "Lead form campaign uses Meta's current outcome-leads objective")
             self.assert_true(lead_form_adset[1][5] == "LEAD_GENERATION" and lead_form_adset[2]["promoted_object"]["page_id"] == "111", "Lead form ad set optimizes for leads and includes page_id as promoted object")
-            self.assert_true(lead_form_creative[2]["lead_gen_form_id"] == "form_123" and lead_form_creative[1][3] == "https://www.facebook.com/111", "Lead form creative receives the lead form ID and a safe Page link fallback")
+            self.assert_true(lead_form_creative[2]["lead_gen_form_id"] == "form_123" and lead_form_creative[1][3] == "https://buyer.example", "Lead form creative receives the lead form ID and configured external destination")
 
             campaign_path.write_text(
                 json.dumps(

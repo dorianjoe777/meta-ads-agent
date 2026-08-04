@@ -93,7 +93,15 @@ from creative_refresh import (
     generate_creative_refresh,
     recent_creative_refreshes,
 )
-from daily_agent import approve as approve_pending, build_action_summary, execute_campaign_creation, reject as reject_pending, run_daily as run_scheduled_daily
+from daily_agent import (
+    approve as approve_pending,
+    build_action_summary,
+    execute_campaign_creation,
+    message_destination_from_plan,
+    reject as reject_pending,
+    run_daily as run_scheduled_daily,
+    whatsapp_phone_number_id_from_plan,
+)
 from decision_memory import (
     decision_memory_payload,
     load_profitability_rules,
@@ -9872,6 +9880,8 @@ def create_campaign(payload):
     schedule = normalize_schedule(payload)
     bidding = normalize_bidding(payload)
     creative_controls = normalize_creative_controls(payload)
+    message_destination = message_destination_from_plan(payload)
+    whatsapp_phone_number_id = whatsapp_phone_number_id_from_plan(payload)
     if creative_controls.get("manual_creative_completion") or creative_controls.get("create_placeholder_ad"):
         final_status = "PAUSED"
         active_confirmed = False
@@ -9890,6 +9900,14 @@ def create_campaign(payload):
     ad_set["billing_event"] = normalize_billing_event(payload.get("billing_event"))
     if bidding:
         ad_set["bidding"] = bidding
+    if message_destination:
+        # Persist the destination on the campaign file. The executor is
+        # intentionally driven by this durable file, not the transient tool
+        # arguments, so losing it here would make a WhatsApp draft revert to
+        # the default web-conversion goal on retry.
+        ad_set["message_destination"] = message_destination
+        if whatsapp_phone_number_id:
+            ad_set["whatsapp_phone_number_id"] = whatsapp_phone_number_id
     if schedule.get("start_time"):
         ad_set["start_time"] = schedule["start_time"]
     if schedule.get("end_time"):
@@ -9927,6 +9945,9 @@ def create_campaign(payload):
         "image_hash": creative_controls["image_hash"],
         "image_url": creative_controls["image_url"],
         "video_url": creative_controls["video_url"],
+        "message_destination": message_destination,
+        "whatsapp_phone_number_id": whatsapp_phone_number_id,
+        "prefilled_message": str(payload.get("prefilled_message") or "").strip(),
         "object_story_spec": creative_controls["object_story_spec"],
         "object_story_id": creative_controls["object_story_id"],
         "use_direct_publishing": creative_controls["use_direct_publishing"],
@@ -12098,7 +12119,17 @@ def handle_create_campaign_stack_tool(arguments, chat_payload, tool):
     manual_completion = bool(creative_controls.get("manual_creative_completion"))
     placeholder_static = bool(creative_controls.get("create_placeholder_ad"))
     required = ["name", "daily_budget"]
-    if not arguments.get("object_story_id"):
+    has_message_destination = bool(message_destination_from_plan(arguments))
+    has_lead_form = bool(
+        arguments.get("lead_gen_form_id")
+        or arguments.get("lead_form_id")
+        or arguments.get("instant_form_id")
+        or arguments.get("meta_lead_form_id")
+        or arguments.get("form_id")
+    )
+    # Messaging and native lead-form ads have no website landing URL. Their
+    # destination is carried by the promoted object/CTA instead.
+    if not arguments.get("object_story_id") and not has_message_destination and not has_lead_form:
         required.append("landing_url")
     missing = [key for key in required if not arguments.get(key)]
     if not any(arguments.get(key) for key in CAMPAIGN_CREATIVE_SOURCE_KEYS) and not (manual_completion or placeholder_static):

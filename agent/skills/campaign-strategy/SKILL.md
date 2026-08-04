@@ -13,6 +13,7 @@ Use this skill before staging or launching a campaign.
 - Before recommending or staging explicit interests, call `mcp_admira_search_meta_targeting` with `kind: interest` and a useful search phrase. Choose from the live results and preserve both the returned `id` and `name`; never invent IDs or silently convert a phrase into an assumed interest.
 - Decide whether those interests should be strict detailed targeting or Advantage+ audience suggestions. For Advantage+ suggestions, pass `targeting_mode: advantage_plus` (equivalent to `targeting_automation: {"advantage_audience": 1}`) plus the exact `targeting_interests` returned by Meta.
 - Explain the strategic effect correctly: with Advantage+ audience, interests guide Meta but delivery may expand beyond them. Do not describe them as a hard audience restriction.
+- Meta requires an explicit `targeting_automation.advantage_audience` flag when detailed interests are sent. If the buyer has not asked for strict control, recommend Advantage+ suggestions (`1`) for cold prospecting and small tests because Meta can find buyers beyond the seed interests. Recommend strict manual (`0`) only when the buyer explicitly prioritizes a narrow/controlled audience, a regulated constraint, or a retargeting/exclusion rule. State this recommendation before staging; do not ask a blank “Advantage or manual?” question.
 
 ## Minimum strategy
 

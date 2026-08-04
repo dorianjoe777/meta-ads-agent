@@ -659,7 +659,19 @@ class SocialFlowClient:
         return aliases.get(raw, raw)
 
     @classmethod
-    def page_post_call_to_action(cls, cta, link, message_destination=""):
+    def page_post_call_to_action(cls, cta, link, message_destination="", lead_gen_form_id=""):
+        # Lead-form ads need the form association on the native Page post
+        # itself.  If it is only passed to the later AdCreative request, the
+        # dark post exists but Meta cannot promote it as a lead-form ad.
+        lead_form_id = str(lead_gen_form_id or "").strip()
+        if lead_form_id:
+            return json.dumps(
+                {
+                    "type": cls.normalize_call_to_action(cta or "SIGN_UP"),
+                    "value": {"lead_gen_form_id": lead_form_id},
+                },
+                ensure_ascii=False,
+            )
         destination = cls.normalize_message_destination(message_destination)
         cta_type = cls.message_destination_cta_type(destination) if destination else cls.normalize_call_to_action(cta)
         target = str(link or "").strip()
@@ -686,6 +698,7 @@ class SocialFlowClient:
         cta,
         unpublished_type,
         message_destination="",
+        lead_gen_form_id="",
         published=False,
     ):
         fields = {
@@ -699,7 +712,7 @@ class SocialFlowClient:
             fields["link"] = link
         if message:
             fields["message"] = message
-        call_to_action = self.page_post_call_to_action(cta, link, message_destination)
+        call_to_action = self.page_post_call_to_action(cta, link, message_destination, lead_gen_form_id)
         if call_to_action:
             fields["call_to_action"] = call_to_action
         return self.post_graph_form(f"{page_id}/feed", fields)
@@ -815,6 +828,7 @@ class SocialFlowClient:
                 video_url = self.flag(args, "--video-url", "")
                 cta = self.flag(args, "--call-to-action", "LEARN_MORE")
                 message_destination = self.normalize_message_destination(self.flag(args, "--message-destination", ""))
+                lead_gen_form_id = self.flag(args, "--lead-gen-form-id", "")
                 if message_destination and not link:
                     link = self.default_message_destination_link(message_destination, page_id)
                 unpublished_type = self.flag(args, "--unpublished-content-type", "ADS_POST") or "ADS_POST"
@@ -830,7 +844,7 @@ class SocialFlowClient:
                         fields["unpublished_content_type"] = unpublished_type
                     if message:
                         fields["description"] = message
-                    call_to_action = self.page_post_call_to_action(cta, link, message_destination)
+                    call_to_action = self.page_post_call_to_action(cta, link, message_destination, lead_gen_form_id)
                     if call_to_action:
                         fields["call_to_action"] = call_to_action
                     result = self.post_graph_multipart(endpoint, fields, {"source": video_path})
@@ -841,7 +855,7 @@ class SocialFlowClient:
                         fields["unpublished_content_type"] = unpublished_type
                     if message:
                         fields["description"] = message
-                    call_to_action = self.page_post_call_to_action(cta, link, message_destination)
+                    call_to_action = self.page_post_call_to_action(cta, link, message_destination, lead_gen_form_id)
                     if call_to_action:
                         fields["call_to_action"] = call_to_action
                     result = self.post_graph_form(endpoint, fields)
@@ -852,7 +866,7 @@ class SocialFlowClient:
                     # When a visible post also includes a destination link, upload the
                     # photo as an unpublished media object first. The following /feed
                     # request is the single buyer-visible post and attaches this image.
-                    photo_published = published and not (link or message_destination)
+                    photo_published = published and not (link or message_destination or lead_gen_form_id)
                     fields = {"access_token": page_token, "published": "true" if photo_published else "false"}
                     if not published and unpublished_type:
                         fields["unpublished_content_type"] = unpublished_type
@@ -861,14 +875,14 @@ class SocialFlowClient:
                     photo_result = self.post_graph_multipart(endpoint, fields, {"source": image_path})
                     photo_body = photo_result.get("body") if isinstance(photo_result.get("body"), dict) else {}
                     image_id = str(photo_body.get("id") or "").strip()
-                    if (link or message_destination) and photo_result.get("ok") and image_id:
+                    if (link or message_destination or lead_gen_form_id) and photo_result.get("ok") and image_id:
                         endpoint = f"{page_id}/feed"
-                        result = self.create_linked_image_page_post(page_id, page_token, message, link, image_id, cta, unpublished_type, message_destination, published=published)
+                        result = self.create_linked_image_page_post(page_id, page_token, message, link, image_id, cta, unpublished_type, message_destination, lead_gen_form_id, published=published)
                     else:
                         result = photo_result
                 elif image_url:
                     endpoint = f"{page_id}/photos"
-                    photo_published = published and not (link or message_destination)
+                    photo_published = published and not (link or message_destination or lead_gen_form_id)
                     fields = {"access_token": page_token, "published": "true" if photo_published else "false", "url": image_url}
                     if not published and unpublished_type:
                         fields["unpublished_content_type"] = unpublished_type
@@ -877,9 +891,9 @@ class SocialFlowClient:
                     photo_result = self.post_graph_form(endpoint, fields)
                     photo_body = photo_result.get("body") if isinstance(photo_result.get("body"), dict) else {}
                     image_id = str(photo_body.get("id") or "").strip()
-                    if (link or message_destination) and photo_result.get("ok") and image_id:
+                    if (link or message_destination or lead_gen_form_id) and photo_result.get("ok") and image_id:
                         endpoint = f"{page_id}/feed"
-                        result = self.create_linked_image_page_post(page_id, page_token, message, link, image_id, cta, unpublished_type, message_destination, published=published)
+                        result = self.create_linked_image_page_post(page_id, page_token, message, link, image_id, cta, unpublished_type, message_destination, lead_gen_form_id, published=published)
                     else:
                         result = photo_result
                 else:
@@ -891,7 +905,7 @@ class SocialFlowClient:
                         fields["message"] = message
                     if link:
                         fields["link"] = link
-                    call_to_action = self.page_post_call_to_action(cta, link, message_destination)
+                    call_to_action = self.page_post_call_to_action(cta, link, message_destination, lead_gen_form_id)
                     if call_to_action:
                         fields["call_to_action"] = call_to_action
                     result = self.post_graph_form(endpoint, fields)
@@ -926,26 +940,23 @@ class SocialFlowClient:
                 return self.graph_record(record, endpoint, result)
             if action in {"lead-forms", "create-lead-form"}:
                 page_id = self.flag(args, "--page-id", "")
-                token = str(getattr(self.config, "meta_publishing_access_token", "") or access_token or "").strip()
-                if not token:
+                # Lead forms are a Marketing API/Page Ads capability.  Do not
+                # blindly prefer the publishing-only token: installations can
+                # have a live publishing token without pages_manage_ads while
+                # the primary Ads token is the one that can read/create forms.
+                token_candidates = []
+                for candidate in (
+                    access_token,
+                    getattr(self.config, "meta_access_token", ""),
+                    getattr(self.config, "meta_publishing_access_token", ""),
+                ):
+                    candidate = str(candidate or "").strip()
+                    if candidate and candidate not in token_candidates:
+                        token_candidates.append(candidate)
+                if not token_candidates:
                     return self.graph_local_record(record, "local/meta-page-token", {"ok": False, "error": "missing_meta_page_token", "message": "Lead forms need a Page-capable token. Connect Publicación directa or a Page access token first."}, ok=False, status=1)
                 if not page_id:
                     return self.graph_local_record(record, "local/meta-lead-form", {"ok": False, "error": "missing_page_id"}, ok=False, status=1)
-                page_lookup = self.page_access_token(page_id, token)
-                if not page_lookup.get("ok"):
-                    return self.graph_local_record(
-                        record,
-                        "local/meta-lead-form",
-                        {
-                            "ok": False,
-                            "error": page_lookup.get("error") or "page_not_found",
-                            "message": "The configured Page token cannot access this Facebook Page, so it cannot list or create lead forms for it.",
-                            "lookup_methods": page_lookup.get("lookup_methods", {}),
-                        },
-                        ok=False,
-                        status=1,
-                    )
-                page_token = page_lookup.get("access_token") or token
                 endpoint = f"{page_id}/leadgen_forms"
                 if action == "lead-forms":
                     limit = self.flag(args, "--limit", "25")
@@ -953,8 +964,43 @@ class SocialFlowClient:
                         self.flag(args, "--fields", ""),
                         "id,name,status,created_time,leads_count,locale,questions",
                     )
-                    result = self.get_graph(endpoint, {"fields": fields, "limit": limit}, access_token=page_token)
-                    return self.graph_record(record, endpoint, result)
+                    last_error = None
+                    for token in token_candidates:
+                        page_lookup = self.page_access_token(page_id, token)
+                        if not page_lookup.get("ok"):
+                            last_error = page_lookup
+                            continue
+                        page_token = page_lookup.get("access_token") or token
+                        result = self.get_graph(endpoint, {"fields": fields, "limit": limit}, access_token=page_token)
+                        if result.get("ok"):
+                            return self.graph_record(record, endpoint, result)
+                        last_error = result
+                    return self.graph_record(record, endpoint, last_error or {"ok": False, "status": 1, "body": {"error": "page_not_found"}})
+
+                # For creation, probe the read edge first.  This is a safe,
+                # non-mutating permission check and prevents a publishing-only
+                # token from reaching the POST and producing a misleading
+                # pages_manage_ads error.
+                page_lookup = None
+                page_token = ""
+                permission_result = None
+                for token in token_candidates:
+                    candidate_lookup = self.page_access_token(page_id, token)
+                    if not candidate_lookup.get("ok"):
+                        permission_result = candidate_lookup
+                        continue
+                    candidate_page_token = candidate_lookup.get("access_token") or token
+                    permission_result = self.get_graph(
+                        endpoint,
+                        {"fields": "id,name", "limit": "1"},
+                        access_token=candidate_page_token,
+                    )
+                    if permission_result.get("ok"):
+                        page_lookup = candidate_lookup
+                        page_token = candidate_page_token
+                        break
+                if not page_lookup:
+                    return self.graph_record(record, endpoint, permission_result or {"ok": False, "status": 1, "body": {"error": "page_not_found"}})
 
                 name = self.flag(args, "--name", "")
                 privacy_url = self.flag(args, "--privacy-policy-url", "")
@@ -1507,6 +1553,7 @@ class SocialFlowClient:
         unpublished_content_type="ADS_POST",
         cta="LEARN_MORE",
         message_destination="",
+        lead_gen_form_id="",
         published=False,
         approved=False,
     ):
@@ -1519,6 +1566,8 @@ class SocialFlowClient:
             args.extend(["--call-to-action", cta])
         if message_destination:
             args.extend(["--message-destination", self.normalize_message_destination(message_destination)])
+        if lead_gen_form_id:
+            args.extend(["--lead-gen-form-id", lead_gen_form_id])
         if image_path:
             args.extend(["--image-path", image_path])
         if image_url:
