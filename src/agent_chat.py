@@ -381,6 +381,9 @@ def strip_technical_preamble(text):
             or "compression.codex_gpt55_autoraise" in lowered
             or ("context file" in lowered and "truncated" in lowered)
             or lowered.startswith("opt back out: hermes config set compression.")
+            or ("context compression" in lowered and ("aborted" in lowered or "failed" in lowered or "timed out" in lowered))
+            or ("context length exceeded" in lowered and ("compressing" in lowered or "cannot compress" in lowered))
+            or "cannot compress further" in lowered
         )
         if internal_runtime_notice:
             continue

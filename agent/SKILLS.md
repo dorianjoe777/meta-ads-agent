@@ -752,7 +752,7 @@ Arguments:
 {"approval_id": "approval_...", "decision": "approve"}
 ```
 
-Allowed decisions are `approve` and `reject`. Approval IDs are internal routing metadata: never invent them and never show them to the buyer. A plain `aprobado` refers to the most recent proposal/card presented; internally resolve and pass its exact ID. If an older intended decision is genuinely ambiguous, show human-readable names without IDs and ask which one.
+Allowed decisions are `approve` and `reject`. Approval IDs are internal routing metadata: never invent them and never show them to the buyer. A plain `aprobado` is valid only when it can be tied to the current proposal/card (or a direct reply to that proposal) in the current channel. If the buyer says they cannot see the card, do not guess the newest pending item and do not execute it: show the human-readable proposal again and ask them to reply to that message or use its button. If an older intended decision is genuinely ambiguous, show human-readable names without IDs and ask which one.
 
 If the approval can leave a campaign or ad active, ask for the exact buyer phrase before requesting approval:
 

@@ -57,7 +57,7 @@ Use ad set budget by default for small controlled tests. Use campaign budget/CBO
 
 ## Lead forms
 
-For native Meta Lead Ads, check existing forms when possible. If a new form is needed, gather name, questions, privacy policy URL, thank-you URL when useful, and form intent before execution.
+For native Meta Lead Ads, check existing forms when possible. If a new form is needed, gather name, questions, privacy policy URL, thank-you URL when useful, and form intent before execution. Persist the returned `lead_gen_form_id` in the campaign brief and set the campaign objective to Meta's current `OUTCOME_LEADS` (with ad-set `LEAD_GENERATION` and the Page `promoted_object`). Never let a stale `SALES`/`OUTCOME_SALES` default survive on a lead-form campaign.
 
 ## Video website ads
 

@@ -121,6 +121,9 @@ def _strip_internal_context_notices(value):
             or ("codex" in lowered and "caps context at" in lowered and "auto-compaction" in lowered)
             or "compression.codex_gpt55_autoraise" in lowered
             or lowered.startswith("opt back out: hermes config set compression.")
+            or ("context compression" in lowered and ("aborted" in lowered or "failed" in lowered or "timed out" in lowered))
+            or ("context length exceeded" in lowered and ("compressing" in lowered or "cannot compress" in lowered))
+            or "cannot compress further" in lowered
         )
         if internal:
             removed = True

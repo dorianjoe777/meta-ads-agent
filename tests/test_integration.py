@@ -1134,6 +1134,8 @@ class IntegrationTestSuite:
             compaction_notice = "ℹ Codex gpt-5.5 caps context at 272K, so auto-compaction was raised to 85% (from 50%) to use more of the window before summarizing.\n  Opt back out: hermes config set compression.codex_gpt55_autoraise false\nSeguimos con la guía de marca."
             compaction_clean = agent_chat.clean_reply(compaction_notice)
             self.assert_true(compaction_clean == "Seguimos con la guía de marca.", "Internal Codex context-compression notices are stripped before reaching buyers")
+            compression_abort = "⚠️ Context compression aborted (Request timed out.). No messages were dropped — conversation is unchanged. Run /compress to retry.\nSeguimos con la campaña."
+            self.assert_true(agent_chat.clean_reply(compression_abort) == "Seguimos con la campaña.", "Dashboard chat strips aborted context-compression diagnostics")
             truncation_notice = "⚠️ Context file AGENTS.md TRUNCATED: 68472 chars exceeds limit of 65280 — trim the file, pin a larger context_file_max_chars, or use a larger-context model!\nSeguimos con la campaña."
             self.assert_true(agent_chat.clean_reply(truncation_notice) == "Seguimos con la campaña.", "Dashboard chat never exposes internal context-file truncation indicators")
             agent_chat.hermes_chat = lambda config, payload: {"ok": True, "provider": "hermes", "reply": noisy}
@@ -1836,6 +1838,10 @@ class IntegrationTestSuite:
                 "⚠️ Context file AGENTS.md TRUNCATED: 68472 chars exceeds limit of 65280",
                 "es",
             )
+            compression_abort, compression_abort_metadata = admira_hermes_runtime_patch.normalize_telegram_outbound_text(
+                "⚠️ Context compression aborted (Request timed out.). No messages were dropped — conversation is unchanged. Run /compress to retry.",
+                "es",
+            )
             leaked_reasoning = """Voy a guardar la preferencia del operador. Para finalizar el turno, debo persistir estos datos.
 
 Las herramientas del producto MCP no están disponibles en mi conjunto de herramientas. Revisaré AGENTS.md y la memoria de Hermes.
@@ -1861,6 +1867,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.assert_true("No pude mostrar correctamente" in invisible_fallback and fallback_metadata["fallback"], "Gateway never delivers an invisible or format-only Telegram message")
             self.assert_true(context_clean == "Listo, continúo con el anuncio." and "internal_context_notice_removed" in context_metadata["reasons"], "Telegram strips context diagnostics while preserving the buyer answer")
             self.assert_true(context_only == "NO_REPLY" and context_only_metadata["suppressed"] and not context_only_metadata["fallback"], "A context-only diagnostic becomes Hermes intentional silence instead of another scary message")
+            self.assert_true(compression_abort == "NO_REPLY" and compression_abort_metadata["suppressed"], "Compression abort diagnostics stay silent in Telegram")
             self.assert_true(reasoning_clean.startswith("Perfecto.") and "MCP" not in reasoning_clean and "Hermes" not in reasoning_clean and "internal_reasoning_removed" in reasoning_metadata["reasons"], "Telegram delivers only the marked final answer when model planning leaks before a divider")
             self.assert_true(tagged_clean == "Seguimos con el público principal de la marca." and "internal_reasoning_removed" in tagged_metadata["reasons"], "Telegram removes tagged reasoning and the internal final marker")
             self.assert_true("• Base" in normalized_response["final_response"], "Gateway response normalization runs on the final response shape Hermes delivers")
@@ -10372,6 +10379,10 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             telegram_agent.reject_pending = lambda approval_id, reason="": [{"id": approval_id}]
             telegram_agent.handle_text(FakeConfig(), "12345", "Prepara una campaña", send=True)
             reply = telegram_agent.handle_text(FakeConfig(), "12345", "Prepara una campaña", send=False)
+            # The natural approval is tied to the proposal card that the
+            # buyer sees; establish that context explicitly in this legacy
+            # channel test.
+            telegram_agent.send_approval_card(FakeConfig(), "12345", fake_dashboard.pending[0])
             approved_text = telegram_agent.handle_text(FakeConfig(), "12345", "aprobado", send=False)
             pending_reply = telegram_agent.handle_text(FakeConfig(), "12345", "/pendientes", send=True)
             callback = telegram_agent.handle_update(FakeConfig(), {"callback_query": {"id": "cb_1", "data": "approve:approval_test", "message": {"chat": {"id": "12345"}}}})
@@ -10392,6 +10403,9 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                     "payload": {"campaign_name": "Campaña Activa"},
                 }
             ]
+            # Establish the same card context a buyer would have before
+            # replying to an activation request.
+            telegram_agent.send_approval_card(FakeConfig(), "12345", fake_dashboard.pending[0])
             blocked_active = telegram_agent.handle_text(FakeConfig(), "12345", "aprobado", send=False)
             approved_active = telegram_agent.handle_text(FakeConfig(), "12345", "Sí, activar", send=False)
             self.assert_true(telegram_agent.is_allowed_chat(FakeConfig(), "12345"), "Configured Telegram private chat is allowed")
@@ -10425,6 +10439,78 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                 history_path.write_text(before, encoding="utf-8")
             elif history_path.exists():
                 history_path.unlink()
+
+    def test_telegram_bare_approval_requires_card_context(self):
+        """A bare approval cannot execute a stale pending item after card delivery failed."""
+        print("\nTesting Telegram Approval Card Context Guard...")
+
+        class FakeConfig:
+            telegram_chat_id = "12345"
+            telegram_bot_token = "fake"
+            agent_chat_api_key = "configured"
+            agent_chat_provider = "hermes"
+
+        class FakeDashboard:
+            def dashboard_payload(self):
+                return {
+                    "metrics": {}, "recommendations": [], "fatigue": [],
+                    "pending": [{
+                        "id": "approval_stale",
+                        "type": "create_lead_form",
+                        "status": "pending",
+                        "payload": {"name": "Formulario de prueba"},
+                    }],
+                }
+
+        original_dashboard = telegram_agent._DASHBOARD
+        original_context_file = telegram_agent.APPROVAL_CONTEXT_FILE
+        original_send = telegram_agent.send_message
+        original_keyboard = telegram_agent.send_message_with_keyboard
+        original_approve = telegram_agent.approve_pending
+        temp_dir = ROOT_DIR / "output" / "test-telegram-approval-context"
+        try:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            telegram_agent._DASHBOARD = FakeDashboard()
+            telegram_agent.APPROVAL_CONTEXT_FILE = temp_dir / "approval-context.json"
+            telegram_agent.send_message = lambda *args, **kwargs: None
+            telegram_agent.send_message_with_keyboard = lambda *args, **kwargs: None
+            calls = []
+            telegram_agent.approve_pending = lambda approval_id: calls.append(approval_id) or [{"id": approval_id, "status": "approved", "result": {"ok": True}}]
+
+            without_card = telegram_agent.handle_text(FakeConfig(), "12345", "aprobado", send=False)
+            self.assert_true(not calls and "no ejecuté" in without_card.lower(), "Telegram does not execute a pending action without a card/reply context")
+
+            telegram_agent.send_approval_card(FakeConfig(), "12345", telegram_agent._DASHBOARD.dashboard_payload()["pending"][0])
+            with_card = telegram_agent.handle_text(FakeConfig(), "12345", "aprobado", send=False)
+            self.assert_true(calls == ["approval_stale"] and "Aprobacion ejecutada" in with_card, "Telegram executes only after the approval card establishes context")
+        finally:
+            telegram_agent._DASHBOARD = original_dashboard
+            telegram_agent.APPROVAL_CONTEXT_FILE = original_context_file
+            telegram_agent.send_message = original_send
+            telegram_agent.send_message_with_keyboard = original_keyboard
+            telegram_agent.approve_pending = original_approve
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_lead_form_alias_forces_lead_campaign_objective(self):
+        """A lead form ID must survive normalization and override stale SALES intent."""
+        print("\nTesting Lead Form Campaign Objective Normalization...")
+        dashboard = load_dashboard_module()
+        normalized = dashboard.normalize_campaign_stack_arguments({
+            "name": "Formulario de artistas",
+            "daily_budget": 19,
+            "objective": "OUTCOME_SALES",
+            "lead_form_id": "form_123",
+        })
+        self.assert_true(normalized["lead_gen_form_id"] == "form_123" and normalized["objective"] == "LEAD_FORM", "Lead form aliases are canonicalized before staging")
+        alias_objective = dashboard.normalize_campaign_stack_arguments({
+            "name": "Formulario de artistas",
+            "daily_budget": 19,
+            "campaign_objective": "LEAD_GENERATION",
+            "lead_gen_form_id": "form_123",
+        })
+        self.assert_true(alias_objective["objective"] == "LEAD_GENERATION", "Campaign objective aliases are preserved before staging")
+        self.assert_true(daily_agent.campaign_objective_for_social("OUTCOME_SALES", ad_plan={"lead_form_id": "form_123"}) == "OUTCOME_LEADS", "Lead form intent overrides stale sales objective at Graph execution")
 
     def test_telegram_codex_image_request_sends_generated_photo(self):
         """Test a Telegram creative-image request executes the Codex/Image backend tool and sends the result."""
@@ -12529,9 +12615,11 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.test_dashboard_operational_monitor_loops_resolve_env_int,
             self.test_social_flow_creates_native_page_post_for_direct_publishing,
             self.test_campaign_stack_execution_creates_full_ad_order,
+            self.test_lead_form_alias_forces_lead_campaign_objective,
             self.test_chat_stages_campaign_creation_and_requires_exact_approval,
             self.test_dashboard_chat_uses_product_actions_before_generic_agent,
             self.test_telegram_channel_routes_agent_and_blocks_approval,
+            self.test_telegram_bare_approval_requires_card_context,
             self.test_telegram_codex_image_request_sends_generated_photo,
             self.test_telegram_connection_change_resets_polling_state,
             self.test_setup_page_contains_unlock_and_trust,

@@ -444,16 +444,16 @@ def resolve_pending_from_text(chat_id, text, pending, reply_approval_id=""):
         for item in pending:
             if item.get("id") == exact:
                 return item, "exact"
-    if len(pending) == 1:
-        return pending[0], "single"
     context_id = last_approval_context(chat_id)
     if context_id:
         for item in pending:
             if item.get("id") == context_id:
                 return item, "context"
-    # Pending items are newest-first. Natural “aprobado” refers to the latest
-    # decision just presented when there is no explicit reply/card context.
-    return pending[0], "latest"
+    # A bare “aprobado” is safe only when it is tied to the approval card (or
+    # an explicit reply to that card). A pending file can contain stale,
+    # abandoned, or unrelated actions; never execute one merely because it is
+    # the only/newest record after a delivery or compression failure.
+    return None, "missing_card_context"
 
 
 def handle_text_approval(config, chat_id, text, dashboard, send=True, reply_approval_id=""):
@@ -468,7 +468,7 @@ def handle_text_approval(config, chat_id, text, dashboard, send=True, reply_appr
         return reply
     item, reason = resolve_pending_from_text(chat_id, text, pending, reply_approval_id=reply_approval_id)
     if not item:
-        reply = "Tienes varias decisiones pendientes. Responde a la tarjeta exacta con 'aprobar' o escribe /pendientes y usa el boton correcto."
+        reply = "No pude vincular ese 'aprobado' a una tarjeta pendiente. Responde al mensaje de aprobación o pide que te muestre la propuesta otra vez; no ejecuté ningún cambio."
         if send:
             send_message(config, chat_id, reply)
             send_pending_cards(config, chat_id, pending)

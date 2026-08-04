@@ -814,7 +814,32 @@ def campaign_creation_failure_result(path, campaign, client, campaign_id, failed
     return result
 
 
-def campaign_objective_for_social(objective):
+def campaign_objective_for_social(objective, campaign=None, ad_plan=None):
+    """Map durable campaign intent to Meta's current outcome enum.
+
+    Native lead-form plans must stay leads all the way to the campaign
+    endpoint. Older/model payloads sometimes left SALES on the campaign while
+    putting LEAD_GENERATION only on the ad set, which Meta rejects.
+    """
+    campaign = campaign if isinstance(campaign, dict) else {}
+    ad_plan = ad_plan if isinstance(ad_plan, dict) else {}
+    lead_form_id = lead_gen_form_id_from_plan(ad_plan)
+    raw_values = (
+        objective,
+        campaign.get("campaign_objective"),
+        campaign.get("goal"),
+        ad_plan.get("campaign_objective"),
+        ad_plan.get("objective"),
+    )
+    normalized = {str(value or "").strip().upper().replace("-", "_") for value in raw_values}
+    if lead_form_id or normalized.intersection({
+        "LEADS", "LEAD", "LEAD_GENERATION", "LEAD_FORM", "LEAD_FORMS",
+        "INSTANT_FORM", "INSTANT_FORMS", "FORMS", "OUTCOME_LEADS",
+        "OUTCOME_LEAD_GENERATION",
+    }):
+        # OUTCOME_LEADS is Meta's current Graph campaign objective. The ad-set
+        # optimization goal remains LEAD_GENERATION.
+        return "OUTCOME_LEADS"
     mapping = {
         "PURCHASES": "OUTCOME_SALES",
         "CONVERSIONS": "OUTCOME_SALES",
@@ -1373,7 +1398,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         campaign_result = client.create_campaign(
             client.config.ad_account_id,
             campaign.get("name", "New Campaign"),
-            campaign_objective_for_social(campaign.get("objective")),
+            campaign_objective_for_social(campaign.get("objective"), campaign=campaign, ad_plan=ad_plan),
             campaign_daily_budget,
             status_plan.get("campaign", "PAUSED"),
             approved=approved,

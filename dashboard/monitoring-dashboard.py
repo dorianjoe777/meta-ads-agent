@@ -9765,6 +9765,7 @@ def apply_action(payload):
 
 def create_campaign(payload):
     payload = normalize_campaign_stack_arguments(payload)
+    lead_gen_form_id = str(payload.get("lead_gen_form_id") or "").strip()
     final_status = str(payload.get("final_status") or "ACTIVE").strip().upper()
     if final_status not in {"PAUSED", "ACTIVE"}:
         final_status = "ACTIVE"
@@ -9946,6 +9947,7 @@ def create_campaign(payload):
         "image_url": creative_controls["image_url"],
         "video_url": creative_controls["video_url"],
         "message_destination": message_destination,
+        "lead_gen_form_id": lead_gen_form_id,
         "whatsapp_phone_number_id": whatsapp_phone_number_id,
         "prefilled_message": str(payload.get("prefilled_message") or "").strip(),
         "object_story_spec": creative_controls["object_story_spec"],
@@ -10309,6 +10311,24 @@ def nested_campaign_creative_arguments(arguments):
 def normalize_campaign_stack_arguments(arguments, chat_payload=None):
     """Accept the looser shapes Hermes/Telegram may send for campaign staging."""
     args = dict(arguments or {})
+
+    # Preserve every lead-form ID alias in the durable campaign contract.
+    # Otherwise a model can send `lead_form_id` while the saved ad keeps the
+    # generic SALES objective, causing Meta to reject a LEAD_GENERATION ad set.
+    for key in ("lead_gen_form_id", "lead_form_id", "instant_form_id", "meta_lead_form_id", "form_id"):
+        value = str(args.get(key) or "").strip()
+        if value:
+            args["lead_gen_form_id"] = value
+            break
+    if not args.get("objective"):
+        for key in ("campaign_objective", "goal", "result_type", "campaign_goal"):
+            if args.get(key):
+                args["objective"] = args.get(key)
+                break
+    if args.get("lead_gen_form_id"):
+        objective = str(args.get("objective") or args.get("campaign_objective") or "").strip().upper().replace("-", "_")
+        if objective in {"", "SALES", "PURCHASES", "CONVERSIONS", "OUTCOME_SALES"}:
+            args["objective"] = "LEAD_FORM"
 
     if not args.get("name"):
         for key in ("campaign_name", "campaign", "campaign_title", "title"):
