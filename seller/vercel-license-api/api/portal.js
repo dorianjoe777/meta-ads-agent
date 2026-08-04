@@ -1020,6 +1020,7 @@ export default async function handler(request, response) {
     let cloudResetInProgress = false;
     let cloudDeleteInProgress = false;
     let cloudHasExistingInstall = false;
+    let cloudInstallRequestId = '';
 
     function setStatus(message, isError = false){
       statusBox.textContent = message || '';
@@ -1095,14 +1096,37 @@ export default async function handler(request, response) {
         .replaceAll('licencias-admira-ia.uboost.lat/descargas', 'admiraia.uboost.lat/access')
         .replaceAll('licencias-admira-ia.uboost.lat', 'admiraia.uboost.lat');
     }
-    async function postJson(url, body){
-      const response = await fetch(url, {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        credentials:'same-origin',
-        cache:'no-store',
-        body:JSON.stringify(body)
-      });
+    function ensureCloudInstallRequestId(){
+      if(cloudInstallRequestId) return cloudInstallRequestId;
+      const random = (window.crypto && typeof window.crypto.randomUUID === 'function')
+        ? window.crypto.randomUUID()
+        : ('cloud-'+Date.now()+'-'+Math.random().toString(36).slice(2,12));
+      cloudInstallRequestId = String(random).toLowerCase().replace(/[^a-z0-9-]/g,'').slice(0,48);
+      return cloudInstallRequestId;
+    }
+    async function postJson(url, body, timeoutMs = 35000){
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(), Math.max(5000, Number(timeoutMs) || 35000));
+      let response;
+      try{
+        response = await fetch(url, {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          credentials:'same-origin',
+          cache:'no-store',
+          body:JSON.stringify(body),
+          signal:controller.signal
+        });
+      }catch(error){
+        if(error && error.name === 'AbortError'){
+          const timeout = new Error('La solicitud sigue procesándose. No pulses crear otra vez; seguiré revisando el mismo servidor.');
+          timeout.code = 'request_timeout';
+          throw timeout;
+        }
+        throw error;
+      }finally{
+        window.clearTimeout(timer);
+      }
       const data = await response.json().catch(() => ({}));
       if(!response.ok) throw new Error(data.detail || data.error || 'No se pudo completar la solicitud.');
       return data;
@@ -1167,6 +1191,7 @@ export default async function handler(request, response) {
       if(data.ready || data.status === 'ready') return 'Dashboard listo';
       const stage = String(data.stage || data.status || '').replaceAll('_',' ');
       if(stage.includes('detenida') || stage.includes('failed')) return 'Instalacion detenida';
+      if(stage.includes('enviando') || stage.includes('solicitud')) return 'Enviando solicitud';
       if(stage.includes('creando')) return 'Creando servidor';
       if(stage.includes('ip')) return 'Esperando IP';
       if(stage.includes('paquetes')) return 'Preparando sistema';
@@ -1291,17 +1316,17 @@ export default async function handler(request, response) {
       }, 5000);
     }
     function renderCloudCreatePreview(progress = 8){
-      const progressData = { status:'creating_request', stage:'creando_servidor', progress };
+      const progressData = { status:'creating_request', stage:'enviando_solicitud', progress };
       downloadTitle.textContent = 'Creando tu servidor';
-      downloadSubtitle.textContent = 'Estoy pidiendo a DigitalOcean que cree el Droplet y deje lista la instalacion.';
+      downloadSubtitle.textContent = 'Estoy enviando una solicitud segura a DigitalOcean y guardando su identificador para no duplicar servidores.';
       installState.innerHTML =
         '<h2>Creando tu servidor cloud</h2>' +
         '<p>No cierres esta pagina. Primero DigitalOcean crea el servidor; despues Admira IA se instala solo y aqui aparecera el boton para entrar.</p>' +
         '<div class="state-grid">' +
           '<div class="state-card">' +
-            '<span class="state-pill pending">Creacion iniciada</span>' +
-            '<strong>DigitalOcean esta preparando tu Droplet</strong>' +
-            '<p>Este primer paso puede tardar unos segundos. Luego veras el avance real de instalacion.</p>' +
+            '<span class="state-pill pending">Solicitud enviada</span>' +
+            '<strong>DigitalOcean esta recibiendo tu Droplet</strong>' +
+            '<p>El identificador queda guardado. Si la red tarda, no se creara otro servidor por accidente.</p>' +
             cloudProgressMarkup(progressData) +
           '</div>' +
           '<div class="state-card">' +
@@ -1312,10 +1337,10 @@ export default async function handler(request, response) {
         '</div>';
       installState.classList.add('active');
       cloudResult.innerHTML =
-        '<strong>Creando tu servidor en DigitalOcean.</strong>' +
-        '<p>Ya empece. Puedes dejar esta pagina abierta; la barra se actualiza sola.</p>' +
+        '<strong>Solicitud enviada a DigitalOcean.</strong>' +
+        '<p>Puedes dejar esta pagina abierta; la barra se actualiza con el estado real.</p>' +
         cloudProgressMarkup(progressData) +
-        '<span class="cloud-open-button pending" aria-disabled="true">Creando servidor...</span>';
+        '<span class="cloud-open-button pending" aria-disabled="true">Esperando confirmacion...</span>';
       cloudResult.classList.add('active');
     }
     function startCloudCreatePreview(){
@@ -1625,6 +1650,7 @@ export default async function handler(request, response) {
           setStatus(data.detail || 'No pude limpiar esa instalacion.', true);
           return;
         }
+        cloudInstallRequestId = '';
         cloudResult.classList.remove('active');
         cloudResult.innerHTML = '';
         renderInstallState(data);
@@ -1668,6 +1694,7 @@ export default async function handler(request, response) {
           setStatus(data.detail || 'No pude borrar ese servidor.', true);
           return;
         }
+        cloudInstallRequestId = '';
         cloudResult.classList.remove('active');
         cloudResult.innerHTML = '';
         renderInstallState(data);
@@ -1846,6 +1873,7 @@ export default async function handler(request, response) {
       }
       button.textContent = 'Creando servidor...';
       const expectedVersion = ++cloudStateVersion;
+      ensureCloudInstallRequestId();
       startCloudCreatePreview();
       installState.scrollIntoView({behavior:'smooth', block:'start'});
       setStatus('Creando tu servidor en DigitalOcean...');
@@ -1857,7 +1885,8 @@ export default async function handler(request, response) {
           digitalocean_token: digitalOceanToken,
           ssh_public_key: document.getElementById('sshPublicKey').value,
           region: document.getElementById('cloudRegion').value,
-          size: document.getElementById('cloudSize').value
+          size: document.getElementById('cloudSize').value,
+          install_request_id: cloudInstallRequestId
         });
         if(expectedVersion !== cloudStateVersion) return;
         stopCloudCreatePreview();
@@ -1875,9 +1904,15 @@ export default async function handler(request, response) {
       }catch(error){
         if(expectedVersion !== cloudStateVersion) return;
         stopCloudCreatePreview();
-        cloudResult.textContent = error.message || 'No pude crear el servidor.';
-        cloudResult.classList.add('active');
-        setStatus(error.message || 'No pude crear el servidor.', true);
+        if(error && error.code === 'request_timeout'){
+          renderCloudCreatePreview(12);
+          setStatus(error.message || 'La solicitud sigue procesándose.');
+          startCloudProgressPolling();
+        }else{
+          cloudResult.textContent = error.message || 'No pude crear el servidor.';
+          cloudResult.classList.add('active');
+          setStatus(error.message || 'No pude crear el servidor.', true);
+        }
       }finally{
         button.textContent = original;
         button.disabled = false;

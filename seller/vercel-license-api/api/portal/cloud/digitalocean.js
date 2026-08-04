@@ -21,6 +21,8 @@ const CLOUD_HTTPS_PORT = "443";
 const CLOUD_HTTP_CHALLENGE_PORT = "80";
 const CLOUDFLARE_API = "https://api.cloudflare.com/client/v4";
 const VERCEL_API = "https://api.vercel.com";
+const DIGITALOCEAN_REQUEST_TIMEOUT_MS = 15000;
+const DIGITALOCEAN_DROPLET_TIMEOUT_MS = 25000;
 
 function baseUrl(request) {
   const host = String(request.headers["x-forwarded-host"] || request.headers.host || "").trim();
@@ -58,17 +60,44 @@ function friendlyFailure(response, status, detail) {
   return json(response, 200, { valid: false, status, detail });
 }
 
-async function doRequest(token, path, { method = "GET", body = null } = {}) {
-  const upstream = await fetch(`${DO_API}${path}`, {
-    method,
-    headers: {
-      "Authorization": `Bearer ${token}`,
-      "Content-Type": "application/json",
-      "Accept": "application/json",
-      "User-Agent": "admira-ia-cloud-installer"
-    },
-    body: body ? JSON.stringify(body) : undefined
-  });
+async function fetchWithTimeout(url, options = {}, timeoutMs = DIGITALOCEAN_REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs) || DIGITALOCEAN_REQUEST_TIMEOUT_MS));
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      const timeout = new Error("digitalocean_request_timeout");
+      timeout.code = "digitalocean_request_timeout";
+      throw timeout;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function doRequest(token, path, { method = "GET", body = null, timeoutMs = DIGITALOCEAN_REQUEST_TIMEOUT_MS } = {}) {
+  let upstream;
+  try {
+    upstream = await fetchWithTimeout(`${DO_API}${path}`, {
+      method,
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "admira-ia-cloud-installer"
+      },
+      body: body ? JSON.stringify(body) : undefined
+    }, timeoutMs);
+  } catch (error) {
+    if (error?.code === "digitalocean_request_timeout") {
+      error.doMethod = method;
+      error.doPath = path;
+      error.statusCode = 504;
+    }
+    throw error;
+  }
   const data = await upstream.json().catch(() => ({}));
   if (!upstream.ok) {
     const id = data?.id || data?.error || "digitalocean_error";
@@ -81,6 +110,18 @@ async function doRequest(token, path, { method = "GET", body = null } = {}) {
     throw error;
   }
   return data;
+}
+
+function normalizeInstallRequestId(value = "") {
+  const normalized = String(value || "").trim().toLowerCase().replace(/[^a-z0-9-]/g, "").slice(0, 48);
+  return normalized.length >= 8 ? normalized : "";
+}
+
+async function findDropletByTag(token, tag) {
+  if (!tag) return null;
+  const response = await doRequest(token, `/droplets?tag_name=${encodeURIComponent(tag)}&per_page=200`);
+  const droplets = Array.isArray(response.droplets) ? response.droplets : [];
+  return droplets.find((droplet) => String(droplet?.name || "").startsWith("admira-ia-")) || droplets[0] || null;
 }
 
 function cloudDashboardBaseDomain() {
@@ -149,7 +190,8 @@ async function ensureCloudflareDnsRecord(hostname = "", ip = "") {
     "Accept": "application/json"
   };
   const listUrl = `${CLOUDFLARE_API}/zones/${encodeURIComponent(zoneId)}/dns_records?type=A&name=${encodeURIComponent(host)}&per_page=1`;
-  const listed = await fetch(listUrl, { headers });
+  const listed = await fetchWithTimeout(listUrl, { headers }, 10000).catch(() => null);
+  if (!listed) return { status: "failed", detail: "No pude revisar el DNS cloud a tiempo." };
   const listData = await listed.json().catch(() => ({}));
   if (!listed.ok || listData.success === false) {
     return { status: "failed", detail: "No pude revisar el DNS cloud." };
@@ -165,11 +207,12 @@ async function ensureCloudflareDnsRecord(hostname = "", ip = "") {
   const writeUrl = existing?.id
     ? `${CLOUDFLARE_API}/zones/${encodeURIComponent(zoneId)}/dns_records/${encodeURIComponent(existing.id)}`
     : `${CLOUDFLARE_API}/zones/${encodeURIComponent(zoneId)}/dns_records`;
-  const written = await fetch(writeUrl, {
+  const written = await fetchWithTimeout(writeUrl, {
     method: existing?.id ? "PUT" : "POST",
     headers,
     body: JSON.stringify(body)
-  });
+  }, 10000).catch(() => null);
+  if (!written) return { status: "failed", detail: "No pude actualizar el DNS cloud a tiempo." };
   const writeData = await written.json().catch(() => ({}));
   if (!written.ok || writeData.success === false) {
     return { status: "failed", detail: "No pude crear el DNS cloud." };
@@ -211,7 +254,7 @@ async function vercelRequest(path, { method = "GET", body = null } = {}) {
   if (!token) {
     return { ok: false, status: 401, data: {}, detail: "Token DNS de Vercel no configurado." };
   }
-  const upstream = await fetch(withVercelTeamParams(path), {
+  const upstream = await fetchWithTimeout(withVercelTeamParams(path), {
     method,
     headers: {
       "Authorization": `Bearer ${token}`,
@@ -219,7 +262,8 @@ async function vercelRequest(path, { method = "GET", body = null } = {}) {
       "Accept": "application/json"
     },
     body: body ? JSON.stringify(body) : undefined
-  });
+  }, 10000).catch(() => null);
+  if (!upstream) return { ok: false, status: 504, data: {}, detail: "DNS de Vercel tardo en responder." };
   const data = await upstream.json().catch(() => ({}));
   return {
     ok: upstream.ok,
@@ -359,6 +403,9 @@ function sourceZipAsset(release = {}) {
 function digitalOceanErrorDetail(error) {
   const status = String(error?.doStatus || "");
   const statusLower = status.toLowerCase();
+  if (error?.code === "digitalocean_request_timeout") {
+    return "DigitalOcean tardo en responder. La solicitud quedo protegida con un identificador y el portal seguira revisando sin crear otro servidor.";
+  }
   if (statusLower.includes("forbidden") || error?.statusCode === 403) {
     return "DigitalOcean rechazo esta actualizacion. Lo mas comun es saldo vencido o cuenta en hold: paga cualquier balance pendiente en DigitalOcean y espera unos minutos. Si no hay saldo vencido, revisa que el token incluya Firewalls: actualizar y Droplets: leer.";
   }
@@ -628,12 +675,61 @@ export async function writeCloudInstallationIfCurrent(record = {}, updatedCloud 
   const currentCloud = current?.cloud_installation || {};
   const expectedDroplet = String(expectedCloud.droplet_id || "");
   const currentDroplet = String(currentCloud.droplet_id || "");
-  if (!current || !expectedDroplet || currentDroplet !== expectedDroplet) return false;
+  const expectedJob = String(expectedCloud.install_job_id || "");
+  const currentJob = String(currentCloud.install_job_id || "");
+  // Before DigitalOcean returns a Droplet id, the install job id is the
+  // ownership token. This closes the old race where a second click could
+  // create another firewall/Droplet while the first request was waiting.
+  if (!current) return false;
+  if (expectedDroplet) {
+    if (currentDroplet !== expectedDroplet) return false;
+  } else if (expectedJob) {
+    if (currentDroplet || (currentJob && currentJob !== expectedJob)) return false;
+  } else if (currentCloud.provider || currentCloud.droplet_id || currentCloud.install_job_id) {
+    return false;
+  }
   const expectedSecret = parseCloudAccessSecret(expectedCloud);
   const currentSecret = parseCloudAccessSecret(currentCloud);
   if (expectedSecret && currentSecret !== expectedSecret) return false;
   await writeCurrent({ ...current, ...recordUpdates, cloud_installation: updatedCloud });
   return true;
+}
+
+async function adoptPendingDroplet(record = {}, token = "") {
+  const cloud = record.cloud_installation || null;
+  if (!cloud?.install_job_id || cloud.droplet_id || !validateDigitalOceanToken(token)) return null;
+  const droplet = await findDropletByTag(token, cloud.droplet_tag || cloud.tag || "").catch(() => null);
+  if (!droplet?.id) return null;
+  const ip = dropletIpv4(droplet);
+  const hostname = String(cloud.cloud_hostname || "").trim().toLowerCase();
+  const dns = ip && hostname
+    ? await ensureCloudDnsRecord(hostname, ip).catch((error) => ({ status: "failed", detail: String(error?.message || error) }))
+    : { status: hostname ? "pending_ip" : "not_configured" };
+  const urls = dashboardUrls({
+    ip,
+    dashboardPort: cleanPort(cloud.dashboard_port, "7871"),
+    accessGatePort: cleanPort(cloud.access_gate_port, CLOUD_ACCESS_PORT),
+    accessSecret: parseCloudAccessSecret(cloud),
+    hostname,
+    dnsActive: dns.status === "active"
+  });
+  const updated = {
+    ...cloud,
+    ...urls,
+    droplet_id: String(droplet.id),
+    droplet_name: droplet.name || cloud.droplet_name || "",
+    droplet_ip: ip || cloud.droplet_ip || "",
+    cloud_hostname: hostname,
+    dns_status: dns.status,
+    dns_provider: dns.provider || cloud.dns_provider || cloudDnsProvider() || "",
+    dns_record_id: dns.record_id || cloud.dns_record_id || "",
+    dns_error: dns.status === "failed" ? dns.detail || "No pude crear el DNS cloud." : "",
+    install_status: ip ? "installing" : "waiting_for_ip",
+    install_progress: ip ? 18 : 12,
+    droplet_adopted_at: new Date().toISOString()
+  };
+  const saved = await writeCloudInstallationIfCurrent(record, updated).catch(() => false);
+  return saved ? updated : null;
 }
 
 function sleep(ms) {
@@ -714,7 +810,7 @@ async function waitForDropletIpv4(token, dropletId) {
 async function refreshCloudIpFromDigitalOcean(record, digitalOceanToken = "") {
   const cloud = record.cloud_installation || null;
   const resolved = resolveDigitalOceanToken(record, digitalOceanToken);
-  if (!cloud?.droplet_id || cloud.dashboard_url || cloud.cloud_open_url || !resolved.token) {
+  if (!cloud?.droplet_id || !resolved.token) {
     return null;
   }
   const ip = await waitForDropletIpv4(resolved.token, cloud.droplet_id).catch(() => "");
@@ -1071,7 +1167,8 @@ export default async function handler(request, response) {
       digitalocean_token: rawDigitalOceanToken = "",
       ssh_public_key: rawSshPublicKey = "",
       region: rawRegion = "",
-      size: rawSize = ""
+      size: rawSize = "",
+      install_request_id: rawInstallRequestId = ""
     } = request.body || {};
     const action = String(rawAction || "create").trim().toLowerCase();
     if (action === "runtime_report") {
@@ -1087,6 +1184,10 @@ export default async function handler(request, response) {
     }
     if (action === "status") {
       const resolvedDigitalOceanToken = resolveDigitalOceanToken(record, rawDigitalOceanToken);
+      const adoptedCloud = await adoptPendingDroplet(record, resolvedDigitalOceanToken.token);
+      if (adoptedCloud) {
+        return cloudInstallStatus({ ...record, cloud_installation: adoptedCloud }, response);
+      }
       const clearedMissingDroplet = await clearIfDigitalOceanDropletMissing(record, resolvedDigitalOceanToken.token);
       if (clearedMissingDroplet) {
         return json(response, 200, {
@@ -1242,8 +1343,9 @@ export default async function handler(request, response) {
     }
 
     const cloudOptions = publicCloudOptions();
-    const region = normalizeChoice(rawRegion, cloudOptions.regions, cloudOptions.default_region);
-    const size = normalizeChoice(rawSize, cloudOptions.sizes, cloudOptions.default_size);
+    const existingCloud = record.cloud_installation || null;
+    const region = normalizeChoice(rawRegion || existingCloud?.region, cloudOptions.regions, cloudOptions.default_region);
+    const size = normalizeChoice(rawSize || existingCloud?.size, cloudOptions.sizes, cloudOptions.default_size);
     const releases = await readReleases();
     const release = await releaseWithDiscoveredAssets(releases.channels?.[session.channel || "stable"]);
     const source = sourceZipAsset(release);
@@ -1251,14 +1353,22 @@ export default async function handler(request, response) {
       return friendlyFailure(response, "release_missing", "Todavia no hay paquete fuente publicado para instalar en la nube.");
     }
     const [assetName, asset] = source;
-    const id = installId();
+    const suppliedJobId = normalizeInstallRequestId(rawInstallRequestId);
+    if (existingCloud?.droplet_id) {
+      return cloudInstallStatus(record, response);
+    }
+    if (existingCloud?.install_job_id && suppliedJobId && existingCloud.install_job_id !== suppliedJobId) {
+      return friendlyFailure(response, "cloud_install_in_progress", "Ya hay una instalacion cloud en curso. No crees otro servidor; sigue revisando esta instalacion unos minutos.");
+    }
+    const id = normalizeInstallRequestId(existingCloud?.install_job_id) || suppliedJobId || installId();
+    const resumingPending = Boolean(existingCloud?.install_job_id && existingCloud.install_job_id === id);
     const deviceId = `do-${id}`;
     const tag = `admira-ia-${id}`;
     const dropletName = `admira-ia-${id}`;
     const firewallName = `admira-ia-${id}-strict`;
     const keyName = `Admira IA ${id}`;
-    const accessSecret = cloudAccessSecret();
-    const cloudHostname = cloudHostnameForInstall(id);
+    const accessSecret = resumingPending ? parseCloudAccessSecret(existingCloud) || cloudAccessSecret() : cloudAccessSecret();
+    const cloudHostname = resumingPending ? String(existingCloud.cloud_hostname || "").trim().toLowerCase() || cloudHostnameForInstall(id) : cloudHostnameForInstall(id);
     const grant = signedReleaseGrant({
       licenseKey: session.license_key,
       buyerEmail: session.buyer_email,
@@ -1274,22 +1384,58 @@ export default async function handler(request, response) {
     });
 
     await createTag(digitalOceanToken, tag);
-    const sshKey = await ensureSshKey(digitalOceanToken, keyName, sshPublicKey);
-    const firewall = await doRequest(digitalOceanToken, "/firewalls", {
-      method: "POST",
-      body: digitalOceanFirewallPayload({
-        name: firewallName,
-        tag,
-        clientIp,
-        allowSshFromAnywhere: true,
-        accessGatePort: CLOUD_ACCESS_PORT
-      })
-    });
-    const firewallId = firewall.firewall?.id;
+    const sshKey = resumingPending && existingCloud.ssh_key_id
+      ? { id: existingCloud.ssh_key_id }
+      : await ensureSshKey(digitalOceanToken, keyName, sshPublicKey);
+    let firewallId = String(resumingPending ? existingCloud.firewall_id || "" : "");
+    let firewallCreatedHere = false;
+    if (!firewallId) {
+      const firewall = await doRequest(digitalOceanToken, "/firewalls", {
+        method: "POST",
+        body: digitalOceanFirewallPayload({
+          name: firewallName,
+          tag,
+          clientIp,
+          allowSshFromAnywhere: true,
+          accessGatePort: CLOUD_ACCESS_PORT
+        })
+      });
+      firewallId = String(firewall.firewall?.id || "");
+      firewallCreatedHere = Boolean(firewallId);
+    }
     if (!firewallId) {
       return friendlyFailure(response, "firewall_failed", "DigitalOcean no devolvio el firewall creado.");
     }
 
+    const now = new Date().toISOString();
+    const tokenRecord = withSavedDigitalOceanToken(record, digitalOceanToken);
+    const pendingCloud = {
+      ...(existingCloud || {}),
+      provider: "digitalocean",
+      install_job_id: id,
+      droplet_tag: tag,
+      droplet_name: existingCloud?.droplet_name || dropletName,
+      firewall_id: firewallId,
+      ssh_key_id: sshKey?.id || sshKey?.fingerprint || existingCloud?.ssh_key_id || "",
+      region,
+      size,
+      cloud_hostname: cloudHostname,
+      cloud_access_secret: accessSecret,
+      access_gate_port: CLOUD_ACCESS_PORT,
+      dashboard_port: "7871",
+      install_status: "creating",
+      install_progress: Math.max(Number(existingCloud?.install_progress || 0), 12),
+      install_started_at: existingCloud?.install_started_at || now,
+      created_at: existingCloud?.created_at || now
+    };
+    const pendingRecord = { ...record, cloud_installation: pendingCloud };
+    const pendingSaved = await writeCloudInstallationIfCurrent(record, pendingCloud, tokenRecord.portal_vault ? { portal_vault: tokenRecord.portal_vault } : {});
+    if (!pendingSaved) {
+      if (firewallCreatedHere) await doRequest(digitalOceanToken, `/firewalls/${firewallId}`, { method: "DELETE" }).catch(() => {});
+      return friendlyFailure(response, "cloud_install_in_progress", "Ya hay una instalacion cloud en curso. No crees otro servidor; revisa el estado actual.");
+    }
+
+    let droplet = null;
     try {
       const bootstrapBase = cloudBootstrapBaseUrl(request);
       const cloudInit = buildDigitalOceanCloudInit({
@@ -1308,6 +1454,7 @@ export default async function handler(request, response) {
       });
       const dropletResponse = await doRequest(digitalOceanToken, "/droplets", {
         method: "POST",
+        timeoutMs: DIGITALOCEAN_DROPLET_TIMEOUT_MS,
         body: {
           name: dropletName,
           region,
@@ -1321,73 +1468,73 @@ export default async function handler(request, response) {
           user_data: cloudInit
         }
       });
-      const droplet = dropletResponse.droplet || {};
-      const ipv4 = dropletIpv4(droplet) || await waitForDropletIpv4(digitalOceanToken, droplet.id);
-      const dns = ipv4 && cloudHostname ? await ensureCloudDnsRecord(cloudHostname, ipv4).catch((error) => ({ status: "failed", detail: String(error?.message || error) })) : { status: cloudHostname ? "pending_ip" : "not_configured" };
-      const urls = dashboardUrls({
-        ip: ipv4,
-        dashboardPort: "7871",
-        accessGatePort: CLOUD_ACCESS_PORT,
-        accessSecret,
-        hostname: cloudHostname,
-        dnsActive: dns.status === "active"
-      });
-      await writeLicense({
-        ...withSavedDigitalOceanToken(record, digitalOceanToken),
-        cloud_installation: {
-          provider: "digitalocean",
-          droplet_id: droplet.id,
-          droplet_name: droplet.name || dropletName,
-          firewall_id: firewallId,
-          region,
-          size,
-          ...urls,
-          cloud_hostname: cloudHostname,
-          dns_status: dns.status,
-          dns_provider: dns.provider || cloudDnsProvider() || "",
-          dns_record_id: dns.record_id || "",
-          dns_error: dns.status === "failed" ? dns.detail || "No pude crear el DNS cloud." : "",
-          cloud_access_secret: accessSecret,
-          access_gate_port: CLOUD_ACCESS_PORT,
-          dashboard_port: "7871",
-          droplet_ip: ipv4 || "",
-          install_status: ipv4 ? "installing" : "waiting_for_ip",
-          install_progress: ipv4 ? 18 : 28,
-          install_started_at: new Date().toISOString(),
-          created_at: new Date().toISOString()
-        }
-      }).catch(() => {});
-      return json(response, 200, {
-        valid: true,
-        status: "creating",
-        detail: "Servidor creado. La instalacion tarda unos minutos.",
-        version: release.version,
-        droplet_id: droplet.id,
-        droplet_name: droplet.name || dropletName,
-        firewall_id: firewallId,
-        region,
-        size,
-        allowed_ip: `${clientIp}/32`,
-        droplet_ip: ipv4,
-        dashboard_url: urls.dashboard_url,
-        dashboard_http_url: urls.dashboard_http_url,
-        dashboard_https_url: urls.dashboard_https_url,
-        cloud_open_url: urls.cloud_open_url,
-        cloud_hostname: cloudHostname,
-        dns_status: dns.status,
-        dns_provider: dns.provider || cloudDnsProvider() || "",
-        ready: false,
-        progress: ipv4 ? 18 : 28,
-        install_status: ipv4 ? "installing" : "waiting_for_ip",
-        stage: ipv4 ? "creando_servidor" : "esperando_ip",
-        ssh_command: ipv4 ? `ssh root@${ipv4}` : "",
-        can_attach_ip: true,
-        next_step: ipv4 ? "Espera 5 a 10 minutos y abre el dashboard cuando el servidor termine de instalar." : "DigitalOcean creo el servidor, pero aun no devolvio la IP. Si aparece en DigitalOcean, pegala aqui para continuar."
-      });
+      droplet = dropletResponse.droplet || null;
     } catch (error) {
-      await doRequest(digitalOceanToken, `/firewalls/${firewallId}`, { method: "DELETE" }).catch(() => {});
-      throw error;
+      if (error?.code === "digitalocean_request_timeout") {
+        droplet = await findDropletByTag(digitalOceanToken, tag).catch(() => null);
+        if (!droplet?.id) {
+          return friendlyFailure(response, "cloud_request_timeout", "DigitalOcean sigue procesando la solicitud. No vuelvas a pulsar crear: esta pagina seguira revisando el mismo servidor automaticamente.");
+        }
+      } else {
+        if (firewallCreatedHere) await doRequest(digitalOceanToken, `/firewalls/${firewallId}`, { method: "DELETE" }).catch(() => {});
+        await writeLicense({ ...record, cloud_installation: null }).catch(() => {});
+        throw error;
+      }
     }
+    if (!droplet?.id) {
+      return friendlyFailure(response, "cloud_request_timeout", "DigitalOcean no confirmo todavia el servidor. No vuelvas a pulsar crear; seguire esta instalacion por su identificador seguro.");
+    }
+    const ipv4 = dropletIpv4(droplet);
+    const urls = dashboardUrls({
+      ip: ipv4,
+      dashboardPort: "7871",
+      accessGatePort: CLOUD_ACCESS_PORT,
+      accessSecret,
+      hostname: cloudHostname,
+      dnsActive: false
+    });
+    const updatedCloud = {
+      ...pendingCloud,
+      ...urls,
+      droplet_id: String(droplet.id),
+      droplet_name: droplet.name || dropletName,
+      droplet_ip: ipv4 || "",
+      install_status: ipv4 ? "installing" : "waiting_for_ip",
+      install_progress: ipv4 ? 18 : 28,
+      droplet_created_at: now
+    };
+    const saved = await writeCloudInstallationIfCurrent(pendingRecord, updatedCloud, tokenRecord.portal_vault ? { portal_vault: tokenRecord.portal_vault } : {});
+    if (!saved) {
+      await doRequest(digitalOceanToken, `/droplets/${encodeURIComponent(droplet.id)}`, { method: "DELETE" }).catch(() => {});
+      if (firewallCreatedHere) await doRequest(digitalOceanToken, `/firewalls/${firewallId}`, { method: "DELETE" }).catch(() => {});
+      return friendlyFailure(response, "cloud_state_persist_failed", "DigitalOcean creo el servidor, pero no pude guardar su estado de forma segura. Limpie el recurso y vuelva a intentarlo.");
+    }
+    return json(response, 200, {
+      valid: true,
+      status: updatedCloud.install_status,
+      detail: "Servidor creado. La instalacion continua automaticamente y aqui veras el avance real.",
+      version: release.version,
+      droplet_id: updatedCloud.droplet_id,
+      droplet_name: updatedCloud.droplet_name,
+      firewall_id: firewallId,
+      region,
+      size,
+      allowed_ip: `${clientIp}/32`,
+      droplet_ip: ipv4,
+      dashboard_url: urls.dashboard_url,
+      dashboard_http_url: urls.dashboard_http_url,
+      dashboard_https_url: urls.dashboard_https_url,
+      cloud_open_url: urls.cloud_open_url,
+      cloud_hostname: cloudHostname,
+      dns_status: "pending",
+      ready: false,
+      progress: updatedCloud.install_progress,
+      install_status: updatedCloud.install_status,
+      stage: ipv4 ? "creando_servidor" : "esperando_ip",
+      ssh_command: ipv4 ? `ssh root@${ipv4}` : "",
+      can_attach_ip: true,
+      next_step: ipv4 ? "Espera 5 a 10 minutos; esta pagina revisara el dashboard automaticamente." : "DigitalOcean creo el servidor. Cuando aparezca su IPv4, la conectare automaticamente."
+    });
   } catch (error) {
     return friendlyFailure(response, "digitalocean_error", digitalOceanErrorDetail(error));
   }

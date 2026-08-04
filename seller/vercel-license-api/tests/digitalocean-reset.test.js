@@ -56,6 +56,42 @@ test("cloud status persists when it still belongs to the current Droplet", async
   assert.equal(writes[0].support_note, "keep-me");
 });
 
+test("pending cloud install can be persisted before DigitalOcean returns a Droplet id", async () => {
+  const writes = [];
+  const original = { license_key: "MAO-PENDING-TEST", buyer_email: "buyer@example.com", cloud_installation: null };
+  const pending = {
+    provider: "digitalocean",
+    install_job_id: "cloud-job-123456",
+    droplet_tag: "admira-ia-cloud-job-123456",
+    firewall_id: "firewall-pending",
+    install_status: "creating",
+    install_progress: 12
+  };
+  const saved = await writeCloudInstallationIfCurrent(original, pending, {}, {
+    readLicense: async () => ({ ...original, cloud_installation: null }),
+    writeLicense: async (record) => writes.push(record)
+  });
+  assert.equal(saved, true);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].cloud_installation.install_job_id, "cloud-job-123456");
+});
+
+test("a second pending cloud install cannot overwrite an existing job", async () => {
+  const writes = [];
+  const original = { license_key: "MAO-PENDING-TEST-2", cloud_installation: null };
+  const current = { ...original, cloud_installation: { provider: "digitalocean", install_job_id: "cloud-job-existing" } };
+  const saved = await writeCloudInstallationIfCurrent(original, {
+    provider: "digitalocean",
+    install_job_id: "cloud-job-new",
+    install_status: "creating"
+  }, {}, {
+    readLicense: async () => current,
+    writeLicense: async (record) => writes.push(record)
+  });
+  assert.equal(saved, false);
+  assert.equal(writes.length, 0);
+});
+
 test("buyer delete removes the saved DigitalOcean Droplet before clearing portal state", async () => {
   const calls = [];
   const clearedReasons = [];
