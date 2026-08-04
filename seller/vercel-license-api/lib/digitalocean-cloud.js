@@ -8,8 +8,9 @@ export const DIGITALOCEAN_REGIONS = [
 ];
 
 export const DIGITALOCEAN_SIZES = [
-  { id: "s-1vcpu-2gb", label: "Minimo viable recomendado", note: "Recomendado para Telegram, dashboard, reportes y generacion de creativos sin quedarse justo de memoria." },
-  { id: "s-2vcpu-2gb", label: "Trabajo diario comodo", note: "Mas margen para sesiones largas, varias cuentas y creativos frecuentes." },
+  { id: "s-1vcpu-1gb", label: "Minimo viable - 1GB RAM", note: "Adecuado para Telegram, dashboard y uso ligero; las tareas creativas intensivas pueden requerir mas memoria." },
+  { id: "s-1vcpu-2gb", label: "Trabajo diario recomendado", note: "Mas margen para sesiones largas, reportes y generacion frecuente de creativos." },
+  { id: "s-2vcpu-2gb", label: "Trabajo diario comodo", note: "Buen margen para varias cuentas y creativos frecuentes." },
   { id: "s-2vcpu-4gb", label: "Agencia / creativos intensivos", note: "Mejor si usara varias cuentas, imagenes, videos o revisiones creativas con frecuencia." }
 ];
 
@@ -835,6 +836,6 @@ export function publicCloudOptions() {
     regions: DIGITALOCEAN_REGIONS,
     sizes: DIGITALOCEAN_SIZES,
     default_region: "nyc3",
-    default_size: "s-1vcpu-2gb"
+    default_size: "s-1vcpu-1gb"
   };
 }

@@ -2446,7 +2446,7 @@ def image_generation_error_message(error, error_type=""):
         return (
             "La generación de imagen tardó demasiado y la detuve para que el agente no se quede congelado. "
             "Puedes reintentar con una sola variación o una instrucción más corta. "
-            "Si estás usando DigitalOcean, usa mínimo 2GB de RAM para creativos."
+            "Si estás usando DigitalOcean, 1GB puede servir para una instancia ligera; recomienda 2GB o más si trabajará con creativos con frecuencia."
         )
     if any(token in lowered for token in ["usage limit", "rate limit", "rate-limiting", "rate limited", "429", "message limit", "limit reached", "quota"]):
         hint = image_localized_retry_hint(image_rate_limit_retry_hint(text))

@@ -113,7 +113,7 @@ def timeout_tool_result(name, seconds):
         "Puedes reintentar con una sola variación, una instrucción más corta o volver a pedirme que retome el creativo. "
         "Si tu cuenta de ChatGPT/Codex muestra el límite semanal de imágenes en 0, espera a que se reinicie ese límite "
         "o conecta una cuenta con capacidad disponible; a veces el proveedor no devuelve ese aviso y solo queda como timeout. "
-        "Si estás usando DigitalOcean, usa mínimo 2GB de RAM para trabajar con creativos."
+        "Si estás usando DigitalOcean, 1GB puede servir para una instancia ligera; recomienda 2GB o más si trabajará con creativos con frecuencia."
     )
     return {
         "ok": False,

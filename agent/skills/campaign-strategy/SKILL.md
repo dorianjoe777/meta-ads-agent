@@ -14,6 +14,7 @@ Use this skill before staging or launching a campaign.
 - Decide whether those interests should be strict detailed targeting or Advantage+ audience suggestions. For Advantage+ suggestions, pass `targeting_mode: advantage_plus` (equivalent to `targeting_automation: {"advantage_audience": 1}`) plus the exact `targeting_interests` returned by Meta.
 - Explain the strategic effect correctly: with Advantage+ audience, interests guide Meta but delivery may expand beyond them. Do not describe them as a hard audience restriction.
 - Meta requires an explicit `targeting_automation.advantage_audience` flag when detailed interests are sent. If the buyer has not asked for strict control, recommend Advantage+ suggestions (`1`) for cold prospecting and small tests because Meta can find buyers beyond the seed interests. Recommend strict manual (`0`) only when the buyer explicitly prioritizes a narrow/controlled audience, a regulated constraint, or a retargeting/exclusion rule. State this recommendation before staging; do not ask a blank “Advantage or manual?” question.
+- Advantage+ age rule: when `advantage_audience=1`, Meta does not allow an enforced `age_max` below 65. Treat a requested lower maximum (for example 40) as an age suggestion and use an effective maximum of 65. If the buyer needs a strict upper age limit, recommend `targeting_mode: manual` / `advantage_audience=0` and explain that this trades algorithmic expansion for control. Never retry the invalid Advantage+ payload unchanged.
 
 ## Minimum strategy
 

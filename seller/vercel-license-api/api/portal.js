@@ -726,6 +726,30 @@ export default async function handler(request, response) {
       white-space:normal;
       word-break:break-word;
     }
+    .ssh-platform-picker{
+      display:flex;
+      flex-wrap:wrap;
+      gap:8px;
+      margin-top:10px;
+    }
+    .ssh-platform-picker button{
+      border:1px solid rgba(95,53,216,.18);
+      border-radius:999px;
+      padding:7px 12px;
+      background:rgba(255,255,255,.72);
+      color:#4f5870;
+      font:inherit;
+      font-size:12px;
+      font-weight:800;
+      cursor:pointer;
+    }
+    .ssh-platform-picker button.active{
+      background:#5f35d8;
+      border-color:#5f35d8;
+      color:#fff;
+    }
+    .ssh-command{display:none}
+    .ssh-command.active{display:block}
     .cloud-result{
       display:none;
       margin-top:14px;
@@ -895,7 +919,7 @@ export default async function handler(request, response) {
               </div>
               <div class="cloud-intro-card">
                 <strong>Costo esperado</strong>
-                <p>DigitalOcean suele ofrecer credito inicial para cuentas nuevas. Para Admira IA recomendamos minimo 2GB de RAM; suele quedar cerca de US$12 al mes en DigitalOcean, segun region y precio vigente. Revisa siempre el precio final antes de crear el servidor.</p>
+                <p>DigitalOcean suele ofrecer credito inicial para cuentas nuevas. Admira IA puede funcionar desde 1GB de RAM para un uso ligero; 2GB deja mas margen para sesiones largas y creativos frecuentes. El plan minimo suele empezar cerca de US$6 al mes, segun region y precio vigente. Revisa siempre el precio final antes de crear el servidor.</p>
               </div>
             </div>
             <div class="cloud-grid">
@@ -914,12 +938,30 @@ export default async function handler(request, response) {
                 </div>
                 <textarea id="sshPublicKey" placeholder="ssh-ed25519 AAAA... tu@email.com" required></textarea>
                 <div class="helper">
-                  <strong>Si no tienes una llave, abre Terminal en tu computador y pega este comando.</strong>
+                  <strong>Si no tienes una llave, selecciona tu sistema y pega el comando en Terminal, PowerShell o CMD.</strong>
                   Al final aparecera una linea larga que empieza por <strong>ssh-ed25519</strong>. Copia esa linea completa y pegala en el campo de arriba. No compartas la llave privada.
-                  <strong>Mac o Linux:</strong>
-                  <code>mkdir -p "$HOME/.ssh" &amp;&amp; chmod 700 "$HOME/.ssh" &amp;&amp; ssh-keygen -t ed25519 -C "admira-ia" -f "$HOME/.ssh/admira_ia" &amp;&amp; cat "$HOME/.ssh/admira_ia.pub"</code>
-                  <strong>Windows CMD:</strong>
-                  <code>if not exist "%USERPROFILE%\\.ssh" mkdir "%USERPROFILE%\\.ssh"<br>ssh-keygen -t ed25519 -C "admira-ia" -f "%USERPROFILE%\\.ssh\\admira_ia"<br>type "%USERPROFILE%\\.ssh\\admira_ia.pub"</code>
+                  <div class="ssh-platform-picker" role="group" aria-label="Sistema operativo">
+                    <button type="button" data-ssh-platform="mac">macOS</button>
+                    <button type="button" data-ssh-platform="linux">Linux</button>
+                    <button type="button" data-ssh-platform="windows">Windows PowerShell</button>
+                    <button type="button" data-ssh-platform="windows-cmd">Windows CMD</button>
+                  </div>
+                  <div class="ssh-command" data-ssh-command="mac">
+                    <strong>macOS</strong>
+                    <code>mkdir -p "$HOME/.ssh" &amp;&amp; chmod 700 "$HOME/.ssh" &amp;&amp; ssh-keygen -t ed25519 -C "admira-ia" -f "$HOME/.ssh/admira_ia" &amp;&amp; cat "$HOME/.ssh/admira_ia.pub"</code>
+                  </div>
+                  <div class="ssh-command" data-ssh-command="linux">
+                    <strong>Linux</strong>
+                    <code>mkdir -p "$HOME/.ssh" &amp;&amp; chmod 700 "$HOME/.ssh" &amp;&amp; ssh-keygen -t ed25519 -C "admira-ia" -f "$HOME/.ssh/admira_ia" &amp;&amp; cat "$HOME/.ssh/admira_ia.pub"</code>
+                  </div>
+                  <div class="ssh-command" data-ssh-command="windows">
+                    <strong>Windows PowerShell</strong>
+                    <code>$sshDir = Join-Path $HOME ".ssh"<br>New-Item -ItemType Directory -Force -Path $sshDir | Out-Null<br>$keyPath = Join-Path $sshDir "admira_ia"<br>if (-not (Test-Path $keyPath)) { ssh-keygen -t ed25519 -C "admira-ia" -f $keyPath }<br>Get-Content "$keyPath.pub"</code>
+                  </div>
+                  <div class="ssh-command" data-ssh-command="windows-cmd">
+                    <strong>Windows CMD</strong>
+                    <code>if not exist "%USERPROFILE%\\.ssh" mkdir "%USERPROFILE%\\.ssh"<br>ssh-keygen -t ed25519 -C "admira-ia" -f "%USERPROFILE%\\.ssh\\admira_ia"<br>type "%USERPROFILE%\\.ssh\\admira_ia.pub"</code>
+                  </div>
                 </div>
               </div>
               <div class="cloud-create-only">
@@ -934,11 +976,12 @@ export default async function handler(request, response) {
               <div class="cloud-create-only">
                 <label for="cloudSize">Tamano del servidor</label>
                 <select id="cloudSize">
-                  <option value="s-1vcpu-2gb">Minimo viable recomendado - 2GB RAM</option>
+                  <option value="s-1vcpu-1gb">Minimo viable - 1GB RAM</option>
+                  <option value="s-1vcpu-2gb">Trabajo diario recomendado - 2GB RAM</option>
                   <option value="s-2vcpu-2gb">Trabajo diario comodo - 2GB RAM</option>
                   <option value="s-2vcpu-4gb">Agencia / creativos intensivos - 4GB RAM</option>
                 </select>
-                <div class="helper">No usamos 1GB como minimo porque puede quedarse sin memoria al generar o revisar creativos.</div>
+                <div class="helper">1GB es suficiente para una instancia ligera. Si usara creativos con frecuencia, recomendamos 2GB o mas.</div>
               </div>
             </div>
             <button class="primary" id="cloudButton" type="submit">Crear mi servidor</button>
@@ -992,6 +1035,24 @@ export default async function handler(request, response) {
       } catch(_err) {}
       return '';
     }
+    function detectSshPlatform(){
+      const platform = String((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || navigator.userAgent || '').toLowerCase();
+      if(platform.includes('win')) return 'windows';
+      if(platform.includes('mac')) return 'mac';
+      return 'linux';
+    }
+    function setSshPlatform(platform){
+      document.querySelectorAll('[data-ssh-command]').forEach((node) => {
+        node.classList.toggle('active', node.dataset.sshCommand === platform);
+      });
+      document.querySelectorAll('[data-ssh-platform]').forEach((button) => {
+        button.classList.toggle('active', button.dataset.sshPlatform === platform);
+      });
+    }
+    document.querySelectorAll('[data-ssh-platform]').forEach((button) => {
+      button.addEventListener('click', () => setSshPlatform(button.dataset.sshPlatform));
+    });
+    setSshPlatform(detectSshPlatform());
     function showPendingWindowMessage(pendingWindow, title, detail){
       if(!pendingWindow) return;
       try{

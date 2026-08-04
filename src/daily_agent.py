@@ -1161,6 +1161,32 @@ def validate_campaign_targeting_before_meta(campaign, client):
             })
             continue
 
+        # Meta treats a lower maximum age as a suggestion when Advantage+
+        # audience is enabled; it rejects an ad set that tries to enforce
+        # age_max below 65. Stop before the first Graph mutation so the agent
+        # can choose between a flexible 18-65 Advantage+ audience or a strict
+        # manual audience with advantage_audience=0.
+        requested_social_targeting = targeting_for_social(targeting)
+        requested_advantage = targeting_advantage_value(requested_social_targeting)
+        if requested_advantage == 1 and age_bounds["age_max"] < 65:
+            validations.append({
+                "adset_index": index,
+                "ok": False,
+                "errors": [{
+                    "field": "age_range.max",
+                    "code": "advantage_audience_age_max_requires_65",
+                    "requested_age_max": age_bounds["age_max"],
+                    "effective_age_max": 65,
+                    "message": "Con Advantage+ audience, Meta exige age_max=65; una edad menor solo puede enviarse como sugerencia. Usa 65 para mantener Advantage+ o targeting_mode=manual/advantage_audience=0 para imponer el límite.",
+                }],
+            })
+            return {
+                "ok": False,
+                "code": "targeting_preflight_failed",
+                "validations": validations,
+                "message": "Meta no permite un límite máximo menor de 65 con Advantage+ audience. Puedo mantener la edad como sugerencia o desactivar Advantage+ para aplicar el límite estricto.",
+            }
+
         live_search = None
         if hasattr(client, "search_meta_targeting"):
             def live_search(kind, query):

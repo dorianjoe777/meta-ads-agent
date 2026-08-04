@@ -25,11 +25,125 @@ lower() {
 }
 
 default_device_id() {
-  python3 - <<'PY'
+  local instance_slug="${1:-default}"
+  ADMIRA_INSTANCE_SLUG="$instance_slug" python3 - <<'PY'
 import hashlib
+import os
 import socket
 import uuid
-print(hashlib.sha256(f"{socket.gethostname()}:{uuid.getnode()}".encode("utf-8")).hexdigest()[:24])
+slug = os.environ.get("ADMIRA_INSTANCE_SLUG", "default")
+print(hashlib.sha256(f"{socket.gethostname()}:{uuid.getnode()}:{slug}".encode("utf-8")).hexdigest()[:24])
+PY
+}
+
+sanitize_instance_slug() {
+  printf '%s' "${1:-default}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-32
+}
+
+choose_free_port() {
+  python3 - "${1:-7871}" <<'PY'
+import socket
+import sys
+start = int(sys.argv[1])
+for port in range(start, start + 100):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", port))
+    except OSError:
+        continue
+    finally:
+        sock.close()
+    print(port)
+    break
+else:
+    raise SystemExit("No encontré un puerto libre para la nueva instancia.")
+PY
+}
+
+select_instance_profile() {
+  local base_dir="$1"
+  local requested_mode="${META_ADS_INSTANCE_MODE:-auto}"
+  local existing=false
+  if [ -f "$base_dir/.env" ] || [ -f "$base_dir/docker-compose.yml" ]; then
+    existing=true
+  fi
+
+  INSTANCE_IS_NEW=false
+  INSTANCE_EXISTING="$existing"
+  INSTANCE_DIR="$base_dir"
+  if [ "$existing" = true ] && [ "$(lower "$requested_mode")" = "auto" ] && [ -t 0 ]; then
+    echo
+    echo "Ya existe una instancia de Admira IA en: $base_dir"
+    echo "1) Actualizar esa instancia (conserva sus datos y licencia)"
+    echo "2) Crear otra instancia aislada (nueva licencia, bot y datos)"
+    printf "Elige [1/2] (1): " >&2
+    local choice=""
+    IFS= read -r choice
+    requested_mode="${choice:-1}"
+  fi
+
+  if [ "$existing" = true ] && { [ "$(lower "$requested_mode")" = "new" ] || [ "$requested_mode" = "2" ] || [ "${META_ADS_NEW_INSTANCE:-false}" = "true" ]; }; then
+    local parent_dir="$(dirname "$base_dir")"
+    local base_name="$(basename "$base_dir")"
+    local candidate="${META_ADS_NEW_INSTANCE_DIR:-$parent_dir/${base_name}-2}"
+    local suffix=2
+    while [ -e "$candidate" ]; do
+      suffix=$((suffix + 1))
+      candidate="$parent_dir/${base_name}-${suffix}"
+    done
+    INSTANCE_DIR="$candidate"
+    INSTANCE_IS_NEW=true
+    INSTANCE_EXISTING=false
+  fi
+
+  local existing_slug=""
+  local existing_port=""
+  if [ "$INSTANCE_IS_NEW" = false ]; then
+    existing_slug="$(read_env_file_value "$INSTANCE_DIR/.env" ADMIRA_INSTANCE_SLUG)"
+    existing_port="$(read_env_file_value "$INSTANCE_DIR/.env" DASHBOARD_PORT)"
+  fi
+  INSTANCE_SLUG="$(sanitize_instance_slug "${existing_slug:-$(basename "$INSTANCE_DIR")}")"
+  INSTANCE_SLUG="${INSTANCE_SLUG:-default}"
+  if [ "$INSTANCE_IS_NEW" = true ]; then
+    INSTANCE_PORT="$(choose_free_port "${META_ADS_NEW_INSTANCE_PORT_START:-7871}")"
+    INSTANCE_PROJECT="admira-ia-${INSTANCE_SLUG}"
+    INSTANCE_CONTAINER="admira-ia-${INSTANCE_SLUG}"
+    INSTANCE_VOLUME_PREFIX="meta_ads_${INSTANCE_SLUG//-/_}"
+  else
+    INSTANCE_PORT="${existing_port:-7871}"
+    INSTANCE_PROJECT="$(read_env_file_value "$INSTANCE_DIR/.env" ADMIRA_COMPOSE_PROJECT_NAME)"
+    INSTANCE_PROJECT="${INSTANCE_PROJECT:-admira-ia}"
+    INSTANCE_CONTAINER="$(read_env_file_value "$INSTANCE_DIR/.env" ADMIRA_CONTAINER_NAME)"
+    INSTANCE_CONTAINER="${INSTANCE_CONTAINER:-admira-ia}"
+    INSTANCE_VOLUME_PREFIX="$(read_env_file_value "$INSTANCE_DIR/.env" ADMIRA_VOLUME_PREFIX)"
+    INSTANCE_VOLUME_PREFIX="${INSTANCE_VOLUME_PREFIX:-meta_ads}"
+  fi
+  export ADMIRA_INSTANCE_SLUG="$INSTANCE_SLUG"
+}
+
+persist_instance_values() {
+  local env_file="$1"
+  [ -f "$env_file" ] || return 0
+  python3 - "$env_file" "$INSTANCE_SLUG" "$INSTANCE_PROJECT" "$INSTANCE_CONTAINER" "$INSTANCE_VOLUME_PREFIX" "$INSTANCE_PORT" <<'PY'
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+updates = {
+    "ADMIRA_INSTANCE_SLUG": sys.argv[2],
+    "ADMIRA_COMPOSE_PROJECT_NAME": sys.argv[3],
+    "ADMIRA_CONTAINER_NAME": sys.argv[4],
+    "ADMIRA_VOLUME_PREFIX": sys.argv[5],
+    "DASHBOARD_PORT": sys.argv[6],
+}
+lines = path.read_text(encoding="utf-8").splitlines()
+positions = {line.split("=", 1)[0]: i for i, line in enumerate(lines) if "=" in line and not line.lstrip().startswith("#")}
+for key, value in updates.items():
+    line = f"{key}={value}"
+    if key in positions:
+        lines[positions[key]] = line
+    else:
+        lines.append(line)
+path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 PY
 }
 
@@ -137,6 +251,7 @@ PY
 request_signed_release_url() {
   local install_dir="$1"
   local tmp_dir="$2"
+  local reuse_existing_credentials="${3:-true}"
   local provider="${META_ADS_BOOTSTRAP_PROVIDER:-$(read_config_value BOOTSTRAP_PROVIDER)}"
   local license_server_url="${META_ADS_LICENSE_SERVER_URL:-$(read_config_value LICENSE_SERVER_URL)}"
   local release_endpoint="${META_ADS_LICENSE_RELEASE_ENDPOINT:-$(read_config_value LICENSE_RELEASE_ENDPOINT)}"
@@ -156,16 +271,21 @@ request_signed_release_url() {
 
   local install_env="$install_dir/.env"
   local current_env="$ROOT_DIR/.env"
-  local license_key="${META_ADS_LICENSE_KEY:-$(read_env_file_value "$install_env" LICENSE_KEY)}"
-  license_key="${license_key:-$(read_env_file_value "$current_env" LICENSE_KEY)}"
-  local buyer_email="${META_ADS_LICENSE_BUYER_EMAIL:-$(read_env_file_value "$install_env" LICENSE_BUYER_EMAIL)}"
-  buyer_email="${buyer_email:-$(read_env_file_value "$current_env" LICENSE_BUYER_EMAIL)}"
-  local device_id="${META_ADS_LICENSE_DEVICE_ID:-$(read_env_file_value "$install_env" LICENSE_DEVICE_ID)}"
-  device_id="${device_id:-$(read_env_file_value "$current_env" LICENSE_DEVICE_ID)}"
+  local license_key="${META_ADS_LICENSE_KEY:-}"
+  local buyer_email="${META_ADS_LICENSE_BUYER_EMAIL:-}"
+  local device_id="${META_ADS_LICENSE_DEVICE_ID:-}"
+  if [ "$(lower "$reuse_existing_credentials")" = "true" ]; then
+    license_key="${license_key:-$(read_env_file_value "$install_env" LICENSE_KEY)}"
+    license_key="${license_key:-$(read_env_file_value "$current_env" LICENSE_KEY)}"
+    buyer_email="${buyer_email:-$(read_env_file_value "$install_env" LICENSE_BUYER_EMAIL)}"
+    buyer_email="${buyer_email:-$(read_env_file_value "$current_env" LICENSE_BUYER_EMAIL)}"
+    device_id="${device_id:-$(read_env_file_value "$install_env" LICENSE_DEVICE_ID)}"
+    device_id="${device_id:-$(read_env_file_value "$current_env" LICENSE_DEVICE_ID)}"
+  fi
 
   license_key="$(prompt_if_missing $'Ingresa tu licencia: ' "$license_key" || true)"
   buyer_email="$(prompt_if_missing $'Ingresa el email de compra: ' "$buyer_email" || true)"
-  device_id="${device_id:-$(default_device_id)}"
+  device_id="${device_id:-$(default_device_id "$INSTANCE_SLUG")}"
 
   if [ -z "$license_key" ] || [ -z "$buyer_email" ]; then
     echo "Necesito licencia y email para preparar tu descarga protegida."
@@ -331,6 +451,9 @@ esac
 
 INSTALL_DIR="${2:-$default_install_dir}"
 
+select_instance_profile "$INSTALL_DIR"
+INSTALL_DIR="$INSTANCE_DIR"
+
 for tool in curl unzip rsync python3; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "Necesito '$tool' para instalar la ultima version."
@@ -345,7 +468,8 @@ cleanup() {
 trap cleanup EXIT
 
 DOWNLOAD_URL=""
-if request_signed_release_url "$INSTALL_DIR" "$TMP_DIR"; then
+reuse_existing_credentials="${INSTANCE_EXISTING:-false}"
+if request_signed_release_url "$INSTALL_DIR" "$TMP_DIR" "$reuse_existing_credentials"; then
   DOWNLOAD_URL="$SIGNED_RELEASE_URL"
 elif [ "$?" -eq 42 ]; then
   if [ "$(lower "${ALLOW_GITHUB_FALLBACK:-$(read_config_value ALLOW_GITHUB_FALLBACK)}")" = "true" ] && request_github_release_url; then
@@ -396,6 +520,9 @@ chmod +x "$INSTALL_DIR/scripts/"*.sh 2>/dev/null || true
 echo
 echo "Version publicada lista en:"
 echo "$INSTALL_DIR"
+if [ "$INSTANCE_IS_NEW" = true ]; then
+  echo "Nueva instancia aislada: $INSTANCE_SLUG (puerto $INSTANCE_PORT)"
+fi
 echo
 echo "Preparando tu configuracion local..."
 (cd "$INSTALL_DIR" && /usr/bin/env bash ./scripts/install-local.sh)
@@ -406,6 +533,8 @@ persist_bootstrap_license_values \
   "${BOOTSTRAP_BUYER_EMAIL:-}" \
   "${BOOTSTRAP_DEVICE_ID:-}" \
   "${BOOTSTRAP_LICENSE_SERVER_URL:-}"
+
+persist_instance_values "$INSTALL_DIR/.env"
 
 echo
 echo "Construyendo y abriendo el dashboard..."

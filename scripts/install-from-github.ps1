@@ -1,5 +1,7 @@
 param(
-    [string]$InstallDir = ""
+    [string]$InstallDir = "",
+    [ValidateSet("auto", "existing", "new")]
+    [string]$InstanceMode = "auto"
 )
 
 $ErrorActionPreference = "Stop"
@@ -64,7 +66,8 @@ function Prompt-IfMissing {
 }
 
 function Get-DefaultDeviceId {
-    $machine = "{0}:{1}" -f $env:COMPUTERNAME, [System.Environment]::MachineName
+    param([string]$InstanceSlug = "default")
+    $machine = "{0}:{1}:{2}" -f $env:COMPUTERNAME, [System.Environment]::MachineName, $InstanceSlug
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($machine)
     $hash = [System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes)
     return ([System.BitConverter]::ToString($hash)).Replace("-", "").ToLowerInvariant().Substring(0, 24)
@@ -79,6 +82,86 @@ function Get-HostLanIp {
         return $ip
     } catch {
         return ""
+    }
+}
+
+function Get-SafeInstanceSlug {
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { $Value = "default" }
+    $slug = ([regex]::Replace($Value.ToLowerInvariant(), "[^a-z0-9]+", "-")).Trim("-")
+    if ([string]::IsNullOrWhiteSpace($slug)) { return "default" }
+    return $slug.Substring(0, [Math]::Min(32, $slug.Length))
+}
+
+function Get-FreeDashboardPort {
+    param([int]$StartPort = 7871)
+    for ($port = $StartPort; $port -lt ($StartPort + 100); $port++) {
+        $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $port)
+        try {
+            $listener.Start()
+            return $port
+        } catch {
+        } finally {
+            $listener.Stop()
+        }
+    }
+    throw "No encontré un puerto libre para la nueva instancia."
+}
+
+function Select-InstanceProfile {
+    param(
+        [string]$BaseDir,
+        [string]$RequestedMode
+    )
+    $existing = (Test-Path (Join-Path $BaseDir ".env")) -or (Test-Path (Join-Path $BaseDir "docker-compose.yml"))
+    $mode = if ($env:META_ADS_INSTANCE_MODE) { $env:META_ADS_INSTANCE_MODE } else { $RequestedMode }
+    $mode = $mode.ToLowerInvariant()
+    $script:InstanceIsNew = $false
+    $script:InstanceExists = $existing
+    $script:InstanceDir = $BaseDir
+
+    if ($existing -and $mode -eq "auto") {
+        Write-Host ""
+        Write-Host "Ya existe una instancia de Admira IA en: $BaseDir"
+        Write-Host "1) Actualizar esa instancia (conserva sus datos y licencia)"
+        Write-Host "2) Crear otra instancia aislada (nueva licencia, bot y datos)"
+        $choice = Read-Host "Elige [1/2] (1)"
+        $mode = if ([string]::IsNullOrWhiteSpace($choice)) { "existing" } elseif ($choice -eq "2") { "new" } else { "existing" }
+    }
+
+    $newRequested = $mode -eq "new" -or $env:META_ADS_NEW_INSTANCE -eq "true"
+    if ($existing -and $newRequested) {
+        $parent = Split-Path -Parent $BaseDir
+        $name = Split-Path -Leaf $BaseDir
+        $candidate = if ($env:META_ADS_NEW_INSTANCE_DIR) { $env:META_ADS_NEW_INSTANCE_DIR } else { Join-Path $parent "$name-2" }
+        $suffix = 2
+        while (Test-Path $candidate) {
+            $suffix++
+            $candidate = Join-Path $parent "$name-$suffix"
+        }
+        $script:InstanceDir = $candidate
+        $script:InstanceIsNew = $true
+        $script:InstanceExists = $false
+    }
+
+    $existingSlug = if (-not $script:InstanceIsNew) { Get-EnvFileValue (Join-Path $script:InstanceDir ".env") "ADMIRA_INSTANCE_SLUG" } else { "" }
+    $existingPort = if (-not $script:InstanceIsNew) { Get-EnvFileValue (Join-Path $script:InstanceDir ".env") "DASHBOARD_PORT" } else { "" }
+    $slugSource = if ($existingSlug) { $existingSlug } else { Split-Path -Leaf $script:InstanceDir }
+    $script:InstanceSlug = Get-SafeInstanceSlug $slugSource
+    if ($script:InstanceIsNew) {
+        $portStart = if ($env:META_ADS_NEW_INSTANCE_PORT_START) { [int]$env:META_ADS_NEW_INSTANCE_PORT_START } else { 7871 }
+        $script:InstancePort = Get-FreeDashboardPort $portStart
+        $script:InstanceProject = "admira-ia-$($script:InstanceSlug)"
+        $script:InstanceContainer = "admira-ia-$($script:InstanceSlug)"
+        $script:InstanceVolumePrefix = "meta_ads_$($script:InstanceSlug.Replace('-', '_'))"
+    } else {
+        $script:InstancePort = if ($existingPort) { $existingPort } else { "7871" }
+        $script:InstanceProject = Get-EnvFileValue (Join-Path $script:InstanceDir ".env") "ADMIRA_COMPOSE_PROJECT_NAME"
+        if ([string]::IsNullOrWhiteSpace($script:InstanceProject)) { $script:InstanceProject = "admira-ia" }
+        $script:InstanceContainer = Get-EnvFileValue (Join-Path $script:InstanceDir ".env") "ADMIRA_CONTAINER_NAME"
+        if ([string]::IsNullOrWhiteSpace($script:InstanceContainer)) { $script:InstanceContainer = "admira-ia" }
+        $script:InstanceVolumePrefix = Get-EnvFileValue (Join-Path $script:InstanceDir ".env") "ADMIRA_VOLUME_PREFIX"
+        if ([string]::IsNullOrWhiteSpace($script:InstanceVolumePrefix)) { $script:InstanceVolumePrefix = "meta_ads" }
     }
 }
 
@@ -145,10 +228,37 @@ function Save-BootstrapEnvValues {
     Set-Content -Path $EnvFile -Value $content
 }
 
+function Save-InstanceEnvValues {
+    param([string]$EnvFile)
+    if (!(Test-Path $EnvFile)) { return }
+    $content = @(Get-Content $EnvFile)
+    $updates = @{
+        "ADMIRA_INSTANCE_SLUG" = $script:InstanceSlug
+        "ADMIRA_COMPOSE_PROJECT_NAME" = $script:InstanceProject
+        "ADMIRA_CONTAINER_NAME" = $script:InstanceContainer
+        "ADMIRA_VOLUME_PREFIX" = $script:InstanceVolumePrefix
+        "DASHBOARD_PORT" = $script:InstancePort
+    }
+    foreach ($key in $updates.Keys) {
+        $value = [string]$updates[$key]
+        $found = $false
+        for ($index = 0; $index -lt $content.Count; $index++) {
+            if ($content[$index] -match "^$([regex]::Escape($key))=") {
+                $content[$index] = "$key=$value"
+                $found = $true
+                break
+            }
+        }
+        if (-not $found) { $content += "$key=$value" }
+    }
+    Set-Content -Path $EnvFile -Value $content
+}
+
 function Get-SignedReleaseUrl {
     param(
         [string]$ResolvedInstallDir,
-        [string]$TempDir
+        [string]$TempDir,
+        [bool]$ReuseExistingCredentials = $true
     )
     $provider = if ($env:META_ADS_BOOTSTRAP_PROVIDER) { $env:META_ADS_BOOTSTRAP_PROVIDER } else { Get-ConfigValue "BOOTSTRAP_PROVIDER" }
     $licenseServerUrl = if ($env:META_ADS_LICENSE_SERVER_URL) { $env:META_ADS_LICENSE_SERVER_URL } else { Get-ConfigValue "LICENSE_SERVER_URL" }
@@ -177,23 +287,22 @@ function Get-SignedReleaseUrl {
     $installEnv = Join-Path $ResolvedInstallDir ".env"
     $currentEnv = Join-Path $RootDir ".env"
 
-    $licenseKey = if ($env:META_ADS_LICENSE_KEY) { $env:META_ADS_LICENSE_KEY } else { Get-EnvFileValue $installEnv "LICENSE_KEY" }
-    if ([string]::IsNullOrWhiteSpace($licenseKey)) {
-        $licenseKey = Get-EnvFileValue $currentEnv "LICENSE_KEY"
-    }
-    $buyerEmail = if ($env:META_ADS_LICENSE_BUYER_EMAIL) { $env:META_ADS_LICENSE_BUYER_EMAIL } else { Get-EnvFileValue $installEnv "LICENSE_BUYER_EMAIL" }
-    if ([string]::IsNullOrWhiteSpace($buyerEmail)) {
-        $buyerEmail = Get-EnvFileValue $currentEnv "LICENSE_BUYER_EMAIL"
-    }
-    $deviceId = if ($env:META_ADS_LICENSE_DEVICE_ID) { $env:META_ADS_LICENSE_DEVICE_ID } else { Get-EnvFileValue $installEnv "LICENSE_DEVICE_ID" }
-    if ([string]::IsNullOrWhiteSpace($deviceId)) {
-        $deviceId = Get-EnvFileValue $currentEnv "LICENSE_DEVICE_ID"
+    $licenseKey = if ($env:META_ADS_LICENSE_KEY) { $env:META_ADS_LICENSE_KEY } else { "" }
+    $buyerEmail = if ($env:META_ADS_LICENSE_BUYER_EMAIL) { $env:META_ADS_LICENSE_BUYER_EMAIL } else { "" }
+    $deviceId = if ($env:META_ADS_LICENSE_DEVICE_ID) { $env:META_ADS_LICENSE_DEVICE_ID } else { "" }
+    if ($ReuseExistingCredentials) {
+        if ([string]::IsNullOrWhiteSpace($licenseKey)) { $licenseKey = Get-EnvFileValue $installEnv "LICENSE_KEY" }
+        if ([string]::IsNullOrWhiteSpace($licenseKey)) { $licenseKey = Get-EnvFileValue $currentEnv "LICENSE_KEY" }
+        if ([string]::IsNullOrWhiteSpace($buyerEmail)) { $buyerEmail = Get-EnvFileValue $installEnv "LICENSE_BUYER_EMAIL" }
+        if ([string]::IsNullOrWhiteSpace($buyerEmail)) { $buyerEmail = Get-EnvFileValue $currentEnv "LICENSE_BUYER_EMAIL" }
+        if ([string]::IsNullOrWhiteSpace($deviceId)) { $deviceId = Get-EnvFileValue $installEnv "LICENSE_DEVICE_ID" }
+        if ([string]::IsNullOrWhiteSpace($deviceId)) { $deviceId = Get-EnvFileValue $currentEnv "LICENSE_DEVICE_ID" }
     }
 
     $licenseKey = Prompt-IfMissing "Ingresa tu licencia" $licenseKey
     $buyerEmail = Prompt-IfMissing "Ingresa el email de compra" $buyerEmail
     if ([string]::IsNullOrWhiteSpace($deviceId)) {
-        $deviceId = Get-DefaultDeviceId
+        $deviceId = Get-DefaultDeviceId $script:InstanceSlug
     }
 
     if ([string]::IsNullOrWhiteSpace($licenseKey) -or [string]::IsNullOrWhiteSpace($buyerEmail)) {
@@ -320,6 +429,9 @@ if ([string]::IsNullOrWhiteSpace($InstallDir)) {
     }
 }
 
+Select-InstanceProfile -BaseDir $InstallDir -RequestedMode $InstanceMode
+$InstallDir = $script:InstanceDir
+
 $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ("meta-ads-agent-" + [System.Guid]::NewGuid().ToString("N"))
 $zipPath = Join-Path $tmpDir "source.zip"
 $unpackDir = Join-Path $tmpDir "unpack"
@@ -328,7 +440,8 @@ $keepDir = Join-Path $tmpDir "keep"
 New-Item -ItemType Directory -Force -Path $tmpDir, $unpackDir, $keepDir | Out-Null
 
 try {
-    $releaseUrl = Get-SignedReleaseUrl -ResolvedInstallDir $InstallDir -TempDir $tmpDir
+    $reuseExistingCredentials = [bool]$script:InstanceExists
+    $releaseUrl = Get-SignedReleaseUrl -ResolvedInstallDir $InstallDir -TempDir $tmpDir -ReuseExistingCredentials $reuseExistingCredentials
     if ([string]::IsNullOrWhiteSpace($releaseUrl)) {
         $allowGitHubFallback = if ($env:META_ADS_ALLOW_GITHUB_FALLBACK) { $env:META_ADS_ALLOW_GITHUB_FALLBACK } else { Get-ConfigValue "ALLOW_GITHUB_FALLBACK" }
         if ((Get-Lower $allowGitHubFallback) -eq "true") {
@@ -395,6 +508,8 @@ try {
         -DeviceId $script:BootstrapDeviceId `
         -LicenseServerUrl $script:BootstrapLicenseServerUrl
 
+    Save-InstanceEnvValues -EnvFile (Join-Path $InstallDir ".env")
+
     Write-Host ""
     Write-Host "Version publicada lista en:"
     Write-Host $InstallDir
@@ -407,14 +522,14 @@ try {
     try {
         # Run Docker in the background. The old foreground command kept this
         # installer PowerShell open for the entire lifetime of Admira IA.
-        docker compose up -d --build
+        docker compose -p $script:InstanceProject up -d --build
         if ($LASTEXITCODE -ne 0) {
             throw "Docker no pudo iniciar Admira IA."
         }
     } finally {
         Pop-Location
     }
-    $dashboardUrl = "http://127.0.0.1:7871/"
+    $dashboardUrl = "http://127.0.0.1:$($script:InstancePort)/"
     if (Wait-ForDashboard -Url $dashboardUrl) {
         Start-Process $dashboardUrl
         Write-Host "Admira IA quedo lista. Puedes cerrar esta ventana."

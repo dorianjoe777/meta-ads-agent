@@ -1,10 +1,10 @@
-name: admira-ia
+name: ${ADMIRA_COMPOSE_PROJECT_NAME:-admira-ia}
 
 services:
   meta-ads-agent:
     build: .
-    image: admira-ia:local
-    container_name: admira-ia
+    image: ${ADMIRA_IMAGE_NAME:-admira-ia:local}
+    container_name: ${ADMIRA_CONTAINER_NAME:-admira-ia}
     ports:
       - "0.0.0.0:${DASHBOARD_PORT:-7871}:7871"
     env_file:
@@ -35,8 +35,14 @@ services:
 
 volumes:
   meta_ads_config:
+    name: ${ADMIRA_VOLUME_PREFIX:-meta_ads}_config
   meta_ads_data:
+    name: ${ADMIRA_VOLUME_PREFIX:-meta_ads}_data
   meta_ads_update_snapshots:
+    name: ${ADMIRA_VOLUME_PREFIX:-meta_ads}_update_snapshots
   meta_ads_output:
+    name: ${ADMIRA_VOLUME_PREFIX:-meta_ads}_output
   meta_ads_logs:
+    name: ${ADMIRA_VOLUME_PREFIX:-meta_ads}_logs
   meta_ads_brand_guides:
+    name: ${ADMIRA_VOLUME_PREFIX:-meta_ads}_brand_guides

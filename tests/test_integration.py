@@ -8415,6 +8415,45 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         )
         self.assert_true(not result["ok"] and result["code"] == "targeting_preflight_failed", "Stale live catalog entries are blocked before Graph mutation")
 
+    def test_advantage_audience_age_cap_blocks_before_graph_mutation(self):
+        """Advantage+ must not send an enforced max age below 65 to Meta."""
+        class Config:
+            live = True
+            mode = "live"
+
+        class Client:
+            config = Config()
+            created = False
+
+            def search_meta_targeting(self, kind, query, limit=25):
+                return {"ok": True, "items": []}
+
+            def create_campaign(self, *args, **kwargs):
+                self.created = True
+                return {"returncode": 0, "stdout": json.dumps({"id": "must-not-create"})}
+
+        client = Client()
+        result = daily_agent.validate_campaign_targeting_before_meta(
+            {
+                "ad_sets": [{
+                    "targeting": {
+                        "locations": ["CO"],
+                        "age_range": {"min": 18, "max": 40},
+                        "targeting_mode": "advantage_plus",
+                    }
+                }]
+            },
+            client,
+        )
+        error = (result.get("validations") or [{}])[0].get("errors", [{}])[0]
+        self.assert_true(
+            not result["ok"]
+            and error.get("code") == "advantage_audience_age_max_requires_65"
+            and error.get("effective_age_max") == 65
+            and not client.created,
+            "Advantage+ age caps are explained and blocked before any Graph mutation",
+        )
+
     def test_live_targeting_validation_rejects_stale_detailed_ids_before_mutation(self):
         """Behaviors/demographics are validated by Meta, not only by syntax."""
         class Config:
@@ -11897,6 +11936,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             "docs/es-planes-de-licencia.md",
             "docs/es-digitalocean-acceso-estricto.md",
             "docs/es-cambiar-de-equipo.md",
+            "docs/es-multiples-instancias-docker.md",
         ]
         for doc in buyer_docs:
             self.assert_true((ROOT_DIR / doc).exists(), f"Buyer doc exists: {doc}")
@@ -11936,6 +11976,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         compose = (ROOT_DIR / "docker-compose.yml").read_text(encoding="utf-8")
         windows_installer = (ROOT_DIR / "Instalar en Windows.bat").read_text(encoding="utf-8")
         windows_bootstrap = (ROOT_DIR / "scripts" / "install-from-github.ps1").read_text(encoding="utf-8")
+        bootstrap_sh = (ROOT_DIR / "scripts" / "install-from-github.sh").read_text(encoding="utf-8")
         mac_installer = (ROOT_DIR / "Instalar en Mac.command").read_text(encoding="utf-8")
         linux_installer = (ROOT_DIR / "Instalar en Linux.sh").read_text(encoding="utf-8")
         mac_pkg_builder = (ROOT_DIR / "scripts" / "build-mac-pkg.sh").read_text(encoding="utf-8")
@@ -11970,6 +12011,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         self.assert_true("forced = {" in docker_entrypoint and "\"DASHBOARD_HOST\": \"0.0.0.0\"" in docker_entrypoint, "Docker entrypoint forces reachable dashboard bind values")
         self.assert_true("LAN_ACCESS_ENABLED" in env_example and "LAN_ACCESS_ENABLED" in docker_entrypoint and "ADMIRA_HOST_LAN_IP" in compose, "Phone LAN access is off by default and Docker receives the host LAN IP when available")
         self.assert_true("meta_ads_config" in compose and "meta_ads_brand_guides" in compose, "Docker Compose persists config and brand guides")
+        self.assert_true("ADMIRA_COMPOSE_PROJECT_NAME" in compose and "ADMIRA_CONTAINER_NAME" in compose and "ADMIRA_VOLUME_PREFIX" in compose and "name: ${ADMIRA_VOLUME_PREFIX" in compose, "Docker Compose isolates project, container, and named volumes per instance")
         self.assert_true("HERMES_HOME: /app/runtime/hermes" in compose and "mkdir -p /app/runtime/hermes" in docker_entrypoint and '"HERMES_HOME": "/app/runtime/hermes"' in docker_entrypoint and "replaced_blank" in docker_entrypoint, "Docker installs persist Hermes ChatGPT/Codex auth across rebuilds")
         self.assert_true("bootstrap_license_keys" in docker_entrypoint and '"LICENSE_KEY"' in docker_entrypoint and '"LICENSE_BUYER_EMAIL"' in docker_entrypoint and 'os.environ.get(key)' in docker_entrypoint, "Docker copies installer license credentials into the persistent runtime before the dashboard loads them")
         self.assert_true('Path("/app/dashboard/data/license_unlock.json")' in docker_entrypoint and 'unlock.get("device_id")' in docker_entrypoint, "Docker rebuilds recover the durable licensed device identity before deriving a new one")
@@ -11980,7 +12022,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         self.assert_true("tracked source has uncommitted changes" in script and "untracked source files would enter the package" in script, "Release packaging cannot publish source that differs from the committed Git version")
         self.assert_true("install-from-github.ps1" in windows_installer and "install-from-github.sh" in mac_installer and "install-from-github.sh" in linux_installer, "Double-click installers use the shared bootstrap scripts")
         windows_launcher = (ROOT_DIR / "Abrir Admira IA.vbs").read_text(encoding="utf-8")
-        self.assert_true("docker compose up -d --build" in windows_installer and "docker compose up -d --build" in windows_bootstrap and "./scripts/run-docker.sh" in mac_installer, "Double-click installers launch Docker in the background instead of keeping a terminal open")
+        self.assert_true("docker compose up -d --build" in windows_installer and "docker compose -p" in windows_bootstrap and "docker compose" in windows_bootstrap and "./scripts/run-docker.sh" in mac_installer, "Double-click installers launch Docker in the background instead of keeping a terminal open")
         self.assert_true("wscript.exe" in nsis_template and "Abrir Admira IA.vbs" in nsis_template and "docker compose up -d" in windows_launcher and "shell.Run command, 0, True" in windows_launcher, "Windows shortcuts open Admira IA through a hidden launcher instead of rerunning the installer")
         self.assert_true('"powershell.exe"' in dashboard_server_source and '"-NoExit"' not in dashboard_server_source and "Read-Host 'Presiona Enter para cerrar'" not in dashboard_server_source and 'CREATE_NEW_CONSOLE' in dashboard_server_source, "Windows ChatGPT login console closes automatically when the interactive command finishes")
         self.assert_true("pkgbuild" in mac_pkg_builder and "productbuild" in mac_pkg_builder, "Mac PKG builder uses native package tools")
@@ -11992,6 +12034,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         self.assert_true("No arrastres nada a Aplicaciones" in mac_dmg_builder and ".background/background.png" in mac_dmg_builder and "set background picture" in mac_dmg_builder, "Mac DMG gives one-click visual instructions instead of an Applications drag workflow")
         self.assert_true("Privacidad y seguridad" in mac_dmg_builder and "Abrir de todos modos" in mac_dmg_builder and "aun no esta firmada por Apple" in mac_dmg_builder, "Mac DMG README explains the temporary unsigned-app security prompt")
         self.assert_true("ADMIRA_DOCKER_SKIP_BUILD" in run_docker and "up)" in run_docker and "--build" in run_docker, "Docker runner can start an existing container without rebuilding every time")
+        self.assert_true("docker compose -p \"$compose_project\"" in run_docker and "ADMIRA_COMPOSE_PROJECT_NAME" in compose and "META_ADS_INSTANCE_MODE" in windows_bootstrap and "select_instance_profile" in bootstrap_sh, "Installers can update an existing instance or create an isolated second instance")
         self.assert_true("candle" in windows_msi_builder and "light" in windows_msi_builder and "MetaAdsAgent-" in windows_msi_builder and "windows.msi" in windows_msi_builder, "Windows MSI builder uses WiX Toolset when available")
         self.assert_true("WINDOWS_SIGN_MSI" in windows_msi_builder and "signtool" in windows_msi_builder and "/fd SHA256" in windows_msi_builder, "Windows MSI builder supports Authenticode signing")
         self.assert_true('Source="{esc(source_ref)}"' in windows_msi_builder and "MetaAdsAgent\\\\" in windows_msi_builder, "Windows MSI source package uses relative file paths for VPS compilation")
@@ -12140,7 +12183,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         self.assert_true("Instalar en la nube" in portal_page and "/api/portal/cloud/digitalocean" in portal_page and "Crear mi servidor" in portal_page, "Download portal exposes guided DigitalOcean install after buyer access")
         self.assert_true("Crear cuenta en DigitalOcean" in portal_page and "https://cloud.digitalocean.com/registrations/new" in portal_page and "Haz clic aqui para obtener el token" in portal_page and "cloud-token-cta" in portal_page, "Cloud install gives buyers direct DigitalOcean signup and a clear token action beside the token field")
         self.assert_true("US$12 al mes" in portal_page and "credito inicial" in portal_page and "metodo de pago" in portal_page, "Cloud install explains expected DigitalOcean cost and signup requirements")
-        self.assert_true("Minimo viable recomendado - 2GB RAM" in portal_page and "No usamos 1GB como minimo" in portal_page and 'default_size: "s-1vcpu-2gb"' in digitalocean_cloud_lib and "s-1vcpu-1gb" not in digitalocean_cloud_lib, "Cloud install uses 2GB RAM as the minimum viable DigitalOcean option")
+        self.assert_true("Minimo viable - 1GB RAM" in portal_page and "1GB es suficiente para una instancia ligera" in portal_page and 'default_size: "s-1vcpu-1gb"' in digitalocean_cloud_lib and 'id: "s-1vcpu-1gb"' in digitalocean_cloud_lib, "Cloud install offers 1GB RAM as the minimum viable DigitalOcean option and keeps 2GB available for heavier work")
         self.assert_true("cloud-progress" in portal_page and "startCloudProgressPolling" in portal_page and "action: 'status'" in portal_page, "Download portal shows cloud install progress and polls status")
         self.assert_true("Math.min(98, rawProgress)" in portal_page and "verificando_dashboard" in portal_digitalocean_api and "Math.min(98, cleanProgress" in portal_digitalocean_api, "Download portal never shows 100 percent until the cloud dashboard is actually ready")
         self.assert_true('if (estimated.ready)' in portal_digitalocean_api and 'progress: 100' in portal_digitalocean_api and "cloudPollFailures" in portal_page and "handleCloudProgressError" in portal_page, "Cloud progress does not freeze at the first preview when the saved install state is ready or polling has a transient failure")
@@ -12196,6 +12239,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         self.assert_true("clearIfDigitalOceanDropletMissing" in portal_digitalocean_api and "digitalOceanResourceMissing" in portal_digitalocean_api and "cleared_deleted_cloud" in portal_digitalocean_api, "DigitalOcean status clears zombie installs when the Droplet no longer exists")
         self.assert_true("cloudStateVersion" in portal_page and "expectedVersion !== cloudStateVersion" in portal_page and "data.cleared_deleted_cloud" in portal_page, "Download portal ignores stale cloud polling after a reset")
         self.assert_true("abre Terminal" in portal_page and 'mkdir -p "$HOME/.ssh"' in portal_page and 'chmod 700 "$HOME/.ssh"' in portal_page and 'if not exist "%USERPROFILE%\\\\.ssh" mkdir "%USERPROFILE%\\\\.ssh"' in portal_page and 'type "%USERPROFILE%\\\\.ssh\\\\admira_ia.pub"' in portal_page and "solo tu computador" in portal_page and "La parte privada queda guardada en tu PC" in portal_page and "parte publica, que es segura de compartir" in portal_page and "No compartas la llave privada" in portal_page, "DigitalOcean SSH key step creates the SSH directory on Mac, Linux, and Windows CMD while explaining key safety")
+        self.assert_true("detectSshPlatform" in portal_page and "data-ssh-platform=\"windows\"" in portal_page and "data-ssh-platform=\"mac\"" in portal_page and "data-ssh-platform=\"linux\"" in portal_page and "New-Item -ItemType Directory" in portal_page, "DigitalOcean SSH instructions detect Windows, macOS, and Linux and show the matching command")
         self.assert_true("signedPortalSession" in license_lib and "verifyPortalSession" in license_lib and "PORTAL_SESSION_MINUTES" in license_lib, "License server can issue short-lived portal sessions")
         self.assert_true("minutes: rawMinutes" in license_lib and "Math.min(Math.floor(requestedMinutes), 360)" in license_lib, "License server can issue longer signed release grants for cloud-init installs")
         self.assert_true("readLicense" in portal_session_api and "releaseWithDiscoveredAssets" in portal_session_api and "validFormat" in portal_session_api, "Portal session validates purchase email and access key server-side")
@@ -12473,6 +12517,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.test_campaign_creation_uses_meta_targeting_selection,
             self.test_social_targeting_uses_meta_ids,
             self.test_live_targeting_preflight_rejects_stale_catalog_before_mutation,
+            self.test_advantage_audience_age_cap_blocks_before_graph_mutation,
             self.test_live_targeting_validation_rejects_stale_detailed_ids_before_mutation,
             self.test_live_account_actions_stage_for_approval_instead_of_auto_mutating,
             self.test_social_flow_graph_api_lists_and_creates_lead_forms,

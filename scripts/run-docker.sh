@@ -32,6 +32,11 @@ legacy_detached_var="ADMI""RO_DOCKER_DETACHED"
 
 export ADMIRA_HOST_LAN_IP="${ADMIRA_HOST_LAN_IP:-${!legacy_host_lan_var:-$(detect_lan_ip)}}"
 
+# Every installation has its own Compose project/container/volume namespace.
+# Older installations keep the original defaults, while new profiles can set
+# these values in .env without affecting any other instance on the machine.
+compose_project="${ADMIRA_COMPOSE_PROJECT_NAME:-admira-ia}"
+
 if [ ! -f .env ]; then
   cp .env.example .env
   echo "Created .env from .env.example for Docker Compose."
@@ -46,9 +51,9 @@ if [ "${ADMIRA_DOCKER_DETACHED:-${!legacy_detached_var:-false}}" = "true" ]; the
 fi
 
 if docker compose version >/dev/null 2>&1; then
-  docker compose "${compose_args[@]}"
+  docker compose -p "$compose_project" "${compose_args[@]}"
 elif command -v docker-compose >/dev/null 2>&1; then
-  docker-compose "${compose_args[@]}"
+  docker-compose -p "$compose_project" "${compose_args[@]}"
 else
   echo "Docker Compose is required. Install Docker Desktop or docker compose plugin."
   exit 1
