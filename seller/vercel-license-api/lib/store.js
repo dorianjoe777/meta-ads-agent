@@ -41,9 +41,18 @@ export async function writeRegistry(registry) {
 }
 
 export async function readReleases() {
-  // Release assets are published to private Blob storage. Keep their registry
-  // there as the source of truth even when licenses themselves live in Upstash;
-  // otherwise the portal can offer a stale platform installer after a release.
+  // Keep the tiny release registry in Upstash when it is available. Release
+  // binaries may live in private Blob or GitHub, but Upstash avoids making a
+  // new release depend on Blob's 1 GB Hobby storage quota or delayed deletes.
+  const preferUpstash = upstashConfigured() && String(process.env.RELEASE_REGISTRY_BACKEND || "").trim().toLowerCase() !== "blob";
+  if (preferUpstash) {
+    try {
+      const releases = await upstash.readReleases();
+      if (releases?.channels && Object.keys(releases.channels).length > 0) return releases;
+    } catch {
+      // Blob remains a read fallback during an Upstash outage.
+    }
+  }
   if (Boolean(process.env.BLOB_READ_WRITE_TOKEN)) {
     try {
       const releases = await blob.readReleases();
