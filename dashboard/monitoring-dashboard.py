@@ -937,6 +937,17 @@ def current_product_version():
     return "v1"
 
 
+def dashboard_html_document():
+    """Return HTML with a release-specific asset URL.
+
+    The dashboard JavaScript is served without caching, but a versioned URL
+    also invalidates older browser/service-worker caches after an installer
+    update. This matters when a buyer updates an existing Docker instance.
+    """
+    version = current_product_version().replace("/", "-").replace("?", "-").replace("#", "-")
+    return HTML.replace("/assets/dashboard/dashboard.js?v=1", f"/assets/dashboard/dashboard.js?v={version}")
+
+
 def version_parts(value):
     numbers = re.findall(r"\d+", str(value or ""))
     return tuple(int(part) for part in numbers) if numbers else (0,)
@@ -13715,7 +13726,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def send_html(self):
-        body = HTML.encode("utf-8")
+        body = dashboard_html_document().encode("utf-8")
         self.send_response(200)
         self.send_security_headers()
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -13979,7 +13990,7 @@ def write_static_snapshot():
         demo_metrics_allowed = env_bool("ADMIRA_ALLOW_DEMO_METRICS", env_bool(legacy_demo_metrics_env, False))
         save_metrics(sample_metrics() if demo_metrics_allowed else empty_meta_metrics())
     with open(DASHBOARD_HTML_FILE, "w", encoding="utf-8") as handle:
-        handle.write(HTML)
+        handle.write(dashboard_html_document())
 
 
 def main():

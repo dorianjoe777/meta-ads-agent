@@ -30,7 +30,10 @@ if [ -x "./scripts/install-from-github.sh" ]; then
     exit 0
   else
     bootstrap_exit="$?"
-    if [ "$bootstrap_exit" -ne 42 ]; then
+    if [ "${ADMIRA_ALLOW_LOCAL_SOURCE_INSTALL:-false}" != "true" ]; then
+      echo "El instalador protegido no pudo preparar la actualización (código $bootstrap_exit)."
+      echo "No voy a iniciar una copia local para evitar reemplazar otra instalación o sus volúmenes."
+      echo "Revisa la licencia, la conexión y vuelve a ejecutar este instalador."
       read -r -p "Presiona Enter para cerrar..."
       exit "$bootstrap_exit"
     fi

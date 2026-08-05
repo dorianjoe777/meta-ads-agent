@@ -33,7 +33,11 @@ if exist "%~dp0scripts\install-from-github.ps1" (
     echo Admira IA quedo ejecutandose en segundo plano.
     exit /b 0
   )
-  if not "%BOOTSTRAP_EXIT%"=="42" (
+  if /I not "%ADMIRA_ALLOW_LOCAL_SOURCE_INSTALL%"=="true" (
+    echo.
+    echo El instalador protegido no pudo preparar la actualizacion ^(codigo %BOOTSTRAP_EXIT%^).
+    echo No voy a iniciar una copia local para evitar reemplazar otra instalacion o sus volumenes.
+    echo Revisa la licencia, la conexion y vuelve a ejecutar este instalador.
     pause
     exit /b %BOOTSTRAP_EXIT%
   )
