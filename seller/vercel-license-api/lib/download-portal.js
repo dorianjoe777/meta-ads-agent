@@ -112,6 +112,11 @@ export function buyerFacingImprovements(items = []) {
 }
 
 function githubRepoFromAssets(release = {}) {
+  const configured = String(process.env.RELEASE_GITHUB_REPO || release.github_repo || "").trim();
+  if (configured && configured.includes("/")) {
+    const [owner, repo] = configured.split("/", 2).map((part) => part.trim());
+    if (owner && repo) return { owner, repo };
+  }
   const assets = release.assets || {};
   for (const asset of Object.values(assets)) {
     const sourceUrl = String(asset?.source_url || "");
@@ -125,7 +130,8 @@ function githubRepoFromAssets(release = {}) {
 
 export async function releaseWithDiscoveredAssets(release = {}) {
   const token = String(process.env.GITHUB_RELEASE_TOKEN || process.env.GITHUB_TOKEN || "").trim();
-  const version = String(release.version || "").trim();
+  const configuredVersion = String(process.env.RELEASE_GITHUB_TAG || "").trim();
+  const version = configuredVersion || String(release.version || "").trim();
   const repo = githubRepoFromAssets(release);
   if (!token || !version || !repo) {
     return release;
@@ -162,6 +168,7 @@ export async function releaseWithDiscoveredAssets(release = {}) {
     }
     return {
       ...release,
+      ...(configuredVersion ? { version, github_repo: `${repo.owner}/${repo.repo}`, github_release_tag: version } : {}),
       assets: {
         ...(release.assets || {}),
         ...discovered
