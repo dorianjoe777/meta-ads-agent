@@ -1109,7 +1109,7 @@ function onboardingSteps(){
  const passwordOk=Boolean(state.config.dashboard_password_set);
  const model=state.config.agent_model||{};
  const studio=state.config.creative_studio||{};
- const brain=model.brain_provider||'openai_codex';
+ const brain=model.brain_provider||'nvidia_nim';
  const apiBrainOk=['openai_api','minimax','nvidia_nim','custom_api'].includes(brain)&&model.api_key_set&&Boolean(model.base_url)&&Boolean(model.model);
  const modelOk=Boolean(model.chatgpt_connected)||apiBrainOk;
  const telegram=state.config.telegram_agent||{};
@@ -1529,7 +1529,8 @@ function compactMetaSetup(){
 function compactAgentSetup(){
  const model=state.config.agent_model||{};
  const studio=state.config.creative_studio||{};
- const brain=model.brain_provider||'openai_codex';
+ // NVIDIA NIM is the safe first-run brain; ChatGPT remains opt-in.
+ const brain=model.brain_provider||'nvidia_nim';
  const apiProviders=['nvidia_nim','openai_api','minimax','custom_api'];
  const provider=brain==='openai_codex'?'openai_codex':(apiProviders.includes(brain)?brain:'nvidia_nim');
  const isChatGpt=provider==='openai_codex';
@@ -1885,7 +1886,8 @@ function chatGptConnectMarkup(onboarding=false){
  const codex=setupItem('codex_cli');
  const model=state.config.agent_model||{};
  const studio=state.config.creative_studio||{};
- const brain=model.brain_provider||'openai_codex';
+ // Keep new installations on NVIDIA until the buyer explicitly chooses ChatGPT.
+ const brain=model.brain_provider||'nvidia_nim';
  const apiBrain=['openai_api','minimax','nvidia_nim','custom_api'].includes(brain);
  const apiReady=apiBrain&&model.api_key_set&&Boolean(model.base_url)&&Boolean(model.model);
  const chatgptConnected=Boolean(model.chatgpt_connected);

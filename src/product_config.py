@@ -477,7 +477,7 @@ class AgentConfig:
     codex_image_source: str = DEFAULT_CODEX_IMAGE_SOURCE
     codex_image_hermes_home: str = ""
     codex_image_hermes_model: str = DEFAULT_HERMES_CODEX_MODEL
-    agent_brain_provider: str = "openai_codex"
+    agent_brain_provider: str = "nvidia_nim"
     dashboard_password_hash: str = ""
     license_public_key: str = ""
     hermes_cli: str = "hermes"
@@ -518,9 +518,9 @@ def load_config():
     if mode not in {"dry-run", "live"}:
         mode = "dry-run"
     legacy_chat_provider = normalize_chat_provider(env_first("AGENT_CHAT_PROVIDER", default="hermes"))
-    base_url = env_first("AGENT_CHAT_BASE_URL", "MINIMAX_BASE_URL", default="https://api.minimax.io/v1").rstrip("/")
+    base_url = env_first("AGENT_CHAT_BASE_URL", "ADMIRA_NVIDIA_BASE_URL", default="https://integrate.api.nvidia.com/v1").rstrip("/")
     brain_provider = normalize_agent_brain_provider(
-        env_first("AGENT_BRAIN_PROVIDER", default=""),
+        env_first("AGENT_BRAIN_PROVIDER", default="nvidia_nim"),
         legacy_chat_provider=legacy_chat_provider,
         base_url=base_url,
     )
@@ -582,7 +582,7 @@ def load_config():
         agent_chat_base_url=base_url,
         agent_chat_api_key=env_first("AGENT_CHAT_API_KEY", "MINIMAX_API_KEY", default=""),
         agent_chat_api=env_first("AGENT_CHAT_API", "MINIMAX_API", default="openai-chat-completions").lower(),
-        agent_chat_model=env_first("AGENT_CHAT_MODEL", "MINIMAX_MODEL", default="MiniMax-M3"),
+        agent_chat_model=env_first("AGENT_CHAT_MODEL", "ADMIRA_NVIDIA_MODEL", default="z-ai/glm-5.2"),
         agent_chat_temperature=env_float("AGENT_CHAT_TEMPERATURE", 0.65),
         agent_profile_dir=os.environ.get("AGENT_PROFILE_DIR", "agent"),
         codex_creative_enabled=env_bool("CODEX_CREATIVE_ENABLED", True),

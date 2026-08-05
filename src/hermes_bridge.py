@@ -317,7 +317,7 @@ def admira_connected_model_config_lines(config, primary_settings=None):
         for provider, connection in connections.items()
         if connection.get("configured")
     ]
-    primary_brain = str(brain.get("brain") or "openai_codex")
+    primary_brain = str(brain.get("brain") or "nvidia_nim")
     primary_slugs = {
         "minimax": ADMIRA_MINIMAX_PROVIDER,
         "nvidia_nim": ADMIRA_NVIDIA_PROVIDER,
