@@ -4959,9 +4959,14 @@ NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
 NVIDIA_NIM_DEFAULT_MODEL = "z-ai/glm-5.2"
 NVIDIA_NIM_MODEL_PREFERENCE = (
     "z-ai/glm-5.2",
+    "minimaxai/minimax-m3",
+    "deepseek-ai/deepseek-v4-flash",
     "openai/gpt-oss-20b",
     "nvidia/nemotron-3-nano-30b-a3b",
     "minimaxai/minimax-m2.7",
+)
+NVIDIA_NIM_SAFE_FALLBACK_MODELS = (
+    "minimaxai/minimax-m3",
     "deepseek-ai/deepseek-v4-flash",
 )
 NVIDIA_NIM_NON_CHAT_MARKERS = (
@@ -5001,7 +5006,7 @@ def cached_nvidia_model_catalog():
     cached = read_json(NVIDIA_MODEL_CATALOG_FILE, {})
     models = _clean_nvidia_model_ids((cached or {}).get("models") if isinstance(cached, dict) else [])
     if not models:
-        models = [NVIDIA_NIM_DEFAULT_MODEL]
+        models = [NVIDIA_NIM_DEFAULT_MODEL, *NVIDIA_NIM_SAFE_FALLBACK_MODELS]
     return {
         **(cached if isinstance(cached, dict) else {}),
         "models": models,

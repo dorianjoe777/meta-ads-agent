@@ -174,6 +174,33 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
             hermes_bridge.CODEX_MODEL_CATALOG_FILE = original_catalog
             hermes_bridge.codex_credential_health = original_codex_health
 
+    def test_nvidia_primary_has_bounded_m3_then_deepseek_fallback_without_catalog(self):
+        original_catalog = hermes_bridge.NVIDIA_MODEL_CATALOG_FILE
+        original_connections = hermes_bridge.agent_model_connections
+        original_codex_health = hermes_bridge.codex_credential_health
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                hermes_bridge.NVIDIA_MODEL_CATALOG_FILE = Path(directory) / "missing-nvidia.json"
+                hermes_bridge.agent_model_connections = lambda _config, include_secrets=False: {}
+                hermes_bridge.codex_credential_health = lambda _config: {"state": "missing", "reauth_required": False}
+                chain = hermes_bridge.admira_inference_fallback_chain(object(), {
+                    "brain": "nvidia_nim",
+                    "provider": hermes_bridge.ADMIRA_NVIDIA_PROVIDER,
+                    "model": "z-ai/glm-5.2",
+                    "base_url": hermes_bridge.ADMIRA_NVIDIA_DEFAULT_BASE_URL,
+                })
+                self.assertEqual(
+                    [(item["provider"], item["model"]) for item in chain],
+                    [
+                        (hermes_bridge.ADMIRA_NVIDIA_PROVIDER, "minimaxai/minimax-m3"),
+                        (hermes_bridge.ADMIRA_NVIDIA_PROVIDER, "deepseek-ai/deepseek-v4-flash"),
+                    ],
+                )
+        finally:
+            hermes_bridge.NVIDIA_MODEL_CATALOG_FILE = original_catalog
+            hermes_bridge.agent_model_connections = original_connections
+            hermes_bridge.codex_credential_health = original_codex_health
+
 
 if __name__ == "__main__":
     unittest.main()

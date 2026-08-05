@@ -68,6 +68,13 @@ ADMIRA_NVIDIA_PROVIDER = "admira-nvidia"
 ADMIRA_NVIDIA_PROVIDER_NAME = "NVIDIA NIM API"
 ADMIRA_NVIDIA_DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
 ADMIRA_NVIDIA_DEFAULT_MODEL = "z-ai/glm-5.2"
+# Verified chat-capable NVIDIA-hosted fallbacks for upgraded installations
+# whose live model catalog has not been cached yet. A live catalog always
+# takes precedence when available.
+NVIDIA_NIM_SAFE_FALLBACK_MODELS = (
+    "minimaxai/minimax-m3",
+    "deepseek-ai/deepseek-v4-flash",
+)
 ADMIRA_OPENAI_KEY_ENV = "ADMIRA_OPENAI_API_KEY"
 ADMIRA_OPENAI_PROVIDER = "admira-openai"
 ADMIRA_CUSTOM_KEY_ENV = "ADMIRA_CUSTOM_API_KEY"
@@ -568,13 +575,21 @@ def admira_inference_fallback_chain(config, primary_settings=None):
         for model in codex_models[:3]:
             append("openai-codex", model)
     elif primary_provider == ADMIRA_NVIDIA_PROVIDER:
-        # Keep a single same-account NVIDIA alternative as the last resort.
-        # An NVIDIA 429 commonly applies to the API key itself, so it must not
-        # delay configured providers with independent capacity.
+        # Keep two bounded same-account alternatives after independently
+        # configured providers. This handles model-specific stalls (for
+        # example GLM-5.2) without allowing an unbounded inference burst.
+        raw_catalog = read_json(NVIDIA_MODEL_CATALOG_FILE, {})
+        catalog_models = _cached_model_ids(NVIDIA_MODEL_CATALOG_FILE)
+        # A pre-catalog installation may have a stale file containing only
+        # the original primary model. Add the tested safe candidates until a
+        # live catalog refresh replaces it. A live catalog remains authoritative
+        # and is never augmented with invented model IDs.
+        if not catalog_models or not isinstance(raw_catalog, dict) or raw_catalog.get("source") != "nvidia_live_catalog":
+            catalog_models = list(dict.fromkeys([*catalog_models, *NVIDIA_NIM_SAFE_FALLBACK_MODELS]))
         nvidia_model_fallbacks = [
-            model for model in _light_model_order(_cached_model_ids(NVIDIA_MODEL_CATALOG_FILE))
+            model for model in _light_model_order(catalog_models)
             if model.lower() != primary_model.lower()
-        ][:1]
+        ][:2]
 
     connections = agent_model_connections(config, include_secrets=True)
     for provider, connection in connections.items():
