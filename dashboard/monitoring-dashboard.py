@@ -4883,6 +4883,13 @@ def resolve_codex_model_choice(value, config=None):
     models = catalog.get("models") or []
     if raw and raw.lower() not in {"auto", "recommended", "recomendado", "default"} and raw in models:
         return raw
+    # Luna is the explicit ChatGPT-subscription default. If the account
+    # catalog has not answered yet, keep that requested default instead of
+    # allowing a stale, previously selected model to win. A verified catalog
+    # still remains authoritative and can safely fall back when Luna is not
+    # available on that account or plan.
+    if raw.lower() == "gpt-5.6-luna" and not catalog.get("account_verified"):
+        return raw
     current = str(getattr(config, "hermes_model", "") or "").strip()
     user_selected = bool(getattr(config, "hermes_model_user_selected", False))
     if user_selected and current in models:

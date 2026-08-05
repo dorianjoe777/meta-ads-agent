@@ -1551,10 +1551,12 @@ function compactAgentSetup(){
  const imageConnected=Boolean(studio.codex_image_connected||model.codex_image_connected);
  const imageReady=Boolean(studio.codex_image_ready||model.codex_image_ready);
  const options=(model.nvidia_model_options||[]).map(value=>`<option value="${escapeHtml(value)}"></option>`).join('');
+ const compactHermesModel=isChatGpt?(brain==='openai_codex'&&model.hermes_model_user_selected&&model.hermes_model?model.hermes_model:'gpt-5.6-luna'):'';
  return `<form id="agent-model-form" class="activation-form" data-submit-code="saveSetupConfig(event)">
   <input type="hidden" name="agent_chat_provider" value="${escapeHtml(provider)}">
   <input type="hidden" name="agent_chat_api" value="openai-chat-completions">
   <input type="hidden" name="agent_chat_base_url" value="${escapeHtml(base)}">
+  <input type="hidden" name="hermes_model" value="${escapeHtml(compactHermesModel)}">
   <input type="hidden" name="codex_image_source" value="dedicated_chatgpt">
   <input type="hidden" name="codex_image_hermes_model" value="gpt-5.5">
   <div class="activation-model-grid">
@@ -1570,8 +1572,8 @@ function compactAgentSetup(){
    <label id="compact-agent-base-field" class="${provider==='custom_api'?'':'hidden'}">${lang==='es'?'URL de la API':'API URL'}<input id="compact-agent-base-input" ${provider==='custom_api'?'name="agent_chat_base_url"':''} value="${escapeHtml(base)}" placeholder="https://..." data-input-code="syncCompactAgentBase(event)"></label>
    <button id="compact-agent-save-button" class="btn primary ${isChatGpt?'hidden':''}" type="submit" name="agent_model_action" value="set_primary">${keySet&&provider===brain?(lang==='es'?'Modelo listo':'Model ready'):(lang==='es'?'Guardar modelo':'Save model')}</button>
   </div>
-  <div class="activation-model-hint"><span>${lang==='es'?'También puedes usar tu suscripción de ChatGPT como modelo principal.':'You can also use your ChatGPT subscription as the primary model.'}</span><button class="btn" type="button" data-provider="openai_codex" data-action-code="selectCompactAgentProvider(event)">${lang==='es'?'ChatGPT suscripción':'ChatGPT subscription'}</button></div>
-  <div id="compact-agent-chatgpt-row" class="activation-chatgpt-row ${isChatGpt?'':'hidden'}"><div><b>${lang==='es'?'Conectar tu suscripción de ChatGPT':'Connect your ChatGPT subscription'}</b><small>${lang==='es'?'Usa tu cuenta de ChatGPT/Codex como cerebro principal del agente.':'Use your ChatGPT/Codex account as the agent’s primary brain.'}</small></div><button class="btn primary" type="button" data-action-code="connectChatGpt(event)">${model.chatgpt_connected?(lang==='es'?'ChatGPT conectado':'ChatGPT connected'):(lang==='es'?'Conectar ChatGPT':'Connect ChatGPT')}</button></div>
+  <div class="activation-model-hint"><span>${lang==='es'?`También puedes usar tu suscripción de ChatGPT como modelo principal.<small>Solo se puede conectar ChatGPT Plus o superior; una cuenta Free no sirve como modelo principal. Luna se elegirá automáticamente.</small>`:`You can also use your ChatGPT subscription as the primary model.<small>Only ChatGPT Plus or higher can be connected; a Free account cannot be the primary model. Luna is selected automatically.</small>`}</span><button class="btn" type="button" data-provider="openai_codex" data-action-code="selectCompactAgentProvider(event)">${lang==='es'?'ChatGPT suscripción':'ChatGPT subscription'}</button></div>
+  <div id="compact-agent-chatgpt-row" class="activation-chatgpt-row ${isChatGpt?'':'hidden'}"><div><b>${lang==='es'?'Conectar tu suscripción de ChatGPT':'Connect your ChatGPT subscription'}</b><small>${lang==='es'?'Usa tu cuenta de ChatGPT/Codex como cerebro principal del agente. Requiere Plus o superior; Luna se selecciona automáticamente.':'Use your ChatGPT/Codex account as the agent’s primary brain. Plus or higher is required; Luna is selected automatically.'}</small></div><button class="btn primary" type="button" data-action-code="connectChatGpt(event)">${model.chatgpt_connected?(lang==='es'?'ChatGPT conectado':'ChatGPT connected'):(lang==='es'?'Conectar ChatGPT':'Connect ChatGPT')}</button></div>
   <div id="chatgpt-connect-result" class="chatgpt-connect-result hidden"></div>
   <div class="activation-image-row ${imageReady?'ready':''}">
    <div><span class="activation-mini-icon">${imageReady?'✓':'IMG'}</span><div><b>${lang==='es'?'ChatGPT para imágenes · opcional':'ChatGPT for images · optional'}</b><small>${imageReady?(lang==='es'?'Cuenta conectada':'Account connected'):(lang==='es'?'Puedes conectarlo después; no bloquea el modelo ni Telegram.':'You can connect it later; it does not block the model or Telegram.')}</small></div></div>
@@ -1595,6 +1597,7 @@ function selectCompactAgentProvider(event){
  form.elements.agent_chat_provider.value=provider;
  form.elements.agent_chat_base_url.value=preset.base;
  form.elements.agent_chat_model.value=provider==='openai_codex'?'':preset.model;
+ if(form.elements.hermes_model)form.elements.hermes_model.value=provider==='openai_codex'?'gpt-5.6-luna':'';
  form.elements.agent_chat_api_key.value='';
  const baseField=qs('#compact-agent-base-field');const baseInput=qs('#compact-agent-base-input');
  const keyField=qs('#compact-agent-key-field');const saveButton=qs('#compact-agent-save-button');const chatGptRow=qs('#compact-agent-chatgpt-row');const modelField=qs('#compact-agent-model-field');const modelInput=form.elements.agent_chat_model;
@@ -1928,7 +1931,7 @@ function chatGptConnectMarkup(onboarding=false){
  const keyPlaceholder=selectedConnection.api_key_set?(lang==='es'?'Clave guardada. Pega otra solo si quieres cambiarla.':'Key saved. Paste another only to replace it.'):(lang==='es'?'Pega la clave API del proveedor':'Paste the provider API key');
  const routeCopy={
   openai_api:{icon:'OA',title:lang==='es'?'OpenAI API':'OpenAI API',desc:lang==='es'?'Si tienes una clave API de OpenAI.':'If you have an OpenAI API key.',panel:lang==='es'?'Pega tu clave API de OpenAI. El agente seguirá usando su memoria, herramientas y aprobaciones.':'Paste your OpenAI API key. The agent still keeps its memory, tools, and approvals.'},
-  chatgpt_subscription:{icon:'CG',title:lang==='es'?'ChatGPT suscripción':'ChatGPT subscription',desc:lang==='es'?'Login OAuth con ChatGPT/Codex.':'OAuth login with ChatGPT/Codex.',panel:lang==='es'?'Primero, en ChatGPT abre Ajustes > Seguridad y activa el login por código para Codex. Después toca Conectar ahora; en PC/Mac abriré la terminal y en DigitalOcean mostraré aquí el enlace seguro.':'First, in ChatGPT open Settings > Security and enable device-code login for Codex. Then click Connect now; on PC/Mac I open the terminal and on DigitalOcean I show the secure link here.'},
+  chatgpt_subscription:{icon:'CG',title:lang==='es'?'ChatGPT suscripción':'ChatGPT subscription',desc:lang==='es'?'Requiere ChatGPT Plus o superior · Luna automático.':'Requires ChatGPT Plus or higher · Luna automatic.',panel:lang==='es'?'Solo se puede conectar una suscripción Plus o superior; las cuentas Free no sirven como cerebro principal. Primero, en ChatGPT abre Ajustes > Seguridad y activa el login por código para Codex. Después toca Conectar ahora; Luna se elegirá automáticamente.':'Only a Plus-or-higher subscription can be connected; Free accounts cannot be the primary brain. First, in ChatGPT open Settings > Security and enable device-code login for Codex. Then click Connect now; Luna will be selected automatically.'},
   minimax_m3:{icon:'M3',title:'MiniMax M3',desc:lang==='es'?'Con clave de MiniMax.':'With a MiniMax key.',panel:lang==='es'?'Pega tu clave de MiniMax. Ya dejé URL y modelo listos para M3. El agente seguirá usando su memoria y herramientas.':'Paste your MiniMax key. URL and model are already set for M3. The agent still keeps memory and tools.'},
   nvidia_nim:{icon:'NV',title:'NVIDIA NIM',desc:lang==='es'?'Modelos alojados del API Catalog.':'Hosted API Catalog models.',panel:lang==='es'?'Pega una API key de build.nvidia.com y carga la lista actual de modelos. El acceso alojado está sujeto a las cuotas y límites de NVIDIA.':'Paste an API key from build.nvidia.com and load the current model list. Hosted access is subject to NVIDIA quotas and limits.'},
   custom_api:{icon:'{}',title:lang==='es'?'Otra API compatible':'Other compatible API',desc:lang==='es'?'Para proveedores tipo OpenAI.':'For OpenAI-style providers.',panel:lang==='es'?'Pega la URL, el nombre del modelo y la clave del proveedor. El agente la usará como cerebro.':'Paste the provider URL, model name, and key. The agent will use it as its brain.'}
@@ -1952,11 +1955,11 @@ function chatGptConnectMarkup(onboarding=false){
  const preferredCodexModel='gpt-5.6-luna';
  const codexModel=catalogVerified
   ? (userSelectedCodexModel&&liveCodexModels.includes(configuredCodexModel)?configuredCodexModel:(liveCodexModels.includes(preferredCodexModel)?preferredCodexModel:(liveCodexModels.includes(recommendedCodexModelFromCatalog)?recommendedCodexModelFromCatalog:liveCodexModels[0]||'')))
-  : (userSelectedCodexModel?(configuredCodexModel||recommendedCodexModelFromCatalog):(liveCodexModels.includes(preferredCodexModel)?preferredCodexModel:recommendedCodexModelFromCatalog||configuredCodexModel||preferredCodexModel));
+  : (userSelectedCodexModel?(configuredCodexModel||recommendedCodexModelFromCatalog):preferredCodexModel);
  if(!catalogVerified&&codexModel&&!liveCodexModels.includes(codexModel))liveCodexModels.unshift(codexModel);
  if(!liveCodexModels.length)liveCodexModels.push(codexModel||'gpt-5.4-mini');
  const recommendedCodexModel=String(model.hermes_model_recommended||liveCodexModels[0]||'').trim();
- const codexModelOptions=liveCodexModels.map(value=>`<option value="${escapeHtml(value)}" ${codexModel===value?'selected':''}>${escapeHtml(value+(value===recommendedCodexModel?(lang==='es'?' · recomendado':' · recommended'):''))}</option>`).join('');
+ const codexModelOptions=liveCodexModels.map(value=>`<option value="${escapeHtml(value)}" ${codexModel===value?'selected':''}>${escapeHtml(value+(value===preferredCodexModel?(lang==='es'?' · Luna automático': ' · Luna automatic'):(value===recommendedCodexModel?(lang==='es'?' · recomendado':' · recommended'):'')))}</option>`).join('');
  const runtimeVersions=model.runtime_versions||{};
  const catalogHas56=liveCodexModels.some(value=>/^gpt-5\.6(?:[-.:]|$)/i.test(value));
  const catalogStateNote=catalogVerified
@@ -2275,7 +2278,7 @@ async function saveChatGptModel(event){
  const box=qs('#chatgpt-connect-result');
  if(btn)btn.disabled=true;
  try{
-  const payload=agentModelFormPayload();payload.agent_chat_provider='openai_codex';payload.agent_model_action='set_primary';
+  const payload=agentModelFormPayload();payload.agent_chat_provider='openai_codex';payload.agent_model_action='set_primary';if(!String(payload.hermes_model||'').trim())payload.hermes_model='gpt-5.6-luna';
   await api('/api/setup-config',{method:'POST',body:JSON.stringify(payload)});
   if(box){box.classList.remove('hidden');box.innerHTML=`<b>${lang==='es'?'Modelo guardado':'Model saved'}</b><p>${lang==='es'?'La conexión de ChatGPT/Codex sigue lista. No abrí otro login.':'ChatGPT/Codex remains connected. I did not open another login.'}</p>`}
   toast(lang==='es'?'Modelo guardado.':'Model saved.');
@@ -2329,7 +2332,8 @@ async function connectChatGpt(event){
  const popupReady=prepareChatGptAuthWindow();
  if(box){box.classList.remove('hidden');box.innerHTML=`<b>${lang==='es'?'Conectando...':'Connecting...'}</b><p>${popupReady?(lang==='es'?'Abrí una pestaña de espera. Cuando aparezca el login seguro, la llevaré ahí automáticamente.':'I opened a waiting tab. When the secure login appears, I will send it there automatically.'):(lang==='es'?'Si el navegador bloqueó la pestaña, te mostraré un botón para abrir el login.':'If the browser blocked the tab, I will show a button to open the login.')}</p>`}
  try{
-  const res=await api('/api/agent-model/connect',{method:'POST',body:JSON.stringify(agentModelFormPayload())});
+  const payload=agentModelFormPayload();if(!String(payload.hermes_model||'').trim())payload.hermes_model='gpt-5.6-luna';
+  const res=await api('/api/agent-model/connect',{method:'POST',body:JSON.stringify(payload)});
   renderChatGptConnectResult(res,'chatgpt-connect-result');
   const status=res.result?.status||res.status;
   const urls=res.result?.urls||res.urls||[];
@@ -2418,7 +2422,7 @@ function applyAgentModelPreset(kind){
   custom_api:{base_url:'',model:''}
  };
  if(fields.agent_chat_api)fields.agent_chat_api.value='openai-chat-completions';
- if(route==='chatgpt_subscription'){fields.agent_chat_provider.value='openai_codex';return}
+ if(route==='chatgpt_subscription'){fields.agent_chat_provider.value='openai_codex';if(fields.hermes_model)fields.hermes_model.value='gpt-5.6-luna';return}
  fields.agent_chat_provider.value=provider;
  fields.agent_chat_base_url.value=connection.base_url||defaults[route]?.base_url||'';
  fields.agent_chat_model.value=connection.model||defaults[route]?.model||'';
