@@ -36,6 +36,7 @@ from hermes_bridge import (
     ADMIRA_OPENAI_PROVIDER,
     admira_connected_model_config_lines,
     admira_fallback_config_lines,
+    hermes_compression_config_lines,
     inference_runtime_policy,
     admira_minimax_credentials,
     enforce_official_skill_catalog,
@@ -548,6 +549,10 @@ def write_gateway_files(config):
         "ADMIRA_GATEWAY_PROVIDER",
         "ADMIRA_CRON_PIN_PROVIDER",
         "ADMIRA_CRON_PIN_MODEL",
+        # Used only as a process-local compatibility bridge for the NVIDIA
+        # auxiliary compressor; never leave a stale value from a prior brain.
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
         "HERMES_CRON_MAX_PARALLEL",
         "ADMIRA_INTERNAL_MODEL_RECOVERY_URL",
         "ADMIRA_INTERNAL_MODEL_RECOVERY_TOKEN_FILE",
@@ -588,6 +593,11 @@ def write_gateway_files(config):
         env_lines.append(f"{key_env}={_env_value(connection.get('api_key'))}")
         env_lines.append(f"{base_env}={_env_value(connection.get('base_url'))}")
         env_lines.append(f"{model_env}={_env_value(connection.get('model'))}")
+    if active_brain.get("brain") == "nvidia_nim" and active_brain.get("api_key"):
+        # Auxiliary compression uses Hermes' generic custom endpoint for
+        # compatibility with older Hermes builds. The key stays in the
+        # private gateway .env (mode 0600), never in config.yaml/workspace.
+        env_lines.append(f"OPENAI_API_KEY={_env_value(active_brain.get('api_key'))}")
     if inference_policy["cron_max_parallel"]:
         # Prevent several due summaries from consuming a small hosted NVIDIA
         # allowance at once. Buyer Telegram messages are already sequential
@@ -631,19 +641,7 @@ def write_gateway_files(config):
         "  at_hour: 4",
         "  idle_minutes: 1440",
         "  notify: false",
-        "compression:",
-        "  enabled: true",
-        f"  threshold: {inference_policy['compression_threshold']}",
-        f"  target_ratio: {inference_policy['compression_target_ratio']}",
-        f"  protect_first_n: {inference_policy['compression_protect_first_n']}",
-        f"  protect_last_n: {inference_policy['compression_protect_last_n']}",
-        f"  hygiene_hard_message_limit: {inference_policy['compression_hard_message_limit']}",
-        "  codex_gpt55_autoraise: false",
-        *([
-            "auxiliary:",
-            "  compression:",
-            f"    provider: {_quote_yaml(inference_policy['compression_provider'])}",
-        ] if inference_policy["compression_provider"] else []),
+        *hermes_compression_config_lines(config, brain, inference_policy),
         "mcp_servers:",
         "  admira:",
         "    enabled: true",

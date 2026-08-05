@@ -16,12 +16,44 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
             "model": "z-ai/glm-5.2",
         })
         self.assertEqual(policy["api_max_retries"], 1)
-        self.assertEqual(policy["max_turns"], 24)
+        self.assertEqual(policy["max_turns"], 10)
         self.assertEqual(policy["cron_max_parallel"], 1)
         self.assertEqual(policy["model_context_length"], 80000)
         self.assertEqual(policy["compression_threshold"], 0.45)
         self.assertEqual(policy["compression_hard_message_limit"], 24)
-        self.assertEqual(policy["compression_provider"], hermes_bridge.ADMIRA_NVIDIA_PROVIDER)
+        self.assertEqual(policy["compression_provider"], "custom")
+        self.assertEqual(policy["compression_abort_on_failure"], False)
+        self.assertEqual(policy["compression_timeout"], 45)
+        self.assertEqual(policy["compression_base_url"], hermes_bridge.ADMIRA_NVIDIA_DEFAULT_BASE_URL)
+        self.assertEqual(policy["context_file_max_chars"], 30000)
+
+    def test_nvidia_compression_uses_compatible_custom_endpoint_and_safe_fallback(self):
+        policy = hermes_bridge.inference_runtime_policy({
+            "brain": "nvidia_nim",
+            "provider": hermes_bridge.ADMIRA_NVIDIA_PROVIDER,
+            "model": "z-ai/glm-5.2",
+            "base_url": hermes_bridge.ADMIRA_NVIDIA_DEFAULT_BASE_URL,
+        })
+        original_chain = hermes_bridge.admira_inference_fallback_chain
+        try:
+            hermes_bridge.admira_inference_fallback_chain = lambda _config, _brain: [
+                {"provider": "admira-minimax", "model": "MiniMax-M3"},
+                {"provider": hermes_bridge.ADMIRA_NVIDIA_PROVIDER, "model": "meta/llama"},
+            ]
+            lines = hermes_bridge.hermes_compression_config_lines(object(), {
+                "brain": "nvidia_nim",
+                "model": "z-ai/glm-5.2",
+                "base_url": hermes_bridge.ADMIRA_NVIDIA_DEFAULT_BASE_URL,
+            }, policy)
+            text = "\n".join(lines)
+            self.assertIn('abort_on_summary_failure: false', text)
+            self.assertIn('provider: "custom"', text)
+            self.assertIn('base_url: "https://integrate.api.nvidia.com/v1"', text)
+            self.assertIn('fallback_chain:', text)
+            self.assertIn('provider: "admira-minimax"', text)
+            self.assertNotIn('meta/llama', text)
+        finally:
+            hermes_bridge.admira_inference_fallback_chain = original_chain
 
     def test_nvidia_model_config_has_operational_context_cap(self):
         policy = hermes_bridge.inference_runtime_policy({"brain": "nvidia_nim"})

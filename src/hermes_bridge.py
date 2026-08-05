@@ -425,6 +425,11 @@ def inference_runtime_policy(primary_settings=None):
         "max_turns": 10 if is_nvidia else 60,
         "cron_max_parallel": 1 if is_nvidia else 0,
         "disable_delegation": is_nvidia,
+        # A failed summary must never freeze a buyer session. Hermes keeps the
+        # protected head/tail and drops the middle window as a last resort;
+        # Admira's durable workspace memory remains available to recover it.
+        "compression_abort_on_failure": False,
+        "compression_timeout": 45,
     }
     if is_nvidia:
         # NVIDIA's hosted endpoint can return a generic 5xx well before the
@@ -434,7 +439,9 @@ def inference_runtime_policy(primary_settings=None):
         # Hermes condenses old chat/tool turns.
         policy.update({
             "model_context_length": 80000,
-            "context_file_max_chars": 45000,
+            # Keep the large product prompt from consuming most of the
+            # operational window before the conversation itself is sent.
+            "context_file_max_chars": 30000,
             "compression_threshold": 0.45,
             "compression_target_ratio": 0.20,
             "compression_protect_first_n": 1,
@@ -443,7 +450,14 @@ def inference_runtime_policy(primary_settings=None):
             # Use the explicit named provider. Hermes' generic "main" alias
             # can fail to resolve named OpenAI-compatible providers, leaving
             # oversized NVIDIA sessions unable to produce a summary.
-            "compression_provider": ADMIRA_NVIDIA_PROVIDER,
+            # Hermes versions used by existing installs do not all resolve
+            # Admira's named custom providers from auxiliary tasks. Route the
+            # compressor through the universally supported OpenAI-compatible
+            # `custom` provider and inject the NVIDIA key only into the
+            # gateway process (never into config files).
+            "compression_provider": "custom",
+            "compression_model": str(brain.get("model") or ADMIRA_NVIDIA_DEFAULT_MODEL),
+            "compression_base_url": str(brain.get("base_url") or ADMIRA_NVIDIA_DEFAULT_BASE_URL).rstrip("/"),
         })
     else:
         policy.update({
@@ -455,8 +469,68 @@ def inference_runtime_policy(primary_settings=None):
             "compression_protect_last_n": 20,
             "compression_hard_message_limit": 400,
             "compression_provider": "",
+            "compression_model": "",
+            "compression_base_url": "",
         })
     return policy
+
+
+def hermes_compression_config_lines(config, brain, policy=None):
+    """Build one safe compression configuration for dashboard and Telegram.
+
+    The same block is emitted by both Hermes entry points so an install cannot
+    have a working dashboard compressor but a broken Telegram compressor.
+    NVIDIA's auxiliary route uses the generic `custom` resolver with an
+    explicit endpoint; the key is supplied through the gateway environment.
+    A configured independent provider may be used as a second attempt.
+    """
+    policy = dict(policy or inference_runtime_policy(brain))
+    lines = [
+        "compression:",
+        "  enabled: true",
+        f"  threshold: {policy['compression_threshold']}",
+        f"  target_ratio: {policy['compression_target_ratio']}",
+        f"  protect_first_n: {policy['compression_protect_first_n']}",
+        f"  protect_last_n: {policy['compression_protect_last_n']}",
+        f"  hygiene_hard_message_limit: {policy['compression_hard_message_limit']}",
+        f"  abort_on_summary_failure: {'true' if policy['compression_abort_on_failure'] else 'false'}",
+        "  codex_gpt55_autoraise: false",
+    ]
+    provider = str(policy.get("compression_provider") or "").strip()
+    if not provider:
+        return lines
+
+    lines.extend([
+        "auxiliary:",
+        "  compression:",
+        f"    provider: {_quote_yaml(provider)}",
+        f"    model: {_quote_yaml(policy.get('compression_model') or brain.get('model') or '')}",
+        f"    base_url: {_quote_yaml(policy.get('compression_base_url') or brain.get('base_url') or '')}",
+        f"    timeout: {int(policy.get('compression_timeout') or 45)}",
+    ])
+
+    # Use only providers with independent credentials. Entries are resolved
+    # from the provider catalog/key_env at runtime; no secret is persisted in
+    # config.yaml. Never add another NVIDIA model under the same key here.
+    fallback_entries = []
+    for entry in admira_inference_fallback_chain(config, brain):
+        entry_provider = str(entry.get("provider") or "").strip()
+        entry_model = str(entry.get("model") or "").strip()
+        if not entry_provider or not entry_model:
+            continue
+        if entry_provider == ADMIRA_NVIDIA_PROVIDER:
+            continue
+        if any(item["provider"] == entry_provider and item["model"] == entry_model for item in fallback_entries):
+            continue
+        fallback_entries.append({"provider": entry_provider, "model": entry_model})
+    if fallback_entries:
+        lines.append("    fallback_chain:")
+        for entry in fallback_entries[:4]:
+            lines.extend([
+                f"      - provider: {_quote_yaml(entry['provider'])}",
+                f"        model: {_quote_yaml(entry['model'])}",
+            ])
+    return lines
 
 
 def admira_inference_fallback_chain(config, primary_settings=None):
@@ -605,7 +679,9 @@ def _cli_hermes_config_needs_write(config_text, brain):
             or f"  context_length: {policy['model_context_length']}" not in config_text
             or f"  threshold: {policy['compression_threshold']}" not in config_text
             or f"  hygiene_hard_message_limit: {policy['compression_hard_message_limit']}" not in config_text
-            or f'provider: "{ADMIRA_NVIDIA_PROVIDER}"' not in config_text
+            or "abort_on_summary_failure: false" not in config_text
+            or '    provider: "custom"' not in config_text
+            or f"    base_url: \"{policy['compression_base_url']}\"" not in config_text
         )
     return False
 
@@ -659,19 +735,7 @@ def write_cli_hermes_config(config, workspace_info, payload=None):
         "  creation_nudge_interval: 0",
         "display:",
         "  memory_notifications: off",
-        "compression:",
-        "  enabled: true",
-        f"  threshold: {inference_policy['compression_threshold']}",
-        f"  target_ratio: {inference_policy['compression_target_ratio']}",
-        f"  protect_first_n: {inference_policy['compression_protect_first_n']}",
-        f"  protect_last_n: {inference_policy['compression_protect_last_n']}",
-        f"  hygiene_hard_message_limit: {inference_policy['compression_hard_message_limit']}",
-        "  codex_gpt55_autoraise: false",
-        *([
-            "auxiliary:",
-            "  compression:",
-            f"    provider: {_quote_yaml(inference_policy['compression_provider'])}",
-        ] if inference_policy["compression_provider"] else []),
+        *hermes_compression_config_lines(config, brain, inference_policy),
         "mcp_servers:",
         "  admira:",
         "    enabled: true",
@@ -2090,6 +2154,11 @@ def hermes_environment(config):
         env[ADMIRA_NVIDIA_BASE_URL_ENV] = settings.get("base_url") or ADMIRA_NVIDIA_DEFAULT_BASE_URL
         env["ADMIRA_NVIDIA_PROVIDER"] = ADMIRA_NVIDIA_PROVIDER
         env["ADMIRA_NVIDIA_MODEL"] = settings.get("model") or ADMIRA_NVIDIA_DEFAULT_MODEL
+        # The auxiliary compressor is deliberately configured through
+        # Hermes' universally supported `custom` endpoint. Keep this bridge
+        # process-local; never write the key to config.yaml or workspace
+        # memory. The main agent still uses the named Admira NVIDIA provider.
+        env["OPENAI_API_KEY"] = settings["api_key"]
     if settings.get("provider") == "custom" and settings.get("api_key"):
         env["OPENAI_API_KEY"] = settings["api_key"]
         if settings.get("base_url"):

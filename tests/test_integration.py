@@ -1036,7 +1036,7 @@ class IntegrationTestSuite:
         cli_yaml = "\n".join(hermes_bridge._hermes_model_config_lines(settings))
         gateway_yaml = "\n".join(hermes_gateway._gateway_model_config_lines(settings))
         self.assert_true(settings["brain"] == "nvidia_nim" and settings["model"] == "z-ai/glm-5.2", "NVIDIA is preserved as an explicit agent brain")
-        self.assert_true(env.get("ADMIRA_NVIDIA_API_KEY") == "nvapi-test-secret" and "OPENAI_API_KEY" not in env, "NVIDIA key stays in its provider-specific process variable")
+        self.assert_true(env.get("ADMIRA_NVIDIA_API_KEY") == "nvapi-test-secret" and env.get("OPENAI_API_KEY") == "nvapi-test-secret", "NVIDIA key is available to the named provider and the private auxiliary compatibility bridge")
         self.assert_true("admira-nvidia" in cli_yaml and "integrate.api.nvidia.com/v1" in cli_yaml and "nvapi-test-secret" not in cli_yaml, "Dashboard Hermes config registers named NVIDIA without persisting its key")
         self.assert_true("admira-nvidia" in gateway_yaml and "ADMIRA_NVIDIA_API_KEY" in gateway_yaml, "Telegram Hermes config uses the same named NVIDIA provider")
         previous_gateway_provider = os.environ.get("ADMIRA_GATEWAY_PROVIDER")
