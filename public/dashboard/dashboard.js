@@ -1531,17 +1531,22 @@ function compactAgentSetup(){
  const studio=state.config.creative_studio||{};
  const brain=model.brain_provider||'openai_codex';
  const apiProviders=['nvidia_nim','openai_api','minimax','custom_api'];
- const provider=apiProviders.includes(brain)?brain:'nvidia_nim';
+ const provider=brain==='openai_codex'?'openai_codex':(apiProviders.includes(brain)?brain:'nvidia_nim');
+ const isChatGpt=provider==='openai_codex';
+ const chatgptConnected=Boolean(model.chatgpt_connected);
  const connections=model.connections||{};
  const selected=connections[provider]||{};
  const defaults={
+  openai_codex:{base:'',model:model.hermes_model||'gpt-5.6-luna'},
   nvidia_nim:{base:'https://integrate.api.nvidia.com/v1',model:'z-ai/glm-5.2'},
   openai_api:{base:'https://api.openai.com/v1',model:'gpt-4.1-mini'},
   minimax:{base:'https://api.minimax.io/v1',model:'MiniMax-M3'},
   custom_api:{base:'',model:''}
  };
  const base=selected.base_url||model.base_url||defaults[provider].base;
- const modelName=selected.model||model.model||defaults[provider].model;
+ const modelName=isChatGpt
+  ? (chatgptConnected?(selected.model||(model.hermes_model_user_selected?model.hermes_model:'')||defaults[provider].model):'')
+  : (selected.model||model.model||defaults[provider].model);
  const keySet=Boolean(selected.api_key_set||(provider===brain&&model.api_key_set));
  const imageConnected=Boolean(studio.codex_image_connected||model.codex_image_connected);
  const imageReady=Boolean(studio.codex_image_ready||model.codex_image_ready);
@@ -1554,16 +1559,20 @@ function compactAgentSetup(){
   <input type="hidden" name="codex_image_hermes_model" value="gpt-5.5">
   <div class="activation-model-grid">
    <label>${lang==='es'?'Proveedor':'Provider'}<select id="compact-agent-provider" data-change-code="selectCompactAgentProvider(event)">
-    <option value="nvidia_nim" ${provider==='nvidia_nim'?'selected':''}>NVIDIA NIM</option>
+   <option value="openai_codex" ${provider==='openai_codex'?'selected':''}>${lang==='es'?'ChatGPT suscripción':'ChatGPT subscription'}</option>
+   <option value="nvidia_nim" ${provider==='nvidia_nim'?'selected':''}>NVIDIA NIM</option>
     <option value="openai_api" ${provider==='openai_api'?'selected':''}>OpenAI API</option>
     <option value="minimax" ${provider==='minimax'?'selected':''}>MiniMax</option>
-    <option value="custom_api" ${provider==='custom_api'?'selected':''}>${lang==='es'?'Otra API':'Other API'}</option>
+   <option value="custom_api" ${provider==='custom_api'?'selected':''}>${lang==='es'?'Otra API':'Other API'}</option>
    </select></label>
-   <label>${lang==='es'?'Modelo':'Model'}<input name="agent_chat_model" value="${escapeHtml(modelName)}" list="${provider==='nvidia_nim'?'nvidia-model-options':''}" placeholder="${lang==='es'?'Nombre del modelo':'Model name'}"><datalist id="nvidia-model-options">${options}</datalist></label>
-   <label class="activation-key-field">${lang==='es'?'API key':'API key'}<input type="password" name="agent_chat_api_key" autocomplete="off" placeholder="${keySet?(lang==='es'?'API key guardada':'API key saved'):(lang==='es'?'Pega la API key':'Paste the API key')}"></label>
+   <label id="compact-agent-model-field" class="${isChatGpt&&!chatgptConnected?'hidden':''}">${lang==='es'?'Modelo':'Model'}<input name="agent_chat_model" value="${escapeHtml(modelName)}" list="${provider==='nvidia_nim'?'nvidia-model-options':''}" placeholder="${isChatGpt?(lang==='es'?'Conecta ChatGPT primero':'Connect ChatGPT first'):(lang==='es'?'Nombre del modelo':'Model name')}" ${isChatGpt&&!chatgptConnected?'disabled':''}><datalist id="nvidia-model-options">${options}</datalist></label>
+   <label id="compact-agent-key-field" class="activation-key-field ${isChatGpt?'hidden':''}">${lang==='es'?'API key':'API key'}<input type="password" name="agent_chat_api_key" autocomplete="off" placeholder="${keySet?(lang==='es'?'API key guardada':'API key saved'):(lang==='es'?'Pega la API key':'Paste the API key')}"></label>
    <label id="compact-agent-base-field" class="${provider==='custom_api'?'':'hidden'}">${lang==='es'?'URL de la API':'API URL'}<input id="compact-agent-base-input" ${provider==='custom_api'?'name="agent_chat_base_url"':''} value="${escapeHtml(base)}" placeholder="https://..." data-input-code="syncCompactAgentBase(event)"></label>
-   <button class="btn primary" type="submit" name="agent_model_action" value="set_primary">${keySet&&provider===brain?(lang==='es'?'Modelo listo':'Model ready'):(lang==='es'?'Guardar modelo':'Save model')}</button>
+   <button id="compact-agent-save-button" class="btn primary ${isChatGpt?'hidden':''}" type="submit" name="agent_model_action" value="set_primary">${keySet&&provider===brain?(lang==='es'?'Modelo listo':'Model ready'):(lang==='es'?'Guardar modelo':'Save model')}</button>
   </div>
+  <div class="activation-model-hint"><span>${lang==='es'?'También puedes usar tu suscripción de ChatGPT como modelo principal.':'You can also use your ChatGPT subscription as the primary model.'}</span><button class="btn" type="button" data-provider="openai_codex" data-action-code="selectCompactAgentProvider(event)">${lang==='es'?'ChatGPT suscripción':'ChatGPT subscription'}</button></div>
+  <div id="compact-agent-chatgpt-row" class="activation-chatgpt-row ${isChatGpt?'':'hidden'}"><div><b>${lang==='es'?'Conectar tu suscripción de ChatGPT':'Connect your ChatGPT subscription'}</b><small>${lang==='es'?'Usa tu cuenta de ChatGPT/Codex como cerebro principal del agente.':'Use your ChatGPT/Codex account as the agent’s primary brain.'}</small></div><button class="btn primary" type="button" data-action-code="connectChatGpt(event)">${model.chatgpt_connected?(lang==='es'?'ChatGPT conectado':'ChatGPT connected'):(lang==='es'?'Conectar ChatGPT':'Connect ChatGPT')}</button></div>
+  <div id="chatgpt-connect-result" class="chatgpt-connect-result hidden"></div>
   <div class="activation-image-row ${imageReady?'ready':''}">
    <div><span class="activation-mini-icon">${imageReady?'✓':'IMG'}</span><div><b>${lang==='es'?'ChatGPT para imágenes · opcional':'ChatGPT for images · optional'}</b><small>${imageReady?(lang==='es'?'Cuenta conectada':'Account connected'):(lang==='es'?'Puedes conectarlo después; no bloquea el modelo ni Telegram.':'You can connect it later; it does not block the model or Telegram.')}</small></div></div>
    ${imageConnected?`<button class="btn" type="button" data-action-code="disconnectAgentModel('image')">${lang==='es'?'Cambiar cuenta':'Change account'}</button>`:`<button class="btn" type="button" data-action-code="connectImageChatGpt(event)">${lang==='es'?'Conectar ChatGPT':'Connect ChatGPT'}</button>`}
@@ -1573,8 +1582,10 @@ function compactAgentSetup(){
 }
 function selectCompactAgentProvider(event){
  const form=event?.target?.closest?.('form');if(!form)return;
- const provider=String(event.target.value||'nvidia_nim');
+ const picked=event?.target?.closest?.('[data-provider]')?.dataset?.provider;
+ const provider=String(picked||event.target.value||'nvidia_nim');
  const defaults={
+  openai_codex:{base:'',model:'gpt-5.6-luna'},
   nvidia_nim:{base:'https://integrate.api.nvidia.com/v1',model:'z-ai/glm-5.2'},
   openai_api:{base:'https://api.openai.com/v1',model:'gpt-4.1-mini'},
   minimax:{base:'https://api.minimax.io/v1',model:'MiniMax-M3'},
@@ -1583,9 +1594,16 @@ function selectCompactAgentProvider(event){
  const preset=defaults[provider]||defaults.nvidia_nim;
  form.elements.agent_chat_provider.value=provider;
  form.elements.agent_chat_base_url.value=preset.base;
- form.elements.agent_chat_model.value=preset.model;
+ form.elements.agent_chat_model.value=provider==='openai_codex'?'':preset.model;
  form.elements.agent_chat_api_key.value='';
  const baseField=qs('#compact-agent-base-field');const baseInput=qs('#compact-agent-base-input');
+ const keyField=qs('#compact-agent-key-field');const saveButton=qs('#compact-agent-save-button');const chatGptRow=qs('#compact-agent-chatgpt-row');const modelField=qs('#compact-agent-model-field');const modelInput=form.elements.agent_chat_model;
+ const isChatGpt=provider==='openai_codex';
+ if(keyField)keyField.classList.toggle('hidden',isChatGpt);
+ if(saveButton)saveButton.classList.toggle('hidden',isChatGpt);
+ if(chatGptRow)chatGptRow.classList.toggle('hidden',!isChatGpt);
+ if(modelField)modelField.classList.toggle('hidden',isChatGpt);
+ if(modelInput){modelInput.disabled=isChatGpt;modelInput.placeholder=isChatGpt?(lang==='es'?'Conecta ChatGPT primero':'Connect ChatGPT first'):(lang==='es'?'Nombre del modelo':'Model name')}
  if(baseField)baseField.classList.toggle('hidden',provider!=='custom_api');
  if(baseInput){baseInput.value=preset.base;if(provider==='custom_api')baseInput.setAttribute('name','agent_chat_base_url');else baseInput.removeAttribute('name')}
 }
@@ -1931,9 +1949,10 @@ function chatGptConnectMarkup(onboarding=false){
  const configuredCodexModel=String(model.hermes_model||'').trim();
  const userSelectedCodexModel=Boolean(model.hermes_model_user_selected);
  const recommendedCodexModelFromCatalog=String(model.hermes_model_recommended||liveCodexModels[0]||'').trim();
+ const preferredCodexModel='gpt-5.6-luna';
  const codexModel=catalogVerified
-  ? (userSelectedCodexModel&&liveCodexModels.includes(configuredCodexModel)?configuredCodexModel:(liveCodexModels.includes(recommendedCodexModelFromCatalog)?recommendedCodexModelFromCatalog:liveCodexModels[0]||''))
-  : (userSelectedCodexModel?(configuredCodexModel||recommendedCodexModelFromCatalog):recommendedCodexModelFromCatalog||configuredCodexModel||'gpt-5.4-mini');
+  ? (userSelectedCodexModel&&liveCodexModels.includes(configuredCodexModel)?configuredCodexModel:(liveCodexModels.includes(preferredCodexModel)?preferredCodexModel:(liveCodexModels.includes(recommendedCodexModelFromCatalog)?recommendedCodexModelFromCatalog:liveCodexModels[0]||'')))
+  : (userSelectedCodexModel?(configuredCodexModel||recommendedCodexModelFromCatalog):(liveCodexModels.includes(preferredCodexModel)?preferredCodexModel:recommendedCodexModelFromCatalog||configuredCodexModel||preferredCodexModel));
  if(!catalogVerified&&codexModel&&!liveCodexModels.includes(codexModel))liveCodexModels.unshift(codexModel);
  if(!liveCodexModels.length)liveCodexModels.push(codexModel||'gpt-5.4-mini');
  const recommendedCodexModel=String(model.hermes_model_recommended||liveCodexModels[0]||'').trim();
@@ -1980,6 +1999,8 @@ function chatGptConnectMarkup(onboarding=false){
 }
 function renderChatGptPanel(){
  qs('#chatgpt-panel').innerHTML=chatGptConnectMarkup(false);
+ const modelChoice=qs('#chatgpt-panel .codex-model-choice');
+ if(modelChoice&&!state.config?.agent_model?.chatgpt_connected)modelChoice.classList.add('hidden');
 }
 const TELEGRAM_GUIDE_VIDEO='/assets/tutorial-meta/crear-bot-telegram.mp4';
 const TELEGRAM_GUIDE_VIDEO_FALLBACK='/assets/tutorial-meta/crear-bot-telegram.mov';
