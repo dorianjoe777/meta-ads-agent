@@ -521,6 +521,53 @@ class SocialFlowClient:
         return ""
 
     @staticmethod
+    def page_welcome_message_payload(prefilled_message, greeting=""):
+        """Build Meta's Visual Editor payload for click-to-message ads.
+
+        Meta stores the customer-sendable first message as an icebreaker in
+        AdCreative.page_welcome_message. Putting ``text=`` on a wa.me/API
+        link is not equivalent: Meta can replace that value while building
+        the native WhatsApp destination.
+        """
+        message = str(prefilled_message or "").strip()
+        if not message:
+            return {}
+        welcome = str(greeting or "").strip() or "¡Hola! ¿Cómo podemos ayudarte?"
+        return {
+            "type": "VISUAL_EDITOR",
+            "version": 2,
+            "landing_screen_type": "welcome_message",
+            "media_type": "text",
+            "text_format": {
+                "customer_action_type": "ice_breakers",
+                "message": {"text": welcome, "ice_breakers": [{"title": message}]},
+            },
+            "image_format": {
+                "customer_action_type": "quick_replies",
+                "message": {
+                    "attachment": {
+                        "type": "template",
+                        "payload": {"template_type": "generic", "elements": [{"title": "", "buttons": []}]},
+                    },
+                    "quick_replies": [{"title": message, "content_type": "text"}],
+                    "text": welcome,
+                },
+            },
+            "video_format": {
+                "customer_action_type": "quick_replies",
+                "message": {
+                    "attachment": {"type": "video", "payload": {"attachment_id": ""}},
+                    "quick_replies": [{"title": message, "content_type": "text"}],
+                    "text": welcome,
+                },
+            },
+            "user_edit": True,
+            "surface": "visual_editor_new",
+            "ice_breakers_edited": True,
+            "autofill_message_edited": False,
+        }
+
+    @staticmethod
     def default_lead_form_link(page_id=""):
         page = str(page_id or "").strip()
         return f"https://www.facebook.com/{page}" if page else "https://www.facebook.com"
@@ -1250,6 +1297,9 @@ class SocialFlowClient:
                     "access_token": creative_access_token,
                     "name": self.flag(args, "--name", "Ad Creative"),
                 }
+                page_welcome_message = self.flag(args, "--page-welcome-message", "")
+                if page_welcome_message:
+                    fields["page_welcome_message"] = page_welcome_message
                 record = {**record, "credential_source": credential_source}
                 object_story_id = self.flag(args, "--object-story-id", "")
                 if object_story_id:
@@ -1643,6 +1693,8 @@ class SocialFlowClient:
         cta_link="",
         object_story_id="",
         lead_gen_form_id="",
+        prefilled_message="",
+        welcome_message="",
         prefer_publishing_token=False,
         approved=False,
     ):
@@ -1652,6 +1704,9 @@ class SocialFlowClient:
         args.extend(["--name", name])
         if prefer_publishing_token:
             args.extend(["--creative-token-source", "publishing"])
+        welcome_payload = self.page_welcome_message_payload(prefilled_message, welcome_message)
+        if welcome_payload:
+            args.extend(["--page-welcome-message", json.dumps(welcome_payload, ensure_ascii=False)])
         if object_story_id:
             args.extend(["--object-story-id", object_story_id])
         elif object_story_spec:

@@ -1512,6 +1512,8 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
     image_hash = ad_plan.get("image_hash") or ""
     video_id = ad_plan.get("video_id") or ""
     message_destination_link = SocialFlowClient.default_message_destination_link(message_destination, destination.get("page_id", ""))
+    prefilled_message = str(ad_plan.get("prefilled_message") or "").strip() if message_destination else ""
+    welcome_message = str(ad_plan.get("welcome_message") or ad_plan.get("initial_business_message") or "").strip()
     lead_form_link = SocialFlowClient.default_lead_form_link(destination.get("page_id", "")) if lead_gen_form_id else ""
     # A lead form still needs an external destination when the development
     # mode fallback promotes a native Page post. Prefer the campaign's real
@@ -1656,6 +1658,8 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         cta_link=ad_plan.get("cta_link") or "",
         object_story_id=creative_object_story_id,
         lead_gen_form_id=lead_gen_form_id,
+        prefilled_message=prefilled_message,
+        welcome_message=welcome_message,
         prefer_publishing_token=bool(direct_video_story_spec),
         approved=approved,
     )
@@ -1679,6 +1683,8 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
             cta_link=ad_plan.get("cta_link") or "",
             object_story_id=object_story_id,
             lead_gen_form_id=lead_gen_form_id,
+            prefilled_message=prefilled_message,
+            welcome_message=welcome_message,
             approved=approved,
         )
         creative_id = social_id_from_result(creative_result)
@@ -1716,6 +1722,8 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
                     cta_link=ad_plan.get("cta_link") or "",
                     object_story_id="" if retry_video_story_spec else object_story_id,
                     lead_gen_form_id=lead_gen_form_id,
+                    prefilled_message=prefilled_message,
+                    welcome_message=welcome_message,
                     prefer_publishing_token=bool(retry_video_story_spec),
                     approved=approved,
                 )

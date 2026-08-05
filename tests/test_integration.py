@@ -9205,8 +9205,27 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             whatsapp_fields = urllib.parse.parse_qs(whatsapp_feed_request.data.decode("utf-8"))
             whatsapp_cta = json.loads(whatsapp_fields["call_to_action"][0])
             self.assert_true(whatsapp_body.get("object_story_id") == "page_1_link_post_1", "WhatsApp direct publishing creates an ads-ready Page post")
-            self.assert_true(whatsapp_fields["link"][0] == "https://api.whatsapp.com/send", "WhatsApp direct publishing uses Meta's click-to-WhatsApp default link")
+            self.assert_true(whatsapp_fields["link"][0] == "https://api.whatsapp.com/send", "WhatsApp direct publishing uses Meta's native WhatsApp destination")
             self.assert_true(whatsapp_cta["type"] == "WHATSAPP_MESSAGE" and whatsapp_cta["value"]["app_destination"] == "WHATSAPP", "WhatsApp direct publishing uses a messaging CTA instead of a website CTA")
+            requests.clear()
+            welcome_creative_result = client.create_creative(
+                "act_999",
+                "WhatsApp welcome creative",
+                "page_1",
+                "",
+                "Escríbenos",
+                "Reserva hoy",
+                "",
+                "WHATSAPP_MESSAGE",
+                object_story_id="page_1_link_post_1",
+                prefilled_message="Hola, quiero reservar la oferta",
+                approved=True,
+            )
+            welcome_creative_request = requests[-1]
+            welcome_creative_fields = urllib.parse.parse_qs(welcome_creative_request.data.decode("utf-8"))
+            welcome_payload = json.loads(welcome_creative_fields["page_welcome_message"][0])
+            self.assert_true(welcome_creative_result.get("returncode") == 0 and welcome_creative_fields["object_story_id"][0] == "page_1_link_post_1", "Click-to-WhatsApp creates the AdCreative from the eligible dark post")
+            self.assert_true(welcome_payload["text_format"]["message"]["ice_breakers"][0]["title"] == "Hola, quiero reservar la oferta", "AdCreative carries the exact customer-sendable message in Meta page_welcome_message")
             requests.clear()
             video_lookup_mode["value"] = "processing"
             processing_result = client.create_page_post("page_1", message="Video procesando", video_url="https://cdn.example/video.mp4", approved=True)
@@ -10086,6 +10105,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                             "image_url": "https://cdn.example/whatsapp-ad.jpg",
                             "message_destination": "WHATSAPP",
                             "whatsapp_phone_number_id": "573128781168",
+                            "prefilled_message": "Hola, quiero reservar la oferta",
                             "use_direct_publishing": True,
                             "final_status": "PAUSED",
                             "active_spend_confirmed": False,
@@ -10099,12 +10119,16 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             whatsapp_campaign = next(call for call in whatsapp_client.calls if call[0] == "create_campaign")
             whatsapp_adset = next(call for call in whatsapp_client.calls if call[0] == "create_adset")
             whatsapp_post = next(call for call in whatsapp_client.calls if call[0] == "create_page_post")
+            whatsapp_creative = next(call for call in whatsapp_client.calls if call[0] == "create_creative")
             self.assert_true(whatsapp_result["ok"], "Click-to-WhatsApp campaign can be created without a website landing URL")
             self.assert_true(whatsapp_campaign[1][2] == "OUTCOME_ENGAGEMENT", "Click-to-WhatsApp campaign uses an engagement-compatible objective")
             self.assert_true(whatsapp_adset[2]["destination_type"] == "WHATSAPP", "Click-to-WhatsApp ad set carries the WhatsApp destination type")
             self.assert_true(whatsapp_adset[1][5] == "CONVERSATIONS", "Click-to-WhatsApp overrides stale web-conversion optimization with Meta's Graph-valid messaging goal")
             self.assert_true(whatsapp_adset[2]["promoted_object"] == {"page_id": "111", "whatsapp_phone_number_id": "573128781168"}, "Click-to-WhatsApp ad set carries the Page and numeric WhatsApp promoted object")
-            self.assert_true(whatsapp_post[2]["message_destination"] == "WHATSAPP" and whatsapp_post[2]["link"] == "https://api.whatsapp.com/send", "Click-to-WhatsApp hidden post carries the message destination instead of requiring a website URL")
+            self.assert_true(whatsapp_post[2]["message_destination"] == "WHATSAPP" and whatsapp_post[2]["link"] == "https://api.whatsapp.com/send", "Click-to-WhatsApp hidden post uses the native message destination instead of requiring a website URL")
+            self.assert_true(whatsapp_creative[2]["prefilled_message"] == "Hola, quiero reservar la oferta", "Click-to-WhatsApp passes the approved first-message text to AdCreative")
+            welcome_payload = SocialFlowClient.page_welcome_message_payload(whatsapp_creative[2]["prefilled_message"])
+            self.assert_true(welcome_payload["text_format"]["message"]["ice_breakers"][0]["title"] == "Hola, quiero reservar la oferta", "Click-to-WhatsApp serializes the customer-sendable text as Meta's page_welcome_message icebreaker")
 
             campaign_path.write_text(
                 json.dumps(
