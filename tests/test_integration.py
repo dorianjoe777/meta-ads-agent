@@ -10511,6 +10511,25 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         })
         self.assert_true(alias_objective["objective"] == "LEAD_GENERATION", "Campaign objective aliases are preserved before staging")
         self.assert_true(daily_agent.campaign_objective_for_social("OUTCOME_SALES", ad_plan={"lead_form_id": "form_123"}) == "OUTCOME_LEADS", "Lead form intent overrides stale sales objective at Graph execution")
+        nested = dashboard.normalize_campaign_stack_arguments({
+            "name": "Formulario anidado",
+            "daily_budget": 19,
+            "objective": "OUTCOME_SALES",
+            "ad": {"creative": {"form": {"id": "form_nested"}}},
+        })
+        self.assert_true(
+            nested["lead_gen_form_id"] == "form_nested" and nested["objective"] == "LEAD_FORM",
+            "Nested lead form IDs are promoted and override stale sales objectives",
+        )
+        missing_form = dashboard.normalize_campaign_stack_arguments({
+            "name": "Formulario sin ID",
+            "daily_budget": 19,
+            "objective": "LEAD_GENERATION",
+        })
+        self.assert_true(
+            dashboard.campaign_arguments_have_lead_intent(missing_form) and not missing_form.get("lead_gen_form_id"),
+            "Lead intent remains explicit when the native form ID is missing",
+        )
 
     def test_telegram_codex_image_request_sends_generated_photo(self):
         """Test a Telegram creative-image request executes the Codex/Image backend tool and sends the result."""

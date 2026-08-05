@@ -9766,6 +9766,10 @@ def apply_action(payload):
 def create_campaign(payload):
     payload = normalize_campaign_stack_arguments(payload)
     lead_gen_form_id = str(payload.get("lead_gen_form_id") or "").strip()
+    if campaign_arguments_have_lead_intent(payload) and not lead_gen_form_id:
+        raise ValueError(
+            "lead_gen_form_id: una campaña de formularios necesita el ID del formulario nativo de Meta antes de crear cualquier objeto."
+        )
     final_status = str(payload.get("final_status") or "ACTIVE").strip().upper()
     if final_status not in {"PAUSED", "ACTIVE"}:
         final_status = "ACTIVE"
@@ -10308,6 +10312,84 @@ def nested_campaign_creative_arguments(arguments):
     return {}
 
 
+LEAD_FORM_ID_KEYS = (
+    "lead_gen_form_id",
+    "lead_form_id",
+    "instant_form_id",
+    "meta_lead_form_id",
+    "form_id",
+)
+
+
+def lead_form_id_from_campaign_arguments(arguments):
+    """Resolve a native Meta form ID from the loose shapes Hermes may emit.
+
+    Hermes can place the returned form ID at the top level or inside the
+    creative/ad/form object. Losing it makes an otherwise lead-specific plan
+    look like a stale sales plan at execution time, so only accept explicit
+    Graph IDs from these known containers.
+    """
+    root = arguments if isinstance(arguments, dict) else {}
+    visited = set()
+
+    def visit(value, form_context=False, depth=0):
+        if depth > 4 or not isinstance(value, (dict, list, tuple)):
+            return ""
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                found = visit(item, form_context=form_context, depth=depth + 1)
+                if found:
+                    return found
+            return ""
+        identity = id(value)
+        if identity in visited:
+            return ""
+        visited.add(identity)
+        for key in LEAD_FORM_ID_KEYS:
+            candidate = str(value.get(key) or "").strip()
+            if candidate:
+                return candidate
+        if form_context:
+            candidate = str(value.get("id") or "").strip()
+            if candidate:
+                return candidate
+        for key, child in value.items():
+            if key in {"ad", "creative", "form", "lead_form", "destination", "lead_form_config", "ads", "creatives"}:
+                found = visit(child, form_context=form_context or key in {"form", "lead_form", "lead_form_config"}, depth=depth + 1)
+                if found:
+                    return found
+        return ""
+
+    resolved = visit(root)
+    if resolved:
+        return resolved
+    return ""
+
+
+def campaign_arguments_have_lead_intent(arguments):
+    """Detect lead-form intent before any campaign object is created."""
+    root = arguments if isinstance(arguments, dict) else {}
+    values = [
+        root.get("objective"),
+        root.get("campaign_objective"),
+        root.get("goal"),
+        root.get("result_type"),
+        root.get("campaign_goal"),
+        root.get("destination_type"),
+        root.get("conversion_location"),
+        root.get("form_type"),
+    ]
+    normalized = {
+        str(value or "").strip().upper().replace("-", "_")
+        for value in values
+    }
+    return bool(lead_form_id_from_campaign_arguments(root)) or bool(normalized.intersection({
+        "LEADS", "LEAD", "LEAD_GENERATION", "LEAD_FORM", "LEAD_FORMS",
+        "INSTANT_FORM", "INSTANT_FORMS", "FORMS", "OUTCOME_LEADS",
+        "OUTCOME_LEAD_GENERATION",
+    }))
+
+
 def normalize_campaign_stack_arguments(arguments, chat_payload=None):
     """Accept the looser shapes Hermes/Telegram may send for campaign staging."""
     args = dict(arguments or {})
@@ -10315,17 +10397,15 @@ def normalize_campaign_stack_arguments(arguments, chat_payload=None):
     # Preserve every lead-form ID alias in the durable campaign contract.
     # Otherwise a model can send `lead_form_id` while the saved ad keeps the
     # generic SALES objective, causing Meta to reject a LEAD_GENERATION ad set.
-    for key in ("lead_gen_form_id", "lead_form_id", "instant_form_id", "meta_lead_form_id", "form_id"):
-        value = str(args.get(key) or "").strip()
-        if value:
-            args["lead_gen_form_id"] = value
-            break
+    lead_form_id = lead_form_id_from_campaign_arguments(args)
+    if lead_form_id:
+        args["lead_gen_form_id"] = lead_form_id
     if not args.get("objective"):
         for key in ("campaign_objective", "goal", "result_type", "campaign_goal"):
             if args.get(key):
                 args["objective"] = args.get(key)
                 break
-    if args.get("lead_gen_form_id"):
+    if campaign_arguments_have_lead_intent(args):
         objective = str(args.get("objective") or args.get("campaign_objective") or "").strip().upper().replace("-", "_")
         if objective in {"", "SALES", "PURCHASES", "CONVERSIONS", "OUTCOME_SALES"}:
             args["objective"] = "LEAD_FORM"
@@ -12139,6 +12219,7 @@ def handle_create_campaign_stack_tool(arguments, chat_payload, tool):
     manual_completion = bool(creative_controls.get("manual_creative_completion"))
     placeholder_static = bool(creative_controls.get("create_placeholder_ad"))
     required = ["name", "daily_budget"]
+    lead_intent = campaign_arguments_have_lead_intent(arguments)
     has_message_destination = bool(message_destination_from_plan(arguments))
     has_lead_form = bool(
         arguments.get("lead_gen_form_id")
@@ -12147,6 +12228,11 @@ def handle_create_campaign_stack_tool(arguments, chat_payload, tool):
         or arguments.get("meta_lead_form_id")
         or arguments.get("form_id")
     )
+    if lead_intent and not has_lead_form:
+        # Never let a lead-form request fall through to a stale/default sales
+        # campaign. The native form ID is required to build the promoted
+        # object and final creative safely.
+        required.append("lead_gen_form_id")
     # Messaging and native lead-form ads have no website landing URL. Their
     # destination is carried by the promoted object/CTA instead.
     if not arguments.get("object_story_id") and not has_message_destination and not has_lead_form:
