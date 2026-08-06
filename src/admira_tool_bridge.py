@@ -264,7 +264,12 @@ def latest_content_asset_batch(*, pending_only=False, approved_for_ads=False, li
         paths = safe_image_paths({"image_paths": item.get("file_paths") or []}, limit=32)
         if not paths:
             continue
-        created_at = str(item.get("created_at") or item.get("updated_at") or "")
+        # Use the latest durable update as the batch key.  A buyer may upload
+        # the two creatives for one campaign a minute apart; after the agent
+        # classifies/approves them together, grouping by the original upload
+        # timestamp would recover only the newest one and silently drop the
+        # other creative after context compaction.
+        created_at = str(item.get("updated_at") or item.get("created_at") or "")
         candidates.append((created_at, item, paths))
     if not candidates:
         return {"paths": [], "asset_ids": []}

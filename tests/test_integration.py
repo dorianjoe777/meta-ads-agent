@@ -3288,6 +3288,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
 
         original_loader = admira_tool_bridge.load_dashboard
         original_latest_batch = admira_tool_bridge.latest_content_asset_batch
+        original_asset_items = admira_tool_bridge.content_asset_library_items
         try:
             admira_tool_bridge.load_dashboard = lambda: FakeDashboard()
             context = admira_tool_bridge.call_tool("mcp_admira_get_real_meta_context", {})
@@ -3369,6 +3370,31 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                 and archived_stage_call[0]["arguments"]["content_asset_ids"] == ["asset-current-approved"],
                 "Tool bridge recovers the newest approved classified creative when a compacted campaign call loses its asset path",
             )
+            admira_tool_bridge.content_asset_library_items = lambda: [
+                {
+                    "id": "asset-glow",
+                    "file_paths": [str(generated_image.resolve())],
+                    "classification_status": "classified",
+                    "approved_for_ads": True,
+                    "preservation_mode": "style_only",
+                    "created_at": "2026-08-04T20:23:04+00:00",
+                    "updated_at": "2026-08-06T03:16:47+00:00",
+                },
+                {
+                    "id": "asset-piel",
+                    "file_paths": [str(generated_image.resolve())],
+                    "classification_status": "classified",
+                    "approved_for_ads": True,
+                    "preservation_mode": "style_only",
+                    "created_at": "2026-08-04T20:24:32+00:00",
+                    "updated_at": "2026-08-06T03:16:47+00:00",
+                },
+            ]
+            same_approval_batch = admira_tool_bridge.latest_content_asset_batch(approved_for_ads=True, limit=8)
+            self.assert_true(
+                set(same_approval_batch["asset_ids"]) == {"asset-glow", "asset-piel"},
+                "Approved creatives classified together are recovered as one batch even when uploaded minutes apart",
+            )
             self.assert_true(ads_onboarding["product_tool"] == "save_ads_onboarding" and "save_ads_onboarding" in called_tools, "Tool bridge maps ads onboarding memory so Hermes can persist campaign KPIs")
             self.assert_true(daily_content["product_tool"] == "save_daily_social_content_settings" and "save_daily_social_content_settings" in called_tools, "Tool bridge maps daily organic content settings to the dashboard handler")
             self.assert_true(staged_social_post["product_tool"] == "stage_organic_social_post" and "stage_organic_social_post" in called_tools, "Tool bridge maps each exact organic image/caption into a protected publication draft")
@@ -3384,6 +3410,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.assert_true(unknown["blocked"] and unknown["reason"] == "unsupported_tool", "Tool bridge rejects unknown tools")
         finally:
             admira_tool_bridge.latest_content_asset_batch = original_latest_batch
+            admira_tool_bridge.content_asset_library_items = original_asset_items
             admira_tool_bridge.load_dashboard = original_loader
             shutil.rmtree(image_dir, ignore_errors=True)
 
