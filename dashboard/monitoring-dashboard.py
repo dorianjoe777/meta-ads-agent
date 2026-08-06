@@ -9942,13 +9942,96 @@ def create_campaign(payload):
         ad_set["end_time"] = schedule["end_time"]
     ad_set["status"] = status_plan["adset"]
     ad_set = apply_signal_quality_to_adset(ad_set, signal_review)
+
+    # Preserve an explicitly requested multi-offer structure.  The legacy
+    # path above still builds a safe Core ad set, but a request containing
+    # `ad_sets:[{ads:[...]}, ...]` must not be collapsed into that one set.
+    # Each nested ad is made durable here so execution can bind it to the
+    # matching Meta ad set instead of reusing the first creative globally.
+    explicit_ad_sets = [
+        item for item in (payload.get("ad_sets") or [])
+        if isinstance(item, dict)
+    ]
+    stored_ad_sets = [ad_set]
+    if explicit_ad_sets:
+        inherited_ad = {
+            "primary_text": str(payload.get("primary_text") or "").strip(),
+            "headline": str(payload.get("headline") or payload.get("name") or "Nueva oferta").strip(),
+            "creative_image_path": str(payload.get("creative_image_path") or "").strip(),
+            "landing_url": str(payload.get("landing_url") or "").strip(),
+            "cta": str(payload.get("cta") or "LEARN_MORE").strip().upper(),
+            "cta_link": creative_controls["cta_link"],
+            "image_hash": creative_controls["image_hash"],
+            "image_url": creative_controls["image_url"],
+            "video_url": creative_controls["video_url"],
+            "message_destination": message_destination,
+            "lead_gen_form_id": lead_gen_form_id,
+            "whatsapp_phone_number_id": whatsapp_phone_number_id,
+            "prefilled_message": str(payload.get("prefilled_message") or "").strip(),
+            "welcome_message": str(payload.get("welcome_message") or payload.get("initial_business_message") or "").strip(),
+            "object_story_spec": creative_controls["object_story_spec"],
+            "object_story_id": creative_controls["object_story_id"],
+            "use_direct_publishing": creative_controls["use_direct_publishing"],
+            "manual_creative_completion": creative_controls["manual_creative_completion"],
+            "create_placeholder_ad": creative_controls["create_placeholder_ad"],
+            "placeholder_ad_count": creative_controls["placeholder_ad_count"],
+            "placeholder_ad_names": creative_controls["placeholder_ad_names"],
+            "creative_creation_strategy": creative_controls["creative_creation_strategy"],
+            "direct_publishing_plan": direct_plan,
+            "creative_format": creative_controls["format"],
+            "final_status": final_status,
+            "active_spend_confirmed": active_confirmed,
+        }
+
+        def inherited_ad_plan(raw_ad, raw_set):
+            plan = dict(inherited_ad)
+            if isinstance(raw_set, dict):
+                for key in ("message_destination", "whatsapp_phone_number_id", "lead_gen_form_id", "landing_url", "cta", "cta_link", "use_direct_publishing", "creative_creation_strategy"):
+                    if raw_set.get(key) not in (None, ""):
+                        plan[key] = raw_set[key]
+            if isinstance(raw_ad, dict):
+                for key, value in raw_ad.items():
+                    if value not in (None, ""):
+                        plan[key] = value
+            plan["cta"] = str(plan.get("cta") or "LEARN_MORE").strip().upper()
+            if plan.get("message_destination") and plan["cta"] in {"LEARN_MORE", "APRENDER_MAS", ""}:
+                plan["cta"] = SocialFlowClient.message_destination_cta_type(plan["message_destination"]) or plan["cta"]
+            return plan
+
+        stored_ad_sets = []
+        for index, raw_set in enumerate(explicit_ad_sets):
+            raw_targeting = raw_set.get("targeting") if isinstance(raw_set.get("targeting"), dict) else dict(audience)
+            nested_set = creator.create_ad_set_config(
+                str(raw_set.get("name") or raw_set.get("adset_name") or raw_set.get("offer") or raw_set.get("product") or f"{payload.get('name', 'New Campaign')} - Ad Set {index + 1}").strip(),
+                raw_targeting,
+                parse_money_like(raw_set.get("budget") or raw_set.get("daily_budget") or raw_set.get("adset_daily_budget"), budget_plan["adset_daily"]),
+            )
+            for key in ("placements", "billing_event", "bidding", "start_time", "end_time", "is_adset_budget_sharing_enabled", "optimization_goal", "promoted_object", "destination_type", "message_destination", "whatsapp_phone_number_id"):
+                if raw_set.get(key) not in (None, ""):
+                    nested_set[key] = raw_set[key]
+            if not nested_set.get("message_destination") and message_destination:
+                nested_set["message_destination"] = message_destination
+            if not nested_set.get("whatsapp_phone_number_id") and whatsapp_phone_number_id:
+                nested_set["whatsapp_phone_number_id"] = whatsapp_phone_number_id
+            nested_set["status"] = "PAUSED" if final_status == "PAUSED" else status_plan["adset"]
+            nested_set = apply_signal_quality_to_adset(nested_set, signal_review)
+            ads = raw_set.get("ads") or raw_set.get("creatives") or raw_set.get("ad_variants") or []
+            if isinstance(ads, dict):
+                ads = [ads]
+            if not isinstance(ads, list):
+                ads = []
+            nested_set["ads"] = [inherited_ad_plan(item, raw_set) for item in ads if isinstance(item, dict)]
+            if not nested_set["ads"]:
+                nested_set["ads"] = [inherited_ad_plan(raw_set, raw_set)]
+            stored_ad_sets.append(nested_set)
+
     campaign = creator.create_campaign_config(
         name=payload.get("name", "New Campaign"),
         objective=payload.get("objective", "PURCHASES"),
         budget_daily=budget_plan["campaign_daily"],
         budget_total=budget_plan["total_budget"],
         pixel_id=payload.get("pixel_id") or None,
-        ad_sets=[ad_set],
+        ad_sets=stored_ad_sets,
     )
     campaign["status"] = status_plan["campaign"]
     campaign["status_plan"] = status_plan
@@ -9990,6 +10073,21 @@ def create_campaign(payload):
         "final_status": final_status,
         "active_spend_confirmed": active_confirmed,
     }
+    # The first ad remains the legacy compatibility view used by previews and
+    # older executors; the complete source of truth is ad_sets[*].ads.
+    first_durable_ad = next(
+        (
+            item
+            for stored_set in campaign.get("ad_sets", [])
+            for item in (stored_set.get("ads") or [])
+            if isinstance(item, dict)
+        ),
+        None,
+    )
+    if first_durable_ad:
+        campaign["ad"] = {**campaign["ad"], **first_durable_ad}
+    campaign["ad_count"] = sum(len(stored_set.get("ads") or []) for stored_set in campaign.get("ad_sets", []))
+    campaign["ad_set_count"] = len(campaign.get("ad_sets", []))
     campaign["creative_format_review"] = creative_format_review(campaign["ad"], placement_config)
     campaign["signal_quality_review"] = signal_review
     out_path = OUTPUT_DIR / f"{campaign['id']}.json"
@@ -10167,6 +10265,144 @@ CAMPAIGN_NESTED_CREATIVE_KEYS = (
     "creatives",
     "variants",
 )
+
+CAMPAIGN_NESTED_AD_SET_KEYS = (
+    "ad_sets",
+    "adsets",
+    "ad_set_variants",
+    "audience_sets",
+    "sets",
+)
+
+
+def _campaign_list(value):
+    """Normalize the loose list/dict/JSON shapes Hermes may emit."""
+    parsed = value
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith(("{", "[")):
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                parsed = value
+    if isinstance(parsed, dict):
+        return [parsed]
+    return list(parsed) if isinstance(parsed, (list, tuple)) else []
+
+
+def _campaign_ad_entry(value):
+    if not isinstance(value, dict):
+        return {}
+    entry = dict(normalize_agent_tool_arguments(value))
+    # Resolve the same aliases accepted at the top level for every nested ad.
+    if not any(entry.get(key) for key in CAMPAIGN_CREATIVE_SOURCE_KEYS):
+        alias = next((entry.get(key) for key in CAMPAIGN_CREATIVE_ALIAS_KEYS if entry.get(key)), "")
+        if isinstance(alias, dict):
+            entry["object_story_spec"] = alias
+        elif alias:
+            resolved = campaign_creative_asset_path(alias)
+            if resolved:
+                entry["creative_image_path"] = resolved
+            elif isinstance(alias, str) and alias.startswith(("http://", "https://")):
+                lowered = alias.lower().split("?", 1)[0]
+                entry["video_url" if lowered.endswith((".mp4", ".mov", ".m4v", ".webm")) else "image_url"] = alias
+    if not entry.get("name"):
+        entry["name"] = str(entry.get("ad_name") or entry.get("label") or entry.get("angle") or "").strip()
+    return entry
+
+
+def normalize_campaign_ad_sets(arguments):
+    """Preserve explicit ad-set and ad structure instead of collapsing to Core.
+
+    The public tool accepts natural shapes such as ``ad_sets:[{ads:[...]}]``
+    and also a flat ``ads`` list.  Older code only extracted the first nested
+    creative, which silently changed a two-offer request into one ad set and
+    one ad.  This helper keeps the complete buyer-defined structure durable;
+    single-ad callers still use the legacy fallback path unchanged.
+    """
+    args = arguments if isinstance(arguments, dict) else {}
+    raw_sets = []
+    for key in CAMPAIGN_NESTED_AD_SET_KEYS:
+        if args.get(key) not in (None, "", [], ()):
+            raw_sets = _campaign_list(args.get(key))
+            break
+
+    flat_ads = []
+    for key in CAMPAIGN_NESTED_CREATIVE_KEYS:
+        if args.get(key) not in (None, "", [], ()):
+            flat_ads = [_campaign_ad_entry(item) for item in _campaign_list(args.get(key))]
+            flat_ads = [item for item in flat_ads if item]
+            if flat_ads:
+                break
+
+    # If only ads were supplied, group explicitly named offers into separate
+    # ad sets.  Without a grouping key, preserve them in one ad set.
+    if not raw_sets and flat_ads:
+        groups = {}
+        ungrouped = []
+        for ad in flat_ads:
+            group = str(
+                ad.get("ad_set_name")
+                or ad.get("adset_name")
+                or ad.get("ad_set")
+                or ad.get("offer")
+                or ad.get("product")
+                or ""
+            ).strip()
+            if group:
+                groups.setdefault(group, []).append(ad)
+            else:
+                ungrouped.append(ad)
+        if len(groups) > 1:
+            raw_sets = [{"name": name, "ads": ads} for name, ads in groups.items()]
+            if ungrouped:
+                raw_sets[0]["ads"].extend(ungrouped)
+        else:
+            raw_sets = [{"ads": flat_ads}]
+
+    normalized = []
+    for index, raw in enumerate(raw_sets):
+        if not isinstance(raw, dict):
+            continue
+        entry = dict(normalize_agent_tool_arguments(raw))
+        nested_targeting = entry.get("targeting") if isinstance(entry.get("targeting"), dict) else {}
+        # Keep targeting fields in their canonical nested object.  Top-level
+        # values remain available as fallbacks in create_campaign().
+        if not nested_targeting:
+            targeting_keys = (
+                "locations", "targeting_locations", "targeting_countries",
+                "countries", "country_codes", "age_range", "age_min", "age_max",
+                "min_age", "max_age", "interests", "targeting_interests",
+                "meta_targeting", "targeting_automation", "targeting_mode",
+                "placements", "publisher_platforms", "facebook_positions",
+                "instagram_positions",
+            )
+            nested_targeting = {key: entry[key] for key in targeting_keys if key in entry}
+        if nested_targeting:
+            entry["targeting"] = nested_targeting
+        budget = entry.get("daily_budget") or entry.get("adset_daily_budget") or entry.get("budget")
+        if budget not in (None, ""):
+            entry["budget"] = parse_money_like(budget, budget)
+        ads_value = None
+        for key in CAMPAIGN_NESTED_CREATIVE_KEYS:
+            if entry.get(key) not in (None, "", [], ()):
+                ads_value = entry.get(key)
+                break
+        ads = [_campaign_ad_entry(item) for item in _campaign_list(ads_value)] if ads_value is not None else []
+        ads = [item for item in ads if item]
+        if not ads and any(entry.get(key) for key in (*CAMPAIGN_CREATIVE_SOURCE_KEYS, *CAMPAIGN_CREATIVE_ALIAS_KEYS)):
+            ads = [_campaign_ad_entry(entry)]
+        entry["ads"] = ads
+        entry["name"] = str(
+            entry.get("name")
+            or entry.get("adset_name")
+            or entry.get("ad_set_name")
+            or entry.get("offer")
+            or entry.get("product")
+            or f"Ad Set {index + 1}"
+        ).strip()
+        normalized.append(entry)
+    return normalized
 
 CURRENCY_SYMBOL_HINTS = (
     ("US$", "USD"),
@@ -10659,8 +10895,27 @@ def normalize_campaign_stack_arguments(arguments, chat_payload=None):
                     if text.startswith(("http://", "https://")):
                         if any(lowered.split("?", 1)[0].endswith(ext) for ext in (".mp4", ".mov", ".m4v", ".webm")):
                             args["video_url"] = text
-                        else:
-                            args["image_url"] = text
+                    else:
+                        args["image_url"] = text
+
+    normalized_ad_sets = normalize_campaign_ad_sets(args)
+    if normalized_ad_sets:
+        args["ad_sets"] = normalized_ad_sets
+        # Keep the first creative available to the legacy preview/validation
+        # fields while retaining every nested ad for execution.
+        first_ad = next((ad for item in normalized_ad_sets for ad in (item.get("ads") or []) if isinstance(ad, dict)), {})
+        for key in CAMPAIGN_CREATIVE_SOURCE_KEYS:
+            if not args.get(key) and first_ad.get(key):
+                args[key] = first_ad[key]
+                break
+
+    # A click-to-message destination has its own canonical CTA.  Persisting
+    # the generic LEARN_MORE default made the durable campaign file disagree
+    # with the native Page post and dropped the buyer's WhatsApp intent on
+    # retries.
+    destination = message_destination_from_plan(args)
+    if destination and str(args.get("cta") or "").strip().upper() in {"", "LEARN_MORE", "APRENDER_MAS"}:
+        args["cta"] = SocialFlowClient.message_destination_cta_type(destination) or args.get("cta")
 
     # The ads app is intentionally allowed to stay in development mode.  A
     # static image therefore always uses the separate live publishing app:

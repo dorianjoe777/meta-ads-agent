@@ -514,6 +514,198 @@ def direct_page_video_story_spec(destination, ad_plan, link, body_text, headline
     return story
 
 
+def execute_multi_adset_static_stack(path, campaign, client, destination, campaign_id,
+                                     adset_ids, status_plan, active_confirmed,
+                                     approved, campaign_created_this_attempt, steps):
+    """Create every durable ad in its matching ad set.
+
+    This is the development-app-safe path for a multi-offer static campaign:
+    each image becomes its own unpublished Page post, then its own creative
+    and paused ad.  It deliberately does not reuse the first post/creative for
+    all ad sets, which was the source of the one-Core/one-ad regression.
+    """
+    adsets = campaign.get("ad_sets") or []
+    if len(adsets) != len(adset_ids) or not any((item.get("ads") or []) for item in adsets if isinstance(item, dict)):
+        return None
+
+    ad_plan_default = dict(campaign.get("ad") or {})
+    all_creative_ids = []
+    all_ad_ids = []
+    all_object_story_ids = []
+    message_destination = message_destination_from_plan(campaign) or message_destination_from_plan(ad_plan_default)
+    whatsapp_phone_number_id = whatsapp_phone_number_id_from_plan(ad_plan_default, campaign, destination)
+    page_id = str(destination.get("page_id") or "").strip()
+    if not page_id:
+        return campaign_creation_failure_result(
+            path, campaign, client, campaign_id, "create_page_post", steps,
+            status_plan, active_confirmed, approved,
+            allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed),
+            adset_ids=adset_ids, creative_ids=all_creative_ids, ad_ids=all_ad_ids,
+            reason="missing_page_id_for_multi_ad_stack",
+        )
+
+    for set_index, (adset, adset_id) in enumerate(zip(adsets, adset_ids)):
+        if not isinstance(adset, dict):
+            continue
+        set_destination = message_destination_from_plan(adset) or message_destination
+        set_phone_id = whatsapp_phone_number_id_from_plan(adset, ad_plan_default, campaign, destination) or whatsapp_phone_number_id
+        source_ads = adset.get("ads") or []
+        if not source_ads:
+            source_ads = [ad_plan_default]
+        for ad_index, source in enumerate(source_ads):
+            ad_plan = dict(ad_plan_default)
+            if isinstance(source, dict):
+                ad_plan.update({key: value for key, value in source.items() if value not in (None, "")})
+            if set_destination and not message_destination_from_plan(ad_plan):
+                ad_plan["message_destination"] = set_destination
+            if set_phone_id and not whatsapp_phone_number_id_from_plan(ad_plan):
+                ad_plan["whatsapp_phone_number_id"] = set_phone_id
+            if set_destination and str(ad_plan.get("cta") or "").upper() in {"", "LEARN_MORE", "APRENDER_MAS"}:
+                ad_plan["cta"] = SocialFlowClient.message_destination_cta_type(set_destination) or ad_plan.get("cta", "LEARN_MORE")
+
+            body_text = str(ad_plan.get("primary_text") or f"Conoce {adset.get('name') or campaign.get('name', 'esta oferta')}.").strip()
+            headline = str(ad_plan.get("headline") or adset.get("name") or campaign.get("name", "Nueva oferta")).strip()
+            link = str(
+                ad_plan.get("landing_url")
+                or SocialFlowClient.default_message_destination_link(set_destination, page_id)
+                or destination.get("url", "")
+            ).strip()
+            direct_missing = direct_publishing_missing_requirements(ad_plan, destination, client, "")
+            if direct_missing:
+                return campaign_creation_failure_result(
+                    path, campaign, client, campaign_id, "create_page_post", steps,
+                    status_plan, active_confirmed, approved,
+                    allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed),
+                    adset_ids=adset_ids, creative_ids=all_creative_ids, ad_ids=all_ad_ids,
+                    missing_requirements=direct_missing, adset_index=set_index, ad_index=ad_index,
+                )
+
+            object_story_id, page_post_result = create_native_page_post_for_ad(
+                client, destination, ad_plan, link, body_text, headline, approved=approved
+            )
+            steps.append({
+                "step": "create_page_post",
+                "ok": bool(object_story_id),
+                "adset_index": set_index,
+                "ad_index": ad_index,
+                "adset_id": adset_id,
+                "object_story_id": object_story_id,
+                "result": page_post_result,
+            })
+            if not object_story_id:
+                return campaign_creation_failure_result(
+                    path, campaign, client, campaign_id, "create_page_post", steps,
+                    status_plan, active_confirmed, approved,
+                    allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed),
+                    adset_ids=adset_ids, creative_ids=all_creative_ids, ad_ids=all_ad_ids,
+                    adset_index=set_index, ad_index=ad_index,
+                )
+            all_object_story_ids.append(object_story_id)
+
+            prefilled_message = str(ad_plan.get("prefilled_message") or "").strip() if set_destination else ""
+            welcome_message = str(ad_plan.get("welcome_message") or ad_plan.get("initial_business_message") or "").strip()
+            creative_result = client.create_creative(
+                client.config.ad_account_id,
+                str(ad_plan.get("name") or f"{campaign.get('name', 'Campaign')} - {adset.get('name', 'Ad Set')} - {ad_index + 1}"),
+                page_id,
+                link,
+                body_text,
+                headline,
+                "",
+                ad_plan.get("cta", "LEARN_MORE"),
+                destination.get("instagram_actor_id", ""),
+                object_story_spec={},
+                image_url="",
+                video_url="",
+                video_id="",
+                cta_link=ad_plan.get("cta_link") or "",
+                object_story_id=object_story_id,
+                lead_gen_form_id=lead_gen_form_id_from_plan(ad_plan),
+                prefilled_message=prefilled_message,
+                welcome_message=welcome_message,
+                approved=approved,
+            )
+            creative_id = social_id_from_result(creative_result)
+            all_creative_ids.append(creative_id)
+            steps.append({
+                "step": "create_creative",
+                "ok": bool(creative_id),
+                "adset_index": set_index,
+                "ad_index": ad_index,
+                "adset_id": adset_id,
+                "object_story_id": object_story_id,
+                "creative_id": creative_id,
+                "result": creative_result,
+            })
+            if not creative_id:
+                return campaign_creation_failure_result(
+                    path, campaign, client, campaign_id, "create_creative", steps,
+                    status_plan, active_confirmed, approved,
+                    allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed),
+                    adset_ids=adset_ids, creative_ids=[value for value in all_creative_ids if value],
+                    ad_ids=[value for value in all_ad_ids if value], adset_index=set_index, ad_index=ad_index,
+                )
+
+            ad_name = str(
+                ad_plan.get("name")
+                or ad_plan.get("ad_name")
+                or f"{campaign.get('name', 'Campaign')} - {adset.get('name', 'Ad Set')} - Variante {ad_index + 1}"
+            ).strip()
+            ad_result = client.create_ad(
+                adset_id,
+                ad_name,
+                creative_id,
+                "PAUSED",
+                website_url=link,
+                approved=approved,
+            )
+            ad_id = social_id_from_result(ad_result)
+            all_ad_ids.append(ad_id)
+            steps.append({
+                "step": "create_ad",
+                "ok": bool(ad_id),
+                "adset_index": set_index,
+                "ad_index": ad_index,
+                "adset_id": adset_id,
+                "creative_id": creative_id,
+                "ad_id": ad_id,
+                "final_status": "PAUSED",
+                "result": ad_result,
+            })
+            if not ad_id:
+                return campaign_creation_failure_result(
+                    path, campaign, client, campaign_id, "create_ad", steps,
+                    status_plan, active_confirmed, approved,
+                    allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed),
+                    adset_ids=adset_ids, creative_ids=[value for value in all_creative_ids if value],
+                    ad_ids=[value for value in all_ad_ids if value], adset_index=set_index, ad_index=ad_index,
+                )
+
+    if not all_ad_ids or len([value for value in all_ad_ids if value]) != sum(len(item.get("ads") or []) for item in adsets):
+        return campaign_creation_failure_result(
+            path, campaign, client, campaign_id, "create_ad", steps,
+            status_plan, active_confirmed, approved,
+            allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed),
+            adset_ids=adset_ids, creative_ids=[value for value in all_creative_ids if value],
+            ad_ids=[value for value in all_ad_ids if value], reason="multi_ad_stack_incomplete",
+        )
+    return {
+        "ok": True,
+        "mode": client.config.mode,
+        "executed": True,
+        "campaign_id": campaign_id,
+        "adset_ids": adset_ids,
+        "creative_ids": [value for value in all_creative_ids if value],
+        "creative_id": next((value for value in all_creative_ids if value), ""),
+        "ad_ids": [value for value in all_ad_ids if value],
+        "ad_id": next((value for value in all_ad_ids if value), ""),
+        "object_story_ids": [value for value in all_object_story_ids if value],
+        "final_status": "PAUSED",
+        "status_plan": status_plan,
+        "steps": steps,
+    }
+
+
 def static_creative_source_available(ad_plan):
     return any(ad_plan.get(key) for key in ("creative_image_path", "image_hash", "image_url", "object_story_spec", "object_story_id"))
 
@@ -1313,7 +1505,15 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         missing.append("external landing URL for lead form ads")
     elif not (has_external_destination or ad_plan.get("object_story_spec") or ad_plan.get("object_story_id") or message_destination):
         missing.append("landing URL")
-    if not creative_source_available(ad_plan) and not (manual_completion or placeholder_static):
+    matrix_has_creative = any(
+        isinstance(item, dict)
+        and any(
+            isinstance(ad, dict) and creative_source_available(ad)
+            for ad in (item.get("ads") or [])
+        )
+        for item in (campaign.get("ad_sets") or [])
+    )
+    if not creative_source_available(ad_plan) and not matrix_has_creative and not (manual_completion or placeholder_static):
         missing.append("creative image path, image hash, image URL, video URL, object_story_spec, or object_story_id")
     elif ad_plan.get("creative_image_path") and not Path(ad_plan.get("creative_image_path")).exists():
         missing.append(f"creative image file missing: {ad_plan.get('creative_image_path')}")
@@ -1508,6 +1708,45 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
                     adset_ids=[value for value in adset_ids if value],
                     targeting_verification=verification,
                 )
+    # A campaign with explicit nested ads must execute that full matrix now.
+    # The legacy code below is intentionally retained for one-ad campaigns;
+    # this branch prevents it from silently binding every creative to the
+    # first ad set.
+    explicit_ad_matrix = any(
+        isinstance(item, dict) and len(item.get("ads") or []) > 0
+        for item in (campaign.get("ad_sets") or [])
+    )
+    if explicit_ad_matrix and (
+        len(campaign.get("ad_sets") or []) > 1
+        or sum(len(item.get("ads") or []) for item in campaign.get("ad_sets") if isinstance(item, dict)) > 1
+    ):
+        multi_result = execute_multi_adset_static_stack(
+            path,
+            campaign,
+            client,
+            destination,
+            campaign_id,
+            adset_ids,
+            status_plan,
+            active_confirmed,
+            approved,
+            campaign_created_this_attempt,
+            steps,
+        )
+        if multi_result is not None:
+            if multi_result.get("ok"):
+                mark_asset_files_retained(
+                    [
+                        ad.get("creative_image_path")
+                        for stored_set in (campaign.get("ad_sets") or [])
+                        for ad in (stored_set.get("ads") or [])
+                        if isinstance(ad, dict)
+                    ],
+                    reason="multi_ad_campaign_created",
+                    meta={"campaign_id": campaign_id, "ad_ids": multi_result.get("ad_ids", []), "final_status": "PAUSED"},
+                )
+            return multi_result
+
     target_adset_id = adset_ids[0] if adset_ids else ""
     image_hash = ad_plan.get("image_hash") or ""
     video_id = ad_plan.get("video_id") or ""

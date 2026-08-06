@@ -10427,6 +10427,124 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             if retry_campaign_path.exists():
                 retry_campaign_path.unlink()
 
+    def test_multi_offer_whatsapp_campaign_preserves_four_ads(self):
+        """Two offers create two paused ad sets and four matching dark-post ads."""
+        print("\nTesting Multi-offer WhatsApp Campaign...")
+        dashboard = load_dashboard_module()
+
+        class FakeConfig:
+            live = False
+            mode = "dry-run"
+            ad_account_id = "act_multi"
+            meta_publishing_access_token = "page-token"
+
+        class FakeClient:
+            config = FakeConfig()
+
+            def __init__(self):
+                self.calls = []
+
+            def _result(self, key, value):
+                return {"stdout": json.dumps(value), "returncode": 0, "executed": True}
+
+            def create_campaign(self, *args, **kwargs):
+                self.calls.append(("create_campaign", args, kwargs))
+                return self._result("create_campaign", {"id": "multi_campaign"})
+
+            def create_adset(self, *args, **kwargs):
+                index = len([call for call in self.calls if call[0] == "create_adset"]) + 1
+                self.calls.append(("create_adset", args, kwargs))
+                return self._result("create_adset", {"id": f"multi_adset_{index}"})
+
+            def create_page_post(self, *args, **kwargs):
+                index = len([call for call in self.calls if call[0] == "create_page_post"]) + 1
+                self.calls.append(("create_page_post", args, kwargs))
+                return self._result("create_page_post", {"object_story_id": f"page_post_{index}"})
+
+            def create_creative(self, *args, **kwargs):
+                index = len([call for call in self.calls if call[0] == "create_creative"]) + 1
+                self.calls.append(("create_creative", args, kwargs))
+                return self._result("create_creative", {"id": f"multi_creative_{index}"})
+
+            def create_ad(self, *args, **kwargs):
+                index = len([call for call in self.calls if call[0] == "create_ad"]) + 1
+                self.calls.append(("create_ad", args, kwargs))
+                return self._result("create_ad", {"id": f"multi_ad_{index}"})
+
+            def delete(self, *args, **kwargs):
+                self.calls.append(("delete", args, kwargs))
+                return self._result("delete", {"success": True})
+
+        image = ROOT_DIR / "output" / "test-multi-offer.jpg"
+        campaign_path = ROOT_DIR / "output" / "test-multi-offer.json"
+        ad_config_path = ROOT_DIR / "ad-config.json"
+        old_ad_config = ad_config_path.read_text(encoding="utf-8") if ad_config_path.exists() else ""
+        try:
+            image.parent.mkdir(exist_ok=True)
+            image.write_bytes(b"fake")
+            ad_config_path.write_text(json.dumps({"creative": {"destination": {"page_id": "page_multi"}}}), encoding="utf-8")
+            payload = {
+                "campaign_name": "Canary Johana Multi",
+                "objective": "MESSAGES",
+                "daily_budget": 20000,
+                "budget_currency": "COP",
+                "final_status": "PAUSED",
+                "message_destination": "WHATSAPP",
+                "whatsapp_phone_number_id": "573000000000",
+                "ad_sets": [
+                    {
+                        "name": "Glow Party - $400.000",
+                        "budget": 20000,
+                        "targeting": {"locations": ["MX"], "age_range": {"min": 30, "max": 58}, "targeting_mode": "manual"},
+                        "ads": [
+                            {"name": "Glow Party - Variante 1", "creative_image_path": str(image), "prefilled_message": "Hola, quiero Glow Party"},
+                            {"name": "Glow Party - Variante 2", "creative_image_path": str(image), "prefilled_message": "Hola, quiero Glow Party"},
+                        ],
+                    },
+                    {
+                        "name": "Piel Inolvidable - $300.000",
+                        "budget": 20000,
+                        "targeting": {"locations": ["MX"], "age_range": {"min": 30, "max": 58}, "targeting_mode": "manual"},
+                        "ads": [
+                            {"name": "Piel Inolvidable - Variante 1", "creative_image_path": str(image), "prefilled_message": "Hola, quiero Piel Inolvidable"},
+                            {"name": "Piel Inolvidable - Variante 2", "creative_image_path": str(image), "prefilled_message": "Hola, quiero Piel Inolvidable"},
+                        ],
+                    },
+                ],
+            }
+            normalized = dashboard.normalize_campaign_stack_arguments(payload)
+            self.assert_true(len(normalized["ad_sets"]) == 2 and [len(item["ads"]) for item in normalized["ad_sets"]] == [2, 2], "Campaign normalization preserves both offers and all four ads")
+            self.assert_true(all(item["targeting"]["age_range"] == {"min": 30, "max": 58} for item in normalized["ad_sets"]), "Each ad set preserves the requested 30-58 age range")
+
+            campaign_path.write_text(json.dumps({
+                "name": "Canary Johana Multi",
+                "objective": "MESSAGES",
+                "budget": {"daily": 20},
+                "status_plan": {"campaign": "PAUSED", "adset": "PAUSED", "ad": "PAUSED"},
+                "ad_sets": [
+                    {"name": "Glow Party - $400.000", "targeting": {"locations": ["MX"], "age_range": {"min": 30, "max": 58}}, "budget": 20, "message_destination": "WHATSAPP", "whatsapp_phone_number_id": "573000000000", "ads": [{"name": "Glow 1", "creative_image_path": str(image), "prefilled_message": "Hola Glow"}, {"name": "Glow 2", "creative_image_path": str(image), "prefilled_message": "Hola Glow"}]},
+                    {"name": "Piel Inolvidable - $300.000", "targeting": {"locations": ["MX"], "age_range": {"min": 30, "max": 58}}, "budget": 20, "message_destination": "WHATSAPP", "whatsapp_phone_number_id": "573000000000", "ads": [{"name": "Piel 1", "creative_image_path": str(image), "prefilled_message": "Hola Piel"}, {"name": "Piel 2", "creative_image_path": str(image), "prefilled_message": "Hola Piel"}]},
+                ],
+                "ad": {"final_status": "PAUSED", "active_spend_confirmed": False},
+            }), encoding="utf-8")
+            client = FakeClient()
+            result = execute_campaign_creation(str(campaign_path), client, approved=True)
+            call_names = [call[0] for call in client.calls]
+            self.assert_true(result["ok"] and len(result["adset_ids"]) == 2 and len(result["ad_ids"]) == 4, "Multi-offer execution creates two ad sets and four paused ads")
+            self.assert_true(call_names == ["create_campaign", "create_adset", "create_adset", "create_page_post", "create_creative", "create_ad", "create_page_post", "create_creative", "create_ad", "create_page_post", "create_creative", "create_ad", "create_page_post", "create_creative", "create_ad"], "Each ad uses its own dark post, creative, and matching ad-set sequence")
+            creative_calls = [call for call in client.calls if call[0] == "create_creative"]
+            self.assert_true([call[2].get("prefilled_message") for call in creative_calls] == ["Hola Glow", "Hola Glow", "Hola Piel", "Hola Piel"], "WhatsApp prefilled messages reach every creative")
+            self.assert_true(all(call[2].get("object_story_id") for call in creative_calls), "Every static creative is built from a native Page post")
+            ad_calls = [call for call in client.calls if call[0] == "create_ad"]
+            self.assert_true(all(call[1][3] == "PAUSED" for call in ad_calls), "Every canary ad is paused")
+        finally:
+            if old_ad_config:
+                ad_config_path.write_text(old_ad_config, encoding="utf-8")
+            elif ad_config_path.exists():
+                ad_config_path.unlink()
+            image.unlink(missing_ok=True)
+            campaign_path.unlink(missing_ok=True)
+
     def test_chat_stages_campaign_creation_and_requires_exact_approval(self):
         """Test natural language can stage campaign creation while approvals require an exact pending decision."""
         print("\nTesting Chat Campaign Creation Routing...")
@@ -12856,6 +12974,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.test_dashboard_operational_monitor_loops_resolve_env_int,
             self.test_social_flow_creates_native_page_post_for_direct_publishing,
             self.test_campaign_stack_execution_creates_full_ad_order,
+            self.test_multi_offer_whatsapp_campaign_preserves_four_ads,
             self.test_lead_form_alias_forces_lead_campaign_objective,
             self.test_chat_stages_campaign_creation_and_requires_exact_approval,
             self.test_dashboard_chat_uses_product_actions_before_generic_agent,
