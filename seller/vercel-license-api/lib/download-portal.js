@@ -131,7 +131,11 @@ function githubRepoFromAssets(release = {}) {
 export async function releaseWithDiscoveredAssets(release = {}) {
   const token = String(process.env.GITHUB_RELEASE_TOKEN || process.env.GITHUB_TOKEN || "").trim();
   const configuredVersion = String(process.env.RELEASE_GITHUB_TAG || "").trim();
-  const version = configuredVersion || String(release.version || "").trim();
+  // The release registry is authoritative. RELEASE_GITHUB_TAG is only a
+  // bootstrap fallback for an empty legacy registry; a stale environment
+  // value must never downgrade a newly published stable channel.
+  const registeredVersion = String(release.version || "").trim();
+  const version = registeredVersion || configuredVersion;
   const repo = githubRepoFromAssets(release);
   if (!token || !version || !repo) {
     return release;
@@ -168,7 +172,9 @@ export async function releaseWithDiscoveredAssets(release = {}) {
     }
     return {
       ...release,
-      ...(configuredVersion ? { version, github_repo: `${repo.owner}/${repo.repo}`, github_release_tag: version } : {}),
+      version,
+      github_repo: `${repo.owner}/${repo.repo}`,
+      github_release_tag: version,
       assets: {
         ...(release.assets || {}),
         ...discovered

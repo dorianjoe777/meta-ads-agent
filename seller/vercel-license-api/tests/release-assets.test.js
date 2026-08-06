@@ -46,6 +46,33 @@ test("discovered GitHub release assets override stale registry entries with the 
   }
 });
 
+test("a stale configured GitHub tag cannot downgrade the stable registry version", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalToken = process.env.GITHUB_RELEASE_TOKEN;
+  const originalTag = process.env.RELEASE_GITHUB_TAG;
+  process.env.GITHUB_RELEASE_TOKEN = "gh-test-token";
+  process.env.RELEASE_GITHUB_TAG = "v1.0.215";
+  globalThis.fetch = async (url) => {
+    assert.match(String(url), /releases\/tags\/v1\.0\.216$/);
+    return { ok: true, async json() { return { assets: [] }; } };
+  };
+  try {
+    const release = await releaseWithDiscoveredAssets({
+      version: "v1.0.216",
+      github_repo: "dorianjoe777/meta-ads-agent",
+      assets: {}
+    });
+    assert.equal(release.version, "v1.0.216");
+    assert.equal(release.github_release_tag, "v1.0.216");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalToken === undefined) delete process.env.GITHUB_RELEASE_TOKEN;
+    else process.env.GITHUB_RELEASE_TOKEN = originalToken;
+    if (originalTag === undefined) delete process.env.RELEASE_GITHUB_TAG;
+    else process.env.RELEASE_GITHUB_TAG = originalTag;
+  }
+});
+
 test("releaseAssetByName resolves assets by key, asset_name, name, or filename", () => {
   const release = {
     assets: {

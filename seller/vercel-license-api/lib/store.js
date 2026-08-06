@@ -11,6 +11,43 @@ function selectedBackend() {
   return upstashConfigured() ? "upstash" : "blob";
 }
 
+function versionParts(value = "") {
+  const match = String(value).trim().match(/^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/i);
+  if (!match) return [0, 0, 0];
+  return [Number(match[1] || 0), Number(match[2] || 0), Number(match[3] || 0)];
+}
+
+function compareReleaseEntries(left = {}, right = {}) {
+  const leftParts = versionParts(left?.version);
+  const rightParts = versionParts(right?.version);
+  for (let index = 0; index < Math.max(leftParts.length, rightParts.length); index += 1) {
+    const difference = Number(leftParts[index] || 0) - Number(rightParts[index] || 0);
+    if (difference) return difference;
+  }
+  return String(left?.published_at || "").localeCompare(String(right?.published_at || ""));
+}
+
+export function mergeReleaseRegistries(...registries) {
+  const usable = registries.filter((value) => value?.channels && typeof value.channels === "object");
+  if (!usable.length) return { channels: {} };
+  const merged = { ...usable[0], channels: {} };
+  for (const registry of usable) {
+    for (const [channel, candidate] of Object.entries(registry.channels || {})) {
+      const current = merged.channels[channel];
+      if (!current || compareReleaseEntries(candidate, current) > 0) {
+        merged.channels[channel] = candidate;
+      } else if (compareReleaseEntries(candidate, current) === 0) {
+        merged.channels[channel] = {
+          ...candidate,
+          ...current,
+          assets: { ...(candidate.assets || {}), ...(current.assets || {}) }
+        };
+      }
+    }
+  }
+  return merged;
+}
+
 async function dualRead(upstashRead, blobRead, usable) {
   try {
     const primary = await upstashRead();
@@ -45,15 +82,24 @@ export async function readReleases() {
   // binaries may live in private Blob or GitHub, but Upstash avoids making a
   // new release depend on Blob's 1 GB Hobby storage quota or delayed deletes.
   const preferUpstash = upstashConfigured() && String(process.env.RELEASE_REGISTRY_BACKEND || "").trim().toLowerCase() !== "blob";
-  if (preferUpstash) {
+  if (preferUpstash && Boolean(process.env.BLOB_READ_WRITE_TOKEN)) {
+    const [upstashResult, blobResult] = await Promise.allSettled([
+      upstash.readReleases(),
+      blob.readReleases()
+    ]);
+    const releases = mergeReleaseRegistries(
+      upstashResult.status === "fulfilled" ? upstashResult.value : null,
+      blobResult.status === "fulfilled" ? blobResult.value : null
+    );
+    if (Object.keys(releases.channels || {}).length > 0) return releases;
+  } else if (preferUpstash) {
     try {
       const releases = await upstash.readReleases();
       if (releases?.channels && Object.keys(releases.channels).length > 0) return releases;
     } catch {
-      // Blob remains a read fallback during an Upstash outage.
+      // Preserve the configured store as a fallback during an Upstash outage.
     }
-  }
-  if (Boolean(process.env.BLOB_READ_WRITE_TOKEN)) {
+  } else if (Boolean(process.env.BLOB_READ_WRITE_TOKEN)) {
     try {
       const releases = await blob.readReleases();
       if (releases?.channels && Object.keys(releases.channels).length > 0) return releases;
