@@ -3287,6 +3287,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                 return {"type": tool_request["tool"], "executed": False, "staged": True, "reply": "Preparado."}
 
         original_loader = admira_tool_bridge.load_dashboard
+        original_latest_batch = admira_tool_bridge.latest_content_asset_batch
         try:
             admira_tool_bridge.load_dashboard = lambda: FakeDashboard()
             context = admira_tool_bridge.call_tool("mcp_admira_get_real_meta_context", {})
@@ -3347,6 +3348,27 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.assert_true(staged_lead_form["product_tool"] == "stage_lead_form" and lead_form_stage_call[0]["arguments"]["privacy_policy_url"] == "https://uboost.lat/privacy", "Tool bridge maps assisted lead form creation to the protected dashboard handler")
             staged_campaign_call = next(call for call in calls if call[0]["tool"] == "create_campaign_stack")
             self.assert_true(staged_campaign["product_tool"] == "create_campaign_stack" and staged_campaign_call[0]["arguments"]["creative_image_path"] == str(generated_image.resolve()), "Tool bridge resolves safe campaign creative aliases before staging")
+            admira_tool_bridge.latest_content_asset_batch = lambda **kwargs: {
+                "paths": [str(generated_image.resolve())],
+                "asset_ids": ["asset-current-approved"],
+            }
+            archived_staged = admira_tool_bridge.call_tool(
+                "mcp_admira_stage_campaign",
+                {
+                    "name": "Stage con creativo archivado",
+                    "daily_budget": 15,
+                    "landing_url": "https://uboost.lat",
+                    "status_plan": "paused",
+                    "active_spend_confirmed": False,
+                },
+            )
+            archived_stage_call = next(call for call in reversed(calls) if call[0]["tool"] == "create_campaign_stack")
+            self.assert_true(
+                archived_staged["product_tool"] == "create_campaign_stack"
+                and archived_stage_call[0]["arguments"]["creative_image_path"] == str(generated_image.resolve())
+                and archived_stage_call[0]["arguments"]["content_asset_ids"] == ["asset-current-approved"],
+                "Tool bridge recovers the newest approved classified creative when a compacted campaign call loses its asset path",
+            )
             self.assert_true(ads_onboarding["product_tool"] == "save_ads_onboarding" and "save_ads_onboarding" in called_tools, "Tool bridge maps ads onboarding memory so Hermes can persist campaign KPIs")
             self.assert_true(daily_content["product_tool"] == "save_daily_social_content_settings" and "save_daily_social_content_settings" in called_tools, "Tool bridge maps daily organic content settings to the dashboard handler")
             self.assert_true(staged_social_post["product_tool"] == "stage_organic_social_post" and "stage_organic_social_post" in called_tools, "Tool bridge maps each exact organic image/caption into a protected publication draft")
@@ -3361,6 +3383,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.assert_true(len(pending["pending"]) == 1 and pending["pending"][0]["id"] == "approval_1", "Tool bridge lists only pending approvals")
             self.assert_true(unknown["blocked"] and unknown["reason"] == "unsupported_tool", "Tool bridge rejects unknown tools")
         finally:
+            admira_tool_bridge.latest_content_asset_batch = original_latest_batch
             admira_tool_bridge.load_dashboard = original_loader
             shutil.rmtree(image_dir, ignore_errors=True)
 
@@ -6140,6 +6163,24 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.assert_true("logo" in brand_fields["logo_notes"] and "imágenes generadas" in brand_fields["asset_notes"], "Brand aliases preserve logo and real-asset decisions")
             self.assert_true(raw_key_fields["brand_name"] == "Spa MediCentro Juliana" and raw_key_fields["colors"].startswith("verde salvia"), "Brand parser reads raw key Markdown such as brand_name and colors")
             self.assert_true(raw_key_fields["visual_style"].startswith("ambiente de spa") and raw_key_fields["logo_notes"].startswith("crear"), "Brand parser maps visual_style, logo_decision, references, and real_assets keys")
+            nested_brand_fields = codex_brand_guides.normalize_general_payload(
+                {
+                    "brand_core": {
+                        "name": "Johana Giraldo - Armonización Facial",
+                        "colors": "negro, dorado y blanco",
+                        "visual_style": "elegante, premium y limpio",
+                        "references": "Glow Party y Piel Inolvidable",
+                        "real_assets": "No usar fotos reales de pacientes; usar referencias aprobadas.",
+                    }
+                }
+            )
+            self.assert_true(
+                nested_brand_fields["brand_name"].startswith("Johana Giraldo")
+                and nested_brand_fields["visual_style"]
+                and nested_brand_fields["references"]
+                and nested_brand_fields["asset_notes"],
+                "Brand readiness accepts branding answers grouped under a natural brand_core object",
+            )
             self.assert_true(product["guide"] == "brand_guides/products/triva.md" and product_card["ready"], "Product aliases save a ready product guide")
             self.assert_true(product_card["fields"]["name"] == "TRIVA" and "Medellín" in product_card["fields"]["audience"], "Product parser reads aliased name and audience fields")
             self.assert_true(brief["ad_brief"] == "brand_guides/ad_briefs/triva-compradores-vivienda.md", "Brief aliases save the expected ad brief file")
@@ -7960,6 +8001,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         original_create = dashboard.create_campaign
         original_pending = dashboard.PENDING_FILE
         original_actions = dashboard.ACTIONS_FILE
+        original_content_assets = dashboard.CONTENT_ASSET_LIBRARY_FILE
         captured = []
         try:
             shutil.rmtree(image_dir, ignore_errors=True)
@@ -7970,6 +8012,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             generated_asset_path.write_bytes(b"fake generated png")
             dashboard.PENDING_FILE = image_dir / "pending.json"
             dashboard.ACTIONS_FILE = image_dir / "actions.json"
+            dashboard.CONTENT_ASSET_LIBRARY_FILE = image_dir / "content_asset_library.json"
             dashboard.require_cloud_license = lambda *args, **kwargs: None
             dashboard.create_campaign = lambda payload: captured.append(payload) or {"status": "pending", "payload": payload}
 
@@ -8024,6 +8067,42 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.assert_true(captured[0]["creative_image_path"] == str(generated_asset_path.resolve()), "An Image 2 asset ID resolves to the protected local upload source")
             self.assert_true(captured[0]["use_direct_publishing"] is True, "Static Image 2 campaigns always select the dark-post publishing route")
             self.assert_true(captured[0]["message_destination"] == "WHATSAPP" and captured[0]["whatsapp_phone_number_id"] == "573128781168", "WhatsApp staging preserves the destination and numeric phone ID for the promoted object")
+
+            captured.clear()
+            archived_creative = image_dir / "glow-party-current.png"
+            archived_creative.write_bytes(b"archived approved creative")
+            dashboard.write_json(
+                dashboard.CONTENT_ASSET_LIBRARY_FILE,
+                {
+                    "items": [{
+                        "id": "asset-glow-party",
+                        "category": "offer_promo",
+                        "purpose": "Creativo actual Glow Party aprobado para anuncios",
+                        "classification_status": "classified",
+                        "preservation_mode": "style_only",
+                        "approved_for_ads": True,
+                        "approved_for_daily_content": False,
+                        "file_paths": [str(archived_creative)],
+                    }],
+                    "updated_at": "2026-08-05T12:00:00Z",
+                },
+            )
+            archived_asset_result = dashboard.execute_agent_tool(
+                {
+                    "tool": "create_campaign_stack",
+                    "arguments": {
+                        "name": "Campaña con creativo archivado",
+                        "objective": "sales",
+                        "daily_budget": 15,
+                        "landing_url": "https://buyer.example",
+                        "content_asset_ids": ["asset-glow-party"],
+                        "final_status": "paused",
+                        "active_spend_confirmed": False,
+                    },
+                },
+                {"language": "es"},
+            )
+            self.assert_true(archived_asset_result.get("staged") is True and captured[0]["creative_image_path"] == str(archived_creative.resolve()), "Campaign staging resolves an approved archived content asset ID into the local creative path")
 
             captured.clear()
             whatsapp_without_url = dashboard.execute_agent_tool(
@@ -8173,6 +8252,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             dashboard.create_campaign = original_create
             dashboard.PENDING_FILE = original_pending
             dashboard.ACTIONS_FILE = original_actions
+            dashboard.CONTENT_ASSET_LIBRARY_FILE = original_content_assets
             shutil.rmtree(image_dir, ignore_errors=True)
             shutil.rmtree(generated_asset_dir, ignore_errors=True)
 

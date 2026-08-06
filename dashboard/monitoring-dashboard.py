@@ -7708,7 +7708,7 @@ PROTECTED_REFERENCE_PATH_KEYS = (
 
 def requested_content_asset_ids(payload):
     payload = payload or {}
-    raw = payload.get("content_asset_ids") or payload.get("asset_ids") or []
+    raw = payload.get("content_asset_ids") or payload.get("content_asset_id") or payload.get("asset_ids") or []
     if isinstance(raw, str):
         raw = [item.strip() for item in raw.split(",") if item.strip()]
     if not isinstance(raw, (list, tuple, set)):
@@ -10574,6 +10574,22 @@ def normalize_campaign_stack_arguments(arguments, chat_payload=None):
     # Accept either the explicit Image 2 asset ID or a natural ads[] payload.
     # This must happen before checking source keys so the local file is treated
     # as an uploadable Meta asset, never as an inaccessible browser URL.
+    if not any(args.get(key) for key in CAMPAIGN_CREATIVE_SOURCE_KEYS):
+        # A buyer-approved creative may be stored in the durable content
+        # library rather than returned as a raw filesystem path. Resolve the
+        # selected content asset before the required-field guard; otherwise a
+        # model that correctly names the saved asset still produces
+        # `missing_creative_image_path_or_url_or_story_spec`.
+        library_references = selected_content_asset_references(args, purpose="ad_creative")
+        library_paths = library_references.get("all") if isinstance(library_references, dict) else []
+        if library_paths:
+            args["creative_image_path"] = library_paths[0]
+            args["resolved_content_asset_ids"] = [
+                str(item.get("id") or "").strip()
+                for item in (library_references.get("items") or [])
+                if isinstance(item, dict) and str(item.get("id") or "").strip()
+            ]
+
     if not any(args.get(key) for key in CAMPAIGN_CREATIVE_SOURCE_KEYS):
         for key in ("creative_asset_id", "generated_creative_asset_id", "generated_image_asset_id", "image_asset_id", "asset_id"):
             resolved = campaign_creative_asset_path(args.get(key))

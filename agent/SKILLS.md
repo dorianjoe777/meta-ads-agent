@@ -677,6 +677,8 @@ Arguments:
 
 When the creative was just generated with `mcp_admira_codex_image_generate`, use its returned `asset_id` as `creative_asset_id`. Do not require or invent a public image URL, and do not send the dashboard `preview_url` to Meta: it is private to the buyer's dashboard. For a static image, pass `use_direct_publishing: true`: the backend resolves the protected asset, creates the native unpublished/dark Page post with the exact ad copy, destination and CTA, then creates the ad from its `object_story_id`. It must not try the legacy direct-image-creative route with the development ads app. A real local `creative_image_path` remains valid when it comes from an attached buyer file. Accept a natural `ads: [{image_path|creative_asset_id: ...}]` shape too, but preserve the specific generated asset selected by the buyer.
 
+If the buyer refers to a previously archived/current creative, pass its approved `content_asset_ids`/`content_asset_id` to `create_campaign_stack`, not only its name or a visual description. The backend resolves the protected local source before checking required creative fields. Never convert a private dashboard preview path into a public URL and never ask the buyer to re-upload an asset that is already in the durable content library.
+
 If the user wants an already prepared campaign activated, ask for explicit confirmation before requesting the protected activation:
 
 > Sí, activar

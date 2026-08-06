@@ -467,7 +467,22 @@ def normalize_product_payload(payload):
 
 
 def normalize_general_payload(payload):
-    return normalize_payload_aliases(payload, GENERAL_PAYLOAD_ALIASES)
+    # Hermes sometimes groups the exact answers under a natural-language
+    # container (`brand_core`, `branding`, or `visual_identity`) instead of
+    # repeating every canonical field at the top level. Flatten one bounded
+    # layer before applying aliases so a successfully answered branding step
+    # cannot look empty to the readiness validator after a long/compacted
+    # Telegram turn. Top-level values always win and no arbitrary recursion is
+    # performed.
+    values = dict(payload or {})
+    for container_key in ("brand_core", "branding", "brand_guide", "brand_memory", "visual_identity"):
+        nested = values.get(container_key)
+        if not isinstance(nested, dict):
+            continue
+        for key, value in nested.items():
+            if not str(values.get(key) or "").strip() and value not in (None, "", [], {}):
+                values[key] = value
+    return normalize_payload_aliases(values, GENERAL_PAYLOAD_ALIASES)
 
 
 def normalize_ad_brief_payload(payload):

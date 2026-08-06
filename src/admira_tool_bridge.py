@@ -257,6 +257,10 @@ def latest_content_asset_batch(*, pending_only=False, approved_for_ads=False, li
             continue
         if approved_for_ads and not bool(item.get("approved_for_ads")):
             continue
+        if approved_for_ads and str(item.get("classification_status") or "classified") != "classified":
+            continue
+        if approved_for_ads and str(item.get("preservation_mode") or "").strip().lower() == "prohibited":
+            continue
         paths = safe_image_paths({"image_paths": item.get("file_paths") or []}, limit=32)
         if not paths:
             continue
@@ -364,6 +368,23 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
 
     dashboard = load_dashboard()
     payload = chat_payload(channel, language)
+    # Telegram can lose the file path/asset ID while Hermes compacts a long
+    # turn. A PAUSED campaign still needs a real static source, so recover the
+    # newest buyer-approved classified batch instead of returning the generic
+    # missing_creative_image_path error. This is deliberately not applied to
+    # video/manual-placeholder flows or to any spend-capable action.
+    if tool in CAMPAIGN_STAGE_TOOLS and not any(args.get(key) for key in CAMPAIGN_CREATIVE_SOURCE_KEYS):
+        controls_text = json.dumps(args or {}, ensure_ascii=False).lower()
+        manual_completion = bool(args.get("manual_creative_completion") or args.get("create_placeholder_ad"))
+        video_requested = bool(args.get("video_url")) or any(token in controls_text for token in ("video", "video_url", "video_creative"))
+        if not manual_completion and not video_requested:
+            recovered = latest_content_asset_batch(approved_for_ads=True, limit=8)
+            if recovered.get("paths"):
+                args = dict(args)
+                args["content_asset_ids"] = recovered.get("asset_ids") or []
+                args["image_paths"] = recovered["paths"][:8]
+                args["recovered_approved_content_batch"] = True
+                payload["image_paths"] = recovered["paths"][:8]
     reference_paths = safe_image_paths(args, limit=8 if tool in CREATIVE_IMAGE_TOOLS else 4)
     if not reference_paths and tool in CREATIVE_IMAGE_TOOLS and creative_args_mentions_uploaded_image(args):
         reference_paths = latest_workspace_image_paths()

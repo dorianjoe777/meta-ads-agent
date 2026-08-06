@@ -31,6 +31,8 @@ When the buyer asks to activate an existing campaign at a future time, never cre
 
 When Publicación directa is connected, prefer native unpublished Page posts for image/static ads, then create the ad from `object_story_id`. Present this as a product capability, not a hack.
 
+For a buyer-approved creative archived earlier by Telegram/content-library, pass its durable `content_asset_ids` (or singular `content_asset_id`) to `mcp_admira_stage_campaign`. The backend resolves the approved local image and the dark-post route; do not pass only the asset name, a visual description, or a private dashboard preview URL. If Hermes lost the path during compaction, the bridge can recover the newest approved classified batch for a paused static campaign, but the model should still select the intended saved asset explicitly whenever its ID is available.
+
 If the publishing token/page access fails, explain the connection problem simply and keep the campaign prepared for retry.
 
 ## Native lead forms
@@ -40,6 +42,7 @@ If the publishing token/page access fails, explain the connection problem simply
 - Tell the buyer to create and publish it in Meta Ads Manager under Leads → Instant forms → Ad level → Instant form → Create form, then ask them to reply that it is ready.
 - After that confirmation, call `mcp_admira_list_lead_forms` again, match the exact live form name/Page, and use its numeric `lead_gen_form_id`. Never invent or reuse an unverified form ID.
 - For a static lead-form ad, pass the image, copy, CTA, verified form ID, and `use_direct_publishing: true`. The backend must create the native unpublished Page post first and create the paused ad from `object_story_id`; do not deliberately try a direct development-app creative first.
+- If the image was archived by Telegram/content-library instead of being returned as a raw path, pass its buyer-approved `content_asset_ids` (or `content_asset_id`) to `stage_campaign`; the backend resolves the protected local file before checking creative requirements. Never pass only a visual description or a dashboard preview URL.
 - Keep the campaign objective `OUTCOME_LEADS`, the ad-set optimization goal `LEAD_GENERATION`, conversion destination `ON_AD`, and the Page ID in `promoted_object`.
 
 ## Partial campaign cleanup
