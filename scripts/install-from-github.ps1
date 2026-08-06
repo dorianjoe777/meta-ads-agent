@@ -156,12 +156,31 @@ function Select-InstanceProfile {
         $script:InstanceVolumePrefix = "meta_ads_$($script:InstanceSlug.Replace('-', '_'))"
     } else {
         $script:InstancePort = if ($existingPort) { $existingPort } else { "7871" }
-        $script:InstanceProject = Get-EnvFileValue (Join-Path $script:InstanceDir ".env") "ADMIRA_COMPOSE_PROJECT_NAME"
-        if ([string]::IsNullOrWhiteSpace($script:InstanceProject)) { $script:InstanceProject = "admira-ia" }
-        $script:InstanceContainer = Get-EnvFileValue (Join-Path $script:InstanceDir ".env") "ADMIRA_CONTAINER_NAME"
-        if ([string]::IsNullOrWhiteSpace($script:InstanceContainer)) { $script:InstanceContainer = "admira-ia" }
-        $script:InstanceVolumePrefix = Get-EnvFileValue (Join-Path $script:InstanceDir ".env") "ADMIRA_VOLUME_PREFIX"
-        if ([string]::IsNullOrWhiteSpace($script:InstanceVolumePrefix)) { $script:InstanceVolumePrefix = "meta_ads" }
+        $configuredProject = Get-EnvFileValue (Join-Path $script:InstanceDir ".env") "ADMIRA_COMPOSE_PROJECT_NAME"
+        $configuredContainer = Get-EnvFileValue (Join-Path $script:InstanceDir ".env") "ADMIRA_CONTAINER_NAME"
+        $configuredVolumePrefix = Get-EnvFileValue (Join-Path $script:InstanceDir ".env") "ADMIRA_VOLUME_PREFIX"
+        $containerProbe = if ([string]::IsNullOrWhiteSpace($configuredContainer)) { "admira-ia" } else { $configuredContainer }
+        $detectedProject = ""
+        $detectedVolumePrefix = ""
+
+        # Legacy releases used Docker Compose's implicit
+        # <project>_meta_ads_* volume names. Detect them from the running
+        # container before applying modern defaults, otherwise an update can
+        # appear to lose every buyer setting by mounting fresh empty volumes.
+        if (Get-Command docker -ErrorAction SilentlyContinue) {
+            & docker inspect $containerProbe *> $null
+            if ($LASTEXITCODE -eq 0) {
+                $detectedProject = [string](& docker inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}' $containerProbe 2>$null | Select-Object -First 1)
+                $runtimeVolume = [string](& docker inspect --format '{{range .Mounts}}{{if eq .Destination "/app/runtime"}}{{.Name}}{{end}}{{end}}' $containerProbe 2>$null | Select-Object -First 1)
+                if (-not [string]::IsNullOrWhiteSpace($runtimeVolume)) {
+                    $detectedVolumePrefix = $runtimeVolume -replace '_config$', ''
+                }
+            }
+        }
+
+        $script:InstanceProject = if (-not [string]::IsNullOrWhiteSpace($configuredProject)) { $configuredProject } elseif (-not [string]::IsNullOrWhiteSpace($detectedProject)) { $detectedProject.Trim() } else { "admira-ia" }
+        $script:InstanceContainer = $containerProbe
+        $script:InstanceVolumePrefix = if (-not [string]::IsNullOrWhiteSpace($configuredVolumePrefix)) { $configuredVolumePrefix } elseif (-not [string]::IsNullOrWhiteSpace($detectedVolumePrefix)) { $detectedVolumePrefix.Trim() } else { "meta_ads" }
     }
 }
 

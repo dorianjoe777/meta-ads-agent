@@ -111,12 +111,28 @@ select_instance_profile() {
     INSTANCE_VOLUME_PREFIX="meta_ads_${INSTANCE_SLUG//-/_}"
   else
     INSTANCE_PORT="${existing_port:-7871}"
-    INSTANCE_PROJECT="$(read_env_file_value "$INSTANCE_DIR/.env" ADMIRA_COMPOSE_PROJECT_NAME)"
-    INSTANCE_PROJECT="${INSTANCE_PROJECT:-admira-ia}"
-    INSTANCE_CONTAINER="$(read_env_file_value "$INSTANCE_DIR/.env" ADMIRA_CONTAINER_NAME)"
-    INSTANCE_CONTAINER="${INSTANCE_CONTAINER:-admira-ia}"
-    INSTANCE_VOLUME_PREFIX="$(read_env_file_value "$INSTANCE_DIR/.env" ADMIRA_VOLUME_PREFIX)"
-    INSTANCE_VOLUME_PREFIX="${INSTANCE_VOLUME_PREFIX:-meta_ads}"
+    local configured_project=""
+    local configured_container=""
+    local configured_volume_prefix=""
+    local detected_project=""
+    local detected_runtime_volume=""
+    configured_project="$(read_env_file_value "$INSTANCE_DIR/.env" ADMIRA_COMPOSE_PROJECT_NAME)"
+    configured_container="$(read_env_file_value "$INSTANCE_DIR/.env" ADMIRA_CONTAINER_NAME)"
+    configured_volume_prefix="$(read_env_file_value "$INSTANCE_DIR/.env" ADMIRA_VOLUME_PREFIX)"
+
+    # Releases before per-instance volume names relied on Docker Compose's
+    # implicit <project>_meta_ads_* names. Read the running container before
+    # choosing new defaults so an update cannot silently mount empty volumes.
+    local container_probe="${configured_container:-admira-ia}"
+    if command -v docker >/dev/null 2>&1 && docker inspect "$container_probe" >/dev/null 2>&1; then
+      detected_project="$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}' "$container_probe" 2>/dev/null || true)"
+      detected_runtime_volume="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/app/runtime"}}{{.Name}}{{end}}{{end}}' "$container_probe" 2>/dev/null || true)"
+      detected_runtime_volume="${detected_runtime_volume%_config}"
+    fi
+
+    INSTANCE_PROJECT="${configured_project:-${detected_project:-admira-ia}}"
+    INSTANCE_CONTAINER="$container_probe"
+    INSTANCE_VOLUME_PREFIX="${configured_volume_prefix:-${detected_runtime_volume:-meta_ads}}"
   fi
   export ADMIRA_INSTANCE_SLUG="$INSTANCE_SLUG"
 }
