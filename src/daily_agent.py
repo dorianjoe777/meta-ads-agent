@@ -1564,7 +1564,6 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
     direct_missing = direct_publishing_missing_requirements(ad_plan, destination, client, video_id)
     should_create_native_page_post = (
         not object_story_id
-        and not lead_gen_form_id
         and not direct_missing
         and direct_preference is not False
         and bool(getattr(client.config, "meta_publishing_access_token", ""))

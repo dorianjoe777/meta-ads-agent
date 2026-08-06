@@ -12413,58 +12413,71 @@ def stage_lead_form_creation(arguments, chat_payload):
             False,
             chat_reply(
                 chat_payload,
-                f"Puedo crear el formulario contigo, pero falta esto: {', '.join(missing)}.",
-                f"I can create the form with you, but this is missing: {', '.join(missing)}.",
+                f"Puedo diseñar el formulario contigo, pero falta esto: {', '.join(missing)}.",
+                f"I can design the form with you, but this is missing: {', '.join(missing)}.",
             ),
             blocked=True,
             reason="missing_lead_form_detail",
             missing=missing,
         )
-    require_cloud_license("Lead form creation requires an active license")
     forms_dir = OUTPUT_DIR / "lead_forms"
     forms_dir.mkdir(parents=True, exist_ok=True)
     slug = re.sub(r"[^a-z0-9]+", "-", payload["name"].lower()).strip("-")[:50] or "lead-form"
     out_path = forms_dir / f"lead_form_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{slug}.json"
     write_json(out_path, payload)
-    pending_payload = {
-        "name": payload["name"],
-        "path": str(out_path),
-        "page_id": payload["page_id"],
-        "requested": {
-            "form": payload["name"],
-            "page_id": payload["page_id"],
-            "questions": payload["questions"],
-            "privacy_policy_url": payload["privacy_policy_url"],
-            "form_type": payload.get("form_type", ""),
-            "locale": payload.get("locale", ""),
-            "follow_up_action_url": payload.get("follow_up_action_url", ""),
+    manual_steps = [
+        "Abre Meta Ads Manager y crea o edita una campaña con el objetivo Clientes potenciales.",
+        "En el conjunto de anuncios, elige Formularios instantáneos como ubicación de conversión.",
+        "En el nivel Anuncio, abre la sección Formulario instantáneo y pulsa Crear formulario.",
+        f"Crea y publica el formulario con el nombre exacto: {payload['name']}.",
+        "Vuelve al chat y escribe: ya creé el formulario. Admira lo localizará en Meta y usará su ID real para preparar la campaña.",
+    ]
+    if chat_lang(chat_payload) != "es":
+        manual_steps = [
+            "Open Meta Ads Manager and create or edit a campaign with the Leads objective.",
+            "At ad-set level, choose Instant forms as the conversion location.",
+            "At ad level, open the Instant form section and click Create form.",
+            f"Create and publish the form with this exact name: {payload['name']}.",
+            "Return to chat and say: I created the form. Admira will locate it in Meta and use its real ID to prepare the campaign.",
+        ]
+    reply = chat_reply(
+        chat_payload,
+        (
+            f"Ya diseñé la estructura de «{payload['name']}». Por la configuración actual de Meta, "
+            "el formulario debe crearse una vez dentro de Ads Manager. Ve a Clientes potenciales → "
+            "Formularios instantáneos → nivel Anuncio → Crear formulario, copia las preguntas y la política "
+            "que definimos y publícalo. Cuando termines, dime «ya creé el formulario»; lo buscaré directamente "
+            "en Meta y usaré su ID real para crear la campaña en pausa."
+        ),
+        (
+            f"I designed the structure for “{payload['name']}”. With the current Meta setup, the form must be "
+            "created once inside Ads Manager. Go to Leads → Instant forms → Ad level → Create form, copy the "
+            "questions and privacy policy we defined, and publish it. When done, tell me “I created the form”; "
+            "I will find it directly in Meta and use its real ID to create the paused campaign."
+        ),
+    )
+    return agent_action_result(
+        "stage_lead_form",
+        False,
+        reply,
+        ok=True,
+        planned=True,
+        manual_creation_required=True,
+        reason="meta_instant_form_manual_creation_required",
+        draft_path=str(out_path),
+        form_blueprint=payload,
+        manual_steps=manual_steps,
+        next_agent_action={
+            "after_buyer_confirmation": "list_lead_forms",
+            "match_page_id": payload["page_id"],
+            "match_form_name": payload["name"],
+            "then": "stage_campaign_with_lead_gen_form_id",
         },
-        "guardrail_reason": "lead_form_creation_requires_approval",
-    }
-    return add_pending("create_lead_form", pending_payload)
+    )
 
 
 def handle_stage_lead_form_tool(arguments, chat_payload, tool):
-    result = stage_lead_form_creation(arguments or {}, chat_payload)
-    if isinstance(result, dict) and result.get("status") == "pending":
-        reply = append_staged_approval_instruction(
-            chat_payload,
-            chat_reply(
-                chat_payload,
-                "Preparé el formulario de clientes potenciales para aprobación.",
-                "I staged the lead form for approval.",
-            ),
-            result,
-        )
-        return agent_action_result(
-            tool,
-            False,
-            reply,
-            staged=True,
-            result=result,
-            approval_choices=staged_approval_choices(result),
-        )
-    return result
+    return stage_lead_form_creation(arguments or {}, chat_payload)
 
 
 def handle_list_lead_forms_tool(arguments, chat_payload, tool):

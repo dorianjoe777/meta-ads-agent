@@ -57,7 +57,9 @@ Use ad set budget by default for small controlled tests. Use campaign budget/CBO
 
 ## Lead forms
 
-For native Meta Lead Ads, check existing forms when possible. If a new form is needed, gather name, questions, privacy policy URL, thank-you URL when useful, and form intent before execution. Persist the returned `lead_gen_form_id` in the campaign brief and set the campaign objective to Meta's current `OUTCOME_LEADS` (with ad-set `LEAD_GENERATION` and the Page `promoted_object`). Never let a stale `SALES`/`OUTCOME_SALES` default survive on a lead-form campaign.
+For native Meta Lead Ads, check existing forms in Meta first. If a new form is needed, help the buyer design its exact name, questions, privacy policy URL, thank-you URL when useful, and form intent. Then guide them to create and publish it once in Meta Ads Manager: Leads objective → Instant forms conversion location → Ad level → Instant form → Create form. Do not claim the form was created by Admira and do not request a product approval for form creation. Ask the buyer to say when it is ready, list live forms again, match the exact form, and persist its real `lead_gen_form_id` in the campaign brief.
+
+Once the live form ID exists, set the campaign objective to Meta's current `OUTCOME_LEADS` (with ad-set `LEAD_GENERATION`, conversion location `ON_AD`, and the Page `promoted_object`). For static creative with Publicación directa connected, use `use_direct_publishing: true`: create the native unpublished Page post with the form CTA first, then create the paused ad creative from its `object_story_id`. Never let a stale `SALES`/`OUTCOME_SALES` default survive on a lead-form campaign.
 
 ## Video website ads
 

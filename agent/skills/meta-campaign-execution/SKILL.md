@@ -33,6 +33,15 @@ When Publicación directa is connected, prefer native unpublished Page posts for
 
 If the publishing token/page access fails, explain the connection problem simply and keep the campaign prepared for retry.
 
+## Native lead forms
+
+- Use `mcp_admira_list_lead_forms` before campaign creation and treat that live Meta result as authoritative.
+- If the required form does not exist, help the buyer design the questions, form intent, privacy policy, and follow-up. Use `mcp_admira_stage_lead_form` only to save the blueprint and return manual Ads Manager steps; it does not create a Meta approval or mutate Meta.
+- Tell the buyer to create and publish it in Meta Ads Manager under Leads → Instant forms → Ad level → Instant form → Create form, then ask them to reply that it is ready.
+- After that confirmation, call `mcp_admira_list_lead_forms` again, match the exact live form name/Page, and use its numeric `lead_gen_form_id`. Never invent or reuse an unverified form ID.
+- For a static lead-form ad, pass the image, copy, CTA, verified form ID, and `use_direct_publishing: true`. The backend must create the native unpublished Page post first and create the paused ad from `object_story_id`; do not deliberately try a direct development-app creative first.
+- Keep the campaign objective `OUTCOME_LEADS`, the ad-set optimization goal `LEAD_GENERATION`, conversion destination `ON_AD`, and the Page ID in `promoted_object`.
+
 ## Partial campaign cleanup
 
 Do not leave failed campaign-creation attempts scattered in Meta Ads Manager when Admira created them.

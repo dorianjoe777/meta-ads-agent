@@ -11,6 +11,11 @@ from typing import Dict, List, Optional
 import sys
 
 
+def _status(message: str) -> None:
+    """Keep human-readable diagnostics off protocol/data stdout."""
+    print(message, file=sys.stderr)
+
+
 class CampaignCreator:
     """Creates Meta Ads campaigns from templates."""
     
@@ -178,23 +183,23 @@ class CampaignCreator:
             required_fields = ["name", "objective", "budget", "start_date", "ad_sets"]
             for field in required_fields:
                 if field not in campaign_config:
-                    print(f"❌ Missing required field: {field}")
+                    _status(f"❌ Missing required field: {field}")
                     return False
             
             # Validate objective
             valid_objectives = ["CONVERSIONS", "LEADS", "PURCHASES"]
             if campaign_config["objective"] not in valid_objectives:
-                print(f"❌ Invalid objective: {campaign_config['objective']}")
+                _status(f"❌ Invalid objective: {campaign_config['objective']}")
                 return False
             
             # Validate budget
             budget = campaign_config.get("budget", {})
             if not isinstance(budget.get("daily"), (int, float)) or budget.get("daily") < 10:
-                print(f"❌ Invalid daily budget: {budget.get('daily')}")
+                _status(f"❌ Invalid daily budget: {budget.get('daily')}")
                 return False
             
             if not isinstance(budget.get("total"), (int, float)) or budget.get("total") < 100:
-                print(f"❌ Invalid total budget: {budget.get('total')}")
+                _status(f"❌ Invalid total budget: {budget.get('total')}")
                 return False
             
             # Validate dates
@@ -203,23 +208,23 @@ class CampaignCreator:
                 if "end_date" in campaign_config:
                     datetime.strptime(campaign_config["end_date"], "%Y-%m-%d")
             except ValueError:
-                print("❌ Invalid date format. Use YYYY-MM-DD")
+                _status("❌ Invalid date format. Use YYYY-MM-DD")
                 return False
             
             # Validate ad sets
             if not campaign_config.get("ad_sets"):
-                print("❌ Campaign must have at least one ad set")
+                _status("❌ Campaign must have at least one ad set")
                 return False
             
             if len(campaign_config["ad_sets"]) > 10:
-                print("❌ Maximum 10 ad sets per campaign")
+                _status("❌ Maximum 10 ad sets per campaign")
                 return False
             
-            print("✅ Campaign configuration is valid")
+            _status("✅ Campaign configuration is valid")
             return True
             
         except Exception as e:
-            print(f"❌ Validation error: {e}")
+            _status(f"❌ Validation error: {e}")
             return False
     
     def generate_campaign_id(self, campaign_config: Dict) -> str:
@@ -253,7 +258,7 @@ class CampaignCreator:
         with open(output_path, "w") as f:
             json.dump(campaign_config, f, indent=2)
         
-        print(f"✅ Campaign saved to: {output_path}")
+        _status(f"✅ Campaign saved to: {output_path}")
         return str(output_path)
     
     def create_conversion_campaign(self,

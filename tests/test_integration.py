@@ -16,6 +16,7 @@ import time
 import types
 import importlib.util
 import io
+import contextlib
 import urllib.error
 import urllib.parse
 from pathlib import Path
@@ -132,6 +133,20 @@ class IntegrationTestSuite:
         # Test 2: Validate campaign
         is_valid = creator.validate_campaign(campaign)
         self.assert_true(is_valid, "Campaign validation passes")
+
+        # MCP/JSON-RPC reserves stdout for protocol messages. Library status
+        # diagnostics must go to stderr so a campaign save cannot corrupt the
+        # next JSON response consumed by Hermes.
+        protocol_stdout = io.StringIO()
+        temp_dir = Path(tempfile.mkdtemp())
+        try:
+            with contextlib.redirect_stdout(protocol_stdout):
+                creator.validate_campaign(campaign)
+                saved_path = creator.save_campaign(campaign, str(temp_dir / "campaign.json"))
+            self.assert_true(protocol_stdout.getvalue() == "", "Campaign validation/save never contaminates MCP JSON stdout")
+            self.assert_true(Path(saved_path).exists(), "Campaign save still writes the requested JSON artifact")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
         
         # Test 3: Generate campaign ID
         campaign_id = creator.generate_campaign_id(campaign)
@@ -8940,35 +8955,17 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         finally:
             social_flow_client.urllib.request.urlopen = original_urlopen
 
-    def test_chat_stages_and_executes_native_lead_form_creation(self):
-        """Test the agent can stage a native lead form from chat and approval executes it."""
-        print("\nTesting Assisted Lead Form Staging and Approval...")
+    def test_chat_designs_native_lead_form_and_requires_manual_meta_creation(self):
+        """Test the agent saves a form blueprint without promising an unsupported Meta mutation."""
+        print("\nTesting Assisted Lead Form Design And Manual Meta Handoff...")
 
         dashboard = load_dashboard_module()
         temp_dir = Path(tempfile.mkdtemp())
-        original = {
-            "pending_file": dashboard.PENDING_FILE,
-            "output_dir": dashboard.OUTPUT_DIR,
-            "require_cloud_license": dashboard.require_cloud_license,
-        }
-
-        class FakeConfig:
-            license_required_for_live = False
-
-        class FakeClient:
-            config = FakeConfig()
-
-            def __init__(self):
-                self.calls = []
-
-            def create_lead_form(self, *args, **kwargs):
-                self.calls.append((args, kwargs))
-                return {"returncode": 0, "stdout": json.dumps({"id": "form_123", "lead_gen_form_id": "form_123"})}
+        original = {"pending_file": dashboard.PENDING_FILE, "output_dir": dashboard.OUTPUT_DIR}
 
         try:
             dashboard.PENDING_FILE = temp_dir / "pending_approvals.json"
             dashboard.OUTPUT_DIR = temp_dir / "output"
-            dashboard.require_cloud_license = lambda *_args, **_kwargs: None
             staged = dashboard.execute_agent_tool(
                 {
                     "tool": "stage_lead_form",
@@ -8983,11 +8980,8 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                 {"language": "es", "channel": "telegram"},
             )
             pending = dashboard.read_json(dashboard.PENDING_FILE, [])
-            payload_path = Path(pending[0]["payload"]["path"])
+            payload_path = Path(staged["draft_path"])
             saved_payload = dashboard.read_json(payload_path, {})
-            fake_client = FakeClient()
-            executed = daily_agent.execute_pending(pending[0], fake_client)
-            call_args, call_kwargs = fake_client.calls[0]
             missing = dashboard.execute_agent_tool(
                 {
                     "tool": "stage_lead_form",
@@ -8999,16 +8993,17 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                 },
                 {"language": "es", "channel": "telegram"},
             )
-            self.assert_true(staged.get("staged") and "aprobar" in staged.get("reply", "").lower(), "Agent chat stages native lead form creation behind approval")
-            self.assert_true(pending[0]["type"] == "create_lead_form" and pending[0]["payload"]["page_id"] == "page_1", "Lead form staging creates a pending approval")
-            self.assert_true(saved_payload["questions"][0]["type"] == "FULL_NAME" and saved_payload["privacy_policy_url"] == "https://uboost.lat/privacy", "Lead form staging persists normalized form details")
-            self.assert_true(executed["ok"] and executed["lead_gen_form_id"] == "form_123", "Approving the pending lead form returns lead_gen_form_id")
-            self.assert_true(call_args[0] == "page_1" and call_args[1] == "Valoración gratuita" and call_kwargs["approved"] is True, "Pending execution calls the Page lead form creator as an approved mutation")
-            self.assert_true(missing.get("blocked") and "privacy_policy_url" in missing.get("missing", []), "Lead form staging blocks clearly when privacy policy URL is missing")
+            self.assert_true(staged.get("ok") and staged.get("manual_creation_required") and not staged.get("executed"), "Agent chat designs the lead form without claiming a Meta mutation")
+            self.assert_true(not pending, "Lead form design does not create a misleading pending approval")
+            self.assert_true(saved_payload["questions"][0]["type"] == "FULL_NAME" and saved_payload["privacy_policy_url"] == "https://uboost.lat/privacy", "Lead form design persists normalized form details")
+            self.assert_true("ads manager" in staged.get("reply", "").lower() and "ya creé el formulario" in staged.get("reply", "").lower(), "Agent guides the buyer to create the form in Meta and report back")
+            self.assert_true(staged["next_agent_action"]["after_buyer_confirmation"] == "list_lead_forms" and staged["next_agent_action"]["then"] == "stage_campaign_with_lead_gen_form_id", "Agent records the exact live-form verification handoff")
+            self.assert_true(missing.get("blocked") and "privacy_policy_url" in missing.get("missing", []), "Lead form design blocks clearly when privacy policy URL is missing")
+            prompt = hermes_gateway.gateway_prompt("es")
+            self.assert_true("Nunca digas que Admira creó el formulario" in prompt and "mcp_admira_list_lead_forms" in prompt and "object_story_id" in prompt, "Hermes is explicitly routed through manual form creation, live form lookup, and static dark-post execution")
         finally:
             dashboard.PENDING_FILE = original["pending_file"]
             dashboard.OUTPUT_DIR = original["output_dir"]
-            dashboard.require_cloud_license = original["require_cloud_license"]
             shutil.rmtree(temp_dir, ignore_errors=True)
 
     def test_organic_content_opt_in_stages_and_publishes_only_after_approval(self):
@@ -10243,12 +10238,14 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             lead_form_calls = [call[0] for call in lead_form_client.calls]
             lead_form_campaign = next(call for call in lead_form_client.calls if call[0] == "create_campaign")
             lead_form_adset = next(call for call in lead_form_client.calls if call[0] == "create_adset")
+            lead_form_post = next(call for call in lead_form_client.calls if call[0] == "create_page_post")
             lead_form_creative = next(call for call in lead_form_client.calls if call[0] == "create_creative")
             self.assert_true(lead_form_result["ok"], "Lead form campaign can use the configured destination URL when the ad plan omits one")
-            self.assert_true("create_page_post" not in lead_form_calls, "Lead form campaigns use the native lead form creative path instead of direct publishing")
+            self.assert_true(lead_form_calls == ["create_campaign", "create_adset", "create_page_post", "create_creative", "create_ad"], "Static lead form campaigns create the native unpublished Page post before the creative")
             self.assert_true(lead_form_campaign[1][2] == "OUTCOME_LEADS", "Lead form campaign uses Meta's current outcome-leads objective")
             self.assert_true(lead_form_adset[1][5] == "LEAD_GENERATION" and lead_form_adset[2]["promoted_object"]["page_id"] == "111", "Lead form ad set optimizes for leads and includes page_id as promoted object")
-            self.assert_true(lead_form_creative[2]["lead_gen_form_id"] == "form_123" and lead_form_creative[1][3] == "https://buyer.example", "Lead form creative receives the lead form ID and configured external destination")
+            self.assert_true(lead_form_post[2]["lead_gen_form_id"] == "form_123" and lead_form_post[2]["link"] == "https://buyer.example", "Lead form dark post receives the verified form ID and configured external destination")
+            self.assert_true(lead_form_creative[2]["object_story_id"] == "111_999" and lead_form_creative[2]["lead_gen_form_id"] == "form_123", "Lead form creative is created from the promotable dark post instead of an inline development-app creative")
 
             campaign_path.write_text(
                 json.dumps(
@@ -12747,7 +12744,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.test_live_targeting_validation_rejects_stale_detailed_ids_before_mutation,
             self.test_live_account_actions_stage_for_approval_instead_of_auto_mutating,
             self.test_social_flow_graph_api_lists_and_creates_lead_forms,
-            self.test_chat_stages_and_executes_native_lead_form_creation,
+            self.test_chat_designs_native_lead_form_and_requires_manual_meta_creation,
             self.test_organic_content_opt_in_stages_and_publishes_only_after_approval,
             self.test_dashboard_operational_monitor_loops_resolve_env_int,
             self.test_social_flow_creates_native_page_post_for_direct_publishing,
