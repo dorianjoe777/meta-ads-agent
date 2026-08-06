@@ -9549,6 +9549,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             live_actions_enabled = True
             meta_connector = "graph_api"
             meta_access_token = "meta-token"
+            meta_publishing_access_token = "publishing-token"
             meta_graph_api_version = "v24.0"
             ad_account_id = "act_999"
 
@@ -9621,6 +9622,26 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             live_app_body = urllib.parse.parse_qs(requests[0].data.decode("utf-8"))
             self.assert_true(json.loads(live_app_creative["stdout"])["id"] == "creative_1" and live_app_creative.get("credential_source") == "publishing", "Graph API can create creatives with the live publishing app token")
             self.assert_true(live_app_body["access_token"][0] == "publishing-token" and json.loads(live_app_body["object_story_spec"][0]) == live_app_spec, "Publishing-token creatives keep the URL-aware object_story_spec payload")
+            requests.clear()
+            whatsapp_creative = client.create_creative(
+                "act_999",
+                "Native WhatsApp Creative",
+                "111",
+                "https://api.whatsapp.com/send",
+                "Escríbenos por WhatsApp",
+                "Reserva hoy",
+                "whatsapp_image_hash",
+                "WHATSAPP_MESSAGE",
+                prefilled_message="Hola, quiero reservar",
+                prefer_publishing_token=True,
+                approved=True,
+            )
+            whatsapp_body = urllib.parse.parse_qs(requests[0].data.decode("utf-8"))
+            whatsapp_story = json.loads(whatsapp_body["object_story_spec"][0])
+            whatsapp_link_data = whatsapp_story["link_data"]
+            self.assert_true(json.loads(whatsapp_creative["stdout"])["id"] == "creative_1" and whatsapp_body["access_token"][0] == "publishing-token", "Native WhatsApp inline creative is created with the Live app credential")
+            self.assert_true(whatsapp_link_data["image_hash"] == "whatsapp_image_hash" and whatsapp_link_data["call_to_action"] == {"type": "WHATSAPP_MESSAGE", "value": {"link": "https://api.whatsapp.com/send", "app_destination": "WHATSAPP"}}, "Native WhatsApp creative matches Ads Manager's link_data image and CTA structure")
+            self.assert_true(whatsapp_link_data["page_welcome_message"]["text_format"]["message"]["ice_breakers"][0]["title"] == "Hola, quiero reservar", "Native WhatsApp creative nests the approved prefilled message inside link_data")
             requests.clear()
             lead_creative = client.create_creative(
                 "act_999",
@@ -10205,6 +10226,22 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             class DirectPublishingClient(FakeClient):
                 config = DirectPublishingConfig()
 
+                def resolve_whatsapp_phone_number(self, page_id):
+                    return {
+                        "ok": True,
+                        "whatsapp_phone_number": "573105000190",
+                        "source": "historical_whatsapp_adset",
+                        "page_id": page_id,
+                    }
+
+                def publishing_ads_capability(self):
+                    return {
+                        "ok": True,
+                        "ads_management_granted": True,
+                        "ads_read_granted": True,
+                        "ad_account_access": True,
+                    }
+
             campaign_path.write_text(
                 json.dumps(
                     {
@@ -10237,7 +10274,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.assert_true(direct_page_post_call[2]["video_url"] == "https://cdn.example/video.mp4", "Video direct publishing passes the buyer video URL to Page post creation")
             self.assert_true(direct_page_post_call[2]["link"] == "https://buyer.example" and direct_page_post_call[2]["cta"] == "LEARN_MORE", "Video direct publishing passes the landing URL and CTA into the Page post")
             self.assert_true(direct_video_story["video_data"]["video_id"] == "page_video_1" and direct_video_story["video_data"]["call_to_action"]["value"]["link"] == "https://buyer.example" and not direct_creative_call[2]["object_story_id"], "Video direct publishing creates a website-aware video creative from the Page video")
-            self.assert_true(direct_creative_call[2]["prefer_publishing_token"] is True, "Video direct publishing creates the URL-aware creative with the live publishing app token when available")
+            self.assert_true(direct_creative_call[2]["prefer_publishing_token"] is False, "Video direct publishing tries the Live primary Ads app before any publishing-token fallback")
             self.assert_true(direct_ad_call[2]["website_url"] == "https://buyer.example", "Final ad creation receives the landing URL for validation/debug tracing")
 
             retry_object_story_client = DirectPublishingClient()
@@ -10287,7 +10324,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.assert_true(retry_missing_website_post[2]["link"] == "https://buyer.example", "Website-missing retries create the new hidden post with the landing URL")
             retry_missing_story = retry_missing_website_creative[2]["object_story_spec"]
             self.assert_true(retry_missing_story["video_data"]["video_id"] == "page_video_1" and retry_missing_story["video_data"]["call_to_action"]["value"]["link"] == "https://buyer.example", "Website-missing retries create a new website-aware video creative instead of reusing the old post without URL")
-            self.assert_true(retry_missing_website_creative[2]["prefer_publishing_token"] is True, "Website-missing retries use the live publishing app token for the replacement URL-aware creative")
+            self.assert_true(retry_missing_website_creative[2]["prefer_publishing_token"] is False, "Website-missing retries try the Live primary Ads app before any publishing-token fallback")
 
             campaign_path.write_text(
                 json.dumps(
@@ -10318,14 +10355,14 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             whatsapp_result = execute_campaign_creation(str(campaign_path), whatsapp_client, approved=True)
             whatsapp_campaign = next(call for call in whatsapp_client.calls if call[0] == "create_campaign")
             whatsapp_adset = next(call for call in whatsapp_client.calls if call[0] == "create_adset")
-            whatsapp_post = next(call for call in whatsapp_client.calls if call[0] == "create_page_post")
             whatsapp_creative = next(call for call in whatsapp_client.calls if call[0] == "create_creative")
             self.assert_true(whatsapp_result["ok"], "Click-to-WhatsApp campaign can be created without a website landing URL")
             self.assert_true(whatsapp_campaign[1][2] == "OUTCOME_ENGAGEMENT", "Click-to-WhatsApp campaign uses an engagement-compatible objective")
             self.assert_true(whatsapp_adset[2]["destination_type"] == "WHATSAPP", "Click-to-WhatsApp ad set carries the WhatsApp destination type")
             self.assert_true(whatsapp_adset[1][5] == "CONVERSATIONS", "Click-to-WhatsApp overrides stale web-conversion optimization with Meta's Graph-valid messaging goal")
-            self.assert_true(whatsapp_adset[2]["promoted_object"] == {"page_id": "111", "whatsapp_phone_number_id": "573128781168"}, "Click-to-WhatsApp ad set carries the Page and numeric WhatsApp promoted object")
-            self.assert_true(whatsapp_post[2]["message_destination"] == "WHATSAPP" and whatsapp_post[2]["link"] == "https://api.whatsapp.com/send", "Click-to-WhatsApp hidden post uses the native message destination instead of requiring a website URL")
+            self.assert_true(whatsapp_adset[2]["promoted_object"] == {"page_id": "111", "whatsapp_phone_number": "573105000190"}, "Click-to-WhatsApp ad set uses the Page-linked number recovered from live Meta state")
+            self.assert_true("create_page_post" not in [call[0] for call in whatsapp_client.calls], "Native WhatsApp static creatives avoid the invalid PHOTO/feed dark-post intermediate route")
+            self.assert_true(whatsapp_creative[1][7] == "WHATSAPP_MESSAGE" and whatsapp_creative[2]["prefer_publishing_token"] is False, "Click-to-WhatsApp creates the inline CTA creative with the Live primary Ads app")
             self.assert_true(whatsapp_creative[2]["prefilled_message"] == "Hola, quiero reservar la oferta", "Click-to-WhatsApp passes the approved first-message text to AdCreative")
             welcome_payload = SocialFlowClient.page_welcome_message_payload(whatsapp_creative[2]["prefilled_message"])
             self.assert_true(welcome_payload["text_format"]["message"]["ice_breakers"][0]["title"] == "Hola, quiero reservar la oferta", "Click-to-WhatsApp serializes the customer-sendable text as Meta's page_welcome_message icebreaker")
@@ -10442,6 +10479,63 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         print("\nTesting Multi-offer WhatsApp Campaign...")
         dashboard = load_dashboard_module()
 
+        class ResolverConfig:
+            ad_account_id = "act_multi"
+            meta_access_token = "ads-token"
+            meta_publishing_access_token = "publishing-token"
+            meta_graph_api_version = "v24.0"
+
+        resolver = SocialFlowClient(ResolverConfig())
+        resolver.get_graph = lambda endpoint, params=None, access_token="": (
+            {"ok": True, "status": 200, "body": {"id": "page_multi"}}
+            if endpoint == "page_multi"
+            else {
+                "ok": True,
+                "status": 200,
+                "body": {
+                    "data": [
+                        {
+                            "id": "old_native_adset",
+                            "name": "WhatsApp histórico",
+                            "status": "ACTIVE",
+                            "effective_status": "CAMPAIGN_PAUSED",
+                            "updated_time": "2026-08-01T12:00:00+0000",
+                            "destination_type": "WHATSAPP",
+                            "promoted_object": {"page_id": "page_multi", "whatsapp_phone_number": "573105000190"},
+                        }
+                    ]
+                },
+            }
+        )
+        resolved = resolver.resolve_whatsapp_phone_number("page_multi")
+        self.assert_true(resolved["ok"] and resolved["whatsapp_phone_number"] == "573105000190" and resolved["source"] == "historical_whatsapp_adset", "WhatsApp resolver recovers the Page-linked number from Meta ad-set history when Page.whatsapp_number is empty")
+
+        capability_client = SocialFlowClient(ResolverConfig())
+        capability_client.get_graph = lambda endpoint, params=None, access_token="": (
+            {
+                "ok": True,
+                "status": 200,
+                "body": {"data": [
+                    {"permission": "pages_manage_posts", "status": "granted"},
+                    {"permission": "ads_management", "status": "granted"},
+                    {"permission": "ads_read", "status": "granted"},
+                ]},
+            }
+            if endpoint == "me/permissions"
+            else {"ok": True, "status": 200, "body": {"id": "act_multi", "account_status": 1}}
+        )
+        capability = capability_client.publishing_ads_capability()
+        self.assert_true(capability["ok"] and capability["ads_management_granted"] and capability["ads_read_granted"] and capability["ad_account_access"], "Live publishing credential preflight confirms ads permissions and selected ad-account access")
+
+        missing_capability_client = SocialFlowClient(ResolverConfig())
+        missing_capability_client.get_graph = lambda endpoint, params=None, access_token="": (
+            {"ok": True, "status": 200, "body": {"data": [{"permission": "pages_manage_posts", "status": "granted"}]}}
+            if endpoint == "me/permissions"
+            else {"ok": False, "status": 403, "body": {"error": {"message": "missing ads permission"}}}
+        )
+        missing_capability = missing_capability_client.publishing_ads_capability()
+        self.assert_true(not missing_capability["ok"] and not missing_capability["ads_management_granted"] and not missing_capability["ad_account_access"], "Live publishing credential preflight detects missing ads permission before campaign mutation")
+
         class FakeConfig:
             live = False
             mode = "dry-run"
@@ -10451,8 +10545,10 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         class FakeClient:
             config = FakeConfig()
 
-            def __init__(self):
+            def __init__(self, publishing_ok=True, primary_development_mode=False):
                 self.calls = []
+                self.publishing_ok = publishing_ok
+                self.primary_development_mode = primary_development_mode
 
             def _result(self, key, value):
                 return {"stdout": json.dumps(value), "returncode": 0, "executed": True}
@@ -10460,6 +10556,24 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             def create_campaign(self, *args, **kwargs):
                 self.calls.append(("create_campaign", args, kwargs))
                 return self._result("create_campaign", {"id": "multi_campaign"})
+
+            def resolve_whatsapp_phone_number(self, page_id):
+                return {
+                    "ok": True,
+                    "whatsapp_phone_number": "573105000190",
+                    "source": "historical_whatsapp_adset",
+                    "page_id": page_id,
+                    "adset_id": "existing_native_whatsapp_adset",
+                }
+
+            def publishing_ads_capability(self):
+                return {
+                    "ok": self.publishing_ok,
+                    "ads_management_granted": self.publishing_ok,
+                    "ads_read_granted": self.publishing_ok,
+                    "ad_account_access": self.publishing_ok,
+                    "reason": "" if self.publishing_ok else "publishing_token_missing_ads_management_or_account_access",
+                }
 
             def create_adset(self, *args, **kwargs):
                 index = len([call for call in self.calls if call[0] == "create_adset"]) + 1
@@ -10471,9 +10585,20 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                 self.calls.append(("create_page_post", args, kwargs))
                 return self._result("create_page_post", {"object_story_id": f"page_post_{index}"})
 
+            def upload_image(self, *args, **kwargs):
+                index = len([call for call in self.calls if call[0] == "upload_image"]) + 1
+                self.calls.append(("upload_image", args, kwargs))
+                return self._result("upload_image", {"images": {f"image_{index}": {"hash": f"hash_{index}"}}})
+
             def create_creative(self, *args, **kwargs):
                 index = len([call for call in self.calls if call[0] == "create_creative"]) + 1
                 self.calls.append(("create_creative", args, kwargs))
+                if self.primary_development_mode and not kwargs.get("prefer_publishing_token"):
+                    return {
+                        "stderr": json.dumps({"error": {"error_subcode": 1885183, "message": "Ads creative post was created by an app that is in development mode. It must be in public to create this ad."}}),
+                        "returncode": 1,
+                        "executed": True,
+                    }
                 return self._result("create_creative", {"id": f"multi_creative_{index}"})
 
             def create_ad(self, *args, **kwargs):
@@ -10487,6 +10612,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
 
         image = ROOT_DIR / "output" / "test-multi-offer.jpg"
         campaign_path = ROOT_DIR / "output" / "test-multi-offer.json"
+        fallback_campaign_path = ROOT_DIR / "output" / "test-multi-offer-fallback.json"
         ad_config_path = ROOT_DIR / "ad-config.json"
         old_ad_config = ad_config_path.read_text(encoding="utf-8") if ad_config_path.exists() else ""
         try:
@@ -10530,6 +10656,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                 "name": "Canary Johana Multi",
                 "objective": "MESSAGES",
                 "budget": {"daily": 20},
+                "budget_currency": "COP",
                 "status_plan": {"campaign": "PAUSED", "adset": "PAUSED", "ad": "PAUSED"},
                 "ad_sets": [
                     {"name": "Glow Party - $400.000", "targeting": {"locations": ["MX"], "age_range": {"min": 30, "max": 58}}, "budget": 20, "message_destination": "WHATSAPP", "whatsapp_phone_number_id": "573000000000", "ads": [{"name": "Glow 1", "creative_image_path": str(image), "prefilled_message": "Hola Glow"}, {"name": "Glow 2", "creative_image_path": str(image), "prefilled_message": "Hola Glow"}]},
@@ -10537,16 +10664,47 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                 ],
                 "ad": {"final_status": "PAUSED", "active_spend_confirmed": False},
             }), encoding="utf-8")
-            client = FakeClient()
-            result = execute_campaign_creation(str(campaign_path), client, approved=True)
+            primary_only_client = FakeClient(publishing_ok=False)
+            primary_only_result = execute_campaign_creation(str(campaign_path), primary_only_client, approved=True)
+            primary_only_creatives = [call for call in primary_only_client.calls if call[0] == "create_creative"]
+            self.assert_true(primary_only_result.get("ok") and len(primary_only_result.get("ad_ids") or []) == 4, "A Live primary Ads app creates native WhatsApp ads without requiring a second publishing credential")
+            self.assert_true(all(call[2].get("prefer_publishing_token") is False for call in primary_only_creatives), "Primary Ads app is the first-choice credential for every inline WhatsApp creative")
+
+            client = primary_only_client
+            result = primary_only_result
             call_names = [call[0] for call in client.calls]
             self.assert_true(result["ok"] and len(result["adset_ids"]) == 2 and len(result["ad_ids"]) == 4, "Multi-offer execution creates two ad sets and four paused ads")
-            self.assert_true(call_names == ["create_campaign", "create_adset", "create_adset", "create_page_post", "create_creative", "create_ad", "create_page_post", "create_creative", "create_ad", "create_page_post", "create_creative", "create_ad", "create_page_post", "create_creative", "create_ad"], "Each ad uses its own dark post, creative, and matching ad-set sequence")
+            self.assert_true(
+                call_names.count("upload_image") == 4
+                and call_names.count("create_creative") == 4
+                and call_names.count("create_ad") == 4,
+                "Each native WhatsApp ad uploads its image and creates its own Live-app inline creative in the matching ad set",
+            )
             creative_calls = [call for call in client.calls if call[0] == "create_creative"]
             self.assert_true([call[2].get("prefilled_message") for call in creative_calls] == ["Hola Glow", "Hola Glow", "Hola Piel", "Hola Piel"], "WhatsApp prefilled messages reach every creative")
-            self.assert_true(all(call[2].get("object_story_id") for call in creative_calls), "Every static creative is built from a native Page post")
+            self.assert_true(all(not call[2].get("object_story_id") and call[2].get("prefer_publishing_token") is False and call[1][7] == "WHATSAPP_MESSAGE" for call in creative_calls), "Every native static creative uses inline link_data with the Live primary Ads app")
+            post_calls = [call for call in client.calls if call[0] == "create_page_post"]
+            self.assert_true(not post_calls, "Native WhatsApp static creation does not generate an unpromotable intermediary Page PHOTO post")
+            adset_calls = [call for call in client.calls if call[0] == "create_adset"]
+            self.assert_true(all(call[2]["promoted_object"]["whatsapp_phone_number"] == "573105000190" for call in adset_calls), "Live Meta history overrides a stale or guessed WhatsApp number before creating ad sets")
+            self.assert_true(all(call[1][3] == 20 for call in adset_calls), "COP ad-set budgets are sent in whole pesos instead of being inflated by a 100x currency offset")
+            self.assert_true(daily_agent.meta_budget_api_amount(20, "USD") == 2000 and daily_agent.meta_budget_api_amount(20000, "COP") == 20000, "Meta budget conversion preserves USD cents and COP whole-unit semantics")
             ad_calls = [call for call in client.calls if call[0] == "create_ad"]
             self.assert_true(all(call[1][3] == "PAUSED" for call in ad_calls), "Every canary ad is paused")
+
+            fallback_payload = json.loads(campaign_path.read_text(encoding="utf-8"))
+            fallback_payload.pop("execution_state", None)
+            fallback_payload["name"] = "Canary Johana Publishing Fallback"
+            fallback_campaign_path.write_text(json.dumps(fallback_payload), encoding="utf-8")
+            fallback_client = FakeClient(publishing_ok=True, primary_development_mode=True)
+            fallback_result = execute_campaign_creation(str(fallback_campaign_path), fallback_client, approved=True)
+            fallback_creatives = [call for call in fallback_client.calls if call[0] == "create_creative"]
+            self.assert_true(fallback_result.get("ok") and len(fallback_result.get("ad_ids") or []) == 4, "Development-mode rejection on the primary app retries safely through an ads-authorized Live publishing app")
+            self.assert_true(
+                len(fallback_creatives) == 8
+                and all(fallback_creatives[index][2].get("prefer_publishing_token") is (index % 2 == 1) for index in range(8)),
+                "Each failed primary WhatsApp creative is retried exactly once with the publishing credential",
+            )
         finally:
             if old_ad_config:
                 ad_config_path.write_text(old_ad_config, encoding="utf-8")
@@ -10554,6 +10712,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                 ad_config_path.unlink()
             image.unlink(missing_ok=True)
             campaign_path.unlink(missing_ok=True)
+            fallback_campaign_path.unlink(missing_ok=True)
 
     def test_chat_stages_campaign_creation_and_requires_exact_approval(self):
         """Test natural language can stage campaign creation while approvals require an exact pending decision."""
@@ -11160,7 +11319,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         self.assert_true("route-state" in html and "connected-account" in html and "chatgpt_connected" in dashboard_source and "codex_image_account" in dashboard_source, "Model cards separate connected accounts from the single primary brain")
         self.assert_true('name="agent_model_action" value="save_connection"' in html and 'name="agent_model_action" value="set_primary"' in html, "API model cards expose distinct save and primary actions")
         self.assert_true("agent_chat_base_url" in html and "agent_chat_api_key" in html and "custom_api" in html, "OpenAI-compatible brain settings are exposed without showing saved keys")
-        self.assert_true("DigitalOcean mostraré aquí el enlace" in html and "Ver diagnóstico para soporte" in html, "Hermes/ChatGPT setup has a browser-based VPS path with diagnostics folded")
+        self.assert_true("Abrí una pestaña de espera" in html and "Ver diagnóstico para soporte" in html, "Hermes/ChatGPT setup has a browser-based login path with diagnostics folded")
         self.assert_true("Toca el botón de abajo para abrir la configuración de tu cuenta ChatGPT." in html and "Activar autorización con códigos de dispositivo para Codex" in html and "Vuelve aquí y toca el botón “Ya lo hice, conectar a ChatGPT ahora”" in html and "chatgpt-preflight" in html and ".chatgpt-preflight ol" in html, "ChatGPT/Codex setup tells buyers to enable device-code authorization before login without overlapping the model field")
         self.assert_true("/api/agent-model/connect-status" in html and "/api/agent-model/connect-input" in html and "sendChatGptTerminalInput" in html, "VPS Hermes bridge can poll and send guided terminal responses")
         self.assert_true("chatgpt-settings-help" in html and "device_auth_settings" in html, "ChatGPT/Codex setup shows a clear recovery card when device-code auth is disabled")
@@ -11199,7 +11358,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         self.assert_true("Elige el estilo que más te guste" in html and "Arriba, junto al menú" in html and "#theme-toggle" in html and ".tour-spot" in html and "theme-choice" in html, "The post-onboarding tour starts with an interactive theme selection coach mark at the header theme picker")
         self.assert_true("Elige la hora de tu lectura diaria" in html and "#daily-brief-schedule-button" in html and "zona horaria se detecta automáticamente" in html, "The first dashboard tour teaches buyers where to change the locally timed daily brief")
         self.assert_true(".guide-overlay.product-tour" in html and "backdrop-filter:none" in html and "rgba(3,4,7,var(--tour-dim))" in html, "The dashboard tour spotlights targets without blurring the buttons buyers need to click")
-        self.assert_true("{id:'meta',status:tokenOk&&accountOk&&destinationOk&&publishingOk?'ok':'blocked'}" in html and "const destinationOk=setupItem('page_id').status==='ok'" in html and "Token 1 · Anuncios" in html and "Token 2 · Página" in html, "The Meta activation section combines both tokens, account, and Page readiness without requiring a website")
+        self.assert_true("{id:'meta',status:tokenOk&&accountOk&&destinationOk&&publishingOk?'ok':'blocked'}" in html and "const destinationOk=setupItem('page_id').status==='ok'" in html and "Token 1 · Anuncios" in html and "Token 2 · Publicación Live" in html, "The Meta activation section combines both tokens, account, and Page readiness without requiring a website")
         self.assert_true("compactActivationSection(1" in html and "compactActivationSection(2" in html and "compactActivationSection(3" in html and "compactActivationSection(4" in html, "Initial activation is one scrolling page ordered password, Meta, model/images, and Telegram")
         self.assert_true("found-choice-card" in html and "account-choice-grid" in html and "destination-choice-grid" in html and "Usar esta cuenta y seguir" in html and "Usar esta página" in html, "Meta account and Page discovery results are shown as prominent glowing choices")
         self.assert_true("Elige qué modelo usará el agente" in html and "apiBrainOk" in html, "Onboarding positions model setup as part of installation and accepts API brain readiness")
@@ -11711,6 +11870,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             payload = dashboard.dashboard_payload()
             payload_json = json.dumps(payload)
             self.assert_true(saved["saved"] and saved["ok"] and saved["page_found"], "Publishing config validates page access before reporting ready")
+            self.assert_true(not saved["native_whatsapp_ads_ready"] and saved["missing_native_whatsapp_scopes"] == ["ads_management", "ads_read"], "Publishing config distinguishes organic Page readiness from native WhatsApp ads permissions")
             self.assert_true(payload["config"]["setup_values"]["meta_publishing_access_token_set"] is True and payload["config"]["publishing"]["ready"] is True, "Dashboard payload exposes direct publishing readiness")
             self.assert_true("EAA-test-direct-publishing-token" not in payload_json and "page-token" not in payload_json, "Dashboard payload never returns raw publishing tokens")
 

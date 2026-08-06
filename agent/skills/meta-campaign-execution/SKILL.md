@@ -35,6 +35,15 @@ For a buyer-approved creative archived earlier by Telegram/content-library, pass
 
 If the publishing token/page access fails, explain the connection problem simply and keep the campaign prepared for retry.
 
+### Native WhatsApp ads
+
+- Read live Meta state before building the campaign. Let the backend resolve the Page-linked WhatsApp number from `Page.whatsapp_number` or the most recent matching native WhatsApp ad set; never guess it from chat or reuse another business's number.
+- A WhatsApp Business mobile-app number already used by the Page/ad account is valid for native `CONVERSATIONS`. Do not claim Cloud API/WABA is mandatory.
+- Keep the native structure: campaign `OUTCOME_ENGAGEMENT`, ad set `CONVERSATIONS`, `destination_type=WHATSAPP`, promoted object with the Page and resolved WhatsApp number, and static creative CTA `WHATSAPP_MESSAGE`.
+- Static native WhatsApp creatives use an inline `object_story_spec.link_data` with the image and approved prefilled/welcome message. Create them first with the primary Ads API app/token; when that app is Live, do not route them through a manually-created PHOTO dark post or generic feed link-share and do not require a second app.
+- If Meta explicitly rejects the primary creative because its app is still in Development, the backend may retry with the separate Live publishing token only when that token has `ads_management`, `ads_read`, Page publishing scopes, and access to the selected ad account. Otherwise clean the paused partial structure and explain the exact setup limitation; never change the objective silently.
+- Error `1487246` means the supplied number is wrong/stale for the selected Page/account. Re-resolve live Meta state. Never silently replace native Conversations with Traffic; offer a `wa.me` website fallback only when the buyer explicitly accepts that Meta will optimize for clicks rather than conversations.
+
 ## Native lead forms
 
 - Use `mcp_admira_list_lead_forms` before campaign creation and treat that live Meta result as authoritative.

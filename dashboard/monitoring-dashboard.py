@@ -3468,12 +3468,25 @@ def test_publishing_connection(payload=None):
     scopes = _debug_token_scopes(debug)
     required_scopes = {"pages_manage_posts", "pages_read_engagement"}
     missing_scopes = sorted(required_scopes - scopes) if scopes else []
+    native_whatsapp_scopes = {"ads_management", "ads_read"}
+    missing_native_whatsapp_scopes = sorted(native_whatsapp_scopes - scopes) if scopes else sorted(native_whatsapp_scopes)
     pages_data = []
     if pages.get("ok") and isinstance(pages.get("data"), dict):
         pages_data = pages["data"].get("data") or []
     page = next((entry for entry in pages_data if str(entry.get("id") or "") == page_id), None) if page_id else None
     page_found = bool(page) if page_id else bool(pages_data)
     ok = bool(pages.get("ok")) and page_found and not missing_scopes
+    ad_account_id = str(getattr(config, "ad_account_id", "") or "").strip()
+    ad_account_result = graph_get(
+        f"/{ad_account_id}",
+        {"fields": "id,name,account_status"},
+        page_token=token,
+    ) if ad_account_id else {"ok": False, "error": "missing_ad_account"}
+    native_whatsapp_ads_ready = bool(
+        ok
+        and not missing_native_whatsapp_scopes
+        and ad_account_result.get("ok")
+    )
     message = "Publicación directa lista." if ok else "La clave de publicación no está lista todavía."
     if missing_scopes:
         message = f"Faltan permisos: {', '.join(missing_scopes)}."
@@ -3481,6 +3494,8 @@ def test_publishing_connection(payload=None):
         message = "La clave de publicación no puede acceder a la página guardada."
     elif not pages.get("ok"):
         message = graph_error_message(pages) or message
+    elif ok and not native_whatsapp_ads_ready:
+        message = "Publicación directa lista para posts. Los anuncios nativos de WhatsApp usarán primero la app principal de Ads cuando esté Live."
     debug_data = debug.get("data", {}).get("data", {}) if isinstance(debug.get("data"), dict) else {}
     return {
         "ok": ok,
@@ -3494,6 +3509,9 @@ def test_publishing_connection(payload=None):
         "page_found": page_found,
         "page_name": (page or {}).get("name", ""),
         "pages_seen": len(pages_data),
+        "native_whatsapp_ads_ready": native_whatsapp_ads_ready,
+        "missing_native_whatsapp_scopes": missing_native_whatsapp_scopes,
+        "ad_account_access": bool(ad_account_result.get("ok")),
     }
 
 
@@ -3513,7 +3531,7 @@ def save_publishing_config(payload):
         "META_PUBLISHING_ACCESS_TOKEN": token,
         "META_PUBLISHING_TOKEN_SAVED_AT": now_iso(),
     })
-    log_action("meta_direct_publishing_config", {"ready": bool(check.get("ok")), "page_found": bool(check.get("page_found")), "missing_scopes": check.get("missing_scopes", [])}, "completed" if check.get("ok") else "warn")
+    log_action("meta_direct_publishing_config", {"ready": bool(check.get("ok")), "page_found": bool(check.get("page_found")), "missing_scopes": check.get("missing_scopes", []), "native_whatsapp_ads_ready": bool(check.get("native_whatsapp_ads_ready")), "missing_native_whatsapp_scopes": check.get("missing_native_whatsapp_scopes", [])}, "completed" if check.get("ok") else "warn")
     return {**check, "saved": True, "token_set": True}
 
 

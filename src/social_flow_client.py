@@ -184,6 +184,115 @@ class SocialFlowClient:
             },
         }
 
+    def resolve_whatsapp_phone_number(self, page_id):
+        """Resolve the WhatsApp identifier Meta already accepts for a Page.
+
+        A Page linked to the WhatsApp Business mobile app can return an empty
+        ``whatsapp_number`` field even while Ads Manager has valid native
+        click-to-WhatsApp ad sets. In that case, recover the value from the
+        promoted object of the most recent matching native ad set.
+        """
+        page_id = str(page_id or "").strip()
+        ad_account_id = self.normalize_ad_account_id(getattr(self.config, "ad_account_id", ""))
+        access_token = str(getattr(self.config, "meta_access_token", "") or "").strip()
+        if not page_id or not ad_account_id or not access_token:
+            return {
+                "ok": False,
+                "whatsapp_phone_number": "",
+                "source": "meta_live",
+                "reason": "missing_page_account_or_token",
+            }
+
+        page_result = self.get_graph(page_id, {"fields": "whatsapp_number"}, access_token=access_token)
+        page_body = page_result.get("body") if isinstance(page_result.get("body"), dict) else {}
+        page_number = "".join(character for character in str(page_body.get("whatsapp_number") or "") if character.isdigit())
+        if page_number:
+            return {
+                "ok": True,
+                "whatsapp_phone_number": page_number,
+                "source": "page.whatsapp_number",
+                "page_id": page_id,
+            }
+
+        adsets_result = self.get_graph(
+            f"{ad_account_id}/adsets",
+            {
+                "fields": "id,name,status,effective_status,updated_time,destination_type,promoted_object",
+                "limit": "500",
+            },
+            access_token=access_token,
+        )
+        adsets_body = adsets_result.get("body") if isinstance(adsets_result.get("body"), dict) else {}
+        candidates = []
+        for adset in adsets_body.get("data") or []:
+            if not isinstance(adset, dict) or str(adset.get("destination_type") or "").upper() != "WHATSAPP":
+                continue
+            promoted = adset.get("promoted_object") if isinstance(adset.get("promoted_object"), dict) else {}
+            if str(promoted.get("page_id") or "").strip() != page_id:
+                continue
+            number = "".join(character for character in str(promoted.get("whatsapp_phone_number") or "") if character.isdigit())
+            if not number:
+                continue
+            status = str(adset.get("effective_status") or adset.get("status") or "").upper()
+            status_rank = 2 if status in {"ACTIVE", "PAUSED", "CAMPAIGN_PAUSED", "ADSET_PAUSED"} else 1
+            candidates.append((status_rank, str(adset.get("updated_time") or ""), number, adset))
+        if not candidates:
+            return {
+                "ok": False,
+                "whatsapp_phone_number": "",
+                "source": "meta_live",
+                "reason": "no_page_linked_whatsapp_number_found",
+                "page_lookup_ok": bool(page_result.get("ok")),
+                "adsets_lookup_ok": bool(adsets_result.get("ok")),
+            }
+        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        _, _, number, adset = candidates[0]
+        return {
+            "ok": True,
+            "whatsapp_phone_number": number,
+            "source": "historical_whatsapp_adset",
+            "page_id": page_id,
+            "adset_id": str(adset.get("id") or ""),
+            "adset_name": str(adset.get("name") or ""),
+        }
+
+    def publishing_ads_capability(self):
+        """Verify that the Live publishing credential can create ad assets."""
+        cached = getattr(self, "_publishing_ads_capability_cache", None)
+        if isinstance(cached, dict):
+            return cached
+        token = str(getattr(self.config, "meta_publishing_access_token", "") or "").strip()
+        ad_account_id = self.normalize_ad_account_id(getattr(self.config, "ad_account_id", ""))
+        if not token or not ad_account_id:
+            result = {
+                "ok": False,
+                "source": "publishing_live_app",
+                "reason": "missing_publishing_token_or_ad_account",
+                "granted_permissions": [],
+            }
+            self._publishing_ads_capability_cache = result
+            return result
+        permissions_result = self.get_graph("me/permissions", {}, access_token=token)
+        permissions_body = permissions_result.get("body") if isinstance(permissions_result.get("body"), dict) else {}
+        granted = sorted({
+            str(item.get("permission") or "")
+            for item in (permissions_body.get("data") or [])
+            if isinstance(item, dict) and str(item.get("status") or "").lower() == "granted"
+        })
+        account_result = self.get_graph(ad_account_id, {"fields": "id,name,account_status"}, access_token=token)
+        result = {
+            "ok": "ads_management" in granted and bool(account_result.get("ok")),
+            "source": "publishing_live_app",
+            "reason": "" if "ads_management" in granted and account_result.get("ok") else "publishing_token_missing_ads_management_or_account_access",
+            "granted_permissions": granted,
+            "ads_management_granted": "ads_management" in granted,
+            "ads_read_granted": "ads_read" in granted,
+            "ad_account_access": bool(account_result.get("ok")),
+            "ad_account_status": account_result.get("status"),
+        }
+        self._publishing_ads_capability_cache = result
+        return result
+
     @staticmethod
     def page_post_id_from_body(page_id, body):
         if not isinstance(body, dict):
@@ -1309,17 +1418,33 @@ class SocialFlowClient:
                     "name": self.flag(args, "--name", "Ad Creative"),
                 }
                 page_welcome_message = self.flag(args, "--page-welcome-message", "")
+                page_welcome_message_value = page_welcome_message
                 if page_welcome_message:
-                    fields["page_welcome_message"] = page_welcome_message
+                    try:
+                        page_welcome_message_value = json.loads(page_welcome_message)
+                    except json.JSONDecodeError:
+                        pass
                 record = {**record, "credential_source": credential_source}
                 object_story_id = self.flag(args, "--object-story-id", "")
                 if object_story_id:
                     fields["object_story_id"] = object_story_id
+                    if page_welcome_message:
+                        fields["page_welcome_message"] = page_welcome_message
                     link_url = self.flag(args, "--link-url", "")
                     if link_url:
                         fields["link_url"] = link_url
                     return self.graph_record(record, endpoint, self.post_graph_form(endpoint, fields))
                 object_story_spec = self.flag(args, "--object-story-spec", "")
+                if object_story_spec and page_welcome_message:
+                    try:
+                        supplied_story = json.loads(object_story_spec)
+                    except json.JSONDecodeError:
+                        supplied_story = {}
+                    if isinstance(supplied_story, dict):
+                        for data_key in ("link_data", "video_data"):
+                            if isinstance(supplied_story.get(data_key), dict):
+                                supplied_story[data_key].setdefault("page_welcome_message", page_welcome_message_value)
+                        object_story_spec = json.dumps(supplied_story, ensure_ascii=False)
                 if not object_story_spec:
                     link = self.flag(args, "--cta-link", "") or self.flag(args, "--link", "")
                     video_id = self.flag(args, "--video-id", "")
@@ -1345,6 +1470,8 @@ class SocialFlowClient:
                             video_data["call_to_action"] = {"type": self.normalize_call_to_action(cta or "SIGN_UP"), "value": {"lead_gen_form_id": lead_gen_form_id}}
                         elif cta:
                             video_data["call_to_action"] = {"type": cta, "value": {"link": link}}
+                        if page_welcome_message:
+                            video_data["page_welcome_message"] = page_welcome_message_value
                         story["video_data"] = video_data
                     else:
                         link_data = {
@@ -1359,7 +1486,12 @@ class SocialFlowClient:
                         if lead_gen_form_id:
                             link_data["call_to_action"] = {"type": self.normalize_call_to_action(cta or "SIGN_UP"), "value": {"lead_gen_form_id": lead_gen_form_id}}
                         elif cta:
-                            link_data["call_to_action"] = {"type": cta, "value": {"link": link}}
+                            cta_value = {"link": link}
+                            if self.normalize_message_destination(cta.replace("_MESSAGE", "")):
+                                cta_value["app_destination"] = self.normalize_message_destination(cta.replace("_MESSAGE", ""))
+                            link_data["call_to_action"] = {"type": cta, "value": cta_value}
+                        if page_welcome_message:
+                            link_data["page_welcome_message"] = page_welcome_message_value
                         story["link_data"] = link_data
                     object_story_spec = json.dumps(story)
                 fields["object_story_spec"] = object_story_spec
