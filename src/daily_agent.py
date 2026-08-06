@@ -450,19 +450,23 @@ def direct_publishing_missing_requirements(ad_plan, destination, client, video_i
     return missing
 
 
-def create_native_page_post_for_ad(client, destination, ad_plan, link, body_text, headline, approved=False):
+def create_native_page_post_for_ad(client, destination, ad_plan, link, body_text, headline, approved=False, media_only=False):
     lead_gen_form_id = lead_gen_form_id_from_plan(ad_plan)
+    message_destination = message_destination_from_plan(ad_plan)
+    post_link = "" if media_only else link
+    post_cta = ad_plan.get("cta", "LEARN_MORE")
     page_post_result = client.create_page_post(
         destination.get("page_id", ""),
         message="\n\n".join([part for part in [body_text, headline] if part]),
-        link=link,
+        link=post_link,
         image_path=ad_plan.get("creative_image_path") or "",
         image_url=ad_plan.get("image_url") or "",
         video_url=ad_plan.get("video_url") or "",
         unpublished_content_type="ADS_POST",
-        cta=ad_plan.get("cta", "LEARN_MORE"),
-        message_destination=message_destination_from_plan(ad_plan),
+        cta=post_cta,
+        message_destination=message_destination,
         lead_gen_form_id=lead_gen_form_id,
+        media_only=media_only,
         approved=approved,
     )
     object_story_id = ""
@@ -532,7 +536,14 @@ def execute_multi_adset_static_stack(path, campaign, client, destination, campai
     all_creative_ids = []
     all_ad_ids = []
     all_object_story_ids = []
-    message_destination = message_destination_from_plan(campaign) or message_destination_from_plan(ad_plan_default)
+    has_explicit_website_adset = any(
+        isinstance(stored_adset, dict)
+        and SocialFlowClient.normalize_destination_type(stored_adset.get("destination_type")) == "WEBSITE"
+        for stored_adset in adsets
+    )
+    message_destination = "" if has_explicit_website_adset else (
+        message_destination_from_plan(campaign) or message_destination_from_plan(ad_plan_default)
+    )
     whatsapp_phone_number_id = whatsapp_phone_number_id_from_plan(ad_plan_default, campaign, destination)
     page_id = str(destination.get("page_id") or "").strip()
     if not page_id:
@@ -558,6 +569,12 @@ def execute_multi_adset_static_stack(path, campaign, client, destination, campai
                 ad_plan.update({key: value for key, value in source.items() if value not in (None, "")})
             if set_destination and not message_destination_from_plan(ad_plan):
                 ad_plan["message_destination"] = set_destination
+            if has_explicit_website_adset:
+                # A /feed link share silently drops the uploaded photo on
+                # this Meta account. Keep a real PHOTO dark post and carry
+                # the destination on the existing-post AdCreative instead.
+                ad_plan["message_destination"] = ""
+                ad_plan["destination_type"] = "WEBSITE"
             if set_phone_id and not whatsapp_phone_number_id_from_plan(ad_plan):
                 ad_plan["whatsapp_phone_number_id"] = set_phone_id
             if set_destination and str(ad_plan.get("cta") or "").upper() in {"", "LEARN_MORE", "APRENDER_MAS"}:
@@ -581,7 +598,8 @@ def execute_multi_adset_static_stack(path, campaign, client, destination, campai
                 )
 
             object_story_id, page_post_result = create_native_page_post_for_ad(
-                client, destination, ad_plan, link, body_text, headline, approved=approved
+                client, destination, ad_plan, link, body_text, headline,
+                approved=approved, media_only=has_explicit_website_adset,
             )
             steps.append({
                 "step": "create_page_post",
@@ -620,6 +638,7 @@ def execute_multi_adset_static_stack(path, campaign, client, destination, campai
                 video_id="",
                 cta_link=ad_plan.get("cta_link") or "",
                 object_story_id=object_story_id,
+                object_story_link_url=link if has_explicit_website_adset else "",
                 lead_gen_form_id=lead_gen_form_id_from_plan(ad_plan),
                 prefilled_message=prefilled_message,
                 welcome_message=welcome_message,
@@ -658,6 +677,11 @@ def execute_multi_adset_static_stack(path, campaign, client, destination, campai
                 "PAUSED",
                 website_url=link,
                 approved=approved,
+                object_story_id=object_story_id,
+                # A link-to-WhatsApp fallback is an existing-post ad;
+                # Meta can reject a standalone creative ID as "missing
+                # media" even though the Page post itself has the image.
+                prefer_object_story_ad=(not has_explicit_website_adset and not set_destination and bool(object_story_id)),
             )
             ad_id = social_id_from_result(ad_result)
             all_ad_ids.append(ad_id)
@@ -1052,6 +1076,14 @@ def campaign_objective_for_social(objective, campaign=None, ad_plan=None):
         "WHATSAPP": "OUTCOME_ENGAGEMENT",
         "MESSENGER": "OUTCOME_ENGAGEMENT",
         "ENGAGEMENT": "OUTCOME_ENGAGEMENT",
+        # Link-to-WhatsApp fallback campaigns use a real website
+        # destination (wa.me) when the Page's WhatsApp Business App number
+        # is not exposed to the Marketing API. Keep the campaign objective
+        # aligned with LINK_CLICKS/LANDING_PAGE_VIEWS; sending this through
+        # the sales default makes Meta reject the ad set as incompatible.
+        "TRAFFIC": "OUTCOME_TRAFFIC",
+        "LINK_CLICKS": "OUTCOME_TRAFFIC",
+        "LANDING_PAGE_VIEWS": "OUTCOME_TRAFFIC",
     }
     return mapping.get(str(objective or "").upper(), "OUTCOME_SALES")
 
@@ -1065,6 +1097,15 @@ def lead_gen_form_id_from_plan(ad_plan):
 
 
 def message_destination_from_plan(ad_plan):
+    # An explicit website destination wins over heuristic URL detection. A
+    # wa.me link is still a website URL at the Graph API boundary when the
+    # native WhatsApp destination is unavailable (for example, a number that
+    # is connected only through WhatsApp Business App). Without this guard the
+    # URL heuristic turns a valid LINK_CLICKS/WEBSITE fallback back into a
+    # CONVERSATIONS/WHATSAPP ad set.
+    explicit_destination = str((ad_plan or {}).get("destination_type") or "").strip()
+    if explicit_destination and SocialFlowClient.normalize_destination_type(explicit_destination) == "WEBSITE":
+        return ""
     for key in ("message_destination", "messaging_destination", "messaging_app", "click_to_message_destination", "conversation_destination"):
         value = str((ad_plan or {}).get(key) or "").strip()
         if value:
@@ -1466,8 +1507,21 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
     destination = ad_config.get("creative", {}).get("destination", {})
     ad_plan = dict(campaign.get("ad") or {})
     lead_gen_form_id = lead_gen_form_id_from_plan(ad_plan)
-    message_destination = message_destination_from_plan(ad_plan)
-    if not message_destination:
+    # A staged link-to-WhatsApp fallback deliberately uses ``wa.me`` as a
+    # website URL. Do not let the URL heuristic turn it back into a native
+    # WhatsApp ad after normalization has already selected WEBSITE on the
+    # ad set. That would send CONVERSATIONS to a TRAFFIC campaign and Meta
+    # rejects the ad set before any creative is attempted.
+    has_explicit_website_adset = any(
+        isinstance(stored_adset, dict)
+        and SocialFlowClient.normalize_destination_type(stored_adset.get("destination_type")) == "WEBSITE"
+        for stored_adset in (campaign.get("ad_sets") or [])
+    )
+    message_destination = "" if has_explicit_website_adset else message_destination_from_plan(ad_plan)
+    if has_explicit_website_adset:
+        ad_plan["message_destination"] = ""
+        ad_plan["destination_type"] = "WEBSITE"
+    if not message_destination and not has_explicit_website_adset:
         # Older campaign files stored the messaging destination on the ad set
         # or campaign object. Recover it before choosing the optimization
         # goal, rather than silently falling back to web conversions.
@@ -1635,15 +1689,23 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
             # Do not carry a pixel/custom event from a stale web-conversion
             # draft into a messaging ad set. Preserve only messaging object
             # fields and add the connected Page/WhatsApp number explicitly.
+            # Meta's current promoted-object schema does not accept the
+            # human-facing ``whatsapp_phone_number_id`` key on an ad set
+            # (Graph returns "Invalid keys ... were found").  The Business
+            # SDK exposes the canonical field as ``whatsapp_phone_number``.
+            # Keep the product-facing name for compatibility, but translate
+            # it exactly once at the Graph boundary.
             promoted_object = {
                 key: value
                 for key, value in promoted_object.items()
-                if key in {"page_id", "whatsapp_phone_number_id", "instagram_profile_id"}
+                if key in {"page_id", "whatsapp_phone_number", "whatsapp_phone_number_id", "instagram_profile_id"}
             }
+            if promoted_object.get("whatsapp_phone_number_id") and not promoted_object.get("whatsapp_phone_number"):
+                promoted_object["whatsapp_phone_number"] = promoted_object.pop("whatsapp_phone_number_id")
             if destination.get("page_id") and not promoted_object.get("page_id"):
                 promoted_object["page_id"] = destination.get("page_id")
             if adset_message_destination == "WHATSAPP" and adset_phone_number_id:
-                promoted_object["whatsapp_phone_number_id"] = adset_phone_number_id
+                promoted_object["whatsapp_phone_number"] = adset_phone_number_id
         elif lead_gen_form_id and destination.get("page_id") and not promoted_object.get("page_id"):
             promoted_object = {**promoted_object, "page_id": destination.get("page_id")}
         requested_targeting = targeting_for_social(adset_targeting)
@@ -1838,6 +1900,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
             body_text,
             headline,
             approved=approved,
+            media_only=has_explicit_website_adset,
         )
         page_post_body = social_body_from_result(page_post_result)
         steps.append({"step": "create_page_post", "ok": bool(object_story_id), "object_story_id": object_story_id, "result": page_post_result})
@@ -1895,6 +1958,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         video_id=video_id,
         cta_link=ad_plan.get("cta_link") or "",
         object_story_id=creative_object_story_id,
+        object_story_link_url=link if has_explicit_website_adset and object_story_id else "",
         lead_gen_form_id=lead_gen_form_id,
         prefilled_message=prefilled_message,
         welcome_message=welcome_message,
@@ -1920,6 +1984,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
             video_id="",
             cta_link=ad_plan.get("cta_link") or "",
             object_story_id=object_story_id,
+            object_story_link_url=link if has_explicit_website_adset else "",
             lead_gen_form_id=lead_gen_form_id,
             prefilled_message=prefilled_message,
             welcome_message=welcome_message,
@@ -2000,6 +2065,8 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
             "PAUSED" if placeholder_static else status_plan.get("ad", final_status),
             website_url=link,
             approved=approved,
+            object_story_id=object_story_id,
+            prefer_object_story_ad=(not has_explicit_website_adset and not message_destination and bool(object_story_id)),
         )
         ad_id = social_id_from_result(ad_result)
         ad_ids.append(ad_id)

@@ -751,7 +751,12 @@ class SocialFlowClient:
         fields = {
             "access_token": page_token,
             "published": "true" if published else "false",
-            "attached_media": json.dumps([{"media_fbid": image_id}], ensure_ascii=False),
+            # Graph's Page feed endpoint expects each attachment as an indexed
+            # form field (`attached_media[0]`), not one JSON array field.  The
+            # latter can return a successful post while silently dropping the
+            # photo; the resulting AdCreative then fails with Meta 1487212 or
+            # 1487891 when the ad is materialized.
+            "attached_media[0]": json.dumps({"media_fbid": image_id}, ensure_ascii=False),
         }
         if not published and unpublished_type:
             fields["unpublished_content_type"] = unpublished_type
@@ -873,10 +878,16 @@ class SocialFlowClient:
                 image_url = self.flag(args, "--image-url", "")
                 video_path = self.flag(args, "--video-path", "")
                 video_url = self.flag(args, "--video-url", "")
+                media_only = str(self.flag(args, "--media-only", "false") or "false").strip().lower() in {"1", "true", "yes", "si", "sí", "on"}
                 cta = self.flag(args, "--call-to-action", "LEARN_MORE")
                 message_destination = self.normalize_message_destination(self.flag(args, "--message-destination", ""))
                 lead_gen_form_id = self.flag(args, "--lead-gen-form-id", "")
-                if message_destination and not link:
+                # Image/video message ads can use an attached-media Page post
+                # with a native messaging CTA and no website link.  Do not
+                # force the api.whatsapp.com/m.me URL here: doing so turns the
+                # post into a link-preview creative and Meta may drop the
+                # attached media or reject it for the messaging objective.
+                if message_destination and not link and not (image_path or image_url or video_path or video_url):
                     link = self.default_message_destination_link(message_destination, page_id)
                 unpublished_type = self.flag(args, "--unpublished-content-type", "ADS_POST") or "ADS_POST"
                 published = str(self.flag(args, "--published", "false") or "false").strip().lower() in {"1", "true", "yes", "si", "sí", "on"}
@@ -922,7 +933,7 @@ class SocialFlowClient:
                     photo_result = self.post_graph_multipart(endpoint, fields, {"source": image_path})
                     photo_body = photo_result.get("body") if isinstance(photo_result.get("body"), dict) else {}
                     image_id = str(photo_body.get("id") or "").strip()
-                    if (link or message_destination or lead_gen_form_id) and photo_result.get("ok") and image_id:
+                    if (link or message_destination or lead_gen_form_id) and not media_only and photo_result.get("ok") and image_id:
                         endpoint = f"{page_id}/feed"
                         result = self.create_linked_image_page_post(page_id, page_token, message, link, image_id, cta, unpublished_type, message_destination, lead_gen_form_id, published=published)
                     else:
@@ -938,7 +949,7 @@ class SocialFlowClient:
                     photo_result = self.post_graph_form(endpoint, fields)
                     photo_body = photo_result.get("body") if isinstance(photo_result.get("body"), dict) else {}
                     image_id = str(photo_body.get("id") or "").strip()
-                    if (link or message_destination or lead_gen_form_id) and photo_result.get("ok") and image_id:
+                    if (link or message_destination or lead_gen_form_id) and not media_only and photo_result.get("ok") and image_id:
                         endpoint = f"{page_id}/feed"
                         result = self.create_linked_image_page_post(page_id, page_token, message, link, image_id, cta, unpublished_type, message_destination, lead_gen_form_id, published=published)
                     else:
@@ -1304,6 +1315,9 @@ class SocialFlowClient:
                 object_story_id = self.flag(args, "--object-story-id", "")
                 if object_story_id:
                     fields["object_story_id"] = object_story_id
+                    link_url = self.flag(args, "--link-url", "")
+                    if link_url:
+                        fields["link_url"] = link_url
                     return self.graph_record(record, endpoint, self.post_graph_form(endpoint, fields))
                 object_story_spec = self.flag(args, "--object-story-spec", "")
                 if not object_story_spec:
@@ -1352,11 +1366,21 @@ class SocialFlowClient:
                 return self.graph_record(record, endpoint, self.post_graph_form(endpoint, fields))
             if action == "create-ad":
                 endpoint = f"{configured_ad_account_id}/ads"
+                object_story_id = self.flag(args, "--object-story-id", "")
+                # Meta's existing-post route accepts the Page post directly
+                # as the creative input. Keep it opt-in so normal ads still
+                # use the documented standalone creative_id route.
+                use_object_story_ad = bool(self.flag(args, "--use-object-story-ad", ""))
+                creative_payload = (
+                    {"object_story_id": object_story_id}
+                    if use_object_story_ad and object_story_id
+                    else {"creative_id": self.flag(args, "--creative-id", "")}
+                )
                 fields = {
                     "access_token": access_token,
                     "name": self.flag(args, "--name", "Ad"),
                     "adset_id": self.positional(args, 2, ""),
-                    "creative": json.dumps({"creative_id": self.flag(args, "--creative-id", "")}),
+                    "creative": json.dumps(creative_payload),
                     "status": self.flag(args, "--status", "PAUSED"),
                 }
                 return self.graph_record(record, endpoint, self.post_graph_form(endpoint, fields))
@@ -1605,6 +1629,7 @@ class SocialFlowClient:
         message_destination="",
         lead_gen_form_id="",
         published=False,
+        media_only=False,
         approved=False,
     ):
         args = ["marketing", "create-page-post", "--page-id", page_id]
@@ -1630,6 +1655,8 @@ class SocialFlowClient:
             args.extend(["--unpublished-content-type", unpublished_content_type])
         if published:
             args.extend(["--published", "true"])
+        if media_only:
+            args.extend(["--media-only", "true"])
         args.extend(["--json", "--yes"])
         return self.run(args, live_required=True, mutation=True, approved=approved)
 
@@ -1695,6 +1722,7 @@ class SocialFlowClient:
         lead_gen_form_id="",
         prefilled_message="",
         welcome_message="",
+        object_story_link_url="",
         prefer_publishing_token=False,
         approved=False,
     ):
@@ -1709,6 +1737,8 @@ class SocialFlowClient:
             args.extend(["--page-welcome-message", json.dumps(welcome_payload, ensure_ascii=False)])
         if object_story_id:
             args.extend(["--object-story-id", object_story_id])
+            if object_story_link_url:
+                args.extend(["--link-url", object_story_link_url])
         elif object_story_spec:
             args.extend(["--object-story-spec", json.dumps(object_story_spec)])
         else:
@@ -1737,10 +1767,14 @@ class SocialFlowClient:
             args.extend(["--instagram-actor-id", instagram_actor_id])
         return self.run(args, live_required=True, mutation=True, approved=approved)
 
-    def create_ad(self, adset_id, name, creative_id, status="PAUSED", website_url="", approved=False):
+    def create_ad(self, adset_id, name, creative_id, status="PAUSED", website_url="", approved=False, object_story_id="", prefer_object_story_ad=False):
         args = ["marketing", "create-ad", adset_id, "--name", name, "--creative-id", creative_id, "--status", status]
         if website_url:
             args.extend(["--website-url", website_url])
+        if object_story_id:
+            args.extend(["--object-story-id", object_story_id])
+        if prefer_object_story_ad and object_story_id:
+            args.extend(["--use-object-story-ad", "true"])
         args.extend(["--json", "--yes"])
         return self.run(args, live_required=True, mutation=True, approved=approved)
 

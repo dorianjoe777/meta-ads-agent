@@ -9354,13 +9354,23 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             body = json.loads(result.get("stdout") or "{}")
             post_body = requests[-1].data
             feed_fields = urllib.parse.parse_qs(post_body.decode("utf-8"))
-            attached_media = json.loads(feed_fields["attached_media"][0])
+            attached_media = json.loads(feed_fields["attached_media[0]"][0])
             image_cta = json.loads(feed_fields["call_to_action"][0])
             self.assert_true(result.get("connector") == "graph_api" and body.get("object_story_id") == "page_1_link_post_1", "Direct publishing returns a native Page post object_story_id")
             self.assert_true(b"page-token" in post_body and b"ads-token" not in post_body, "Page post creation uses the Page publishing token, not the ads token")
             self.assert_true(b'published' in post_body and b'false' in post_body and b'ADS_POST' in post_body, "Direct publishing creates an unpublished ads-ready Page post")
-            self.assert_true(feed_fields["link"][0] == "https://uboost.lat" and attached_media[0]["media_fbid"] == "photo_1", "Static direct publishing creates a linked feed post with the uploaded image attached")
+            self.assert_true(feed_fields["link"][0] == "https://uboost.lat" and attached_media["media_fbid"] == "photo_1", "Static direct publishing creates a linked feed post with the uploaded image attached")
             self.assert_true(image_cta["type"] == "LEARN_MORE" and image_cta["value"]["link"] == "https://uboost.lat", "Static direct publishing includes a website URL CTA")
+            requests.clear()
+            media_only_result = client.create_page_post("page_1", message="Media-only fallback", link="https://wa.me/573128781168", image_path=str(image_path), media_only=True, approved=True)
+            media_only_body = json.loads(media_only_result.get("stdout") or "{}")
+            media_only_request = requests[-1]
+            self.assert_true(media_only_body.get("object_story_id") == "page_1_post_1" and "/page_1/photos" in media_only_request.full_url and "/page_1/feed" not in media_only_request.full_url, "Website fallback keeps the unpublished Page post as a real PHOTO object")
+            self.assert_true(b"wa.me" not in media_only_request.data, "Website fallback does not turn the media-only Page post into a link preview")
+            requests.clear()
+            link_creative_result = client.create_creative("act_999", "Photo link creative", "page_1", "https://wa.me/573128781168", "Texto", "Titular", "", "LEARN_MORE", object_story_id="page_1_post_1", object_story_link_url="https://wa.me/573128781168", approved=True)
+            link_creative_fields = urllib.parse.parse_qs(requests[-1].data.decode("utf-8"))
+            self.assert_true(link_creative_result.get("returncode") == 0 and link_creative_fields["object_story_id"][0] == "page_1_post_1" and link_creative_fields["link_url"][0] == "https://wa.me/573128781168", "Existing-photo creatives carry the destination URL separately from the Page media object")
             requests.clear()
             lead_form_result = client.create_page_post(
                 "page_1",
@@ -9395,7 +9405,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             whatsapp_fields = urllib.parse.parse_qs(whatsapp_feed_request.data.decode("utf-8"))
             whatsapp_cta = json.loads(whatsapp_fields["call_to_action"][0])
             self.assert_true(whatsapp_body.get("object_story_id") == "page_1_link_post_1", "WhatsApp direct publishing creates an ads-ready Page post")
-            self.assert_true(whatsapp_fields["link"][0] == "https://api.whatsapp.com/send", "WhatsApp direct publishing uses Meta's native WhatsApp destination")
+            self.assert_true(whatsapp_fields.get("link", [""])[0] in {"", "https://api.whatsapp.com/send"}, "WhatsApp direct publishing keeps the native destination without forcing a link-preview post")
             self.assert_true(whatsapp_cta["type"] == "WHATSAPP_MESSAGE" and whatsapp_cta["value"]["app_destination"] == "WHATSAPP", "WhatsApp direct publishing uses a messaging CTA instead of a website CTA")
             requests.clear()
             welcome_creative_result = client.create_creative(
