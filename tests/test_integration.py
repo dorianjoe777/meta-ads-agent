@@ -3367,10 +3367,36 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             admira_mcp_server.handle_request({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "codex_image_generate", "arguments": {"request": "imagen"}}})
 
             tool_names = [tool["name"] for tool in captured[1]["result"]["tools"]]
+            tools_by_name = {tool["name"]: tool for tool in captured[1]["result"]["tools"]}
             call_text = captured[2]["result"]["content"][0]["text"]
             self.assert_true(captured[0]["result"]["serverInfo"]["name"] == "admira", "MCP server initializes as Admira")
             self.assert_true("codex_image_generate" in tool_names and "stage_campaign" in tool_names and "search_meta_targeting" in tool_names and "inspect_adset_targeting" in tool_names and "schedule_campaign_activation" in tool_names and "stage_lead_form" in tool_names and "list_lead_forms" in tool_names and "approve_action" in tool_names and "review_signal_quality" in tool_names and "preflight_campaign" in tool_names and "fetch_public_asset" in tool_names and "record_verified_signal" in tool_names and "save_ads_onboarding" in tool_names and "save_daily_social_content_settings" in tool_names and "stage_organic_social_post" in tool_names and "save_content_asset" in tool_names and "save_durable_memory" in tool_names and "import_product_catalog" in tool_names and "search_product_catalog" in tool_names, "MCP server lists product, live audience, and multi-product catalog tools for Hermes")
+            self.assert_true(
+                {"request", "purpose"}.issubset(tools_by_name["codex_image_generate"]["inputSchema"]["properties"])
+                and {"name", "daily_budget", "creative_image_path"}.issubset(tools_by_name["stage_campaign"]["inputSchema"]["properties"])
+                and {"file_path", "category", "purpose"}.issubset(tools_by_name["save_content_asset"]["inputSchema"]["properties"])
+                and "brand_name" in tools_by_name["save_brand_memory"]["inputSchema"]["properties"],
+                "MCP publishes typed creative, campaign, asset, and brand argument contracts instead of empty schemas",
+            )
             self.assert_true('"tool": "admira_codex_image_generate"' in call_text and '"request": "imagen"' in call_text, "MCP server calls the product bridge with Admira-prefixed tool names")
+
+            admira_mcp_server.call_tool = lambda name, arguments: {
+                "ok": False,
+                "tool": name,
+                "blocked": True,
+                "reason": "empty_tool_arguments",
+            }
+            for request_id in range(4, 10):
+                admira_mcp_server.handle_request({"jsonrpc": "2.0", "id": request_id, "method": "tools/call", "params": {"name": "stage_campaign", "arguments": {}}})
+            self.assert_true(
+                captured[3]["result"]["isError"] is False
+                and '"reason": "empty_tool_arguments"' in captured[3]["result"]["content"][0]["text"],
+                "MCP returns product validation as normal tool output instead of tripping Hermes server-unreachable protection",
+            )
+            self.assert_true(
+                all(message["result"]["isError"] is False for message in captured[3:9]),
+                "Repeated validation misses in a long session remain normal tool results and cannot accumulate as MCP transport failures",
+            )
 
             probe_code = "import admira_mcp_server as m; m.FastMCP=None; m.main()"
             probe_env = {**os.environ, "PYTHONPATH": str(ROOT_DIR / "src")}
@@ -3401,6 +3427,68 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                 os.environ["ADMIRA_MCP_USE_FASTMCP"] = original_fastmcp_flag
             admira_mcp_server.write_message = original_write
             admira_mcp_server.call_tool = original_call
+
+    def test_admira_mcp_empty_argument_recovery_is_safe(self):
+        """Empty compacted calls expose recoverable context without mutating Meta or inventing facts."""
+        print("\nTesting Admira MCP empty-argument recovery...")
+
+        test_dir = ROOT_DIR / "output" / "test-empty-mcp-recovery"
+        image_path = test_dir / "buyer-photo.png"
+        original_items = admira_tool_bridge.content_asset_library_items
+        original_loader = admira_tool_bridge.load_dashboard
+        dashboard_calls = []
+
+        class FakeDashboard:
+            @staticmethod
+            def execute_agent_tool(request, payload):
+                dashboard_calls.append((request, payload))
+                return {"executed": True, "saved": True, "result": {"saved": True}}
+
+        try:
+            shutil.rmtree(test_dir, ignore_errors=True)
+            test_dir.mkdir(parents=True, exist_ok=True)
+            image_path.write_bytes(b"not-a-real-image-but-valid-path")
+            admira_tool_bridge.content_asset_library_items = lambda: [
+                {
+                    "id": "asset_recent",
+                    "created_at": "2026-08-05T10:15:01-05:00",
+                    "classification_status": "pending_agent_review",
+                    "approved_for_ads": False,
+                    "file_paths": [str(image_path)],
+                }
+            ]
+            admira_tool_bridge.load_dashboard = lambda: FakeDashboard()
+
+            empty_asset = admira_tool_bridge.call_tool("mcp_admira_save_content_asset", {})
+            empty_campaign = admira_tool_bridge.call_tool("mcp_admira_stage_campaign", {})
+            empty_brand = admira_tool_bridge.call_tool("mcp_admira_save_brand_memory", {})
+            empty_image = admira_tool_bridge.call_tool("mcp_admira_codex_image_generate", {})
+            self.assert_true(
+                all(item.get("reason") == "empty_tool_arguments" and item.get("ok") is False for item in (empty_asset, empty_campaign, empty_brand, empty_image))
+                and not dashboard_calls,
+                "Empty MCP calls never create campaigns, overwrite brand memory, or start image generation",
+            )
+            self.assert_true(
+                empty_asset["result"]["recovered_context"]["paths"] == [str(image_path.resolve())]
+                and empty_asset["result"]["retry_limit"] == 1,
+                "Empty asset classification recovers the exact archived Telegram batch for one canonical retry",
+            )
+
+            hydrated = admira_tool_bridge.call_tool(
+                "mcp_admira_save_content_asset",
+                {"category": "location", "purpose": "usar como fondo real", "preservation_mode": "pixel_locked"},
+            )
+            saved_arguments = dashboard_calls[0][0]["arguments"]
+            self.assert_true(
+                hydrated["ok"] is True
+                and saved_arguments["file_paths"] == [str(image_path.resolve())]
+                and saved_arguments["recovered_archived_batch"] is True,
+                "A classified asset call missing only paths safely hydrates the latest archived batch",
+            )
+        finally:
+            admira_tool_bridge.content_asset_library_items = original_items
+            admira_tool_bridge.load_dashboard = original_loader
+            shutil.rmtree(test_dir, ignore_errors=True)
 
     def test_content_asset_library_persists_buyer_files(self):
         """Test buyer image batches are durable, deduped, classified, and protected."""
@@ -12599,6 +12687,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.test_hermes_uses_only_official_skills_and_persists_confirmed_memory,
             self.test_admira_tool_bridge_maps_mcp_tools_to_dashboard_actions,
             self.test_admira_mcp_server_lists_and_calls_product_tools,
+            self.test_admira_mcp_empty_argument_recovery_is_safe,
             self.test_content_asset_library_persists_buyer_files,
             self.test_public_asset_fetcher_normalizes_drive_and_blocks_private_urls,
             self.test_public_asset_fetcher_extracts_video_frames_for_vision_review,

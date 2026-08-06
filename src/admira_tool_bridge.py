@@ -101,6 +101,14 @@ WORKSPACE_IMAGE_TRIGGER_WORDS = (
     "uploaded",
 )
 IMAGE_OUTPUT_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+EMPTY_ARGUMENT_GUARDED_TOOLS = {
+    "admira_save_content_asset": ("file_path or file_paths", "category", "purpose", "preservation_mode"),
+    "admira_save_brand_memory": ("brand_name or offer", "colors", "visual_style", "tone"),
+    "admira_save_product_memory": ("name", "target_audience", "benefit or main_offer"),
+    "admira_save_ads_onboarding": ("campaign_goal or objective or success_metrics",),
+    "admira_codex_image_generate": ("request", "purpose"),
+    "admira_stage_campaign": ("name", "daily_budget", "destination details", "creative source"),
+}
 
 
 def load_dashboard():
@@ -224,6 +232,120 @@ def latest_workspace_image_paths(limit=4):
     return safe[:limit]
 
 
+def content_asset_library_items():
+    path = ROOT_DIR / "dashboard" / "data" / "content_asset_library.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        return []
+    items = payload.get("items") if isinstance(payload, dict) else []
+    return [item for item in (items or []) if isinstance(item, dict)]
+
+
+def latest_content_asset_batch(*, pending_only=False, approved_for_ads=False, limit=32):
+    """Return one recent archived buyer batch without guessing its meaning.
+
+    Telegram ingestion archives files before the model classifies them. If a
+    compacted session drops the path arguments, this lets the bridge surface
+    the exact durable paths back to the model instead of pretending the files
+    disappeared. Files are grouped by their creation minute, which matches the
+    atomic Telegram batch ingestion used by the product.
+    """
+    candidates = []
+    for item in content_asset_library_items():
+        if pending_only and str(item.get("classification_status") or "") != "pending_agent_review":
+            continue
+        if approved_for_ads and not bool(item.get("approved_for_ads")):
+            continue
+        paths = safe_image_paths({"image_paths": item.get("file_paths") or []}, limit=32)
+        if not paths:
+            continue
+        created_at = str(item.get("created_at") or item.get("updated_at") or "")
+        candidates.append((created_at, item, paths))
+    if not candidates:
+        return {"paths": [], "asset_ids": []}
+    candidates.sort(key=lambda row: row[0], reverse=True)
+    newest_bucket = candidates[0][0][:16]
+    selected = [row for row in candidates if row[0][:16] == newest_bucket] if newest_bucket else candidates[:1]
+    paths = []
+    asset_ids = []
+    for _, item, item_paths in selected:
+        for path in item_paths:
+            if path not in paths:
+                paths.append(path)
+        asset_id = str(item.get("id") or "").strip()
+        if asset_id and asset_id not in asset_ids:
+            asset_ids.append(asset_id)
+    return {"paths": paths[:limit], "asset_ids": asset_ids[:limit]}
+
+
+def empty_tool_arguments_result(tool):
+    required = list(EMPTY_ARGUMENT_GUARDED_TOOLS.get(tool) or ())
+    recovered = {}
+    if tool == "admira_save_content_asset":
+        recovered = latest_content_asset_batch(pending_only=True)
+    elif tool == "admira_codex_image_generate":
+        recovered = latest_content_asset_batch()
+    elif tool == "admira_stage_campaign":
+        # A campaign may only suggest assets explicitly approved for ads.
+        recovered = latest_content_asset_batch(approved_for_ads=True, limit=8)
+    product_tool = TOOL_MAP.get(tool, tool.removeprefix("admira_"))
+    if tool == "admira_save_content_asset" and recovered.get("paths"):
+        reply = (
+            "La llamada llegó sin clasificación, pero recuperé el lote archivado. "
+            "Reintenta una sola vez agrupando estas rutas por category, purpose y preservation_mode; "
+            "no digas que quedó organizado hasta que el guardado responda ok."
+        )
+    else:
+        reply = (
+            "La herramienta llegó sin argumentos. Reintenta una sola vez con los campos canónicos indicados "
+            "y los datos ya confirmados en la conversación; no inventes valores ni afirmes que se guardó o ejecutó."
+        )
+    result = {
+        "type": product_tool,
+        "executed": False,
+        "blocked": True,
+        "reason": "empty_tool_arguments",
+        "missing": required,
+        "retryable": True,
+        "retry_limit": 1,
+        "recovered_context": recovered,
+        "reply": reply,
+    }
+    return {
+        "ok": False,
+        "tool": tool,
+        "product_tool": product_tool,
+        "blocked": True,
+        "reason": "empty_tool_arguments",
+        "result": result,
+    }
+
+
+def hydrate_archived_content_asset_paths(tool, args):
+    """Restore a just-archived Telegram batch when classification args exist.
+
+    This is deliberately limited to the non-spending content-asset save tool.
+    Campaigns, brand facts, products, and image prompts are never invented from
+    ambient memory when their tool call arrives empty.
+    """
+    if tool != "admira_save_content_asset" or not args:
+        return args
+    if safe_image_paths(args, limit=1):
+        return args
+    if any(str(args.get(key) or "").strip() for key in ("url", "asset_url", "source_url", "public_url", "video_url", "direct_url")):
+        return args
+    if not any(str(args.get(key) or "").strip() for key in ("category", "purpose", "notes", "preservation_mode")):
+        return args
+    recovered = latest_content_asset_batch(pending_only=True)
+    if not recovered.get("paths"):
+        return args
+    hydrated = dict(args)
+    hydrated["file_paths"] = recovered["paths"]
+    hydrated["recovered_archived_batch"] = True
+    return hydrated
+
+
 def call_tool(name, arguments=None, channel="telegram", language="es"):
     tool = normalize_tool_name(name)
     args = normalize_tool_arguments(arguments)
@@ -235,6 +357,10 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
             "reason": "unsupported_tool",
             "reply": "Esa herramienta no está disponible para Admira IA.",
         }
+
+    if not args and tool in EMPTY_ARGUMENT_GUARDED_TOOLS:
+        return empty_tool_arguments_result(tool)
+    args = hydrate_archived_content_asset_paths(tool, args)
 
     dashboard = load_dashboard()
     payload = chat_payload(channel, language)

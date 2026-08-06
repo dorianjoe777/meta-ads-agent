@@ -71,15 +71,321 @@ TOOL_DEFINITIONS = [
 ]
 
 
+def _string(description, *, enum=None):
+    schema = {"type": "string", "description": description}
+    if enum:
+        schema["enum"] = list(enum)
+    return schema
+
+
+def _boolean(description):
+    return {"type": "boolean", "description": description}
+
+
+def _number(description):
+    return {"type": "number", "description": description}
+
+
+def _strings(description):
+    return {"type": "array", "description": description, "items": {"type": "string"}}
+
+
+# Hermes relies on the MCP input schema when deciding which arguments belong in
+# a tool call.  An empty `properties` object made long/compacted sessions much
+# more likely to emit `{}` even when the buyer had supplied every detail.  Keep
+# aliases open for backwards compatibility, but make the canonical contract
+# explicit for the high-value memory, creative, and campaign tools.
+TOOL_INPUT_SCHEMAS = {
+    "get_real_meta_context": {
+        "type": "object", "additionalProperties": True,
+        "properties": {
+            "date_preset": _string("maximum, today, last_7d, or custom.", enum=("maximum", "today", "last_7d", "custom")),
+            "since": _string("YYYY-MM-DD start date when date_preset=custom."),
+            "until": _string("YYYY-MM-DD end date when date_preset=custom."),
+            "detail_level": _string("standard or deep live inventory/insight detail.", enum=("standard", "deep")),
+        },
+    },
+    "search_meta_targeting": {
+        "type": "object", "additionalProperties": True,
+        "properties": {"kind": _string("interest or location.", enum=("interest", "location")), "q": _string("Human search term to resolve against Meta's current catalog.")},
+        "required": ["kind", "q"],
+    },
+    "inspect_adset_targeting": {
+        "type": "object", "additionalProperties": True,
+        "properties": {"adset_id": _string("Exact numeric Meta ad-set ID."), "requested_interest_ids": _strings("Expected live Meta interest IDs."), "advantage_audience": _boolean("Expected Advantage+ audience flag.")},
+        "required": ["adset_id"],
+    },
+    "review_signal_quality": {
+        "type": "object", "additionalProperties": True,
+        "properties": {"objective": _string("Campaign objective."), "pixel_id": _string("Exact Pixel/Dataset ID."), "optimization_event": _string("Economic outcome or primary result event.")},
+    },
+    "schedule_experiment_review": {
+        "type": "object", "additionalProperties": True,
+        "properties": {"campaign_id": _string("Exact real Meta campaign ID."), "test_budget": _number("Authorized test budget in account currency."), "target_cost": _number("Target CPA or CPL."), "variants": {"type": "array", "description": "At least two variants with real Meta ad/creative IDs.", "items": {"type": "object", "additionalProperties": True}}, "timezone": _string("Buyer timezone.")},
+        "required": ["campaign_id", "test_budget", "target_cost", "variants"],
+    },
+    "save_optimization_research": {
+        "type": "object", "additionalProperties": True,
+        "properties": {"title": _string("Concise finding title."), "source_url": _string("Official/research/expert/forum source URL."), "source_type": _string("official, research, expert, forum, or reddit."), "finding": _string("What the source suggests."), "credibility": _string("Credibility and limitations."), "counterevidence": _string("Contrary evidence or caveats."), "test_hypothesis": _string("Safe evidence-gathering experiment, never an automatic spend change."), "expires_at": _string("Expiry/review date.")},
+        "required": ["title", "source_url", "finding", "test_hypothesis"],
+    },
+    "set_campaign_metric_priorities": {
+        "type": "object", "additionalProperties": True,
+        "properties": {"campaign_id": _string("Exact real Meta campaign ID."), "metrics": _strings("Up to six prioritized dashboard KPIs."), "reason": _string("Why these KPIs best explain this campaign.")},
+        "required": ["campaign_id", "metrics"],
+    },
+    "preflight_campaign": {
+        "type": "object", "additionalProperties": True,
+        "properties": {"name": _string("Proposed campaign name."), "objective": _string("Campaign objective."), "daily_budget": _number("Budget in the connected account currency."), "pixel_id": _string("Pixel/Dataset ID when applicable."), "optimization_event": _string("Primary event/result."), "countries": _strings("Exact country codes.")},
+    },
+    "fetch_public_asset": {
+        "type": "object", "additionalProperties": True,
+        "properties": {"url": _string("Buyer-shared public URL to inspect or download."), "purpose": _string("How the asset will be used.")},
+        "required": ["url"],
+    },
+    "save_content_asset": {
+        "type": "object",
+        "additionalProperties": True,
+        "properties": {
+            "file_path": _string("One exact local path supplied by the product for the buyer-shared asset."),
+            "file_paths": _strings("All exact local paths in the buyer-shared batch that share this classification."),
+            "url": _string("Public asset URL when the source is a link instead of an uploaded file."),
+            "urls": _strings("Public asset URLs that share this classification."),
+            "category": _string(
+                "Confirmed asset category. Use other only while genuinely pending review.",
+                enum=("official_logo", "product", "location", "team_founder", "customer_testimonial", "ugc", "offer_promo", "social_proof", "style_reference", "do_not_use", "other"),
+            ),
+            "purpose": _string("What the buyer said this asset is for and how it may be used."),
+            "notes": _string("Useful visual/context notes for future content and campaign work."),
+            "preservation_mode": _string(
+                "pixel_locked for buyer-owned real photos/logos; style_only for inspiration; pending_classification if unclear; prohibited when it must not be used.",
+                enum=("pixel_locked", "style_only", "pending_classification", "prohibited"),
+            ),
+            "approved_for_ads": _boolean("Whether the buyer approved this exact asset for paid ads."),
+            "approved_for_daily_content": _boolean("Whether this asset may be reused in recurring organic content."),
+        },
+        "anyOf": [
+            {"required": ["file_path"]},
+            {"required": ["file_paths"]},
+            {"required": ["url"]},
+            {"required": ["urls"]},
+        ],
+    },
+    "record_verified_signal": {
+        "type": "object", "additionalProperties": True,
+        "properties": {"stage": _string("Verified outcome: fake, not_interested, wrong_audience, qualified, booked, showed, purchased, or high_value."), "person_label": _string("Non-sensitive local label for the contact."), "campaign_id": _string("Related real campaign ID when known."), "ad_id": _string("Related real ad ID when known."), "value": _number("Purchase/high-value amount when applicable."), "currency": _string("ISO currency code."), "notes": _string("Verified business context."), "items": {"type": "array", "items": {"type": "object", "additionalProperties": True}}},
+        "anyOf": [{"required": ["stage"]}, {"required": ["items"]}],
+    },
+    "save_brand_memory": {
+        "type": "object",
+        "additionalProperties": True,
+        "properties": {
+            "brand_name": _string("Exact brand or business name confirmed by the buyer."),
+            "offer": _string("Short description of what the brand sells or provides."),
+            "colors": _string("Confirmed brand palette, including color names or codes when known."),
+            "visual_style": _string("Confirmed visual direction, references, typography, and composition preferences."),
+            "tone": _string("Brand voice and communication tone."),
+            "logo_path": _string("Exact local path supplied by the product for the official logo."),
+            "logo_notes": _string("Whether the official logo exists and rules for reproducing it exactly."),
+            "references": _string("Approved style/reference guidance."),
+            "asset_notes": _string("Known real photos, products, locations, people, and usage decisions."),
+            "what_to_avoid": _string("Visual or verbal elements the brand must avoid."),
+        },
+        "anyOf": [{"required": ["brand_name"]}, {"required": ["offer"]}],
+    },
+    "save_product_memory": {
+        "type": "object",
+        "additionalProperties": True,
+        "properties": {
+            "name": _string("Exact product, service, offer, or bundle name."),
+            "target_audience": _string("Who this specific offer is for."),
+            "problem": _string("Problem or desire this offer addresses."),
+            "benefit": _string("Primary outcome or benefit."),
+            "main_offer": _string("Price, package, inclusion, promise, or commercial offer."),
+            "details": _string("Other confirmed details that distinguish this offer from the brand's other offers."),
+        },
+        "required": ["name"],
+    },
+    "save_ads_onboarding": {
+        "type": "object",
+        "additionalProperties": True,
+        "properties": {
+            "campaign_goal": _string("The business result the buyer wants from ads."),
+            "objective": _string("Recommended or confirmed Meta campaign objective."),
+            "success_metrics": _strings("Up to three prioritized business KPIs, ordered most important first."),
+            "budget": _number("Confirmed daily or test budget in the ad account currency."),
+            "budget_level": _string("Where budget is controlled.", enum=("campaign", "adset")),
+            "countries": _strings("Exact ISO country codes confirmed or recommended for this campaign."),
+            "optimization_event": _string("Economic outcome or campaign result Meta should optimize for."),
+            "notes": _string("Other confirmed campaign decisions and constraints."),
+        },
+        "anyOf": [{"required": ["campaign_goal"]}, {"required": ["objective"]}, {"required": ["success_metrics"]}],
+    },
+    "codex_image_generate": {
+        "type": "object",
+        "additionalProperties": True,
+        "properties": {
+            "request": _string("Self-contained image request with exact active offer/topic, visual concept, desired message, format, and CTA decision."),
+            "purpose": _string("Use ad_creative for paid ads, daily_social_post or organic_social_post for organic content, and standalone_asset for other images."),
+            "active_topic": _string("Exact current topic or offer; do not rely only on general brand memory."),
+            "content_pillar": _string("Organic content pillar when applicable."),
+            "objective": _string("What this image should make the audience understand or do."),
+            "desired_on_image_message": _string("Exact or near-exact text intended to appear inside the image."),
+            "format": _string("Requested output format/aspect ratio, for example 1:1 1080x1080 or 4:5 1080x1350."),
+            "cta_decision": _string("Exact CTA, or explicitly no CTA on image."),
+            "reference_image_paths": _strings("Inspiration-only image paths supplied by the product."),
+            "protected_reference_image_paths": _strings("Buyer-owned real photo/logo paths that must remain pixel-accurate."),
+            "content_asset_ids": _strings("Durable content-library asset IDs selected for this image."),
+            "variation_count": {"type": "integer", "minimum": 1, "maximum": 8, "description": "Number of requested variants."},
+        },
+        "required": ["request", "purpose"],
+    },
+    "codex_creative_plan": {
+        "type": "object", "additionalProperties": True,
+        "properties": {"request": _string("Self-contained creative planning request for the exact active offer/topic."), "purpose": _string("ad_creative, organic_social_post, or standalone_asset."), "formats": _strings("Requested formats."), "variation_count": {"type": "integer", "minimum": 1, "maximum": 12}, "reference_image_paths": _strings("Approved inspiration paths."), "protected_reference_image_paths": _strings("Real photos/logos that must remain pixel-accurate.")},
+        "required": ["request", "purpose"],
+    },
+    "stage_campaign": {
+        "type": "object",
+        "additionalProperties": True,
+        "properties": {
+            "name": _string("Exact campaign name."),
+            "objective": _string("Campaign objective, such as sales, leads, engagement/messages, traffic, video, or awareness."),
+            "daily_budget": _number("Daily budget in the connected ad account currency, not hard-coded USD."),
+            "budget_level": _string("Campaign or ad-set budget control.", enum=("campaign", "adset")),
+            "landing_url": _string("Final website URL for website-destination campaigns. Omit for native lead form or messaging destinations."),
+            "creative_image_path": _string("Exact safe local path returned by Image 2 or the content library for a static creative."),
+            "creative_asset_id": _string("Asset ID returned by Admira Image 2."),
+            "object_story_id": _string("Existing promotable Page post ID when already created."),
+            "video_url": _string("Public/direct video URL when using a supported video route."),
+            "ads": {"type": "array", "description": "Named ad variants with their exact copy, destination, and creative source.", "items": {"type": "object", "additionalProperties": True}},
+            "ad_sets": {"type": "array", "description": "Named ad-set structures and targeting decisions.", "items": {"type": "object", "additionalProperties": True}},
+            "countries": _strings("Exact ISO country codes. Never silently replace them with US."),
+            "age_min": {"type": "integer", "minimum": 13, "maximum": 65, "description": "Confirmed minimum age."},
+            "age_max": {"type": "integer", "minimum": 13, "maximum": 65, "description": "Confirmed maximum age; Advantage+ may require 65 as the hard maximum."},
+            "interest_ids": _strings("Decimal IDs returned by the live search_meta_targeting tool; never invented names or suffixed IDs."),
+            "targeting_mode": _string("Advantage+ suggestions or strict manual targeting.", enum=("advantage_plus", "manual")),
+            "message_destination": _string("Messaging destination when applicable.", enum=("WHATSAPP", "MESSENGER", "INSTAGRAM_DIRECT")),
+            "whatsapp_phone_number_id": _string("Numeric Meta WhatsApp phone-number ID resolved from the connected Page/account."),
+            "welcome_message": _string("Prefilled message/conversation text the prospect can send."),
+            "lead_gen_form_id": _string("Native Meta instant-form ID for lead-form campaigns."),
+            "use_direct_publishing": _boolean("For static images, create a dark/unpublished Page post through the live publishing app and use its object_story_id."),
+            "manual_creative_completion": _boolean("For unsupported video completion, create only the paused structure for manual finalization."),
+            "create_placeholder_ad": _boolean("For video fallback, create paused static placeholder ads the buyer will replace in Ads Manager."),
+            "placeholder_ad_names": _strings("Intelligent variant names based on the creative concepts already discussed."),
+            "final_status": _string("PAUSED is the safe creation state; ACTIVE requires a separate approval.", enum=("PAUSED", "ACTIVE")),
+            "active_spend_confirmed": _boolean("Explicit buyer authorization to activate spend. False for normal paused creation."),
+            "success_metrics": _strings("Up to three prioritized campaign KPIs."),
+        },
+        "required": ["name", "daily_budget"],
+    },
+    "list_lead_forms": {
+        "type": "object", "additionalProperties": True,
+        "properties": {"page_id": _string("Exact connected Facebook Page ID.")},
+    },
+    "stage_lead_form": {
+        "type": "object", "additionalProperties": True,
+        "properties": {
+            "page_id": _string("Exact connected Facebook Page ID."),
+            "name": _string("Internal instant-form name."),
+            "headline": _string("Form headline."),
+            "questions": {"type": "array", "description": "Standard fields or custom question objects.", "items": {}},
+            "privacy_policy_url": _string("Public privacy-policy URL."),
+            "thank_you_url": _string("Optional follow-up destination after submission."),
+        },
+        "required": ["page_id", "name", "questions", "privacy_policy_url"],
+    },
+    "stage_budget_change": {
+        "type": "object", "additionalProperties": True,
+        "properties": {"campaign_id": _string("Exact real Meta campaign ID."), "daily_budget": _number("New daily budget in account currency."), "reason": _string("Evidence-based reason for the change.")},
+        "required": ["campaign_id", "daily_budget"],
+    },
+    "pause_campaign": {
+        "type": "object", "additionalProperties": True,
+        "properties": {"campaign_id": _string("Exact real Meta campaign ID."), "reason": _string("Reason to pause.")},
+        "required": ["campaign_id"],
+    },
+    "resume_campaign": {
+        "type": "object", "additionalProperties": True,
+        "properties": {"campaign_id": _string("Exact real Meta campaign ID."), "reason": _string("Reason to activate/resume spend."), "active_spend_confirmed": _boolean("Explicit buyer approval to spend.")},
+        "required": ["campaign_id", "active_spend_confirmed"],
+    },
+    "schedule_campaign_activation": {
+        "type": "object", "additionalProperties": True,
+        "properties": {"campaign_id": _string("Exact numeric Meta campaign ID."), "scheduled_at": _string("Authorized ISO date/time with timezone."), "timezone": _string("Buyer timezone."), "buyer_authorized": _boolean("Explicit buyer approval to activate spend."), "creative_ready_confirmed": _boolean("Final creatives, destination, and tracking were reviewed.")},
+        "required": ["campaign_id", "scheduled_at", "buyer_authorized", "creative_ready_confirmed"],
+    },
+    "delete_campaign": {
+        "type": "object", "additionalProperties": True,
+        "properties": {"campaign_id": _string("Exact real Meta campaign ID."), "reason": _string("Why this incomplete/paused campaign should be cleaned up.")},
+        "required": ["campaign_id"],
+    },
+    "approve_action": {
+        "type": "object", "additionalProperties": True,
+        "properties": {"approval_id": _string("Exact pending approval ID resolved from the buyer's replied message/card.")},
+        "required": ["approval_id"],
+    },
+    "reject_action": {
+        "type": "object", "additionalProperties": True,
+        "properties": {"approval_id": _string("Exact pending approval ID resolved from the buyer's replied message/card.")},
+        "required": ["approval_id"],
+    },
+    "save_agent_preferences": {
+        "type": "object", "additionalProperties": True,
+        "properties": {"communication_style": _string("Simple or technical wording preference."), "ads_experience": _string("Buyer's Meta Ads experience level."), "language": _string("Preferred language."), "timezone": _string("Buyer timezone.")},
+    },
+    "save_daily_social_content_settings": {
+        "type": "object", "additionalProperties": True,
+        "properties": {"enabled": _boolean("Whether the buyer opted into recurring organic content."), "time": _string("Local delivery time HH:MM."), "timezone": _string("Buyer timezone."), "posts_per_day": {"type": "integer", "minimum": 1, "maximum": 6}, "frequency_days": {"type": "integer", "minimum": 1, "maximum": 30}, "platforms": _strings("Facebook and/or Instagram destinations."), "strategy_summary": _string("Confirmed organic content strategy.")},
+        "required": ["enabled"],
+    },
+    "stage_organic_social_post": {
+        "type": "object", "additionalProperties": True,
+        "properties": {"page_id": _string("Exact connected Facebook Page ID."), "caption": _string("Final exact post caption."), "image_path": _string("Final generated image path returned by Admira Image 2."), "scheduled_at": _string("Optional future time; publishing still requires explicit approval.")},
+        "required": ["page_id", "caption", "image_path"],
+    },
+    "save_business_memory": {
+        "type": "object", "additionalProperties": True,
+        "properties": {"business_type": _string("Type of business."), "main_offer": _string("Main offer."), "ideal_customer": _string("Ideal customer."), "current_stage": _string("Current business stage."), "what_to_improve": _string("Priority problem/opportunity."), "success_goal": _string("Concrete near-term success goal.")},
+        "anyOf": [{"required": ["main_offer"]}, {"required": ["ideal_customer"]}, {"required": ["current_stage"]}],
+    },
+    "save_durable_memory": {
+        "type": "object", "additionalProperties": True,
+        "properties": {"category": _string("decision, preference, fact, blocker, next_step, or workflow."), "scope": _string("Business/product/campaign/workflow scope."), "summary": _string("Concrete confirmed fact or decision to preserve."), "status": _string("Current state when applicable.")},
+        "required": ["summary"],
+    },
+    "import_product_catalog": {
+        "type": "object", "additionalProperties": True,
+        "properties": {"file_path": _string("Catalog PDF/Excel/CSV/TSV/JSON path supplied by the product."), "file_paths": _strings("Multiple catalog source paths."), "products": {"type": "array", "description": "Structured product records, up to 50.", "items": {"type": "object", "additionalProperties": True}}},
+        "anyOf": [{"required": ["file_path"]}, {"required": ["file_paths"]}, {"required": ["products"]}],
+    },
+    "search_product_catalog": {
+        "type": "object", "additionalProperties": True,
+        "properties": {"query": _string("Product name, SKU, category, tag, benefit, audience, or component."), "limit": {"type": "integer", "minimum": 1, "maximum": 50}},
+        "required": ["query"],
+    },
+    "save_ad_brief": {
+        "type": "object", "additionalProperties": True,
+        "properties": {"name": _string("Brief/campaign name."), "product_name": _string("Exact offer from the product catalog."), "budget": _number("Test budget in account currency."), "formats": _strings("Creative formats."), "variation_count": {"type": "integer", "minimum": 1, "maximum": 12}, "creative_hypothesis": _string("What the variants are testing."), "success_metrics": _strings("Prioritized KPIs.")},
+        "required": ["name"],
+    },
+    "save_creative_references": {
+        "type": "object", "additionalProperties": True,
+        "properties": {"reference_image_paths": _strings("Approved inspiration image paths."), "protected_reference_image_paths": _strings("Real assets that must remain pixel-accurate."), "notes": _string("What to borrow or preserve from the references."), "approved": _boolean("Buyer approval status.")},
+    },
+}
+
+
 def tool_schema(name, description):
+    input_schema = TOOL_INPUT_SCHEMAS.get(name) or {
+        "type": "object",
+        "additionalProperties": True,
+        "properties": {},
+    }
     return {
         "name": name,
         "description": description,
-        "inputSchema": {
-            "type": "object",
-            "additionalProperties": True,
-            "properties": {},
-        },
+        "inputSchema": input_schema,
     }
 
 
@@ -322,7 +628,11 @@ def handle_request(request):
                 request_id,
                 {
                     "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}],
-                    "isError": not bool(result.get("ok")),
+                    # A returned validation/block result means the MCP server
+                    # and product bridge worked. Marking it as a transport
+                    # error makes Hermes count ordinary missing-field feedback
+                    # toward its server-unreachable circuit breaker.
+                    "isError": False,
                 },
             )
         except Exception as exc:
