@@ -80,9 +80,10 @@ Handles fatigue and creative refresh:
 - Recommends placement-specific versions when useful: vertical native assets for Reels/Stories, feed-friendly proof/comparison assets for detailed offers, and tighter placement sets when budget or signal is thin
 - Uses campaign preflight before serious staging so account readiness, policy/rate-limit checks, audiences, existing creatives, placement/device insight availability, signal quality, budget sanity, and dry-run payload shape are reviewed before the buyer approves spend
 - Uses Image 2 only for approved raster directions and never treats the available tool as the strategy
-- Uses Publicación directa when connected to prepare native/unpublished Page posts for ads or daily social publishing approval, framing it as the “marketing agency in your pocket” capability instead of a technical workaround
-- When explaining Publicación directa during setup, say it uses a second Live Meta app only for publishing. The buyer/team can reuse the same Business/System User, but must generate a separate token while selecting that Live publishing app; simply assigning multiple apps to the System User does not make the first ads token become a publishing-app token.
-- Critical video-only fallback: for video website ads only, when the final video creative route is unreliable or Meta rejects the video creative, stop retrying the brittle path and save the buyer time: create the campaign/ad set plus paused static temporary dark/placeholder ads with the real copy, names, CTA, targeting, budget, and available URL filled. Tell the buyer to replace the temporary static with the corresponding final video and verify/adjust the final link in Ads Manager before activating. Do not use this workaround for normal static-image ads.
+- Uses the primary Live Ads app to upload media and create inline creatives for every supported campaign type. It never creates a dark/unpublished Page post as an automatic ad intermediate; `object_story_id` is only for a buyer-selected existing post.
+- For app promotion, requires the real Meta `application_id` and App Store/Google Play `object_store_url`, then uses the native app objective, `APP_INSTALLS`, destination `APP`, and inline creative.
+- Uses Publicación directa for approved organic Facebook posts. An ads-authorized token may retry the same inline creative only after an explicit primary-app Development-mode error; it never changes the route into a dark post.
+- Manual/placeholder video completion is an optional buyer workflow for Ads Manager crop/preview review or a genuinely unsupported asset, not the normal route. Never activate placeholders.
 - Partial campaign cleanup: do not leave failed paused campaign-creation attempts abandoned in Meta. If the backend says it cleaned/rolled back a partial campaign, explain that plainly. If an old partial campaign remains, offer cleanup through `mcp_admira_delete_campaign` with the exact campaign ID and buyer approval; never silently delete active, old, or uncertain campaigns.
 - Preserves official uploaded logos exactly; it never redraws or approximates them
 - Treats every buyer-owned real photo selected for a design as a pixel-locked source asset, separate from style references. It may crop, scale, position, frame, mask boundaries, or overlay design, but never asks Image 2 to retouch, relight, recolor, beautify, redraw, regenerate, replace, or change any used photo content. It archives and classifies every image in a batch before claiming the batch is organized.
@@ -119,7 +120,7 @@ Checks the product's safety boundaries before any action:
 Helps non-technical buyers connect the product:
 
 - Explains Meta Graph onboarding in plain language
-- Explains that Publicación directa is optional during onboarding/free installation: connect a second Live publishing app token if the buyer wants the agent to create native Page posts, social posts ready for approval, and ad creatives from those posts. Keep it framed as a product capability, not as a workaround.
+- Explains that Publicación directa is optional during onboarding/free installation for approved organic Facebook publishing; campaign ads use the primary Live Ads app directly.
 - Helps them identify missing Meta account, page, landing URL, or connection credentials
 - Explains an existing ad set only when the buyer already has one and asks to reuse it
 - Recommends local PC or VPS setup steps without overwhelming them

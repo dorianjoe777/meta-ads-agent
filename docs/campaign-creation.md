@@ -16,6 +16,19 @@ The campaign creation script (`campaign_creator.py`) provides a Python API and C
 - ✅ Campaign ID generation
 - ✅ JSON output for Meta Ads API
 
+## Native creative execution
+
+When a staged campaign is materialized in Meta, Admira IA uses the primary Live Ads app for every supported format:
+
+- Website sales and traffic: inline `link_data` with the exact destination.
+- Awareness and post engagement: inline `photo_data` or `video_data` without a fake URL.
+- Video: direct upload to the ad account, then inline `video_data`.
+- Instant forms: inline CTA with the verified `lead_gen_form_id`; no external landing URL is required.
+- WhatsApp, Messenger, and Instagram Direct: native messaging destination and approved starter/welcome text.
+- App promotion: native `OUTCOME_APP_PROMOTION`/`APP_INSTALLS` with the real Meta `application_id`, App Store/Google Play `object_store_url`, and destination `APP`.
+
+The product does not create dark/unpublished Page posts as campaign intermediates. `object_story_id` is used only when the buyer explicitly chooses an existing Page post. Publicación directa remains an organic-post capability and an optional ads-authorized credential fallback.
+
 ## Usage
 
 ### Python API

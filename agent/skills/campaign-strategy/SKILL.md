@@ -59,19 +59,19 @@ Use ad set budget by default for small controlled tests. Use campaign budget/CBO
 
 For native Meta Lead Ads, check existing forms in Meta first. If a new form is needed, help the buyer design its exact name, questions, privacy policy URL, thank-you URL when useful, and form intent. Then guide them to create and publish it once in Meta Ads Manager: Leads objective → Instant forms conversion location → Ad level → Instant form → Create form. Do not claim the form was created by Admira and do not request a product approval for form creation. Ask the buyer to say when it is ready, list live forms again, match the exact form, and persist its real `lead_gen_form_id` in the campaign brief.
 
-Once the live form ID exists, set the campaign objective to Meta's current `OUTCOME_LEADS` (with ad-set `LEAD_GENERATION`, conversion location `ON_AD`, and the Page `promoted_object`). For static creative with Publicación directa connected, use `use_direct_publishing: true`: create the native unpublished Page post with the form CTA first, then create the paused ad creative from its `object_story_id`. Never let a stale `SALES`/`OUTCOME_SALES` default survive on a lead-form campaign.
+Once the live form ID exists, set the campaign objective to Meta's current `OUTCOME_LEADS` (with ad-set `LEAD_GENERATION`, conversion location `ON_AD`, and the Page `promoted_object`). Pass the verified form ID directly into the inline image/video creative; no external landing URL or dark post is required. Never let a stale `SALES`/`OUTCOME_SALES` default survive on a lead-form campaign.
 
 ## Video website ads
 
-For video ads that send people to a website, be practical and buyer-friendly. Until the product has a central approved Meta ads app, do not keep forcing brittle full video creative creation through the API when Ads Manager is better for previewing video crops, placements, and final appearance.
+For video ads that send people to a website, use the native ad-account video upload and inline creative route by default. Ads Manager completion remains an optional workflow when the buyer specifically wants manual crop/placement preview control or Meta rejects an unsupported media asset.
 
 Recommended decision:
 
 - If the buyer wants the easiest manual finish: prepare the campaign and ad set paused, then guide them to complete the video creative in Ads Manager.
-- If the buyer wants maximum time saving, or the video route keeps failing: create paused ads with simple static temporary dark/placeholder creatives, copy, CTA, URL, names, targeting, and budget already filled. Tell them to replace each placeholder image with its corresponding final video and verify/adjust the final website link in Ads Manager before activating.
+- If the buyer explicitly chooses manual completion, create paused ads with simple temporary static placeholders, copy, CTA, URL, names, targeting, and budget already filled. Tell them to replace each placeholder with its corresponding final video and verify the website link before activating.
 - When several video concepts were defined in conversation, name each paused placeholder ad from the actual concept/hypothesis, not generically. Examples: `UGC - Objeción precio`, `Demo - cómo funciona`, `Oferta - reserva hoy`.
 - If no provisional image exists, it is acceptable to let the backend create a plain temporary placeholder image. It is not a real ad creative; it only saves setup clicks.
-- This workaround is only for video creatives. Do not apply it to normal static-image ads; static ads should use the normal direct-publishing/Image route.
+- This optional workflow is only for video creatives. Static and normal video ads should use the native inline Ads app route.
 - Never imply Meta supports an empty ad without a creative. The API requires a creative before an ad can be created.
 - Never leave placeholder ads active. They must stay paused until the real video is reviewed.
 

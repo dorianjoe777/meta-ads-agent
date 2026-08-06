@@ -1,6 +1,6 @@
 ---
 name: meta-campaign-execution
-description: Execute or stage Meta campaigns safely through Admira IA tools and Meta Graph: preflight, direct publishing/hidden posts, lead forms, promoted objects, budgets, bidding, statuses, approvals, and error handling.
+description: "Execute or stage Meta campaigns safely through Admira IA tools and Meta Graph: native inline creatives, lead forms, messaging destinations, promoted objects, budgets, bidding, statuses, approvals, and error handling."
 ---
 
 # Meta Campaign Execution Skill
@@ -27,13 +27,15 @@ When the buyer asks to activate an existing campaign at a future time, never cre
 - The scheduling request itself is the activation approval. Do not request a second approval when the due time arrives.
 - This product tool executes deterministically without inference, verifies the campaign identity again, activates only that campaign, and confirms `ACTIVE` from Meta. Do not substitute `mcp_admira_resume_campaign` inside a generic cron.
 
-## Direct publishing
+## Native creative route
 
-When Publicación directa is connected, prefer native unpublished Page posts for image/static ads, then create the ad from `object_story_id`. Present this as a product capability, not a hack.
+For every supported website, traffic, awareness, engagement, video, native lead-form, WhatsApp, Messenger, and Instagram Direct campaign, pass the exact image/video source and let the backend upload it to the ad account and create an inline AdCreative with the primary Live Ads app. Never request or create a dark/unpublished Page post as an intermediate ad object.
 
-For a buyer-approved creative archived earlier by Telegram/content-library, pass its durable `content_asset_ids` (or singular `content_asset_id`) to `mcp_admira_stage_campaign`. The backend resolves the approved local image and the dark-post route; do not pass only the asset name, a visual description, or a private dashboard preview URL. If Hermes lost the path during compaction, the bridge can recover the newest approved classified batch for a paused static campaign, but the model should still select the intended saved asset explicitly whenever its ID is available.
+For app-promotion campaigns, also pass the exact Meta `application_id` and App Store/Google Play `object_store_url`. The backend uses `OUTCOME_APP_PROMOTION`, `APP_INSTALLS`, destination `APP`, and those values in `promoted_object`; never substitute a generic website campaign.
 
-If the publishing token/page access fails, explain the connection problem simply and keep the campaign prepared for retry.
+Use `object_story_id` only when the buyer deliberately selects a real existing Page post. For a buyer-approved creative archived earlier by Telegram/content-library, pass its durable `content_asset_ids` (or singular `content_asset_id`); the backend resolves and uploads the protected source directly. Never pass only an asset name, visual description, or private dashboard preview URL.
+
+Publicación directa is for approved organic Facebook posts. Its token may retry the exact same inline AdCreative only after Meta explicitly reports that the primary app is in Development and the token has `ads_management`, `ads_read`, and access to the selected ad account. It never triggers a dark-post fallback.
 
 ### Native WhatsApp ads
 
@@ -50,7 +52,7 @@ If the publishing token/page access fails, explain the connection problem simply
 - If the required form does not exist, help the buyer design the questions, form intent, privacy policy, and follow-up. Use `mcp_admira_stage_lead_form` only to save the blueprint and return manual Ads Manager steps; it does not create a Meta approval or mutate Meta.
 - Tell the buyer to create and publish it in Meta Ads Manager under Leads → Instant forms → Ad level → Instant form → Create form, then ask them to reply that it is ready.
 - After that confirmation, call `mcp_admira_list_lead_forms` again, match the exact live form name/Page, and use its numeric `lead_gen_form_id`. Never invent or reuse an unverified form ID.
-- For a static lead-form ad, pass the image, copy, CTA, verified form ID, and `use_direct_publishing: true`. The backend must create the native unpublished Page post first and create the paused ad from `object_story_id`; do not deliberately try a direct development-app creative first.
+- For a lead-form ad, pass the image/video, copy, CTA, and verified form ID. The backend creates the inline creative directly with `lead_gen_form_id`; no external landing URL or Page post is required.
 - If the image was archived by Telegram/content-library instead of being returned as a raw path, pass its buyer-approved `content_asset_ids` (or `content_asset_id`) to `stage_campaign`; the backend resolves the protected local file before checking creative requirements. Never pass only a visual description or a dashboard preview URL.
 - Keep the campaign objective `OUTCOME_LEADS`, the ad-set optimization goal `LEAD_GENERATION`, conversion destination `ON_AD`, and the Page ID in `promoted_object`.
 
@@ -63,20 +65,18 @@ Do not leave failed campaign-creation attempts scattered in Meta Ads Manager whe
 - Use `mcp_admira_delete_campaign` only with an exact campaign ID and only for buyer-approved cleanup/deletion. Never silently delete active campaigns, old campaigns, or campaigns not clearly created by the failed Admira attempt.
 - Prefer cleanup over leaving duplicate partial campaigns, but prefer pause/retry over deletion when the campaign has real delivery history, spend, or uncertain ownership.
 
-## Video website completion modes
+## Optional manual video completion
 
-For video ads that send traffic/conversions to a website, avoid claiming that an empty ad can be created. Meta requires a creative before an ad exists.
-
-Use one of these explicit staging modes:
+The normal route uploads video to the ad account and creates the inline creative directly. If the buyer specifically wants to inspect/replace crops in Ads Manager, or Meta rejects a genuinely unsupported media asset, remember that an empty ad cannot exist and use one of these explicit optional modes:
 
 - `manual_creative_completion: true`: create/reuse campaign and ad set only, paused, then return a checklist for completing the video creative in Ads Manager.
-- `create_placeholder_ad: true` with `placeholder_ad_count` and, when known, `placeholder_ad_names`: create paused ad(s) with temporary static dark/placeholder media, saved copy/headline/CTA/website URL, and names already filled. The buyer replaces the placeholder media with the corresponding final video and verifies/adjusts the final link in Ads Manager before activating.
+- `create_placeholder_ad: true` with `placeholder_ad_count` and, when known, `placeholder_ad_names`: create paused ad(s) with temporary static placeholder media, saved copy/headline/CTA/website URL, and names already filled. The buyer replaces the placeholder media with the corresponding final video and verifies the final link before activating.
 
 Use placeholder ads only for video creative completion, when the buyer wants this convenience or when it clearly saves time for several ads. If no provisional image exists, the backend may create a plain temporary placeholder image. Say plainly that the placeholder must not be activated. Do not use this fallback for normal static-image ads.
 
 ## Payload reminders
 
-Pass justified fields only: objective, budget level, daily/lifetime budgets, statuses, placements, promoted object, optimization goal/event, billing event, bid strategy, image/video/story fields, CTA/link, message starter fields, lead form ID, direct publishing flag, and video completion fields (`manual_creative_completion`, `create_placeholder_ad`, `placeholder_ad_count`, `placeholder_ad_names`) when appropriate.
+Pass justified fields only: objective, budget level, daily/lifetime budgets, statuses, placements, promoted object, optimization goal/event, billing event, bid strategy, image/video fields, CTA/link, message starter fields, lead form ID, an existing `object_story_id` only when explicitly selected, and optional manual video completion fields when appropriate.
 
 ## Interest and Advantage+ verification
 

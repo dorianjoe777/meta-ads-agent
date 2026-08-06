@@ -433,451 +433,258 @@ def creative_blocked_by_development_mode(result):
     )
 
 
-def direct_publishing_preference(ad_plan):
-    for key in ("use_direct_publishing", "direct_publishing", "create_as_unpublished_post", "unpublished_post"):
-        parsed = boolish(ad_plan.get(key))
-        if parsed is not None:
-            return parsed
-    strategy = str(ad_plan.get("creative_creation_strategy") or ad_plan.get("publishing_strategy") or "").strip().lower()
-    if strategy in {"direct", "direct_publishing", "native_post", "page_post", "dark_post", "unpublished_post"}:
-        return True
-    if strategy in {"direct_creative", "inline_creative", "image_hash", "legacy"}:
-        return False
-    return None
+def native_campaign_creative_link(campaign, ad_plan, destination, message_destination="", lead_gen_form_id=""):
+    """Return the destination used by an inline Meta AdCreative.
 
-
-def direct_publishing_missing_requirements(ad_plan, destination, client, video_id=""):
-    missing = []
-    if not destination.get("page_id"):
-        missing.append("Facebook Page ID")
-    if not getattr(client.config, "meta_publishing_access_token", ""):
-        missing.append("META_PUBLISHING_ACCESS_TOKEN")
-    has_page_post_asset = bool(ad_plan.get("creative_image_path") or ad_plan.get("image_url") or ad_plan.get("video_url"))
-    if video_id and not ad_plan.get("video_url"):
-        missing.append("video_url")
-    if not has_page_post_asset:
-        missing.append("creative_image_path_or_image_url_or_video_url")
-    if not hasattr(client, "create_page_post"):
-        missing.append("create_page_post capability")
-    return missing
-
-
-def create_native_page_post_for_ad(client, destination, ad_plan, link, body_text, headline, approved=False, media_only=False):
-    lead_gen_form_id = lead_gen_form_id_from_plan(ad_plan)
-    message_destination = message_destination_from_plan(ad_plan)
-    # Native messaging destinations are carried by the CTA, not a website
-    # URL. Sending api.whatsapp.com as a feed link turns an attached PHOTO
-    # into a generic SHARE object and Meta later rejects the ad as missing
-    # media. Keep the link empty while retaining the messaging CTA.
-    post_link = "" if media_only or message_destination else link
-    post_cta = ad_plan.get("cta", "LEARN_MORE")
-    page_post_result = client.create_page_post(
-        destination.get("page_id", ""),
-        message="\n\n".join([part for part in [body_text, headline] if part]),
-        link=post_link,
-        image_path=ad_plan.get("creative_image_path") or "",
-        image_url=ad_plan.get("image_url") or "",
-        video_url=ad_plan.get("video_url") or "",
-        unpublished_content_type="ADS_POST",
-        cta=post_cta,
-        message_destination=message_destination,
-        lead_gen_form_id=lead_gen_form_id,
-        media_only=media_only,
-        approved=approved,
-    )
-    object_story_id = ""
-    try:
-        body = json.loads(page_post_result.get("stdout") or page_post_result.get("stderr") or "{}")
-        if isinstance(body, dict):
-            object_story_id = str(body.get("object_story_id") or body.get("post_id") or "").strip()
-    except json.JSONDecodeError:
-        pass
-    return object_story_id, page_post_result
-
-
-def direct_page_video_story_spec(destination, ad_plan, link, body_text, headline, page_post_body):
-    """Build a website-aware video story spec from a Page video created by Publicación directa.
-
-    Promoting a Page video post by `object_story_id` can pass creative creation
-    but still fail at final ad validation with "website URL required" because
-    Meta does not always treat the Page post CTA as the ad destination. When we
-    already have the Page video ID, create the ad creative as explicit
-    `video_data` with the landing URL in the CTA.
+    Native forms and click-to-message ads select their real destination in
+    the CTA/ad-set fields. Awareness and post-engagement ads can use
+    ``photo_data``/``video_data`` without inventing a website URL. Website
+    sales and traffic keep the exact buyer/configured destination.
     """
-    if not isinstance(page_post_body, dict):
-        return {}
-    if not ad_plan.get("video_url"):
-        return {}
-    if message_destination_from_plan(ad_plan) or ad_plan.get("lead_gen_form_id"):
-        return {}
     page_id = str((destination or {}).get("page_id") or "").strip()
-    video_id = str(page_post_body.get("video_id") or page_post_body.get("id") or "").strip()
-    target = str(link or ad_plan.get("cta_link") or "").strip()
-    if not (page_id and video_id and target.startswith(("http://", "https://"))):
-        return {}
-    video_data = {
-        "video_id": video_id,
-        "message": body_text or "",
-        "title": headline or "",
-        "call_to_action": {
-            "type": SocialFlowClient.normalize_call_to_action(ad_plan.get("cta", "LEARN_MORE")),
-            "value": {"link": target},
-        },
-    }
-    thumbnail = str(page_post_body.get("thumbnail_url") or page_post_body.get("picture") or "").strip()
-    if thumbnail:
-        video_data["image_url"] = thumbnail
-    story = {"page_id": page_id, "video_data": video_data}
-    instagram_actor_id = str((destination or {}).get("instagram_actor_id") or "").strip()
-    if instagram_actor_id:
-        story["instagram_actor_id"] = instagram_actor_id
-    return story
+    if lead_gen_form_id:
+        return SocialFlowClient.default_lead_form_link(page_id)
+    if message_destination:
+        return SocialFlowClient.default_message_destination_link(message_destination, page_id)
+    explicit = str((ad_plan or {}).get("landing_url") or (ad_plan or {}).get("cta_link") or "").strip()
+    if explicit:
+        return explicit
+    outcome = campaign_objective_for_social((campaign or {}).get("objective"), campaign=campaign, ad_plan=ad_plan)
+    if outcome == "OUTCOME_APP_PROMOTION":
+        return object_store_url_from_plan(ad_plan, campaign)
+    if outcome in {"OUTCOME_SALES", "OUTCOME_TRAFFIC", "OUTCOME_APP_PROMOTION"}:
+        return str((destination or {}).get("url") or "").strip()
+    return ""
 
 
-def execute_multi_adset_static_stack(path, campaign, client, destination, campaign_id,
+def native_campaign_cta(ad_plan, link="", message_destination="", lead_gen_form_id=""):
+    if message_destination:
+        return SocialFlowClient.message_destination_cta_type(message_destination)
+    if lead_gen_form_id:
+        return SocialFlowClient.normalize_call_to_action((ad_plan or {}).get("cta") or "SIGN_UP")
+    if not link:
+        return ""
+    return SocialFlowClient.normalize_call_to_action((ad_plan or {}).get("cta") or "LEARN_MORE")
+
+
+def prepare_native_ad_media(client, ad_plan, approved=False):
+    """Resolve local image/video inputs into ad-account media IDs.
+
+    The primary Live Ads app owns these uploads. No Page post is created.
+    Returned operations are appended to the campaign audit trail by callers.
+    """
+    plan = ad_plan if isinstance(ad_plan, dict) else {}
+    image_hash = str(plan.get("image_hash") or "").strip()
+    video_id = str(plan.get("video_id") or "").strip()
+    operations = []
+    image_path = str(plan.get("creative_image_path") or "").strip()
+    if image_path and not image_hash:
+        upload_result = client.upload_image(client.config.ad_account_id, image_path, approved=approved)
+        image_hash = image_hash_from_result(upload_result)
+        operations.append({"step": "upload_image", "ok": bool(image_hash), "image_hash": image_hash, "result": upload_result})
+        if not image_hash:
+            return {"ok": False, "failed_step": "upload_image", "image_hash": "", "video_id": video_id, "operations": operations}
+
+    video_path = str(plan.get("video_path") or "").strip()
+    video_url = str(plan.get("video_url") or "").strip()
+    if (video_path or video_url) and not video_id:
+        upload_result = client.upload_video(
+            client.config.ad_account_id,
+            file_path=video_path,
+            file_url=video_url,
+            title=str(plan.get("name") or plan.get("headline") or "Admira IA video"),
+            approved=approved,
+        )
+        body = social_body_from_result(upload_result)
+        video_id = str(body.get("id") or body.get("video_id") or "").strip()
+        operations.append({"step": "upload_video", "ok": bool(video_id), "video_id": video_id, "result": upload_result})
+        if not video_id:
+            return {"ok": False, "failed_step": "upload_video", "image_hash": image_hash, "video_id": "", "operations": operations}
+
+    has_inline_media = bool(image_hash or plan.get("image_url") or video_id)
+    has_explicit_story = bool(plan.get("object_story_spec") or plan.get("object_story_id"))
+    if not has_inline_media and not has_explicit_story:
+        return {
+            "ok": False,
+            "failed_step": "prepare_creative_media",
+            "image_hash": image_hash,
+            "video_id": video_id,
+            "operations": operations,
+            "missing_requirements": ["creative_image_path_or_image_hash_or_image_url_or_video_path_or_video_url_or_video_id"],
+        }
+    return {"ok": True, "image_hash": image_hash, "video_id": video_id, "operations": operations}
+
+
+def create_native_ad_creative(client, creative_args, creative_kwargs):
+    """Create one inline AdCreative with the primary Live Ads app.
+
+    A second credential may retry the *same inline payload* only when Meta
+    explicitly says the primary app is still in Development and the second
+    credential has ads permissions. It never creates a dark post.
+    """
+    primary_kwargs = dict(creative_kwargs or {})
+    primary_kwargs["prefer_publishing_token"] = False
+    result = client.create_creative(*creative_args, **primary_kwargs)
+    creative_id = social_id_from_result(result)
+    token_source = "primary_ads_app"
+    fallback_capability = {}
+    if not creative_id and creative_blocked_by_development_mode(result):
+        if hasattr(client, "publishing_ads_capability"):
+            fallback_capability = client.publishing_ads_capability() or {}
+        if fallback_capability.get("ok"):
+            fallback_kwargs = dict(primary_kwargs)
+            fallback_kwargs["prefer_publishing_token"] = True
+            result = client.create_creative(*creative_args, **fallback_kwargs)
+            creative_id = social_id_from_result(result)
+            token_source = "publishing_ads_app_fallback"
+    return creative_id, result, token_source, fallback_capability
+
+
+def execute_multi_adset_native_stack(path, campaign, client, destination, campaign_id,
                                      adset_ids, status_plan, active_confirmed,
                                      approved, campaign_created_this_attempt, steps,
-                                     resolved_whatsapp_phone_number="",
-                                     publishing_ads_capability=None):
-    """Create every durable ad in its matching ad set.
+                                     resolved_whatsapp_phone_number=""):
+    """Create each requested ad inline with the primary Live Ads app.
 
-    For native WhatsApp campaigns each image becomes an inline AdCreative
-    created by the primary Ads app, with a Live publishing-app fallback only
-    when Meta explicitly rejects the primary app as development-only. Other
-    static destinations retain the unpublished Page-post compatibility path.
-    Every ad keeps its own creative and matching ad set.
+    This route supports native website, traffic, instant-form, messaging,
+    awareness and engagement image/video creatives. It never creates a Page
+    post. ``object_story_id`` remains supported only when the buyer explicitly
+    selected an existing Page post.
     """
     adsets = campaign.get("ad_sets") or []
     if len(adsets) != len(adset_ids) or not any((item.get("ads") or []) for item in adsets if isinstance(item, dict)):
         return None
-
     ad_plan_default = dict(campaign.get("ad") or {})
     all_creative_ids = []
     all_ad_ids = []
-    all_object_story_ids = []
-    has_explicit_website_adset = any(
-        isinstance(stored_adset, dict)
-        and SocialFlowClient.normalize_destination_type(stored_adset.get("destination_type")) == "WEBSITE"
-        for stored_adset in adsets
-    )
-    message_destination = "" if has_explicit_website_adset else (
-        message_destination_from_plan(campaign) or message_destination_from_plan(ad_plan_default)
-    )
-    whatsapp_phone_number_id = (
+    explicit_story_ids = []
+    page_id = str((destination or {}).get("page_id") or "").strip()
+    if not page_id:
+        return campaign_creation_failure_result(
+            path, campaign, client, campaign_id, "prepare_creative", steps,
+            status_plan, active_confirmed, approved,
+            allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed),
+            adset_ids=adset_ids, reason="missing_page_id_for_multi_ad_stack",
+        )
+
+    default_message_destination = message_destination_from_plan(campaign) or message_destination_from_plan(ad_plan_default)
+    default_whatsapp_number = (
         str(resolved_whatsapp_phone_number or "").strip()
         or whatsapp_phone_number_id_from_plan(ad_plan_default, campaign, destination)
     )
-    publishing_ads_capability = publishing_ads_capability if isinstance(publishing_ads_capability, dict) else {}
-    page_id = str(destination.get("page_id") or "").strip()
-    if not page_id:
-        return campaign_creation_failure_result(
-            path, campaign, client, campaign_id, "create_page_post", steps,
-            status_plan, active_confirmed, approved,
-            allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed),
-            adset_ids=adset_ids, creative_ids=all_creative_ids, ad_ids=all_ad_ids,
-            reason="missing_page_id_for_multi_ad_stack",
-        )
-
+    expected_ad_count = 0
     for set_index, (adset, adset_id) in enumerate(zip(adsets, adset_ids)):
         if not isinstance(adset, dict):
             continue
-        set_destination = message_destination_from_plan(adset) or message_destination
-        set_phone_id = whatsapp_phone_number_id or whatsapp_phone_number_id_from_plan(adset, ad_plan_default, campaign, destination)
-        source_ads = adset.get("ads") or []
-        if not source_ads:
-            source_ads = [ad_plan_default]
+        set_is_website = SocialFlowClient.normalize_destination_type(adset.get("destination_type")) == "WEBSITE"
+        set_destination = "" if set_is_website else (message_destination_from_plan(adset) or default_message_destination)
+        source_ads = adset.get("ads") or [ad_plan_default]
+        expected_ad_count += len(source_ads)
         for ad_index, source in enumerate(source_ads):
             ad_plan = dict(ad_plan_default)
             if isinstance(source, dict):
                 ad_plan.update({key: value for key, value in source.items() if value not in (None, "")})
-            if set_destination and not message_destination_from_plan(ad_plan):
-                ad_plan["message_destination"] = set_destination
-            if has_explicit_website_adset:
-                # A /feed link share silently drops the uploaded photo on
-                # this Meta account. Keep a real PHOTO dark post and carry
-                # the destination on the existing-post AdCreative instead.
-                ad_plan["message_destination"] = ""
+            if set_is_website:
                 ad_plan["destination_type"] = "WEBSITE"
-            if set_phone_id and not whatsapp_phone_number_id_from_plan(ad_plan):
-                ad_plan["whatsapp_phone_number_id"] = set_phone_id
-            if set_destination and str(ad_plan.get("cta") or "").upper() in {"", "LEARN_MORE", "APRENDER_MAS"}:
-                ad_plan["cta"] = SocialFlowClient.message_destination_cta_type(set_destination) or ad_plan.get("cta", "LEARN_MORE")
+                ad_plan["message_destination"] = ""
+            elif set_destination and not message_destination_from_plan(ad_plan):
+                ad_plan["message_destination"] = set_destination
+            message_destination = "" if set_is_website else message_destination_from_plan(ad_plan)
+            if message_destination == "WHATSAPP" and not whatsapp_phone_number_id_from_plan(ad_plan):
+                ad_plan["whatsapp_phone_number_id"] = default_whatsapp_number
 
+            lead_form_id = lead_gen_form_id_from_plan(ad_plan)
+            link = native_campaign_creative_link(campaign, ad_plan, destination, message_destination, lead_form_id)
             body_text = str(ad_plan.get("primary_text") or f"Conoce {adset.get('name') or campaign.get('name', 'esta oferta')}.").strip()
             headline = str(ad_plan.get("headline") or adset.get("name") or campaign.get("name", "Nueva oferta")).strip()
-            link = str(
-                ad_plan.get("landing_url")
-                or SocialFlowClient.default_message_destination_link(set_destination, page_id)
-                or destination.get("url", "")
-            ).strip()
-            native_whatsapp_inline = bool(set_destination == "WHATSAPP")
-
-            # Ads Manager's working native WhatsApp structure is an inline
-            # object_story_spec.link_data creative made by the Live app. The
-            # Page-linked phone remains on the ad set promoted_object; the
-            # creative carries the image, WHATSAPP_MESSAGE CTA and welcome
-            # text. A PHOTO dark post cannot carry that CTA reliably, while a
-            # feed link share can lose its attached media.
-            if native_whatsapp_inline:
-                image_hash = str(ad_plan.get("image_hash") or "").strip()
-                image_url = str(ad_plan.get("image_url") or "").strip()
-                image_path = str(ad_plan.get("creative_image_path") or "").strip()
-                if not (image_hash or image_url or image_path):
-                    return campaign_creation_failure_result(
-                        path, campaign, client, campaign_id, "upload_image", steps,
-                        status_plan, active_confirmed, approved,
-                        allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed),
-                        adset_ids=adset_ids, creative_ids=all_creative_ids, ad_ids=all_ad_ids,
-                        missing_requirements=["creative_image_path_or_image_hash_or_image_url"],
-                        adset_index=set_index, ad_index=ad_index,
-                    )
-                if image_path and not image_hash:
-                    upload_result = client.upload_image(client.config.ad_account_id, image_path, approved=approved)
-                    image_hash = image_hash_from_result(upload_result)
-                    steps.append({
-                        "step": "upload_image",
-                        "ok": bool(image_hash),
-                        "adset_index": set_index,
-                        "ad_index": ad_index,
-                        "image_hash": image_hash,
-                        "result": upload_result,
-                    })
-                    if not image_hash:
-                        return campaign_creation_failure_result(
-                            path, campaign, client, campaign_id, "upload_image", steps,
-                            status_plan, active_confirmed, approved,
-                            allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed),
-                            adset_ids=adset_ids, creative_ids=all_creative_ids, ad_ids=all_ad_ids,
-                            adset_index=set_index, ad_index=ad_index,
-                        )
-                prefilled_message = str(ad_plan.get("prefilled_message") or "").strip()
-                welcome_message = str(ad_plan.get("welcome_message") or ad_plan.get("initial_business_message") or "").strip()
-                creative_args = (
-                    client.config.ad_account_id,
-                    str(ad_plan.get("name") or f"{campaign.get('name', 'Campaign')} - {adset.get('name', 'Ad Set')} - {ad_index + 1}"),
-                    page_id,
-                    link or "https://api.whatsapp.com/send",
-                    body_text,
-                    headline,
-                    image_hash,
-                    SocialFlowClient.message_destination_cta_type("WHATSAPP"),
-                    destination.get("instagram_actor_id", ""),
-                )
-                creative_kwargs = dict(
-                    image_url=image_url,
-                    prefilled_message=prefilled_message,
-                    welcome_message=welcome_message,
-                    prefer_publishing_token=False,
-                    approved=approved,
-                )
-                creative_result = client.create_creative(*creative_args, **creative_kwargs)
-                creative_id = social_id_from_result(creative_result)
-                creative_token_source = "primary_ads_app"
-                if (
-                    not creative_id
-                    and creative_blocked_by_development_mode(creative_result)
-                    and publishing_ads_capability.get("ok")
-                ):
-                    creative_kwargs["prefer_publishing_token"] = True
-                    creative_result = client.create_creative(*creative_args, **creative_kwargs)
-                    creative_id = social_id_from_result(creative_result)
-                    creative_token_source = "publishing_app_fallback"
-                all_creative_ids.append(creative_id)
-                steps.append({
-                    "step": "create_creative",
-                    "ok": bool(creative_id),
-                    "route": "native_whatsapp_inline_ads_app",
-                    "creative_token_source": creative_token_source,
-                    "adset_index": set_index,
-                    "ad_index": ad_index,
-                    "adset_id": adset_id,
-                    "creative_id": creative_id,
-                    "result": creative_result,
-                })
-                if not creative_id:
-                    return campaign_creation_failure_result(
-                        path, campaign, client, campaign_id, "create_creative", steps,
-                        status_plan, active_confirmed, approved,
-                        allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed),
-                        adset_ids=adset_ids, creative_ids=[value for value in all_creative_ids if value],
-                        ad_ids=[value for value in all_ad_ids if value], adset_index=set_index, ad_index=ad_index,
-                    )
-                ad_name = str(
-                    ad_plan.get("name")
-                    or ad_plan.get("ad_name")
-                    or f"{campaign.get('name', 'Campaign')} - {adset.get('name', 'Ad Set')} - Variante {ad_index + 1}"
-                ).strip()
-                ad_result = client.create_ad(
-                    adset_id,
-                    ad_name,
-                    creative_id,
-                    "PAUSED",
-                    approved=approved,
-                )
-                ad_id = social_id_from_result(ad_result)
-                all_ad_ids.append(ad_id)
-                steps.append({
-                    "step": "create_ad",
-                    "ok": bool(ad_id),
-                    "route": "native_whatsapp_inline_live_app",
-                    "adset_index": set_index,
-                    "ad_index": ad_index,
-                    "adset_id": adset_id,
-                    "creative_id": creative_id,
-                    "ad_id": ad_id,
-                    "final_status": "PAUSED",
-                    "result": ad_result,
-                })
-                if not ad_id:
-                    return campaign_creation_failure_result(
-                        path, campaign, client, campaign_id, "create_ad", steps,
-                        status_plan, active_confirmed, approved,
-                        allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed),
-                        adset_ids=adset_ids, creative_ids=[value for value in all_creative_ids if value],
-                        ad_ids=[value for value in all_ad_ids if value], adset_index=set_index, ad_index=ad_index,
-                    )
-                continue
-
-            direct_missing = direct_publishing_missing_requirements(ad_plan, destination, client, "")
-            if direct_missing:
+            cta = native_campaign_cta(ad_plan, link, message_destination, lead_form_id)
+            media = prepare_native_ad_media(client, ad_plan, approved=approved)
+            for operation in media.get("operations") or []:
+                steps.append({**operation, "adset_index": set_index, "ad_index": ad_index, "route": "native_inline_ads_app"})
+            if not media.get("ok"):
                 return campaign_creation_failure_result(
-                    path, campaign, client, campaign_id, "create_page_post", steps,
+                    path, campaign, client, campaign_id, media.get("failed_step") or "prepare_creative_media", steps,
                     status_plan, active_confirmed, approved,
                     allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed),
-                    adset_ids=adset_ids, creative_ids=all_creative_ids, ad_ids=all_ad_ids,
-                    missing_requirements=direct_missing, adset_index=set_index, ad_index=ad_index,
+                    adset_ids=adset_ids, creative_ids=[value for value in all_creative_ids if value], ad_ids=[value for value in all_ad_ids if value],
+                    missing_requirements=media.get("missing_requirements") or [], adset_index=set_index, ad_index=ad_index,
                 )
 
-            object_story_id, page_post_result = create_native_page_post_for_ad(
-                client, destination, ad_plan, link, body_text, headline,
-                approved=approved, media_only=has_explicit_website_adset,
-            )
-            steps.append({
-                "step": "create_page_post",
-                "ok": bool(object_story_id),
-                "adset_index": set_index,
-                "ad_index": ad_index,
-                "adset_id": adset_id,
-                "object_story_id": object_story_id,
-                "result": page_post_result,
-            })
-            if not object_story_id:
-                return campaign_creation_failure_result(
-                    path, campaign, client, campaign_id, "create_page_post", steps,
-                    status_plan, active_confirmed, approved,
-                    allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed),
-                    adset_ids=adset_ids, creative_ids=all_creative_ids, ad_ids=all_ad_ids,
-                    adset_index=set_index, ad_index=ad_index,
-                )
-            all_object_story_ids.append(object_story_id)
-
-            prefilled_message = str(ad_plan.get("prefilled_message") or "").strip() if set_destination else ""
-            welcome_message = str(ad_plan.get("welcome_message") or ad_plan.get("initial_business_message") or "").strip()
-            creative_result = client.create_creative(
+            existing_story_id = str(ad_plan.get("object_story_id") or "").strip()
+            if existing_story_id:
+                explicit_story_ids.append(existing_story_id)
+            creative_args = (
                 client.config.ad_account_id,
-                str(ad_plan.get("name") or f"{campaign.get('name', 'Campaign')} - {adset.get('name', 'Ad Set')} - {ad_index + 1}"),
+                str(ad_plan.get("name") or ad_plan.get("ad_name") or f"{campaign.get('name', 'Campaign')} - {adset.get('name', 'Ad Set')} - {ad_index + 1}"),
                 page_id,
                 link,
                 body_text,
                 headline,
-                "",
-                ad_plan.get("cta", "LEARN_MORE"),
-                destination.get("instagram_actor_id", ""),
-                object_story_spec={},
-                image_url="",
-                video_url="",
-                video_id="",
-                cta_link=ad_plan.get("cta_link") or "",
-                object_story_id=object_story_id,
-                object_story_link_url=link if has_explicit_website_adset else "",
-                lead_gen_form_id=lead_gen_form_id_from_plan(ad_plan),
-                prefilled_message=prefilled_message,
-                welcome_message=welcome_message,
-                approved=approved,
+                media.get("image_hash") or "",
+                cta,
+                str((destination or {}).get("instagram_actor_id") or ""),
             )
-            creative_id = social_id_from_result(creative_result)
+            creative_kwargs = {
+                "object_story_spec": ad_plan.get("object_story_spec") or {},
+                "image_url": str(ad_plan.get("image_url") or "").strip(),
+                "video_id": media.get("video_id") or "",
+                "cta_link": str(ad_plan.get("cta_link") or "").strip(),
+                "object_story_id": existing_story_id,
+                "lead_gen_form_id": lead_form_id,
+                "prefilled_message": str(ad_plan.get("prefilled_message") or "").strip() if message_destination else "",
+                "welcome_message": str(ad_plan.get("welcome_message") or ad_plan.get("initial_business_message") or "").strip(),
+                "message_destination": message_destination,
+                "approved": approved,
+            }
+            creative_id, creative_result, token_source, fallback_capability = create_native_ad_creative(client, creative_args, creative_kwargs)
             all_creative_ids.append(creative_id)
             steps.append({
-                "step": "create_creative",
-                "ok": bool(creative_id),
-                "adset_index": set_index,
-                "ad_index": ad_index,
-                "adset_id": adset_id,
-                "object_story_id": object_story_id,
-                "creative_id": creative_id,
-                "result": creative_result,
+                "step": "create_creative", "ok": bool(creative_id), "route": "existing_page_post" if existing_story_id else "native_inline_ads_app",
+                "creative_token_source": token_source, "fallback_capability": fallback_capability,
+                "adset_index": set_index, "ad_index": ad_index, "adset_id": adset_id,
+                "creative_id": creative_id, "object_story_id": existing_story_id, "result": creative_result,
             })
             if not creative_id:
                 return campaign_creation_failure_result(
                     path, campaign, client, campaign_id, "create_creative", steps,
                     status_plan, active_confirmed, approved,
                     allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed),
-                    adset_ids=adset_ids, creative_ids=[value for value in all_creative_ids if value],
-                    ad_ids=[value for value in all_ad_ids if value], adset_index=set_index, ad_index=ad_index,
+                    adset_ids=adset_ids, creative_ids=[value for value in all_creative_ids if value], ad_ids=[value for value in all_ad_ids if value],
+                    adset_index=set_index, ad_index=ad_index,
                 )
-
-            ad_name = str(
-                ad_plan.get("name")
-                or ad_plan.get("ad_name")
-                or f"{campaign.get('name', 'Campaign')} - {adset.get('name', 'Ad Set')} - Variante {ad_index + 1}"
-            ).strip()
-            ad_result = client.create_ad(
-                adset_id,
-                ad_name,
-                creative_id,
-                "PAUSED",
-                website_url=link,
-                approved=approved,
-                object_story_id=object_story_id,
-                # A link-to-WhatsApp fallback is an existing-post ad;
-                # Meta can reject a standalone creative ID as "missing
-                # media" even though the Page post itself has the image.
-                prefer_object_story_ad=(not has_explicit_website_adset and not set_destination and bool(object_story_id)),
-            )
+            ad_name = str(ad_plan.get("name") or ad_plan.get("ad_name") or f"{campaign.get('name', 'Campaign')} - {adset.get('name', 'Ad Set')} - Variante {ad_index + 1}").strip()
+            ad_result = client.create_ad(adset_id, ad_name, creative_id, "PAUSED", website_url=link, approved=approved)
             ad_id = social_id_from_result(ad_result)
             all_ad_ids.append(ad_id)
             steps.append({
-                "step": "create_ad",
-                "ok": bool(ad_id),
-                "adset_index": set_index,
-                "ad_index": ad_index,
-                "adset_id": adset_id,
-                "creative_id": creative_id,
-                "ad_id": ad_id,
-                "final_status": "PAUSED",
-                "result": ad_result,
+                "step": "create_ad", "ok": bool(ad_id), "route": "native_inline_live_ads_app",
+                "adset_index": set_index, "ad_index": ad_index, "adset_id": adset_id,
+                "creative_id": creative_id, "ad_id": ad_id, "final_status": "PAUSED", "result": ad_result,
             })
             if not ad_id:
                 return campaign_creation_failure_result(
                     path, campaign, client, campaign_id, "create_ad", steps,
                     status_plan, active_confirmed, approved,
                     allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed),
-                    adset_ids=adset_ids, creative_ids=[value for value in all_creative_ids if value],
-                    ad_ids=[value for value in all_ad_ids if value], adset_index=set_index, ad_index=ad_index,
+                    adset_ids=adset_ids, creative_ids=[value for value in all_creative_ids if value], ad_ids=[value for value in all_ad_ids if value],
+                    adset_index=set_index, ad_index=ad_index,
                 )
 
-    if not all_ad_ids or len([value for value in all_ad_ids if value]) != sum(len(item.get("ads") or []) for item in adsets):
+    if not all_ad_ids or len([value for value in all_ad_ids if value]) != expected_ad_count:
         return campaign_creation_failure_result(
             path, campaign, client, campaign_id, "create_ad", steps,
             status_plan, active_confirmed, approved,
             allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed),
-            adset_ids=adset_ids, creative_ids=[value for value in all_creative_ids if value],
-            ad_ids=[value for value in all_ad_ids if value], reason="multi_ad_stack_incomplete",
+            adset_ids=adset_ids, creative_ids=[value for value in all_creative_ids if value], ad_ids=[value for value in all_ad_ids if value],
+            reason="multi_ad_stack_incomplete",
         )
     return {
-        "ok": True,
-        "mode": client.config.mode,
-        "executed": True,
-        "campaign_id": campaign_id,
-        "adset_ids": adset_ids,
-        "creative_ids": [value for value in all_creative_ids if value],
+        "ok": True, "mode": client.config.mode, "executed": True, "campaign_id": campaign_id,
+        "adset_ids": adset_ids, "creative_ids": [value for value in all_creative_ids if value],
         "creative_id": next((value for value in all_creative_ids if value), ""),
-        "ad_ids": [value for value in all_ad_ids if value],
-        "ad_id": next((value for value in all_ad_ids if value), ""),
-        "object_story_ids": [value for value in all_object_story_ids if value],
-        "final_status": "PAUSED",
-        "status_plan": status_plan,
-        "steps": steps,
+        "ad_ids": [value for value in all_ad_ids if value], "ad_id": next((value for value in all_ad_ids if value), ""),
+        "object_story_ids": explicit_story_ids, "creative_route": "native_inline_ads_app",
+        "final_status": "PAUSED", "status_plan": status_plan, "steps": steps,
     }
 
 
@@ -1228,6 +1035,11 @@ def campaign_objective_for_social(objective, campaign=None, ad_plan=None):
         # optimization goal remains LEAD_GENERATION.
         return "OUTCOME_LEADS"
     mapping = {
+        "OUTCOME_SALES": "OUTCOME_SALES",
+        "OUTCOME_TRAFFIC": "OUTCOME_TRAFFIC",
+        "OUTCOME_ENGAGEMENT": "OUTCOME_ENGAGEMENT",
+        "OUTCOME_AWARENESS": "OUTCOME_AWARENESS",
+        "OUTCOME_APP_PROMOTION": "OUTCOME_APP_PROMOTION",
         "PURCHASES": "OUTCOME_SALES",
         "CONVERSIONS": "OUTCOME_SALES",
         "SALES": "OUTCOME_SALES",
@@ -1247,6 +1059,15 @@ def campaign_objective_for_social(objective, campaign=None, ad_plan=None):
         "WHATSAPP": "OUTCOME_ENGAGEMENT",
         "MESSENGER": "OUTCOME_ENGAGEMENT",
         "ENGAGEMENT": "OUTCOME_ENGAGEMENT",
+        "POST_ENGAGEMENT": "OUTCOME_ENGAGEMENT",
+        "VIDEO": "OUTCOME_ENGAGEMENT",
+        "VIDEO_VIEWS": "OUTCOME_ENGAGEMENT",
+        "THRUPLAY": "OUTCOME_ENGAGEMENT",
+        "AWARENESS": "OUTCOME_AWARENESS",
+        "REACH": "OUTCOME_AWARENESS",
+        "BRAND_AWARENESS": "OUTCOME_AWARENESS",
+        "APP_INSTALLS": "OUTCOME_APP_PROMOTION",
+        "APP_PROMOTION": "OUTCOME_APP_PROMOTION",
         # Explicit link-to-WhatsApp fallbacks use a real website destination
         # (wa.me). Keep that buyer-approved fallback aligned with
         # LINK_CLICKS/LANDING_PAGE_VIEWS; never select it merely because the
@@ -1321,6 +1142,30 @@ def whatsapp_phone_number_id_from_plan(*plans):
     return ""
 
 
+def application_id_from_plan(*plans):
+    for plan in plans:
+        if not isinstance(plan, dict):
+            continue
+        for candidate in (plan, plan.get("app") if isinstance(plan.get("app"), dict) else {}):
+            for key in ("application_id", "app_id", "meta_application_id"):
+                value = str(candidate.get(key) or "").strip()
+                if value:
+                    return value
+    return ""
+
+
+def object_store_url_from_plan(*plans):
+    for plan in plans:
+        if not isinstance(plan, dict):
+            continue
+        for candidate in (plan, plan.get("app") if isinstance(plan.get("app"), dict) else {}):
+            for key in ("object_store_url", "app_store_url", "play_store_url", "store_url"):
+                value = str(candidate.get(key) or "").strip()
+                if value.startswith(("http://", "https://")):
+                    return value
+    return ""
+
+
 def adset_optimization_goal_for_campaign(adset, campaign, lead_gen_form_id="", message_destination=""):
     objective = str((campaign or {}).get("objective") or "").upper()
     if lead_gen_form_id or objective in {"LEADS", "LEAD_GENERATION", "LEAD_FORM", "LEAD_FORMS", "INSTANT_FORM", "INSTANT_FORMS", "FORMS"}:
@@ -1334,6 +1179,16 @@ def adset_optimization_goal_for_campaign(adset, campaign, lead_gen_form_id="", m
     explicit = str((adset or {}).get("optimization_goal") or "").strip()
     if explicit:
         return SocialFlowClient.normalize_optimization_goal(explicit)
+    if objective in {"SALES", "PURCHASES", "CONVERSIONS"}:
+        return "OFFSITE_CONVERSIONS"
+    if objective in {"AWARENESS", "REACH", "BRAND_AWARENESS"}:
+        return "REACH"
+    if objective in {"VIDEO", "VIDEO_VIEWS", "THRUPLAY"}:
+        return "THRUPLAY"
+    if objective in {"ENGAGEMENT", "POST_ENGAGEMENT"}:
+        return "POST_ENGAGEMENT"
+    if objective in {"APP_INSTALLS", "APP_PROMOTION"}:
+        return "APP_INSTALLS"
     return "LINK_CLICKS"
 
 
@@ -1708,9 +1563,6 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
     # mobile-app-linked number may be visible only in existing native ad sets,
     # even while Page.whatsapp_number is empty for the connected token.
     whatsapp_phone_number_id = resolved_whatsapp_phone_number or explicit_whatsapp_phone_number
-    publishing_ads_capability = {}
-    if message_destination == "WHATSAPP" and hasattr(client, "publishing_ads_capability"):
-        publishing_ads_capability = client.publishing_ads_capability() or {}
     manual_completion = manual_creative_completion_enabled(ad_plan)
     placeholder_static = placeholder_static_ad_enabled(ad_plan)
     final_status = str(ad_plan.get("final_status") or "PAUSED").upper()
@@ -1729,15 +1581,25 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         missing.append("META_AD_ACCOUNT_ID")
     if not destination.get("page_id") and not ad_plan.get("object_story_id"):
         missing.append("Facebook Page ID")
-    has_external_destination = bool(ad_plan.get("landing_url") or destination.get("url"))
-    if lead_gen_form_id and not has_external_destination:
-        # The development-mode-safe route promotes a native Page post. Meta
-        # rejects that lead-form creative without an external URL, so fail
-        # before creating a partial campaign instead of falling back to the
-        # Page URL and discovering it at create_ad.
-        missing.append("external landing URL for lead form ads")
-    elif not (has_external_destination or ad_plan.get("object_story_spec") or ad_plan.get("object_story_id") or message_destination):
+    has_external_destination = bool(
+        ad_plan.get("landing_url")
+        or destination.get("url")
+        or object_store_url_from_plan(ad_plan, campaign)
+    )
+    mapped_objective = campaign_objective_for_social(campaign.get("objective"), campaign=campaign, ad_plan=ad_plan)
+    requires_external_destination = mapped_objective in {"OUTCOME_SALES", "OUTCOME_TRAFFIC", "OUTCOME_APP_PROMOTION"}
+    if requires_external_destination and not (
+        has_external_destination
+        or ad_plan.get("object_story_spec")
+        or ad_plan.get("object_story_id")
+        or message_destination
+    ):
         missing.append("landing URL")
+    if mapped_objective == "OUTCOME_APP_PROMOTION":
+        if not application_id_from_plan(ad_plan, campaign):
+            missing.append("application_id")
+        if not object_store_url_from_plan(ad_plan, campaign):
+            missing.append("object_store_url")
     matrix_has_creative = any(
         isinstance(item, dict)
         and any(
@@ -1873,8 +1735,21 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         adset_targeting = dict(adset.get("targeting") or {})
         if adset.get("placements") is not None and not adset_targeting.get("placements"):
             adset_targeting["placements"] = adset.get("placements")
-        adset_message_destination = message_destination_from_plan(adset) or message_destination
+        nested_ads = [item for item in (adset.get("ads") or []) if isinstance(item, dict)]
+        nested_ad = nested_ads[0] if nested_ads else {}
+        adset_lead_form_id = (
+            lead_gen_form_id_from_plan(adset)
+            or lead_gen_form_id_from_plan(nested_ad)
+            or lead_gen_form_id
+        )
+        adset_message_destination = (
+            message_destination_from_plan(adset)
+            or message_destination_from_plan(nested_ad)
+            or message_destination
+        )
         adset_phone_number_id = resolved_whatsapp_phone_number or whatsapp_phone_number_id_from_plan(adset, ad_plan, campaign, destination) or whatsapp_phone_number_id
+        adset_application_id = application_id_from_plan(adset, nested_ad, ad_plan, campaign)
+        adset_object_store_url = object_store_url_from_plan(adset, nested_ad, ad_plan, campaign)
         promoted_object = SocialFlowClient.normalize_promoted_object(adset.get("promoted_object") or {})
         if adset_message_destination:
             # Do not carry a pixel/custom event from a stale web-conversion
@@ -1897,8 +1772,16 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
                 promoted_object["page_id"] = destination.get("page_id")
             if adset_message_destination == "WHATSAPP" and adset_phone_number_id:
                 promoted_object["whatsapp_phone_number"] = adset_phone_number_id
-        elif lead_gen_form_id and destination.get("page_id") and not promoted_object.get("page_id"):
+            if adset_message_destination == "INSTAGRAM_DIRECT" and destination.get("instagram_actor_id"):
+                promoted_object["instagram_profile_id"] = destination.get("instagram_actor_id")
+        elif adset_lead_form_id and destination.get("page_id") and not promoted_object.get("page_id"):
             promoted_object = {**promoted_object, "page_id": destination.get("page_id")}
+        elif campaign_objective_for_social(campaign.get("objective"), campaign=campaign, ad_plan=nested_ad or ad_plan) == "OUTCOME_APP_PROMOTION":
+            promoted_object = {
+                **promoted_object,
+                "application_id": adset_application_id,
+                "object_store_url": adset_object_store_url,
+            }
         requested_targeting = targeting_for_social(adset_targeting)
         result = client.create_adset(
             campaign_id,
@@ -1906,7 +1789,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
             requested_targeting,
             daily_budget,
             status_plan.get("adset", adset.get("status", "PAUSED")),
-            adset_optimization_goal_for_campaign(adset, campaign, lead_gen_form_id, message_destination),
+            adset_optimization_goal_for_campaign(adset, campaign, adset_lead_form_id, adset_message_destination),
             promoted_object=promoted_object,
             billing_event=adset.get("billing_event") or "IMPRESSIONS",
             bidding=SocialFlowClient.normalize_bidding_config(adset.get("bidding") or {}),
@@ -1920,7 +1803,13 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
             destination_type=(
                 adset.get("destination_type")
                 or ad_plan.get("destination_type")
-                or ("ON_AD" if lead_gen_form_id else SocialFlowClient.destination_type_for_message_destination(message_destination))
+                or (
+                    "ON_AD"
+                    if adset_lead_form_id
+                    else "APP"
+                    if adset_application_id
+                    else SocialFlowClient.destination_type_for_message_destination(adset_message_destination)
+                )
             ),
             approved=approved,
         )
@@ -1973,7 +1862,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         len(campaign.get("ad_sets") or []) > 1
         or sum(len(item.get("ads") or []) for item in campaign.get("ad_sets") if isinstance(item, dict)) > 1
     ):
-        multi_result = execute_multi_adset_static_stack(
+        multi_result = execute_multi_adset_native_stack(
             path,
             campaign,
             client,
@@ -1986,7 +1875,6 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
             campaign_created_this_attempt,
             steps,
             resolved_whatsapp_phone_number=resolved_whatsapp_phone_number,
-            publishing_ads_capability=publishing_ads_capability,
         )
         if multi_result is not None:
             if multi_result.get("ok"):
@@ -2003,17 +1891,9 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
             return multi_result
 
     target_adset_id = adset_ids[0] if adset_ids else ""
-    image_hash = ad_plan.get("image_hash") or ""
-    video_id = ad_plan.get("video_id") or ""
-    message_destination_link = SocialFlowClient.default_message_destination_link(message_destination, destination.get("page_id", ""))
     prefilled_message = str(ad_plan.get("prefilled_message") or "").strip() if message_destination else ""
     welcome_message = str(ad_plan.get("welcome_message") or ad_plan.get("initial_business_message") or "").strip()
-    lead_form_link = SocialFlowClient.default_lead_form_link(destination.get("page_id", "")) if lead_gen_form_id else ""
-    # A lead form still needs an external destination when the development
-    # mode fallback promotes a native Page post. Prefer the campaign's real
-    # landing URL (or configured destination URL); use the Page URL only as a
-    # last-resort compatibility fallback.
-    link = ad_plan.get("landing_url") or message_destination_link or destination.get("url", "") or lead_form_link
+    link = native_campaign_creative_link(campaign, ad_plan, destination, message_destination, lead_gen_form_id)
     body_text = ad_plan.get("primary_text") or f"Conoce {campaign.get('name', 'esta oferta')}."
     headline = ad_plan.get("headline") or campaign.get("name", "Nueva oferta")
     if manual_completion and not placeholder_static:
@@ -2038,7 +1918,10 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
     placeholder_image_path = ""
     if placeholder_static:
         ad_plan["deferred_video_url"] = ad_plan.get("deferred_video_url") or ad_plan.get("video_url") or ""
+        ad_plan["deferred_video_path"] = ad_plan.get("deferred_video_path") or ad_plan.get("video_path") or ""
         ad_plan["video_url"] = ""
+        ad_plan["video_path"] = ""
+        ad_plan["video_id"] = ""
         ad_plan["final_status"] = "PAUSED"
         ad_plan["active_spend_confirmed"] = False
         if not static_creative_source_available(ad_plan):
@@ -2046,90 +1929,18 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
             ad_plan["creative_image_path"] = placeholder_image_path
         elif ad_plan.get("creative_image_path"):
             placeholder_image_path = ad_plan.get("creative_image_path")
-    reuse_prior_object_story_id = not prior_result_missing_website_url(prior_result)
-    object_story_id = str(
-        ad_plan.get("object_story_id")
-        or (prior_meta_id(prior_result, "object_story_id", "create_page_post") if reuse_prior_object_story_id else "")
-        or (prior_meta_id(prior_result, "object_story_id", "create_page_post_fallback") if reuse_prior_object_story_id else "")
-        or ""
-    ).strip()
-    page_post_body = {}
-    direct_preference = direct_publishing_preference(ad_plan)
-    direct_missing = direct_publishing_missing_requirements(ad_plan, destination, client, video_id)
-    should_create_native_page_post = (
-        not object_story_id
-        and not (
-            message_destination == "WHATSAPP"
-            and bool(ad_plan.get("creative_image_path") or ad_plan.get("image_url"))
-        )
-        and not direct_missing
-        and direct_preference is not False
-        and bool(getattr(client.config, "meta_publishing_access_token", ""))
-    )
-    if direct_preference is True and not object_story_id and direct_missing:
-        steps.append({
-            "step": "create_page_post",
-            "ok": False,
-            "direct_publishing_requested": True,
-            "missing_requirements": direct_missing,
-        })
+    # Existing Page posts remain supported only when the buyer explicitly
+    # selected one. Admira never creates a dark/unpublished post for an ad.
+    object_story_id = str(ad_plan.get("object_story_id") or "").strip()
+    media = prepare_native_ad_media(client, ad_plan, approved=approved)
+    steps.extend({**operation, "route": "native_inline_ads_app"} for operation in (media.get("operations") or []))
+    if not media.get("ok"):
         return campaign_creation_failure_result(
-            path,
-            campaign,
-            client,
-            campaign_id,
-            "create_page_post",
-            steps,
-            status_plan,
-            active_confirmed,
-            approved,
+            path, campaign, client, campaign_id, media.get("failed_step") or "prepare_creative_media", steps,
+            status_plan, active_confirmed, approved,
             allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed),
-            adset_ids=adset_ids,
-            direct_publishing_required=True,
-            missing_requirements=direct_missing,
+            adset_ids=adset_ids, missing_requirements=media.get("missing_requirements") or [],
         )
-    if should_create_native_page_post:
-        object_story_id, page_post_result = create_native_page_post_for_ad(
-            client,
-            destination,
-            ad_plan,
-            link,
-            body_text,
-            headline,
-            approved=approved,
-            media_only=has_explicit_website_adset,
-        )
-        page_post_body = social_body_from_result(page_post_result)
-        steps.append({"step": "create_page_post", "ok": bool(object_story_id), "object_story_id": object_story_id, "result": page_post_result})
-        if not object_story_id:
-            return campaign_creation_failure_result(path, campaign, client, campaign_id, "create_page_post", steps, status_plan, active_confirmed, approved, allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed), adset_ids=adset_ids)
-
-    if ad_plan.get("creative_image_path") and not object_story_id:
-        upload_result = client.upload_image(client.config.ad_account_id, ad_plan.get("creative_image_path"), approved=approved)
-        image_hash = image_hash_from_result(upload_result)
-        steps.append({"step": "upload_image", "ok": bool(image_hash), "image_hash": image_hash, "result": upload_result})
-        if not image_hash:
-            return campaign_creation_failure_result(path, campaign, client, campaign_id, "upload_image", steps, status_plan, active_confirmed, approved, allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed), adset_ids=adset_ids)
-    if ad_plan.get("video_url") and not video_id and not object_story_id:
-        upload_result = client.upload_video(
-            client.config.ad_account_id,
-            file_url=ad_plan.get("video_url"),
-            title=f"{campaign.get('name', 'New Campaign')} - Video",
-            approved=approved,
-        )
-        try:
-            body = json.loads(upload_result.get("stdout") or "{}")
-            if isinstance(body, dict):
-                video_id = body.get("id") or body.get("video_id") or ""
-        except json.JSONDecodeError:
-            pass
-        steps.append({"step": "upload_video", "ok": bool(video_id), "video_id": video_id, "result": upload_result})
-        if not video_id:
-            return campaign_creation_failure_result(path, campaign, client, campaign_id, "upload_video", steps, status_plan, active_confirmed, approved, allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed), adset_ids=adset_ids)
-
-    direct_video_story_spec = direct_page_video_story_spec(destination, ad_plan, link, body_text, headline, page_post_body)
-    creative_object_story_id = "" if direct_video_story_spec else object_story_id
-    creative_object_story_spec = direct_video_story_spec or ({} if object_story_id else (ad_plan.get("object_story_spec") or {}))
 
     creative_args = (
         client.config.ad_account_id,
@@ -2138,121 +1949,31 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         link,
         body_text,
         headline,
-        image_hash,
-        SocialFlowClient.message_destination_cta_type(message_destination) or ad_plan.get("cta", "LEARN_MORE"),
+        media.get("image_hash") or "",
+        native_campaign_cta(ad_plan, link, message_destination, lead_gen_form_id),
         destination.get("instagram_actor_id", ""),
     )
     creative_kwargs = dict(
-        object_story_spec=creative_object_story_spec,
+        object_story_spec=ad_plan.get("object_story_spec") or {},
         image_url=ad_plan.get("image_url") or "",
-        video_url=ad_plan.get("video_url") or "",
-        video_id=video_id,
+        video_id=media.get("video_id") or "",
         cta_link=ad_plan.get("cta_link") or "",
-        object_story_id=creative_object_story_id,
-        object_story_link_url=link if has_explicit_website_adset and object_story_id else "",
+        object_story_id=object_story_id,
         lead_gen_form_id=lead_gen_form_id,
         prefilled_message=prefilled_message,
         welcome_message=welcome_message,
-        prefer_publishing_token=False,
+        message_destination=message_destination,
         approved=approved,
     )
-    creative_result = client.create_creative(*creative_args, **creative_kwargs)
-    creative_id = social_id_from_result(creative_result)
-    creative_token_source = "primary_ads_app"
-    if (
-        not creative_id
-        and creative_blocked_by_development_mode(creative_result)
-        and publishing_ads_capability.get("ok")
-    ):
-        creative_kwargs["prefer_publishing_token"] = True
-        creative_result = client.create_creative(*creative_args, **creative_kwargs)
-        creative_id = social_id_from_result(creative_result)
-        creative_token_source = "publishing_app_fallback"
-    steps.append({"step": "create_creative", "ok": bool(creative_id), "creative_id": creative_id, "creative_token_source": creative_token_source, "result": creative_result})
-    if not creative_id and direct_video_story_spec and object_story_id and creative_blocked_by_development_mode(creative_result):
-        creative_result = client.create_creative(
-            client.config.ad_account_id,
-            f"{campaign.get('name', 'New Campaign')} - Creative",
-            destination.get("page_id", ""),
-            link,
-            body_text,
-            headline,
-            "",
-            ad_plan.get("cta", "LEARN_MORE"),
-            destination.get("instagram_actor_id", ""),
-            object_story_spec={},
-            image_url="",
-            video_url="",
-            video_id="",
-            cta_link=ad_plan.get("cta_link") or "",
-            object_story_id=object_story_id,
-            object_story_link_url=link if has_explicit_website_adset else "",
-            lead_gen_form_id=lead_gen_form_id,
-            prefilled_message=prefilled_message,
-            welcome_message=welcome_message,
-            approved=approved,
-        )
-        creative_id = social_id_from_result(creative_result)
-        steps.append({"step": "create_creative_retry_object_story_id", "ok": bool(creative_id), "creative_id": creative_id, "result": creative_result})
-    if not creative_id and not creative_object_story_id and not direct_video_story_spec and creative_blocked_by_development_mode(creative_result):
-        fallback_missing = direct_publishing_missing_requirements(ad_plan, destination, client, video_id)
-        if not fallback_missing:
-            object_story_id, page_post_result = create_native_page_post_for_ad(
-                client,
-                destination,
-                ad_plan,
-                link,
-                body_text,
-                headline,
-                approved=approved,
-            )
-            page_post_body = social_body_from_result(page_post_result)
-            steps.append({"step": "create_page_post_fallback", "ok": bool(object_story_id), "object_story_id": object_story_id, "result": page_post_result})
-            if object_story_id:
-                retry_video_story_spec = direct_page_video_story_spec(destination, ad_plan, link, body_text, headline, page_post_body)
-                creative_result = client.create_creative(
-                    client.config.ad_account_id,
-                    f"{campaign.get('name', 'New Campaign')} - Creative",
-                    destination.get("page_id", ""),
-                    link,
-                    body_text,
-                    headline,
-                    "",
-                    ad_plan.get("cta", "LEARN_MORE"),
-                    destination.get("instagram_actor_id", ""),
-                    object_story_spec=retry_video_story_spec,
-                    image_url="",
-                    video_url="",
-                    video_id="",
-                    cta_link=ad_plan.get("cta_link") or "",
-                    object_story_id="" if retry_video_story_spec else object_story_id,
-                    lead_gen_form_id=lead_gen_form_id,
-                    prefilled_message=prefilled_message,
-                    welcome_message=welcome_message,
-                    prefer_publishing_token=bool(retry_video_story_spec),
-                    approved=approved,
-                )
-                creative_id = social_id_from_result(creative_result)
-                steps.append({"step": "create_creative_retry_object_story_id", "ok": bool(creative_id), "creative_id": creative_id, "result": creative_result})
-        if not creative_id:
-            return campaign_creation_failure_result(
-                path,
-                campaign,
-                client,
-                campaign_id,
-                "create_creative",
-                steps,
-                status_plan,
-                active_confirmed,
-                approved,
-                allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed),
-                adset_ids=adset_ids,
-                recovery={
-                    "direct_publishing_required": True,
-                    "missing_requirements": fallback_missing,
-                    "message": "Meta blocked direct creative creation because the ads app is in development mode. Connect Publicación directa or provide an original image path/URL so the backend can create a native unpublished Page post first.",
-                },
-            )
+    creative_id, creative_result, creative_token_source, fallback_capability = create_native_ad_creative(
+        client, creative_args, creative_kwargs
+    )
+    steps.append({
+        "step": "create_creative", "ok": bool(creative_id), "creative_id": creative_id,
+        "route": "existing_page_post" if object_story_id else "native_inline_ads_app",
+        "creative_token_source": creative_token_source, "fallback_capability": fallback_capability,
+        "result": creative_result,
+    })
     if not creative_id:
         return campaign_creation_failure_result(path, campaign, client, campaign_id, "create_creative", steps, status_plan, active_confirmed, approved, allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed), adset_ids=adset_ids)
 

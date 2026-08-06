@@ -3131,7 +3131,13 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             core_text = core_skill.read_text(encoding="utf-8")
             self.assert_true("Executive response contract" in core_text and "60-180 words" in core_text and "must usually stay under 220 words" in core_text and "Never append a generic engagement hook" in core_text, "Simple-word replies have a concrete concise response budget and decisive ending")
             self.assert_true("purposeful emojis" in core_text and "📊" in core_text and "🎯" in core_text and "not every sentence" in core_text, "Core behavior uses restrained functional emojis to make dense mobile replies easier to scan")
-            self.assert_true("Critical video-only fallback" in agents_text and "temporary static dark/placeholder" in meta_execution_skill.read_text(encoding="utf-8") and "normal static-image ads" in campaign_text, "Hermes workspace makes the video-only placeholder workaround explicit at top-level and execution levels")
+            self.assert_true(
+                "primary Live Ads app" in agents_text
+                and "normal route uploads video" in meta_execution_skill.read_text(encoding="utf-8")
+                and "Never create an automatic dark post" in campaign_text
+                and "placeholder must not be activated" in meta_execution_skill.read_text(encoding="utf-8"),
+                "Hermes workspace makes native image/video creatives the default and keeps placeholders explicit, paused, and exceptional",
+            )
             self.assert_true("mcp_admira_approve_action" in approvals_skill.read_text(encoding="utf-8"), "Approval skill points Hermes to exact approval MCP tools")
             self.assert_true("Never show them in buyer-facing text" in approvals_skill.read_text(encoding="utf-8") and "`aprobado`" in approvals_skill.read_text(encoding="utf-8") and "`Sí, activar`" in approvals_skill.read_text(encoding="utf-8"), "Approval skill keeps internal IDs hidden and teaches natural approval/activation language")
             self.assert_true("never expose the internal approval ID" in organic_content_text and "reply simply `aprobado`" in organic_content_text, "Organic content approvals ask for a simple buyer reply while retaining exact routing internally")
@@ -3370,6 +3376,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                 and archived_stage_call[0]["arguments"]["content_asset_ids"] == ["asset-current-approved"],
                 "Tool bridge recovers the newest approved classified creative when a compacted campaign call loses its asset path",
             )
+            admira_tool_bridge.latest_content_asset_batch = original_latest_batch
             admira_tool_bridge.content_asset_library_items = lambda: [
                 {
                     "id": "asset-glow",
@@ -8092,7 +8099,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.assert_true(image_2_asset_result.get("staged") is True and not image_2_asset_result.get("blocked"), "Campaign staging accepts an Image 2 asset ID without a public URL")
             self.assert_true(captured[0]["name"] == "WhatsApp desde Image 2" and captured[0]["daily_budget"] == 15, "Campaign staging normalizes campaign_name and adset_daily_budget aliases")
             self.assert_true(captured[0]["creative_image_path"] == str(generated_asset_path.resolve()), "An Image 2 asset ID resolves to the protected local upload source")
-            self.assert_true(captured[0]["use_direct_publishing"] is True, "Static Image 2 campaigns always select the dark-post publishing route")
+            self.assert_true(captured[0].get("use_direct_publishing") is None, "Static Image 2 campaigns use the native Ads app route without forcing a dark-post flag")
             self.assert_true(captured[0]["message_destination"] == "WHATSAPP" and captured[0]["whatsapp_phone_number_id"] == "573128781168", "WhatsApp staging preserves the destination and numeric phone ID for the promoted object")
 
             captured.clear()
@@ -8129,7 +8136,14 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                 },
                 {"language": "es"},
             )
-            self.assert_true(archived_asset_result.get("staged") is True and captured[0]["creative_image_path"] == str(archived_creative.resolve()), "Campaign staging resolves an approved archived content asset ID into the local creative path")
+            resolved_archived_path = Path(captured[0].get("creative_image_path") or "").resolve()
+            self.assert_true(
+                archived_asset_result.get("staged") is True
+                and resolved_archived_path.exists()
+                and resolved_archived_path.parent == dashboard.CONTENT_ASSET_FILES_DIR.resolve()
+                and resolved_archived_path.read_bytes() == archived_creative.read_bytes(),
+                "Campaign staging resolves an approved archived content asset ID into its durable local creative copy",
+            )
 
             captured.clear()
             whatsapp_without_url = dashboard.execute_agent_tool(
@@ -8365,8 +8379,8 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.assert_true(preflight["dry_run_preview"]["placements"]["manual"] == ["INSTAGRAM_REELS", "INSTAGRAM_STORIES"], "Campaign preflight exposes placement strategy")
             self.assert_true(preflight["dry_run_preview"]["creative_controls"]["has_image_url"], "Campaign preflight exposes creative media controls")
             self.assert_true(preflight["dry_run_preview"]["creative_controls"]["will_create_object_story_id"] is False, "Campaign preflight does not imply object_story_id exists or will be created when publishing is missing")
-            self.assert_true(preflight["dry_run_preview"]["creative_controls"]["creative_route"] == "direct_creative", "Campaign preflight exposes the current creative route")
-            self.assert_true("META_PUBLISHING_ACCESS_TOKEN" in preflight["dry_run_preview"]["creative_controls"]["direct_publishing_plan"]["missing_requirements"], "Campaign preflight exposes direct-publishing readiness")
+            self.assert_true(preflight["dry_run_preview"]["creative_controls"]["creative_route"] == "native_inline_ads_app", "Campaign preflight exposes the native inline creative route")
+            self.assert_true(not preflight["dry_run_preview"]["creative_controls"]["direct_publishing_plan"]["missing_requirements"], "Campaign preflight does not require an organic publishing token for ads")
             self.assert_true(preflight["dry_run_preview"]["success_metrics"]["items"][0]["metric"] == "roas" and preflight["dry_run_preview"]["success_metrics"]["items"][2]["metric"] == "cost_per_initiate_checkout", "Campaign preflight exposes the ranked success metrics scorecard")
         finally:
             dashboard.load_config = original_config
@@ -8494,8 +8508,8 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             )
             direct_controls = direct_result["payload"]["requested"]["creative_controls"]
             direct_preview = direct_result["payload"]["dry_run_preview"]["creative"]
-            self.assert_true(direct_controls["will_create_object_story_id"] is True and direct_controls["creative_route"] == "unpublished_page_post_object_story_id", "Approval card exposes that direct publishing will create object_story_id during execution")
-            self.assert_true(direct_preview["will_create_object_story_id"] is True and direct_preview["creative_route"] == "unpublished_page_post_object_story_id", "Dry-run preview distinguishes future object_story_id creation from existing object_story_id presence")
+            self.assert_true(direct_controls["will_create_object_story_id"] is False and direct_controls["creative_route"] == "native_inline_ads_app", "Approval card shows that legacy direct-publishing flags no longer create an object_story_id")
+            self.assert_true(direct_preview["will_create_object_story_id"] is False and direct_preview["creative_route"] == "native_inline_ads_app", "Dry-run preview exposes native inline creation without a dark post")
 
             manual_video_result = dashboard.create_campaign(
                 {
@@ -9107,7 +9121,13 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.assert_true(staged["next_agent_action"]["after_buyer_confirmation"] == "list_lead_forms" and staged["next_agent_action"]["then"] == "stage_campaign_with_lead_gen_form_id", "Agent records the exact live-form verification handoff")
             self.assert_true(missing.get("blocked") and "privacy_policy_url" in missing.get("missing", []), "Lead form design blocks clearly when privacy policy URL is missing")
             prompt = hermes_gateway.gateway_prompt("es")
-            self.assert_true("Nunca digas que Admira creó el formulario" in prompt and "mcp_admira_list_lead_forms" in prompt and "object_story_id" in prompt, "Hermes is explicitly routed through manual form creation, live form lookup, and static dark-post execution")
+            self.assert_true(
+                "Nunca digas que Admira creó el formulario" in prompt
+                and "mcp_admira_list_lead_forms" in prompt
+                and "lead_gen_form_id" in prompt
+                and "no requiere landing externa ni dark post" in prompt,
+                "Hermes is explicitly routed through manual form creation, live form lookup, and native inline lead creatives",
+            )
         finally:
             dashboard.PENDING_FILE = original["pending_file"]
             dashboard.OUTPUT_DIR = original["output_dir"]
@@ -9633,6 +9653,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                 "whatsapp_image_hash",
                 "WHATSAPP_MESSAGE",
                 prefilled_message="Hola, quiero reservar",
+                message_destination="WHATSAPP",
                 prefer_publishing_token=True,
                 approved=True,
             )
@@ -9660,6 +9681,30 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             lead_story = json.loads(lead_body["object_story_spec"][0])
             self.assert_true(json.loads(lead_creative["stdout"])["id"] == "creative_1", "Graph API creates lead form creatives")
             self.assert_true(lead_story["link_data"]["link"] == "https://www.facebook.com/111" and lead_story["link_data"]["call_to_action"]["value"]["lead_gen_form_id"] == "form_123", "Lead form creative uses lead_gen_form_id instead of a website URL CTA")
+            requests.clear()
+            messenger_creative = client.create_creative(
+                "act_999", "Messenger Creative", "111", "", "Escríbenos", "Conversemos", "messenger_hash", "MESSAGE_PAGE",
+                message_destination="MESSENGER", prefilled_message="Hola, quiero información", approved=True,
+            )
+            messenger_body = urllib.parse.parse_qs(requests[0].data.decode("utf-8"))
+            messenger_story = json.loads(messenger_body["object_story_spec"][0])
+            messenger_cta = messenger_story["link_data"]["call_to_action"]
+            self.assert_true(json.loads(messenger_creative["stdout"])["id"] == "creative_1" and messenger_cta["value"]["app_destination"] == "MESSENGER", "Messenger creatives use the native app destination without a dark post")
+            requests.clear()
+            instagram_creative = client.create_creative(
+                "act_999", "Instagram Direct Creative", "111", "", "Escríbenos", "Conversemos", "instagram_hash", "INSTAGRAM_MESSAGE",
+                instagram_actor_id="ig_222", message_destination="INSTAGRAM_DIRECT", approved=True,
+            )
+            instagram_body = urllib.parse.parse_qs(requests[0].data.decode("utf-8"))
+            instagram_story = json.loads(instagram_body["object_story_spec"][0])
+            self.assert_true(json.loads(instagram_creative["stdout"])["id"] == "creative_1" and instagram_story["instagram_actor_id"] == "ig_222" and instagram_story["link_data"]["call_to_action"]["value"]["app_destination"] == "INSTAGRAM_DIRECT", "Instagram Direct creatives use the selected Instagram actor and native destination")
+            requests.clear()
+            awareness_creative = client.create_creative(
+                "act_999", "Awareness Creative", "111", "", "Conoce nuestra marca", "", "awareness_hash", "", approved=True,
+            )
+            awareness_body = urllib.parse.parse_qs(requests[0].data.decode("utf-8"))
+            awareness_story = json.loads(awareness_body["object_story_spec"][0])
+            self.assert_true(json.loads(awareness_creative["stdout"])["id"] == "creative_1" and awareness_story["photo_data"]["image_hash"] == "awareness_hash" and "link_data" not in awareness_story, "Awareness creatives use native photo_data without inventing a website URL")
             requests.clear()
             existing = client.create_creative("act_999", "Existing Post Creative", "111", "", "", "", "", "", object_story_id="111_222", approved=True)
             existing_body = urllib.parse.parse_qs(requests[0].data.decode("utf-8"))
@@ -9963,8 +10008,8 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             publishing_result = execute_campaign_creation(str(campaign_path), publishing_client, approved=True)
             publishing_steps = [call[0] for call in publishing_client.calls]
             publishing_creative_call = next(call for call in publishing_client.calls if call[0] == "create_creative")
-            self.assert_true(publishing_result["ok"] and publishing_steps == ["create_campaign", "create_adset", "create_page_post", "create_creative", "create_ad"], "Campaign stack uses direct publishing native Page posts before the legacy image-hash upload path when configured")
-            self.assert_true(publishing_creative_call[2]["object_story_id"] == "111_999" and not publishing_creative_call[2]["object_story_spec"], "Native Page post object_story_id replaces inline story specs for direct publishing")
+            self.assert_true(publishing_result["ok"] and publishing_steps == ["create_campaign", "create_adset", "upload_image", "create_creative", "create_ad"], "Campaign stack uses the Live Ads app inline route even when an organic publishing token is configured")
+            self.assert_true(not publishing_creative_call[2]["object_story_id"] and publishing_creative_call[1][6] == "hash_1", "Configured publishing access never turns an ad creative into an automatic dark post")
 
             class DevModeFallbackClient(PublishingClient):
                 def __init__(self):
@@ -9982,6 +10027,9 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                             "executed": True,
                         }
                     return {"stdout": json.dumps({"id": "creative_retry"}), "executed": True}
+
+                def publishing_ads_capability(self):
+                    return {"ok": True, "ads_management_granted": True, "ads_read_granted": True, "ad_account_access": True}
 
             campaign_path.write_text(
                 json.dumps(
@@ -10007,15 +10055,12 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             )
             fallback_client = DevModeFallbackClient()
             fallback_result = execute_campaign_creation(str(campaign_path), fallback_client, approved=True)
-            fallback_steps = [step.get("step") for step in fallback_result.get("steps", [])]
-            fallback_retry_call = fallback_client.calls[-2]
-            fallback_page_post_call = next(call for call in fallback_client.calls if call[0] == "create_page_post")
+            fallback_creative_calls = [call for call in fallback_client.calls if call[0] == "create_creative"]
             fallback_adset_call = next(call for call in fallback_client.calls if call[0] == "create_adset")
-            self.assert_true(fallback_result["ok"] and "create_page_post_fallback" in fallback_steps and "create_creative_retry_object_story_id" in fallback_steps, "Campaign stack falls back to unpublished Page post when Meta blocks direct creative creation for development-mode apps")
-            self.assert_true(fallback_retry_call[2]["object_story_id"] == "111_999", "Development-mode fallback retries the creative with object_story_id")
-            self.assert_true(fallback_page_post_call[2]["lead_gen_form_id"] == "form_123", "Lead-form fallback carries the form ID into the native Page post")
+            self.assert_true(fallback_result["ok"] and len(fallback_creative_calls) == 2 and "create_page_post" not in [call[0] for call in fallback_client.calls], "Development-mode recovery retries the same inline creative and never creates a dark post")
+            self.assert_true(fallback_creative_calls[0][2]["prefer_publishing_token"] is False and fallback_creative_calls[1][2]["prefer_publishing_token"] is True, "Development-mode recovery changes only to the ads-authorized fallback credential")
+            self.assert_true(all(call[2]["lead_gen_form_id"] == "form_123" and not call[2]["object_story_id"] for call in fallback_creative_calls), "Lead-form recovery preserves the form ID in the inline creative")
             self.assert_true(fallback_adset_call[2]["destination_type"] == "ON_AD", "Lead-form ad sets default to Meta's ON_AD destination")
-            self.assert_true(fallback_page_post_call[2]["link"] == "https://buyer.example", "Lead-form fallback preserves the configured external destination URL")
 
             retry_campaign_path.write_text(
                 json.dumps(
@@ -10265,16 +10310,12 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             direct_video_client = DirectPublishingClient()
             direct_video_result = execute_campaign_creation(str(campaign_path), direct_video_client, approved=True)
             direct_video_calls = [call[0] for call in direct_video_client.calls]
-            direct_page_post_call = next(call for call in direct_video_client.calls if call[0] == "create_page_post")
             direct_creative_call = next(call for call in direct_video_client.calls if call[0] == "create_creative")
             direct_ad_call = next(call for call in direct_video_client.calls if call[0] == "create_ad")
-            direct_video_story = direct_creative_call[2]["object_story_spec"]
-            self.assert_true(direct_video_result["ok"], "Approved video campaign can use direct publishing when connected")
-            self.assert_true(direct_video_calls == ["create_campaign", "create_adset", "create_page_post", "create_creative", "create_ad"], "Direct-publishing video campaign creates a Page post instead of uploading an ad-account video")
-            self.assert_true(direct_page_post_call[2]["video_url"] == "https://cdn.example/video.mp4", "Video direct publishing passes the buyer video URL to Page post creation")
-            self.assert_true(direct_page_post_call[2]["link"] == "https://buyer.example" and direct_page_post_call[2]["cta"] == "LEARN_MORE", "Video direct publishing passes the landing URL and CTA into the Page post")
-            self.assert_true(direct_video_story["video_data"]["video_id"] == "page_video_1" and direct_video_story["video_data"]["call_to_action"]["value"]["link"] == "https://buyer.example" and not direct_creative_call[2]["object_story_id"], "Video direct publishing creates a website-aware video creative from the Page video")
-            self.assert_true(direct_creative_call[2]["prefer_publishing_token"] is False, "Video direct publishing tries the Live primary Ads app before any publishing-token fallback")
+            self.assert_true(direct_video_result["ok"], "Approved video campaign uses the native Live Ads app route")
+            self.assert_true(direct_video_calls == ["create_campaign", "create_adset", "upload_video", "create_creative", "create_ad"], "Video campaign uploads directly to the ad account and never creates a Page post")
+            self.assert_true(direct_creative_call[2]["video_id"] == "vid_1" and direct_creative_call[2]["object_story_id"] == "", "Video campaign creates inline video_data from the uploaded ad-account video")
+            self.assert_true(direct_creative_call[2]["prefer_publishing_token"] is False, "Video campaign tries the Live primary Ads app before any ads-authorized credential fallback")
             self.assert_true(direct_ad_call[2]["website_url"] == "https://buyer.example", "Final ad creation receives the landing URL for validation/debug tracing")
 
             retry_object_story_client = DirectPublishingClient()
@@ -10295,8 +10336,8 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             )
             retry_object_story_calls = [call[0] for call in retry_object_story_client.calls]
             retry_object_story_creative = next(call for call in retry_object_story_client.calls if call[0] == "create_creative")
-            self.assert_true(retry_object_story_result["ok"] and "create_page_post" not in retry_object_story_calls, "Campaign retry reuses a previously-created Page post instead of creating another hidden video post")
-            self.assert_true(retry_object_story_creative[2]["object_story_id"] == "111_existing_post", "Campaign retry passes the prior object_story_id into creative creation")
+            self.assert_true(retry_object_story_result["ok"] and retry_object_story_calls.count("upload_video") == 1 and "create_page_post" not in retry_object_story_calls, "Campaign retry ignores hidden-post artifacts from obsolete attempts and uploads the video natively")
+            self.assert_true(retry_object_story_creative[2]["object_story_id"] == "" and retry_object_story_creative[2]["video_id"] == "vid_1", "Campaign retry never imports a prior automatic object_story_id into the new inline creative")
 
             retry_missing_website_client = DirectPublishingClient()
             retry_missing_website_result = execute_campaign_creation(
@@ -10318,13 +10359,10 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                 },
             )
             retry_missing_website_calls = [call[0] for call in retry_missing_website_client.calls]
-            retry_missing_website_post = next(call for call in retry_missing_website_client.calls if call[0] == "create_page_post")
             retry_missing_website_creative = next(call for call in retry_missing_website_client.calls if call[0] == "create_creative")
-            self.assert_true(retry_missing_website_result["ok"] and "create_page_post" in retry_missing_website_calls, "Campaign retry recreates the Page post when the previous one was missing the website URL")
-            self.assert_true(retry_missing_website_post[2]["link"] == "https://buyer.example", "Website-missing retries create the new hidden post with the landing URL")
-            retry_missing_story = retry_missing_website_creative[2]["object_story_spec"]
-            self.assert_true(retry_missing_story["video_data"]["video_id"] == "page_video_1" and retry_missing_story["video_data"]["call_to_action"]["value"]["link"] == "https://buyer.example", "Website-missing retries create a new website-aware video creative instead of reusing the old post without URL")
-            self.assert_true(retry_missing_website_creative[2]["prefer_publishing_token"] is False, "Website-missing retries try the Live primary Ads app before any publishing-token fallback")
+            self.assert_true(retry_missing_website_result["ok"] and retry_missing_website_calls.count("upload_video") == 1 and "create_page_post" not in retry_missing_website_calls, "Website-missing retries rebuild the video creative natively instead of recreating a hidden post")
+            self.assert_true(retry_missing_website_creative[2]["video_id"] == "vid_1" and retry_missing_website_creative[1][3] == "https://buyer.example", "Website-missing retries keep the landing URL in the new inline video creative")
+            self.assert_true(retry_missing_website_creative[2]["prefer_publishing_token"] is False, "Website-missing retries try the Live primary Ads app before any ads-authorized fallback")
 
             campaign_path.write_text(
                 json.dumps(
@@ -10392,14 +10430,99 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             lead_form_calls = [call[0] for call in lead_form_client.calls]
             lead_form_campaign = next(call for call in lead_form_client.calls if call[0] == "create_campaign")
             lead_form_adset = next(call for call in lead_form_client.calls if call[0] == "create_adset")
-            lead_form_post = next(call for call in lead_form_client.calls if call[0] == "create_page_post")
             lead_form_creative = next(call for call in lead_form_client.calls if call[0] == "create_creative")
-            self.assert_true(lead_form_result["ok"], "Lead form campaign can use the configured destination URL when the ad plan omits one")
-            self.assert_true(lead_form_calls == ["create_campaign", "create_adset", "create_page_post", "create_creative", "create_ad"], "Static lead form campaigns create the native unpublished Page post before the creative")
+            self.assert_true(lead_form_result["ok"], "Lead form campaign does not require an external landing URL")
+            self.assert_true(lead_form_calls == ["create_campaign", "create_adset", "create_creative", "create_ad"], "Static lead form campaigns create a native inline form creative without a Page post")
             self.assert_true(lead_form_campaign[1][2] == "OUTCOME_LEADS", "Lead form campaign uses Meta's current outcome-leads objective")
             self.assert_true(lead_form_adset[1][5] == "LEAD_GENERATION" and lead_form_adset[2]["promoted_object"]["page_id"] == "111", "Lead form ad set optimizes for leads and includes page_id as promoted object")
-            self.assert_true(lead_form_post[2]["lead_gen_form_id"] == "form_123" and lead_form_post[2]["link"] == "https://buyer.example", "Lead form dark post receives the verified form ID and configured external destination")
-            self.assert_true(lead_form_creative[2]["object_story_id"] == "111_999" and lead_form_creative[2]["lead_gen_form_id"] == "form_123", "Lead form creative is created from the promotable dark post instead of an inline development-app creative")
+            self.assert_true(not lead_form_creative[2]["object_story_id"] and lead_form_creative[2]["lead_gen_form_id"] == "form_123", "Lead form creative carries the verified native form ID directly")
+
+            campaign_path.write_text(
+                json.dumps(
+                    {
+                        "name": "Messenger Native Stack",
+                        "objective": "MESSAGES",
+                        "budget": {"daily": 20},
+                        "ad_sets": [{"name": "Messenger Native Stack - Core", "targeting": {"locations": ["MX"]}, "budget": 20}],
+                        "ad": {
+                            "primary_text": "Escríbenos por Messenger",
+                            "headline": "Conversemos",
+                            "image_url": "https://cdn.example/messenger.jpg",
+                            "message_destination": "MESSENGER",
+                            "prefilled_message": "Hola, quiero información",
+                            "final_status": "PAUSED",
+                            "active_spend_confirmed": False,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            messenger_client = FakeClient()
+            messenger_result = execute_campaign_creation(str(campaign_path), messenger_client, approved=True)
+            messenger_adset = next(call for call in messenger_client.calls if call[0] == "create_adset")
+            messenger_creative = next(call for call in messenger_client.calls if call[0] == "create_creative")
+            self.assert_true(messenger_result["ok"] and "create_page_post" not in [call[0] for call in messenger_client.calls], "Messenger campaign creates the full paused stack without a dark post")
+            self.assert_true(messenger_adset[1][5] == "CONVERSATIONS" and messenger_adset[2]["destination_type"] == "MESSENGER", "Messenger ad set uses the native conversations destination")
+            self.assert_true(messenger_creative[2]["message_destination"] == "MESSENGER" and messenger_creative[2]["prefilled_message"] == "Hola, quiero información", "Messenger inline creative receives the destination and approved first message")
+
+            campaign_path.write_text(
+                json.dumps(
+                    {
+                        "name": "Awareness Native Stack",
+                        "objective": "AWARENESS",
+                        "budget": {"daily": 20},
+                        "ad_sets": [{"name": "Awareness Native Stack - Core", "targeting": {"locations": ["MX"]}, "budget": 20}],
+                        "ad": {
+                            "primary_text": "Conoce nuestra marca",
+                            "headline": "",
+                            "image_url": "https://cdn.example/awareness.jpg",
+                            "final_status": "PAUSED",
+                            "active_spend_confirmed": False,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            awareness_client = FakeClient()
+            awareness_result = execute_campaign_creation(str(campaign_path), awareness_client, approved=True)
+            awareness_campaign = next(call for call in awareness_client.calls if call[0] == "create_campaign")
+            awareness_adset = next(call for call in awareness_client.calls if call[0] == "create_adset")
+            awareness_creative = next(call for call in awareness_client.calls if call[0] == "create_creative")
+            self.assert_true(awareness_result["ok"] and awareness_campaign[1][2] == "OUTCOME_AWARENESS", "Awareness campaign can be created without a landing URL")
+            self.assert_true(awareness_adset[1][5] == "REACH" and awareness_creative[1][3] == "" and awareness_creative[1][7] == "", "Awareness uses native reach optimization and a no-link inline creative")
+
+            campaign_path.write_text(
+                json.dumps(
+                    {
+                        "name": "App Promotion Native Stack",
+                        "objective": "APP_PROMOTION",
+                        "application_id": "123456789012345",
+                        "object_store_url": "https://play.google.com/store/apps/details?id=com.example.app",
+                        "budget": {"daily": 20},
+                        "ad_sets": [{"name": "App Promotion Native Stack - Core", "targeting": {"locations": ["MX"]}, "budget": 20}],
+                        "ad": {
+                            "primary_text": "Instala la app",
+                            "headline": "Disponible ahora",
+                            "image_url": "https://cdn.example/app.jpg",
+                            "application_id": "123456789012345",
+                            "object_store_url": "https://play.google.com/store/apps/details?id=com.example.app",
+                            "cta": "INSTALL_MOBILE_APP",
+                            "final_status": "PAUSED",
+                            "active_spend_confirmed": False,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            app_client = FakeClient()
+            app_result = execute_campaign_creation(str(campaign_path), app_client, approved=True)
+            app_campaign = next(call for call in app_client.calls if call[0] == "create_campaign")
+            app_adset = next(call for call in app_client.calls if call[0] == "create_adset")
+            app_creative = next(call for call in app_client.calls if call[0] == "create_creative")
+            self.assert_true(app_result["ok"] and "create_page_post" not in [call[0] for call in app_client.calls], "App-promotion campaign creates the complete paused stack without a dark post")
+            self.assert_true(app_campaign[1][2] == "OUTCOME_APP_PROMOTION" and app_adset[1][5] == "APP_INSTALLS" and app_adset[2]["destination_type"] == "APP", "App-promotion campaign uses Meta's native objective, optimization, and destination")
+            self.assert_true(app_adset[2]["promoted_object"] == {"application_id": "123456789012345", "object_store_url": "https://play.google.com/store/apps/details?id=com.example.app"}, "App-promotion ad set receives the official promoted-object fields")
+            self.assert_true(app_creative[1][3] == "https://play.google.com/store/apps/details?id=com.example.app" and app_creative[1][7] == "INSTALL_MOBILE_APP", "App-promotion inline creative links to the exact store listing")
 
             campaign_path.write_text(
                 json.dumps(

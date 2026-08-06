@@ -3383,7 +3383,7 @@ def publishing_status(config=None, destination=None):
         "ready": token_set and bool(page_id),
         "page_id": page_id,
         "saved_at": getattr(config, "meta_publishing_token_saved_at", ""),
-        "description": "Direct publishing can create unpublished Page posts for ads and scheduled social posts." if token_set else "Direct publishing is optional and not connected.",
+        "description": "Direct publishing is available for approved organic Facebook posts and, when ads-authorized, as an optional inline creative credential fallback." if token_set else "Direct publishing is optional and not connected.",
     }
 
 
@@ -3398,26 +3398,22 @@ def direct_publishing_campaign_plan(payload=None, creative_controls=None, config
     manual_completion = manual_creative_completion_enabled({**payload, **creative_controls})
     placeholder_static = placeholder_static_ad_enabled({**payload, **creative_controls})
     has_existing_post = bool(creative_controls.get("object_story_id"))
-    has_video_url = bool(creative_controls.get("video_url"))
+    has_video_url = bool(creative_controls.get("video_path") or creative_controls.get("video_url") or creative_controls.get("video_id"))
     has_static_image = bool(payload.get("creative_image_path") or creative_controls.get("image_url")) and not has_video_url
     has_native_asset = has_static_image or has_video_url or placeholder_static
+    # Old flags remain readable for upgrade compatibility, but no longer
+    # change campaign creative creation. Ads use the Live Ads app inline;
+    # Publicación directa is for organic posts and an optional credential retry.
     requested = explicit is True or strategy in {"direct", "direct_publishing", "native_post", "page_post", "dark_post", "unpublished_post"}
-    disabled = explicit is False or strategy in {"direct_creative", "inline_creative", "image_hash", "legacy"}
-    will_create = bool(status.get("ready")) and has_native_asset and not has_existing_post and not disabled and not manual_completion and not placeholder_static
+    disabled = explicit is False
+    will_create = False
     missing = []
-    if requested and not has_existing_post:
-        if not status.get("token_set"):
-            missing.append("META_PUBLISHING_ACCESS_TOKEN")
-        if not status.get("page_id"):
-            missing.append("Facebook Page ID")
-        if not has_native_asset and not placeholder_static:
-            missing.append("creative_image_path_or_image_url_or_video_url")
     if placeholder_static:
         route = "paused_static_placeholder_ads"
     elif manual_completion:
         route = "manual_ads_manager_completion"
     else:
-        route = "existing_object_story_id" if has_existing_post else ("unpublished_page_post_object_story_id" if will_create else "direct_creative")
+        route = "existing_object_story_id" if has_existing_post else "native_inline_ads_app"
     return {
         "requested": requested,
         "disabled": disabled,
@@ -3434,7 +3430,7 @@ def direct_publishing_campaign_plan(payload=None, creative_controls=None, config
         "placeholder_ad_names": placeholder_ad_names({**payload, **creative_controls}) if placeholder_static else [],
         "creative_route": route,
         "missing_requirements": missing,
-        "note": "Publicación directa: crear post no publicado y usar object_story_id." if will_create else "",
+        "note": "Los anuncios usan la app Live de Ads directamente; no se crea un dark post." if has_native_asset and not has_existing_post else "",
     }
 
 
@@ -10134,7 +10130,7 @@ def create_campaign(payload):
             "creative_controls": {
                 "has_object_story_spec": bool(campaign["ad"].get("object_story_spec")),
                 "has_object_story_id": bool(campaign["ad"].get("object_story_id")),
-                "will_create_object_story_id": bool(direct_plan.get("will_create_unpublished_post") or campaign["ad"].get("object_story_id")),
+                "will_create_object_story_id": bool(campaign["ad"].get("object_story_id")),
                 "has_image_hash": bool(campaign["ad"].get("image_hash")),
                 "has_image_url": bool(campaign["ad"].get("image_url")),
                 "has_video_url": bool(campaign["ad"].get("video_url")),
@@ -10235,7 +10231,9 @@ CAMPAIGN_CREATIVE_SOURCE_KEYS = (
     "creative_image_path",
     "image_hash",
     "image_url",
+    "video_path",
     "video_url",
+    "video_id",
     "object_story_spec",
     "object_story_spec_json",
     "object_story_id",
@@ -10934,15 +10932,6 @@ def normalize_campaign_stack_arguments(arguments, chat_payload=None):
     destination = message_destination_from_plan(args)
     if destination and str(args.get("cta") or "").strip().upper() in {"", "LEARN_MORE", "APRENDER_MAS"}:
         args["cta"] = SocialFlowClient.message_destination_cta_type(destination) or args.get("cta")
-
-    # The ads app is intentionally allowed to stay in development mode.  A
-    # static image therefore always uses the separate live publishing app:
-    # local/static asset -> unpublished Page post -> object_story_id -> ad.
-    # This is not a buyer-facing choice and prevents accidental regression to
-    # the development-app direct creative route.
-    has_static_image = bool(args.get("creative_image_path") or args.get("image_url")) and not bool(args.get("video_url"))
-    if has_static_image and not args.get("object_story_id"):
-        args["use_direct_publishing"] = True
 
     return args
 
@@ -12424,7 +12413,7 @@ def campaign_preflight(arguments, chat_payload):
             "creative_controls": {
                 "has_object_story_spec": bool(creative_controls.get("object_story_spec")),
                 "has_object_story_id": bool(creative_controls.get("object_story_id")),
-                "will_create_object_story_id": bool(direct_plan.get("will_create_unpublished_post") or creative_controls.get("object_story_id")),
+                "will_create_object_story_id": bool(creative_controls.get("object_story_id")),
                 "has_image_hash": bool(creative_controls.get("image_hash")),
                 "has_image_url": bool(creative_controls.get("image_url")),
                 "has_video_url": bool(creative_controls.get("video_url")),

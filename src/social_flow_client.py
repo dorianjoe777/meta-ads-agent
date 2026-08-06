@@ -627,6 +627,11 @@ class SocialFlowClient:
             return "https://api.whatsapp.com/send"
         if normalized == "MESSENGER" and str(page_id or "").strip():
             return f"https://m.me/{str(page_id).strip()}"
+        if normalized == "INSTAGRAM_DIRECT":
+            # The destination is selected by ``app_destination``. Meta still
+            # expects link_data to carry a valid URL in some API versions, so
+            # use Instagram's public root instead of inventing a profile URL.
+            return "https://www.instagram.com/"
         return ""
 
     @staticmethod
@@ -1450,29 +1455,65 @@ class SocialFlowClient:
                     video_id = self.flag(args, "--video-id", "")
                     image_hash = self.flag(args, "--image-hash", "")
                     image_url = self.flag(args, "--image-url", "")
-                    cta = self.flag(args, "--call-to-action", "")
+                    cta = self.normalize_call_to_action(self.flag(args, "--call-to-action", "")) if self.flag(args, "--call-to-action", "") else ""
                     lead_gen_form_id = self.flag(args, "--lead-gen-form-id", "")
+                    message_destination = self.normalize_message_destination(self.flag(args, "--message-destination", ""))
                     story = {
                         "page_id": self.flag(args, "--page-id", ""),
                         **({"instagram_actor_id": self.flag(args, "--instagram-actor-id", "")} if self.flag(args, "--instagram-actor-id", "") else {}),
                     }
                     if lead_gen_form_id and not link:
                         link = self.default_lead_form_link(story.get("page_id", ""))
+                    if message_destination and not link:
+                        link = self.default_message_destination_link(message_destination, story.get("page_id", ""))
+
+                    def call_to_action_payload():
+                        if lead_gen_form_id:
+                            return {
+                                "type": self.normalize_call_to_action(cta or "SIGN_UP"),
+                                "value": {"lead_gen_form_id": lead_gen_form_id},
+                            }
+                        if message_destination:
+                            value = {"app_destination": message_destination}
+                            if link:
+                                value["link"] = link
+                            return {
+                                "type": self.message_destination_cta_type(message_destination),
+                                "value": value,
+                            }
+                        if cta and link:
+                            return {"type": cta, "value": {"link": link}}
+                        return {}
+
+                    call_to_action = call_to_action_payload()
                     if video_id:
                         video_data = {
                             "video_id": video_id,
                             "message": self.flag(args, "--body-text", ""),
                             "title": self.flag(args, "--headline", ""),
                         }
+                        if image_hash:
+                            video_data["image_hash"] = image_hash
                         if image_url:
                             video_data["image_url"] = image_url
-                        if lead_gen_form_id:
-                            video_data["call_to_action"] = {"type": self.normalize_call_to_action(cta or "SIGN_UP"), "value": {"lead_gen_form_id": lead_gen_form_id}}
-                        elif cta:
-                            video_data["call_to_action"] = {"type": cta, "value": {"link": link}}
+                        if call_to_action:
+                            video_data["call_to_action"] = call_to_action
                         if page_welcome_message:
                             video_data["page_welcome_message"] = page_welcome_message_value
                         story["video_data"] = video_data
+                    elif not link and not lead_gen_form_id and not message_destination:
+                        # Awareness/post-engagement ads do not need a fake
+                        # website destination. Meta's native photo_data shape
+                        # carries the image and copy without creating a Page
+                        # post first.
+                        photo_data = {"caption": self.flag(args, "--body-text", "")}
+                        if image_hash:
+                            photo_data["image_hash"] = image_hash
+                        if image_url:
+                            photo_data["url"] = image_url
+                        if page_welcome_message:
+                            photo_data["page_welcome_message"] = page_welcome_message_value
+                        story["photo_data"] = photo_data
                     else:
                         link_data = {
                             "link": link,
@@ -1483,13 +1524,8 @@ class SocialFlowClient:
                             link_data["image_hash"] = image_hash
                         if image_url:
                             link_data["picture"] = image_url
-                        if lead_gen_form_id:
-                            link_data["call_to_action"] = {"type": self.normalize_call_to_action(cta or "SIGN_UP"), "value": {"lead_gen_form_id": lead_gen_form_id}}
-                        elif cta:
-                            cta_value = {"link": link}
-                            if self.normalize_message_destination(cta.replace("_MESSAGE", "")):
-                                cta_value["app_destination"] = self.normalize_message_destination(cta.replace("_MESSAGE", ""))
-                            link_data["call_to_action"] = {"type": cta, "value": cta_value}
+                        if call_to_action:
+                            link_data["call_to_action"] = call_to_action
                         if page_welcome_message:
                             link_data["page_welcome_message"] = page_welcome_message_value
                         story["link_data"] = link_data
@@ -1854,6 +1890,7 @@ class SocialFlowClient:
         lead_gen_form_id="",
         prefilled_message="",
         welcome_message="",
+        message_destination="",
         object_story_link_url="",
         prefer_publishing_token=False,
         approved=False,
@@ -1894,6 +1931,8 @@ class SocialFlowClient:
                 args.extend(["--cta-link", cta_link])
             if lead_gen_form_id:
                 args.extend(["--lead-gen-form-id", lead_gen_form_id])
+            if message_destination:
+                args.extend(["--message-destination", self.normalize_message_destination(message_destination)])
         args.extend(["--json", "--yes"])
         if instagram_actor_id:
             args.extend(["--instagram-actor-id", instagram_actor_id])

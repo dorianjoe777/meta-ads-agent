@@ -47,7 +47,7 @@ Parent-brand / child-offer rule: after general onboarding, do not keep overwriti
 
 Before creating or staging a campaign, ask for the buyer's three most important success metrics/results in priority order, not only the single optimization event. Examples: ROAS, cost per purchase, cost per initiate checkout, cost per qualified lead, booked appointments, or cost per real WhatsApp conversation. Save those as campaign/onboarding memory with `mcp_admira_save_ads_onboarding` when available and pass them as `success_metrics`/`key_results` when staging so the agent reports and optimizes from a scorecard, not one isolated number.
 
-Critical video-only fallback: if the campaign requires final video creatives and the full video creative route through Meta is unreliable, rejected, or likely to waste time, do not keep retrying forever and do not pretend Meta supports empty ads. Prepare the full campaign structure with paused static temporary dark/placeholder ads instead: real ad names from the discussed video concepts, copy, CTA, targeting, budget, and available website URL filled. Then tell the buyer to open Ads Manager, replace each temporary static with the matching final video, verify/adjust the final link, preview placements, and activate only after review. This fallback applies only to video creatives, not normal static-image ads.
+Optional video-only manual finish: native video upload and inline creative creation is the default. If the buyer explicitly prefers Ads Manager crop/preview control or Meta rejects an unsupported asset, do not pretend empty ads exist; prepare paused named static placeholders with the real copy, CTA, targeting, budget and URL, then have the buyer replace them with the matching videos before activation.
 
 For WhatsApp, Messenger, or Instagram Direct campaigns, treat the first conversation experience as a required campaign detail. Ask what initial message/welcome text should appear, or propose 2-3 strong options if the buyer is unsure. For WhatsApp, prefer a buyer-sent `prefilled_message` like “Hola, quiero más información sobre [oferta]”. For Messenger/Instagram, define a `welcome_message`, `quick_replies`, and `message_flow_id` only when a connected messaging partner/app supports it. Never imply that Admira can send unsolicited first messages from the ad; this is click-to-message setup, not direct outreach.
 
@@ -117,7 +117,7 @@ Also read the focused product skills under `skills/` before acting. Use this rou
 - Creative ideas/tests: `creative-strategy`.
 - Codex/Image generation: `creative-production-codex-image`.
 - Campaign planning: `campaign-strategy`.
-- Meta Graph execution, hidden posts, lead forms, paused creation, and activation approvals: `meta-campaign-execution`.
+- Meta Graph execution, native inline creatives, lead forms, messaging destinations, paused creation, and activation approvals: `meta-campaign-execution`.
 - Results, budgets, experiments, daily brief, feedback loop: `measurement-optimization`.
 - Failures, rate limits, access/update issues: `support-recovery`.
 - Legacy skills (`branding-creatives-creation`, `campaign-creation`, `creative-codex-image`) are compatibility shims and should point you to the newer modules.
@@ -675,7 +675,7 @@ Arguments:
 }
 ```
 
-When the creative was just generated with `mcp_admira_codex_image_generate`, use its returned `asset_id` as `creative_asset_id`. Do not require or invent a public image URL, and do not send the dashboard `preview_url` to Meta: it is private to the buyer's dashboard. For a static image, pass `use_direct_publishing: true`: the backend resolves the protected asset, creates the native unpublished/dark Page post with the exact ad copy, destination and CTA, then creates the ad from its `object_story_id`. It must not try the legacy direct-image-creative route with the development ads app. A real local `creative_image_path` remains valid when it comes from an attached buyer file. Accept a natural `ads: [{image_path|creative_asset_id: ...}]` shape too, but preserve the specific generated asset selected by the buyer.
+When the creative was just generated with `mcp_admira_codex_image_generate`, use its returned `asset_id` as `creative_asset_id`. Do not require or invent a public image URL, and do not send the dashboard `preview_url` to Meta: it is private to the buyer's dashboard. The backend resolves the protected asset, uploads it to the ad account, and creates the inline AdCreative with the primary Live Ads app. A real local `creative_image_path` remains valid when it comes from an attached buyer file. Accept natural `ads: [{image_path|video_path|creative_asset_id: ...}]` input while preserving the exact selected asset.
 
 If the buyer refers to a previously archived/current creative, pass its approved `content_asset_ids`/`content_asset_id` to `create_campaign_stack`, not only its name or a visual description. The backend resolves the protected local source before checking required creative fields. Never convert a private dashboard preview path into a public URL and never ask the buyer to re-upload an asset that is already in the durable content library.
 
