@@ -3052,6 +3052,15 @@ function accountChoiceCard(account){
  const warning=account.requires_business_replacement_confirmation?`<p class="notice">${lang==='es'?'Al continuar, te mostraremos una confirmación antes de limpiar la configuración del negocio anterior.':'A confirmation will appear before the previous business setup is cleared.'}</p>`:'';
  return `<article class="found-choice-card ad-account-choice"><div><span class="choice-kicker">${escapeHtml(status)}</span><b>${escapeHtml(name)}</b><p>${escapeHtml(meta)}</p>${warning}</div><button class="btn primary" type="button" ${action}>${label}</button></article>`;
 }
+function bindAccountChoiceButtons(box){
+ box?.querySelectorAll?.('[data-account-choice]').forEach(button=>button.addEventListener('click',event=>{
+  // Keep this direct listener as a resilient fallback for environments where a
+  // browser extension, cached script, or an interrupted dashboard boot prevents
+  // the document-level delegated listener from receiving the click.
+  event.preventDefault();event.stopPropagation();
+  selectSocialAccount(button.dataset.accountChoice).catch(err=>{console.error(err);toast(err.message||String(err))});
+ }));
+}
 function renderSocialAccountResults(res){
  const box=qs('#social-account-results');if(!box)return;
  if(res.accounts&&res.accounts.length){
@@ -3060,6 +3069,7 @@ function renderSocialAccountResults(res){
   const count=`${managed.used||0}/${managed.max_accounts||res.max_managed_accounts||5}`;
   const rule=lang==='es'?`Puedes agregar hasta 5 cuentas, todas bajo el mismo Business Manager${bm.name||bm.id?`: ${bm.name||bm.id}`:'.'}`:`You can add up to 5 accounts, all under the same Business Manager${bm.name||bm.id?`: ${bm.name||bm.id}`:'.'}`;
   box.innerHTML=`<div class="guide-panel found-summary"><b>${single?(lang==='es'?'Encontré tu cuenta publicitaria':'I found your ad account'):(lang==='es'?'Elige o agrega una cuenta publicitaria':'Choose or add an ad account')}</b><p>${single?(lang==='es'?'Haz clic en el botón rosa y seguimos al siguiente paso.':'Click the pink button and we continue to the next step.'):(lang==='es'?'Elige una cuenta real de este mismo negocio.':'Choose a real account from this same business.')}</p><p class="notice">${escapeHtml(rule)} · ${escapeHtml(count)}</p></div><div class="account-choice-grid">${res.accounts.map(accountChoiceCard).join('')}</div>`;
+  bindAccountChoiceButtons(box);
   focusGuideResults(box);
   return;
  }
