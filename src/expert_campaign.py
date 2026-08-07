@@ -183,11 +183,29 @@ def validate_meta_targeting_selection(interests=None, locations=None, age_min=18
         if name:
             normalized["name"] = name
         if live_search:
-            result = live_search("interest", name)
+            # Meta's search endpoint often returns no rows when the model
+            # reuses the UI label verbatim, especially for labels with a
+            # parenthetical category (for example ``Música (entretenimiento
+            # y medios de comunicación)``).  Keep the ID authoritative, but
+            # retry the stable base label before treating a live ID as stale.
+            queries = [name]
+            if "(" in name:
+                base_name = name.split("(", 1)[0].strip()
+                if base_name and base_name not in queries:
+                    queries.append(base_name)
+            result = None
+            rows = []
+            for query in queries:
+                candidate = live_search("interest", query)
+                if isinstance(candidate, dict) and candidate.get("ok"):
+                    result = candidate
+                    rows = candidate.get("items") or []
+                    match = next((row for row in rows if str(row.get("id") or "").strip() == interest_id), None)
+                    if match:
+                        break
             if not isinstance(result, dict) or not result.get("ok"):
                 errors.append({"field": "interests", "code": "targeting_catalog_unavailable", "id": interest_id})
                 continue
-            rows = result.get("items") or []
             match = next((row for row in rows if str(row.get("id") or "").strip() == interest_id), None)
             if not match:
                 errors.append({
