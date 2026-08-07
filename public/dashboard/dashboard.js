@@ -14,6 +14,7 @@ let updateCheckError='';
 let updateAutoTimer=null;
 const UPDATE_INSTALLED_ACK_KEY='dashboardUpdateInstalledVersion';
 const UPDATE_CHECK_COOLDOWN_MS=60*1000;
+const UPDATE_CHECK_POLL_MS=60*1000;
 const ONBOARDING_STEP_KEY='dashboardOnboardingStepId';
 const fmtMoney=n=>'$'+Number(n||0).toLocaleString(undefined,{maximumFractionDigits:2});
 const fmtPct=n=>Number(n||0).toFixed(2)+'%';
@@ -599,7 +600,7 @@ function openOnboardingPasswordStep(){const steps=onboardingSteps();const idx=st
 async function requestUnlock(message=''){if(!dashboardPasswordIsSet()){hideUnlock();openOnboardingPasswordStep();return ''}return showUnlock(message||t('unlock_needed'),'unlock')}
 async function responseErrorMessage(res){const text=await res.text();try{const data=JSON.parse(text);return data.error||data.detail||text}catch{return text}}
 async function api(path,opts={}){const headers={'Content-Type':'application/json',...(opts.headers||{})};const password=dashboardPassword();if(password)headers['X-Dashboard-Token']=password;let res=await fetch(path,{...opts,headers});if(res.status===401){clearStoredDashboardSecrets();const entered=await requestUnlock();if(entered){headers['X-Dashboard-Token']=entered;res=await fetch(path,{...opts,headers});if(res.status===401){clearStoredDashboardSecrets();await requestUnlock(t('unlock_failed'));throw new Error(t('unlock_failed'))}}}if(!res.ok)throw new Error(await responseErrorMessage(res));return res.json()}
-async function load(){const firstLoad=!state;if(firstLoad)setDashboardBooting(true);try{state=await api('/api/dashboard');if(!metricsRangeTouched)metricsRange=normalizeClientMetricsRange(state.metrics?.metrics_range);render();const canAccess=Boolean(uiWorkbenchPreview||!state.config.dashboard_password_required||(state.config.dashboard_password_set&&dashboardPassword()));if(!uiWorkbenchPreview&&state.config.dashboard_password_required&&!state.config.dashboard_password_set){clearStoredDashboardSecrets();hideUnlock()}else if(!uiWorkbenchPreview&&state.config.dashboard_password_required&&state.config.dashboard_password_set&&!dashboardPassword()&&state.onboarding&&state.onboarding.completed)showUnlock(t('unlock_needed'),'unlock');else if(!uiWorkbenchPreview&&state.onboarding?.completed)syncBrowserBriefTimezone();if(canAccess){openModelReconnectFromUrl();setTimeout(startDashboardIntroTourIfPending,350)}}finally{if(firstLoad)setDashboardBooting(false)}const canRefresh=Boolean(uiWorkbenchPreview||!state.config.dashboard_password_required||(state.config.dashboard_password_set&&dashboardPassword()));if(firstLoad)refreshAgentRuntimeStatus(false);if(canRefresh&&state.onboarding?.completed){if(firstLoad)setTimeout(()=>refreshInsights({silent:true}),700);startLiveMetricsAutoRefresh()}}
+async function load(){const firstLoad=!state;if(firstLoad)setDashboardBooting(true);try{state=await api('/api/dashboard');if(!metricsRangeTouched)metricsRange=normalizeClientMetricsRange(state.metrics?.metrics_range);render();const canAccess=Boolean(uiWorkbenchPreview||!state.config.dashboard_password_required||(state.config.dashboard_password_set&&dashboardPassword()));if(!uiWorkbenchPreview&&state.config.dashboard_password_required&&!state.config.dashboard_password_set){clearStoredDashboardSecrets();hideUnlock()}else if(!uiWorkbenchPreview&&state.config.dashboard_password_required&&state.config.dashboard_password_set&&!dashboardPassword()&&state.onboarding&&state.onboarding.completed)showUnlock(t('unlock_needed'),'unlock');else if(!uiWorkbenchPreview&&state.onboarding?.completed)syncBrowserBriefTimezone();if(canAccess){openModelReconnectFromUrl();setTimeout(startDashboardIntroTourIfPending,350)}}finally{if(firstLoad)setDashboardBooting(false)}const canRefresh=Boolean(uiWorkbenchPreview||!state.config.dashboard_password_required||(state.config.dashboard_password_set&&dashboardPassword()));if(firstLoad)refreshAgentRuntimeStatus(false);if(canRefresh&&state.onboarding?.completed){if(firstLoad)setTimeout(()=>refreshInsights({silent:true}),700);startLiveMetricsAutoRefresh();startUpdateAutoCheck()}}
 
 let agentRuntimeRefreshInFlight=false;
 function mergeAgentRuntimeStatus(runtime={}){
@@ -2506,7 +2507,7 @@ function renderCloudAccessPanel(){
 }
 function renderUpdateRollbackPanel(){
  if(!state?.onboarding?.completed){qs('#update-rollback-panel').innerHTML='';return}
- qs('#update-rollback-panel').innerHTML=`<div class="next-step"><div><b>${lang==='es'?'Actualizaciones y copias':'Updates and backups'}</b><p>${lang==='es'?'Las actualizaciones oficiales se instalan automáticamente a las 3:00 a. m. y te aviso una vez a las 9:00 a. m. si hubo una. Antes de cada cambio se guarda una copia segura.':'Official updates install automatically at 3:00 AM, with one 9:00 AM notice only when an update was installed. A safe copy is saved before every change.'}</p></div><div class="mode-actions"><button class="btn" type="button" data-action-code="loadUpdateSnapshots(true)">${lang==='es'?'Ver copias guardadas':'View saved copies'}</button></div></div><div id="update-snapshot-list"></div>`;
+ qs('#update-rollback-panel').innerHTML=`<div class="next-step"><div><b>${lang==='es'?'Actualizaciones y copias':'Updates and backups'}</b><p>${lang==='es'?'El dashboard busca releases nuevas cada minuto mientras está abierto. Las actualizaciones oficiales se instalan automáticamente a las 3:00 a. m. y te aviso a las 9:00 a. m. si hubo una. Antes de cada cambio se guarda una copia segura.':'The dashboard checks for new releases every minute while open. Official updates install automatically at 3:00 AM, with one 9:00 AM notice only when an update was installed. A safe copy is saved before every change.'}</p></div><div class="mode-actions"><button class="btn" type="button" data-action-code="loadUpdateSnapshots(true)">${lang==='es'?'Ver copias guardadas':'View saved copies'}</button></div></div><div id="update-snapshot-list"></div>`;
  loadUpdateSnapshots(false);
 }
 function updateCardsMarkup(info){
@@ -2519,7 +2520,12 @@ function updateWarningsMarkup(info){
 }
 function renderUpdateBanner(info){
  const box=qs('#update-banner');if(!box)return;
- box.classList.add('hidden');box.innerHTML='';
+ const latest=String(info?.latest_version||'').trim();
+ const current=String(info?.current_version||'').trim();
+ const acknowledged=localStorage.getItem(UPDATE_INSTALLED_ACK_KEY)||'';
+ if(!info?.available||!latest||acknowledged===latest){box.classList.add('hidden');box.innerHTML='';return}
+ box.innerHTML=`<div><b>${lang==='es'?'Nueva actualización disponible':'New update available'}</b><p>${escapeHtml(current)} → ${escapeHtml(latest)}</p></div><button class="btn primary" type="button" data-action-code="showUpdateDetails()">${lang==='es'?'Ver actualización':'View update'}</button>`;
+ box.classList.remove('hidden');
 }
 function renderDeferredOnboardingBanner(){
  const box=qs('#deferred-onboarding-banner');if(!box)return;
@@ -2549,7 +2555,11 @@ function showUpdateDetails(){
  const box=qs('#confirm-overlay');box.innerHTML=`<div class="confirm-card guide-modal-card"><div class="next-step"><div><h2>${lang==='es'?'Actualización oficial':'Official update'}</h2><p>${lang==='es'?'Versión':'Version'}: ${escapeHtml(updateInfo.current_version||'')} → ${escapeHtml(updateInfo.latest_version||'')}</p></div><button class="btn" type="button" data-action-code="closeConfirm()">${lang==='es'?'Cerrar':'Close'}</button></div>${updateWarningsMarkup(updateInfo)}${updateCardsMarkup(updateInfo)}<p class="notice">${lang==='es'?'Antes de cambiar archivos crearé una copia de seguridad. Si algo falla, podrás volver desde Configuración. Meta seguirá ejecutando lo que ya esté activo fuera del dashboard.':'Before changing files I will create a backup. If something fails, you can return from Setup. Meta will keep running anything already active outside the dashboard.'}</p><div class="confirm-actions"><button class="btn" type="button" data-action-code="closeConfirm()">${lang==='es'?'Ahora no':'Not now'}</button><button class="btn primary" type="button" data-action-code="applyDashboardUpdate()">${lang==='es'?'Crear copia e instalar':'Backup and install'}</button></div></div>`;box.classList.add('open');
 }
 function startUpdateAutoCheck(){
- return;
+ if(updateAutoTimer)return;
+ const poll=()=>{if(document.hidden||!dashboardPassword())return;checkForUpdates(false,{silent:true})};
+ poll();
+ updateAutoTimer=setInterval(poll,UPDATE_CHECK_POLL_MS);
+ window.addEventListener('beforeunload',()=>{if(updateAutoTimer){clearInterval(updateAutoTimer);updateAutoTimer=null}},{once:true});
 }
 async function checkForUpdates(force=false,options={}){
  const now=Date.now();
