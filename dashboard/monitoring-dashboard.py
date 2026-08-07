@@ -185,6 +185,7 @@ from expert_campaign import (
     normalize_creative_controls,
     normalize_age_bounds,
     normalize_location_codes,
+    normalize_gender_values,
     infer_location_codes_from_context,
     country_name_for_code,
     normalize_schedule,
@@ -9836,6 +9837,9 @@ def apply_action(payload):
 
 def create_campaign(payload):
     payload = normalize_campaign_stack_arguments(payload)
+    gender_error = _campaign_gender_contract_error(payload)
+    if gender_error:
+        raise ValueError(gender_error)
     lead_gen_form_id = str(payload.get("lead_gen_form_id") or "").strip()
     if campaign_arguments_have_lead_intent(payload) and not lead_gen_form_id:
         raise ValueError(
@@ -10034,7 +10038,17 @@ def create_campaign(payload):
         def inherited_ad_plan(raw_ad, raw_set):
             plan = dict(inherited_ad)
             if isinstance(raw_set, dict):
-                for key in ("message_destination", "whatsapp_phone_number_id", "lead_gen_form_id", "landing_url", "cta", "cta_link", "use_direct_publishing", "creative_creation_strategy"):
+                # An ad-set-level brief is a valid shorthand for all of its
+                # variants. Preserve its approved copy and message opener;
+                # previously only destination fields were inherited, so a
+                # prefilled WhatsApp message (and sometimes the copy) was
+                # silently replaced by the generic fallback at execution.
+                for key in (
+                    "primary_text", "headline", "description", "cta",
+                    "prefilled_message", "welcome_message", "message_destination",
+                    "whatsapp_phone_number_id", "lead_gen_form_id", "landing_url",
+                    "cta_link", "use_direct_publishing", "creative_creation_strategy",
+                ):
                     if raw_set.get(key) not in (None, ""):
                         plan[key] = raw_set[key]
             if isinstance(raw_ad, dict):
@@ -10340,10 +10354,107 @@ def _campaign_list(value):
     return list(parsed) if isinstance(parsed, (list, tuple)) else []
 
 
+def _canonicalize_campaign_copy(value):
+    """Flatten natural-language copy shapes into the durable ad contract.
+
+    Hermes commonly returns ``copy: {primary_text, headline, cta}`` or uses
+    aliases such as ``body``/``title``.  Keeping only the nested object made
+    the executor fall back to a generic sentence and silently drop the copy
+    the buyer had already approved.
+    """
+    if not isinstance(value, dict):
+        return {}
+    entry = dict(value)
+    sources = [entry.get(key) for key in ("copy", "ad_copy", "creative_copy", "text")]
+    sources = [item for item in sources if isinstance(item, dict)]
+
+    def first(keys):
+        for source in [entry, *sources]:
+            for key in keys:
+                raw = source.get(key)
+                if raw not in (None, "") and not isinstance(raw, (dict, list)):
+                    text = str(raw).strip()
+                    if text:
+                        return text
+        return ""
+
+    aliases = {
+        "primary_text": ("primary_text", "body", "caption", "message", "text", "description", "copy_text"),
+        "headline": ("headline", "title", "name_on_ad", "hook"),
+        "description": ("description", "link_description", "subheadline"),
+        "cta": ("cta", "call_to_action", "button"),
+        "prefilled_message": (
+            "prefilled_message", "initial_message", "first_message", "opening_message",
+            "message_starter", "whatsapp_prefilled_message",
+        ),
+        "welcome_message": ("welcome_message", "greeting", "welcome", "initial_business_message"),
+    }
+    for canonical, keys in aliases.items():
+        if not str(entry.get(canonical) or "").strip():
+            resolved = first(keys)
+            if resolved:
+                entry[canonical] = resolved
+    return entry
+
+
+def _canonicalize_campaign_targeting(value):
+    """Preserve gender and Advantage/automatic placement choices in nested sets."""
+    if not isinstance(value, dict):
+        return {}
+    targeting = dict(value)
+    if not targeting.get("genders"):
+        for key in ("gender", "targeting_gender", "targeting_genders", "sex"):
+            if targeting.get(key) not in (None, "", [], ()):
+                genders = normalize_gender_values(targeting.get(key))
+                if genders:
+                    targeting["genders"] = genders
+                    break
+    if not targeting.get("placements"):
+        for key in (
+            "placement_strategy", "placement_mode", "placements_mode", "meta_placements",
+            "delivery_placements", "advantage_placements",
+        ):
+            if targeting.get(key) not in (None, "", [], ()):
+                targeting["placements"] = targeting[key]
+                break
+    if targeting.get("genders") not in (None, "", [], ()):
+        genders = normalize_gender_values(targeting.get("genders"))
+        if genders:
+            targeting["genders"] = genders
+    return targeting
+
+
+def _campaign_gender_contract_error(arguments):
+    """Reject an explicit but unrecognized gender instead of broadening it.
+
+    A missing gender means the buyer intentionally chose all genders.  An
+    unrecognized explicit value, however, is almost always a serialization or
+    translation bug; letting it fall through would make a women-only campaign
+    unexpectedly target men/all genders.
+    """
+    roots = [arguments if isinstance(arguments, dict) else {}]
+    for raw_set in (arguments or {}).get("ad_sets", []) if isinstance(arguments, dict) else []:
+        if not isinstance(raw_set, dict):
+            continue
+        roots.append(raw_set)
+        targeting = raw_set.get("targeting")
+        if isinstance(targeting, dict):
+            roots.append(targeting)
+    aliases = ("genders", "gender", "targeting_gender", "targeting_genders", "sex")
+    for root in roots:
+        for key in aliases:
+            value = root.get(key) if isinstance(root, dict) else None
+            if value in (None, "", [], ()):
+                continue
+            if not normalize_gender_values(value):
+                return f"targeting_gender_invalid: no pude interpretar '{value}' como hombres, mujeres o todos"
+    return ""
+
+
 def _campaign_ad_entry(value):
     if not isinstance(value, dict):
         return {}
-    entry = dict(normalize_agent_tool_arguments(value))
+    entry = _canonicalize_campaign_copy(dict(normalize_agent_tool_arguments(value)))
     # Resolve the same aliases accepted at the top level for every nested ad.
     if not any(entry.get(key) for key in CAMPAIGN_CREATIVE_SOURCE_KEYS):
         alias = next((entry.get(key) for key in CAMPAIGN_CREATIVE_ALIAS_KEYS if entry.get(key)), "")
@@ -10414,7 +10525,7 @@ def normalize_campaign_ad_sets(arguments):
     for index, raw in enumerate(raw_sets):
         if not isinstance(raw, dict):
             continue
-        entry = dict(normalize_agent_tool_arguments(raw))
+        entry = _canonicalize_campaign_copy(dict(normalize_agent_tool_arguments(raw)))
         nested_targeting = entry.get("targeting") if isinstance(entry.get("targeting"), dict) else {}
         # Keep targeting fields in their canonical nested object.  Top-level
         # values remain available as fallbacks in create_campaign().
@@ -10424,12 +10535,19 @@ def normalize_campaign_ad_sets(arguments):
                 "countries", "country_codes", "age_range", "age_min", "age_max",
                 "min_age", "max_age", "interests", "targeting_interests",
                 "meta_targeting", "targeting_automation", "targeting_mode",
+                "genders", "gender", "targeting_gender", "targeting_genders", "sex",
                 "placements", "publisher_platforms", "facebook_positions",
                 "instagram_positions",
             )
             nested_targeting = {key: entry[key] for key in targeting_keys if key in entry}
+        nested_targeting = _canonicalize_campaign_targeting(nested_targeting)
         if nested_targeting:
             entry["targeting"] = nested_targeting
+            # Placement configuration is a first-class ad-set field. Promote
+            # it out of targeting so the durable campaign and Graph payload
+            # cannot silently fall back to the default feed/stories set.
+            if entry.get("placements") in (None, "", [], ()) and nested_targeting.get("placements") not in (None, "", [], ()):
+                entry["placements"] = nested_targeting["placements"]
         budget = entry.get("daily_budget") or entry.get("adset_daily_budget") or entry.get("budget")
         if budget not in (None, ""):
             entry["budget"] = parse_money_like(budget, budget)
@@ -10442,6 +10560,17 @@ def normalize_campaign_ad_sets(arguments):
         ads = [item for item in ads if item]
         if not ads and any(entry.get(key) for key in (*CAMPAIGN_CREATIVE_SOURCE_KEYS, *CAMPAIGN_CREATIVE_ALIAS_KEYS)):
             ads = [_campaign_ad_entry(entry)]
+        # An ad-set brief can intentionally apply to every variant. Materialize
+        # that inheritance now so the saved campaign remains self-contained
+        # after a retry or context compaction; do not let execution rediscover
+        # a message/copy that was only present on the parent set.
+        for ad in ads:
+            for key in (
+                "primary_text", "headline", "description", "cta",
+                "prefilled_message", "welcome_message",
+            ):
+                if ad.get(key) in (None, "") and entry.get(key) not in (None, ""):
+                    ad[key] = entry[key]
         entry["ads"] = ads
         entry["name"] = str(
             entry.get("name")
@@ -10694,14 +10823,37 @@ def campaign_arguments_have_lead_intent(arguments):
     }
     return bool(lead_form_id_from_campaign_arguments(root)) or bool(normalized.intersection({
         "LEADS", "LEAD", "LEAD_GENERATION", "LEAD_FORM", "LEAD_FORMS",
-        "INSTANT_FORM", "INSTANT_FORMS", "FORMS", "OUTCOME_LEADS",
+        "INSTANT_FORM", "INSTANT_FORMS", "FORMS", "FORMULARIOS", "OUTCOME_LEADS",
         "OUTCOME_LEAD_GENERATION",
     }))
 
 
 def normalize_campaign_stack_arguments(arguments, chat_payload=None):
     """Accept the looser shapes Hermes/Telegram may send for campaign staging."""
-    args = dict(arguments or {})
+    args = _canonicalize_campaign_copy(dict(arguments or {}))
+
+    # Canonicalize explicit gender aliases before nested ad-set normalization.
+    # Meta expects numeric values (1=men, 2=women); losing this field silently
+    # broadens or changes the audience, so unknown labels are never guessed.
+    if not args.get("genders"):
+        for key in ("gender", "targeting_gender", "targeting_genders", "sex"):
+            if args.get(key) not in (None, "", [], ()):
+                genders = normalize_gender_values(args.get(key))
+                if genders:
+                    args["genders"] = genders
+                    break
+    if args.get("genders") not in (None, "", [], ()):
+        genders = normalize_gender_values(args.get("genders"))
+        if genders:
+            args["genders"] = genders
+    if args.get("placements") in (None, "", [], ()):
+        for key in (
+            "placement_strategy", "placement_mode", "placements_mode", "meta_placements",
+            "delivery_placements", "advantage_placements",
+        ):
+            if args.get(key) not in (None, "", [], ()):
+                args["placements"] = args[key]
+                break
 
     # Preserve every lead-form ID alias in the durable campaign contract.
     # Otherwise a model can send `lead_form_id` while the saved ad keeps the

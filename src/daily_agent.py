@@ -51,6 +51,7 @@ from expert_campaign import (
     normalize_age_bounds,
     normalize_budget_plan,
     normalize_location_codes,
+    normalize_gender_values,
     normalize_status_plan,
     placeholder_ad_count,
     placeholder_ad_names,
@@ -1028,7 +1029,7 @@ def campaign_objective_for_social(objective, campaign=None, ad_plan=None):
     normalized = {str(value or "").strip().upper().replace("-", "_") for value in raw_values}
     if lead_form_id or normalized.intersection({
         "LEADS", "LEAD", "LEAD_GENERATION", "LEAD_FORM", "LEAD_FORMS",
-        "INSTANT_FORM", "INSTANT_FORMS", "FORMS", "OUTCOME_LEADS",
+        "INSTANT_FORM", "INSTANT_FORMS", "FORMS", "FORMULARIOS", "OUTCOME_LEADS",
         "OUTCOME_LEAD_GENERATION",
     }):
         # OUTCOME_LEADS is Meta's current Graph campaign objective. The ad-set
@@ -1043,6 +1044,11 @@ def campaign_objective_for_social(objective, campaign=None, ad_plan=None):
         "PURCHASES": "OUTCOME_SALES",
         "CONVERSIONS": "OUTCOME_SALES",
         "SALES": "OUTCOME_SALES",
+        "SALE": "OUTCOME_SALES",
+        "VENTAS": "OUTCOME_SALES",
+        "VENTA": "OUTCOME_SALES",
+        "COMPRAS": "OUTCOME_SALES",
+        "COMPRA": "OUTCOME_SALES",
         # Meta's current campaign objective enum is OUTCOME_LEADS.  The
         # ad-set optimization goal remains LEAD_GENERATION; these are
         # different Graph fields and must not be conflated.
@@ -1053,12 +1059,18 @@ def campaign_objective_for_social(objective, campaign=None, ad_plan=None):
         "INSTANT_FORM": "OUTCOME_LEADS",
         "INSTANT_FORMS": "OUTCOME_LEADS",
         "FORMS": "OUTCOME_LEADS",
+        "FORMULARIOS": "OUTCOME_LEADS",
         "MESSAGES": "OUTCOME_ENGAGEMENT",
         "MESSAGE": "OUTCOME_ENGAGEMENT",
         "CONVERSATIONS": "OUTCOME_ENGAGEMENT",
         "WHATSAPP": "OUTCOME_ENGAGEMENT",
         "MESSENGER": "OUTCOME_ENGAGEMENT",
         "ENGAGEMENT": "OUTCOME_ENGAGEMENT",
+        "INTERACTION": "OUTCOME_ENGAGEMENT",
+        "INTERACTIONS": "OUTCOME_ENGAGEMENT",
+        "INTERACCION": "OUTCOME_ENGAGEMENT",
+        "INTERACCIONES": "OUTCOME_ENGAGEMENT",
+        "INTERACCIÓN": "OUTCOME_ENGAGEMENT",
         "POST_ENGAGEMENT": "OUTCOME_ENGAGEMENT",
         "VIDEO": "OUTCOME_ENGAGEMENT",
         "VIDEO_VIEWS": "OUTCOME_ENGAGEMENT",
@@ -1168,7 +1180,7 @@ def object_store_url_from_plan(*plans):
 
 def adset_optimization_goal_for_campaign(adset, campaign, lead_gen_form_id="", message_destination=""):
     objective = str((campaign or {}).get("objective") or "").upper()
-    if lead_gen_form_id or objective in {"LEADS", "LEAD_GENERATION", "LEAD_FORM", "LEAD_FORMS", "INSTANT_FORM", "INSTANT_FORMS", "FORMS"}:
+    if lead_gen_form_id or objective in {"LEADS", "LEAD_GENERATION", "LEAD_FORM", "LEAD_FORMS", "INSTANT_FORM", "INSTANT_FORMS", "FORMS", "FORMULARIOS", "OUTCOME_LEADS", "OUTCOME_LEAD_GENERATION"}:
         return "LEAD_GENERATION"
     # A stale conversion goal in an old draft must never override a
     # click-to-message destination. Meta's Graph API uses CONVERSATIONS for
@@ -1179,13 +1191,13 @@ def adset_optimization_goal_for_campaign(adset, campaign, lead_gen_form_id="", m
     explicit = str((adset or {}).get("optimization_goal") or "").strip()
     if explicit:
         return SocialFlowClient.normalize_optimization_goal(explicit)
-    if objective in {"SALES", "PURCHASES", "CONVERSIONS"}:
+    if objective in {"SALES", "SALE", "PURCHASES", "COMPRAS", "COMPRA", "CONVERSIONS", "OUTCOME_SALES", "VENTAS", "VENTA"}:
         return "OFFSITE_CONVERSIONS"
     if objective in {"AWARENESS", "REACH", "BRAND_AWARENESS"}:
         return "REACH"
     if objective in {"VIDEO", "VIDEO_VIEWS", "THRUPLAY"}:
         return "THRUPLAY"
-    if objective in {"ENGAGEMENT", "POST_ENGAGEMENT"}:
+    if objective in {"ENGAGEMENT", "POST_ENGAGEMENT", "INTERACTION", "INTERACTIONS", "INTERACCION", "INTERACCIONES", "INTERACCIÓN"}:
         return "POST_ENGAGEMENT"
     if objective in {"APP_INSTALLS", "APP_PROMOTION"}:
         return "APP_INSTALLS"
@@ -1301,6 +1313,12 @@ def targeting_for_social(targeting):
     ):
         if targeting.get(key):
             spec[key] = targeting.get(key)
+    if not spec.get("genders"):
+        genders = normalize_gender_values(
+            targeting.get("gender") or targeting.get("targeting_gender") or targeting.get("targeting_genders")
+        )
+        if genders:
+            spec["genders"] = genders
     return apply_placement_targeting(spec, targeting.get("placements") or targeting.get("placement_preset"))
 
 

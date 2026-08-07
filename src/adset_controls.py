@@ -60,7 +60,13 @@ def normalize_placement_config(value=None):
     """
     if isinstance(value, str):
         lowered = value.strip().lower()
-        if lowered in {"automatic", "advantage", "advantage+", "advantage_plus", "all"}:
+        if lowered in {
+            "automatic", "automatic placements", "automatic_placements", "auto",
+            "advantage", "advantage+", "advantage_plus", "advantage placements",
+            "advantage+ placements", "advantage_plus_placements", "all",
+            "ubicaciones automaticas", "ubicaciones automáticas",
+            "ubicaciones advantage", "ubicaciones advantage+",
+        }:
             return {"automatic": True, "manual": []}
         if lowered in {"feed_stories", "feeds_stories", "default", "meta_feed_stories"}:
             return {"automatic": False, "manual": list(DEFAULT_MANUAL_PLACEMENTS)}

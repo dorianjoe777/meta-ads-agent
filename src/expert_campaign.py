@@ -754,6 +754,34 @@ def string_list(value):
     return [str(item).strip() for item in raw if str(item or "").strip()]
 
 
+def normalize_gender_values(value):
+    """Normalize buyer-friendly gender labels to Meta's targeting values.
+
+    Meta expects ``genders`` as numeric values: 1 for men and 2 for women.
+    Hermes may receive Spanish/English labels or a JSON/list-shaped value.
+    Unknown labels are deliberately ignored instead of becoming an accidental
+    all-gender or male-only audience.
+    """
+    raw = parse_jsonish(value, value)
+    if raw in (None, ""):
+        return []
+    if not isinstance(raw, (list, tuple, set)):
+        raw = [raw]
+    result = []
+    for item in raw:
+        if isinstance(item, (int, float)) and int(item) in {1, 2}:
+            result.append(int(item))
+            continue
+        text = _ascii_upper(item)
+        if text in {"1", "MALE", "MAN", "MEN", "HOMBRE", "HOMBRES", "MASCULINO"}:
+            result.append(1)
+        elif text in {"2", "FEMALE", "WOMAN", "WOMEN", "MUJER", "MUJERES", "FEMENINO"}:
+            result.append(2)
+        elif text in {"ALL", "TODOS", "TODAS", "AMBOS", "ANY"}:
+            result.extend((1, 2))
+    return list(dict.fromkeys(result))
+
+
 def merge_expert_targeting(audience, payload):
     targeting = dict(audience or {})
     custom = id_objects(payload.get("custom_audiences") or payload.get("custom_audiences_json"))
@@ -798,10 +826,9 @@ def merge_expert_targeting(audience, payload):
             targeting["targeting_automation"] = {"advantage_audience": 1}
         elif targeting_mode in {"manual", "strict", "detailed", "detailed_targeting"}:
             targeting["targeting_automation"] = {"advantage_audience": 0}
-    genders = string_list(payload.get("genders"))
+    genders = normalize_gender_values(payload.get("genders") or payload.get("gender") or payload.get("targeting_gender"))
     if genders:
-        numeric = [int(item) for item in genders if str(item).isdigit()]
-        targeting["genders"] = numeric or genders
+        targeting["genders"] = genders
     for key in TARGETING_LIST_FIELDS:
         values = string_list(payload.get(key))
         if values:

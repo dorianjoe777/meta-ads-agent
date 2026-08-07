@@ -55,6 +55,18 @@ For WhatsApp, Messenger, or Instagram Direct, ask what initial message/welcome t
 
 Use ad set budget by default for small controlled tests. Use campaign budget/CBO when several ad sets should compete and budget is high enough. Choose placements from the creative and audience, not a rigid checklist.
 
+## Campaign read-back before staging
+
+Before handing the brief to `stage_campaign`, read it back as a compact
+contract: business goal versus Meta outcome, destination, exact gender and
+age, automatic/Advantage+ or manual placements, and every ad's approved
+primary text, headline, CTA, and WhatsApp prefilled/Messenger welcome text.
+Correct any mismatch before calling Meta. Never allow a missing field to turn
+into generic copy, an all-gender audience, default US targeting, or default
+manual placements. For click-to-WhatsApp, explain that Meta's native outcome
+may be shown as Engagement while the ad set optimizes Conversations; this is
+different from silently changing a website-sales campaign to Engagement.
+
 ## Lead forms
 
 For native Meta Lead Ads, check existing forms in Meta first. If a new form is needed, help the buyer design its exact name, questions, privacy policy URL, thank-you URL when useful, and form intent. Then guide them to create and publish it once in Meta Ads Manager: Leads objective → Instant forms conversion location → Ad level → Instant form → Create form. Do not claim the form was created by Admira and do not request a product approval for form creation. Ask the buyer to say when it is ready, list live forms again, match the exact form, and persist its real `lead_gen_form_id` in the campaign brief.

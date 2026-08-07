@@ -78,6 +78,14 @@ Use placeholder ads only for video creative completion, when the buyer wants thi
 
 Pass justified fields only: objective, budget level, daily/lifetime budgets, statuses, placements, promoted object, optimization goal/event, billing event, bid strategy, image/video fields, CTA/link, message starter fields, lead form ID, an existing `object_story_id` only when explicitly selected, and optional manual video completion fields when appropriate.
 
+Before execution, perform a final payload read-back. Confirm that the Graph
+objective matches the buyer's business goal and destination, each ad has its
+approved copy/CTA, the exact gender and age are present, Advantage+/automatic
+placements are represented when selected, and the exact prefilled WhatsApp or
+welcome message is present. If any value is missing or conflicts, stop before
+the first Meta mutation and repair the structured payload; never silently use
+generic copy, all genders, US, or manual feed/story placements.
+
 ## Interest and Advantage+ verification
 
 - Never send free-form interest names as if they were valid targeting. Search first with `mcp_admira_search_meta_targeting`, then pass `targeting_interests` as objects containing the exact live Meta `id` and `name`.

@@ -57,6 +57,26 @@ Collect:
 - approved creative assets or a production plan
 - final status: paused draft or active after approval
 
+### Final contract check before staging
+
+Before calling `mcp_admira_stage_campaign`, read the normalized proposal back
+as a compact contract and compare it with what the buyer requested. It must
+contain, for every ad set/ad: the correct Meta outcome (sales, leads,
+engagement/messages, traffic, etc.), the exact gender and age restriction,
+the chosen automatic/Advantage+ or manual placement mode, the approved
+primary text/headline/CTA, and the exact WhatsApp `prefilled_message` or
+Messenger/Instagram welcome text. If any of those fields is missing or
+conflicts with the conversation, do not create a partial campaign; correct
+the tool payload first and explain the one real blocker if owner input is
+needed. A generic fallback copy, default male/all-gender audience, default
+US location, or default manual placements is never an acceptable substitute
+for an explicit buyer decision.
+
+For click-to-WhatsApp campaigns, distinguish the business goal from Meta's
+current enum: Meta normally displays the campaign outcome as Engagement while
+the ad set uses Conversations. Explain this when relevant, but never silently
+change a requested website-sales campaign into an engagement campaign.
+
 Do not reduce the creative strategy to one image. Check that the proposed concurrent creative count fits the budget; keep additional concepts in a backlog rather than starving every test.
 
 Before staging a conversion, lead, message, or website-action campaign, call `mcp_admira_review_signal_quality`. Use its recommended event and warnings in the campaign proposal. If it says signal setup is weak, still allow a paused draft, but do not present active launch as low-risk until the buyer understands the warning.
