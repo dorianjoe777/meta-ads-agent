@@ -49,9 +49,9 @@ Publicación directa is for approved organic Facebook posts. Its token may retry
 ## Native lead forms
 
 - Use `mcp_admira_list_lead_forms` before campaign creation and treat that live Meta result as authoritative.
-- If the required form does not exist, help the buyer design the questions, form intent, privacy policy, and follow-up. Use `mcp_admira_stage_lead_form` only to save the blueprint and return manual Ads Manager steps; it does not create a Meta approval or mutate Meta.
-- Tell the buyer to create and publish it in Meta Ads Manager under Leads → Instant forms → Ad level → Instant form → Create form, then ask them to reply that it is ready.
-- After that confirmation, call `mcp_admira_list_lead_forms` again, match the exact live form name/Page, and use its numeric `lead_gen_form_id`. Never invent or reuse an unverified form ID.
+- If the required form does not exist, help the buyer design the questions, form intent, privacy policy, and follow-up, then call `mcp_admira_create_lead_form`. It creates the native Instant Form through the connected Page token, reads the Page forms again, and returns success only when the exact `lead_gen_form_id` is confirmed live. Creating the form does not create spend, so it does not require a second approval ceremony.
+- After `mcp_admira_create_lead_form` succeeds, pass its verified `lead_gen_form_id` directly to `mcp_admira_stage_campaign` with the Leads objective and `final_status: PAUSED`. Do not ask the buyer to copy an ID or recreate the form manually.
+- If form lookup/creation is rejected because the Page token lacks the required Meta permission, do not retry blindly. Call `mcp_admira_stage_lead_form` as the fallback, give the exact Ads Manager steps, and ask the buyer to create/publish it once; then call `mcp_admira_list_lead_forms` and match the exact live Page/name before staging the campaign.
 - For a lead-form ad, pass the image/video, copy, CTA, and verified form ID. The backend creates the inline creative directly with `lead_gen_form_id`; no external landing URL or Page post is required.
 - If the image was archived by Telegram/content-library instead of being returned as a raw path, pass its buyer-approved `content_asset_ids` (or `content_asset_id`) to `stage_campaign`; the backend resolves the protected local file before checking creative requirements. Never pass only a visual description or a dashboard preview URL.
 - Keep the campaign objective `OUTCOME_LEADS`, the ad-set optimization goal `LEAD_GENERATION`, conversion destination `ON_AD`, and the Page ID in `promoted_object`.

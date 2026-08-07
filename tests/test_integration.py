@@ -3442,7 +3442,8 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             tools_by_name = {tool["name"]: tool for tool in captured[1]["result"]["tools"]}
             call_text = captured[2]["result"]["content"][0]["text"]
             self.assert_true(captured[0]["result"]["serverInfo"]["name"] == "admira", "MCP server initializes as Admira")
-            self.assert_true("codex_image_generate" in tool_names and "stage_campaign" in tool_names and "search_meta_targeting" in tool_names and "inspect_adset_targeting" in tool_names and "schedule_campaign_activation" in tool_names and "stage_lead_form" in tool_names and "list_lead_forms" in tool_names and "approve_action" in tool_names and "review_signal_quality" in tool_names and "preflight_campaign" in tool_names and "fetch_public_asset" in tool_names and "record_verified_signal" in tool_names and "save_ads_onboarding" in tool_names and "save_daily_social_content_settings" in tool_names and "stage_organic_social_post" in tool_names and "save_content_asset" in tool_names and "save_durable_memory" in tool_names and "import_product_catalog" in tool_names and "search_product_catalog" in tool_names, "MCP server lists product, live audience, and multi-product catalog tools for Hermes")
+            self.assert_true("codex_image_generate" in tool_names and "stage_campaign" in tool_names and "search_meta_targeting" in tool_names and "inspect_adset_targeting" in tool_names and "schedule_campaign_activation" in tool_names and "stage_lead_form" in tool_names and "create_lead_form" in tool_names and "list_lead_forms" in tool_names and "approve_action" in tool_names and "review_signal_quality" in tool_names and "preflight_campaign" in tool_names and "fetch_public_asset" in tool_names and "record_verified_signal" in tool_names and "save_ads_onboarding" in tool_names and "save_daily_social_content_settings" in tool_names and "stage_organic_social_post" in tool_names and "save_content_asset" in tool_names and "save_durable_memory" in tool_names and "import_product_catalog" in tool_names and "search_product_catalog" in tool_names, "MCP server lists product, live audience, native lead-form creation, and multi-product catalog tools for Hermes")
+            self.assert_true(admira_tool_bridge.TOOL_MAP.get("admira_create_lead_form") == "create_lead_form", "MCP bridge routes native lead-form creation to the product handler")
             self.assert_true(
                 {"request", "purpose"}.issubset(tools_by_name["codex_image_generate"]["inputSchema"]["properties"])
                 and {"name", "daily_budget", "creative_image_path"}.issubset(tools_by_name["stage_campaign"]["inputSchema"]["properties"])
@@ -9122,16 +9123,69 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.assert_true(missing.get("blocked") and "privacy_policy_url" in missing.get("missing", []), "Lead form design blocks clearly when privacy policy URL is missing")
             prompt = hermes_gateway.gateway_prompt("es")
             self.assert_true(
-                "Nunca digas que Admira creó el formulario" in prompt
+                "mcp_admira_create_lead_form" in prompt
                 and "mcp_admira_list_lead_forms" in prompt
                 and "lead_gen_form_id" in prompt
                 and "no requiere landing externa ni dark post" in prompt,
-                "Hermes is explicitly routed through manual form creation, live form lookup, and native inline lead creatives",
+                "Hermes is explicitly routed through direct native form creation, live verification, and native inline lead creatives",
             )
         finally:
             dashboard.PENDING_FILE = original["pending_file"]
             dashboard.OUTPUT_DIR = original["output_dir"]
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_chat_creates_and_verifies_native_lead_form_without_approval(self):
+        """A requested form is created through Meta and verified before campaign staging."""
+        print("\nTesting Direct Native Lead Form Creation And Verification...")
+        dashboard = load_dashboard_module()
+        original_client = dashboard.SocialFlowClient
+        original_license_check = dashboard.require_cloud_license
+        calls = []
+
+        class FakeClient:
+            normalize_lead_form_questions = staticmethod(SocialFlowClient.normalize_lead_form_questions)
+            normalize_lead_form_form_type = staticmethod(SocialFlowClient.normalize_lead_form_form_type)
+
+            def __init__(self, _config):
+                pass
+
+            def lead_forms(self, page_id, limit=100):
+                calls.append(("list", page_id, limit))
+                if len([call for call in calls if call[0] == "list"]) == 1:
+                    return {"returncode": 0, "stdout": json.dumps({"data": []}), "stderr": ""}
+                return {"returncode": 0, "stdout": json.dumps({"data": [{"id": "form_123", "name": "Valoración gratuita"}]}), "stderr": ""}
+
+            def create_lead_form(self, page_id, name, **kwargs):
+                calls.append(("create", page_id, name, kwargs.get("approved")))
+                return {"returncode": 0, "executed": True, "stdout": json.dumps({"id": "form_123", "page_id": page_id, "name": name}), "stderr": ""}
+
+        try:
+            dashboard.SocialFlowClient = FakeClient
+            dashboard.require_cloud_license = lambda *_args, **_kwargs: None
+            result = dashboard.execute_agent_tool(
+                {
+                    "tool": "create_lead_form",
+                    "arguments": {
+                        "page_id": "page_1",
+                        "name": "Valoración gratuita",
+                        "questions": ["full_name", "phone", {"type": "CUSTOM", "label": "¿Qué servicio te interesa?"}],
+                        "privacy_policy_url": "https://uboost.lat/privacy",
+                        "follow_up_action_url": "https://uboost.lat/gracias",
+                    },
+                },
+                {"language": "es", "channel": "telegram"},
+            )
+            self.assert_true(
+                result.get("executed") and result.get("verified_live") and result.get("lead_gen_form_id") == "form_123",
+                "Direct form creation returns only after the live lead_gen_form_id is verified",
+            )
+            self.assert_true(
+                calls[0][:3] == ("list", "page_1", 100) and calls[1][0] == "create" and calls[1][3] is True and calls[2][0] == "list",
+                "Form creation is idempotency-checked, explicitly executed without spend approval, and read back",
+            )
+        finally:
+            dashboard.SocialFlowClient = original_client
+            dashboard.require_cloud_license = original_license_check
 
     def test_organic_content_opt_in_stages_and_publishes_only_after_approval(self):
         """Test organic content is gated by readiness and exact approval publishes one visible post."""

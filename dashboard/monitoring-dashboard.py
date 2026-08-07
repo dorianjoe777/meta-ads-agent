@@ -12758,6 +12758,146 @@ def handle_stage_lead_form_tool(arguments, chat_payload, tool):
     return stage_lead_form_creation(arguments or {}, chat_payload)
 
 
+def _lead_form_records_from_result(result):
+    """Normalize the Graph/CLI response for Page leadgen_forms reads."""
+    try:
+        body = json.loads((result or {}).get("stdout") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        body = {}
+    if isinstance(body, dict):
+        data = body.get("data")
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        for key in ("forms", "lead_forms", "items"):
+            data = body.get(key)
+            if isinstance(data, list):
+                return [item for item in data if isinstance(item, dict)]
+        if any(body.get(key) for key in ("id", "lead_gen_form_id", "lead_form_id")):
+            return [body]
+    elif isinstance(body, list):
+        return [item for item in body if isinstance(item, dict)]
+    return []
+
+
+def _lead_form_id_from_result(result):
+    """Extract the created form ID without trusting a human-readable name."""
+    for record in _lead_form_records_from_result(result):
+        for key in ("lead_gen_form_id", "lead_form_id", "id"):
+            value = str(record.get(key) or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def create_lead_form_creation(arguments, chat_payload):
+    """Create and verify a native Meta Instant Form, without creating spend."""
+    payload = normalize_lead_form_tool_arguments(arguments, chat_payload)
+    missing = []
+    if not payload.get("page_id"):
+        missing.append("page_id")
+    if not payload.get("name"):
+        missing.append("name")
+    if not str(payload.get("privacy_policy_url") or "").startswith(("http://", "https://")):
+        missing.append("privacy_policy_url")
+    if not payload.get("questions"):
+        missing.append("questions")
+    if missing:
+        return agent_action_result(
+            "create_lead_form", False,
+            chat_reply(
+                chat_payload,
+                f"Puedo crear el formulario nativo, pero falta esto: {', '.join(missing)}.",
+                f"I can create the native form, but this is missing: {', '.join(missing)}.",
+            ),
+            blocked=True, reason="missing_lead_form_detail", missing=missing,
+        )
+
+    require_cloud_license("Native Meta lead-form creation requires an active license")
+    client = SocialFlowClient(load_config())
+    # Idempotency: reuse an exact existing form instead of creating duplicates
+    # when Hermes retries after a timeout or the buyer repeats the request.
+    listed = client.lead_forms(payload["page_id"], limit=100)
+    if listed.get("returncode") != 0:
+        return agent_action_result(
+            "create_lead_form", False,
+            chat_reply(
+                chat_payload,
+                "No pude comprobar los formularios existentes de esa página, así que no crearé otro a ciegas. "
+                "Revisa que la app/token tenga permisos de formularios de clientes potenciales; si no, puedo dejarte la guía manual.",
+                "I could not check the Page's existing forms, so I will not create a duplicate blindly. "
+                "Check that the app/token has lead-form permissions; I can provide the manual fallback if needed.",
+            ),
+            blocked=True, reason="lead_form_lookup_failed", result=summarize_cli_result(listed),
+        )
+    existing = _lead_form_records_from_result(listed)
+    requested_name = payload["name"].casefold()
+    for form in existing:
+        if str(form.get("name") or "").strip().casefold() == requested_name:
+            form_id = _lead_form_id_from_result({"stdout": json.dumps(form)})
+            if form_id:
+                return agent_action_result(
+                    "create_lead_form", True,
+                    chat_reply(
+                        chat_payload,
+                        f"El formulario «{payload['name']}» ya existe en Meta. Verifiqué su ID real: {form_id}. Ya se puede usar en la campaña pausada.",
+                        f"The form “{payload['name']}” already exists in Meta. I verified its real ID: {form_id}. It is ready for the paused campaign.",
+                    ),
+                    created=False, reused=True, verified_live=True,
+                    lead_gen_form_id=form_id, page_id=payload["page_id"], form=form,
+                )
+
+    created = client.create_lead_form(
+        payload["page_id"], payload["name"], questions=payload["questions"],
+        privacy_policy_url=payload["privacy_policy_url"],
+        privacy_policy_link_text=payload["privacy_policy_link_text"],
+        follow_up_action_url=payload["follow_up_action_url"], locale=payload["locale"],
+        form_type=payload["form_type"], context_card=payload["context_card"],
+        thank_you_page=payload["thank_you_page"], custom_disclaimer=payload["custom_disclaimer"],
+        approved=True,
+    )
+    if created.get("returncode") != 0:
+        return agent_action_result(
+            "create_lead_form", False,
+            chat_reply(
+                chat_payload,
+                "Meta no permitió crear el formulario. No se creó la campaña ni se activó gasto; revisaré el permiso exacto del Page token.",
+                "Meta did not allow the form to be created. No campaign or spend was started; check the exact Page-token permission.",
+            ),
+            blocked=True, reason="meta_lead_form_creation_failed", result=summarize_cli_result(created),
+        )
+    created_id = _lead_form_id_from_result(created)
+    # Never claim success from a write response alone: read the Page edge again
+    # and require the exact ID to be present before handing it to stage_campaign.
+    verified_list = client.lead_forms(payload["page_id"], limit=100)
+    verified_forms = _lead_form_records_from_result(verified_list)
+    verified = next((item for item in verified_forms if _lead_form_id_from_result({"stdout": json.dumps(item)}) == created_id), None)
+    if not created_id or verified_list.get("returncode") != 0 or not verified:
+        return agent_action_result(
+            "create_lead_form", False,
+            chat_reply(
+                chat_payload,
+                "Meta respondió al crear el formulario, pero la lectura posterior no confirmó su ID real. No lo usaré todavía para una campaña.",
+                "Meta accepted the form write, but the follow-up read did not confirm its real ID. I will not use it in a campaign yet.",
+            ),
+            blocked=True, reason="lead_form_verification_failed", created_lead_gen_form_id=created_id,
+            create_result=summarize_cli_result(created), verification_result=summarize_cli_result(verified_list),
+        )
+    return agent_action_result(
+        "create_lead_form", True,
+        chat_reply(
+            chat_payload,
+            f"Formulario nativo creado y verificado en Meta: «{payload['name']}» (ID {created_id}). Ya puedo usarlo para crear la campaña de clientes potenciales en pausa; no se ha activado gasto.",
+            f"Native Meta form created and verified: “{payload['name']}” (ID {created_id}). I can now use it to create the paused lead campaign; no spend has started.",
+        ),
+        created=True, verified_live=True, lead_gen_form_id=created_id,
+        page_id=payload["page_id"], form=verified,
+    )
+
+
+def handle_create_lead_form_tool(arguments, chat_payload, tool):
+    return create_lead_form_creation(arguments or {}, chat_payload)
+
+
 def handle_list_lead_forms_tool(arguments, chat_payload, tool):
     payload = dict(arguments or {})
     page_id = str(payload.get("page_id") or payload.get("facebook_page_id") or business_identity(payload).get("page_id") or "").strip()
@@ -13339,6 +13479,7 @@ AGENT_TOOL_HANDLERS = {
     "export_report": handle_export_report_tool,
     "list_lead_forms": handle_list_lead_forms_tool,
     "stage_lead_form": handle_stage_lead_form_tool,
+    "create_lead_form": handle_create_lead_form_tool,
     "create_campaign_stack": handle_create_campaign_stack_tool,
     "build_audience_strategy": handle_build_audience_strategy_tool,
     "init_brand_guides": handle_init_brand_guides_tool,
