@@ -2061,10 +2061,28 @@ def managed_account_limit_status(account, state=None):
     business = state.get("business_manager") or {}
     if business.get("id"):
         if not account.get("business_id"):
+            if not license_entitlements().get("is_agency"):
+                return {
+                    "can_select": True,
+                    "requires_business_replacement_confirmation": True,
+                    "reason": "business_manager_unknown",
+                }
             return {"can_select": False, "reason": "business_manager_unknown"}
         if account.get("business_id") != business.get("id"):
+            if not license_entitlements().get("is_agency"):
+                return {
+                    "can_select": True,
+                    "requires_business_replacement_confirmation": True,
+                    "reason": "business_manager_mismatch",
+                }
             return {"can_select": False, "reason": "business_manager_mismatch"}
     elif accounts:
+        if not license_entitlements().get("is_agency"):
+            return {
+                "can_select": True,
+                "requires_business_replacement_confirmation": True,
+                "reason": "business_manager_unknown",
+            }
         return {"can_select": False, "reason": "business_manager_unknown"}
     return {"can_select": True, "reason": "same_business_manager"}
 
@@ -4654,7 +4672,15 @@ def social_set_default_account(payload):
         "confirm_replace_business": payload.get("confirm_replace_business"),
     }
     replaced = enforce_individual_business_change(replace_payload)
-    saved = save_setup_config({**replace_payload, "_skip_business_enforcement": True})
+    saved = save_setup_config({
+        **replace_payload,
+        "_skip_business_enforcement": True,
+        # social_set_default_account already performed the explicit
+        # replacement check above. Tell setup persistence to replace the
+        # managed-account registry too, rather than seeding the old account
+        # back from the still-loaded config during this same request.
+        "_replace_business_state": replaced,
+    })
     saved["business_replaced"] = replaced
     saved["managed_ad_accounts"] = managed_ad_accounts_payload()
     return {
@@ -6478,7 +6504,7 @@ def save_setup_config(payload):
                 "business_id": payload.get("business_id") or payload.get("business_manager_id"),
                 "business_name": payload.get("business_name") or payload.get("business_manager_name"),
             },
-            replace_business=replaced,
+            replace_business=bool(payload.get("_replace_business_state")) or replaced,
         )
     env_updates = {}
     text_fields = {

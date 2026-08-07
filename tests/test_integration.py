@@ -6777,6 +6777,78 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             else:
                 managed_path.write_bytes(managed_before)
 
+    def test_meta_account_switch_after_new_token_is_selectable_and_clean(self):
+        """A new token may expose another BM; the UI must allow an explicit clean switch."""
+        print("\nTesting Meta Account Replacement After Token Change... ")
+        dashboard = load_dashboard_module()
+        original = {
+            "DATA_DIR": dashboard.DATA_DIR,
+            "ENV_FILE": dashboard.ENV_FILE,
+            "AD_CONFIG_FILE": dashboard.AD_CONFIG_FILE,
+            "ONBOARDING_FILE": dashboard.ONBOARDING_FILE,
+            "INDIVIDUAL_BINDING_FILE": dashboard.INDIVIDUAL_BINDING_FILE,
+            "MANAGED_AD_ACCOUNTS_FILE": dashboard.MANAGED_AD_ACCOUNTS_FILE,
+            "license_entitlements": dashboard.license_entitlements,
+            "load_config": dashboard.load_config,
+            "graph_get": dashboard.graph_get,
+        }
+        test_dir = Path(tempfile.mkdtemp(prefix="meta-account-switch-"))
+        try:
+            dashboard.DATA_DIR = test_dir / "data"
+            dashboard.DATA_DIR.mkdir(parents=True, exist_ok=True)
+            dashboard.ENV_FILE = test_dir / ".env"
+            dashboard.AD_CONFIG_FILE = test_dir / "ad-config.json"
+            dashboard.ONBOARDING_FILE = dashboard.DATA_DIR / "onboarding_state.json"
+            dashboard.INDIVIDUAL_BINDING_FILE = dashboard.DATA_DIR / "individual_business_binding.json"
+            dashboard.MANAGED_AD_ACCOUNTS_FILE = dashboard.DATA_DIR / "managed_ad_accounts.json"
+            dashboard.license_entitlements = lambda: {"plan": "individual", "is_agency": False, "max_devices": 1, "workspace_limit": 1}
+
+            class Config:
+                ad_account_id = "act_old"
+                meta_access_token = "new-token"
+                meta_access_token_kind = "stable"
+                meta_access_token_saved_at = ""
+                meta_graph_api_version = "v24.0"
+                meta_publishing_access_token = ""
+                meta_publishing_token_saved_at = ""
+                telegram_bot_token = ""
+                telegram_chat_id = ""
+                telegram_language = "es"
+                agent_brain_provider = ""
+                agent_chat_provider = "hermes"
+                agent_chat_base_url = ""
+
+            dashboard.load_config = lambda: Config()
+            dashboard.update_env_values({"META_AD_ACCOUNT_ID": "act_old", "META_ACCESS_TOKEN": "new-token"})
+            dashboard.write_json(dashboard.ONBOARDING_FILE, {"completed": True})
+            dashboard.write_json(dashboard.AD_CONFIG_FILE, {"account": {"id": "act_old", "business_manager_id": "bm_old"}, "creative": {"destination": {"page_id": "page_old"}}})
+            dashboard.write_json(dashboard.INDIVIDUAL_BINDING_FILE, {"ad_account_id": "act_old", "page_id": "page_old", "business_manager_id": "bm_old"})
+            dashboard.write_json(dashboard.MANAGED_AD_ACCOUNTS_FILE, {"business_manager": {"id": "bm_old", "name": "Old BM"}, "active_ad_account_id": "act_old", "accounts": [{"id": "act_old", "name": "Old", "business_id": "bm_old"}], "max_accounts": 5})
+
+            def fake_graph_get(path, params=None, page_token=""):
+                if path == "/me/adaccounts":
+                    return {"ok": True, "data": {"data": [{"account_id": "new", "name": "New Business Account", "currency": "USD", "account_status": 1, "business": {"id": "bm_new", "name": "New BM"}}]}}
+                return {"ok": True, "data": {"data": []}}
+
+            dashboard.graph_get = fake_graph_get
+            discovered = dashboard.social_marketing_accounts()
+            choice = discovered["accounts"][0]
+            self.assert_true(choice["can_select"] and choice["requires_business_replacement_confirmation"], "A new-Business account is clickable and requests an explicit replacement confirmation")
+            try:
+                dashboard.social_set_default_account({"ad_account_id": "act_new", "account_name": "New Business Account", "business_manager_id": "bm_new", "business_manager_name": "New BM"})
+                self.assert_true(False, "Switching businesses without confirmation must be blocked")
+            except ValueError as exc:
+                self.assert_true("CONFIRM_BUSINESS_REPLACE" in str(exc), "Server keeps the clean-business confirmation guard")
+            selected = dashboard.social_set_default_account({"ad_account_id": "act_new", "account_name": "New Business Account", "business_manager_id": "bm_new", "business_manager_name": "New BM", "confirm_replace_business": True})
+            managed = dashboard.read_json(dashboard.MANAGED_AD_ACCOUNTS_FILE, {})
+            self.assert_true(selected["local_saved"] and selected.get("saved", {}).get("ad_config", {}).get("account", {}).get("id") == "act_new", "Confirmed selection completes the local save response")
+            self.assert_true(managed.get("active_ad_account_id") == "act_new" and [item.get("id") for item in managed.get("accounts", [])] == ["act_new"], "Confirmed replacement leaves only the new account in the managed registry")
+            self.assert_true("META_AD_ACCOUNT_ID=act_new" in dashboard.ENV_FILE.read_text(encoding="utf-8"), "Confirmed replacement writes the new account to the environment")
+        finally:
+            shutil.rmtree(test_dir, ignore_errors=True)
+            for key, value in original.items():
+                setattr(dashboard, key, value)
+
     def test_chat_saves_existing_adset_when_user_provides_it(self):
         """Test chat can store an optional existing ad set ID without making it a beginner requirement."""
         print("\nTesting Chat Existing Ad Set Memory...")
