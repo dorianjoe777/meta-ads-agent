@@ -3389,15 +3389,19 @@ def publishing_status(config=None, destination=None):
     config = config or load_config()
     if destination is None:
         destination = read_json(AD_CONFIG_FILE, {}).get("creative", {}).get("destination", {})
-    token_set = bool(getattr(config, "meta_publishing_access_token", ""))
+    # New installs use one Meta token for Ads and Page publishing. Keep the
+    # legacy publishing token as a fallback so older installs continue to
+    # work while they migrate.
+    token_set = bool(getattr(config, "meta_access_token", "") or getattr(config, "meta_publishing_access_token", ""))
     page_id = str((destination or {}).get("page_id") or "").strip()
     return {
         "ok": token_set and bool(page_id),
         "token_set": token_set,
         "ready": token_set and bool(page_id),
         "page_id": page_id,
-        "saved_at": getattr(config, "meta_publishing_token_saved_at", ""),
-        "description": "Direct publishing is available for approved organic Facebook posts and, when ads-authorized, as an optional inline creative credential fallback." if token_set else "Direct publishing is optional and not connected.",
+        "saved_at": getattr(config, "meta_access_token_saved_at", "") or getattr(config, "meta_publishing_token_saved_at", ""),
+        "token_source": "meta_access_token" if getattr(config, "meta_access_token", "") else "legacy_meta_publishing_access_token",
+        "description": "Direct publishing uses the same Meta token as Ads and is available for approved organic Facebook posts." if token_set else "Direct publishing is not connected.",
     }
 
 
@@ -3468,13 +3472,16 @@ def _debug_token_scopes(debug_result):
 def test_publishing_connection(payload=None):
     payload = payload or {}
     config = load_config()
-    token = str(payload.get("token") or getattr(config, "meta_publishing_access_token", "") or "").strip()
+    token = str(payload.get("token") or getattr(config, "meta_access_token", "") or getattr(config, "meta_publishing_access_token", "") or "").strip()
     destination = read_json(AD_CONFIG_FILE, {}).get("creative", {}).get("destination", {})
     page_id = str(payload.get("page_id") or destination.get("page_id") or "").strip()
     if not token:
-        return {"ok": False, "code": "missing_token", "message": "Falta conectar Publicación directa.", "page_id": page_id}
+        return {"ok": False, "code": "missing_token", "message": "Falta conectar el token único de Meta.", "page_id": page_id}
     debug = graph_get("/debug_token", {"input_token": token}, page_token=token)
-    pages = graph_get("/me/accounts", {"fields": "id,name,tasks,perms,access_token", "limit": 100}, page_token=token)
+    # `tasks`/`perms` are not consistently available on current Graph API
+    # Page-token responses. Resolve access from the token and Page ID instead
+    # of making the whole validation fail on an obsolete field.
+    pages = graph_get("/me/accounts", {"fields": "id,name,access_token", "limit": 100}, page_token=token)
     scopes = _debug_token_scopes(debug)
     required_scopes = {"pages_manage_posts", "pages_read_engagement"}
     missing_scopes = sorted(required_scopes - scopes) if scopes else []
@@ -3497,7 +3504,7 @@ def test_publishing_connection(payload=None):
         and not missing_native_whatsapp_scopes
         and ad_account_result.get("ok")
     )
-    message = "Publicación directa lista." if ok else "La clave de publicación no está lista todavía."
+    message = "Publicación directa lista con el token único de Meta." if ok else "El token único de Meta todavía no está listo para publicar."
     if missing_scopes:
         message = f"Faltan permisos: {', '.join(missing_scopes)}."
     elif page_id and not page_found:
@@ -3537,7 +3544,12 @@ def save_publishing_config(payload):
     if len(token) < 20:
         raise ValueError("La clave de publicación es demasiado corta.")
     check = test_publishing_connection({"token": token, "page_id": payload.get("page_id") or ""})
+    # Compatibility endpoint for pre-unification clients. Store the token as
+    # the primary credential too; new UI never presents a second token field.
     update_env_values({
+        "META_ACCESS_TOKEN": token,
+        "META_ACCESS_TOKEN_KIND": "stable",
+        "META_ACCESS_TOKEN_SAVED_AT": now_iso(),
         "META_PUBLISHING_ACCESS_TOKEN": token,
         "META_PUBLISHING_TOKEN_SAVED_AT": now_iso(),
     })

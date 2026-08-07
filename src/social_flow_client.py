@@ -19,6 +19,27 @@ class SocialFlowClient:
     def __init__(self, config):
         self.config = config
 
+    def meta_page_token(self):
+        """Return the unified Meta credential, with legacy fallback.
+
+        New installations grant Ads and Page permissions to one token. The
+        old publishing-only variable remains a migration fallback so an
+        existing installation is not broken during upgrade.
+        """
+        return str(
+            getattr(self.config, "meta_access_token", "")
+            or getattr(self.config, "meta_publishing_access_token", "")
+            or ""
+        ).strip()
+
+    def legacy_publishing_token(self):
+        """Return the old publishing-only token for migration fallback paths."""
+        return str(
+            getattr(self.config, "meta_publishing_access_token", "")
+            or getattr(self.config, "meta_access_token", "")
+            or ""
+        ).strip()
+
     def run(self, args, live_required=True, mutation=False, approved=False):
         operation = ["meta-graph"] + list(args)
         record = {
@@ -127,7 +148,7 @@ class SocialFlowClient:
         user_token = str(user_token or "").strip()
         if not page_id or not user_token:
             return {"ok": False, "access_token": "", "page": {}, "error": "missing_page_or_token"}
-        result = self.get_graph("me/accounts", {"fields": "id,name,access_token,tasks,perms", "limit": "200"}, access_token=user_token)
+        result = self.get_graph("me/accounts", {"fields": "id,name,access_token", "limit": "200"}, access_token=user_token)
         body = result.get("body") if isinstance(result.get("body"), dict) else {}
         for page in body.get("data") or []:
             if str(page.get("id") or "") == page_id:
@@ -261,7 +282,7 @@ class SocialFlowClient:
         cached = getattr(self, "_publishing_ads_capability_cache", None)
         if isinstance(cached, dict):
             return cached
-        token = str(getattr(self.config, "meta_publishing_access_token", "") or "").strip()
+        token = self.meta_page_token()
         ad_account_id = self.normalize_ad_account_id(getattr(self.config, "ad_account_id", ""))
         if not token or not ad_account_id:
             result = {
@@ -965,10 +986,10 @@ class SocialFlowClient:
             if area != "marketing":
                 return None
             if action == "create-page-post":
-                publishing_token = str(getattr(self.config, "meta_publishing_access_token", "") or "").strip()
+                publishing_token = self.meta_page_token()
                 page_id = self.flag(args, "--page-id", "")
                 if not publishing_token:
-                    return self.graph_local_record(record, "local/meta-publishing-token", {"ok": False, "error": "missing_meta_publishing_access_token", "message": "Direct publishing is not connected. Save the Page publishing token in Settings > Publicación directa, not in the main Meta Ads token field."}, ok=False, status=1)
+                    return self.graph_local_record(record, "local/meta-page-token", {"ok": False, "error": "missing_meta_page_token", "message": "Direct publishing is not connected. Save the unified Meta token in the main Meta connection field."}, ok=False, status=1)
                 if not page_id:
                     return self.graph_local_record(record, "local/meta-page-post", {"ok": False, "error": "missing_page_id"}, ok=False, status=1)
                 page_lookup = self.page_access_token(page_id, publishing_token)
@@ -1120,7 +1141,7 @@ class SocialFlowClient:
                 for candidate in (
                     access_token,
                     getattr(self.config, "meta_access_token", ""),
-                    getattr(self.config, "meta_publishing_access_token", ""),
+                    self.meta_page_token(),
                 ):
                     candidate = str(candidate or "").strip()
                     if candidate and candidate not in token_candidates:
@@ -1414,7 +1435,7 @@ class SocialFlowClient:
                 creative_access_token = access_token
                 credential_source = "primary"
                 if str(creative_token_source or "").strip().lower() in {"publishing", "direct_publishing", "page_publishing"}:
-                    publishing_token = str(getattr(self.config, "meta_publishing_access_token", "") or "").strip()
+                    publishing_token = self.legacy_publishing_token()
                     if publishing_token:
                         creative_access_token = publishing_token
                         credential_source = "publishing"

@@ -9503,7 +9503,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             attached_media = json.loads(feed_fields["attached_media[0]"][0])
             image_cta = json.loads(feed_fields["call_to_action"][0])
             self.assert_true(result.get("connector") == "graph_api" and body.get("object_story_id") == "page_1_link_post_1", "Direct publishing returns a native Page post object_story_id")
-            self.assert_true(b"page-token" in post_body and b"ads-token" not in post_body, "Page post creation uses the Page publishing token, not the ads token")
+            self.assert_true(b"page-token" in post_body and b"ads-token" not in post_body, "Page post derives its Page token from the unified primary Meta credential")
             self.assert_true(b'published' in post_body and b'false' in post_body and b'ADS_POST' in post_body, "Direct publishing creates an unpublished ads-ready Page post")
             self.assert_true(feed_fields["link"][0] == "https://uboost.lat" and attached_media["media_fbid"] == "photo_1", "Static direct publishing creates a linked feed post with the uploaded image attached")
             self.assert_true(image_cta["type"] == "LEARN_MORE" and image_cta["value"]["link"] == "https://uboost.lat", "Static direct publishing includes a website URL CTA")
@@ -9600,7 +9600,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             page_token_result = client.create_page_post("page_1", message="Token de pagina directo", image_url="https://cdn.example/ad.jpg", approved=True)
             page_token_body = json.loads(page_token_result.get("stdout") or "{}")
             self.assert_true(page_token_body.get("object_story_id") == "page_1_post_1", "Direct publishing accepts a saved direct Page access token")
-            self.assert_true(any("/page_1?" in item.full_url for item in requests) and b"access_token=publish-token" in requests[-1].data, "Direct Page token fallback uses the saved publishing token when no child access token is returned")
+            self.assert_true(any("/page_1?" in item.full_url for item in requests) and b"access_token=ads-token" in requests[-1].data, "Direct Page token fallback uses the unified primary Meta token when no child access token is returned")
             requests.clear()
             lookup_mode["value"] = "page_token_retry"
             page_token_retry_result = client.create_page_post("page_1", message="Token de pagina con retry", image_url="https://cdn.example/ad.jpg", approved=True)
@@ -9608,7 +9608,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             direct_lookup_urls = [item.full_url for item in requests if "/page_1?" in item.full_url]
             self.assert_true(page_token_retry_body.get("object_story_id") == "page_1_post_1", "Direct Page token lookup retries with minimal fields when Meta rejects optional fields")
             self.assert_true(len(direct_lookup_urls) >= 2 and "fields=id%2Cname%2Caccess_token" in direct_lookup_urls[0] and "fields=id%2Cname" in direct_lookup_urls[-1], "Direct Page token retry first asks for access_token then falls back to id/name only")
-            self.assert_true(any(item.data and b"access_token=publish-token" in item.data for item in requests), "Direct Page token retry publishes with the saved direct Page token")
+            self.assert_true(any(item.data and b"access_token=ads-token" in item.data for item in requests), "Direct Page token retry publishes with the unified primary Meta token")
         finally:
             social_flow_client.urllib.request.urlopen = original_urlopen
             if original_attempts is None:
@@ -11457,8 +11457,8 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         self.assert_true("version-pill" in html and 'id="s-version"' in html and "product_version" in dashboard_source, "Header exposes the installed product version")
         self.assert_true("Tu licencia es de por vida" in html and "Activa de por vida" in html and "license_term==='lifetime'" in html, "Dashboard clearly presents the commercial license as lifetime")
         self.assert_true("expires=status.expires_at" not in html and "?'vence':'expires'" not in html, "Dashboard never presents the internal verification refresh date as a license expiry")
-        self.assert_true("Opcional: clave de Publicación directa" in html and "app Live de publicaciones" in html and "savePublishingConfig" in html, "Onboarding exposes optional direct publishing setup without making it required")
-        self.assert_true("direct-publishing-shots" in html and "meta-business-24-select-app-token.png" in html and "pages_manage_posts" in html, "Direct publishing guide includes screenshot-based Meta token steps and required Page permissions")
+        self.assert_true("Una sola conexión para anuncios y Página" in html and "Token único de Meta" in html and "saveMetaToken" in html, "Onboarding exposes one unified Meta token for Ads and Page publishing")
+        self.assert_true("pages_manage_posts" in html and "pages_read_engagement" in html and "pages_show_list" in html and "No pegues un segundo token" in html, "Unified Meta token guide includes the required Page permissions and rejects a second token")
         self.assert_true("testPublishingConnection" in html and "disconnectPublishingConfig" in html, "Direct publishing UI actions are allowed from dashboard/onboarding buttons")
         self.assert_true("guide-overlay" in html and "guide-modal-card" in html, "Guide cards are shown in a popup")
         self.assert_true("@keyframes chat-panel-in" in html and "chat-avatar-pop" in html, "Chat opens with polished motion")
@@ -11607,7 +11607,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         self.assert_true("Elige el estilo que más te guste" in html and "Arriba, junto al menú" in html and "#theme-toggle" in html and ".tour-spot" in html and "theme-choice" in html, "The post-onboarding tour starts with an interactive theme selection coach mark at the header theme picker")
         self.assert_true("Elige la hora de tu lectura diaria" in html and "#daily-brief-schedule-button" in html and "zona horaria se detecta automáticamente" in html, "The first dashboard tour teaches buyers where to change the locally timed daily brief")
         self.assert_true(".guide-overlay.product-tour" in html and "backdrop-filter:none" in html and "rgba(3,4,7,var(--tour-dim))" in html, "The dashboard tour spotlights targets without blurring the buttons buyers need to click")
-        self.assert_true("{id:'meta',status:tokenOk&&accountOk&&destinationOk&&publishingOk?'ok':'blocked'}" in html and "const destinationOk=setupItem('page_id').status==='ok'" in html and "Token 1 · Anuncios" in html and "Token 2 · Publicación Live" in html, "The Meta activation section combines both tokens, account, and Page readiness without requiring a website")
+        self.assert_true("{id:'meta',status:tokenOk&&accountOk&&destinationOk&&publishingOk?'ok':'blocked'}" in html and "const destinationOk=setupItem('page_id').status==='ok'" in html and "Single Meta token · Ads + Page" in html and "Token 2 · Live publishing" not in html, "The Meta activation section uses one token for Ads and Page readiness without requiring a website")
         self.assert_true("compactActivationSection(1" in html and "compactActivationSection(2" in html and "compactActivationSection(3" in html and "compactActivationSection(4" in html, "Initial activation is one scrolling page ordered password, Meta, model/images, and Telegram")
         self.assert_true("found-choice-card" in html and "account-choice-grid" in html and "destination-choice-grid" in html and "Usar esta cuenta y seguir" in html and "Usar esta página" in html, "Meta account and Page discovery results are shown as prominent glowing choices")
         self.assert_true("Elige qué modelo usará el agente" in html and "apiBrainOk" in html, "Onboarding positions model setup as part of installation and accepts API brain readiness")
