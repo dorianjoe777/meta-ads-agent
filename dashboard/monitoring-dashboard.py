@@ -2061,29 +2061,23 @@ def managed_account_limit_status(account, state=None):
     business = state.get("business_manager") or {}
     if business.get("id"):
         if not account.get("business_id"):
-            if not license_entitlements().get("is_agency"):
-                return {
-                    "can_select": True,
-                    "requires_business_replacement_confirmation": True,
-                    "reason": "business_manager_unknown",
-                }
-            return {"can_select": False, "reason": "business_manager_unknown"}
-        if account.get("business_id") != business.get("id"):
-            if not license_entitlements().get("is_agency"):
-                return {
-                    "can_select": True,
-                    "requires_business_replacement_confirmation": True,
-                    "reason": "business_manager_mismatch",
-                }
-            return {"can_select": False, "reason": "business_manager_mismatch"}
-    elif accounts:
-        if not license_entitlements().get("is_agency"):
             return {
                 "can_select": True,
                 "requires_business_replacement_confirmation": True,
                 "reason": "business_manager_unknown",
             }
-        return {"can_select": False, "reason": "business_manager_unknown"}
+        if account.get("business_id") != business.get("id"):
+            return {
+                "can_select": True,
+                "requires_business_replacement_confirmation": True,
+                "reason": "business_manager_mismatch",
+            }
+    elif accounts:
+        return {
+            "can_select": True,
+            "requires_business_replacement_confirmation": True,
+            "reason": "business_manager_unknown",
+        }
     return {"can_select": True, "reason": "same_business_manager"}
 
 
@@ -2119,6 +2113,8 @@ def prepare_managed_ad_account_update(account, replace_business=False):
     existing_index = next((idx for idx, item in enumerate(accounts) if item.get("id") == account["id"]), -1)
     if existing_index < 0:
         status = managed_account_limit_status(account, state)
+        if status.get("requires_business_replacement_confirmation") and not replace_business:
+            raise ValueError("CONFIRM_BUSINESS_REPLACE: Esa cuenta pertenece a otro Business Manager. Para cambiar de negocio hay que confirmar el reemplazo y continuar limpio.")
         if not status["can_select"]:
             if status["reason"] == "max_accounts":
                 raise ValueError("MAX_META_ACCOUNTS: Esta instalación puede manejar máximo 5 cuentas publicitarias al mismo tiempo.")
@@ -4679,7 +4675,7 @@ def social_set_default_account(payload):
         # replacement check above. Tell setup persistence to replace the
         # managed-account registry too, rather than seeding the old account
         # back from the still-loaded config during this same request.
-        "_replace_business_state": replaced,
+        "_replace_business_state": bool(payload.get("confirm_replace_business")) or replaced,
     })
     saved["business_replaced"] = replaced
     saved["managed_ad_accounts"] = managed_ad_accounts_payload()
@@ -6504,7 +6500,7 @@ def save_setup_config(payload):
                 "business_id": payload.get("business_id") or payload.get("business_manager_id"),
                 "business_name": payload.get("business_name") or payload.get("business_manager_name"),
             },
-            replace_business=bool(payload.get("_replace_business_state")) or replaced,
+            replace_business=bool(payload.get("_replace_business_state")) or bool(payload.get("confirm_replace_business")) or replaced,
         )
     env_updates = {}
     text_fields = {
