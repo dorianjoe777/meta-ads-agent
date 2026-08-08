@@ -1630,8 +1630,16 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         missing.append("creative image path, image hash, image URL, video URL, object_story_spec, or object_story_id")
     elif ad_plan.get("creative_image_path") and not Path(ad_plan.get("creative_image_path")).exists():
         missing.append(f"creative image file missing: {ad_plan.get('creative_image_path')}")
-    if message_destination == "WHATSAPP" and not whatsapp_phone_number_id and not (manual_completion or placeholder_static):
-        missing.append("Page-linked WhatsApp number verified in live Meta state")
+    # A Page-linked WhatsApp Business number is resolved by Meta when the ad
+    # set is created.  The Page ID is the durable promoted object; the phone
+    # number ID is not exposed by every valid Page/system-user token (and is
+    # often absent for numbers connected through Business Suite).  Do not
+    # block a real WhatsApp attempt merely because the optional lookup is
+    # empty.  Meta will return the authoritative, actionable error if the
+    # Page is still linked to a personal number or has no WhatsApp Business
+    # account.  This also lets newly-connected WABA numbers work immediately.
+    if message_destination == "WHATSAPP" and not destination.get("page_id") and not (manual_completion or placeholder_static):
+        missing.append("Facebook Page ID for WhatsApp destination")
     if final_status == "ACTIVE" and not active_confirmed:
         missing.append("active spend confirmation")
     if missing:
@@ -1800,6 +1808,17 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
                 "application_id": adset_application_id,
                 "object_store_url": adset_object_store_url,
             }
+        elif (
+            campaign_objective_for_social(campaign.get("objective"), campaign=campaign, ad_plan=nested_ad or ad_plan)
+            in {"OUTCOME_ENGAGEMENT", "OUTCOME_AWARENESS"}
+            and destination.get("page_id")
+            and not promoted_object.get("page_id")
+        ):
+            # Meta requires an object related to the selected outcome for
+            # native engagement/awareness ads.  A connected Page is the
+            # canonical promoted object; omitting it lets campaign/ad-set
+            # creation succeed but rejects the final ad with subcode 1885154.
+            promoted_object = {**promoted_object, "page_id": destination.get("page_id")}
         requested_targeting = targeting_for_social(adset_targeting)
         result = client.create_adset(
             campaign_id,

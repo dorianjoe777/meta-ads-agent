@@ -46,6 +46,38 @@ OBJECTIVE_RULES = {
         "optimization_goal": "LANDING_PAGE_VIEWS",
         "volume_label": "visitas de calidad",
     },
+    "engagement": {
+        "label": "interacción",
+        "primary_event": "PostEngagement",
+        "fallback_events": [],
+        "valid_events": {"PostEngagement"},
+        "optimization_goal": "POST_ENGAGEMENT",
+        "volume_label": "interacciones",
+    },
+    "awareness": {
+        "label": "reconocimiento",
+        "primary_event": "Reach",
+        "fallback_events": ["Impressions"],
+        "valid_events": {"Reach", "Impressions"},
+        "optimization_goal": "REACH",
+        "volume_label": "personas alcanzadas",
+    },
+    "video": {
+        "label": "reproducciones de video",
+        "primary_event": "ThruPlay",
+        "fallback_events": ["VideoView"],
+        "valid_events": {"ThruPlay", "VideoView"},
+        "optimization_goal": "THRUPLAY",
+        "volume_label": "reproducciones",
+    },
+    "app_promotion": {
+        "label": "instalaciones de aplicación",
+        "primary_event": "AppInstall",
+        "fallback_events": ["AppActivation"],
+        "valid_events": {"AppInstall", "AppActivation"},
+        "optimization_goal": "APP_INSTALLS",
+        "volume_label": "instalaciones",
+    },
 }
 
 EVENT_ALIASES = {
@@ -134,6 +166,14 @@ def normalize_objective(value):
         return "messages"
     if any(term in raw for term in ("lead", "contact", "registration", "form", "cliente potencial", "registro")):
         return "leads"
+    if any(term in raw for term in ("awareness", "reach", "reconocimiento", "alcance", "notoriedad")):
+        return "awareness"
+    if any(term in raw for term in ("video", "thruplay", "reproducción", "reproduccion", "views", "video views")):
+        return "video"
+    if any(term in raw for term in ("app promotion", "app_promotion", "app install", "instalación de app", "instalacion de app")):
+        return "app_promotion"
+    if any(term in raw for term in ("engagement", "interaction", "interacción", "interaccion", "post engagement", "participación", "participacion")):
+        return "engagement"
     if any(term in raw for term in ("traffic", "landing", "link", "visita", "tráfico", "trafico")):
         return "traffic"
     if any(term in raw for term in ("purchase", "conversion", "sales", "sale", "compra", "venta", "ventas", "purchases")):
@@ -257,7 +297,17 @@ def choose_recommended_event(rule, selected_event, weekly_volume):
 
 
 def event_requires_dataset(event):
-    return event not in {"MessagingConversationStarted", "LandingPageView"}
+    return event not in {
+        "MessagingConversationStarted",
+        "LandingPageView",
+        "PostEngagement",
+        "Reach",
+        "Impressions",
+        "ThruPlay",
+        "VideoView",
+        "AppInstall",
+        "AppActivation",
+    }
 
 
 def review_signal_quality(payload=None, metrics=None, language="es"):

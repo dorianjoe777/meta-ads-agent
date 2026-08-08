@@ -186,18 +186,35 @@ def check_interest_parenthetical_fallback(daily_agent):
     assert calls == [("interest", "Música (entretenimiento y medios de comunicación)"), ("interest", "Música")], calls
 
 
+def check_signal_objective_mapping():
+    from signal_quality import review_signal_quality
+
+    expected = {
+        "engagement": ("POST_ENGAGEMENT", "PostEngagement"),
+        "awareness": ("REACH", "Reach"),
+        "video": ("THRUPLAY", "ThruPlay"),
+        "app_promotion": ("APP_INSTALLS", "AppInstall"),
+    }
+    for objective, (goal, event) in expected.items():
+        review = review_signal_quality({"objective": objective})
+        patch = review.get("campaign_patch") or {}
+        assert patch.get("optimization_goal") == goal, (objective, patch)
+        assert patch.get("optimization_event") == event, (objective, patch)
+
+
 def main():
     dashboard = load_dashboard()
     import daily_agent
 
     check_interest_parenthetical_fallback(daily_agent)
+    check_signal_objective_mapping()
     summaries = []
     for index, payload in enumerate(cases(), 1):
         try:
             summaries.append(check_case(dashboard, daily_agent, payload))
         except Exception as exc:
             raise SystemExit(f"CASE {index} FAILED ({payload.get('name')}): {exc}") from exc
-    print(json.dumps({"ok": True, "interest_parenthetical_fallback": True, "cases": len(summaries), "ads": sum(x["ads"] for x in summaries), "summaries": summaries}, indent=2, ensure_ascii=False))
+    print(json.dumps({"ok": True, "interest_parenthetical_fallback": True, "signal_objective_mapping": True, "cases": len(summaries), "ads": sum(x["ads"] for x in summaries), "summaries": summaries}, indent=2, ensure_ascii=False))
 
 
 if __name__ == "__main__":

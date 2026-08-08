@@ -10531,6 +10531,50 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             welcome_payload = SocialFlowClient.page_welcome_message_payload(whatsapp_creative[2]["prefilled_message"])
             self.assert_true(welcome_payload["text_format"]["message"]["ice_breakers"][0]["title"] == "Hola, quiero reservar la oferta", "Click-to-WhatsApp serializes the customer-sendable text as Meta's page_welcome_message icebreaker")
 
+            class PageOnlyWhatsAppClient(DirectPublishingClient):
+                """A valid Page/WABA token may not expose the phone ID.
+
+                Meta can still resolve the Page-linked Business number from
+                promoted_object.page_id when the ad set is created. The
+                product must attempt that native path instead of blocking the
+                buyer before Graph has a chance to validate the connection.
+                """
+
+                def resolve_whatsapp_phone_number(self, page_id):
+                    return {
+                        "ok": False,
+                        "whatsapp_phone_number": "",
+                        "source": "meta_live",
+                        "reason": "phone_id_not_exposed_by_token",
+                        "page_id": page_id,
+                    }
+
+            campaign_path.write_text(
+                json.dumps(
+                    {
+                        "name": "WhatsApp Page-Only Stack",
+                        "objective": "MESSAGES",
+                        "budget": {"daily": 20},
+                        "ad_sets": [{"name": "WhatsApp Page-Only Stack - Core", "targeting": {"locations": ["MX"]}, "budget": 20}],
+                        "ad": {
+                            "primary_text": "Escríbenos por WhatsApp",
+                            "headline": "Habla con nosotros",
+                            "image_url": "https://cdn.example/whatsapp-page-only.jpg",
+                            "message_destination": "WHATSAPP",
+                            "prefilled_message": "Hola, quiero información",
+                            "final_status": "PAUSED",
+                            "active_spend_confirmed": False,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            page_only_client = PageOnlyWhatsAppClient()
+            page_only_result = execute_campaign_creation(str(campaign_path), page_only_client, approved=True)
+            page_only_adset = next(call for call in page_only_client.calls if call[0] == "create_adset")
+            self.assert_true(page_only_result["ok"], "WhatsApp Business creation does not require the phone ID to be exposed by the token")
+            self.assert_true(page_only_adset[2]["promoted_object"] == {"page_id": "111"}, "Page-linked WhatsApp Business fallback uses the Page promoted object")
+
             campaign_path.write_text(
                 json.dumps(
                     {
