@@ -70,6 +70,7 @@ ACTIONS_FILE = DATA_DIR / "actions.json"
 PENDING_FILE = DATA_DIR / "pending_approvals.json"
 ORGANIC_CONTENT_POSTS_FILE = DATA_DIR / "organic_content_posts.json"
 FATIGUE_LOG = OUTPUT_DIR / "fatigue-log.md"
+META_LEAD_ADS_TERMS_URL = "https://www.facebook.com/ads/leadgen/tos"
 
 def money(value):
     return round(float(value or 0), 2)
@@ -423,6 +424,49 @@ def result_debug_text(result):
     if body:
         parts.append(json.dumps(body, ensure_ascii=False))
     return "\n".join(parts).lower()
+
+
+def lead_ads_terms_guidance_from_steps(steps):
+    """Turn Meta's Page lead-ads terms blocker into an actionable buyer handoff.
+
+    Meta returns this blocker at ad-set or ad creation time, often after the
+    campaign and creative have already been created. Keep the URL and the
+    exact browser/device instruction in the structured result so Hermes can
+    present it directly instead of retrying the same mutation or inventing a
+    generic permissions explanation.
+    """
+    try:
+        text = json.dumps(steps or {}, ensure_ascii=False).lower()
+    except (TypeError, ValueError):
+        text = str(steps or {}).lower()
+    markers = (
+        "1815089",
+        "lead generation terms",
+        "lead ads terms",
+        "condiciones del servicio de generación de clientes potenciales",
+        "condiciones del servicio de generacion de clientes potenciales",
+        "terms of service for lead generation",
+    )
+    if not any(marker in text for marker in markers):
+        return None
+    return {
+        "required": True,
+        "kind": "meta_lead_ads_terms",
+        "url": META_LEAD_ADS_TERMS_URL,
+        "stop_retries_until_confirmed": True,
+        "message_es": (
+            "Meta necesita que la Página acepte las Condiciones de Lead Ads. "
+            "Abre Telegram Desktop, mantén abierta tu cuenta de Facebook con control total de la Página, "
+            f"abre este enlace y acepta las condiciones: {META_LEAD_ADS_TERMS_URL}. "
+            "Después vuelve a Telegram y escribe: condiciones aceptadas."
+        ),
+        "message_en": (
+            "Meta requires the Page to accept the Lead Ads Terms. "
+            "Open Telegram Desktop, keep your Facebook account with full Page control open, "
+            f"open this link and accept the terms: {META_LEAD_ADS_TERMS_URL}. "
+            "Then return to Telegram and write: terms accepted."
+        ),
+    }
 
 
 def creative_blocked_by_development_mode(result):
@@ -999,6 +1043,10 @@ def campaign_creation_failure_result(path, campaign, client, campaign_id, failed
         "steps": steps,
         **extra,
     }
+    terms_guidance = lead_ads_terms_guidance_from_steps(steps)
+    if terms_guidance:
+        result["buyer_action_required"] = terms_guidance
+        result["lead_ads_terms_required"] = True
     if campaign_id:
         result.setdefault("campaign_id", campaign_id)
         cleanup = cleanup_partial_created_campaign(path, campaign, client, campaign_id, failed_step, steps, status_plan, active_confirmed, approved, allow_cleanup=allow_cleanup)

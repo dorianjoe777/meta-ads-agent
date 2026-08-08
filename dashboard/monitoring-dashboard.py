@@ -12767,7 +12767,19 @@ def handle_create_campaign_stack_tool(arguments, chat_payload, tool):
             reason=reason,
             error=detail,
         )
-    if result.get("status") == "created_paused":
+    execution_result = result.get("result") if isinstance(result.get("result"), dict) else {}
+    terms_guidance = execution_result.get("buyer_action_required") if isinstance(execution_result, dict) else None
+    if isinstance(terms_guidance, dict) and terms_guidance.get("required"):
+        # Meta requires a one-time Page-level acceptance before a lead ad set
+        # can be created. Make this deterministic and actionable in chat;
+        # do not let Hermes retry the same mutation or bury the URL in raw
+        # Graph diagnostics.
+        reply = chat_reply(
+            chat_payload,
+            str(terms_guidance.get("message_es") or "Meta requiere aceptar las Condiciones de Lead Ads antes de continuar."),
+            str(terms_guidance.get("message_en") or "Meta requires accepting the Lead Ads Terms before continuing."),
+        )
+    elif result.get("status") == "created_paused":
         reply = chat_reply(
             chat_payload,
             "Hice el análisis y creé la campaña en Meta en pausa. No está gastando dinero; el siguiente paso protegido es activarla cuando la revises.",

@@ -13314,6 +13314,74 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         safe_error = meta_insights.safe_graph_error({"error": {"message": "Request failed", "code": 100}})
         self.assert_true("access_token" not in json.dumps(safe_error) and safe_error["code"] == 100, "Meta collector errors stay structured without leaking tokens")
 
+    def test_lead_ads_terms_blocker_guides_buyer_to_meta(self):
+        """Lead Ads terms errors become a direct, non-retrying buyer handoff."""
+        print("\nTesting Lead Ads Terms Handoff...")
+        steps = [{
+            "step": "create_adset",
+            "result": {
+                "stderr": json.dumps({
+                    "error": {
+                        "code": 100,
+                        "error_subcode": 1815089,
+                        "error_user_msg": "The Page must accept Lead Generation Terms of Service.",
+                    }
+                })
+            },
+        }]
+        guidance = daily_agent.lead_ads_terms_guidance_from_steps(steps)
+        prompt = hermes_gateway.gateway_prompt("es")
+        self.assert_true(
+            guidance and guidance["url"] == "https://www.facebook.com/ads/leadgen/tos"
+            and guidance["stop_retries_until_confirmed"] is True,
+            "Lead Ads terms blocker exposes the direct Meta URL and stops blind retries",
+        )
+        self.assert_true(
+            "Telegram Desktop" in guidance["message_es"]
+            and "control total" in guidance["message_es"]
+            and "https://www.facebook.com/ads/leadgen/tos" in guidance["message_es"],
+            "Lead Ads terms handoff tells the buyer to use Telegram Desktop and full Page control",
+        )
+        self.assert_true(
+            "https://www.facebook.com/ads/leadgen/tos" in prompt
+            and "Telegram Desktop" in prompt
+            and "condiciones aceptadas" in prompt,
+            "Hermes is instructed to send the Meta terms URL instead of hiding the blocker",
+        )
+        self.assert_true(
+            daily_agent.lead_ads_terms_guidance_from_steps([{"result": {"stderr": "rate limit"}}]) is None,
+            "Unrelated Meta errors do not trigger the Lead Ads terms handoff",
+        )
+        dashboard = load_dashboard_module()
+        original_create_campaign = dashboard.create_campaign
+        original_license = dashboard.require_cloud_license
+        try:
+            dashboard.require_cloud_license = lambda *_args, **_kwargs: None
+            dashboard.create_campaign = lambda _arguments: {
+                "status": "failed",
+                "executed": True,
+                "result": {"buyer_action_required": guidance},
+            }
+            routed = dashboard.handle_create_campaign_stack_tool(
+                {
+                    "name": "Lead terms handoff",
+                    "daily_budget": 20,
+                    "landing_url": "https://example.com",
+                    "creative_image_path": "/tmp/canary.png",
+                    "final_status": "PAUSED",
+                },
+                {"language": "es", "channel": "telegram"},
+                "create_campaign_stack",
+            )
+            self.assert_true(
+                "https://www.facebook.com/ads/leadgen/tos" in routed.get("reply", "")
+                and "Telegram Desktop" in routed.get("reply", ""),
+                "Campaign tool reply sends the Lead Ads terms URL directly through chat",
+            )
+        finally:
+            dashboard.create_campaign = original_create_campaign
+            dashboard.require_cloud_license = original_license
+
     def run_all_tests(self):
         """Run all integration tests."""
         print("=" * 70)
@@ -13435,6 +13503,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.test_live_targeting_validation_rejects_stale_detailed_ids_before_mutation,
             self.test_live_account_actions_stage_for_approval_instead_of_auto_mutating,
             self.test_social_flow_graph_api_lists_and_creates_lead_forms,
+            self.test_lead_ads_terms_blocker_guides_buyer_to_meta,
             self.test_chat_designs_native_lead_form_and_requires_manual_meta_creation,
             self.test_organic_content_opt_in_stages_and_publishes_only_after_approval,
             self.test_dashboard_operational_monitor_loops_resolve_env_int,
