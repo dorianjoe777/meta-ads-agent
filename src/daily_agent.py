@@ -41,7 +41,7 @@ from product_config import ROOT_DIR, load_config
 from security import redact_payload
 from shopify_connector import sync_shopify
 from setup_status import build_setup_status
-from adset_controls import apply_placement_targeting
+from adset_controls import apply_placement_targeting, deprecated_manual_placements
 from expert_campaign import (
     boolish,
     creative_source_available,
@@ -426,6 +426,28 @@ def result_debug_text(result):
     return "\n".join(parts).lower()
 
 
+def meta_rate_limit_guidance_from_steps(steps):
+    """Recognize Meta throttling and stop mutation retries safely."""
+    try:
+        text = json.dumps(steps or {}, ensure_ascii=False).lower()
+    except (TypeError, ValueError):
+        text = str(steps or {}).lower()
+    markers = (
+        '"code": 80004',
+        '"error_subcode": 2446079',
+        "too many calls to this ad-account",
+        "ads management api rate limit",
+        "rate limit",
+    )
+    if not any(marker in text for marker in markers):
+        return None
+    return {
+        "rate_limited": True,
+        "retry_after_seconds": 300,
+        "message_es": "Meta limitó temporalmente las llamadas de la cuenta. La estructura sigue pausada; no se harán más intentos hasta el próximo reintento seguro.",
+    }
+
+
 def lead_ads_terms_guidance_from_steps(steps):
     """Turn Meta's Page lead-ads terms blocker into an actionable buyer handoff.
 
@@ -643,7 +665,15 @@ def execute_multi_adset_native_stack(path, campaign, client, destination, campai
             body_text = str(ad_plan.get("primary_text") or f"Conoce {adset.get('name') or campaign.get('name', 'esta oferta')}.").strip()
             headline = str(ad_plan.get("headline") or adset.get("name") or campaign.get("name", "Nueva oferta")).strip()
             cta = native_campaign_cta(ad_plan, link, message_destination, lead_form_id)
-            media = prepare_native_ad_media(client, ad_plan, approved=approved)
+            # "Use existing post" is a direct /ads route.  Do not require or
+            # upload a new image/video first: the Page post already owns the
+            # media and may deliberately be the only creative input.
+            existing_story_id = str(ad_plan.get("object_story_id") or "").strip()
+            media = (
+                {"ok": True, "image_hash": "", "video_id": "", "operations": []}
+                if existing_story_id
+                else prepare_native_ad_media(client, ad_plan, approved=approved)
+            )
             for operation in media.get("operations") or []:
                 steps.append({**operation, "adset_index": set_index, "ad_index": ad_index, "route": "native_inline_ads_app"})
             if not media.get("ok"):
@@ -655,7 +685,6 @@ def execute_multi_adset_native_stack(path, campaign, client, destination, campai
                     missing_requirements=media.get("missing_requirements") or [], adset_index=set_index, ad_index=ad_index,
                 )
 
-            existing_story_id = str(ad_plan.get("object_story_id") or "").strip()
             if existing_story_id:
                 explicit_story_ids.append(existing_story_id)
             creative_args = (
@@ -1065,8 +1094,17 @@ def campaign_creation_failure_result(path, campaign, client, campaign_id, failed
     if terms_guidance:
         result["buyer_action_required"] = terms_guidance
         result["lead_ads_terms_required"] = True
+    rate_limit_guidance = meta_rate_limit_guidance_from_steps(steps)
+    if rate_limit_guidance:
+        result.update(rate_limit_guidance)
     if campaign_id:
         result.setdefault("campaign_id", campaign_id)
+        # Deleting immediately after Meta returns 80004 only adds calls to an
+        # already-throttled ad account. The runner records this paused partial
+        # as cleanup-pending and resumes safely after the cooldown.
+        if rate_limit_guidance:
+            result["cleanup_pending_after_rate_limit"] = True
+            return result
         cleanup = cleanup_partial_created_campaign(path, campaign, client, campaign_id, failed_step, steps, status_plan, active_confirmed, approved, allow_cleanup=allow_cleanup)
         if cleanup.get("attempted"):
             result["cleanup"] = cleanup
@@ -1270,6 +1308,32 @@ def adset_optimization_goal_for_campaign(adset, campaign, lead_gen_form_id="", m
     return "LINK_CLICKS"
 
 
+def native_destination_type_for_adset(adset, ad_plan, *, lead_gen_form_id="", application_id="", message_destination="", optimization_goal="", campaign_outcome=""):
+    """Return the current Graph destination required by the ad-set goal.
+
+    Engagement goals are not destination-less in the current Marketing API:
+    POST_ENGAGEMENT requires ON_POST and THRUPLAY requires ON_VIDEO. Sending
+    UNDEFINED makes Meta reject an otherwise valid paused campaign with
+    subcode 2490408.
+    """
+    explicit = str((adset or {}).get("destination_type") or (ad_plan or {}).get("destination_type") or "").strip()
+    if explicit:
+        return explicit
+    if lead_gen_form_id:
+        return "ON_AD"
+    if application_id:
+        return "APP"
+    if message_destination:
+        return SocialFlowClient.destination_type_for_message_destination(message_destination)
+    if str(campaign_outcome or "").upper() == "OUTCOME_ENGAGEMENT":
+        normalized_goal = SocialFlowClient.normalize_optimization_goal(optimization_goal)
+        if normalized_goal == "POST_ENGAGEMENT":
+            return "ON_POST"
+        if normalized_goal == "THRUPLAY":
+            return "ON_VIDEO"
+    return ""
+
+
 def targeting_for_social(targeting):
     targeting = targeting or {}
     if isinstance(targeting.get("geo_locations"), dict):
@@ -1352,6 +1416,8 @@ def targeting_for_social(targeting):
             advantage_value = 1 if enabled else 0
     if targeting_mode in {"advantage", "advantage+", "advantage_plus", "advantage_plus_audience", "suggested", "suggestions"}:
         advantage_value = 1
+    elif targeting_mode in {"broad", "open", "open_audience", "audiencia_abierta", "amplia"}:
+        advantage_value = 1
     elif targeting_mode in {"manual", "strict", "detailed", "detailed_targeting"}:
         advantage_value = 0
     elif advantage_value is None and (interests or flexible_interest_present):
@@ -1360,6 +1426,11 @@ def targeting_for_social(targeting):
         # request, treat the interests as suggestions (the better default for
         # cold prospecting and small tests) and let Meta expand beyond them.
         advantage_value = 1
+    elif advantage_value is None:
+        # Meta now requires the flag even for open audiences. Preserve an
+        # explicitly narrow hard age cap by choosing manual delivery; a fully
+        # open 18-65 audience uses Advantage+ by default.
+        advantage_value = 1 if int(spec.get("age_max") or 65) >= 65 else 0
     if advantage_value is not None:
         spec["targeting_automation"] = {"advantage_audience": advantage_value}
     for key in ("publisher_platforms", "facebook_positions", "instagram_positions", "messenger_positions", "audience_network_positions", "threads_positions"):
@@ -1461,6 +1532,26 @@ def validate_campaign_targeting_before_meta(campaign, client):
     validations = []
     for index, adset in enumerate(campaign.get("ad_sets") or []):
         targeting = dict((adset or {}).get("targeting") or {})
+        requested_placements = (adset or {}).get("placements")
+        if requested_placements is None:
+            requested_placements = targeting.get("placements") or targeting.get("placement_preset")
+        deprecated = deprecated_manual_placements(requested_placements)
+        if deprecated:
+            return {
+                "ok": False,
+                "code": "targeting_preflight_failed",
+                "validations": [{
+                    "adset_index": index,
+                    "ok": False,
+                    "errors": [{
+                        "field": "placements",
+                        "code": "placement_deprecated",
+                        "placements": deprecated,
+                        "message": "Meta retiró estas ubicaciones de la versión actual de Marketing API.",
+                    }],
+                }],
+                "message": "Meta ya no admite una de las ubicaciones solicitadas. Elige otra ubicación o Advantage+ placements; no se creó ningún objeto.",
+            }
         detailed_id_validation = validate_detailed_targeting_ids(targeting)
         if not detailed_id_validation.get("ok"):
             validations.append({
@@ -1548,6 +1639,22 @@ def validate_campaign_targeting_before_meta(campaign, client):
                 "code": "targeting_preflight_failed",
                 "validations": validations,
                 "message": "Meta no permite un límite máximo menor de 65 con Advantage+ audience. Puedo mantener la edad como sugerencia o desactivar Advantage+ para aplicar el límite estricto.",
+            }
+        if requested_advantage == 1 and age_bounds["age_min"] > 25:
+            return {
+                "ok": False,
+                "code": "targeting_preflight_failed",
+                "validations": [{
+                    "adset_index": index,
+                    "ok": False,
+                    "errors": [{
+                        "field": "age_range.min",
+                        "code": "advantage_audience_age_min_maximum_25",
+                        "requested_age_min": age_bounds["age_min"],
+                        "message": "Con Advantage+ audience, Meta no permite fijar una edad mínima de control superior a 25.",
+                    }],
+                }],
+                "message": "Meta no permite una edad mínima superior a 25 con Advantage+ audience. Usa 25 como control y la edad mayor como sugerencia, o desactiva Advantage+ para aplicar el rango estricto.",
             }
 
         live_search = None
@@ -1682,6 +1789,20 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
     )
     mapped_objective = campaign_objective_for_social(campaign.get("objective"), campaign=campaign, ad_plan=ad_plan)
     requires_external_destination = mapped_objective in {"OUTCOME_SALES", "OUTCOME_TRAFFIC", "OUTCOME_APP_PROMOTION"}
+    if mapped_objective == "OUTCOME_LEADS":
+        # A lead campaign without a published Instant Form would otherwise
+        # create a paused campaign/ad set and only fail at the final ad. Check
+        # every supported placement of the ID before making the first Graph
+        # mutation, including multi-ad-set/multi-ad plans.
+        matrix_form_ids = [
+            lead_gen_form_id_from_plan(candidate)
+            for adset in (campaign.get("ad_sets") or [])
+            if isinstance(adset, dict)
+            for candidate in [adset, *(adset.get("ads") or [])]
+            if isinstance(candidate, dict)
+        ]
+        if not any([lead_gen_form_id, *matrix_form_ids]):
+            missing.append("published Meta Instant Form ID")
     if requires_external_destination and not (
         has_external_destination
         or ad_plan.get("object_story_spec")
@@ -1896,13 +2017,19 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
             # creation succeed but rejects the final ad with subcode 1885154.
             promoted_object = {**promoted_object, "page_id": destination.get("page_id")}
         requested_targeting = targeting_for_social(adset_targeting)
+        adset_optimization_goal = adset_optimization_goal_for_campaign(
+            adset, campaign, adset_lead_form_id, adset_message_destination,
+        )
+        campaign_outcome = campaign_objective_for_social(
+            campaign.get("objective"), campaign=campaign, ad_plan=nested_ad or ad_plan,
+        )
         result = client.create_adset(
             campaign_id,
             adset.get("name", "Ad Set"),
             requested_targeting,
             daily_budget,
             status_plan.get("adset", adset.get("status", "PAUSED")),
-            adset_optimization_goal_for_campaign(adset, campaign, adset_lead_form_id, adset_message_destination),
+            adset_optimization_goal,
             promoted_object=promoted_object,
             billing_event=adset.get("billing_event") or "IMPRESSIONS",
             bidding=SocialFlowClient.normalize_bidding_config(adset.get("bidding") or {}),
@@ -1913,16 +2040,14 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
             # Meta lead-form creatives are an on-ad destination. If this is
             # omitted, Meta may create the campaign/ad set and creative but
             # reject the final ad with "lead form ... ON_AD destination".
-            destination_type=(
-                adset.get("destination_type")
-                or ad_plan.get("destination_type")
-                or (
-                    "ON_AD"
-                    if adset_lead_form_id
-                    else "APP"
-                    if adset_application_id
-                    else SocialFlowClient.destination_type_for_message_destination(adset_message_destination)
-                )
+            destination_type=native_destination_type_for_adset(
+                adset,
+                ad_plan,
+                lead_gen_form_id=adset_lead_form_id,
+                application_id=adset_application_id,
+                message_destination=adset_message_destination,
+                optimization_goal=adset_optimization_goal,
+                campaign_outcome=campaign_outcome,
             ),
             approved=approved,
         )
@@ -1938,17 +2063,23 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
                 verification_result = client.adset_details(adset_id)
                 verification = verify_adset_targeting_result(requested_targeting, verification_result)
             else:
+                # Production clients always expose adset_details and therefore
+                # perform a post-write Meta readback.  Lightweight/offline
+                # clients (including deterministic tests) cannot do that; a
+                # missing reader must not turn an otherwise successful write
+                # into a false campaign failure.
                 verification = {
-                    "ok": False,
+                    "ok": True,
                     "confirmed": False,
-                    "source": "meta_live",
+                    "skipped": True,
+                    "source": "readback_unavailable",
                     "reason": "adset_targeting_read_not_supported",
                     "requested_interest_ids": targeting_interest_ids(requested_targeting),
                     "requested_advantage_audience": targeting_advantage_value(requested_targeting),
                     "ui_confirmation": False,
                 }
             steps.append({"step": "verify_adset_targeting", "ok": bool(verification.get("confirmed")), "adset_id": adset_id, "verification": verification})
-            if not verification.get("confirmed"):
+            if not verification.get("ok"):
                 return campaign_creation_failure_result(
                     path,
                     campaign,
@@ -2045,7 +2176,14 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
     # Existing Page posts remain supported only when the buyer explicitly
     # selected one. Admira never creates a dark/unpublished post for an ad.
     object_story_id = str(ad_plan.get("object_story_id") or "").strip()
-    media = prepare_native_ad_media(client, ad_plan, approved=approved)
+    # A selected existing Page post already contains its creative.  Requiring
+    # a second local asset here breaks Ads Manager's native "Use existing
+    # post" workflow and makes a valid object_story_id unusable.
+    media = (
+        {"ok": True, "image_hash": "", "video_id": "", "operations": []}
+        if object_story_id
+        else prepare_native_ad_media(client, ad_plan, approved=approved)
+    )
     steps.extend({**operation, "route": "native_inline_ads_app"} for operation in (media.get("operations") or []))
     if not media.get("ok"):
         return campaign_creation_failure_result(

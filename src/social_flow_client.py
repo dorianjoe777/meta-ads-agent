@@ -1715,7 +1715,41 @@ class SocialFlowClient:
         rows = body.get("data") if isinstance(body.get("data"), list) else []
         if rows:
             invalid = [row for row in rows if isinstance(row, dict) and row.get("valid") is False]
-            return {"ok": not invalid, "items": rows, "invalid": invalid}
+            if not invalid:
+                return {"ok": True, "items": rows, "invalid": []}
+            # Current Graph versions can return ``valid:false`` from the old
+            # targetingvalidation edge for IDs returned moments earlier by
+            # the live adinterest catalog. Confirm each ID against that live
+            # catalog before rejecting it; exact ID matching prevents stale or
+            # fabricated values from passing this compatibility fallback.
+            confirmed = []
+            for entry in entries:
+                name = str(entry.get("name") or "").strip()
+                interest_id = str(entry.get("id") or "").strip()
+                if not name:
+                    break
+                searched = self.search_meta_targeting("interest", name, limit=25)
+                match = next(
+                    (item for item in searched.get("items") or [] if str(item.get("id") or "").strip() == interest_id),
+                    None,
+                ) if searched.get("ok") else None
+                if not match and "(" in name:
+                    searched = self.search_meta_targeting("interest", name.split("(", 1)[0].strip(), limit=25)
+                    match = next(
+                        (item for item in searched.get("items") or [] if str(item.get("id") or "").strip() == interest_id),
+                        None,
+                    ) if searched.get("ok") else None
+                if not match:
+                    break
+                confirmed.append({"id": interest_id, "name": str(match.get("name") or name), "valid": True})
+            if len(confirmed) == len(entries):
+                return {
+                    "ok": True,
+                    "items": confirmed,
+                    "invalid": [],
+                    "validation_source": "live_adinterest_exact_id_fallback",
+                }
+            return {"ok": False, "items": rows, "invalid": invalid}
         if "valid" in body:
             return {"ok": bool(body.get("valid")), "items": [body] if isinstance(body, dict) else []}
         # A successful empty response is not proof that the IDs are valid.

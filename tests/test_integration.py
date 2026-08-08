@@ -10397,7 +10397,10 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                 json.dumps(
                     {
                         "name": "Video Stack",
-                        "objective": "LEADS",
+                        # This probe exercises native video upload, not an
+                        # Instant Form. Lead campaigns now correctly require
+                        # a published form ID before any Graph mutation.
+                        "objective": "TRAFFIC",
                         "budget": {"daily": 20},
                         "ad_sets": [{"name": "Video Stack - Core", "targeting": {"locations": ["MX"]}, "budget": 20}],
                         "ad": {
@@ -10447,7 +10450,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                 json.dumps(
                     {
                         "name": "Video Direct Publishing Stack",
-                        "objective": "LEADS",
+                        "objective": "TRAFFIC",
                         "budget": {"daily": 20},
                         "ad_sets": [{"name": "Video Direct Publishing Stack - Core", "targeting": {"locations": ["MX"]}, "budget": 20}],
                         "ad": {

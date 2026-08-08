@@ -18,10 +18,15 @@ PLACEMENT_TO_TARGETING = {
     "INSTAGRAM_STORY": ("instagram", "instagram_positions", "story"),
     "INSTAGRAM_STORIES": ("instagram", "instagram_positions", "story"),
     "INSTAGRAM_REELS": ("instagram", "instagram_positions", "reels"),
-    "INSTAGRAM_EXPLORE": ("instagram", "instagram_positions", "explore"),
     "INSTAGRAM_PROFILE_FEED": ("instagram", "instagram_positions", "profile_feed"),
     "MESSENGER": ("messenger", "messenger_positions", "messenger_home"),
     "AUDIENCE_NETWORK": ("audience_network", "audience_network_positions", "classic"),
+}
+
+DEPRECATED_MANUAL_PLACEMENTS = {
+    # Meta Graph rejects this placement in the current Marketing API even
+    # though older Ads Manager/API versions exposed it.
+    "INSTAGRAM_EXPLORE",
 }
 
 PLACEMENT_TARGETING_KEYS = [
@@ -52,6 +57,18 @@ def _normalize_manual_placement(value):
     return text.upper().replace("-", "_").replace(" ", "_")
 
 
+def deprecated_manual_placements(value=None):
+    """Return explicitly requested placements Meta no longer accepts."""
+    if isinstance(value, dict):
+        value = value.get("manual") or value.get("placements") or value.get("include") or []
+    elif isinstance(value, str):
+        value = [part.strip() for part in value.split(",") if part.strip()]
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    requested = {_normalize_manual_placement(item) for item in value}
+    return sorted(requested & DEPRECATED_MANUAL_PLACEMENTS)
+
+
 def normalize_placement_config(value=None):
     """Return a product-level placement config.
 
@@ -80,11 +97,15 @@ def normalize_placement_config(value=None):
             manual = DEFAULT_MANUAL_PLACEMENTS
         normalized = [_normalize_manual_placement(item) for item in manual]
         normalized = [item for item in normalized if item in PLACEMENT_TO_TARGETING]
+        if "INSTAGRAM_PROFILE_FEED" in normalized and "INSTAGRAM_FEED" not in normalized:
+            normalized.insert(0, "INSTAGRAM_FEED")
         return {"automatic": False, "manual": _dedupe(normalized or DEFAULT_MANUAL_PLACEMENTS)}
 
     if isinstance(value, (list, tuple, set)):
         normalized = [_normalize_manual_placement(item) for item in value]
         normalized = [item for item in normalized if item in PLACEMENT_TO_TARGETING]
+        if "INSTAGRAM_PROFILE_FEED" in normalized and "INSTAGRAM_FEED" not in normalized:
+            normalized.insert(0, "INSTAGRAM_FEED")
         return {"automatic": False, "manual": _dedupe(normalized or DEFAULT_MANUAL_PLACEMENTS)}
 
     return {"automatic": False, "manual": list(DEFAULT_MANUAL_PLACEMENTS)}
