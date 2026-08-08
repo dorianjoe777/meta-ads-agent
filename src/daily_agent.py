@@ -681,28 +681,46 @@ def execute_multi_adset_native_stack(path, campaign, client, destination, campai
                 "message_destination": message_destination,
                 "approved": approved,
             }
-            creative_id, creative_result, token_source, fallback_capability = create_native_ad_creative(client, creative_args, creative_kwargs)
-            all_creative_ids.append(creative_id)
-            steps.append({
-                "step": "create_creative", "ok": bool(creative_id), "route": "existing_page_post" if existing_story_id else "native_inline_ads_app",
-                "creative_token_source": token_source, "fallback_capability": fallback_capability,
-                "adset_index": set_index, "ad_index": ad_index, "adset_id": adset_id,
-                "creative_id": creative_id, "object_story_id": existing_story_id, "result": creative_result,
-            })
-            if not creative_id:
-                return campaign_creation_failure_result(
-                    path, campaign, client, campaign_id, "create_creative", steps,
-                    status_plan, active_confirmed, approved,
-                    allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed),
-                    adset_ids=adset_ids, creative_ids=[value for value in all_creative_ids if value], ad_ids=[value for value in all_ad_ids if value],
-                    adset_index=set_index, ad_index=ad_index,
-                )
+            creative_id = ""
+            if existing_story_id:
+                # Meta may reject the standalone /adcreatives endpoint with
+                # code 3 even though the same app is allowed to reuse the
+                # Page post directly inside POST /ads. This is also the
+                # shortest path for Ads Manager's "Use existing post" flow.
+                steps.append({
+                    "step": "reuse_existing_page_post", "ok": True,
+                    "route": "existing_page_post_direct_ad",
+                    "adset_index": set_index, "ad_index": ad_index, "adset_id": adset_id,
+                    "object_story_id": existing_story_id,
+                })
+            else:
+                creative_id, creative_result, token_source, fallback_capability = create_native_ad_creative(client, creative_args, creative_kwargs)
+                all_creative_ids.append(creative_id)
+                steps.append({
+                    "step": "create_creative", "ok": bool(creative_id), "route": "native_inline_ads_app",
+                    "creative_token_source": token_source, "fallback_capability": fallback_capability,
+                    "adset_index": set_index, "ad_index": ad_index, "adset_id": adset_id,
+                    "creative_id": creative_id, "object_story_id": "", "result": creative_result,
+                })
+                if not creative_id:
+                    return campaign_creation_failure_result(
+                        path, campaign, client, campaign_id, "create_creative", steps,
+                        status_plan, active_confirmed, approved,
+                        allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed),
+                        adset_ids=adset_ids, creative_ids=[value for value in all_creative_ids if value], ad_ids=[value for value in all_ad_ids if value],
+                        adset_index=set_index, ad_index=ad_index,
+                    )
             ad_name = str(ad_plan.get("name") or ad_plan.get("ad_name") or f"{campaign.get('name', 'Campaign')} - {adset.get('name', 'Ad Set')} - Variante {ad_index + 1}").strip()
-            ad_result = client.create_ad(adset_id, ad_name, creative_id, "PAUSED", website_url=link, approved=approved)
+            ad_result = client.create_ad(
+                adset_id, ad_name, creative_id, "PAUSED",
+                website_url=link, approved=approved,
+                object_story_id=existing_story_id,
+                prefer_object_story_ad=bool(existing_story_id),
+            )
             ad_id = social_id_from_result(ad_result)
             all_ad_ids.append(ad_id)
             steps.append({
-                "step": "create_ad", "ok": bool(ad_id), "route": "native_inline_live_ads_app",
+                "step": "create_ad", "ok": bool(ad_id), "route": "existing_page_post_direct_ad" if existing_story_id else "native_inline_live_ads_app",
                 "adset_index": set_index, "ad_index": ad_index, "adset_id": adset_id,
                 "creative_id": creative_id, "ad_id": ad_id, "final_status": "PAUSED", "result": ad_result,
             })
@@ -1647,10 +1665,20 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         missing.append("META_AD_ACCOUNT_ID")
     if not destination.get("page_id") and not ad_plan.get("object_story_id"):
         missing.append("Facebook Page ID")
+    matrix_has_external_destination = any(
+        isinstance(item, dict)
+        and any(
+            isinstance(ad, dict)
+            and bool(ad.get("landing_url") or ad.get("cta_link") or object_store_url_from_plan(ad, campaign))
+            for ad in (item.get("ads") or [])
+        )
+        for item in (campaign.get("ad_sets") or [])
+    )
     has_external_destination = bool(
         ad_plan.get("landing_url")
         or destination.get("url")
         or object_store_url_from_plan(ad_plan, campaign)
+        or matrix_has_external_destination
     )
     mapped_objective = campaign_objective_for_social(campaign.get("objective"), campaign=campaign, ad_plan=ad_plan)
     requires_external_destination = mapped_objective in {"OUTCOME_SALES", "OUTCOME_TRAFFIC", "OUTCOME_APP_PROMOTION"}
@@ -2050,17 +2078,25 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         message_destination=message_destination,
         approved=approved,
     )
-    creative_id, creative_result, creative_token_source, fallback_capability = create_native_ad_creative(
-        client, creative_args, creative_kwargs
-    )
-    steps.append({
-        "step": "create_creative", "ok": bool(creative_id), "creative_id": creative_id,
-        "route": "existing_page_post" if object_story_id else "native_inline_ads_app",
-        "creative_token_source": creative_token_source, "fallback_capability": fallback_capability,
-        "result": creative_result,
-    })
-    if not creative_id:
-        return campaign_creation_failure_result(path, campaign, client, campaign_id, "create_creative", steps, status_plan, active_confirmed, approved, allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed), adset_ids=adset_ids)
+    creative_id = ""
+    if object_story_id:
+        steps.append({
+            "step": "reuse_existing_page_post", "ok": True,
+            "route": "existing_page_post_direct_ad",
+            "object_story_id": object_story_id,
+        })
+    else:
+        creative_id, creative_result, creative_token_source, fallback_capability = create_native_ad_creative(
+            client, creative_args, creative_kwargs
+        )
+        steps.append({
+            "step": "create_creative", "ok": bool(creative_id), "creative_id": creative_id,
+            "route": "native_inline_ads_app",
+            "creative_token_source": creative_token_source, "fallback_capability": fallback_capability,
+            "result": creative_result,
+        })
+        if not creative_id:
+            return campaign_creation_failure_result(path, campaign, client, campaign_id, "create_creative", steps, status_plan, active_confirmed, approved, allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed), adset_ids=adset_ids)
 
     ad_ids = []
     names = placeholder_ad_names(ad_plan)
@@ -2074,7 +2110,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
             website_url=link,
             approved=approved,
             object_story_id=object_story_id,
-            prefer_object_story_ad=(not has_explicit_website_adset and not message_destination and bool(object_story_id)),
+            prefer_object_story_ad=bool(object_story_id),
         )
         ad_id = social_id_from_result(ad_result)
         ad_ids.append(ad_id)
@@ -2082,7 +2118,7 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         if not ad_id:
             return campaign_creation_failure_result(path, campaign, client, campaign_id, "create_ad", steps, status_plan, active_confirmed, approved, allow_cleanup=cleanup_incomplete_campaign_allowed(campaign, campaign_id, campaign_created_this_attempt, status_plan, active_confirmed), adset_ids=adset_ids, creative_id=creative_id, ad_ids=[value for value in ad_ids if value])
     ad_id = ad_ids[0] if ad_ids else ""
-    final = {"ok": bool(ad_id), "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "creative_id": creative_id, "ad_id": ad_id, "ad_ids": ad_ids, "final_status": "PAUSED" if placeholder_static else status_plan.get("ad", final_status), "status_plan": status_plan, "steps": steps}
+    final = {"ok": bool(ad_id), "mode": client.config.mode, "executed": True, "campaign_id": campaign_id, "adset_ids": adset_ids, "creative_id": creative_id, "ad_id": ad_id, "ad_ids": ad_ids, "object_story_ids": [object_story_id] if object_story_id else [], "creative_route": "existing_page_post_direct_ad" if object_story_id else "native_inline_ads_app", "final_status": "PAUSED" if placeholder_static else status_plan.get("ad", final_status), "status_plan": status_plan, "steps": steps}
     if placeholder_static:
         task = manual_creative_completion_task(campaign, ad_plan, campaign_id, adset_ids, link, body_text, headline, placeholder_ad_ids=ad_ids, placeholder_image_path=placeholder_image_path)
         steps.append({"step": "manual_creative_completion", "ok": True, "completed_step": "paused_placeholder_ads", "task": task})

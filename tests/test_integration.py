@@ -10010,6 +10010,36 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             saved_campaign = json.loads(campaign_path.read_text(encoding="utf-8"))
             self.assert_true(saved_campaign.get("execution_state", {}).get("campaign_id") == "cmp_1", "Campaign execution stores the created Meta campaign ID for safe retries")
 
+            campaign_path.write_text(
+                json.dumps({
+                    "name": "Existing Page Post Stack",
+                    "objective": "TRAFFIC",
+                    "budget": {"daily": 20},
+                    "status_plan": {"campaign": "PAUSED", "adset": "PAUSED", "ad": "PAUSED"},
+                    "ad_sets": [{
+                        "name": "Existing Page Post Stack - Core",
+                        "targeting": {"locations": ["CO"], "age_range": {"min": 18, "max": 65}},
+                        "budget": 20,
+                        "destination_type": "WEBSITE",
+                    }],
+                    "ad": {
+                        "primary_text": "Texto ya incluido en el post",
+                        "headline": "Post existente",
+                        "object_story_id": "111_222",
+                        "landing_url": "https://buyer.example/post",
+                        "final_status": "PAUSED",
+                        "active_spend_confirmed": False,
+                    },
+                }),
+                encoding="utf-8",
+            )
+            existing_post_client = FakeClient()
+            existing_post_result = execute_campaign_creation(str(campaign_path), existing_post_client, approved=True)
+            existing_post_calls = [call for call in existing_post_client.calls if call[0] in {"upload_image", "create_creative", "create_ad"}]
+            self.assert_true(existing_post_result.get("ok") and [call[0] for call in existing_post_calls] == ["create_ad"], "Existing Page posts bypass the standalone AdCreative endpoint and create the paused ad directly")
+            self.assert_true(existing_post_calls[0][1][2] == "" and existing_post_calls[0][2].get("object_story_id") == "111_222" and existing_post_calls[0][2].get("prefer_object_story_ad") is True, "Direct existing-post ads send object_story_id inside POST /ads")
+            self.assert_true(existing_post_result.get("creative_route") == "existing_page_post_direct_ad" and existing_post_result.get("object_story_ids") == ["111_222"], "Existing-post execution reports the verified direct-ad route")
+
             class VerifiedTargetingClient(FakeClient):
                 def adset_details(self, adset_id):
                     self.calls.append(("adset_details", (adset_id,), {}))
@@ -10906,6 +10936,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         image = ROOT_DIR / "output" / "test-multi-offer.jpg"
         campaign_path = ROOT_DIR / "output" / "test-multi-offer.json"
         fallback_campaign_path = ROOT_DIR / "output" / "test-multi-offer-fallback.json"
+        existing_post_campaign = ROOT_DIR / "output" / "test-multi-existing-post.json"
         ad_config_path = ROOT_DIR / "ad-config.json"
         old_ad_config = ad_config_path.read_text(encoding="utf-8") if ad_config_path.exists() else ""
         try:
@@ -10985,6 +11016,36 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             ad_calls = [call for call in client.calls if call[0] == "create_ad"]
             self.assert_true(all(call[1][3] == "PAUSED" for call in ad_calls), "Every canary ad is paused")
 
+            existing_post_campaign.write_text(json.dumps({
+                "name": "Existing Post Multi Stack",
+                "objective": "TRAFFIC",
+                "budget": {"daily": 20},
+                "status_plan": {"campaign": "PAUSED", "adset": "PAUSED", "ad": "PAUSED"},
+                "ad_sets": [{
+                    "name": "Existing Post Set",
+                    "budget": 20,
+                    "destination_type": "WEBSITE",
+                    "targeting": {"locations": ["CO"], "age_range": {"min": 18, "max": 65}},
+                    "ads": [{
+                        "name": "Reuse Social Proof",
+                        "object_story_id": "page_multi_post_1",
+                        "landing_url": "https://buyer.example/existing-post",
+                    }, {
+                        "name": "Reuse Social Proof 2",
+                        "object_story_id": "page_multi_post_2",
+                        "landing_url": "https://buyer.example/existing-post-2",
+                    }],
+                }],
+                "ad": {"final_status": "PAUSED", "active_spend_confirmed": False},
+            }), encoding="utf-8")
+            existing_post_client = FakeClient(publishing_ok=False)
+            existing_post_result = execute_campaign_creation(str(existing_post_campaign), existing_post_client, approved=True)
+            existing_post_creatives = [call for call in existing_post_client.calls if call[0] == "create_creative"]
+            existing_post_ads = [call for call in existing_post_client.calls if call[0] == "create_ad"]
+            self.assert_true(existing_post_result.get("ok") and not existing_post_creatives and len(existing_post_ads) == 2, "Multi-adset existing-post flow also bypasses standalone creative creation")
+            self.assert_true([call[2].get("object_story_id") for call in existing_post_ads] == ["page_multi_post_1", "page_multi_post_2"] and all(call[2].get("prefer_object_story_ad") is True for call in existing_post_ads), "Multi-adset existing-post flow reuses every selected post directly in its paused ad")
+            existing_post_campaign.unlink(missing_ok=True)
+
             fallback_payload = json.loads(campaign_path.read_text(encoding="utf-8"))
             fallback_payload.pop("execution_state", None)
             fallback_payload["name"] = "Canary Johana Publishing Fallback"
@@ -11006,6 +11067,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             image.unlink(missing_ok=True)
             campaign_path.unlink(missing_ok=True)
             fallback_campaign_path.unlink(missing_ok=True)
+            existing_post_campaign.unlink(missing_ok=True)
 
     def test_chat_stages_campaign_creation_and_requires_exact_approval(self):
         """Test natural language can stage campaign creation while approvals require an exact pending decision."""
