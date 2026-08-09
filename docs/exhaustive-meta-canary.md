@@ -10,7 +10,11 @@ escenarios reales siempre en `PAUSED`.
 - `--layer negative`: bloqueos obligatorios sin mutar Meta.
 - `--layer briefs`: 30 briefs en lenguaje natural; exige que el JSON conserve
   objetivo, presupuesto, audiencia, ubicaciones, placements, copy, CTA, media,
-  destino y estado.
+  destino y estado. Si el proveedor principal devuelve 429, hace un único
+  intento con `--brief-fallback-model` y mantiene allí la corrección de JSON.
+  También escala una sola vez si el proveedor principal sigue cambiando una
+  decisión tras la corrección; no entra en bucles ni convierte un 429 o una
+  respuesta incompleta en un aprobado.
 - `--layer live --confirm-live-paused-canary`: 60 escenarios reales, resumibles
   y verificados mediante lectura posterior desde Meta.
 
@@ -39,7 +43,12 @@ campaña salvo un keeper por familia compatible.
 ```text
 python3 scripts/exhaustive_campaign_canary.py --layer contracts
 python3 scripts/exhaustive_campaign_canary.py --layer negative
-python3 scripts/exhaustive_campaign_canary.py --layer briefs --brief-delay-seconds 20
+python3 scripts/exhaustive_campaign_canary.py --layer briefs --brief-delay-seconds 20 \
+  --brief-fallback-model minimaxai/minimax-m3
+# Para aislar calidad/latencia de un modelo concreto:
+python3 scripts/exhaustive_campaign_canary.py --layer briefs \
+  --brief-primary-model deepseek-ai/deepseek-v4-flash-0731 \
+  --brief-fallback-model minimaxai/minimax-m3
 python3 scripts/exhaustive_campaign_canary.py --layer live \
   --run-id YYYYMMDD-meta60 --start 1 --stop 60 \
   --confirm-live-paused-canary

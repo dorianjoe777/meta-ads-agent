@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Resumable, PAUSED-only exhaustive Meta campaign canary.
 
-The script has three explicit layers:
+The script has four explicit layers:
 
 * ``contracts`` validates 128 deterministic payloads without Graph writes.
+* ``negative`` proves high-risk invalid inputs stop before Graph writes.
 * ``briefs`` asks Hermes to extract 30 natural-language briefs without tools.
 * ``live`` creates 60 real PAUSED probes, reads them back, and cleans all but
   one designated keeper per supported family.
@@ -28,6 +29,7 @@ import sys
 import tempfile
 import time
 import uuid
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -291,9 +293,13 @@ def brief_mismatches(expected, parsed):
     }
 
 
-def run_brief_extraction(prompt, timeout_seconds):
+def run_brief_extraction(prompt, timeout_seconds, model=""):
+    command = ["hermes"]
+    if model:
+        command.extend(["-m", model])
+    command.extend(["-z", prompt, "--accept-hooks"])
     process = subprocess.run(
-        ["hermes", "-z", prompt, "--accept-hooks"],
+        command,
         cwd=str(ROOT), text=True, capture_output=True, timeout=timeout_seconds,
         env={**os.environ, "META_ADS_AGENT_MODE": "dry-run"},
     )
@@ -315,39 +321,66 @@ def provider_rate_limited(process):
     )
 
 
-def run_briefs(output_dir: Path, timeout_seconds=180, resume=True, delay_seconds=12.0):
+def run_briefs(
+    output_dir: Path,
+    timeout_seconds=180,
+    resume=True,
+    delay_seconds=12.0,
+    primary_model="",
+    fallback_model="minimaxai/minimax-m3",
+):
     state_path = output_dir / "brief-state.json"
     state = read_json(state_path, {"rows": []}) if resume else {"rows": []}
     completed = {item.get("brief_id") for item in state.get("rows") or [] if item.get("ok")}
     for item in natural_language_briefs():
         if item["brief_id"] in completed:
             continue
+        prior_row = next((row for row in state.get("rows") or [] if row.get("brief_id") == item["brief_id"]), {})
+        prior_attempts = int(prior_row.get("total_attempts") or prior_row.get("attempts") or 0)
         prompt = (
             "Prueba de extracción sin herramientas. No llames herramientas ni crees objetos. "
             "Lee el brief y devuelve solamente un objeto JSON con exactamente estas claves: "
             "name, objective, daily_budget, budget_level, age_min, age_max, genders, countries, "
             "placements, adset_count, ad_count, primary_text, headline, cta, message_destination, "
             "landing_url, initial_message, media_kind, final_status. Conserva literalmente nombres y textos; "
-            "usa una cadena vacía cuando el brief diga ninguno.\n\nBRIEF:\n"
+            "daily_budget siempre es el número que aparece después de 'presupuesto', incluso cuando el nivel "
+            "es campaign; usa una cadena vacía solamente cuando el brief diga ninguno.\n\nBRIEF:\n"
             + item["text"]
         )
         started = time.monotonic()
         try:
-            process, parsed = run_brief_extraction(prompt, timeout_seconds)
+            process, parsed = run_brief_extraction(prompt, timeout_seconds, model=primary_model)
             expected = item["expected"]
             mismatches = brief_mismatches(expected, parsed)
             attempts = 1
+            active_model = primary_model
             if provider_rate_limited(process):
-                row = {
-                    "brief_id": item["brief_id"], "ok": False, "status": "rate_limited",
-                    "latency_seconds": round(time.monotonic() - started, 3), "mismatches": mismatches,
-                    "actual": parsed, "attempts": attempts, "returncode": process.returncode,
-                    "provider_error": (process.stderr or process.stdout)[-800:],
-                }
-                state["rows"] = [existing for existing in state.get("rows") or [] if existing.get("brief_id") != item["brief_id"]]
-                state.setdefault("rows", []).append(row)
-                write_json(state_path, state)
-                break
+                # The free GLM endpoint can throttle after a small burst. Use
+                # the configured NVIDIA MiniMax endpoint once before marking
+                # this brief blocked; never loop or retry the same provider.
+                same_model = active_model == fallback_model
+                if same_model:
+                    fallback_process, fallback_parsed = process, parsed
+                else:
+                    fallback_process, fallback_parsed = run_brief_extraction(prompt, timeout_seconds, model=fallback_model)
+                attempts = 1 if same_model else 2
+                if not provider_rate_limited(fallback_process):
+                    process, parsed = fallback_process, fallback_parsed
+                    mismatches = brief_mismatches(expected, parsed)
+                    active_model = fallback_model
+                else:
+                    row = {
+                        "brief_id": item["brief_id"], "ok": False, "status": "rate_limited",
+                        "latency_seconds": round(time.monotonic() - started, 3), "mismatches": mismatches,
+                        "actual": parsed, "attempts": attempts, "returncode": fallback_process.returncode,
+                        "total_attempts": prior_attempts + attempts,
+                        "provider_model": fallback_model,
+                        "provider_error": (fallback_process.stderr or fallback_process.stdout)[-800:],
+                    }
+                    state["rows"] = [existing for existing in state.get("rows") or [] if existing.get("brief_id") != item["brief_id"]]
+                    state.setdefault("rows", []).append(row)
+                    write_json(state_path, state)
+                    break
             # A malformed/truncated JSON answer must never be mistaken for a
             # preserved campaign brief. Give Hermes one corrective pass with
             # the exact missing keys; the report retains both the retry count
@@ -356,19 +389,33 @@ def run_briefs(output_dir: Path, timeout_seconds=180, resume=True, delay_seconds
                 correction = (
                     "Tu JSON anterior fue incompleto o cambió decisiones. "
                     "Devuelve de nuevo solamente un único objeto JSON completo con exactamente las claves pedidas. "
-                    "No resumas, no omitas campos y no expliques nada.\n\n"
+                    "No resumas, no omitas campos y no expliques nada. daily_budget debe ser el valor numérico "
+                    "escrito después de 'presupuesto', incluso para budget_level=campaign.\n\n"
                     + prompt
                     + "\n\nCAMPOS A CORREGIR:\n"
                     + ", ".join(mismatches)
                 )
-                process, parsed = run_brief_extraction(correction, timeout_seconds)
+                process, parsed = run_brief_extraction(correction, timeout_seconds, model=active_model)
+                attempts += 1
                 mismatches = brief_mismatches(expected, parsed)
-                attempts = 2
+                # A provider can return HTTP 200 while still dropping or
+                # changing a high-risk decision. After one corrective pass,
+                # escalate once to the fallback model for fidelity as well as
+                # for transport/rate failures. The final row keeps the model
+                # and cumulative attempt count, so this is never hidden.
+                should_escalate = provider_rate_limited(process) or (process.returncode == 0 and bool(mismatches))
+                if should_escalate and active_model != fallback_model:
+                    process, parsed = run_brief_extraction(correction, timeout_seconds, model=fallback_model)
+                    active_model = fallback_model
+                    attempts += 1
+                    mismatches = brief_mismatches(expected, parsed)
                 if provider_rate_limited(process):
                     row = {
                         "brief_id": item["brief_id"], "ok": False, "status": "rate_limited",
                         "latency_seconds": round(time.monotonic() - started, 3), "mismatches": mismatches,
                         "actual": parsed, "attempts": attempts, "returncode": process.returncode,
+                        "total_attempts": prior_attempts + attempts,
+                        "provider_model": active_model or "configured_primary",
                         "provider_error": (process.stderr or process.stdout)[-800:],
                     }
                     state["rows"] = [existing for existing in state.get("rows") or [] if existing.get("brief_id") != item["brief_id"]]
@@ -380,11 +427,18 @@ def run_briefs(output_dir: Path, timeout_seconds=180, resume=True, delay_seconds
                 "latency_seconds": round(time.monotonic() - started, 3), "mismatches": mismatches,
                 "actual": parsed,
                 "attempts": attempts,
+                "total_attempts": prior_attempts + attempts,
+                "provider_model": active_model or "configured_primary",
                 "returncode": process.returncode,
                 "provider_error": "" if process.returncode == 0 else (process.stderr or process.stdout)[-800:],
             }
         except subprocess.TimeoutExpired:
-            row = {"brief_id": item["brief_id"], "ok": False, "latency_seconds": round(time.monotonic() - started, 3), "error": "timeout"}
+            row = {
+                "brief_id": item["brief_id"], "ok": False,
+                "latency_seconds": round(time.monotonic() - started, 3),
+                "error": "timeout", "attempts": 1,
+                "total_attempts": prior_attempts + 1,
+            }
         state["rows"] = [existing for existing in state.get("rows") or [] if existing.get("brief_id") != item["brief_id"]]
         state.setdefault("rows", []).append(row)
         write_json(state_path, state)
@@ -709,7 +763,14 @@ def archive_form(client, form_id):
 def delete_post(client, post_id):
     if not post_id:
         return {"ok": True, "skipped": True}
-    result = client.delete_graph_object(post_id, client.meta_page_token())
+    # Page post deletion requires the Page access token, not merely the
+    # unified user/system token used to create the post. Resolve it from the
+    # Page prefix in ``PAGE_ID_POST_ID`` before issuing DELETE.
+    page_id = str(post_id).split("_", 1)[0]
+    user_token = client.meta_page_token()
+    page_lookup = client.page_access_token(page_id, user_token) if page_id and user_token else {}
+    access_token = str(page_lookup.get("access_token") or user_token).strip()
+    result = client.delete_graph_object(post_id, access_token)
     return {"ok": bool(result.get("ok")), "id": post_id, "error": redact_payload(result.get("body")) if not result.get("ok") else {}}
 
 
@@ -947,21 +1008,33 @@ def run_negative_contracts(output_dir: Path):
 
 def markdown_summary(output_dir: Path):
     contracts = read_json(output_dir / "contracts.json", {})
+    negative = read_json(output_dir / "negative-contracts.json", {})
     briefs = read_json(output_dir / "briefs.json", {})
     live = read_json(output_dir / "live-report.json", {})
     assets = read_json(output_dir / "assets.json", {})
+    live_statuses = Counter(row.get("status") or "unknown" for row in live.get("rows") or [])
+    gate_ok = contracts.get("ok") and negative.get("ok") and briefs.get("ok") and live.get("ok")
     lines = [
         f"# Admira exhaustive Meta canary — {output_dir.name}", "",
         f"Generated: {now_iso()}", "",
         f"- Contracts: {contracts.get('passed', 0)}/{contracts.get('cases', 0)}",
+        f"- Negative preflight contracts: {negative.get('passed', 0)}/{negative.get('cases', 0)}",
         f"- Natural-language briefs: {briefs.get('passed', 0)}/{briefs.get('briefs', 0)}",
         f"- Live probes: {live.get('passed', 0)}/{live.get('cases', 0)}",
-        f"- Overall gate: {'PASS' if contracts.get('ok') and briefs.get('ok') and live.get('ok') else 'FAIL'}",
+        f"- Live objects: {live_statuses.get('cleaned', 0)} cleaned, {live_statuses.get('kept', 0)} kept, {live_statuses.get('capability_block', 0)} expected capability blocks",
+        f"- Canary matrix gate: {'PASS' if gate_ok else 'FAIL'}",
         "", "## Keepers", "",
     ]
     for family, campaign_id in (live.get("keepers") or {}).items():
         lines.append(f"- {family}: `{campaign_id}`")
     lines.extend(["", "## Temporary assets", "", f"- Visible post cleanup: {(assets.get('visible_post_cleanup') or {}).get('ok')}", f"- Lead form archived: {(assets.get('lead_form_archive') or {}).get('ok')}", ""])
+    capability_blocks = [row for row in live.get("rows") or [] if row.get("status") == "capability_block"]
+    lines.extend(["## Expected capability blocks", ""])
+    if not capability_blocks:
+        lines.append("- None")
+    for row in capability_blocks:
+        lines.append(f"- {row.get('case_id')}: {row.get('family')} — {row.get('reason')}")
+    lines.append("")
     failures = [row for row in live.get("rows") or [] if not row.get("ok")]
     lines.extend(["## Failures", ""])
     if not failures:
@@ -983,6 +1056,8 @@ def main():
     parser.add_argument("--delay-seconds", type=float, default=2.0)
     parser.add_argument("--brief-timeout", type=int, default=180)
     parser.add_argument("--brief-delay-seconds", type=float, default=12.0)
+    parser.add_argument("--brief-primary-model", default=os.environ.get("CANARY_BRIEF_PRIMARY_MODEL", ""))
+    parser.add_argument("--brief-fallback-model", default=os.environ.get("CANARY_BRIEF_FALLBACK_MODEL", "minimaxai/minimax-m3"))
     parser.add_argument("--no-resume", action="store_true")
     parser.add_argument("--confirm-live-paused-canary", action="store_true")
     args = parser.parse_args()
@@ -999,7 +1074,14 @@ def main():
     if args.layer in {"negative", "all"}:
         results["negative"] = run_negative_contracts(output_dir)
     if args.layer in {"briefs", "all"}:
-        results["briefs"] = run_briefs(output_dir, timeout_seconds=args.brief_timeout, resume=not args.no_resume, delay_seconds=args.brief_delay_seconds)
+        results["briefs"] = run_briefs(
+            output_dir,
+            timeout_seconds=args.brief_timeout,
+            resume=not args.no_resume,
+            delay_seconds=args.brief_delay_seconds,
+            primary_model=args.brief_primary_model,
+            fallback_model=args.brief_fallback_model,
+        )
     if args.layer in {"live", "all"}:
         if not args.confirm_live_paused_canary:
             raise SystemExit("Refusing Graph mutations without --confirm-live-paused-canary")
