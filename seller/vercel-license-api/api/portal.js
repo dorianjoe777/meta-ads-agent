@@ -938,8 +938,8 @@ export default async function handler(request, response) {
                 </div>
                 <textarea id="sshPublicKey" placeholder="ssh-ed25519 AAAA... tu@email.com" required></textarea>
                 <div class="helper">
-                  <strong>Si no tienes una llave, selecciona tu sistema y pega el comando en Terminal, PowerShell o CMD.</strong>
-                  Al final aparecera una linea larga que empieza por <strong>ssh-ed25519</strong>. Copia esa linea completa y pegala en el campo de arriba. No compartas la llave privada.
+                  <strong>Si no tienes una llave, en Mac o Linux abre Terminal; en Windows abre PowerShell o CMD. Selecciona tu sistema y pega el comando.</strong>
+                  El comando crea la carpeta solo en tu computador. La parte privada queda guardada en tu PC. Al final aparecera la parte publica, que es segura de compartir: una linea larga que empieza por <strong>ssh-ed25519</strong>. Copia esa linea completa y pegala en el campo de arriba. No compartas la llave privada.
                   <div class="ssh-platform-picker" role="group" aria-label="Sistema operativo">
                     <button type="button" data-ssh-platform="mac">macOS</button>
                     <button type="button" data-ssh-platform="linux">Linux</button>

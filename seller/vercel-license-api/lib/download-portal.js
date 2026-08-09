@@ -4,17 +4,17 @@ const PLATFORM_DEFINITIONS = [
     label: "Mac",
     badge: "Launcher Docker para Mac",
     formats: [".dmg"],
-    allowUniversalFallback: true,
-    description: "Descarga el DMG y abre Admira IA. Si el DMG aun se esta preparando, descarga el ZIP estable, descomprimelo y abre Instalar en Mac.command.",
+    allowUniversalFallback: false,
+    description: "Descarga el DMG, abre Admira IA y sigue el launcher Docker para Mac.",
     button: "Descargar para Mac"
   },
   {
     id: "windows",
     label: "Windows",
-    badge: "Paquete ZIP temporal para Windows",
+    badge: "Launcher Docker para Windows",
     formats: [".exe"],
-    allowUniversalFallback: true,
-    description: "Descarga el instalador y abre Docker Desktop. Si el instalador de Windows aun no esta publicado, descarga el ZIP estable, descomprimelo y abre Instalar en Windows.bat.",
+    allowUniversalFallback: false,
+    description: "Descarga el instalador, abre Docker Desktop y sigue el launcher Docker para Windows.",
     button: "Descargar para Windows"
   },
   {
