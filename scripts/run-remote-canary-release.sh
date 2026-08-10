@@ -19,6 +19,8 @@ ssh -i "$IDENTITY_FILE" \
     test -x /usr/local/bin/hermes && \
     test -f /app/src/admira_mcp_server.py && \
     test -f /app/src/admira_hermes_runtime_patch.py && \
+    export PYTHONPATH=\"/app/src\" && \
+    export ADMIRA_HERMES_RUNTIME_PATCHES=1 && \
     HERMES_HOME=\"$HERMES_HOME_PATH\" hermes mcp test admira && \
     canary_home=\$(mktemp -d) && canary_log=\$(mktemp) && \
     cleanup() { rm -rf \"\$canary_home\" \"\$canary_log\"; } && trap cleanup EXIT INT TERM && \
