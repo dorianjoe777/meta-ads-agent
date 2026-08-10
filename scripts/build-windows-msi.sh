@@ -51,11 +51,11 @@ rsync -a "$ROOT_DIR/" "$STAGING_DIR/" \
   --exclude "scripts/run-content-dashboard.sh" \
   --exclude "src/content_pipeline.py" \
   --exclude "src/keyframe_planner.py" \
-  --exclude "src/remotion" \
-  --exclude "package.json" \
-  --exclude "package-lock.json" \
   --exclude "node_modules" \
   --exclude "*/node_modules" \
+  --exclude "installer/local-gui/AdmiraIA-Installer.exe" \
+  --exclude "installer/local-gui/gui/bin" \
+  --exclude "installer/local-gui/gui/obj" \
   --exclude "__pycache__" \
   --exclude "*/__pycache__" \
   --exclude ".pytest_cache" \

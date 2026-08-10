@@ -441,6 +441,8 @@ class IntegrationTestSuite:
             daily_social_content_time="10:00",
             daily_social_content_posts_per_day=1,
             daily_social_content_interval_days=1,
+            daily_social_content_formats="image",
+            daily_social_content_video_interval_days=7,
             telegram_bot_token="",
             telegram_chat_id="",
             creative_refresh_enabled=True,
@@ -690,6 +692,8 @@ class IntegrationTestSuite:
             daily_social_content_time="10:00",
             daily_social_content_posts_per_day=1,
             daily_social_content_interval_days=1,
+            daily_social_content_formats="image",
+            daily_social_content_video_interval_days=7,
             telegram_bot_token="",
             telegram_chat_id="",
             creative_refresh_enabled=True,
@@ -4306,6 +4310,8 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             FakeConfig.daily_social_content_enabled = True
             FakeConfig.daily_social_content_time = "10:15"
             FakeConfig.daily_social_content_posts_per_day = 2
+            FakeConfig.daily_social_content_formats = "image,motion_video"
+            FakeConfig.daily_social_content_video_interval_days = 5
 
             def fake_social_run(command, **kwargs):
                 social_calls.append((command, kwargs.get("env", {})))
@@ -4320,6 +4326,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.assert_true(social_created["configured"] and social_created["schedule"] == "15 10 * * *" and social_created["posts_per_day"] == 2, "Hermes creates the optional daily social content cron at the buyer's chosen time")
             self.assert_true("Admira IA - posts diarios" in social_command and "telegram:12345" in social_command and "mcp_admira_codex_image_generate" in social_prompt and "mcp_admira_stage_organic_social_post" in social_prompt and "mcp_admira_approve_action" in social_prompt and "memory/content_asset_library.json" in social_prompt and "pixel-level accurate" in social_prompt and "protected_reference_image_paths" in social_prompt and "pending_agent_review" in social_prompt, "Daily social content cron uses Image 2, classified protected assets, direct media delivery, exact approval drafts, and protected publishing")
             self.assert_true("request` autosuficiente" in social_prompt and "Está prohibido enviar solo" in social_prompt and "No conviertas automáticamente cada post" in social_prompt and "aprobada más recientemente" in social_prompt, "Daily organic cron sends a complete active brief, separates organic from paid ads, and prioritizes the latest approved reference")
+            self.assert_true("mcp_admira_search_motion_graphic_recipes" in social_prompt and "mcp_admira_generate_motion_graphic_video" in social_prompt and "video_path" in social_prompt and "uno cada 5 día(s)" in social_prompt, "Daily organic cron can deliberately create and approval-stage motion videos at the saved cadence")
             self.assert_true(social_env.get("HERMES_TIMEZONE") == "America/Bogota" and social_env.get("TZ") == "America/Bogota", "Daily social content cron inherits the buyer timezone")
             removal_calls = []
             FakeConfig.daily_social_content_enabled = False
@@ -6098,6 +6105,21 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.assert_true("contrato de logo protegido" in wrapped_prompt and "sin redibujarla" in wrapped_prompt, "Codex image wrapper preserves the exact-logo contract instead of contradicting it")
             organic_wrapper = codex_brand_guides.codex_image_generation_prompt("Post educativo sin venta", purpose="daily_social_post")
             self.assert_true("contenido orgánico" in organic_wrapper and "no lo conviertas en anuncio pagado" in organic_wrapper, "Final Image 2 wrapper keeps organic posts out of the paid-ad path")
+
+            story_element = dashboard.codex_image_generate(
+                {
+                    "request": "Crea unas manos sosteniendo demasiadas facturas para representar trabajo manual acumulado.",
+                    "purpose": "motion_graphic_asset",
+                    "asset_role": "story_subject",
+                    "narrative_role": "representar visualmente que las tareas manuales consumen el día del dueño",
+                    "product_scope": "Servicio de automatización para pymes",
+                    "reusable_asset": False,
+                }
+            )
+            story_prompt = captured["prompt"]
+            self.assert_true("Rol exacto dentro del storyboard: story_subject" in story_prompt and "tareas manuales consumen el día" in story_prompt, "One-off story subjects carry their exact narrative function into the Image 2 prompt")
+            self.assert_true(story_element["prompt_package"]["include_logo"] is False and "storyboard_integration" in story_element, "Story elements avoid an automatic logo and explicitly require storyboard inspection before rendering")
+            self.assert_true(story_element["storyboard_integration"]["suggested_scene_field"] == "media_path", "A non-isolated story frame binds to the scene's main media field")
         finally:
             dashboard.guide_library = original_library
             dashboard.read_json = original_read_json
@@ -9266,6 +9288,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         dashboard = load_dashboard_module()
         test_dir = ROOT_DIR / "output" / "test-organic-content-approval"
         image_path = test_dir / "daily-post.png"
+        video_path = test_dir / "daily-video.mp4"
         original = {
             "env_file": dashboard.ENV_FILE,
             "content_strategy": dashboard.CONTENT_STRATEGY_FILE,
@@ -9311,6 +9334,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             shutil.rmtree(test_dir, ignore_errors=True)
             test_dir.mkdir(parents=True, exist_ok=True)
             image_path.write_bytes(b"fake-png")
+            video_path.write_bytes(b"fake-mp4" * 512)
             dashboard.ENV_FILE = test_dir / ".env"
             dashboard.CONTENT_STRATEGY_FILE = test_dir / "content_strategy.md"
             dashboard.PENDING_FILE = test_dir / "pending.json"
@@ -9330,8 +9354,10 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
 
             dashboard.organic_content_readiness = lambda payload=None: {"ready": True, "missing": [], "next_question": "", "branding_ready": True, "strategy_ready": True}
             FakeConfig.daily_social_content_enabled = True
-            enabled = dashboard.save_daily_social_content_settings({"enabled": True, "time": "09:30", "posts_per_day": 1, "interval_days": 1, "content_strategy": "Educación, prueba social y oferta; CTA a conversar; Facebook tras aprobación."})
+            enabled = dashboard.save_daily_social_content_settings({"enabled": True, "time": "09:30", "posts_per_day": 1, "interval_days": 1, "content_formats": ["image", "motion_video"], "video_frequency_days": 5, "content_strategy": "Educación, prueba social y oferta; mezclar imágenes y videos; CTA a conversar; Facebook tras aprobación."})
             self.assert_true(enabled["enabled"] and enabled["cron"]["configured"], "Recurring organic content starts only after brand and strategy readiness")
+            updated_env = dashboard.ENV_FILE.read_text(encoding="utf-8")
+            self.assert_true(enabled["content_formats"] == ["image", "motion_video"] and enabled["video_interval_days"] == 5 and "DAILY_SOCIAL_CONTENT_FORMATS=image,motion_video" in updated_env and "DAILY_SOCIAL_CONTENT_VIDEO_INTERVAL_DAYS=5" in updated_env, "Recurring organic settings persist the buyer-approved image/video mix and motion cadence")
             self.assert_true(not gateway_restart_calls and enabled["gateway"].get("restart_required") is False, "Saving recurring organic settings hot-reloads the cron without terminating the active Telegram Gateway")
 
             draft = dashboard.stage_organic_social_post({
@@ -9363,6 +9389,17 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             ledger = json.loads(daily_agent.ORGANIC_CONTENT_POSTS_FILE.read_text(encoding="utf-8"))
             publish_call = FakePublishingClient.calls[0]
             self.assert_true(approved[0]["status"] == "approved" and publish_call["published"] is True and publish_call["approved"] is True, "Exact buyer approval publishes the reviewed post visibly through the protected Page connection")
+            video_draft = dashboard.stage_organic_social_post({
+                "page_id": "page_1",
+                "caption": "Tres pasos para cuidar tu piel.",
+                "video_path": str(video_path),
+                "pillar": "educación",
+                "objective": "enseñar",
+            })
+            video_approved = daily_agent.approve(video_draft["approval_id"])
+            video_publish_call = FakePublishingClient.calls[-1]
+            self.assert_true(video_draft["media_type"] == "video" and video_draft["video_path"] == str(video_path), "A finished organic MP4 becomes an exact approval draft instead of being treated as an image")
+            self.assert_true(video_approved[0]["status"] == "approved" and video_publish_call["video_path"] == str(video_path) and not video_publish_call.get("image_path"), "Exact buyer approval publishes the reviewed organic video through the native Page video route")
             self.assert_true(ledger["items"][0]["post_id"] == "page_1_post_approved" and not json.loads(dashboard.PENDING_FILE.read_text(encoding="utf-8")), "Published organic posts keep the real Meta post ID and leave no stale pending draft")
         finally:
             dashboard.ENV_FILE = original["env_file"]
@@ -12879,9 +12916,6 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             'public/content-keyframes/*',
             'src/content_pipeline.py',
             'src/keyframe_planner.py',
-            'src/remotion/*',
-            'package.json',
-            'package-lock.json',
             'node_modules/*',
             '*/node_modules/*',
             '.git/*',
@@ -12932,7 +12966,19 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             "scripts/import-migration.ps1",
             "src/meta_action_metrics.py",
             "src/product_catalog.py",
+            "src/motion_graphics.py",
+            "src/motion_recipe_compiler.py",
+            "src/shotcraft_catalog.py",
+            "src/remotion/compositions/MotionGraphic.tsx",
+            "scripts/render-motion-graphic.mjs",
+            "scripts/validate-motion-recipe-source.mjs",
+            "scripts/build-shotcraft-storytelling-vocabulary.py",
+            "package.json",
+            "package-lock.json",
             "agent/skills/product-catalog-management/SKILL.md",
+            "agent/skills/motion-graphics-video/SKILL.md",
+            "agent/skills/motion-graphics-video/references/shotcraft/gallery/api/library.json",
+            "agent/skills/motion-graphics-video/references/shotcraft-storytelling-vocabulary.json",
             "deploy/digitalocean/cloud-init-strict-access.yaml",
             "installer/release-bootstrap.env",
             "installer/windows/MetaAdsAgentInstaller.nsi",

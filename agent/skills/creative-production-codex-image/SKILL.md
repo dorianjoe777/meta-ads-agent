@@ -10,6 +10,9 @@ Use this skill when the buyer asks to generate, revise, or deliver image creativ
 ## Tool path
 
 - Use `mcp_admira_codex_image_generate` for actual image files.
+- For motion-graphics storyboard assets, use `purpose: motion_graphic_asset`. Generate full-frame scene imagery normally; use `background_removal: green_screen` for isolated shapes, icons, foreground objects, branded motifs, badges, or transition elements that Remotion must layer over other scenes.
+- Storytelling subjects and props are equally valid: send `asset_role: story_subject` or `story_prop` plus the exact `narrative_role`, scene perspective, gaze/action direction, lighting, scale, and safe crop. They are one-off by default and should not be saved as reusable brand elements unless the exact asset truly belongs in the recurring library.
+- Before generating a recurring design element, search the classified content library. Save useful parent-brand/product elements with `reusable_asset`, an exact `product_scope`, and a semantic `asset_role`; do not regenerate equivalent elements on every video.
 - Use `mcp_admira_codex_creative_plan` only for concept/prompt planning after brand/product context is ready.
 - Do not use Hermes internal image generation or mention external image APIs.
 - When Image 2/Codex is configured, never redirect the buyer to Midjourney, DALL·E, Bing, Canva, or manual generation because the tool is absent from one runtime session. Treat that as an internal product-health fault: keep the image request active, trigger/recommend the Admira update or connection recovery path, and retry the official tool after recovery. Do not turn the fault into placeholder work or another decision for the buyer unless the buyer explicitly requests that workaround.

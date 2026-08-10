@@ -15,7 +15,10 @@ mkdir -p "$STAGING_DIR" "$RELEASE_DIR"
 rsync -a "$ROOT_DIR/" "$STAGING_DIR/" \
   --exclude ".env" --exclude "ad-config.json" --exclude ".git" --exclude "release" \
   --exclude "dashboard/data" --exclude "logs" --exclude "output" --exclude "seller" \
-  --exclude "node_modules" --exclude "*/node_modules" --exclude "__pycache__" --exclude "*/__pycache__" \
+  --exclude "node_modules" --exclude "*/node_modules" \
+  --exclude "installer/local-gui/AdmiraIA-Installer.exe" \
+  --exclude "installer/local-gui/gui/bin" --exclude "installer/local-gui/gui/obj" \
+  --exclude "__pycache__" --exclude "*/__pycache__" \
   --exclude "*.pyc" --exclude "*.log"
 
 sed -e "s|@@VERSION@@|$VERSION|g" -e "s|@@STAGING_DIR@@|$STAGING_DIR|g" -e "s|@@EXE_PATH@@|$EXE_PATH|g" "$TEMPLATE" > "$GENERATED"

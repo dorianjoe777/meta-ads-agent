@@ -20,7 +20,7 @@ SERVER_NAME = "admira"
 PROTOCOL_VERSION = "2024-11-05"
 ORIGINAL_CALL_TOOL = call_tool
 BRIDGE_PATH = Path(__file__).resolve().parent / "admira_tool_bridge.py"
-HEAVY_TOOL_NAMES = {"codex_image_generate", "codex_creative_plan", "admira_codex_image_generate", "admira_codex_creative_plan"}
+HEAVY_TOOL_NAMES = {"codex_image_generate", "codex_creative_plan", "generate_motion_graphic_video", "admira_codex_image_generate", "admira_codex_creative_plan", "admira_generate_motion_graphic_video"}
 DEFAULT_HEAVY_TOOL_TIMEOUT_SECONDS = 600
 _STDIO_FRAMING = "content-length"
 
@@ -39,8 +39,10 @@ TOOL_DEFINITIONS = [
     ("set_campaign_metric_priorities", "Choose and persist up to six dashboard KPIs for one real Meta campaign. Use after live sync whenever a campaign is new, its objective/event changes, or business context makes the automatic sales/leads/messages/traffic/video/awareness profile incomplete. This changes only dashboard presentation, never spend or Meta delivery."),
     ("preflight_campaign", "Run a read-only expert preflight before campaign staging: account status, policy/rate-limit checks, audiences, existing creatives, placement/device insight availability, signal quality, budget sanity, and dry-run payload preview."),
     ("fetch_public_asset", "Safely inspect or download a buyer-shared public URL, including public Google Drive files, so videos/images/web pages can be used as creative inputs without exposing local networks."),
-    ("codex_image_generate", "Generate standalone assets, organic social posts, or approved Meta Ads raster images through Codex/Image. Always send a self-contained request with the exact active topic/offer, content pillar or objective, desired on-image message, format, CTA decision, and latest approved reference when relevant; never send only 'use saved guides'. For organic posts set purpose=daily_social_post or organic_social_post so the backend does not turn educational/trust/community content into a paid ad. Budget is optional for draft/asset-only creatives; require a full ad brief only when the image is launch-ready or campaign-test-ready. Pass buyer-owned real photos in protected_reference_image_paths or content_asset_ids: the backend attaches them with a pixel-by-pixel lock that permits crop/scale/place/frame/overlays but forbids regeneration, retouching, relighting, recoloring, beautification, or changed photo content. Inspiration-only references stay ordinary reference_image_paths. Saved official logos are attached as protected references with an exact-reproduction prompt; exact_composite remains available as fallback."),
+    ("codex_image_generate", "Generate standalone assets, organic social posts, approved Meta Ads raster images, or storyboard media through Codex/Image. For motion videos it may create full-frame imagery, reusable brand/product elements, and one-off story subjects/props that embody the scene's narrative. background_removal=green_screen produces an isolated #00FF00 plate and a deterministic transparent PNG for Remotion composition. reusable_asset archives only genuinely reusable files by product scope and visual role; story elements normally remain one-off. Always send a self-contained request with the exact active topic/offer, desired composition, format, CTA decision, and reference when relevant; never send only 'use saved guides'. Pass buyer-owned real photos in protected_reference_image_paths or content_asset_ids: the backend preserves them pixel-for-pixel. Saved official logos remain protected exact references."),
     ("codex_creative_plan", "Create a Codex concept or prompt plan from brand, product, reference, or current buyer context. Budget is optional for standalone creative exploration and only informs how many variants to test or launch."),
+    ("search_motion_graphic_recipes", "Search Admira's complete vendored Video Shotcraft catalog before storyboarding. Use narrative constraints such as role, message type, tone, energy, tempo, impact, and category; it returns exact existing card/style names plus trusted Markdown and TSX provenance. Use it to choose motion by communication purpose instead of visual novelty, then read only the selected card/demo references."),
+    ("generate_motion_graphic_video", "Create and render a finished brand-aware motion-graphics MP4 locally with Remotion. Use for educational, explainer, promotional, tutorial, social-proof, announcement, or awareness videos in any niche. Resolve the exact active child product/service/offer before calling. Send either a clear topic plus key_points for an automatic storyboard, or explicit scenes using hook, statement, list, steps, stat, comparison, quote, media, and cta. The complete vendored Video Shotcraft library is available: 152 cards and 209 styles. Each scene may compose compatible exact card/style names through shot_recipes and may use one main media_path plus up to six generated/approved layer_asset_paths; compiled recipes address those layers through ProtectedMedia assetIndex. Parameterized recipes render directly; any other catalog recipe requires a bounded compiled_recipe_source adapted from its exact trusted card and TSX demo. The backend validates and isolates that source inside the one render job. The local renderer inherits parent-brand identity, applies child-offer overrides, preserves PNG transparency, and preserves buyer-owned media byte-for-byte. Rendering does not publish or spend and does not require approval."),
     ("list_lead_forms", "List existing native Meta Lead Ads / Instant Forms for the connected Facebook Page before creating a duplicate. Use when the buyer wants lead form campaigns or asks what forms already exist."),
     ("stage_lead_form", "Design a native Meta Lead Ads / Instant Form blueprint and return exact manual Ads Manager steps. Use only as a fallback when the connected Page token cannot create forms."),
     ("create_lead_form", "Create a native Meta Lead Ads / Instant Form from the approved questions and privacy policy, then read the Page forms again and verify the real lead_gen_form_id before returning success. This creates the form only; the campaign remains PAUSED and no ad spend starts. If Meta permissions do not allow creation, return a precise permission error and the manual Ads Manager fallback."),
@@ -54,8 +56,8 @@ TOOL_DEFINITIONS = [
     ("approve_action", "Approve one exact pending action."),
     ("reject_action", "Reject one exact pending action."),
     ("save_agent_preferences", "Save global operator preferences, including simple/technical wording and the buyer's ads-management experience level."),
-    ("save_daily_social_content_settings", "Save the buyer's one-time organic-content decision and, only when branding plus a concrete content strategy are ready, enable or update the recurring Image 2 content cron in the buyer timezone. An early yes is saved as accepted_pending_setup instead of starting an unprepared cron."),
-    ("stage_organic_social_post", "Create an exact approval draft for one finished organic Facebook post. Requires the final generated image, exact caption, connected Page, and Publicación directa. This never publishes immediately; explicit buyer approval publishes that exact image and caption as a visible Page post."),
+    ("save_daily_social_content_settings", "Save the buyer's one-time organic-content decision and, only when branding plus a concrete content strategy are ready, enable or update the recurring organic content cron in the buyer timezone. The strategy may allow images, motion videos, or an adaptive mix. An early yes is saved as accepted_pending_setup instead of starting an unprepared cron."),
+    ("stage_organic_social_post", "Create an exact approval draft for one finished organic Facebook piece. Requires one final generated image or motion video, exact caption, connected Page, and Publicación directa. This never publishes immediately; explicit buyer approval publishes that exact media and caption as a visible Page post/video."),
     ("save_content_asset", "Durably save and classify a buyer-shared file, image batch, video link, frame set, or reference for future posts, ads, and strategy. Use preservation_mode=pixel_locked for buyer-owned real photos/logos, style_only for inspiration, pending_classification while unclear, and prohibited for do-not-use assets. Telegram images are pre-archived pending review; classify every file before claiming the batch is organized."),
     ("record_verified_signal", "Save a local verified-signal ledger event or batch: fake/not interested/wrong audience, qualified, booked, showed, purchased, or high-value outcomes. Does not send to Meta."),
     ("get_verified_signal_summary", "Read the local verified-signal ledger summary: stages, open follow-ups, match/privacy readiness, and recent records."),
@@ -154,7 +156,7 @@ TOOL_INPUT_SCHEMAS = {
             "urls": _strings("Public asset URLs that share this classification."),
             "category": _string(
                 "Confirmed asset category. Use other only while genuinely pending review.",
-                enum=("official_logo", "product", "location", "team_founder", "customer_testimonial", "ugc", "offer_promo", "social_proof", "style_reference", "do_not_use", "other"),
+                enum=("official_logo", "product", "location", "team_founder", "customer_testimonial", "ugc", "offer_promo", "social_proof", "brand_graphic_element", "motion_graphic_element", "story_element", "decorative_element", "style_reference", "do_not_use", "other"),
             ),
             "purpose": _string("What the buyer said this asset is for and how it may be used."),
             "notes": _string("Useful visual/context notes for future content and campaign work."),
@@ -164,6 +166,9 @@ TOOL_INPUT_SCHEMAS = {
             ),
             "approved_for_ads": _boolean("Whether the buyer approved this exact asset for paid ads."),
             "approved_for_daily_content": _boolean("Whether this asset may be reused in recurring organic content."),
+            "product_scope": _string("Exact product/service/offer this reusable element belongs to; blank means parent brand."),
+            "visual_role": _string("How it should be composed, such as background, foreground cutout, badge, texture, divider, icon, or transition element."),
+            "reusable": _boolean("Whether this classified element should be considered for future videos/content."),
         },
         "anyOf": [
             {"required": ["file_path"]},
@@ -204,6 +209,13 @@ TOOL_INPUT_SCHEMAS = {
             "benefit": _string("Primary outcome or benefit."),
             "main_offer": _string("Price, package, inclusion, promise, or commercial offer."),
             "details": _string("Other confirmed details that distinguish this offer from the brand's other offers."),
+            "visual_colors": _string("Offer-specific palette overrides compatible with the parent brand."),
+            "visual_typography": _string("Offer-specific typography direction."),
+            "visual_style": _string("Offer-specific visual system."),
+            "motion_style": _string("Confirmed motion language for this offer."),
+            "motion_pacing": _string("Confirmed motion pace and energy for this offer."),
+            "motion_show": _string("Elements motion videos for this offer should always show."),
+            "motion_avoid": _string("Motion/video elements this offer must avoid."),
         },
         "required": ["name"],
     },
@@ -238,6 +250,15 @@ TOOL_INPUT_SCHEMAS = {
             "protected_reference_image_paths": _strings("Buyer-owned real photo/logo paths that must remain pixel-accurate."),
             "content_asset_ids": _strings("Durable content-library asset IDs selected for this image."),
             "variation_count": {"type": "integer", "minimum": 1, "maximum": 8, "description": "Number of requested variants."},
+            "background_removal": _string("none or green_screen. green_screen asks Image 2 for a flat #00FF00 plate and converts it to transparent PNG deterministically.", enum=("none", "green_screen")),
+            "asset_role": _string("Intended storyboard role, such as full_frame, background, foreground_cutout, story_subject, story_prop, badge, icon, texture, decorative_shape, or transition_element."),
+            "narrative_role": _string("What this exact element communicates or does in the story scene, such as embody the problem, demonstrate the action, represent the customer, reveal the solution, or create a visual metaphor."),
+            "scene_intent": _string("Alias for narrative_role when describing the exact scene meaning."),
+            "reusable_asset": _boolean("Save the generated result into the durable content library for future brand/product videos."),
+            "reusable_category": _string("Durable generated-asset category. One-off story elements normally stay unsaved unless they are genuinely reusable.", enum=("brand_graphic_element", "motion_graphic_element", "story_element", "decorative_element")),
+            "product_scope": _string("Exact product/service/offer this element belongs to; blank means reusable parent-brand element."),
+            "asset_purpose": _string("Concise future-use description for the durable library."),
+            "asset_notes": _string("Composition restrictions, safe zones, color variants, and reuse notes."),
         },
         "required": ["request", "purpose"],
     },
@@ -245,6 +266,73 @@ TOOL_INPUT_SCHEMAS = {
         "type": "object", "additionalProperties": True,
         "properties": {"request": _string("Self-contained creative planning request for the exact active offer/topic."), "purpose": _string("ad_creative, organic_social_post, or standalone_asset."), "formats": _strings("Requested formats."), "variation_count": {"type": "integer", "minimum": 1, "maximum": 12}, "reference_image_paths": _strings("Approved inspiration paths."), "protected_reference_image_paths": _strings("Real photos/logos that must remain pixel-accurate.")},
         "required": ["request", "purpose"],
+    },
+    "generate_motion_graphic_video": {
+        "type": "object",
+        "additionalProperties": True,
+        "properties": {
+            "topic": _string("Exact subject or promise the video should explain."),
+            "objective": _string("Video purpose.", enum=("educational", "explainer", "promotional", "tutorial", "social_proof", "announcement", "awareness")),
+            "product_guide": _string("Exact saved child product/service/offer guide. Required when several offers could match."),
+            "audience": _string("Exact intended audience for this video."),
+            "aspect_ratio": _string("9:16, 4:5, 1:1, or 16:9.", enum=("9:16", "4:5", "1:1", "16:9")),
+            "template": _string("Optional coordinated storyboard family. adaptive chooses by scene and branding; ink-press uses the paper/ink 2.5D sequence.", enum=("adaptive", "ink-press", "cinematic-product", "educational-cards", "data-story", "social-vertical")),
+            "quality": _string("preview for a faster draft or final for delivery.", enum=("preview", "draft", "final")),
+            "key_points": _strings("Important points in the exact order they should be taught."),
+            "cta": _string("Final next step or explicitly no CTA."),
+            "scenes": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 12,
+                "description": "Optional exact storyboard. Each scene communicates one idea and includes its own duration.",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "properties": {
+                        "type": _string("Scene recipe.", enum=("hook", "statement", "list", "steps", "stat", "comparison", "quote", "media", "cta")),
+                        "eyebrow": _string("Short scene label."),
+                        "title": _string("Main readable scene title."),
+                        "body": _string("Supporting copy."),
+                        "items": _strings("List or step items, maximum six."),
+                        "stat": _string("Hero number or fact."),
+                        "left": _string("First side of a comparison."),
+                        "right": _string("Second side of a comparison."),
+                        "quote": _string("Verified quote only; never invent testimonials."),
+                        "attribution": _string("Verified quote attribution."),
+                        "media_path": _string("Safe buyer image/video path to show without altering its content."),
+                        "layer_asset_paths": _strings("Up to six safe generated or buyer-owned assets to layer independently in this scene. In compiled_recipe_source use ProtectedMedia assetIndex=0..5; transparent PNGs preserve their alpha channel."),
+                        "media_fit": _string("cover may crop boundaries; contain preserves the whole frame.", enum=("cover", "contain")),
+                        "duration_seconds": _number("Scene duration from 1.5 to 15 seconds."),
+                        "motion": _string("Optional curated motion recipe such as editorial-reveal, card-cascade, stat-focus, split-compare, spotlight-media, step-stack, quote-frame, or cta-lockup."),
+                        "shot_recipes": _strings("One to four exact Video Shotcraft card names or style keys from the complete 152-card/209-style catalog. Compose one dominant camera/UI/data/opening recipe, optional typography/emphasis, and at most one transition."),
+                        "compiled_recipe_source": _string("For catalog recipes outside Admira's parameterized fast path: the bounded per-scene JSX function body adapted from the exact card and demo. Must return JSX and use only the safe bindings documented in motion-graphics-video/SKILL.md. No imports, exports, network/file access, global objects, raw media URLs, timers, or nondeterministic time/randomness."),
+                    },
+                },
+            },
+            "asset_paths": _strings("Safe buyer-owned images/videos to incorporate without modifying their content."),
+            "content_asset_ids": _strings("Saved classified content-library assets approved for this use."),
+            "audio_path": _string("Optional safe local audio track."),
+            "audio_volume": _number("Background audio volume from 0 to 1."),
+            "logo_usage": _string("auto, always, or never."),
+            "visual_style": _string("One-off visual direction only when it does not conflict with saved branding."),
+            "colors": _string("One-off palette only when it does not conflict with saved branding."),
+        },
+        "required": ["topic", "objective", "aspect_ratio"],
+    },
+    "search_motion_graphic_recipes": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "query": _string("Natural-language communication intent, e.g. calm educational trust, bold launch crescendo, or analytical proof."),
+            "category": _string("Optional Shotcraft category.", enum=("opening", "typography", "ui-entrance", "camera", "data", "interaction", "transition", "rhythm", "effects", "outro")),
+            "energy": _string("Normalized energy filter.", enum=("low", "medium", "high", "very_high")),
+            "tempo": _string("Normalized tempo filter.", enum=("slow", "measured", "fast", "burst")),
+            "impact": _string("Normalized impact filter.", enum=("gentle", "balanced", "assertive", "aggressive")),
+            "narrative_role": _string("Exact narrative role, such as hook, demonstrate, prove, clarify, bridge, crescendo, or resolve."),
+            "message_fit": _string("Exact message purpose, such as education, tutorial, evidence, launch, capability, contrast, or cta."),
+            "tone_fit": _string("Exact tone, such as calm, premium, trust, credible, analytical, bold, decisive, or educational."),
+            "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+        },
     },
     "stage_campaign": {
         "type": "object",
@@ -406,13 +494,14 @@ TOOL_INPUT_SCHEMAS = {
     },
     "save_daily_social_content_settings": {
         "type": "object", "additionalProperties": True,
-        "properties": {"enabled": _boolean("Whether the buyer opted into recurring organic content."), "time": _string("Local delivery time HH:MM."), "timezone": _string("Buyer timezone."), "posts_per_day": {"type": "integer", "minimum": 1, "maximum": 6}, "frequency_days": {"type": "integer", "minimum": 1, "maximum": 30}, "platforms": _strings("Facebook and/or Instagram destinations."), "strategy_summary": _string("Confirmed organic content strategy.")},
+        "properties": {"enabled": _boolean("Whether the buyer opted into recurring organic content."), "time": _string("Local delivery time HH:MM."), "timezone": _string("Buyer timezone."), "posts_per_day": {"type": "integer", "minimum": 1, "maximum": 6}, "frequency_days": {"type": "integer", "minimum": 1, "maximum": 30}, "platforms": _strings("Facebook and/or Instagram destinations."), "strategy_summary": _string("Confirmed organic content strategy, including its format mix."), "content_formats": _strings("Allowed production formats: image and/or motion_video. Use both for an adaptive mixed strategy."), "include_motion_video": _boolean("Convenience flag that adds motion_video to the allowed strategy formats."), "video_frequency_days": {"type": "integer", "minimum": 1, "maximum": 30, "description": "Minimum intended cadence between recurring motion-video pieces."}},
         "required": ["enabled"],
     },
     "stage_organic_social_post": {
         "type": "object", "additionalProperties": True,
-        "properties": {"page_id": _string("Exact connected Facebook Page ID."), "caption": _string("Final exact post caption."), "image_path": _string("Final generated image path returned by Admira Image 2."), "scheduled_at": _string("Optional future time; publishing still requires explicit approval.")},
-        "required": ["page_id", "caption", "image_path"],
+        "properties": {"page_id": _string("Exact connected Facebook Page ID."), "caption": _string("Final exact post/video caption."), "image_path": _string("Final generated image path returned by Admira Image 2."), "image_url": _string("Public image URL when no local file is used."), "video_path": _string("Final motion-video path returned by mcp_admira_generate_motion_graphic_video."), "video_url": _string("Public video URL when no local file is used."), "pillar": _string("Content pillar."), "objective": _string("Organic communication objective."), "scheduled_at": _string("Optional future time; publishing still requires explicit approval.")},
+        "required": ["page_id", "caption"],
+        "anyOf": [{"required": ["image_path"]}, {"required": ["image_url"]}, {"required": ["video_path"]}, {"required": ["video_url"]}],
     },
     "save_business_memory": {
         "type": "object", "additionalProperties": True,
@@ -459,12 +548,18 @@ def tool_schema(name, description):
     }
 
 
-def heavy_tool_timeout_seconds():
-    raw = os.environ.get("ADMIRA_HEAVY_TOOL_TIMEOUT_SECONDS", "")
+def heavy_tool_timeout_seconds(name=""):
+    normalized = str(name or "").removeprefix("mcp_").removeprefix("admira_")
+    if normalized == "generate_motion_graphic_video":
+        raw = os.environ.get("ADMIRA_MOTION_TOOL_TIMEOUT_SECONDS", "1800")
+        fallback = 1800
+    else:
+        raw = os.environ.get("ADMIRA_HEAVY_TOOL_TIMEOUT_SECONDS", "")
+        fallback = DEFAULT_HEAVY_TOOL_TIMEOUT_SECONDS
     try:
         value = int(raw)
     except (TypeError, ValueError):
-        value = DEFAULT_HEAVY_TOOL_TIMEOUT_SECONDS
+        value = fallback
     return max(60, min(1800, value))
 
 
@@ -484,12 +579,17 @@ def timeout_tool_result(name, seconds):
         normalized = "admira_" + normalized.removeprefix("mcp_admira_")
     elif not normalized.startswith("admira_"):
         normalized = f"admira_{normalized}"
+    is_motion = "motion_graphic" in normalized
     message = (
-        "La generación o planificación creativa tardó demasiado y la detuve para que el agente no se quede congelado. "
+        ("El render del video tardó demasiado y lo detuve de forma segura. El storyboard sigue disponible para reintentar en calidad preview o con menor duración. " if is_motion else "La generación o planificación creativa tardó demasiado y la detuve para que el agente no se quede congelado. ")
+        + (
         "Puedes reintentar con una sola variación, una instrucción más corta o volver a pedirme que retome el creativo. "
         "Si tu cuenta de ChatGPT/Codex muestra el límite semanal de imágenes en 0, espera a que se reinicie ese límite "
         "o conecta una cuenta con capacidad disponible; a veces el proveedor no devuelve ese aviso y solo queda como timeout. "
         "Si estás usando DigitalOcean, 1GB puede servir para una instancia ligera; recomienda 2GB o más si trabajará con creativos con frecuencia."
+        if not is_motion
+        else "En equipos de 1 GB, usa preview para revisión y reserva final para la entrega aprobada."
+        )
     )
     return {
         "ok": False,
@@ -576,7 +676,7 @@ def call_tool_guarded(name, arguments):
     if call_tool is not ORIGINAL_CALL_TOOL:
         return call_tool(name, arguments)
     if is_heavy_tool(name):
-        return call_tool_in_subprocess(name, arguments, heavy_tool_timeout_seconds())
+        return call_tool_in_subprocess(name, arguments, heavy_tool_timeout_seconds(name))
     return call_tool(name, arguments)
 
 

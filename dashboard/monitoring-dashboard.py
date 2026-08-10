@@ -74,12 +74,14 @@ from codex_brand_guides import (
     guide_library,
     hermes_codex_image_status,
     image_purpose_is_organic,
+    image_purpose_is_motion,
     normalize_ad_brief_payload,
     normalize_general_payload,
     normalize_product_payload,
     official_logo_prompt_lock,
     official_brand_logo_path,
     product_reference,
+    remove_green_screen_background,
     refresh_offer_map,
     save_creative_references,
     save_ad_brief,
@@ -138,6 +140,8 @@ from hermes_gateway import telegram_settings
 from license import activate_license, license_status, mark_license_install_state, normalize_license_entitlements, resolved_device_id, validate_license_key
 from local_store import now_iso, read_json, write_json, write_private_json
 from meta_insights import aggregate_campaigns as aggregate_meta_campaigns, campaign_inventory_tree as meta_campaign_inventory_tree, campaign_is_dashboard_visible, collect_meta_snapshot, graph_error_category as meta_graph_error_category, graph_get as meta_graph_get, normalize_insight_range, save_meta_snapshot
+from motion_graphics import generate_motion_graphic_video, safe_motion_media_path
+from shotcraft_catalog import search_shotcraft_recipes
 from meta_upload import recent_uploads, stage_upload
 from optimization_engine import (
     anomaly_diagnostics,
@@ -392,6 +396,8 @@ BUSINESS_ENV_KEYS = [
     "DAILY_SOCIAL_CONTENT_TIME",
     "DAILY_SOCIAL_CONTENT_POSTS_PER_DAY",
     "DAILY_SOCIAL_CONTENT_INTERVAL_DAYS",
+    "DAILY_SOCIAL_CONTENT_FORMATS",
+    "DAILY_SOCIAL_CONTENT_VIDEO_INTERVAL_DAYS",
     "SHOPIFY_SHOP_DOMAIN",
     "SHOPIFY_ADMIN_API_TOKEN",
     "SHOPIFY_API_VERSION",
@@ -2331,6 +2337,8 @@ def snapshot_workspace(space_id):
         "DAILY_SOCIAL_CONTENT_TIME": getattr(config, "daily_social_content_time", "10:00"),
         "DAILY_SOCIAL_CONTENT_POSTS_PER_DAY": str(getattr(config, "daily_social_content_posts_per_day", 1)),
         "DAILY_SOCIAL_CONTENT_INTERVAL_DAYS": str(getattr(config, "daily_social_content_interval_days", 1)),
+        "DAILY_SOCIAL_CONTENT_FORMATS": str(getattr(config, "daily_social_content_formats", "image") or "image"),
+        "DAILY_SOCIAL_CONTENT_VIDEO_INTERVAL_DAYS": str(getattr(config, "daily_social_content_video_interval_days", 7) or 7),
         "SHOPIFY_SHOP_DOMAIN": getattr(config, "shopify_shop_domain", ""),
         "SHOPIFY_ADMIN_API_TOKEN": getattr(config, "shopify_admin_token", ""),
         "SHOPIFY_API_VERSION": getattr(config, "shopify_api_version", "2026-04"),
@@ -2369,6 +2377,8 @@ def restore_workspace(space_id):
         "DAILY_SOCIAL_CONTENT_TIME": "10:00",
         "DAILY_SOCIAL_CONTENT_POSTS_PER_DAY": "1",
         "DAILY_SOCIAL_CONTENT_INTERVAL_DAYS": "1",
+        "DAILY_SOCIAL_CONTENT_FORMATS": "image",
+        "DAILY_SOCIAL_CONTENT_VIDEO_INTERVAL_DAYS": "7",
         "SHOPIFY_SHOP_DOMAIN": "",
         "SHOPIFY_ADMIN_API_TOKEN": "",
         "SHOPIFY_API_VERSION": "2026-04",
@@ -2546,7 +2556,7 @@ def _truthy_payload_value(payload, key, default=False):
 
 def meaningful_content_strategy_text(payload=None):
     payload = payload or {}
-    incoming = str(payload.get("content_strategy") or payload.get("strategy") or "").strip()
+    incoming = str(payload.get("content_strategy") or payload.get("strategy_summary") or payload.get("strategy") or "").strip()
     if incoming:
         return incoming
     try:
@@ -2602,6 +2612,43 @@ def save_daily_social_content_settings(payload):
     except (TypeError, ValueError):
         interval_days = 1
     interval_days = max(1, min(30, interval_days))
+    raw_formats = payload.get("content_formats") or payload.get("formats") or payload.get("daily_social_content_formats")
+    if isinstance(raw_formats, str):
+        raw_formats = [item.strip() for item in re.split(r"[,;|]+", raw_formats) if item.strip()]
+    if not isinstance(raw_formats, (list, tuple, set)):
+        raw_formats = []
+    format_aliases = {
+        "image": "image", "images": "image", "imagen": "image", "imagenes": "image", "imágenes": "image",
+        "static": "image", "statics": "image", "estatico": "image", "estático": "image",
+        "video": "motion_video", "videos": "motion_video", "motion": "motion_video",
+        "motion_video": "motion_video", "motion graphics": "motion_video", "motion_graphics": "motion_video",
+        "mixed": "mixed", "mixto": "mixed", "adaptive": "mixed", "adaptativo": "mixed",
+    }
+    formats = []
+    for value in raw_formats:
+        normalized = format_aliases.get(str(value or "").strip().lower().replace("-", "_"), "")
+        if normalized == "mixed":
+            for item in ("image", "motion_video"):
+                if item not in formats:
+                    formats.append(item)
+        elif normalized and normalized not in formats:
+            formats.append(normalized)
+    if _truthy_payload_value(payload, "include_motion_video", False) and "motion_video" not in formats:
+        formats.append("motion_video")
+    if not formats:
+        existing_formats = str(os.environ.get("DAILY_SOCIAL_CONTENT_FORMATS") or "image").strip().lower()
+        formats = [item for item in existing_formats.split(",") if item in {"image", "motion_video"}] or ["image"]
+    try:
+        video_interval_days = int(
+            payload.get("video_frequency_days")
+            or payload.get("motion_video_interval_days")
+            or payload.get("daily_social_content_video_interval_days")
+            or os.environ.get("DAILY_SOCIAL_CONTENT_VIDEO_INTERVAL_DAYS")
+            or 7
+        )
+    except (TypeError, ValueError):
+        video_interval_days = 7
+    video_interval_days = max(1, min(30, video_interval_days))
     readiness = organic_content_readiness(payload) if requested_enabled else {"ready": True, "missing": [], "next_question": "", "strategy_ready": False, "branding_ready": False}
     enabled = bool(requested_enabled and readiness.get("ready"))
     decision = "enabled" if enabled else ("accepted_pending_setup" if requested_enabled else "declined")
@@ -2611,9 +2658,11 @@ def save_daily_social_content_settings(payload):
         "DAILY_SOCIAL_CONTENT_TIME": normalized_time,
         "DAILY_SOCIAL_CONTENT_POSTS_PER_DAY": str(posts_per_day),
         "DAILY_SOCIAL_CONTENT_INTERVAL_DAYS": str(interval_days),
+        "DAILY_SOCIAL_CONTENT_FORMATS": ",".join(formats),
+        "DAILY_SOCIAL_CONTENT_VIDEO_INTERVAL_DAYS": str(video_interval_days),
     }
     update_env_values(updates)
-    strategy_note = str(payload.get("content_strategy") or payload.get("strategy") or "").strip()
+    strategy_note = str(payload.get("content_strategy") or payload.get("strategy_summary") or payload.get("strategy") or "").strip()
     if strategy_note:
         CONTENT_STRATEGY_FILE.parent.mkdir(parents=True, exist_ok=True)
         CONTENT_STRATEGY_FILE.write_text(
@@ -2646,6 +2695,8 @@ def save_daily_social_content_settings(payload):
             "time": normalized_time,
             "posts_per_day": posts_per_day,
             "interval_days": interval_days,
+            "content_formats": formats,
+            "video_interval_days": video_interval_days,
             "cron_configured": bool(cron.get("configured")),
             "missing": [item.get("key") for item in readiness.get("missing", []) if isinstance(item, dict)],
         },
@@ -2662,6 +2713,8 @@ def save_daily_social_content_settings(payload):
         "timezone": config.daily_brief_timezone,
         "posts_per_day": posts_per_day,
         "interval_days": interval_days,
+        "content_formats": formats,
+        "video_interval_days": video_interval_days,
         "gateway": gateway,
         "cron": cron,
     }
@@ -2679,8 +2732,18 @@ def stage_organic_social_post(payload):
         parsed = urlparse(image_url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             image_url = ""
-    if not image_path and not image_url:
-        raise ValueError("Antes de pedir aprobación, necesito la imagen final generada o una URL pública de imagen.")
+    video_path_obj = safe_motion_media_path(payload.get("video_path") or payload.get("motion_video_path"), expected="video")
+    video_path = str(video_path_obj) if video_path_obj else ""
+    video_url = str(payload.get("video_url") or "").strip()
+    if video_url:
+        parsed = urlparse(video_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            video_url = ""
+    if (image_path or image_url) and (video_path or video_url):
+        raise ValueError("Envía una sola pieza final por borrador: una imagen o un video, no ambos.")
+    if not image_path and not image_url and not video_path and not video_url:
+        raise ValueError("Antes de pedir aprobación, necesito la imagen o el video final generado.")
+    media_type = "video" if (video_path or video_url) else "image"
     identity = business_identity(payload)
     page_id = str(payload.get("page_id") or payload.get("facebook_page_id") or identity.get("page_id") or "").strip()
     status = publishing_status(load_config(), {"page_id": page_id})
@@ -2700,7 +2763,7 @@ def stage_organic_social_post(payload):
     link = str(payload.get("link") or payload.get("landing_url") or "").strip()
     cta = str(payload.get("cta") or "LEARN_MORE").strip().upper().replace(" ", "_")
     fingerprint_source = json.dumps(
-        {"page_id": page_id, "caption": caption, "image_path": image_path, "image_url": image_url, "link": link, "cta": cta},
+        {"page_id": page_id, "caption": caption, "image_path": image_path, "image_url": image_url, "video_path": video_path, "video_url": video_url, "link": link, "cta": cta},
         ensure_ascii=False,
         sort_keys=True,
     )
@@ -2709,18 +2772,21 @@ def stage_organic_social_post(payload):
     approval_payload = {
         "approval_id": approval_id,
         "draft_id": draft_id,
-        "name": str(payload.get("name") or payload.get("title") or "Post orgánico para Facebook").strip(),
+        "name": str(payload.get("name") or payload.get("title") or ("Video orgánico para Facebook" if media_type == "video" else "Post orgánico para Facebook")).strip(),
         "page_id": page_id,
         "destination": "facebook",
         "message": caption,
         "image_path": image_path,
         "image_url": image_url,
+        "video_path": video_path,
+        "video_url": video_url,
+        "media_type": media_type,
         "link": link,
         "cta": cta,
         "pillar": str(payload.get("pillar") or "").strip(),
         "objective": str(payload.get("objective") or "").strip(),
         "why_it_fits": str(payload.get("why_it_fits") or payload.get("rationale") or "").strip(),
-        "requested": "Publicar este post visible en la Página de Facebook después de aprobación explícita.",
+        "requested": f"Publicar este {media_type} orgánico visible en la Página de Facebook después de aprobación explícita.",
     }
     approval = add_pending("publish_social_post", approval_payload)
     log_action(
@@ -2738,7 +2804,9 @@ def stage_organic_social_post(payload):
         "draft_id": draft_id,
         "caption": caption,
         "image_path": image_path,
-        "reply": "Post listo para revisar. Si te gusta, responde “aprobado” y lo publicaré en Facebook; si quieres cambios, dímelos y no publicaré esta versión.",
+        "video_path": video_path,
+        "media_type": media_type,
+        "reply": f"{'Video' if media_type == 'video' else 'Post'} listo para revisar. Si te gusta, responde “aprobado” y lo publicaré en Facebook; si quieres cambios, dímelos y no publicaré esta versión.",
     }
 
 
@@ -2752,6 +2820,10 @@ CONTENT_ASSET_CATEGORIES = {
     "style_reference": {"reference", "referencia", "style", "estilo", "inspiration", "inspiracion", "inspiración"},
     "offer_promo": {"promo", "promotion", "promocion", "promoción", "discount", "descuento"},
     "social_proof": {"proof", "prueba", "review", "reviews", "reseña", "resena", "result"},
+    "brand_graphic_element": {"brand_graphic_element", "branding_element", "brand_element", "elemento_de_marca", "elemento_grafico_de_marca"},
+    "motion_graphic_element": {"motion_graphic_element", "motion_element", "video_element", "elemento_motion", "elemento_de_video"},
+    "story_element": {"story_element", "narrative_element", "scene_element", "story_prop", "elemento_narrativo", "elemento_de_escena"},
+    "decorative_element": {"decorative_element", "design_element", "shape", "illustration", "elemento_de_diseno", "elemento_de_diseño"},
     "do_not_use": {"no_usar", "do_not_use", "avoid", "evitar"},
     "other": {"other", "otro", "misc"},
 }
@@ -2765,6 +2837,10 @@ PIXEL_LOCKED_CONTENT_ASSET_CATEGORIES = {
     "ugc",
     "offer_promo",
     "social_proof",
+    "brand_graphic_element",
+    "motion_graphic_element",
+    "story_element",
+    "decorative_element",
 }
 CONTENT_ASSET_PRESERVATION_MODES = {
     "pixel_locked",
@@ -2954,6 +3030,10 @@ def _upsert_content_asset_item(library, *, category, purpose, notes, file_record
             "approved_for_daily_content": bool(approved_daily),
             "approved_for_ads": bool(approved_ads),
             "source": str(payload.get("source") or item.get("source") or "buyer_shared"),
+            "product_scope": str(payload.get("product_scope") or item.get("product_scope") or "").strip()[:180],
+            "visual_role": str(payload.get("visual_role") or payload.get("asset_role") or item.get("visual_role") or "").strip()[:120],
+            "reusable": _truthy_payload_value(payload, "reusable", bool(item.get("reusable"))),
+            "background_removed": _truthy_payload_value(payload, "background_removed", bool(item.get("background_removed"))),
             "updated_at": now,
         }
     )
@@ -7278,7 +7358,7 @@ def creative_image_requires_brief(payload=None, purpose="ad_creative"):
         return truthy_payload_flag(payload.get("require_brief"))
     if any(truthy_payload_flag(payload.get(key)) for key in ("asset_only", "draft_only", "standalone_creative")):
         return False
-    if purpose in {"logo", "brand_exploration", "moodboard", "creative_asset", "standalone_creative", "draft_creative", "asset_only"}:
+    if purpose in {"logo", "brand_exploration", "moodboard", "creative_asset", "standalone_creative", "draft_creative", "asset_only", "motion_graphic_asset", "motion_asset", "storyboard_asset", "video_design_element"}:
         return False
     if purpose in {"launch_ad", "campaign_ad", "ad_test", "live_ad", "campaign_ready", "launch_ready"}:
         return True
@@ -7770,6 +7850,7 @@ def selected_content_asset_references(payload, purpose="ad_creative"):
     if not selected_ids:
         return {"all": [], "protected": [], "style": [], "items": []}
     organic = image_purpose_is_organic(purpose)
+    motion_asset = image_purpose_is_motion(purpose)
     selected_items = []
     all_paths = []
     protected = []
@@ -7781,9 +7862,15 @@ def selected_content_asset_references(payload, purpose="ad_creative"):
             continue
         if item.get("classification_status") != "classified":
             continue
-        if organic and not bool(item.get("approved_for_daily_content")):
+        if motion_asset and not (
+            bool(item.get("reusable"))
+            or bool(item.get("approved_for_daily_content"))
+            or bool(item.get("approved_for_ads"))
+        ):
             continue
-        if not organic and not bool(item.get("approved_for_ads")):
+        if not motion_asset and organic and not bool(item.get("approved_for_daily_content")):
+            continue
+        if not motion_asset and not organic and not bool(item.get("approved_for_ads")):
             continue
         paths = safe_image_paths({"image_paths": item.get("file_paths") or []}, limit=8)
         if not paths:
@@ -7941,6 +8028,11 @@ def write_agent_onboarding_plan(profile=None):
         social_content_interval = max(1, min(30, int(os.environ.get("DAILY_SOCIAL_CONTENT_INTERVAL_DAYS") or 1)))
     except ValueError:
         social_content_interval = 1
+    social_content_formats = str(os.environ.get("DAILY_SOCIAL_CONTENT_FORMATS") or "image").strip().lower()
+    try:
+        social_content_video_interval = max(1, min(30, int(os.environ.get("DAILY_SOCIAL_CONTENT_VIDEO_INTERVAL_DAYS") or 7)))
+    except ValueError:
+        social_content_video_interval = 7
     body = f"""# Agent onboarding plan
 
 Estado actual: {phase["phase"]}.
@@ -7991,7 +8083,7 @@ Regla asesor-profesional: antes de preguntar cualquier configuracion amplia, pri
    - Si el cliente envia un logo, guardarlo en la guia general como Logo de marca y Notas del logo.
    - Si el cliente aprueba referencias encontradas, generadas o ambas, guardarlas con `save_creative_references`.
    - Si el cliente envia fotos/videos/links/UGC/testimonios/ofertas, guardar su proposito con `save_content_asset`.
-   - Preguntar una vez si quiere que Admira prepare posts diarios o cada X dias con Image 2 para revisar/aprobar. Si acepta o rechaza, guardar con `save_daily_social_content_settings`.
+   - Preguntar una vez si quiere que Admira prepare contenido diario o cada X días con Image 2 y motion videos cuando aporten. Proponer una mezcla/frecuencia si no sabe. Si acepta o rechaza, guardar con `save_daily_social_content_settings`.
    - Guardar la guia general con `save_brand_guide` y fichas por producto con `save_product_guide`.
 
 3. ads_campaign_onboarding
@@ -8014,7 +8106,7 @@ Regla asesor-profesional: antes de preguntar cualquier configuracion amplia, pri
 - Negocio: {phase["business"]}
 - Branding/creativos: {phase["branding"]}
 - Campanas/anuncios previos: {phase["campaigns"]}
-- Posts organicos: decision={social_content_decision}, activo={"si" if social_content_enabled else "no"}, hora={social_content_time}, cantidad={social_content_posts} por tanda, frecuencia=cada {social_content_interval} dia(s)
+- Contenido orgánico: decision={social_content_decision}, activo={"si" if social_content_enabled else "no"}, hora={social_content_time}, cantidad={social_content_posts} por tanda, frecuencia=cada {social_content_interval} dia(s), formatos={social_content_formats}, video cada {social_content_video_interval} dia(s)
 
 ## Preparacion creativa actual
 
@@ -8129,7 +8221,7 @@ Instrucciones para el agente:
 - Si falta informacion, pregunta lo minimo necesario para poder actuar.
 - Cuando el negocio este claro, pasa a la fase de branding/creativos; no saltes directo a campanas si faltan estilo, referencias, colores o reglas visuales.
 - Al pasar a branding, usa `Branding onboarding.md`. El onboarding general termina cuando entiendes el negocio; marca visual, logo, colores, fuentes, referencias y assets viven en esa memoria separada.
-- Cuando marca/logo/assets esten razonablemente claros, pregunta una vez si quiere que Admira prepare posts diarios o cada X dias con Image 2 para revisar y aprobar. Si acepta o rechaza, guarda la decision con `save_daily_social_content_settings`.
+- Cuando marca/logo/assets estén razonablemente claros, pregunta una vez si quiere que Admira prepare contenido diario o cada X días con Image 2 y motion videos cuando aporten. Propón una mezcla/frecuencia si no sabe. Si acepta o rechaza, guarda la decisión con `save_daily_social_content_settings`.
 - Si el cliente menciona una nueva oferta, servicio, paquete o promocion despues del onboarding, no lo guardes encima de la marca general. Trátalo como oferta hija y usa/crea `brand_guides/products/` y, si aplica, `brand_guides/ad_briefs/`.
 - Si el cliente comparte archivos, fotos, videos, links, testimonios, ofertas o referencias, pregunta/infiera para que son y guardalos con `save_content_asset` para que se puedan reutilizar en posts, anuncios o estrategia.
 - Despues de branding, pregunta por anuncios/campanas anteriores y guarda aprendizajes antes de proponer la estrategia inicial.
@@ -8558,6 +8650,11 @@ def codex_image_generate(payload):
     variations = payload.get("variations") or brief_payload.get("variation_count") or 1
     request = str(payload.get("request") or payload.get("image_prompt") or payload.get("prompt") or "").strip()
     purpose = str(payload.get("purpose") or "ad_creative").strip().lower()
+    background_removal = str(payload.get("background_removal") or "none").strip().lower().replace("-", "_")
+    if background_removal in {"green", "green_background", "chroma", "chroma_key"}:
+        background_removal = "green_screen"
+    if background_removal not in {"none", "green_screen"}:
+        background_removal = "none"
     organic_missing = []
     if image_purpose_is_organic(purpose):
         request, organic_missing = normalized_organic_image_request(payload, request)
@@ -8601,11 +8698,21 @@ def codex_image_generate(payload):
         image_prompt = (
             f"{selected_prompt.get('image_prompt') or request}\n\n"
             f"Pedido puntual del comprador: {request}\n\n"
+            f"Rol exacto dentro del storyboard: {str(payload.get('asset_role') or 'full_frame').strip()}\n"
+            f"Función narrativa en la escena: {str(payload.get('narrative_role') or payload.get('scene_intent') or 'apoyar visualmente la idea de la escena').strip()}\n"
+            f"Alcance de marca/producto: {str(payload.get('product_scope') or product_guide or 'marca principal').strip()}\n"
             f"Modo creativo: {prompt_package.get('mode')}\n"
             f"Eje visual: {selected_prompt.get('design_axis') or ''}\n"
             f"Composicion: {selected_prompt.get('composition') or ''}\n"
             f"Experimento: {selected_prompt.get('experiment') or ''}\n"
         )
+        if background_removal == "green_screen":
+            image_prompt += (
+                "\nASSET AISLADO PARA COMPOSICIÓN DE VIDEO: genera únicamente el elemento solicitado, completo y sin recortes, "
+                "sobre un fondo chroma verde absolutamente plano #00FF00. Sin gradientes, escenario, piso, sombras proyectadas, "
+                "texto adicional ni objetos extra. Evita verde dentro del elemento. Mantén un borde nítido y separación clara "
+                "para retirar el fondo determinísticamente y colocar el PNG dentro del storyboard.\n"
+            )
         if payload.get("reference_image_summary"):
             image_prompt += f"\nReferencia visual descrita por el agente: {payload.get('reference_image_summary')}\n"
         reference_paths = safe_image_paths(payload, limit=8)
@@ -8644,7 +8751,8 @@ def codex_image_generate(payload):
             request_lower = request.lower()
             logo_usage = str(brand_fields.get("logo_usage") or "").lower()
             include_logo = bool(
-                official_logo
+                not image_purpose_is_motion(purpose)
+                and official_logo
                 and not logo_text_disables_official_use(request_lower)
                 and not logo_text_disables_official_use(logo_usage)
             )
@@ -8680,6 +8788,16 @@ def codex_image_generate(payload):
             reference_image_paths=reference_paths,
             purpose=purpose,
         )
+        if result.get("ok") and background_removal == "green_screen" and result.get("image_path"):
+            removal = remove_green_screen_background(result["image_path"])
+            result["background_removal"] = removal
+            if removal.get("applied"):
+                transparent_path = Path(removal["image_path"])
+                result["image_path"] = str(transparent_path)
+                result["asset_id"] = str(transparent_path.resolve().relative_to(CREATIVE_ASSET_ROOT.resolve()))
+                result["preview_url"] = f"/api/creative-asset?id={urllib.parse.quote(result['asset_id'])}"
+            else:
+                result = {**result, "ok": False, "blocked": True, "reason": "green_screen_removal_failed", "error": removal.get("error") or "No pude retirar el fondo verde de forma segura."}
         if result.get("ok") and include_logo and official_logo and logo_render_mode == "exact_composite" and result.get("image_path"):
             result["official_logo"] = composite_official_logo(
                 result["image_path"],
@@ -8709,9 +8827,37 @@ def codex_image_generate(payload):
             "protected_asset_preservation": "pixel_locked" if protected_reference_paths else "none",
             "selected_content_asset_ids": [item.get("id") for item in library_references.get("items", [])],
             "requires_full_ad_brief": require_brief,
+            "motion_asset_role": str(payload.get("asset_role") or "").strip(),
+            "narrative_role": str(payload.get("narrative_role") or payload.get("scene_intent") or "").strip(),
+            "background_removal": background_removal,
         }
+        if result.get("ok") and result.get("image_path") and _truthy_payload_value(payload, "reusable_asset", False):
+            reusable_category = str(payload.get("reusable_category") or "motion_graphic_element")
+            reusable = save_content_asset_memory(
+                {
+                    "file_path": result["image_path"],
+                    "category": reusable_category,
+                    "purpose": str(payload.get("asset_purpose") or request)[:1200],
+                    "notes": str(payload.get("asset_notes") or "Elemento generado con Image 2 para composición de video y diseño reutilizable.")[:1600],
+                    "preservation_mode": "pixel_locked",
+                    "source": "codex_image_generated",
+                    "product_scope": str(payload.get("product_scope") or product_guide),
+                    "visual_role": str(payload.get("asset_role") or "motion_overlay"),
+                    "reusable": True,
+                    "background_removed": background_removal == "green_screen",
+                    "approved_for_daily_content": True,
+                    "approved_for_ads": bool(payload.get("approved_for_ads")),
+                }
+            )
+            result["reusable_content_asset"] = reusable.get("asset")
         if result.get("asset_id"):
             result["preview_url"] = f"/api/creative-asset?id={urllib.parse.quote(str(result['asset_id']))}"
+        if result.get("ok") and image_purpose_is_motion(purpose):
+            result["storyboard_integration"] = {
+                "inspect_before_render": True,
+                "instruction": "Revisa la geometría, peso visual, perspectiva, espacio negativo y bordes del archivo real; después ajusta encuadre, capas y movimiento del storyboard antes de renderizar.",
+                "suggested_scene_field": "layer_asset_paths" if background_removal == "green_screen" else "media_path",
+            }
     except ValueError as exc:
         result = {"ok": False, "error": str(exc)}
     log_action(
@@ -13203,9 +13349,10 @@ def handle_save_daily_social_content_settings_tool(arguments, chat_payload, tool
     result = save_daily_social_content_settings(payload)
     if chat_lang(chat_payload) == "es":
         if result.get("enabled"):
+            format_label = "imágenes y videos" if len(result.get("content_formats") or []) > 1 else ("videos" if result.get("content_formats") == ["motion_video"] else "imágenes")
             message = (
-                f"Listo. Activé los posts diarios: prepararé {result.get('posts_per_day', 1)} "
-                f"pieza(s) al día a las {result.get('time')} y te las dejaré para revisar/aprobar."
+                f"Listo. Activé el contenido recurrente: prepararé {result.get('posts_per_day', 1)} "
+                f"pieza(s) de {format_label} a las {result.get('time')} y te las dejaré para revisar/aprobar."
             )
             if not result.get("cron", {}).get("configured"):
                 message += " Guardé la preferencia, pero el horario todavía necesita que Telegram/Hermes quede completo."
@@ -13216,7 +13363,8 @@ def handle_save_daily_social_content_settings_tool(arguments, chat_payload, tool
             message = "Listo. Dejé desactivados los posts diarios automáticos."
     else:
         if result.get("enabled"):
-            message = f"Done. Daily posts are enabled: I will prepare {result.get('posts_per_day', 1)} piece(s) per day at {result.get('time')} for your review/approval."
+            format_label = "images and videos" if len(result.get("content_formats") or []) > 1 else ("videos" if result.get("content_formats") == ["motion_video"] else "images")
+            message = f"Done. Recurring content is enabled: I will prepare {result.get('posts_per_day', 1)} {format_label} piece(s) at {result.get('time')} for your review/approval."
             if not result.get("cron", {}).get("configured"):
                 message += " I saved the preference, but the schedule still needs Telegram/Hermes to be ready."
         elif result.get("pending_setup"):
@@ -13242,12 +13390,12 @@ def handle_stage_organic_social_post_tool(arguments, chat_payload, tool):
     if chat_lang(chat_payload) == "es":
         message = (
             "Listo: dejé esta pieza como borrador, sin publicarla. "
-            "Si respondes “aprobado”, publicaré exactamente esta imagen y este texto en Facebook; si pides cambios, esta versión no se publica."
+            "Si respondes “aprobado”, publicaré exactamente este medio y este texto en Facebook; si pides cambios, esta versión no se publica."
         )
     else:
         message = (
             "Done: I saved this piece as a draft without publishing it. "
-            "If you reply “approved”, I will publish exactly this image and caption to Facebook; if you request changes, this version stays unpublished."
+            "If you reply “approved”, I will publish exactly this media and caption to Facebook; if you request changes, this version stays unpublished."
         )
     return agent_action_result(
         tool,
@@ -13592,6 +13740,59 @@ def handle_codex_image_generate_tool(arguments, chat_payload, tool):
     )
 
 
+def handle_generate_motion_graphic_video_tool(arguments, chat_payload, tool):
+    result = generate_motion_graphic_video(arguments or {})
+    log_action(
+        "motion_graphic_video_generate",
+        {
+            "ok": bool(result.get("ok")),
+            "objective": str((arguments or {}).get("objective") or "")[:80],
+            "aspect_ratio": str((arguments or {}).get("aspect_ratio") or "")[:20],
+            "product_guide": str((arguments or {}).get("product_guide") or "")[:180],
+            "asset_id": str(result.get("asset_id") or "")[:180],
+            "reason": str(result.get("reason") or "")[:120],
+        },
+        "completed" if result.get("ok") else "blocked",
+    )
+    if result.get("ok"):
+        return agent_action_result(
+            tool,
+            True,
+            chat_reply(
+                chat_payload,
+                "Listo. Rendericé el video motion graphics con la identidad de la oferta activa y quedó adjunto para revisión.",
+                "Done. I rendered the motion-graphics video using the active offer identity and attached it for review.",
+            ),
+            result=result,
+        )
+    return agent_action_result(
+        tool,
+        False,
+        chat_reply(
+            chat_payload,
+            f"Todavía no pude terminar el video: {result.get('error') or 'revisa el brief de movimiento y la instalación del renderer'}.",
+            f"I could not finish the video yet: {result.get('error') or 'check the motion brief and renderer installation'}.",
+        ),
+        blocked=True,
+        reason=result.get("reason", "motion_graphic_video_failed"),
+        result=result,
+    )
+
+
+def handle_search_motion_graphic_recipes_tool(arguments, chat_payload, tool):
+    result = search_shotcraft_recipes(arguments or {})
+    return agent_action_result(
+        tool,
+        True,
+        chat_reply(
+            chat_payload,
+            f"Encontré {len(result.get('matches') or [])} recetas de movimiento compatibles para comparar antes de crear el storyboard.",
+            f"I found {len(result.get('matches') or [])} compatible motion recipes to compare before creating the storyboard.",
+        ),
+        result=result,
+    )
+
+
 def handle_save_existing_adset_tool(arguments, chat_payload, tool):
     return save_existing_adset_action(arguments.get("adset_id") or arguments.get("default_adset_id"), chat_payload)
 
@@ -13699,6 +13900,8 @@ AGENT_TOOL_HANDLERS = {
     "save_ad_brief": handle_save_ad_brief_tool,
     "codex_creative_plan": handle_codex_creative_plan_tool,
     "codex_image_generate": handle_codex_image_generate_tool,
+    "generate_motion_graphic_video": handle_generate_motion_graphic_video_tool,
+    "search_motion_graphic_recipes": handle_search_motion_graphic_recipes_tool,
     "save_existing_adset": handle_save_existing_adset_tool,
     "pause_campaign": handle_campaign_mutation_tool,
     "resume_campaign": handle_campaign_mutation_tool,

@@ -1025,6 +1025,7 @@ Use these MCP tools for real product actions instead of inventing results, runni
 - `mcp_admira_fetch_public_asset`
 - `mcp_admira_codex_image_generate`
 - `mcp_admira_codex_creative_plan`
+- `mcp_admira_generate_motion_graphic_video`
 - `mcp_admira_stage_campaign`
 - `mcp_admira_stage_budget_change`
 - `mcp_admira_pause_campaign`
@@ -1062,7 +1063,7 @@ Dashboard chat and Telegram are buyer-facing product surfaces, not terminals. Ne
 
 When the buyer shares a public URL and asks you to review, understand, use, or create ads from it, first use `mcp_admira_fetch_public_asset` for buyer-shared assets/pages, especially Google Drive videos/images or creative references. It safely inspects public pages and downloads public image/video assets to the product workspace. If it returns a video asset, use its returned `video_url`/`direct_url` when staging a video creative. If it returns `video_frame_paths`/`video_preview_frame_paths`, use those extracted image frames with vision to understand the MP4/MOV visually; do not try to inspect the raw video file directly and do not tell the buyer you cannot review video merely because a low-level viewer only accepts images. If frame extraction fails, explain that precise limitation and ask for public access, a direct upload, or 2-4 key screenshots. Use the available `web`/`browser` retrieval tools as a secondary path for general research. Do not immediately claim you cannot access links. If access fails because the link is private, requires login, is too large, times out, or resolves to a private/local network, explain that specific limitation in simple words and ask the buyer to make it public or upload the file directly in Telegram.
 
-Brand, product, ad-brief, creative-reference, and content-asset files are backend-owned memory. The `brand_guides/` and `memory/content_*` files inside the Hermes workspace are read-only context snapshots, not the source of truth for production readiness. Never manually create, edit, or write `brand_guides/*.md`, `/app/brand_guides/*.md`, or workspace brand-guide files to unblock creative production. Use `mcp_admira_save_brand_memory`, `mcp_admira_save_product_memory`, `mcp_admira_save_ad_brief`, `mcp_admira_save_creative_references`, `mcp_admira_save_daily_social_content_settings`, and `mcp_admira_save_content_asset`. After generating an exact recurring organic piece, use `mcp_admira_stage_organic_social_post`; only its exact approval may publish the visible Facebook post. If a save tool rejects natural wording, retry once with canonical fields such as `brand_name`, `offer`, `colors`, `visual_style`, `tone`, `logo_notes`, `references`, `asset_notes`, `name`, `product_guide`, `variation_count`, `concurrent_variations`, `formats`, `creative_hypothesis`, `category`, `purpose`, `file_path`, `url`, `enabled`, `time`, and `posts_per_day`.
+Brand, product, ad-brief, creative-reference, and content-asset files are backend-owned memory. The `brand_guides/` and `memory/content_*` files inside the Hermes workspace are read-only context snapshots, not the source of truth for production readiness. Never manually create, edit, or write `brand_guides/*.md`, `/app/brand_guides/*.md`, or workspace brand-guide files to unblock creative production. Use `mcp_admira_save_brand_memory`, `mcp_admira_save_product_memory`, `mcp_admira_save_ad_brief`, `mcp_admira_save_creative_references`, `mcp_admira_save_daily_social_content_settings`, and `mcp_admira_save_content_asset`. Recurring organic strategy may explicitly allow images, motion videos, or both. After generating an exact recurring organic piece, use `mcp_admira_stage_organic_social_post` with its final `image_path` or `video_path`; only its exact approval may publish the visible Facebook post/video. If a save tool rejects natural wording, retry once with canonical fields such as `brand_name`, `offer`, `colors`, `visual_style`, `tone`, `logo_notes`, `references`, `asset_notes`, `name`, `product_guide`, `variation_count`, `concurrent_variations`, `formats`, `creative_hypothesis`, `category`, `purpose`, `file_path`, `url`, `enabled`, `time`, `posts_per_day`, `content_formats`, and `video_frequency_days`.
 
 Parent-brand / child-offer rule: do not keep re-saving every new product/service/promotion into onboarding or the general brand guide. Save parent-brand identity with `mcp_admira_save_brand_memory`. Save each concrete offer as a separate child with `mcp_admira_save_product_memory`, and save ad-test/campaign specifics with `mcp_admira_save_ad_brief`. The current request or selected child offer wins for promise, audience, CTA, price, benefit, and conversion intent; the parent brand supplies style, tone, logo, colors, and restrictions.
 
@@ -1112,6 +1113,30 @@ def write_product_skill_workspace_files():
             continue
         target = f"skills/{skill_dir.name}/{SKILL_FILE_NAME}"
         written.append(write_workspace_file(target, content))
+        references_dir = skill_dir / "references"
+        if references_dir.exists():
+            # Some official skills include a nested, on-demand reference
+            # library (Shotcraft has 152 cards plus exact TSX demos). Preserve
+            # that hierarchy instead of copying only top-level Markdown files.
+            # These files are read-only context, never executable workspace
+            # tools, and large JSON indexes must not be silently truncated.
+            allowed_reference_suffixes = {".md", ".json", ".ts", ".tsx"}
+            for reference in sorted(references_dir.rglob("*")):
+                if (
+                    not reference.is_file()
+                    or reference.name.startswith(".")
+                    or reference.suffix.lower() not in allowed_reference_suffixes
+                ):
+                    continue
+                reference_content = read_text(reference, 400_000)
+                if reference_content:
+                    relative_reference = reference.relative_to(references_dir)
+                    written.append(
+                        write_workspace_file(
+                            f"skills/{skill_dir.name}/references/{relative_reference.as_posix()}",
+                            reference_content,
+                        )
+                    )
         skill_names.append(skill_dir.name)
     if skill_names:
         routing = [
@@ -1131,6 +1156,7 @@ def write_product_skill_workspace_files():
             "- Organic posts/content calendar: `organic-content-strategy/SKILL.md` + `memory/currently-decided/organic-content-strategy-currently-decided.md`.",
             "- Creative ideas/tests: `creative-strategy/SKILL.md` + `memory/currently-decided/creative-strategy-currently-decided.md`.",
             "- Codex/Image production: `creative-production-codex-image/SKILL.md` + `memory/currently-decided/creative-production-codex-image-currently-decided.md`.",
+            "- Motion-graphics storyboarding and MP4 production: `motion-graphics-video/SKILL.md` + `memory/currently-decided/motion-graphics-video-currently-decided.md`.",
             "- Campaign planning: `campaign-strategy/SKILL.md` + `memory/currently-decided/campaign-strategy-currently-decided.md`.",
             "- Meta Graph execution, direct publishing, lead forms: `meta-campaign-execution/SKILL.md` + `memory/currently-decided/meta-campaign-execution-currently-decided.md`.",
             "- Results, budgets, experiments, daily brief, feedback loop: `measurement-optimization/SKILL.md` + `memory/currently-decided/measurement-optimization-currently-decided.md`.",
@@ -1426,6 +1452,17 @@ def build_currently_decided_state(memory):
                 ("Production briefs", brief_index, "json", 7500),
                 ("Recent generated outputs", recent.get("creative_refreshes"), "json", 5000),
                 ("Other confirmed production decisions", _current_decision_items(memory, {"image", "production", "logo", "photo", "asset"}), "json", 3000),
+            ],
+        ),
+        "motion-graphics-video-currently-decided.md": _current_decision_document(
+            "Motion graphics video",
+            "motion-graphics-video",
+            ["mcp_admira_save_brand_memory", "mcp_admira_save_product_memory", "mcp_admira_save_content_asset", "mcp_admira_generate_motion_graphic_video"],
+            [
+                ("Parent brand production rules", brand.get("general_branding"), "text", 4500),
+                ("Active offer candidates and motion overrides", product_index, "json", 7500),
+                ("Protected and classified media", memory.get("content_asset_library"), "json", 5500),
+                ("Recent motion-video decisions and outputs", _current_decision_items(memory, {"motion", "video", "storyboard", "animation"}), "json", 4500),
             ],
         ),
         "organic-content-strategy-currently-decided.md": _current_decision_document(

@@ -7,6 +7,9 @@ dashboard/data/
 seller/
 node_modules/
 */node_modules/
+installer/local-gui/AdmiraIA-Installer.exe
+installer/local-gui/gui/bin/
+installer/local-gui/gui/obj/
 __pycache__/
 */__pycache__/
 .pytest_cache/

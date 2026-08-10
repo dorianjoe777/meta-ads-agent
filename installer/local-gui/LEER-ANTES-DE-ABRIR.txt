@@ -1,0 +1,7 @@
+INSTALADOR DE ADMIRA IA
+
+Abre únicamente:
+
+  AdmiraIA-Installer.exe
+
+No abras archivos .ps1 ni archivos de comandos. El instalador gráfico se encarga de todo y muestra la ventana de permisos de Windows cuando la necesita.

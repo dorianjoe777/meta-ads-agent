@@ -32,6 +32,8 @@ TOOL_MAP = {
     "admira_fetch_public_asset": "fetch_public_asset",
     "admira_codex_image_generate": "codex_image_generate",
     "admira_codex_creative_plan": "codex_creative_plan",
+    "admira_search_motion_graphic_recipes": "search_motion_graphic_recipes",
+    "admira_generate_motion_graphic_video": "generate_motion_graphic_video",
     "admira_list_lead_forms": "list_lead_forms",
     "admira_stage_lead_form": "stage_lead_form",
     "admira_create_lead_form": "create_lead_form",
@@ -70,6 +72,7 @@ PUBLIC_TOOLS = sorted([
 ])
 ARGUMENT_WRAPPER_KEYS = {"arguments", "args", "kwargs", "payload", "fields", "data", "input"}
 CREATIVE_IMAGE_TOOLS = {"admira_codex_image_generate", "admira_codex_creative_plan"}
+GENERATED_MEDIA_TOOLS = {"admira_codex_image_generate", "admira_generate_motion_graphic_video"}
 CAMPAIGN_STAGE_TOOLS = {"admira_stage_campaign"}
 CAMPAIGN_CREATIVE_SOURCE_KEYS = {
     "creative_image_path",
@@ -104,12 +107,14 @@ WORKSPACE_IMAGE_TRIGGER_WORDS = (
     "uploaded",
 )
 IMAGE_OUTPUT_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+VIDEO_OUTPUT_EXTENSIONS = {".mp4"}
 EMPTY_ARGUMENT_GUARDED_TOOLS = {
     "admira_save_content_asset": ("file_path or file_paths", "category", "purpose", "preservation_mode"),
     "admira_save_brand_memory": ("brand_name or offer", "colors", "visual_style", "tone"),
     "admira_save_product_memory": ("name", "target_audience", "benefit or main_offer"),
     "admira_save_ads_onboarding": ("campaign_goal or objective or success_metrics",),
     "admira_codex_image_generate": ("request", "purpose"),
+    "admira_generate_motion_graphic_video": ("topic", "objective", "aspect_ratio"),
     "admira_stage_campaign": ("name", "daily_budget", "destination details", "creative source"),
 }
 
@@ -143,12 +148,12 @@ def result_ok(result):
 
 def generated_media_attachment_for_result(tool, result):
     """Return an internal MEDIA directive for generated creative files."""
-    if tool != "admira_codex_image_generate" or not result_ok(result):
+    if tool not in GENERATED_MEDIA_TOOLS or not result_ok(result):
         return ""
     nested = (result or {}).get("result") if isinstance(result, dict) else {}
     if not isinstance(nested, dict):
         return ""
-    raw_path = nested.get("image_path")
+    raw_path = nested.get("image_path") if tool == "admira_codex_image_generate" else nested.get("video_path")
     if not raw_path:
         return ""
     try:
@@ -156,7 +161,8 @@ def generated_media_attachment_for_result(tool, result):
         path.relative_to((ROOT_DIR / "output").resolve())
     except (OSError, RuntimeError, ValueError):
         return ""
-    if path.suffix.lower() not in IMAGE_OUTPUT_EXTENSIONS or not path.exists() or not path.is_file():
+    allowed_extensions = IMAGE_OUTPUT_EXTENSIONS if tool == "admira_codex_image_generate" else VIDEO_OUTPUT_EXTENSIONS
+    if path.suffix.lower() not in allowed_extensions or not path.exists() or not path.is_file():
         return ""
     return f"MEDIA:{path}"
 
@@ -520,7 +526,7 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
     if media_attachment:
         response["media_attachment"] = media_attachment
         response["buyer_delivery_instruction"] = (
-            "Native attachment prepared. In the visible buyer reply, say the image is attached here. "
+            "Native attachment prepared. In the visible buyer reply, say the generated media is attached here. "
             "Do not paste MEDIA:/... or local file paths as links."
         )
     return redact_payload(response)

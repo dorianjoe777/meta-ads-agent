@@ -220,6 +220,13 @@ PRODUCT_FIELD_LABELS = {
     "strong_phrases": "Frases fuertes permitidas",
     "avoid_phrases": "Frases que evitar",
     "assets": "Fotos o activos del producto",
+    "visual_colors": "Colores propios de esta oferta",
+    "visual_typography": "Tipografia propia de esta oferta",
+    "visual_style": "Estilo visual propio de esta oferta",
+    "motion_style": "Estilo de movimiento",
+    "motion_pacing": "Ritmo de movimiento",
+    "motion_show": "Mostrar siempre en videos",
+    "motion_avoid": "Evitar en videos",
     "tags": "Etiquetas",
     "components": "Productos incluidos en el conjunto",
     "cross_sell": "Venta cruzada sugerida",
@@ -280,6 +287,13 @@ PRODUCT_FIELD_ALIASES = {
     "show": ("Mostrar visualmente", "Debe mostrar", "Must show"),
     "avoid": ("Evitar", "No usar", "Must avoid"),
     "assets": ("Fotos", "Imagenes", "Imágenes", "Assets", "Media", "Product images"),
+    "visual_colors": ("Colores de la oferta", "Paleta de la oferta", "Offer colors", "product_colors", "motion_colors"),
+    "visual_typography": ("Tipografia de la oferta", "Tipografía de la oferta", "Offer typography", "product_typography"),
+    "visual_style": ("Estilo visual de la oferta", "Product visual style", "offer_visual_style", "creative_style"),
+    "motion_style": ("Estilo de movimiento", "Motion style", "animation_style"),
+    "motion_pacing": ("Ritmo de movimiento", "Motion pacing", "animation_pacing"),
+    "motion_show": ("Mostrar siempre en videos", "Motion must show", "video_must_show"),
+    "motion_avoid": ("Evitar en videos", "Motion must avoid", "video_must_avoid"),
     "tags": ("Etiquetas", "Tags", "Keywords", "Palabras clave"),
     "components": ("Componentes", "Productos incluidos", "Bundle products", "Pack", "Conjunto"),
     "cross_sell": ("Venta cruzada", "Cross sell", "Cross-sell", "Complementos"),
@@ -333,6 +347,13 @@ PRODUCT_PAYLOAD_ALIASES = {
     "show": ("must_show", "visual_must_show"),
     "avoid": ("must_avoid", "visual_must_avoid"),
     "assets": ("images", "photos", "media", "asset_paths"),
+    "visual_colors": ("product_colors", "offer_colors", "motion_colors"),
+    "visual_typography": ("product_typography", "offer_typography"),
+    "visual_style": ("offer_visual_style", "product_visual_style", "creative_style"),
+    "motion_style": ("animation_style",),
+    "motion_pacing": ("animation_pacing", "video_pacing"),
+    "motion_show": ("video_must_show",),
+    "motion_avoid": ("video_must_avoid",),
     "tags": ("keywords", "labels"),
     "components": ("component_products", "bundle_products", "included_products"),
     "cross_sell": ("cross_sell_products", "related_products"),
@@ -392,8 +413,31 @@ AD_BRIEF_PAYLOAD_ALIASES = {
 def read_text(path, fallback=""):
     try:
         return path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeError):
         return fallback
+
+
+def visible_markdown_files(directory, *, example_name=""):
+    """Return buyer-authored Markdown files, excluding OS metadata and templates."""
+    directory = Path(directory)
+    if not directory.exists():
+        return []
+    return sorted(
+        path
+        for path in directory.glob("*.md")
+        if path.is_file()
+        and path.name != example_name
+        and not path.name.startswith(".")
+        and not path.name.startswith("._")
+    )
+
+
+def product_guide_paths():
+    return visible_markdown_files(PRODUCT_DIR, example_name=PRODUCT_EXAMPLE.name)
+
+
+def ad_brief_paths():
+    return visible_markdown_files(AD_BRIEF_DIR, example_name=AD_BRIEF_EXAMPLE.name)
 
 
 def write_text(path, text):
@@ -658,6 +702,56 @@ def composite_official_logo(image_path, logo_path, position="top-right", backgro
     }
 
 
+def remove_green_screen_background(image_path, *, tolerance=82, edge_softness=46):
+    """Convert a generated chroma-green plate into a transparent PNG.
+
+    This is intentionally deterministic and applies only when the caller
+    explicitly requested a motion/design cutout. It never modifies buyer-owned
+    pixel-locked media.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        return {"applied": False, "error": "Pillow no está disponible para retirar el fondo verde."}
+    source = Path(image_path).expanduser().resolve()
+    if not source.is_file() or source.suffix.lower() not in CODEX_GENERATED_IMAGE_EXTENSIONS:
+        return {"applied": False, "error": "No encontré una imagen generada compatible para retirar el fondo."}
+    target = source.with_name(f"{source.stem}-transparent.png")
+    try:
+        canvas = Image.open(source).convert("RGBA")
+        pixels = canvas.load()
+        for y in range(canvas.height):
+            for x in range(canvas.width):
+                red, green, blue, alpha = pixels[x, y]
+                dominance = green - max(red, blue)
+                brightness = green
+                score = min(dominance, brightness - min(red, blue))
+                if score >= tolerance:
+                    new_alpha = 0
+                elif score > tolerance - edge_softness:
+                    new_alpha = int(alpha * (tolerance - score) / max(1, edge_softness))
+                else:
+                    new_alpha = alpha
+                if new_alpha < alpha:
+                    # Suppress green spill on antialiased edges without
+                    # recoloring opaque subject pixels.
+                    green = min(green, max(red, blue))
+                pixels[x, y] = (red, green, blue, new_alpha)
+        bbox = canvas.getchannel("A").getbbox()
+        if not bbox:
+            return {"applied": False, "error": "El recorte eliminó toda la imagen; vuelve a generarla con un fondo verde plano y sujeto sin verde."}
+        canvas.save(target, format="PNG", optimize=True)
+    except Exception as exc:
+        return {"applied": False, "error": str(exc)}
+    return {
+        "applied": True,
+        "source_image_path": str(source),
+        "image_path": str(target),
+        "background": "transparent",
+        "method": "deterministic_green_screen",
+    }
+
+
 def default_general_guide():
     profile = read_json(BUSINESS_PROFILE_FILE, {})
     base = read_text(GENERAL_EXAMPLE) or DEFAULT_GENERAL_GUIDE_TEMPLATE
@@ -781,8 +875,8 @@ def _offer_map_line(label, value):
 def build_offer_map_markdown():
     """Build a natural-language parent-brand/child-offer index for Hermes."""
     general = general_fields(read_text(GENERAL_GUIDE, default_general_guide()))
-    products = sorted(path for path in PRODUCT_DIR.glob("*.md") if path.name != "product.example.md") if PRODUCT_DIR.exists() else []
-    ad_briefs = sorted(path for path in AD_BRIEF_DIR.glob("*.md") if path.name != "ad_brief.example.md") if AD_BRIEF_DIR.exists() else []
+    products = product_guide_paths()
+    ad_briefs = ad_brief_paths()
     lines = [
         "# Offer map",
         "",
@@ -879,8 +973,8 @@ def refresh_offer_map():
 
 
 def brand_guide_status():
-    products = sorted(path for path in PRODUCT_DIR.glob("*.md") if path.name != "product.example.md") if PRODUCT_DIR.exists() else []
-    ad_briefs = sorted(path for path in AD_BRIEF_DIR.glob("*.md") if path.name != "ad_brief.example.md") if AD_BRIEF_DIR.exists() else []
+    products = product_guide_paths()
+    ad_briefs = ad_brief_paths()
     return {
         "general_exists": GENERAL_GUIDE.exists(),
         "general_guide": str(GENERAL_GUIDE),
@@ -898,8 +992,8 @@ def brand_guide_status():
 
 def guide_library():
     suggested_general = default_general_guide()
-    products = sorted(path for path in PRODUCT_DIR.glob("*.md") if path.name != "product.example.md") if PRODUCT_DIR.exists() else []
-    ad_briefs = sorted(path for path in AD_BRIEF_DIR.glob("*.md") if path.name != "ad_brief.example.md") if AD_BRIEF_DIR.exists() else []
+    products = product_guide_paths()
+    ad_briefs = ad_brief_paths()
     product_cards = []
     for path in products[:MAX_PRODUCT_GUIDES]:
         fields = product_fields(read_text(path))
@@ -1050,6 +1144,16 @@ def render_product_guide(fields):
 - Frases fuertes permitidas: {fields.get('strong_phrases', '')}
 - Frases que evitar: {fields.get('avoid_phrases', '')}
 - Fotos o activos del producto: {fields.get('assets', '')}
+
+## Identidad visual y movimiento de esta oferta
+
+- Colores propios de esta oferta: {fields.get('visual_colors', '')}
+- Tipografia propia de esta oferta: {fields.get('visual_typography', '')}
+- Estilo visual propio de esta oferta: {fields.get('visual_style', '')}
+- Estilo de movimiento: {fields.get('motion_style', '')}
+- Ritmo de movimiento: {fields.get('motion_pacing', '')}
+- Mostrar siempre en videos: {fields.get('motion_show', '')}
+- Evitar en videos: {fields.get('motion_avoid', '')}
 
 ## Relacion con el catalogo
 
@@ -1364,9 +1468,7 @@ def resolve_product_guide(product_guide=""):
     """Accept only local product Markdown guides; never let model text read arbitrary files."""
     raw = str(product_guide or "").strip()
     if not raw:
-        available = sorted(
-            path for path in PRODUCT_DIR.glob("*.md") if path.name != "product.example.md"
-        ) if PRODUCT_DIR.exists() else []
+        available = product_guide_paths()
         return available[0] if len(available) == 1 else None
     if "/" not in raw and "\\" not in raw and not raw.endswith(".md"):
         raw = f"brand_guides/products/{product_slug(raw)}.md"
@@ -1607,6 +1709,7 @@ ORGANIC_IMAGE_PURPOSES = {
     "social_post",
     "standalone_organic",
 }
+MOTION_IMAGE_PURPOSES = {"motion_graphic_asset", "motion_asset", "storyboard_asset", "video_design_element"}
 
 
 def normalized_image_purpose(value):
@@ -1615,6 +1718,10 @@ def normalized_image_purpose(value):
 
 def image_purpose_is_organic(value):
     return normalized_image_purpose(value) in ORGANIC_IMAGE_PURPOSES
+
+
+def image_purpose_is_motion(value):
+    return normalized_image_purpose(value) in MOTION_IMAGE_PURPOSES
 
 
 def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", mode="fixed", variations=3, seed=None, purpose="ad_creative"):
@@ -1636,7 +1743,8 @@ def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", 
     request_text = str(request or "").strip()
     selected_purpose = normalized_image_purpose(purpose)
     organic = image_purpose_is_organic(selected_purpose)
-    if organic:
+    motion_asset = image_purpose_is_motion(selected_purpose)
+    if organic or motion_asset:
         routes = list(ORGANIC_IMAGE_ROUTES[:count]) if selected_mode == "fixed" else _seeded_routes(ORGANIC_IMAGE_ROUTES, count, used_seed)
     else:
         routes = list(FIXED_IMAGE_ROUTES[:count]) if selected_mode == "fixed" else _seeded_routes(FREE_IMAGE_ROUTES, count, used_seed)
@@ -1678,6 +1786,12 @@ def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", 
     )
     visible_offer_rule = (
         (
+            "Esta imagen es materia prima visual para un storyboard de motion graphics. No la conviertas en anuncio, poster "
+            "ni publicación terminada; no agregues CTA, precio, logo o texto salvo que el pedido puntual lo exija para ese elemento."
+        )
+        if motion_asset
+        else
+        (
             "Esta es una pieza orgánica, no un anuncio pagado. Solo muestra precio, descuento, fecha límite o CTA comercial "
             "si el pedido puntual define explícitamente un pilar promocional. No inventes una oferta ni conviertas una pieza "
             "educativa, de confianza o comunidad en venta directa."
@@ -1689,10 +1803,12 @@ def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", 
             "pero no escondas la promocion principal."
         )
     )
-    visual_kind = "pieza de contenido orgánico para Facebook/Instagram" if organic else "imagen para Meta Ads"
-    context_kind = "pieza orgánica" if organic else "anuncio"
+    visual_kind = "asset visual para un storyboard de motion graphics" if motion_asset else ("pieza de contenido orgánico para Facebook/Instagram" if organic else "imagen para Meta Ads")
+    context_kind = "asset de storyboard" if motion_asset else ("pieza orgánica" if organic else "anuncio")
     quality_rule = (
-        "Debe verse como publicación orgánica profesional y útil para el feed, no necesariamente como anuncio. "
+        "Debe ser un elemento visual limpio, componible y coherente con la receta Shotcraft y el branding indicados. "
+        if motion_asset
+        else "Debe verse como publicación orgánica profesional y útil para el feed, no necesariamente como anuncio. "
         if organic
         else "Debe verse como anuncio profesional, claro en menos de 2 segundos, sin claims irreales. "
     )
@@ -1709,7 +1825,8 @@ def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", 
                     f"Crear {visual_kind} en formato {requested_format}. Ruta creativa: {route['axis']}. "
                     f"Composicion: {route['composition']} Objetivo del experimento: {route['experiment']} "
                     f"Contexto que debe aparecer en la {context_kind}: {prompt_context or request_text or 'tema u oferta descrita por el comprador'}. "
-                    f"{brand_lock} {visible_offer_rule} Texto dentro de la imagen: corto, grande y legible. "
+                    f"{brand_lock} {visible_offer_rule} "
+                    f"{'No agregues texto dentro del asset salvo que el pedido lo requiera expresamente. ' if motion_asset else 'Texto dentro de la imagen: corto, grande y legible. '}"
                     f"{quality_rule}"
                     "No escribas 'faltan datos', 'datos clave' ni mensajes de configuracion dentro de la imagen."
                 ),
@@ -1728,7 +1845,7 @@ def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", 
         }
         for item in prompts
     ]
-    codex_prompt = f"""Actua como prompt engineer senior para ChatGPT Image / Image 2 y {'contenido orgánico de redes sociales' if organic else 'Meta Ads'}.
+    codex_prompt = f"""Actua como prompt engineer senior para ChatGPT Image / Image 2 y {'assets de storyboards de motion graphics' if motion_asset else ('contenido orgánico de redes sociales' if organic else 'Meta Ads')}.
 
 Tu tarea es convertir memoria de marca, producto y brief en prompts finales de imagen.
 
@@ -1736,7 +1853,7 @@ Tu tarea es convertir memoria de marca, producto y brief en prompts finales de i
 
 Reglas no negociables:
 - Usa solo el contexto incluido abajo.
-- El propósito de esta pieza es `{selected_purpose}`. {'No la conviertas automáticamente en anuncio pagado ni inventes un CTA de venta.' if organic else 'Trátala como creativo publicitario salvo que el pedido diga lo contrario.'}
+- El propósito de esta pieza es `{selected_purpose}`. {'Trátala como materia prima visual componible para el storyboard; no como anuncio terminado.' if motion_asset else ('No la conviertas automáticamente en anuncio pagado ni inventes un CTA de venta.' if organic else 'Trátala como creativo publicitario salvo que el pedido diga lo contrario.')}
 - Identifica la oferta activa antes de escribir el prompt final. La oferta activa viene del pedido puntual, del brief elegido o de la ficha de producto elegida; no mezcles beneficios, CTA, audiencia, precios ni promesas de otras ofertas bajo la misma marca.
 - Trata la guía general como marca madre: identidad visual, tono, logo, colores y restricciones. No la uses para reemplazar la oferta activa si el comprador está hablando de otro producto/servicio.
 - No leas archivos, credenciales, tokens ni configuracion local.
@@ -2236,11 +2353,20 @@ def codex_image_generation_prompt(prompt, has_references=False, purpose="ad_crea
         if has_references else ""
     )
     organic = image_purpose_is_organic(purpose)
-    output_kind = "una pieza de contenido orgánico para Facebook/Instagram" if organic else "un creativo de Meta Ads"
+    motion_asset = image_purpose_is_motion(purpose)
+    output_kind = (
+        "un recurso visual para un storyboard de motion graphics"
+        if motion_asset
+        else ("una pieza de contenido orgánico para Facebook/Instagram" if organic else "un creativo de Meta Ads")
+    )
     commercial_rule = (
-        "- Es contenido orgánico: no lo conviertas en anuncio pagado ni inventes precio, descuento, urgencia o CTA comercial salvo que el pedido lo exija.\n"
-        if organic
-        else ""
+        "- Es un recurso de storyboard, no un anuncio terminado: no fuerces precio, CTA, logo, titular ni composición publicitaria. Crea exactamente el fondo, objeto, forma o elemento solicitado y respeta sus zonas seguras.\n"
+        if motion_asset
+        else (
+            "- Es contenido orgánico: no lo conviertas en anuncio pagado ni inventes precio, descuento, urgencia o CTA comercial salvo que el pedido lo exija.\n"
+            if organic
+            else ""
+        )
     )
     return f"""$imagegen
 

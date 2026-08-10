@@ -1055,22 +1055,32 @@ Si todavía no hay Datos reales de Meta, dilo claramente y explica qué falta co
 """
 
 
-def daily_social_content_prompt(posts_per_day=1, interval_days=1):
+def daily_social_content_prompt(posts_per_day=1, interval_days=1, content_formats="image", video_interval_days=7):
     count = max(1, min(5, int(posts_per_day or 1)))
     interval = max(1, min(30, int(interval_days or 1)))
     plural = "post" if count == 1 else "posts"
     cadence = "diario" if interval == 1 else f"cada {interval} días"
+    normalized_formats = {
+        item.strip().lower()
+        for item in str(content_formats or "image").replace(";", ",").split(",")
+        if item.strip()
+    }
+    allowed_formats = [item for item in ("image", "motion_video") if item in normalized_formats] or ["image"]
+    format_label = "imágenes y motion videos" if len(allowed_formats) > 1 else ("motion videos" if allowed_formats == ["motion_video"] else "imágenes")
+    video_interval = max(1, min(30, int(video_interval_days or 7)))
     return f"""Prepara el lote de contenido orgánico {cadence} de Admira IA para este negocio.
 
-Objetivo: dejar {count} {plural} visual(es) listo(s) para que el comprador los revise/apruebe desde Telegram. No publiques automáticamente.
+Objetivo: dejar {count} {plural} de {format_label} listo(s) para que el comprador los revise/apruebe desde Telegram. No publiques automáticamente.
+Formatos autorizados por la estrategia: {', '.join(allowed_formats)}. Cadencia orientativa de motion video: uno cada {video_interval} día(s).
 
 Antes de crear nada:
-1. Lee `skills/core-agent-behavior/SKILL.md`, `skills/session-continuity/SKILL.md`, `skills/brand-and-assets/SKILL.md`, `skills/product-catalog-management/SKILL.md`, `skills/organic-content-strategy/SKILL.md`, `skills/creative-strategy/SKILL.md` y `skills/creative-production-codex-image/SKILL.md`.
-2. Lee `memory/content_asset_library.json`, `memory/content_strategy.md`, `brand_guides/general_branding.md`, `brand_guides/creative_references.md`, productos/briefs y memoria reciente.
+1. Lee `skills/core-agent-behavior/SKILL.md`, `skills/session-continuity/SKILL.md`, `skills/brand-and-assets/SKILL.md`, `skills/product-catalog-management/SKILL.md`, `skills/organic-content-strategy/SKILL.md`, `skills/creative-strategy/SKILL.md`, `skills/creative-production-codex-image/SKILL.md` y `skills/motion-graphics-video/SKILL.md`.
+2. Lee `memory/content_asset_library.json`, `memory/content_strategy.md`, `memory/organic_content_posts.json`, `brand_guides/general_branding.md`, `brand_guides/creative_references.md`, productos/briefs y memoria reciente.
 3. Confirma que `memory/content_strategy.md` contiene una estrategia aceptada y que marca/logo/colores/tono/assets ya están claros. Si no, no improvises una tanda: continúa el onboarding que falta y vuelve a guardar la configuración con `mcp_admira_save_daily_social_content_settings` cuando quede lista.
 
 Cuando haya marca suficiente:
-- Usa Codex/Image mediante `mcp_admira_codex_image_generate`.
+- Respeta estrictamente los formatos autorizados arriba. Si solo está autorizada imagen, no generes un video; puedes proponer añadirlo a la estrategia cuando una idea realmente lo merezca. Si están autorizados ambos, elige deliberadamente el formato que mejor explica la idea y evita repetir motion video antes de su cadencia salvo petición directa del comprador.
+- Para imagen, usa Codex/Image mediante `mcp_admira_codex_image_generate`.
 - Usa propósito `daily_social_post` o `organic_social_post`, no `standalone_creative` ni campaña pagada.
 - En cada llamada envía un `request` autosuficiente con: tema/oferta activa exacta, pilar (educación, prueba, comunidad, objeción, detrás de cámaras o promoción), objetivo, texto principal visible, formato 4:5, decisión de CTA y referencia aprobada que debe seguir. Está prohibido enviar solo “usa las guías guardadas”.
 - Si hay varios productos, llama `mcp_admira_search_product_catalog` y selecciona deliberadamente el producto, categoría o combinación que corresponde a la estrategia. No uses por defecto el último producto recordado ni mezcles detalles entre fichas.
@@ -1082,11 +1092,12 @@ Cuando haya marca suficiente:
 - Las `style_reference` con `preservation_mode=style_only` van como referencias normales y solo guían el estilo; no las mezcles con fotos reales protegidas.
 - Si un asset sigue sin propósito claro, haz una sola pregunta agrupada para clasificar la tanda antes de basar la estrategia en ella.
 - Mantén los diseños alineados con colores, tono, referencias y restricciones de marca.
+- Para motion video, primero define el propósito narrativo y busca recetas con `mcp_admira_search_motion_graphic_recipes`; después genera con Image 2 únicamente los fondos, sujetos o elementos faltantes y crea el MP4 con `mcp_admira_generate_motion_graphic_video`. Usa la marca principal y la oferta exacta, revisa el resultado real y reajusta el storyboard si hace falta. No conviertas una idea estática simple en video solo por variar.
 
 Entrega en Telegram:
-- Adjunta/envía las imágenes generadas; no pegues rutas internas.
+- Adjunta/envía la imagen o el MP4 generado; no pegues rutas internas.
 - Incluye copy/caption sugerido, objetivo del post, pilar de contenido y por qué encaja.
-- Después de cada imagen final, llama `mcp_admira_stage_organic_social_post` con su ruta final segura, caption exacto, pilar, objetivo y la Página guardada. Esa herramienta debe devolver una aprobación exacta; no inventes un ID.
+- Después de cada pieza final, llama `mcp_admira_stage_organic_social_post` con `image_path` o `video_path`, caption exacto, pilar, objetivo y la Página guardada. Esa herramienta debe devolver una aprobación exacta; no inventes un ID.
 - Presenta tres decisiones simples: responder `aprobado` para publicar, pedir cambios o descartar. Nunca muestres el ID interno de aprobación.
 - Conserva internamente el approval_id exacto devuelto. Si el comprador aprueba esa pieza, llama `mcp_admira_approve_action` con el ID oculto. Solo esa aprobación puede publicar el post visible en Facebook.
 - Si Publicación directa no está conectada, envía igualmente la pieza para revisión y explica el paso de conexión; nunca afirmes que quedó publicada.
@@ -1105,7 +1116,7 @@ Antes de escribir:
 
 Mensaje deseado:
 - Si branding todavía no está claro, empieza por branding: logo, colores, referencias, fotos/videos reales, tono o fuentes. Di que para crear posts bonitos primero conviene dejar esa base clara.
-- Si branding ya está razonablemente claro, ofrece preparar una estrategia de contenido orgánico: pilares, temas por oferta/servicio/producto, frecuencia diaria o cada X días, y posts listos para aprobar con Image 2.
+- Si branding ya está razonablemente claro, ofrece preparar una estrategia de contenido orgánico: pilares, temas por oferta/servicio/producto, frecuencia diaria o cada X días, y una mezcla recomendada de imágenes con Image 2 y motion videos cuando el mensaje gane claridad o atención con movimiento. No impongas video; propón una frecuencia razonable y deja que el comprador la confirme.
 - Explica que el comprador puede compartir fotos, videos, testimonios, referencias o productos; Admira los guarda/categoriza y los usa inteligentemente.
 - No actives un cron ni publiques nada todavía. Solo pregunta si quiere que lo armen juntos ahora.
 - Mantén la respuesta corta, cálida y en español simple.
@@ -1342,7 +1353,9 @@ def ensure_daily_social_content_cron(config):
     files = write_gateway_files(config)
     posts_per_day = max(1, min(5, int(getattr(config, "daily_social_content_posts_per_day", 1) or 1)))
     interval_days = max(1, min(30, int(getattr(config, "daily_social_content_interval_days", 1) or 1)))
-    prompt = daily_social_content_prompt(posts_per_day, interval_days)
+    content_formats = str(getattr(config, "daily_social_content_formats", "image") or "image")
+    video_interval_days = max(1, min(30, int(getattr(config, "daily_social_content_video_interval_days", 7) or 7)))
+    prompt = daily_social_content_prompt(posts_per_day, interval_days, content_formats, video_interval_days)
     DAILY_SOCIAL_CONTENT_PROMPT_FILE.write_text(prompt, encoding="utf-8")
     env = hermes_environment(config)
     env["HERMES_HOME"] = files["hermes_home"]
@@ -1364,7 +1377,7 @@ def ensure_daily_social_content_cron(config):
     desired_delivery = f"telegram:{status['chat_id']}"
     if existing:
         if existing.get("schedule") == schedule and existing.get("deliver") == desired_delivery:
-            return {"configured": True, "needed": True, "exists": True, "name": name, "job_id": existing["id"], "schedule": schedule, "timezone": timezone_name, "posts_per_day": posts_per_day, "interval_days": interval_days, **files}
+            return {"configured": True, "needed": True, "exists": True, "name": name, "job_id": existing["id"], "schedule": schedule, "timezone": timezone_name, "posts_per_day": posts_per_day, "interval_days": interval_days, "content_formats": content_formats, "video_interval_days": video_interval_days, **files}
         try:
             edit_result = subprocess.run(
                 [
@@ -1402,12 +1415,14 @@ def ensure_daily_social_content_cron(config):
             "timezone": timezone_name,
             "posts_per_day": posts_per_day,
             "interval_days": interval_days,
+            "content_formats": content_formats,
+            "video_interval_days": video_interval_days,
             "stdout": (edit_result.stdout or "")[-500:],
             "stderr": (edit_result.stderr or "")[-500:],
             **files,
         }
     if name in list_output:
-        return {"configured": True, "needed": True, "exists": True, "name": name, "schedule": schedule, "timezone": timezone_name, "posts_per_day": posts_per_day, "interval_days": interval_days, **files}
+        return {"configured": True, "needed": True, "exists": True, "name": name, "schedule": schedule, "timezone": timezone_name, "posts_per_day": posts_per_day, "interval_days": interval_days, "content_formats": content_formats, "video_interval_days": video_interval_days, **files}
     try:
         result = subprocess.run(
             [
@@ -1442,6 +1457,8 @@ def ensure_daily_social_content_cron(config):
         "timezone": timezone_name,
         "posts_per_day": posts_per_day,
         "interval_days": interval_days,
+        "content_formats": content_formats,
+        "video_interval_days": video_interval_days,
         "stdout": (result.stdout or "")[-500:],
         "stderr": (result.stderr or "")[-500:],
         **files,

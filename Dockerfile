@@ -21,7 +21,12 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 python3-venv python3-pip ca-certificates curl git openssl ffmpeg xz-utils \
+    && apt-get install -y --no-install-recommends \
+        python3 python3-venv python3-pip ca-certificates curl git openssl ffmpeg xz-utils \
+        libnss3 libdbus-1-3 libatk1.0-0 libgbm-dev libasound2 libxrandr2 \
+        libxkbcommon-dev libxfixes3 libxcomposite1 libxdamage1 \
+        libatk-bridge2.0-0 libpango-1.0-0 libcairo2 libcups2 \
+        fonts-noto-core fonts-noto-color-emoji \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python3 /usr/local/bin/python3
 
@@ -34,6 +39,10 @@ RUN python3 -m pip install --break-system-packages --no-cache-dir \
     "xlrd>=2,<3" \
     "hermes-agent==${HERMES_AGENT_VERSION}" \
     && hermes --version
+
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts \
+    && npx remotion browser ensure
 
 COPY . .
 RUN chmod +x scripts/*.sh \

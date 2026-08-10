@@ -112,6 +112,16 @@ else
   fi
 fi
 
+if [ -f package.json ] && [ -f package-lock.json ]; then
+  if command -v npm >/dev/null 2>&1; then
+    echo "Installing the pinned local motion-graphics renderer..."
+    npm ci --ignore-scripts
+    npx remotion browser ensure
+  else
+    echo "Node.js/npm is required for motion-graphics video rendering. The rest of Admira IA can continue without that optional output." >&2
+  fi
+fi
+
 if command -v hermes >/dev/null 2>&1; then
   echo "Hermes Agent found: $(command -v hermes)"
 else

@@ -99,14 +99,15 @@ rsync -a "$ROOT_DIR/" "$STAGING_DIR/" \
   --exclude "scripts/run-content-dashboard.sh" \
   --exclude "src/content_pipeline.py" \
   --exclude "src/keyframe_planner.py" \
-  --exclude "src/remotion" \
-  --exclude "src/remotion/*" \
-  --exclude "package.json" \
-  --exclude "package-lock.json" \
   --exclude "node_modules" \
   --exclude "node_modules/*" \
   --exclude "*/node_modules" \
   --exclude "*/node_modules/*" \
+  --exclude "installer/local-gui/AdmiraIA-Installer.exe" \
+  --exclude "installer/local-gui/gui/bin" \
+  --exclude "installer/local-gui/gui/bin/*" \
+  --exclude "installer/local-gui/gui/obj" \
+  --exclude "installer/local-gui/gui/obj/*" \
   --exclude "__pycache__" \
   --exclude "__pycache__/*" \
   --exclude "*/__pycache__" \
@@ -136,6 +137,23 @@ required = [
     "src/product_catalog.py",
     "agent/skills/product-catalog-management/SKILL.md",
     "scripts/install-local.sh",
+    "scripts/render-motion-graphic.mjs",
+    "scripts/validate-motion-recipe-source.mjs",
+    "scripts/build-shotcraft-storytelling-vocabulary.py",
+    "src/motion_graphics.py",
+    "src/motion_recipe_compiler.py",
+    "src/shotcraft_catalog.py",
+    "src/remotion/compositions/MotionGraphic.tsx",
+    "src/remotion/shotcraft/ShotRecipes.tsx",
+    "agent/skills/motion-graphics-video/SKILL.md",
+    "agent/skills/motion-graphics-video/references/shotcraft-gallery-index.md",
+    "agent/skills/motion-graphics-video/references/shotcraft-storytelling-vocabulary.json",
+    "agent/skills/motion-graphics-video/references/shotcraft/gallery/api/library.json",
+    "agent/skills/motion-graphics-video/references/shotcraft/demos/README.md",
+    "third_party/video-shotcraft/LICENSE",
+    "third_party/video-shotcraft/NOTICE.md",
+    "package.json",
+    "package-lock.json",
 ]
 missing = [item for item in required if not (root / item).exists()]
 if missing:

@@ -68,7 +68,13 @@ def main() -> None:
             fail("MCP initialization did not identify Admira")
         listed = request(process, {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
         tools = {item.get("name") for item in listed.get("result", {}).get("tools", [])}
-        required = {"preflight_campaign", "codex_image_generate", "stage_campaign"}
+        required = {
+            "preflight_campaign",
+            "codex_image_generate",
+            "search_motion_graphic_recipes",
+            "generate_motion_graphic_video",
+            "stage_campaign",
+        }
         if not required.issubset(tools):
             fail("MCP tool contract is incomplete")
         print("CANARY PASS: pinned SDK, protocol MCP transport, and required tools are healthy.")

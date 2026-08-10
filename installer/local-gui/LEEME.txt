@@ -1,0 +1,46 @@
+ADMIRA IA — INSTALADOR PARA WINDOWS v1.0.8
+
+Uso:
+1. Extrae todo el ZIP a una carpeta local. No abras el EXE desde dentro del ZIP.
+2. Ejecuta únicamente «AdmiraIA-Installer.exe». No hay archivos CMD ni PS1
+   que debas ejecutar.
+3. Introduce el correo de compra y la licencia en la ventana de Admira IA.
+   La licencia se protege temporalmente con Windows y nunca se escribe en el log.
+4. Acepta el aviso de permisos de Windows cuando aparezca. El instalador hace
+   todas las demás etapas desde la misma interfaz gráfica.
+5. Si Windows necesita reiniciarse, Admira IA continúa automáticamente al
+   volver a iniciar sesión con el mismo usuario. No abras una segunda copia
+   mientras la ventana indique que está continuando.
+6. Al terminar se crea el acceso directo de Admira IA y se abre el dashboard.
+
+El ZIP contiene:
+- AdmiraIA-Installer.exe: el único archivo que se ejecuta.
+- payload: componentes privados que deben permanecer junto al EXE.
+- LEEME.txt: estas instrucciones.
+
+Diagnóstico:
+- Si aparece un código ADM-..., conserva su texto para soporte.
+- El estado de instalación se guarda en:
+  C:\ProgramData\AdmiraIA\SelfService\prepare-state.json
+
+Instalaciones y datos existentes:
+- Cada licencia crea su propia instancia, proyecto Docker, volumen, puerto,
+  tarea de arranque y acceso directo bajo %LOCALAPPDATA%\AdmiraIA\instances.
+- Una instalación anterior sólo se reutiliza cuando se usa la misma licencia.
+- El instalador no borra volúmenes Docker ni configuraciones existentes.
+
+Requisitos:
+- Windows 10 22H2 o Windows 11 23H2 o posterior, x64.
+- 8 GB de RAM como mínimo y virtualización habilitada.
+- Sesión de Windows con permisos de administrador.
+
+Seguridad:
+- WSL y Docker Desktop se descargan desde sus fuentes oficiales y se valida
+  su firma digital.
+- El dashboard queda en localhost, sin abrirse a Internet ni a la red local.
+- Este EXE debe distribuirse firmado con Authenticode antes de entregarlo a
+  clientes finales.
+
+Limitación:
+Docker Desktop no está soportado oficialmente en Windows Server. Usa Windows
+10/11 para el recorrido de autoservicio.

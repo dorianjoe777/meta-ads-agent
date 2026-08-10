@@ -1,6 +1,6 @@
 ---
 name: organic-content-strategy
-description: Plan and run Admira IA organic social content: optional daily Image 2 posts, content pillars, buyer-shared asset categorization, captions, approval flow, and direct publishing handoff.
+description: "Plan and run Admira IA organic social content: optional recurring Image 2 posts and motion videos, content pillars, buyer-shared asset categorization, captions, approval flow, and direct publishing handoff."
 ---
 
 # Organic Content Strategy Skill
@@ -11,7 +11,7 @@ Use this skill when the buyer asks for social posts, daily content, content cale
 
 First distinguish a one-off content request from a recurring schedule change:
 
-- “crea otro post”, “haz otra imagen”, “cambia el título”, “prueba otro arrangement”, “haz una variante” and similar instructions continue the current one-off creative workflow. Generate/revise with `mcp_admira_codex_image_generate`, send the resulting media, and stage the exact organic post only after the image and caption are final.
+- “crea otro post”, “haz otra imagen”, “crea un video educativo”, “cambia el título”, “haz una variante” and similar instructions continue the current one-off creative workflow. Use Image 2 for images; for motion video use `mcp_admira_search_motion_graphic_recipes`, any needed Image 2 storyboard assets, and `mcp_admira_generate_motion_graphic_video`. Send the resulting media and stage the exact organic piece only after its image/video and caption are final.
 - Call `mcp_admira_save_daily_social_content_settings` only when the buyer explicitly accepts, declines, enables, disables, or changes the recurring cadence, preparation time, quantity, or content strategy. Never call it merely to label, register, save, approve, generate, or revise one organic post.
 - Never register a post as approved before generating and showing its final image/caption. The order is: generate -> deliver -> revise if requested -> stage exact draft -> natural-language approval -> publish.
 
@@ -23,7 +23,7 @@ After business basics and brand/logo/assets are reasonably clear, ask once only 
 
 “¿Quieres que también te prepare posts con tu marca, diarios o cada X días, para revisar y aprobar?”
 
-Explain it simply: Admira can use the saved brand, logo, photos, videos, references, and offers to propose daily posts with Image 2, captions, and a small content strategy. It does not publish automatically unless the buyer later approves and Publicación directa is connected.
+Explain it simply: Admira can use the saved brand, logo, photos, videos, references, and offers to propose recurring images with Image 2, motion videos, captions, and a small content strategy. Recommend motion only when movement improves teaching, demonstration, storytelling, proof, or attention. It does not publish automatically unless the buyer later approves and Publicación directa is connected.
 
 If brand/logo/colors/references/assets are not clear, do not jump into a content calendar. Start or continue `memory/Branding onboarding.md` first: logo decision, colors, style references, tone, real photos/videos/assets, and font/style direction.
 
@@ -35,6 +35,8 @@ If yes, save the acceptance immediately so resets do not cause the same offer ag
   "time": "10:00",
   "posts_per_day": 1,
   "interval_days": 1,
+  "content_formats": ["image", "motion_video"],
+  "video_frequency_days": 7,
   "content_strategy": "short summary of pillars/cadence"
 }
 ```
@@ -86,6 +88,7 @@ Before locking the strategy, discuss:
 - which topics are educational, proof-based, promotional, community, objection-handling, or behind-the-scenes;
 - whether the cadence should be daily or every X days;
 - whether posts go to Facebook, Instagram, or both after buyer approval.
+- whether the mix is image-only, motion-video-only, or adaptive; and a sensible video cadence. If the buyer does not know, propose a mix based on the niche, available assets, production value, and whether topics benefit from sequential explanation.
 
 For each proposed post, include:
 
@@ -111,13 +114,25 @@ For final daily post visuals, use `mcp_admira_codex_image_generate` through `cre
 - Do not invent access to private links; ask the buyer to make them public or upload directly.
 - Deliver the media directly in chat and avoid internal paths.
 
+## Motion-video production
+
+Use `skills/motion-graphics-video/SKILL.md` when the buyer asks for an organic video or the saved strategy allows motion and today's topic materially benefits from it.
+
+- Choose motion for sequential education, demonstrations, comparisons, transformations, data stories, visual metaphors, announcements, or emotionally paced storytelling—not merely to make every post move.
+- Search the complete Shotcraft catalog first with `mcp_admira_search_motion_graphic_recipes`.
+- Use Image 2 only for missing full-frame images, brand elements, and story subjects/props required by the storyboard.
+- Render with `mcp_admira_generate_motion_graphic_video`; inspect the actual MP4 and revise if readability, contrast, pacing, composition, or branding is weak.
+- For recurring generation, obey the saved `content_formats` and `video_frequency_days`. When the strategy is image-only, a cron may propose adding motion but must not silently change settings or generate scheduled videos before the buyer accepts.
+- For a direct one-off buyer request, generate the video without changing recurring settings.
+- Deliver the MP4 in chat, then stage it with `mcp_admira_stage_organic_social_post` using `video_path` and the exact caption.
+
 ## Approval and publishing
 
 Daily content is draft-first:
 
 - generate or propose;
 - send media/caption directly in Telegram;
-- call `mcp_admira_stage_organic_social_post` once for each exact final image/caption pair;
+- call `mcp_admira_stage_organic_social_post` once for each exact final image-or-video/caption pair;
 - ask the buyer to reply simply `aprobado`, request changes, or discard; never expose the internal approval ID;
 - internally retain the exact approval returned by the tool and, when the buyer approves that piece, call `mcp_admira_approve_action` with that hidden approval ID;
 - publish only through that protected approval. Never call a raw Page-post action or claim publication before the approval result contains the real Meta post ID.

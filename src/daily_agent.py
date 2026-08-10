@@ -357,6 +357,9 @@ def record_social_post_publication(payload, result):
         "caption": str(payload.get("message") or payload.get("caption") or "").strip()[:4000],
         "image_path": str(payload.get("image_path") or "").strip(),
         "image_url": str(payload.get("image_url") or "").strip(),
+        "video_path": str(payload.get("video_path") or "").strip(),
+        "video_url": str(payload.get("video_url") or "").strip(),
+        "media_type": str(payload.get("media_type") or ("video" if payload.get("video_path") or payload.get("video_url") else "image")).strip(),
         "status": "published" if result.get("ok") else "failed",
         "published_at": now_iso() if result.get("ok") else "",
         "updated_at": now_iso(),
@@ -385,6 +388,8 @@ def publish_approved_social_post(payload, client):
         link=str(payload.get("link") or "").strip(),
         image_path=str(payload.get("image_path") or "").strip(),
         image_url=str(payload.get("image_url") or "").strip(),
+        video_path=str(payload.get("video_path") or "").strip(),
+        video_url=str(payload.get("video_url") or "").strip(),
         unpublished_content_type="",
         cta=str(payload.get("cta") or "LEARN_MORE").strip(),
         published=True,
@@ -402,9 +407,10 @@ def publish_approved_social_post(payload, client):
         "provider_result": result,
     }
     record_social_post_publication(payload, publication)
-    if ok and payload.get("image_path"):
+    retained_media = payload.get("image_path") or payload.get("video_path")
+    if ok and retained_media:
         mark_asset_files_retained(
-            [payload.get("image_path")],
+            [retained_media],
             reason="organic_social_post_published",
             meta={"post_id": publication.get("post_id"), "page_id": publication.get("page_id")},
         )
