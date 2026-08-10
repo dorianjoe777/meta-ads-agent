@@ -3026,6 +3026,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.assert_true("Estás hablando directamente desde Hermes Telegram Gateway" not in config_yaml and "Usa tu memoria de Hermes" not in config_yaml, "Telegram prompt does not teach the buyer-facing agent to introduce itself as Hermes")
             english_prompt = hermes_gateway.gateway_prompt("en", "simple", "")
             self.assert_true("customer-facing identity is only Admira IA" in english_prompt and "Never mention Hermes" in english_prompt and "`/help` command suggestions" in english_prompt, "English Telegram prompt also hides Hermes/runtime branding from buyers")
+            self.assert_true("every Facebook-only campaign" in english_prompt and "omit instagram_actor_id/instagram_user_id" in english_prompt and "cualquier objetivo o destino configurado solo en Facebook" in config_yaml, "Gateway enforces Page-only identity across every Facebook-only campaign type")
             self.assert_true("MEDIA:<local_path>" in english_prompt and "native attachment directive" in english_prompt, "English Telegram prompt treats MEDIA paths as attachment syntax, not buyer links")
             self.assert_true("experiencia creando/gestionando anuncios" in config_yaml and "Experiencia en anuncios: avanzada" in config_yaml, "Hermes Gateway asks and applies the global ad-experience preference")
             self.assert_true("Sé proactivo globalmente" in config_yaml and "evento correcto" in config_yaml, "Hermes Gateway applies the global expert configurator posture beyond placements")
@@ -3142,6 +3143,9 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                 and "placeholder must not be activated" in meta_execution_skill.read_text(encoding="utf-8"),
                 "Hermes workspace makes native image/video creatives the default and keeps placeholders explicit, paused, and exceptional",
             )
+            meta_execution_text = meta_execution_skill.read_text(encoding="utf-8")
+            self.assert_true("Any Facebook-only campaign" in meta_execution_text and "never send, infer, or require `instagram_actor_id`" in meta_execution_text and "sales, traffic, awareness" in meta_execution_text, "Every Facebook-only objective uses Page identity instead of forcing Instagram")
+            self.assert_true("Antioquia, Colombia" in meta_execution_text and "exact current Meta key" in meta_execution_text and "never a default `US`" in meta_execution_text, "Geography guidance resolves natural regions/cities through Meta without broadening or US fallback")
             self.assert_true("mcp_admira_approve_action" in approvals_skill.read_text(encoding="utf-8"), "Approval skill points Hermes to exact approval MCP tools")
             self.assert_true("Never show them in buyer-facing text" in approvals_skill.read_text(encoding="utf-8") and "`aprobado`" in approvals_skill.read_text(encoding="utf-8") and "`Sí, activar`" in approvals_skill.read_text(encoding="utf-8"), "Approval skill keeps internal IDs hidden and teaches natural approval/activation language")
             self.assert_true("never expose the internal approval ID" in organic_content_text and "reply simply `aprobado`" in organic_content_text, "Organic content approvals ask for a simple buyer reply while retaining exact routing internally")
@@ -6676,6 +6680,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             "PENDING_FILE": dashboard.PENDING_FILE,
             "AD_CONFIG_FILE": dashboard.AD_CONFIG_FILE,
             "load_config": dashboard.load_config,
+            "meta_targeting_search": dashboard.meta_targeting_search,
         }
         test_dir = ROOT_DIR / "output" / "test-targeting-validation"
 
@@ -6726,6 +6731,52 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.assert_true(result["payload"]["requested"]["targeting"]["locations"] == ["CO"], "Explicit target country is preserved instead of defaulting to US")
             self.assert_true(targeting["locations"] == ["CO"], "Graph targeting payload contains the requested country code")
             self.assert_true(targeting["age_range"] == {"min": 25, "max": 40}, "Flat targeting age aliases are preserved")
+
+            dashboard.meta_targeting_search = lambda payload: {
+                "ok": True,
+                "kind": "location",
+                "query": payload.get("q"),
+                "items": [{
+                    "id": "1000001",
+                    "key": "1000001",
+                    "name": "Antioquia",
+                    "label": "Antioquia · Colombia",
+                    "type": "region",
+                    "country_code": "CO",
+                }],
+            }
+            region_result = dashboard.create_campaign({
+                "name": "Preserve Antioquia region",
+                "objective": "MESSAGES",
+                "message_destination": "MESSENGER",
+                "daily_budget": 15,
+                "final_status": "PAUSED",
+                "image_hash": "hash_existing",
+                "locations": "Antioquia, Colombia",
+            })
+            region_created = dashboard.read_json(dashboard.CREATED_FILE, [])[0]["campaign"]
+            region_targeting = region_created["ad_sets"][0]["targeting"]
+            region_graph = daily_agent.targeting_for_social(region_targeting)
+            self.assert_true(region_result["payload"]["requested"]["targeting"]["locations"][0].startswith("Antioquia"), "Natural-language region is resolved through Meta instead of being reduced to the country")
+            self.assert_true(region_graph["geo_locations"]["regions"] == [{"key": "1000001"}], "Resolved Antioquia Meta key reaches the Graph targeting payload")
+            self.assert_true("US" not in region_graph["geo_locations"].get("countries", []), "Resolved regional targeting never falls back to US")
+
+            dashboard.create_campaign({
+                "name": "Nested Antioquia Messenger audience",
+                "objective": "MESSAGES",
+                "message_destination": "MESSENGER",
+                "daily_budget": 15,
+                "final_status": "PAUSED",
+                "locations": ["CO"],
+                "ad_sets": [{
+                    "name": "Antioquia",
+                    "targeting": {"locations": "Antioquia, Colombia"},
+                    "ads": [{"image_hash": "hash_existing", "primary_text": "Escríbenos"}],
+                }],
+            })
+            nested_created = dashboard.read_json(dashboard.CREATED_FILE, [])[0]["campaign"]
+            nested_graph = daily_agent.targeting_for_social(nested_created["ad_sets"][0]["targeting"])
+            self.assert_true(nested_graph["geo_locations"]["regions"] == [{"key": "1000001"}], "Nested ad-set geography also resolves Antioquia through Meta")
         finally:
             for key, value in original.items():
                 setattr(dashboard, key, value)
@@ -8679,6 +8730,10 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
 
         automatic = daily_agent.targeting_for_social({"locations": ["US"], "placements": {"automatic": True}})
         self.assert_true("publisher_platforms" not in automatic, "Automatic placements remain available when explicitly requested")
+        self.assert_true(not daily_agent.creative_uses_instagram_identity(["FACEBOOK_FEED", "FACEBOOK_STORIES"]), "Facebook-only placements suppress Instagram identity for every campaign objective")
+        self.assert_true(daily_agent.creative_uses_instagram_identity(["FACEBOOK_FEED", "INSTAGRAM_FEED"]), "Mixed Facebook/Instagram placements keep Instagram identity available")
+        self.assert_true(not daily_agent.creative_uses_instagram_identity({"automatic": True}, "WHATSAPP") and not daily_agent.creative_uses_instagram_identity({"automatic": True}, "MESSENGER"), "Native WhatsApp and Messenger never inherit an Instagram actor")
+        self.assert_true(daily_agent.creative_uses_instagram_identity(["FACEBOOK_FEED"], "INSTAGRAM_DIRECT"), "Instagram Direct explicitly requires the verified Instagram identity")
 
         list_string = daily_agent.targeting_for_social({"locations": "['US']"})
         self.assert_true(list_string["geo_locations"]["countries"] == ["US"], "List-looking location strings are normalized before sending to Meta")
@@ -9848,12 +9903,30 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             requests.clear()
             messenger_creative = client.create_creative(
                 "act_999", "Messenger Creative", "111", "", "Escríbenos", "Conversemos", "messenger_hash", "MESSAGE_PAGE",
+                instagram_actor_id="stale_or_invalid_instagram_actor",
                 message_destination="MESSENGER", prefilled_message="Hola, quiero información", approved=True,
             )
             messenger_body = urllib.parse.parse_qs(requests[0].data.decode("utf-8"))
             messenger_story = json.loads(messenger_body["object_story_spec"][0])
             messenger_cta = messenger_story["link_data"]["call_to_action"]
             self.assert_true(json.loads(messenger_creative["stdout"])["id"] == "creative_1" and messenger_cta["value"]["app_destination"] == "MESSENGER", "Messenger creatives use the native app destination without a dark post")
+            self.assert_true("instagram_actor_id" not in messenger_story and "instagram_user_id" not in messenger_story, "Page-only Messenger creatives never inherit a stale Instagram identity")
+            requests.clear()
+            facebook_only_creative = client.create_creative(
+                "act_999", "Facebook-only Sales Creative", "111", "", "Compra ahora", "Nueva colección", "", "LEARN_MORE",
+                instagram_actor_id="stale_or_invalid_instagram_actor",
+                object_story_spec={
+                    "page_id": "111",
+                    "instagram_actor_id": "stale_or_invalid_instagram_actor",
+                    "link_data": {"link": "https://buyer.example", "image_hash": "facebook_only_hash"},
+                },
+                use_instagram_identity=False,
+                approved=True,
+            )
+            facebook_only_body = urllib.parse.parse_qs(requests[0].data.decode("utf-8"))
+            facebook_only_story = json.loads(facebook_only_body["object_story_spec"][0])
+            self.assert_true(json.loads(facebook_only_creative["stdout"])["id"] == "creative_1" and facebook_only_story["page_id"] == "111", "Facebook-only non-messaging creatives retain the Page identity")
+            self.assert_true("instagram_actor_id" not in facebook_only_story and "instagram_user_id" not in facebook_only_story, "Facebook-only sales/traffic/awareness/leads creatives strip stale Instagram identity")
             requests.clear()
             instagram_creative = client.create_creative(
                 "act_999", "Instagram Direct Creative", "111", "", "Escríbenos", "Conversemos", "instagram_hash", "INSTAGRAM_MESSAGE",

@@ -41,7 +41,7 @@ from product_config import ROOT_DIR, load_config
 from security import redact_payload
 from shopify_connector import sync_shopify
 from setup_status import build_setup_status
-from adset_controls import apply_placement_targeting, deprecated_manual_placements
+from adset_controls import apply_placement_targeting, deprecated_manual_placements, normalize_placement_config
 from expert_campaign import (
     boolish,
     creative_source_available,
@@ -540,6 +540,32 @@ def native_campaign_cta(ad_plan, link="", message_destination="", lead_gen_form_
     return SocialFlowClient.normalize_call_to_action((ad_plan or {}).get("cta") or "LEARN_MORE")
 
 
+def creative_uses_instagram_identity(placement_config=None, message_destination=""):
+    """Return whether this ad explicitly needs an Instagram identity.
+
+    Facebook-only creatives use the Page identity even when the saved account
+    binding contains an Instagram ID. Automatic placements may include
+    Instagram, while explicit manual placements are authoritative.
+    """
+    destination = SocialFlowClient.normalize_message_destination(message_destination)
+    if destination in {"MESSENGER", "WHATSAPP"}:
+        return False
+    if destination == "INSTAGRAM_DIRECT":
+        return True
+    if isinstance(placement_config, dict) and placement_config.get("publisher_platforms"):
+        platforms = {str(item or "").strip().lower() for item in placement_config.get("publisher_platforms") or []}
+        return "instagram" in platforms
+    if isinstance(placement_config, dict) and any(
+        key in placement_config for key in ("facebook_positions", "instagram_positions", "messenger_positions")
+    ):
+        return bool(placement_config.get("instagram_positions"))
+    normalized = normalize_placement_config(placement_config)
+    if normalized.get("automatic"):
+        return True
+    manual = {str(item or "").strip().upper() for item in normalized.get("manual") or []}
+    return any(item.startswith("INSTAGRAM_") for item in manual)
+
+
 def prepare_native_ad_media(client, ad_plan, approved=False):
     """Resolve local image/video inputs into ad-account media IDs.
 
@@ -702,7 +728,11 @@ def execute_multi_adset_native_stack(path, campaign, client, destination, campai
                 headline,
                 media.get("image_hash") or "",
                 cta,
-                str((destination or {}).get("instagram_actor_id") or ""),
+                (
+                    str((destination or {}).get("instagram_actor_id") or "")
+                    if creative_uses_instagram_identity(adset.get("placements") or adset_targeting, message_destination)
+                    else ""
+                ),
             )
             creative_kwargs = {
                 "object_story_spec": ad_plan.get("object_story_spec") or {},
@@ -714,6 +744,7 @@ def execute_multi_adset_native_stack(path, campaign, client, destination, campai
                 "prefilled_message": str(ad_plan.get("prefilled_message") or "").strip() if message_destination else "",
                 "welcome_message": str(ad_plan.get("welcome_message") or ad_plan.get("initial_business_message") or "").strip(),
                 "message_destination": message_destination,
+                "use_instagram_identity": creative_uses_instagram_identity(adset.get("placements") or adset_targeting, message_destination),
                 "approved": approved,
             }
             creative_id = ""
@@ -2208,7 +2239,15 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         headline,
         media.get("image_hash") or "",
         native_campaign_cta(ad_plan, link, message_destination, lead_gen_form_id),
-        destination.get("instagram_actor_id", ""),
+        (
+            destination.get("instagram_actor_id", "")
+            if creative_uses_instagram_identity(
+                ((campaign.get("ad_sets") or [{}])[0] or {}).get("placements")
+                or ((campaign.get("ad_sets") or [{}])[0] or {}).get("targeting"),
+                message_destination,
+            )
+            else ""
+        ),
     )
     creative_kwargs = dict(
         object_story_spec=ad_plan.get("object_story_spec") or {},
@@ -2220,6 +2259,11 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
         prefilled_message=prefilled_message,
         welcome_message=welcome_message,
         message_destination=message_destination,
+        use_instagram_identity=creative_uses_instagram_identity(
+            ((campaign.get("ad_sets") or [{}])[0] or {}).get("placements")
+            or ((campaign.get("ad_sets") or [{}])[0] or {}).get("targeting"),
+            message_destination,
+        ),
         approved=approved,
     )
     creative_id = ""

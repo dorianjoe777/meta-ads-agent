@@ -28,6 +28,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -3902,6 +3903,86 @@ def targeting_location_values(selected, fallback):
         elif item.get("name"):
             values.append(str(item["name"]))
     return normalize_location_codes(values, default=[]) or normalize_location_codes(fallback, default=[])
+
+
+def _plain_location_text(value):
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    return "".join(char for char in text if not unicodedata.combining(char)).strip().casefold()
+
+
+def campaign_location_query_terms(value):
+    """Return non-country place names that must be resolved through Meta.
+
+    Country names/codes remain handled by normalize_location_codes. Regions,
+    cities and towns are deliberately preserved instead of being discarded
+    from inputs such as ``Antioquia, Colombia``.
+    """
+    if value in (None, "", [], ()):
+        return []
+    if isinstance(value, dict):
+        # Structured picker results already contain their live Meta key.
+        if value.get("key") or value.get("id"):
+            return []
+        values = [value.get("name") or value.get("label") or ""]
+    elif isinstance(value, (list, tuple, set)):
+        values = list(value)
+    else:
+        text = str(value or "").strip()
+        if text.startswith(("[", "{")):
+            try:
+                return campaign_location_query_terms(json.loads(text))
+            except json.JSONDecodeError:
+                pass
+        values = re.split(r"\s*(?:,|;|/|\||\by\b|\band\b)\s*", text, flags=re.IGNORECASE)
+    queries = []
+    seen = set()
+    for item in values:
+        if isinstance(item, dict):
+            queries.extend(campaign_location_query_terms(item))
+            continue
+        term = str(item or "").strip().strip("[](){}'\" ")
+        if not term or normalize_location_codes(term, default=[]):
+            continue
+        identity = _plain_location_text(term)
+        if identity and identity not in seen:
+            seen.add(identity)
+            queries.append(term)
+    return queries
+
+
+def resolve_campaign_location_queries(queries, country_codes=None):
+    """Resolve natural city/region names against Meta's current catalog."""
+    resolved = []
+    country_codes = [str(code or "").strip().upper() for code in (country_codes or []) if code]
+    for query in queries or []:
+        request = {"kind": "location", "q": query, "limit": 25}
+        if len(country_codes) == 1:
+            request["country_code"] = country_codes[0]
+        result = meta_targeting_search(request)
+        if not isinstance(result, dict) or not result.get("ok"):
+            raise ValueError(
+                f"targeting_location_catalog_unavailable: Meta no pudo validar '{query}'. No se creó ningún objeto."
+            )
+        items = result.get("items") or []
+        query_key = _plain_location_text(query)
+        exact = [item for item in items if _plain_location_text(item.get("name")) == query_key]
+        candidates = exact or (items if len(items) == 1 else [])
+        if country_codes:
+            same_country = [item for item in candidates if str(item.get("country_code") or "").upper() in country_codes]
+            candidates = same_country
+        # Prefer the narrow place the buyer named over a broad country result.
+        candidates = sorted(
+            candidates,
+            key=lambda item: ({"city": 0, "region": 1, "country": 2}.get(str(item.get("type") or "").lower(), 3)),
+        )
+        if not candidates:
+            raise ValueError(
+                f"targeting_location_ambiguous_or_not_found: Meta no devolvió una coincidencia única para '{query}'. No se creó ningún objeto."
+            )
+        selected = dict(candidates[0])
+        selected["id"] = str(selected.get("id") or selected.get("key") or "").strip()
+        resolved.append(selected)
+    return resolved
 
 
 def targeting_summary(audience):
@@ -10015,6 +10096,18 @@ def create_campaign(payload):
             f"{first_detail_error.get('code') or 'targeting_detail_invalid_id'}: la segmentación detallada contiene un ID que no proviene del catálogo actual de Meta."
         )
     manual_locations = normalize_location_codes(payload.get("locations"), default=[])
+    location_queries = list(payload.get("targeting_location_queries") or [])
+    if location_queries:
+        resolved_locations = resolve_campaign_location_queries(location_queries, manual_locations)
+        existing_location_ids = {
+            str(item.get("id") or item.get("key") or "").strip()
+            for item in selected_locations
+            if isinstance(item, dict)
+        }
+        selected_locations.extend(
+            item for item in resolved_locations
+            if str(item.get("id") or item.get("key") or "").strip() not in existing_location_ids
+        )
     explicit_location_source = any(
         payload.get(key) not in (None, "", [], ())
         for key in ("locations", "targeting_countries", "targeting_locations", "countries", "country_codes")
@@ -10209,6 +10302,23 @@ def create_campaign(payload):
         stored_ad_sets = []
         for index, raw_set in enumerate(explicit_ad_sets):
             raw_targeting = raw_set.get("targeting") if isinstance(raw_set.get("targeting"), dict) else dict(audience)
+            nested_location_source = (
+                raw_targeting.get("locations")
+                or raw_targeting.get("targeting_locations")
+                or raw_targeting.get("targeting_countries")
+                or raw_targeting.get("countries")
+                or raw_targeting.get("geography")
+                or raw_targeting.get("geo")
+            )
+            nested_country_codes = normalize_location_codes(nested_location_source, default=[])
+            nested_location_queries = list(raw_targeting.get("targeting_location_queries") or campaign_location_query_terms(nested_location_source))
+            if nested_location_queries:
+                nested_selected = resolve_campaign_location_queries(nested_location_queries, nested_country_codes)
+                raw_targeting = dict(raw_targeting)
+                if nested_country_codes:
+                    raw_targeting["locations"] = nested_country_codes
+                raw_meta_targeting = raw_targeting.get("meta_targeting") if isinstance(raw_targeting.get("meta_targeting"), dict) else {}
+                raw_targeting["meta_targeting"] = {**raw_meta_targeting, "locations": nested_selected}
             nested_set = creator.create_ad_set_config(
                 str(raw_set.get("name") or raw_set.get("adset_name") or raw_set.get("offer") or raw_set.get("product") or f"{payload.get('name', 'New Campaign')} - Ad Set {index + 1}").strip(),
                 raw_targeting,
@@ -11080,6 +11190,12 @@ def normalize_campaign_stack_arguments(arguments, chat_payload=None):
         or args.get("geography")
         or args.get("geo")
     )
+    location_queries = campaign_location_query_terms(location_source)
+    if location_queries:
+        # Keep the buyer's city/region intent durable across normalization and
+        # context compaction. The live Meta lookup happens immediately before
+        # campaign materialization.
+        args["targeting_location_queries"] = location_queries
     normalized_locations = normalize_location_codes(location_source, default=[])
     if not normalized_locations:
         normalized_locations = infer_location_codes_from_context(
@@ -11098,7 +11214,7 @@ def normalize_campaign_stack_arguments(arguments, chat_payload=None):
     # Preserve the user's explicit geography intent.  A malformed explicit
     # value must not disappear and silently turn into the historical US
     # default; create_campaign will return a field-level validation error.
-    if location_source not in (None, "", [], ()) and not normalized_locations:
+    if location_source not in (None, "", [], ()) and not normalized_locations and not location_queries:
         args["locations"] = []
 
     age_value = (

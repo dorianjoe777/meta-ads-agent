@@ -46,6 +46,13 @@ Publicación directa is for approved organic Facebook posts and uses the same pr
 - If Meta explicitly rejects the primary creative because its app is still in Development, do not ask the buyer for another token. Explain that the connected app must be Live and have both Ads and Page permissions; legacy separate credentials may be used internally only during migration. Otherwise clean the paused partial structure and explain the exact setup limitation; never change the objective silently.
 - Error `1487246` means the supplied number is wrong/stale for the selected Page/account. Re-resolve live Meta state. Never silently replace native Conversations with Traffic; offer a `wa.me` website fallback only when the buyer explicitly accepts that Meta will optimize for clicks rather than conversations.
 
+### Facebook-only Page identity
+
+- Any Facebook-only campaign can use the connected Facebook Page as its identity without an Instagram account. This applies to sales, traffic, awareness, engagement, video, lead-form, Messenger, WhatsApp, and other supported objectives.
+- For Messenger, keep campaign `OUTCOME_ENGAGEMENT`, ad set `CONVERSATIONS`, destination `MESSENGER`, and CTA `MESSAGE_PAGE`. For WhatsApp, keep its native destination while still using Page-only identity when placements exclude Instagram.
+- Whenever the buyer requests only Facebook placements, never send, infer, or require `instagram_actor_id`/`instagram_user_id`. Do not tell the buyer to create or connect Instagram as a workaround. Use Instagram identity only when the buyer explicitly requests an Instagram destination/placement and a live Instagram account is verified.
+- If Meta reports an invalid Instagram actor on any Facebook-only request, treat it as stale backend identity leakage. Retry with Page-only identity; do not change the buyer's objective, destination, audience, or creative.
+
 ## Native lead forms
 
 - Use `mcp_admira_list_lead_forms` before campaign creation and treat that live Meta result as authoritative.
@@ -95,5 +102,11 @@ generic copy, all genders, US, or manual feed/story placements.
 - With Advantage+ audience enabled, send an effective `age_max` of 65. A lower requested maximum is only a suggestion and must not be sent as an enforced cap. If the buyer requires a strict lower maximum, switch to manual targeting (`advantage_audience: 0`) before staging and explain the tradeoff.
 - Campaign/ad-set creation success is not targeting verification. After the ad set is created, the backend rereads it from Meta. If the result does not confirm all requested interest IDs and the requested Advantage+ flag, treat creation as incomplete; do not claim it worked. For an existing ad set, call `mcp_admira_inspect_adset_targeting` with its numeric ID.
 - Describe confirmed state precisely: “Meta returned these interest IDs in the live ad-set targeting, with Advantage+ audience enabled/disabled.” Never claim a value is visible under a particular Ads Manager UI heading unless it was actually observed there; UI labels and placement can change independently of Graph state.
+
+## Geographic targeting verification
+
+- Accept country names/codes and natural city, region, or town names. Resolve every non-country place through `mcp_admira_search_meta_targeting` and pass the exact current Meta key; never send a city/region name as a country code.
+- Preserve every requested level. For “Antioquia, Colombia,” target the live Antioquia region key, not all Colombia and never a default `US`. For multiple towns/cities, resolve and retain each exact selection.
+- If Meta returns multiple ambiguous places, use the surrounding country/business context to narrow the search. If it remains ambiguous, ask only for the missing geographic discriminator before creating anything. Never choose the first search result blindly.
 
 Budgets are interpreted in the connected ad account currency; do not assume USD.

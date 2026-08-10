@@ -1948,8 +1948,21 @@ class SocialFlowClient:
         message_destination="",
         object_story_link_url="",
         prefer_publishing_token=False,
+        use_instagram_identity=None,
         approved=False,
     ):
+        normalized_message_destination = self.normalize_message_destination(message_destination)
+        # A Page-only Messenger/WhatsApp ad must not inherit a stale Instagram
+        # identity from the global account binding. Ads Manager represents
+        # this as "Use Facebook Page". Sending instagram_actor_id anyway can
+        # make Meta reject the final ad even when Instagram was never selected.
+        page_only_message_destination = normalized_message_destination in {"MESSENGER", "WHATSAPP"}
+        if page_only_message_destination or use_instagram_identity is False:
+            instagram_actor_id = ""
+            if isinstance(object_story_spec, dict):
+                object_story_spec = dict(object_story_spec)
+                object_story_spec.pop("instagram_actor_id", None)
+                object_story_spec.pop("instagram_user_id", None)
         args = ["marketing", "create-creative"]
         if ad_account_id:
             args.append(ad_account_id)
@@ -1986,8 +1999,8 @@ class SocialFlowClient:
                 args.extend(["--cta-link", cta_link])
             if lead_gen_form_id:
                 args.extend(["--lead-gen-form-id", lead_gen_form_id])
-            if message_destination:
-                args.extend(["--message-destination", self.normalize_message_destination(message_destination)])
+            if normalized_message_destination:
+                args.extend(["--message-destination", normalized_message_destination])
         args.extend(["--json", "--yes"])
         if instagram_actor_id:
             args.extend(["--instagram-actor-id", instagram_actor_id])
