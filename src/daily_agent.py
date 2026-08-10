@@ -675,6 +675,7 @@ def execute_multi_adset_native_stack(path, campaign, client, destination, campai
     for set_index, (adset, adset_id) in enumerate(zip(adsets, adset_ids)):
         if not isinstance(adset, dict):
             continue
+        adset_targeting = adset.get("targeting") if isinstance(adset.get("targeting"), dict) else {}
         set_is_website = SocialFlowClient.normalize_destination_type(adset.get("destination_type")) == "WEBSITE"
         set_destination = "" if set_is_website else (message_destination_from_plan(adset) or default_message_destination)
         source_ads = adset.get("ads") or [ad_plan_default]
