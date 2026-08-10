@@ -30,7 +30,7 @@ Build the video as a recipe storyboard. For every scene, choose one dominant nam
 
 The full Video Shotcraft library is available: 152 recipe cards and 209 named styles. There is no 24-recipe ceiling. Use progressive disclosure so the catalog does not bloat the conversation:
 
-1. Call `mcp_admira_search_motion_graphic_recipes` with the message's narrative role, tone, energy, tempo, impact, or category. Search `references/shotcraft-storytelling-vocabulary.json` only when deeper comparison is needed.
+1. Call `mcp_admira_search_motion_graphic_recipes` with the message's narrative role, tone, energy, tempo, impact, or category. Search `references/shotcraft-storytelling-vocabulary.json` only when deeper comparison is needed. If the tool returns suggested filters, choices, or a broad result set, choose the best-fit filters and recipes yourself; do not ask the buyer to select a recipe for a reversible creative decision.
 2. Read each selected card's exact `source` Markdown.
 3. Read the exact TSX demo named by that card under `references/shotcraft/demos/` or `references/shotcraft/template/`.
 4. Translate the tuned timing, easing, masks, staging, and known pitfalls into the buyer's actual scene, copy, assets, aspect ratio, parent brand, and active child offer. Do not imitate a card from its name alone.
