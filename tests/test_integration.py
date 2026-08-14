@@ -769,6 +769,22 @@ class IntegrationTestSuite:
                 dashboard_password_hash = ""
                 dashboard_token_required = True
 
+            class PublicDashboard:
+                dashboard_token = "secret-password"
+                dashboard_password = "secret-password"
+                dashboard_password_hash = ""
+                dashboard_token_required = True
+                allow_public_dashboard = True
+                lan_access_enabled = False
+
+            class LocalOnlyDashboard:
+                dashboard_token = "secret-password"
+                dashboard_password = "secret-password"
+                dashboard_password_hash = ""
+                dashboard_token_required = True
+                allow_public_dashboard = False
+                lan_access_enabled = False
+
             dashboard.load_onboarding_state = lambda: {"completed": False}
             dashboard.load_config = lambda: NoPassword()
             self.assert_true(not handler.auth_required_for_post("/api/dashboard-password"), "First password creation stays open before a password exists")
@@ -788,6 +804,13 @@ class IntegrationTestSuite:
             self.assert_true(handler.auth_required_for_post("/api/agent-model/connect"), "ChatGPT/Codex login is protected once a dashboard password exists")
             self.assert_true(handler.auth_required_for_post("/api/dashboard-password"), "Changing password requires auth after a password exists")
             self.assert_true(handler.auth_required_for_get("/api/dashboard"), "Dashboard API is protected after password exists even before onboarding is complete")
+            handler.headers = {"Host": "174.138.83.15:7871"}
+            dashboard.load_config = lambda: PublicDashboard()
+            self.assert_true(handler.local_network_request_allowed(), "Explicit public dashboard opt-in allows cloud/Docker requests while password protection remains active")
+            dashboard.load_config = lambda: LocalOnlyDashboard()
+            self.assert_true(not handler.local_network_request_allowed(), "Local-only dashboard still rejects non-local public requests")
+            handler.headers = {"Host": "127.0.0.1:7871"}
+            self.assert_true(handler.local_network_request_allowed(), "Local-only dashboard allows loopback requests")
             dashboard.ensure_internal_model_recovery_token = lambda: "private-loopback-secret-1234567890"
             handler.headers = {"X-Admira-Internal-Recovery": "private-loopback-secret-1234567890"}
             handler.client_address = ("127.0.0.1", 45678)

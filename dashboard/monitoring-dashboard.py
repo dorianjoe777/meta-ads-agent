@@ -14705,7 +14705,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def local_network_request_allowed(self):
         config = load_config()
-        if install_environment_label() == "cloud" or config.lan_access_enabled:
+        # A public cloud dashboard is intentionally reachable through its
+        # published host (and remains protected by the dashboard password).
+        # Older cloud Docker installs do not carry CLOUD_DASHBOARD_HOSTNAME or
+        # DIGITALOCEAN_DROPLET_ID, so relying only on install_environment_label
+        # incorrectly classified them as local-only and returned the Wi-Fi
+        # disabled page for every public request.  ALLOW_PUBLIC_DASHBOARD is
+        # the explicit opt-in checked at startup; honor it here as well.
+        if install_environment_label() == "cloud" or config.lan_access_enabled or config.allow_public_dashboard:
             return True
         return request_host_is_local(self.headers.get("Host", ""))
 
