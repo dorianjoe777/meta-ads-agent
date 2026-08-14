@@ -3250,12 +3250,12 @@ def save_telegram_config(payload):
         values["TELEGRAM_LANGUAGE"] = "en" if str(payload.get("language")).strip().lower() == "en" else "es"
     next_bot = values.get("TELEGRAM_BOT_TOKEN", old_config.telegram_bot_token)
     next_chat = values.get("TELEGRAM_CHAT_ID", old_config.telegram_chat_id)
-    # A new BotFather token belongs to a different bot and must never inherit
-    # the previous bot's private chat.  Without this reset, a fresh onboarding
-    # could show Telegram as complete before the buyer sends the required
-    # "hola" to the new bot.  An explicit chat_id is still honored for the
-    # detected-chat save path.
-    if next_bot != old_config.telegram_bot_token and "chat_id" not in payload:
+    # A BotFather token entered from the setup UI must never inherit a stored
+    # private chat.  This also handles installs whose Docker/runtime volume
+    # survived a reinstall, and forces the buyer to send the required "hola"
+    # to the bot currently being configured.  An explicit chat_id is still
+    # honored for the detected-chat save path.
+    if str(payload.get("bot_token") or "").strip() and "chat_id" not in payload:
         values["TELEGRAM_CHAT_ID"] = ""
         next_chat = ""
     connection_changed = next_bot != old_config.telegram_bot_token or next_chat != old_config.telegram_chat_id
