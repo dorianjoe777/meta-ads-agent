@@ -1514,7 +1514,7 @@ function compactAgentSetup(){
  const selected=connections[provider]||{};
  const defaults={
   openai_codex:{base:'',model:model.hermes_model||'gpt-5.6-luna'},
-  nvidia_nim:{base:'https://integrate.api.nvidia.com/v1',model:'z-ai/glm-5.2'},
+  nvidia_nim:{base:'https://integrate.api.nvidia.com/v1',model:'minimaxai/minimax-m3'},
   openai_api:{base:'https://api.openai.com/v1',model:'gpt-4.1-mini'},
   minimax:{base:'https://api.minimax.io/v1',model:'MiniMax-M3'},
   custom_api:{base:'',model:''}
@@ -1564,7 +1564,7 @@ function selectCompactAgentProvider(event){
  const provider=String(picked||event.target.value||'nvidia_nim');
  const defaults={
   openai_codex:{base:'',model:'gpt-5.6-luna'},
-  nvidia_nim:{base:'https://integrate.api.nvidia.com/v1',model:'z-ai/glm-5.2'},
+  nvidia_nim:{base:'https://integrate.api.nvidia.com/v1',model:'minimaxai/minimax-m3'},
   openai_api:{base:'https://api.openai.com/v1',model:'gpt-4.1-mini'},
   minimax:{base:'https://api.minimax.io/v1',model:'MiniMax-M3'},
   custom_api:{base:'',model:''}
@@ -1889,7 +1889,7 @@ function chatGptConnectMarkup(onboarding=false){
  const runtimeChanged=Boolean(runtimeModelLabel&&(telegramRuntime.source==='telegram_model_command'||telegramRuntime.is_configured_primary===false));
  const telegramRuntimeNotice=runtimeModelLabel?`<div class="telegram-runtime-note ${runtimeChanged?'changed':''}"><b>${lang==='es'?'Telegram ahora usa':'Telegram is using now'}</b><span>${escapeHtml(runtimeModelLabel)}</span>${runtimeChanged?`<small>${lang==='es'?'Cambiado desde Telegram con /model. Si quieres que sea el principal fijo, guárdalo aquí también.':'Changed from Telegram with /model. To make it the permanent primary model, save it here too.'}</small>`:''}</div>`:'';
  const base=selectedConnection.base_url||model.base_url||(selectedRoute==='nvidia_nim'?'https://integrate.api.nvidia.com/v1':(selectedRoute==='openai_api'?'https://api.openai.com/v1':(selectedRoute==='custom_api'?'':'https://api.minimax.io/v1')));
- const modelName=selectedConnection.model||model.model||(selectedRoute==='nvidia_nim'?'z-ai/glm-5.2':(selectedRoute==='openai_api'?'gpt-4.1-mini':(selectedRoute==='custom_api'?'':'MiniMax-M3')));
+ const modelName=selectedConnection.model||model.model||(selectedRoute==='nvidia_nim'?'minimaxai/minimax-m3':(selectedRoute==='openai_api'?'gpt-4.1-mini':(selectedRoute==='custom_api'?'':'MiniMax-M3')));
  const catalogVerified=Boolean(model.hermes_model_catalog_account_verified);
  const catalogAuthResolved=Boolean(model.hermes_model_catalog_auth_resolved);
  const imageSource=model.codex_image_source||studio.codex_image_source||'main_chatgpt';
@@ -1919,8 +1919,8 @@ function chatGptConnectMarkup(onboarding=false){
  const apiPanelHelp=selectedRoute==='chatgpt_subscription'?routeCopy.minimax_m3.panel:routeCopy[selectedRoute].panel;
  const providerValue=providerForRoute[selectedRoute]||'openai_codex';
  const liveNvidiaModels=(Array.isArray(model.nvidia_model_options)?model.nvidia_model_options:[]).map(value=>String(value||'').trim()).filter(Boolean);
- const recommendedNvidiaModel=String(model.nvidia_model_recommended||'z-ai/glm-5.2').trim();
- const nvidiaModels=liveNvidiaModels.length?[...liveNvidiaModels]:[recommendedNvidiaModel];
+ const recommendedNvidiaModel=String(model.nvidia_model_recommended||'minimaxai/minimax-m3').trim();
+ const nvidiaModels=Array.from(new Set([recommendedNvidiaModel,...liveNvidiaModels]));
  if(selectedRoute==='nvidia_nim'&&modelName&&!nvidiaModels.includes(modelName))nvidiaModels.unshift(modelName);
  const nvidiaModelOptions=nvidiaModels.map(value=>`<option value="${escapeHtml(value)}">${escapeHtml(value===recommendedNvidiaModel?(lang==='es'?'Recomendado':'Recommended'):'')}</option>`).join('');
  const apiModelField=`<input name="agent_chat_model" value="${escapeHtml(modelName)}" placeholder="${lang==='es'?'Nombre del modelo':'Model name'}" ${selectedRoute==='nvidia_nim'?'list="nvidia-model-options"':''}><datalist id="nvidia-model-options">${nvidiaModelOptions}</datalist>`;
@@ -2290,9 +2290,10 @@ async function refreshNvidiaModelCatalog(event){
   const models=Array.isArray(catalog.models)?catalog.models:[];
   const count=models.length;
   const datalist=qs('#nvidia-model-options');
-  if(datalist)datalist.innerHTML=models.map(value=>`<option value="${escapeHtml(value)}">${escapeHtml(value===catalog.recommended?(lang==='es'?'Recomendado':'Recommended'):'')}</option>`).join('');
+  const orderedModels=Array.from(new Set([String(catalog.recommended||'').trim(),...models].filter(Boolean)));
+  if(datalist)datalist.innerHTML=orderedModels.map(value=>`<option value="${escapeHtml(value)}">${escapeHtml(value===catalog.recommended?(lang==='es'?'Recomendado':'Recommended'):'')}</option>`).join('');
   const modelInput=form?.elements?.agent_chat_model;
-  if(modelInput){modelInput.setAttribute('list','nvidia-model-options');if(!models.includes(modelInput.value))modelInput.value=catalog.recommended||models[0]||'z-ai/glm-5.2'}
+  if(modelInput){modelInput.setAttribute('list','nvidia-model-options');if(!models.includes(modelInput.value))modelInput.value=catalog.recommended||models[0]||'minimaxai/minimax-m3'}
   toast(lang==='es'?`NVIDIA confirmó ${count} modelos de conversación disponibles.`:`NVIDIA confirmed ${count} available chat models.`);
  }catch(err){
   toast(err.message||String(err));
@@ -2395,7 +2396,7 @@ function applyAgentModelPreset(kind){
  const defaults={
   openai_api:{base_url:'https://api.openai.com/v1',model:'gpt-4.1-mini'},
   minimax_m3:{base_url:'https://api.minimax.io/v1',model:'MiniMax-M3'},
-  nvidia_nim:{base_url:'https://integrate.api.nvidia.com/v1',model:'z-ai/glm-5.2'},
+  nvidia_nim:{base_url:'https://integrate.api.nvidia.com/v1',model:'minimaxai/minimax-m3'},
   custom_api:{base_url:'',model:''}
  };
  if(fields.agent_chat_api)fields.agent_chat_api.value='openai-chat-completions';

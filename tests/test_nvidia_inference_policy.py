@@ -1,14 +1,40 @@
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 import admira_hermes_runtime_patch
 import hermes_bridge
 import hermes_gateway
+import product_config
 
 
 class NvidiaInferencePolicyTests(unittest.TestCase):
+    def test_nvidia_default_is_minimax_m3_and_legacy_glm_migrates_only_when_untouched(self):
+        self.assertEqual(product_config.DEFAULT_NVIDIA_NIM_MODEL, "minimaxai/minimax-m3")
+        self.assertEqual(
+            product_config.normalize_nvidia_model("z-ai/glm-5.2"),
+            "minimaxai/minimax-m3",
+        )
+        self.assertEqual(
+            product_config.normalize_nvidia_model("z-ai/glm-5.2", user_selected=True),
+            "z-ai/glm-5.2",
+        )
+
+    def test_nvidia_fallback_preference_keeps_m3_first_and_uses_live_ids(self):
+        models = [
+            "z-ai/glm-5.2",
+            "deepseek-ai/deepseek-v4-flash-0731",
+            "openai/gpt-oss-20b",
+            "minimaxai/minimax-m3",
+        ]
+        ordered = hermes_bridge._nvidia_model_specific_fallback_order(models, "minimaxai/minimax-m3")
+        self.assertEqual(
+            ordered,
+            ["openai/gpt-oss-20b", "deepseek-ai/deepseek-v4-flash-0731", "z-ai/glm-5.2"],
+        )
+
     def test_nvidia_uses_one_attempt_and_serial_crons(self):
         policy = hermes_bridge.inference_runtime_policy({
             "brain": "nvidia_nim",
@@ -68,6 +94,44 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         gateway_config = "\n".join(hermes_gateway._gateway_model_config_lines(brain))
         self.assertIn("context_length: 80000", bridge_config)
         self.assertIn("context_length: 80000", gateway_config)
+
+    def test_nvidia_root_agent_profile_fits_without_hermes_truncation(self):
+        """Specialist skills must remain reachable before the first tool call."""
+        profile = hermes_bridge.combined_agent_rules()
+        policy = hermes_bridge.inference_runtime_policy({"brain": "nvidia_nim"})
+        self.assertLessEqual(len(profile), policy["context_file_max_chars"])
+        self.assertIn("mcp_admira_generate_motion_graphic_video", profile)
+        self.assertIn("skills/core-agent-behavior", profile)
+
+    def test_nvidia_config_rewrites_retired_deepseek_fallback(self):
+        config_text = """
+mcp_servers:\n  admira:\n    command: admira_mcp_server.py
+creation_nudge_interval: 0
+memory_notifications: off
+context_file_max_chars: 30000
+fallback_providers:
+  - provider: \"admira-nvidia\"
+    model: \"deepseek-ai/deepseek-v4-flash\"
+providers:
+  admira-nvidia:
+    base_url: \"https://integrate.api.nvidia.com/v1\"
+agent:
+  context_length: 80000
+compression:
+  threshold: 0.45
+  hygiene_hard_message_limit: 24
+  abort_on_summary_failure: false
+  models:
+    - provider: \"custom\"
+      base_url: \"https://integrate.api.nvidia.com/v1\"
+"""
+        brain = {
+            "brain": "nvidia_nim",
+            "provider": hermes_bridge.ADMIRA_NVIDIA_PROVIDER,
+            "model": "z-ai/glm-5.2",
+            "base_url": hermes_bridge.ADMIRA_NVIDIA_DEFAULT_BASE_URL,
+        }
+        self.assertTrue(hermes_bridge._cli_hermes_config_needs_write(config_text, brain))
 
     def test_connected_model_catalog_keeps_primary_context_cap(self):
         original_connections = hermes_bridge.agent_model_connections
@@ -145,7 +209,7 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
                 })
                 self.assertEqual(chain[0]["provider"], hermes_bridge.ADMIRA_MINIMAX_PROVIDER)
                 self.assertEqual(chain[1]["provider"], "openai-codex")
-                self.assertEqual(chain[-1]["provider"], hermes_bridge.ADMIRA_NVIDIA_PROVIDER)
+                self.assertFalse(any(item["provider"] == hermes_bridge.ADMIRA_NVIDIA_PROVIDER for item in chain[1:]))
         finally:
             hermes_bridge.agent_model_connections = original_connections
             hermes_bridge.NVIDIA_MODEL_CATALOG_FILE = original_nvidia_catalog
@@ -174,7 +238,7 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
             hermes_bridge.CODEX_MODEL_CATALOG_FILE = original_catalog
             hermes_bridge.codex_credential_health = original_codex_health
 
-    def test_nvidia_primary_has_bounded_m3_then_deepseek_fallback_without_catalog(self):
+    def test_nvidia_primary_has_no_invented_fallback_without_another_provider(self):
         original_catalog = hermes_bridge.NVIDIA_MODEL_CATALOG_FILE
         original_connections = hermes_bridge.agent_model_connections
         original_codex_health = hermes_bridge.codex_credential_health
@@ -189,17 +253,75 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
                     "model": "z-ai/glm-5.2",
                     "base_url": hermes_bridge.ADMIRA_NVIDIA_DEFAULT_BASE_URL,
                 })
-                self.assertEqual(
-                    [(item["provider"], item["model"]) for item in chain],
-                    [
-                        (hermes_bridge.ADMIRA_NVIDIA_PROVIDER, "minimaxai/minimax-m3"),
-                        (hermes_bridge.ADMIRA_NVIDIA_PROVIDER, "deepseek-ai/deepseek-v4-flash"),
-                    ],
-                )
+                self.assertEqual(chain, [])
         finally:
             hermes_bridge.NVIDIA_MODEL_CATALOG_FILE = original_catalog
             hermes_bridge.agent_model_connections = original_connections
             hermes_bridge.codex_credential_health = original_codex_health
+
+    def test_nvidia_live_catalog_adds_one_model_specific_same_key_fallback(self):
+        """A fresh live catalog permits one alternate NIM pool, never guesses IDs."""
+        original_catalog = hermes_bridge.NVIDIA_MODEL_CATALOG_FILE
+        original_connections = hermes_bridge.agent_model_connections
+        original_codex_health = hermes_bridge.codex_credential_health
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                hermes_bridge.NVIDIA_MODEL_CATALOG_FILE = Path(directory) / "nvidia.json"
+                hermes_bridge.NVIDIA_MODEL_CATALOG_FILE.write_text(json.dumps({
+                    "models": ["z-ai/glm-5.2", "minimaxai/minimax-m3", "openai/gpt-oss-20b"],
+                    "source": "nvidia_live_catalog",
+                    "account_verified": True,
+                    "checked_epoch": time.time(),
+                }), encoding="utf-8")
+                hermes_bridge.agent_model_connections = lambda _config, include_secrets=False: {}
+                hermes_bridge.codex_credential_health = lambda _config: {"state": "missing", "reauth_required": False}
+                chain = hermes_bridge.admira_inference_fallback_chain(object(), {
+                    "brain": "nvidia_nim",
+                    "provider": hermes_bridge.ADMIRA_NVIDIA_PROVIDER,
+                    "model": "z-ai/glm-5.2",
+                    "base_url": hermes_bridge.ADMIRA_NVIDIA_DEFAULT_BASE_URL,
+                })
+                self.assertEqual(len(chain), 1)
+                self.assertEqual(chain[0]["provider"], hermes_bridge.ADMIRA_NVIDIA_PROVIDER)
+                self.assertEqual(chain[0]["model"], "minimaxai/minimax-m3")
+                self.assertEqual(chain[0]["key_env"], hermes_bridge.ADMIRA_NVIDIA_KEY_ENV)
+        finally:
+            hermes_bridge.NVIDIA_MODEL_CATALOG_FILE = original_catalog
+            hermes_bridge.agent_model_connections = original_connections
+            hermes_bridge.codex_credential_health = original_codex_health
+
+    def test_stale_nvidia_catalog_does_not_enable_same_key_fallback(self):
+        original_catalog = hermes_bridge.NVIDIA_MODEL_CATALOG_FILE
+        original_connections = hermes_bridge.agent_model_connections
+        original_codex_health = hermes_bridge.codex_credential_health
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                hermes_bridge.NVIDIA_MODEL_CATALOG_FILE = Path(directory) / "nvidia.json"
+                hermes_bridge.NVIDIA_MODEL_CATALOG_FILE.write_text(json.dumps({
+                    "models": ["z-ai/glm-5.2", "minimaxai/minimax-m3"],
+                    "source": "nvidia_live_catalog",
+                    "account_verified": True,
+                    "checked_epoch": time.time() - hermes_bridge.NVIDIA_LIVE_CATALOG_MAX_AGE_SECONDS - 1,
+                }), encoding="utf-8")
+                hermes_bridge.agent_model_connections = lambda _config, include_secrets=False: {}
+                hermes_bridge.codex_credential_health = lambda _config: {"state": "missing", "reauth_required": False}
+                chain = hermes_bridge.admira_inference_fallback_chain(object(), {
+                    "brain": "nvidia_nim",
+                    "provider": hermes_bridge.ADMIRA_NVIDIA_PROVIDER,
+                    "model": "z-ai/glm-5.2",
+                })
+                self.assertEqual(chain, [])
+        finally:
+            hermes_bridge.NVIDIA_MODEL_CATALOG_FILE = original_catalog
+            hermes_bridge.agent_model_connections = original_connections
+            hermes_bridge.codex_credential_health = original_codex_health
+
+    def test_same_nvidia_guard_only_blocks_shared_key_failures(self):
+        self.assertTrue(admira_hermes_runtime_patch._admira_same_nvidia_fallback_blocked("upstream_rate_limit"))
+        self.assertTrue(admira_hermes_runtime_patch._admira_same_nvidia_fallback_blocked("billing"))
+        self.assertTrue(admira_hermes_runtime_patch._admira_same_nvidia_fallback_blocked("authentication_error"))
+        self.assertFalse(admira_hermes_runtime_patch._admira_same_nvidia_fallback_blocked("timeout"))
+        self.assertFalse(admira_hermes_runtime_patch._admira_same_nvidia_fallback_blocked("internal_server_error"))
 
 
 if __name__ == "__main__":

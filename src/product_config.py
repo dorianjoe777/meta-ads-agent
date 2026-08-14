@@ -15,6 +15,8 @@ ENV_FILE = ROOT_DIR / ".env"
 DASHBOARD_IDENTITY_FILE = ROOT_DIR / "dashboard" / "data" / "dashboard_identity.json"
 DEFAULT_HERMES_CODEX_MODEL = "gpt-5.4-mini"
 DEFAULT_CODEX_IMAGE_SOURCE = "main_chatgpt"
+DEFAULT_NVIDIA_NIM_MODEL = "minimaxai/minimax-m3"
+LEGACY_NVIDIA_NIM_DEFAULT_MODELS = frozenset({"z-ai/glm-5.2"})
 AGENT_MODEL_CONNECTION_SPECS = {
     "openai_api": {
         "env_prefix": "ADMIRA_OPENAI",
@@ -31,7 +33,7 @@ AGENT_MODEL_CONNECTION_SPECS = {
     "nvidia_nim": {
         "env_prefix": "ADMIRA_NVIDIA",
         "base_url": "https://integrate.api.nvidia.com/v1",
-        "model": "z-ai/glm-5.2",
+        "model": DEFAULT_NVIDIA_NIM_MODEL,
         "api": "openai-chat-completions",
     },
     "custom_api": {
@@ -64,6 +66,23 @@ def normalize_hermes_model(value):
     model = str(value or "").strip()
     if not model or model.lower() in {"auto", "recommended", "recomendado", "default"}:
         return DEFAULT_HERMES_CODEX_MODEL
+    return model
+
+
+def normalize_nvidia_model(value, user_selected=False):
+    """Return the effective NVIDIA chat model without hiding explicit choices.
+
+    Older releases used GLM 5.2 as the implicit NIM default.  MiniMax M3 is
+    now the product default because it is the first model proven responsive on
+    the hosted catalog used by fresh installs.  A buyer who explicitly chose
+    another model keeps that choice; untouched legacy profiles are migrated at
+    runtime and by the dashboard's one-time persistence hook.
+    """
+    model = str(value or "").strip()
+    if not model:
+        return DEFAULT_NVIDIA_NIM_MODEL
+    if not user_selected and model.lower() in LEGACY_NVIDIA_NIM_DEFAULT_MODELS:
+        return DEFAULT_NVIDIA_NIM_MODEL
     return model
 
 
@@ -248,6 +267,11 @@ def agent_model_connections(config=None, include_secrets=False):
     legacy_api = str(
         getattr(config, "agent_chat_api", "") if config is not None else os.environ.get("AGENT_CHAT_API", "")
     ).strip().lower()
+    nvidia_model_user_selected = bool(
+        getattr(config, "agent_nvidia_model_user_selected", False)
+        if config is not None
+        else env_bool("AGENT_NVIDIA_MODEL_USER_SELECTED", False)
+    )
     legacy_provider = active_provider if active_provider in AGENT_MODEL_CONNECTION_SPECS else ""
     if legacy_key and not legacy_provider:
         legacy_url = legacy_base.lower()
@@ -271,6 +295,8 @@ def agent_model_connections(config=None, include_secrets=False):
             saved_base = saved_base or legacy_base
             saved_model = saved_model or legacy_model
             saved_api = saved_api or legacy_api
+        if provider == "nvidia_nim":
+            saved_model = normalize_nvidia_model(saved_model, user_selected=nvidia_model_user_selected)
         base_url = saved_base or spec["base_url"]
         model = saved_model or spec["model"]
         api = saved_api or spec["api"]
@@ -480,6 +506,7 @@ class AgentConfig:
     codex_image_hermes_home: str = ""
     codex_image_hermes_model: str = DEFAULT_HERMES_CODEX_MODEL
     agent_brain_provider: str = "nvidia_nim"
+    agent_nvidia_model_user_selected: bool = False
     dashboard_password_hash: str = ""
     license_public_key: str = ""
     hermes_cli: str = "hermes"
@@ -586,7 +613,10 @@ def load_config():
         agent_chat_base_url=base_url,
         agent_chat_api_key=env_first("AGENT_CHAT_API_KEY", "MINIMAX_API_KEY", default=""),
         agent_chat_api=env_first("AGENT_CHAT_API", "MINIMAX_API", default="openai-chat-completions").lower(),
-        agent_chat_model=env_first("AGENT_CHAT_MODEL", "ADMIRA_NVIDIA_MODEL", default="z-ai/glm-5.2"),
+        agent_chat_model=normalize_nvidia_model(
+            env_first("AGENT_CHAT_MODEL", "ADMIRA_NVIDIA_MODEL", default=DEFAULT_NVIDIA_NIM_MODEL),
+            user_selected=env_bool("AGENT_NVIDIA_MODEL_USER_SELECTED", False),
+        ) if brain_provider == "nvidia_nim" else env_first("AGENT_CHAT_MODEL", "ADMIRA_NVIDIA_MODEL", default=""),
         agent_chat_temperature=env_float("AGENT_CHAT_TEMPERATURE", 0.65),
         agent_profile_dir=os.environ.get("AGENT_PROFILE_DIR", "agent"),
         codex_creative_enabled=env_bool("CODEX_CREATIVE_ENABLED", True),
@@ -596,6 +626,7 @@ def load_config():
         codex_image_hermes_home=normalize_local_path(os.environ.get("CODEX_IMAGE_HERMES_HOME", ""), default_codex_image_hermes_home()) if os.environ.get("CODEX_IMAGE_HERMES_HOME") else "",
         codex_image_hermes_model=normalize_hermes_model(os.environ.get("CODEX_IMAGE_HERMES_MODEL", os.environ.get("HERMES_MODEL", ""))),
         agent_brain_provider=brain_provider,
+        agent_nvidia_model_user_selected=env_bool("AGENT_NVIDIA_MODEL_USER_SELECTED", False),
         dashboard_password_hash=os.environ.get("DASHBOARD_PASSWORD_HASH", ""),
         license_public_key=os.environ.get("LICENSE_PUBLIC_KEY", ""),
         hermes_cli=os.environ.get("HERMES_CLI", "hermes"),

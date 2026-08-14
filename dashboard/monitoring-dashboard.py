@@ -158,7 +158,9 @@ from optimization_engine import (
 from optimization_research import RESEARCH_FILE, load_research, save_research_item, seed_current_research
 from scheduled_campaign_actions import schedule_campaign_activation
 from product_config import (
+    DEFAULT_NVIDIA_NIM_MODEL,
     ENV_FILE,
+    LEGACY_NVIDIA_NIM_DEFAULT_MODELS,
     agent_model_connection_env_keys,
     agent_model_connections,
     agent_brain_uses_chatgpt_codex,
@@ -5174,18 +5176,22 @@ def cached_codex_model_catalog(config=None):
 
 
 NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
-NVIDIA_NIM_DEFAULT_MODEL = "z-ai/glm-5.2"
+NVIDIA_NIM_DEFAULT_MODEL = DEFAULT_NVIDIA_NIM_MODEL
 NVIDIA_NIM_MODEL_PREFERENCE = (
-    "z-ai/glm-5.2",
     "minimaxai/minimax-m3",
-    "deepseek-ai/deepseek-v4-flash",
     "openai/gpt-oss-20b",
     "nvidia/nemotron-3-nano-30b-a3b",
+    "deepseek-ai/deepseek-v4-flash-0731",
+    "deepseek-ai/deepseek-v4-flash",
+    "z-ai/glm-5.2",
     "minimaxai/minimax-m2.7",
 )
 NVIDIA_NIM_SAFE_FALLBACK_MODELS = (
     "minimaxai/minimax-m3",
-    "deepseek-ai/deepseek-v4-flash",
+    "openai/gpt-oss-20b",
+    "nvidia/nemotron-3-nano-30b-a3b",
+    "deepseek-ai/deepseek-v4-flash-0731",
+    "z-ai/glm-5.2",
 )
 NVIDIA_NIM_NON_CHAT_MARKERS = (
     "embed", "rerank", "retriev", "diffusion", "grounding", "segmentation",
@@ -6639,6 +6645,7 @@ AGENT_MODEL_GATEWAY_ENV_KEYS = {
     "ADMIRA_NVIDIA_BASE_URL",
     "ADMIRA_NVIDIA_MODEL",
     "ADMIRA_NVIDIA_API",
+    "AGENT_NVIDIA_MODEL_USER_SELECTED",
     "ADMIRA_CUSTOM_API_KEY",
     "ADMIRA_CUSTOM_BASE_URL",
     "ADMIRA_CUSTOM_MODEL",
@@ -6733,6 +6740,11 @@ def save_setup_config(payload):
                 profile_keys["api"]: api,
                 profile_keys["api_key"]: api_key,
             })
+            if provider == "nvidia_nim":
+                # Saving from this form is an explicit buyer choice. Preserve
+                # it on future updates, including an intentional GLM choice;
+                # untouched legacy GLM profiles are migrated to M3 below.
+                env_updates["AGENT_NVIDIA_MODEL_USER_SELECTED"] = "true"
             # Updating the profile that is already primary must update the live
             # compatibility fields too, without changing which provider owns
             # the single primary marker.
@@ -14112,6 +14124,36 @@ def require_cloud_license(action_name="buyer feature"):
         raise ValueError(f"{action_name}: {status.get('detail')}")
 
 
+def migrate_nvidia_primary_model(config=None):
+    """Migrate an untouched legacy NIM default to MiniMax M3 once.
+
+    Releases before the M3 preference wrote GLM 5.2 into both compatibility
+    fields.  Do not make a buyer revisit setup after an update: migrate only
+    that known implicit value, and leave an explicit model selection alone.
+    The marker is intentionally separate from Hermes' Codex model marker.
+    """
+    config = config or load_config()
+    brain = normalize_agent_brain_provider(
+        getattr(config, "agent_brain_provider", ""),
+        legacy_chat_provider=getattr(config, "agent_chat_provider", "hermes"),
+        base_url=getattr(config, "agent_chat_base_url", ""),
+    )
+    if brain != "nvidia_nim" or bool(getattr(config, "agent_nvidia_model_user_selected", False)):
+        return config
+    raw_models = {
+        str(os.environ.get("AGENT_CHAT_MODEL") or "").strip().lower(),
+        str(os.environ.get("ADMIRA_NVIDIA_MODEL") or "").strip().lower(),
+    }
+    if not raw_models.intersection({str(item).lower() for item in LEGACY_NVIDIA_NIM_DEFAULT_MODELS}):
+        return config
+    update_env_values({
+        "AGENT_CHAT_MODEL": DEFAULT_NVIDIA_NIM_MODEL,
+        "ADMIRA_NVIDIA_MODEL": DEFAULT_NVIDIA_NIM_MODEL,
+        "AGENT_NVIDIA_MODEL_USER_SELECTED": "false",
+    })
+    return load_config()
+
+
 def dashboard_payload():
     metrics = load_metrics()
     recommendations = calculate_recommendations(metrics.get("campaigns", []))
@@ -14965,7 +15007,7 @@ def write_static_snapshot():
 def main():
     global CURRENT_DASHBOARD_BIND_HOST, CURRENT_DASHBOARD_BIND_PORT
     query = parse_qs(urlparse(sys.argv[1]).query) if len(sys.argv) > 1 and sys.argv[1].startswith("?") else {}
-    config = load_config()
+    config = migrate_nvidia_primary_model(load_config())
     host = query.get("host", [config.dashboard_host])[0]
     port = int(query.get("port", [config.dashboard_port or PORT])[0])
     allow_public_for_session = str(query.get("allow_public", ["false"])[0]).lower() in {"1", "true", "yes", "on"}

@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -37,8 +38,9 @@ from admira_rate_limit_messages import (
 from security import redact_payload
 
 try:
-    from product_config import agent_model_connections, normalize_hermes_model, preferred_hermes_model
+    from product_config import DEFAULT_NVIDIA_NIM_MODEL, agent_model_connections, normalize_hermes_model, normalize_nvidia_model, preferred_hermes_model
 except ImportError:
+    DEFAULT_NVIDIA_NIM_MODEL = "minimaxai/minimax-m3"
     def normalize_hermes_model(value):
         model = str(value or "").strip()
         if not model or model.lower() in {"auto", "recommended", "recomendado", "default"}:
@@ -47,6 +49,10 @@ except ImportError:
 
     def preferred_hermes_model(models):
         return next((str(model).strip() for model in models or [] if str(model).strip()), "gpt-5.4-mini")
+
+    def normalize_nvidia_model(value, user_selected=False):
+        model = str(value or "").strip()
+        return model if model and (user_selected or model.lower() != "z-ai/glm-5.2") else "minimaxai/minimax-m3"
 
     def agent_model_connections(config=None, include_secrets=False):
         return {}
@@ -67,14 +73,7 @@ ADMIRA_NVIDIA_BASE_URL_ENV = "ADMIRA_NVIDIA_BASE_URL"
 ADMIRA_NVIDIA_PROVIDER = "admira-nvidia"
 ADMIRA_NVIDIA_PROVIDER_NAME = "NVIDIA NIM API"
 ADMIRA_NVIDIA_DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
-ADMIRA_NVIDIA_DEFAULT_MODEL = "z-ai/glm-5.2"
-# Verified chat-capable NVIDIA-hosted fallbacks for upgraded installations
-# whose live model catalog has not been cached yet. A live catalog always
-# takes precedence when available.
-NVIDIA_NIM_SAFE_FALLBACK_MODELS = (
-    "minimaxai/minimax-m3",
-    "deepseek-ai/deepseek-v4-flash",
-)
+ADMIRA_NVIDIA_DEFAULT_MODEL = DEFAULT_NVIDIA_NIM_MODEL
 ADMIRA_OPENAI_KEY_ENV = "ADMIRA_OPENAI_API_KEY"
 ADMIRA_OPENAI_PROVIDER = "admira-openai"
 ADMIRA_CUSTOM_KEY_ENV = "ADMIRA_CUSTOM_API_KEY"
@@ -106,11 +105,22 @@ RECENT_CONTEXT_LOOKBACK_DAYS = 7
 RECENT_CONTEXT_ITEM_LIMIT = 12
 BLOCKED_MEMORY_TOKENS = {".env", "license_unlock.json"}
 PROFILE_FILES = ("SOUL.md", "USER.md", "AGENTS.md", "TOOLS.md", "SKILLS.md")
-COMBINED_AGENT_PROFILE_FILES = ("SOUL.md", "USER.md", "AGENTS.md", "TOOLS.md")
+# The versioned skills and their generated buyer-state companions are the
+# detailed operating manual.  Do not concatenate every legacy profile into
+# the root AGENTS.md: NVIDIA's hosted models have a much smaller *practical*
+# context window than their advertised maximum and Hermes truncates context
+# files before the agent can read a specialist skill.  Keep the root profile
+# to identity + buyer preferences + the concise runtime contract below, then
+# have the agent load the relevant official skill on demand.
+COMBINED_AGENT_PROFILE_FILES = ("SOUL.md", "USER.md")
 SKILL_FILE_NAME = "SKILL.md"
 HERMES_CONTEXT_FILE_SAFE_MAX_CHARS = 60000
 CODEX_MODEL_CATALOG_FILE = DATA_DIR / "codex_model_catalog.json"
 NVIDIA_MODEL_CATALOG_FILE = DATA_DIR / "nvidia_model_catalog.json"
+# A same-key NIM fallback is useful only when the model catalog was recently
+# verified against NVIDIA.  A stale/safe catalog must never manufacture a
+# second route that may not exist for the buyer's key.
+NVIDIA_LIVE_CATALOG_MAX_AGE_SECONDS = 6 * 60 * 60
 MODEL_USAGE_LIMIT_PATTERNS = (
     r"\b429\b",
     r"too many requests",
@@ -400,6 +410,60 @@ def _cached_model_ids(path):
     return models[:40]
 
 
+def _live_nvidia_model_ids(path, now=None):
+    """Return model IDs from a recent, authenticated NVIDIA catalog only.
+
+    The model list is deliberately not treated as a credential or entitlement
+    proof.  It is merely the last successful `/models` response, and therefore
+    only qualifies for model-specific failover while it is fresh.  This keeps a
+    first-time/offline install honest: no guessed NIM endpoint is added.
+    """
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, dict) or payload.get("source") != "nvidia_live_catalog":
+        return []
+    if not bool(payload.get("account_verified")):
+        return []
+    try:
+        checked_epoch = float(payload.get("checked_epoch") or 0)
+    except (TypeError, ValueError):
+        return []
+    if checked_epoch <= 0:
+        return []
+    current = float(now if now is not None else time.time())
+    age = current - checked_epoch
+    if age < 0 or age > NVIDIA_LIVE_CATALOG_MAX_AGE_SECONDS:
+        return []
+    return _cached_model_ids(path)
+
+
+def _nvidia_model_specific_fallback_order(models, primary_model):
+    """Prefer a different live NIM pool, without inventing model IDs."""
+    primary_key = str(primary_model or "").strip().lower()
+    preferred = (
+        # MiniMax M3 is the primary NIM route. The remaining entries are
+        # same-key fallbacks only when NVIDIA's live catalog confirms them.
+        "minimaxai/minimax-m3",
+        "openai/gpt-oss-20b",
+        "nvidia/nemotron-3-nano-30b-a3b",
+        "deepseek-ai/deepseek-v4-flash-0731",
+        "deepseek-ai/deepseek-v4-flash",
+        "z-ai/glm-5.2",
+    )
+    ordered = []
+    for model in [*preferred, *models]:
+        value = str(model or "").strip()
+        key = value.lower()
+        if not value or key == primary_key or key in {item.lower() for item in ordered}:
+            continue
+        if value not in models:
+            continue
+        ordered.append(value)
+    return ordered
+
+
 def _light_model_order(models):
     cleaned = [str(model or "").strip() for model in models or [] if str(model or "").strip()]
     if not cleaned:
@@ -416,11 +480,12 @@ def _light_model_order(models):
 def inference_runtime_policy(primary_settings=None):
     """Return bounded inference settings for the selected product brain.
 
-    Hosted/free NVIDIA NIM capacity is often account-wide rather than
-    model-specific. Retrying the same request several times, or exhausting
-    several NVIDIA models before a separately configured provider, turns one
-    temporary 429 into an avoidable burst. Keep its route intentionally
-    conservative while leaving paid/independent providers at Hermes defaults.
+    Hosted/free NVIDIA NIM capacity can be account-wide for quota/auth errors,
+    while individual model pools can still fail independently. Retrying the
+    same request several times, or exhausting several NVIDIA models after a
+    shared 429, turns one temporary limit into an avoidable burst. Keep the
+    primary route conservative; the runtime guard permits one live-catalog
+    model fallback only for model-specific transport failures.
     """
     brain = dict(primary_settings or {})
     is_nvidia = _runtime_provider_for_brain(brain) == ADMIRA_NVIDIA_PROVIDER
@@ -569,28 +634,10 @@ def admira_inference_fallback_chain(config, primary_settings=None):
             entry["key_env"] = str(key_env).strip()
         entries.append(entry)
 
-    nvidia_model_fallbacks = []
     if primary_provider == "openai-codex":
         codex_models = _light_model_order(_cached_model_ids(CODEX_MODEL_CATALOG_FILE))
         for model in codex_models[:3]:
             append("openai-codex", model)
-    elif primary_provider == ADMIRA_NVIDIA_PROVIDER:
-        # Keep two bounded same-account alternatives after independently
-        # configured providers. This handles model-specific stalls (for
-        # example GLM-5.2) without allowing an unbounded inference burst.
-        raw_catalog = read_json(NVIDIA_MODEL_CATALOG_FILE, {})
-        catalog_models = _cached_model_ids(NVIDIA_MODEL_CATALOG_FILE)
-        # A pre-catalog installation may have a stale file containing only
-        # the original primary model. Add the tested safe candidates until a
-        # live catalog refresh replaces it. A live catalog remains authoritative
-        # and is never augmented with invented model IDs.
-        if not catalog_models or not isinstance(raw_catalog, dict) or raw_catalog.get("source") != "nvidia_live_catalog":
-            catalog_models = list(dict.fromkeys([*catalog_models, *NVIDIA_NIM_SAFE_FALLBACK_MODELS]))
-        nvidia_model_fallbacks = [
-            model for model in _light_model_order(catalog_models)
-            if model.lower() != primary_model.lower()
-        ][:2]
-
     connections = agent_model_connections(config, include_secrets=True)
     for provider, connection in connections.items():
         if not connection.get("configured"):
@@ -620,8 +667,15 @@ def admira_inference_fallback_chain(config, primary_settings=None):
         if codex_models:
             append("openai-codex", codex_models[0])
 
-    for model in nvidia_model_fallbacks:
-        append(ADMIRA_NVIDIA_PROVIDER, model, brain.get("base_url") or ADMIRA_NVIDIA_DEFAULT_BASE_URL, ADMIRA_NVIDIA_KEY_ENV)
+    # Some NVIDIA hosted pools are model-specific: a timeout/5xx/empty
+    # response from GLM can coexist with a healthy M3 pool under the same key.
+    # Add at most one alternate model, and only from a recent authenticated
+    # catalog.  Runtime policy skips this entry for quota/auth/billing errors;
+    # those are shared-key failures and must not be amplified.
+    if primary_provider == ADMIRA_NVIDIA_PROVIDER:
+        live_models = _live_nvidia_model_ids(NVIDIA_MODEL_CATALOG_FILE)
+        for model in _nvidia_model_specific_fallback_order(live_models, primary_model)[:1]:
+            append(ADMIRA_NVIDIA_PROVIDER, model, brain.get("base_url") or ADMIRA_NVIDIA_DEFAULT_BASE_URL, ADMIRA_NVIDIA_KEY_ENV)
 
     return entries[:6]
 
@@ -641,6 +695,25 @@ def admira_fallback_config_lines(config, primary_settings=None):
         if entry.get("key_env"):
             lines.append(f"    key_env: {_quote_yaml(entry['key_env'])}")
     return lines
+
+
+def _nvidia_same_key_models_in_fallback_config(config_text):
+    """Read only same-provider entries from Hermes' fallback YAML block."""
+    match = re.search(
+        r"(?ms)^fallback_providers:\s*\n(?P<body>.*?)(?=^[A-Za-z_][A-Za-z0-9_-]*:|\Z)",
+        str(config_text or ""),
+    )
+    if not match:
+        return []
+    models = []
+    for block in re.split(r"(?m)^\s*-\s+provider:", match.group("body"))[1:]:
+        provider = block.splitlines()[0].strip().strip("\"'").lower().replace("_", "-")
+        if provider != ADMIRA_NVIDIA_PROVIDER:
+            continue
+        model_match = re.search(r"(?m)^\s+model:\s*[\"']?([^\"'\n]+)", block)
+        if model_match:
+            models.append(model_match.group(1).strip())
+    return models
 
 
 def hermes_cli_provider(brain):
@@ -686,6 +759,13 @@ def _cli_hermes_config_needs_write(config_text, brain):
     if brain.get("brain") == "nvidia_nim":
         lowered = config_text.lower()
         policy = inference_runtime_policy(brain)
+        live_models = _live_nvidia_model_ids(NVIDIA_MODEL_CATALOG_FILE)
+        expected_same_key = _nvidia_model_specific_fallback_order(live_models, brain.get("model"))[:1]
+        existing_same_key = _nvidia_same_key_models_in_fallback_config(config_text)
+        deepseek_is_not_live = (
+            "deepseek-ai/deepseek-v4-flash" in lowered
+            and "deepseek-ai/deepseek-v4-flash" not in {item.lower() for item in live_models}
+        )
         return (
             "admira-nvidia" not in lowered
             or "integrate.api.nvidia.com/v1" not in lowered
@@ -697,6 +777,15 @@ def _cli_hermes_config_needs_write(config_text, brain):
             or "abort_on_summary_failure: false" not in config_text
             or '    provider: "custom"' not in config_text
             or f"    base_url: \"{policy['compression_base_url']}\"" not in config_text
+            # NVIDIA retired this model.  Existing installations may retain
+            # the old fallback block even after updating product code, which
+            # turns an otherwise recoverable provider stall into a guaranteed
+            # 410 failure.  Rewrite the generated config once it is seen.
+            or deepseek_is_not_live
+            # Keep the fallback block synchronized with the live catalog:
+            # add the one current model-specific candidate after a refresh,
+            # or remove old same-key entries when the catalog is stale/missing.
+            or existing_same_key != expected_same_key
         )
     return False
 
@@ -2288,10 +2377,14 @@ def hermes_brain_settings(config):
             "requires_codex_auth": False,
         }
     if brain in {"nvidia", "nvidia_api", "nvidia_nim"}:
+        user_selected = bool(getattr(config, "agent_nvidia_model_user_selected", False))
         return {
             "brain": "nvidia_nim",
             "provider": "nvidia_nim",
-            "model": str(getattr(config, "agent_chat_model", "") or ADMIRA_NVIDIA_DEFAULT_MODEL).strip(),
+            "model": normalize_nvidia_model(
+                getattr(config, "agent_chat_model", "") or ADMIRA_NVIDIA_DEFAULT_MODEL,
+                user_selected=user_selected,
+            ),
             "base_url": str(getattr(config, "agent_chat_base_url", "") or ADMIRA_NVIDIA_DEFAULT_BASE_URL).strip().rstrip("/"),
             "api_key": str(getattr(config, "agent_chat_api_key", "") or "").strip(),
             "requires_codex_auth": False,

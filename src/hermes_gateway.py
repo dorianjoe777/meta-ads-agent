@@ -248,7 +248,7 @@ def _telegram_model_label(provider, model):
     if provider_key in {"admira-minimax", "minimax"}:
         return f"MiniMax M3 · {model_name or 'MiniMax-M3'}"
     if provider_key in {"admira-nvidia", "nvidia", "nvidia-nim"}:
-        return f"NVIDIA NIM · {model_name or 'z-ai/glm-5.2'}"
+        return f"NVIDIA NIM · {model_name or 'minimaxai/minimax-m3'}"
     if provider_key in {"openai-codex", "openai_codex", "codex"}:
         return f"ChatGPT/Codex · {model_name or 'gpt-5.4-mini'}"
     if provider_key in {"admira-openai", "openai", "openai-api"}:

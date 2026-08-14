@@ -1067,6 +1067,7 @@ class IntegrationTestSuite:
             agent_chat_base_url = "https://integrate.api.nvidia.com/v1"
             agent_chat_api_key = "nvapi-test-secret"
             agent_chat_model = "z-ai/glm-5.2"
+            agent_nvidia_model_user_selected = True
             agent_chat_temperature = 0.42
             agent_profile_dir = "agent"
             hermes_model = "gpt-5.4-mini"
@@ -1115,7 +1116,7 @@ class IntegrationTestSuite:
             dashboard.urllib.request.urlopen = lambda request, timeout=30: FakeResponse()
             catalog = dashboard.nvidia_model_catalog(api_key="nvapi-test-secret", config=FakeConfig(), force_refresh=True)
             cached_text = dashboard.NVIDIA_MODEL_CATALOG_FILE.read_text(encoding="utf-8")
-            self.assert_true(catalog["account_verified"] is True and catalog["recommended"] == "z-ai/glm-5.2", "Live NVIDIA catalog chooses a supported recommended chat model")
+            self.assert_true(catalog["account_verified"] is True and catalog["recommended"] == "openai/gpt-oss-20b", "Live NVIDIA catalog chooses the first supported model in the M3-first fallback order")
             self.assert_true("openai/gpt-oss-20b" in catalog["models"] and "baai/bge-m3" not in catalog["models"], "Catalog filters obvious non-chat endpoints from the brain picker")
             self.assert_true("nvapi-test-secret" not in cached_text, "NVIDIA catalog cache never stores the API key")
         finally:
@@ -3078,7 +3079,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             nvidia_yaml = Path(nvidia_files["config"]).read_text(encoding="utf-8")
             nvidia_env_path = Path(nvidia_files["env"])
             nvidia_env = nvidia_env_path.read_text(encoding="utf-8")
-            self.assert_true("ADMIRA_NVIDIA_API_KEY=nvapi-cron-private-key" in nvidia_env and "ADMIRA_NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1" in nvidia_env and "ADMIRA_NVIDIA_MODEL=z-ai/glm-5.2" in nvidia_env, "A fresh unattended NVIDIA cron reload has all provider credentials it needs")
+            self.assert_true("ADMIRA_NVIDIA_API_KEY=nvapi-cron-private-key" in nvidia_env and "ADMIRA_NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1" in nvidia_env and "ADMIRA_NVIDIA_MODEL=minimaxai/minimax-m3" in nvidia_env, "A fresh unattended NVIDIA cron reload has all provider credentials it needs and starts on MiniMax M3")
             self.assert_true("nvapi-cron-private-key" not in nvidia_yaml and (nvidia_env_path.stat().st_mode & 0o777) == 0o600, "NVIDIA credentials stay out of config.yaml and inside the private env")
             self.assert_true("  max_turns: 10" in nvidia_yaml and "    - delegation" in nvidia_yaml and "  api_max_retries: 1" in nvidia_yaml, "Hosted NVIDIA conversations cannot spawn subagents or fan one buyer message into an unbounded inference burst")
 
@@ -13169,7 +13170,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
         self.assert_true("https://admiraia.uboost.lat" in env_example, "Buyer release uses deployed license server")
         self.assert_true("LICENSE_PUBLIC_KEY=" in env_example, "Buyer release includes only license verification key")
-        self.assert_true("AGENT_CHAT_BASE_URL=https://integrate.api.nvidia.com/v1" in env_example and "AGENT_CHAT_MODEL=z-ai/glm-5.2" in env_example and "AGENT_CHAT_PROVIDER=hermes" in env_example and "AGENT_BRAIN_PROVIDER=nvidia_nim" in env_example, "Buyer release defaults the primary brain to NVIDIA NIM while retaining the other providers")
+        self.assert_true("AGENT_CHAT_BASE_URL=https://integrate.api.nvidia.com/v1" in env_example and "AGENT_CHAT_MODEL=minimaxai/minimax-m3" in env_example and "AGENT_CHAT_PROVIDER=hermes" in env_example and "AGENT_BRAIN_PROVIDER=nvidia_nim" in env_example, "Buyer release defaults the primary brain to NVIDIA NIM on MiniMax M3 while retaining the other providers")
         self.assert_true("HERMES_MODEL=gpt-5.4-mini" in env_example, "Buyer release defaults ChatGPT/Codex to the lightweight GPT-5.4 mini instead of auto")
         self.assert_true("except ImportError" in hermes_gateway_source and "gpt-5.4-mini" in hermes_gateway_source and "except ImportError" in hermes_bridge_source and "gpt-5.4-mini" in hermes_bridge_source and "except ImportError" in dashboard_server_source and "gpt-5.4-mini" in dashboard_server_source, "Hermes and dashboard tolerate mixed-version installs when model normalization is missing")
         product_version = (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()
