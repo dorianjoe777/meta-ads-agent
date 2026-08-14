@@ -117,6 +117,13 @@ def preferred_hermes_model(models):
 
 
 def load_dotenv(path=None):
+    """Load persisted settings without clobbering process-level settings.
+
+    Docker Compose injects the installation's environment (including the
+    cloud/LAN access mode) while the named runtime volume contains defaults
+    from an older image.  The persisted file should fill in missing values,
+    not override explicit environment variables on every dashboard restart.
+    """
     path = Path(path or ENV_FILE)
     if not path.exists():
         return
@@ -128,7 +135,8 @@ def load_dotenv(path=None):
             key, value = line.split("=", 1)
             key = key.strip()
             value = value.strip().strip('"').strip("'")
-            os.environ[key] = value
+            if key not in os.environ:
+                os.environ[key] = value
 
 
 def recover_dashboard_identity_from_data(path=None):

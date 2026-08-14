@@ -92,6 +92,13 @@ forced = {
     "DASHBOARD_HOST": "0.0.0.0",
     "DASHBOARD_PORT": "7871",
     "ALLOW_PUBLIC_DASHBOARD": "true",
+    # Keep the persistent runtime aligned with the Compose environment. A
+    # cloud instance has LAN_ACCESS_ENABLED=true in its env_file, while a
+    # local Docker install can intentionally keep it false. Without this,
+    # a fresh named volume or an image update resurrects the old "Wi-Fi
+    # access disabled" value and hides a healthy cloud dashboard behind 403.
+    "LAN_ACCESS_ENABLED": str(os.environ.get("LAN_ACCESS_ENABLED") or "false").strip().lower(),
+    "DIGITALOCEAN_DROPLET_ID": str(os.environ.get("DIGITALOCEAN_DROPLET_ID") or "").strip(),
 }
 for key, value in forced.items():
     replaced = False
