@@ -11659,6 +11659,14 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.assert_true("Primero voy a entender tu negocio" in sent_messages[0][2]["text"], "Telegram welcome starts the buyer interview in clear Spanish")
             self.assert_true(not offset_path.exists() and not context_path.exists(), "Telegram bot/chat change clears stale polling offset and approval context")
             self.assert_true(calls and calls[0]["TELEGRAM_BOT_TOKEN"] == "new-bot" and calls[0]["TELEGRAM_CHAT_ID"] == "new-chat", "Telegram config saves the new bot and chat")
+
+            # Saving a replacement token without a detected chat must clear
+            # any old chat id so onboarding cannot be marked complete before
+            # the buyer sends "hola" to the new bot.
+            calls.clear()
+            configs[:] = [FakeConfig("old-bot", "old-chat"), FakeConfig("new-bot", "")]
+            dashboard.save_telegram_config({"enabled": "true", "bot_token": "new-bot", "language": "es"})
+            self.assert_true(calls and calls[0]["TELEGRAM_CHAT_ID"] == "", "Replacing a Telegram bot token clears a stale chat until the new bot receives hola")
         finally:
             dashboard.update_env_values = original_update
             dashboard.load_config = original_load
