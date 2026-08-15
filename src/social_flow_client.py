@@ -758,14 +758,61 @@ class SocialFlowClient:
             "codigo_postal": "ZIP",
             "código_postal": "ZIP",
         }
+        # MCP/tool schemas sometimes wrap a question in an ``item`` (or
+        # ``question``/``value``) envelope when the model emits an array of
+        # objects.  Meta's ``/{page-id}/leadgen_forms`` edge accepts the
+        # question object itself, never that envelope.  Unwrap it before
+        # normalizing so the wire payload cannot contain ``item``.
+        seen = set()
+        while isinstance(value, dict):
+            has_question_fields = any(
+                key in value for key in ("type", "label", "question", "title", "key")
+            )
+            wrapper = next(
+                (
+                    key
+                    for key in ("item", "question", "value")
+                    if key in value
+                    and isinstance(value.get(key), (dict, list, str))
+                    and (len(value) == 1 or not has_question_fields)
+                ),
+                None,
+            )
+            if not wrapper or id(value) in seen:
+                break
+            seen.add(id(value))
+            value = value.get(wrapper)
+
         if isinstance(value, str):
             raw = value.strip()
             normalized = cls.normalize_lead_form_slug(raw, raw).lower()
             return {"type": aliases.get(normalized, raw.upper().replace(" ", "_") or "EMAIL")}
         if not isinstance(value, dict):
             return {}
-        question = {key: val for key, val in value.items() if val not in (None, "")}
-        label = str(question.get("label") or question.get("question") or question.get("title") or "").strip()
+        raw_question = dict(value)
+        label = str(
+            raw_question.get("label")
+            or raw_question.get("question")
+            or raw_question.get("title")
+            or ""
+        ).strip()
+        # Keep only fields from Meta's LeadGenQuestion schema.  In particular,
+        # never forward model/tool bookkeeping keys such as ``item``.
+        allowed_keys = {
+            "type",
+            "key",
+            "label",
+            "options",
+            "conditional_questions_choices",
+            "conditional_questions_group_id",
+            "dependent_conditional_questions",
+            "inline_context",
+        }
+        question = {
+            key: val
+            for key, val in value.items()
+            if key in allowed_keys and val not in (None, "")
+        }
         raw_type = str(question.get("type") or ("CUSTOM" if label else "")).strip()
         normalized = cls.normalize_lead_form_slug(raw_type, raw_type).lower()
         if raw_type:
