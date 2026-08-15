@@ -3081,7 +3081,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             nvidia_env = nvidia_env_path.read_text(encoding="utf-8")
             self.assert_true("ADMIRA_NVIDIA_API_KEY=nvapi-cron-private-key" in nvidia_env and "ADMIRA_NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1" in nvidia_env and "ADMIRA_NVIDIA_MODEL=minimaxai/minimax-m3" in nvidia_env, "A fresh unattended NVIDIA cron reload has all provider credentials it needs and starts on MiniMax M3")
             self.assert_true("nvapi-cron-private-key" not in nvidia_yaml and (nvidia_env_path.stat().st_mode & 0o777) == 0o600, "NVIDIA credentials stay out of config.yaml and inside the private env")
-            self.assert_true("  max_turns: 10" in nvidia_yaml and "    - delegation" in nvidia_yaml and "  api_max_retries: 1" in nvidia_yaml, "Hosted NVIDIA conversations cannot spawn subagents or fan one buyer message into an unbounded inference burst")
+            self.assert_true("  max_turns: 10" in nvidia_yaml and "    - delegation" in nvidia_yaml and "  api_max_retries: 0" in nvidia_yaml, "Hosted NVIDIA conversations cannot spawn subagents or fan one buyer message into an unbounded inference burst or retry a shared 429")
 
             disconnected_files = hermes_gateway.write_gateway_files(FakeConfig())
             disconnected_env = Path(disconnected_files["env"]).read_text(encoding="utf-8")

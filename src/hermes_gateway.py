@@ -557,6 +557,11 @@ def write_gateway_files(config):
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
         "HERMES_CRON_MAX_PARALLEL",
+        "HERMES_STREAM_RETRIES",
+        "ADMIRA_NVIDIA_REQUESTS_PER_MINUTE",
+        "ADMIRA_NVIDIA_MIN_REQUEST_INTERVAL_SECONDS",
+        "ADMIRA_NVIDIA_REQUEST_DIAGNOSTICS_FILE",
+        "ADMIRA_HERMES_RUNTIME_PATCHES",
         "ADMIRA_INTERNAL_MODEL_RECOVERY_URL",
         "ADMIRA_INTERNAL_MODEL_RECOVERY_TOKEN_FILE",
         *managed_provider_keys,
@@ -601,6 +606,14 @@ def write_gateway_files(config):
         # compatibility with older Hermes builds. The key stays in the
         # private gateway .env (mode 0600), never in config.yaml/workspace.
         env_lines.append(f"OPENAI_API_KEY={_env_value(active_brain.get('api_key'))}")
+        # Cron processes load this private .env independently of the long
+        # lived Gateway. Keep the same NIM retry and cross-process gate policy
+        # there so scheduled jobs cannot create a parallel request burst.
+        env_lines.append("HERMES_STREAM_RETRIES=0")
+        env_lines.append("ADMIRA_NVIDIA_REQUESTS_PER_MINUTE=36")
+        env_lines.append("ADMIRA_NVIDIA_MIN_REQUEST_INTERVAL_SECONDS=1.7")
+        env_lines.append(f"ADMIRA_NVIDIA_REQUEST_DIAGNOSTICS_FILE={_env_value(str(LOGS_DIR / 'nvidia-request-diagnostics.jsonl'))}")
+        env_lines.append("ADMIRA_HERMES_RUNTIME_PATCHES=1")
     if inference_policy["cron_max_parallel"]:
         # Prevent several due summaries from consuming a small hosted NVIDIA
         # allowance at once. Buyer Telegram messages are already sequential

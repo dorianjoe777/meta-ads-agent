@@ -446,10 +446,14 @@ def _nvidia_model_specific_fallback_order(models, primary_model):
         # MiniMax M3 is the primary NIM route. The remaining entries are
         # same-key fallbacks only when NVIDIA's live catalog confirms them.
         "minimaxai/minimax-m3",
-        "openai/gpt-oss-20b",
-        "nvidia/nemotron-3-nano-30b-a3b",
+        # DeepSeek V4 Flash is the intentional first alternate pool for a
+        # model-specific timeout. Do not rotate here after a shared 429;
+        # admira_hermes_runtime_patch blocks same-key candidates for that
+        # failure class.
         "deepseek-ai/deepseek-v4-flash-0731",
         "deepseek-ai/deepseek-v4-flash",
+        "openai/gpt-oss-20b",
+        "nvidia/nemotron-3-nano-30b-a3b",
         "z-ai/glm-5.2",
     )
     ordered = []
@@ -490,7 +494,11 @@ def inference_runtime_policy(primary_settings=None):
     brain = dict(primary_settings or {})
     is_nvidia = _runtime_provider_for_brain(brain) == ADMIRA_NVIDIA_PROVIDER
     policy = {
-        "api_max_retries": 1 if is_nvidia else 3,
+        # Hosted/free NIM endpoints enforce a shared request quota.  A retry
+        # after a 429 is not useful and can turn one user turn into a burst;
+        # the cross-process request gate plus an independent configured
+        # provider fallback are safer than retrying the same NIM call.
+        "api_max_retries": 0 if is_nvidia else 3,
         # One buyer message can consume one inference call per tool turn. Keep
         # the free hosted NVIDIA route bounded so a normal request cannot fan
         # out into dozens of calls and exhaust its shared capacity.
@@ -530,6 +538,12 @@ def inference_runtime_policy(primary_settings=None):
             "compression_provider": "custom",
             "compression_model": str(brain.get("model") or ADMIRA_NVIDIA_DEFAULT_MODEL),
             "compression_base_url": str(brain.get("base_url") or ADMIRA_NVIDIA_DEFAULT_BASE_URL).rstrip("/"),
+            # Keep a safety margin below NVIDIA's nominal 40 RPM. Hermes has
+            # an additional streaming retry loop; the runtime gate spaces
+            # starts across Telegram, dashboard and cron processes.
+            "requests_per_minute": 36,
+            "min_request_interval_seconds": 1.7,
+            "stream_retries": 0,
         })
     else:
         policy.update({
@@ -772,6 +786,7 @@ def _cli_hermes_config_needs_write(config_text, brain):
             or "providers:" not in lowered
             or f"context_file_max_chars: {policy['context_file_max_chars']}" not in config_text
             or f"  context_length: {policy['model_context_length']}" not in config_text
+            or f"  api_max_retries: {policy['api_max_retries']}" not in config_text
             or f"  threshold: {policy['compression_threshold']}" not in config_text
             or f"  hygiene_hard_message_limit: {policy['compression_hard_message_limit']}" not in config_text
             or "abort_on_summary_failure: false" not in config_text
@@ -2246,6 +2261,9 @@ def hermes_user_query(payload, workspace_info):
 
 def hermes_environment(config):
     env = os.environ.copy()
+    # Make the cross-process NIM request gate resolve to the product runtime
+    # even when the dashboard was launched from a different working directory.
+    env["ADMIRA_PRODUCT_ROOT"] = str(ROOT_DIR)
     timezone_name = str(getattr(config, "daily_brief_timezone", "UTC") or "UTC")
     # Hermes' scheduler resolves wall-clock time from HERMES_TIMEZONE. TZ is
     # also set for child processes and third-party tools launched by Hermes.
@@ -2300,6 +2318,14 @@ def hermes_environment(config):
         # process-local; never write the key to config.yaml or workspace
         # memory. The main agent still uses the named Admira NVIDIA provider.
         env["OPENAI_API_KEY"] = settings["api_key"]
+        # Prevent one failed stream from being replayed by Hermes' inner
+        # transport loop. The outer agent policy owns the single bounded
+        # attempt, while the runtime patch applies the shared request gate.
+        env["HERMES_STREAM_RETRIES"] = "0"
+        env["ADMIRA_NVIDIA_REQUESTS_PER_MINUTE"] = "36"
+        env["ADMIRA_NVIDIA_MIN_REQUEST_INTERVAL_SECONDS"] = "1.7"
+        env["ADMIRA_NVIDIA_REQUEST_DIAGNOSTICS_FILE"] = str(ROOT_DIR / "logs" / "nvidia-request-diagnostics.jsonl")
+        env["ADMIRA_HERMES_RUNTIME_PATCHES"] = "1"
     if settings.get("provider") == "custom" and settings.get("api_key"):
         env["OPENAI_API_KEY"] = settings["api_key"]
         if settings.get("base_url"):

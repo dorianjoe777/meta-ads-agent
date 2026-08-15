@@ -11,6 +11,75 @@ import product_config
 
 
 class NvidiaInferencePolicyTests(unittest.TestCase):
+    @staticmethod
+    def _admira_tool(name):
+        return {"type": "function", "function": {"name": f"mcp_admira_{name}", "description": name}}
+
+    def test_nvidia_profile_matrix_routes_only_needed_product_tools(self):
+        """Every common workflow gets a bounded, purpose-specific registry."""
+        all_names = sorted(set().union(*admira_hermes_runtime_patch.ADMIRA_NVIDIA_TOOL_PROFILES.values()))
+        tools = [self._admira_tool(name) for name in all_names]
+        tools.extend([
+            {"type": "function", "function": {"name": "read_file"}},
+            {"type": "function", "function": {"name": "memory_search"}},
+            {"type": "function", "function": {"name": "web_search"}},
+            {"type": "function", "function": {"name": "vision_analyze"}},
+        ])
+        cases = (
+            ("metrics", "Revisa las métricas, gasto, CTR y compras de la campaña", 8192, "get_real_meta_context"),
+            ("campaign", "Prepara la campaña de ventas con presupuesto, segmentación y aprobación en pausa", 8192, "stage_campaign"),
+            ("creative", "Crea un video con storyboard, recetas e Image 2 para este producto", 12288, "generate_motion_graphic_video"),
+            ("organic", "Prepara una publicación orgánica para Facebook y déjala en borrador", 12288, "stage_organic_social_post"),
+            ("organic_en", "Create an organic social media post and leave it as a draft", 12288, "stage_organic_social_post"),
+            ("catalog", "Importa el catálogo, busca productos y arma un bundle", 8192, "import_product_catalog"),
+        )
+        native_names = {"read_file", "memory_search", "web_search", "vision_analyze"}
+        for expected_profile, prompt, max_tokens, expected_tool in cases:
+            with self.subTest(profile=expected_profile):
+                prepared = admira_hermes_runtime_patch._nvidia_prepare_request({
+                    "messages": [{"role": "user", "content": prompt}],
+                    "tools": tools,
+                    "max_tokens": 65536,
+                })
+                names = {
+                    admira_hermes_runtime_patch._nvidia_normalize_tool_name(
+                        admira_hermes_runtime_patch._nvidia_tool_name(item)
+                    )
+                    for item in prepared["tools"]
+                }
+                self.assertEqual(prepared["max_tokens"], max_tokens)
+                self.assertIn(expected_tool, names)
+                self.assertTrue(native_names.issubset(names))
+                self.assertLess(len(names), len(all_names) + len(native_names))
+                self.assertLessEqual(
+                    admira_hermes_runtime_patch._nvidia_estimated_input_tokens(
+                        prepared["messages"], prepared["tools"]
+                    ),
+                    admira_hermes_runtime_patch.ADMIRA_NVIDIA_INPUT_BUDGET_TOKENS,
+                )
+
+    def test_nvidia_tool_continuity_preserves_active_tool_across_profile_change(self):
+        prepared = admira_hermes_runtime_patch._nvidia_prepare_request({
+            "messages": [
+                {"role": "assistant", "tool_calls": [{"function": {"name": "mcp_admira_stage_campaign"}}]},
+                {"role": "user", "content": "Ahora revisa el rendimiento y dime el siguiente paso."},
+            ],
+            "tools": [
+                self._admira_tool("stage_campaign"),
+                self._admira_tool("get_real_meta_context"),
+                self._admira_tool("run_daily_brief"),
+            ],
+            "max_tokens": 65536,
+        })
+        names = {
+            admira_hermes_runtime_patch._nvidia_normalize_tool_name(
+                admira_hermes_runtime_patch._nvidia_tool_name(item)
+            )
+            for item in prepared["tools"]
+        }
+        self.assertIn("stage_campaign", names)
+        self.assertIn("get_real_meta_context", names)
+
     def test_nvidia_default_is_minimax_m3_and_legacy_glm_migrates_only_when_untouched(self):
         self.assertEqual(product_config.DEFAULT_NVIDIA_NIM_MODEL, "minimaxai/minimax-m3")
         self.assertEqual(
@@ -32,7 +101,7 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         ordered = hermes_bridge._nvidia_model_specific_fallback_order(models, "minimaxai/minimax-m3")
         self.assertEqual(
             ordered,
-            ["openai/gpt-oss-20b", "deepseek-ai/deepseek-v4-flash-0731", "z-ai/glm-5.2"],
+            ["deepseek-ai/deepseek-v4-flash-0731", "openai/gpt-oss-20b", "z-ai/glm-5.2"],
         )
 
     def test_nvidia_uses_one_attempt_and_serial_crons(self):
@@ -41,7 +110,7 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
             "provider": hermes_bridge.ADMIRA_NVIDIA_PROVIDER,
             "model": "z-ai/glm-5.2",
         })
-        self.assertEqual(policy["api_max_retries"], 1)
+        self.assertEqual(policy["api_max_retries"], 0)
         self.assertEqual(policy["max_turns"], 10)
         self.assertEqual(policy["cron_max_parallel"], 1)
         self.assertEqual(policy["model_context_length"], 80000)
@@ -52,6 +121,157 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         self.assertEqual(policy["compression_timeout"], 45)
         self.assertEqual(policy["compression_base_url"], hermes_bridge.ADMIRA_NVIDIA_DEFAULT_BASE_URL)
         self.assertEqual(policy["context_file_max_chars"], 30000)
+        self.assertEqual(policy["requests_per_minute"], 36)
+        self.assertEqual(policy["min_request_interval_seconds"], 1.7)
+        self.assertEqual(policy["stream_retries"], 0)
+
+    def test_nvidia_request_gate_records_only_bounded_request_timestamps(self):
+        import nvidia_request_gate
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "gate.json"
+            old_path = nvidia_request_gate.os.environ.get("ADMIRA_NVIDIA_RATE_LIMIT_STATE")
+            old_interval = nvidia_request_gate.os.environ.get("ADMIRA_NVIDIA_MIN_REQUEST_INTERVAL_SECONDS")
+            try:
+                nvidia_request_gate.os.environ["ADMIRA_NVIDIA_RATE_LIMIT_STATE"] = str(path)
+                nvidia_request_gate.os.environ["ADMIRA_NVIDIA_MIN_REQUEST_INTERVAL_SECONDS"] = "0.01"
+                self.assertEqual(
+                    nvidia_request_gate.acquire_request(provider="admira-nvidia", now_fn=lambda: 100.0),
+                    0.0,
+                )
+                self.assertEqual(nvidia_request_gate.recent_request_count(now_fn=lambda: 100.0), 1)
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                self.assertNotIn("api_key", payload)
+                self.assertNotIn("messages", payload)
+            finally:
+                if old_path is None:
+                    nvidia_request_gate.os.environ.pop("ADMIRA_NVIDIA_RATE_LIMIT_STATE", None)
+                else:
+                    nvidia_request_gate.os.environ["ADMIRA_NVIDIA_RATE_LIMIT_STATE"] = old_path
+                if old_interval is None:
+                    nvidia_request_gate.os.environ.pop("ADMIRA_NVIDIA_MIN_REQUEST_INTERVAL_SECONDS", None)
+                else:
+                    nvidia_request_gate.os.environ["ADMIRA_NVIDIA_MIN_REQUEST_INTERVAL_SECONDS"] = old_interval
+
+    def test_nvidia_request_preflight_routes_only_relevant_admira_tools(self):
+        def tool(name):
+            return {"type": "function", "function": {"name": f"mcp_admira_{name}", "description": name}}
+
+        original = {
+            "model": "minimaxai/minimax-m3",
+            "messages": [{"role": "user", "content": "Dame las métricas y el gasto de la campaña"}],
+            "tools": [
+                tool("get_real_meta_context"),
+                tool("run_daily_brief"),
+                tool("stage_campaign"),
+                tool("codex_image_generate"),
+                {"type": "function", "function": {"name": "read_file"}},
+            ],
+            "max_tokens": 65536,
+        }
+        prepared = admira_hermes_runtime_patch._nvidia_prepare_request(original)
+        names = {admira_hermes_runtime_patch._nvidia_normalize_tool_name(
+            admira_hermes_runtime_patch._nvidia_tool_name(item)
+        ) for item in prepared["tools"]}
+        self.assertEqual(original["max_tokens"], 65536)
+        self.assertEqual(prepared["max_tokens"], 8192)
+        self.assertIn("get_real_meta_context", names)
+        self.assertIn("run_daily_brief", names)
+        self.assertNotIn("stage_campaign", names)
+        self.assertNotIn("codex_image_generate", names)
+        self.assertIn("read_file", names)
+
+    def test_nvidia_creative_preflight_keeps_video_tools_with_bounded_output(self):
+        def tool(name):
+            return {"type": "function", "function": {"name": f"mcp_admira_{name}"}}
+
+        prepared = admira_hermes_runtime_patch._nvidia_prepare_request({
+            "messages": [{"role": "user", "content": "Crea un video educativo con Image 2"}],
+            "tools": [
+                tool("get_real_meta_context"),
+                tool("generate_motion_graphic_video"),
+                tool("codex_image_generate"),
+                tool("stage_campaign"),
+            ],
+            "max_tokens": 65536,
+        })
+        names = {admira_hermes_runtime_patch._nvidia_normalize_tool_name(
+            admira_hermes_runtime_patch._nvidia_tool_name(item)
+        ) for item in prepared["tools"]}
+        self.assertEqual(prepared["max_tokens"], 12288)
+        self.assertIn("generate_motion_graphic_video", names)
+        self.assertIn("codex_image_generate", names)
+        self.assertNotIn("stage_campaign", names)
+
+    def test_nvidia_preflight_caps_plain_requests_without_tools(self):
+        prepared = admira_hermes_runtime_patch._nvidia_prepare_request({
+            "messages": [{"role": "user", "content": "Responde brevemente"}],
+            "max_tokens": 65536,
+        })
+        self.assertEqual(prepared["max_tokens"], 8192)
+
+    def test_nvidia_preflight_compacts_complete_payload_when_tools_push_it_over_budget(self):
+        messages = [{"role": "system", "content": "system"}]
+        messages.extend({"role": "user", "content": "x" * 30000} for _ in range(10))
+        messages.append({"role": "user", "content": "latest"})
+        prepared = admira_hermes_runtime_patch._nvidia_prepare_request({
+            "messages": messages,
+            "tools": [{"type": "function", "function": {"name": "read_file"}}],
+            "max_tokens": 65536,
+        })
+        self.assertLess(len(prepared["messages"]), len(messages))
+        self.assertEqual(prepared["messages"][0]["role"], "system")
+        self.assertEqual(prepared["messages"][-1]["content"], "latest")
+        self.assertLessEqual(
+            admira_hermes_runtime_patch._nvidia_estimated_input_tokens(
+                prepared["messages"], prepared["tools"]
+            ),
+            admira_hermes_runtime_patch.ADMIRA_NVIDIA_INPUT_BUDGET_TOKENS,
+        )
+
+    def test_nvidia_hard_budget_holds_for_single_opaque_large_turn(self):
+        prepared = admira_hermes_runtime_patch._nvidia_prepare_request({
+            "messages": [{"role": "system", "content": "S" * 250000}, {"role": "user", "content": "U" * 250000}],
+            "tools": [self._admira_tool("get_real_meta_context")],
+            "max_tokens": 100000,
+        })
+        self.assertLessEqual(
+            admira_hermes_runtime_patch._nvidia_estimated_input_tokens(
+                prepared["messages"], prepared["tools"]
+            ),
+            admira_hermes_runtime_patch.ADMIRA_NVIDIA_INPUT_BUDGET_TOKENS,
+        )
+        self.assertLessEqual(prepared["max_tokens"], 12288)
+
+    def test_nvidia_request_diagnostics_redact_payload_and_record_counts(self):
+        def tool(name):
+            return {"type": "function", "function": {"name": f"mcp_admira_{name}"}}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "nvidia.jsonl"
+            old = admira_hermes_runtime_patch.os.environ.get("ADMIRA_NVIDIA_REQUEST_DIAGNOSTICS_FILE")
+            try:
+                admira_hermes_runtime_patch.os.environ["ADMIRA_NVIDIA_REQUEST_DIAGNOSTICS_FILE"] = str(path)
+                admira_hermes_runtime_patch._nvidia_prepare_request({
+                    "model": "minimaxai/minimax-m3",
+                    "messages": [{"role": "user", "content": "hola"}],
+                    "tools": [tool("get_real_meta_context"), tool("stage_campaign")],
+                    "max_tokens": 65536,
+                })
+                record = json.loads(path.read_text(encoding="utf-8").splitlines()[-1])
+                self.assertEqual(record["tools_before"], 2)
+                self.assertEqual(record["tools_after"], 1)
+                self.assertEqual(record["max_tokens_before"], 65536)
+                self.assertEqual(record["max_tokens_after"], 8192)
+                self.assertEqual(record["input_budget_tokens"], admira_hermes_runtime_patch.ADMIRA_NVIDIA_INPUT_BUDGET_TOKENS)
+                self.assertLessEqual(record["estimated_input_tokens"], record["input_budget_tokens"])
+                self.assertNotIn("content", record)
+                self.assertNotIn("api_key", record)
+            finally:
+                if old is None:
+                    admira_hermes_runtime_patch.os.environ.pop("ADMIRA_NVIDIA_REQUEST_DIAGNOSTICS_FILE", None)
+                else:
+                    admira_hermes_runtime_patch.os.environ["ADMIRA_NVIDIA_REQUEST_DIAGNOSTICS_FILE"] = old
 
     def test_nvidia_compression_uses_compatible_custom_endpoint_and_safe_fallback(self):
         policy = hermes_bridge.inference_runtime_policy({
@@ -322,6 +542,17 @@ compression:
         self.assertTrue(admira_hermes_runtime_patch._admira_same_nvidia_fallback_blocked("authentication_error"))
         self.assertFalse(admira_hermes_runtime_patch._admira_same_nvidia_fallback_blocked("timeout"))
         self.assertFalse(admira_hermes_runtime_patch._admira_same_nvidia_fallback_blocked("internal_server_error"))
+
+    def test_nvidia_policy_has_zero_retries_and_at_most_one_same_key_candidate(self):
+        policy = hermes_bridge.inference_runtime_policy({
+            "brain": "nvidia_nim",
+            "provider": hermes_bridge.ADMIRA_NVIDIA_PROVIDER,
+            "model": "minimaxai/minimax-m3",
+        })
+        self.assertEqual(policy["api_max_retries"], 0)
+        self.assertEqual(policy["stream_retries"], 0)
+        self.assertTrue(admira_hermes_runtime_patch._admira_same_nvidia_fallback_blocked("429 upstream rate limit"))
+        self.assertFalse(admira_hermes_runtime_patch._admira_same_nvidia_fallback_blocked("model timeout"))
 
 
 if __name__ == "__main__":

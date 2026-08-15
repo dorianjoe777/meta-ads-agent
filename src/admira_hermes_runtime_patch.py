@@ -103,6 +103,111 @@ ADMIRA_NOVICE_SIGNAL_RE = re.compile(
     r"i\s+don['’]?t\s+know|i['’]?m\s+new|beginner|you\s+decide|guide\s+me)\b"
 )
 
+# NVIDIA's hosted/free endpoints are especially sensitive to the size of a
+# single request. Hermes normally advertises every enabled MCP schema on every
+# turn; those schemas are useful as a registry, but sending all of them to the
+# model is unnecessary and can make an otherwise small turn look enormous.
+# Keep this routing table local and deterministic: it runs before the provider
+# call and never needs another model call to decide which tools to expose.
+ADMIRA_NVIDIA_DEFAULT_MAX_OUTPUT_TOKENS = 8192
+ADMIRA_NVIDIA_CREATIVE_MAX_OUTPUT_TOKENS = 12288
+ADMIRA_NVIDIA_INPUT_BUDGET_TOKENS = 48000
+ADMIRA_NVIDIA_TOOL_PROFILES = {
+    "core": {
+        "get_real_meta_context",
+        "preflight_campaign",
+        "search_meta_targeting",
+        "inspect_adset_targeting",
+        "review_signal_quality",
+        "list_pending_approvals",
+        "save_durable_memory",
+        "save_business_memory",
+        "save_agent_preferences",
+        "search_product_catalog",
+    },
+    "campaign": {
+        "stage_campaign",
+        "stage_budget_change",
+        "pause_campaign",
+        "resume_campaign",
+        "schedule_campaign_activation",
+        "delete_campaign",
+        "approve_action",
+        "reject_action",
+        "list_lead_forms",
+        "stage_lead_form",
+        "create_lead_form",
+        "save_ads_onboarding",
+        "save_ad_brief",
+        "set_campaign_metric_priorities",
+        # Campaign briefs often contain a not-yet-produced image/video. Keep
+        # the bounded creative subset available instead of making the router
+        # force the buyer through a second turn.
+        "fetch_public_asset",
+        "codex_image_generate",
+        "codex_creative_plan",
+        "search_motion_graphic_recipes",
+        "generate_motion_graphic_video",
+        "save_content_asset",
+        "save_creative_references",
+    },
+    "creative": {
+        "fetch_public_asset",
+        "codex_image_generate",
+        "codex_creative_plan",
+        "search_motion_graphic_recipes",
+        "generate_motion_graphic_video",
+        "save_content_asset",
+        "save_brand_memory",
+        "save_product_memory",
+        "save_creative_references",
+        "save_ad_brief",
+    },
+    "organic": {
+        "fetch_public_asset",
+        "codex_image_generate",
+        "codex_creative_plan",
+        "search_motion_graphic_recipes",
+        "generate_motion_graphic_video",
+        "stage_organic_social_post",
+        "save_daily_social_content_settings",
+        "save_content_asset",
+        "save_brand_memory",
+        "save_product_memory",
+        "save_creative_references",
+    },
+    "insights": {
+        "get_real_meta_context",
+        "run_daily_brief",
+        "review_signal_quality",
+        "set_campaign_metric_priorities",
+        "list_experiment_reviews",
+        "run_due_experiment_reviews",
+        "schedule_experiment_review",
+        "save_optimization_research",
+        "list_optimization_research",
+        "get_verified_signal_summary",
+        "verified_signal_feedback_prompt",
+    },
+    "catalog": {
+        "import_product_catalog",
+        "search_product_catalog",
+        "save_product_memory",
+        "save_brand_memory",
+        "save_content_asset",
+        "save_ad_brief",
+        "codex_creative_plan",
+        "codex_image_generate",
+    },
+}
+ADMIRA_NVIDIA_PROFILE_TERMS = {
+    "campaign": ("campaign", "campaña", "ad set", "anuncio", "ads", "publicidad", "presupuesto", "segmentación", "targeting", "meta ads"),
+    "creative": ("creative", "creativo", "imagen", "image", "video", "vídeo", "codex", "motion", "storyboard", "diseño", "logo"),
+    "organic": ("orgánico", "organico", "organic", "post", "publication", "publicación", "publicar", "publish", "contenido diario", "daily content", "redes sociales", "social media"),
+    "insights": ("métrica", "metricas", "métricas", "metrics", "insight", "rendimiento", "performance", "gasto", "spend", "ctr", "cpc", "roas", "checkout", "compras", "purchases"),
+    "catalog": ("producto", "productos", "product", "products", "catálogo", "catalogo", "catalog", "sku", "oferta", "bundle", "pdf", "excel"),
+}
+
 # Hermes versions pinned by existing Admira releases can mark the wrong
 # OpenAI/Codex pool entry as exhausted after a 429. Keep the exact key that
 # actually failed in task-local state so concurrent Telegram turns cannot
@@ -914,6 +1019,402 @@ def _patch_credential_pool_failure_assignment():
         patched_any = True
 
     return patched_any or bool(getattr(runtime_helpers, "_admira_exact_failure_assignment_patch", False))
+
+
+def _admira_failover_reason_text(reason):
+    value = getattr(reason, "value", reason)
+    return f"{value or ''} {reason or ''}".strip().lower()
+
+
+def _admira_same_nvidia_fallback_blocked(reason):
+    """Classify failures that are shared by every model under one NIM key.
+
+    A model-specific timeout/5xx/empty response may be recoverable by trying a
+    different NIM pool.  A quota, upstream rate limit, authentication, or
+    billing failure is not: rotating models with the same key only creates more
+    requests and can make the provider impose a longer cooldown.
+    """
+    text = _admira_failover_reason_text(reason)
+    return any(marker in text for marker in (
+        "rate_limit",
+        "rate limit",
+        "upstream_rate_limit",
+        "upstream rate limit",
+        "billing",
+        "quota",
+        "auth",
+        "authentication",
+        "unauthorized",
+        "forbidden",
+    ))
+
+
+def _admira_provider_name(value):
+    if isinstance(value, dict):
+        value = value.get("provider") or value.get("slug") or value.get("name")
+    else:
+        value = getattr(value, "provider", value)
+    return str(value or "").strip().lower().replace("_", "-")
+
+
+def _patch_same_nvidia_model_failover_guard():
+    """Skip same-key NIM entries only for shared quota/auth failures.
+
+    The actual fallback selection remains Hermes' own implementation.  This
+    narrow guard prevents a same-NIM candidate from following a 429 while
+    preserving it for model-specific transport/provider failures.
+    """
+    try:
+        import agent.chat_completion_helpers as helpers
+    except Exception:
+        return False
+    original = getattr(helpers, "try_activate_fallback", None)
+    if not callable(original):
+        return False
+    if getattr(original, "_admira_same_nvidia_guard", False):
+        return True
+
+    def patched_try_activate_fallback(agent, reason=None, *args, **kwargs):
+        current_provider = _admira_provider_name(getattr(agent, "provider", ""))
+        if current_provider == "admira-nvidia" and _admira_same_nvidia_fallback_blocked(reason):
+            chain = list(getattr(agent, "_fallback_chain", []) or [])
+            index = int(getattr(agent, "_fallback_index", 0) or 0)
+            while index < len(chain):
+                candidate = chain[index]
+                if _admira_provider_name(candidate) != "admira-nvidia":
+                    break
+                index += 1
+            try:
+                agent._fallback_index = index
+            except Exception:
+                pass
+        return original(agent, reason, *args, **kwargs)
+
+    patched_try_activate_fallback._admira_same_nvidia_guard = True
+    patched_try_activate_fallback._admira_original_try_activate_fallback = original
+    helpers.try_activate_fallback = patched_try_activate_fallback
+    return True
+
+
+def _nvidia_tool_name(tool):
+    """Return a provider-tool name without assuming one SDK schema shape."""
+    if not isinstance(tool, dict):
+        return ""
+    function = tool.get("function")
+    if isinstance(function, dict) and function.get("name"):
+        return str(function.get("name") or "").strip()
+    return str(tool.get("name") or "").strip()
+
+
+def _nvidia_normalize_tool_name(name):
+    value = str(name or "").strip().lower()
+    for prefix in ("mcp_admira_", "admira_", "mcp_"):
+        if value.startswith(prefix):
+            return value[len(prefix):]
+    return value
+
+
+def _nvidia_message_text(messages):
+    parts = []
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            content = " ".join(
+                str(item.get("text") or item.get("content") or "")
+                for item in content
+                if isinstance(item, dict)
+            )
+        if content:
+            parts.append(str(content))
+    return " ".join(parts[-12:]).lower()
+
+
+def _nvidia_request_profile(messages):
+    text = _nvidia_message_text(messages)
+    # Organic requests commonly mention both image and video. Those words
+    # overlap with the creative profile, so recognize the explicit organic
+    # destination before generic media scoring.
+    if (
+        "orgánico" in text
+        or "organico" in text
+        or "organic" in text
+    ) and any(marker in text for marker in ("facebook", "publicación", "publicacion", "publication", "post", "borrador", "draft", "publish")):
+        return "organic"
+    scores = {
+        profile: sum(1 for term in terms if term in text)
+        for profile, terms in ADMIRA_NVIDIA_PROFILE_TERMS.items()
+    }
+    best = max(scores, key=scores.get) if scores else ""
+    return best if scores.get(best, 0) else "core"
+
+
+def _nvidia_used_tool_names(messages):
+    """Keep tools already involved in a multi-step tool turn available."""
+    used = set()
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+        for call in message.get("tool_calls") or []:
+            if not isinstance(call, dict):
+                continue
+            function = call.get("function") or {}
+            name = function.get("name") if isinstance(function, dict) else ""
+            normalized = _nvidia_normalize_tool_name(name)
+            if normalized:
+                used.add(normalized)
+        name = message.get("name") or message.get("tool_name")
+        normalized = _nvidia_normalize_tool_name(name)
+        if normalized:
+            used.add(normalized)
+    return used
+
+
+def _nvidia_estimated_input_tokens(messages, tools):
+    try:
+        serialized = json.dumps(
+            {"messages": messages or [], "tools": tools or []},
+            ensure_ascii=False,
+            default=str,
+        )
+    except (TypeError, ValueError):
+        serialized = str({"messages": messages or [], "tools": tools or []})
+    return max(0, len(serialized) // 4)
+
+
+def _nvidia_trim_value(value, max_string_chars):
+    """Trim only oversized serialized strings while preserving JSON shape."""
+    if isinstance(value, str):
+        if len(value) <= max_string_chars:
+            return value
+        return value[:max_string_chars] + "…[NVIDIA context trimmed]"
+    if isinstance(value, list):
+        return [_nvidia_trim_value(item, max_string_chars) for item in value]
+    if isinstance(value, dict):
+        return {key: _nvidia_trim_value(item, max_string_chars) for key, item in value.items()}
+    return value
+
+
+def _nvidia_compact_request_payload(messages, tools):
+    """Last-resort bounded window after normal Hermes compression.
+
+    This is intentionally conservative and only runs when the *complete*
+    request (including tool schemas) exceeds the operational input budget.
+    The first system message and the latest ten turns are retained; normal
+    Hermes compression remains responsible for producing the durable summary.
+    """
+    if not isinstance(messages, list):
+        return messages, tools
+    compacted_messages = list(messages)
+    compacted_tools = list(tools or []) if isinstance(tools, list) else tools
+    if _nvidia_estimated_input_tokens(compacted_messages, compacted_tools) <= ADMIRA_NVIDIA_INPUT_BUDGET_TOKENS:
+        return compacted_messages, compacted_tools
+
+    head = (
+        compacted_messages[:1]
+        if isinstance(compacted_messages[0], dict) and compacted_messages[0].get("role") == "system"
+        else []
+    )
+    tail = compacted_messages[-10:]
+    compacted_messages = head + [item for item in tail if item not in head]
+    # A single tool result can be very large. Drop older turns until the
+    # complete request, not just the chat history, fits the NIM budget.
+    while (
+        len(compacted_messages) > 2
+        and _nvidia_estimated_input_tokens(compacted_messages, compacted_tools) > ADMIRA_NVIDIA_INPUT_BUDGET_TOKENS
+    ):
+        first_tail_index = 1 if head else 0
+        compacted_messages.pop(first_tail_index)
+
+    if _nvidia_estimated_input_tokens(compacted_messages, compacted_tools) > ADMIRA_NVIDIA_INPUT_BUDGET_TOKENS:
+        # Preserve the protocol shape and the newest turn, but bound giant
+        # tool arguments/results and verbose system text. This is only a last
+        # resort after Hermes' normal summarizer and the sliding window.
+        for max_chars in (16384, 8192, 4096, 2048, 1024, 512, 256):
+            candidate_messages = _nvidia_trim_value(compacted_messages, max_chars)
+            candidate_tools = _nvidia_trim_value(compacted_tools, max_chars)
+            if _nvidia_estimated_input_tokens(candidate_messages, candidate_tools) <= ADMIRA_NVIDIA_INPUT_BUDGET_TOKENS:
+                return candidate_messages, candidate_tools
+        # The final fallback is intentionally tiny and deterministic. It
+        # avoids sending an oversized request even if an SDK injects a very
+        # large opaque field that cannot be trimmed structurally.
+        latest = compacted_messages[-1:] or [{"role": "user", "content": "Continúa con el último paso."}]
+        return head[-1:] + _nvidia_trim_value(latest, 128), []
+
+    return compacted_messages, compacted_tools
+
+
+def _nvidia_compact_request_messages(messages, tools):
+    """Compatibility wrapper retained for callers/tests that need messages."""
+    compacted, _ = _nvidia_compact_request_payload(messages, tools)
+    return compacted
+
+
+def _nvidia_prepare_request(api_kwargs):
+    """Bound an outgoing NIM request without changing non-NVIDIA providers.
+
+    Hermes' compression protects conversation messages, while this preflight
+    protects the complete provider payload: MCP schemas and output budget are
+    part of the request too. The function returns a shallow copy so callers do
+    not mutate Hermes' session history or retry payload.
+    """
+    if not isinstance(api_kwargs, dict):
+        return api_kwargs
+    request = dict(api_kwargs)
+    messages = request.get("messages") if isinstance(request.get("messages"), list) else []
+    tools = request.get("tools") if isinstance(request.get("tools"), list) else []
+
+    before_tools = len(tools)
+    profile = _nvidia_request_profile(messages)
+    allowed = set(ADMIRA_NVIDIA_TOOL_PROFILES.get("core", set()))
+    allowed.update(ADMIRA_NVIDIA_TOOL_PROFILES.get(profile, set()))
+    allowed.update(_nvidia_used_tool_names(messages))
+
+    filtered = []
+    for tool in tools:
+        name = _nvidia_tool_name(tool)
+        normalized = _nvidia_normalize_tool_name(name)
+        # Hermes-native tools are intentionally preserved. Only the large
+        # Admira MCP registry is routed by profile.
+        if normalized in {"", "get_real_meta_context"} or not (
+            name.lower().startswith(("mcp_admira_", "admira_"))
+        ):
+            filtered.append(tool)
+        elif normalized in allowed:
+            filtered.append(tool)
+    if filtered and len(filtered) < before_tools:
+        request["tools"] = filtered
+
+    request["messages"], request["tools"] = _nvidia_compact_request_payload(
+        messages,
+        request.get("tools") or [],
+    )
+
+    current_max = request.get("max_tokens")
+    try:
+        current_max = int(current_max)
+    except (TypeError, ValueError):
+        current_max = ADMIRA_NVIDIA_DEFAULT_MAX_OUTPUT_TOKENS
+    output_cap = (
+        ADMIRA_NVIDIA_CREATIVE_MAX_OUTPUT_TOKENS
+        if profile in {"creative", "organic"}
+        else ADMIRA_NVIDIA_DEFAULT_MAX_OUTPUT_TOKENS
+    )
+    request["max_tokens"] = max(256, min(current_max, output_cap))
+
+    _record_nvidia_request_diagnostic(
+        request,
+        profile=profile,
+        before_tools=before_tools,
+        after_tools=len(request.get("tools") or []),
+        before_max_tokens=current_max,
+    )
+    return request
+
+
+def _record_nvidia_request_diagnostic(request, *, profile, before_tools, after_tools, before_max_tokens):
+    """Write bounded request metadata only when diagnostics are configured."""
+    path_value = str(os.environ.get("ADMIRA_NVIDIA_REQUEST_DIAGNOSTICS_FILE") or "").strip()
+    if not path_value:
+        return
+    try:
+        messages = request.get("messages") or []
+        payload = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "model": str(request.get("model") or ""),
+            "profile": profile,
+            "tools_before": int(before_tools),
+            "tools_after": int(after_tools),
+            "messages": len(messages),
+            "estimated_input_tokens": len(json.dumps(
+                {"messages": messages, "tools": request.get("tools") or []},
+                ensure_ascii=False,
+                default=str,
+            )) // 4,
+            "input_budget_tokens": ADMIRA_NVIDIA_INPUT_BUDGET_TOKENS,
+            "max_tokens_before": int(before_max_tokens),
+            "max_tokens_after": int(request.get("max_tokens") or 0),
+        }
+        path = Path(path_value).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+def _patch_nvidia_request_gate():
+    """Throttle NIM calls across all Hermes sessions in this installation."""
+    try:
+        import agent.chat_completion_helpers as helpers
+    except Exception:
+        return False
+
+    def _is_nvidia_agent(agent):
+        provider = str(getattr(agent, "provider", "") or "").strip().lower().replace("_", "-")
+        # Hermes keeps both the normalized and original URL on the agent.  Do
+        # not require the API key in the environment: credentials can be
+        # loaded from Hermes' provider config/.env before the request starts.
+        base_url = str(
+            getattr(agent, "_base_url_lower", "")
+            or getattr(agent, "base_url", "")
+            or ""
+        ).strip().lower()
+        return provider == "admira-nvidia" or "integrate.api.nvidia.com" in base_url
+
+    def _reserve(agent):
+        if not _is_nvidia_agent(agent):
+            return
+        try:
+            from nvidia_request_gate import acquire_request
+
+            acquire_request(provider="admira-nvidia")
+        except Exception:
+            # The gate is defensive: a local state-file problem must not
+            # turn a healthy provider into a buyer-facing failure.
+            pass
+
+    original = getattr(helpers, "interruptible_api_call", None)
+    original_streaming = getattr(helpers, "interruptible_streaming_api_call", None)
+    patched_any = False
+
+    if callable(original) and not getattr(original, "_admira_nvidia_gate_patch", False):
+        def patched_interruptible_api_call(agent, api_kwargs):
+            _reserve(agent)
+            if _is_nvidia_agent(agent):
+                api_kwargs = _nvidia_prepare_request(api_kwargs)
+            return original(agent, api_kwargs)
+
+        patched_interruptible_api_call._admira_nvidia_gate_patch = True
+        patched_interruptible_api_call._admira_original_interruptible_api_call = original
+        helpers.interruptible_api_call = patched_interruptible_api_call
+        patched_any = True
+    elif getattr(original, "_admira_nvidia_gate_patch", False):
+        patched_any = True
+
+    # Hermes sends normal chat-completions through the streaming helper.  The
+    # previous patch only guarded the non-streaming fallback, so the primary
+    # request could still burst past NIM's hosted endpoint quota.
+    if callable(original_streaming) and not getattr(original_streaming, "_admira_nvidia_gate_patch", False):
+        def patched_interruptible_streaming_api_call(agent, api_kwargs, *, on_first_delta=None):
+            _reserve(agent)
+            if _is_nvidia_agent(agent):
+                api_kwargs = _nvidia_prepare_request(api_kwargs)
+            return original_streaming(agent, api_kwargs, on_first_delta=on_first_delta)
+
+        patched_interruptible_streaming_api_call._admira_nvidia_gate_patch = True
+        patched_interruptible_streaming_api_call._admira_original_interruptible_streaming_api_call = original_streaming
+        helpers.interruptible_streaming_api_call = patched_interruptible_streaming_api_call
+        patched_any = True
+    elif getattr(original_streaming, "_admira_nvidia_gate_patch", False):
+        patched_any = True
+
+    return patched_any
 
 
 def _path_within(path, root):
@@ -1932,6 +2433,8 @@ def _patch_telegram_update_install_callback():
 def apply():
     rate_limit_patched = _patch_gateway_rate_limit_reply()
     credential_pool_patched = _patch_credential_pool_failure_assignment()
+    same_nvidia_guard_patched = _patch_same_nvidia_model_failover_guard()
+    nvidia_gate_patched = _patch_nvidia_request_gate()
     mcp_result_patched = _patch_mcp_call_result_compatibility()
     minimax_patched = _patch_minimax_model_switch()
     runtime_patched = _patch_minimax_runtime_provider()
@@ -1941,4 +2444,4 @@ def apply():
     cron_run_patched = _patch_cron_job_execution()
     context_patched = _patch_context_truncation_notifications()
     telegram_update_patched = _patch_telegram_update_install_callback()
-    return bool(rate_limit_patched or credential_pool_patched or mcp_result_patched or minimax_patched or runtime_patched or media_patched or video_patched or cron_create_patched or cron_run_patched or context_patched or telegram_update_patched)
+    return bool(rate_limit_patched or credential_pool_patched or same_nvidia_guard_patched or nvidia_gate_patched or mcp_result_patched or minimax_patched or runtime_patched or media_patched or video_patched or cron_create_patched or cron_run_patched or context_patched or telegram_update_patched)
