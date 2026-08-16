@@ -28,6 +28,7 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         cases = (
             ("metrics", "Revisa las métricas, gasto, CTR y compras de la campaña", 8192, "get_real_meta_context"),
             ("campaign", "Prepara la campaña de ventas con presupuesto, segmentación y aprobación en pausa", 8192, "stage_campaign"),
+            ("lead_form", "Necesito crear un formulario nativo de leads para mi página", 8192, "create_lead_form"),
             ("creative", "Crea un video con storyboard, recetas e Image 2 para este producto", 12288, "generate_motion_graphic_video"),
             ("organic", "Prepara una publicación orgánica para Facebook y déjala en borrador", 12288, "stage_organic_social_post"),
             ("organic_en", "Create an organic social media post and leave it as a draft", 12288, "stage_organic_social_post"),
@@ -57,6 +58,55 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
                     ),
                     admira_hermes_runtime_patch.ADMIRA_NVIDIA_INPUT_BUDGET_TOKENS,
                 )
+
+    def test_nvidia_lead_form_profile_excludes_unrelated_campaign_and_creative_tools(self):
+        """A native form turn must not carry the whole campaign/media registry."""
+        all_names = sorted(set().union(*admira_hermes_runtime_patch.ADMIRA_NVIDIA_TOOL_PROFILES.values()))
+        tools = [self._admira_tool(name) for name in all_names]
+        tools.extend([
+            {"type": "function", "function": {"name": "read_file"}},
+            {"type": "function", "function": {"name": "memory_search"}},
+        ])
+        prepared = admira_hermes_runtime_patch._nvidia_prepare_request({
+            "messages": [{"role": "user", "content": "Crea el formulario instantáneo de leads con las preguntas que aprobamos"}],
+            "tools": tools,
+            "max_tokens": 65536,
+        })
+        names = {
+            admira_hermes_runtime_patch._nvidia_normalize_tool_name(
+                admira_hermes_runtime_patch._nvidia_tool_name(item)
+            )
+            for item in prepared["tools"]
+        }
+        self.assertIn("create_lead_form", names)
+        self.assertIn("list_lead_forms", names)
+        self.assertNotIn("stage_campaign", names)
+        self.assertNotIn("codex_image_generate", names)
+        self.assertNotIn("generate_motion_graphic_video", names)
+        self.assertLessEqual(len(names), 10)
+
+    def test_nvidia_lead_form_retry_injects_no_empty_arguments_rule(self):
+        prepared = admira_hermes_runtime_patch._nvidia_prepare_request({
+            "messages": [
+                {"role": "tool", "name": "mcp_admira_create_lead_form", "content": '{"reason":"missing_lead_form_detail","missing":["name"]}'},
+                {"role": "user", "content": "Inténtalo de nuevo"},
+            ],
+            "tools": [
+                self._admira_tool("create_lead_form"),
+                self._admira_tool("stage_campaign"),
+            ],
+            "max_tokens": 65536,
+        })
+        text = "\n".join(str(message.get("content") or "") for message in prepared["messages"])
+        self.assertIn("never retry with {}", text)
+        names = {
+            admira_hermes_runtime_patch._nvidia_normalize_tool_name(
+                admira_hermes_runtime_patch._nvidia_tool_name(item)
+            )
+            for item in prepared["tools"]
+        }
+        self.assertIn("create_lead_form", names)
+        self.assertNotIn("stage_campaign", names)
 
     def test_nvidia_tool_continuity_preserves_active_tool_across_profile_change(self):
         prepared = admira_hermes_runtime_patch._nvidia_prepare_request({
@@ -124,6 +174,38 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         self.assertEqual(policy["requests_per_minute"], 36)
         self.assertEqual(policy["min_request_interval_seconds"], 1.7)
         self.assertEqual(policy["stream_retries"], 0)
+
+    def test_nvidia_auxiliary_session_titles_are_suppressed_without_affecting_other_providers(self):
+        import sys
+        import types
+
+        calls = []
+        original_module = sys.modules.get("agent.title_generator")
+        module = types.ModuleType("agent.title_generator")
+
+        def native(*args, **kwargs):
+            calls.append((args, kwargs))
+            return "native-title"
+
+        module.maybe_auto_title = native
+        sys.modules["agent.title_generator"] = module
+        try:
+            self.assertTrue(admira_hermes_runtime_patch._patch_nvidia_auxiliary_title_generation())
+            self.assertIsNone(module.maybe_auto_title(main_runtime={
+                "provider": "admira-nvidia",
+                "base_url": "https://integrate.api.nvidia.com/v1",
+            }))
+            self.assertEqual(calls, [])
+            self.assertEqual(
+                module.maybe_auto_title(main_runtime={"provider": "openai-codex"}),
+                "native-title",
+            )
+            self.assertEqual(len(calls), 1)
+        finally:
+            if original_module is None:
+                sys.modules.pop("agent.title_generator", None)
+            else:
+                sys.modules["agent.title_generator"] = original_module
 
     def test_nvidia_request_gate_records_only_bounded_request_timestamps(self):
         import nvidia_request_gate

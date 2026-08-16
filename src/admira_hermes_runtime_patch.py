@@ -151,6 +151,21 @@ ADMIRA_NVIDIA_TOOL_PROFILES = {
         "save_content_asset",
         "save_creative_references",
     },
+    # Form creation needs a particularly small, deterministic tool surface.
+    # Smaller hosted NIM models otherwise see the entire campaign/creative
+    # registry and can emit an empty create_lead_form call, then waste the
+    # next turns retrying it.  The handler itself will reject incomplete form
+    # details, so exposing unrelated mutating tools cannot help this step.
+    "lead_form": {
+        "get_real_meta_context",
+        "list_lead_forms",
+        "create_lead_form",
+        "stage_lead_form",
+        "save_business_memory",
+        "save_product_memory",
+        "save_ad_brief",
+        "save_durable_memory",
+    },
     "creative": {
         "fetch_public_asset",
         "codex_image_generate",
@@ -207,6 +222,11 @@ ADMIRA_NVIDIA_PROFILE_TERMS = {
     "insights": ("métrica", "metricas", "métricas", "metrics", "insight", "rendimiento", "performance", "gasto", "spend", "ctr", "cpc", "roas", "checkout", "compras", "purchases"),
     "catalog": ("producto", "productos", "product", "products", "catálogo", "catalogo", "catalog", "sku", "oferta", "bundle", "pdf", "excel"),
 }
+ADMIRA_NVIDIA_LEAD_FORM_TERMS = (
+    "formulario", "formularios", "lead form", "lead-form", "instant form",
+    "formulario instantáneo", "formulario instantaneo", "clientes potenciales",
+    "lead ads", "leadgen",
+)
 
 # Hermes versions pinned by existing Admira releases can mark the wrong
 # OpenAI/Codex pool entry as exhausted after a 429. Keep the exact key that
@@ -1133,6 +1153,15 @@ def _nvidia_message_text(messages):
 
 def _nvidia_request_profile(messages):
     text = _nvidia_message_text(messages)
+    # This must win over the generic campaign profile.  A native instant form
+    # is a campaign-related task, but its initial creation has a much smaller
+    # and safer contract than staging the eventual campaign.
+    if (
+        "create_lead_form" in text
+        or "missing_lead_form_detail" in text
+        or any(marker in text for marker in ADMIRA_NVIDIA_LEAD_FORM_TERMS)
+    ):
+        return "lead_form"
     # Organic requests commonly mention both image and video. Those words
     # overlap with the creative profile, so recognize the explicit organic
     # destination before generic media scoring.
@@ -1148,6 +1177,46 @@ def _nvidia_request_profile(messages):
     }
     best = max(scores, key=scores.get) if scores else ""
     return best if scores.get(best, 0) else "core"
+
+
+def _nvidia_lead_form_retry_instruction(messages):
+    """Add a private recovery rule after the backend rejected empty form args.
+
+    A model must either supply all four fields in one call or ask the one
+    missing owner question.  Repeating ``create_lead_form({})`` is never a
+    useful retry and needlessly consumes a hosted-provider request.
+    """
+    text = _nvidia_message_text(messages)
+    if "missing_lead_form_detail" not in text:
+        return ""
+    return (
+        "[INTERNAL LEAD-FORM RETRY RULE — never quote] The previous native-form "
+        "call was rejected because its arguments were incomplete. Do not call "
+        "create_lead_form again unless this one call includes non-empty page_id, "
+        "name, privacy_policy_url, and questions. Recover exact values from the "
+        "conversation or saved context. If any is genuinely absent, ask one concise "
+        "combined question for the missing fields; never retry with {}. "
+        "[END INTERNAL LEAD-FORM RETRY RULE]"
+    )
+
+
+def _nvidia_append_private_instruction(messages, instruction):
+    """Attach a bounded internal instruction to the latest request message."""
+    if not instruction or not isinstance(messages, list):
+        return messages
+    updated = list(messages)
+    for index in range(len(updated) - 1, -1, -1):
+        item = updated[index]
+        if not isinstance(item, dict) or item.get("role") not in {"user", "system"}:
+            continue
+        clone = dict(item)
+        content = clone.get("content")
+        if isinstance(content, str):
+            clone["content"] = f"{content}\n\n{instruction}"
+            updated[index] = clone
+            return updated
+    updated.append({"role": "system", "content": instruction})
+    return updated
 
 
 def _nvidia_used_tool_names(messages):
@@ -1267,8 +1336,15 @@ def _nvidia_prepare_request(api_kwargs):
 
     before_tools = len(tools)
     profile = _nvidia_request_profile(messages)
-    allowed = set(ADMIRA_NVIDIA_TOOL_PROFILES.get("core", set()))
-    allowed.update(ADMIRA_NVIDIA_TOOL_PROFILES.get(profile, set()))
+    # Most profiles retain the small shared core.  The form workflow is an
+    # explicit exception: only form and persistence tools are useful before
+    # a verified lead_gen_form_id exists, so do not send campaign/image/video
+    # schemas merely because a buyer mentioned a campaign.
+    if profile == "lead_form":
+        allowed = set(ADMIRA_NVIDIA_TOOL_PROFILES["lead_form"])
+    else:
+        allowed = set(ADMIRA_NVIDIA_TOOL_PROFILES.get("core", set()))
+        allowed.update(ADMIRA_NVIDIA_TOOL_PROFILES.get(profile, set()))
     allowed.update(_nvidia_used_tool_names(messages))
 
     filtered = []
@@ -1415,6 +1491,51 @@ def _patch_nvidia_request_gate():
         patched_any = True
 
     return patched_any
+
+
+def _nvidia_runtime_identity(runtime):
+    """Return whether a Hermes runtime descriptor points at NVIDIA NIM."""
+    if not isinstance(runtime, dict):
+        return False
+    provider = str(runtime.get("provider") or runtime.get("provider_name") or "").strip().lower().replace("_", "-")
+    endpoint = " ".join(
+        str(runtime.get(key) or "")
+        for key in ("base_url", "api_base", "endpoint")
+    ).lower()
+    return provider in {"admira-nvidia", "custom:admira-nvidia", "nvidia", "nvidia-nim"} or "integrate.api.nvidia.com" in endpoint
+
+
+def _patch_nvidia_auxiliary_title_generation():
+    """Do not spend a hosted NIM call naming an internal session.
+
+    Hermes starts this best-effort task in a background thread after a first
+    exchange.  On a free hosted endpoint it can race the buyer's next turn,
+    producing an avoidable 429.  Session titles are cosmetic and must never
+    compete with the actual manager response.  Other brain providers keep
+    Hermes' native title behaviour.
+    """
+    title_generator = sys.modules.get("agent.title_generator")
+    if title_generator is None:
+        try:
+            import agent.title_generator as title_generator
+        except ImportError:
+            return False
+    original = getattr(title_generator, "maybe_auto_title", None)
+    if not callable(original):
+        return False
+    if getattr(original, "_admira_nvidia_title_patch", False):
+        return True
+
+    def patched_maybe_auto_title(*args, **kwargs):
+        runtime = kwargs.get("main_runtime")
+        if _nvidia_runtime_identity(runtime):
+            return None
+        return original(*args, **kwargs)
+
+    patched_maybe_auto_title._admira_nvidia_title_patch = True
+    patched_maybe_auto_title._admira_original_maybe_auto_title = original
+    title_generator.maybe_auto_title = patched_maybe_auto_title
+    return True
 
 
 def _path_within(path, root):
@@ -2435,6 +2556,7 @@ def apply():
     credential_pool_patched = _patch_credential_pool_failure_assignment()
     same_nvidia_guard_patched = _patch_same_nvidia_model_failover_guard()
     nvidia_gate_patched = _patch_nvidia_request_gate()
+    nvidia_title_patched = _patch_nvidia_auxiliary_title_generation()
     mcp_result_patched = _patch_mcp_call_result_compatibility()
     minimax_patched = _patch_minimax_model_switch()
     runtime_patched = _patch_minimax_runtime_provider()
@@ -2444,4 +2566,4 @@ def apply():
     cron_run_patched = _patch_cron_job_execution()
     context_patched = _patch_context_truncation_notifications()
     telegram_update_patched = _patch_telegram_update_install_callback()
-    return bool(rate_limit_patched or credential_pool_patched or same_nvidia_guard_patched or nvidia_gate_patched or mcp_result_patched or minimax_patched or runtime_patched or media_patched or video_patched or cron_create_patched or cron_run_patched or context_patched or telegram_update_patched)
+    return bool(rate_limit_patched or credential_pool_patched or same_nvidia_guard_patched or nvidia_gate_patched or nvidia_title_patched or mcp_result_patched or minimax_patched or runtime_patched or media_patched or video_patched or cron_create_patched or cron_run_patched or context_patched or telegram_update_patched)
