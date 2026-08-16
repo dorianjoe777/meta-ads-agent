@@ -27,7 +27,10 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         ])
         cases = (
             ("metrics", "Revisa las métricas, gasto, CTR y compras de la campaña", 8192, "get_real_meta_context"),
-            ("campaign", "Prepara la campaña de ventas con presupuesto, segmentación y aprobación en pausa", 8192, "stage_campaign"),
+            ("campaign_strategy", "Recomienda la audiencia, ubicaciones e intereses para mi campaña", 8192, "search_meta_targeting"),
+            ("campaign_execution", "Prepara la campaña de ventas pausada con los creativos aprobados", 8192, "stage_campaign"),
+            ("messaging_campaign", "Crea una campaña de WhatsApp con el mensaje inicial aprobado", 8192, "stage_campaign"),
+            ("campaign_media", "Crea dos imágenes Image 2 para la campaña que vamos a lanzar", 12288, "codex_image_generate"),
             ("lead_form", "Necesito crear un formulario nativo de leads para mi página", 8192, "create_lead_form"),
             ("creative", "Crea un video con storyboard, recetas e Image 2 para este producto", 12288, "generate_motion_graphic_video"),
             ("organic", "Prepara una publicación orgánica para Facebook y déjala en borrador", 12288, "stage_organic_social_post"),
@@ -85,6 +88,55 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         self.assertNotIn("generate_motion_graphic_video", names)
         self.assertLessEqual(len(names), 10)
 
+    def test_nvidia_campaign_subprofiles_do_not_leak_unrelated_mutations_or_media(self):
+        """Campaign wording must not re-expand to the old all-in-one registry."""
+        all_names = sorted(set().union(*admira_hermes_runtime_patch.ADMIRA_NVIDIA_TOOL_PROFILES.values()))
+        tools = [self._admira_tool(name) for name in all_names]
+        tools.extend([
+            {"type": "function", "function": {"name": "read_file"}},
+            {"type": "function", "function": {"name": "memory_search"}},
+        ])
+        cases = (
+            (
+                "Recomienda la segmentación, ciudades e intereses para mi campaña.",
+                {"search_meta_targeting"},
+                {"stage_campaign", "delete_campaign", "codex_image_generate", "create_lead_form"},
+            ),
+            (
+                "Crea la campaña pausada con los anuncios y creativos ya aprobados.",
+                {"stage_campaign", "pause_campaign"},
+                {"codex_image_generate", "generate_motion_graphic_video", "create_lead_form"},
+            ),
+            (
+                "Prepara la campaña de WhatsApp con el mensaje inicial aprobado.",
+                {"stage_campaign"},
+                {"delete_campaign", "codex_image_generate", "create_lead_form"},
+            ),
+            (
+                "Genera dos imágenes con Image 2 para la campaña de lanzamiento.",
+                {"codex_image_generate", "codex_creative_plan"},
+                {"stage_campaign", "delete_campaign", "create_lead_form"},
+            ),
+        )
+        for prompt, expected, forbidden in cases:
+            with self.subTest(prompt=prompt):
+                prepared = admira_hermes_runtime_patch._nvidia_prepare_request({
+                    "messages": [{"role": "user", "content": prompt}],
+                    "tools": tools,
+                    "max_tokens": 65536,
+                })
+                names = {
+                    admira_hermes_runtime_patch._nvidia_normalize_tool_name(
+                        admira_hermes_runtime_patch._nvidia_tool_name(item)
+                    )
+                    for item in prepared["tools"]
+                }
+                self.assertTrue(expected.issubset(names))
+                self.assertTrue(names.isdisjoint(forbidden))
+                # Two Hermes-native tools remain. Every product profile stays
+                # far below the previous 42-tool campaign payload.
+                self.assertLessEqual(len(names), 20)
+
     def test_nvidia_lead_form_retry_injects_no_empty_arguments_rule(self):
         prepared = admira_hermes_runtime_patch._nvidia_prepare_request({
             "messages": [
@@ -108,27 +160,18 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         self.assertIn("create_lead_form", names)
         self.assertNotIn("stage_campaign", names)
 
-    def test_nvidia_tool_continuity_preserves_active_tool_across_profile_change(self):
-        prepared = admira_hermes_runtime_patch._nvidia_prepare_request({
-            "messages": [
-                {"role": "assistant", "tool_calls": [{"function": {"name": "mcp_admira_stage_campaign"}}]},
-                {"role": "user", "content": "Ahora revisa el rendimiento y dime el siguiente paso."},
-            ],
-            "tools": [
-                self._admira_tool("stage_campaign"),
-                self._admira_tool("get_real_meta_context"),
-                self._admira_tool("run_daily_brief"),
-            ],
-            "max_tokens": 65536,
-        })
-        names = {
-            admira_hermes_runtime_patch._nvidia_normalize_tool_name(
-                admira_hermes_runtime_patch._nvidia_tool_name(item)
-            )
-            for item in prepared["tools"]
-        }
-        self.assertIn("stage_campaign", names)
-        self.assertIn("get_real_meta_context", names)
+    def test_nvidia_tool_continuity_keeps_only_an_active_loop_not_history(self):
+        active = [
+            {"role": "user", "content": "Crea la campaña"},
+            {"role": "assistant", "tool_calls": [{"function": {"name": "mcp_admira_stage_campaign"}}]},
+            {"role": "tool", "name": "mcp_admira_stage_campaign", "content": "{\"ok\": false}"},
+        ]
+        self.assertEqual(
+            admira_hermes_runtime_patch._nvidia_used_tool_names(active),
+            {"stage_campaign"},
+        )
+        next_buyer_turn = active + [{"role": "user", "content": "Ahora revisa el rendimiento"}]
+        self.assertEqual(admira_hermes_runtime_patch._nvidia_used_tool_names(next_buyer_turn), set())
 
     def test_nvidia_default_is_minimax_m3_and_legacy_glm_migrates_only_when_untouched(self):
         self.assertEqual(product_config.DEFAULT_NVIDIA_NIM_MODEL, "minimaxai/minimax-m3")

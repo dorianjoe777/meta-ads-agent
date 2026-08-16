@@ -125,7 +125,29 @@ ADMIRA_NVIDIA_TOOL_PROFILES = {
         "save_agent_preferences",
         "search_product_catalog",
     },
-    "campaign": {
+    # A recommendation/targeting turn must not carry tools that can create,
+    # pause, delete, or generate media.  This is deliberately separate from
+    # campaign execution so a business conversation remains lightweight.
+    "campaign_strategy": {
+        "get_real_meta_context",
+        "preflight_campaign",
+        "search_meta_targeting",
+        "inspect_adset_targeting",
+        "review_signal_quality",
+        "search_product_catalog",
+        "save_agent_preferences",
+        "save_ads_onboarding",
+        "save_ad_brief",
+        "save_durable_memory",
+    },
+    # This route assumes a buyer asked to materialize or modify a campaign.
+    # It intentionally excludes image/video production and form creation.
+    "campaign_execution": {
+        "get_real_meta_context",
+        "preflight_campaign",
+        "search_meta_targeting",
+        "inspect_adset_targeting",
+        "review_signal_quality",
         "stage_campaign",
         "stage_budget_change",
         "pause_campaign",
@@ -134,22 +156,41 @@ ADMIRA_NVIDIA_TOOL_PROFILES = {
         "delete_campaign",
         "approve_action",
         "reject_action",
-        "list_lead_forms",
-        "stage_lead_form",
-        "create_lead_form",
         "save_ads_onboarding",
         "save_ad_brief",
         "set_campaign_metric_priorities",
-        # Campaign briefs often contain a not-yet-produced image/video. Keep
-        # the bounded creative subset available instead of making the router
-        # force the buyer through a second turn.
+        "list_pending_approvals",
+        "save_durable_memory",
+    },
+    # Click-to-message has a different Meta payload and must not be diluted
+    # by lead-form/video/page-post helpers.  The exact WhatsApp/Messenger/IG
+    # identifiers are still resolved server-side from live Meta state.
+    "messaging_campaign": {
+        "get_real_meta_context",
+        "preflight_campaign",
+        "search_meta_targeting",
+        "inspect_adset_targeting",
+        "review_signal_quality",
+        "stage_campaign",
+        "save_ads_onboarding",
+        "save_ad_brief",
+        "save_durable_memory",
+    },
+    # A campaign can be discussed together with a pending creative.  Keep
+    # production narrow and safe; the next explicit creation request routes
+    # to campaign_execution once the media is ready.
+    "campaign_media": {
         "fetch_public_asset",
         "codex_image_generate",
         "codex_creative_plan",
         "search_motion_graphic_recipes",
         "generate_motion_graphic_video",
         "save_content_asset",
+        "save_brand_memory",
+        "save_product_memory",
         "save_creative_references",
+        "save_ad_brief",
+        "save_durable_memory",
     },
     # Form creation needs a particularly small, deterministic tool surface.
     # Smaller hosted NIM models otherwise see the entire campaign/creative
@@ -216,7 +257,6 @@ ADMIRA_NVIDIA_TOOL_PROFILES = {
     },
 }
 ADMIRA_NVIDIA_PROFILE_TERMS = {
-    "campaign": ("campaign", "campaña", "ad set", "anuncio", "ads", "publicidad", "presupuesto", "segmentación", "targeting", "meta ads"),
     "creative": ("creative", "creativo", "imagen", "image", "video", "vídeo", "codex", "motion", "storyboard", "diseño", "logo"),
     "organic": ("orgánico", "organico", "organic", "post", "publication", "publicación", "publicar", "publish", "contenido diario", "daily content", "redes sociales", "social media"),
     "insights": ("métrica", "metricas", "métricas", "metrics", "insight", "rendimiento", "performance", "gasto", "spend", "ctr", "cpc", "roas", "checkout", "compras", "purchases"),
@@ -226,6 +266,33 @@ ADMIRA_NVIDIA_LEAD_FORM_TERMS = (
     "formulario", "formularios", "lead form", "lead-form", "instant form",
     "formulario instantáneo", "formulario instantaneo", "clientes potenciales",
     "lead ads", "leadgen",
+)
+ADMIRA_NVIDIA_CAMPAIGN_TERMS = (
+    "campaign", "campaña", "ad set", "conjunto de anuncios", "anuncio", "ads",
+    "publicidad", "meta ads",
+)
+ADMIRA_NVIDIA_CAMPAIGN_ACTION_TERMS = (
+    "crear", "crea", "create", "monta", "montar", "lanzar", "lanza", "launch",
+    "prepara", "preparar", "duplicar", "duplica", "activar", "activa", "pausar",
+    "pausa", "eliminar", "elimina", "delete", "resume", "reanuda",
+)
+ADMIRA_NVIDIA_CAMPAIGN_STRATEGY_TERMS = (
+    "audiencia", "segmentación", "segmentacion", "targeting", "intereses", "interest",
+    "ubicación", "ubicacion", "location", "geografía", "geografia", "edad", "género",
+    "genero", "advantage", "presupuesto", "budget", "estrategia", "recomienda",
+)
+ADMIRA_NVIDIA_MESSAGING_CAMPAIGN_TERMS = (
+    "whatsapp", "messenger", "instagram direct", "instagram dm", "mensajes",
+    "conversaciones", "mensaje prellenado", "mensaje inicial", "prefilled",
+)
+ADMIRA_NVIDIA_CAMPAIGN_MEDIA_TERMS = (
+    "creativo", "creative", "imagen", "image", "video", "vídeo", "image 2",
+    "codex", "motion", "storyboard", "render", "reel", "receta",
+)
+ADMIRA_NVIDIA_MEDIA_PRODUCTION_TERMS = (
+    "genera", "generar", "generate", "diseña", "disena", "diseñar", "disenar",
+    "design", "produce", "producir", "renderiza", "renderizar", "image 2",
+    "codex image", "crear imágenes", "crear imagen", "create images", "create image",
 )
 
 # Hermes versions pinned by existing Admira releases can mark the wrong
@@ -1163,14 +1230,37 @@ def _nvidia_request_profile(messages):
     ):
         return "lead_form"
     # Organic requests commonly mention both image and video. Those words
-    # overlap with the creative profile, so recognize the explicit organic
-    # destination before generic media scoring.
+    # overlap with a campaign brief, so recognize the explicit destination
+    # before campaign/media routing.
     if (
         "orgánico" in text
         or "organico" in text
         or "organic" in text
     ) and any(marker in text for marker in ("facebook", "publicación", "publicacion", "publication", "post", "borrador", "draft", "publish")):
         return "organic"
+    campaign_context = any(marker in text for marker in ADMIRA_NVIDIA_CAMPAIGN_TERMS)
+    if campaign_context:
+        # Destination-specific Meta payloads deserve their own small tool
+        # registry even when the buyer also says "create campaign".
+        if any(marker in text for marker in ADMIRA_NVIDIA_MESSAGING_CAMPAIGN_TERMS):
+            return "messaging_campaign"
+        action_requested = any(marker in text for marker in ADMIRA_NVIDIA_CAMPAIGN_ACTION_TERMS)
+        # "Create a campaign with approved creatives" belongs to execution;
+        # media routing is for an explicit request to produce the media.
+        if (
+            any(marker in text for marker in ADMIRA_NVIDIA_CAMPAIGN_MEDIA_TERMS)
+            and any(marker in text for marker in ADMIRA_NVIDIA_MEDIA_PRODUCTION_TERMS)
+        ):
+            return "campaign_media"
+        if action_requested:
+            return "campaign_execution"
+        if any(marker in text for marker in ADMIRA_NVIDIA_PROFILE_TERMS["insights"]):
+            return "insights"
+        if any(marker in text for marker in ADMIRA_NVIDIA_CAMPAIGN_STRATEGY_TERMS):
+            return "campaign_strategy"
+        # A bare "campaign" generally means the buyer wants the next
+        # concrete preparation step, not an open-ended lesson.
+        return "campaign_execution"
     scores = {
         profile: sum(1 for term in terms if term in text)
         for profile, terms in ADMIRA_NVIDIA_PROFILE_TERMS.items()
@@ -1220,11 +1310,19 @@ def _nvidia_append_private_instruction(messages, instruction):
 
 
 def _nvidia_used_tool_names(messages):
-    """Keep tools already involved in a multi-step tool turn available."""
+    """Keep only tools from the currently active tool loop available.
+
+    Earlier versions scanned the full session and carried every historical
+    tool into every later request.  That defeats routing on longer chats.  A
+    tool is active only after Hermes has issued it and before the next buyer
+    message; once a buyer sends a new message, the new profile is authoritative.
+    """
     used = set()
-    for message in messages or []:
+    for message in reversed(messages or []):
         if not isinstance(message, dict):
             continue
+        if message.get("role") == "user":
+            break
         for call in message.get("tool_calls") or []:
             if not isinstance(call, dict):
                 continue
@@ -1336,12 +1434,15 @@ def _nvidia_prepare_request(api_kwargs):
 
     before_tools = len(tools)
     profile = _nvidia_request_profile(messages)
-    # Most profiles retain the small shared core.  The form workflow is an
-    # explicit exception: only form and persistence tools are useful before
-    # a verified lead_gen_form_id exists, so do not send campaign/image/video
-    # schemas merely because a buyer mentioned a campaign.
-    if profile == "lead_form":
-        allowed = set(ADMIRA_NVIDIA_TOOL_PROFILES["lead_form"])
+    # The specialised campaign workflows are self-contained.  Do not append
+    # the generic core registry or a narrow form/strategy/execution request
+    # grows back into the previous all-in-one campaign payload.
+    direct_profiles = {
+        "lead_form", "campaign_strategy", "campaign_execution",
+        "messaging_campaign", "campaign_media",
+    }
+    if profile in direct_profiles:
+        allowed = set(ADMIRA_NVIDIA_TOOL_PROFILES[profile])
     else:
         allowed = set(ADMIRA_NVIDIA_TOOL_PROFILES.get("core", set()))
         allowed.update(ADMIRA_NVIDIA_TOOL_PROFILES.get(profile, set()))
@@ -1362,8 +1463,10 @@ def _nvidia_prepare_request(api_kwargs):
     if filtered and len(filtered) < before_tools:
         request["tools"] = filtered
 
+    private_instruction = _nvidia_lead_form_retry_instruction(messages) if profile == "lead_form" else ""
+    prepared_messages = _nvidia_append_private_instruction(messages, private_instruction)
     request["messages"], request["tools"] = _nvidia_compact_request_payload(
-        messages,
+        prepared_messages,
         request.get("tools") or [],
     )
 
@@ -1374,7 +1477,7 @@ def _nvidia_prepare_request(api_kwargs):
         current_max = ADMIRA_NVIDIA_DEFAULT_MAX_OUTPUT_TOKENS
     output_cap = (
         ADMIRA_NVIDIA_CREATIVE_MAX_OUTPUT_TOKENS
-        if profile in {"creative", "organic"}
+        if profile in {"creative", "organic", "campaign_media"}
         else ADMIRA_NVIDIA_DEFAULT_MAX_OUTPUT_TOKENS
     )
     request["max_tokens"] = max(256, min(current_max, output_cap))
