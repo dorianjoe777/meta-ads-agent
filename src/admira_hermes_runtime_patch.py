@@ -44,6 +44,7 @@ ADMIRA_MINIMAX_ALIASES = {
 ADMIRA_MEDIA_EXTENSIONS = "png|jpe?g|gif|webp"
 ADMIRA_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 ADMIRA_VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"}
+ADMIRA_NVIDIA_PREPARE_ACTIVE = ContextVar("admira_nvidia_prepare_active", default=False)
 ADMIRA_MEDIA_TAG_RE = re.compile(
     rf"MEDIA:\s*(?P<path>(?:/|~/)\S+?\.(?:{ADMIRA_MEDIA_EXTENSIONS})(?=[\s\"'`,;:)\]]|$))",
     re.IGNORECASE,
@@ -1202,9 +1203,20 @@ def _nvidia_normalize_tool_name(name):
 
 
 def _nvidia_message_text(messages):
-    parts = []
+    """Return only the buyer's current request and its active tool loop.
+
+    The assembled system prompt documents every Admira capability (including
+    organic content, lead forms and video).  Routing from the whole prompt
+    therefore lets unrelated system wording win over the buyer's actual
+    request.  Stop at the newest user message and retain only the tool/agent
+    messages after it, which are required to recover a current tool error.
+    """
+    entries = []
     for message in messages or []:
         if not isinstance(message, dict):
+            continue
+        role = str(message.get("role") or "").lower()
+        if role not in {"user", "assistant", "tool"}:
             continue
         content = message.get("content")
         if isinstance(content, list):
@@ -1213,9 +1225,29 @@ def _nvidia_message_text(messages):
                 for item in content
                 if isinstance(item, dict)
             )
-        if content:
-            parts.append(str(content))
-    return " ".join(parts[-12:]).lower()
+        entries.append((role, str(content or "")))
+    last_user = next((index for index in range(len(entries) - 1, -1, -1) if entries[index][0] == "user"), None)
+    if last_user is None:
+        # Defensive fallback for malformed provider requests. Still omit the
+        # large system prompt rather than routing from product documentation.
+        return " ".join(content for _, content in entries[-4:]).lower()
+
+    active = entries[last_user:]
+    user_text = entries[last_user][1].lower()
+    # A buyer who says only "retry", "again" or "continue" is referring to
+    # the immediately preceding tool outcome. Include that narrow prior loop
+    # but never earlier user turns or the full system prompt.
+    if re.search(r"\b(reintenta|reintentar|int[eé]ntalo|again|retry|contin[uú]a|continue)\b", user_text):
+        prior = []
+        for role, content in reversed(entries[:last_user]):
+            if role == "user":
+                break
+            if content:
+                prior.append((role, content))
+            if len(prior) >= 4:
+                break
+        active = list(reversed(prior)) + active
+    return " ".join(content for _, content in active if content).lower()
 
 
 def _nvidia_request_profile(messages):
@@ -1506,11 +1538,9 @@ def _record_nvidia_request_diagnostic(request, *, profile, before_tools, after_t
             "tools_before": int(before_tools),
             "tools_after": int(after_tools),
             "messages": len(messages),
-            "estimated_input_tokens": len(json.dumps(
-                {"messages": messages, "tools": request.get("tools") or []},
-                ensure_ascii=False,
-                default=str,
-            )) // 4,
+            "estimated_input_tokens": _nvidia_estimated_input_tokens(
+                messages, request.get("tools") or []
+            ),
             "input_budget_tokens": ADMIRA_NVIDIA_INPUT_BUDGET_TOKENS,
             "max_tokens_before": int(before_max_tokens),
             "max_tokens_after": int(request.get("max_tokens") or 0),
@@ -1527,6 +1557,66 @@ def _record_nvidia_request_diagnostic(request, *, profile, before_tools, after_t
         pass
 
 
+def _record_nvidia_hook_diagnostic(
+    agent,
+    api_kwargs,
+    *,
+    path,
+    is_nvidia,
+    prepared_profile=None,
+    tools_before=None,
+):
+    """Optionally record that a real Hermes provider seam was reached.
+
+    This is enabled only by the release canary.  It deliberately stores no
+    messages, URLs, API keys or tool arguments: the record explains whether a
+    third-party Hermes version called the patched seam with a mapping that can
+    be normalized before the request goes to NVIDIA.
+    """
+    path_value = str(os.environ.get("ADMIRA_NVIDIA_HOOK_DIAGNOSTICS_FILE") or "").strip()
+    if not path_value:
+        return
+    try:
+        provider = str(getattr(agent, "provider", "") or "").strip().lower().replace("_", "-")
+        base_url = str(getattr(agent, "base_url", "") or getattr(agent, "_base_url", "") or "").lower()
+        payload = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "path": str(path),
+            "is_nvidia": bool(is_nvidia),
+            "provider": provider,
+            "base_url_is_nvidia": "integrate.api.nvidia.com" in base_url,
+            "request_is_mapping": isinstance(api_kwargs, dict),
+            "request_type": type(api_kwargs).__name__,
+            "prepare_already_active": bool(ADMIRA_NVIDIA_PREPARE_ACTIVE.get()),
+            "request_diagnostics_configured": bool(
+                str(os.environ.get("ADMIRA_NVIDIA_REQUEST_DIAGNOSTICS_FILE") or "").strip()
+            ),
+        }
+        if prepared_profile:
+            tools_after = api_kwargs.get("tools") if isinstance(api_kwargs, dict) else []
+            payload.update({
+                "prepared": True,
+                "profile": str(prepared_profile),
+                "tools_before": int(tools_before or 0),
+                "tools_after": len(tools_after or []),
+                "estimated_input_tokens": _nvidia_estimated_input_tokens(
+                    api_kwargs.get("messages") or [], tools_after or []
+                ) if isinstance(api_kwargs, dict) else 0,
+                "max_tokens_after": int(api_kwargs.get("max_tokens") or 0)
+                if isinstance(api_kwargs, dict) else 0,
+            })
+        diagnostic_path = Path(path_value).expanduser()
+        diagnostic_path.parent.mkdir(parents=True, exist_ok=True)
+        with diagnostic_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, separators=(",", ":")) + "\n")
+        try:
+            diagnostic_path.chmod(0o600)
+        except OSError:
+            pass
+    except (OSError, TypeError, ValueError):
+        pass
+
+
 def _patch_nvidia_request_gate():
     """Throttle NIM calls across all Hermes sessions in this installation."""
     try:
@@ -1536,15 +1626,27 @@ def _patch_nvidia_request_gate():
 
     def _is_nvidia_agent(agent):
         provider = str(getattr(agent, "provider", "") or "").strip().lower().replace("_", "-")
-        # Hermes keeps both the normalized and original URL on the agent.  Do
-        # not require the API key in the environment: credentials can be
-        # loaded from Hermes' provider config/.env before the request starts.
-        base_url = str(
-            getattr(agent, "_base_url_lower", "")
-            or getattr(agent, "base_url", "")
-            or ""
-        ).strip().lower()
-        return provider == "admira-nvidia" or "integrate.api.nvidia.com" in base_url
+        # Hermes versions disagree on whether a named provider is exposed as
+        # ``admira-nvidia``, ``custom:admira-nvidia`` or ``custom``. Inspect
+        # every harmless URL representation as well; the URL is the reliable
+        # identity and no secret is needed.
+        base_urls = [
+            getattr(agent, "_base_url_lower", ""),
+            getattr(agent, "base_url", ""),
+            getattr(agent, "_base_url", ""),
+            getattr(agent, "api_base", ""),
+        ]
+        client = getattr(agent, "client", None)
+        if client is not None:
+            base_urls.extend([
+                getattr(client, "base_url", ""),
+                getattr(client, "_base_url", ""),
+            ])
+        haystack = " ".join(str(value or "") for value in base_urls).strip().lower()
+        return (
+            provider in {"admira-nvidia", "custom:admira-nvidia", "nvidia", "nvidia-nim"}
+            or "integrate.api.nvidia.com" in haystack
+        )
 
     def _reserve(agent):
         if not _is_nvidia_agent(agent):
@@ -1558,16 +1660,90 @@ def _patch_nvidia_request_gate():
             # turn a healthy provider into a buyer-facing failure.
             pass
 
+    def _prepare_call(agent, api_kwargs, *, path):
+        """Apply the request guard at most once through nested Hermes seams."""
+        is_nvidia = _is_nvidia_agent(agent)
+        _record_nvidia_hook_diagnostic(agent, api_kwargs, path=path, is_nvidia=is_nvidia)
+        token = None
+        if is_nvidia and not ADMIRA_NVIDIA_PREPARE_ACTIVE.get():
+            token = ADMIRA_NVIDIA_PREPARE_ACTIVE.set(True)
+            tools_before = len(api_kwargs.get("tools") or []) if isinstance(api_kwargs, dict) else 0
+            _reserve(agent)
+            api_kwargs = _nvidia_prepare_request(api_kwargs)
+            _record_nvidia_hook_diagnostic(
+                agent,
+                api_kwargs,
+                path=f"{path}:prepared",
+                is_nvidia=True,
+                prepared_profile=_nvidia_request_profile(api_kwargs.get("messages") or [])
+                if isinstance(api_kwargs, dict) else None,
+                tools_before=tools_before,
+            )
+        return api_kwargs, token
+
+    def _finish_prepared_call(token):
+        if token is not None:
+            ADMIRA_NVIDIA_PREPARE_ACTIVE.reset(token)
+
+    # Hermes' AIAgent methods import the helper functions lazily. Wrapping
+    # only ``agent.chat_completion_helpers`` is timing-sensitive: sitecustomize
+    # can run before the CLI imports ``run_agent`` and the first request can
+    # bypass the filter entirely. Patch the actual forwarders when available;
+    # this is the narrowest stable seam across Hermes releases.
+    try:
+        # Do not import run_agent from sitecustomize: it is the CLI's entry
+        # module and eager loading it here can create a circular startup stall.
+        # sitecustomize calls this function again after the import completes.
+        run_agent = sys.modules.get("run_agent")
+        agent_class = getattr(run_agent, "AIAgent", None) if run_agent is not None else None
+        if agent_class is not None and not getattr(agent_class, "_admira_nvidia_gate_patch", False):
+            original_agent_call = getattr(agent_class, "_interruptible_api_call", None)
+            original_agent_streaming = getattr(agent_class, "_interruptible_streaming_api_call", None)
+
+            if callable(original_agent_call):
+                def patched_agent_call(agent, api_kwargs):
+                    token = None
+                    try:
+                        api_kwargs, token = _prepare_call(agent, api_kwargs, path="agent_call")
+                        return original_agent_call(agent, api_kwargs)
+                    finally:
+                        _finish_prepared_call(token)
+
+                agent_class._admira_original_interruptible_api_call = original_agent_call
+                agent_class._interruptible_api_call = patched_agent_call
+
+            if callable(original_agent_streaming):
+                def patched_agent_streaming(agent, api_kwargs, *, on_first_delta=None):
+                    token = None
+                    try:
+                        api_kwargs, token = _prepare_call(agent, api_kwargs, path="agent_stream")
+                        return original_agent_streaming(agent, api_kwargs, on_first_delta=on_first_delta)
+                    finally:
+                        _finish_prepared_call(token)
+
+                agent_class._admira_original_interruptible_streaming_api_call = original_agent_streaming
+                agent_class._interruptible_streaming_api_call = patched_agent_streaming
+
+            if callable(original_agent_call) or callable(original_agent_streaming):
+                agent_class._admira_nvidia_gate_patch = True
+                return True
+    except Exception:
+        # Older Hermes builds may not expose run_agent.AIAgent at import time;
+        # retain the helper-level compatibility path below.
+        pass
+
     original = getattr(helpers, "interruptible_api_call", None)
     original_streaming = getattr(helpers, "interruptible_streaming_api_call", None)
     patched_any = False
 
     if callable(original) and not getattr(original, "_admira_nvidia_gate_patch", False):
         def patched_interruptible_api_call(agent, api_kwargs):
-            _reserve(agent)
-            if _is_nvidia_agent(agent):
-                api_kwargs = _nvidia_prepare_request(api_kwargs)
-            return original(agent, api_kwargs)
+            token = None
+            try:
+                api_kwargs, token = _prepare_call(agent, api_kwargs, path="helper_call")
+                return original(agent, api_kwargs)
+            finally:
+                _finish_prepared_call(token)
 
         patched_interruptible_api_call._admira_nvidia_gate_patch = True
         patched_interruptible_api_call._admira_original_interruptible_api_call = original
@@ -1581,10 +1757,12 @@ def _patch_nvidia_request_gate():
     # request could still burst past NIM's hosted endpoint quota.
     if callable(original_streaming) and not getattr(original_streaming, "_admira_nvidia_gate_patch", False):
         def patched_interruptible_streaming_api_call(agent, api_kwargs, *, on_first_delta=None):
-            _reserve(agent)
-            if _is_nvidia_agent(agent):
-                api_kwargs = _nvidia_prepare_request(api_kwargs)
-            return original_streaming(agent, api_kwargs, on_first_delta=on_first_delta)
+            token = None
+            try:
+                api_kwargs, token = _prepare_call(agent, api_kwargs, path="helper_stream")
+                return original_streaming(agent, api_kwargs, on_first_delta=on_first_delta)
+            finally:
+                _finish_prepared_call(token)
 
         patched_interruptible_streaming_api_call._admira_nvidia_gate_patch = True
         patched_interruptible_streaming_api_call._admira_original_interruptible_streaming_api_call = original_streaming

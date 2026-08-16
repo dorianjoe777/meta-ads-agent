@@ -137,6 +137,28 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
                 # far below the previous 42-tool campaign payload.
                 self.assertLessEqual(len(names), 20)
 
+    def test_nvidia_profile_ignores_system_capability_words_but_keeps_active_tool_error(self):
+        system = {
+            "role": "system",
+            "content": "Admira puede crear contenido orgánico, publicaciones, videos y formularios.",
+        }
+        self.assertEqual(
+            admira_hermes_runtime_patch._nvidia_request_profile([
+                system,
+                {"role": "user", "content": "Recomienda audiencia, ciudades e intereses para mi campaña."},
+            ]),
+            "campaign_strategy",
+        )
+        self.assertEqual(
+            admira_hermes_runtime_patch._nvidia_request_profile([
+                system,
+                {"role": "user", "content": "Crea el formulario de leads con los datos confirmados."},
+                {"role": "assistant", "tool_calls": [{"function": {"name": "mcp_admira_create_lead_form"}}]},
+                {"role": "tool", "name": "mcp_admira_create_lead_form", "content": "missing_lead_form_detail"},
+            ]),
+            "lead_form",
+        )
+
     def test_nvidia_lead_form_retry_injects_no_empty_arguments_rule(self):
         prepared = admira_hermes_runtime_patch._nvidia_prepare_request({
             "messages": [
@@ -277,6 +299,47 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
                     nvidia_request_gate.os.environ.pop("ADMIRA_NVIDIA_MIN_REQUEST_INTERVAL_SECONDS", None)
                 else:
                     nvidia_request_gate.os.environ["ADMIRA_NVIDIA_MIN_REQUEST_INTERVAL_SECONDS"] = old_interval
+
+    def test_nvidia_hook_diagnostic_is_redacted_and_never_serializes_request_content(self):
+        class NvidiaAgent:
+            provider = "custom"
+            base_url = "https://integrate.api.nvidia.com/v1"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "hook.jsonl"
+            previous = admira_hermes_runtime_patch.os.environ.get("ADMIRA_NVIDIA_HOOK_DIAGNOSTICS_FILE")
+            try:
+                admira_hermes_runtime_patch.os.environ["ADMIRA_NVIDIA_HOOK_DIAGNOSTICS_FILE"] = str(path)
+                admira_hermes_runtime_patch._record_nvidia_hook_diagnostic(
+                    NvidiaAgent(),
+                    {
+                        "messages": [{"role": "user", "content": "private buyer message"}],
+                        "api_key": "secret",
+                        "tools": [],
+                        "max_tokens": 8192,
+                    },
+                    path="agent_stream",
+                    is_nvidia=True,
+                    prepared_profile="campaign_strategy",
+                    tools_before=42,
+                )
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(payload["path"], "agent_stream")
+                self.assertTrue(payload["is_nvidia"])
+                self.assertTrue(payload["base_url_is_nvidia"])
+                self.assertTrue(payload["request_is_mapping"])
+                self.assertTrue(payload["prepared"])
+                self.assertEqual(payload["profile"], "campaign_strategy")
+                self.assertEqual(payload["tools_before"], 42)
+                self.assertEqual(payload["tools_after"], 0)
+                self.assertNotIn("messages", payload)
+                self.assertNotIn("api_key", payload)
+                self.assertNotIn("private buyer message", json.dumps(payload))
+            finally:
+                if previous is None:
+                    admira_hermes_runtime_patch.os.environ.pop("ADMIRA_NVIDIA_HOOK_DIAGNOSTICS_FILE", None)
+                else:
+                    admira_hermes_runtime_patch.os.environ["ADMIRA_NVIDIA_HOOK_DIAGNOSTICS_FILE"] = previous
 
     def test_nvidia_request_preflight_routes_only_relevant_admira_tools(self):
         def tool(name):
