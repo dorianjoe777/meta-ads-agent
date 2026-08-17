@@ -101,6 +101,9 @@ async function metaJson(url, options = {}) {
     if (!response.ok || payload?.error) {
       const error = new Error("meta_oauth_exchange_failed");
       error.meta = payload?.error?.message || "Meta rejected the connection.";
+      error.meta_code = Number(payload?.error?.code || 0);
+      error.meta_subcode = Number(payload?.error?.error_subcode || 0);
+      error.meta_type = String(payload?.error?.type || "");
       throw error;
     }
     return payload;
@@ -212,6 +215,9 @@ async function finalizeCallback(requestId, code) {
   const shortToken = await metaJson(tokenUrl).catch((error) => {
     const failure = new Error("meta_oauth_token_exchange_failed");
     failure.cause = error;
+    failure.meta_code = error?.meta_code;
+    failure.meta_subcode = error?.meta_subcode;
+    failure.meta_type = error?.meta_type;
     throw failure;
   });
   const exchangeUrl = new URL(`https://graph.facebook.com/${GRAPH_VERSION}/oauth/access_token`);
@@ -232,6 +238,9 @@ async function finalizeCallback(requestId, code) {
   ]).catch((error) => {
     const failure = new Error("meta_oauth_asset_discovery_failed");
     failure.cause = error;
+    failure.meta_code = error?.meta_code;
+    failure.meta_subcode = error?.meta_subcode;
+    failure.meta_type = error?.meta_type;
     throw failure;
   });
   const businessAssets = collectBusinessAssets(rows(businessesResult));
@@ -272,7 +281,13 @@ export default async function handleMetaOAuth(request, response) {
       const failureCode = oauthFailureCode(error);
       // Keep server logs useful to support, without logging OAuth codes or
       // access tokens.  Meta's own detailed response stays server-side.
-      console.error("meta_oauth_callback_failed", { failureCode, message: String(error?.message || "") });
+      console.error("meta_oauth_callback_failed", {
+        failureCode,
+        message: String(error?.message || ""),
+        graphCode: Number(error?.meta_code || 0),
+        graphSubcode: Number(error?.meta_subcode || 0),
+        graphType: String(error?.meta_type || ""),
+      });
       // Mark the one-time request as failed so the polling installation drops
       // it and a buyer never gets told to open the same spent link again.
       try {
