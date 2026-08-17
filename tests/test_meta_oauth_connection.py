@@ -192,6 +192,25 @@ class MetaOAuthConnectionTests(unittest.TestCase):
         self.assertEqual(phase["phase"], "facebook_connection")
         self.assertFalse(phase["facebook_connected"])
 
+    def test_initial_telegram_setup_dispatches_oauth_without_model_permission(self):
+        started = []
+        with patch.object(self.dashboard, "telegram_settings", return_value={
+            "enabled": True, "bot_configured": True, "chat_id": "123",
+        }), patch.object(self.dashboard, "social_oauth_status", return_value={
+            "connected": False, "pending": False,
+        }), patch.object(self.dashboard, "social_oauth_start", side_effect=lambda payload: started.append(payload)):
+            self.dashboard._dispatch_initial_meta_oauth_link(self.config)
+        self.assertEqual(started, [{"telegram_chat_id": "123", "source": "initial_telegram_setup"}])
+
+    def test_initial_telegram_setup_preserves_existing_meta_connection(self):
+        with patch.object(self.dashboard, "telegram_settings", return_value={
+            "enabled": True, "bot_configured": True, "chat_id": "123",
+        }), patch.object(self.dashboard, "social_oauth_status", return_value={
+            "connected": True, "pending": False,
+        }), patch.object(self.dashboard, "social_oauth_start") as start:
+            self.dashboard._dispatch_initial_meta_oauth_link(self.config)
+        start.assert_not_called()
+
     def test_business_save_marks_organic_transition_without_sending_oauth(self):
         import sys
 

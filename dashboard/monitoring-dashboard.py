@@ -3384,7 +3384,21 @@ def ensure_telegram_listener():
         TELEGRAM_THREAD = None
         TELEGRAM_STOP = None
         TELEGRAM_FINGERPRINT = None
-        return start_hermes_gateway(config)
+        gateway = start_hermes_gateway(config)
+        # Facebook OAuth is an installation prerequisite, not a sales/spend
+        # action.  Do not delegate the first link to model prose: a model can
+        # ask for permission, mention a stale inline button, or simply omit
+        # the tool call.  Once Telegram has a real private chat, dispatch the
+        # ordinary-text OAuth URL deterministically in the background.  The
+        # pending request prevents duplicate links if Hermes also calls the
+        # explicit tool in the same turn.
+        threading.Thread(
+            target=_dispatch_initial_meta_oauth_link,
+            args=(config,),
+            daemon=True,
+            name="admira-initial-meta-oauth",
+        ).start()
+        return gateway
     fingerprint = (config.telegram_bot_token, status["chat_id"], status["enabled"], status["language"])
     if not (status["enabled"] and status["bot_configured"] and status["chat_id"]):
         if TELEGRAM_STOP:
@@ -3401,6 +3415,26 @@ def ensure_telegram_listener():
     TELEGRAM_THREAD.start()
     TELEGRAM_FINGERPRINT = fingerprint
     return {"started": True, "mode": "legacy"}
+
+
+def _dispatch_initial_meta_oauth_link(config):
+    """Send the first OAuth URL without waiting for an LLM decision.
+
+    Existing token-based installations retain their current connection.  New
+    OAuth-first installations receive exactly the direct text link; account
+    and Page selection still happens conversationally after OAuth returns.
+    """
+    try:
+        status = telegram_settings(config)
+        if not (status.get("enabled") and status.get("bot_configured") and status.get("chat_id")):
+            return
+        current = social_oauth_status(config)
+        if current.get("connected") or current.get("pending") or config.meta_access_token:
+            return
+        social_oauth_start({"telegram_chat_id": status["chat_id"], "source": "initial_telegram_setup"})
+    except Exception as exc:
+        # A failed broker must not prevent the gateway itself from answering.
+        log_action("meta_oauth_initial_link", {"error": str(exc)[:240]}, "blocked")
 
 
 def detect_telegram_chats():
