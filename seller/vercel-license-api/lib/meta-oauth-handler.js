@@ -10,6 +10,18 @@ import {
 const GRAPH_VERSION = String(process.env.META_GRAPH_API_VERSION || "v26.0").replace(/^v?/i, "v");
 const MAX_AGE_MS = 15 * 60 * 1000;
 
+// The browser must never receive Graph payloads, OAuth codes, or tokens.  A
+// short phase code is enough to make an OAuth failure diagnosable from Vercel
+// logs and lets the local installation discard a spent handoff safely.
+function oauthFailureCode(error) {
+  const value = String(error?.message || "oauth_callback_failed").toLowerCase();
+  if (value.includes("expired")) return "request_expired";
+  if (value.includes("token_exchange")) return "token_exchange";
+  if (value.includes("vault")) return "credential_vault";
+  if (value.includes("asset_discovery")) return "asset_discovery";
+  return "callback_failed";
+}
+
 function noStore(response) {
   response.setHeader("Cache-Control", "no-store, private");
   response.setHeader("X-Content-Type-Options", "nosniff");
@@ -197,7 +209,11 @@ async function finalizeCallback(requestId, code) {
   tokenUrl.searchParams.set("client_secret", process.env.META_OAUTH_APP_SECRET);
   tokenUrl.searchParams.set("redirect_uri", callbackUrl());
   tokenUrl.searchParams.set("code", code);
-  const shortToken = await metaJson(tokenUrl);
+  const shortToken = await metaJson(tokenUrl).catch((error) => {
+    const failure = new Error("meta_oauth_token_exchange_failed");
+    failure.cause = error;
+    throw failure;
+  });
   const exchangeUrl = new URL(`https://graph.facebook.com/${GRAPH_VERSION}/oauth/access_token`);
   exchangeUrl.searchParams.set("grant_type", "fb_exchange_token");
   exchangeUrl.searchParams.set("client_id", process.env.META_OAUTH_APP_ID);
@@ -213,7 +229,11 @@ async function finalizeCallback(requestId, code) {
     metaJson(`${graphBase}/me/accounts?fields=id,name,category,access_token,instagram_business_account{id,username}&limit=100&access_token=${encodeURIComponent(userToken)}`),
     metaJson(`${graphBase}/me/permissions?access_token=${encodeURIComponent(userToken)}`),
     optionalMetaJson(`${graphBase}/me/businesses?fields=id,name,owned_ad_accounts.limit(100){id,account_id,name,currency,account_status},client_ad_accounts.limit(100){id,account_id,name,currency,account_status},owned_pages.limit(100){id,name,category,instagram_business_account{id,username}},client_pages.limit(100){id,name,category,instagram_business_account{id,username}}&limit=100&access_token=${encodeURIComponent(userToken)}`),
-  ]);
+  ]).catch((error) => {
+    const failure = new Error("meta_oauth_asset_discovery_failed");
+    failure.cause = error;
+    throw failure;
+  });
   const businessAssets = collectBusinessAssets(rows(businessesResult));
   const initialPages = mergeAssets([
     ...rows(pages).map((item) => ({ ...item, sources: ["me/accounts"], business_ids: [] })),
@@ -248,8 +268,20 @@ export default async function handleMetaOAuth(request, response) {
     try {
       await finalizeCallback(state, code);
       return html(response, 200, "<h1>Facebook conectado</h1><p>Ya puedes volver a Telegram. Admira te mostrará las cuentas y páginas disponibles.</p>");
-    } catch {
-      return html(response, 400, "<h1>No se pudo completar la conexión</h1><p>Vuelve a abrir el enlace desde Telegram. Si continúa, revisa que aceptaste la invitación de la app.</p>");
+    } catch (error) {
+      const failureCode = oauthFailureCode(error);
+      // Keep server logs useful to support, without logging OAuth codes or
+      // access tokens.  Meta's own detailed response stays server-side.
+      console.error("meta_oauth_callback_failed", { failureCode, message: String(error?.message || "") });
+      // Mark the one-time request as failed so the polling installation drops
+      // it and a buyer never gets told to open the same spent link again.
+      try {
+        const pending = await readMetaOAuthRequest(state);
+        if (pending) await writeMetaOAuthRequest(state, { ...pending, status: "failed", failed_at: new Date().toISOString(), failure_code: failureCode });
+      } catch {
+        // The public response still remains safe if storage is unavailable.
+      }
+      return html(response, 400, `<h1>No se pudo completar la conexión</h1><p>La autorización llegó, pero falló el paso <strong>${failureCode}</strong>. Vuelve a Telegram y solicita un enlace nuevo; no reutilices este enlace.</p>`);
     }
   }
   if (request.method !== "POST") return json(response, 405, { ok: false, error: "method_not_allowed" });
@@ -268,6 +300,10 @@ export default async function handleMetaOAuth(request, response) {
       const pending = await readMetaOAuthRequest(requestId);
       if (!pending || !validSecret(handoffSecret) || !sameDigest(String(pending.handoff_digest || ""), handoffDigest(handoffSecret))) return json(response, 404, { ok: false, error: "oauth_request_not_found" });
       if (Date.now() - Date.parse(pending.created_at || "") > MAX_AGE_MS) { await deleteMetaOAuthRequest(requestId); return json(response, 410, { ok: false, error: "oauth_request_expired" }); }
+      if (pending.status === "failed") {
+        await deleteMetaOAuthRequest(requestId);
+        return json(response, 409, { ok: false, error: "oauth_callback_failed", failure_code: String(pending.failure_code || "callback_failed") });
+      }
       if (pending.status !== "connected") return json(response, 200, { ok: true, status: pending.status || "pending" });
       const raw = decryptPortalSecret(pending.credentials);
       if (!raw) return json(response, 500, { ok: false, error: "oauth_result_unavailable" });

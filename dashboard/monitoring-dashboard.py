@@ -3848,7 +3848,7 @@ def _poll_meta_oauth_in_background():
                     # explicit default choice.
                     log_action("meta_oauth_connected", {"background": True}, "completed")
                     return
-                if result.get("error") in {"oauth_request_expired", "oauth_request_not_found"}:
+                if result.get("error") in {"oauth_request_expired", "oauth_request_not_found", "oauth_callback_failed"}:
                     try: META_OAUTH_PENDING_FILE.unlink()
                     except OSError: pass
                     return
@@ -3940,14 +3940,16 @@ def social_oauth_poll(payload=None):
         # between this UI poll and the request above. Treat that as success,
         # rather than showing a misleading expired-link error.
         existing = _meta_oauth_connection()
-        if result.get("error") in {"oauth_request_expired", "oauth_request_not_found"} and existing.get("connected"):
+        if result.get("error") in {"oauth_request_expired", "oauth_request_not_found", "oauth_callback_failed"} and existing.get("connected"):
             try: META_OAUTH_PENDING_FILE.unlink()
             except OSError: pass
             return {"ok": True, "status": "connected", **_safe_meta_oauth_summary(existing)}
-        if result.get("error") in {"oauth_request_expired", "oauth_request_not_found"}:
+        if result.get("error") in {"oauth_request_expired", "oauth_request_not_found", "oauth_callback_failed"}:
             try: META_OAUTH_PENDING_FILE.unlink()
             except OSError: pass
-        raise ValueError("La conexión de Facebook venció o no pudo verificarse. Solicita un enlace nuevo.")
+        failure_code = str(result.get("failure_code") or "").strip()
+        suffix = f" (paso: {failure_code})" if failure_code else ""
+        raise ValueError("La conexión de Facebook no pudo verificarse. Solicita un enlace nuevo." + suffix)
     summary = _apply_meta_oauth_credentials(result.get("credentials"))
     try: META_OAUTH_PENDING_FILE.unlink()
     except OSError: pass
