@@ -122,6 +122,17 @@ async function optionalMetaJson(url, options = {}) {
   }
 }
 
+async function discoveredMetaJson(stage, url, options = {}) {
+  try {
+    return await metaJson(url, options);
+  } catch (error) {
+    // This label never contains a URL or credential.  It tells support which
+    // Graph edge rejected the OAuth token without leaking the token itself.
+    error.oauth_stage = stage;
+    throw error;
+  }
+}
+
 function safePage(row) {
   if (!row?.id) return null;
   return {
@@ -230,10 +241,10 @@ async function finalizeCallback(requestId, code) {
   if (!userToken) throw new Error("meta_oauth_exchange_failed");
   const graphBase = `https://graph.facebook.com/${GRAPH_VERSION}`;
   const [profile, accounts, pages, permissions, businessesResult] = await Promise.all([
-    metaJson(`${graphBase}/me?fields=id,name&access_token=${encodeURIComponent(userToken)}`),
-    metaJson(`${graphBase}/me/adaccounts?fields=id,account_id,name,currency,account_status&limit=100&access_token=${encodeURIComponent(userToken)}`),
-    metaJson(`${graphBase}/me/accounts?fields=id,name,category,access_token,instagram_business_account{id,username}&limit=100&access_token=${encodeURIComponent(userToken)}`),
-    metaJson(`${graphBase}/me/permissions?access_token=${encodeURIComponent(userToken)}`),
+    discoveredMetaJson("profile", `${graphBase}/me?fields=id,name&access_token=${encodeURIComponent(userToken)}`),
+    discoveredMetaJson("ad_accounts", `${graphBase}/me/adaccounts?fields=id,account_id,name,currency,account_status&limit=100&access_token=${encodeURIComponent(userToken)}`),
+    discoveredMetaJson("pages", `${graphBase}/me/accounts?fields=id,name,category,access_token,instagram_business_account{id,username}&limit=100&access_token=${encodeURIComponent(userToken)}`),
+    discoveredMetaJson("permissions", `${graphBase}/me/permissions?access_token=${encodeURIComponent(userToken)}`),
     optionalMetaJson(`${graphBase}/me/businesses?fields=id,name,owned_ad_accounts.limit(100){id,account_id,name,currency,account_status},client_ad_accounts.limit(100){id,account_id,name,currency,account_status},owned_pages.limit(100){id,name,category,instagram_business_account{id,username}},client_pages.limit(100){id,name,category,instagram_business_account{id,username}}&limit=100&access_token=${encodeURIComponent(userToken)}`),
   ]).catch((error) => {
     const failure = new Error("meta_oauth_asset_discovery_failed");
@@ -241,6 +252,7 @@ async function finalizeCallback(requestId, code) {
     failure.meta_code = error?.meta_code;
     failure.meta_subcode = error?.meta_subcode;
     failure.meta_type = error?.meta_type;
+    failure.oauth_stage = error?.oauth_stage || "";
     throw failure;
   });
   const businessAssets = collectBusinessAssets(rows(businessesResult));
@@ -287,6 +299,10 @@ export default async function handleMetaOAuth(request, response) {
         graphCode: Number(error?.meta_code || 0),
         graphSubcode: Number(error?.meta_subcode || 0),
         graphType: String(error?.meta_type || ""),
+        graphStage: String(error?.oauth_stage || ""),
+        // Meta error strings describe the rejected field/permission, not the
+        // bearer token. Logging it is required to repair configuration drift.
+        graphMessage: String(error?.cause?.meta || error?.meta || "").slice(0, 300),
       });
       // Mark the one-time request as failed so the polling installation drops
       // it and a buyer never gets told to open the same spent link again.
