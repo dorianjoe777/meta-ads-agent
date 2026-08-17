@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""Agent profile loader for the dashboard chat runtime."""
+import os
+from pathlib import Path
+
+from product_config import ROOT_DIR
+
+
+PROFILE_FILES = (
+    ("SOUL", "SOUL.md"),
+    ("AGENTS", "AGENTS.md"),
+    ("TOOLS", "TOOLS.md"),
+    ("SKILLS", "SKILLS.md"),
+    ("USER", "USER.md"),
+)
+
+
+def profile_dir(config=None):
+    configured = getattr(config, "agent_profile_dir", "") if config else ""
+    configured = configured or os.environ.get("AGENT_PROFILE_DIR", "agent")
+    path = Path(configured)
+    if not path.is_absolute():
+        path = ROOT_DIR / path
+    return path
+
+
+def load_agent_profile(config=None):
+    base = profile_dir(config)
+    sections = []
+    missing = []
+    for title, filename in PROFILE_FILES:
+        path = base / filename
+        if not path.exists():
+            missing.append(str(path))
+            continue
+        sections.append(
+            {
+                "title": title,
+                "filename": filename,
+                "path": str(path),
+                "content": path.read_text(encoding="utf-8").strip(),
+            }
+        )
+    return {"dir": str(base), "sections": sections, "missing": missing}
+
+
+def language_runtime_instruction(language=""):
+    if language == "es":
+        return """# Language Runtime Instruction
+The dashboard language is Spanish. Think directly in natural Latin American Spanish, not in English translated to Spanish.
+
+Use beginner-friendly business language. Avoid textbook marketing definitions unless the user asks. Explain only the KPIs that matter, in plain terms:
+- ROAS: how much money came back for each dollar spent.
+- CPA: roughly what it costs to get one purchase, lead, or customer.
+- CTR: how attractive the ad is to click.
+- Frequency: how many times people are seeing the ad; high frequency can mean fatigue.
+
+Keep answers warm, practical, and easy for a non-marketer to follow. Use clear next steps."""
+    if language == "en":
+        return """# Language Runtime Instruction
+The dashboard language is English. Use clear beginner-friendly business language. Explain only the KPIs that matter and keep next steps concrete."""
+    return """# Language Runtime Instruction
+Use the user's language. If Spanish is used, think directly in natural Latin American Spanish and avoid translated-English phrasing."""
+
+
+def turn_orientation_instruction():
+    return """# Turn Orientation Instruction
+First read the automatically attached live Meta snapshot silently on every ordinary buyer turn. It is authoritative for which campaigns, ad sets and ads currently exist, their current status, budget and performance. It overrides saved memory, action logs, local plans, created-campaign drafts and approval files. Never mention or prioritize an old approval unless the buyer explicitly asks to approve, reject or activate one exact current action. If deeper current detail is needed, call the live Meta context tool instead of guessing from memory.
+
+Before every reply, silently orient yourself instead of answering the latest message in isolation:
+1. What is the buyer's immediate goal in this turn?
+2. Where were we in the current business/ad/creative/setup workflow?
+3. What has already been decided, saved, created, attempted, or blocked?
+4. What is still missing before the next useful action?
+5. What is the next safest helpful step: answer, ask one clear question, use a product tool, stage an approval, or explain a blocker?
+
+Use durable memory and current context when available; do not restart onboarding or repeat solved questions just because the current message is short.
+Keep this checklist private. The buyer-facing answer should feel continuous: briefly acknowledge the current step when helpful, then move the work forward."""
+
+
+def build_system_prompt(config=None, language=""):
+    profile = load_agent_profile(config)
+    if not profile["sections"]:
+        return fallback_system_prompt(language)
+
+    chunks = [
+        "You are Admira IA, the product's Meta Ads manager agent. Use this durable agent profile as your operating architecture.",
+        "These profile files define identity, internal roles, tools, safety boundaries, and the default buyer profile.",
+    ]
+    for section in profile["sections"]:
+        chunks.append(f"\n\n# {section['filename']}\n{section['content']}")
+    if profile["missing"]:
+        chunks.append("\n\n# Missing profile files\n" + "\n".join(f"- {item}" for item in profile["missing"]))
+    chunks.append("\n\n" + language_runtime_instruction(language))
+    chunks.append("\n\n" + turn_orientation_instruction())
+    return "\n".join(chunks)
+
+
+def fallback_system_prompt(language=""):
+    return """You are Admira IA, the user's warm Meta Ads business manager inside a self-hosted ads operator.
+
+Be warm, calm, practical, and confidence-building. Use the user's language, explain marketing terms for beginners, and never claim live Meta changes were executed unless the backend confirms it. Use current live Meta state before saved memory. Fully paused no-spend preparation may proceed when requested; activation and protected live-account mutations require explicit confirmation.
+
+""" + language_runtime_instruction(language) + "\n\n" + turn_orientation_instruction()

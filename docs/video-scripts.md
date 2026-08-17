@@ -1,0 +1,37 @@
+# Guiones cortos de video
+
+## 1. Instalar localmente
+
+"En este video instalamos el operador en tu maquina. Abre el instalador o la carpeta del producto, entra a la terminal dentro de esa carpeta y ejecuta `./scripts/install-local.sh`. Luego corre `./scripts/run-dashboard.sh` y abre el enlace del dashboard."
+
+## 2. Agregar licencia
+
+"Pega la licencia que recibiste por email con tu compra. Esa es la unica clave que te damos nosotros. Al final del onboarding crearas tu propia contrasena del dashboard para proteger este computador o VPS."
+
+## 3. Crear conexion privada con Meta
+
+"Ahora vamos a crear tu conexion privada con Meta. Veras dos opciones. La recomendada es crear una clave estable desde tu propio Meta Business con un Usuario del sistema. Si quieres empezar mas rapido, tambien puedes usar Graph API Explorer. Esa clave puede pedir renovacion cada 60 dias aproximadamente, pero puedes cambiar a clave estable mas adelante desde Configuracion. Nosotros no recibimos esa clave: queda guardada localmente en tu computador o VPS."
+
+## 4. Elegir cuenta publicitaria
+
+"Despues de guardar el token, toca Buscar mis cuentas. Elige la cuenta que quieres que el agente cuide. Si prefieres hacerlo manualmente, copia el ID que empieza por `act_` y pegalo en el campo de cuenta publicitaria."
+
+## 5. Primera lectura con supervision
+
+"Antes de tocar Meta Ads, hacemos una lectura con supervision. El agente lee datos reales, explica que esta pasando y prepara recomendaciones. El dashboard debe mostrar `Datos reales de Meta`."
+
+## 6. Aprobar un cambio de presupuesto
+
+"Cuando el agente recomienda un cambio grande, no lo ejecuta solo. Te muestra la decision exacta. Puedes aprobar desde el dashboard o desde Telegram tocando el boton correcto. Si queda activo y puede gastar, veras una confirmacion especial."
+
+## 7. Usar el chat manager
+
+"Tambien puedes hablar con el manager. Pidele: 'que me falta para activar piloto automatico', 'revisa presupuesto' o 'pausa esta campana'. Si falta informacion, el agente te la pedira antes de actuar."
+
+## 8. Activar Piloto automatico con seguridad
+
+"Piloto automatico se activa al final, cuando licencia, Meta, datos reales y aprobaciones estan listos. Haz una prueba pequena, revisa la tarjeta de resultado y vuelve a Con supervision si algo no cuadra."
+
+## 9. Hablar con el agente por Telegram
+
+"Desde Configuracion puedes conectar Telegram. Primero instala Telegram en el celular; si puedes, tambien en tu PC para copiar mas facil. Busca BotFather, escribe /newbot, pon cualquier nombre y luego un usuario que termine en bot. BotFather te dara una clave larga: la pegas aqui, le escribes hola a tu bot y tocas Detectar mi chat. Esto se hace una sola vez. Desde ahi consultas al manager por Telegram y apruebas decisiones exactas con botones."

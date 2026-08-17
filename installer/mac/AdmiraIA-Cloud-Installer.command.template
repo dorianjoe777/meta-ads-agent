@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Internal-only terminal installer. The build script appends the cloud engine
+# below the marker, so this remains a single double-clickable .command file.
+STATE_DIR="$HOME/Library/Application Support/Admira IA/Cloud Installer"
+STABLE_COMMAND="$STATE_DIR/AdmiraIA-Cloud-Installer.command"
+STABLE_ENGINE="$STATE_DIR/admira-mac-cloud-engine.sh"
+SOURCE_FILE="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+
+mkdir -p "$STATE_DIR"
+if [ "$SOURCE_FILE" != "$STABLE_COMMAND" ]; then
+  /usr/bin/ditto "$SOURCE_FILE" "$STABLE_COMMAND"
+fi
+
+extract_engine() {
+  local tmp
+  tmp="$(/usr/bin/mktemp "$STATE_DIR/engine.XXXXXX")"
+  /usr/bin/awk 'seen && /^__ADMIRA_GATE_PAYLOAD__$/ { exit } seen { print } /^__ADMIRA_ENGINE_PAYLOAD_BELOW__$/ { seen=1; next }' "$SOURCE_FILE" > "$tmp"
+  /bin/chmod 700 "$tmp"
+  /bin/mv -f "$tmp" "$STABLE_ENGINE"
+}
+
+extract_assets() {
+  local dir="$STATE_DIR/cloud-agent" tmp_gate tmp_reset
+  mkdir -p "$dir"
+  tmp_gate="$(/usr/bin/mktemp "$dir/gate.XXXXXX")"
+  tmp_reset="$(/usr/bin/mktemp "$dir/reset.XXXXXX")"
+  /usr/bin/awk 'seen && /^__ADMIRA_RESET_PAYLOAD__$/ { exit } seen { print } /^__ADMIRA_GATE_PAYLOAD__$/ { seen=1; next }' "$SOURCE_FILE" > "$tmp_gate"
+  /usr/bin/awk 'seen { print } /^__ADMIRA_RESET_PAYLOAD__$/ { seen=1; next }' "$SOURCE_FILE" > "$tmp_reset"
+  /bin/chmod 700 "$tmp_gate" "$tmp_reset"
+  /bin/mv -f "$tmp_gate" "$dir/admira-cloud-access-gate.py"
+  /bin/mv -f "$tmp_reset" "$dir/admira-cloud-clean-reset.sh"
+}
+
+extract_engine
+extract_assets
+
+if [ "${1:-}" = "--help" ]; then
+  echo "Uso: doble clic en este archivo para crear una instalación cloud de Admira IA."
+  echo "Para reanudar después de un reinicio se usa automáticamente --resume."
+  exit 0
+fi
+
+if [ "${1:-}" = "--resume" ]; then
+  echo "Reanudando la instalación anterior…"
+  export ADMIRA_INSTALLER_MODE="command"
+  export ADMIRA_INSTALLER_COMMAND_FILE="$STABLE_COMMAND"
+  export ADMIRA_CLOUD_ASSET_DIR="$STATE_DIR/cloud-agent"
+  exec /bin/bash "$STABLE_ENGINE" --resume
+fi
+
+echo ""
+echo "=============================================="
+echo "  ADMIRA IA · INSTALADOR CLOUD INTERNO"
+echo "=============================================="
+echo "Este instalador crea un Droplet de DigitalOcean."
+echo "No cierres esta ventana hasta que termine."
+echo ""
+
+read -r -p "Correo de compra: " ADMIRA_INSTALLER_EMAIL
+read -r -p "Licencia de Admira IA: " ADMIRA_INSTALLER_LICENSE
+printf "Token personal de DigitalOcean (no se mostrará): "
+read -r -s ADMIRA_DO_TOKEN
+printf "\n"
+read -r -p "Tamaño [1=1 GB con swap, 2=2 GB recomendado, 4=4 GB] (2): " size_choice
+read -r -p "Región [nyc3, sfo3, ams3, fra1, sgp1] (nyc3): " ADMIRA_DO_REGION
+
+size_choice="$(printf '%s' "${size_choice:-2}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+case "$size_choice" in
+  1|1gb|s-1vcpu-1gb) ADMIRA_DO_SIZE="s-1vcpu-1gb" ;;
+  4|4gb|s-2vcpu-4gb) ADMIRA_DO_SIZE="s-2vcpu-4gb" ;;
+  2|2gb|s-1vcpu-2gb|'') ADMIRA_DO_SIZE="s-1vcpu-2gb" ;;
+  *) echo "Tamaño no válido." >&2; exit 2 ;;
+esac
+ADMIRA_DO_REGION="$(printf '%s' "${ADMIRA_DO_REGION:-nyc3}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+
+export ADMIRA_INSTALLER_EMAIL ADMIRA_INSTALLER_LICENSE ADMIRA_DO_TOKEN
+export ADMIRA_DO_SIZE ADMIRA_DO_REGION
+export ADMIRA_INSTALLER_MODE="command"
+export ADMIRA_INSTALLER_COMMAND_FILE="$STABLE_COMMAND"
+export ADMIRA_CLOUD_ASSET_DIR="$STATE_DIR/cloud-agent"
+
+echo ""
+echo "Iniciando Admira IA en DigitalOcean…"
+echo "Los avances y errores quedarán en:"
+echo "  $STATE_DIR/install.log"
+echo ""
+set +e
+/bin/bash "$STABLE_ENGINE" --gui
+engine_status=$?
+set -e
+
+if [ "$engine_status" -eq 42 ]; then
+  echo ""
+  echo "La licencia está vinculada a otro equipo, pero permite transferirse."
+  read -r -p "¿Transferirla a este Mac y continuar? [s/N]: " transfer_choice
+  transfer_choice="$(printf '%s' "$transfer_choice" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  case "$transfer_choice" in
+    s|si|sí|y|yes)
+      export ADMIRA_TRANSFER_DEVICE="true"
+      set +e
+      /bin/bash "$STABLE_ENGINE" --gui
+      engine_status=$?
+      set -e
+      ;;
+  esac
+fi
+
+exit "$engine_status"
+
+__ADMIRA_ENGINE_PAYLOAD_BELOW__

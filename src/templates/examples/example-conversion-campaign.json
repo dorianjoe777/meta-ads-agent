@@ -1,0 +1,62 @@
+{
+  "name": "Q2 Sales Campaign - May 2026",
+  "objective": "CONVERSIONS",
+  "budget": {
+    "daily": 100,
+    "total": 3000
+  },
+  "start_date": "2026-05-01",
+  "end_date": "2026-05-31",
+  "pixel_id": "123456789012345",
+  "ad_sets": [
+    {
+      "name": "Lookalike 1% - Purchasers",
+      "bid_strategy": "LOWEST_COST",
+      "budget": 50,
+      "optimization_goal": "CONVERSIONS",
+      "audience": {
+        "locations": ["US", "CA"],
+        "age_range": { "min": 25, "max": 54 },
+        "genders": ["ALL"],
+        "lookalike": {
+          "source": "Purchasers - Last 180 Days",
+          "percentage": 1
+        }
+      },
+      "placements": {
+        "automatic": true
+      }
+    },
+    {
+      "name": "Retargeting - Cart Abandoners",
+      "bid_strategy": "CAP",
+      "budget": 30,
+      "bid_amount": 5.00,
+      "optimization_goal": "CONVERSIONS",
+      "audience": {
+        "locations": ["US", "CA"],
+        "age_range": { "min": 25, "max": 54 },
+        "genders": ["ALL"],
+        "interests": ["Online Shopping", "E-commerce"]
+      },
+      "placements": {
+        "automatic": true
+      }
+    },
+    {
+      "name": "Interest - Fitness Enthusiasts",
+      "bid_strategy": "LOWEST_COST",
+      "budget": 20,
+      "optimization_goal": "CONVERSIONS",
+      "audience": {
+        "locations": ["US"],
+        "age_range": { "min": 18, "max": 45 },
+        "genders": ["ALL"],
+        "interests": ["Fitness", "Weight Training", "Health & Wellness"]
+      },
+      "placements": {
+        "automatic": true
+      }
+    }
+  ]
+}

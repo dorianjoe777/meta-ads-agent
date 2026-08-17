@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="320" viewBox="0 0 320 320" role="img" aria-labelledby="title desc">
+  <title id="title">Ad+ mark</title>
+  <desc id="desc">Compact Ad+ mark with superscript plus.</desc>
+  <defs>
+    <linearGradient id="word" x1="34" y1="244" x2="202" y2="76" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#DCCBFF"/>
+      <stop offset="0.52" stop-color="#FFF9FF"/>
+      <stop offset="1" stop-color="#FFD0CB"/>
+    </linearGradient>
+    <linearGradient id="plus" x1="214" y1="62" x2="292" y2="136" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#C7F1B7"/>
+      <stop offset="0.55" stop-color="#DCCBFF"/>
+      <stop offset="1" stop-color="#FFD0CB"/>
+    </linearGradient>
+  </defs>
+  <text x="26" y="222" fill="url(#word)" font-family="Orbitron, Eurostile, Bank Gothic, Arial Black, sans-serif" font-size="160" font-weight="900" letter-spacing="-8">Ad</text>
+  <path d="M206 56h22v30h30v22h-30v30h-22v-30h-30V86h30V56Z" fill="url(#plus)"/>
+</svg>
