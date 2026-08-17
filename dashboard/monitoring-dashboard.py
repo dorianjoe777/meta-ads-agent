@@ -3823,6 +3823,12 @@ def _apply_meta_oauth_credentials(credentials):
         "_skip_business_enforcement": True,
         "_skip_meta_profile_sync": True,
     })
+    ad_config = read_json(AD_CONFIG_FILE, {})
+    ad_config.setdefault("account", {})["id"] = ""
+    destination = ad_config.setdefault("creative", {}).setdefault("destination", {})
+    destination["page_id"] = ""
+    destination["instagram_actor_id"] = ""
+    write_json(AD_CONFIG_FILE, ad_config)
     update_env_values(updates)
     return _safe_meta_oauth_summary(connection)
 
