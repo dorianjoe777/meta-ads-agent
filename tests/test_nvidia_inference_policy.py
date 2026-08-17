@@ -322,13 +322,21 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         models = [
             "z-ai/glm-5.2",
             "deepseek-ai/deepseek-v4-flash-0731",
+            "nvidia/nemotron-3.5-lightning-30b-a3b",
+            "nvidia/nemotron-3-ultra-550b-a55b",
             "openai/gpt-oss-20b",
             "minimaxai/minimax-m3",
         ]
         ordered = hermes_bridge._nvidia_model_specific_fallback_order(models, "minimaxai/minimax-m3")
         self.assertEqual(
             ordered,
-            ["deepseek-ai/deepseek-v4-flash-0731", "openai/gpt-oss-20b", "z-ai/glm-5.2"],
+            [
+                "deepseek-ai/deepseek-v4-flash-0731",
+                "nvidia/nemotron-3.5-lightning-30b-a3b",
+                "z-ai/glm-5.2",
+                "nvidia/nemotron-3-ultra-550b-a55b",
+                "openai/gpt-oss-20b",
+            ],
         )
 
     def test_nvidia_uses_one_attempt_and_serial_crons(self):
@@ -780,8 +788,8 @@ compression:
             hermes_bridge.agent_model_connections = original_connections
             hermes_bridge.codex_credential_health = original_codex_health
 
-    def test_nvidia_live_catalog_adds_one_model_specific_same_key_fallback(self):
-        """A fresh live catalog permits one alternate NIM pool, never guesses IDs."""
+    def test_nvidia_live_catalog_adds_bounded_model_specific_same_key_fallbacks(self):
+        """A fresh catalog enables only real, bounded alternate NIM pools."""
         original_catalog = hermes_bridge.NVIDIA_MODEL_CATALOG_FILE
         original_connections = hermes_bridge.agent_model_connections
         original_codex_health = hermes_bridge.codex_credential_health
@@ -789,7 +797,12 @@ compression:
             with tempfile.TemporaryDirectory() as directory:
                 hermes_bridge.NVIDIA_MODEL_CATALOG_FILE = Path(directory) / "nvidia.json"
                 hermes_bridge.NVIDIA_MODEL_CATALOG_FILE.write_text(json.dumps({
-                    "models": ["z-ai/glm-5.2", "minimaxai/minimax-m3", "openai/gpt-oss-20b"],
+                    "models": [
+                        "z-ai/glm-5.2", "minimaxai/minimax-m3",
+                        "deepseek-ai/deepseek-v4-flash-0731",
+                        "nvidia/nemotron-3.5-lightning-30b-a3b",
+                        "nvidia/nemotron-3-ultra-550b-a55b",
+                    ],
                     "source": "nvidia_live_catalog",
                     "account_verified": True,
                     "checked_epoch": time.time(),
@@ -802,10 +815,14 @@ compression:
                     "model": "z-ai/glm-5.2",
                     "base_url": hermes_bridge.ADMIRA_NVIDIA_DEFAULT_BASE_URL,
                 })
-                self.assertEqual(len(chain), 1)
-                self.assertEqual(chain[0]["provider"], hermes_bridge.ADMIRA_NVIDIA_PROVIDER)
-                self.assertEqual(chain[0]["model"], "minimaxai/minimax-m3")
-                self.assertEqual(chain[0]["key_env"], hermes_bridge.ADMIRA_NVIDIA_KEY_ENV)
+                self.assertEqual([item["model"] for item in chain], [
+                    "minimaxai/minimax-m3",
+                    "deepseek-ai/deepseek-v4-flash-0731",
+                    "nvidia/nemotron-3.5-lightning-30b-a3b",
+                    "nvidia/nemotron-3-ultra-550b-a55b",
+                ])
+                self.assertTrue(all(item["provider"] == hermes_bridge.ADMIRA_NVIDIA_PROVIDER for item in chain))
+                self.assertTrue(all(item["key_env"] == hermes_bridge.ADMIRA_NVIDIA_KEY_ENV for item in chain))
         finally:
             hermes_bridge.NVIDIA_MODEL_CATALOG_FILE = original_catalog
             hermes_bridge.agent_model_connections = original_connections
@@ -846,7 +863,7 @@ compression:
         self.assertFalse(admira_hermes_runtime_patch._admira_same_nvidia_fallback_blocked("timeout"))
         self.assertFalse(admira_hermes_runtime_patch._admira_same_nvidia_fallback_blocked("internal_server_error"))
 
-    def test_nvidia_policy_has_zero_retries_and_at_most_one_same_key_candidate(self):
+    def test_nvidia_policy_has_zero_retries_and_bounded_same_key_candidates(self):
         policy = hermes_bridge.inference_runtime_policy({
             "brain": "nvidia_nim",
             "provider": hermes_bridge.ADMIRA_NVIDIA_PROVIDER,
@@ -856,6 +873,22 @@ compression:
         self.assertEqual(policy["stream_retries"], 0)
         self.assertFalse(admira_hermes_runtime_patch._admira_same_nvidia_fallback_blocked("429 upstream rate limit"))
         self.assertFalse(admira_hermes_runtime_patch._admira_same_nvidia_fallback_blocked("model timeout"))
+
+    def test_nemotron_request_disables_thinking_without_affecting_other_models(self):
+        prepared = admira_hermes_runtime_patch._nvidia_prepare_request({
+            "model": "nvidia/nemotron-3.5-lightning-30b-a3b",
+            "messages": [{"role": "user", "content": "hola"}],
+            "max_tokens": 300,
+            "reasoning_budget": 999,
+        })
+        self.assertEqual(prepared["chat_template_kwargs"], {"enable_thinking": False})
+        self.assertNotIn("reasoning_budget", prepared)
+        plain = admira_hermes_runtime_patch._nvidia_prepare_request({
+            "model": "minimaxai/minimax-m3",
+            "messages": [{"role": "user", "content": "hola"}],
+            "max_tokens": 300,
+        })
+        self.assertNotIn("chat_template_kwargs", plain)
 
 
 if __name__ == "__main__":

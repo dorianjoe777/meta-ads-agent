@@ -33,7 +33,13 @@ class NvidiaProtectionCanaryTests(unittest.TestCase):
             self.assertGreaterEqual(len(report["rows"]), 6)
             self.assertEqual(report["fallback"]["primary"], "minimaxai/minimax-m3")
             self.assertEqual(report["fallback"]["first_model_specific_alternate"], "deepseek-ai/deepseek-v4-flash-0731")
-            self.assertTrue(report["fallback"]["same_key_429_blocked"])
+            self.assertTrue(report["fallback"]["same_key_429_allowed"])
+            self.assertEqual(report["fallback"]["alternate_models"], [
+                "deepseek-ai/deepseek-v4-flash-0731",
+                "nvidia/nemotron-3.5-lightning-30b-a3b",
+                "z-ai/glm-5.2",
+                "nvidia/nemotron-3-ultra-550b-a55b",
+            ])
             self.assertEqual(report["fallback"]["api_max_retries"], 0)
 
     def test_remote_canary_is_explicitly_no_write_and_bounded(self):

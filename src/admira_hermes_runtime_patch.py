@@ -1700,6 +1700,18 @@ def _nvidia_prepare_request(api_kwargs):
     )
     request["max_tokens"] = max(256, min(current_max, output_cap))
 
+    # Nemotron reasoning variants otherwise emit their chain-of-thought in
+    # ordinary ``content`` on the hosted endpoint. That is neither useful nor
+    # appropriate in a buyer-facing Telegram reply. NVIDIA accepts this
+    # template option for these models; keep other NIM payloads untouched.
+    model_key = str(request.get("model") or "").strip().lower()
+    if "nemotron" in model_key:
+        template_kwargs = request.get("chat_template_kwargs")
+        template_kwargs = dict(template_kwargs) if isinstance(template_kwargs, dict) else {}
+        template_kwargs["enable_thinking"] = False
+        request["chat_template_kwargs"] = template_kwargs
+        request.pop("reasoning_budget", None)
+
     _record_nvidia_request_diagnostic(
         request,
         profile=profile,

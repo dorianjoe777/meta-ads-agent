@@ -121,6 +121,10 @@ NVIDIA_MODEL_CATALOG_FILE = DATA_DIR / "nvidia_model_catalog.json"
 # verified against NVIDIA.  A stale/safe catalog must never manufacture a
 # second route that may not exist for the buyer's key.
 NVIDIA_LIVE_CATALOG_MAX_AGE_SECONDS = 6 * 60 * 60
+# A hosted NIM pool can be temporarily saturated while other models behind
+# the same buyer key remain healthy. These are bounded, model-specific
+# alternates (never retries of the model that just failed).
+NVIDIA_SAME_KEY_FALLBACK_LIMIT = 4
 MODEL_USAGE_LIMIT_PATTERNS = (
     r"\b429\b",
     r"too many requests",
@@ -446,14 +450,18 @@ def _nvidia_model_specific_fallback_order(models, primary_model):
         # MiniMax M3 is the primary NIM route. The remaining entries are
         # same-key fallbacks only when NVIDIA's live catalog confirms them.
         "minimaxai/minimax-m3",
-        # DeepSeek V4 Flash is the intentional first alternate hosted pool.
-        # It is permitted for one bounded attempt after an M3 model-pool 429;
-        # the runtime guard still blocks shared quota/auth/billing failures.
+        # DeepSeek V4 Flash is the first lightweight alternate hosted pool.
         "deepseek-ai/deepseek-v4-flash-0731",
+        # Lightning is deliberately ahead of larger reasoning models: it is
+        # fast enough to preserve a normal Telegram conversation.
+        "nvidia/nemotron-3.5-lightning-30b-a3b",
+        "z-ai/glm-5.2",
+        # Last-resort high-capability pool. It is used only when each prior
+        # live model-specific attempt failed; thinking is disabled at runtime.
+        "nvidia/nemotron-3-ultra-550b-a55b",
         "deepseek-ai/deepseek-v4-flash",
         "openai/gpt-oss-20b",
         "nvidia/nemotron-3-nano-30b-a3b",
-        "z-ai/glm-5.2",
     )
     ordered = []
     for model in [*preferred, *models]:
@@ -682,12 +690,12 @@ def admira_inference_fallback_chain(config, primary_settings=None):
 
     # Some NVIDIA hosted pools are model-specific: a timeout/5xx/empty
     # response from GLM can coexist with a healthy M3 pool under the same key.
-    # Add at most one alternate model, and only from a recent authenticated
-    # catalog.  Runtime policy skips this entry for quota/auth/billing errors;
-    # those are shared-key failures and must not be amplified.
+    # Keep a small, live-catalog-verified sequence of different pools. Each
+    # candidate is tried at most once; shared quota/auth/billing failures skip
+    # the entire same-key sequence in the runtime guard.
     if primary_provider == ADMIRA_NVIDIA_PROVIDER:
         live_models = _live_nvidia_model_ids(NVIDIA_MODEL_CATALOG_FILE)
-        for model in _nvidia_model_specific_fallback_order(live_models, primary_model)[:1]:
+        for model in _nvidia_model_specific_fallback_order(live_models, primary_model)[:NVIDIA_SAME_KEY_FALLBACK_LIMIT]:
             append(ADMIRA_NVIDIA_PROVIDER, model, brain.get("base_url") or ADMIRA_NVIDIA_DEFAULT_BASE_URL, ADMIRA_NVIDIA_KEY_ENV)
 
     return entries[:6]

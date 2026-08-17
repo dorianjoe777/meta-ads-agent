@@ -109,7 +109,13 @@ def run_matrix() -> dict:
     fallback = {
         "primary": "minimaxai/minimax-m3",
         "first_model_specific_alternate": "deepseek-ai/deepseek-v4-flash-0731",
-        "same_key_429_blocked": runtime._admira_same_nvidia_fallback_blocked("429 upstream rate limit"),
+        "alternate_models": [
+            "deepseek-ai/deepseek-v4-flash-0731",
+            "nvidia/nemotron-3.5-lightning-30b-a3b",
+            "z-ai/glm-5.2",
+            "nvidia/nemotron-3-ultra-550b-a55b",
+        ],
+        "same_key_429_allowed": not runtime._admira_same_nvidia_fallback_blocked("429 upstream rate limit"),
         "same_key_timeout_allowed": not runtime._admira_same_nvidia_fallback_blocked("model timeout"),
         "api_max_retries": int(policy.get("api_max_retries") or 0),
         "stream_retries": int(policy.get("stream_retries") or 0),
@@ -122,7 +128,7 @@ def run_matrix() -> dict:
         "rows": rows,
         "fallback": fallback,
         "passed": all(row["passed"] for row in rows)
-        and fallback["same_key_429_blocked"]
+        and fallback["same_key_429_allowed"]
         and fallback["same_key_timeout_allowed"]
         and fallback["api_max_retries"] == 0
         and fallback["stream_retries"] == 0,
