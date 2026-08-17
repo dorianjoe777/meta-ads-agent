@@ -51,6 +51,21 @@ class OAuthFirstSetupTests(TestCase):
         self.assertIn("return metaConnectionGuide();", compact)
         self.assertNotIn("meta-token-input", compact)
 
+    def test_dashboard_does_not_offer_facebook_connection_controls(self):
+        source = Path(__file__).parents[1].joinpath("public", "dashboard", "dashboard.js").read_text()
+        start = source.index("function metaConnectionGuide()")
+        end = source.index("function accountPickerGuide()", start)
+        guide = source[start:end]
+        self.assertIn("No hay botones ni campos de Facebook", guide)
+        self.assertNotIn("data-action-code=\"startMetaOAuth()\"", guide)
+        self.assertNotIn("data-action-code=\"pollMetaOAuth()\"", guide)
+
+        start = source.index("function renderMetaConnectionPanel()")
+        end = source.index("function renderSetupConfig()", start)
+        panel = source[start:end]
+        self.assertNotIn("openMetaSettingsGuide", panel)
+        self.assertNotIn("Conectar Facebook", panel)
+
 
 if __name__ == "__main__":
     import unittest
