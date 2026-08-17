@@ -446,10 +446,9 @@ def _nvidia_model_specific_fallback_order(models, primary_model):
         # MiniMax M3 is the primary NIM route. The remaining entries are
         # same-key fallbacks only when NVIDIA's live catalog confirms them.
         "minimaxai/minimax-m3",
-        # DeepSeek V4 Flash is the intentional first alternate pool for a
-        # model-specific timeout. Do not rotate here after a shared 429;
-        # admira_hermes_runtime_patch blocks same-key candidates for that
-        # failure class.
+        # DeepSeek V4 Flash is the intentional first alternate hosted pool.
+        # It is permitted for one bounded attempt after an M3 model-pool 429;
+        # the runtime guard still blocks shared quota/auth/billing failures.
         "deepseek-ai/deepseek-v4-flash-0731",
         "deepseek-ai/deepseek-v4-flash",
         "openai/gpt-oss-20b",

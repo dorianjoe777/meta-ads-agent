@@ -1378,8 +1378,17 @@ def targeting_for_social(targeting):
         geo_locations = dict(targeting["geo_locations"])
     else:
         geo_locations = None
-    age_range = targeting.get("age_range") or {}
-    countries = normalize_location_codes(targeting.get("locations"), default=["US"])
+    # Campaign normalization persists the scalar age/country fields on nested
+    # ad sets.  Older campaign drafts use ``age_range`` / ``locations``.
+    # Accept both representations here: otherwise a correctly-normalized
+    # nested brief silently reaches Graph as Meta's 18–65 default audience.
+    age_range = targeting.get("age_range") if isinstance(targeting.get("age_range"), dict) else {}
+    age_min = age_range.get("min", targeting.get("age_min", targeting.get("min_age", 18)))
+    age_max = age_range.get("max", targeting.get("age_max", targeting.get("max_age", 65)))
+    countries = normalize_location_codes(
+        targeting.get("locations") or targeting.get("countries") or targeting.get("targeting_countries"),
+        default=["US"],
+    )
     meta_targeting = targeting.get("meta_targeting") or {}
     if isinstance(geo_locations, dict) and "countries" in geo_locations:
         normalized_geo_countries = normalize_location_codes(geo_locations.get("countries"), default=[])
@@ -1407,8 +1416,8 @@ def targeting_for_social(targeting):
             geo_locations = {"countries": countries or ["US"]}
     spec = {
         "geo_locations": geo_locations,
-        "age_min": int(age_range.get("min", 18)),
-        "age_max": int(age_range.get("max", 65)),
+        "age_min": int(age_min),
+        "age_max": int(age_max),
     }
     selected_interests = meta_targeting.get("interests") if isinstance(meta_targeting, dict) else []
     if not selected_interests and isinstance(targeting.get("interests"), list):
@@ -1875,6 +1884,11 @@ def execute_campaign_creation(path, client, approved=False, prior_result=None):
     # account.  This also lets newly-connected WABA numbers work immediately.
     if message_destination == "WHATSAPP" and not destination.get("page_id") and not (manual_completion or placeholder_static):
         missing.append("Facebook Page ID for WhatsApp destination")
+    if (
+        message_destination == "WHATSAPP"
+        and whatsapp_number_resolution.get("reason") == "page_read_permission_missing_for_whatsapp"
+    ):
+        missing.append("Meta Page read permission (pages_read_engagement) for WhatsApp destination")
     if final_status == "ACTIVE" and not active_confirmed:
         missing.append("active spend confirmation")
     if missing:

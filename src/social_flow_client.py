@@ -258,13 +258,31 @@ class SocialFlowClient:
             status_rank = 2 if status in {"ACTIVE", "PAUSED", "CAMPAIGN_PAUSED", "ADSET_PAUSED"} else 1
             candidates.append((status_rank, str(adset.get("updated_time") or ""), number, adset))
         if not candidates:
+            page_error = page_body.get("error") if isinstance(page_body.get("error"), dict) else {}
+            page_error_code = str(page_error.get("code") or "").strip()
+            page_error_message = str(page_error.get("message") or "").strip()
+            # A blank `whatsapp_number` is normal for some Business Suite
+            # links, but a Graph permission error is not. Keep the historical
+            # ad-set fallback above, then surface this as a deterministic
+            # preflight blocker instead of pretending no number exists and
+            # letting a campaign become partial later.
+            permission_missing = page_error_code in {"10", "200"} and (
+                "pages_read_engagement" in page_error_message.lower()
+                or "page public" in page_error_message.lower()
+            )
             return {
                 "ok": False,
                 "whatsapp_phone_number": "",
                 "source": "meta_live",
-                "reason": "no_page_linked_whatsapp_number_found",
+                "reason": (
+                    "page_read_permission_missing_for_whatsapp"
+                    if permission_missing
+                    else "no_page_linked_whatsapp_number_found"
+                ),
                 "page_lookup_ok": bool(page_result.get("ok")),
                 "adsets_lookup_ok": bool(adsets_result.get("ok")),
+                "page_error_code": page_error_code,
+                "page_error_message": page_error_message[:240],
             }
         candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
         _, _, number, adset = candidates[0]

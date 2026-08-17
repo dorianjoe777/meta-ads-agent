@@ -20,6 +20,7 @@ export type ShotPalette = {
   surfaceMutedText: string;
   primaryText: string;
   accentText: string;
+  accentOnBackground: string;
   highlightText: string;
   emphasisText: string;
 };
@@ -157,7 +158,7 @@ const CrashZoomPunch: React.FC<{scene: ShotScene; palette: ShotPalette}> = ({sce
       <div style={{position: "absolute", inset: 0, background: scene.media_src ? "#0006" : palette.background}}/>
       <div style={{position: "absolute", inset: "12% 8%", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", textAlign: "center", transform: `scale(${0.58 + p * 0.42})`, opacity: Math.min(1, p)}}>
         <div style={{fontSize: Math.min(width * 0.13, height * 0.1), lineHeight: 0.9, fontWeight: 950, color: palette.text, textTransform: "uppercase", textShadow: `0 8px 30px ${palette.background}`}}>{scene.title}</div>
-        <div style={{fontSize: Math.min(width * 0.038, 38), marginTop: 24, color: palette.accent}}>{scene.body}</div>
+        <div style={{fontSize: Math.min(width * 0.038, 38), marginTop: 24, color: palette.accentOnBackground || palette.text}}>{scene.body}</div>
       </div>
     </AbsoluteFill>
   );

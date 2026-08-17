@@ -3,6 +3,11 @@ FROM node:22-bookworm-slim
 ARG CODEX_CLI_VERSION=0.142.5
 ARG HERMES_AGENT_VERSION=0.18.0
 ARG MCP_SDK_VERSION=2.0.0
+ARG ADMIRA_BUILD_VERSION=unknown
+
+LABEL org.opencontainers.image.title="Admira IA" \
+      org.opencontainers.image.version="${ADMIRA_BUILD_VERSION}" \
+      org.opencontainers.image.description="Admira IA agent runtime"
 
 ENV PYTHONUNBUFFERED=1 \
     DASHBOARD_HOST=0.0.0.0 \

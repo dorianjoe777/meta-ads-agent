@@ -1,4 +1,5 @@
 import { signedReleaseGrant, verifyPortalSession } from "../../lib/license.js";
+import { licenseEmailMatches } from "../../lib/license-email.js";
 import { platformAsset, releaseWithDiscoveredAssets } from "../../lib/download-portal.js";
 import { readLicense, readReleases } from "../../lib/store.js";
 
@@ -33,7 +34,7 @@ export default async function handler(request, response) {
       return friendlyFailure(response, "platform_required", "Elige Mac, Windows o Linux.");
     }
     const record = await readLicense(session.license_key);
-    if (!record || record.status !== "active" || String(record.buyer_email || "").toLowerCase() !== session.buyer_email) {
+    if (!record || record.status !== "active" || !licenseEmailMatches(record, session.buyer_email)) {
       return friendlyFailure(response, "access_revoked", "No pude confirmar esta compra. Contacta soporte.");
     }
     const releases = await readReleases();

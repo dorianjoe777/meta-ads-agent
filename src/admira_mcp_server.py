@@ -27,6 +27,9 @@ _STDIO_FRAMING = "content-length"
 
 TOOL_DEFINITIONS = [
     ("get_real_meta_context", "Synchronize directly with Meta and read the current campaign/ad set/ad inventory plus performance context. Supports date_preset=maximum|today|last_7d|custom, custom since/until dates, and detail_level=standard|deep; deep includes placement/device, age/gender and country breakdowns. Read-only transient Graph failures are retried once. Inspect live_sync.connection and live_sync.error_details: if connection.reachable=true, do not claim Meta is disconnected or the token expired. Preserve code, subcode and fbtrace_id for support. Treat local memory and approvals only as candidate workflow context: they never prove what currently exists or runs in Meta, and a failed/incomplete empty response never proves the account has no campaigns."),
+    ("start_meta_oauth_connection", "Send the buyer a short-lived secure Facebook OAuth link in their connected Telegram chat. Use exactly once after business discovery is complete when get_meta_oauth_workspaces says Facebook is not connected. Do not ask for a Meta token, System User, or app. This is setup only and never spends money."),
+    ("get_meta_oauth_workspaces", "List the buyer's Facebook OAuth connection plus the ad accounts and Pages it discovered. Tokens are never returned. If several assets exist, explain the choices concisely and ask the buyer which business should be active."),
+    ("select_meta_oauth_workspace", "Select one previously discovered Facebook OAuth ad account and Page as the active business. Only accepts IDs returned by get_meta_oauth_workspaces; never invent or accept an external ID."),
     ("search_meta_targeting", "Search Meta's live targeting catalog for current interest or location IDs. Use kind=interest with q=<term>, or kind=location. Interest names from memory or web research are only ideas: call this tool and use the returned Meta IDs before staging a targeted audience. Never invent an interest ID."),
     ("inspect_adset_targeting", "Read one exact ad set directly from Meta and verify its persisted interest IDs and Advantage+ audience flag. Pass the numeric adset_id and optionally requested_interest_ids plus advantage_audience. Call this before claiming suggested interests or Advantage+ targeting were applied. It confirms Graph state, not the exact Ads Manager UI wording or placement."),
     ("run_daily_brief", "Run the daily Meta Ads brief and return the safe result."),
@@ -42,10 +45,10 @@ TOOL_DEFINITIONS = [
     ("codex_image_generate", "Generate standalone assets, organic social posts, approved Meta Ads raster images, or storyboard media through Codex/Image. For motion videos it may create full-frame imagery, reusable brand/product elements, and one-off story subjects/props that embody the scene's narrative. background_removal=green_screen produces an isolated #00FF00 plate and a deterministic transparent PNG for Remotion composition. reusable_asset archives only genuinely reusable files by product scope and visual role; story elements normally remain one-off. Always send a self-contained request with the exact active topic/offer, desired composition, format, CTA decision, and reference when relevant; never send only 'use saved guides'. Pass buyer-owned real photos in protected_reference_image_paths or content_asset_ids: the backend preserves them pixel-for-pixel. Saved official logos remain protected exact references."),
     ("codex_creative_plan", "Create a Codex concept or prompt plan from brand, product, reference, or current buyer context. Budget is optional for standalone creative exploration and only informs how many variants to test or launch."),
     ("search_motion_graphic_recipes", "Search Admira's complete vendored Video Shotcraft catalog before storyboarding. Use narrative constraints such as role, message type, tone, energy, tempo, impact, and category; it returns exact existing card/style names plus trusted Markdown and TSX provenance. Use it to choose motion by communication purpose instead of visual novelty, then read only the selected card/demo references."),
-    ("generate_motion_graphic_video", "Create and render a finished brand-aware motion-graphics MP4 locally with Remotion. Use for educational, explainer, promotional, tutorial, social-proof, announcement, or awareness videos in any niche. Resolve the exact active child product/service/offer before calling. Send either a clear topic plus key_points for an automatic storyboard, or explicit scenes using hook, statement, list, steps, stat, comparison, quote, media, and cta. The complete vendored Video Shotcraft library is available: 152 cards and 209 styles. Each scene may compose compatible exact card/style names through shot_recipes and may use one main media_path plus up to six generated/approved layer_asset_paths; compiled recipes address those layers through ProtectedMedia assetIndex. Parameterized recipes render directly; any other catalog recipe requires a bounded compiled_recipe_source adapted from its exact trusted card and TSX demo. The backend validates and isolates that source inside the one render job. The local renderer inherits parent-brand identity, applies child-offer overrides, preserves PNG transparency, and preserves buyer-owned media byte-for-byte. Rendering does not publish or spend and does not require approval."),
+    ("generate_motion_graphic_video", "Create and render a finished brand-aware motion-graphics MP4 locally with Remotion. Use for educational, explainer, promotional, tutorial, social-proof, announcement, or awareness videos in any niche. Resolve the exact active child product/service/offer before calling. Send either a clear topic plus key_points for an automatic storyboard, or explicit scenes using hook, statement, list, steps, stat, comparison, quote, media, and cta. The complete vendored Video Shotcraft library is available: 152 cards and 209 styles. Each scene may compose compatible exact card/style names through shot_recipes and may use one main media_path plus up to six generated/approved layer_asset_paths; compiled recipes address those layers through ProtectedMedia assetIndex. When this video uses or promises Image 2 visuals, set require_visual_assets=true and explicitly bind every intended generated asset to a scene; the renderer rejects an empty/generic storyboard under that contract. Parameterized recipes render directly; any other catalog recipe requires a bounded compiled_recipe_source adapted from its exact trusted card and TSX demo. The backend validates and isolates that source inside the one render job. The local renderer inherits parent-brand identity, applies child-offer overrides, preserves PNG transparency, and preserves buyer-owned media byte-for-byte. Rendering does not publish or spend and does not require approval."),
     ("list_lead_forms", "List existing native Meta Lead Ads / Instant Forms for the connected Facebook Page before creating a duplicate. Use when the buyer wants lead form campaigns or asks what forms already exist."),
-    ("stage_lead_form", "Design a native Meta Lead Ads / Instant Form blueprint and return exact manual Ads Manager steps. Use only as a fallback when the connected Page token cannot create forms."),
-    ("create_lead_form", "Create a native Meta Lead Ads / Instant Form from the approved questions and privacy policy, then read the Page forms again and verify the real lead_gen_form_id before returning success. This creates the form only; the campaign remains PAUSED and no ad spend starts. Call it only when page_id, name, privacy_policy_url, and a non-empty questions array are all known; never call it with {} or partial arguments. If any required value is absent, ask one concise combined question instead. If Meta permissions do not allow creation, return a precise permission error and the manual Ads Manager fallback."),
+    ("stage_lead_form", "Design a native Meta Lead Ads / Instant Form blueprint and return exact manual Ads Manager steps. Meta's current form-creation capability is not reliable through this integration, so the buyer creates and publishes the form once in Ads Manager; then Admira reads the Page forms, verifies the real lead_gen_form_id, and uses that verified ID in the PAUSED campaign."),
+    ("create_lead_form", "Compatibility alias for assisted native Meta Lead Ads / Instant Form design. Do not attempt a Graph form mutation or promise it was created. Collect the approved questions and privacy policy, return the exact Ads Manager steps for the buyer to create/publish it once, then ask them to reply when ready so Admira can list forms, verify the real lead_gen_form_id, and use that ID in the PAUSED campaign. Never call it with {} or partial arguments; ask one concise combined question when values are missing."),
     ("stage_campaign", "Create or stage a full Meta campaign stack. If the buyer requested a fully PAUSED/no-spend campaign and required details are present, the backend may create the campaign/ad set/ad objects in Meta immediately without a second approval; activation/spend remains approval-protected. Include up to three prioritized success_metrics/key_results/KPIs when known. Image 2/content-library assets are protected local files that the backend uploads to the ad account. For all supported website, traffic, awareness, engagement, video, native lead-form, WhatsApp, Messenger, and Instagram Direct campaigns, the backend uses the primary Live Ads app to upload media and create inline AdCreatives; it never creates a dark/unpublished Page post first. object_story_id is accepted only when the buyer deliberately selects an existing Page post. Natural ads:[{image_path|video_path|creative_asset_id|content_asset_ids: ...}] input is accepted. Publicación directa remains for approved organic posts and as an optional inline credential retry only if Meta explicitly says the primary app is in Development and that fallback has ads_management, ads_read, and selected-ad-account access. For messaging campaigns pass the exact message_destination plus approved prefilled/welcome text. For lead forms pass the verified lead_gen_form_id; no external landing URL is required. Do not guess WhatsApp identifiers: resolve live Meta state and use OUTCOME_ENGAGEMENT, CONVERSATIONS and the native destination/promoted object. Treat error 1487246 as stale and resolve again; never silently switch to Traffic. For detailed interests, recommend Advantage+ suggestions by default for prospecting/small budgets; use strict manual only when justified or requested. Targeting is double-checked server-side with real decimal IDs and exact countries/ages before mutation."),
     ("stage_budget_change", "Stage or execute a guarded budget change."),
     ("pause_campaign", "Stage or execute a guarded campaign pause."),
@@ -99,6 +102,13 @@ def _strings(description):
 # aliases open for backwards compatibility, but make the canonical contract
 # explicit for the high-value memory, creative, and campaign tools.
 TOOL_INPUT_SCHEMAS = {
+    "start_meta_oauth_connection": {"type": "object", "additionalProperties": False, "properties": {}},
+    "get_meta_oauth_workspaces": {"type": "object", "additionalProperties": False, "properties": {}},
+    "select_meta_oauth_workspace": {
+        "type": "object", "additionalProperties": False,
+        "properties": {"ad_account_id": _string("One ad account ID returned by get_meta_oauth_workspaces."), "page_id": _string("One Facebook Page ID returned by get_meta_oauth_workspaces.")},
+        "required": ["ad_account_id", "page_id"],
+    },
     "get_real_meta_context": {
         "type": "object", "additionalProperties": True,
         "properties": {
@@ -311,6 +321,9 @@ TOOL_INPUT_SCHEMAS = {
             },
             "asset_paths": _strings("Safe buyer-owned images/videos to incorporate without modifying their content."),
             "content_asset_ids": _strings("Saved classified content-library assets approved for this use."),
+            "require_visual_assets": _boolean("Set true when this storyboard uses or promises Image 2/generated/buyer visual assets. The renderer then rejects a generic render with no explicitly scene-bound media."),
+            "minimum_visual_assets": {"type": "integer", "minimum": 1, "maximum": 12, "description": "Minimum distinct visual assets that must be explicitly bound to scenes when require_visual_assets is true. Use 2 or more when the story needs multiple visual moments."},
+            "require_transparent_story_element": _boolean("Set true when the storyboard promises a green-screen Image 2 cutout/transparent foreground. At least one layer_asset_paths binding is then mandatory."),
             "audio_path": _string("Optional safe local audio track."),
             "audio_volume": _number("Background audio volume from 0 to 1."),
             "logo_usage": _string("auto, always, or never."),
@@ -437,11 +450,37 @@ TOOL_INPUT_SCHEMAS = {
         "required": ["page_id", "name", "questions", "privacy_policy_url"],
     },
     "create_lead_form": {
-        "type": "object", "additionalProperties": True,
+        "type": "object", "additionalProperties": False,
         "properties": {
             "page_id": _string("Exact connected Facebook Page ID."),
             "name": _string("Internal native instant-form name."),
-            "questions": {"type": "array", "description": "Standard fields or custom question objects already agreed with the buyer.", "items": {}},
+            "questions": {
+                "type": "array",
+                "description": "Flat array of Meta standard field names or custom question objects; never wrap it in item/$text.",
+                "items": {
+                    "oneOf": [
+                        {
+                            "type": "string",
+                            "enum": [
+                                "FULL_NAME", "FIRST_NAME", "LAST_NAME", "EMAIL", "PHONE",
+                                "CITY", "STATE", "COUNTRY", "ZIP_CODE", "DATE_OF_BIRTH",
+                                "GENDER", "MARITAL_STATUS", "JOB_TITLE", "COMPANY_NAME",
+                            ],
+                        },
+                        {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "type": {"type": "string", "enum": ["CUSTOM"]},
+                                "key": {"type": "string"},
+                                "label": {"type": "string"},
+                                "options": {"type": "array", "items": {"type": "object"}},
+                            },
+                            "required": ["type", "label"],
+                        },
+                    ]
+                },
+            },
             "privacy_policy_url": _string("Public privacy-policy URL required by Meta."),
             "privacy_policy_link_text": _string("Privacy-policy link text, at most 70 characters."),
             "follow_up_action_url": _string("Optional thank-you/follow-up URL."),

@@ -17,17 +17,21 @@ First distinguish a one-off content request from a recurring schedule change:
 
 If Image 2 returns a blocked/error result, explain that specific generation blocker briefly and stop that branch. Do not switch to recurring settings, invent an approval, or claim a post was registered as a workaround.
 
-## Optional onboarding offer
+## Mandatory first-run organic strategy
 
-After business basics and brand/logo/assets are reasonably clear, ask once only when no durable decision exists:
+As soon as business discovery is complete, use this skill **before** detailed branding questions and before ads/campaign discussion. Do not ask the passive generic question “¿quieres contenido orgánico?”. Act as the buyer's marketing manager and proactively present a useful, tailored starting plan based on the business facts already saved.
 
-“¿Quieres que también te prepare posts con tu marca, diarios o cada X días, para revisar y aprobar?”
+The proposal must contain:
 
-Explain it simply: Admira can use the saved brand, logo, photos, videos, references, and offers to propose recurring images with Image 2, motion videos, captions, and a small content strategy. Recommend motion only when movement improves teaching, demonstration, storytelling, proof, or attention. It does not publish automatically unless the buyer later approves and Publicación directa is connected.
+- 2–4 content pillars that fit the niche;
+- examples of post ideas under those pillars;
+- a practical cadence recommendation;
+- which posts Image 2 will design and when motion video would genuinely add clarity;
+- that every piece arrives in Telegram as a draft for review and nothing visible is published without approval.
 
-If brand/logo/colors/references/assets are not clear, do not jump into a content calendar. Start or continue `memory/Branding onboarding.md` first: logo decision, colors, style references, tone, real photos/videos/assets, and font/style direction.
+Use simple language. Facebook is already connected before this strategy step, so the buyer may approve the plan or adjust it without another technical interruption. Then continue into branding and final cadence setup. Never ask for a Meta token, System User, or app.
 
-If yes, save the acceptance immediately so resets do not cause the same offer again. Then finish the brand and content strategy, ask the preferred time, rough quantity, and cadence, defaulting to 1 post at 10:00 every 1 day in the buyer timezone. Save again with `mcp_admira_save_daily_social_content_settings` once the strategy is concrete:
+If the buyer accepts, save the acceptance immediately so resets do not cause the same offer again. Then finish the brand and content strategy, ask the preferred time, rough quantity, and cadence, defaulting to 1 post at 10:00 every 1 day in the buyer timezone. Save again with `mcp_admira_save_daily_social_content_settings` once the strategy is concrete:
 
 ```json
 {
@@ -41,9 +45,9 @@ If yes, save the acceptance immediately so resets do not cause the same offer ag
 }
 ```
 
-If no, save the decision with `enabled: false` so future resets do not re-ask immediately.
+If they decline, save the decision with `enabled: false` so future resets do not re-ask immediately.
 
-The product will not start the recurring cron until both branding and the content strategy are ready. An early yes is stored as `accepted_pending_setup`; continue with the next missing branding/strategy question instead of pretending the schedule is active.
+The product will not start the recurring cron until both branding and the content strategy are ready. An early yes is stored as `accepted_pending_setup`; after Facebook connection, continue with the next missing branding/strategy question instead of pretending the schedule is active.
 
 ## Buyer-shared files/assets
 

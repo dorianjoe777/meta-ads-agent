@@ -700,6 +700,38 @@ def handle_callback(config, query):
         return {"handled": False, "reason": "unauthorized_chat"}
     data = str(query.get("data") or "")
     action, _, approval_id = data.partition(":")
+    if action == "meta_account" and approval_id:
+        dashboard = load_dashboard_module()
+        try:
+            result = dashboard.social_oauth_select_account(approval_id)
+            pages = [item for item in (result.get("pages") or []) if isinstance(item, dict) and item.get("id")]
+            if not pages:
+                callback_answer(config, callback_id, "No encontré una Página publicable.")
+                send_message(config, chat_id, "Esa cuenta fue elegida, pero Facebook no devolvió una Página con permiso de publicación. Vuelve a conectar Facebook y acepta los permisos de Página.")
+                return {"handled": True, "type": "meta_account_without_page"}
+            keyboard = []
+            for page in pages[:25]:
+                page_id = str(page.get("id") or "").strip()
+                if page_id:
+                    keyboard.append([{"text": str(page.get("name") or page_id)[:55], "callback_data": f"meta_page:{page_id}"}])
+            callback_answer(config, callback_id, "Cuenta elegida.")
+            send_message_with_keyboard(config, chat_id, "Ahora elige la Página de Facebook que usarás con esa cuenta.", keyboard)
+            return {"handled": True, "type": "meta_account_selected"}
+        except Exception:
+            callback_answer(config, callback_id, "No pude guardar esa cuenta.")
+            send_message(config, chat_id, "No pude guardar esa cuenta publicitaria. Vuelve a abrir la conexión de Facebook y prueba de nuevo.")
+            return {"handled": True, "type": "meta_account_failed"}
+    if action == "meta_page" and approval_id:
+        dashboard = load_dashboard_module()
+        try:
+            result = dashboard.social_oauth_select_page(approval_id)
+            callback_answer(config, callback_id, "Página elegida.")
+            send_message(config, chat_id, "Listo. Ya conecté la cuenta y la Página correctas. Ahora sí empezamos a conocer tu negocio y preparar la estrategia.")
+            return {"handled": True, "type": "meta_workspace_selected", "account_id": result.get("active_ad_account_id"), "page_id": result.get("active_page_id")}
+        except Exception:
+            callback_answer(config, callback_id, "No pude guardar esa Página.")
+            send_message(config, chat_id, "No pude guardar esa Página. Vuelve a conectar Facebook y acepta los permisos de Página.")
+            return {"handled": True, "type": "meta_page_failed"}
     if action not in {"approve", "approve_active", "reject"} or not approval_id:
         callback_answer(config, callback_id, "Accion no reconocida.")
         return {"handled": False, "reason": "unsupported_callback"}

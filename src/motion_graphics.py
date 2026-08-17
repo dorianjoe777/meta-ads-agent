@@ -409,6 +409,10 @@ def parse_palette(*values):
     primary_text = readable_text_color(primary)
     accent_text = readable_text_color(accent)
     highlight_text = readable_text_color(highlight)
+    # A brand accent may be excellent as a decorative stroke but unreadable
+    # when placed directly on the generated background. Keep the raw accent
+    # for shapes and expose a guarded foreground for text overlays.
+    accent_on_background = readable_emphasis_color(accent, background, text_color)
     return {
         "background": background,
         "surface": surface,
@@ -421,6 +425,7 @@ def parse_palette(*values):
         "surfaceMutedText": accessible_muted_color(surface_text, surface),
         "primaryText": primary_text,
         "accentText": accent_text,
+        "accentOnBackground": accent_on_background,
         "highlightText": highlight_text,
         # Accent colors are still available for strokes and decoration.  Text
         # uses this guarded value so a subtle brand gold or teal never becomes
@@ -712,6 +717,13 @@ def _copy_asset(path, public_dir, *, label):
 
 def build_motion_graphic_spec(payload, *, job_id=None):
     payload = dict(payload or {})
+    require_visual_assets = str(payload.get("require_visual_assets") or "").strip().lower() in {"1", "true", "yes", "si", "sí", "on"}
+    require_transparent_story_element = str(payload.get("require_transparent_story_element") or "").strip().lower() in {"1", "true", "yes", "si", "sí", "on"}
+    try:
+        minimum_visual_assets = int(payload.get("minimum_visual_assets") or 1)
+    except (TypeError, ValueError):
+        minimum_visual_assets = 1
+    minimum_visual_assets = max(1, min(12, minimum_visual_assets))
     general, product, product_path = _resolve_brand_and_product(payload)
     objective = str(payload.get("objective") or "educational").strip().lower()
     if objective not in OBJECTIVES:
@@ -790,10 +802,13 @@ def build_motion_graphic_spec(payload, *, job_id=None):
 
     copied_by_source = {item["source"]: item["src"] for item in copied_assets}
     image_assets = [item for item in copied_assets if item["extension"] in IMAGE_EXTENSIONS]
+    explicitly_bound_sources = set()
+    has_transparent_layer_binding = False
     for index, scene in enumerate(scenes):
         media_path = safe_motion_media_path(scene.pop("media_path", ""))
         if media_path:
             source = str(media_path)
+            explicitly_bound_sources.add(source)
             if source not in copied_by_source:
                 copied_item = {
                     "source": source,
@@ -816,6 +831,8 @@ def build_motion_graphic_spec(payload, *, job_id=None):
             if not layer_path:
                 continue
             source = str(layer_path)
+            explicitly_bound_sources.add(source)
+            has_transparent_layer_binding = True
             if source not in copied_by_source:
                 copied_item = {
                     "source": source,
@@ -850,6 +867,25 @@ def build_motion_graphic_spec(payload, *, job_id=None):
             except ShotcraftCatalogError:
                 pass
         scene["duration_frames"] = max(1, round(scene["duration_seconds"] * fps))
+
+    # A generic typography-only video can be valid. It is not valid after the
+    # agent has committed to generated or buyer visual assets: those assets
+    # must be deliberately mapped to scenes, not silently dropped.
+    if require_visual_assets and len(explicitly_bound_sources) < minimum_visual_assets:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise MotionGraphicError(
+            "Este storyboard prometió usar activos visuales, pero solo vinculó "
+            f"{len(explicitly_bound_sources)} de los {minimum_visual_assets} requeridos. "
+            "Genera o reutiliza los activos y pásalos explícitamente en media_path "
+            "o layer_asset_paths de las escenas correspondientes antes de renderizar."
+        )
+    if require_transparent_story_element and not has_transparent_layer_binding:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise MotionGraphicError(
+            "Este storyboard prometió un elemento transparente, pero no hay ningún "
+            "layer_asset_paths vinculado. Pasa el PNG transparente devuelto por Image 2 "
+            "como capa de la escena donde debe aparecer."
+        )
 
     logo_mode = str(payload.get("logo_usage") or general.get("logo_usage") or "auto").strip().lower()
     logo_path = None if logo_mode in {"never", "nunca", "omit", "none", "no"} else official_brand_logo_path(general)
@@ -896,6 +932,12 @@ def build_motion_graphic_spec(payload, *, job_id=None):
         "schema": "admira.motion-graphic.v1",
         "job_id": job_id,
         "created_at": now_iso(),
+        "visual_asset_contract": {
+            "required": require_visual_assets,
+            "minimum_visual_assets": minimum_visual_assets if require_visual_assets else 0,
+            "transparent_story_element_required": require_transparent_story_element,
+            "explicitly_bound_assets": len(explicitly_bound_sources),
+        },
         "objective": objective,
         "template": template,
         "aspect_ratio": aspect_ratio,

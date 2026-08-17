@@ -26,6 +26,7 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
             {"type": "function", "function": {"name": "vision_analyze"}},
         ])
         cases = (
+            ("onboarding", "Es mi primera conversación: mi negocio es una clínica y quiero reservas", 8192, "save_agent_preferences"),
             ("metrics", "Revisa las métricas, gasto, CTR y compras de la campaña", 8192, "get_real_meta_context"),
             ("campaign_strategy", "Recomienda la audiencia, ubicaciones e intereses para mi campaña", 8192, "search_meta_targeting"),
             ("campaign_execution", "Prepara la campaña de ventas pausada con los creativos aprobados", 8192, "stage_campaign"),
@@ -49,18 +50,39 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
                     admira_hermes_runtime_patch._nvidia_normalize_tool_name(
                         admira_hermes_runtime_patch._nvidia_tool_name(item)
                     )
-                    for item in prepared["tools"]
+                    for item in prepared.get("tools", [])
                 }
                 self.assertEqual(prepared["max_tokens"], max_tokens)
-                self.assertIn(expected_tool, names)
-                self.assertTrue(native_names.issubset(names))
+                if expected_tool:
+                    self.assertIn(expected_tool, names)
+                if expected_profile == "lead_form":
+                    self.assertEqual(names, {"create_lead_form", "list_lead_forms"})
+                else:
+                    self.assertTrue(native_names.issubset(names))
                 self.assertLess(len(names), len(all_names) + len(native_names))
                 self.assertLessEqual(
                     admira_hermes_runtime_patch._nvidia_estimated_input_tokens(
-                        prepared["messages"], prepared["tools"]
+                        prepared["messages"], prepared.get("tools", [])
                     ),
                     admira_hermes_runtime_patch.ADMIRA_NVIDIA_INPUT_BUDGET_TOKENS,
                 )
+
+    def test_nvidia_onboarding_profile_excludes_campaign_and_creative_tools(self):
+        all_names = sorted(set().union(*admira_hermes_runtime_patch.ADMIRA_NVIDIA_TOOL_PROFILES.values()))
+        prepared = admira_hermes_runtime_patch._nvidia_prepare_request({
+            "messages": [{"role": "user", "content": "Primera conversación: mi negocio ofrece estética facial en Medellín y quiero reservas."}],
+            "tools": [self._admira_tool(name) for name in all_names],
+            "max_tokens": 65536,
+        })
+        names = {
+            admira_hermes_runtime_patch._nvidia_normalize_tool_name(
+                admira_hermes_runtime_patch._nvidia_tool_name(item)
+            )
+            for item in prepared.get("tools", [])
+        }
+        self.assertEqual(names, {"save_agent_preferences", "get_meta_oauth_workspaces", "start_meta_oauth_connection", "select_meta_oauth_workspace"})
+        self.assertNotIn("stage_campaign", names)
+        self.assertNotIn("codex_image_generate", names)
 
     def test_nvidia_lead_form_profile_excludes_unrelated_campaign_and_creative_tools(self):
         """A native form turn must not carry the whole campaign/media registry."""
@@ -79,14 +101,14 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
             admira_hermes_runtime_patch._nvidia_normalize_tool_name(
                 admira_hermes_runtime_patch._nvidia_tool_name(item)
             )
-            for item in prepared["tools"]
+            for item in prepared.get("tools", [])
         }
         self.assertIn("create_lead_form", names)
         self.assertIn("list_lead_forms", names)
         self.assertNotIn("stage_campaign", names)
         self.assertNotIn("codex_image_generate", names)
         self.assertNotIn("generate_motion_graphic_video", names)
-        self.assertLessEqual(len(names), 10)
+        self.assertEqual(names, {"create_lead_form", "list_lead_forms"})
 
     def test_nvidia_campaign_subprofiles_do_not_leak_unrelated_mutations_or_media(self):
         """Campaign wording must not re-expand to the old all-in-one registry."""
@@ -129,7 +151,7 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
                     admira_hermes_runtime_patch._nvidia_normalize_tool_name(
                         admira_hermes_runtime_patch._nvidia_tool_name(item)
                     )
-                    for item in prepared["tools"]
+                    for item in prepared.get("tools", [])
                 }
                 self.assertTrue(expected.issubset(names))
                 self.assertTrue(names.isdisjoint(forbidden))
@@ -159,6 +181,31 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
             "lead_form",
         )
 
+    def test_nvidia_profile_stays_on_buyer_intent_after_live_meta_tool_result(self):
+        messages = [
+            {
+                "role": "user",
+                "content": "Consulta Meta en vivo y dime la cuenta, página y cuántas campañas activas hay.",
+            },
+            {
+                "role": "assistant",
+                "tool_calls": [{"function": {"name": "mcp_admira_get_real_meta_context"}}],
+            },
+            {
+                "role": "tool",
+                "name": "mcp_admira_get_real_meta_context",
+                "content": "Campañas pausadas con creativos de imagen, video y formularios disponibles.",
+            },
+        ]
+        self.assertEqual(
+            admira_hermes_runtime_patch._nvidia_request_profile(messages),
+            "insights",
+        )
+        self.assertNotIn(
+            "creativos de imagen",
+            admira_hermes_runtime_patch._nvidia_routing_text(messages),
+        )
+
     def test_nvidia_lead_form_retry_injects_no_empty_arguments_rule(self):
         prepared = admira_hermes_runtime_patch._nvidia_prepare_request({
             "messages": [
@@ -172,15 +219,80 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
             "max_tokens": 65536,
         })
         text = "\n".join(str(message.get("content") or "") for message in prepared["messages"])
-        self.assertIn("never retry with {}", text)
+        self.assertIn("Never call it with {}", text)
+        self.assertIn("Do not inspect files", text)
         names = {
             admira_hermes_runtime_patch._nvidia_normalize_tool_name(
                 admira_hermes_runtime_patch._nvidia_tool_name(item)
             )
-            for item in prepared["tools"]
+            for item in prepared.get("tools", [])
         }
         self.assertIn("create_lead_form", names)
         self.assertNotIn("stage_campaign", names)
+
+    def test_nvidia_lead_form_tool_loop_cannot_repeat_the_mutation(self):
+        prepared = admira_hermes_runtime_patch._nvidia_prepare_request({
+            "messages": [
+                {"role": "user", "content": "Crea el formulario de leads con los datos confirmados."},
+                {"role": "assistant", "tool_calls": [{
+                    "function": {"name": "mcp_admira_create_lead_form", "arguments": "{}"},
+                }]},
+                {"role": "tool", "name": "mcp_admira_create_lead_form", "content": '{"reason":"empty_tool_arguments"}'},
+            ],
+            "tools": [self._admira_tool("create_lead_form")],
+            "max_tokens": 65536,
+        })
+        self.assertEqual(prepared["tool_choice"], "none")
+
+    def test_nvidia_explicit_lead_form_creation_requires_the_one_function(self):
+        prepared = admira_hermes_runtime_patch._nvidia_prepare_request({
+            "messages": [{
+                "role": "user",
+                "content": "Crea el formulario de leads con nombre, preguntas y URL ya confirmados.",
+            }],
+            "tools": [
+                self._admira_tool("create_lead_form"),
+                self._admira_tool("list_lead_forms"),
+                {"type": "function", "function": {"name": "read_file"}},
+            ],
+            "max_tokens": 65536,
+        })
+        self.assertEqual(
+            prepared["tool_choice"],
+            {
+                "type": "function",
+                "function": {"name": "mcp_admira_create_lead_form"},
+            },
+        )
+        self.assertFalse(prepared["parallel_tool_calls"])
+        create_tool = next(
+            item for item in prepared.get("tools", [])
+            if admira_hermes_runtime_patch._nvidia_normalize_tool_name(
+                admira_hermes_runtime_patch._nvidia_tool_name(item)
+            ) == "create_lead_form"
+        )
+        parameters = create_tool["function"]["parameters"]
+        self.assertEqual(
+            parameters["required"],
+            ["page_id", "name", "questions", "privacy_policy_url"],
+        )
+        self.assertIn("questions", parameters["properties"])
+
+    def test_nvidia_restores_empty_hermes_mcp_parameters_without_mutating_registry(self):
+        original = self._admira_tool("create_lead_form")
+        original["function"]["parameters"] = {"type": "object", "additionalProperties": True}
+        restored = admira_hermes_runtime_patch._nvidia_restore_admira_tool_schemas([original])
+        self.assertEqual(original["function"]["parameters"].get("properties"), None)
+        self.assertIn("page_id", restored[0]["function"]["parameters"]["properties"])
+        self.assertIn("questions", restored[0]["function"]["parameters"]["required"])
+
+    def test_nvidia_plain_lead_form_advice_does_not_force_creation(self):
+        prepared = admira_hermes_runtime_patch._nvidia_prepare_request({
+            "messages": [{"role": "user", "content": "¿Qué preguntas recomiendas para mi formulario de leads?"}],
+            "tools": [self._admira_tool("create_lead_form")],
+            "max_tokens": 65536,
+        })
+        self.assertNotIn("tool_choice", prepared)
 
     def test_nvidia_tool_continuity_keeps_only_an_active_loop_not_history(self):
         active = [
@@ -332,6 +444,7 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
                 self.assertEqual(payload["profile"], "campaign_strategy")
                 self.assertEqual(payload["tools_before"], 42)
                 self.assertEqual(payload["tools_after"], 0)
+                self.assertEqual(payload["tool_schema_summaries"], [])
                 self.assertNotIn("messages", payload)
                 self.assertNotIn("api_key", payload)
                 self.assertNotIn("private buyer message", json.dumps(payload))
@@ -360,7 +473,7 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         prepared = admira_hermes_runtime_patch._nvidia_prepare_request(original)
         names = {admira_hermes_runtime_patch._nvidia_normalize_tool_name(
             admira_hermes_runtime_patch._nvidia_tool_name(item)
-        ) for item in prepared["tools"]}
+        ) for item in prepared.get("tools", [])}
         self.assertEqual(original["max_tokens"], 65536)
         self.assertEqual(prepared["max_tokens"], 8192)
         self.assertIn("get_real_meta_context", names)
@@ -385,7 +498,7 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         })
         names = {admira_hermes_runtime_patch._nvidia_normalize_tool_name(
             admira_hermes_runtime_patch._nvidia_tool_name(item)
-        ) for item in prepared["tools"]}
+        ) for item in prepared.get("tools", [])}
         self.assertEqual(prepared["max_tokens"], 12288)
         self.assertIn("generate_motion_graphic_video", names)
         self.assertIn("codex_image_generate", names)
@@ -412,7 +525,7 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         self.assertEqual(prepared["messages"][-1]["content"], "latest")
         self.assertLessEqual(
             admira_hermes_runtime_patch._nvidia_estimated_input_tokens(
-                prepared["messages"], prepared["tools"]
+                prepared["messages"], prepared.get("tools", [])
             ),
             admira_hermes_runtime_patch.ADMIRA_NVIDIA_INPUT_BUDGET_TOKENS,
         )
@@ -425,7 +538,7 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         })
         self.assertLessEqual(
             admira_hermes_runtime_patch._nvidia_estimated_input_tokens(
-                prepared["messages"], prepared["tools"]
+                prepared["messages"], prepared.get("tools", [])
             ),
             admira_hermes_runtime_patch.ADMIRA_NVIDIA_INPUT_BUDGET_TOKENS,
         )
@@ -725,9 +838,11 @@ compression:
             hermes_bridge.codex_credential_health = original_codex_health
 
     def test_same_nvidia_guard_only_blocks_shared_key_failures(self):
-        self.assertTrue(admira_hermes_runtime_patch._admira_same_nvidia_fallback_blocked("upstream_rate_limit"))
         self.assertTrue(admira_hermes_runtime_patch._admira_same_nvidia_fallback_blocked("billing"))
         self.assertTrue(admira_hermes_runtime_patch._admira_same_nvidia_fallback_blocked("authentication_error"))
+        self.assertTrue(admira_hermes_runtime_patch._admira_same_nvidia_fallback_blocked("quota exhausted"))
+        self.assertFalse(admira_hermes_runtime_patch._admira_same_nvidia_fallback_blocked("upstream_rate_limit"))
+        self.assertFalse(admira_hermes_runtime_patch._admira_same_nvidia_fallback_blocked("HTTP 429: Too Many Requests"))
         self.assertFalse(admira_hermes_runtime_patch._admira_same_nvidia_fallback_blocked("timeout"))
         self.assertFalse(admira_hermes_runtime_patch._admira_same_nvidia_fallback_blocked("internal_server_error"))
 
@@ -739,7 +854,7 @@ compression:
         })
         self.assertEqual(policy["api_max_retries"], 0)
         self.assertEqual(policy["stream_retries"], 0)
-        self.assertTrue(admira_hermes_runtime_patch._admira_same_nvidia_fallback_blocked("429 upstream rate limit"))
+        self.assertFalse(admira_hermes_runtime_patch._admira_same_nvidia_fallback_blocked("429 upstream rate limit"))
         self.assertFalse(admira_hermes_runtime_patch._admira_same_nvidia_fallback_blocked("model timeout"))
 
 

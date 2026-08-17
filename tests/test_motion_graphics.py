@@ -449,6 +449,28 @@ class MotionGraphicContractTests(unittest.TestCase):
             shutil.rmtree(prepared["job_dir"], ignore_errors=True)
             shutil.rmtree(fixture_dir, ignore_errors=True)
 
+    def test_required_visual_assets_rejects_generic_storyboard(self):
+        with self.assertRaisesRegex(motion.MotionGraphicError, "prometió usar activos visuales"):
+            motion.build_motion_graphic_spec(payload(require_visual_assets=True, minimum_visual_assets=2))
+
+    def test_required_transparent_story_element_needs_layer_binding(self):
+        fixture_dir = motion.OUTPUT_ROOT / "test-required-visual-fixtures"
+        fixture_dir.mkdir(parents=True, exist_ok=True)
+        fixture = fixture_dir / "main-image.png"
+        fixture.write_bytes(b"\x89PNG\r\n\x1a\n" + b"main-image" * 20)
+        try:
+            with self.assertRaisesRegex(motion.MotionGraphicError, "elemento transparente"):
+                motion.build_motion_graphic_spec(
+                    payload(
+                        require_visual_assets=True,
+                        minimum_visual_assets=1,
+                        require_transparent_story_element=True,
+                        scenes=[{"type": "media", "title": "Escena", "media_path": str(fixture)}],
+                    )
+                )
+        finally:
+            shutil.rmtree(fixture_dir, ignore_errors=True)
+
     def test_scene_can_layer_six_generated_or_approved_assets(self):
         fixture_dir = motion.OUTPUT_ROOT / "test-layer-fixtures"
         fixture_dir.mkdir(parents=True, exist_ok=True)
@@ -506,6 +528,8 @@ class MotionGraphicContractTests(unittest.TestCase):
         self.assertIn("shot_recipes", schema["properties"]["scenes"]["items"]["properties"])
         self.assertIn("compiled_recipe_source", schema["properties"]["scenes"]["items"]["properties"])
         self.assertIn("layer_asset_paths", schema["properties"]["scenes"]["items"]["properties"])
+        self.assertIn("require_visual_assets", schema["properties"])
+        self.assertIn("require_transparent_story_element", schema["properties"])
         organic_settings = TOOL_INPUT_SCHEMAS["save_daily_social_content_settings"]
         self.assertIn("content_formats", organic_settings["properties"])
         self.assertIn("video_frequency_days", organic_settings["properties"])

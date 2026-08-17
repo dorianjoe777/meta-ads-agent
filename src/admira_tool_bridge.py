@@ -3,11 +3,15 @@
 import argparse
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
 
-ROOT_DIR = Path(__file__).resolve().parent.parent
+ROOT_DIR = Path(
+    os.environ.get("ADMIRA_PRODUCT_ROOT")
+    or Path(__file__).resolve().parent.parent
+).expanduser().resolve()
 DASHBOARD_PATH = ROOT_DIR / "dashboard" / "monitoring-dashboard.py"
 SRC_DIR = ROOT_DIR / "src"
 
@@ -65,6 +69,9 @@ TOOL_MAP = {
 
 PUBLIC_TOOLS = sorted([
     "admira_get_real_meta_context",
+    "admira_start_meta_oauth_connection",
+    "admira_get_meta_oauth_workspaces",
+    "admira_select_meta_oauth_workspace",
     "admira_search_meta_targeting",
     "admira_inspect_adset_targeting",
     "admira_list_pending_approvals",
@@ -116,6 +123,7 @@ EMPTY_ARGUMENT_GUARDED_TOOLS = {
     "admira_codex_image_generate": ("request", "purpose"),
     "admira_generate_motion_graphic_video": ("topic", "objective", "aspect_ratio"),
     "admira_stage_campaign": ("name", "daily_budget", "destination details", "creative source"),
+    "admira_create_lead_form": ("page_id", "name", "privacy_policy_url", "questions"),
 }
 
 
@@ -193,6 +201,33 @@ def parse_argument_mapping(value):
     return {}
 
 
+def normalize_model_collection_wrappers(value, depth=0):
+    """Recover array values emitted as ``{"item": ...}`` by some NIM models.
+
+    Hermes advertises ordinary JSON-schema arrays, but OpenAI-compatible
+    hosted models can still serialize an XML-style collection wrapper.  Letting
+    that wrapper reach campaign validation turns a complete request into
+    repeated missing-field/gender errors.  A mapping whose sole key is
+    ``item`` is unambiguously a collection; mixed mappings remain objects and
+    are only normalized recursively.
+    """
+    if depth > 12:
+        return value
+    if isinstance(value, list):
+        return [normalize_model_collection_wrappers(item, depth + 1) for item in value]
+    if not isinstance(value, dict):
+        return value
+    # Some OpenAI-compatible XML adapters add a redundant text node beside
+    # the item collection. It is serialization residue, not a second field.
+    if "item" in value and set(value).issubset({"item", "$text", "#text"}):
+        item = normalize_model_collection_wrappers(value.get("item"), depth + 1)
+        return item if isinstance(item, list) else [item]
+    return {
+        key: normalize_model_collection_wrappers(item, depth + 1)
+        for key, item in value.items()
+    }
+
+
 def normalize_tool_arguments(arguments, depth=0):
     values = parse_argument_mapping(arguments)
     if not values or depth > 4:
@@ -206,7 +241,7 @@ def normalize_tool_arguments(arguments, depth=0):
                 nested.update(normalize_tool_arguments(parsed, depth + 1))
                 continue
         direct[key] = value
-    return {**nested, **direct}
+    return normalize_model_collection_wrappers({**nested, **direct})
 
 
 def creative_args_mentions_uploaded_image(args):
@@ -493,6 +528,21 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
             }
         )
 
+    if tool == "admira_get_meta_oauth_workspaces":
+        result = dashboard.social_oauth_status()
+        return redact_payload({"ok": bool(result.get("connected")), "tool": tool, "result": result})
+
+    if tool == "admira_start_meta_oauth_connection":
+        # This sends the buyer's own short-lived Facebook authorization link to
+        # the configured Telegram chat.  It is connection setup only: it never
+        # creates ads, changes an account, or exposes a token to Hermes.
+        result = dashboard.social_oauth_start(args)
+        return redact_payload({"ok": bool(result.get("ok")), "tool": tool, "result": result})
+
+    if tool == "admira_select_meta_oauth_workspace":
+        result = dashboard.social_oauth_select(args)
+        return redact_payload({"ok": bool(result.get("selected")), "tool": tool, "result": result})
+
     if tool == "admira_list_pending_approvals":
         pending = dashboard.read_json(dashboard.PENDING_FILE, [])
         pending = [item for item in pending if isinstance(item, dict) and item.get("status", "pending") == "pending"]
@@ -522,6 +572,15 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
         "product_tool": product_tool,
         "result": result,
     }
+    if tool == "admira_save_business_memory" and result_ok(result):
+        profile = result.get("profile") if isinstance(result, dict) else {}
+        if isinstance(profile, dict) and profile.get("context_completed_at"):
+            # Business discovery deliberately transitions to a proactive
+            # organic-content proposal first.  OAuth is requested only after
+            # the buyer accepts or adjusts that strategy, so onboarding feels
+            # like useful marketing work rather than connection paperwork.
+            response["organic_content_strategy_required"] = True
+            response["next_onboarding_phase"] = "organic_content_strategy"
     media_attachment = generated_media_attachment_for_result(tool, result)
     if media_attachment:
         response["media_attachment"] = media_attachment

@@ -280,6 +280,13 @@ UPDATE_SNAPSHOTS_DIR = DATA_DIR / "update-snapshots"
 TELEGRAM_UPDATE_NOTIFICATION_FILE = DATA_DIR / "telegram_update_notifications.json"
 TELEGRAM_UPDATE_INSTALL_REQUEST_FILE = DATA_DIR / "telegram_update_install_request.json"
 AUTOMATIC_UPDATE_STATE_FILE = DATA_DIR / "automatic_update_state.json"
+META_OAUTH_PENDING_FILE = DATA_DIR / "meta_oauth_pending.json"
+META_OAUTH_CONNECTION_FILE = DATA_DIR / "meta_oauth_connection.json"
+# Hermes owns Telegram polling, so a fresh installation may not have a
+# dashboard-era TELEGRAM_CHAT_ID yet.  The runtime records the real incoming
+# Telegram chat here; it contains only the numeric routing ID, never a token.
+TELEGRAM_RUNTIME_CHAT_FILE = DATA_DIR / "telegram_runtime_chat.json"
+INSTALLATION_STATE_FILE = DATA_DIR / "installation_state.json"
 UPDATE_SNAPSHOT_ROOT_NAME = "MetaAdsAgent-rollback"
 MAX_UPDATE_SNAPSHOTS = 3
 DEFAULT_POST_LIMIT_BYTES = 2 * 1024 * 1024
@@ -288,6 +295,7 @@ MAX_MIGRATION_ARCHIVE_BYTES = 100 * 1024 * 1024
 MAX_UPDATE_ARCHIVE_BYTES = 220 * 1024 * 1024
 MAX_UPDATE_UNPACKED_BYTES = 300 * 1024 * 1024
 MAX_MANAGED_META_AD_ACCOUNTS = 5
+META_OAUTH_POLL_LOCK = threading.Lock()
 CURRENT_DASHBOARD_BIND_HOST = ""
 CURRENT_DASHBOARD_BIND_PORT = 0
 CREATIVE_ASSET_ROOT = OUTPUT_DIR / "creatives"
@@ -1123,6 +1131,69 @@ def save_automatic_update_state(state):
     write_private_json(AUTOMATIC_UPDATE_STATE_FILE, state, ensure_ascii=False)
 
 
+def installation_runtime_state():
+    state = read_json(INSTALLATION_STATE_FILE, {})
+    return state if isinstance(state, dict) else {}
+
+
+def reconcile_installation_state():
+    """Make the durable update record agree with the code actually running.
+
+    Docker installations can apply a signed source update inside an existing
+    container without rebuilding the host image.  The application VERSION is
+    therefore the source of truth after restart; the updater state is repaired
+    here so the UI/Telegram path never reports an older release as installed.
+    """
+    version = current_product_version()
+    state = automatic_update_state()
+    health = state.get("health") if isinstance(state.get("health"), dict) else {}
+    changed = (
+        str(state.get("version") or "").strip() != version
+        or str(health.get("package_version") or "").strip() != version
+        or state.get("status") == "checking"
+    )
+    if changed:
+        state.update({
+            "status": "installed",
+            "version": version,
+            "completed_at": state.get("completed_at") or now_iso(),
+            "reconciled_at": now_iso(),
+            "reconciled_from_runtime": True,
+        })
+        state["health"] = {**health, "package_version": version}
+        save_automatic_update_state(state)
+    installation = installation_runtime_state()
+    desired = {
+        "source_version": version,
+        "image_base_version": str(os.environ.get("ADMIRA_IMAGE_VERSION") or "").strip(),
+        "update_state_version": version,
+        "updated_at": installation.get("updated_at") or now_iso(),
+        "update_mode": "in_place_source" if Path("/.dockerenv").exists() else "native_source",
+    }
+    changed = any(installation.get(key) != value for key, value in desired.items() if key != "updated_at")
+    if changed:
+        desired["updated_at"] = now_iso()
+        write_private_json(INSTALLATION_STATE_FILE, desired, ensure_ascii=False)
+        installation = desired
+    return {**installation, "update_state": state}
+
+
+def installation_runtime_payload():
+    identity = reconcile_installation_state()
+    source_version = str(identity.get("source_version") or current_product_version()).strip()
+    state_version = str(identity.get("update_state_version") or "").strip()
+    image_version = str(identity.get("image_base_version") or "").strip()
+    return {
+        "source_version": source_version,
+        "image_base_version": image_version,
+        "update_state_version": state_version,
+        "consistent": bool(source_version and source_version == state_version),
+        "image_tag_may_be_older": bool(image_version and image_version not in {"unknown", source_version}),
+        "update_mode": identity.get("update_mode") or "",
+        "updated_at": identity.get("updated_at") or "",
+    }
+
+
 def automatic_update_notice_text(state, language="es"):
     version = str(state.get("version") or "").strip()
     if str(language or "es").lower().startswith("en"):
@@ -1869,6 +1940,17 @@ def _apply_official_update_unlocked():
         except Exception as rollback_exc:
             raise ValueError("La actualizacion fallo y tampoco pude restaurar automaticamente el punto anterior.") from rollback_exc
         raise ValueError("La actualizacion no paso las verificaciones y restaure automaticamente la version anterior.") from exc
+    installed_version = str(health.get("package_version") or release["latest_version"]).strip()
+    update_state = automatic_update_state()
+    update_state.update({
+        "status": "installed",
+        "version": installed_version,
+        "completed_at": now_iso(),
+        "snapshot_id": str(snapshot.get("id") or ""),
+        "health": health,
+    })
+    save_automatic_update_state(update_state)
+    reconcile_installation_state()
     log_action("official_update_apply", {"from": release["current_version"], "to": release["latest_version"], "channel": release["channel"], "snapshot_id": snapshot.get("id"), "package_version": health.get("package_version", installed_version), "archive_sha256_verified": bool(archive_integrity.get("verified"))}, "completed")
     threading.Timer(1.2, restart_dashboard_process).start()
     return {**release, "installed": True, "snapshot": snapshot, "health": health, "archive_integrity": archive_integrity, "message": "Actualizacion instalada. El dashboard se reiniciara automaticamente."}
@@ -3425,6 +3507,7 @@ def social_auth_status():
             "facebook_ready": False,
             "token_expired": False,
             "default_account": config.ad_account_id,
+            "oauth": social_oauth_status(),
         }
     result = graph_get("/me", {"fields": "id,name"})
     raw = json.dumps(result.get("data") if result.get("ok") else result.get("error"), ensure_ascii=False)
@@ -3438,17 +3521,340 @@ def social_auth_status():
         "facebook_ready": bool(result.get("ok")) and not expired,
         "token_expired": expired,
         "default_account": config.ad_account_id,
+        "oauth": social_oauth_status(),
     }
 
 
 def social_login_url():
     return {
-        "url": "https://business.facebook.com/settings/system-users",
+        "url": "",
         "instructions": {
-            "es": "Abre Meta Business, crea un Usuario del sistema y genera una clave estable para tu propia cuenta publicitaria.",
-            "en": "Open Meta Business, create a System User, and generate a stable key for your own ad account.",
+            "es": "Conecta Facebook desde el enlace seguro que Admira envía a tu Telegram. No pegues claves de Meta.",
+            "en": "Connect Facebook with the secure link Admira sends to Telegram. Do not paste Meta keys.",
         },
     }
+
+
+def _meta_oauth_broker_url(config=None):
+    config = config or load_config()
+    raw = str(getattr(config, "meta_oauth_broker_url", "") or "").strip().rstrip("/")
+    parsed = urllib.parse.urlparse(raw)
+    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
+        return ""
+    return raw
+
+
+def _meta_oauth_request(url, payload):
+    body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json", "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            data = json.loads(exc.read().decode("utf-8"))
+        except Exception:
+            data = {"ok": False, "error": "oauth_broker_unavailable"}
+    except Exception:
+        data = {"ok": False, "error": "oauth_broker_unavailable"}
+    return data if isinstance(data, dict) else {"ok": False, "error": "oauth_broker_invalid_response"}
+
+
+def _meta_oauth_pending():
+    value = read_json(META_OAUTH_PENDING_FILE, {})
+    return value if isinstance(value, dict) else {}
+
+
+def _meta_oauth_connection():
+    value = read_json(META_OAUTH_CONNECTION_FILE, {})
+    return value if isinstance(value, dict) else {}
+
+
+def _safe_meta_oauth_summary(connection):
+    connection = connection if isinstance(connection, dict) else {}
+    return {
+        "connected": bool(connection.get("connected")),
+        "connected_at": str(connection.get("connected_at") or ""),
+        "expires_at": str(connection.get("expires_at") or ""),
+        "user": {"id": str((connection.get("user") or {}).get("id") or ""), "name": str((connection.get("user") or {}).get("name") or "")},
+        "accounts": [{key: item.get(key) for key in ("id", "account_id", "name", "currency", "account_status")} for item in connection.get("accounts", []) if isinstance(item, dict)],
+        "pages": [{key: item.get(key) for key in ("id", "name", "category", "instagram", "can_publish", "sources", "business_ids")} for item in connection.get("pages", []) if isinstance(item, dict)],
+        "businesses": [{key: item.get(key) for key in ("id", "name")} for item in connection.get("businesses", []) if isinstance(item, dict)],
+        "active_ad_account_id": str(connection.get("active_ad_account_id") or ""),
+        "active_page_id": str(connection.get("active_page_id") or ""),
+    }
+
+
+def social_oauth_status():
+    config = load_config()
+    connection = _meta_oauth_connection()
+    pending = _meta_oauth_pending()
+    result = _safe_meta_oauth_summary(connection)
+    result.update({
+        "ok": bool(result["connected"]),
+        "broker_configured": bool(_meta_oauth_broker_url(config)),
+        "pending": bool(pending.get("request_id")),
+        "pending_created_at": str(pending.get("created_at") or ""),
+        "legacy_token_connected": bool(config.meta_access_token and str(config.meta_access_token_kind or "").lower() != "oauth"),
+    })
+    return result
+
+
+def _runtime_telegram_chat_id():
+    value = read_json(TELEGRAM_RUNTIME_CHAT_FILE, {})
+    chat_id = str(value.get("chat_id") or "").strip() if isinstance(value, dict) else ""
+    return chat_id if chat_id.lstrip("-").isdigit() else ""
+
+
+def _meta_oauth_chat_id(config, explicit_chat_id=""):
+    for candidate in (explicit_chat_id, getattr(config, "telegram_chat_id", ""), _runtime_telegram_chat_id()):
+        chat_id = str(candidate or "").strip()
+        if chat_id.lstrip("-").isdigit():
+            return chat_id
+    return ""
+
+
+def _send_meta_oauth_link(config, authorization_url, chat_id=""):
+    chat_id = _meta_oauth_chat_id(config, chat_id)
+    if not chat_id:
+        raise ValueError("Conecta primero tu bot de Telegram para enviarte el enlace seguro de Facebook.")
+    telegram_bot_request(config, "sendMessage", {
+        "chat_id": chat_id,
+        "text": "Conecta tu Facebook y Meta Ads desde este botón. Inicia sesión con la cuenta que administra tus activos; nunca compartas una clave de Meta por chat.",
+        "reply_markup": json.dumps({"inline_keyboard": [[{"text": "Conectar Facebook y Meta", "url": authorization_url}]]}),
+    }, timeout=20)
+
+
+def _oauth_publishable_pages(connection):
+    return [item for item in (connection.get("pages") or []) if isinstance(item, dict) and item.get("id") and item.get("access_token")]
+
+
+def _send_meta_oauth_account_picker(config, connection, chat_id=""):
+    """Keep initial Meta workspace selection deterministic, before Hermes.
+
+    Facebook authorization and the account/Page choice are setup operations,
+    not advisory work. They must remain usable when a model is limited or a
+    new Hermes session has no prior conversation context.
+    """
+    accounts = [item for item in (connection.get("accounts") or []) if isinstance(item, dict) and item.get("id")]
+    if not accounts:
+        return
+    buttons = []
+    for account in accounts[:25]:
+        account_id = clean_ad_account_id(account.get("id"))
+        if not account_id:
+            continue
+        label = str(account.get("name") or account_id).strip()[:42]
+        currency = str(account.get("currency") or "").strip()
+        buttons.append([{"text": f"{label}{' · ' + currency if currency else ''}", "callback_data": f"meta_account:{account_id}"}])
+    if not buttons:
+        return
+    telegram_bot_request(config, "sendMessage", {
+        "chat_id": _meta_oauth_chat_id(config, chat_id),
+        "text": "Facebook conectado. Primero elige la cuenta publicitaria que vas a gestionar.",
+        "reply_markup": json.dumps({"inline_keyboard": buttons}),
+    }, timeout=20)
+
+
+def social_oauth_select_account(account_id):
+    account_id = clean_ad_account_id(account_id)
+    connection = _meta_oauth_connection()
+    account = next((item for item in connection.get("accounts", []) if clean_ad_account_id(item.get("id")) == account_id), None)
+    if not account:
+        raise ValueError("La cuenta elegida no pertenece a esta conexión de Facebook.")
+    connection["pending_ad_account_id"] = account_id
+    write_private_json(META_OAUTH_CONNECTION_FILE, connection)
+    return {"ok": True, "account": {key: account.get(key) for key in ("id", "account_id", "name", "currency")}, "pages": _oauth_publishable_pages(connection)}
+
+
+def social_oauth_select_page(page_id):
+    connection = _meta_oauth_connection()
+    account_id = clean_ad_account_id(connection.get("pending_ad_account_id") or connection.get("active_ad_account_id"))
+    page_id = str(page_id or "").strip()
+    account = next((item for item in connection.get("accounts", []) if clean_ad_account_id(item.get("id")) == account_id), None)
+    page = next((item for item in _oauth_publishable_pages(connection) if str(item.get("id") or "") == page_id), None)
+    if not account or not page:
+        raise ValueError("La cuenta o Página elegida no pertenece a esta conexión de Facebook.")
+    connection["active_ad_account_id"] = account_id
+    connection["active_page_id"] = page_id
+    connection.pop("pending_ad_account_id", None)
+    write_private_json(META_OAUTH_CONNECTION_FILE, connection)
+    update_env_values({"META_AD_ACCOUNT_ID": account_id, "META_PUBLISHING_ACCESS_TOKEN": str(page.get("access_token") or ""), "META_PUBLISHING_TOKEN_SAVED_AT": now_iso()})
+    save_setup_config({"ad_account_id": account_id, "account_name": account.get("name", ""), "account_currency": account.get("currency", ""), "page_id": page_id, "instagram_actor_id": str((page.get("instagram") or {}).get("id") or ""), "_skip_meta_profile_sync": True})
+    log_action("meta_oauth_workspace_selected", {"account_id": account_id, "page_id": page_id, "source": "telegram"}, "completed")
+    return {"ok": True, "selected": True, "account": account, "page": page, **_safe_meta_oauth_summary(connection)}
+
+
+def social_oauth_start(payload=None):
+    payload = payload or {}
+    config = load_config()
+    broker_url = _meta_oauth_broker_url(config)
+    if not broker_url:
+        raise ValueError("La conexión segura de Facebook aún no está configurada en esta versión. Actualiza o contacta soporte.")
+    existing = _meta_oauth_pending()
+    if existing.get("request_id") and existing.get("handoff_secret"):
+        # A completed business interview can trigger the deterministic handoff
+        # and the model may also call the explicit tool in the same turn. Keep
+        # one pending link rather than confusing the buyer with duplicates.
+        return {"ok": True, "sent_to_telegram": True, "pending": True, "already_pending": True, "expires_in_seconds": 900}
+    handoff_secret = secrets.token_urlsafe(48)
+    result = _meta_oauth_request(broker_url, {
+        "flow": "start",
+        "handoff_secret": handoff_secret,
+        "installation_id": resolved_device_id(config.license_device_id, config.license_key),
+    })
+    if not result.get("ok") or not result.get("request_id") or not result.get("authorization_url"):
+        raise ValueError("No pude preparar la conexión segura de Facebook. Intenta de nuevo en un minuto.")
+    chat_id = _meta_oauth_chat_id(config, str(payload.get("telegram_chat_id") or ""))
+    if not chat_id:
+        raise ValueError("Aún no detecto tu chat de Telegram. Envía un mensaje al bot y vuelve a intentar.")
+    pending = {"request_id": str(result["request_id"]), "handoff_secret": handoff_secret, "created_at": now_iso(), "broker_url": broker_url, "telegram_chat_id": chat_id}
+    write_private_json(META_OAUTH_PENDING_FILE, pending)
+    _send_meta_oauth_link(config, str(result["authorization_url"]), chat_id)
+    # Telegram is the primary buyer experience, so do not require the local
+    # dashboard tab to stay open after it sends the OAuth link. This bounded
+    # worker only polls the broker; it never makes a Meta mutation itself.
+    threading.Thread(target=_poll_meta_oauth_in_background, name="admira-meta-oauth-poll", daemon=True).start()
+    log_action("meta_oauth_started", {"telegram_sent": True, "request_id_present": True}, "completed")
+    return {"ok": True, "sent_to_telegram": True, "pending": True, "expires_in_seconds": int(result.get("expires_in_seconds") or 900)}
+
+
+def _poll_meta_oauth_in_background():
+    if not META_OAUTH_POLL_LOCK.acquire(blocking=False):
+        return
+    try:
+        deadline = time.monotonic() + 15 * 60
+        while time.monotonic() < deadline:
+            pending = _meta_oauth_pending()
+            if not pending.get("request_id"):
+                return
+            try:
+                result = _meta_oauth_request(str(pending.get("broker_url") or ""), {"flow": "poll", "request_id": pending["request_id"], "handoff_secret": pending["handoff_secret"]})
+                if result.get("ok") and result.get("status") == "connected":
+                    _apply_meta_oauth_credentials(result.get("credentials"))
+                    chat_id = str(pending.get("telegram_chat_id") or "")
+                    try: META_OAUTH_PENDING_FILE.unlink()
+                    except OSError: pass
+                    config = load_config()
+                    if _meta_oauth_chat_id(config, chat_id):
+                        try:
+                            _send_meta_oauth_account_picker(config, _meta_oauth_connection(), chat_id)
+                        except Exception:
+                            pass
+                    log_action("meta_oauth_connected", {"background": True}, "completed")
+                    return
+                if result.get("error") in {"oauth_request_expired", "oauth_request_not_found"}:
+                    try: META_OAUTH_PENDING_FILE.unlink()
+                    except OSError: pass
+                    return
+            except Exception:
+                # A temporary network error is not a reason to tell the buyer
+                # the connection failed. The next bounded poll can recover.
+                pass
+            time.sleep(4)
+    finally:
+        META_OAUTH_POLL_LOCK.release()
+
+
+def _apply_meta_oauth_credentials(credentials):
+    if not isinstance(credentials, dict):
+        raise ValueError("La respuesta de Facebook llegó incompleta.")
+    token = str(credentials.get("user_token") or "").strip()
+    accounts = [item for item in credentials.get("accounts") or [] if isinstance(item, dict) and item.get("id")]
+    pages = []
+    for raw_page in credentials.get("pages") or []:
+        if not isinstance(raw_page, dict) or not raw_page.get("id"):
+            continue
+        page = dict(raw_page)
+        page["can_publish"] = bool(page.get("access_token"))
+        pages.append(page)
+    publishable_pages = [item for item in pages if item.get("can_publish")]
+    businesses = [item for item in credentials.get("businesses") or [] if isinstance(item, dict) and item.get("id")]
+    if len(token) < 20 or not accounts or not publishable_pages:
+        raise ValueError("Facebook no devolvió una cuenta publicitaria y una Página utilizables. Revisa los permisos aceptados.")
+    active_account = accounts[0] if len(accounts) == 1 else {}
+    active_page = publishable_pages[0] if len(publishable_pages) == 1 else {}
+    connection = {
+        "connected": True,
+        "connected_at": now_iso(),
+        "expires_at": str(credentials.get("expires_at") or ""),
+        "user": credentials.get("user") if isinstance(credentials.get("user"), dict) else {},
+        "user_token": token,
+        "accounts": accounts,
+        "pages": pages,
+        "businesses": businesses,
+        "active_ad_account_id": str(active_account.get("id") or ""),
+        "active_page_id": str(active_page.get("id") or ""),
+    }
+    write_private_json(META_OAUTH_CONNECTION_FILE, connection)
+    updates = {
+        "META_ACCESS_TOKEN": token,
+        "META_ACCESS_TOKEN_KIND": "oauth",
+        "META_ACCESS_TOKEN_SAVED_AT": now_iso(),
+        "META_OAUTH_CONNECTED_AT": connection["connected_at"],
+        "META_OAUTH_EXPIRES_AT": connection["expires_at"],
+        "META_OAUTH_USER_ID": str((connection["user"] or {}).get("id") or ""),
+    }
+    # OAuth user token is used for Ads. The selected Page token is saved only
+    # after the buyer explicitly chooses a page, except when there is one page.
+    if active_page:
+        updates["META_PUBLISHING_ACCESS_TOKEN"] = str(active_page.get("access_token") or "")
+        updates["META_PUBLISHING_TOKEN_SAVED_AT"] = now_iso()
+    if active_account:
+        updates["META_AD_ACCOUNT_ID"] = clean_ad_account_id(active_account.get("id"))
+    update_env_values(updates)
+    if active_account or active_page:
+        save_setup_config({"ad_account_id": active_account.get("id", ""), "account_name": active_account.get("name", ""), "account_currency": active_account.get("currency", ""), "page_id": active_page.get("id", ""), "instagram_actor_id": str((active_page.get("instagram") or {}).get("id") or ""), "_skip_meta_profile_sync": True})
+    return _safe_meta_oauth_summary(connection)
+
+
+def social_oauth_poll(payload=None):
+    pending = _meta_oauth_pending()
+    if not pending.get("request_id") or not pending.get("handoff_secret"):
+        return {"ok": True, "status": "idle", **social_oauth_status()}
+    result = _meta_oauth_request(str(pending.get("broker_url") or ""), {"flow": "poll", "request_id": pending["request_id"], "handoff_secret": pending["handoff_secret"]})
+    if result.get("status") == "pending":
+        return {"ok": True, "status": "pending"}
+    if not result.get("ok") or result.get("status") != "connected":
+        # The background worker may have applied the one-time broker result
+        # between this UI poll and the request above. Treat that as success,
+        # rather than showing a misleading expired-link error.
+        existing = _meta_oauth_connection()
+        if result.get("error") in {"oauth_request_expired", "oauth_request_not_found"} and existing.get("connected"):
+            try: META_OAUTH_PENDING_FILE.unlink()
+            except OSError: pass
+            return {"ok": True, "status": "connected", **_safe_meta_oauth_summary(existing)}
+        if result.get("error") in {"oauth_request_expired", "oauth_request_not_found"}:
+            try: META_OAUTH_PENDING_FILE.unlink()
+            except OSError: pass
+        raise ValueError("La conexión de Facebook venció o no pudo verificarse. Solicita un enlace nuevo.")
+    chat_id = str(pending.get("telegram_chat_id") or "")
+    summary = _apply_meta_oauth_credentials(result.get("credentials"))
+    try: META_OAUTH_PENDING_FILE.unlink()
+    except OSError: pass
+    config = load_config()
+    account_count, page_count = len(summary.get("accounts") or []), len(summary.get("pages") or [])
+    text = "Facebook conectado. " + ("Elegí automáticamente tu única cuenta y Página." if account_count == 1 and page_count == 1 else f"Encontré {account_count} cuentas y {page_count} páginas. Elige cuáles usar desde Configuración.")
+    resolved_chat_id = _meta_oauth_chat_id(config, chat_id)
+    if resolved_chat_id:
+        try: telegram_bot_request(config, "sendMessage", {"chat_id": resolved_chat_id, "text": text}, timeout=15)
+        except Exception: pass
+    log_action("meta_oauth_connected", {"accounts": account_count, "pages": page_count, "auto_selected": account_count == 1 and page_count == 1}, "completed")
+    return {"ok": True, "status": "connected", **summary}
+
+
+def social_oauth_select(payload=None):
+    payload = payload or {}
+    account_id = clean_ad_account_id(payload.get("ad_account_id"))
+    page_id = str(payload.get("page_id") or "").strip()
+    connection = _meta_oauth_connection()
+    account = next((item for item in connection.get("accounts", []) if clean_ad_account_id(item.get("id")) == account_id), None)
+    page = next((item for item in connection.get("pages", []) if str(item.get("id") or "") == page_id and item.get("access_token")), None)
+    if not account or not page:
+        raise ValueError("La cuenta o Página elegida no pertenece a esta conexión de Facebook.")
+    connection["pending_ad_account_id"] = account_id
+    write_private_json(META_OAUTH_CONNECTION_FILE, connection)
+    return social_oauth_select_page(page_id)
 
 
 def social_save_facebook_token(payload):
@@ -8066,17 +8472,43 @@ def ads_campaign_onboarding_status(profile=None):
     return "pending"
 
 
+def organic_content_strategy_status():
+    """Return whether the one-time organic strategy decision is resolved.
+
+    This is deliberately separate from readiness.  A buyer can approve the
+    direction before branding is complete; in that case the cron remains
+    disabled, but the onboarding must continue to branding rather than asking
+    the generic organic-content question again after every restart.
+    """
+    decision = str(os.environ.get("DAILY_SOCIAL_CONTENT_DECISION") or "").strip().lower()
+    if decision in {"accepted_pending_setup", "enabled", "declined"}:
+        return "completed"
+    return "pending"
+
+
 def agent_onboarding_phase(profile=None):
     profile = profile if isinstance(profile, dict) else read_json(BUSINESS_PROFILE_FILE, {})
     if not isinstance(profile, dict):
         profile = {}
     business = onboarding_interview_status(profile)
+    oauth = social_oauth_status()
+    organic_content = organic_content_strategy_status()
     branding = branding_creatives_status()
     campaigns = ads_campaign_onboarding_status(profile)
     creative_readiness = creative_strategy_readiness(require_brief=False)
-    if business != "completed":
+    facebook_connected = bool(oauth.get("connected")) and bool(oauth.get("active_ad_account_id")) and bool(oauth.get("active_page_id"))
+    if not facebook_connected:
+        phase = "facebook_connection"
+        next_step = "Conectar Facebook de forma segura y elegir la cuenta publicitaria y Página activas antes de iniciar la entrevista del negocio."
+    elif business != "completed":
         phase = "business_discovery"
         next_step = "Entrevistar al cliente sobre negocio, oferta, cliente ideal, etapa actual, problemas y meta de 30 dias."
+    elif organic_content != "completed":
+        phase = "organic_content_strategy"
+        next_step = (
+            "Antes de branding o anuncios, proponer una estrategia de contenido orgánico concreta para este negocio: "
+            "pilares, temas, frecuencia, borradores con Image 2 y revisión antes de publicar."
+        )
     elif branding != "completed":
         phase = "branding_creatives_creation"
         next_step = creative_readiness.get("next_question") or "Usar el skill branding creatives creation para definir marca, logo, productos, referencias, paletas, fuentes y reglas de creativos."
@@ -8088,7 +8520,9 @@ def agent_onboarding_phase(profile=None):
         next_step = "Operar como manager continuo: leer datos, recordar decisiones, proponer acciones, esperar resultados cuando conviene."
     return {
         "phase": phase,
+        "facebook_connected": facebook_connected,
         "business": business,
+        "organic_content": organic_content,
         "branding": branding,
         "campaigns": campaigns,
         "next_step": next_step,
@@ -8106,6 +8540,8 @@ def agent_onboarding_deferred_reasons(profile=None):
     reasons = []
     if phase["business"] != "completed":
         reasons.append("entrevista_negocio")
+    if phase.get("organic_content") != "completed":
+        reasons.append("estrategia_contenido_organico")
     if phase["branding"] != "completed":
         reasons.append("branding_creativos")
     if phase["campaigns"] != "completed":
@@ -8144,9 +8580,9 @@ Siguiente movimiento: {phase["next_step"]}
 
 Antes de hacer la primera pregunta, explica el camino con palabras simples:
 
-1. Primero voy a entender tu negocio: que vendes, a quien le vendes, en que etapa estas y que quieres mejorar.
-2. Despues vamos a definir tu parte visual: marca, logo, colores, referencias, estilo y tono.
-3. Luego aterrizamos anuncios: ofertas especificas, campanas anteriores, estrategia, briefs y proximos pasos.
+1. Primero conectaremos Facebook de forma segura para leer tus datos reales y no interrumpir el proceso después.
+2. Luego entenderé tu negocio y te propondré una estrategia simple de contenido orgánico: ideas, pilares, frecuencia y borradores con Image 2 para revisión.
+3. Después dejaremos clara la parte visual de la marca y aterrizaremos anuncios: ofertas específicas, estrategia, briefs y próximos pasos.
 
 Despues de explicar esto, pregunta tambien la preferencia global del operador: "Tienes experiencia creando o gestionando anuncios? Quieres que te explique cosas tecnicas con detalle, o prefieres que yo tome las decisiones de mejores practicas y te lo explique en palabras simples? Esto lo puedes cambiar cuando quieras."
 
@@ -8154,9 +8590,9 @@ Cuando responda, guarda esa preferencia con `save_agent_preferences` / `mcp_admi
 - `ad_experience_level`: `beginner`, `intermediate` o `advanced`.
 - `communication_style`: `simple` o `technical`.
 
-Despues de esa preferencia, haz una sola pregunta clara de negocio. La mejor primera pregunta es: "Que vendes exactamente y cual es tu oferta principal hoy?"
+La primera acción no es una pregunta de negocio: consulta `mcp_admira_get_meta_oauth_workspaces` y, si no hay conexión, llama `mcp_admira_start_meta_oauth_connection` para enviar el botón seguro de Facebook a Telegram. Nunca pidas tokens, Usuario del sistema, app de Meta ni IDs técnicos. Tras seleccionar cuenta/Página, haz una sola pregunta clara de negocio: "Que vendes exactamente y cual es tu oferta principal hoy?"
 
-Al terminar el onboarding general de negocio, no sigas reescribiendo esta memoria para cada oferta nueva. Pasa al archivo separado `Branding onboarding.md` para marca visual, logo, colores, referencias y activos. Luego trata cada producto/servicio/promocion como oferta hija separada en `brand_guides/products/` y `brand_guides/ad_briefs/`.
+Al terminar el onboarding general de negocio, no saltes a anuncios ni branding. Facebook ya estará conectado y seleccionado; entra en `organic_content_strategy`: lee `skills/organic-content-strategy/SKILL.md` y presenta una propuesta concreta, adaptada al negocio recién entendido. Debe incluir 2-4 pilares, ejemplos de temas, frecuencia recomendada y borradores con Image 2 (y motion video solo cuando aporte) para revisión/aprobación antes de publicar. Cuando el comprador acepte o ajuste esa dirección, guarda `accepted_pending_setup` con `mcp_admira_save_daily_social_content_settings`; después pasa a `Branding onboarding.md` para marca visual, logo, colores, referencias y activos.
 
 ## Postura experta global
 
@@ -8166,15 +8602,25 @@ Regla asesor-profesional: antes de preguntar cualquier configuracion amplia, pri
 
 ## Fases
 
-1. business_discovery
+1. facebook_connection
+   - Consultar `mcp_admira_get_meta_oauth_workspaces`; si falta conexión, llamar `mcp_admira_start_meta_oauth_connection` y entregar el botón seguro de Telegram.
+   - Tras OAuth, mostrar las cuentas/Páginas encontradas y guardar el par activo seleccionado. Nunca pedir token, Usuario del sistema, app ni IDs técnicos.
+
+2. business_discovery
    - Entender que vende, oferta principal, productos/servicios prioritarios, cliente ideal, etapa actual, dolores, meta de 30 dias y tono comercial.
    - Preguntar una sola cosa a la vez.
-   - Guardar lo aprendido con `save_business_context`.
+   - Guardar lo aprendido con `save_business_context`. Cuando ya estén claros oferta principal, cliente ideal, etapa y meta/mejora, guarda también `context_complete=true`: esto cierra la entrevista y abre la fase de estrategia de contenido orgánico.
 
-2. branding_creatives_creation
+3. organic_content_strategy
+   - Antes de branding y anuncios, leer `skills/organic-content-strategy/SKILL.md` y proponer, no preguntar de forma genérica, una estrategia concreta para el negocio: pilares, temas de ejemplo, mezcla recomendada de posts educativos/comunidad/promoción, frecuencia y por qué sirve al objetivo del negocio.
+   - Explicar que Image 2 prepara los diseños y que las piezas se envían primero por Telegram para revisión; nada visible se publica sin la aprobación explícita del comprador.
+   - Facebook ya está conectado: cerrar la propuesta indicando que, tras aprobarla o ajustarla, el siguiente paso es branding y cadencia final.
+   - Cuando acepte, cambie o rechace la estrategia, guardar la decisión con `save_daily_social_content_settings`. Una aceptación temprana se guarda como `accepted_pending_setup`, sin activar cron aún.
+   - Tras una aceptación/ajuste, pasar a branding.
+
+4. branding_creatives_creation
    - Usar el skill `skills/branding-creatives-creation/SKILL.md`.
    - Leer `Branding onboarding.md` como la guia especifica de branding. El onboarding general solo indica que esta fase empieza; el detalle de branding vive separado.
-   - Despues de entender marca/logo/assets, usar tambien `skills/organic-content-strategy/SKILL.md` si el cliente quiere posts organicos diarios o comparte assets reutilizables.
    - Buscar referencias visuales de anuncios del nicho con las herramientas web/browser disponibles.
    - No generar anuncios todavía. Completar colores, estilo visual, tono, decisión de logo, decisión de referencias y decisión sobre fotos/activos reales.
    - Preguntar activamente si el cliente quiere subir un logo, diseño de referencia, foto de producto, fundador, cliente, local o empaque.
@@ -8184,10 +8630,10 @@ Regla asesor-profesional: antes de preguntar cualquier configuracion amplia, pri
    - Si el cliente envia un logo, guardarlo en la guia general como Logo de marca y Notas del logo.
    - Si el cliente aprueba referencias encontradas, generadas o ambas, guardarlas con `save_creative_references`.
    - Si el cliente envia fotos/videos/links/UGC/testimonios/ofertas, guardar su proposito con `save_content_asset`.
-   - Preguntar una vez si quiere que Admira prepare contenido diario o cada X días con Image 2 y motion videos cuando aporten. Proponer una mezcla/frecuencia si no sabe. Si acepta o rechaza, guardar con `save_daily_social_content_settings`.
+   - Si el comprador ya aprobó contenido orgánico, terminar aquí la base necesaria: logo, colores, estilo, referencias, tono y assets. Después guardar la estrategia concreta (hora, cantidad, frecuencia y formatos) con `save_daily_social_content_settings`, lo que habilita el cron; si no la aprobó, no volver a insistir salvo que cambie de opinión.
    - Guardar la guia general con `save_brand_guide` y fichas por producto con `save_product_guide`.
 
-3. ads_campaign_onboarding
+4. ads_campaign_onboarding
    - Entender que anuncio antes, que resultados tuvo, que cree que fallo, que quiere mantener, presupuesto, CPA/CPL objetivo cuando exista, paises, ofertas y restricciones.
    - Preguntar por los 3 resultados/KPIs mas importantes para juzgar cada campana en orden de prioridad, por ejemplo ROAS, costo por compra y costo por iniciar checkout; guardarlos y pasarlos como `success_metrics`.
    - Preguntar el presupuesto antes de proponer cuantos creativos probar simultaneamente.
@@ -8197,7 +8643,7 @@ Regla asesor-profesional: antes de preguntar cualquier configuracion amplia, pri
    - Guardar contexto con `save_ads_onboarding`.
    - Crear briefs por promocion, campana, conjunto o anuncio con `save_ad_brief`.
 
-4. continuous_ads_manager
+5. continuous_ads_manager
    - Usar metricas, memoria de decisiones, guias de marca, referencias, briefs y contexto de campanas para responder como manager coherente.
    - Si no hay accion clara, decir que conviene esperar y que senal revisar despues.
    - Si hay accion clara, preparar o ejecutar bajo las reglas del backend.
@@ -8205,6 +8651,7 @@ Regla asesor-profesional: antes de preguntar cualquier configuracion amplia, pri
 ## Estado resumido
 
 - Negocio: {phase["business"]}
+- Estrategia de contenido orgánico: {phase["organic_content"]}
 - Branding/creativos: {phase["branding"]}
 - Campanas/anuncios previos: {phase["campaigns"]}
 - Contenido orgánico: decision={social_content_decision}, activo={"si" if social_content_enabled else "no"}, hora={social_content_time}, cantidad={social_content_posts} por tanda, frecuencia=cada {social_content_interval} dia(s), formatos={social_content_formats}, video cada {social_content_video_interval} dia(s)
@@ -8320,9 +8767,9 @@ Instrucciones para el agente:
 - Usa los links guardados como contexto, pero deja que el cliente corrija todo.
 - Documenta lo aprendido en el perfil del negocio y en las guias de marca/producto/brief cuando corresponda.
 - Si falta informacion, pregunta lo minimo necesario para poder actuar.
-- Cuando el negocio este claro, pasa a la fase de branding/creativos; no saltes directo a campanas si faltan estilo, referencias, colores o reglas visuales.
-- Al pasar a branding, usa `Branding onboarding.md`. El onboarding general termina cuando entiendes el negocio; marca visual, logo, colores, fuentes, referencias y assets viven en esa memoria separada.
-- Cuando marca/logo/assets estén razonablemente claros, pregunta una vez si quiere que Admira prepare contenido diario o cada X días con Image 2 y motion videos cuando aporten. Propón una mezcla/frecuencia si no sabe. Si acepta o rechaza, guarda la decisión con `save_daily_social_content_settings`.
+- Cuando el negocio esté claro, antes de branding y antes de anuncios pasa a `skills/organic-content-strategy/SKILL.md`. No preguntes solo si “quiere contenido”: propone primero una estrategia de contenido orgánico hecha para ese negocio, con pilares, ejemplos de ideas, frecuencia recomendada, diseño con Image 2 y revisión/aprobación por Telegram antes de publicar.
+- En el cierre de esa propuesta explica que, si la dirección le gusta o quiere ajustarla, el siguiente paso será conectar su Página de Facebook para publicar las piezas aprobadas y sincronizar Ads. Al aceptar/ajustar/declinar, guarda la decisión con `save_daily_social_content_settings`; una aceptación temprana queda `accepted_pending_setup` hasta completar branding, sin activar cron todavía.
+- Solo después de que el cliente acepte o ajuste la estrategia, revisa `mcp_admira_get_meta_oauth_workspaces`; si Facebook no está conectado llama `mcp_admira_start_meta_oauth_connection`. Después de elegir cuenta/Página, usa `Branding onboarding.md` para logo, colores, fuentes, referencias y assets; luego continúa a Ads.
 - Si el cliente menciona una nueva oferta, servicio, paquete o promocion despues del onboarding, no lo guardes encima de la marca general. Trátalo como oferta hija y usa/crea `brand_guides/products/` y, si aplica, `brand_guides/ad_briefs/`.
 - Si el cliente comparte archivos, fotos, videos, links, testimonios, ofertas o referencias, pregunta/infiera para que son y guardalos con `save_content_asset` para que se puedan reutilizar en posts, anuncios o estrategia.
 - Despues de branding, pregunta por anuncios/campanas anteriores y guarda aprendizajes antes de proponer la estrategia inicial.
@@ -8339,7 +8786,8 @@ Preguntas que debes cubrir poco a poco:
 
 Despues de estas preguntas:
 - Usa `save_business_context`.
-- Luego usa el skill `branding creatives creation`.
+- Luego propone y guarda/descarta la estrategia de contenido orgánico antes de branding o Ads.
+- Después usa el skill `branding creatives creation`.
 - Luego usa `save_ads_onboarding`.
 - Solo despues propone una estrategia inicial robusta pero clara.
 
@@ -9309,7 +9757,7 @@ def complete_onboarding(payload=None):
     ad_config = read_json(AD_CONFIG_FILE, {})
     destination = ad_config.get("creative", {}).get("destination", {})
     if not config.meta_access_token:
-        raise ValueError("Pega y guarda tu clave de Meta antes de terminar.")
+        raise ValueError("Conecta Facebook desde el enlace seguro enviado a Telegram antes de terminar.")
     if not config.ad_account_id:
         raise ValueError("Elige tu cuenta publicitaria antes de terminar.")
     if not destination.get("page_id") or not destination.get("url"):
@@ -13375,7 +13823,15 @@ def create_lead_form_creation(arguments, chat_payload):
 
 
 def handle_create_lead_form_tool(arguments, chat_payload, tool):
-    return create_lead_form_creation(arguments or {}, chat_payload)
+    """Compatibility entrypoint for legacy prompts.
+
+    Meta's form-write endpoint can reject otherwise valid Page/app credentials
+    with an application-capability error.  A form is a no-spend object, but a
+    retry loop here still wastes the buyer's time and makes the agent claim a
+    mutation it cannot verify.  Keep the familiar tool name while taking the
+    deterministic assisted/manual route until Meta's capability is reliable.
+    """
+    return stage_lead_form_creation(arguments or {}, chat_payload)
 
 
 def handle_list_lead_forms_tool(arguments, chat_payload, tool):
@@ -14161,6 +14617,7 @@ def dashboard_payload():
     decisions = decision_memory_payload(metrics, recommendations, fatigue)
     experiment_reviews = experiment_review_payload(metrics)
     config = load_config()
+    installation = installation_runtime_payload()
     runtime_status = cached_agent_runtime_status(config)
     ensure_dashboard_identity_backup(config)
     optimization_state = load_optimization_state()
@@ -14245,6 +14702,7 @@ def dashboard_payload():
         "config": {
             "mode": config.mode,
             "product_version": current_product_version(),
+            "installation": installation,
             "communication_preference": {
                 **communication_preference(
                     config.communication_style,
@@ -14349,6 +14807,8 @@ def dashboard_payload():
                 "managed_ad_accounts": managed_accounts,
                 "meta_access_token_kind": config.meta_access_token_kind,
                 "meta_access_token_saved_at": config.meta_access_token_saved_at,
+                "meta_oauth_connected_at": getattr(config, "meta_oauth_connected_at", ""),
+                "meta_oauth_expires_at": getattr(config, "meta_oauth_expires_at", ""),
                 "page_id": destination.get("page_id", ""),
                 "instagram_actor_id": destination.get("instagram_actor_id", ""),
                 "default_adset_id": destination.get("default_adset_id", ""),
@@ -14365,6 +14825,7 @@ def dashboard_payload():
                 "codex_image_hermes_model": image_model,
             },
             "publishing": publishing_status(config, destination),
+            "meta_oauth": social_oauth_status(),
         },
         "setup": setup,
         "onboarding": onboarding,
@@ -14572,8 +15033,8 @@ HTML = r"""<!DOCTYPE html>
 
 class DashboardHandler(BaseHTTPRequestHandler):
     HTML_PATHS = {"/", "/dashboard"}
-    PROTECTED_GET_PATHS = {"/api/dashboard", "/api/export", "/api/report", "/api/setup", "/api/social/auth-status", "/api/social/accounts", "/api/update/snapshots", "/api/creative-asset", "/api/brand-asset"}
-    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/social/token", "/api/social/default-account", "/api/social/discover-assets", "/api/publishing/config", "/api/publishing/test", "/api/agent-model/connect", "/api/agent-model/disconnect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/agent-model/catalog", "/api/agent-model/nvidia-catalog", "/api/agent-model/runtime", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/logo", "/api/brand-guides/product", "/api/product-catalog/import", "/api/product-catalog/search", "/api/ad-briefs", "/api/codex/creative-plan", "/api/codex/image-generate", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/optimization/settings", "/api/optimization/unlock", "/api/shopify/config", "/api/shopify/test", "/api/shopify/sync", "/api/daily-brief/schedule", "/api/daily-social-content/settings", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/communication-style", "/api/onboarding/complete", "/api/onboarding/skip", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/local-network-access", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
+    PROTECTED_GET_PATHS = {"/api/dashboard", "/api/export", "/api/report", "/api/setup", "/api/social/auth-status", "/api/social/oauth/status", "/api/social/accounts", "/api/update/snapshots", "/api/creative-asset", "/api/brand-asset"}
+    PROTECTED_POST_PATHS = {"/api/unlock", "/api/dashboard-password", "/api/action", "/api/campaigns", "/api/targeting/search", "/api/audience-strategy", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/social/token", "/api/social/oauth/start", "/api/social/oauth/poll", "/api/social/oauth/select", "/api/social/default-account", "/api/social/discover-assets", "/api/publishing/config", "/api/publishing/test", "/api/agent-model/connect", "/api/agent-model/disconnect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/agent-model/catalog", "/api/agent-model/nvidia-catalog", "/api/agent-model/runtime", "/api/brand-guides/init", "/api/brand-guides/general", "/api/brand-guides/logo", "/api/brand-guides/product", "/api/product-catalog/import", "/api/product-catalog/search", "/api/ad-briefs", "/api/codex/creative-plan", "/api/codex/image-generate", "/api/setup-config", "/api/guardrails", "/api/profitability-rules", "/api/optimization/settings", "/api/optimization/unlock", "/api/shopify/config", "/api/shopify/test", "/api/shopify/sync", "/api/daily-brief/schedule", "/api/daily-social-content/settings", "/api/telegram/config", "/api/telegram/detect", "/api/telegram/test", "/api/license/activate", "/api/onboarding/communication-style", "/api/onboarding/complete", "/api/onboarding/skip", "/api/onboarding/reset", "/api/agency/spaces", "/api/agency/spaces/switch", "/api/approve", "/api/reject", "/api/chat", "/api/chat/reset", "/api/creative-refresh", "/api/creative-storage/clear", "/api/stage-upload", "/api/execute-upload", "/api/mode", "/api/migration/export", "/api/migration/import", "/api/local-network-access", "/api/cloud-access/refresh", "/api/update/check", "/api/update/apply", "/api/update/rollback"}
     ONBOARDING_OPEN_GETS = {"/api/dashboard", "/api/setup"}
     ONBOARDING_OPEN_POSTS = {"/api/dashboard-password", "/api/business-profile", "/api/business-profile/scan", "/api/business-profile/questions", "/api/business-profile/links", "/api/license/activate", "/api/agent-model/connect", "/api/agent-model/connect-status", "/api/agent-model/connect-input", "/api/agent-model/nvidia-catalog", "/api/agent-model/runtime", "/api/onboarding/communication-style", "/api/onboarding/complete"}
     GET_JSON_ROUTES = {
@@ -14582,6 +15043,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         "/api/report": lambda: run_daily_agent()[1],
         "/api/setup": build_setup_status,
         "/api/social/auth-status": social_auth_status,
+        "/api/social/oauth/status": social_oauth_status,
         "/api/social/login-url": social_login_url,
         "/api/social/accounts": social_marketing_accounts,
         "/api/update/snapshots": lambda: {"ok": True, "result": list_update_snapshots()},
@@ -14590,6 +15052,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         "/api/unlock": lambda payload: {"unlocked": True, **create_dashboard_session(remember=bool(payload.get("remember_device", True)))},
         "/api/dashboard-password": set_dashboard_password,
         "/api/social/token": social_save_facebook_token,
+        "/api/social/oauth/start": social_oauth_start,
+        "/api/social/oauth/poll": social_oauth_poll,
+        "/api/social/oauth/select": social_oauth_select,
         "/api/social/default-account": social_set_default_account,
         "/api/social/discover-assets": social_discover_assets,
         "/api/publishing/config": save_publishing_config,

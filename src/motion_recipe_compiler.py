@@ -23,6 +23,18 @@ MAX_SCENE_SOURCE_CHARS = 40_000
 MAX_TOTAL_SOURCE_CHARS = 240_000
 
 
+def _guard_accent_text_color(source):
+    """Keep custom recipe text readable without stripping brand accents from shapes."""
+    # `palette.accent` remains available for fills, borders, glows and other
+    # decorative layers. A direct CSS `color:` use, however, is text and must
+    # use the contrast-checked foreground generated for the scene background.
+    return re.sub(
+        r"(\bcolor\s*:\s*)palette\.accent\b",
+        r"\1(palette.accentOnBackground || palette.text)",
+        str(source or ""),
+    )
+
+
 class MotionRecipeCompileError(ValueError):
     """A compiled Shotcraft scene violates the bounded render contract."""
 
@@ -89,7 +101,7 @@ def build_generated_entrypoint(spec, job_dir):
     validated = {}
     for index, source in enumerate(sources):
         if source:
-            validated[index] = validate_recipe_component_source(source)
+            validated[index] = validate_recipe_component_source(_guard_accent_text_color(source))
 
     defaults = dict(spec)
     defaults.pop("generated_entrypoint", None)

@@ -24,6 +24,7 @@ export type Palette = {
   surfaceMutedText: string;
   primaryText: string;
   accentText: string;
+  accentOnBackground: string;
   highlightText: string;
   emphasisText: string;
 };
@@ -150,7 +151,7 @@ const MediaFrame: React.FC<{scene: Scene; palette: Palette; progress: number; mo
 };
 
 const Eyebrow: React.FC<{text: string; palette: Palette; progress: number}> = ({text, palette, progress}) => text ? (
-  <div style={{fontSize: 30, fontWeight: 800, letterSpacing: 4, textTransform: "uppercase", color: palette.accent, opacity: progress, translate: `0 ${24 * (1 - progress)}px`, marginBottom: 22}}>{text}</div>
+  <div style={{fontSize: 30, fontWeight: 800, letterSpacing: 4, textTransform: "uppercase", color: palette.accentOnBackground || palette.text, opacity: progress, translate: `0 ${24 * (1 - progress)}px`, marginBottom: 22}}>{text}</div>
 ) : null;
 
 const recipeSceneType = (scene: Scene) => ({

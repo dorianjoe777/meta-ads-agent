@@ -1,5 +1,8 @@
 {
   "functions": {
+    "api/portal/session.js": {
+      "maxDuration": 60
+    },
     "api/**/*.js": {
       "maxDuration": 10
     }
@@ -8,6 +11,10 @@
     {
       "source": "/api/webhooks/hotmart",
       "destination": "/api/admin/licenses?webhook=hotmart"
+    },
+    {
+      "source": "/api/meta-oauth",
+      "destination": "/api/portal/session?meta_oauth=1"
     },
     {
       "source": "/",
@@ -28,6 +35,10 @@
     {
       "source": "/health",
       "destination": "/api/health"
+    },
+    {
+      "source": "/admin/licenses",
+      "destination": "/admin/licenses.html"
     },
     {
       "source": "/privacy",

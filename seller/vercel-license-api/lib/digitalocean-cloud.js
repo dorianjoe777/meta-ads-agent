@@ -39,6 +39,113 @@ export function validateSshPublicKey(key = "") {
   return /^[A-Za-z0-9+/=]+$/.test(body);
 }
 
+function cloudGateIp(cloud = {}) {
+  const candidates = [
+    cloud.droplet_ip,
+    cloud.dashboard_http_url,
+    cloud.dashboard_url,
+    cloud.cloud_open_url
+  ];
+  for (const candidate of candidates) {
+    const raw = String(candidate || "").trim();
+    if (!raw) continue;
+    try {
+      const hostname = new URL(raw.includes("://") ? raw : `http://${raw}`).hostname;
+      if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(hostname)) {
+        const parts = hostname.split(".").map(Number);
+        if (parts.length === 4 && parts.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)) {
+          return hostname;
+        }
+      }
+    } catch {
+      // Ignore malformed legacy URLs and try the next stored candidate.
+    }
+  }
+  return "";
+}
+
+function cloudGateSecret(cloud = {}) {
+  if (cloud.cloud_access_secret) return String(cloud.cloud_access_secret).trim();
+  try {
+    const parsed = new URL(String(cloud.cloud_open_url || ""));
+    return decodeURIComponent(parsed.pathname.replace(/^\/open\//, "")).trim();
+  } catch {
+    return "";
+  }
+}
+
+function cloudGatePort(value = "7870") {
+  const port = String(value || "7870").trim();
+  return /^\d{2,5}$/.test(port) ? port : "7870";
+}
+
+async function cloudGateRequest(cloud = {}, path = "/admin/reset-status", options = {}, dependencies = {}) {
+  const ip = cloudGateIp(cloud);
+  const secret = cloudGateSecret(cloud);
+  if (!ip || !secret) {
+    const error = new Error("cloud_clean_reset_unavailable");
+    error.code = "cloud_clean_reset_unavailable";
+    throw error;
+  }
+  const fetchImpl = dependencies.fetchImpl || globalThis.fetch;
+  if (typeof fetchImpl !== "function") {
+    const error = new Error("cloud_clean_reset_fetch_unavailable");
+    error.code = "cloud_clean_reset_fetch_unavailable";
+    throw error;
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12000);
+  try {
+    const response = await fetchImpl(`http://${ip}:${cloudGatePort(cloud.access_gate_port)}${path}`, {
+      method: options.method || "GET",
+      headers: {
+        "Accept": "application/json",
+        "X-Admira-Cloud-Secret": secret,
+        ...(options.body ? { "Content-Type": "application/json" } : {})
+      },
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: controller.signal
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload?.ok === false) {
+      const code = response.status === 404 ? "cloud_clean_reset_unavailable" : String(payload?.error || "cloud_clean_reset_failed");
+      const error = new Error(code);
+      error.code = code;
+      error.statusCode = response.status;
+      throw error;
+    }
+    return payload;
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      const timeoutError = new Error("cloud_clean_reset_timeout");
+      timeoutError.code = "cloud_clean_reset_timeout";
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export function cloudCleanResetCapability(cloud = {}) {
+  return Boolean(cloudGateIp(cloud) && cloudGateSecret(cloud));
+}
+
+export async function requestCloudCleanReset(cloud = {}, dependencies = {}) {
+  return cloudGateRequest(cloud, "/admin/reset", {
+    method: "POST",
+    body: {
+      scope: "clean_installation",
+      preserve: ["provider_credentials", "chatgpt_connection", "telegram_connection"],
+      clear: ["business_state", "facebook_token", "dashboard_password"]
+    }
+  }, dependencies);
+}
+
+export async function cloudCleanResetStatus(cloud = {}, dependencies = {}) {
+  return cloudGateRequest(cloud, "/admin/reset-status", { method: "GET" }, dependencies);
+}
+
 export function normalizeChoice(value, choices, fallback) {
   const selected = String(value || "").trim().toLowerCase();
   return choices.some((choice) => choice.id === selected) ? selected : fallback;
@@ -466,6 +573,314 @@ set +a
 exec /usr/bin/env bash /opt/meta-ads-agent/scripts/digitalocean-refresh-firewall.sh "$@"
 SH
 chmod 0700 /usr/local/bin/meta-ads-refresh-access
+cat > /usr/local/bin/admira-cloud-clean-reset <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$#" -ne 1 ]; then
+  exit 2
+fi
+JOB_ID="$1"
+STATE_DIR="/var/lib/admira-cloud-access-gate"
+STATE_FILE="$STATE_DIR/reset-state.json"
+INSTALL_DIR="/opt/meta-ads-agent"
+ENV_FILE="$INSTALL_DIR/.env"
+BACKUP_DIR="$(mktemp -d /run/admira-clean-reset.XXXXXX)"
+HOST_ENV_BACKUP="$BACKUP_DIR/host.env"
+RUNTIME_ENV_BACKUP=".clean-reset-backup"
+mkdir -p "$STATE_DIR"
+chmod 0700 "$STATE_DIR"
+
+set_state() {
+  /usr/bin/python3 - "$STATE_FILE" "$JOB_ID" "$1" "$2" <<'PY'
+import json
+import os
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+path = Path(sys.argv[1])
+payload = {
+    "job_id": sys.argv[2],
+    "status": sys.argv[3],
+    "detail": sys.argv[4],
+    "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+}
+path.parent.mkdir(parents=True, exist_ok=True)
+fd, temporary = tempfile.mkstemp(prefix="reset-state.", dir=str(path.parent))
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+        handle.write("\\n")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+finally:
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+PY
+}
+
+restore_host_env() {
+  if [ -f "$HOST_ENV_BACKUP" ]; then
+    cp -p "$HOST_ENV_BACKUP" "$ENV_FILE"
+  fi
+}
+
+on_error() {
+  local code="$1"
+  trap - ERR
+  restore_host_env || true
+  if [ -d "$INSTALL_DIR" ]; then
+    cd "$INSTALL_DIR" || true
+    docker compose up -d --force-recreate >/dev/null 2>&1 || true
+  fi
+  set_state "failed" "No pude completar la limpieza de la instalacion cloud."
+  exit "$code"
+}
+trap 'on_error $?' ERR
+
+cleanup() {
+  /bin/rm -rf "$BACKUP_DIR"
+}
+trap cleanup EXIT
+
+set_state "running" "Limpiando el estado de prueba y conservando las conexiones autorizadas…"
+if [ ! -d "$INSTALL_DIR" ] || [ ! -f "$ENV_FILE" ]; then
+  set_state "failed" "No encontre la instalacion cloud en el servidor."
+  exit 1
+fi
+cp -p "$ENV_FILE" "$HOST_ENV_BACKUP"
+
+cd "$INSTALL_DIR"
+docker compose down --remove-orphans
+
+/usr/bin/python3 - "$ENV_FILE" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+clear_keys = {
+    "DASHBOARD_PASSWORD",
+    "DASHBOARD_PASSWORD_HASH",
+    "DASHBOARD_TOKEN",
+    "META_AD_ACCOUNT_ID",
+    "META_ACCESS_TOKEN",
+    "META_ACCESS_TOKEN_KIND",
+    "META_ACCESS_TOKEN_SAVED_AT",
+    "META_PUBLISHING_ACCESS_TOKEN",
+    "META_PUBLISHING_TOKEN_SAVED_AT",
+    "SHOPIFY_SHOP_DOMAIN",
+    "SHOPIFY_ADMIN_API_TOKEN",
+    "TELEGRAM_AGENT_ENABLED",
+    "TELEGRAM_CHAT_ID",
+    "DAILY_SOCIAL_CONTENT_ENABLED",
+    "DAILY_SOCIAL_CONTENT_DECISION",
+    "DAILY_SOCIAL_CONTENT_TIME",
+    "DAILY_SOCIAL_CONTENT_POSTS_PER_DAY",
+    "DAILY_SOCIAL_CONTENT_INTERVAL_DAYS",
+    "DAILY_SOCIAL_CONTENT_FORMATS",
+    "DAILY_SOCIAL_CONTENT_VIDEO_INTERVAL_DAYS",
+}
+lines = []
+seen = set()
+for line in path.read_text(encoding="utf-8").splitlines() if path.exists() else []:
+    if "=" in line and not line.lstrip().startswith("#"):
+        key = line.split("=", 1)[0].strip()
+        if key in clear_keys:
+            lines.append(f"{key}=")
+            seen.add(key)
+            continue
+    lines.append(line)
+for key in sorted(clear_keys - seen):
+    lines.append(f"{key}=")
+path.write_text("\\n".join(lines).rstrip() + "\\n", encoding="utf-8")
+path.chmod(0o600)
+PY
+
+docker compose run --rm --no-deps -T --entrypoint python3 meta-ads-agent - "$RUNTIME_ENV_BACKUP" <<'PY'
+import json
+from pathlib import Path
+import shutil
+import sys
+
+backup_name = sys.argv[1]
+runtime = Path("/app/runtime")
+runtime_env = runtime / ".env"
+runtime_backup = runtime / backup_name
+if runtime_env.exists():
+    shutil.copy2(runtime_env, runtime_backup)
+    runtime_backup.chmod(0o600)
+clear_keys = {
+    "DASHBOARD_PASSWORD",
+    "DASHBOARD_PASSWORD_HASH",
+    "DASHBOARD_TOKEN",
+    "META_AD_ACCOUNT_ID",
+    "META_ACCESS_TOKEN",
+    "META_ACCESS_TOKEN_KIND",
+    "META_ACCESS_TOKEN_SAVED_AT",
+    "META_PUBLISHING_ACCESS_TOKEN",
+    "META_PUBLISHING_TOKEN_SAVED_AT",
+    "SHOPIFY_SHOP_DOMAIN",
+    "SHOPIFY_ADMIN_API_TOKEN",
+    "TELEGRAM_AGENT_ENABLED",
+    "TELEGRAM_CHAT_ID",
+    "DAILY_SOCIAL_CONTENT_ENABLED",
+    "DAILY_SOCIAL_CONTENT_DECISION",
+    "DAILY_SOCIAL_CONTENT_TIME",
+    "DAILY_SOCIAL_CONTENT_POSTS_PER_DAY",
+    "DAILY_SOCIAL_CONTENT_INTERVAL_DAYS",
+    "DAILY_SOCIAL_CONTENT_FORMATS",
+    "DAILY_SOCIAL_CONTENT_VIDEO_INTERVAL_DAYS",
+}
+if runtime_env.exists():
+    lines = []
+    seen = set()
+    for line in runtime_env.read_text(encoding="utf-8").splitlines():
+        if "=" in line and not line.lstrip().startswith("#"):
+            key = line.split("=", 1)[0].strip()
+            if key in clear_keys:
+                lines.append(f"{key}=")
+                seen.add(key)
+                continue
+        lines.append(line)
+    for key in sorted(clear_keys - seen):
+        lines.append(f"{key}=")
+    runtime_env.write_text("\\n".join(lines).rstrip() + "\\n", encoding="utf-8")
+    runtime_env.chmod(0o600)
+
+def clear_directory(path, preserve=()):
+    path.mkdir(parents=True, exist_ok=True)
+    preserved = set(preserve)
+    for child in path.iterdir():
+        if child.name in preserved:
+            continue
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+# This is a fresh buyer workspace, not a source-code reset. Keep the durable
+# license identity and only provider authentication artifacts. Remove all
+# mutable Hermes state (memory, sessions, history, personal skills, prompts,
+# caches and old workspaces), then recreate the homes empty below. ChatGPT/Codex
+# authentication files are retained so image generation does not need reconnecting.
+AUTH_FILES = {
+    "account.json", "auth.json", "auth.lock", "credentials.json", "credential.json",
+    "login.json", "oauth.json", "openai.json", "token.json", "tokens.json",
+    "session.json", "sessions.json", "openai-auth.json", "codex-auth.json",
+}
+AUTH_DIRS = {".codex", "codex", "openai", "account", "auth", "login", "oauth", "tokens", "credentials", "openai-auth", "codex-auth"}
+AUTH_NAME_PARTS = {"account", "auth", "credential", "login", "oauth", "session", "token"}
+AUTH_SUFFIXES = {"", ".json", ".lock", ".db", ".sqlite", ".sqlite3"}
+
+def is_auth_file(path):
+    name = path.name.lower()
+    return path.is_file() and (
+        path.name in AUTH_FILES
+        or (path.suffix.lower() in AUTH_SUFFIXES and any(part in name for part in AUTH_NAME_PARTS))
+    )
+
+def prune_auth_dir(path):
+    path.mkdir(parents=True, exist_ok=True)
+    for child in list(path.iterdir()):
+        if child.is_symlink():
+            if not is_auth_file(child):
+                child.unlink()
+        elif child.is_dir():
+            if child.name.lower() in AUTH_DIRS:
+                prune_auth_dir(child)
+            else:
+                shutil.rmtree(child)
+        elif not is_auth_file(child):
+            child.unlink()
+
+def reset_state_home(path):
+    path.mkdir(parents=True, exist_ok=True)
+    for child in list(path.iterdir()):
+        if child.is_symlink():
+            if not is_auth_file(child):
+                child.unlink()
+        elif child.is_dir():
+            if child.name.lower() in AUTH_DIRS:
+                prune_auth_dir(child)
+            else:
+                shutil.rmtree(child)
+        elif not is_auth_file(child):
+            child.unlink()
+
+clear_directory(Path("/app/dashboard/data"), preserve=("hermes-home", "hermes-image-home", "license_unlock.json", "update-snapshots"))
+clear_directory(Path("/app/dashboard/data/update-snapshots"))
+reset_state_home(Path("/app/dashboard/data/hermes-home"))
+reset_state_home(Path("/app/dashboard/data/hermes-image-home"))
+clear_directory(Path("/app/output"))
+clear_directory(Path("/app/logs"))
+clear_directory(Path("/app/brand_guides"))
+reset_state_home(runtime / "hermes")
+reset_state_home(runtime / "codex")
+(runtime / "codex" / "generated_images").mkdir(parents=True, exist_ok=True)
+for child in list(runtime.iterdir()):
+    if child.name in {".env", "ad-config.json", "hermes", "codex"}:
+        continue
+    if child.is_dir() and not child.is_symlink():
+        shutil.rmtree(child)
+    else:
+        child.unlink()
+ad_config = runtime / "ad-config.json"
+example = Path("/app/ad-config.example.json")
+if example.exists():
+    try:
+        config = json.loads(example.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        config = {}
+    account = config.setdefault("account", {})
+    account["id"] = ""
+    account["name"] = ""
+    brand = config.setdefault("brand", {})
+    for key in ("name", "offer", "voice", "visual_style"):
+        brand[key] = ""
+    brand["avoid"] = []
+    destination = config.setdefault("creative", {}).setdefault("destination", {})
+    for key in ("page_id", "instagram_actor_id", "default_adset_id", "url"):
+        destination[key] = ""
+    ad_config.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\\n", encoding="utf-8")
+else:
+    ad_config.write_text("{}\\n", encoding="utf-8")
+ad_config.chmod(0o600)
+seed = Path("/app/brand_guides_seed")
+if seed.exists():
+    shutil.copytree(seed, "/app/brand_guides", dirs_exist_ok=True)
+PY
+
+docker compose up -d --force-recreate
+ready="false"
+for attempt in $(seq 1 90); do
+  if curl -fsS --max-time 3 "http://127.0.0.1:\${DASHBOARD_PORT:-7871}/" >/dev/null 2>&1; then
+    ready="true"
+    break
+  fi
+  sleep 2
+done
+if [ "$ready" != "true" ]; then
+  restore_host_env
+  docker compose up -d --force-recreate || true
+  set_state "failed" "El dashboard no respondio despues de limpiar la instalacion."
+  exit 1
+fi
+
+docker compose run --rm --no-deps -T --entrypoint python3 meta-ads-agent - "$RUNTIME_ENV_BACKUP" <<'PY'
+from pathlib import Path
+import sys
+
+backup = Path("/app/runtime") / sys.argv[1]
+if backup.exists():
+    backup.unlink()
+PY
+set_state "complete" "Instalacion base lista. Se conservaron las credenciales autorizadas y la licencia; se borraron memoria, skills personales, sesiones, configuracion de anuncios, Meta y contraseña."
+SH
+chmod 0700 /usr/local/bin/admira-cloud-clean-reset
 install_cloud_access_gate() {
   [ -n "$CLOUD_ACCESS_SECRET" ] || return 0
   mkdir -p /opt/admira-cloud-access-gate /etc/admira-cloud-access-gate
@@ -473,22 +888,27 @@ install_cloud_access_gate() {
 #!/usr/bin/env python3
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import html
+import hmac
 import ipaddress
 import json
 import os
 import re
+import secrets
 import subprocess
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import socket
 
 SECRET = os.environ.get("CLOUD_ACCESS_SECRET", "").strip()
 PORT = int(os.environ.get("CLOUD_ACCESS_PORT", "7870") or "7870")
 DASHBOARD_PORT = os.environ.get("DASHBOARD_PORT", "7871").strip() or "7871"
 REFRESH_COMMAND = os.environ.get("REFRESH_COMMAND", "/usr/local/bin/meta-ads-refresh-access")
+RESET_COMMAND = os.environ.get("RESET_COMMAND", "/usr/local/bin/admira-cloud-clean-reset")
 STATE_DIR = "/var/lib/admira-cloud-access-gate"
 STATE_FILE = f"{STATE_DIR}/state.json"
+RESET_STATE_FILE = f"{STATE_DIR}/reset-state.json"
 
 def valid_client_ip(value):
     try:
@@ -519,6 +939,55 @@ def save_state(payload):
     with open(STATE_FILE, "w", encoding="utf-8") as handle:
         json.dump(payload, handle)
     os.chmod(STATE_FILE, 0o600)
+
+def read_reset_state():
+    try:
+        with open(RESET_STATE_FILE, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        return payload if isinstance(payload, dict) else {"status": "idle"}
+    except (OSError, ValueError):
+        return {"status": "idle"}
+
+def write_reset_state(payload):
+    os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+    temporary = f"{RESET_STATE_FILE}.tmp"
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, RESET_STATE_FILE)
+
+def admin_secret_is_valid(handler):
+    supplied = str(handler.headers.get("X-Admira-Cloud-Secret", "")).strip()
+    return bool(SECRET and supplied and hmac.compare_digest(supplied, SECRET))
+
+def start_clean_reset():
+    current = read_reset_state()
+    if current.get("status") in {"queued", "running"}:
+        return current
+    job_id = secrets.token_urlsafe(18)
+    queued = {
+        "ok": True,
+        "job_id": job_id,
+        "status": "queued",
+        "detail": "La limpieza se iniciara en el servidor.",
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    write_reset_state(queued)
+    try:
+        subprocess.Popen(
+            [RESET_COMMAND, job_id],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except Exception as exc:
+        failed = {**queued, "status": "failed", "detail": "No pude iniciar la limpieza del servidor."}
+        write_reset_state(failed)
+        print(f"clean reset launch failed: {exc}", flush=True)
+        return failed
+    return queued
 
 def dashboard_ready():
     try:
@@ -666,10 +1135,28 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def do_POST(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path != "/admin/reset":
+            self.send_json(404, {"ok": False, "error": "not_found"})
+            return
+        if not admin_secret_is_valid(self):
+            self.send_json(404, {"ok": False, "error": "not_found"})
+            return
+        payload = start_clean_reset()
+        status = 202 if payload.get("status") in {"queued", "running"} else 500
+        self.send_json(status, payload)
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/health":
             self.send_text(200, "ok")
+            return
+        if parsed.path == "/admin/reset-status":
+            if not admin_secret_is_valid(self):
+                self.send_json(404, {"ok": False, "error": "not_found"})
+                return
+            self.send_json(200, {"ok": True, **read_reset_state()})
             return
         status_prefix = "/status/"
         status_secret = urllib.parse.unquote(parsed.path[len(status_prefix):]) if parsed.path.startswith(status_prefix) else ""
@@ -720,6 +1207,7 @@ CLOUD_ACCESS_PORT=$CLOUD_ACCESS_PORT
 DASHBOARD_PORT=$DASHBOARD_PORT
 CLOUD_DASHBOARD_HTTPS_URL=$CLOUD_DASHBOARD_HTTPS_URL
 REFRESH_COMMAND=/usr/local/bin/meta-ads-refresh-access
+RESET_COMMAND=/usr/local/bin/admira-cloud-clean-reset
 EOF
   chmod 600 /etc/admira-cloud-access-gate/env
   cat > /etc/systemd/system/admira-cloud-access-gate.service <<'SERVICE'

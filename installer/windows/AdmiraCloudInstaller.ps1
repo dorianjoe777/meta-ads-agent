@@ -156,7 +156,7 @@ function Start-Install {
     $publicKey = Ensure-SshKey
     Set-Status "Generando acceso SSH seguro...", 12
     $keyName = "admira-ia-$([Environment]::MachineName)-$((Get-Date).ToString('yyyyMMddHHmmss'))"
-    $ssh = (Invoke-DoApi $token POST "/ssh_keys" @{ name = $keyName; public_key = $publicKey }).ssh_key
+    $ssh = (Invoke-DoApi $token POST "/account/keys" @{ name = $keyName; public_key = $publicKey }).ssh_key
     Set-Status "Creando servidor en DigitalOcean...", 22
     $cloudInit = @"
 #cloud-config

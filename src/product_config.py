@@ -538,6 +538,11 @@ class AgentConfig:
     shopify_api_version: str = "2026-04"
     communication_style: str = "simple"
     ad_experience_level: str = ""
+    # OAuth is additive: old installer/test configuration can omit it.
+    meta_oauth_broker_url: str = ""
+    meta_oauth_connected_at: str = ""
+    meta_oauth_expires_at: str = ""
+    meta_oauth_user_id: str = ""
 
     @property
     def live(self):
@@ -593,6 +598,10 @@ def load_config():
         meta_connector="graph_api",
         ad_account_id=os.environ.get("META_AD_ACCOUNT_ID", ""),
         meta_access_token=os.environ.get("META_ACCESS_TOKEN", ""),
+        meta_oauth_broker_url=env_first("META_OAUTH_BROKER_URL", default=(os.environ.get("LICENSE_SERVER_URL", "").rstrip("/") + "/api/meta-oauth") if os.environ.get("LICENSE_SERVER_URL", "").strip() else ""),
+        meta_oauth_connected_at=os.environ.get("META_OAUTH_CONNECTED_AT", ""),
+        meta_oauth_expires_at=os.environ.get("META_OAUTH_EXPIRES_AT", ""),
+        meta_oauth_user_id=os.environ.get("META_OAUTH_USER_ID", ""),
         meta_access_token_kind=os.environ.get("META_ACCESS_TOKEN_KIND", ""),
         meta_access_token_saved_at=os.environ.get("META_ACCESS_TOKEN_SAVED_AT", ""),
         meta_publishing_access_token=os.environ.get("META_PUBLISHING_ACCESS_TOKEN", ""),

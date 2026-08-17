@@ -1089,9 +1089,9 @@ function stepCopy(key){
 	  strategy:['Primer plan','El agente lo prepara después de la entrevista.',''],
 	  license:['Pega tu licencia','Pega el único código que recibiste de nosotros.',''],
 	  chatgpt:['Conecta ChatGPT','Elige ChatGPT/Codex o un modelo API como MiniMax M3.',''],
-	  telegram:['Conecta Telegram','Recomendado: habla con el manager desde tu celular. Después elegirás qué tan técnicas serán sus respuestas.',''],
+  telegram:['Conecta Telegram','Primero conectamos tu bot: así Admira puede enviarte el enlace seguro de Facebook.',''],
 	  communication:['Elige cómo quieres que te explique','Usa palabras simples o permite explicaciones técnicas. Podrás cambiarlo después.',''],
-	  meta:['Conectar mi cuenta de Facebook','Paso seguro: usa tu propia conexión de Facebook/Meta y tu propia clave.',''],
+  meta:['Conectar mi cuenta de Facebook','Recibirás un enlace seguro por Telegram. No tendrás que crear ni pegar claves de Meta.',''],
 	  account:['Elige una cuenta','Escoge la cuenta de anuncios que quieres usar.',''],
 	  destination:['Elige dónde van los anuncios','Agrega la página de Facebook, Instagram, web y la clave opcional para publicación directa.',''],
 	  insights:['Lee datos reales','Miro tus números reales y todavía no cambio nada.',''],
@@ -1121,9 +1121,9 @@ function onboardingSteps(){
  const publishingOk=Boolean(state.config.publishing?.ready||tokenOk);
  return [
   {id:'password',status:passwordOk?'ok':'blocked'},
+  {id:'telegram',status:telegramOk?'ok':'blocked'},
   {id:'meta',status:tokenOk&&accountOk&&destinationOk&&publishingOk?'ok':'blocked'},
-  {id:'chatgpt',status:modelOk?'ok':'blocked'},
-  {id:'telegram',status:telegramOk?'ok':'blocked'}
+  {id:'chatgpt',status:modelOk?'ok':'blocked'}
  ];
 	}
 function renderOnboarding(){
@@ -1391,16 +1391,34 @@ function startMetaFrameCycle(){
  if(frames.length<2)return;
  metaGuideFrameTimer=setInterval(()=>{const current=metaTokenSlides()[metaGuideSlide]||{};const currentFrames=Array.isArray(current.images)&&current.images.length?current.images:(current.image?[metaFrame(current.image,current.shot)]:[]);if(!qs('#meta-token-slider')||currentFrames.length<2){stopMetaFrameCycle();return}metaGuideFrame=(metaGuideFrame+1)%currentFrames.length;qs('#meta-token-slider').innerHTML=renderMetaTokenSlide()},3600);
 }
-function maybeStartMetaFrameCycle(stepId){if(stepId==='meta')setTimeout(startMetaFrameCycle,80);else stopMetaFrameCycle()}
+function maybeStartMetaFrameCycle(stepId){if(stepId==='meta'){setTimeout(startMetaFrameCycle,80);setTimeout(renderMetaOAuthChoices,100)}else stopMetaFrameCycle()}
 function setMetaGuideFrame(index){const slide=metaTokenSlides()[metaGuideSlide]||{};const frames=Array.isArray(slide.images)&&slide.images.length?slide.images:(slide.image?[metaFrame(slide.image,slide.shot)]:[]);metaGuideFrame=Math.max(0,Math.min(Number(index)||0,Math.max(0,frames.length-1)));const box=qs('#meta-token-slider');if(box)box.innerHTML=renderMetaTokenSlide();startMetaFrameCycle()}
 function setMetaGuideSlide(index){metaGuideSlide=Math.max(0,Math.min(Number(index)||0,metaTokenSlides().length-1));metaGuideFrame=0;const box=qs('#meta-token-slider');if(box)box.innerHTML=renderMetaTokenSlide();startMetaFrameCycle()}
+let metaOauthPollTimer=null;
+function stopMetaOauthPoll(){if(metaOauthPollTimer){clearInterval(metaOauthPollTimer);metaOauthPollTimer=null}}
+async function pollMetaOAuth(){
+ try{const res=await api('/api/social/oauth/poll',{method:'POST',body:JSON.stringify({})});const result=res.result||res;if(result.status==='connected'){stopMetaOauthPoll();toast(lang==='es'?'Facebook conectado. Ahora elige la cuenta y Página.':'Facebook connected. Now choose the account and Page.');await load();renderMetaOAuthChoices();return result}return result}catch(err){stopMetaOauthPoll();toast(err.message||String(err));throw err}
+}
+function renderMetaOAuthChoices(){
+ const oauth=state.config?.meta_oauth||{};const accounts=oauth.accounts||[];const pages=oauth.pages||[];const usablePages=pages.filter(p=>p.can_publish!==false);const box=qs('#social-account-results');if(!box||!oauth.connected)return;
+ if(accounts.length===1&&usablePages.length===1){box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'Listo: conexión completada':'Connection complete'}</b><p>${lang==='es'?'Encontré una cuenta y una Página utilizables, así que las dejé seleccionadas.':'I found one usable account and Page, so they are selected.'}</p></div>`;return}
+ const selectedAccount=oauth.active_ad_account_id||accounts[0]?.id||'';const selectedPage=oauth.active_page_id||usablePages[0]?.id||'';
+ const unavailable=pages.length-usablePages.length;
+ const sourceNote=(oauth.businesses||[]).length?`<p class="notice">${lang==='es'?`También revisé ${oauth.businesses.length} negocio${oauth.businesses.length===1?'':'s'} donde eres administrador.`:`I also checked ${oauth.businesses.length} business portfolio${oauth.businesses.length===1?'':'s'} where you are an administrator.`}</p>`:'';
+ const unavailableText=lang==='es'?`${unavailable} página${unavailable===1?' fue encontrada pero no devolvió permiso de publicación; queda visible, pero no se puede elegir todavía.':'s fueron encontradas pero no devolvieron permiso de publicación; quedan visibles, pero no se pueden elegir todavía.'}`:`${unavailable} Page${unavailable===1?' was':'s were'} found but did not return publishing permission; ${unavailable===1?'it remains':'they remain'} visible but cannot be selected yet.`;
+ const unavailableNote=unavailable?`<p class="notice">${unavailableText}</p>`:'';
+ box.innerHTML=`<form class="onboarding-mini two" data-submit-code="selectMetaOAuthWorkspace(event)"><b>${lang==='es'?'Elige el negocio que vas a gestionar':'Choose the business to manage'}</b><p>${lang==='es'?'Guardamos todas las cuentas encontradas, incluidas las de portfolios donde eres administrador. Para trabajar ahora, selecciona una cuenta y una Página con acceso de publicación.':'We save every account found, including portfolios where you are an administrator. To work now, select an ad account and a Page with publishing access.'}</p>${sourceNote}${unavailableNote}<label>${lang==='es'?'Cuenta publicitaria':'Ad account'}<select name="ad_account_id">${accounts.map(a=>`<option value="${escapeHtml(a.id)}" ${a.id===selectedAccount?'selected':''}>${escapeHtml(a.name||a.id)} · ${escapeHtml(a.currency||'')}</option>`).join('')}</select></label><label>${lang==='es'?'Página de Facebook':'Facebook Page'}<select name="page_id">${pages.map(p=>`<option value="${escapeHtml(p.id)}" ${p.id===selectedPage?'selected':''} ${p.can_publish===false?'disabled':''}>${escapeHtml(p.name||p.id)}${p.can_publish===false?(lang==='es'?' · sin permiso de publicación':' · no publishing permission'):''}</option>`).join('')}</select></label><div class="onboarding-step-actions"><button class="btn primary" type="submit">${lang==='es'?'Usar este negocio':'Use this business'}</button></div></form>`;
+}
+async function selectMetaOAuthWorkspace(e){e.preventDefault();const payload=Object.fromEntries(new FormData(e.target).entries());await api('/api/social/oauth/select',{method:'POST',body:JSON.stringify(payload)});toast(lang==='es'?'Cuenta y Página guardadas.':'Ad account and Page saved.');await load();renderMetaOAuthChoices();}
+async function startMetaOAuth(){
+ const box=qs('#social-account-results');if(box)box.innerHTML=`<div class="guide-card"><p>${lang==='es'?'Enviando el enlace seguro a Telegram...':'Sending the secure link to Telegram...'}</p></div>`;
+ try{const res=await api('/api/social/oauth/start',{method:'POST',body:JSON.stringify({})});const result=res.result||res;if(box)box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'Revisa Telegram':'Check Telegram'}</b><p>${lang==='es'?'Abrí el botón “Conectar Facebook y Meta”, iniciá sesión y aceptá los permisos. Esta pantalla se actualizará sola.':'Open “Connect Facebook and Meta”, sign in, and accept the permissions. This screen will update automatically.'}</p></div>`;stopMetaOauthPoll();metaOauthPollTimer=setInterval(()=>pollMetaOAuth().catch(()=>{}),3000);setTimeout(()=>stopMetaOauthPoll(),10*60*1000);return result}catch(err){if(box)box.innerHTML=`<div class="guide-card"><b>${lang==='es'?'No pude enviar el enlace':'I could not send the link'}</b><p>${escapeHtml(err.message||String(err))}</p></div>`;throw err}
+}
 function metaConnectionGuide(){
- const v=state.config.setup_values||{};
- const tokenLabel=lang==='es'?'Clave de Facebook/Meta':'Facebook/Meta key';
- const tokenPlaceholder=lang==='es'?'Pega aquí la clave completa que Meta te mostró':'Paste the full key Meta showed you';
- const tokenNotice=lang==='es'?'Se guarda automáticamente al pegarla. Nosotros no recibimos esta clave; queda local en esta instalación. Puedes cambiarla después desde Configuración.':'It saves automatically when pasted. We do not receive this key; it stays local to this install. You can change it later from Setup.';
- if(lang==='es')return `<div class="setup-guide private-connection meta-token-walkthrough"><section class="guide-hero"><div class="guide-main"><span class="guide-eyebrow">Paso seguro</span><h3>Crea tu app privada en Meta</h3><p>En este paso vas a crear una app en Meta. Esa app sirve como puente privado entre tu cuenta de Facebook/Meta y tu agente de IA. Es personal para tu negocio, queda bajo tu control y es más segura que conectar tu cuenta a una plataforma externa.</p><div class="guide-actions"><button class="btn" type="button" data-action-code="showMetaTokenBox('stable')">Ya tengo la clave</button></div></div><aside class="guide-checklist"><b>Lo que necesitas</b><ol><li>Ser administrador del negocio en Meta.</li><li>Una cuenta publicitaria real.</li><li>La página de Facebook de tu negocio.</li><li>Una app de Meta conectada al negocio.</li></ol></aside></section><div id="meta-token-slider">${renderMetaTokenSlide()}</div><div id="meta-token-box" class="token-box"><label>${tokenLabel}<textarea id="meta-token-input" data-input-code="scheduleMetaTokenAutoSave()" data-paste-code="setTimeout(scheduleMetaTokenAutoSave,0)" placeholder="${tokenPlaceholder}"></textarea></label><button class="btn" type="button" data-action-code="saveMetaToken()">Reintentar guardar</button><p class="notice">${tokenNotice}</p></div><div id="social-account-results" class="setup-guide"></div><div class="guide-panel"><b>Por qué esto es más seguro</b><p>La conexión queda entre tu cuenta de Meta y tu instalación local. Si algún día quieres cortar acceso, eliminas esa clave desde Meta y listo.</p></div></div>`;
- return `<div class="setup-guide private-connection meta-token-walkthrough"><section class="guide-hero"><div class="guide-main"><span class="guide-eyebrow">Secure step</span><h3>Create your private Meta app</h3><p>In this step you will create a Meta app. That app works as a private bridge between your Facebook/Meta account and your AI agent. It is personal to your business, stays under your control, and is safer than connecting your account to an external platform.</p><div class="guide-actions"><button class="btn" type="button" data-action-code="showMetaTokenBox('stable')">I have the key</button></div></div><aside class="guide-checklist"><b>What you need</b><ol><li>Admin access to the Meta business.</li><li>A real ad account.</li><li>Your business Facebook Page.</li><li>A Meta app connected to the business.</li></ol></aside></section><div id="meta-token-slider">${renderMetaTokenSlide()}</div><div id="meta-token-box" class="token-box"><label>${tokenLabel}<textarea id="meta-token-input" data-input-code="scheduleMetaTokenAutoSave()" data-paste-code="setTimeout(scheduleMetaTokenAutoSave,0)" placeholder="${tokenPlaceholder}"></textarea></label><button class="btn" type="button" data-action-code="saveMetaToken()">Retry save</button><p class="notice">${tokenNotice}</p></div><div id="social-account-results" class="setup-guide"></div><div class="guide-panel"><b>Why this is safer</b><p>The connection stays between your Meta account and your local install. If you ever want to cut access, revoke that key from Meta.</p></div></div>`;
+ const oauth=state.config?.meta_oauth||state.config?.social_oauth||{};
+ const connected=Boolean(oauth.connected);
+ const already=connected?(lang==='es'?'Facebook ya está conectado. Puedes cambiar la cuenta activa abajo.':'Facebook is already connected. You can change the active account below.'):(lang==='es'?'No necesitas crear una app ni pegar claves. Te enviaré un enlace de Facebook a tu Telegram.':'You do not need to create an app or paste keys. We will send a Facebook link to your Telegram.');
+ return `<div class="setup-guide private-connection"><section class="guide-hero"><div class="guide-main"><span class="guide-eyebrow">${lang==='es'?'Conexión segura':'Secure connection'}</span><h3>${lang==='es'?'Conecta Facebook en un toque':'Connect Facebook in one step'}</h3><p>${already}</p><div class="guide-actions"><button class="btn primary" type="button" data-action-code="startMetaOAuth()">${connected?(lang==='es'?'Conectar otra cuenta':'Connect another account'):(lang==='es'?'Enviar enlace a Telegram':'Send link to Telegram')}</button>${oauth.pending?`<button class="btn" type="button" data-action-code="pollMetaOAuth()">${lang==='es'?'Ya conecté Facebook':'I connected Facebook'}</button>`:''}</div></div><aside class="guide-checklist"><b>${lang==='es'?'Qué pasa después':'What happens next'}</b><ol><li>${lang==='es'?'Abres el enlace desde Telegram.':'Open the Telegram link.'}</li><li>${lang==='es'?'Eliges tu cuenta de Facebook.':'Choose your Facebook account.'}</li><li>${lang==='es'?'Admira encuentra tus cuentas y Páginas.':'Admira finds your ad accounts and Pages.'}</li></ol></aside></section><div id="social-account-results" class="setup-guide"></div><p class="notice">${lang==='es'?'La conexión se guarda de forma privada en tu instalación. Puedes revocarla desde Facebook cuando quieras.':'The connection is stored privately in your installation. You can revoke it in Facebook whenever you wish.'}</p></div>`;
 }
 function accountPickerGuide(){
  const v=state.config.setup_values||{};
@@ -1417,18 +1435,23 @@ function destinationPickerGuide(){
 function directPublishingState(){
  const v=state.config.setup_values||{};
  const publishing=state.config.publishing||{};
- const tokenSet=Boolean(v.meta_access_token_set||v.meta_publishing_access_token_set||publishing.token_set);
+ const oauth=state.config?.meta_oauth||{};
+ const oauthConnected=Boolean(oauth.connected);
+ const tokenSet=Boolean(oauthConnected||v.meta_access_token_set||v.meta_publishing_access_token_set||publishing.token_set);
  const ready=Boolean(publishing.ready||publishing.ok);
  const page=v.page_id||publishing.page_id||'';
  const savedAt=v.meta_publishing_token_saved_at?new Date(v.meta_publishing_token_saved_at).toLocaleString():'';
  const title=lang==='es'?'Publicación directa':'Direct publishing';
- const body=ready?(lang==='es'?'La misma clave de Meta administra anuncios y publica contenido orgánico en tu Página.':'The same Meta key manages ads and publishes organic content to your Page.'):(tokenSet?(lang==='es'?'La clave principal está guardada. Debe incluir permisos de anuncios y de Página para publicar desde el agente.':'The primary key is saved. It must include both Ads and Page permissions for agent publishing.'):(lang==='es'?'Pega una sola clave de Meta con permisos de anuncios y de Página.':'Paste one Meta key with both Ads and Page permissions.'));
+ const body=ready?(lang==='es'?'La conexión de Facebook administra anuncios y publica contenido orgánico en tu Página.':'Your Facebook connection manages ads and publishes organic content to your Page.'):(oauthConnected?(lang==='es'?'Facebook ya está conectado. Elige la cuenta y la Página que usarás.':'Facebook is connected. Choose the ad account and Page you will use.'):(tokenSet?(lang==='es'?'Hay una conexión anterior guardada. Puedes reemplazarla con la conexión segura de Facebook.':'A legacy connection is saved. You can replace it with the secure Facebook connection.'):(lang==='es'?'Conecta Facebook para administrar anuncios y tu Página.':'Connect Facebook to manage ads and your Page.')));
  const badge=ready?(lang==='es'?'Lista':'Ready'):(tokenSet?(lang==='es'?'Revisar':'Check'):(lang==='es'?'Opcional':'Optional'));
  const placeholder=tokenSet?(lang==='es'?'Clave guardada. Pega otra solo para cambiarla.':'Key saved. Paste another only to replace it.'):'EAA...';
- return {v,publishing,tokenSet,ready,page,savedAt,title,body,badge,placeholder};
+ return {v,publishing,oauth,oauthConnected,tokenSet,ready,page,savedAt,title,body,badge,placeholder};
 }
 function directPublishingGuide(onboarding=false){
  const s=directPublishingState();
+ if(s.oauthConnected){
+  return `<div class="setup-guide direct-publishing-guide"><section class="guide-hero"><div class="guide-main"><span class="guide-eyebrow">${lang==='es'?'Publicación directa':'Direct publishing'}</span><h3>${lang==='es'?'Tu conexión de Facebook ya cubre anuncios y Página':'Your Facebook connection covers ads and your Page'}</h3><p>${lang==='es'?'No necesitas una segunda app, System User ni otra clave para publicar.':'You do not need a second app, System User, or another key to publish.'}</p><div class="guide-actions"><button class="btn" type="button" data-action-code="testPublishingConnection()">${lang==='es'?'Revisar conexión':'Check connection'}</button></div></div><aside class="guide-checklist"><b>${lang==='es'?'Qué habilita':'What it enables'}</b><ol><li>${lang==='es'?'Crear y leer anuncios.':'Create and read ads.'}</li><li>${lang==='es'?'Publicar posts orgánicos en tu Página.':'Publish organic posts to your Page.'}</li><li>${lang==='es'?'Cambiar de negocio sin pegar secretos.':'Switch business without pasting secrets.'}</li></ol></aside></section></div>`;
+ }
  const appsUrl='https://business.facebook.com/latest/settings/apps';
  const usersUrl='https://business.facebook.com/latest/settings/system-users';
  const permissionNote=lang==='es'?'Usa la misma clave que pegaste en el paso Meta. La app y el usuario del sistema deben tener permisos de anuncios y de Página (por ejemplo ads_management, ads_read, pages_manage_posts, pages_read_engagement y pages_show_list).':'Use the same key pasted in the Meta step. The app and system user must have both Ads and Page permissions (for example ads_management, ads_read, pages_manage_posts, pages_read_engagement, and pages_show_list).';
@@ -1813,15 +1836,16 @@ function renderLicensePanel(){
 function openMetaSettingsGuide(action='token'){
  const box=qs('#meta-settings-guide');if(!box)return;
  box.classList.remove('hidden');
- if(action==='token')setTimeout(()=>showMetaTokenBox('stable'),20);
- if(action==='accounts')setTimeout(()=>refreshSocialAccounts(),40);
+ if(action==='token')setTimeout(()=>startMetaOAuth().catch(()=>{}),20);
+ if(action==='accounts')setTimeout(()=>{const oauth=state.config?.meta_oauth||{};if(oauth.connected)renderMetaOAuthChoices();else startMetaOAuth().catch(()=>{})},40);
  if(action==='assets')setTimeout(()=>discoverMetaAssets((state.config.setup_values||{}).ad_account_id||''),40);
  box.scrollIntoView({behavior:'smooth',block:'start'});
 }
 function renderMetaConnectionPanel(){
  const box=qs('#meta-connection-panel');if(!box)return;
  const v=state.config.setup_values||{};
- const tokenSet=Boolean(v.meta_access_token_set||v.meta_access_token_saved_at);
+ const oauth=state.config?.meta_oauth||{};
+ const tokenSet=Boolean(oauth.connected||v.meta_access_token_set||v.meta_access_token_saved_at);
  const account=v.ad_account_id||'';
  const managed=v.managed_ad_accounts||state.managed_ad_accounts||{};
  const bm=managed.business_manager||{};
@@ -1830,10 +1854,10 @@ function renderMetaConnectionPanel(){
  const instagram=v.instagram_actor_id||'';
  const savedAt=v.meta_access_token_saved_at?new Date(v.meta_access_token_saved_at).toLocaleString():'';
  const statusTitle=tokenSet?(lang==='es'?'Facebook conectado':'Facebook connected'):(lang==='es'?'Falta conectar Facebook':'Facebook needs connection');
- const statusBody=tokenSet?(lang==='es'?'Ya hay una clave de Meta guardada. Puedes agregar o cambiar entre hasta 5 cuentas publicitarias del mismo Business Manager.':'A Meta key is saved. You can add or switch between up to 5 ad accounts from the same Business Manager.'):(lang==='es'?'Pega la clave estable de tu propio Meta Business para que el dashboard pueda buscar tus cuentas reales.':'Paste the stable key from your own Meta Business so the dashboard can find your real accounts.');
+ const statusBody=oauth.connected?(lang==='es'?'Facebook está conectado. Puedes cambiar entre las cuentas y Páginas descubiertas sin pegar claves.':'Facebook is connected. You can switch among discovered ad accounts and Pages without pasting keys.'):(tokenSet?(lang==='es'?'Hay una conexión anterior guardada. Puedes reemplazarla con Facebook seguro.':'A legacy connection is saved. You can replace it with secure Facebook.'):(lang==='es'?'Conecta Facebook para que el dashboard encuentre tus cuentas reales.':'Connect Facebook so the dashboard can find your real accounts.'));
  const onboardingOpen=qs('#onboarding-flow')?.classList.contains('open');
  const guide=onboardingOpen?'':`<div id="meta-settings-guide" class="meta-settings-guide ${tokenSet?'hidden':''}">${metaConnectionGuide()}</div>`;
- box.innerHTML=`<div class="next-step meta-connection-card"><div><b>${lang==='es'?'Conexión Facebook / Meta':'Facebook / Meta connection'}</b><p>${statusBody}</p>${savedAt?`<p class="notice">${lang==='es'?'Guardada':'Saved'}: ${escapeHtml(savedAt)}</p>`:''}</div><div class="mode-actions"><button class="btn ${tokenSet?'':'primary'}" type="button" data-action-code="openMetaSettingsGuide('token')">${tokenSet?(lang==='es'?'Cambiar clave de Facebook':'Change Facebook key'):(lang==='es'?'Conectar Facebook':'Connect Facebook')}</button><button class="btn" type="button" data-action-code="openMetaSettingsGuide('accounts')">${lang==='es'?'Buscar/agregar cuenta publicitaria':'Find/add ad account'}</button><button class="btn" type="button" ${account?'':'disabled'} data-action-code="openMetaSettingsGuide('assets')">${lang==='es'?'Buscar página e Instagram':'Find Page and Instagram'}</button></div></div><div class="trust-grid license-limits-grid"><div class="trust-card"><b>${lang==='es'?'Estado':'Status'}</b><p>${statusTitle}</p></div><div class="trust-card"><b>${lang==='es'?'Cuenta activa':'Active account'}</b><p>${escapeHtml(account||'-')}</p></div><div class="trust-card"><b>${lang==='es'?'Cuentas conectadas':'Connected accounts'}</b><p>${escapeHtml(accountUse)} ${lang==='es'?'máx. 5':'max 5'}</p></div><div class="trust-card"><b>Business Manager</b><p>${escapeHtml(bm.name||bm.id||'-')}</p></div><div class="trust-card"><b>${lang==='es'?'Página':'Page'}</b><p>${escapeHtml(page||'-')}</p></div><div class="trust-card"><b>Instagram</b><p>${escapeHtml(instagram||'-')}</p></div></div>${guide}`;
+ box.innerHTML=`<div class="next-step meta-connection-card"><div><b>${lang==='es'?'Conexión Facebook / Meta':'Facebook / Meta connection'}</b><p>${statusBody}</p>${savedAt?`<p class="notice">${lang==='es'?'Guardada':'Saved'}: ${escapeHtml(savedAt)}</p>`:''}</div><div class="mode-actions"><button class="btn ${tokenSet?'':'primary'}" type="button" data-action-code="openMetaSettingsGuide('token')">${tokenSet?(lang==='es'?'Cambiar conexión de Facebook':'Change Facebook connection'):(lang==='es'?'Conectar Facebook':'Connect Facebook')}</button><button class="btn" type="button" data-action-code="openMetaSettingsGuide('accounts')">${lang==='es'?'Elegir cuenta publicitaria':'Choose ad account'}</button><button class="btn" type="button" ${account?'':'disabled'} data-action-code="openMetaSettingsGuide('assets')">${lang==='es'?'Buscar página e Instagram':'Find Page and Instagram'}</button></div></div><div class="trust-grid license-limits-grid"><div class="trust-card"><b>${lang==='es'?'Estado':'Status'}</b><p>${statusTitle}</p></div><div class="trust-card"><b>${lang==='es'?'Cuenta activa':'Active account'}</b><p>${escapeHtml(account||'-')}</p></div><div class="trust-card"><b>${lang==='es'?'Cuentas conectadas':'Connected accounts'}</b><p>${escapeHtml(accountUse)} ${lang==='es'?'máx. 5':'max 5'}</p></div><div class="trust-card"><b>Business Manager</b><p>${escapeHtml(bm.name||bm.id||'-')}</p></div><div class="trust-card"><b>${lang==='es'?'Página':'Page'}</b><p>${escapeHtml(page||'-')}</p></div><div class="trust-card"><b>Instagram</b><p>${escapeHtml(instagram||'-')}</p></div></div>${guide}`;
 }
 function renderSetupConfig(){
  const v=state.config.setup_values||{};

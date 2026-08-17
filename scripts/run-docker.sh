@@ -32,6 +32,14 @@ legacy_detached_var="ADMI""RO_DOCKER_DETACHED"
 
 export ADMIRA_HOST_LAN_IP="${ADMIRA_HOST_LAN_IP:-${!legacy_host_lan_var:-$(detect_lan_ip)}}"
 
+# Keep the Docker image label, runtime environment and application payload on
+# the same release.  Without this explicit build value, Compose can continue
+# tagging a rebuilt image as `local` (or retain a previous version tag), which
+# makes a successful in-container update look like a stale installation.
+if [ -f "$ROOT_DIR/VERSION" ]; then
+  export ADMIRA_BUILD_VERSION="${ADMIRA_BUILD_VERSION:-$(tr -d '[:space:]' < "$ROOT_DIR/VERSION")}"
+fi
+
 # Every installation has its own Compose project/container/volume namespace.
 # Older installations keep the original defaults, while new profiles can set
 # these values in .env without affecting any other instance on the machine.

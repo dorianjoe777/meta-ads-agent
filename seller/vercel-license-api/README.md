@@ -91,9 +91,11 @@ Routes:
 - `POST /api/webhooks/hotmart`
 - `POST /api/license/activate`
 - `POST /api/license/release`
+- `POST /api/license/release` with `action: cloud_install` (one-time registration from the internal Mac cloud installer)
 - `GET /api/download/release?token=...`
 - `GET /api/admin/licenses` with `Authorization: Bearer ...`
 - `POST /api/admin/licenses` with `Authorization: Bearer ...`
+- `/admin/licenses` opens the protected browser table for reviewing licenses and changing the associated buyer email.
 - `GET /api/admin/releases` with `Authorization: Bearer ...`
 - `POST /api/admin/releases` with `Authorization: Bearer ...`
 
@@ -141,6 +143,22 @@ curl -X POST "https://admiraia.uboost.lat/api/admin/licenses" \
 - If email delivery fails, the API returns `502 buyer_email_send_failed` and still includes the created license in the response so the buyer can be recovered manually.
 - Resend is the recommended production path for this project because delivery uses HTTPS from Vercel and gives clearer delivery logs.
 - If using the SMTP fallback on Vercel, use authenticated submission on port `465` or `587`, never port `25`, and the function waits for the send to finish before responding.
+
+License email transfer:
+
+- Open `https://admiraia.uboost.lat/admin/licenses`, enter `LICENSE_ADMIN_KEY`, and choose **Guardar** beside a license.
+- The protected action is `POST /api/admin/licenses` with `{ "action": "update_email", "license_key": "MAO-...", "buyer_email": "new-owner@example.com" }`.
+- The API changes only the owner email, records a bounded audit history, and keeps the old email as a technical alias. Device registrations, the license key, and `cloud_installation` are preserved, so an already-installed client can continue updating while the new owner uses the new email.
+- The alias is intentional for continuity. Remove it later only as a separate, explicit access-revocation operation.
+
+Cloud clean handoff:
+
+- The same protected table can trigger `POST /api/admin/licenses` with `{ "action": "reset_cloud_installation", "license_key": "MAO-...", "confirm_license_key": "MAO-..." }` for a completed DigitalOcean install.
+- The protected table can also switch a completed cloud installation with `{ "action": "set_cloud_network_mode", "license_key": "MAO-...", "mode": "testing" | "strict", "confirm_license_key": "MAO-..." }`. Testing mode publishes only the dashboard/HTTPS ports so a client can complete Meta onboarding; the dashboard password, SSH rules and private admin/reset gate remain protected. Switching back to `strict` restores the original authorized IPv4 rule.
+- The request is accepted only after the admin key and exact license confirmation are valid, then updates the saved DigitalOcean firewall token directly. It keeps the Droplet and preserves provider/API credentials, the ChatGPT/Codex connection used for images, and Telegram.
+- The remote reset clears Facebook/Meta tokens, the dashboard password, business/onboarding data, generated media, logs, ad configuration, Hermes memory/history/sessions, and mutable personal skills. It recreates the provider-independent base files while retaining only the license identity, provider/API credentials, and ChatGPT/Codex authentication artifacts needed for images. The next person sees the initial password step and must connect Facebook again.
+- Older cloud installations without the current access gate return `cloud_clean_reset_unavailable`; use the full Droplet delete/reinstall flow for those instances.
+- New installations created by the internal Mac `.command` cloud installer register the same protected gate automatically, so they also appear in the table and can be handed to a client without recreating the Droplet.
 
 Owner commercial purchase email test pipeline:
 
@@ -229,3 +247,35 @@ DigitalOcean guided install:
 - If `CLOUD_DASHBOARD_BASE_DOMAIN` and DNS provider credentials are configured, the portal creates a per-install subdomain and the Droplet installs Caddy with a free Let's Encrypt certificate. The access gate then redirects to the HTTPS dashboard.
 - The direct dashboard port remains restricted to the last authorized buyer IP. SSH remains key-only recovery, not the main buyer flow.
 - Recommended scoped DigitalOcean token permissions: Droplets create/read, Firewalls create/read/update, SSH Keys create/read, Tags create/read.
+# Facebook OAuth for buyer onboarding
+
+New Admira installations connect Facebook from a button delivered to the
+buyer's already-connected Telegram chat. They do **not** paste a Meta token or
+create a System User. Before enabling this release in production, configure
+the following Vercel Production environment variables (never commit values):
+
+```text
+META_OAUTH_APP_ID=<your Live/test Meta app ID>
+META_OAUTH_APP_SECRET=<your Meta app secret>
+META_OAUTH_REDIRECT_URI=https://admiraia.uboost.lat/api/meta-oauth
+# Optional: Facebook Login for Business configuration for User access tokens
+META_OAUTH_CONFIG_ID=<your user-token configuration ID>
+PORTAL_SECRET_VAULT_KEY=<existing strong vault key>
+```
+
+In the Meta app, add this exact Valid OAuth Redirect URI:
+
+```text
+https://admiraia.uboost.lat/api/meta-oauth?flow=callback
+```
+
+For pilot/tester users, invite the buyer as an app role before they open the
+link. The broker keeps only an encrypted, one-time OAuth handoff for 15
+minutes. It deletes the handoff after the local installation retrieves it.
+Do not print tokens, callback codes, or secrets in logs, tickets, or chat.
+
+The OAuth request includes `business_management` in addition to Ads and Page
+permissions. This lets Admira discover ad accounts and Pages in business
+portfolios where the buyer is an administrator, not only the buyer's personal
+portfolio. A Page remains selectable only when Meta also returns its Page
+publishing access token; discovery never fabricates access to an asset.

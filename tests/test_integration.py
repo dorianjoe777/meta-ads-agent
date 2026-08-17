@@ -9301,41 +9301,21 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                 and "mcp_admira_list_lead_forms" in prompt
                 and "lead_gen_form_id" in prompt
                 and "no requiere landing externa ni dark post" in prompt,
-                "Hermes is explicitly routed through direct native form creation, live verification, and native inline lead creatives",
+                "Hermes keeps the compatible form tool available and is routed to live ID verification and native inline lead creatives",
             )
         finally:
             dashboard.PENDING_FILE = original["pending_file"]
             dashboard.OUTPUT_DIR = original["output_dir"]
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-    def test_chat_creates_and_verifies_native_lead_form_without_approval(self):
-        """A requested form is created through Meta and verified before campaign staging."""
-        print("\nTesting Direct Native Lead Form Creation And Verification...")
+    def test_create_lead_form_alias_uses_assisted_manual_handoff(self):
+        """The old creation tool name must not retry Meta's unreliable form-write API."""
+        print("\nTesting Lead Form Compatibility Alias Uses Manual Handoff...")
         dashboard = load_dashboard_module()
-        original_client = dashboard.SocialFlowClient
-        original_license_check = dashboard.require_cloud_license
-        calls = []
-
-        class FakeClient:
-            normalize_lead_form_questions = staticmethod(SocialFlowClient.normalize_lead_form_questions)
-            normalize_lead_form_form_type = staticmethod(SocialFlowClient.normalize_lead_form_form_type)
-
-            def __init__(self, _config):
-                pass
-
-            def lead_forms(self, page_id, limit=100):
-                calls.append(("list", page_id, limit))
-                if len([call for call in calls if call[0] == "list"]) == 1:
-                    return {"returncode": 0, "stdout": json.dumps({"data": []}), "stderr": ""}
-                return {"returncode": 0, "stdout": json.dumps({"data": [{"id": "form_123", "name": "Valoración gratuita"}]}), "stderr": ""}
-
-            def create_lead_form(self, page_id, name, **kwargs):
-                calls.append(("create", page_id, name, kwargs.get("approved")))
-                return {"returncode": 0, "executed": True, "stdout": json.dumps({"id": "form_123", "page_id": page_id, "name": name}), "stderr": ""}
-
+        temp_dir = Path(tempfile.mkdtemp())
+        original = {"output_dir": dashboard.OUTPUT_DIR}
         try:
-            dashboard.SocialFlowClient = FakeClient
-            dashboard.require_cloud_license = lambda *_args, **_kwargs: None
+            dashboard.OUTPUT_DIR = temp_dir / "output"
             result = dashboard.execute_agent_tool(
                 {
                     "tool": "create_lead_form",
@@ -9350,16 +9330,17 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                 {"language": "es", "channel": "telegram"},
             )
             self.assert_true(
-                result.get("executed") and result.get("verified_live") and result.get("lead_gen_form_id") == "form_123",
-                "Direct form creation returns only after the live lead_gen_form_id is verified",
+                result.get("ok") and result.get("manual_creation_required") and not result.get("executed"),
+                "Legacy creation tool aliases to the no-mutation assisted/manual flow",
             )
             self.assert_true(
-                calls[0][:3] == ("list", "page_1", 100) and calls[1][0] == "create" and calls[1][3] is True and calls[2][0] == "list",
-                "Form creation is idempotency-checked, explicitly executed without spend approval, and read back",
+                result.get("reason") == "meta_instant_form_manual_creation_required"
+                and result.get("next_agent_action", {}).get("then") == "stage_campaign_with_lead_gen_form_id",
+                "Legacy creation tool instructs the buyer to publish once and then verify the actual Meta form ID",
             )
         finally:
-            dashboard.SocialFlowClient = original_client
-            dashboard.require_cloud_license = original_license_check
+            dashboard.OUTPUT_DIR = original["output_dir"]
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
     def test_organic_content_opt_in_stages_and_publishes_only_after_approval(self):
         """Test organic content is gated by readiness and exact approval publishes one visible post."""
@@ -10970,6 +10951,24 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         )
         resolved = resolver.resolve_whatsapp_phone_number("page_multi")
         self.assert_true(resolved["ok"] and resolved["whatsapp_phone_number"] == "573105000190" and resolved["source"] == "historical_whatsapp_adset", "WhatsApp resolver recovers the Page-linked number from Meta ad-set history when Page.whatsapp_number is empty")
+
+        permission_resolver = SocialFlowClient(ResolverConfig())
+        permission_resolver.get_graph = lambda endpoint, params=None, access_token="": (
+            {
+                "ok": False,
+                "status": 400,
+                "body": {"error": {"code": 10, "message": "This endpoint requires the pages_read_engagement permission."}},
+            }
+            if endpoint == "page_no_read"
+            else {"ok": True, "status": 200, "body": {"data": []}}
+        )
+        permission_resolution = permission_resolver.resolve_whatsapp_phone_number("page_no_read")
+        self.assert_true(
+            not permission_resolution["ok"]
+            and permission_resolution["reason"] == "page_read_permission_missing_for_whatsapp"
+            and permission_resolution["page_error_code"] == "10",
+            "WhatsApp preflight distinguishes a missing Page-read permission from a Page with no linked number",
+        )
 
         capability_client = SocialFlowClient(ResolverConfig())
         capability_client.get_graph = lambda endpoint, params=None, access_token="": (

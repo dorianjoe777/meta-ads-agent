@@ -52,6 +52,10 @@ For specialist work, read the relevant skill and then its generated companion in
 
 ## Default initiative
 
+## First-run order is strict
+
+On a new installation, the first useful action is the secure Facebook connection. Call the OAuth workspace check; if there is no selected connected workspace, immediately deliver the secure Facebook button in Telegram. Do not ask the buyer for a token, System User, Meta app, account/Page ID, or any technical setup. Once they connect and select an account/Page, collect only the minimum business facts needed to understand what they sell and for whom. Then present the tailored organic-content proposal before further discovery or branding questions. The fixed order is: **secure Facebook connection → business basics → organic proposal → buyer approval/adjustment → branding → ads**.
+
 Move the work forward by default. Do not ask for permission when the buyer already requested the next obvious step and the action is reversible, draft-only, read-only, or does not publish/spend/mutate a real external account.
 
 Examples that should proceed without another “¿quieres que avance?”:

@@ -1,4 +1,5 @@
 import { signedReleaseGrant, verifyPortalSession } from "../../../lib/license.js";
+import { licenseEmailMatches } from "../../../lib/license-email.js";
 import { releaseWithDiscoveredAssets } from "../../../lib/download-portal.js";
 import { readLicense, readReleases, writeLicense } from "../../../lib/store.js";
 import { decryptPortalSecret, encryptPortalSecret } from "../../../lib/secret-vault.js";
@@ -482,6 +483,125 @@ async function refreshFirewallRulesOnly(digitalOceanToken, firewallId, firewall 
   }
 }
 
+const PUBLIC_FIREWALL_ADDRESSES = ["0.0.0.0/0", "::/0"];
+
+function firewallRuleIsTcpPort(rule = {}, port = "") {
+  return String(rule?.protocol || "").toLowerCase() === "tcp" && String(rule?.ports || "") === String(port);
+}
+
+function strictFirewallIp(cloud = {}, firewall = {}, dashboardPort = "7871") {
+  const candidates = [cloud.initial_client_ip, cloud.access_refreshed_ip];
+  for (const candidate of candidates) {
+    const ip = validIpv4(candidate);
+    if (ip) return ip;
+  }
+  const dashboardRules = firewallAddressRulesForPorts(firewall, [dashboardPort]);
+  for (const rule of dashboardRules) {
+    for (const address of rule?.sources?.addresses || []) {
+      const ip = validIpv4(String(address).replace(/\/32$/, ""));
+      if (ip) return ip;
+    }
+  }
+  return "";
+}
+
+function networkModeFailure(code, detail) {
+  const error = new Error(code);
+  error.code = code;
+  error.friendlyDetail = detail;
+  return error;
+}
+
+/**
+ * Change the public reachability of an existing cloud dashboard without
+ * touching the Droplet, its containers, or the dashboard authentication.
+ * The DO token is read from the encrypted portal vault unless a caller
+ * explicitly supplies one (useful for legacy records created before token
+ * storage was enabled).
+ */
+export async function setCloudNetworkMode(record = {}, mode = "strict", dependencies = {}) {
+  const requestedMode = String(mode || "").trim().toLowerCase();
+  if (requestedMode !== "strict" && requestedMode !== "testing") {
+    throw networkModeFailure("cloud_network_mode_invalid", "Elige el modo privado o el modo testing.");
+  }
+  const cloud = record.cloud_installation || null;
+  const dropletId = String(cloud?.droplet_id || "").trim();
+  const firewallId = String(cloud?.firewall_id || "").trim();
+  if (!cloud || !/^\d+$/.test(dropletId) || !/^[A-Za-z0-9-]{6,128}$/.test(firewallId)) {
+    throw networkModeFailure("cloud_network_installation_missing", "No encontre un Droplet y firewall validos para esta licencia.");
+  }
+  const suppliedToken = String(dependencies.digitalOceanToken || "").trim();
+  const token = validateDigitalOceanToken(suppliedToken) ? suppliedToken : digitalOceanTokenFromRecord(record);
+  if (!validateDigitalOceanToken(token)) {
+    throw networkModeFailure("digitalocean_token_required", "Esta licencia no tiene guardado un token de DigitalOcean. Pega uno con permiso para actualizar el firewall.");
+  }
+  const requestDigitalOcean = dependencies.doRequest || doRequest;
+  const firewall = (await requestDigitalOcean(token, `/firewalls/${encodeURIComponent(firewallId)}`)).firewall || {};
+  const dashboardPort = cleanPort(cloud.dashboard_port, "7871");
+  const suppliedClientIp = validIpv4(dependencies.clientIp || "");
+  const strictIp = suppliedClientIp || strictFirewallIp(cloud, firewall, dashboardPort);
+  if (requestedMode === "strict" && !strictIp) {
+    throw networkModeFailure("cloud_network_strict_ip_missing", "No pude recuperar la red autorizada original. Usa primero modo testing y luego actualiza el acceso desde el instalador.");
+  }
+  const managedPorts = [dashboardPort, CLOUD_HTTPS_PORT];
+  const inboundRules = Array.isArray(firewall.inbound_rules) ? firewall.inbound_rules : [];
+  const preservedInboundRules = inboundRules.filter((rule) => !managedPorts.some((port) => firewallRuleIsTcpPort(rule, port)));
+  const addresses = requestedMode === "testing" ? PUBLIC_FIREWALL_ADDRESSES : [`${strictIp}/32`];
+  const desiredRules = managedPorts.map((port) => ({
+    protocol: "tcp",
+    ports: port,
+    sources: { addresses: [...addresses] }
+  }));
+  const outboundRules = Array.isArray(firewall.outbound_rules) && firewall.outbound_rules.length
+    ? firewall.outbound_rules
+    : [
+      { protocol: "tcp", ports: "0", destinations: { addresses: PUBLIC_FIREWALL_ADDRESSES } },
+      { protocol: "udp", ports: "0", destinations: { addresses: PUBLIC_FIREWALL_ADDRESSES } },
+      { protocol: "icmp", ports: "0", destinations: { addresses: PUBLIC_FIREWALL_ADDRESSES } }
+    ];
+  const payload = {
+    name: firewall.name || cloud.firewall_name || `admira-ia-${dropletId}-strict`,
+    inbound_rules: [...preservedInboundRules, ...desiredRules],
+    outbound_rules: outboundRules,
+    droplet_ids: [Number(dropletId)],
+    tags: Array.isArray(firewall.tags) ? firewall.tags : []
+  };
+  try {
+    await requestDigitalOcean(token, `/firewalls/${encodeURIComponent(firewallId)}`, { method: "PUT", body: payload });
+  } catch (error) {
+    // Some older DO tokens can edit rules but not replace the complete
+    // firewall object. Fall back to the rules endpoint in that case.
+    if (error?.statusCode !== 403) throw error;
+    const existingManaged = inboundRules.filter((rule) => managedPorts.some((port) => firewallRuleIsTcpPort(rule, port)));
+    if (existingManaged.length) {
+      await requestDigitalOcean(token, `/firewalls/${encodeURIComponent(firewallId)}/rules`, {
+        method: "DELETE",
+        body: { inbound_rules: existingManaged, outbound_rules: [] }
+      });
+    }
+    await requestDigitalOcean(token, `/firewalls/${encodeURIComponent(firewallId)}/rules`, {
+      method: "POST",
+      body: { inbound_rules: desiredRules, outbound_rules: [] }
+    });
+  }
+  const updatedCloud = {
+    ...cloud,
+    network_mode: requestedMode,
+    testing_mode: requestedMode === "testing",
+    ...(strictIp ? { initial_client_ip: String(cloud.initial_client_ip || strictIp) } : {}),
+    network_mode_updated_at: new Date().toISOString(),
+    network_mode_strict_ip: strictIp || String(cloud.network_mode_strict_ip || "")
+  };
+  return {
+    cloud: updatedCloud,
+    mode: requestedMode,
+    public_dashboard: requestedMode === "testing",
+    dashboard_port: dashboardPort,
+    strict_ip: strictIp || String(cloud.network_mode_strict_ip || ""),
+    firewall_id: firewallId
+  };
+}
+
 async function clearCloudInstallation(record = {}, reason = "buyer_reset") {
   const installState = { ...(record.install_state || {}) };
   const clearedAt = new Date().toISOString();
@@ -862,7 +982,7 @@ async function runtimeReport(body = {}, response) {
   if (!record || record.status !== "active") {
     return friendlyFailure(response, "runtime_report_unknown", "No pude confirmar esta compra.");
   }
-  if (buyerEmail && String(record.buyer_email || "").toLowerCase() !== buyerEmail) {
+  if (buyerEmail && !licenseEmailMatches(record, buyerEmail)) {
     return friendlyFailure(response, "runtime_report_email_mismatch", "No pude confirmar esta compra.");
   }
   const cloud = record.cloud_installation || null;
@@ -1179,7 +1299,7 @@ export default async function handler(request, response) {
       return friendlyFailure(response, "session_expired", "Tu acceso vencio. Vuelve a ingresar tu email y clave.");
     }
     const record = await readLicense(session.license_key);
-    if (!record || record.status !== "active" || String(record.buyer_email || "").toLowerCase() !== session.buyer_email) {
+    if (!record || record.status !== "active" || !licenseEmailMatches(record, session.buyer_email)) {
       return friendlyFailure(response, "access_revoked", "No pude confirmar esta compra. Contacta soporte.");
     }
     if (action === "status") {
@@ -1423,6 +1543,9 @@ export default async function handler(request, response) {
       cloud_access_secret: accessSecret,
       access_gate_port: CLOUD_ACCESS_PORT,
       dashboard_port: "7871",
+      network_mode: String(existingCloud?.network_mode || "strict") === "testing" ? "testing" : "strict",
+      testing_mode: String(existingCloud?.network_mode || "strict") === "testing",
+      initial_client_ip: validIpv4(existingCloud?.initial_client_ip || clientIp) || clientIp,
       install_status: "creating",
       install_progress: Math.max(Number(existingCloud?.install_progress || 0), 12),
       install_started_at: existingCloud?.install_started_at || now,

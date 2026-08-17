@@ -1,4 +1,5 @@
 import { normalizeEntitlements, signedUnlock, validFormat } from "../../lib/license.js";
+import { licenseEmailMatches } from "../../lib/license-email.js";
 import { ensureDeviceBinding } from "../../lib/device-binding.js";
 import {
   deviceRegistrations,
@@ -35,7 +36,7 @@ export default async function handler(request, response) {
     if (record.status !== "active") {
       return response.status(200).json({ valid: false, status: record.status, detail: "Esta licencia no está activa. Contacta soporte." });
     }
-    if (String(record.buyer_email).toLowerCase() !== buyerEmail) {
+    if (!licenseEmailMatches(record, buyerEmail)) {
       return response.status(200).json({ valid: false, status: "email_mismatch", detail: "El email no coincide con esta licencia." });
     }
     const entitlements = normalizeEntitlements(record);

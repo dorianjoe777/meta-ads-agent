@@ -196,6 +196,32 @@ export function signedReleaseGrant({ licenseKey, buyerEmail, deviceId, channel, 
   };
 }
 
+function signedCloudInstallGrant({ licenseKey, buyerEmail, deviceId, minutes: rawMinutes }) {
+  const secret = String(process.env.RELEASE_DOWNLOAD_SECRET || "");
+  if (!secret) {
+    throw new Error("RELEASE_DOWNLOAD_SECRET is not configured");
+  }
+  const requestedMinutes = Number(rawMinutes);
+  const minutes = Number.isFinite(requestedMinutes) && requestedMinutes > 0
+    ? Math.min(Math.floor(requestedMinutes), 24 * 60)
+    : 360;
+  const payload = {
+    buyer_email: buyerEmail,
+    device_id: deviceId,
+    expires_at: new Date(Date.now() + minutes * 60000).toISOString(),
+    issued_at: new Date().toISOString(),
+    license_key: licenseKey,
+    purpose: "cloud_install_registration"
+  };
+  const body = Buffer.from(canonicalForHmac(payload), "utf8").toString("base64url");
+  const signature = createHmac("sha256", secret).update(body).digest("base64url");
+  return { ...payload, token: `${body}.${signature}` };
+}
+
+export function signedCloudInstallRegistrationGrant(options = {}) {
+  return signedCloudInstallGrant(options);
+}
+
 export function signedPortalSession({ licenseKey, buyerEmail, channel = "stable", plan = "individual", minutes: rawMinutes }) {
   const secret = String(process.env.RELEASE_DOWNLOAD_SECRET || "");
   if (!secret) {
@@ -256,6 +282,29 @@ export function verifyReleaseGrant(token) {
   try {
     const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
     if (!payload.expires_at || new Date(payload.expires_at).getTime() < Date.now()) {
+      return null;
+    }
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+export function verifyCloudInstallRegistrationGrant(token) {
+  const secret = String(process.env.RELEASE_DOWNLOAD_SECRET || "");
+  if (!secret || !token || !String(token).includes(".")) {
+    return null;
+  }
+  const [body, supplied] = String(token).split(".", 2);
+  const expected = createHmac("sha256", secret).update(body).digest("base64url");
+  const suppliedBuffer = Buffer.from(String(supplied || ""));
+  const expectedBuffer = Buffer.from(expected);
+  if (suppliedBuffer.length !== expectedBuffer.length || !timingSafeEqual(suppliedBuffer, expectedBuffer)) {
+    return null;
+  }
+  try {
+    const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+    if (payload.purpose !== "cloud_install_registration" || !payload.expires_at || new Date(payload.expires_at).getTime() < Date.now()) {
       return null;
     }
     return payload;

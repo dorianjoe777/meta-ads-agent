@@ -2,8 +2,11 @@ name: ${ADMIRA_COMPOSE_PROJECT_NAME:-admira-ia}
 
 services:
   meta-ads-agent:
-    build: .
-    image: ${ADMIRA_IMAGE_NAME:-admira-ia:local}
+    build:
+      context: .
+      args:
+        ADMIRA_BUILD_VERSION: ${ADMIRA_BUILD_VERSION:-unknown}
+    image: ${ADMIRA_IMAGE_NAME:-admira-ia:${ADMIRA_BUILD_VERSION:-local}}
     container_name: ${ADMIRA_CONTAINER_NAME:-admira-ia}
     ports:
       - "0.0.0.0:${DASHBOARD_PORT:-7871}:7871"
@@ -14,6 +17,7 @@ services:
       DASHBOARD_PORT: 7871
       ALLOW_PUBLIC_DASHBOARD: "true"
       ADMIRA_HOST_LAN_IP: ${ADMIRA_HOST_LAN_IP:-}
+      ADMIRA_IMAGE_VERSION: ${ADMIRA_BUILD_VERSION:-unknown}
       CODEX_CREATIVE_ENABLED: "true"
       CODEX_CLI: codex
       CODEX_HOME: /app/runtime/codex

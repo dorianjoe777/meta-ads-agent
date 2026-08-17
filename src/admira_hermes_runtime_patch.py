@@ -8,9 +8,11 @@ provider-error formatter that can otherwise leak raw English provider text.
 """
 import hashlib
 import importlib
+import importlib.util
 import json
 import os
 import re
+import copy
 import subprocess
 import sys
 import time
@@ -124,7 +126,19 @@ ADMIRA_NVIDIA_TOOL_PROFILES = {
         "save_durable_memory",
         "save_business_memory",
         "save_agent_preferences",
+        "save_daily_social_content_settings",
+        "get_meta_oauth_workspaces",
+        "start_meta_oauth_connection",
         "search_product_catalog",
+    },
+    # The first-run route is intentionally limited to the secure Facebook
+    # connection and the operator's communication preference. Business,
+    # creative and campaign tools arrive only after a Page is selected.
+    "onboarding": {
+        "get_meta_oauth_workspaces",
+        "start_meta_oauth_connection",
+        "select_meta_oauth_workspace",
+        "save_agent_preferences",
     },
     # A recommendation/targeting turn must not carry tools that can create,
     # pause, delete, or generate media.  This is deliberately separate from
@@ -199,14 +213,8 @@ ADMIRA_NVIDIA_TOOL_PROFILES = {
     # next turns retrying it.  The handler itself will reject incomplete form
     # details, so exposing unrelated mutating tools cannot help this step.
     "lead_form": {
-        "get_real_meta_context",
         "list_lead_forms",
         "create_lead_form",
-        "stage_lead_form",
-        "save_business_memory",
-        "save_product_memory",
-        "save_ad_brief",
-        "save_durable_memory",
     },
     "creative": {
         "fetch_public_asset",
@@ -1115,19 +1123,17 @@ def _admira_failover_reason_text(reason):
 
 
 def _admira_same_nvidia_fallback_blocked(reason):
-    """Classify failures that are shared by every model under one NIM key.
+    """Classify failures for which an alternate NIM model must not be tried.
 
-    A model-specific timeout/5xx/empty response may be recoverable by trying a
-    different NIM pool.  A quota, upstream rate limit, authentication, or
-    billing failure is not: rotating models with the same key only creates more
-    requests and can make the provider impose a longer cooldown.
+    A NIM ``429`` is not necessarily account-wide: NVIDIA can throttle an
+    individual hosted model pool while another listed model under the *same*
+    key is healthy.  The fallback chain contains at most one, live-catalog
+    verified alternate, so a 429 may use that one bounded attempt.  Explicit
+    quota, billing and credential failures remain shared-key failures and
+    must never rotate models.
     """
     text = _admira_failover_reason_text(reason)
     return any(marker in text for marker in (
-        "rate_limit",
-        "rate limit",
-        "upstream_rate_limit",
-        "upstream rate limit",
         "billing",
         "quota",
         "auth",
@@ -1149,8 +1155,8 @@ def _patch_same_nvidia_model_failover_guard():
     """Skip same-key NIM entries only for shared quota/auth failures.
 
     The actual fallback selection remains Hermes' own implementation.  This
-    narrow guard prevents a same-NIM candidate from following a 429 while
-    preserving it for model-specific transport/provider failures.
+    narrow guard permits one live-catalog alternate after a model-pool 429,
+    while preventing rotation after quota, billing or credential failures.
     """
     try:
         import agent.chat_completion_helpers as helpers
@@ -1237,7 +1243,11 @@ def _nvidia_message_text(messages):
     # A buyer who says only "retry", "again" or "continue" is referring to
     # the immediately preceding tool outcome. Include that narrow prior loop
     # but never earlier user turns or the full system prompt.
-    if re.search(r"\b(reintenta|reintentar|int[eé]ntalo|again|retry|contin[uú]a|continue)\b", user_text):
+    if re.search(
+        r"\b(reintenta|reintentar|int[eé]ntalo|again|retry|contin[uú]a|continue|"
+        r"hazlo|procede|dale|aprobado|approved|ok|s[ií])\b",
+        user_text,
+    ):
         prior = []
         for role, content in reversed(entries[:last_user]):
             if role == "user":
@@ -1250,8 +1260,62 @@ def _nvidia_message_text(messages):
     return " ".join(content for _, content in active if content).lower()
 
 
+def _nvidia_routing_text(messages):
+    """Anchor one tool loop to the buyer's latest explicit request.
+
+    Live Meta snapshots can mention images, videos, forms and campaigns in the
+    same tool result.  Those incidental capability words must not change the
+    request profile between the first provider call and the post-tool call.
+    A genuinely generic retry/continue message remains the one exception: it
+    needs the narrow prior tool loop supplied by ``_nvidia_message_text``.
+    """
+    latest_user = ""
+    for message in reversed(messages or []):
+        if not isinstance(message, dict) or str(message.get("role") or "").lower() != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            content = " ".join(
+                str(item.get("text") or item.get("content") or "")
+                for item in content
+                if isinstance(item, dict)
+            )
+        latest_user = str(content or "").strip().lower()
+        break
+    if not latest_user:
+        return _nvidia_message_text(messages)
+    if re.search(
+        r"\b(reintenta|reintentar|int[eé]ntalo|again|retry|contin[uú]a|continue|"
+        r"hazlo|procede|dale|aprobado|approved|ok|s[ií])\b",
+        latest_user,
+    ):
+        return _nvidia_message_text(messages)
+    return latest_user
+
+
+def _nvidia_explicit_lead_form_creation_requested(messages):
+    text = _nvidia_routing_text(messages)
+    form = any(marker in text for marker in ADMIRA_NVIDIA_LEAD_FORM_TERMS)
+    action = bool(re.search(
+        r"\b(crea|crear|créalo|crealo|hazlo|procede|publica|publicar|"
+        r"create|build|publish|approved|aprobado)\b",
+        text,
+    ))
+    return form and action
+
+
 def _nvidia_request_profile(messages):
-    text = _nvidia_message_text(messages)
+    text = _nvidia_routing_text(messages)
+    # Treat a buyer introducing their business as onboarding even when they
+    # mention a future campaign or destination.  The mandatory first-run
+    # sequence is business -> organic proposal -> Facebook -> brand -> Ads;
+    # exposing the campaign registry here encourages a premature jump.
+    if any(marker in text for marker in (
+        "primera conversación", "primera conversacion", "primera vez",
+        "mi negocio", "mi empresa", "mi clínica", "mi clinica",
+        "my business", "my company", "first conversation", "first time",
+    )):
+        return "onboarding"
     # This must win over the generic campaign profile.  A native instant form
     # is a campaign-related task, but its initial creation has a much smaller
     # and safer contract than staging the eventual campaign.
@@ -1276,7 +1340,18 @@ def _nvidia_request_profile(messages):
         # registry even when the buyer also says "create campaign".
         if any(marker in text for marker in ADMIRA_NVIDIA_MESSAGING_CAMPAIGN_TERMS):
             return "messaging_campaign"
-        action_requested = any(marker in text for marker in ADMIRA_NVIDIA_CAMPAIGN_ACTION_TERMS)
+        # Use word boundaries here: substring matching treats the noun/adjective
+        # ``campañas activas`` as the command ``activa`` and exposes mutation
+        # tools during a read-only status question.
+        action_requested = any(
+            re.search(rf"(?<!\w){re.escape(marker)}(?!\w)", text)
+            for marker in ADMIRA_NVIDIA_CAMPAIGN_ACTION_TERMS
+        )
+        read_only_requested = any(marker in text for marker in (
+            "consulta", "consultar", "revisa", "revisar", "lista", "listar",
+            "muestra", "mostrar", "cuántas", "cuantas", "estado", "status",
+            "read", "inspect", "check", "show", "list",
+        ))
         # "Create a campaign with approved creatives" belongs to execution;
         # media routing is for an explicit request to produce the media.
         if (
@@ -1286,6 +1361,8 @@ def _nvidia_request_profile(messages):
             return "campaign_media"
         if action_requested:
             return "campaign_execution"
+        if read_only_requested:
+            return "insights"
         if any(marker in text for marker in ADMIRA_NVIDIA_PROFILE_TERMS["insights"]):
             return "insights"
         if any(marker in text for marker in ADMIRA_NVIDIA_CAMPAIGN_STRATEGY_TERMS):
@@ -1302,23 +1379,51 @@ def _nvidia_request_profile(messages):
 
 
 def _nvidia_lead_form_retry_instruction(messages):
-    """Add a private recovery rule after the backend rejected empty form args.
+    """Keep the native-form turn on one strict tool call.
 
-    A model must either supply all four fields in one call or ask the one
-    missing owner question.  Repeating ``create_lead_form({})`` is never a
-    useful retry and needlessly consumes a hosted-provider request.
+    Hosted NVIDIA models behave reliably with one narrow JSON schema, but can
+    emit ``create_lead_form({})`` and start inspecting files when the same turn
+    advertises unrelated native and product tools.  The tool handler remains
+    the source of truth; this private instruction only prevents an unbounded
+    recovery loop and never invents missing buyer data.
     """
     text = _nvidia_message_text(messages)
-    if "missing_lead_form_detail" not in text:
+    retry = " The previous call was incomplete, so this is the only permitted retry." if (
+        "missing_lead_form_detail" in text or "empty_tool_arguments" in text
+    ) else ""
+    return (
+        "[INTERNAL LEAD-FORM EXECUTION RULE — never quote] Use only the exposed "
+        "lead-form tools. Do not inspect files, search code, browse, or call memory "
+        "tools. Call create_lead_form at most once and only with a JSON object that "
+        "includes non-empty page_id, name, privacy_policy_url, and a flat questions "
+        "array. Never call it with {} or wrap arrays in item/$text objects. Recover "
+        "exact values already present in the conversation. If a required value is "
+        "genuinely absent, ask one concise combined question instead of calling a tool."
+        + retry + " "
+        "[END INTERNAL LEAD-FORM RETRY RULE]"
+    )
+
+
+def _nvidia_campaign_retry_instruction(messages):
+    """Stop malformed campaign retries from dropping already known fields."""
+    text = _nvidia_message_text(messages)
+    if not any(marker in text for marker in (
+        "missing_campaign_creation_detail",
+        "targeting_gender_invalid",
+        "targeting_age_invalid",
+        "targeting_location",
+    )):
         return ""
     return (
-        "[INTERNAL LEAD-FORM RETRY RULE — never quote] The previous native-form "
-        "call was rejected because its arguments were incomplete. Do not call "
-        "create_lead_form again unless this one call includes non-empty page_id, "
-        "name, privacy_policy_url, and questions. Recover exact values from the "
-        "conversation or saved context. If any is genuinely absent, ask one concise "
-        "combined question for the missing fields; never retry with {}. "
-        "[END INTERNAL LEAD-FORM RETRY RULE]"
+        "[INTERNAL CAMPAIGN RETRY RULE — never quote] The previous paused-campaign "
+        "call failed validation. Make at most one corrected stage_campaign call. "
+        "Preserve every already confirmed root field: name, objective, daily_budget, "
+        "landing_url when website-bound, creative_image_path/video_path, countries, "
+        "ages, targeting_mode, final_status=PAUSED and active_spend_confirmed=false. "
+        "Use ad_sets and ads as JSON arrays, never {item: ...}. For all genders omit "
+        "genders or send gender='todos'; never send genders=['all']. If the exact "
+        "correction cannot be formed, report the validation error instead of looping. "
+        "[END INTERNAL CAMPAIGN RETRY RULE]"
     )
 
 
@@ -1380,6 +1485,43 @@ def _nvidia_estimated_input_tokens(messages, tools):
     except (TypeError, ValueError):
         serialized = str({"messages": messages or [], "tools": tools or []})
     return max(0, len(serialized) // 4)
+
+
+def _nvidia_restore_admira_tool_schemas(tools):
+    """Restore product-owned MCP schemas lost by some Hermes releases.
+
+    Hermes 0.18 can discover an MCP tool name and description while flattening
+    its ``inputSchema`` to an empty OpenAI ``parameters`` object. Hosted models
+    then call the right function with ``{}``. Admira owns the canonical schema,
+    so restore it immediately before the NVIDIA request without changing
+    Hermes-native tools or mutating the shared registry.
+    """
+    try:
+        from admira_mcp_server import TOOL_INPUT_SCHEMAS
+    except Exception:
+        return list(tools or [])
+    restored = []
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            restored.append(tool)
+            continue
+        name = _nvidia_tool_name(tool)
+        normalized = _nvidia_normalize_tool_name(name)
+        schema = TOOL_INPUT_SCHEMAS.get(normalized)
+        function = tool.get("function") if isinstance(tool.get("function"), dict) else None
+        if not schema or function is None or not name.lower().startswith(("mcp_admira_", "admira_")):
+            restored.append(tool)
+            continue
+        current = function.get("parameters") if isinstance(function.get("parameters"), dict) else {}
+        if current.get("properties") or current.get("required") or current.get("anyOf") or current.get("oneOf"):
+            restored.append(tool)
+            continue
+        cloned = dict(tool)
+        cloned_function = dict(function)
+        cloned_function["parameters"] = copy.deepcopy(schema)
+        cloned["function"] = cloned_function
+        restored.append(cloned)
+    return restored
 
 
 def _nvidia_trim_value(value, max_string_chars):
@@ -1470,7 +1612,7 @@ def _nvidia_prepare_request(api_kwargs):
     # the generic core registry or a narrow form/strategy/execution request
     # grows back into the previous all-in-one campaign payload.
     direct_profiles = {
-        "lead_form", "campaign_strategy", "campaign_execution",
+        "onboarding", "lead_form", "campaign_strategy", "campaign_execution",
         "messaging_campaign", "campaign_media",
     }
     if profile in direct_profiles:
@@ -1484,23 +1626,67 @@ def _nvidia_prepare_request(api_kwargs):
     for tool in tools:
         name = _nvidia_tool_name(tool)
         normalized = _nvidia_normalize_tool_name(name)
+        if profile == "lead_form" and not name.lower().startswith(("mcp_admira_", "admira_")):
+            # A form-creation turn is a bounded transaction. Native file/web/
+            # memory tools only give small hosted models an attractive but
+            # incorrect escape path after a malformed first call.
+            continue
+        if profile == "lead_form" and normalized not in allowed:
+            continue
         # Hermes-native tools are intentionally preserved. Only the large
         # Admira MCP registry is routed by profile.
-        if normalized in {"", "get_real_meta_context"} or not (
+        if normalized == "" or not (
             name.lower().startswith(("mcp_admira_", "admira_"))
         ):
             filtered.append(tool)
         elif normalized in allowed:
             filtered.append(tool)
-    if filtered and len(filtered) < before_tools:
+    # An intentionally tool-free profile (the first organic proposal) must
+    # actually remove the entire Admira registry.  Keeping the original list
+    # when filtering yields zero items silently turns that profile into the
+    # old all-tools payload.
+    if len(filtered) < before_tools:
         request["tools"] = filtered
+    request["tools"] = _nvidia_restore_admira_tool_schemas(request.get("tools") or [])
+    # NVIDIA treats an explicit empty tools array differently from a normal
+    # text-only request and can return HTTP 404. A tool-free onboarding
+    # proposal is valid, so omit the field altogether.
+    if not request["tools"]:
+        request.pop("tools", None)
 
-    private_instruction = _nvidia_lead_form_retry_instruction(messages) if profile == "lead_form" else ""
+    if profile == "lead_form":
+        private_instruction = _nvidia_lead_form_retry_instruction(messages)
+    elif profile in {"campaign_execution", "messaging_campaign"}:
+        private_instruction = _nvidia_campaign_retry_instruction(messages)
+    else:
+        private_instruction = ""
     prepared_messages = _nvidia_append_private_instruction(messages, private_instruction)
     request["messages"], request["tools"] = _nvidia_compact_request_payload(
         prepared_messages,
         request.get("tools") or [],
     )
+    if profile == "lead_form":
+        used = _nvidia_used_tool_names(messages)
+        create_tool_name = next((
+            _nvidia_tool_name(tool)
+            for tool in request.get("tools") or []
+            if _nvidia_normalize_tool_name(_nvidia_tool_name(tool)) == "create_lead_form"
+        ), "")
+        if create_tool_name and "create_lead_form" not in used and _nvidia_explicit_lead_form_creation_requested(messages):
+            # NVIDIA's hosted MiniMax endpoint fills the strict schema
+            # correctly when the function is required; with auto selection it
+            # can emit the same function with an empty argument object.
+            request["tool_choice"] = {
+                "type": "function",
+                "function": {"name": create_tool_name},
+            }
+            request["parallel_tool_calls"] = False
+        elif "create_lead_form" in used:
+            # The backend already returned the authoritative result. Do not
+            # let a hosted model repeat the mutation while composing its final
+            # buyer-facing reply.
+            request["tool_choice"] = "none"
+            request["parallel_tool_calls"] = False
 
     current_max = request.get("max_tokens")
     try:
@@ -1594,6 +1780,18 @@ def _record_nvidia_hook_diagnostic(
         }
         if prepared_profile:
             tools_after = api_kwargs.get("tools") if isinstance(api_kwargs, dict) else []
+            schema_summaries = []
+            for tool in tools_after or []:
+                if not isinstance(tool, dict):
+                    continue
+                function = tool.get("function") if isinstance(tool.get("function"), dict) else {}
+                parameters = function.get("parameters") if isinstance(function.get("parameters"), dict) else {}
+                schema_summaries.append({
+                    "name": str(function.get("name") or tool.get("name") or ""),
+                    "has_parameters": bool(parameters),
+                    "required": [str(item) for item in (parameters.get("required") or [])[:16]],
+                    "property_names": [str(item) for item in list((parameters.get("properties") or {}).keys())[:32]],
+                })
             payload.update({
                 "prepared": True,
                 "profile": str(prepared_profile),
@@ -1604,6 +1802,10 @@ def _record_nvidia_hook_diagnostic(
                 ) if isinstance(api_kwargs, dict) else 0,
                 "max_tokens_after": int(api_kwargs.get("max_tokens") or 0)
                 if isinstance(api_kwargs, dict) else 0,
+                # Schema shape only: no descriptions, values, messages or
+                # arguments. This makes canary incompatibilities diagnosable
+                # without persisting buyer data or credentials.
+                "tool_schema_summaries": schema_summaries,
             })
         diagnostic_path = Path(path_value).expanduser()
         diagnostic_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2720,6 +2922,109 @@ def _telegram_update_install_request_path():
     return Path(root).expanduser() / "dashboard" / "data" / "telegram_update_install_request.json" if root else None
 
 
+def _telegram_runtime_chat_context_path():
+    """Where the native Telegram gateway records the buyer's actual chat ID.
+
+    Hermes keeps its own opaque channel key for authorization.  Admira's OAuth
+    sender needs the numeric Bot API chat id, which is only available on a real
+    incoming update.  This small handoff lets the product send an OAuth button
+    later in the same conversation without opening a second Telegram poller.
+    """
+    root = str(os.environ.get("ADMIRA_PRODUCT_ROOT") or "").strip()
+    product_root = Path(root).expanduser() if root else Path(__file__).resolve().parent.parent
+    path = product_root / "dashboard" / "data" / "telegram_runtime_chat.json"
+    return path if path.parent.exists() else None
+
+
+def _record_telegram_runtime_chat(chat_id, user_id=""):
+    value = str(chat_id or "").strip()
+    if not value.lstrip("-").isdigit():
+        return False
+    path = _telegram_runtime_chat_context_path()
+    if not path:
+        return False
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({
+            "chat_id": value,
+            "user_id": str(user_id or ""),
+            "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }), encoding="utf-8")
+        tmp.replace(path)
+        path.chmod(0o600)
+        return True
+    except OSError:
+        return False
+
+
+_ADMIRA_DASHBOARD_MODULE = None
+
+
+def _admira_dashboard_module():
+    """Load the product dashboard lazily only for an explicit OAuth button."""
+    global _ADMIRA_DASHBOARD_MODULE
+    if _ADMIRA_DASHBOARD_MODULE is not None:
+        return _ADMIRA_DASHBOARD_MODULE
+    root = str(os.environ.get("ADMIRA_PRODUCT_ROOT") or "").strip()
+    product_root = Path(root).expanduser() if root else Path(__file__).resolve().parent.parent
+    path = product_root / "dashboard" / "monitoring-dashboard.py"
+    if not path or not path.exists():
+        raise RuntimeError("Admira dashboard unavailable")
+    spec = importlib.util.spec_from_file_location("admira_runtime_dashboard", path)
+    if not spec or not spec.loader:
+        raise RuntimeError("Admira dashboard unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _ADMIRA_DASHBOARD_MODULE = module
+    return module
+
+
+def _telegram_adapter_classes():
+    classes = []
+    for module_name in (
+        "hermes_plugins.telegram_platform.adapter",
+        "plugins.platforms.telegram.adapter",
+    ):
+        try:
+            module = importlib.import_module(module_name)
+            adapter_class = getattr(module, "TelegramAdapter", None)
+        except ImportError:
+            continue
+        if adapter_class is not None and all(adapter_class is not item for item in classes):
+            classes.append(adapter_class)
+    return classes
+
+
+def _patch_telegram_runtime_chat_capture():
+    """Persist the real authorized Telegram chat ID before Hermes batches text."""
+    patched_any = False
+    for adapter_class in _telegram_adapter_classes():
+        original = getattr(adapter_class, "_handle_text_message", None)
+        if not callable(original):
+            continue
+        if getattr(original, "_admira_runtime_chat_capture", False):
+            patched_any = True
+            continue
+
+        async def patched(self, update, context, _original=original):
+            try:
+                message = self._effective_update_message(update)
+                if message is not None and self._is_user_authorized_from_message(message):
+                    chat = getattr(message, "chat", None)
+                    sender = getattr(message, "from_user", None)
+                    _record_telegram_runtime_chat(getattr(chat, "id", None), getattr(sender, "id", None))
+            except Exception:
+                pass
+            return await _original(self, update, context)
+
+        patched._admira_runtime_chat_capture = True
+        patched._admira_original_handle_text_message = original
+        adapter_class._handle_text_message = patched
+        patched_any = True
+    return patched_any
+
+
 def _write_telegram_update_install_request(payload):
     """Persist one authorized Telegram update click for the dashboard worker."""
     path = _telegram_update_install_request_path()
@@ -2743,23 +3048,8 @@ def _patch_telegram_update_install_callback():
     second getUpdates consumer.  The gateway acknowledges the tap immediately
     then the dashboard process performs the package update independently.
     """
-    adapter_classes = []
-    for module_name in (
-        # Hermes 0.18+ runtime path.
-        "hermes_plugins.telegram_platform.adapter",
-        # Older/compatibility runtime path.
-        "plugins.platforms.telegram.adapter",
-    ):
-        try:
-            module = importlib.import_module(module_name)
-            adapter_class = getattr(module, "TelegramAdapter", None)
-        except ImportError:
-            continue
-        if adapter_class is not None and all(adapter_class is not item for item in adapter_classes):
-            adapter_classes.append(adapter_class)
-
     patched_any = False
-    for adapter_class in adapter_classes:
+    for adapter_class in _telegram_adapter_classes():
         original = getattr(adapter_class, "_handle_callback_query", None)
         if not callable(original):
             continue
@@ -2770,6 +3060,53 @@ def _patch_telegram_update_install_callback():
         async def patched(self, update, context, _original=original):
             query = getattr(update, "callback_query", None)
             data = str(getattr(query, "data", "") or "")
+            if data.startswith(("meta_account:", "meta_page:")):
+                message = getattr(query, "message", None)
+                chat = getattr(message, "chat", None)
+                chat_id = getattr(message, "chat_id", None)
+                user = getattr(query, "from_user", None)
+                user_id = str(getattr(user, "id", "") or "")
+                if not self._is_callback_user_authorized(
+                    user_id,
+                    chat_id=chat_id,
+                    chat_type=str(getattr(chat, "type", "") or "") or None,
+                    thread_id=str(getattr(message, "message_thread_id", "") or "") or None,
+                    user_name=getattr(user, "first_name", None),
+                ):
+                    await query.answer(text="No tienes permiso para elegir esta cuenta.")
+                    return
+                _record_telegram_runtime_chat(chat_id, user_id)
+                try:
+                    dashboard = _admira_dashboard_module()
+                    kind, selected_id = data.split(":", 1)
+                    if kind == "meta_account":
+                        result = dashboard.social_oauth_select_account(selected_id)
+                        pages = result.get("pages") or []
+                        adapter_module = sys.modules.get(adapter_class.__module__)
+                        button = getattr(adapter_module, "InlineKeyboardButton", None)
+                        markup = getattr(adapter_module, "InlineKeyboardMarkup", None)
+                        keyboard = []
+                        if button and markup:
+                            for page in pages[:25]:
+                                page_id = str(page.get("id") or "").strip()
+                                if page_id:
+                                    keyboard.append([button(str(page.get("name") or page_id)[:48], callback_data=f"meta_page:{page_id}")])
+                        if not keyboard:
+                            raise ValueError("Facebook no devolvió una Página publicable para esta cuenta.")
+                        await query.answer(text="Cuenta seleccionada.")
+                        await message.reply_text("Ahora elige la Página de Facebook que usarás con esta cuenta.", reply_markup=markup(keyboard))
+                        return
+                    result = dashboard.social_oauth_select_page(selected_id)
+                    await query.answer(text="Página seleccionada.")
+                    account = result.get("account") or {}
+                    page = result.get("page") or {}
+                    await message.reply_text(
+                        f"Facebook quedó conectado: {account.get('name') or 'cuenta publicitaria'} + {page.get('name') or 'Página'}. Ya podemos continuar con la marca y la estrategia.",
+                    )
+                    return
+                except Exception:
+                    await query.answer(text="No pude guardar esa selección. Vuelve a conectar Facebook e inténtalo otra vez.")
+                    return
             if not data.startswith("au:"):
                 return await _original(self, update, context)
             version = data.split(":", 1)[1].strip()
@@ -2846,5 +3183,6 @@ def apply():
     cron_create_patched = _patch_cron_job_creation()
     cron_run_patched = _patch_cron_job_execution()
     context_patched = _patch_context_truncation_notifications()
+    telegram_chat_capture_patched = _patch_telegram_runtime_chat_capture()
     telegram_update_patched = _patch_telegram_update_install_callback()
-    return bool(rate_limit_patched or credential_pool_patched or same_nvidia_guard_patched or nvidia_gate_patched or nvidia_title_patched or mcp_result_patched or minimax_patched or runtime_patched or media_patched or video_patched or cron_create_patched or cron_run_patched or context_patched or telegram_update_patched)
+    return bool(rate_limit_patched or credential_pool_patched or same_nvidia_guard_patched or nvidia_gate_patched or nvidia_title_patched or mcp_result_patched or minimax_patched or runtime_patched or media_patched or video_patched or cron_create_patched or cron_run_patched or context_patched or telegram_chat_capture_patched or telegram_update_patched)

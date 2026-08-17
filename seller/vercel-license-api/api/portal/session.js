@@ -1,7 +1,9 @@
 import { normalizeEntitlements, signedPortalSession, validFormat, verifyPortalSession } from "../../lib/license.js";
+import { licenseEmailMatches } from "../../lib/license-email.js";
 import { buyerFacingImprovements, platformCards, releaseWithDiscoveredAssets } from "../../lib/download-portal.js";
 import { normalizeInstallationLabel, portfolioCard } from "../../lib/buyer-portfolio.js";
 import { deviceRegistrations, readLicense, readRegistry, readReleases, writeLicense } from "../../lib/store.js";
+import handleMetaOAuth from "../../lib/meta-oauth-handler.js";
 
 const PORTAL_COOKIE = "admira_portal_session";
 
@@ -62,7 +64,7 @@ async function buyerPortfolio({ buyerEmail, selectedLicenseKey, channel }) {
   const uniqueKeys = [...new Set(summaries.map((item) => String(item?.license_key || "").trim().toUpperCase()).filter(Boolean))];
   if (selectedLicenseKey && !uniqueKeys.includes(selectedLicenseKey)) uniqueKeys.unshift(selectedLicenseKey);
   const records = (await Promise.all(uniqueKeys.map((key) => readLicense(key).catch(() => null))))
-    .filter((record) => record && String(record.buyer_email || "").trim().toLowerCase() === buyerEmail)
+    .filter((record) => record && licenseEmailMatches(record, buyerEmail))
     .sort((left, right) => String(left.created_at || "").localeCompare(String(right.created_at || "")));
   return records.map((record, position) => {
     const licenseKey = String(record.license_key || "").trim().toUpperCase();
@@ -91,7 +93,7 @@ async function portalPayload({ request, response, licenseKey, buyerEmail, channe
     if (record.status !== "active") {
       return friendlyFailure(response, record.status, "Esta compra no esta activa. Contacta soporte.");
     }
-    if (String(record.buyer_email || "").toLowerCase() !== buyerEmail) {
+    if (!licenseEmailMatches(record, buyerEmail)) {
       return friendlyFailure(response, "email_mismatch", "El email no coincide con esta compra.");
     }
 
@@ -162,6 +164,11 @@ async function portalPayload({ request, response, licenseKey, buyerEmail, channe
 }
 
 export default async function handler(request, response) {
+  // /api/meta-oauth is rewritten here so the OAuth broker does not consume
+  // another Serverless Function slot on the Vercel Hobby plan.
+  if (String(request.query?.meta_oauth || "") === "1") {
+    return handleMetaOAuth(request, response);
+  }
   if (request.method === "DELETE") {
     clearPortalCookie(response);
     return json(response, 200, { valid: true, status: "signed_out", detail: "Sesion cerrada." });
@@ -199,7 +206,7 @@ export default async function handler(request, response) {
       const buyerEmail = String(selected.buyer_email || "").trim().toLowerCase();
       const licenseKey = String(selected.license_key || "").trim().toUpperCase();
       const record = await readLicense(licenseKey);
-      if (!record || record.status !== "active" || String(record.buyer_email || "").trim().toLowerCase() !== buyerEmail) {
+      if (!record || record.status !== "active" || !licenseEmailMatches(record, buyerEmail)) {
         return friendlyFailure(response, "license_unavailable", "Esta instalacion ya no esta disponible.");
       }
       if (action === "rename_installation") {

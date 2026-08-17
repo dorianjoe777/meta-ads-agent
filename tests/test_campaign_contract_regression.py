@@ -153,6 +153,21 @@ class CampaignContractRegressionTests(unittest.TestCase):
         self.assertEqual(broad["targeting_automation"], {"advantage_audience": 1})
         self.assertEqual(narrow["targeting_automation"], {"advantage_audience": 0})
 
+    def test_scalar_nested_targeting_preserves_age_and_countries(self):
+        """Nested ad-set drafts use scalar fields after normalization."""
+        targeting = self.targeting_for_social({
+            "countries": ["CO"],
+            "age_min": 30,
+            "age_max": 58,
+            "genders": [2],
+            "targeting_mode": "manual",
+        })
+        self.assertEqual(targeting["geo_locations"]["countries"], ["CO"])
+        self.assertEqual(targeting["age_min"], 30)
+        self.assertEqual(targeting["age_max"], 58)
+        self.assertEqual(targeting["genders"], [2])
+        self.assertEqual(targeting["targeting_automation"], {"advantage_audience": 0})
+
     def test_advantage_age_and_deprecated_placement_block_before_graph(self):
         class NoGraphClient:
             pass

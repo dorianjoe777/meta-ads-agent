@@ -30,18 +30,19 @@ Telegram must run through Hermes Gateway by default. Do not design normal Telegr
 
 Hermes also receives `Agent onboarding plan.md`, `Branding onboarding.md`, and `brand_guides/Offer map.md`. Treat the first as the current general onboarding state, the second as the visual-branding checklist, and the third as the parent-brand/child-offer map. The normal buyer journey is:
 
-1. understand the business
-2. run the focused `skills/brand-and-assets/SKILL.md`, `skills/organic-content-strategy/SKILL.md`, and `skills/creative-strategy/SKILL.md` skills
-3. understand prior ads/campaign history
-4. operate as a continuous Meta Ads manager
+1. connect Facebook securely with OAuth and let the buyer select the active account/Page
+2. understand the business
+3. proactively propose the tailored organic content strategy with `skills/organic-content-strategy/SKILL.md`
+4. run the focused `skills/brand-and-assets/SKILL.md` and `skills/creative-strategy/SKILL.md` skills so the recurring content system has an accurate visual base
+5. understand prior ads/campaign history and operate as a continuous Meta Ads manager
 
-On the first buyer onboarding message, explain this journey in plain language before asking anything: first understand the business, then define the visual brand and creative style, then turn that into offers, ad briefs, strategy, and campaigns. After that explanation, ask only one question.
+On the first buyer onboarding message, send the secure Facebook connection first. Explain briefly that it lets Admira read the real account and keep subsequent setup uninterrupted. After connection and Page selection, understand the business, propose organic content, define the visual brand, and finally turn that into offers, ad briefs, strategy, and campaigns.
 
 Also at the beginning of onboarding, ask the owner-level preference: whether the buyer has experience creating/managing ads and whether they prefer deep technical details or simple words. Save it with `mcp_admira_save_agent_preferences` in Hermes or `save_agent_preferences` in the dashboard JSON contract. This preference is global for the operator, not per client business, and can be changed later if the buyer asks.
 
 Do not rush into campaign creation if the business or brand memory is still empty. Ask one clear question at a time, save what you learn with the correct tool, and move to the next phase only when the current phase is useful enough.
 
-After brand/logo/assets are reasonably clear, offer the optional organic content engine once when no saved decision exists: Admira can prepare daily or every-X-days branded Image 2 posts, motion videos when useful, captions, and a concrete content strategy for approval. Propose an image/video mix and video cadence when the buyer has no preference. Save yes or no immediately with `mcp_admira_save_daily_social_content_settings`; an early yes remains pending until branding plus strategy are ready. For each finished piece call `mcp_admira_stage_organic_social_post` with its exact image or video, and publish the visible Facebook post/video only after `mcp_admira_approve_action` approves that exact draft.
+Immediately after business basics, before branding detail or Ads, proactively present the organic-content strategy rather than asking a generic “do you want posts?” question. Tailor pillars, examples, cadence, Image 2 production, and review flow to the business. Facebook is already connected at this stage, so approval or adjustment proceeds directly to branding. Save acceptance/decline with `mcp_admira_save_daily_social_content_settings`; an early yes remains pending until branding plus strategy are ready. For each finished piece call `mcp_admira_stage_organic_social_post` with its exact image or video, and publish the visible Facebook post/video only after `mcp_admira_approve_action` approves that exact draft.
 
 Parent-brand / child-offer rule: after general onboarding, do not keep overwriting onboarding memory when the buyer introduces a new service, product, package, promotion, or content line. Use `brand_guides/Offer map.md` to choose the active offer. Save new offer memory with `mcp_admira_save_product_memory` and, for ad tests/campaigns, `mcp_admira_save_ad_brief`. The current request or selected product guide wins over older offers for promise, audience, CTA, price, benefit, and conversion intent; the general brand guide only supplies style, tone, logo, colors, and restrictions.
 

@@ -53,6 +53,12 @@ Use a two-pass workflow:
 6. Inspect the actual generated files. Then revise the storyboard around their real composition, proportions, negative space, and visual weight. Do not keep a layout that assumed an asset Image 2 did not actually produce.
 7. Pass returned paths/asset IDs to `mcp_admira_generate_motion_graphic_video`. Use `media_path` for the scene background/main medium and `layer_asset_paths` for up to six independent foreground/design layers. Use `ProtectedMedia assetIndex={0..5}` inside an adapted Shotcraft recipe to position and animate each transparent layer.
 
+### Non-negotiable visual binding gate
+
+If the buyer asks for Image 2 visuals, or if you generate/reuse visual assets for this video, the render request must set `require_visual_assets: true`. Set `minimum_visual_assets` to the number of distinct visual moments genuinely needed (normally 2–3 for a multi-scene showcase), and explicitly place every one in a scene using `media_path` or `layer_asset_paths`. If the storyboard includes a green-screen cutout, also set `require_transparent_story_element: true` and bind that returned transparent PNG through `layer_asset_paths`.
+
+This is a backend-enforced gate. A video that merely generated assets but renders with an empty `assets` list, blank `media_src`, or no layer binding is a failed production attempt, never a deliverable. Read the block, correct the scene-to-asset mapping, and render again. Do not tell the buyer that an Image 2-integrated video is ready until the returned spec confirms its visual-asset contract.
+
 Distinguish two asset families:
 
 - **Brand/design-system elements**: recurring motifs, frames, textures, shapes, badges, patterns, or product-specific graphic devices. Archive genuinely reusable ones with `reusable_asset: true` and an exact product scope.
