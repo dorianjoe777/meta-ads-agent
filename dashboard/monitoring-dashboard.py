@@ -3428,7 +3428,11 @@ def _dispatch_initial_meta_oauth_link(config):
         status = telegram_settings(config)
         if not (status.get("enabled") and status.get("bot_configured") and status.get("chat_id")):
             return
-        current = social_oauth_status(config)
+        # This helper obtains the current config internally. Passing the
+        # config object here caused the first-link dispatcher to raise before
+        # contacting Telegram, leaving a new buyer with prose about a button
+        # but no actual OAuth URL.
+        current = social_oauth_status()
         if current.get("connected") or current.get("pending") or config.meta_access_token:
             return
         social_oauth_start({"telegram_chat_id": status["chat_id"], "source": "initial_telegram_setup"})
