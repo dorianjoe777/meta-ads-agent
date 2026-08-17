@@ -1117,13 +1117,8 @@ function onboardingSteps(){
 	 const telegramOk=Boolean(telegram.enabled&&telegram.bot_configured&&telegram.chat_id);
  const oauth=state.config?.meta_oauth||{};
  const oauthConnected=Boolean(oauth.connected);
- const tokenOk=oauthConnected||setupItem('access_token').status==='ok';
- const accountOk=setupItem('ad_account').status==='ok';
- const destinationOk=setupItem('page_id').status==='ok';
- const publishingOk=Boolean(state.config.publishing?.ready||oauthConnected||tokenOk);
  return [
   {id:'password',status:passwordOk?'ok':'blocked'},
-  {id:'meta',status:tokenOk&&accountOk&&destinationOk&&publishingOk?'ok':'blocked'},
   {id:'chatgpt',status:modelOk?'ok':'blocked'},
   {id:'telegram',status:telegramOk?'ok':'blocked'}
  ];
@@ -1159,7 +1154,7 @@ function onboardingFormFor(stepId){
 	 if(stepId==='license')return `<form class="onboarding-mini two" data-submit-code="activateLicenseFromForm(event)"><label>${t('license_key')}<input name="license_key" placeholder="MAO-..." autocomplete="off"></label><label>${t('buyer_email')}<input name="license_buyer_email" value="${escapeHtml(v.license_buyer_email||'')}" placeholder="buyer@email.com" autocomplete="email"></label><div class="onboarding-step-actions"><button class="btn primary" type="submit">${t('license_activate')}</button></div></form>`;
 	 if(stepId==='chatgpt')return chatGptConnectMarkup(true);
 	 if(stepId==='telegram')return telegramOnboardingGuide();
- if(stepId==='meta')return metaConnectionGuide();
+ if(stepId==='meta')return '';
  if(stepId==='account')return accountPickerGuide();
  if(stepId==='destination')return destinationPickerGuide();
  if(stepId==='password')return `<form class="unlock-form" data-submit-code="setDashboardPasswordFromOnboarding(event)"><label>${t('dashboard_password')}<input id="new-dashboard-password" type="password" autocomplete="new-password" minlength="8" placeholder="${lang==='es'?'Crea una contraseña segura':'Create a secure password'}"></label><label>${lang==='es'?'Repetir contraseña':'Repeat password'}<input id="confirm-dashboard-password" type="password" autocomplete="new-password" minlength="8" placeholder="${lang==='es'?'Escríbela otra vez':'Type it again'}"></label><label><input id="new-dashboard-remember" type="checkbox" checked> ${t('remember_device')}</label><div class="unlock-error" id="dashboard-password-error"></div><button class="btn primary" type="submit">${lang==='es'?'Guardar mi contraseña':'Save my password'}</button></form>`;
@@ -1393,7 +1388,7 @@ function startMetaFrameCycle(){
  if(frames.length<2)return;
  metaGuideFrameTimer=setInterval(()=>{const current=metaTokenSlides()[metaGuideSlide]||{};const currentFrames=Array.isArray(current.images)&&current.images.length?current.images:(current.image?[metaFrame(current.image,current.shot)]:[]);if(!qs('#meta-token-slider')||currentFrames.length<2){stopMetaFrameCycle();return}metaGuideFrame=(metaGuideFrame+1)%currentFrames.length;qs('#meta-token-slider').innerHTML=renderMetaTokenSlide()},3600);
 }
-function maybeStartMetaFrameCycle(stepId){if(stepId==='meta'){setTimeout(startMetaFrameCycle,80);setTimeout(renderMetaOAuthChoices,100)}else stopMetaFrameCycle()}
+function maybeStartMetaFrameCycle(stepId){stopMetaFrameCycle()}
 function setMetaGuideFrame(index){const slide=metaTokenSlides()[metaGuideSlide]||{};const frames=Array.isArray(slide.images)&&slide.images.length?slide.images:(slide.image?[metaFrame(slide.image,slide.shot)]:[]);metaGuideFrame=Math.max(0,Math.min(Number(index)||0,Math.max(0,frames.length-1)));const box=qs('#meta-token-slider');if(box)box.innerHTML=renderMetaTokenSlide();startMetaFrameCycle()}
 function setMetaGuideSlide(index){metaGuideSlide=Math.max(0,Math.min(Number(index)||0,metaTokenSlides().length-1));metaGuideFrame=0;const box=qs('#meta-token-slider');if(box)box.innerHTML=renderMetaTokenSlide();startMetaFrameCycle()}
 let metaOauthPollTimer=null;
@@ -1514,10 +1509,9 @@ function compactPasswordSetup(ready){
  </form>`;
 }
 function compactMetaSetup(){
- // OAuth is the only Meta connection shown in the fresh-install flow.  The
- // legacy token input remains available only in the separate compatibility
- // settings route for old installations.
- return metaConnectionGuide();
+ // Facebook is intentionally absent from the dashboard. Hermes owns the
+ // OAuth connection and workspace selection from Telegram.
+ return '';
 }
 function compactAgentSetup(){
  const model=state.config.agent_model||{};
@@ -1629,18 +1623,9 @@ function compactActivationSection(number,title,status,body){
 }
 let compactAccountAutoDiscoveryKey='';
 function maybeAutoDiscoverCompactSetup(){
- const v=state.config.setup_values||{};
- const oauth=state.config?.meta_oauth||{};
- if(oauth.connected&&!v.ad_account_id&&!oauth.active_ad_account_id&&compactAccountAutoDiscoveryKey!=='accounts'){
-  compactAccountAutoDiscoveryKey='accounts';
-  setTimeout(()=>renderMetaOAuthChoices(),100);
- }else if((v.ad_account_id||oauth.active_ad_account_id)&&!v.page_id&&!oauth.active_page_id){
-  const key=`page:${v.ad_account_id}`;
-  if(compactAccountAutoDiscoveryKey!==key){
-   compactAccountAutoDiscoveryKey=key;
-   setTimeout(()=>renderMetaOAuthChoices(),100);
-  }
- }
+ // Do not discover, select, or mutate Meta assets from the dashboard. Hermes
+ // performs the complete Facebook OAuth/workspace flow in Telegram.
+ return;
 }
 function renderOnboardingFlow(){
  const flow=qs('#onboarding-flow');if(!flow)return;
@@ -1657,9 +1642,8 @@ function renderOnboardingFlow(){
   ${!licenseReady?`<div class="activation-install-alert"><b>${lang==='es'?'La activación de la instalación necesita revisión.':'Installation activation needs attention.'}</b><span>${lang==='es'?'La licencia se corrige desde el instalador o con soporte; nunca se pega aquí.':'The license is repaired through the installer or support; it is never pasted here.'}</span></div>`:''}
   <main class="activation-rail">
    ${compactActivationSection(1,lang==='es'?'Crea tu contraseña':'Create your password',steps[0].status,compactPasswordSetup(steps[0].status==='ok'))}
-   ${compactActivationSection(2,lang==='es'?'Conecta Meta':'Connect Meta',steps[1].status,compactMetaSetup())}
-   ${compactActivationSection(3,lang==='es'?'Elige el modelo':'Choose the model',steps[2].status,compactAgentSetup())}
-   ${compactActivationSection(4,lang==='es'?'Conecta Telegram':'Connect Telegram',steps[3].status,compactTelegramSetup())}
+   ${compactActivationSection(2,lang==='es'?'Elige el modelo':'Choose the model',steps[1].status,compactAgentSetup())}
+   ${compactActivationSection(3,lang==='es'?'Conecta Telegram':'Connect Telegram',steps[2].status,compactTelegramSetup())}
   </main>
   <footer class="activation-footer"><span>${lang==='es'?'Tus claves permanecen en esta instalación.':'Your keys stay in this installation.'}</span><button class="btn primary" type="button" data-action-code="completeOnboarding()">${lang==='es'?'Revisar y abrir dashboard':'Review and open dashboard'}</button></footer>
  </div>`;
@@ -1839,27 +1823,17 @@ function openMetaSettingsGuide(action='token'){
 }
 function renderMetaConnectionPanel(){
  const box=qs('#meta-connection-panel');if(!box)return;
- const v=state.config.setup_values||{};
- const oauth=state.config?.meta_oauth||{};
- const tokenSet=Boolean(oauth.connected||v.meta_access_token_set||v.meta_access_token_saved_at);
- const account=v.ad_account_id||'';
- const managed=v.managed_ad_accounts||state.managed_ad_accounts||{};
- const bm=managed.business_manager||{};
- const accountUse=`${managed.used||0}/${managed.max_accounts||5}`;
- const page=v.page_id||'';
- const instagram=v.instagram_actor_id||'';
- const savedAt=v.meta_access_token_saved_at?new Date(v.meta_access_token_saved_at).toLocaleString():'';
- const statusTitle=tokenSet?(lang==='es'?'Facebook conectado':'Facebook connected'):(lang==='es'?'Falta conectar Facebook':'Facebook needs connection');
- const statusBody=oauth.connected?(lang==='es'?'Facebook está conectado. Hermes ya gestiona las cuentas y Páginas seleccionadas.':'Facebook is connected. Hermes manages the selected accounts and Pages.'):(lang==='es'?'La conexión de Facebook se inicia únicamente desde Hermes por Telegram.':'Facebook is connected only through Hermes in Telegram.');
- box.innerHTML=`<div class="next-step meta-connection-card"><div><b>${lang==='es'?'Facebook / Meta · gestionado por Hermes':'Facebook / Meta · managed by Hermes'}</b><p>${statusBody}</p>${savedAt?`<p class="notice">${lang==='es'?'Estado local anterior':'Previous local status'}: ${escapeHtml(savedAt)}</p>`:''}<p class="notice">${lang==='es'?'No hay controles de conexión en este dashboard. Habla con Hermes para iniciar, cambiar o seleccionar una cuenta.':'This dashboard has no connection controls. Talk to Hermes to connect, change, or select an account.'}</p></div></div><div class="trust-grid license-limits-grid"><div class="trust-card"><b>${lang==='es'?'Estado':'Status'}</b><p>${statusTitle}</p></div><div class="trust-card"><b>${lang==='es'?'Cuenta activa':'Active account'}</b><p>${escapeHtml(account||'-')}</p></div><div class="trust-card"><b>${lang==='es'?'Página':'Page'}</b><p>${escapeHtml(page||'-')}</p></div><div class="trust-card"><b>Instagram</b><p>${escapeHtml(instagram||'-')}</p></div></div>`;
+ // Facebook is intentionally not a dashboard feature. Hermes owns the entire
+ // connection, OAuth flow, account selection, and page selection in Telegram.
+ // Keep the mount point empty so stale dashboard markup cannot reintroduce a
+ // token, OAuth, or account selector after an update.
+ box.innerHTML='';
+ box.hidden=true;
 }
 function renderSetupConfig(){
  const v=state.config.setup_values||{};
  const licensePlaceholder=v.license_key_set?(lang==='es'?'Licencia ya guardada. Pega una nueva solo si quieres cambiarla.':'License already saved. Paste a new one only to replace it.'):'MAO-...';
- const oauthFirst=Boolean(state.config?.meta_oauth?.broker_configured||state.config?.meta_oauth?.connected);
- const metaFields=oauthFirst?`<div class="field wide"><div class="guide-panel"><b>${lang==='es'?'Facebook se gestiona desde Hermes':'Facebook is managed by Hermes'}</b><p>${lang==='es'?'La cuenta publicitaria, la Página y los cambios de conexión se eligen en Telegram. No pegues tokens ni IDs aquí.':'The ad account, Page, and connection changes are selected in Telegram. Do not paste tokens or IDs here.'}</p></div></div>`:`<div class="field wide"><label>${t('ad_account_id')}</label><span class="field-help">${lang==='es'?'Cuenta activa. Puedes conectar hasta 5 cuentas bajo el mismo Business Manager usando Buscar/agregar cuenta publicitaria.':'Active account. You can connect up to 5 accounts under the same Business Manager using Find/add ad account.'}</span><input name="ad_account_id" value="${escapeHtml(v.ad_account_id||'')}" placeholder="act_123456789"></div>
-  <div class="field"><label>${t('page_id')}</label><span class="field-help">${lang==='es'?'La página desde donde salen tus anuncios.':'The Page your ads publish from.'}</span><input name="page_id" value="${escapeHtml(v.page_id||'')}"></div>
-  <div class="field"><label>${t('instagram_actor_id')}</label><span class="field-help">${lang==='es'?'Solo si tu Instagram está conectado a la página.':'Only if Instagram is connected to the Page.'}</span><input name="instagram_actor_id" value="${escapeHtml(v.instagram_actor_id||'')}" placeholder="${lang==='es'?'opcional':'optional'}"></div>`;
+ const metaFields='';
  qs('#setup-config').innerHTML=`<div class="next-step"><div><b>${t('setup_form_title')}</b><p>${t('setup_form_body')}</p></div><button class="btn ask-btn" type="button" data-action-code="openChat(lang==='es'?'Ayúdame a revisar estos datos de configuración y dime si falta algo importante.':'Help me review these setup details and tell me if anything important is missing.')">${t('ask_agent')}</button></div><form id="setup-config-form" class="form-grid">
   <div class="field"><label>${t('license_key')}</label><span class="field-help">${lang==='es'?'El código que recibiste al comprar.':'The code you received after purchase.'}</span><input name="license_key" value="" placeholder="${escapeHtml(licensePlaceholder)}"></div>
   <div class="field"><label>${t('buyer_email')}</label><span class="field-help">${lang==='es'?'El email usado para la compra o soporte.':'Email used for purchase or support.'}</span><input name="license_buyer_email" value="${escapeHtml(v.license_buyer_email||'')}" placeholder="buyer@email.com"></div>
@@ -3155,13 +3129,13 @@ function showDecisionConfirm(options={}){
   box.classList.add('open');
  });
 }
-function showOnboardingCompleteConfirm(){const box=qs('#confirm-overlay');box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'Todo está listo':'Everything is ready'}</h2><p>${lang==='es'?'Admira IA ya tiene Meta, modelo y Telegram. ChatGPT para imágenes puede conectarse ahora o después desde Configuración.':'Admira IA now has Meta, a model, and Telegram. ChatGPT for images can be connected now or later from Setup.'}</p><div class="confirm-actions"><button class="btn" type="button" data-action-code="closeConfirm()">${lang==='es'?'Seguir revisando':'Keep reviewing'}</button><button class="btn primary" type="button" data-action-code="finishOnboardingConfirmed()">${lang==='es'?'Abrir dashboard':'Open dashboard'}</button></div></div>`;box.classList.add('open')}
+function showOnboardingCompleteConfirm(){const box=qs('#confirm-overlay');box.innerHTML=`<div class="confirm-card"><h2>${lang==='es'?'Todo está listo':'Everything is ready'}</h2><p>${lang==='es'?'Admira IA ya tiene contraseña, modelo y Telegram. Facebook se conecta y se administra únicamente desde Hermes, dentro de Telegram. ChatGPT para imágenes puede conectarse ahora o después desde Configuración.':'Admira IA has the password, model, and Telegram ready. Facebook is connected and managed only by Hermes inside Telegram. ChatGPT for images can be connected now or later from Setup.'}</p><div class="confirm-actions"><button class="btn" type="button" data-action-code="closeConfirm()">${lang==='es'?'Seguir revisando':'Keep reviewing'}</button><button class="btn primary" type="button" data-action-code="finishOnboardingConfirmed()">${lang==='es'?'Abrir dashboard':'Open dashboard'}</button></div></div>`;box.classList.add('open')}
 async function finishOnboardingConfirmed(){closeConfirm();await finishOnboardingAndStartTour('manual')}
 async function completeOnboarding(){
  const steps=onboardingSteps();
  const missingIndex=steps.findIndex(step=>step.status!=='ok');
  if(missingIndex>=0){
-  const labels=lang==='es'?['la contraseña','Meta y sus dos tokens','el modelo','Telegram']:['the password','Meta and both tokens','the model','Telegram'];
+  const labels=lang==='es'?['la contraseña','el modelo','Telegram']:['the password','the model','Telegram'];
   toast(`${lang==='es'?'Completa primero':'Complete first'} ${labels[missingIndex]}.`);
   qs(`#activation-${missingIndex+1}`)?.scrollIntoView({behavior:'smooth',block:'start'});
   return;
@@ -3185,6 +3159,13 @@ async function openUpdateFromUrl(){if(urlParams.get('open_update')!=='1')return;
 document.querySelectorAll('.tab').forEach(btn=>btn.addEventListener('click',()=>activateDashboardTab(btn.dataset.tab)))
 qs('#campaign-form').addEventListener('submit',async e=>{e.preventDefault();syncTargetingHidden('location');syncTargetingHidden('interest');const payload=Object.fromEntries(new FormData(e.target).entries());await api('/api/campaigns',{method:'POST',body:JSON.stringify(payload)});toast(lang==='es'?'Campaña enviada para tu aprobación':'Campaign sent for your approval');await load()})
 qs('#audience-form').addEventListener('submit',async e=>{e.preventDefault();const payload=Object.fromEntries(new FormData(e.target).entries());payload.consent=e.target.elements.consent.checked?'yes':'no';await buildAudienceStrategy(payload)})
+// Hard guard for any legacy callback: Facebook is never reopened in the
+// dashboard. The only supported connection surface is Hermes on Telegram.
+function goToMetaTokenStep(){
+ openChat(lang==='es'?'Hermes, necesito conectar o cambiar mi cuenta de Facebook/Meta. Envíame el enlace seguro y ayúdame a elegir la cuenta y la Página.':'Hermes, I need to connect or change my Facebook/Meta account. Send me the secure link and help me choose the account and Page.');
+ toast(lang==='es'?'Facebook se gestiona desde Hermes por Telegram.':'Facebook is managed by Hermes in Telegram.');
+}
+function connectMetaStarted(){goToMetaTokenStep()}
 installDelegatedActions();
 applyTranslations();
 applyDashboardTheme();

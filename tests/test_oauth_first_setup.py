@@ -43,16 +43,52 @@ class OAuthFirstSetupTests(TestCase):
         self.assertIn("access_token", keys)
         self.assertIn("publishing_token", keys)
 
-    def test_compact_onboarding_uses_oauth_and_has_no_meta_token_input(self):
+    def test_compact_onboarding_has_no_facebook_section_or_token_input(self):
         source = Path(__file__).parents[1].joinpath("public", "dashboard", "dashboard.js").read_text()
         start = source.index("function compactMetaSetup()")
         end = source.index("function compactAgentSetup()", start)
         compact = source[start:end]
-        self.assertIn("return metaConnectionGuide();", compact)
+        self.assertIn("return '';", compact)
         self.assertNotIn("meta-token-input", compact)
 
     def test_dashboard_does_not_offer_facebook_connection_controls(self):
         source = Path(__file__).parents[1].joinpath("public", "dashboard", "dashboard.js").read_text()
+        start = source.index("function onboardingSteps()")
+        end = source.index("function renderOnboarding()", start)
+        steps = source[start:end]
+        self.assertNotIn("{id:'meta'", steps)
+
+        start = source.index("function renderOnboardingFlow()")
+        end = source.index("function maybeAutoDiscoverDestination", start)
+        flow = source[start:end]
+        self.assertNotIn("Conecta Meta", flow)
+        self.assertNotIn("compactMetaSetup()", flow)
+        self.assertIn("Elige el modelo", flow)
+        self.assertIn("Conecta Telegram", flow)
+
+        start = source.index("function maybeAutoDiscoverCompactSetup()")
+        end = source.index("function renderOnboardingFlow()", start)
+        discovery = source[start:end]
+        self.assertIn("return;", discovery)
+        self.assertNotIn("renderMetaOAuthChoices()", discovery)
+
+        start = source.index("function renderMetaConnectionPanel()")
+        end = source.index("function renderSetupConfig()", start)
+        panel = source[start:end]
+        self.assertIn("box.hidden=true", panel)
+        self.assertIn("box.innerHTML=''", panel)
+
+        start = source.index("function renderSetupConfig()")
+        end = source.index("function renderPublishingPanel()", start)
+        setup_config = source[start:end]
+        self.assertIn("const metaFields=''", setup_config)
+        self.assertNotIn("name=\"ad_account_id\"", setup_config)
+        self.assertNotIn("name=\"page_id\"", setup_config)
+        self.assertNotIn("name=\"instagram_actor_id\"", setup_config)
+
+        self.assertIn("function onboardingFormFor(stepId)", source)
+        self.assertIn("if(stepId==='meta')return '';", source)
+
         start = source.index("function metaConnectionGuide()")
         end = source.index("function accountPickerGuide()", start)
         guide = source[start:end]

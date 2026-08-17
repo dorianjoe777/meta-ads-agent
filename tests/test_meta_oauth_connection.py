@@ -47,7 +47,7 @@ class MetaOAuthConnectionTests(unittest.TestCase):
             item.stop()
         self.temp.cleanup()
 
-    def test_start_uses_one_time_handoff_and_sends_only_url_to_telegram(self):
+    def test_start_uses_one_time_handoff_and_sends_plain_url_to_telegram(self):
         sent = []
         with patch.object(self.dashboard, "load_config", return_value=self.config), \
              patch.object(self.dashboard, "resolved_device_id", return_value="device"), \
@@ -59,7 +59,29 @@ class MetaOAuthConnectionTests(unittest.TestCase):
         self.assertEqual(pending["request_id"], "r" * 43)
         self.assertGreater(len(pending["handoff_secret"]), 32)
         self.assertNotIn(pending["handoff_secret"], str(sent))
-        self.assertEqual(sent[0]["reply_markup"].count("facebook.example"), 1)
+        self.assertIn("https://facebook.example/oauth", sent[0]["text"])
+        self.assertNotIn("reply_markup", sent[0])
+
+    def test_workspace_picker_lists_accounts_and_pages_without_buttons(self):
+        sent = []
+        connection = {
+            "accounts": [
+                {"id": "act_1", "name": "Cuenta Uno", "currency": "USD"},
+                {"id": "act_2", "name": "Cuenta Dos", "currency": "COP"},
+            ],
+            "pages": [
+                {"id": "page_1", "name": "Página Uno", "access_token": "p" * 40},
+                {"id": "page_2", "name": "Página Dos", "access_token": "p" * 40},
+            ],
+        }
+        with patch.object(self.dashboard, "load_config", return_value=self.config), \
+             patch.object(self.dashboard, "telegram_bot_request", side_effect=lambda _c, _m, payload, **_k: sent.append(payload)):
+            self.dashboard._send_meta_oauth_account_picker(self.config, connection, "123")
+        self.assertEqual(len(sent), 1)
+        self.assertIn("Cuenta Uno", sent[0]["text"])
+        self.assertIn("Página Dos", sent[0]["text"])
+        self.assertIn("cuenta 1", sent[0]["text"])
+        self.assertNotIn("reply_markup", sent[0])
 
     def test_start_uses_runtime_telegram_chat_when_dashboard_chat_is_not_available(self):
         sent = []
@@ -75,7 +97,7 @@ class MetaOAuthConnectionTests(unittest.TestCase):
         self.assertEqual(sent[0]["chat_id"], "123456")
         self.assertEqual(self.dashboard._meta_oauth_pending()["telegram_chat_id"], "123456")
 
-    def test_apply_keeps_all_assets_and_auto_selects_only_single_pair(self):
+    def test_apply_keeps_all_assets_and_waits_for_explicit_workspace_choice(self):
         credentials = {
             "user_token": "x" * 40,
             "expires_at": "2026-10-01T00:00:00Z",
@@ -87,9 +109,10 @@ class MetaOAuthConnectionTests(unittest.TestCase):
         with patch.object(self.dashboard, "update_env_values", side_effect=lambda values: updates.append(values)), \
              patch.object(self.dashboard, "save_setup_config", return_value={"saved": True}):
             result = self.dashboard._apply_meta_oauth_credentials(credentials)
-        self.assertEqual(result["active_ad_account_id"], "act_1")
-        self.assertEqual(result["active_page_id"], "page_1")
-        self.assertEqual(updates[0]["META_ACCESS_TOKEN_KIND"], "oauth")
+        self.assertEqual(result["active_ad_account_id"], "")
+        self.assertEqual(result["active_page_id"], "")
+        token_update = next(update for update in updates if "META_ACCESS_TOKEN_KIND" in update)
+        self.assertEqual(token_update["META_ACCESS_TOKEN_KIND"], "oauth")
         self.assertNotIn("user_token", str(result))
 
     def test_apply_keeps_business_discovered_pages_without_selecting_unpublishable_page(self):
@@ -105,7 +128,7 @@ class MetaOAuthConnectionTests(unittest.TestCase):
         }
         with patch.object(self.dashboard, "update_env_values"), patch.object(self.dashboard, "save_setup_config", return_value={"saved": True}):
             result = self.dashboard._apply_meta_oauth_credentials(credentials)
-        self.assertEqual(result["active_page_id"], "page_1")
+        self.assertEqual(result["active_page_id"], "")
         self.assertEqual(len(result["pages"]), 2)
         self.assertFalse(next(item for item in result["pages"] if item["id"] == "page_2")["can_publish"])
         self.assertEqual(result["businesses"][0]["name"], "Client portfolio")
@@ -153,6 +176,10 @@ class MetaOAuthConnectionTests(unittest.TestCase):
         self.assertIn("mcp_admira_get_meta_oauth_workspaces", prompt)
         self.assertIn("mcp_admira_get_meta_oauth_workspaces", prompt)
         self.assertIn("mcp_admira_start_meta_oauth_connection", prompt)
+        self.assertIn("URL segura como texto visible normal", prompt)
+        self.assertIn("nunca dependas de un botón", prompt)
+        self.assertIn("con números/nombres breves", prompt)
+        self.assertIn("mcp_admira_select_meta_oauth_workspace", prompt)
         self.assertIn("Después de conectar y elegir cuenta/Página: básicos del negocio", prompt)
         self.assertLess(
             prompt.index("mcp_admira_get_meta_oauth_workspaces"),

@@ -3620,8 +3620,11 @@ def _send_meta_oauth_link(config, authorization_url, chat_id=""):
         raise ValueError("Conecta primero tu bot de Telegram para enviarte el enlace seguro de Facebook.")
     telegram_bot_request(config, "sendMessage", {
         "chat_id": chat_id,
-        "text": "Conecta tu Facebook y Meta Ads desde este botón. Inicia sesión con la cuenta que administra tus activos; nunca compartas una clave de Meta por chat.",
-        "reply_markup": json.dumps({"inline_keyboard": [[{"text": "Conectar Facebook y Meta", "url": authorization_url}]]}),
+        # Keep this as a normal URL in the message. Inline buttons are handled
+        # by the native Hermes callback loop and have repeatedly been lost or
+        # left stale on fresh Telegram connections. The buyer can tap the URL
+        # directly in Telegram Desktop or on their phone.
+        "text": f"Conecta Facebook y Meta Ads abriendo este enlace seguro:\n{authorization_url}\n\nInicia sesión con la cuenta que administra tus activos. Nunca compartas una clave de Meta por chat.",
     }, timeout=20)
 
 
@@ -3630,29 +3633,37 @@ def _oauth_publishable_pages(connection):
 
 
 def _send_meta_oauth_account_picker(config, connection, chat_id=""):
-    """Keep initial Meta workspace selection deterministic, before Hermes.
+    """Tell Hermes what Facebook returned; let the buyer choose in text.
 
-    Facebook authorization and the account/Page choice are setup operations,
-    not advisory work. They must remain usable when a model is limited or a
-    new Hermes session has no prior conversation context.
+    The OAuth link is deliberately plain text and the workspace choice is
+    deliberately conversational. This avoids a second Telegram callback
+    consumer and lets Hermes resolve an account/Page pair from the buyer's
+    natural-language answer (number or exact name).
     """
     accounts = [item for item in (connection.get("accounts") or []) if isinstance(item, dict) and item.get("id")]
-    if not accounts:
+    pages = [item for item in _oauth_publishable_pages(connection) if isinstance(item, dict) and item.get("id")]
+    if not accounts or not pages:
         return
-    buttons = []
-    for account in accounts[:25]:
+    account_lines = []
+    for index, account in enumerate(accounts[:25], 1):
         account_id = clean_ad_account_id(account.get("id"))
         if not account_id:
             continue
         label = str(account.get("name") or account_id).strip()[:42]
         currency = str(account.get("currency") or "").strip()
-        buttons.append([{"text": f"{label}{' · ' + currency if currency else ''}", "callback_data": f"meta_account:{account_id}"}])
-    if not buttons:
+        account_lines.append(f"{index}. {label}{' · ' + currency if currency else ''}")
+    page_lines = [f"{index}. {str(page.get('name') or page.get('id')).strip()[:52]}" for index, page in enumerate(pages[:25], 1)]
+    if not account_lines or not page_lines:
         return
     telegram_bot_request(config, "sendMessage", {
         "chat_id": _meta_oauth_chat_id(config, chat_id),
-        "text": "Facebook conectado. Primero elige la cuenta publicitaria que vas a gestionar.",
-        "reply_markup": json.dumps({"inline_keyboard": buttons}),
+        "text": (
+            "Facebook quedó conectado. Encontré estas opciones:\n\n"
+            "CUENTAS PUBLICITARIAS:\n" + "\n".join(account_lines) +
+            "\n\nPÁGINAS DE FACEBOOK:\n" + "\n".join(page_lines) +
+            "\n\nDime cuál quieres usar como predeterminada, por ejemplo: "
+            "‘cuenta 1 y Página 2’ o escribe sus nombres exactos. Después la guardaré y continuaremos."
+        ),
     }, timeout=20)
 
 
@@ -3735,12 +3746,11 @@ def _poll_meta_oauth_in_background():
                     chat_id = str(pending.get("telegram_chat_id") or "")
                     try: META_OAUTH_PENDING_FILE.unlink()
                     except OSError: pass
-                    config = load_config()
-                    if _meta_oauth_chat_id(config, chat_id):
-                        try:
-                            _send_meta_oauth_account_picker(config, _meta_oauth_connection(), chat_id)
-                        except Exception:
-                            pass
+                    # Do not send a second unsolicited Telegram message here.
+                    # Hermes will read the workspaces on the buyer's next
+                    # natural-language turn (for example, “ya lo hice”),
+                    # present the numbered accounts/Pages, and wait for an
+                    # explicit default choice.
                     log_action("meta_oauth_connected", {"background": True}, "completed")
                     return
                 if result.get("error") in {"oauth_request_expired", "oauth_request_not_found"}:
@@ -3772,8 +3782,6 @@ def _apply_meta_oauth_credentials(credentials):
     businesses = [item for item in credentials.get("businesses") or [] if isinstance(item, dict) and item.get("id")]
     if len(token) < 20 or not accounts or not publishable_pages:
         raise ValueError("Facebook no devolvió una cuenta publicitaria y una Página utilizables. Revisa los permisos aceptados.")
-    active_account = accounts[0] if len(accounts) == 1 else {}
-    active_page = publishable_pages[0] if len(publishable_pages) == 1 else {}
     connection = {
         "connected": True,
         "connected_at": now_iso(),
@@ -3783,8 +3791,10 @@ def _apply_meta_oauth_credentials(credentials):
         "accounts": accounts,
         "pages": pages,
         "businesses": businesses,
-        "active_ad_account_id": str(active_account.get("id") or ""),
-        "active_page_id": str(active_page.get("id") or ""),
+        # Never silently choose a workspace. Hermes presents the numbered
+        # accounts/Pages and selects only after the buyer answers in text.
+        "active_ad_account_id": "",
+        "active_page_id": "",
     }
     write_private_json(META_OAUTH_CONNECTION_FILE, connection)
     updates = {
@@ -3795,16 +3805,25 @@ def _apply_meta_oauth_credentials(credentials):
         "META_OAUTH_EXPIRES_AT": connection["expires_at"],
         "META_OAUTH_USER_ID": str((connection["user"] or {}).get("id") or ""),
     }
-    # OAuth user token is used for Ads. The selected Page token is saved only
-    # after the buyer explicitly chooses a page, except when there is one page.
-    if active_page:
-        updates["META_PUBLISHING_ACCESS_TOKEN"] = str(active_page.get("access_token") or "")
-        updates["META_PUBLISHING_TOKEN_SAVED_AT"] = now_iso()
-    if active_account:
-        updates["META_AD_ACCOUNT_ID"] = clean_ad_account_id(active_account.get("id"))
+    # OAuth user token is used for discovery. The selected account/Page
+    # credentials are persisted only by social_oauth_select after the buyer's
+    # natural-language choice.
+    # Clear any stale selection from a previous connection so no Meta action
+    # can accidentally run against the old account while Hermes is waiting
+    # for the buyer's new default choice.
+    update_env_values({
+        "META_AD_ACCOUNT_ID": "",
+        "META_PUBLISHING_ACCESS_TOKEN": "",
+        "META_PUBLISHING_TOKEN_SAVED_AT": "",
+    })
+    save_setup_config({
+        "ad_account_id": "",
+        "page_id": "",
+        "instagram_actor_id": "",
+        "_skip_business_enforcement": True,
+        "_skip_meta_profile_sync": True,
+    })
     update_env_values(updates)
-    if active_account or active_page:
-        save_setup_config({"ad_account_id": active_account.get("id", ""), "account_name": active_account.get("name", ""), "account_currency": active_account.get("currency", ""), "page_id": active_page.get("id", ""), "instagram_actor_id": str((active_page.get("instagram") or {}).get("id") or ""), "_skip_meta_profile_sync": True})
     return _safe_meta_oauth_summary(connection)
 
 
@@ -3828,18 +3847,10 @@ def social_oauth_poll(payload=None):
             try: META_OAUTH_PENDING_FILE.unlink()
             except OSError: pass
         raise ValueError("La conexión de Facebook venció o no pudo verificarse. Solicita un enlace nuevo.")
-    chat_id = str(pending.get("telegram_chat_id") or "")
     summary = _apply_meta_oauth_credentials(result.get("credentials"))
     try: META_OAUTH_PENDING_FILE.unlink()
     except OSError: pass
-    config = load_config()
-    account_count, page_count = len(summary.get("accounts") or []), len(summary.get("pages") or [])
-    text = "Facebook conectado. " + ("Elegí automáticamente tu única cuenta y Página." if account_count == 1 and page_count == 1 else f"Encontré {account_count} cuentas y {page_count} páginas. Elige cuáles usar desde Configuración.")
-    resolved_chat_id = _meta_oauth_chat_id(config, chat_id)
-    if resolved_chat_id:
-        try: telegram_bot_request(config, "sendMessage", {"chat_id": resolved_chat_id, "text": text}, timeout=15)
-        except Exception: pass
-    log_action("meta_oauth_connected", {"accounts": account_count, "pages": page_count, "auto_selected": account_count == 1 and page_count == 1}, "completed")
+    log_action("meta_oauth_connected", {"accounts": len(summary.get("accounts") or []), "pages": len(summary.get("pages") or []), "workspace_selection": "natural_language"}, "completed")
     return {"ok": True, "status": "connected", **summary}
 
 
@@ -8590,7 +8601,7 @@ Cuando responda, guarda esa preferencia con `save_agent_preferences` / `mcp_admi
 - `ad_experience_level`: `beginner`, `intermediate` o `advanced`.
 - `communication_style`: `simple` o `technical`.
 
-La primera acción no es una pregunta de negocio: consulta `mcp_admira_get_meta_oauth_workspaces` y, si no hay conexión, llama `mcp_admira_start_meta_oauth_connection` para enviar el botón seguro de Facebook a Telegram. Nunca pidas tokens, Usuario del sistema, app de Meta ni IDs técnicos. Tras seleccionar cuenta/Página, haz una sola pregunta clara de negocio: "Que vendes exactamente y cual es tu oferta principal hoy?"
+La primera acción no es una pregunta de negocio: consulta `mcp_admira_get_meta_oauth_workspaces` y, si no hay conexión, llama `mcp_admira_start_meta_oauth_connection` para enviar la URL segura de Facebook como texto visible a Telegram. Nunca pidas tokens, Usuario del sistema, app de Meta ni IDs técnicos. En el siguiente turno del comprador, lista las cuentas/Páginas encontradas, espera su elección en lenguaje natural y selecciona el par indicado. Después haz una sola pregunta clara de negocio: "Que vendes exactamente y cual es tu oferta principal hoy?"
 
 Al terminar el onboarding general de negocio, no saltes a anuncios ni branding. Facebook ya estará conectado y seleccionado; entra en `organic_content_strategy`: lee `skills/organic-content-strategy/SKILL.md` y presenta una propuesta concreta, adaptada al negocio recién entendido. Debe incluir 2-4 pilares, ejemplos de temas, frecuencia recomendada y borradores con Image 2 (y motion video solo cuando aporte) para revisión/aprobación antes de publicar. Cuando el comprador acepte o ajuste esa dirección, guarda `accepted_pending_setup` con `mcp_admira_save_daily_social_content_settings`; después pasa a `Branding onboarding.md` para marca visual, logo, colores, referencias y activos.
 
@@ -8603,8 +8614,8 @@ Regla asesor-profesional: antes de preguntar cualquier configuracion amplia, pri
 ## Fases
 
 1. facebook_connection
-   - Consultar `mcp_admira_get_meta_oauth_workspaces`; si falta conexión, llamar `mcp_admira_start_meta_oauth_connection` y entregar el botón seguro de Telegram.
-   - Tras OAuth, mostrar las cuentas/Páginas encontradas y guardar el par activo seleccionado. Nunca pedir token, Usuario del sistema, app ni IDs técnicos.
+   - Consultar `mcp_admira_get_meta_oauth_workspaces`; si falta conexión, llamar `mcp_admira_start_meta_oauth_connection` y entregar la URL segura como texto visible de Telegram.
+   - En el turno siguiente, mostrar las cuentas/Páginas encontradas, esperar una elección en lenguaje natural y guardar solo el par activo seleccionado. Nunca pedir token, Usuario del sistema, app ni IDs técnicos.
 
 2. business_discovery
    - Entender que vende, oferta principal, productos/servicios prioritarios, cliente ideal, etapa actual, dolores, meta de 30 dias y tono comercial.
@@ -8769,7 +8780,7 @@ Instrucciones para el agente:
 - Si falta informacion, pregunta lo minimo necesario para poder actuar.
 - Cuando el negocio esté claro, antes de branding y antes de anuncios pasa a `skills/organic-content-strategy/SKILL.md`. No preguntes solo si “quiere contenido”: propone primero una estrategia de contenido orgánico hecha para ese negocio, con pilares, ejemplos de ideas, frecuencia recomendada, diseño con Image 2 y revisión/aprobación por Telegram antes de publicar.
 - En el cierre de esa propuesta explica que, si la dirección le gusta o quiere ajustarla, el siguiente paso será conectar su Página de Facebook para publicar las piezas aprobadas y sincronizar Ads. Al aceptar/ajustar/declinar, guarda la decisión con `save_daily_social_content_settings`; una aceptación temprana queda `accepted_pending_setup` hasta completar branding, sin activar cron todavía.
-- Solo después de que el cliente acepte o ajuste la estrategia, revisa `mcp_admira_get_meta_oauth_workspaces`; si Facebook no está conectado llama `mcp_admira_start_meta_oauth_connection`. Después de elegir cuenta/Página, usa `Branding onboarding.md` para logo, colores, fuentes, referencias y assets; luego continúa a Ads.
+- Después de seleccionar la cuenta/Página mediante OAuth y completar la entrevista breve, usa `Branding onboarding.md` para logo, colores, fuentes, referencias y assets; luego presenta la estrategia orgánica y continúa a Ads.
 - Si el cliente menciona una nueva oferta, servicio, paquete o promocion despues del onboarding, no lo guardes encima de la marca general. Trátalo como oferta hija y usa/crea `brand_guides/products/` y, si aplica, `brand_guides/ad_briefs/`.
 - Si el cliente comparte archivos, fotos, videos, links, testimonios, ofertas o referencias, pregunta/infiera para que son y guardalos con `save_content_asset` para que se puedan reutilizar en posts, anuncios o estrategia.
 - Despues de branding, pregunta por anuncios/campanas anteriores y guarda aprendizajes antes de proponer la estrategia inicial.
