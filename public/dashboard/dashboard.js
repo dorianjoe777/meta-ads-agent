@@ -1115,15 +1115,17 @@ function onboardingSteps(){
  const modelOk=Boolean(model.chatgpt_connected)||apiBrainOk;
  const telegram=state.config.telegram_agent||{};
 	 const telegramOk=Boolean(telegram.enabled&&telegram.bot_configured&&telegram.chat_id);
- const tokenOk=setupItem('access_token').status==='ok';
+ const oauth=state.config?.meta_oauth||{};
+ const oauthConnected=Boolean(oauth.connected);
+ const tokenOk=oauthConnected||setupItem('access_token').status==='ok';
  const accountOk=setupItem('ad_account').status==='ok';
  const destinationOk=setupItem('page_id').status==='ok';
- const publishingOk=Boolean(state.config.publishing?.ready||tokenOk);
+ const publishingOk=Boolean(state.config.publishing?.ready||oauthConnected||tokenOk);
  return [
   {id:'password',status:passwordOk?'ok':'blocked'},
-  {id:'telegram',status:telegramOk?'ok':'blocked'},
   {id:'meta',status:tokenOk&&accountOk&&destinationOk&&publishingOk?'ok':'blocked'},
-  {id:'chatgpt',status:modelOk?'ok':'blocked'}
+  {id:'chatgpt',status:modelOk?'ok':'blocked'},
+  {id:'telegram',status:telegramOk?'ok':'blocked'}
  ];
 	}
 function renderOnboarding(){
@@ -1509,20 +1511,10 @@ function compactPasswordSetup(ready){
  </form>`;
 }
 function compactMetaSetup(){
- const v=state.config.setup_values||{};
- const adsTokenSet=Boolean(v.meta_access_token_set);
- const account=v.ad_account_id||'';
- const page=v.page_id||'';
- const tokenPlaceholder=adsTokenSet?(lang==='es'?'Token de Meta guardado':'Meta token saved'):(lang==='es'?'Pega tu único token de Meta':'Paste your single Meta token');
- return `<div class="activation-form">
-  <label class="wide"><span>${lang==='es'?'Token único de Meta · Anuncios + Página':'Single Meta token · Ads + Page'}</span><input id="meta-token-input" type="password" autocomplete="off" placeholder="${tokenPlaceholder}" data-input-code="scheduleMetaTokenAutoSave()" data-paste-code="setTimeout(scheduleMetaTokenAutoSave,0)"><small>${adsTokenSet?'✓ ':''}${lang==='es'?'Debe incluir ads_management, ads_read y permisos de Página como pages_manage_posts, pages_read_engagement y pages_show_list. Se usa para anuncios y publicaciones orgánicas.':'Must include ads_management, ads_read, and Page permissions such as pages_manage_posts, pages_read_engagement, and pages_show_list. Used for ads and organic publishing.'}</small></label>
-  <div class="activation-selection-strip">
-   <span class="${account?'ready':''}">${account?'✓ ':''}${lang==='es'?'Cuenta':'Account'}${account?`: ${escapeHtml(account)}`:''}</span>
-   <span class="${page?'ready':''}">${page?'✓ ':''}${lang==='es'?'Página':'Page'}${page?`: ${escapeHtml(page)}`:''}</span>
-  </div>
-  <div id="social-account-results" class="activation-results"></div>
-  <div id="destination-discovery-results" class="activation-results"></div>
- </div>`;
+ // OAuth is the only Meta connection shown in the fresh-install flow.  The
+ // legacy token input remains available only in the separate compatibility
+ // settings route for old installations.
+ return metaConnectionGuide();
 }
 function compactAgentSetup(){
  const model=state.config.agent_model||{};
@@ -1635,14 +1627,15 @@ function compactActivationSection(number,title,status,body){
 let compactAccountAutoDiscoveryKey='';
 function maybeAutoDiscoverCompactSetup(){
  const v=state.config.setup_values||{};
- if(v.meta_access_token_set&&!v.ad_account_id&&compactAccountAutoDiscoveryKey!=='accounts'){
+ const oauth=state.config?.meta_oauth||{};
+ if(oauth.connected&&!v.ad_account_id&&!oauth.active_ad_account_id&&compactAccountAutoDiscoveryKey!=='accounts'){
   compactAccountAutoDiscoveryKey='accounts';
-  setTimeout(()=>refreshSocialAccounts().catch(()=>{}),100);
- }else if(v.ad_account_id&&!v.page_id){
+  setTimeout(()=>renderMetaOAuthChoices(),100);
+ }else if((v.ad_account_id||oauth.active_ad_account_id)&&!v.page_id&&!oauth.active_page_id){
   const key=`page:${v.ad_account_id}`;
   if(compactAccountAutoDiscoveryKey!==key){
    compactAccountAutoDiscoveryKey=key;
-   setTimeout(()=>discoverMetaAssets(v.ad_account_id).catch(()=>{}),100);
+   setTimeout(()=>renderMetaOAuthChoices(),100);
   }
  }
 }

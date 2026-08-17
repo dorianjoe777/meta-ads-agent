@@ -26,6 +26,7 @@ SCRIPTS_DIR = ROOT_DIR / "scripts"
 ACTIONS_FILE = DATA_DIR / "actions.json"
 PENDING_FILE = DATA_DIR / "pending_approvals.json"
 METRICS_FILE = DATA_DIR / "metrics.json"
+META_OAUTH_CONNECTION_FILE = DATA_DIR / "meta_oauth_connection.json"
 
 
 def item(key, label, status, detail="", action=""):
@@ -41,6 +42,28 @@ def exists_item(key, label, path, action=""):
 
 def configured(value):
     return bool(str(value or "").strip())
+
+
+def meta_oauth_summary(config):
+    """Return the local, non-secret OAuth state used by the dashboard.
+
+    OAuth credentials are intentionally not exposed in setup diagnostics.  The
+    connection record only contains the safe account/Page summary and is the
+    source of truth for OAuth-first installations.
+    """
+    connection = read_json(META_OAUTH_CONNECTION_FILE, {})
+    if not isinstance(connection, dict):
+        connection = {}
+    accounts = [entry for entry in (connection.get("accounts") or []) if isinstance(entry, dict)]
+    pages = [entry for entry in (connection.get("pages") or []) if isinstance(entry, dict)]
+    return {
+        "enabled": configured(getattr(config, "meta_oauth_broker_url", "")) or META_OAUTH_CONNECTION_FILE.exists(),
+        "connected": bool(connection.get("connected")),
+        "accounts": accounts,
+        "pages": pages,
+        "active_ad_account_id": str(connection.get("active_ad_account_id") or "").strip(),
+        "active_page_id": str(connection.get("active_page_id") or "").strip(),
+    }
 
 
 def meta_token_age_days(config):
@@ -141,10 +164,11 @@ def files_section():
 
 
 def runtime_section(config, daily_report, action):
-    graph_ready = bool(getattr(config, "meta_access_token", ""))
+    oauth = meta_oauth_summary(config)
+    graph_ready = bool(getattr(config, "meta_access_token", "")) or oauth["connected"]
     return [
         item("approval_protection", "Protección por aprobación", "ok", "Crear pausado permitido; activar/gastar pide aprobación", "Admira puede dejar estructuras listas en pausa. La luz verde se pide al activar o gastar."),
-        item("connector", "Meta execution path", "ok" if graph_ready else "warn", "Meta Graph API directo" if graph_ready else "Falta clave de Meta", "Pega una clave de Meta válida en Configuración para que Admira ejecute acciones reales."),
+        item("connector", "Meta execution path", "ok" if graph_ready else "warn", "Facebook OAuth seguro" if oauth["connected"] else ("Meta Graph API directo" if configured(getattr(config, "meta_access_token", "")) else "Conecta Facebook desde el enlace seguro de Telegram"), "Conecta Facebook desde Telegram; no necesitas pegar claves." if oauth["enabled"] else "Pega una clave de Meta válida en Configuración para que Admira ejecute acciones reales."),
         item("daily_report", "Latest daily report", "ok" if daily_report else "warn", str(daily_report) if daily_report else "No daily report yet.", "Run ./scripts/run-daily-agent.sh"),
         item("latest_action", "Latest action log", "ok" if action else "warn", action.get("type", "No actions yet") if action else "No actions logged yet."),
     ]
@@ -170,6 +194,18 @@ def security_section(config, license_status):
 
 
 def meta_section(config, destination):
+    oauth = meta_oauth_summary(config)
+    # New installations are OAuth-first.  Do not expose the obsolete token
+    # checklist in their setup status; legacy token installs remain supported.
+    if oauth["enabled"]:
+        account_id = oauth["active_ad_account_id"] or str(config.ad_account_id or "").strip()
+        page_id = oauth["active_page_id"] or str(destination.get("page_id") or "").strip()
+        return [
+            item("facebook_oauth", "Facebook connection", "ok" if oauth["connected"] else "blocked", "Connected with secure Facebook OAuth" if oauth["connected"] else "Connect Facebook from the secure link sent to Telegram.", "Open Telegram and press Connect Facebook."),
+            item("ad_account", "Meta ad account", "ok" if configured(account_id) else "blocked", account_id or "Choose an ad account after Facebook OAuth.", "Choose one of the ad accounts returned by Facebook."),
+            item("page_id", "Page ID", "ok" if configured(page_id) else "blocked", page_id or "Choose a Facebook Page after Facebook OAuth.", "Choose the Page where ads and organic posts will run."),
+            item("landing_url", "Landing page URL", "ok" if configured(destination.get("url")) else "blocked", destination.get("url") or "Missing creative.destination.url", "Set creative.destination.url in ad-config.json."),
+        ]
     return [
         item("ad_account", "Meta ad account", "ok" if configured(config.ad_account_id) else "blocked", config.ad_account_id or "Missing META_AD_ACCOUNT_ID", "Elige una cuenta publicitaria desde Configuración o pega el ID act_XXXX manualmente."),
         item("access_token", "Meta access key", "ok" if configured(config.meta_access_token) else ("blocked" if config.live and config.meta_connector == "graph_api" else "warn"), meta_token_detail(config) if configured(config.meta_access_token) else "Not configured; paste your Meta key in onboarding.", "Pega la clave creada en tu propia app de Meta."),
@@ -259,13 +295,15 @@ def setup_summary(config, sections, context):
     meta = next(section["items"] for section in sections if section["title"] == "Meta Live Requirements")
     creative = next(section["items"] for section in sections if section["title"] == "Creative Generation")
     codex_image_ready = any(entry["key"] == "codex_image_auth" and entry["status"] == "ok" for entry in creative)
+    oauth = meta_oauth_summary(config)
+    live_connection = oauth["connected"] or configured(config.meta_access_token)
     return {
         "counts": status_counts(all_items),
         "demo_ready": ENV_FILE.exists() and METRICS_FILE.exists(),
         "security_ready": all(entry["status"] == "ok" for entry in security[:4]),
         "license_ready": context["license_status"]["valid"],
         "live_actions_enabled": False,
-        "live_ads_ready": bool(config.meta_access_token and configured(config.ad_account_id)),
+        "live_ads_ready": bool(live_connection and configured(config.ad_account_id)),
         "approval_protection": True,
         "direct_graph_ready": all(entry["status"] == "ok" for entry in meta),
         "creative_ready": config.creative_refresh_enabled and codex_image_ready,
