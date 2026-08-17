@@ -3652,6 +3652,7 @@ def _safe_meta_oauth_summary(connection):
         "accounts": [{key: item.get(key) for key in ("id", "account_id", "name", "currency", "account_status")} for item in connection.get("accounts", []) if isinstance(item, dict)],
         "pages": [{key: item.get(key) for key in ("id", "name", "category", "instagram", "can_publish", "sources", "business_ids")} for item in connection.get("pages", []) if isinstance(item, dict)],
         "businesses": [{key: item.get(key) for key in ("id", "name")} for item in connection.get("businesses", []) if isinstance(item, dict)],
+        "discovery_issues": [{key: item.get(key) for key in ("stage", "graph_code", "graph_subcode", "graph_type")} for item in connection.get("discovery_issues", []) if isinstance(item, dict)],
         "active_ad_account_id": str(connection.get("active_ad_account_id") or ""),
         "active_page_id": str(connection.get("active_page_id") or ""),
     }
@@ -3889,8 +3890,8 @@ def _apply_meta_oauth_credentials(credentials):
         pages.append(page)
     publishable_pages = [item for item in pages if item.get("can_publish")]
     businesses = [item for item in credentials.get("businesses") or [] if isinstance(item, dict) and item.get("id")]
-    if len(token) < 20 or not accounts or not publishable_pages:
-        raise ValueError("Facebook no devolvió una cuenta publicitaria y una Página utilizables. Revisa los permisos aceptados.")
+    if len(token) < 20:
+        raise ValueError("Facebook no devolvió una conexión utilizable. Revisa los permisos aceptados.")
     connection = {
         "connected": True,
         "connected_at": now_iso(),
@@ -3900,6 +3901,7 @@ def _apply_meta_oauth_credentials(credentials):
         "accounts": accounts,
         "pages": pages,
         "businesses": businesses,
+        "discovery_issues": [item for item in credentials.get("discovery_issues") or [] if isinstance(item, dict)],
         # Never silently choose a workspace. Hermes presents the numbered
         # accounts/Pages and selects only after the buyer answers in text.
         "active_ad_account_id": "",

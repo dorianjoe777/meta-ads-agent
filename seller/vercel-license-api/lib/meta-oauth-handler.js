@@ -240,21 +240,31 @@ async function finalizeCallback(requestId, code) {
   const userToken = String(longToken.access_token || shortToken.access_token || "");
   if (!userToken) throw new Error("meta_oauth_exchange_failed");
   const graphBase = `https://graph.facebook.com/${GRAPH_VERSION}`;
-  const [profile, accounts, pages, permissions, businessesResult] = await Promise.all([
-    discoveredMetaJson("profile", `${graphBase}/me?fields=id,name&access_token=${encodeURIComponent(userToken)}`),
-    discoveredMetaJson("ad_accounts", `${graphBase}/me/adaccounts?fields=id,account_id,name,currency,account_status&limit=100&access_token=${encodeURIComponent(userToken)}`),
-    discoveredMetaJson("pages", `${graphBase}/me/accounts?fields=id,name,category,access_token,instagram_business_account{id,username}&limit=100&access_token=${encodeURIComponent(userToken)}`),
-    discoveredMetaJson("permissions", `${graphBase}/me/permissions?access_token=${encodeURIComponent(userToken)}`),
+  const profile = await discoveredMetaJson("profile", `${graphBase}/me?fields=id,name&access_token=${encodeURIComponent(userToken)}`);
+  const discoveryIssues = [];
+  const safeDiscover = async (stage, url) => {
+    try {
+      return await discoveredMetaJson(stage, url);
+    } catch (error) {
+      // A user's direct ad-account edge can be unavailable even when their
+      // business portfolio edges or Page access are valid. Preserve the OAuth
+      // connection and try every independent route instead of rejecting the
+      // whole buyer because one Graph edge is unavailable.
+      discoveryIssues.push({
+        stage,
+        graph_code: Number(error?.meta_code || 0),
+        graph_subcode: Number(error?.meta_subcode || 0),
+        graph_type: String(error?.meta_type || ""),
+      });
+      return { data: [] };
+    }
+  };
+  const [accounts, pages, permissions, businessesResult] = await Promise.all([
+    safeDiscover("ad_accounts", `${graphBase}/me/adaccounts?fields=id,account_id,name,currency,account_status&limit=100&access_token=${encodeURIComponent(userToken)}`),
+    safeDiscover("pages", `${graphBase}/me/accounts?fields=id,name,category,access_token,instagram_business_account{id,username}&limit=100&access_token=${encodeURIComponent(userToken)}`),
+    safeDiscover("permissions", `${graphBase}/me/permissions?access_token=${encodeURIComponent(userToken)}`),
     optionalMetaJson(`${graphBase}/me/businesses?fields=id,name,owned_ad_accounts.limit(100){id,account_id,name,currency,account_status},client_ad_accounts.limit(100){id,account_id,name,currency,account_status},owned_pages.limit(100){id,name,category,instagram_business_account{id,username}},client_pages.limit(100){id,name,category,instagram_business_account{id,username}}&limit=100&access_token=${encodeURIComponent(userToken)}`),
-  ]).catch((error) => {
-    const failure = new Error("meta_oauth_asset_discovery_failed");
-    failure.cause = error;
-    failure.meta_code = error?.meta_code;
-    failure.meta_subcode = error?.meta_subcode;
-    failure.meta_type = error?.meta_type;
-    failure.oauth_stage = error?.oauth_stage || "";
-    throw failure;
-  });
+  ]);
   const businessAssets = collectBusinessAssets(rows(businessesResult));
   const initialPages = mergeAssets([
     ...rows(pages).map((item) => ({ ...item, sources: ["me/accounts"], business_ids: [] })),
@@ -273,6 +283,7 @@ async function finalizeCallback(requestId, code) {
     accounts: mergedAccounts,
     pages: mergedPages,
     businesses: businessAssets.businesses,
+    discovery_issues: discoveryIssues,
     granted_permissions: (permissions.data || []).filter((item) => item && typeof item.permission === "string" && item.status === "granted").map((item) => item.permission),
   }));
   if (!credentials) throw new Error("oauth_vault_unavailable");

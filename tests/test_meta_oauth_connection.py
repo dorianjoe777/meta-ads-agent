@@ -153,6 +153,20 @@ class MetaOAuthConnectionTests(unittest.TestCase):
         self.assertEqual(token_update["META_ACCESS_TOKEN_KIND"], "oauth")
         self.assertNotIn("user_token", str(result))
 
+    def test_apply_keeps_valid_oauth_connection_when_one_asset_edge_is_unavailable(self):
+        credentials = {
+            "user_token": "x" * 40,
+            "user": {"id": "user", "name": "Buyer"},
+            "accounts": [],
+            "pages": [],
+            "discovery_issues": [{"stage": "ad_accounts", "graph_code": 100}],
+        }
+        with patch.object(self.dashboard, "update_env_values"), \
+             patch.object(self.dashboard, "save_setup_config", return_value={"saved": True}):
+            result = self.dashboard._apply_meta_oauth_credentials(credentials)
+        self.assertTrue(result["connected"])
+        self.assertEqual(result["discovery_issues"][0]["stage"], "ad_accounts")
+
     def test_apply_keeps_business_discovered_pages_without_selecting_unpublishable_page(self):
         credentials = {
             "user_token": "x" * 40,
