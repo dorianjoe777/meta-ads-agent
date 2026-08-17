@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -3775,6 +3775,20 @@ def social_oauth_start(payload=None):
     if not broker_url:
         raise ValueError("La conexión segura de Facebook aún no está configurada en esta versión. Actualiza o contacta soporte.")
     existing = _meta_oauth_pending()
+    # A dashboard/gateway restart can stop the bounded polling worker before
+    # it removes an expired broker request. Never resend an old URL: OAuth
+    # codes are single-use and Facebook will correctly reject that handoff.
+    try:
+        existing_created_at = datetime.fromisoformat(str(existing.get("created_at") or "").replace("Z", "+00:00"))
+    except ValueError:
+        existing_created_at = None
+    if existing_created_at and existing_created_at.tzinfo is None:
+        existing_created_at = existing_created_at.replace(tzinfo=timezone.utc)
+    existing_is_fresh = bool(existing_created_at and (datetime.now(timezone.utc) - existing_created_at).total_seconds() < 14 * 60)
+    if existing.get("request_id") and not existing_is_fresh:
+        try: META_OAUTH_PENDING_FILE.unlink()
+        except OSError: pass
+        existing = {}
     if existing.get("request_id") and existing.get("handoff_secret"):
         # Do not create another browser handoff, but do resend the actual
         # visible URL if the buyer explicitly asks again.  A prior message may

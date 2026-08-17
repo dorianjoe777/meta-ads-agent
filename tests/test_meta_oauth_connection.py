@@ -2,6 +2,7 @@ import importlib.util
 import os
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -104,6 +105,7 @@ class MetaOAuthConnectionTests(unittest.TestCase):
             "handoff_secret": "s" * 64,
             "authorization_url": "https://facebook.example/oauth",
             "telegram_chat_id": "123456",
+            "created_at": datetime.now(timezone.utc).isoformat(),
         })
         sent = []
         with patch.object(self.dashboard, "_meta_oauth_broker_url", return_value="https://broker.example"), \
@@ -113,6 +115,25 @@ class MetaOAuthConnectionTests(unittest.TestCase):
         self.assertTrue(result["link_resent"])
         self.assertTrue(result["sent_to_telegram"])
         self.assertIn("https://facebook.example/oauth", sent[0]["text"])
+
+    def test_expired_pending_oauth_request_is_replaced_instead_of_resent(self):
+        self.dashboard.write_private_json(self.dashboard.META_OAUTH_PENDING_FILE, {
+            "request_id": "o" * 43,
+            "handoff_secret": "s" * 64,
+            "authorization_url": "https://facebook.example/old",
+            "telegram_chat_id": "123456",
+            "created_at": (datetime.now(timezone.utc) - timedelta(minutes=15)).isoformat(),
+        })
+        sent = []
+        with patch.object(self.dashboard, "load_config", return_value=self.config), \
+             patch.object(self.dashboard, "resolved_device_id", return_value="device"), \
+             patch.object(self.dashboard, "_meta_oauth_request", return_value={"ok": True, "request_id": "n" * 43, "authorization_url": "https://facebook.example/new"}), \
+             patch.object(self.dashboard, "telegram_bot_request", side_effect=lambda _c, _m, payload, **_k: sent.append(payload)), \
+             patch.object(self.dashboard.threading, "Thread"):
+            result = self.dashboard.social_oauth_start({"telegram_chat_id": "123456"})
+        self.assertFalse(result.get("already_pending", False))
+        self.assertEqual(self.dashboard._meta_oauth_pending()["request_id"], "n" * 43)
+        self.assertIn("https://facebook.example/new", sent[0]["text"])
 
     def test_apply_keeps_all_assets_and_waits_for_explicit_workspace_choice(self):
         credentials = {
