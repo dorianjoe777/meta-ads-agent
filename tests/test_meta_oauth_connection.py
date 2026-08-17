@@ -228,6 +228,30 @@ class MetaOAuthConnectionTests(unittest.TestCase):
             self.dashboard._dispatch_initial_meta_oauth_link(self.config)
         start.assert_not_called()
 
+    def test_nvidia_runtime_startup_refreshes_catalog_before_gateway_config(self):
+        config = SimpleNamespace(
+            agent_brain_provider="nvidia_nim",
+            agent_chat_provider="hermes",
+            agent_chat_base_url="https://integrate.api.nvidia.com/v1",
+            agent_chat_api_key="nvidia-test-key",
+        )
+        with patch.object(self.dashboard, "nvidia_model_catalog", return_value={"models": ["minimaxai/minimax-m3", "deepseek-ai/deepseek-v4-flash-0731"], "account_verified": True}) as catalog:
+            result = self.dashboard._ensure_nvidia_runtime_fallback_catalog(config)
+        self.assertTrue(result["account_verified"])
+        catalog.assert_called_once_with(api_key="nvidia-test-key", config=config, force_refresh=False)
+
+    def test_nvidia_runtime_catalog_failure_never_blocks_gateway_start(self):
+        config = SimpleNamespace(
+            agent_brain_provider="nvidia_nim",
+            agent_chat_provider="hermes",
+            agent_chat_base_url="https://integrate.api.nvidia.com/v1",
+            agent_chat_api_key="nvidia-test-key",
+        )
+        with patch.object(self.dashboard, "nvidia_model_catalog", side_effect=ValueError("catalog unavailable")), \
+             patch.object(self.dashboard, "log_action") as logged:
+            self.assertEqual(self.dashboard._ensure_nvidia_runtime_fallback_catalog(config), {})
+        logged.assert_called_once()
+
     def test_business_save_marks_organic_transition_without_sending_oauth(self):
         import sys
 

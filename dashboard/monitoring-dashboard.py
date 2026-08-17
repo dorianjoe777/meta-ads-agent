@@ -3384,6 +3384,7 @@ def ensure_telegram_listener():
         TELEGRAM_THREAD = None
         TELEGRAM_STOP = None
         TELEGRAM_FINGERPRINT = None
+        _ensure_nvidia_runtime_fallback_catalog(config)
         gateway = start_hermes_gateway(config)
         # Facebook OAuth is an installation prerequisite, not a sales/spend
         # action.  Do not delegate the first link to model prose: a model can
@@ -3415,6 +3416,39 @@ def ensure_telegram_listener():
     TELEGRAM_THREAD.start()
     TELEGRAM_FINGERPRINT = fingerprint
     return {"started": True, "mode": "legacy"}
+
+
+def _ensure_nvidia_runtime_fallback_catalog(config):
+    """Refresh the account-verified NIM catalog before Hermes writes config.
+
+    A new installation used to write its Hermes fallback chain before it had
+    ever queried ``/models``.  The chain was therefore empty even when a
+    different NVIDIA hosted model was healthy.  This is metadata only (not an
+    inference request), is cached for six hours, and failures never interrupt
+    Telegram or create a second request loop.
+    """
+    brain = normalize_agent_brain_provider(
+        getattr(config, "agent_brain_provider", ""),
+        legacy_chat_provider=getattr(config, "agent_chat_provider", "hermes"),
+        base_url=getattr(config, "agent_chat_base_url", ""),
+    )
+    if brain != "nvidia_nim":
+        return {}
+    key = str(getattr(config, "agent_chat_api_key", "") or "").strip()
+    if not key:
+        try:
+            key = str(agent_model_connections(config, include_secrets=True).get("nvidia_nim", {}).get("api_key") or "").strip()
+        except Exception:
+            key = ""
+    if not key:
+        return {}
+    try:
+        return nvidia_model_catalog(api_key=key, config=config, force_refresh=False)
+    except Exception as exc:
+        # Existing saved fallback data remains usable.  Do not turn a model
+        # catalog refresh into a buyer-facing outage.
+        log_action("nvidia_runtime_catalog", {"error": str(exc)[:180]}, "attention")
+        return {}
 
 
 def _dispatch_initial_meta_oauth_link(config):
