@@ -117,12 +117,18 @@ def preferred_hermes_model(models):
 
 
 def load_dotenv(path=None):
-    """Load persisted settings without clobbering process-level settings.
+    """Load persisted settings without clobbering explicit process settings.
 
     Docker Compose injects the installation's environment (including the
     cloud/LAN access mode) while the named runtime volume contains defaults
     from an older image.  The persisted file should fill in missing values,
     not override explicit environment variables on every dashboard restart.
+
+    Compose commonly exports optional settings as *empty* strings.  Those are
+    placeholders, not an intentional override: treating them as authoritative
+    would make a saved Telegram/model connection disappear every time a
+    container is recreated.  A non-empty process value remains authoritative;
+    a blank one is filled from the persistent runtime file.
     """
     path = Path(path or ENV_FILE)
     if not path.exists():
@@ -135,7 +141,7 @@ def load_dotenv(path=None):
             key, value = line.split("=", 1)
             key = key.strip()
             value = value.strip().strip('"').strip("'")
-            if key not in os.environ:
+            if key not in os.environ or not str(os.environ.get(key) or "").strip():
                 os.environ[key] = value
 
 

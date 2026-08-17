@@ -95,6 +95,23 @@ class MacCloudInstallerTests(unittest.TestCase):
                     else:
                         os.environ[key] = value
 
+    def test_persisted_dotenv_recovers_values_from_blank_compose_placeholders(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            env_path.write_text("TELEGRAM_BOT_TOKEN=durable-token\n", encoding="utf-8")
+            previous = os.environ.get("TELEGRAM_BOT_TOKEN")
+            try:
+                # Compose emits empty optional variables even when the durable
+                # runtime volume already contains the buyer's connection.
+                os.environ["TELEGRAM_BOT_TOKEN"] = ""
+                load_dotenv(env_path)
+                self.assertEqual(os.environ["TELEGRAM_BOT_TOKEN"], "durable-token")
+            finally:
+                if previous is None:
+                    os.environ.pop("TELEGRAM_BOT_TOKEN", None)
+                else:
+                    os.environ["TELEGRAM_BOT_TOKEN"] = previous
+
 
 if __name__ == "__main__":
     unittest.main()
