@@ -828,6 +828,31 @@ compression:
             hermes_bridge.agent_model_connections = original_connections
             hermes_bridge.codex_credential_health = original_codex_health
 
+    def test_live_nvidia_fallback_catalog_is_not_truncated_before_late_models(self):
+        original_catalog = hermes_bridge.NVIDIA_MODEL_CATALOG_FILE
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                hermes_bridge.NVIDIA_MODEL_CATALOG_FILE = Path(directory) / "nvidia.json"
+                models = [f"vendor/model-{index:03d}" for index in range(45)] + [
+                    "minimaxai/minimax-m3",
+                    "deepseek-ai/deepseek-v4-flash-0731",
+                    "nvidia/nemotron-3.5-lightning-30b-a3b",
+                    "z-ai/glm-5.2",
+                    "nvidia/nemotron-3-ultra-550b-a55b",
+                ]
+                hermes_bridge.NVIDIA_MODEL_CATALOG_FILE.write_text(json.dumps({
+                    "models": models,
+                    "source": "nvidia_live_catalog",
+                    "account_verified": True,
+                    "checked_epoch": time.time(),
+                }), encoding="utf-8")
+                live = hermes_bridge._live_nvidia_model_ids(hermes_bridge.NVIDIA_MODEL_CATALOG_FILE)
+                self.assertIn("nvidia/nemotron-3.5-lightning-30b-a3b", live)
+                self.assertIn("z-ai/glm-5.2", live)
+                self.assertIn("nvidia/nemotron-3-ultra-550b-a55b", live)
+        finally:
+            hermes_bridge.NVIDIA_MODEL_CATALOG_FILE = original_catalog
+
     def test_stale_nvidia_catalog_does_not_enable_same_key_fallback(self):
         original_catalog = hermes_bridge.NVIDIA_MODEL_CATALOG_FILE
         original_connections = hermes_bridge.agent_model_connections

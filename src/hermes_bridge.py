@@ -396,7 +396,7 @@ def _runtime_provider_for_brain(brain):
     return str((brain or {}).get("provider") or "openai-codex").strip() or "openai-codex"
 
 
-def _cached_model_ids(path):
+def _cached_model_ids(path, limit=40):
     try:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
@@ -411,7 +411,11 @@ def _cached_model_ids(path):
             continue
         seen.add(key)
         models.append(model)
-    return models[:40]
+    try:
+        maximum = max(1, int(limit))
+    except (TypeError, ValueError):
+        maximum = 40
+    return models[:maximum]
 
 
 def _live_nvidia_model_ids(path, now=None):
@@ -440,7 +444,11 @@ def _live_nvidia_model_ids(path, now=None):
     age = current - checked_epoch
     if age < 0 or age > NVIDIA_LIVE_CATALOG_MAX_AGE_SECONDS:
         return []
-    return _cached_model_ids(path)
+    # The dashboard stores the catalog alphabetically. Restricting it to the
+    # first 40 generic entries silently removes late-alphabet models such as
+    # GLM and Nemotron before fallback selection. Keep the UI/catalog display
+    # bounded elsewhere, but inspect the complete validated NIM list here.
+    return _cached_model_ids(path, limit=160)
 
 
 def _nvidia_model_specific_fallback_order(models, primary_model):
