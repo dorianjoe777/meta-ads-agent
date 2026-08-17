@@ -2925,9 +2925,9 @@ def _telegram_update_install_request_path():
 def _telegram_runtime_chat_context_path():
     """Where the native Telegram gateway records the buyer's actual chat ID.
 
-    Hermes keeps its own opaque channel key for authorization.  Admira's OAuth
+    Hermes keeps its own opaque channel key for authorization. Admira's OAuth
     sender needs the numeric Bot API chat id, which is only available on a real
-    incoming update.  This small handoff lets the product send an OAuth button
+    incoming update. This small handoff lets the product send the OAuth URL
     later in the same conversation without opening a second Telegram poller.
     """
     root = str(os.environ.get("ADMIRA_PRODUCT_ROOT") or "").strip()
@@ -2962,7 +2962,7 @@ _ADMIRA_DASHBOARD_MODULE = None
 
 
 def _admira_dashboard_module():
-    """Load the product dashboard lazily only for an explicit OAuth button."""
+    """Load the product dashboard lazily for the OAuth URL handoff."""
     global _ADMIRA_DASHBOARD_MODULE
     if _ADMIRA_DASHBOARD_MODULE is not None:
         return _ADMIRA_DASHBOARD_MODULE
