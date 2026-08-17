@@ -3742,10 +3742,24 @@ def social_oauth_start(payload=None):
         raise ValueError("La conexión segura de Facebook aún no está configurada en esta versión. Actualiza o contacta soporte.")
     existing = _meta_oauth_pending()
     if existing.get("request_id") and existing.get("handoff_secret"):
-        # A completed business interview can trigger the deterministic handoff
-        # and the model may also call the explicit tool in the same turn. Keep
-        # one pending link rather than confusing the buyer with duplicates.
-        return {"ok": True, "sent_to_telegram": True, "pending": True, "already_pending": True, "expires_in_seconds": 900}
+        # Do not create another browser handoff, but do resend the actual
+        # visible URL if the buyer explicitly asks again.  A prior message may
+        # have been buried in Telegram; telling them to use a nonexistent
+        # callback button is never an acceptable fallback.
+        existing_url = str(existing.get("authorization_url") or "").strip()
+        chat_id = _meta_oauth_chat_id(config, str(payload.get("telegram_chat_id") or ""))
+        resent = False
+        if existing_url and chat_id:
+            _send_meta_oauth_link(config, existing_url, chat_id)
+            resent = True
+        return {
+            "ok": True,
+            "sent_to_telegram": bool(resent),
+            "pending": True,
+            "already_pending": True,
+            "link_resent": bool(resent),
+            "expires_in_seconds": 900,
+        }
     handoff_secret = secrets.token_urlsafe(48)
     result = _meta_oauth_request(broker_url, {
         "flow": "start",
@@ -3757,7 +3771,16 @@ def social_oauth_start(payload=None):
     chat_id = _meta_oauth_chat_id(config, str(payload.get("telegram_chat_id") or ""))
     if not chat_id:
         raise ValueError("Aún no detecto tu chat de Telegram. Envía un mensaje al bot y vuelve a intentar.")
-    pending = {"request_id": str(result["request_id"]), "handoff_secret": handoff_secret, "created_at": now_iso(), "broker_url": broker_url, "telegram_chat_id": chat_id}
+    pending = {
+        "request_id": str(result["request_id"]),
+        "handoff_secret": handoff_secret,
+        # Stored only in the installation's private runtime data so an
+        # explicit retry can resend this same one-time OAuth handoff.
+        "authorization_url": str(result["authorization_url"]),
+        "created_at": now_iso(),
+        "broker_url": broker_url,
+        "telegram_chat_id": chat_id,
+    }
     write_private_json(META_OAUTH_PENDING_FILE, pending)
     _send_meta_oauth_link(config, str(result["authorization_url"]), chat_id)
     # Telegram is the primary buyer experience, so do not require the local

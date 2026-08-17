@@ -57,6 +57,7 @@ class MetaOAuthConnectionTests(unittest.TestCase):
         self.assertTrue(result["sent_to_telegram"])
         pending = self.dashboard._meta_oauth_pending()
         self.assertEqual(pending["request_id"], "r" * 43)
+        self.assertEqual(pending["authorization_url"], "https://facebook.example/oauth")
         self.assertGreater(len(pending["handoff_secret"]), 32)
         self.assertNotIn(pending["handoff_secret"], str(sent))
         self.assertIn("https://facebook.example/oauth", sent[0]["text"])
@@ -96,6 +97,22 @@ class MetaOAuthConnectionTests(unittest.TestCase):
         self.assertTrue(result["sent_to_telegram"])
         self.assertEqual(sent[0]["chat_id"], "123456")
         self.assertEqual(self.dashboard._meta_oauth_pending()["telegram_chat_id"], "123456")
+
+    def test_pending_oauth_request_resends_plain_url_when_buyer_asks_again(self):
+        self.dashboard.write_private_json(self.dashboard.META_OAUTH_PENDING_FILE, {
+            "request_id": "r" * 43,
+            "handoff_secret": "s" * 64,
+            "authorization_url": "https://facebook.example/oauth",
+            "telegram_chat_id": "123456",
+        })
+        sent = []
+        with patch.object(self.dashboard, "_meta_oauth_broker_url", return_value="https://broker.example"), \
+             patch.object(self.dashboard, "telegram_bot_request", side_effect=lambda _c, _m, payload, **_k: sent.append(payload)):
+            result = self.dashboard.social_oauth_start({"telegram_chat_id": "123456"})
+        self.assertTrue(result["already_pending"])
+        self.assertTrue(result["link_resent"])
+        self.assertTrue(result["sent_to_telegram"])
+        self.assertIn("https://facebook.example/oauth", sent[0]["text"])
 
     def test_apply_keeps_all_assets_and_waits_for_explicit_workspace_choice(self):
         credentials = {
