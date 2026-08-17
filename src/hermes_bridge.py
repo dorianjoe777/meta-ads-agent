@@ -789,10 +789,18 @@ def _cli_hermes_config_needs_write(config_text, brain):
         lowered = config_text.lower()
         policy = inference_runtime_policy(brain)
         live_models = _live_nvidia_model_ids(NVIDIA_MODEL_CATALOG_FILE)
-        expected_same_key = _nvidia_model_specific_fallback_order(live_models, brain.get("model"))[:1]
+        expected_same_key = _nvidia_model_specific_fallback_order(
+            live_models, brain.get("model")
+        )[:NVIDIA_SAME_KEY_FALLBACK_LIMIT]
         existing_same_key = _nvidia_same_key_models_in_fallback_config(config_text)
         deepseek_is_not_live = (
-            "deepseek-ai/deepseek-v4-flash" in lowered
+            # Match only the retired bare ID. A valid live successor such as
+            # ``deepseek-v4-flash-0731`` must not trigger a rewrite just
+            # because it contains the legacy value as a prefix.
+            bool(re.search(
+                r'(?m)^\s*model:\s*["\']deepseek-ai/deepseek-v4-flash["\']\s*$',
+                config_text,
+            ))
             and "deepseek-ai/deepseek-v4-flash" not in {item.lower() for item in live_models}
         )
         return (
