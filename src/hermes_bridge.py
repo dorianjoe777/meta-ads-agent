@@ -44,11 +44,21 @@ except ImportError:
     def normalize_hermes_model(value):
         model = str(value or "").strip()
         if not model or model.lower() in {"auto", "recommended", "recomendado", "default"}:
-            return "gpt-5.4-mini"
+            # Mixed-version installs without product_config still follow the
+            # current ChatGPT/Codex default; the verified catalog decides the
+            # fallback when Luna is not exposed by that account.
+            return "gpt-5.6-luna"
         return model
 
     def preferred_hermes_model(models):
-        return next((str(model).strip() for model in models or [] if str(model).strip()), "gpt-5.4-mini")
+        cleaned = [str(model or "").strip() for model in models or [] if str(model or "").strip()]
+        if not cleaned:
+            return "gpt-5.6-luna"
+        lowered = {model.lower(): model for model in cleaned}
+        for candidate in ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-mini", "gpt-5.4-mini"):
+            if candidate in lowered:
+                return lowered[candidate]
+        return cleaned[0]
 
     def normalize_nvidia_model(value, user_selected=False):
         model = str(value or "").strip()

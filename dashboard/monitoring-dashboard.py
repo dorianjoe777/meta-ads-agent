@@ -227,14 +227,14 @@ except ImportError:
     def normalize_hermes_model(value):
         model = str(value or "").strip()
         if not model or model.lower() in {"auto", "recommended", "recomendado", "default"}:
-            return "gpt-5.4-mini"
+            return "gpt-5.6-luna"
         return model
 
     def preferred_hermes_model(models):
         models = [str(item or "").strip() for item in (models or []) if str(item or "").strip()]
         if not models:
-            return "gpt-5.4-mini"
-        priority = ("gpt-5.6-luna", "gpt-5.6-mini", "gpt-5.4-mini", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.5-mini", "gpt-5.5", "gpt-5.4")
+            return "gpt-5.6-luna"
+        priority = ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-mini", "gpt-5.4-mini", "gpt-5.6-sol", "gpt-5.5-mini", "gpt-5.5", "gpt-5.4")
         lowered = {item.lower(): item for item in models}
         for candidate in priority:
             if candidate in lowered:
@@ -5843,7 +5843,7 @@ def codex_model_catalog(config=None, force_refresh=False):
     )
     if not models:
         current = str(getattr(config, "hermes_model", "") or "").strip()
-        models = _clean_codex_model_ids([current, "gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.5", "gpt-5.4"])
+        models = _clean_codex_model_ids([current, "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-mini", "gpt-5.4-mini", "gpt-5.6-sol", "gpt-5.5", "gpt-5.4"])
     payload = {
         "models": models,
         "recommended": preferred_hermes_model(models),
@@ -5916,7 +5916,7 @@ def cached_codex_model_catalog(config=None):
     models = _clean_codex_model_ids(cached.get("models") if isinstance(cached, dict) else [])
     if not models:
         current = str(getattr(config, "hermes_model", "") or "").strip()
-        models = _clean_codex_model_ids([current, "gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.5", "gpt-5.4"])
+        models = _clean_codex_model_ids([current, "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-mini", "gpt-5.4-mini", "gpt-5.6-sol", "gpt-5.5", "gpt-5.4"])
     return {
         **(cached if isinstance(cached, dict) else {}),
         "models": models,
