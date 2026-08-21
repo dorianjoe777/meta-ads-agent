@@ -14,7 +14,9 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT_DIR / ".env"
 TIMEZONE_PREFERENCE_FILE = ROOT_DIR / "dashboard" / "data" / "timezone_preference.json"
 DASHBOARD_IDENTITY_FILE = ROOT_DIR / "dashboard" / "data" / "dashboard_identity.json"
-DEFAULT_HERMES_CODEX_MODEL = "gpt-5.4-mini"
+# ChatGPT/Codex subscriptions start on Luna.  A verified account catalog can
+# still select a supported fallback when that plan does not expose Luna.
+DEFAULT_HERMES_CODEX_MODEL = "gpt-5.6-luna"
 DEFAULT_CODEX_IMAGE_SOURCE = "main_chatgpt"
 DEFAULT_NVIDIA_NIM_MODEL = "minimaxai/minimax-m3"
 LEGACY_NVIDIA_NIM_DEFAULT_MODELS = frozenset({"z-ai/glm-5.2"})
@@ -52,15 +54,14 @@ AGENT_MODEL_CONNECTION_SPECS = {
 }
 
 # The account catalog is authoritative, but the provider does not guarantee a
-# stable ordering. Keep a small, buyer-safe preference order so new installs
-# do not silently default to the heaviest model. Luna is the preferred GPT-5.6
-# option when it is actually available; Go accounts commonly expose the
-# smaller GPT-5.4 mini model instead.
+# stable ordering. ChatGPT/Codex starts explicitly on Luna; after a verified
+# catalog response, Terra is the first fallback when Luna is not available.
+# We never invent a model that the connected account did not advertise.
 _HERMES_DEFAULT_MODEL_PREFERENCE = (
     "gpt-5.6-luna",
+    "gpt-5.6-terra",
     "gpt-5.6-mini",
     "gpt-5.4-mini",
-    "gpt-5.6-terra",
     "gpt-5.6-sol",
     "gpt-5.5-mini",
     "gpt-5.5",

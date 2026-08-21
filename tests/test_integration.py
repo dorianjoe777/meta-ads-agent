@@ -2252,10 +2252,11 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         """Test the dashboard ChatGPT/Codex connection endpoint prefers an automatic terminal action."""
         print("\nTesting Dashboard ChatGPT/Codex Connect Action...")
 
-        self.assert_true(normalize_hermes_model("") == "gpt-5.4-mini", "Empty Hermes model uses the lightweight GPT-5.4 mini fallback")
-        self.assert_true(normalize_hermes_model("auto") == "gpt-5.4-mini", "Legacy auto Hermes model uses the lightweight GPT-5.4 mini fallback")
-        self.assert_true(normalize_hermes_model("recommended") == "gpt-5.4-mini", "Legacy recommended Hermes model uses the lightweight GPT-5.4 mini fallback")
+        self.assert_true(normalize_hermes_model("") == "gpt-5.6-luna", "Empty Hermes model uses Luna for ChatGPT/Codex subscriptions")
+        self.assert_true(normalize_hermes_model("auto") == "gpt-5.6-luna", "Legacy auto Hermes model uses Luna for ChatGPT/Codex subscriptions")
+        self.assert_true(normalize_hermes_model("recommended") == "gpt-5.6-luna", "Legacy recommended Hermes model uses Luna for ChatGPT/Codex subscriptions")
         self.assert_true(preferred_hermes_model(["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.5"]) == "gpt-5.6-luna", "The default prefers GPT-5.6 Luna over the heavier GPT-5.6 variants")
+        self.assert_true(preferred_hermes_model(["gpt-5.4-mini", "gpt-5.6-terra"]) == "gpt-5.6-terra", "Terra is the first verified fallback when Luna is unavailable")
         self.assert_true(preferred_hermes_model(["gpt-5.5", "gpt-5.4-mini"]) == "gpt-5.4-mini", "The default prefers GPT-5.4 mini when it is the smaller account model")
 
         dashboard = load_dashboard_module()
@@ -2272,7 +2273,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             result = dashboard.connect_agent_model({})
             self.assert_true(result["status"] == "terminal_opened", "Connect action opens the terminal when the environment allows it")
             self.assert_true("AGENT_CHAT_PROVIDER" not in captured and "AGENT_BRAIN_PROVIDER" not in captured, "Connecting ChatGPT does not silently replace another saved primary provider")
-            self.assert_true(captured.get("HERMES_MODEL") == "gpt-5.4-mini", "ChatGPT/Codex connection defaults to the lightweight GPT-5.4 mini instead of an unavailable auto option")
+            self.assert_true(captured.get("HERMES_MODEL") == "gpt-5.6-luna", "ChatGPT/Codex connection explicitly defaults to Luna")
         finally:
             dashboard.update_env_values = original_update
             dashboard.launch_hermes_terminal = original_launch
@@ -3215,7 +3216,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.assert_true("    - admira" in config_yaml, "Hermes Gateway explicitly enables Admira MCP tools for Telegram")
             self.assert_true("disabled_toolsets:" in config_yaml and "code_execution" in config_yaml and str(workspace) in config_yaml, "Hermes Gateway config keeps Telegram in the curated workspace")
             self.assert_true("    - delegation" not in config_yaml, "Paid/independent primary providers retain Hermes delegation when capacity permits")
-            self.assert_true('default: "gpt-5.4-mini"' in config_yaml and 'default: "auto"' not in config_yaml, "Hermes Gateway normalizes legacy auto model to the lightweight GPT-5.4 mini")
+            self.assert_true('default: "gpt-5.6-luna"' in config_yaml and 'default: "auto"' not in config_yaml, "Hermes Gateway defaults ChatGPT/Codex to Luna")
             self.assert_true("entrevista del negocio" in config_yaml and "no bloquean la configuración inicial" in config_yaml, "Hermes Gateway tells Telegram that agent interviews are not dashboard blockers")
             self.assert_true("primero entenderemos el negocio" in config_yaml and "marca visual" in config_yaml and "ofertas, briefs, estrategia y campañas" in config_yaml, "Hermes Gateway introduction explains the three-step onboarding journey")
             self.assert_true("Tu identidad de cara al cliente es solo Admira IA" in config_yaml and "comandos como `/help`" in config_yaml, "Telegram prompt blocks buyer-facing Hermes/runtime command branding")
@@ -13982,7 +13983,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         self.assert_true("https://admiraia.uboost.lat" in env_example, "Buyer release uses deployed license server")
         self.assert_true("LICENSE_PUBLIC_KEY=" in env_example, "Buyer release includes only license verification key")
         self.assert_true("AGENT_CHAT_BASE_URL=https://integrate.api.nvidia.com/v1" in env_example and "AGENT_CHAT_MODEL=minimaxai/minimax-m3" in env_example and "AGENT_CHAT_PROVIDER=hermes" in env_example and "AGENT_BRAIN_PROVIDER=nvidia_nim" in env_example, "Buyer release defaults the primary brain to NVIDIA NIM on MiniMax M3 while retaining the other providers")
-        self.assert_true("HERMES_MODEL=gpt-5.4-mini" in env_example, "Buyer release defaults ChatGPT/Codex to the lightweight GPT-5.4 mini instead of auto")
+        self.assert_true("HERMES_MODEL=gpt-5.6-luna" in env_example, "Buyer release defaults ChatGPT/Codex to Luna")
         self.assert_true("except ImportError" in hermes_gateway_source and "gpt-5.4-mini" in hermes_gateway_source and "except ImportError" in hermes_bridge_source and "gpt-5.4-mini" in hermes_bridge_source and "except ImportError" in dashboard_server_source and "gpt-5.4-mini" in dashboard_server_source, "Hermes and dashboard tolerate mixed-version installs when model normalization is missing")
         product_version = (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()
         self.assert_true(f"META_ADS_AGENT_VERSION={product_version}" in env_example, "Buyer release exposes the installed product version")
