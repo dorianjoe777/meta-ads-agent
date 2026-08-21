@@ -73,7 +73,12 @@ def main() -> None:
             "codex_image_generate",
             "search_motion_graphic_recipes",
             "generate_motion_graphic_video",
-            "stage_campaign",
+            # Campaign creation is destination-specific. stage_campaign is a
+            # retired generic helper and is not part of the public contract.
+            "create_whatsapp_campaign",
+            "create_lead_form_campaign",
+            "create_website_campaign",
+            "create_messaging_campaign",
         }
         if not required.issubset(tools):
             fail("MCP tool contract is incomplete")

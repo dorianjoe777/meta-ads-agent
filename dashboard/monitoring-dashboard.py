@@ -973,8 +973,14 @@ def dashboard_html_document():
 
 
 def version_parts(value):
-    numbers = re.findall(r"\d+", str(value or ""))
-    return tuple(int(part) for part in numbers) if numbers else (0,)
+    text = str(value or "").strip().lower()
+    # ``rN`` is the current release line.  Rank it above the legacy
+    # v1.0.2xx markers so existing installations can discover r59.
+    release_match = re.search(r"(?:^|[-_.])r(\d+)(?:$|[-_.])", text)
+    if release_match:
+        return (1, int(release_match.group(1)))
+    numbers = re.findall(r"\d+", text)
+    return (0, *tuple(int(part) for part in numbers)) if numbers else (0, 0)
 
 
 def is_newer_version(remote, current):
