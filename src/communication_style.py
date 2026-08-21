@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""Installation-wide operator preferences shared by every agent channel."""
+
+import os
+
+COMMUNICATION_STYLES = {"simple", "technical"}
+AD_EXPERIENCE_LEVELS = {"beginner", "intermediate", "advanced"}
+AD_EXPERIENCE_ALIASES = {
+    "no": "beginner",
+    "none": "beginner",
+    "nuevo": "beginner",
+    "nueva": "beginner",
+    "principiante": "beginner",
+    "beginner": "beginner",
+    "basic": "beginner",
+    "basico": "beginner",
+    "básico": "beginner",
+    "little": "beginner",
+    "poco": "beginner",
+    "some": "intermediate",
+    "algo": "intermediate",
+    "intermedio": "intermediate",
+    "intermediate": "intermediate",
+    "medium": "intermediate",
+    "medio": "intermediate",
+    "yes": "advanced",
+    "si": "advanced",
+    "sí": "advanced",
+    "experienced": "advanced",
+    "advanced": "advanced",
+    "avanzado": "advanced",
+    "avanzada": "advanced",
+    "experto": "advanced",
+    "experta": "advanced",
+    "professional": "advanced",
+    "profesional": "advanced",
+}
+
+
+def normalize_communication_style(value, default="simple"):
+    style = str(value or "").strip().lower()
+    if style in COMMUNICATION_STYLES:
+        return style
+    fallback = str(default or "").strip().lower()
+    return fallback if fallback in COMMUNICATION_STYLES else ""
+
+
+def communication_style_from_environment(default="simple"):
+    return normalize_communication_style(os.environ.get("AGENT_COMMUNICATION_STYLE"), default=default)
+
+
+def communication_style_is_configured():
+    return str(os.environ.get("AGENT_COMMUNICATION_STYLE") or "").strip().lower() in COMMUNICATION_STYLES
+
+
+def normalize_ad_experience_level(value, default=""):
+    raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    level = AD_EXPERIENCE_ALIASES.get(raw, raw)
+    if level in AD_EXPERIENCE_LEVELS:
+        return level
+    fallback_raw = str(default or "").strip().lower().replace("-", "_").replace(" ", "_")
+    fallback = AD_EXPERIENCE_ALIASES.get(fallback_raw, fallback_raw)
+    return fallback if fallback in AD_EXPERIENCE_LEVELS else ""
+
+
+def ad_experience_from_environment(default=""):
+    return normalize_ad_experience_level(os.environ.get("AGENT_AD_EXPERIENCE_LEVEL"), default=default)
+
+
+def ad_experience_is_configured():
+    return normalize_ad_experience_level(os.environ.get("AGENT_AD_EXPERIENCE_LEVEL"), default="") in AD_EXPERIENCE_LEVELS
+
+
+def communication_style_instruction(style, language="es"):
+    normalized = normalize_communication_style(style)
+    english = str(language or "").strip().lower().startswith("en")
+    if normalized == "technical":
+        if english:
+            return (
+                "Communication preference: technical. Use precise marketing and technical terminology freely when it improves the answer. "
+                "Include mechanisms, assumptions, limitations, and implementation detail when useful; do not automatically simplify or omit them. "
+                "Stay clear and organized. This preference never overrides security, approval, evidence, or account-safety rules."
+            )
+        return (
+            "Preferencia de comunicación: técnica. Usa libremente terminología precisa de marketing y tecnología cuando mejore la respuesta. "
+            "Incluye mecanismos, supuestos, límites y detalles de implementación cuando sean útiles; no los simplifiques ni omitas automáticamente. "
+            "Mantén claridad y orden. Esta preferencia nunca cambia las reglas de seguridad, aprobación, evidencia o cuidado de la cuenta."
+        )
+    if english:
+        return (
+            "Communication preference: simple words. Lead with the decision and business impact, use everyday language, and avoid jargon. "
+            "If a technical term is necessary, explain it immediately in one plain sentence. Do not show code, commands, or internal implementation "
+            "details unless the buyer asks for them. Still make expert best-practice recommendations proactively; simply explain the business impact "
+            "instead of the machinery. For an ordinary status, recommendation, diagnosis, or next-step reply, target 60-180 words and normally stay "
+            "under 220 words. Use no more than one short heading and 3-6 bullets when bullets help. Exceed that only when the buyer explicitly asks for "
+            "depth, the requested deliverable itself is long, or safety/accuracy genuinely requires it. Do not repeat the request, narrate internal reasoning, "
+            "list every possible branch, or add a generic continuation offer. Never end a complete reply with 'if you want...', 'would you like me to...', "
+            "or an equivalent invitation. If one answer is truly blocking, ask exactly one concise question; otherwise end decisively with the result, "
+            "recommendation, or next action. Use a few purposeful emojis as visual signposts when they make dense ads, metrics, or strategy information easier "
+            "to scan on a phone: for example 📊 metrics, ✅ what works, ⚠️ risk, 🎯 recommendation, 💰 budget/results, 🧪 test, and 🚀 next action. Put them on a "
+            "short heading or key bullet, not every sentence; avoid emoji chains, decoration, or a childish tone. This preference never overrides security, "
+            "approval, evidence, or account-safety rules. When the buyer is a "
+            "beginner or says they do not know, do not turn them into a student or dump options on them: choose one path, give one business reason, advance "
+            "safe work, and ask at most one blocking owner-only question. In that case, 180 words is the ordinary maximum and you must inspect Meta, "
+            "connections, files, and assets before asking for discoverable information."
+        )
+    return (
+        "Preferencia de comunicación: palabras simples. Empieza por la decisión y el impacto en el negocio, usa lenguaje cotidiano y evita jerga. "
+        "Si un término técnico es necesario, explícalo de inmediato en una frase sencilla. No muestres código, comandos ni detalles internos de "
+        "implementación salvo que el comprador los pida. Aun así, recomienda de forma proactiva las mejores prácticas; solo explica el impacto en negocio "
+        "en vez de toda la maquinaria. Para una respuesta normal de estado, recomendación, diagnóstico o siguiente paso, apunta a 60-180 palabras y "
+        "normalmente no pases de 220. Usa como máximo un título corto y entre 3 y 6 viñetas cuando ayuden. Supera ese tamaño solo si el comprador pide "
+        "profundidad, el entregable solicitado es largo o la seguridad/precisión realmente lo exige. No repitas la solicitud, no narres tu razonamiento interno, "
+        "no enumeres todas las ramas posibles ni agregues una oferta genérica de continuación. Nunca termines una respuesta ya completa con «si quieres...», "
+        "«¿quieres que...?», «puedo también...» ni equivalentes. Si falta una respuesta realmente bloqueante, haz exactamente una pregunta breve; de lo "
+        "contrario, termina de forma ejecutiva con el resultado, la recomendación o la siguiente acción. Usa pocos emojis funcionales como señales visuales cuando "
+        "faciliten leer información densa de anuncios, métricas o estrategia en el celular: por ejemplo 📊 métricas, ✅ lo que funciona, ⚠️ riesgo, 🎯 recomendación, "
+        "💰 presupuesto/resultados, 🧪 prueba y 🚀 siguiente acción. Colócalos en un título corto o viñeta clave, no en cada frase; evita cadenas de emojis, decoración "
+        "o tono infantil. Esta preferencia nunca cambia las reglas de seguridad, "
+        "aprobación, evidencia o cuidado de la cuenta. Cuando el comprador sea principiante o diga que no sabe, no lo conviertas en alumno ni le descargues opciones: "
+        "elige una ruta, da una razón de negocio, avanza lo seguro y pregunta como máximo un dato bloqueante que solo el dueño pueda conocer. En ese caso, "
+        "180 palabras es el máximo normal y primero debes consultar Meta, conexiones, archivos y activos antes de pedir información descubrible."
+    )
+
+
+def ad_experience_instruction(level, language="es"):
+    normalized = normalize_ad_experience_level(level, default="")
+    english = str(language or "").strip().lower().startswith("en")
+    if not normalized:
+        if english:
+            return (
+                "Ad experience preference is not configured yet. Early in onboarding, ask whether the buyer has experience creating/managing ads "
+                "and whether they want deep technical details. Save the answer with `mcp_admira_save_agent_preferences` when available."
+            )
+        return (
+            "La experiencia del comprador con anuncios todavía no está configurada. Al inicio del onboarding, pregunta si tiene experiencia creando/"
+            "gestionando anuncios y si quiere detalles técnicos profundos. Guarda la respuesta con `mcp_admira_save_agent_preferences` cuando esté disponible."
+        )
+    if normalized == "advanced":
+        if english:
+            return (
+                "Ad experience: advanced. You may discuss strategic tradeoffs, signal quality, optimization events, audience structure, budget math, "
+                "creative-test design, and tool limits in more depth. Stay proactive and challenge weak assumptions kindly."
+            )
+        return (
+            "Experiencia en anuncios: avanzada. Puedes hablar con más profundidad de tradeoffs estratégicos, calidad de señal, eventos de optimización, "
+            "estructura de audiencias, matemáticas de presupuesto, diseño de tests creativos y límites de herramientas. Sé proactivo y corrige supuestos débiles con tacto."
+        )
+    if normalized == "intermediate":
+        if english:
+            return (
+                "Ad experience: intermediate. Use a balanced style: name the important lever, give the practical reason, and include deeper detail only "
+                "when it changes the decision."
+            )
+        return (
+            "Experiencia en anuncios: intermedia. Usa un balance: nombra la palanca importante, da la razón práctica e incluye detalle profundo solo "
+            "cuando cambie la decisión."
+        )
+    if english:
+        return (
+            "Ad experience: beginner. Act like the expert operator: do not make the buyer choose technical Ads Manager knobs unless required. "
+            "Recommend one best-practice configuration, explain the money/business reason in plain words, advance all safe work, and ask for approval only "
+            "when spend or real-account change is involved. Inspect Meta, connections, memory, and assets first; ask at most one blocking question about something only the owner can know."
+        )
+    return (
+        "Experiencia en anuncios: principiante. Actúa como operador experto: no hagas que el comprador elija perillas técnicas de Ads Manager salvo que sea necesario. "
+        "Recomienda una sola configuración de mejores prácticas, explica la razón de dinero/negocio con palabras simples, avanza todo paso seguro y pide aprobación "
+        "solo cuando haya gasto o cambio real de cuenta. Consulta primero Meta, conexiones, memoria y activos; haz como máximo una pregunta bloqueante sobre algo que solo el dueño pueda saber."
+    )
+
+
+def communication_preference(style=None, language="es", default="simple", ad_experience_level=None, ad_experience_default=""):
+    style = normalize_communication_style(style, default=communication_style_from_environment(default=default))
+    ad_level = normalize_ad_experience_level(ad_experience_level, default=ad_experience_from_environment(default=ad_experience_default))
+    return {
+        "style": style,
+        "instruction": communication_style_instruction(style, language),
+        "ad_experience_level": ad_level,
+        "ad_experience_instruction": ad_experience_instruction(ad_level, language),
+    }

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Instalar Meta Ads Agent
+Comment=Instalador facil con Docker
+Exec=bash -c 'cd "$(dirname "%k")" && ./Instalar\ en\ Linux.sh'
+Terminal=true
+Categories=Utility;

@@ -1,0 +1,25 @@
+---
+name: meta-account-connection
+description: Connect Facebook through OAuth, list authorized ad accounts and Pages, persist the buyer's selected workspace, and read current Meta inventory. Use for connection, selection, account/Page switching, or current-account truth.
+---
+
+# Meta Account Connection
+
+Read this skill before calling `mcp_admira_start_meta_oauth_connection`, `mcp_admira_get_meta_oauth_workspaces`, `mcp_admira_select_meta_oauth_workspace`, or `mcp_admira_get_real_meta_context`.
+
+## Choose the operation
+
+- Need current campaigns, status, performance, account currency, account timezone, or selected Page/account truth: call `mcp_admira_get_real_meta_context`. Do not call it for an unrelated greeting or creative conversation.
+- Need to know whether Facebook is connected or which accounts/Pages OAuth exposed: call `mcp_admira_get_meta_oauth_workspaces`.
+- OAuth is genuinely absent: call `mcp_admira_start_meta_oauth_connection` and send its visible URL. Do not ask for a token or send terminal commands.
+- Buyer chooses an account and Page from the returned inventory: call `mcp_admira_select_meta_oauth_workspace` with those exact IDs. Resolve a natural name or numbered choice against the displayed inventory; never invent IDs.
+
+## Persistence and continuation
+
+A successful selection is durable across `/reset`, `/restart`, gateway restarts, and model changes. Use it silently afterward. Ask again only when the buyer requests a switch or the backend reports that the binding is missing, inaccessible, or no longer authorized.
+
+After sending an OAuth URL, the next “Listo/Done” means only “check OAuth completion”. List the workspaces and continue selection; do not route that acknowledgement to campaigns, images, or approvals.
+
+## Truth
+
+OAuth authorization, workspace selection, and live campaign synchronization are different states. A transient Graph read failure does not mean Facebook is disconnected. Preserve structured Meta error details for support and never describe an empty partial response as proof that nothing exists.

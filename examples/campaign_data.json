@@ -1,0 +1,36 @@
+[
+  {
+    "id": "camp_q2-sales-20260323",
+    "name": "Q2 Sales Campaign - May 2026",
+    "budget": {
+      "daily": 100.0,
+      "total": 3000.0
+    },
+    "metrics": {
+      "spend": 300.0,
+      "impressions": 15000,
+      "clicks": 450,
+      "conversions": 15,
+      "revenue": 600.0,
+      "cost_per_result": 20.0,
+      "roas": 2.0
+    }
+  },
+  {
+    "id": "camp_lead-gen-20260323",
+    "name": "Lead Generation Campaign",
+    "budget": {
+      "daily": 50.0,
+      "total": 1500.0
+    },
+    "metrics": {
+      "spend": 150.0,
+      "impressions": 10000,
+      "clicks": 300,
+      "conversions": 30,
+      "revenue": 0.0,
+      "cost_per_result": 5.0,
+      "roas": 0.0
+    }
+  }
+]

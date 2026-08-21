@@ -1,0 +1,371 @@
+# Codex image generation: architecture and troubleshooting
+
+This is the durable operating guide for image generation through a buyer's
+ChatGPT/Codex subscription. Read it before changing models, upgrading Codex,
+or debugging a Telegram creative that is slow, missing, or reported as
+successful without an attachment.
+
+## Shared ChatGPT subscription login
+
+The Gemini installation uses one buyer-selected ChatGPT subscription for both
+Image 2 and the Terra text fallback. The canonical login is the native Codex
+device flow under `CODEX_HOME = HERMES_HOME/codex-auth`; after it completes,
+Admira imports that exact session into Hermes. Never import an older CLI cache
+over a newer Hermes login.
+
+From the authorized Telegram chat, the buyer can send `/conectar_chatgpt` or a
+clear request such as “dame el enlace para cambiar la cuenta de ChatGPT”. The
+gateway handles this before inference, so it also works while the primary model
+is unavailable. It returns only the allow-listed OpenAI URL and one-time code.
+The deliberate account-switch flow clears OAuth artifacts from the old main and
+image-only stores, preserves business memory/campaign data, changes Image 2 to
+`main_chatgpt`, and starts `codex login --device-auth` without the former
+30-second timeout. A Hermes-only login remains a 300-second compatibility
+fallback when the Codex CLI is absent.
+
+After login verify all three conditions:
+
+1. `codex login status` succeeds with the isolated `CODEX_HOME`.
+2. Hermes resolves `openai-codex` from the matching `HERMES_HOME`.
+3. A Terra text probe and an Image 2 probe use the same account identifier and
+   neither reports the prior account's cooldown.
+
+The companion end-to-end test procedure is
+[`real-conversation-image-canary.md`](real-conversation-image-canary.md).
+
+## What the product actually does
+
+This route does **not** call the OpenAI Images API with an Admira API key. Its
+primary path calls Hermes' subscription-native `openai-codex` image provider,
+authenticated with the buyer's ChatGPT subscription. That provider calls the
+image model directly and writes a raster file. It does not need to start a
+Terra, Sol, or Luna reasoning session first.
+
+```text
+Telegram buyer
+  -> Hermes Gateway
+  -> configured conversational brain (Gemini in the current canary)
+  -> mcp_admira_codex_image_generate
+  -> Admira MCP subprocess
+  -> Admira tool bridge / dashboard image action
+  -> Hermes openai-codex image provider
+  -> gpt-image-2-medium through the buyer's ChatGPT subscription
+  -> <image-HERMES_HOME>/cache/images/.../image.png
+  -> /app/output/creatives/codex-.../admira-image.png
+  -> MCP role=tool result containing media_attachment=MEDIA:<path>
+  -> Admira Hermes runtime attachment hook
+  -> Telegram sendPhoto/media-group delivery
+```
+
+Only when that provider is unavailable for a known compatibility reason does
+Admira fall back to `codex exec -m <model> $imagegen`. Terra is therefore a
+compatibility fallback, not the normal image worker and not the pixel model.
+This distinction matters because the direct CLI consumes the account's Codex
+agent/reasoning allowance before it can invoke image generation.
+
+## Current canary contract
+
+As of 2026-08-18, the known-good canary contract is:
+
+- Main conversational brain: Gemini through Hermes.
+- Primary image provider: `openai-codex` through Hermes.
+- Primary pixel model observed in successful results: `gpt-image-2-medium`.
+- Compatibility fallback: `gpt-5.6-terra` through Codex CLI and the buyer's
+  ChatGPT login.
+- Codex CLI observed during the repair: `0.147.0`.
+- Inner image-provider or Codex-fallback timeout: 270 seconds.
+- Complete buyer-facing creative-tool ceiling: 300 seconds.
+- Codex process starts in its own process group and the complete group is
+  terminated on timeout.
+- Published images live under `/app/output/creatives/`.
+- Codex OAuth is isolated under `/app/runtime/hermes/codex-auth`; it must not
+  share Hermes' provider `auth.json`.
+- Telegram success requires a native attachment event, not only a PNG on disk
+  or a success sentence.
+
+The primary provider does not depend on Terra being available. Treat the
+fallback model name and CLI version as a recorded known-good pair, not a
+permanent guarantee. Account catalogs, subscription entitlements, and CLI
+compatibility can change.
+
+## Configuration flow: provider first, model fallback second
+
+The image action must call `run_hermes_image_bridge()` first. A healthy response
+identifies `provider=openai-codex` and normally `model=gpt-image-2-medium`.
+`CODEX_IMAGE_HERMES_MODEL` is relevant only if the bridge reports a recognized
+compatibility failure and the direct `codex exec` fallback is used.
+
+The fallback model begins in the container environment as
+`CODEX_IMAGE_HERMES_MODEL`. `hermes_gateway.py` copies it into
+`mcp_servers.admira.env` in `/app/runtime/hermes/config.yaml`. Hermes launches
+the isolated MCP subprocess from that block. The image action then passes the
+fallback model to `codex_brand_guides.call_codex_image_cli_direct`, which adds
+`-m <model>` to `codex exec`.
+
+Do not trust only the host `.env`, Compose inspection, dashboard display, or
+`/app/runtime/.env`. The value that matters is the value inside the live MCP
+process and the `-m` argument on the live Codex command.
+
+Verify all four layers:
+
+```bash
+# 1. Container configuration
+docker inspect <container> --format '{{range .Config.Env}}{{println .}}{{end}}' \
+  | grep '^CODEX_IMAGE_HERMES_MODEL='
+
+# 2. Generated Hermes MCP configuration
+docker exec <container> sh -lc \
+  'grep -n -A14 "mcp_servers:" /app/runtime/hermes/config.yaml'
+
+# 3. Live MCP process environment (run on the host)
+mcp_pid=$(docker top <container> -eo pid,comm,args \
+  | awk '$2=="python3" && /admira_mcp_server.py/ {print $1; exit}')
+tr '\0' '\n' < "/proc/$mcp_pid/environ" \
+  | grep -E '^(CODEX_IMAGE_HERMES_MODEL|ADMIRA_HEAVY_TOOL_TIMEOUT_SECONDS)='
+
+# 4. Only if fallback occurs, inspect the live Codex command line
+docker top <container> -eo pid,ppid,etimes,stat,comm,args \
+  | grep -E 'codex exec|admira_codex_image_generate'
+```
+
+If the provider status is healthy, no `codex exec` process should be required.
+If fallback occurs and layers 1-2 say Terra but layer 4 says an older model,
+the MCP environment bridge is broken or the long-running Gateway has not been
+restarted.
+
+## Authentication layout
+
+Hermes and Codex use different authentication formats:
+
+- `HERMES_HOME=/app/runtime/hermes` stores Hermes provider/session state.
+- `CODEX_HOME=/app/runtime/hermes/codex-auth` stores Codex CLI OAuth.
+
+Sharing one `auth.json` between them can make a status check look plausible
+while `codex exec` receives a 401 or unusable credentials. Always check the
+same home the worker uses:
+
+```bash
+docker exec <container> sh -lc \
+  'CODEX_HOME=/app/runtime/hermes/codex-auth codex login status'
+```
+
+Do not print or copy `auth.json` into logs, tickets, documentation, or chat.
+
+## First-response checklist
+
+Use read-only checks before restarting or editing anything:
+
+1. Record UTC time, buyer/chat, elapsed time, and requested asset count.
+2. Inspect `agent.log` from just before the request.
+3. Inspect the process tree and exact `codex exec -m ...` command.
+4. Check whether a new file exists in `/app/output/creatives/` and in the
+   selected `CODEX_HOME/generated_images/` tree.
+5. Sample the native Codex process I/O twice several seconds apart. Zero I/O,
+   no new files, and no network activity indicate a stall rather than a slow
+   render.
+6. Confirm effective model, CLI version, login home, and timeout.
+7. Check native Telegram delivery logs separately from generation logs.
+8. Compare host, live-container, and tagged-image source hashes before editing.
+
+Useful commands:
+
+```bash
+date -Is
+docker top <container> -eo pid,ppid,etimes,stat,comm,args
+docker exec <container> tail -n 240 /app/runtime/hermes/logs/agent.log
+docker exec <container> sh -lc \
+  'find /app/output/creatives -type f -mmin -15 -printf "%TY-%Tm-%TdT%TH:%TM:%TS %s %p\n" | sort'
+docker exec <container> codex --version
+```
+
+## Frequent failure modes and where to look
+
+### Installed Codex CLI is too old
+
+Symptoms include unsupported flags, missing `$imagegen` capability, model
+metadata errors, or a model that works in a newer Codex environment but not on
+the droplet. Check `codex --version`, the exact binary path, and whether the
+container image actually contains the upgraded CLI. Upgrading a host-global
+binary does not upgrade a binary baked into the running container.
+
+After an upgrade, verify login status again and perform one controlled canary.
+Do not assume CLI upgrades preserve authentication paths or model support.
+
+### Configured model is unavailable or too new for the CLI
+
+The buyer's plan determines which Codex models are exposed. A model available
+on one subscription may be absent on Go or another plan. The CLI may also be
+too old to recognize a currently entitled model. Look for `model_not_found`,
+`unsupported model`, `model metadata`, or `requires a newer version of codex`.
+
+Never silently substitute a heavy or unrelated model. Use a model confirmed in
+the buyer's actual account catalog. On this canary, Terra was retained because
+Luna could not be assumed for Go subscriptions.
+
+### Model propagation bridge is missing
+
+The container may correctly advertise Terra while the isolated MCP subprocess
+loads an old value from `/app/runtime/.env`. The visible symptom is a live
+command such as `codex exec -m gpt-5.5` despite Compose showing Terra. Inspect
+`mcp_servers.admira.env`, the MCP process environment, and the live command.
+
+The required bridge fields are:
+
+```text
+CODEX_IMAGE_HERMES_MODEL=<configured model>
+ADMIRA_HEAVY_TOOL_TIMEOUT_SECONDS=300
+```
+
+Restart the Gateway/container after changing generated MCP configuration;
+long-running processes do not reload Python modules or environment variables.
+
+### MCP result compatibility bridge is missing
+
+Hermes Agent 0.18 reads `CallToolResult.isError`; MCP 2.x exposes the Python
+field as `is_error`. A successful image can be followed by:
+
+```text
+'CallToolResult' object has no attribute 'isError'
+```
+
+All Hermes subprocesses must receive `/app/src` on `PYTHONPATH` and
+`ADMIRA_HERMES_RUNTIME_PATCHES=1` so the compatibility alias loads before the
+MCP adapter.
+
+### Image exists but Telegram sends only text
+
+Generation and delivery are separate stages. Real Hermes MCP output stores the
+asset in a `role=tool` message, followed by the model's normal assistant text.
+The runtime attachment hook must inspect all current-turn tool/assistant
+messages after the latest buyer message, append the internal `MEDIA:<path>`
+directive, and never replay media from an older turn.
+
+A PNG on disk plus “good news, I generated it” is still a failure unless logs
+show image extraction and `sendPhoto`/media-group delivery.
+
+One concrete failure shape is `MEDIA:<path>` followed by `[ADMIRA FINAL]` in
+the model response. Private-reasoning cleanup removes everything before that
+marker. The runtime must therefore normalize the visible answer first and only
+then append current-turn media recovered from the successful `role=tool`
+message. Reversing those operations silently deletes the valid attachment.
+
+### Codex stalls until timeout
+
+A healthy image commonly finishes in about one minute, but provider latency
+varies. The current worker ceiling is 270 seconds and the complete tool ceiling
+is 300 seconds. A request must not leave Telegram working for nine or ten
+minutes.
+
+On timeout, `codex exec` must have `start_new_session=True`, and cleanup must
+signal its complete process group. Killing only the Node launcher can leave the
+native Codex child alive and consuming memory or holding subscription work.
+
+After cleanup, check for leftovers:
+
+```bash
+docker top <container> -eo pid,ppid,etimes,stat,comm,args | grep -E 'codex exec|\[codex\]'
+ps -eo pid,ppid,pgid,sid,stat,etime,comm,args | grep -E 'codex|admira_tool_bridge'
+```
+
+A `Z`/`<defunct>` process cannot be killed again; its parent must reap it. A
+planned container restart clears it. Confirm the PID and command belong to the
+failed image request before signaling any process group.
+
+### Direct Codex CLI preempts the image provider
+
+This was the 2026-08-18 canary regression. A direct Terra session was attempted
+before the healthy `openai-codex` image provider. Terra stalled for the full
+270-second worker timeout, so the working direct-image route was never reached.
+
+The invariant is provider-first: `run_hermes_image_bridge()` must run before
+`call_codex_image_cli_direct()`. Direct CLI fallback is allowed only for the
+explicit compatibility errors in `CODEX_IMAGE_DIRECT_FALLBACK_ERROR_TYPES`.
+A provider timeout, rate limit, or ambiguous failure must not launch a second
+subscription operation automatically.
+
+### Subscription quota or provider throttling
+
+Look for rate-limit, usage-limit, weekly-image-limit, quota, 429, or retry-after
+text. Do not automatically retry a successful or ambiguous image call: a
+duplicate consumes subscription capacity and can create the wrong attachment.
+Return one clear retryable failure and preserve the original diagnostic.
+
+Do not treat every `usage_limit_exceeded` as an image-limit result. A Codex
+rollout/session file reports the Codex agent/reasoning allowance used by direct
+`codex exec`; the `openai-codex` provider's image allowance is a separate path.
+It is valid for direct Terra to report an exhausted Codex allowance while the
+provider status still reports `provider=openai-codex` and image generation is
+available. Check the backend/provider stored in the MCP result and run provider
+status inside the exact MCP environment before diagnosing image quota.
+
+### A file appears after a reported failure
+
+Compare file modification time and request start time, then validate the file
+with Pillow. Do not attach an older image merely because it is the newest file
+in a shared directory. Current-turn tool metadata is authoritative; directory
+scanning is only diagnostic/recovery evidence.
+
+### Host, container, and image tag contain different code
+
+The canary can have three distinct copies:
+
+1. Host checkout under `/opt/admira-ia`.
+2. Writable filesystem of the running container under `/app`.
+3. Image currently referenced by the canary tag.
+
+Never patch the oldest convenient copy. Hash the exact files first:
+
+```bash
+sha256sum /opt/admira-ia/src/<file>
+docker exec <container> sha256sum /app/src/<file>
+docker run --rm --entrypoint sha256sum <image-tag> /app/src/<file>
+```
+
+If they differ, recover the exact live or intended image baseline before using
+`apply_patch`. After verification, sync the repaired source deliberately,
+restart the canary, and commit/tag the verified container state. Keep a named
+pre-fix image tag for rollback. Do not update the local repository until that
+separate task is explicitly requested.
+
+### Tests expect an obsolete authentication directory
+
+Older tests expected `CODEX_HOME` to equal `HERMES_HOME`. The current security
+contract deliberately uses `<HERMES_HOME>/codex-auth`. A failing path assertion
+must be checked against `codex_cli_environment()` before changing production
+behavior. Update stale test expectations when the isolated path is intentional;
+do not collapse the two auth stores to make an old test pass.
+
+## Safe recovery order
+
+1. Stop duplicate requests; do not generate another image for diagnosis.
+2. Let a request close through its bounded timeout unless it threatens the
+   service. Capture its final tool result.
+3. Terminate only a confirmed leftover image-worker process group.
+4. Correct configuration/code on the exact live baseline.
+5. Run focused tests that use fake subprocesses and consume no image quota.
+6. Restart so Gateway and MCP reload the patch.
+7. Verify model and timeout inside the live MCP process.
+8. Check HTTP health, Telegram reconnection, and Codex login.
+9. Persist the verified container to the canary tag with a rollback tag.
+10. Run one real conversational canary only when end-to-end proof is needed.
+
+## Required regression coverage
+
+Keep tests for all of these behaviors:
+
+- MCP receives the configured image-worker model.
+- A healthy `openai-codex` provider runs before direct Codex CLI fallback.
+- Creative tool timeout cannot exceed 300 seconds.
+- Inner Codex worker uses a shorter 270-second ceiling.
+- Timeout sends SIGTERM to the complete Codex process group.
+- MCP `isError` compatibility loads in every Hermes subprocess.
+- A current-turn `role=tool` media attachment reaches the final response.
+- Media from an older turn is not replayed.
+- Codex and Hermes authentication homes remain isolated.
+
+## Meaning of success
+
+Declare the route healthy only when one buyer request produces exactly one
+valid image, Hermes returns a truthful natural-language response, Telegram
+sends the native attachment, no duplicate tool call occurs, and no Codex
+process remains after completion. Each stage must be verified independently.

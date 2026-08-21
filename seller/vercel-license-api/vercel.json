@@ -1,0 +1,60 @@
+{
+  "functions": {
+    "api/portal/session.js": {
+      "maxDuration": 60
+    },
+    "api/**/*.js": {
+      "maxDuration": 10
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/webhooks/hotmart",
+      "destination": "/api/admin/licenses?webhook=hotmart"
+    },
+    {
+      "source": "/api/meta-oauth",
+      "destination": "/api/portal/session?meta_oauth=1"
+    },
+    {
+      "source": "/",
+      "destination": "/api/portal"
+    },
+    {
+      "source": "/access",
+      "destination": "/api/portal"
+    },
+    {
+      "source": "/descargas",
+      "destination": "/api/portal"
+    },
+    {
+      "source": "/download",
+      "destination": "/api/portal"
+    },
+    {
+      "source": "/health",
+      "destination": "/api/health"
+    },
+    {
+      "source": "/admin/licenses",
+      "destination": "/admin/licenses.html"
+    },
+    {
+      "source": "/privacy",
+      "destination": "/privacy.html"
+    },
+    {
+      "source": "/privacy-policy",
+      "destination": "/privacy.html"
+    },
+    {
+      "source": "/data-deletion",
+      "destination": "/data-deletion.html"
+    },
+    {
+      "source": "/delete-data",
+      "destination": "/data-deletion.html"
+    }
+  ]
+}

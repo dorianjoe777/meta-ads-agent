@@ -1,0 +1,27 @@
+#cloud-config
+package_update: true
+package_upgrade: false
+packages:
+  - ca-certificates
+  - curl
+  - git
+  - python3
+  - unzip
+  - docker.io
+  - docker-compose-plugin
+
+users:
+  - default
+
+write_files:
+  - path: /etc/ssh/sshd_config.d/99-meta-ads-agent-hardening.conf
+    permissions: "0644"
+    content: |
+      PasswordAuthentication no
+      PermitRootLogin prohibit-password
+
+runcmd:
+  - systemctl enable --now docker
+  - systemctl restart ssh || systemctl restart sshd
+  - mkdir -p /opt/meta-ads-agent
+  - echo "Upload or install Meta Ads Agent into /opt/meta-ads-agent, then run scripts/install-digitalocean-strict-access.sh"

@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Admira IA · Licencias</title>
+  <style>
+    :root { color-scheme: dark; --bg:#090b12; --panel:#121827; --panel-2:#182136; --line:#2a3650; --text:#f4f7ff; --muted:#9ba9c4; --accent:#62e1c0; --accent-2:#9d7bff; --danger:#ff8b9e; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; color:var(--text); background:radial-gradient(circle at 15% 0%, #203654 0, transparent 38%), radial-gradient(circle at 90% 8%, #352052 0, transparent 35%), var(--bg); font:15px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    main { width:min(1240px, calc(100% - 32px)); margin:0 auto; padding:34px 0 56px; }
+    .eyebrow { color:var(--accent); font-size:12px; font-weight:800; letter-spacing:.14em; text-transform:uppercase; }
+    h1 { margin:6px 0 8px; font-size:clamp(27px, 4vw, 42px); letter-spacing:-.04em; }
+    .lede { max-width:720px; margin:0; color:var(--muted); }
+    .panel { margin-top:26px; padding:22px; border:1px solid var(--line); border-radius:20px; background:linear-gradient(145deg, rgba(24,33,54,.95), rgba(13,18,31,.94)); box-shadow:0 22px 70px rgba(0,0,0,.24); }
+    .panel-head, .toolbar, .form-row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    .panel-head { justify-content:space-between; margin-bottom:16px; }
+    h2 { margin:0; font-size:19px; }
+    label { display:grid; gap:7px; color:var(--muted); font-size:12px; font-weight:700; }
+    input, select, button { border:1px solid var(--line); border-radius:10px; min-height:40px; font:inherit; }
+    input, select { width:100%; padding:9px 11px; color:var(--text); background:#0d1321; outline:none; }
+    input:focus, select:focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(98,225,192,.14); }
+    button { padding:9px 14px; color:var(--text); background:#1b2740; cursor:pointer; font-weight:750; transition:transform .15s ease, background .15s ease, border-color .15s ease; }
+    button:hover { transform:translateY(-1px); border-color:#4d6288; background:#243452; }
+    button.primary { color:#07131a; border-color:transparent; background:linear-gradient(135deg, var(--accent), #7be7ff); }
+    button.danger { color:#ffd9df; border-color:rgba(255,139,158,.45); background:rgba(89,24,43,.35); }
+    button.small { min-height:34px; padding:6px 10px; font-size:12px; }
+    .auth-grid { display:grid; grid-template-columns:minmax(260px, 1fr) auto; gap:12px; align-items:end; }
+    .hint { margin:11px 0 0; color:var(--muted); font-size:12px; }
+    .hidden { display:none !important; }
+    .stats { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:12px; margin-bottom:20px; }
+    .stat { padding:15px 16px; border:1px solid var(--line); border-radius:14px; background:rgba(9,13,24,.5); }
+    .stat span { display:block; color:var(--muted); font-size:12px; }
+    .stat strong { display:block; margin-top:4px; font-size:25px; letter-spacing:-.04em; }
+    .toolbar { justify-content:space-between; margin-bottom:13px; }
+    .toolbar input { width:min(360px, 100%); }
+    .table-wrap { overflow:auto; border:1px solid var(--line); border-radius:14px; }
+    table { width:100%; min-width:1100px; border-collapse:collapse; }
+    th, td { padding:13px 14px; border-bottom:1px solid rgba(42,54,80,.65); text-align:left; vertical-align:middle; }
+    th { color:var(--muted); background:#111a2c; font-size:11px; letter-spacing:.09em; text-transform:uppercase; }
+    tr:last-child td { border-bottom:0; }
+    code { color:#c5d1ec; font-size:12px; word-break:break-all; }
+    .email-cell { display:flex; min-width:250px; gap:7px; }
+    .email-cell input { min-height:34px; }
+    .cloud-cell { display:grid; gap:7px; min-width:210px; }
+    .cloud-cell .cloud-meta { color:var(--muted); font-size:11px; }
+    .cloud-status { display:inline-flex; align-items:center; gap:6px; width:max-content; color:#a8f4d9; font-size:12px; font-weight:800; text-transform:capitalize; }
+    .cloud-status::before { width:7px; height:7px; border-radius:50%; background:currentColor; content:""; }
+    .cloud-status.resetting { color:#ffd58a; }
+    .cloud-status.failed { color:var(--danger); }
+    .cloud-status.testing { color:#ffd58a; }
+    .status { display:inline-flex; align-items:center; gap:6px; color:#a8f4d9; font-size:12px; font-weight:800; text-transform:capitalize; }
+    .status::before { width:7px; height:7px; border-radius:50%; background:currentColor; content:""; }
+    .status.revoked { color:var(--danger); }
+    .empty { padding:32px; color:var(--muted); text-align:center; }
+    .create-grid { display:grid; grid-template-columns:minmax(240px, 1fr) 180px auto; gap:12px; align-items:end; }
+    .notice { margin-top:14px; padding:12px 14px; border-radius:10px; color:#b9c7df; background:rgba(98,225,192,.08); font-size:12px; }
+    #toast { position:fixed; right:20px; bottom:20px; z-index:2; max-width:min(420px, calc(100% - 40px)); padding:13px 16px; border:1px solid var(--line); border-radius:12px; background:#121a2b; box-shadow:0 15px 45px rgba(0,0,0,.35); }
+    #toast.error { color:#ffd5dc; border-color:rgba(255,139,158,.5); }
+    @media (max-width:700px) { main { width:min(100% - 20px, 1240px); padding-top:22px; } .panel { padding:15px; border-radius:15px; } .auth-grid, .create-grid { grid-template-columns:1fr; } .stats { grid-template-columns:repeat(2, minmax(0, 1fr)); } }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="eyebrow">Admira IA · administración</div>
+    <h1>Licencias y propietarios</h1>
+    <p class="lede">Cambia propietarios o prepara una instalación cloud de pruebas para entregarla limpia a un cliente.</p>
+
+    <section class="panel" aria-labelledby="auth-title">
+      <div class="panel-head"><h2 id="auth-title">Acceso administrativo</h2><span id="connection" class="hint">Desconectado</span></div>
+      <div class="auth-grid">
+        <label for="admin-key">Clave administrativa
+          <input id="admin-key" type="password" autocomplete="off" placeholder="LICENSE_ADMIN_KEY">
+        </label>
+        <button id="connect" class="primary" type="button">Conectar</button>
+      </div>
+      <p class="hint">La clave solo se conserva en la sesión de esta pestaña y se envía por HTTPS al endpoint administrativo.</p>
+    </section>
+
+    <section id="workspace" class="panel hidden" aria-labelledby="table-title">
+      <div class="stats" aria-label="Resumen"><div class="stat"><span>Total</span><strong id="stat-total">0</strong></div><div class="stat"><span>Activas</span><strong id="stat-active">0</strong></div><div class="stat"><span>Con instalación</span><strong id="stat-devices">0</strong></div><div class="stat"><span>Emails enviados</span><strong id="stat-sent">0</strong></div></div>
+      <div class="panel-head"><h2 id="table-title">Registro de licencias</h2><button id="refresh" class="small" type="button">Actualizar</button></div>
+      <div class="toolbar"><input id="search" type="search" placeholder="Buscar por licencia o email" aria-label="Buscar licencias"><span id="updated" class="hint"></span></div>
+      <div class="table-wrap"><table><thead><tr><th>Licencia</th><th>Email asociado</th><th>Plan</th><th>Estado</th><th>Dispositivos</th><th>Instalación cloud</th><th>Creada</th></tr></thead><tbody id="licenses-body"><tr><td colspan="7" class="empty">Conecta para cargar licencias.</td></tr></tbody></table></div>
+      <div class="notice">Al guardar un email nuevo, el anterior queda como alias técnico. «Restablecer limpia» conserva las API keys, la conexión ChatGPT/Codex para imágenes, Telegram y la licencia; borra Facebook/Meta, la contraseña, memoria, sesiones, skills personales, datos de negocio, multimedia y onboarding para que el próximo cliente empiece desde cero.</div>
+    </section>
+
+    <section id="create-panel" class="panel hidden" aria-labelledby="create-title">
+      <div class="panel-head"><h2 id="create-title">Crear una licencia</h2></div>
+      <div class="create-grid">
+        <label for="create-email">Email inicial
+          <input id="create-email" type="email" placeholder="cliente@ejemplo.com">
+        </label>
+        <label for="create-plan">Plan
+          <select id="create-plan"><option value="individual">Individual</option><option value="agency">Agency</option></select>
+        </label>
+        <button id="create" class="primary" type="button">Crear licencia</button>
+      </div>
+    </section>
+  </main>
+  <div id="toast" class="hidden" role="status" aria-live="polite"></div>
+  <script>
+    (() => {
+      const keyInput = document.getElementById('admin-key');
+      const workspace = document.getElementById('workspace');
+      const createPanel = document.getElementById('create-panel');
+      const body = document.getElementById('licenses-body');
+      const search = document.getElementById('search');
+      const toast = document.getElementById('toast');
+      let records = [];
+      let toastTimer;
+      const savedKey = sessionStorage.getItem('admira_license_admin_key') || '';
+      if (savedKey) keyInput.value = savedKey;
+      function notify(message, error = false) { clearTimeout(toastTimer); toast.textContent = message; toast.classList.toggle('error', error); toast.classList.remove('hidden'); toastTimer = setTimeout(() => toast.classList.add('hidden'), 4600); }
+      function readableError(error, fallback = 'No se pudo completar la operación.') { const value = error && typeof error === 'object' && 'message' in error ? error.message : error; if (typeof value === 'string' && value.trim()) return value; try { const serialized = JSON.stringify(value); return serialized && serialized !== '{}' ? serialized : fallback; } catch (_) { return fallback; } }
+      function adminKey() { return keyInput.value.trim(); }
+      async function api(bodyData, method = 'GET') {
+        const options = { method, headers: { Authorization: `Bearer ${adminKey()}`, Accept: 'application/json' } };
+        if (method !== 'GET') { options.headers['Content-Type'] = 'application/json'; options.body = JSON.stringify(bodyData); }
+        const response = await fetch('/api/admin/licenses', options);
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload.ok === false) throw new Error(payload.error || `Error ${response.status}`);
+        return payload;
+      }
+      function date(value) { if (!value) return '—'; const parsed = new Date(value); return Number.isNaN(parsed.getTime()) ? '—' : parsed.toLocaleDateString(); }
+      function render() {
+        const needle = search.value.trim().toLowerCase();
+        const visible = records.filter((record) => !needle || `${record.license_key} ${record.buyer_email}`.toLowerCase().includes(needle));
+        if (!visible.length) { body.innerHTML = '<tr><td colspan="7" class="empty">No hay licencias que coincidan.</td></tr>'; return; }
+        body.innerHTML = visible.map((record) => {
+          const cloud = record.cloud || {};
+          const resetStatus = String(cloud.clean_reset_status || '').toLowerCase();
+          const resetting = resetStatus === 'queued' || resetStatus === 'running';
+          const cloudStatus = cloud.installed ? (resetting ? 'restableciendo' : (cloud.status || 'instalada')) : 'sin instalación';
+          const cloudClass = resetting ? 'resetting' : (resetStatus === 'failed' ? 'failed' : '');
+          const testingMode = cloud.testing_mode === true || cloud.network_mode === 'testing';
+          const resetButton = cloud.can_clean_install
+            ? `<button class="small danger clean-cloud" type="button" ${resetting ? 'disabled' : ''}>${resetting ? 'Limpiando…' : 'Restablecer limpia'}</button>`
+            : '';
+          const networkButton = cloud.can_change_network_mode
+            ? `<button class="small network-mode ${testingMode ? 'testing' : ''}" type="button" ${resetting ? 'disabled' : ''}>${testingMode ? 'Volver privado' : 'Activar testing'}</button>`
+            : '';
+          const cloudMeta = cloud.installed
+            ? `${cloud.droplet_ip ? escapeHtml(cloud.droplet_ip) : 'Servidor cloud registrado'} · ${testingMode ? 'dashboard público' : 'dashboard privado'}`
+            : 'Instala primero en la nube';
+          return `<tr data-key="${escapeHtml(record.license_key)}"><td><code>${escapeHtml(record.license_key)}</code><br><button class="small copy" type="button">Copiar</button></td><td><div class="email-cell"><input class="email" type="email" value="${escapeHtml(record.buyer_email || '')}" aria-label="Email de ${escapeHtml(record.license_key)}"><button class="small save" type="button">Guardar</button></div></td><td>${escapeHtml(record.plan || 'individual')}</td><td><span class="status ${record.status === 'revoked' ? 'revoked' : ''}">${escapeHtml(record.status || 'active')}</span></td><td>${Number(record.devices || 0)}</td><td><div class="cloud-cell"><span class="cloud-status ${cloudClass} ${testingMode ? 'testing' : ''}">${escapeHtml(cloudStatus)}</span><span class="cloud-meta">${cloudMeta}</span>${networkButton}${resetButton}</div></td><td>${date(record.created_at)}</td></tr>`;
+        }).join('');
+        body.querySelectorAll('.save').forEach((button) => button.addEventListener('click', () => updateEmail(button.closest('tr'))));
+        body.querySelectorAll('.copy').forEach((button) => button.addEventListener('click', async () => { const value = button.closest('tr').dataset.key; await navigator.clipboard?.writeText(value); notify('Licencia copiada.'); }));
+        body.querySelectorAll('.clean-cloud').forEach((button) => button.addEventListener('click', () => cleanCloud(button.closest('tr'))));
+        body.querySelectorAll('.network-mode').forEach((button) => button.addEventListener('click', () => toggleNetworkMode(button.closest('tr'))));
+      }
+      function escapeHtml(value) { return String(value ?? '').replace(/[&<>'"]/g, (character) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[character])); }
+      function updateStats() { document.getElementById('stat-total').textContent = records.length; document.getElementById('stat-active').textContent = records.filter((record) => record.status === 'active').length; document.getElementById('stat-devices').textContent = records.filter((record) => Number(record.devices || 0) > 0).length; document.getElementById('stat-sent').textContent = records.filter((record) => record.buyer_email_status === 'sent').length; }
+      async function load() { if (!adminKey()) { notify('Escribe la clave administrativa.', true); return; } try { const payload = await api(); records = Array.isArray(payload.licenses) ? payload.licenses : []; updateStats(); render(); workspace.classList.remove('hidden'); createPanel.classList.remove('hidden'); document.getElementById('connection').textContent = `Conectado · ${records.length} licencias`; document.getElementById('updated').textContent = `Actualizado ${new Date().toLocaleTimeString()}`; sessionStorage.setItem('admira_license_admin_key', adminKey()); } catch (error) { document.getElementById('connection').textContent = 'Error de autenticación'; notify(readableError(error, 'No se pudo cargar el registro.'), true); } }
+      async function updateEmail(row) { const licenseKey = row.dataset.key; const input = row.querySelector('.email'); const nextEmail = input.value.trim().toLowerCase(); const button = row.querySelector('.save'); button.disabled = true; try { const payload = await api({ action: 'update_email', license_key: licenseKey, buyer_email: nextEmail }, 'POST'); const updated = payload.license; const index = records.findIndex((record) => record.license_key === licenseKey); if (index >= 0) records[index] = { ...records[index], buyer_email: updated.buyer_email }; updateStats(); render(); notify(payload.email_change?.changed ? 'Email actualizado. La instalación existente se conservó.' : 'Sin cambios.'); } catch (error) { notify(error.message || 'No se pudo actualizar el email.', true); } finally { button.disabled = false; } }
+      async function cleanCloud(row) {
+        const licenseKey = row.dataset.key;
+        const record = records.find((item) => item.license_key === licenseKey) || {};
+        const cloud = record.cloud || {};
+        if (!cloud.can_clean_install) { notify('Esta instalación no tiene habilitado el canal seguro de limpieza.', true); return; }
+        const accepted = window.confirm(`Se limpiará la instalación cloud de ${record.buyer_email || 'este propietario'} sin borrar el Droplet.\n\nSe conservarán las API keys, ChatGPT/Codex para imágenes, Telegram y la licencia. Se borrarán Facebook/Meta, la contraseña, memoria, sesiones, skills personales, datos de negocio, multimedia y onboarding.\n\n¿Continuar?`);
+        if (!accepted) return;
+        const typed = window.prompt(`Para confirmar, escribe exactamente la licencia:\n${licenseKey}`) || '';
+        if (typed.trim().toUpperCase() !== licenseKey) { notify('Limpieza cancelada: la licencia no coincide.', true); return; }
+        const button = row.querySelector('.clean-cloud');
+        button.disabled = true;
+        try {
+          const payload = await api({ action: 'reset_cloud_installation', license_key: licenseKey, confirm_license_key: typed }, 'POST');
+          const index = records.findIndex((item) => item.license_key === licenseKey);
+          if (index >= 0) records[index] = { ...records[index], cloud: { ...records[index].cloud, ...payload.cloud } };
+          render();
+          notify('Limpieza solicitada. El servidor está borrando el estado anterior y preparando el onboarding desde cero.');
+          pollCloudReset(licenseKey, 36);
+        } catch (error) {
+          notify(error.message || 'No se pudo iniciar la limpieza cloud.', true);
+          button.disabled = false;
+        }
+      }
+      async function toggleNetworkMode(row) {
+        const licenseKey = row.dataset.key;
+        const record = records.find((item) => item.license_key === licenseKey) || {};
+        const cloud = record.cloud || {};
+        const currentMode = cloud.testing_mode === true || cloud.network_mode === 'testing' ? 'testing' : 'strict';
+        const nextMode = currentMode === 'testing' ? 'strict' : 'testing';
+        const actionLabel = nextMode === 'testing' ? 'hacer público el dashboard' : 'volver a limitarlo a la red autorizada';
+        const accepted = window.confirm(`Vas a ${actionLabel} para ${record.buyer_email || 'esta licencia'}.
+\nSolo se publican el puerto del dashboard y HTTPS; la contraseña, SSH y el canal administrativo siguen protegidos.\n\n¿Continuar?`);
+        if (!accepted) return;
+        const typed = window.prompt(`Para confirmar, escribe exactamente la licencia:\n${licenseKey}`) || '';
+        if (typed.trim().toUpperCase() !== licenseKey) { notify('Cambio cancelado: la licencia no coincide.', true); return; }
+        const button = row.querySelector('.network-mode');
+        button.disabled = true;
+        let digitalOceanToken = '';
+        let clientIp = '';
+        try {
+          let payload;
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            try {
+              payload = await api({ action: 'set_cloud_network_mode', license_key: licenseKey, mode: nextMode, confirm_license_key: typed, ...(digitalOceanToken ? { digitalocean_token: digitalOceanToken.trim() } : {}), ...(clientIp ? { client_ip: clientIp.trim() } : {}) }, 'POST');
+              break;
+            } catch (error) {
+              if (error.message === 'digitalocean_token_required' && !digitalOceanToken) {
+                digitalOceanToken = window.prompt('Esta instalación no tiene guardado el token de DigitalOcean. Pégalo una vez para actualizar el firewall:') || '';
+                if (!digitalOceanToken.trim()) throw error;
+                continue;
+              }
+              if (error.message === 'cloud_network_strict_ip_missing' && nextMode === 'strict' && !clientIp) {
+                clientIp = window.prompt('Para volver a modo privado necesito el IPv4 autorizado (por ejemplo, 203.0.113.10):') || '';
+                if (!clientIp.trim()) throw error;
+                continue;
+              }
+              throw error;
+            }
+          }
+          if (!payload) throw new Error('cloud_network_mode_failed');
+          const index = records.findIndex((item) => item.license_key === licenseKey);
+          if (index >= 0) records[index] = { ...records[index], cloud: { ...records[index].cloud, ...payload.cloud } };
+          render();
+          notify(nextMode === 'testing' ? 'Modo testing activo: el cliente puede abrir el dashboard y pegar su token de Meta.' : 'Modo privado activo: el dashboard volvió a la red autorizada.');
+        } catch (error) {
+          notify(error.message || 'No se pudo actualizar el modo de red.', true);
+          button.disabled = false;
+        }
+      }
+      function pollCloudReset(licenseKey, remaining) {
+        if (remaining <= 0) return;
+        window.setTimeout(async () => {
+          try {
+            const payload = await api({ action: 'cloud_reset_status', license_key: licenseKey }, 'POST');
+            const index = records.findIndex((item) => item.license_key === licenseKey);
+            if (index >= 0) records[index] = { ...records[index], cloud: { ...records[index].cloud, ...payload.cloud } };
+            render();
+            const status = String(payload.reset?.status || '').toLowerCase();
+            if (status === 'complete') { notify('Instalación limpia lista. El próximo cliente debe crear una contraseña y conectar Facebook.'); return; }
+            if (status === 'failed') { notify(payload.reset?.detail || 'La limpieza cloud falló.', true); return; }
+            pollCloudReset(licenseKey, remaining - 1);
+          } catch (error) {
+            if (remaining > 1) pollCloudReset(licenseKey, remaining - 1);
+            else notify(error.message || 'No pude comprobar el estado de la limpieza.', true);
+          }
+        }, 2500);
+      }
+      async function createLicense() { const email = document.getElementById('create-email').value.trim().toLowerCase(); const plan = document.getElementById('create-plan').value; const button = document.getElementById('create'); button.disabled = true; try { const payload = await api({ buyer_email: email, plan }, 'POST'); document.getElementById('create-email').value = ''; notify(`Licencia creada: ${payload.license.license_key}`); await load(); } catch (error) { notify(error.message || 'No se pudo crear la licencia.', true); } finally { button.disabled = false; } }
+      document.getElementById('connect').addEventListener('click', load); document.getElementById('refresh').addEventListener('click', load); document.getElementById('create').addEventListener('click', createLicense); search.addEventListener('input', render); keyInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') load(); });
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="620" height="320" viewBox="0 0 620 320" role="img" aria-labelledby="title desc">
+  <title id="title">Ad+ logo</title>
+  <desc id="desc">Angular Ad+ wordmark with a smaller superscript plus.</desc>
+  <defs>
+    <linearGradient id="word" x1="70" y1="250" x2="380" y2="56" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#DCCBFF"/>
+      <stop offset="0.52" stop-color="#FFF9FF"/>
+      <stop offset="1" stop-color="#FFD0CB"/>
+    </linearGradient>
+    <linearGradient id="plus" x1="424" y1="50" x2="506" y2="132" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#C7F1B7"/>
+      <stop offset="0.58" stop-color="#DCCBFF"/>
+      <stop offset="1" stop-color="#FFD0CB"/>
+    </linearGradient>
+    <filter id="glow" x="-18%" y="-30%" width="136%" height="160%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.72 0 0 0 0 0.58 0 0 0 0 1 0 0 0 .42 0"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <g filter="url(#glow)">
+    <text x="62" y="230" fill="url(#word)" font-family="Orbitron, Eurostile, Bank Gothic, Arial Black, sans-serif" font-size="202" font-weight="900" letter-spacing="-8">Ad</text>
+    <path d="M428 54h24v33h33v24h-33v33h-24v-33h-33V87h33V54Z" fill="url(#plus)"/>
+  </g>
+</svg>

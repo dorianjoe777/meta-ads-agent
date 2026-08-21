@@ -1,0 +1,46 @@
+{
+  "account": {
+    "id": "act_123456789",
+    "name": "Example Brand"
+  },
+  "brand": {
+    "name": "Ad+",
+    "offer": "Premium product or service",
+    "voice": "clear, direct, benefit-led",
+    "visual_style": "premium ecommerce photography, clean lighting, high trust, conversion-focused",
+    "avoid": [
+      "misleading claims",
+      "before-and-after exaggeration",
+      "excessive text in image",
+      "fake UI elements"
+    ]
+  },
+  "benchmarks": {
+    "target_cpa": 50.0,
+    "target_roas": 3.0,
+    "max_frequency": 3.0,
+    "min_ctr": 1.0,
+    "max_cpc": 2.5
+  },
+  "creative": {
+    "default_aspect_ratios": ["1:1", "4:5", "9:16"],
+    "variants_per_campaign": 3,
+    "create_ads_as_paused": true,
+    "destination": {
+      "page_id": "",
+      "instagram_actor_id": "",
+      "default_adset_id": "",
+      "url": "https://example.com"
+    },
+    "refresh_when": {
+      "health_in": ["fatigue", "losing"],
+      "frequency_over": 3.0,
+      "ctr_drop_pct_over": 20,
+      "roas_below": 1.2
+    }
+  },
+  "reporting": {
+    "default_preset": "last_7d",
+    "timezone": "America/Bogota"
+  }
+}

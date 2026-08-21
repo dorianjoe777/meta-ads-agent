@@ -1,0 +1,52 @@
+name: ${ADMIRA_COMPOSE_PROJECT_NAME:-admira-ia}
+
+services:
+  meta-ads-agent:
+    build:
+      context: .
+      args:
+        ADMIRA_BUILD_VERSION: ${ADMIRA_BUILD_VERSION:-unknown}
+    image: ${ADMIRA_IMAGE_NAME:-admira-ia:${ADMIRA_BUILD_VERSION:-local}}
+    container_name: ${ADMIRA_CONTAINER_NAME:-admira-ia}
+    ports:
+      - "0.0.0.0:${DASHBOARD_PORT:-7871}:7871"
+    env_file:
+      - .env
+    environment:
+      DASHBOARD_HOST: 0.0.0.0
+      DASHBOARD_PORT: 7871
+      ALLOW_PUBLIC_DASHBOARD: "true"
+      ADMIRA_HOST_LAN_IP: ${ADMIRA_HOST_LAN_IP:-}
+      ADMIRA_IMAGE_VERSION: ${ADMIRA_BUILD_VERSION:-unknown}
+      CODEX_CREATIVE_ENABLED: "true"
+      CODEX_CLI: codex
+      CODEX_HOME: /app/runtime/hermes/codex-auth
+      HERMES_DISABLED_TOOLSETS: terminal,code_execution,image_gen,skills
+      HERMES_HOME: /app/runtime/hermes
+      TELEGRAM_AGENT_MODE: hermes_gateway
+    volumes:
+      - meta_ads_config:/app/runtime
+      - meta_ads_data:/app/dashboard/data
+      - meta_ads_update_snapshots:/app/dashboard/data/update-snapshots
+      - meta_ads_output:/app/output
+      - meta_ads_logs:/app/logs
+      - meta_ads_brand_guides:/app/brand_guides
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  meta_ads_config:
+    name: ${ADMIRA_VOLUME_PREFIX:-meta_ads}_config
+  meta_ads_data:
+    name: ${ADMIRA_VOLUME_PREFIX:-meta_ads}_data
+  meta_ads_update_snapshots:
+    name: ${ADMIRA_VOLUME_PREFIX:-meta_ads}_update_snapshots
+  meta_ads_output:
+    name: ${ADMIRA_VOLUME_PREFIX:-meta_ads}_output
+  meta_ads_logs:
+    name: ${ADMIRA_VOLUME_PREFIX:-meta_ads}_logs
+  meta_ads_brand_guides:
+    name: ${ADMIRA_VOLUME_PREFIX:-meta_ads}_brand_guides
