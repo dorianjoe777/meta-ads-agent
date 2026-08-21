@@ -12,9 +12,15 @@ function selectedBackend() {
 }
 
 function versionParts(value = "") {
-  const match = String(value).trim().match(/^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/i);
+  const text = String(value || "").trim().toLowerCase();
+  // The rN release line supersedes legacy v1.0.2xx markers. Keep the
+  // ordering explicit so an older Blob registry cannot hide a new Upstash
+  // release while both stores are being reconciled.
+  const releaseMatch = text.match(/(?:^|[-_.])r(\d+)(?:$|[-_.])/i);
+  if (releaseMatch) return [1, Number(releaseMatch[1]), 0];
+  const match = text.match(/^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/i);
   if (!match) return [0, 0, 0];
-  return [Number(match[1] || 0), Number(match[2] || 0), Number(match[3] || 0)];
+  return [0, Number(match[1] || 0), Number(match[2] || 0), Number(match[3] || 0)];
 }
 
 function compareReleaseEntries(left = {}, right = {}) {
