@@ -3206,6 +3206,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.assert_true("context_file_max_chars: 60000" in config_yaml, "Hermes Gateway pins a safe context-file budget below the smallest supported buyer model cap")
             self.assert_true("fallback_providers: []" in config_yaml or '- provider: "openai-codex"' in config_yaml, "Hermes Gateway either needs no fallback for a Codex primary or uses the current ChatGPT/Codex route")
             self.assert_true("ADMIRA_CRON_PIN_PROVIDER=openai-codex" in env_text and "ADMIRA_CRON_PIN_MODEL=gpt-5.4-mini" in env_text, "Hermes reasoning crons receive the current buyer-selected brain at execution time")
+            self.assert_true("ADMIRA_NVIDIA_API_KEY=" not in env_text and "integrate.api.nvidia.com" not in env_text, "Inactive saved providers cannot leak into an active ChatGPT cron fallback environment")
             self.assert_true("HERMES_MEDIA_ALLOW_DIRS=" in env_text and "/output" in env_text, "Hermes Gateway allows generated output files to be delivered as native media attachments")
             self.assert_true("mcp_servers:" in config_yaml and "admira:" in config_yaml and "admira_mcp_server.py" in config_yaml, "Hermes Gateway registers the Admira MCP product-tool bridge")
             self.assert_true('CODEX_IMAGE_HERMES_MODEL: "gpt-5.6-terra"' in config_yaml, "Hermes Gateway passes the configured image-worker model into the isolated MCP subprocess")

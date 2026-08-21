@@ -622,8 +622,18 @@ def write_gateway_files(config):
     env_lines.append(f"ADMIRA_GATEWAY_PROVIDER={_env_value(active_provider)}")
     env_lines.append(f"ADMIRA_CRON_PIN_PROVIDER={_env_value(active_provider)}")
     env_lines.append(f"ADMIRA_CRON_PIN_MODEL={_env_value(active_model)}")
+    # Cron workers reload this private environment independently of the
+    # gateway. Keep only the currently selected API connection here. Hermes
+    # can otherwise discover an old saved provider (for example NVIDIA) and
+    # attempt it as an implicit fallback after the active model is rate
+    # limited, even though Admira's explicit fallback chain points elsewhere.
+    # The Codex subscription fallback is file-authenticated under CODEX_HOME,
+    # so it does not need a second API connection copied into this file.
+    active_connection_provider = str(active_brain.get("brain") or "").strip()
     for provider, connection in agent_model_connections(config, include_secrets=True).items():
         if not connection.get("configured"):
+            continue
+        if provider != active_connection_provider:
             continue
         key_env, base_env, model_env = provider_env[provider]
         env_lines.append(f"{key_env}={_env_value(connection.get('api_key'))}")
