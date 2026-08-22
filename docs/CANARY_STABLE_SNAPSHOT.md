@@ -1,11 +1,12 @@
 # Stable Canary Snapshot
 
 This repository snapshot captures the code and product configuration that was
-running successfully on the DigitalOcean canary on 2026-08-20.
+running successfully on the DigitalOcean canary on 2026-08-21.
 
-- Version: `v1.0.242-canary`
+- Version: `r63`
 - Snapshot purpose: stable baseline for the Admira IA Meta Ads agent
-- Verified flows: creative generation, paused campaign creation, and campaign editing
+- Verified flows: Telegram gateway startup, direct ChatGPT reconnection,
+  creative generation, paused campaign creation, and campaign editing
 
 The snapshot intentionally excludes runtime and customer-specific state:
 

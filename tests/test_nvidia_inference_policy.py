@@ -792,6 +792,8 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
             "nudge": dashboard.nudge_hermes_browserless_autodrive,
             "refresh": dashboard.refresh_telegram_gateway_after_agent_model_change,
             "cache": dashboard.cache_codex_session_status,
+            "update": dashboard.update_env_values,
+            "catalog": dashboard.codex_model_catalog,
         }
         old_state = dict(dashboard.HERMES_LOGIN_STATE)
         try:
@@ -803,27 +805,36 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
                 dashboard.nudge_hermes_browserless_autodrive = lambda: None
                 dashboard.refresh_telegram_gateway_after_agent_model_change = lambda *_args, **_kwargs: {"started": True}
                 dashboard.cache_codex_session_status = lambda *_args, **_kwargs: None
+                delayed_updates = []
+                dashboard.update_env_values = lambda values: delayed_updates.append(values)
+                dashboard.codex_model_catalog = lambda **_kwargs: {"models": []}
                 config = SimpleNamespace(hermes_model="gpt-5.6-terra")
                 baseline = dashboard.codex_cli_auth_fingerprint(config)
+                process_state = {"returncode": None}
                 dashboard.HERMES_LOGIN_STATE.clear()
                 dashboard.HERMES_LOGIN_STATE.update({
                     "id": "switch-test",
-                    "proc": SimpleNamespace(poll=lambda: None),
+                    "proc": SimpleNamespace(poll=lambda: process_state["returncode"]),
                     "output": "https://auth.openai.com/codex/device\nABCD-EFGH",
                     "force_reconnect": True,
                     "baseline_auth_fingerprint": baseline,
                 })
                 waiting = dashboard.hermes_browserless_snapshot(config)
                 self.assertNotEqual(waiting.get("status"), "completed")
+                self.assertFalse(delayed_updates)
                 (home / "auth.json").write_text('{"account":"new"}', encoding="utf-8")
+                process_state["returncode"] = 0
                 completed = dashboard.hermes_browserless_snapshot(config)
                 self.assertEqual(completed.get("status"), "completed")
+                self.assertEqual(delayed_updates[-1]["CODEX_IMAGE_SOURCE"], "main_chatgpt")
         finally:
             dashboard.hermes_environment = originals["environment"]
             dashboard.browserless_chatgpt_ready = originals["ready"]
             dashboard.nudge_hermes_browserless_autodrive = originals["nudge"]
             dashboard.refresh_telegram_gateway_after_agent_model_change = originals["refresh"]
             dashboard.cache_codex_session_status = originals["cache"]
+            dashboard.update_env_values = originals["update"]
+            dashboard.codex_model_catalog = originals["catalog"]
             dashboard.HERMES_LOGIN_STATE.clear()
             dashboard.HERMES_LOGIN_STATE.update(old_state)
 

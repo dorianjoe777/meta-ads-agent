@@ -6,6 +6,7 @@ Admira should not edit site-packages in place, so this module is loaded through
 PYTHONPATH/sitecustomize only for the gateway process and wraps the narrow
 provider-error formatter that can otherwise leak raw English provider text.
 """
+import asyncio
 import hashlib
 import importlib
 import importlib.util
@@ -1528,7 +1529,14 @@ def _patch_gateway_chatgpt_slash_commands():
                     session_key = self._session_key_for_source(source)
                 except Exception:
                     session_key = ""
-                result = _automatic_codex_recovery(wait_seconds=15, action="switch")
+                # Device login performs local HTTP and PTY polling. Keep it
+                # off the Telegram event loop so typing, commands and polling
+                # continue while the secure URL/code is being produced.
+                result = await asyncio.to_thread(
+                    _automatic_codex_recovery,
+                    wait_seconds=15,
+                    action="switch",
+                )
                 if result.get("url") and result.get("code"):
                     _remember_chatgpt_login_pending(session_key)
                 language = str(os.environ.get("ADMIRA_GATEWAY_LANGUAGE") or "es")

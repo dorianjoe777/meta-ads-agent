@@ -2895,7 +2895,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             result = dashboard.reconnect_shared_chatgpt_subscription()
             self.assert_true(result["status"] == "browser_login_started", "Shared ChatGPT reconnect starts a new browser login")
             self.assert_true(not captured["clears"], "Shared reconnect preserves the working OAuth credential until the replacement device login completes")
-            self.assert_true(captured["env"]["CODEX_IMAGE_SOURCE"] == "main_chatgpt", "Shared reconnect points Image 2 at the canonical main ChatGPT session")
+            self.assert_true("env" not in captured, "Shared reconnect does not restart Telegram before returning the device login code")
             self.assert_true(captured["start"] == ("/safe/main", "agent", True), "Shared reconnect cannot short-circuit on an older valid account")
         finally:
             dashboard.load_config = originals["load_config"]

@@ -6992,12 +6992,19 @@ def codex_cli_auth_fingerprint(config):
 def hermes_browserless_snapshot(config=None, purpose="agent"):
     config = config or load_config()
     purpose = normalize_connect_purpose(purpose)
-    ready, auth_detail = browserless_chatgpt_ready(config)
     with HERMES_LOGIN_LOCK:
         state = dict(HERMES_LOGIN_STATE)
         proc = state.get("proc")
         running = bool(proc and proc.poll() is None)
         output = state.get("output", "")
+    # While a replacement login is running, its PTY output is the source of
+    # truth. Probing the old Codex credential first can take 10-15 seconds per
+    # poll and delays the device link long enough for the Telegram request to
+    # time out. Validate the credential only after the login process exits.
+    if running:
+        ready, auth_detail = False, "ChatGPT account switch is in progress"
+    else:
+        ready, auth_detail = browserless_chatgpt_ready(config)
     force_reconnect = bool(state.get("force_reconnect"))
     baseline_fingerprint = str(state.get("baseline_auth_fingerprint") or "")
     replacement_changed = codex_cli_auth_fingerprint(config) != baseline_fingerprint
@@ -7134,6 +7141,14 @@ def finish_hermes_browserless_session(session_id, returncode):
     if force_reconnect and not replacement_changed:
         auth_detail = "La cuenta anterior sigue activa; el nuevo login todavía no reemplazó la credencial de Codex."
     if ready and purpose == "agent":
+        # Only after the replacement credential is safely persisted may the
+        # shared Image 2/fallback route be updated. A gateway restart is safe
+        # here because the device URL and code were delivered earlier.
+        update_env_values({
+            "CODEX_IMAGE_SOURCE": "main_chatgpt",
+            "CODEX_IMAGE_HERMES_HOME": "",
+            "HERMES_REQUIRE_CODEX_AUTH": "false",
+        })
         try:
             codex_model_catalog(config=config, force_refresh=True)
         except Exception:
@@ -7199,7 +7214,12 @@ def start_hermes_browserless_login(config, purpose="agent", force_reconnect=Fals
             command=hermes_browserless_shell_command(config),
             connection_purpose=purpose,
         )
-    ready, auth_detail = browserless_chatgpt_ready(config)
+    # A forced account switch must open the device flow immediately. Checking
+    # the credential being replaced adds latency and cannot satisfy the switch.
+    if force_reconnect:
+        ready, auth_detail = False, "ChatGPT account switch requested"
+    else:
+        ready, auth_detail = browserless_chatgpt_ready(config)
     if ready and not force_reconnect:
         gateway = refresh_telegram_gateway_after_agent_model_change(
             {"HERMES_MODEL": getattr(config, "hermes_model", "")}
@@ -7478,16 +7498,12 @@ def connect_agent_model(payload=None):
 
 def reconnect_shared_chatgpt_subscription():
     """Start one buyer-controlled ChatGPT login shared by fallback and Image 2."""
-    base = load_config()
     stop_hermes_login_session("agent")
     # Keep the current credential until a replacement login completes. An
     # unavailable browser/device flow must not destroy the working Image 2
-    # subscription and then misreport the failure as a quota problem.
-    update_env_values({
-        "CODEX_IMAGE_SOURCE": "main_chatgpt",
-        "CODEX_IMAGE_HERMES_HOME": "",
-        "HERMES_REQUIRE_CODEX_AUTH": "false",
-    })
+    # subscription and then misreport the failure as a quota problem. Do not
+    # rewrite gateway environment here: its watcher would restart Telegram
+    # before the command handler can return the device URL and code.
     config = load_config()
     cache_codex_session_status(config, purpose="agent", authenticated=False, detail="ChatGPT account switch started by buyer")
     return start_hermes_browserless_login(config, purpose="agent", force_reconnect=True)

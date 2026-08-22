@@ -25,34 +25,43 @@ def _install_runtime_patches():
 
             def admira_import(name, globals=None, locals=None, fromlist=(), level=0):
                 module = original_import(name, globals, locals, fromlist, level)
-                if (
-                    str(name or "").startswith("agent.chat_completion_helpers")
-                    or (str(name or "") == "agent" and "chat_completion_helpers" in (fromlist or ()))
-                    or str(name or "") == "run_agent"
-                ):
-                    try:
-                        runtime_patch._patch_nvidia_request_gate()
-                    except Exception:
-                        # Runtime compatibility hooks must never prevent
-                        # Hermes from starting; the canary diagnostics expose
-                        # an unpatched request if this fails.
-                        pass
-                # ``gateway.run`` is imported after sitecustomize during
-                # normal Hermes startup. Retry the GatewayRunner patch at
-                # the point where the class has actually been defined.
-                if str(name or "") == "gateway.run":
-                    try:
-                        runtime_patch._patch_gateway_chatgpt_slash_commands()
-                    except Exception:
-                        pass
-                    try:
-                        runtime_patch._patch_gateway_generated_media_delivery()
-                    except Exception:
-                        pass
-                    try:
-                        runtime_patch._patch_gateway_reset_campaign_scope()
-                    except Exception:
-                        pass
+                # Patch helpers import the same Hermes modules they patch.
+                # Guard the callback section so those nested imports return
+                # normally instead of recursively invoking every patch again.
+                if getattr(builtins, "__admira_import_patch_active__", False):
+                    return module
+                builtins.__admira_import_patch_active__ = True
+                try:
+                    if (
+                        str(name or "").startswith("agent.chat_completion_helpers")
+                        or (str(name or "") == "agent" and "chat_completion_helpers" in (fromlist or ()))
+                        or str(name or "") == "run_agent"
+                    ):
+                        try:
+                            runtime_patch._patch_nvidia_request_gate()
+                        except Exception:
+                            # Runtime compatibility hooks must never prevent
+                            # Hermes from starting; the canary diagnostics expose
+                            # an unpatched request if this fails.
+                            pass
+                    # ``gateway.run`` is imported after sitecustomize during
+                    # normal Hermes startup. Retry the GatewayRunner patch at
+                    # the point where the class has actually been defined.
+                    if str(name or "") == "gateway.run":
+                        try:
+                            runtime_patch._patch_gateway_chatgpt_slash_commands()
+                        except Exception:
+                            pass
+                        try:
+                            runtime_patch._patch_gateway_generated_media_delivery()
+                        except Exception:
+                            pass
+                        try:
+                            runtime_patch._patch_gateway_reset_campaign_scope()
+                        except Exception:
+                            pass
+                finally:
+                    builtins.__admira_import_patch_active__ = False
                 return module
 
             builtins.__import__ = admira_import
