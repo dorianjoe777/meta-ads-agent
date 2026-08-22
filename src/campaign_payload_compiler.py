@@ -52,27 +52,38 @@ DESTINATIONS = {
 DESTINATION_REQUIRED_FIELDS = {
     "whatsapp": (
         "name", "daily_budget", "budget_confirmation", "locations", "placements",
-        "prefilled_message", "creative_decision", "creative_approved",
+        "primary_text", "headline", "primary_text_approved", "headline_approved",
+        "creative_decision", "creative_approved", "prefilled_message",
         "prefilled_message_approved",
     ),
     "lead_form": (
         "name", "daily_budget", "budget_confirmation", "locations", "placements",
+        "primary_text", "headline", "primary_text_approved", "headline_approved",
+        "creative_decision", "creative_approved",
         "lead_gen_form_id",
     ),
     "website": (
         "name", "daily_budget", "budget_confirmation", "locations", "placements",
+        "primary_text", "headline", "primary_text_approved", "headline_approved",
+        "creative_decision", "creative_approved",
         "landing_url",
     ),
     "messaging": (
         "name", "daily_budget", "budget_confirmation", "locations", "placements",
+        "primary_text", "headline", "primary_text_approved", "headline_approved",
+        "creative_decision", "creative_approved",
         "message_destination", "welcome_message",
     ),
     "app": (
         "name", "daily_budget", "budget_confirmation", "locations", "placements",
+        "primary_text", "headline", "primary_text_approved", "headline_approved",
+        "creative_decision", "creative_approved",
         "application_id", "object_store_url",
     ),
     "on_meta": (
         "name", "daily_budget", "budget_confirmation", "locations", "placements",
+        "primary_text", "headline", "primary_text_approved", "headline_approved",
+        "creative_decision", "creative_approved",
     ),
 }
 
@@ -183,13 +194,15 @@ def destination_payload_properties(destination):
         "targeting_mode": _string(),
         "primary_text": _string(),
         "headline": _string(),
+        "primary_text_approved": _boolean(),
+        "headline_approved": _boolean(),
+        "creative_decision": _string(),
+        "creative_approved": _boolean(),
         "success_metrics": {"type": "array", "items": {"type": "string"}},
     }
     extras = {
         "whatsapp": {
             "prefilled_message": _string(),
-            "creative_decision": _string(),
-            "creative_approved": _boolean(),
             "prefilled_message_approved": _boolean(),
         },
         "lead_form": {"lead_gen_form_id": _string()},
@@ -240,6 +253,131 @@ def persist_latest_brief(tool, brief_markdown):
     )
     _atomic_private_text(LATEST_BRIEF_FILE, body)
     return LATEST_BRIEF_FILE
+
+
+def _verbatim_buyer_text(brief_markdown):
+    """Return only buyer-authored evidence from the compiler brief.
+
+    The model's summary is deliberately excluded.  It is a proposal and can
+    contain values the model inferred (or copied from an older campaign), so it
+    must never authorize a budget, creative, or ad copy by itself.
+    """
+    text = str(brief_markdown or "")
+    match = re.search(
+        r"(?is)^##\s*Verbatim\s+recent\s+buyer\s+messages\s*\(authoritative\)\s*$"
+        r"(.*?)(?=^##\s+|\Z)",
+        text,
+        re.MULTILINE,
+    )
+    return (match.group(1) if match else "").strip()
+
+
+def _pending_campaign_confirmation(destination, buyer_text):
+    """Allow a short natural-language approval only after a proposal was held.
+
+    This keeps the first request from inheriting an old budget while still
+    allowing a buyer to answer “sí”, “ok” or “adelante” after seeing the exact
+    proposal in the immediately preceding turn.  A completed/old workflow is
+    never enough; only the current pending workflow is considered.
+    """
+    text = str(buyer_text or "").strip().lower()
+    if not re.search(
+        r"(?i)(?:\bs[ií]\b|\bok(?:ay)?\b|\badelante\b|\bconfirmo\b|"
+        r"\baprob(?:ado|ada|ar)\b|\bde acuerdo\b|\bme gusta\b|"
+        r"\bsigamos\b|\bcontin(?:uemos|uar)\b)",
+        text,
+    ):
+        return False
+    pending_path = ROOT_DIR / "dashboard" / "data" / "pending_campaign_workflow.json"
+    try:
+        state = json.loads(pending_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return False
+    if not isinstance(state, dict) or str(state.get("status") or "").lower() != "pending":
+        return False
+    if str(state.get("destination") or "").strip().lower() != str(destination or "").strip().lower():
+        return False
+    # A short approval can resume only a concrete proposal that was actually
+    # held.  An empty blocker record must still ask for the missing decisions.
+    proposal = str(state.get("proposal_brief_markdown") or "").strip().lower()
+    if not proposal:
+        return False
+    has_amount = bool(re.search(
+        r"(?i)(?:[$€£]\s*\d|\b\d[\d.,]*(?:\s*mil)?\s*(?:usd|us\$|d[oó]lares?|cop|pesos?|mxn|eur|euros?)\b|"
+        r"\b(?:usd|us\$|d[oó]lares?|cop|pesos?|mxn|eur|euros?)\b\s*\d)",
+        proposal,
+    ))
+    has_copy = "texto principal" in proposal or "primary_text" in proposal
+    has_title = "título" in proposal or "titulo" in proposal or "headline" in proposal
+    has_creative = "creativ" in proposal or "imagen" in proposal or "content_asset" in proposal
+    has_message = destination != "whatsapp" or "mensaje" in proposal or "prefilled_message" in proposal
+    return bool(has_amount and has_copy and has_title and has_creative and has_message)
+
+
+def _held_campaign_proposal(destination):
+    pending_path = ROOT_DIR / "dashboard" / "data" / "pending_campaign_workflow.json"
+    try:
+        state = json.loads(pending_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return ""
+    if not isinstance(state, dict) or str(state.get("status") or "").lower() != "pending":
+        return ""
+    if str(state.get("destination") or "").strip().lower() != str(destination or "").strip().lower():
+        return ""
+    return str(state.get("proposal_brief_markdown") or "").strip()
+
+
+def _buyer_decision_gaps(destination, brief_markdown):
+    """Find missing owner decisions before any provider or Meta call.
+
+    This is intentionally an evidence gate, not a phrase-based conversation
+    router.  Any current buyer wording that contains the relevant value or a
+    clear selection/approval counts.  What never counts is the agent's own
+    summary, a previous campaign, or a remembered amount.
+    """
+    buyer_text = _verbatim_buyer_text(brief_markdown)
+    if not buyer_text:
+        return ["budget_confirmation", "creative_approval", "primary_text_approval", "headline_approval"]
+    pending_confirmation = _pending_campaign_confirmation(destination, buyer_text)
+    normalized = buyer_text.lower()
+    approval = re.search(
+        r"(?i)(?:\baprob(?:ado|ada|ar)\b|\bconfirm(?:o|ado|ada)\b|\bme gusta\b|"
+        r"\busa(?:r|mos)?\b|\butiliza(?:r|mos)?\b|\belijo\b|\bseleccion(?:o|ar)\b|"
+        r"\breutiliza(?:r|mos)?\b|\badelante\b|\bsigamos\b|\bcontin(?:uemos|uar)\b|"
+        r"\bde acuerdo\b|\bcomo est[aá]\b|\bd[eé]jalo as[ií]\b)",
+        normalized,
+    )
+    # Accept common natural-language money forms, including “40 mil pesos”.
+    has_budget = bool(re.search(
+        r"(?i)(?:[$€£]\s*\d|\b\d[\d.,]*(?:\s*mil)?\s*(?:usd|us\$|d[oó]lares?|cop|pesos?|mxn|eur|euros?)\b|"
+        r"\b(?:usd|us\$|d[oó]lares?|cop|pesos?|mxn|eur|euros?)\b\s*\d)",
+        normalized,
+    ))
+    has_creative = bool(re.search(r"(?i)\b(?:creativ[oa]s?|imagen|foto|video|asset|archivo)\b", normalized)) and bool(
+        approval or re.search(r"(?i)\b(?:crea(?:r|mos)|genera(?:r|mos)|sub(?:o|ir)|adjunt(?:o|ar)|usa(?:r|mos)|reutiliza(?:r|mos))\b", normalized)
+    )
+    has_copy = bool(re.search(r"(?i)\b(?:copy|texto(?:\s+principal)?|texto\s+del\s+anuncio|primary\s+text)\b", normalized)) and bool(
+        approval or re.search(r"[\"“”']|\s[:=]\s", normalized)
+    )
+    has_title = bool(re.search(r"(?i)\b(?:t[ií]tulo|headline|encabezado)\b", normalized)) and bool(
+        approval or re.search(r"[\"“”']|\s[:=]\s", normalized)
+    )
+    gaps = []
+    if not has_budget and not pending_confirmation:
+        gaps.append("budget_confirmation")
+    if not has_creative and not pending_confirmation:
+        gaps.append("creative_approval")
+    if not has_copy and not pending_confirmation:
+        gaps.append("primary_text_approval")
+    if not has_title and not pending_confirmation:
+        gaps.append("headline_approval")
+    if destination == "whatsapp":
+        has_message = bool(re.search(r"(?i)\b(?:mensaje(?:\s+prellenado|\s+inicial)?|prefilled\s+message|welcome\s+message)\b", normalized)) and bool(
+            approval or re.search(r"[\"“”']|\s[:=]\s", normalized)
+        )
+        if not has_message and not pending_confirmation:
+            gaps.append("prefilled_message_approval")
+    return gaps
 
 
 def _missing_required_fields(destination, payload):
@@ -764,6 +902,18 @@ def compile_campaign_brief(tool, brief_markdown, *, timeout=240, config=None):
         return {"ok": False, "reason": "campaign_brief_too_large"}
 
     brief_path = persist_latest_brief(tool, brief)
+    decision_gaps = _buyer_decision_gaps(destination, brief)
+    if decision_gaps:
+        # Do not spend a compiler-provider call on an invented proposal and do
+        # not let a remembered amount become a new campaign's budget.  The
+        # conversational agent can use these field names to ask for one
+        # compact, natural-language confirmation packet.
+        return {
+            "ok": False,
+            "reason": "campaign_brief_incomplete",
+            "missing_fields": decision_gaps,
+            "error": "The latest buyer messages do not explicitly resolve all campaign decisions.",
+        }
     contract = CONTRACT_FILE.read_text(encoding="utf-8") if CONTRACT_FILE.exists() else ""
     schema = compiler_output_schema(tool)
     config = config or load_config()
@@ -780,6 +930,7 @@ The selected destination itself supplies its contract-defined objective; for Wha
 Audience automation and placement automation are different controls. If the brief explicitly says Advantage+ Audience, set targeting_mode to advantage_plus. If it explicitly disables Advantage+ Audience or requests manual/original audience targeting, set targeting_mode to manual. For a multi-ad-set brief with different audience modes, set targeting_mode inside every ad_sets item and preserve each item's decision; do not force one campaign-wide mode. Never infer either decision from placement wording.
 For multi-ad-set campaigns, locations, placements, prefilled_message/welcome_message, budgets, ages, genders, creative references, and ad copy may differ per item. Preserve those values inside each ad_sets item. Do not require a fake campaign-wide default when every ad set supplies the field.
 Every structured Meta location must preserve its `id`/`key` and its exact `type` (`city`, `region`, or `country`). Preserve `name` and `country_code` when supplied. Never emit an object containing only an ID; if exact structure is uncertain, preserve the buyer's natural city/region string so the backend resolves it live.
+The `## Verbatim recent buyer messages (authoritative)` section is the only evidence of owner decisions. The agent-authored summary above it is a proposal, not approval. Never copy a budget from a previous campaign, durable memory, pending workflow, or the summary. If the verbatim messages do not contain the current amount and currency, leave ready=false and include budget_confirmation in missing_fields. Likewise, primary_text, headline, creative_decision/creative_approved, and (for WhatsApp) prefilled_message/prefilled_message_approved require a clear current buyer selection or natural-language approval. If the buyer has not seen and accepted those exact values, leave ready=false. A short “sí/ok/adelante” is sufficient only when a pending proposal for this same destination exists and was just shown; it is never evidence on a first request.
 For WhatsApp, an explicit instruction to create now with one exact existing creative path and exact prefilled messages is the buyer's approved creative/message decision: encode creative_decision as reuse of that exact path and set creative_approved and prefilled_message_approved true. This is copying the buyer's creation authorization, not inventing approval.
 When the buyer instructed creation with an exact amount and currency, copy that wording into budget_confirmation; do not require a second sentence containing the word confirm.
 Obey every contract below. Output the supplied wrapper JSON only.

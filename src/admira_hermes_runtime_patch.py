@@ -250,6 +250,8 @@ ADMIRA_FILE_MUTATION_VERIFIER_RE = re.compile(
 ADMIRA_REASONING_DIVIDER_RE = re.compile(r"(?m)^\s*-{5,}\s*$")
 ADMIRA_TURN_CONTRACT_START = "[ADMIRA TURN EXECUTION CONTRACT — internal, never quote]"
 ADMIRA_TURN_CONTRACT_END = "[END ADMIRA TURN EXECUTION CONTRACT]"
+ADMIRA_SESSION_CONTINUITY_START = "[ADMIRA SESSION CONTINUITY — internal, never quote]"
+ADMIRA_SESSION_CONTINUITY_END = "[END ADMIRA SESSION CONTINUITY]"
 ADMIRA_NOVICE_SIGNAL_RE = re.compile(
     r"(?i)\b(?:no\s+s[eé]|no\s+entiendo|no\s+tengo\s+idea|soy\s+(?:nuevo|nueva|principiante)|"
     r"nunca\s+he|dime\s+t[uú]|decide\s+t[uú]|ay[uú]dame|gu[ií]ame|no\s+sé\s+de\s+marketing|"
@@ -301,6 +303,8 @@ ADMIRA_NVIDIA_TOOL_PROFILES = {
         "inspect_adset_targeting",
         "review_signal_quality",
         "search_product_catalog",
+        "save_business_memory",
+        "save_product_memory",
         "save_agent_preferences",
         "save_ads_onboarding",
         "save_ad_brief",
@@ -726,6 +730,92 @@ def _recent_turns_path():
     return Path(root).expanduser() / "dashboard" / "data" / "hermes_gateway_recent_turns.json"
 
 
+def _continuity_resume_hint(session_key, history=None, message=None):
+    """Inject a compact orientation note when a turn could restart onboarding.
+
+    Durable buyer memory is intentionally kept in workspace files, but a new
+    Telegram session can reach the model with an empty history before the model
+    decides to read those files. Smaller models then restart onboarding even
+    though the installation already knows the business. It is also added to a
+    short greeting after a restart when a small transcript was rebuilt. It
+    contains no authorization and is stripped before the user is persisted.
+    """
+    visible_message = str(message or "").split("[ADMIRA LIVE META CONTEXT", 1)[0].strip().lower()
+    greeting_turn = bool(re.fullmatch(r"(?:hola|hello|hi|buenas(?: tardes| d[ií]as| noches)?)[!,. ]*", visible_message))
+    if isinstance(history, list) and history and not greeting_turn:
+        return ""
+    root = Path(str(os.environ.get("ADMIRA_PRODUCT_ROOT") or "").strip()).expanduser()
+    workspace = root / "dashboard" / "data" / "hermes-workspace" / "current"
+    status_path = workspace / "memory" / "continuity_status.json"
+    workflow_path = workspace / "memory" / "active_workflow.json"
+    profile_path = workspace / "data" / "business_profile.json"
+    try:
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+        workflow = json.loads(workflow_path.read_text(encoding="utf-8"))
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        return ""
+    if not (
+        bool(status.get("has_persistent_memory"))
+        or bool(workflow.get("has_active_workflow"))
+    ):
+        return ""
+
+    # If the caller did not provide history, use the session database as a
+    # conservative fallback. Never inject continuity into an established
+    # conversation, where the normal transcript is the better source.
+    if history is None:
+        session_id = ""
+        sessions_path = root / "runtime" / "hermes" / "sessions" / "sessions.json"
+        try:
+            index = json.loads(sessions_path.read_text(encoding="utf-8"))
+            entry = index.get(str(session_key or ""), {})
+            session_id = str(entry.get("session_id") or "") if isinstance(entry, dict) else ""
+        except (OSError, TypeError, ValueError):
+            return ""
+        if not session_id:
+            return ""
+        try:
+            with sqlite3.connect(str(root / "runtime" / "hermes" / "state.db"), timeout=1.0) as connection:
+                count = connection.execute(
+                    "SELECT COUNT(*) FROM messages WHERE session_id = ? AND role IN ('user', 'assistant')",
+                    (session_id,),
+                ).fetchone()[0]
+            if int(count or 0) > 1:
+                return ""
+        except (OSError, sqlite3.Error, TypeError, ValueError):
+            return ""
+
+    goal = str(profile.get("campaign_goal") or "").strip()
+    goal = re.sub(r"\s+", " ", goal)[:420]
+    phase = str(workflow.get("phase") or "").strip()
+    next_step = str(workflow.get("next_step") or "").strip()
+    if next_step:
+        next_step = re.sub(r"\s+", " ", next_step)[:300]
+    if phase:
+        phase = re.sub(r"\s+", " ", phase)[:120]
+    lines = [ADMIRA_SESSION_CONTINUITY_START]
+    if isinstance(history, list) and history:
+        lines.append("Es un saludo después de un reinicio, no un comprador nuevo; ya existe conversación y memoria duradera.")
+    else:
+        lines.extend([
+            "Esta es una sesión nueva después de un reinicio/actualización, no un comprador nuevo.",
+            "La memoria duradera ya existe.",
+        ])
+    lines.append("No anuncies ni vuelvas a pedir una conexión o selección Meta que el bloque live marque como ya activa.")
+    lines.append("La conexión no salta onboarding: si faltan datos, resume lo que ya se conoce y pide confirmar solo lo que falta; no hagas la pregunta genérica de qué negocio o público tiene.")
+    if goal:
+        lines.append(f"Negocio/objetivo ya identificado: {goal}")
+    if phase or next_step:
+        lines.append(f"Flujo recordado: {phase or 'activo'}. Siguiente orientación: {next_step or 'retomar la conversación reciente'}.")
+    lines.extend([
+        "Usa esta información solo para orientar la respuesta; no autoriza crear, editar, activar ni gastar.",
+        "Lee el bloque live de Meta adjunto y, si es un saludo, responde con una continuidad breve usando una señal concreta; actúa como manager o pide una confirmación específica, nunca reinicies el onboarding de forma genérica.",
+        ADMIRA_SESSION_CONTINUITY_END,
+    ])
+    return "\n".join(lines)
+
+
 def _redact_turn_text(value):
     text = str(value or "")
     if not text:
@@ -796,6 +886,8 @@ def _append_turn_execution_contract(value):
             f"{ADMIRA_TURN_CONTRACT_START}\n"
             "Este turno debe sentirse guiado por un manager senior, no por un formulario ni una clase. "
             "Identifica en silencio el objetivo inmediato, consulta Meta/herramientas/archivos antes de preguntar cualquier dato descubrible y elige una sola ruta recomendada. "
+            "En una campaña nueva, no generes ni selecciones un creativo y no llames a un MCP de creación mientras el cliente no haya visto y resuelto el presupuesto actual, el creativo exacto, el texto principal, el título y el mensaje/destino correspondiente. Una petición de crear campaña no autoriza valores inventados ni el presupuesto de otra campaña; presenta la propuesta y espera su acuerdo natural. Mientras falten el copy o el creativo, tampoco preguntes si desea crearla o dejarla en pausa: presenta primero la propuesta concreta y abre la revisión conjunta. Si usas la herramienta nativa de aclaración para pedir aprobación, la pregunta visible debe incluir el copy completo, el título distinto y el mensaje de destino exactos; nunca escondas el copy detrás de un botón genérico de «aprobar y crear». Primero muestra el creativo y la propuesta para que el cliente corrija o apruebe en conjunto. "
+            "Si el bloque live confirma oauth_workspace.selection_required=false y contiene active_ad_account_id y active_page_id, la conexión y selección ya son hechos persistentes: no los anuncies como novedad ni pidas elegirlos otra vez. La conexión no salta el onboarding: si aún faltan datos del negocio, resume primero un dato concreto de business_profile, una guía de producto/marca o current_campaigns y pide únicamente confirmar o completar lo que falta; nunca preguntes de forma genérica qué negocio tiene el comprador. Si el contexto ya es suficiente, actúa como manager continuo y usa una señal concreta de Meta. "
             "Avanza ahora todo paso seguro ya autorizado. Antes de preguntar, identifica todos los insumos del dueño necesarios para terminar el siguiente entregable. Haz como máximo una pregunta bloqueante; si faltan varios datos o archivos del dueño estrechamente relacionados, pídelos juntos una sola vez en un paquete breve. "
             "Para un principiante, entrega decisión, una razón o riesgo de negocio y la acción concreta siguiente en máximo 180 palabras. No descargues alternativas ni termines con una invitación tipo «si quieres». "
             "Si recomiendas precio o presupuesto y ya conoces los costos, calcula el margen de contribución y las ventas/leads adicionales aproximados necesarios para recuperar la pauta antes de elegir el test.\n"
@@ -918,6 +1010,33 @@ def _compact_live_meta_context(context):
         20,
         ("objective", "daily_budget", "priority_metrics", "metric_profile"),
     )
+    # Include a compact view of the current inventory even when campaigns are
+    # paused. Active-only context made a test account look empty and nudged
+    # the model back into onboarding.
+    def project_current(rows, limit, extra=()):
+        projected = []
+        for row in (rows or [])[:limit]:
+            if not isinstance(row, dict):
+                continue
+            keys = (*common, *extra, *metrics)
+            projected.append({key: row.get(key) for key in keys if row.get(key) not in (None, "", [], {})})
+        return projected
+
+    current_campaigns = project_current(
+        context.get("campaigns"),
+        20,
+        ("objective", "daily_budget", "priority_metrics", "metric_profile"),
+    )
+    current_adsets = project_current(
+        context.get("adsets"),
+        40,
+        ("optimization_goal", "billing_event", "daily_budget", "lifetime_budget", "budget_remaining"),
+    )
+    current_ads = project_current(
+        context.get("ads"),
+        60,
+        ("creative_id", "object_story_id"),
+    )
     campaign_ids = {str(row.get("id") or "") for row in campaigns}
     adsets_source = [
         row for row in (context.get("adsets") or [])
@@ -948,8 +1067,12 @@ def _compact_live_meta_context(context):
         "active_campaigns": campaigns,
         "active_adsets": adsets,
         "active_ads": ads,
+        "current_campaigns": current_campaigns,
+        "current_adsets": current_adsets,
+        "current_ads": current_ads,
         "snapshot_scope": {
             "active_only": True,
+            "current_inventory_included": True,
             "campaign_limit": 20,
             "adset_limit": 40,
             "ad_limit": 60,
@@ -970,6 +1093,12 @@ def _strip_admira_runtime_injections(value):
     )
     text = re.sub(
         r"\n*\[ADMIRA TURN EXECUTION CONTRACT.*?\[END ADMIRA TURN EXECUTION CONTRACT\]\s*",
+        "\n",
+        text,
+        flags=re.DOTALL,
+    )
+    text = re.sub(
+        r"\n*\[ADMIRA SESSION CONTINUITY.*?\[END ADMIRA SESSION CONTINUITY\]\s*",
         "\n",
         text,
         flags=re.DOTALL,
@@ -1292,6 +1421,9 @@ def _chatgpt_login_confirmation_reply(session_key, language="es"):
 def _chatgpt_connection_request(text):
     """Recognize an explicit buyer request without spending a model turn."""
     value = str(text or "").strip().lower()
+    # Telegram/Markdown copies sometimes escape underscores in displayed
+    # commands. Treat that presentation artifact as the intended command.
+    value = value.replace("\\_", "_")
     value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
     command = value.split(maxsplit=1)[0].split("@", 1)[0] if value else ""
     if command in {
@@ -1355,6 +1487,58 @@ def _chatgpt_connection_reply(result, language="es"):
         "No pude obtener todavía el enlace de ChatGPT. Espera unos segundos y vuelve a enviar "
         "`/conectar_chatgpt`."
     )
+
+
+def _patch_gateway_chatgpt_slash_commands():
+    """Make the secure ChatGPT reconnect aliases real gateway commands.
+
+    Hermes' slash dispatcher rejects unknown commands before the normal
+    buyer-message path runs. The runtime already recognized these aliases in
+    its text interceptor, but that interceptor was never reached for a typed
+    slash command. Intercept only the three explicit connection aliases at
+    the gateway boundary; unrelated commands remain Hermes' responsibility.
+    """
+    try:
+        from gateway.run import GatewayRunner
+    except Exception:
+        return False
+    original = getattr(GatewayRunner, "_handle_message", None)
+    if not callable(original):
+        return False
+    if getattr(original, "_admira_chatgpt_slash_patch", False):
+        return True
+
+    async def patched(self, event, _original=original):
+        raw = str(getattr(event, "text", "") or "").strip()
+        if _chatgpt_connection_request(raw):
+            normalized = raw.lower().replace("\\_", "_")
+            command = normalized.split(maxsplit=1)[0].split("@", 1)[0]
+            if command in {
+                "/conectar_chatgpt", "/reconectar_chatgpt", "/connect_chatgpt",
+            }:
+                source = getattr(event, "source", None)
+                # Let Hermes' normal pairing/authorization response handle an
+                # unauthorized sender; do not expose the login recovery path.
+                try:
+                    if source is not None and not self._is_user_authorized(source):
+                        return await _original(self, event)
+                except Exception:
+                    return await _original(self, event)
+                try:
+                    session_key = self._session_key_for_source(source)
+                except Exception:
+                    session_key = ""
+                result = _automatic_codex_recovery(wait_seconds=15, action="switch")
+                if result.get("url") and result.get("code"):
+                    _remember_chatgpt_login_pending(session_key)
+                language = str(os.environ.get("ADMIRA_GATEWAY_LANGUAGE") or "es")
+                return _chatgpt_connection_reply(result, language)
+        return await _original(self, event)
+
+    patched._admira_chatgpt_slash_patch = True
+    patched._admira_original_handle_message = original
+    GatewayRunner._handle_message = patched
+    return True
 
 
 def gateway_authentication_reply(text, language=None):
@@ -1799,6 +1983,121 @@ def _admira_buyer_requests_clarification(messages):
     )
 
 
+def _admira_latest_user_text(messages):
+    """Return the latest buyer message, excluding agent/system context."""
+    for message in reversed(messages or []):
+        if not isinstance(message, dict) or str(message.get("role") or "").lower() != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            content = " ".join(
+                str(item.get("text") or item.get("content") or "")
+                for item in content if isinstance(item, dict)
+            )
+        return _strip_admira_runtime_injections(str(content or "")).strip().lower()
+    return ""
+
+
+def _admira_latest_assistant_text(messages):
+    """Return the assistant turn immediately before the latest buyer turn."""
+    seen_buyer = False
+    for message in reversed(messages or []):
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role") or "").lower()
+        if role == "user":
+            seen_buyer = True
+            continue
+        if seen_buyer and role == "assistant":
+            content = message.get("content")
+            if isinstance(content, list):
+                content = " ".join(
+                    str(item.get("text") or item.get("content") or "")
+                    for item in content if isinstance(item, dict)
+                )
+            return _strip_admira_runtime_injections(str(content or "")).strip().lower()
+    return ""
+
+
+def _admira_latest_creative_approval(messages):
+    """Return true when the buyer approves an already delivered creative."""
+    latest = _admira_latest_user_text(messages)
+    if not latest or not re.fullmatch(
+        r"(?:s[ií]|si|ok(?:ay)?|adelante|me gusta|aprobado|aprobada|de acuerdo|"
+        r"sigamos|contin[uú]a(?:mos)?|hazlo)[.!?\s]*",
+        latest,
+    ):
+        return False
+    previous = _admira_latest_assistant_text(messages)
+    delivered = bool(re.search(r"(?:media:|adjunt(?:é|e|ado|ada)|imagen\s+(?:generada|creada)|creativo\s+(?:generado|creado))", previous))
+    approval_prompt = bool(re.search(r"(?:aprueb|opini[oó]n|te\s+parece|visto\s+bueno|revis(?:a|ar)|confirma)", previous))
+    return delivered and approval_prompt
+
+
+def _admira_latest_media_request_or_approval(messages):
+    """Allow media tools only for a direct request or approval of a proposal.
+
+    Campaign context often contains older assistant text such as “creative” or
+    “image”. Looking at the whole conversation made a budget/service answer
+    look like a new image request. This helper deliberately scopes the decision
+    to the latest buyer turn and, for a short “sí”, the immediately preceding
+    assistant proposal.
+    """
+    latest = _admira_latest_user_text(messages)
+    if not latest:
+        return False
+    plain = unicodedata.normalize("NFKD", latest).encode("ascii", "ignore").decode("ascii")
+    # A campaign request may mention that it needs a creative. That is still
+    # planning context, not an order to render pixels. Require a direct media
+    # action whose object is the image/creative itself (or an explicit
+    # revision/show request), rather than merely seeing both words anywhere.
+    media_object = r"(?:creativ[oa]|imagen|foto|video|diseno\s+grafico|creative|image|photo|video)"
+    direct_media = bool(re.search(
+        rf"\b(?:crea(?:r|mos)?|genera(?:r|mos)?|haz(?:me)?|produce|producir|redise[nñ]a|"
+        rf"dise[nñ]a|edita|revisa|muestra|cambia|ajusta)\s+(?:un[oa]?\s+|el\s+|la\s+|otro\s+|otra\s+|nuevo\s+|nueva\s+)?{media_object}\b",
+        plain,
+    )) or bool(re.search(
+        rf"\b{media_object}\b.{{0,32}}\b(?:redise[nñ]a|edita|revisa|muestra|cambia|ajusta)\b",
+        plain,
+    ))
+    # A buyer's answer to a creative-choice question is also a media
+    # direction, even when it is declarative rather than imperative (for
+    # example: “un anuncio con un texto grande”). It authorizes a visual draft,
+    # not the campaign itself.
+    previous = _admira_latest_assistant_text(messages)
+    creative_direction = bool(re.search(
+        r"\b(?:anuncio|creativ[oa]|imagen|dise[nñ]o|foto|visual)\b",
+        plain,
+    )) and bool(re.search(
+        r"(?:texto\s+(?:grande|visible|claro)|mensaje|titular|dise[nñ]o|foto|imagen|visual)",
+        plain,
+    )) and (
+        bool(re.search(
+            r"(?:prefieres|prefiere|que\s+prefieres|tipo\s+de|creativo|imagen|foto|dise[nñ]o).{0,140}(?:\?|elige|utilicemos|usar)",
+            previous,
+        ))
+        or bool(_admira_latest_campaign_routing_context())
+    )
+    direct_media = direct_media or creative_direction
+    if direct_media:
+        return True
+    if not re.fullmatch(
+        r"(?:s[ií]|si|ok(?:ay)?|adelante|me gusta|aprobado|aprobada|de acuerdo|"
+        r"sigamos|contin[uú]a(?:mos)?|hazlo)[.!?\s]*",
+        latest,
+    ):
+        return False
+    # A short approval authorizes media only when the preceding assistant turn
+    # actually presented a concept/copy and asked the buyer to approve it.
+    if _admira_latest_creative_approval(messages):
+        return False
+    return bool(
+        re.search(r"(?:concepto|propuesta creativa|idea creativa|angulo|ángulo)", previous)
+        and re.search(r"(?:copy|texto principal|t[ií]tulo|headline|creativo|imagen)", previous)
+        and re.search(r"(?:aprueb|parece|opini[oó]n|visto bueno|de acuerdo)", previous)
+    )
+
+
 def _admira_budget_detail_turn(messages):
     """Return true when the latest buyer turn only supplies a daily budget."""
     latest = ""
@@ -1822,7 +2121,7 @@ def _admira_budget_detail_turn(messages):
     ))
     daily = bool(re.search(r"\b(?:al\s+d[ií]a|por\s+d[ií]a|diari[oa]|daily)\b", latest))
     # If the same turn explicitly requests media, it is not budget-only.
-    return has_amount and daily and not _admira_explicit_image_generation_requested(messages)
+    return has_amount and daily and not _admira_latest_media_request_or_approval(messages)
 
 
 def _admira_existing_creative_reuse_requested(messages):
@@ -2026,6 +2325,7 @@ ADMIRA_CAMPAIGN_CREATION_SUPPORT_TOOLS = {
     "search_motion_graphic_recipes",
     "generate_motion_graphic_video",
     "save_content_asset",
+    "save_business_memory",
     "save_brand_memory",
     "save_product_memory",
     "save_creative_references",
@@ -2100,12 +2400,72 @@ def _admira_route_request_tools(api_kwargs):
     messages = request.get("messages") if isinstance(request.get("messages"), list) else []
     tools = request.get("tools") if isinstance(request.get("tools"), list) else []
     if _admira_freeform_agent_mode():
-        # Canary freeform mode intentionally exposes the complete official
-        # registry. The model interprets buyer language; MCP schemas and
-        # backend authorization remain the action boundary.
-        request["tools"] = _nvidia_restore_admira_tool_schemas(tools)
+        # Freeform mode keeps the complete registry for natural-language
+        # interpretation, but the two sequencing boundaries remain product
+        # invariants: a creative direction gets the image first, and a
+        # campaign/detail turn cannot leak image production into the model's
+        # tool choices. Otherwise an older generated image can make a later
+        # “texto grande” turn jump straight to campaign approval.
+        creator = _admira_destination_campaign_creator(messages)
+        latest_media_ready = _admira_latest_media_request_or_approval(messages)
+        recent_context = _admira_latest_campaign_routing_context()
+        if not creator and (latest_media_ready or recent_context):
+            if "destination contract: `whatsapp`" in recent_context or "destination contract: whatsapp" in recent_context:
+                creator = "create_whatsapp_campaign"
+            elif "destination contract: `messaging`" in recent_context or "destination contract: messaging" in recent_context:
+                creator = "create_messaging_campaign"
+            elif "destination contract: `lead_form`" in recent_context or "destination contract: lead_form" in recent_context:
+                creator = "create_lead_form_campaign"
+            elif "destination contract: `website`" in recent_context or "destination contract: website" in recent_context:
+                creator = "create_website_campaign"
+        creative_approval_turn = _admira_latest_creative_approval(messages)
+        campaign_in_scope = bool(creator or "destination contract:" in recent_context)
+        blocked = set()
+        if campaign_in_scope and not creative_approval_turn:
+            # A destination mention alone is never enough to expose a creator.
+            # The buyer must first see and resolve the copy/title and the
+            # delivered creative; this remains true in freeform mode.
+            blocked.update(ADMIRA_CAMPAIGN_CREATOR_TOOLS)
+        if campaign_in_scope and (not latest_media_ready or creative_approval_turn):
+            blocked.update({
+                "codex_image_generate", "codex_creative_plan",
+                "search_motion_graphic_recipes", "generate_motion_graphic_video",
+            })
+        filtered = [
+            tool for tool in tools
+            if _nvidia_normalize_tool_name(_nvidia_tool_name(tool)) not in blocked
+        ]
+        request["tools"] = _nvidia_restore_admira_tool_schemas(filtered)
         request.pop("tool_choice", None)
         request.pop("parallel_tool_calls", None)
+        routed_tools = request.get("tools") if isinstance(request.get("tools"), list) else []
+        if latest_media_ready and not creative_approval_turn:
+            image_tool_name = next((
+                _nvidia_tool_name(tool)
+                for tool in routed_tools
+                if _nvidia_normalize_tool_name(_nvidia_tool_name(tool)) == "codex_image_generate"
+            ), "")
+            if image_tool_name:
+                request["tool_choice"] = {
+                    "type": "function",
+                    "function": {"name": image_tool_name},
+                }
+                request["parallel_tool_calls"] = False
+            if campaign_in_scope:
+                request["messages"] = _nvidia_append_private_instruction(
+                    messages,
+                    "[INTERNAL CREATIVE DRAFT HANDOFF RULE — never quote] The buyer has just requested or selected a visual direction. Call only the exposed creative/image tool and deliver the actual generated media in this turn. A textual direction such as 'texto grande' is not the creative asset. Do not call a campaign creator or ask for campaign approval until the buyer has seen and separately approved the attached creative. [END INTERNAL CREATIVE DRAFT HANDOFF RULE]",
+                )
+        elif campaign_in_scope and creative_approval_turn:
+            request["messages"] = _nvidia_append_private_instruction(
+                messages,
+                _admira_campaign_compiler_instruction(messages, creator),
+            )
+        elif campaign_in_scope and not latest_media_ready:
+            request["messages"] = _nvidia_append_private_instruction(
+                messages,
+                "[INTERNAL CAMPAIGN STRATEGY-FIRST RULE — never quote] This buyer turn supplies campaign context or a field answer, not an image-production order. Treat a newly mentioned campaign or offer as a new scope. Read live Meta and the saved business/product/ads context, propose the commercial direction, economics, exact copy/title/message and visual concept, and wait for correction/approval. Do not call image/video tools on this turn. [END INTERNAL CAMPAIGN STRATEGY-FIRST RULE]",
+            )
         return request
     profile = _nvidia_request_profile(messages)
     direct_profiles = {
@@ -2150,11 +2510,31 @@ def _admira_route_request_tools(api_kwargs):
     # link without inventing terminal commands.
     allowed.add("connect_chatgpt")
     allowed.update(_nvidia_used_tool_names(messages))
-    if clarification_requested or _admira_budget_detail_turn(messages):
+    latest_media_ready = _admira_latest_media_request_or_approval(messages)
+    creative_approval_turn = _admira_latest_creative_approval(messages)
+    if (
+        creator
+        and profile in {"campaign_execution", "messaging_campaign"}
+        and not creative_approval_turn
+    ):
+        # Do not let a generic “create/leave paused?” turn reach the
+        # destination MCP. The model must first present the exact ad package
+        # and deliver/review the creative with the buyer.
+        allowed.discard(creator)
+    if creator and profile in {"campaign_execution", "messaging_campaign"} and latest_media_ready and not creative_approval_turn:
+        # A direction or direct request for a new creative is a visual-draft
+        # turn. Do not let the campaign creator compete with Image 2 before the
+        # buyer has seen and approved the actual generated asset.
+        allowed.discard(creator)
+    if clarification_requested or _admira_budget_detail_turn(messages) or (
+        creator and profile in {"campaign_strategy", "campaign_execution", "messaging_campaign"}
+        and not latest_media_ready
+    ):
         # Creative production stays available to campaign conversations, but
-        # only on the buyer turn that actually asks for it. A prior Image call
-        # or a budget/detail follow-up must not leak the mutating media tool
-        # into the next turn.
+        # only on the buyer turn that actually asks for it (or approves a
+        # concept/copy read-back). A prior Image call, a new service, or a
+        # budget/detail follow-up must not leak the mutating media tool into the
+        # next turn.
         allowed.difference_update({
             "codex_image_generate", "codex_creative_plan",
             "search_motion_graphic_recipes", "generate_motion_graphic_video",
@@ -2194,13 +2574,28 @@ def _admira_route_request_tools(api_kwargs):
             messages,
             "[INTERNAL CAMPAIGN EDIT RULE — never quote] Use mcp_admira_edit_campaign for each natural-language edit. Resolve the campaign mentioned in the current message independently against live Meta. If it names a different campaign, create a separate scoped draft even when the buyer does not say 'another' or 'now'. If it has only a pronoun, continue the last unambiguous campaign. Send the buyer's exact current request in change_request; do not invent IDs or assemble a full campaign payload. [END INTERNAL CAMPAIGN EDIT RULE]",
         )
+    elif creator and profile in {"campaign_execution", "messaging_campaign"} and latest_media_ready and not creative_approval_turn:
+        request["messages"] = _nvidia_append_private_instruction(
+            messages,
+            "[INTERNAL CREATIVE DRAFT HANDOFF RULE — never quote] The buyer has just requested or selected a visual direction. Call only the exposed creative/image tool with a self-contained active-offer request and deliver the actual generated media in this turn. A textual description such as 'texto grande' is not the creative asset. Do not call any campaign creator, do not ask for campaign approval, and do not claim the campaign is ready until the buyer has seen and separately approved the attached creative. [END INTERNAL CREATIVE DRAFT HANDOFF RULE]",
+        )
+    elif creator and profile in {"campaign_execution", "messaging_campaign"} and creative_approval_turn:
+        request["messages"] = _nvidia_append_private_instruction(
+            messages,
+            _admira_campaign_compiler_instruction(messages, creator),
+        )
+    elif creator and profile in {"campaign_execution", "messaging_campaign"} and not latest_media_ready:
+        request["messages"] = _nvidia_append_private_instruction(
+            messages,
+            "[INTERNAL CAMPAIGN STRATEGY-FIRST RULE — never quote] This buyer turn supplies campaign context or a field answer, not an image-production order. Treat a newly mentioned campaign or offer as a new scope: do not activate, resume, or inherit the prior campaign's budget, currency, creative, copy, title, audience, geography, CTA, destination message, or offer. First act as a senior marketing manager: read live Meta plus the saved business/product/ads context; understand the owner's business outcome and time horizon, active offer, ideal customer and trigger, funnel/follow-up, price/cost/capacity and budget currency. Give a concise recommendation with three success signals, break-even logic, and conservative/base/upside test expectations; label unknown figures as assumptions or ranges. Persist stable business facts with save_business_memory, the active offer with save_product_memory, account-wide ads history/defaults only with save_ads_onboarding, and this campaign's goals/KPIs, budget/currency, hypothesis, copy, projection and plan with a uniquely named save_ad_brief. Reuse a returned brief ID only when editing the same campaign; do not reuse another campaign's brief. Treat the brief as planning memory only: for actual spend, delivery, status, CPA/CPL, ROAS, leads, conversations, audience, or learning, use the fresh Meta read and never the brief's estimate. Then propose the exact primary text, distinct title, CTA/message, and concrete visual concept, and ask for the buyer's natural correction or approval. Do not call image/video/creative tools until that concept and copy are approved. Do not call the campaign creator until the current budget/currency and all final ad inputs are resolved. [END INTERNAL CAMPAIGN STRATEGY-FIRST RULE]",
+        )
     elif creator and profile in {"campaign_execution", "messaging_campaign"}:
         request["messages"] = _nvidia_append_private_instruction(
             messages,
             _admira_campaign_compiler_instruction(messages, creator),
         )
     routed_tools = request.get("tools") if isinstance(request.get("tools"), list) else tools
-    if _admira_explicit_image_generation_requested(messages):
+    if _admira_latest_media_request_or_approval(messages):
         used = _nvidia_used_tool_names(messages)
         image_tool_name = next((
             _nvidia_tool_name(tool)
@@ -2319,7 +2714,12 @@ def _admira_campaign_compiler_instruction(messages, creator):
         "inside every ad set; mixed manual/Advantage+ campaigns require targeting_mode on every set. "
         "Do not construct the final JSON; "
         "the campaign compiler does that privately. Do not split the brief into incremental calls. If a genuinely required "
-        "buyer decision is absent, ask one concise question instead of calling the creator. After a compiler "
+        "buyer decision is absent, ask one concise question instead of calling the creator. Before the handoff, the saved "
+        "brief should also capture the business outcome/time horizon, active offer, ideal customer, funnel/follow-up, "
+        "known price/cost/capacity assumptions, three success metrics, break-even logic, test projection, and review plan. "
+        "Use save_business_memory for stable business facts, save_product_memory for the active child offer, save_ads_onboarding "
+        "only for account-wide history/defaults, and save_ad_brief for this campaign's confirmed goals/KPIs and plan; never "
+        "pretend the payload itself is the marketing plan. After a compiler "
         "validation error, retry at most once with the entire corrected brief, never only the missing fields."
         " Image and video tools may remain visible during campaign work, but call them only when the buyer "
         "explicitly asks to create, generate, redesign, or produce a creative. A budget, destination, approval, "
@@ -2327,6 +2727,190 @@ def _admira_campaign_compiler_instruction(messages, creator):
         "buyer wants a new creative instead of calling an image tool with missing arguments."
         + reuse + " [END INTERNAL DESTINATION CAMPAIGN COMPILER RULE]"
     )
+
+
+def _admira_clarify_text(value):
+    """Return human-facing text from a native Hermes clarify argument."""
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        return " ".join(
+            str(value.get(key) or "")
+            for key in ("label", "description", "text", "title")
+            if str(value.get(key) or "").strip()
+        )
+    if isinstance(value, (list, tuple)):
+        return " ".join(_admira_clarify_text(item) for item in value)
+    return str(value)
+
+
+def _admira_clarify_normalize(value):
+    text = _admira_clarify_text(value)
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(char for char in text if not unicodedata.combining(char))
+    return text.lower()
+
+
+ADMIRA_CLARIFY_CAMPAIGN_FIELD_LABELS = {
+    "primary_text": (
+        r"texto\s+principal", r"primary\s+text", r"ad\s+text", r"copy"
+    ),
+    "title": (
+        r"titulo(?:\s+del\s+anuncio)?", r"ad\s+title", r"headline"
+    ),
+    "destination_message": (
+        r"mensaje\s+inicial(?:\s+de\s+whatsapp)?", r"mensaje\s+prellenado",
+        r"prefilled(?:\s+message)?", r"whatsapp\s+message", r"welcome\s+message",
+    ),
+}
+
+
+def _admira_clarify_field_value(text, labels):
+    """Extract the value displayed after a proposal field label.
+
+    The native clarify UI only renders the question and choices.  A label
+    without its exact value is therefore not a buyer-visible proposal.  This
+    parser intentionally accepts common Markdown bullets/quotes while stopping
+    at the next labelled field.
+    """
+    all_labels = tuple(
+        label
+        for values in ADMIRA_CLARIFY_CAMPAIGN_FIELD_LABELS.values()
+        for label in values
+    )
+    target = "(?:" + "|".join(labels) + ")"
+    every = "(?:" + "|".join(all_labels) + ")"
+    start_re = re.compile(
+        rf"(?im)(?:^|[\n;])\s*(?:[-*•>#]\s*)?(?:{target})\s*[:\-]\s*"
+    )
+    match = start_re.search(text)
+    if not match:
+        return ""
+    value_start = match.end()
+    end_re = re.compile(
+        rf"(?im)(?=[\n;]\s*(?:[-*•>#]\s*)?(?:{every})\s*[:\-]\s*)"
+    )
+    end_match = end_re.search(text, value_start)
+    value = text[value_start:end_match.start() if end_match else len(text)]
+    value = re.sub(r"[>*_`\"']", "", value)
+    return " ".join(value.split()).strip(" -:;")
+
+
+def _admira_clarify_has_substantive_value(value, minimum_chars):
+    value = " ".join(str(value or "").split()).strip()
+    if len(re.findall(r"[a-z]", value)) < minimum_chars:
+        return False
+    generic = (
+        r"^(?:este|el siguiente|la siguiente|this|the following)\s+"
+        r"(?:copy|texto|creativo|creative|headline|titulo|title|message|mensaje)",
+        r"^(?:copy|texto)\s+(?:enfocado|propuesto|sugerido|generico|generic)",
+        r"^(?:por definir|pendiente|to be defined|tbd|n/?a)$",
+    )
+    return not any(re.search(pattern, value, re.IGNORECASE) for pattern in generic)
+
+
+def _admira_clarify_campaign_approval_needs_proposal(question, choices):
+    """Detect the approval card that must follow a visible ad proposal."""
+    question_text = _admira_clarify_normalize(question)
+    choices_text = _admira_clarify_normalize(choices)
+    combined = f"{question_text} {choices_text}".strip()
+    campaign_terms = r"(?:campan|campaign|anuncio|ad|creativ|creative|copy|texto)"
+    approval = re.search(
+        rf"\b(?:aprobar|aprueba|aprobado|approve|approved|confirmar|confirm)\b"
+        rf".{{0,140}}\b{campaign_terms}", combined, re.IGNORECASE,
+    )
+    create = re.search(
+        rf"\b(?:crear|creacion|create|launch|dejar|leave)\b"
+        rf".{{0,100}}\b(?:campan|campaign|anuncio|ad)\b", combined, re.IGNORECASE,
+    )
+    authorization_to_create = re.search(
+        r"\b(?:autoriz(?:a|as|ar)|deseas|quieres|proced(?:er|amos)|"
+        r"avanz(?:ar|amos)|dejar(?:la|las|los)?|arm(?:ar|emos)|"
+        r"prepar(?:ar|emos))\b"
+        r".{0,160}\b(?:crear|creacion|campan|campaign|estructura|"
+        r"paused|pausa|en\s+pausa)\b",
+        combined,
+        re.IGNORECASE,
+    )
+    return bool(
+        approval
+        or authorization_to_create
+        or (
+            create
+            and re.search(
+                r"\b(?:aprob|approve|confirm|gusta|like)\w*\b",
+                combined,
+                re.IGNORECASE,
+            )
+        )
+    )
+
+
+def _patch_campaign_clarify_gate():
+    """Prevent generic campaign approval buttons before exact copy is shown.
+
+    Hermes' native ``clarify`` tool is intentionally generic.  For campaign
+    work, however, its numbered approval card is only useful after the buyer
+    has seen the exact primary text, distinct title, destination message and
+    the attached creative.  A model can otherwise call clarify with only
+    “approve this copy”, which creates a false sense of shared approval while
+    hiding the copy itself.  Return a tool-level repair instruction so the
+    model emits a normal visible proposal and keeps the conversation natural.
+    """
+    try:
+        clarify_module = importlib.import_module("tools.clarify_tool")
+    except Exception:
+        return False
+    original = getattr(clarify_module, "clarify_tool", None)
+    if not callable(original):
+        return False
+    if getattr(original, "_admira_campaign_clarify_gate", False):
+        return True
+
+    def guarded(question, choices=None, callback=None):
+        if _admira_clarify_campaign_approval_needs_proposal(question, choices):
+            normalized = _admira_clarify_normalize(question) + " " + _admira_clarify_normalize(choices)
+            primary = _admira_clarify_field_value(
+                normalized, ADMIRA_CLARIFY_CAMPAIGN_FIELD_LABELS["primary_text"]
+            )
+            title = _admira_clarify_field_value(
+                normalized, ADMIRA_CLARIFY_CAMPAIGN_FIELD_LABELS["title"]
+            )
+            destination_message = _admira_clarify_field_value(
+                normalized, ADMIRA_CLARIFY_CAMPAIGN_FIELD_LABELS["destination_message"]
+            )
+            messaging_destination = re.search(
+                r"\b(?:whatsapp|messenger|instagram\s+direct|prefilled|"
+                r"mensaje\s+inicial|welcome\s+message)\b",
+                normalized,
+                re.IGNORECASE,
+            )
+            visible_proposal_ready = (
+                _admira_clarify_has_substantive_value(primary, 24)
+                and _admira_clarify_has_substantive_value(title, 6)
+                and (
+                    not messaging_destination
+                    or _admira_clarify_has_substantive_value(destination_message, 12)
+                )
+            )
+            if not visible_proposal_ready:
+                return json.dumps({
+                    "error": (
+                        "CAMPAIGN_CLARIFY_BLOCKED: Before asking for campaign approval, "
+                        "show the exact visible proposal in normal conversation: the full "
+                        "primary text/copy, a distinct ad title, the destination/WhatsApp "
+                        "message, and deliver the actual creative. Do not ask 'approve and "
+                        "create' yet, do not hide the copy behind buttons, and do not infer "
+                        "approval from an older campaign. After the buyer sees it, ask for "
+                        "their natural correction or approval."
+                    )
+                }, ensure_ascii=False)
+        return original(question=question, choices=choices, callback=callback)
+
+    guarded._admira_campaign_clarify_gate = True
+    guarded._admira_original_clarify_tool = original
+    clarify_module.clarify_tool = guarded
+    return True
 
 
 def _admira_campaign_verbatim_source(messages, max_user_turns=3, max_chars=20_000):
@@ -4141,6 +4725,7 @@ def _patch_gateway_generated_media_delivery():
         message = kwargs.get("message")
         if message is None and args:
             message = args[0]
+        call_args = list(args)
         session_key = kwargs.get("session_key")
         if session_key is None and len(args) > 5:
             session_key = args[5]
@@ -4149,6 +4734,13 @@ def _patch_gateway_generated_media_delivery():
             if session_id is None and len(args) > 4:
                 session_id = args[4]
             session_key = session_id or "default"
+        continuity_hint = _continuity_resume_hint(session_key, kwargs.get("history"), message=message)
+        if continuity_hint and isinstance(message, str) and ADMIRA_SESSION_CONTINUITY_START not in message:
+            message = f"{message}\n\n{continuity_hint}"
+            if "message" in kwargs:
+                kwargs["message"] = message
+            elif call_args:
+                call_args[0] = message
         persisted = kwargs.get("persist_user_message")
         clean_persisted = _strip_admira_runtime_injections(
             persisted if persisted is not None else message
@@ -4177,7 +4769,7 @@ def _patch_gateway_generated_media_delivery():
                 "messages": [],
             }
         else:
-            result = await original(self, *args, **kwargs)
+            result = await original(self, *tuple(call_args), **kwargs)
         result = _apply_conversational_output_guards(result)
         try:
             result = _normalize_gateway_outbound_response(result)
@@ -4621,7 +5213,15 @@ def _patch_product_prompt_guidance():
         "authorization. Recommend, explain, and ask one natural blocking question "
         "without tool calls when that is the correct next step. When the buyer does "
         "request an executable outcome and its required facts are ready, use the "
-        "official tool and report only verified results."
+        "official tool and report only verified results.\n"
+        "For a new campaign, the creative and ad wording are a joint review with "
+        "the buyer. Never call the native clarification tool with a generic approval "
+        "card such as 'approve this copy and create the campaign' unless the "
+        "visible question already contains the exact full primary text/copy, a "
+        "distinct title, and the exact destination or WhatsApp message, and the "
+        "creative has already been delivered. If any of those are missing, send "
+        "a normal readable proposal first; buttons are not a substitute for "
+        "showing the copy."
     )
     prompt_builder.TASK_COMPLETION_GUIDANCE = (
         "# Complete the buyer's actual request\n"
@@ -4838,6 +5438,8 @@ def _patch_telegram_update_install_callback():
 
 def apply():
     product_prompt_patched = _patch_product_prompt_guidance()
+    chatgpt_slash_patched = _patch_gateway_chatgpt_slash_commands()
+    campaign_clarify_patched = _patch_campaign_clarify_gate()
     rate_limit_patched = _patch_gateway_rate_limit_reply()
     credential_pool_patched = _patch_credential_pool_failure_assignment()
     same_nvidia_guard_patched = _patch_same_nvidia_model_failover_guard()
@@ -4855,4 +5457,4 @@ def apply():
     context_patched = _patch_context_truncation_notifications()
     telegram_chat_capture_patched = _patch_telegram_runtime_chat_capture()
     telegram_update_patched = _patch_telegram_update_install_callback()
-    return bool(product_prompt_patched or rate_limit_patched or credential_pool_patched or same_nvidia_guard_patched or nvidia_gate_patched or nvidia_title_patched or mcp_result_patched or mcp_skill_gate_patched or minimax_patched or runtime_patched or media_patched or video_patched or reset_scope_patched or cron_create_patched or cron_run_patched or context_patched or telegram_chat_capture_patched or telegram_update_patched)
+    return bool(product_prompt_patched or chatgpt_slash_patched or campaign_clarify_patched or rate_limit_patched or credential_pool_patched or same_nvidia_guard_patched or nvidia_gate_patched or nvidia_title_patched or mcp_result_patched or mcp_skill_gate_patched or minimax_patched or runtime_patched or media_patched or video_patched or reset_scope_patched or cron_create_patched or cron_run_patched or context_patched or telegram_chat_capture_patched or telegram_update_patched)

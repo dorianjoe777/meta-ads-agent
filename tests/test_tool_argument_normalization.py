@@ -93,6 +93,10 @@ class ToolArgumentNormalizationTests(unittest.TestCase):
                 "image_path": "/app/output/approved.png",
             }],
             "budget_confirmation": "5 USD",
+            "primary_text": "Texto aprobado",
+            "headline": "Asesoría laboral",
+            "primary_text_approved": True,
+            "headline_approved": True,
             "prefilled_message": "Hola, quiero una asesoría.",
             "creative_decision": "Usar el creativo que acabo de aprobar.",
             "creative_approved": True,
@@ -122,6 +126,10 @@ class ToolArgumentNormalizationTests(unittest.TestCase):
             "budget_confirmation": "5 USD",
             "locations": ["CO"],
             "placements": {"automatic": True},
+            "primary_text": "Escríbenos para recibir información.",
+            "headline": "Conoce más",
+            "primary_text_approved": True,
+            "headline_approved": True,
             "prefilled_message": "Hola, quiero información.",
         }
         normalized, error = admira_tool_bridge.destination_campaign_arguments(

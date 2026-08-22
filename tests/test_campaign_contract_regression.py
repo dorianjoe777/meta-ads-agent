@@ -23,6 +23,10 @@ def load_dashboard():
     return module
 
 
+def authoritative_buyer_brief(message):
+    return f"## Verbatim recent buyer messages (authoritative)\n\n{message}"
+
+
 class CampaignContractRegressionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -528,6 +532,10 @@ class CampaignContractRegressionTests(unittest.TestCase):
                 "age_max": 65,
                 "genders": [1, 2],
                 "placements": {"automatic": True},
+                "primary_text": "Reserva tu café hoy.",
+                "headline": "Canary Café",
+                "primary_text_approved": True,
+                "headline_approved": True,
                 "prefilled_message": "Hola, quiero reservar.",
                 "creative_decision": "Reutilizar el creativo aprobado",
                 "creative_approved": True,
@@ -564,7 +572,11 @@ class CampaignContractRegressionTests(unittest.TestCase):
                 config = SimpleNamespace(codex_cli="codex", hermes_home=str(root / "hermes"))
                 result = compiler.compile_campaign_brief(
                     "create_whatsapp_campaign",
-                    "Campaña Café, 5 USD, Cartagena, creativo aprobado y mensaje aprobado.",
+                    authoritative_buyer_brief(
+                        "Confirmo 5 USD diarios para Cartagena. Apruebo reutilizar la imagen "
+                        "/app/output/cafe.png, el texto principal: ‘Reserva tu café hoy.’, "
+                        "el título: ‘Canary Café’ y el mensaje inicial: ‘Hola, quiero reservar.’"
+                    ),
                     config=config,
                 )
                 self.assertTrue(result["ok"])
@@ -613,7 +625,11 @@ class CampaignContractRegressionTests(unittest.TestCase):
                 compiler.subprocess.Popen = IncompleteProcess
                 result = compiler.compile_campaign_brief(
                     "create_whatsapp_campaign",
-                    "Campaña Café con 5 USD diarios para Cartagena.",
+                    authoritative_buyer_brief(
+                        "Confirmo 5 USD diarios para Cartagena. Apruebo que generes una imagen, "
+                        "el texto principal: ‘Reserva tu café hoy.’, el título: ‘Canary Café’ y "
+                        "el mensaje inicial: ‘Hola, quiero reservar.’"
+                    ),
                     config=SimpleNamespace(codex_cli="codex", hermes_home=str(root / "hermes")),
                 )
                 self.assertFalse(result["ok"])
@@ -634,6 +650,10 @@ class CampaignContractRegressionTests(unittest.TestCase):
             "creative_image_path": "/app/output/cafe.png",
             "locations": ["Cartagena"],
             "placements": {"automatic": True},
+            "primary_text": "Reserva tu café hoy.",
+            "headline": "Canary Café",
+            "primary_text_approved": True,
+            "headline_approved": True,
             "prefilled_message": "Hola, quiero reservar.",
             "creative_decision": "Usar el creativo aprobado",
             "creative_approved": True,
@@ -674,7 +694,11 @@ class CampaignContractRegressionTests(unittest.TestCase):
                 )
                 result = compiler.compile_campaign_brief(
                     "create_whatsapp_campaign",
-                    "Crea la campaña aprobada para Cartagena por 5 USD diarios.",
+                    authoritative_buyer_brief(
+                        "Confirmo 5 USD diarios para Cartagena. Apruebo usar la imagen "
+                        "/app/output/cafe.png, el texto principal: ‘Reserva tu café hoy.’, "
+                        "el título: ‘Canary Café’ y el mensaje inicial: ‘Hola, quiero reservar.’"
+                    ),
                     config=config,
                 )
                 self.assertTrue(result["ok"])
@@ -698,6 +722,10 @@ class CampaignContractRegressionTests(unittest.TestCase):
             "creative_image_path": "/app/output/cafe.png",
             "locations": ["Cartagena"],
             "placements": {"automatic": True},
+            "primary_text": "Reserva tu café hoy.",
+            "headline": "Canary Café",
+            "primary_text_approved": True,
+            "headline_approved": True,
             "prefilled_message": "Hola, quiero reservar.",
             "creative_decision": "Usar el creativo aprobado",
             "creative_approved": True,
@@ -748,7 +776,11 @@ class CampaignContractRegressionTests(unittest.TestCase):
                 )
                 result = compiler.compile_campaign_brief(
                     "create_whatsapp_campaign",
-                    "Crea la campaña aprobada para Cartagena por 5 USD diarios.",
+                    authoritative_buyer_brief(
+                        "Confirmo 5 USD diarios para Cartagena. Apruebo usar la imagen "
+                        "/app/output/cafe.png, el texto principal: ‘Reserva tu café hoy.’, "
+                        "el título: ‘Canary Café’ y el mensaje inicial: ‘Hola, quiero reservar.’"
+                    ),
                     config=config,
                 )
                 self.assertTrue(result["ok"])
@@ -804,7 +836,11 @@ class CampaignContractRegressionTests(unittest.TestCase):
                 )
                 result = compiler.compile_campaign_brief(
                     "create_whatsapp_campaign",
-                    "Usa cinco o diez dólares y escoge tú una ciudad conveniente.",
+                    authoritative_buyer_brief(
+                        "Usa 5 o 10 USD y escoge tú una ciudad conveniente. Apruebo usar la imagen "
+                        "/app/output/cafe.png, el texto principal: ‘Reserva tu café hoy.’, "
+                        "el título: ‘Canary Café’ y el mensaje inicial: ‘Hola, quiero reservar.’"
+                    ),
                     config=config,
                 )
                 self.assertFalse(result["ok"])
@@ -820,6 +856,15 @@ class CampaignContractRegressionTests(unittest.TestCase):
 
     def test_campaign_compiler_requires_explicit_audience_automation_decision(self):
         import campaign_payload_compiler as compiler
+
+        approved_ad_material = {
+            "primary_text": "Reserva hoy.",
+            "headline": "Reserva ahora",
+            "primary_text_approved": True,
+            "headline_approved": True,
+            "creative_decision": "Reutilizar /app/output/existing.png",
+            "creative_approved": True,
+        }
 
         self.assertEqual(
             compiler._brief_targeting_mode(
@@ -858,6 +903,7 @@ class CampaignContractRegressionTests(unittest.TestCase):
                 "ready": True,
                 "missing_fields": [],
                 "payload_json": json.dumps({
+                    **approved_ad_material,
                     "name": "Canary Web",
                     "daily_budget": 9,
                     "budget_confirmation": "9 USD",
@@ -882,6 +928,7 @@ class CampaignContractRegressionTests(unittest.TestCase):
                 "ready": True,
                 "missing_fields": [],
                 "payload_json": json.dumps({
+                    **approved_ad_material,
                     "name": "Canary Mixed",
                     "daily_budget": 8,
                     "budget_confirmation": "8 USD",
@@ -902,6 +949,7 @@ class CampaignContractRegressionTests(unittest.TestCase):
         self.assertTrue(accepted_mixed["ok"])
 
         mixed_candidate["compiled"]["payload_json"] = json.dumps({
+            **approved_ad_material,
             "name": "Canary Mixed",
             "daily_budget": 8,
             "budget_confirmation": "8 USD",
@@ -920,6 +968,7 @@ class CampaignContractRegressionTests(unittest.TestCase):
         self.assertEqual(rejected_mixed["missing_fields"], ["ad_sets[].targeting_mode"])
 
         mixed_candidate["compiled"]["payload_json"] = json.dumps({
+            **approved_ad_material,
             "name": "Canary Mixed",
             "daily_budget": 8,
             "budget_confirmation": "8 USD",
@@ -963,6 +1012,7 @@ class CampaignContractRegressionTests(unittest.TestCase):
                 "ready": True,
                 "missing_fields": [],
                 "payload_json": json.dumps({
+                    **approved_ad_material,
                     "name": "Placement Matrix",
                     "daily_budget": 8,
                     "budget_confirmation": "8 USD",
@@ -993,6 +1043,7 @@ class CampaignContractRegressionTests(unittest.TestCase):
             {"facebook_feed", "facebook_story", "facebook_video_feeds", "facebook_reels", "instagram_feed", "instagram_story"},
         )
         placement_candidate["compiled"]["payload_json"] = json.dumps({
+            **approved_ad_material,
             "name": "Placement Matrix",
             "daily_budget": 8,
             "budget_confirmation": "8 USD",
@@ -1020,6 +1071,7 @@ class CampaignContractRegressionTests(unittest.TestCase):
         )
 
         placement_candidate["compiled"]["payload_json"] = json.dumps({
+            **approved_ad_material,
             "name": "Placement arrays",
             "daily_budget": 8,
             "budget_confirmation": "8 USD",
@@ -1043,6 +1095,7 @@ class CampaignContractRegressionTests(unittest.TestCase):
         )
 
         placement_candidate["compiled"]["payload_json"] = json.dumps({
+            **approved_ad_material,
             "name": "Incomplete city",
             "daily_budget": 8,
             "budget_confirmation": "8 USD",
@@ -1071,6 +1124,7 @@ class CampaignContractRegressionTests(unittest.TestCase):
             {"459425", "476114"},
         )
         placement_candidate["compiled"]["payload_json"] = json.dumps({
+            **approved_ad_material,
             "name": "Dropped exact ID",
             "daily_budget": 8,
             "budget_confirmation": "8 USD",
@@ -1090,6 +1144,7 @@ class CampaignContractRegressionTests(unittest.TestCase):
         self.assertEqual(dropped_exact_id["missing_fields"], ["meta_location_id:459425"])
 
         whatsapp_matrix = {
+            **approved_ad_material,
             "name": "WA Matrix",
             "daily_budget": 8,
             "budget_confirmation": "8 USD diarios",
@@ -1130,9 +1185,19 @@ class CampaignContractRegressionTests(unittest.TestCase):
     def test_website_destination_without_explicit_objective_defaults_to_traffic(self):
         from admira_tool_bridge import destination_campaign_arguments
 
+        approved_ad_material = {
+            "primary_text": "Reserva hoy.",
+            "headline": "Reserva ahora",
+            "primary_text_approved": True,
+            "headline_approved": True,
+            "creative_decision": "Usar /app/output/example.png",
+            "creative_approved": True,
+        }
+
         arguments, error = destination_campaign_arguments(
             "admira_create_website_campaign",
             {
+                **approved_ad_material,
                 "name": "Canary Web",
                 "daily_budget": 9,
                 "budget_confirmation": "9 USD",
@@ -1149,6 +1214,7 @@ class CampaignContractRegressionTests(unittest.TestCase):
         explicit, error = destination_campaign_arguments(
             "admira_create_website_campaign",
             {
+                **approved_ad_material,
                 "name": "Canary Sales",
                 "objective": "OUTCOME_SALES",
                 "daily_budget": 9,

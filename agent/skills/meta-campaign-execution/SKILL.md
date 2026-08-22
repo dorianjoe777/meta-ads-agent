@@ -21,13 +21,18 @@ marketer who understands the client's industry, then record the buyer's
 approval or edits in the natural-language brief. Never let Terra, a fallback,
 or a backend default invent missing copy. Never use the campaign name or ad-set
 name as the ad title unless the buyer explicitly chose that wording.
+When using Hermes' native clarification/choice UI, include those exact values
+in the visible question before offering approval. A generic “approve and
+create” card with omitted copy is invalid; show the full proposal and the
+delivered creative first, then accept the buyer's natural correction or
+approval.
 
 ## Safe execution
 
 - Use `mcp_admira_review_signal_quality` before conversion, lead, message, or website-action campaigns.
 - Use `mcp_admira_preflight_campaign` for serious launches or advanced targeting/creative setups.
-- Use exactly one destination tool: `mcp_admira_create_whatsapp_campaign`, `mcp_admira_create_lead_form_campaign`, `mcp_admira_create_website_campaign`, `mcp_admira_create_messaging_campaign`, `mcp_admira_create_app_campaign`, or `mcp_admira_create_on_meta_campaign`. The broad legacy `stage_campaign` contract is not model-facing. Every creation tool forces the complete stack to `PAUSED`/no-spend and creates it immediately after the buyer asks; activation or another spend-capable change remains separately approval-protected.
-- Creating a complete campaign/ad set/ad structure in `PAUSED` status is allowed after the buyer asks for it; it should not require a second approval just to create non-spending Meta objects. The protected approval is activation, resuming, publishing active, budget increases, customer-data sends, or any action that can spend or materially mutate a live running account.
+- Use exactly one destination tool: `mcp_admira_create_whatsapp_campaign`, `mcp_admira_create_lead_form_campaign`, `mcp_admira_create_website_campaign`, `mcp_admira_create_messaging_campaign`, `mcp_admira_create_app_campaign`, or `mcp_admira_create_on_meta_campaign`. The broad legacy `stage_campaign` contract is not model-facing. Every creation tool forces the complete stack to `PAUSED`/no-spend and creates it once the buyer has resolved the exact current inputs; activation or another spend-capable change remains separately approval-protected.
+- Creating a complete campaign/ad set/ad structure in `PAUSED` status is allowed after the buyer asks for it only when the current campaign's exact budget/currency, creative, primary text, title, and destination-specific detail have been shown and resolved. A campaign request is not approval for values invented by the agent or copied from another campaign. Once those inputs are explicitly accepted, it should not require a redundant second approval merely to create non-spending Meta objects. The protected approval is activation, resuming, publishing active, budget increases, customer-data sends, or any action that can spend or materially mutate a live running account.
 - New campaigns requested as `ACTIVE` or any spend-capable change require explicit approval/confirmation. Do not claim execution unless a tool confirms it.
 - Preparing a paused draft, preflight, retry, or approval-ready staging is the normal next step after the buyer asks for it. Do not ask a redundant “should I prepare it?” confirmation unless an unresolved choice would materially change what is staged.
 - If paused creation fails because a technical field such as pixel/event/promoted_object is missing or invalid, do not ask “do you want me to continue?” The buyer already asked for creation. Fix the payload from known context when safe, retry through the tool, or give the exact blocker and the one missing detail needed.

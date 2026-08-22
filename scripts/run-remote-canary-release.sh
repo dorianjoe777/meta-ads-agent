@@ -7,7 +7,7 @@ set -euo pipefail
 TARGET="${1:?Usage: $0 <user@host> <identity-file> <container> [hermes-home]}"
 IDENTITY_FILE="${2:?Usage: $0 <user@host> <identity-file> <container> [hermes-home]}"
 CONTAINER="${3:?Usage: $0 <user@host> <identity-file> <container> [hermes-home]}"
-HERMES_HOME_PATH="${4:-/app/dashboard/data/hermes-home}"
+HERMES_HOME_PATH="${4:-/app/runtime/hermes}"
 AGENT_TIMEOUT_SECONDS="${ADMIRA_CANARY_AGENT_TIMEOUT_SECONDS:-45}"
 
 ssh -i "$IDENTITY_FILE" \
@@ -19,6 +19,10 @@ ssh -i "$IDENTITY_FILE" \
     test -x /usr/local/bin/hermes && \
     test -f /app/src/admira_mcp_server.py && \
     test -f /app/src/admira_hermes_runtime_patch.py && \
+    test -d "$HERMES_HOME_PATH" && \
+    test -f "$HERMES_HOME_PATH/.env" && \
+    test -f "$HERMES_HOME_PATH/auth.json" && \
+    (test -f "$HERMES_HOME_PATH/config.yaml" || test -f "$HERMES_HOME_PATH/config.toml") && \
     export PYTHONPATH=\"/app/src\" && \
     export ADMIRA_HERMES_RUNTIME_PATCHES=1 && \
     HERMES_HOME=\"$HERMES_HOME_PATH\" hermes mcp test admira && \

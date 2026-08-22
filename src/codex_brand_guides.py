@@ -240,11 +240,24 @@ AD_BRIEF_FIELD_LABELS = {
     "product_guide": "Ficha de producto",
     "campaign_name": "Campaña",
     "campaign_id": "ID de campaña",
+    "campaign_currency": "Moneda de la campaña",
     "adset_name": "Conjunto de anuncios",
     "adset_id": "ID de conjunto de anuncios",
     "base_ad_name": "Anuncio base",
     "base_ad_id": "ID de anuncio base",
     "objective": "Objetivo del anuncio",
+    "business_outcome": "Resultado de negocio buscado",
+    "time_horizon": "Horizonte de tiempo",
+    "offer_details": "Oferta activa y alcance",
+    "ideal_customer": "Cliente ideal y disparador",
+    "funnel_follow_up": "Embudo y seguimiento",
+    "economics": "Economia unitaria y supuestos",
+    "projection": "Proyeccion del test",
+    "measurement_plan": "Plan de medicion y revisiones",
+    "primary_text": "Texto principal aprobado",
+    "headline": "Titulo aprobado",
+    "cta": "Llamada a la accion",
+    "destination_message": "Mensaje de destino aprobado",
     "promotion": "Promocion o idea puntual",
     "audience_slice": "Segmento o lectura de audiencia",
     "base_ad": "Que ya funciona del anuncio",
@@ -262,6 +275,7 @@ AD_BRIEF_FIELD_LABELS = {
     "required_assets": "Activos necesarios",
     "creative_hypothesis": "Hipotesis creativa",
     "success_signal": "Senal de exito",
+    "success_metrics": "Resultados y KPIs prioritarios",
     "agent_notes": "Notas para el agente",
 }
 
@@ -307,10 +321,23 @@ AD_BRIEF_FIELD_ALIASES = {
     "name": ("Nombre", "Nombre del anuncio", "Brief", "Brief name", "brief_name", "Ad name", "ad_name", "Title"),
     "product_guide": ("Producto", "Product", "product", "product_name", "Oferta", "Ficha producto"),
     "campaign_name": ("Campaign", "campaign", "Nombre de campaña"),
+    "campaign_currency": ("Currency", "Moneda", "Account currency", "Moneda de cuenta"),
     "adset_name": ("Ad set", "Adset", "adset", "Conjunto"),
     "base_ad_name": ("Base ad name", "Existing ad", "existing_ad", "Anuncio existente"),
     "base_ad": ("base_ad", "Lo que funciona", "What works", "Preservar", "preserve"),
     "objective": ("Objetivo", "Goal", "Meta"),
+    "business_outcome": ("Resultado de negocio", "Business outcome", "Resultado buscado", "business_goal"),
+    "time_horizon": ("Horizonte", "Time horizon", "Plazo", "30 dias", "30-day goal"),
+    "offer_details": ("Oferta activa", "Offer details", "Que incluye", "Oferta y alcance", "offer"),
+    "ideal_customer": ("Cliente ideal", "Ideal customer", "Comprador ideal", "Disparador", "ideal_buyer"),
+    "funnel_follow_up": ("Embudo", "Funnel", "Seguimiento", "Follow-up", "follow_up"),
+    "economics": ("Economia", "Economics", "Costos", "Costes", "Margen", "Unit economics", "unit_economics"),
+    "projection": ("Proyeccion", "Proyección", "Projection", "Escenarios", "Forecast", "test_projection"),
+    "measurement_plan": ("Plan de medicion", "Plan de medición", "Measurement plan", "Revision", "Review plan"),
+    "primary_text": ("Texto principal", "Primary text", "Copy", "Ad copy", "Copy principal"),
+    "headline": ("Titulo", "Título", "Headline", "Ad title", "Title"),
+    "cta": ("CTA", "Llamada a la accion", "Llamada a la acción", "Call to action"),
+    "destination_message": ("Mensaje de destino", "WhatsApp opener", "Prefilled message", "Welcome message", "Mensaje WhatsApp"),
     "promotion": ("Promoción", "Promo", "Offer", "Idea", "Oferta puntual"),
     "audience_slice": ("Audiencia", "Segmento", "Audience", "Target audience", "target_audience"),
     "budget": ("Budget", "Presupuesto total"),
@@ -324,6 +351,7 @@ AD_BRIEF_FIELD_ALIASES = {
     "required_assets": ("Assets", "Activos", "Required assets"),
     "creative_hypothesis": ("Hipótesis", "Hipotesis", "Hypothesis", "hypothesis", "test_hypothesis"),
     "success_signal": ("Señal", "Senal", "Success metric", "success_metric"),
+    "success_metrics": ("KPIs", "Resultados", "Success metrics", "Priority metrics", "key_results"),
 }
 
 PRODUCT_PAYLOAD_ALIASES = {
@@ -393,6 +421,19 @@ AD_BRIEF_PAYLOAD_ALIASES = {
     "name": ("brief_name", "ad_name", "title"),
     "product_guide": ("product", "product_name", "offer", "main_offer"),
     "campaign_name": ("campaign",),
+    "campaign_currency": ("currency", "account_currency", "moneda"),
+    "business_outcome": ("business_goal", "goal", "commercial_goal"),
+    "time_horizon": ("deadline", "evaluation_window", "goal_horizon"),
+    "offer_details": ("offer", "offer_scope", "inclusions"),
+    "ideal_customer": ("ideal_buyer", "buyer", "customer_profile"),
+    "funnel_follow_up": ("follow_up", "followup", "sales_process", "qualification_process"),
+    "economics": ("unit_economics", "costs", "costes", "margin", "contribution_margin", "conversion_assumptions"),
+    "projection": ("forecast", "test_projection", "scenario_projection", "scenarios"),
+    "measurement_plan": ("review_plan", "kpi_plan", "measurement", "checkpoints"),
+    "primary_text": ("copy", "ad_copy", "primary_ad_text"),
+    "headline": ("title", "ad_title", "titulo"),
+    "cta": ("call_to_action", "action"),
+    "destination_message": ("prefilled_message", "welcome_message", "whatsapp_message", "opener"),
     "adset_name": ("adset", "ad_set", "ad_set_name"),
     "base_ad_name": ("existing_ad", "base_ad_title", "base_ad_label"),
     "base_ad": ("what_works", "preserve", "base_ad_notes", "winning_ad"),
@@ -408,6 +449,7 @@ AD_BRIEF_PAYLOAD_ALIASES = {
     "required_assets": ("assets", "required_images"),
     "creative_hypothesis": ("hypothesis", "test_hypothesis"),
     "success_signal": ("success_metric", "metric"),
+    "success_metrics": ("kpis", "priority_metrics", "key_results", "top_3_results", "important_results"),
 }
 
 
@@ -1182,6 +1224,7 @@ Usa este archivo para crear anuncios concretos, promociones puntuales y variacio
 - Ficha de producto: {fields.get('product_guide', '')}
 - Campaña: {fields.get('campaign_name', '')}
 - ID de campaña: {fields.get('campaign_id', '')}
+- Moneda de la campaña: {fields.get('campaign_currency', '')}
 - Conjunto de anuncios: {fields.get('adset_name', '')}
 - ID de conjunto de anuncios: {fields.get('adset_id', '')}
 - Anuncio base: {fields.get('base_ad_name', '')}
@@ -1190,6 +1233,11 @@ Usa este archivo para crear anuncios concretos, promociones puntuales y variacio
 ## Pedido creativo
 
 - Objetivo del anuncio: {fields.get('objective', '')}
+- Resultado de negocio buscado: {fields.get('business_outcome', '')}
+- Horizonte de tiempo: {fields.get('time_horizon', '')}
+- Oferta activa y alcance: {fields.get('offer_details', '')}
+- Cliente ideal y disparador: {fields.get('ideal_customer', '')}
+- Embudo y seguimiento: {fields.get('funnel_follow_up', '')}
 - Promocion o idea puntual: {fields.get('promotion', '')}
 - Segmento o lectura de audiencia: {fields.get('audience_slice', '')}
 - Que ya funciona del anuncio: {fields.get('base_ad', '')}
@@ -1202,6 +1250,14 @@ Usa este archivo para crear anuncios concretos, promociones puntuales y variacio
 - Presupuesto diario: {fields.get('daily_budget', '')}
 - Presupuesto mensual: {fields.get('monthly_budget', '')}
 - CPA/CPL objetivo: {fields.get('target_cpa_cpl', '')}
+- Resultados y KPIs prioritarios: {fields.get('success_metrics', '')}
+- Economia unitaria y supuestos: {fields.get('economics', '')}
+- Proyeccion del test: {fields.get('projection', '')}
+- Plan de medicion y revisiones: {fields.get('measurement_plan', '')}
+- Texto principal aprobado: {fields.get('primary_text', '')}
+- Titulo aprobado: {fields.get('headline', '')}
+- Llamada a la accion: {fields.get('cta', '')}
+- Mensaje de destino aprobado: {fields.get('destination_message', '')}
 
 ## Variaciones
 

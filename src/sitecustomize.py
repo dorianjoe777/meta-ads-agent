@@ -42,6 +42,10 @@ def _install_runtime_patches():
                 # the point where the class has actually been defined.
                 if str(name or "") == "gateway.run":
                     try:
+                        runtime_patch._patch_gateway_chatgpt_slash_commands()
+                    except Exception:
+                        pass
+                    try:
                         runtime_patch._patch_gateway_generated_media_delivery()
                     except Exception:
                         pass

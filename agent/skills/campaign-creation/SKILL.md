@@ -19,7 +19,7 @@ Use this skill when the buyer asks to create, launch, prepare, or publish a Meta
 
 ## Safety Rules
 
-- A complete campaign/ad set/ad structure that will remain `PAUSED` may be created after the buyer asks for it; do not add a second approval ceremony for no-spend creation. The important approval is activation or another spend-capable live change.
+- A complete campaign/ad set/ad structure that will remain `PAUSED` may be created after the buyer asks for it, but only after the current campaign's exact budget/currency, creative, primary text, title, and destination-specific message/form/URL have been shown and resolved. A campaign request is not approval for values invented by the agent or copied from another campaign. Once those inputs are explicitly accepted, do not add a redundant second approval ceremony merely because the structure is PAUSED; activation or another spend-capable live change still needs its own approval.
 - If the buyer wants the final ad active and able to spend, require explicit active-spend confirmation.
 - Chat can stage a campaign but cannot silently approve it.
 - If information is truly blocking, ask one clear question at a time.
@@ -67,6 +67,13 @@ copy principal and a separate title from the active offer, audience, proof,
 objection, and destination. Recommend the strongest version and show the exact
 wording in the chat. Ask the buyer to approve it, edit it, or provide their own
 wording; natural agreement is enough and no magic approval phrase is required.
+If you use Hermes' native clarification/choice UI for that review, the visible
+question must repeat the exact copy principal, distinct title, CTA and
+destination opener/message. Never show a generic “approve this copy and create”
+button while the wording is hidden in the model's context; emit the readable
+proposal first, deliver the actual creative, and let the buyer correct or
+approve the package together in natural language. Buttons are only a convenient
+way to answer an already-visible proposal, not a substitute for the review.
 
 - Never copy the campaign name or ad-set name into the title merely because a
   title is missing. The title should sell the benefit, promise, proof, or

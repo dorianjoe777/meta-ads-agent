@@ -687,6 +687,22 @@ def destination_campaign_arguments(tool, arguments, *, budget_parser=None, budge
         args.pop(key, None)
     args["final_status"] = "PAUSED"
     args["active_spend_confirmed"] = False
+    # A campaign request is not approval for model-invented ad material.  Keep
+    # this close to the destination boundary so direct tool callers cannot
+    # bypass the compiler's buyer-evidence check.
+    if tool in CAMPAIGN_CREATION_TOOLS:
+        if not str(args.get("primary_text") or "").strip():
+            return None, "missing_primary_text"
+        if not str(args.get("headline") or "").strip():
+            return None, "missing_headline"
+        if args.get("primary_text_approved") is not True:
+            return None, "primary_text_not_approved"
+        if args.get("headline_approved") is not True:
+            return None, "headline_not_approved"
+        if not str(args.get("creative_decision") or "").strip():
+            return None, "missing_creative_decision"
+        if args.get("creative_approved") is not True:
+            return None, "creative_not_approved"
     external_keys = {
         "landing_url", "message_destination", "whatsapp_phone_number_id",
         "lead_gen_form_id", "lead_form_id", "instant_form_id",
@@ -695,10 +711,6 @@ def destination_campaign_arguments(tool, arguments, *, budget_parser=None, budge
     }
     if tool == "admira_create_whatsapp_campaign":
         creative_decision = str(args.get("creative_decision") or "").strip()
-        if not creative_decision:
-            return None, "missing_creative_decision"
-        if args.get("creative_approved") is not True:
-            return None, "creative_not_approved"
         if not str(args.get("prefilled_message") or "").strip() and not every_ad_set_has("prefilled_message"):
             return None, "missing_prefilled_message"
         if args.get("prefilled_message_approved") is not True:
@@ -785,7 +797,8 @@ def persist_pending_campaign_workflow(tool, args, reason, *, result=None, status
         "name", "objective", "daily_budget", "daily_budget_raw", "budget_confirmation",
         "account_currency", "locations", "targeting_locations", "countries", "placements",
         "age_min", "age_max", "genders", "gender", "targeting_mode", "primary_text",
-        "headline", "prefilled_message", "creative_decision", "creative_approved",
+        "headline", "primary_text_approved", "headline_approved", "prefilled_message",
+        "creative_decision", "creative_approved",
         "prefilled_message_approved", "creative_asset_id", "content_asset_id",
         "content_asset_ids", "creative_image_path", "video_path", "video_url", "object_story_id",
         "success_metrics",
@@ -810,6 +823,12 @@ def persist_pending_campaign_workflow(tool, args, reason, *, result=None, status
         "next_step": next_step_by_reason.get(str(reason or ""), "Resolve the exact blocker and resume this campaign; do not restart onboarding."),
         "meta_creation_verified": status == "completed",
     }
+    proposal_brief = str(source.get("brief_markdown") or "").strip()
+    if proposal_brief:
+        # Keep the exact held proposal private so a later short “sí” can
+        # approve what was shown, without treating an empty pending blocker as
+        # permission to invent a fresh budget or creative.
+        payload["proposal_brief_markdown"] = proposal_brief[:60000]
     try:
         PENDING_CAMPAIGN_WORKFLOW_FILE.parent.mkdir(parents=True, exist_ok=True)
         PENDING_CAMPAIGN_WORKFLOW_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -887,7 +906,14 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
                 persist_pending_campaign_workflow(tool, original_campaign_args, reason)
                 missing = campaign_compilation.get("missing_fields") or []
                 if reason == "campaign_brief_incomplete":
-                    detail = ", ".join(str(value) for value in missing) or "datos de campaña"
+                    labels = {
+                        "budget_confirmation": "el presupuesto diario exacto y su moneda",
+                        "creative_approval": "la elección y aprobación del creativo exacto",
+                        "primary_text_approval": "la aprobación del texto principal del anuncio",
+                        "headline_approval": "la aprobación del título del anuncio",
+                        "prefilled_message_approval": "la aprobación del mensaje inicial de WhatsApp",
+                    }
+                    detail = ", ".join(labels.get(str(value), str(value)) for value in missing) or "datos de campaña"
                     reply = f"No se creó nada en Meta: el briefing aún necesita confirmar {detail}."
                 else:
                     reply = str(campaign_compilation.get("error") or "Terra no pudo compilar el briefing de campaña. Intenta de nuevo sin cambiar los datos aprobados.")
@@ -914,6 +940,10 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
             replies = {
                 "missing_creative_decision": "No se creó nada en Meta: primero pregunta si el cliente quiere crear un creativo nuevo, reutilizar uno reciente o usar una imagen subida.",
                 "creative_not_approved": "No se creó nada en Meta: falta terminar y aprobar el creativo exacto que llevará el anuncio.",
+                "missing_primary_text": "No se creó nada en Meta: falta el texto principal exacto del anuncio.",
+                "missing_headline": "No se creó nada en Meta: falta el título exacto del anuncio.",
+                "primary_text_not_approved": "No se creó nada en Meta: muestra el texto principal exacto y espera la aprobación o edición del cliente.",
+                "headline_not_approved": "No se creó nada en Meta: muestra el título exacto y espera la aprobación o edición del cliente.",
                 "missing_prefilled_message": "No se creó nada en Meta: falta definir el mensaje exacto que aparecerá al abrir WhatsApp.",
                 "prefilled_message_not_approved": "No se creó nada en Meta: muestra el mensaje exacto de WhatsApp y obtén la aprobación del cliente.",
             }

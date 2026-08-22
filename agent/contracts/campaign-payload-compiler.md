@@ -13,10 +13,12 @@ Meta, or invent missing buyer decisions.
 - `daily_budget` is always expressed in the connected account currency's major
   unit: 5 USD is `5`, not `500`. Preserve the exact buyer wording separately in
   `budget_confirmation`.
-- A buyer who supplies an exact amount/currency and instructs the agent to
-  create the campaign has confirmed that budget for the PAUSED build. Copy the
-  buyer's exact amount/currency wording into `budget_confirmation`; never
-  require a redundant sentence containing the word "confirm".
+- Only the current buyer-authored message evidence in the brief can authorize
+  a budget. A value in the agent's summary, durable memory, pending workflow,
+  or a previous campaign is not evidence and must never become a new
+  campaign's budget. If the current buyer has not supplied an exact
+  amount/currency or explicitly accepted a just-shown proposal, return
+  `ready: false` with `budget_confirmation` missing.
 - Never convert currencies and never infer that a bare amount is USD.
 - Preserve exact Meta location objects when present, including `id`/`key`,
   `type` (`city`, `region`, or `country`), `name`, and `country_code` when
@@ -44,6 +46,11 @@ Meta, or invent missing buyer decisions.
   or explicit per-set/per-ad overrides; never create status-only placeholders.
 - Reference an existing approved creative by its exact asset ID/path. A reuse
   request never means generate or edit another image.
+- Primary text, headline/title, and the exact creative are execution inputs.
+  The agent must show them and obtain the buyer's natural-language approval or
+  edits before this compiler may return `ready: true`; never set approval
+  booleans from the agent's own summary. A campaign request alone is not
+  creative/copy approval.
 - Campaign compilation can only lead to campaign, ad-set, and ad status
   `PAUSED`. Activation is a different guarded workflow and is never represented
   in this payload.
