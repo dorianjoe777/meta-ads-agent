@@ -382,6 +382,16 @@ def _name_score(name: str, message_tokens: Sequence[str]) -> float:
     if len(name_tokens) == 1 and len(name_tokens[0]) < 6:
         return 0.0
     best = 0.0
+    # Buyers naturally shorten a displayed name (“Rodeo” for
+    # “Rodeo - Car Detailing”). A distinctive exact token is useful evidence;
+    # duplicate prefixes remain ambiguous because every matching asset gets
+    # the same score and the resolver refuses close ties.
+    shared = {
+        token for token in name_tokens
+        if len(token) >= 5 and token in set(message_tokens)
+    }
+    if shared:
+        best = max(best, min(0.94, 0.82 + 0.04 * (len(shared) - 1)))
     minimum = max(1, len(name_tokens) - 1)
     maximum = min(len(message_tokens), len(name_tokens) + 1)
     for size in range(minimum, maximum + 1):
@@ -396,19 +406,27 @@ def _tokens_in_kind_scope(
     scope_positions: Sequence[int],
     other_scope_positions: Sequence[int],
 ) -> list[str]:
-    """Return text governed by this asset noun when both kinds are named.
+    """Return tokens whose nearest entity noun belongs to this asset kind.
 
-    In “cuenta Dorian Singularity y página Rodeo”, the account name must not
-    also match a Page named Dorian Singularity. Each explicit scope owns the
-    text after it until the next account/Page scope marker.
+    This is deliberately symmetric: both “cuenta Acme” and “Acme como cuenta”
+    bind Acme to the account scope. It also prevents that name from matching a
+    Page with the same name elsewhere in the inventory.
     """
     if not scope_positions or not other_scope_positions:
         return list(tokens)
-    all_scopes = sorted(set(scope_positions) | set(other_scope_positions))
     selected: list[str] = []
-    for position in scope_positions:
-        boundary = min((item for item in all_scopes if item > position), default=len(tokens))
-        selected.extend(tokens[position:boundary])
+    for index, token in enumerate(tokens):
+        own_distance = min(abs(index - position) for position in scope_positions)
+        other_distance = min(abs(index - position) for position in other_scope_positions)
+        tie_belongs_here = False
+        if own_distance == other_distance:
+            nearest_own = min(scope_positions, key=lambda position: abs(index - position))
+            nearest_other = min(other_scope_positions, key=lambda position: abs(index - position))
+            # At an exact midpoint, natural “Name como cuenta/página” grammar
+            # belongs to the upcoming noun on the right.
+            tie_belongs_here = nearest_own > nearest_other or index in scope_positions
+        if own_distance < other_distance or tie_belongs_here:
+            selected.append(token)
     return selected or list(tokens)
 
 
@@ -442,11 +460,18 @@ def _resolve_kind(
         asset = next(iter(unique_ordinal_matches.values()))
         return {"status": "resolved", "asset": asset, "evidence": "ordinal", "scoped": True}
 
-    exact_names: list[dict[str, Any]] = []
+    exact_name_matches: list[tuple[tuple[int, int], dict[str, Any]]] = []
     for asset in assets:
         name_norm = normalize_selection_text(asset["name"])
         if len(name_norm) >= 3 and name_norm in kind_message:
-            exact_names.append(asset)
+            exact_name_matches.append(((len(name_norm.split()), len(name_norm)), asset))
+    # Prefer the most specific complete name. “Dorian Singularity” must beat
+    # accounts named only “Dorian”; duplicate equally-specific names remain
+    # ambiguous and still require an ordinal or ID.
+    exact_names: list[dict[str, Any]] = []
+    if exact_name_matches:
+        best_specificity = max(item[0] for item in exact_name_matches)
+        exact_names = [asset for specificity, asset in exact_name_matches if specificity == best_specificity]
     if len(exact_names) > 1:
         return {"status": "ambiguous", "kind": kind, "candidate_ids": [item["id"] for item in exact_names], "scoped": scoped}
     if len(exact_names) == 1:

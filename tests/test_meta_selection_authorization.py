@@ -163,6 +163,22 @@ class MetaSelectionAuthorizationTests(unittest.TestCase):
         self.assertEqual(result["status"], "ambiguous")
         self.assertCountEqual(result["account"]["candidate_ids"], ["act_1", "act_2"])
 
+    def test_longest_explicit_name_beats_shorter_prefixes(self):
+        inventory = {
+            "accounts": [
+                {"id": "act_1", "name": "Dorian"},
+                {"id": "act_2", "name": "Dorian"},
+                {"id": "act_8", "name": "Dorian Singularity"},
+            ],
+            "pages": [{"id": "page_1", "name": "Rodeo - Car Detailing"}],
+        }
+        result = resolve_selection_message(
+            "Usa Dorian Singularity como cuenta y Rodeo como página",
+            inventory,
+        )
+        self.assertEqual(result["status"], "resolved")
+        self.assertEqual(result["account"]["asset"]["id"], "act_8")
+
     def test_same_unscoped_name_across_account_and_page_is_ambiguous(self):
         inventory = {
             "accounts": [{"id": "act_1", "name": "Acme"}],
@@ -187,6 +203,14 @@ class MetaSelectionAuthorizationTests(unittest.TestCase):
         self.assertEqual(result["status"], "resolved")
         self.assertEqual(result["account"]["asset"]["id"], "act_8")
         self.assertEqual(result["page"]["asset"]["id"], "page_1")
+
+        reversed_order = resolve_selection_message(
+            "Usa Dorian Singularity como cuenta y Rodeo como página",
+            inventory,
+        )
+        self.assertEqual(reversed_order["status"], "resolved")
+        self.assertEqual(reversed_order["account"]["asset"]["id"], "act_8")
+        self.assertEqual(reversed_order["page"]["asset"]["id"], "page_1")
 
     def test_scoped_switch_keeps_only_the_unchanged_other_side(self):
         current = {"ad_account_id": "act_100", "page_id": "1319759131214498"}
