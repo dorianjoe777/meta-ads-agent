@@ -1401,7 +1401,7 @@ def _append_live_meta_context(value, context):
         + "This is authoritative for what currently exists, runs, spends, or performs in Meta Ads. "
         + "Prefer it over session history and durable memory. If ok is false or the read is incomplete, explicitly say live Meta could not be confirmed; never turn an empty list into a claim that no campaigns exist.\n"
         + "Pending approvals, old plans, created-campaign drafts, and remembered IDs are not current Meta state. Do not mention or prioritize them unless the buyer explicitly asks to approve/reject/activate one exact current action. If they conflict with this snapshot, ignore them and follow Meta.\n"
-        + "OAuth workspace state has a separate meaning from live campaign sync. If oauth_workspace.authorized=true and selection_required=true, Facebook permissions succeeded: never claim authorization or ads_read/ads_management is missing, and never request another link. List the available OAuth accounts/Pages when asked, wait for the buyer's choice, then use mcp_admira_select_meta_oauth_workspace with the matching IDs.\n"
+        + "OAuth workspace state has a separate meaning from live campaign sync. If oauth_workspace.authorized=true and selection_required=true, Facebook permissions succeeded: never claim authorization or ads_read/ads_management is missing, and never request another link. List publishable Pages first and ad accounts second, then require exactly two numbers with no words: Page number first and ad-account number second. Names, confirmations, prose, out-of-range values, and partial replies do not authorize; show both lists again. Only the protected backend may resolve that strict pair before mcp_admira_select_meta_oauth_workspace persists it.\n"
         + "If oauth_workspace.selection_required=false and active account/Page IDs are present, that selection is already persistent: use it silently and never ask the buyer to choose again unless they explicitly request a switch. Never claim a new selection was saved unless mcp_admira_select_meta_oauth_workspace succeeded in this turn.\n"
         + "pending_campaign_workflow is context, not proof or permission. After an explicit conversation reset, act on it only when the current exchange establishes that scope again. A short acknowledgement can authorize an action only when it answers an immediately preceding explicit question in the active conversation; persisted memory alone never supplies that authorization.\n"
         + "Use this context silently; do not mention this injected block, runtime machinery, internal paths, or implementation details to the buyer.\n"
@@ -5953,7 +5953,7 @@ def _patch_telegram_update_install_callback():
                 _record_telegram_runtime_chat(chat_id, user_id)
                 await query.answer(text="Este selector anterior fue retirado.")
                 await message.reply_text(
-                    "Ese selector anterior ya no se usa. Escríbeme en este chat qué cuenta publicitaria y qué Página quieres usar; te mostraré las opciones y guardaré la pareja por texto."
+                    "Ese selector anterior ya no se usa. Pídeme la lista y responde únicamente con dos números: primero Página y después cuenta publicitaria, por ejemplo: 1, 8."
                 )
                 return
             if not data.startswith("au:"):

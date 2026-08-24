@@ -1386,7 +1386,7 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
             if context["oauth_workspace"]["selection_required"]:
                 context["metrics_source"]["notice"] = (
                     "Facebook ya está autorizado y los activos OAuth están disponibles. "
-                    "Falta únicamente que el comprador elija la cuenta publicitaria y Página activas; no solicites permisos ni otro enlace."
+                    "Falta únicamente el par numérico estricto del comprador: primero Página y después cuenta publicitaria; no solicites permisos ni otro enlace."
                 )
         elif live_sync.get("partial"):
             context["metrics_source"].update({

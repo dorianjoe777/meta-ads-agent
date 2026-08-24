@@ -91,15 +91,19 @@ class MetaSelectionAuthorizationTests(unittest.TestCase):
         self.assertEqual(intent["inventory_hash"], inventory_fingerprint(INVENTORY))
         self.assertEqual([item["ordinal"] for item in intent["inventory"]["pages"]], [1, 2])
 
-    def test_initial_selection_needs_both_explicit_halves_and_never_chooses_first_page(self):
+    def test_initial_selection_rejects_partial_prose_and_requires_one_numeric_pair(self):
         opened = self.open()
-        partial = self.authorize(opened, "Usa la cuenta 2")
-        self.assertEqual(partial["status"], "partial")
-        self.assertEqual(partial["selected"]["ad_account_id"], "act_200")
-        self.assertEqual(partial["selected"]["page_id"], "")
-        self.assertNotIn("ticket", partial)
+        account_only = self.authorize(opened, "Usa la cuenta 2")
+        self.assertEqual(account_only["status"], "rejected")
+        self.assertEqual(account_only["reason"], "numeric_pair_required")
+        self.assertNotIn("ticket", account_only)
 
-        authorized = self.authorize(opened, "Y la página Odontóloga María Flores", sequence=12)
+        page_only = self.authorize(opened, "Y la página Odontóloga María Flores", sequence=12)
+        self.assertEqual(page_only["status"], "rejected")
+        self.assertEqual(page_only["reason"], "numeric_pair_required")
+        self.assertNotIn("ticket", page_only)
+
+        authorized = self.authorize(opened, "1, 2", sequence=13)
         self.assertEqual(authorized["status"], "authorized")
         self.assertEqual(
             authorized["selection"],
@@ -114,53 +118,84 @@ class MetaSelectionAuthorizationTests(unittest.TestCase):
         current = self.authorizer.current_intent(chat_id="telegram:123", session_id="session-a")
         self.assertEqual(current["intent_id"], opened["intent_id"])
         self.assertNotIn("inventory", current)
+        self.assertNotIn("partial", current)
         result = self.authorizer.authorize_current_message(
             chat_id="telegram:123",
             session_id="session-a",
             message_sequence=11,
-            raw_message="cuenta 2 y página 1",
+            raw_message="1, 2",
             inventory=INVENTORY,
             current_pair={},
         )
         self.assertEqual(result["status"], "authorized")
         self.assertIsNone(self.authorizer.current_intent(chat_id="telegram:123", session_id="session-a"))
 
-    def test_unicode_typos_and_scoped_ordinals_resolve_naturally(self):
+    def test_unicode_typos_and_natural_names_require_numeric_pair(self):
         opened = self.open()
         result = self.authorize(
             opened,
             "Quiero la cuetna dos y la páguina Odontloga María Florez",
         )
-        self.assertEqual(result["status"], "authorized")
-        self.assertEqual(result["selection"]["ad_account_id"], "act_200")
-        self.assertEqual(result["selection"]["page_id"], "1319759131214498")
+        self.assertEqual(result["status"], "rejected")
+        self.assertEqual(result["reason"], "numeric_pair_required")
+        self.assertNotIn("ticket", result)
 
-    def test_two_scoped_ordinals_do_not_leak_across_categories(self):
+    def test_scoped_numeric_prose_requires_bare_numeric_pair(self):
         opened = self.open()
         result = self.authorize(opened, "cuenta 2 y página 1")
-        self.assertEqual(result["status"], "authorized")
-        self.assertEqual(result["selection"], {"ad_account_id": "act_200", "page_id": "1319759131214498"})
+        self.assertEqual(result["status"], "rejected")
+        self.assertEqual(result["reason"], "numeric_pair_required")
+        self.assertNotIn("ticket", result)
 
-    def test_two_bare_numbers_use_page_then_ad_account_order(self):
+    def test_supported_numeric_pair_formats_use_page_then_ad_account_order(self):
+        for message in ("1,2", "1, 2", "1 2"):
+            with self.subTest(message=message):
+                result = resolve_selection_message(message, INVENTORY)
+                self.assertEqual(result["status"], "resolved")
+                self.assertEqual(result["account"]["asset"]["id"], "act_200")
+                self.assertEqual(result["page"]["asset"]["id"], "1319759131214498")
+                self.assertEqual(result["account"]["evidence"], "canonical_numeric_pair")
+                self.assertEqual(result["page"]["evidence"], "canonical_numeric_pair")
+
+    def test_numeric_pair_rejects_extra_tokens_and_out_of_range_ordinals(self):
         opened = self.open()
-        result = self.authorize(opened, "1, 2")
-        self.assertEqual(result["status"], "authorized")
-        self.assertEqual(
-            result["selection"],
-            {"ad_account_id": "act_200", "page_id": "1319759131214498"},
-        )
+        for sequence, message in enumerate(
+            (
+                "1",
+                "uno dos",
+                "página 1 cuenta 2",
+                "1 y 2",
+                "1 2 3",
+                "1 2 listo",
+                "1/2",
+                "1.2",
+                "-1, 2",
+                "1, 2 ✅",
+            ),
+            start=11,
+        ):
+            with self.subTest(message=message):
+                result = self.authorize(opened, message, sequence=sequence)
+                self.assertEqual(result["status"], "rejected")
+                self.assertEqual(result["reason"], "numeric_pair_required")
+                self.assertNotIn("ticket", result)
+
+        out_of_range = self.authorize(opened, "3, 1", sequence=21)
+        self.assertEqual(out_of_range["status"], "rejected")
+        self.assertEqual(out_of_range["reason"], "numeric_pair_out_of_range")
+        self.assertNotIn("ticket", out_of_range)
 
     def test_generic_delegation_never_authorizes(self):
         opened = self.open()
         result = self.authorize(opened, "Usa lo que veas, confío en ti")
         self.assertEqual(result, {
             "status": "rejected",
-            "reason": "delegated_without_explicit_asset",
+            "reason": "numeric_pair_required",
             "intent_id": opened["intent_id"],
             "expires_at": opened["expires_at"],
         })
 
-    def test_duplicate_names_are_ambiguous(self):
+    def test_duplicate_names_do_not_participate_in_authorization(self):
         inventory = {
             "accounts": [
                 {"id": "act_1", "name": "Mi negocio"},
@@ -169,10 +204,9 @@ class MetaSelectionAuthorizationTests(unittest.TestCase):
             "pages": [{"id": "123456789", "name": "Página segura"}],
         }
         result = resolve_selection_message("usa la cuenta Mi negocio", inventory)
-        self.assertEqual(result["status"], "ambiguous")
-        self.assertCountEqual(result["account"]["candidate_ids"], ["act_1", "act_2"])
+        self.assertEqual(result, {"status": "rejected", "reason": "numeric_pair_required"})
 
-    def test_longest_explicit_name_beats_shorter_prefixes(self):
+    def test_longest_explicit_name_still_requires_numeric_pair(self):
         inventory = {
             "accounts": [
                 {"id": "act_1", "name": "Dorian"},
@@ -185,19 +219,17 @@ class MetaSelectionAuthorizationTests(unittest.TestCase):
             "Usa Dorian Singularity como cuenta y Rodeo como página",
             inventory,
         )
-        self.assertEqual(result["status"], "resolved")
-        self.assertEqual(result["account"]["asset"]["id"], "act_8")
+        self.assertEqual(result, {"status": "rejected", "reason": "numeric_pair_required"})
 
-    def test_same_unscoped_name_across_account_and_page_is_ambiguous(self):
+    def test_same_unscoped_name_across_account_and_page_requires_numeric_pair(self):
         inventory = {
             "accounts": [{"id": "act_1", "name": "Acme"}],
             "pages": [{"id": "123456789", "name": "Acme"}],
         }
         result = resolve_selection_message("Acme", inventory)
-        self.assertEqual(result["status"], "ambiguous")
-        self.assertEqual(result["reason"], "same_name_across_asset_types")
+        self.assertEqual(result, {"status": "rejected", "reason": "numeric_pair_required"})
 
-    def test_scoped_names_do_not_cross_match_other_asset_type(self):
+    def test_scoped_names_never_authorize_either_asset_type(self):
         inventory = {
             "accounts": [{"id": "act_8", "name": "Dorian Singularity"}],
             "pages": [
@@ -209,35 +241,37 @@ class MetaSelectionAuthorizationTests(unittest.TestCase):
             "Quiero usar la cuenta Dorian Singularity y la página Rodeo - Car Detailing",
             inventory,
         )
-        self.assertEqual(result["status"], "resolved")
-        self.assertEqual(result["account"]["asset"]["id"], "act_8")
-        self.assertEqual(result["page"]["asset"]["id"], "page_1")
+        self.assertEqual(result, {"status": "rejected", "reason": "numeric_pair_required"})
 
         reversed_order = resolve_selection_message(
             "Usa Dorian Singularity como cuenta y Rodeo como página",
             inventory,
         )
-        self.assertEqual(reversed_order["status"], "resolved")
-        self.assertEqual(reversed_order["account"]["asset"]["id"], "act_8")
-        self.assertEqual(reversed_order["page"]["asset"]["id"], "page_1")
+        self.assertEqual(reversed_order, {"status": "rejected", "reason": "numeric_pair_required"})
 
-    def test_scoped_switch_keeps_only_the_unchanged_other_side(self):
+    def test_switch_rejects_scoped_partial_and_requires_full_numeric_pair(self):
         current = {"ad_account_id": "act_100", "page_id": "1319759131214498"}
         opened = self.open(current=current, mode="switch")
-        result = self.authorize(opened, "Cambia la cuenta a la 2", current=current)
+        rejected = self.authorize(opened, "Cambia la cuenta a la 2", current=current)
+        self.assertEqual(rejected["status"], "rejected")
+        self.assertEqual(rejected["reason"], "numeric_pair_required")
+        self.assertNotIn("ticket", rejected)
+
+        result = self.authorize(opened, "1, 2", sequence=12, current=current)
         self.assertEqual(result["status"], "authorized")
         self.assertEqual(result["selection"], {"ad_account_id": "act_200", "page_id": current["page_id"]})
 
-    def test_unscoped_switch_name_does_not_silently_retain_page(self):
+    def test_unscoped_switch_name_requires_numeric_pair(self):
         current = {"ad_account_id": "act_100", "page_id": "1319759131214498"}
         opened = self.open(current=current, mode="switch")
         result = self.authorize(opened, "DOrian2", current=current)
-        self.assertEqual(result["status"], "partial")
-        self.assertEqual(result["selected"], {"ad_account_id": "act_200", "page_id": ""})
+        self.assertEqual(result["status"], "rejected")
+        self.assertEqual(result["reason"], "numeric_pair_required")
+        self.assertNotIn("ticket", result)
 
     def test_ticket_rejects_cross_chat_and_cross_session(self):
         opened = self.open()
-        result = self.authorize(opened, "cuenta 2, página 1")
+        result = self.authorize(opened, "1, 2")
         with self.assertRaises(SelectionBindingMismatch):
             self.consume(result["ticket"], chat="telegram:other")
         with self.assertRaises(SelectionBindingMismatch):
@@ -246,7 +280,7 @@ class MetaSelectionAuthorizationTests(unittest.TestCase):
 
     def test_ticket_is_one_use(self):
         opened = self.open()
-        result = self.authorize(opened, "cuenta 2, página 1")
+        result = self.authorize(opened, "1, 2")
         self.assertNotIn(result["ticket"], self.state_path.read_text(encoding="utf-8"))
         self.consume(result["ticket"])
         with self.assertRaisesRegex(SelectionTicketInvalid, "already consumed"):
@@ -254,7 +288,7 @@ class MetaSelectionAuthorizationTests(unittest.TestCase):
 
     def test_ticket_transaction_keeps_capability_retryable_on_downstream_failure(self):
         opened = self.open()
-        result = self.authorize(opened, "cuenta 2, página 1")
+        result = self.authorize(opened, "1, 2")
         with self.assertRaisesRegex(RuntimeError, "injected persistence failure"):
             with self.authorizer.ticket_transaction(
                 ticket=result["ticket"],
@@ -277,10 +311,10 @@ class MetaSelectionAuthorizationTests(unittest.TestCase):
         opened = self.open()
         self.clock.advance(61)
         with self.assertRaises(SelectionIntentNotFound):
-            self.authorize(opened, "cuenta 2, página 1")
+            self.authorize(opened, "1, 2")
 
         opened = self.open(sequence=20)
-        result = self.authorize(opened, "cuenta 2, página 1", sequence=21)
+        result = self.authorize(opened, "1, 2", sequence=21)
         self.clock.advance(61)
         with self.assertRaisesRegex(SelectionTicketInvalid, "invalid or expired"):
             self.consume(result["ticket"])
@@ -293,15 +327,15 @@ class MetaSelectionAuthorizationTests(unittest.TestCase):
             "pages": INVENTORY["pages"],
         }
         with self.assertRaisesRegex(SelectionBindingMismatch, "inventory changed"):
-            self.authorize(opened, "cuenta 2", current=current, inventory=reordered)
+            self.authorize(opened, "1, 2", current=current, inventory=reordered)
         changed = {"ad_account_id": "act_200", "page_id": current["page_id"]}
         with self.assertRaisesRegex(SelectionBindingMismatch, "workspace changed"):
-            self.authorize(opened, "cuenta 2", current=changed)
+            self.authorize(opened, "1, 2", current=changed)
 
     def test_ticket_rechecks_inventory_and_old_pair_before_execution(self):
         current = {"ad_account_id": "act_100", "page_id": "1319759131214498"}
         opened = self.open(current=current, mode="switch")
-        result = self.authorize(opened, "cambia la cuenta a la 2", current=current)
+        result = self.authorize(opened, "1, 2", current=current)
         changed_inventory = {
             "accounts": INVENTORY["accounts"] + [{"id": "act_300", "name": "Nueva"}],
             "pages": INVENTORY["pages"],
@@ -315,18 +349,18 @@ class MetaSelectionAuthorizationTests(unittest.TestCase):
     def test_stale_inbound_sequence_is_rejected(self):
         opened = self.open(sequence=10)
         with self.assertRaisesRegex(SelectionBindingMismatch, "stale"):
-            self.authorize(opened, "cuenta 2", sequence=10)
+            self.authorize(opened, "1, 2", sequence=10)
 
     def test_opening_new_prompt_revokes_an_older_unconsumed_ticket(self):
         opened = self.open()
-        result = self.authorize(opened, "cuenta 2, página 1")
+        result = self.authorize(opened, "1, 2")
         self.open(sequence=20)
         with self.assertRaises(SelectionTicketInvalid):
             self.consume(result["ticket"])
 
     def test_clear_scope_revokes_pending_intents_and_tickets(self):
         opened = self.open()
-        result = self.authorize(opened, "cuenta 2, página 1")
+        result = self.authorize(opened, "1, 2")
         other = self.authorizer.open_intent(
             chat_id="telegram:other",
             session_id="other-session",
@@ -343,7 +377,7 @@ class MetaSelectionAuthorizationTests(unittest.TestCase):
             chat_id="telegram:other",
             session_id="other-session",
             message_sequence=2,
-            raw_message="cuenta 1, página 1",
+            raw_message="1, 1",
             inventory=INVENTORY,
             current_pair={},
         )

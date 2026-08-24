@@ -4037,8 +4037,8 @@ def _meta_oauth_selection_inventory(connection=None):
         "accounts": [
             item for item in (connection.get("accounts") or [])
             if isinstance(item, dict) and clean_ad_account_id(item.get("id"))
-        ],
-        "pages": _oauth_publishable_pages(connection),
+        ][:50],
+        "pages": _oauth_publishable_pages(connection)[:50],
     }
 
 
@@ -4456,7 +4456,7 @@ def _refresh_meta_oauth_pending_once():
             {
                 "accounts": len(summary.get("accounts") or []),
                 "pages": len(summary.get("pages") or []),
-                "workspace_selection": "natural_language",
+                "workspace_selection": "strict_numeric_page_then_account",
                 "completion": "status_refresh",
             },
             "completed",
@@ -4536,49 +4536,45 @@ def _oauth_publishable_pages(connection):
 
 
 def _send_meta_oauth_account_picker(config, connection, chat_id=""):
-    """Tell Hermes what Facebook returned; let the buyer choose in text.
+    """Show the canonical numeric Page/ad-account selection in Telegram.
 
     The OAuth link is deliberately plain text and the workspace choice is
-    deliberately conversational. This avoids a second Telegram callback
-    consumer and lets Hermes resolve an account/Page pair from the buyer's
-    natural-language answer (number or exact name).
+    deliberately a strict numeric pair. This avoids a second Telegram callback
+    consumer and prevents names, typos, or model interpretation from selecting
+    the wrong business assets.
     """
     accounts = [item for item in (connection.get("accounts") or []) if isinstance(item, dict) and item.get("id")]
     pages = [item for item in _oauth_publishable_pages(connection) if isinstance(item, dict) and item.get("id")]
     if not accounts or not pages:
         return
     account_lines = []
-    for index, account in enumerate(accounts[:25], 1):
+    for index, account in enumerate(accounts[:50], 1):
         account_id = clean_ad_account_id(account.get("id"))
         if not account_id:
             continue
         label = str(account.get("name") or account_id).strip()[:42]
         currency = str(account.get("currency") or "").strip()
         account_lines.append(f"{index}. {label}{' · ' + currency if currency else ''}")
-    page_lines = [f"{index}. {str(page.get('name') or page.get('id')).strip()[:52]}" for index, page in enumerate(pages[:25], 1)]
+    page_lines = [f"{index}. {str(page.get('name') or page.get('id')).strip()[:52]}" for index, page in enumerate(pages[:50], 1)]
     if not account_lines or not page_lines:
         return
     telegram_bot_request(config, "sendMessage", {
         "chat_id": _meta_oauth_chat_id(config, chat_id),
         "text": (
             "Facebook quedó conectado. Encontré estas opciones:\n\n"
-            "CUENTAS PUBLICITARIAS:\n" + "\n".join(account_lines) +
-            "\n\nPÁGINAS DE FACEBOOK:\n" + "\n".join(page_lines) +
-            "\n\nDime cuál quieres usar como predeterminada, por ejemplo: "
-            "‘cuenta 1 y Página 2’ o escribe sus nombres exactos. Después la guardaré y continuaremos."
+            "PÁGINAS DE FACEBOOK:\n" + "\n".join(page_lines) +
+            "\n\nCUENTAS PUBLICITARIAS:\n" + "\n".join(account_lines) +
+            "\n\nResponde únicamente con dos números: primero Página y después cuenta publicitaria. "
+            "Ejemplo: 1, 8"
         ),
     }, timeout=20)
 
 
 def social_oauth_select_account(account_id):
-    account_id = clean_ad_account_id(account_id)
-    connection = _meta_oauth_connection()
-    account = next((item for item in connection.get("accounts", []) if clean_ad_account_id(item.get("id")) == account_id), None)
-    if not account:
-        raise ValueError("La cuenta elegida no pertenece a esta conexión de Facebook.")
-    connection["pending_ad_account_id"] = account_id
-    write_private_json(META_OAUTH_CONNECTION_FILE, connection)
-    return {"ok": True, "account": {key: account.get(key) for key in ("id", "account_id", "name", "currency", "timezone_name", "timezone_offset_hours_utc")}, "pages": _oauth_publishable_pages(connection)}
+    """Reject the retired account-first Telegram callback flow."""
+    raise ValueError(
+        "El selector anterior fue retirado. Usa el par numérico completo: Página y cuenta publicitaria."
+    )
 
 
 def live_ad_account_timezone_metadata(account):
@@ -4919,14 +4915,9 @@ def _finalize_meta_oauth_workspace_persistence(result, *, account_id, page_id, s
 
 
 def social_oauth_select_page(page_id):
-    """Legacy internal Telegram callback path retained for old installations."""
-    connection = _meta_oauth_connection()
-    account_id = clean_ad_account_id(connection.get("pending_ad_account_id") or connection.get("active_ad_account_id"))
-    return _persist_meta_oauth_workspace_pair(
-        account_id,
-        page_id,
-        source="legacy_telegram_callback",
-        connection=connection,
+    """Reject the retired Page callback; selection needs a trusted pair."""
+    raise ValueError(
+        "El selector anterior fue retirado. Usa el par numérico completo: Página y cuenta publicitaria."
     )
 
 
@@ -5147,7 +5138,7 @@ def social_oauth_poll(payload=None):
     summary = _apply_meta_oauth_credentials(result.get("credentials"))
     try: META_OAUTH_PENDING_FILE.unlink()
     except OSError: pass
-    log_action("meta_oauth_connected", {"accounts": len(summary.get("accounts") or []), "pages": len(summary.get("pages") or []), "workspace_selection": "natural_language"}, "completed")
+    log_action("meta_oauth_connected", {"accounts": len(summary.get("accounts") or []), "pages": len(summary.get("pages") or []), "workspace_selection": "strict_numeric_page_then_account"}, "completed")
     return {"ok": True, "status": "connected", **summary}
 
 
@@ -5165,7 +5156,7 @@ def social_oauth_select(payload=None):
     if not ticket:
         raise ValueError(
             "La selección no fue autorizada por una respuesta reciente del comprador. "
-            "Lista las cuentas y Páginas y espera su elección natural explícita."
+            "Lista primero las Páginas y después las cuentas, y espera exactamente dos números: Página y cuenta."
         )
     authorizer = _meta_oauth_selection_authorizer()
     try:
@@ -5204,7 +5195,7 @@ def social_oauth_select(payload=None):
 
     # Persistence and ticket consumption are now both committed. Only now may
     # the private turn lose its capability; failed writes intentionally leave
-    # it untouched so the same natural-language choice can be retried.
+    # it untouched so the same strict numeric choice can be retried.
     # Keep the full read/compare/modify/write under the same cross-process
     # lock used by ``record_trusted_buyer_turn``. Without this critical
     # section, a newer buyer message could be persisted after our read and
@@ -10924,7 +10915,7 @@ Cuando responda, guarda esa preferencia con `save_agent_preferences` / `mcp_admi
 - `ad_experience_level`: `beginner`, `intermediate` o `advanced`.
 - `communication_style`: `simple` o `technical`.
 
-La primera acción no es una pregunta de negocio: consulta `mcp_admira_get_meta_oauth_workspaces` y, si no hay conexión, llama `mcp_admira_start_meta_oauth_connection` para enviar la URL segura de Facebook como texto visible a Telegram. Nunca pidas tokens, Usuario del sistema, app de Meta ni IDs técnicos. En el siguiente turno del comprador, lista las cuentas/Páginas encontradas, espera su elección en lenguaje natural y selecciona el par indicado. Después haz una sola pregunta clara de negocio: "Que vendes exactamente y cual es tu oferta principal hoy?"
+La primera acción no es una pregunta de negocio: consulta `mcp_admira_get_meta_oauth_workspaces` y, si no hay conexión, llama `mcp_admira_start_meta_oauth_connection` para enviar la URL segura de Facebook como texto visible a Telegram. Nunca pidas tokens, Usuario del sistema, app de Meta ni IDs técnicos. En el siguiente turno del comprador, lista primero las Páginas y después las cuentas publicitarias. Exige exactamente dos números sin texto: primero Página y después cuenta (`1, 8`). Cualquier otro formato se rechaza y vuelve a mostrar ambas listas. Después haz una sola pregunta clara de negocio: "Que vendes exactamente y cual es tu oferta principal hoy?"
 
 Al terminar y confirmar el onboarding general de negocio, entra primero en `branding_creatives_creation`: usa `Branding onboarding.md` para definir y confirmar logo, colores, estilo, tono, referencias y activos. Durante esta fase Image 2 puede crear candidatos reales de logo, moodboards o muestras de marca; siempre adjunta el archivo y revísalo con el comprador antes de guardarlo como oficial. Solo cuando el branding esté listo pasa a `organic_content_strategy` y presenta pilares, temas, frecuencia y borradores para revisión.
 
@@ -10938,7 +10929,7 @@ Regla asesor-profesional: antes de preguntar cualquier configuracion amplia, pri
 
 1. facebook_connection
    - Consultar `mcp_admira_get_meta_oauth_workspaces`; si falta conexión, llamar `mcp_admira_start_meta_oauth_connection` y entregar la URL segura como texto visible de Telegram.
-   - En el turno siguiente, mostrar las cuentas/Páginas encontradas, esperar una elección en lenguaje natural y guardar solo el par activo seleccionado. Nunca pedir token, Usuario del sistema, app ni IDs técnicos.
+   - En el turno siguiente, mostrar primero Páginas y después cuentas. Exigir en un único mensaje exactamente dos números: Página primero y cuenta publicitaria después. No aceptar nombres, frases, confirmaciones ni selecciones parciales. Nunca pedir token, Usuario del sistema, app ni IDs técnicos.
 
 2. business_discovery
    - Entender que vende, oferta principal, productos/servicios prioritarios, cliente ideal, etapa actual, dolores, meta de 30 dias y tono comercial.

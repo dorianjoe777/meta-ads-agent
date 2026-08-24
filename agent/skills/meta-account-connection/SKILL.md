@@ -12,15 +12,15 @@ The runtime compiles this procedure before exposing the relevant connection tool
 - Need current campaigns, status, performance, account currency, account timezone, or selected Page/account truth: call `mcp_admira_get_real_meta_context`. Do not call it for an unrelated greeting or creative conversation.
 - Need to know whether Facebook is connected or which accounts/Pages OAuth exposed: call `mcp_admira_get_meta_oauth_workspaces`.
 - OAuth is genuinely absent: call `mcp_admira_start_meta_oauth_connection` and send its visible URL. Do not ask for a token or send terminal commands.
-- Buyer chooses an account and Page from the returned inventory: call `mcp_admira_select_meta_oauth_workspace` with those exact IDs. Resolve a natural name or numbered choice against the displayed inventory; never invent IDs.
+- Buyer sends the exact two-number Page/account pair from the returned inventory: call `mcp_admira_select_meta_oauth_workspace`; the protected backend resolves that trusted reply to the exact IDs. Never resolve names or invent IDs.
 
 ## Text-only selection
 
-Communicate only through ordinary chat text. Never use `clarify`, inline choice cards, approval cards, or account/Page buttons. List every publishable Page first, then every ad account, each with short numbers and names and without exposing tokens. Ask for two numbers: first the Facebook Page number, then the ad-account number. For example, `1, 8` means Page 1 with ad account 8. The buyer may also answer by name, approximate spelling, or a natural phrase; resolve the meaning against the displayed inventory.
+Communicate only through ordinary chat text. Never use `clarify`, inline choice cards, approval cards, or account/Page buttons. List every publishable Page first, then every ad account, each with short numbers and names and without exposing tokens. Ask for exactly two numbers and no other text: first the Facebook Page number, then the ad-account number. For example, `1, 8` means Page 1 with ad account 8. Names, approximate spelling, confirmations, or natural-language descriptions do not authorize this security-sensitive selection; show the numeric format again.
 
-Require an explicit choice for both the ad account and the Page. If the buyer specifies only one, ask one short text question for the missing asset. Never auto-select the first Page, never infer the missing half of the pair, and never call the selection tool until both choices are unambiguous. Treat selection as successful only when the tool returns both `selected: true` and `verified_persisted: true`.
+Require the complete pair in one reply. A one-number reply, an out-of-range number, or any reply containing words is invalid; show both numbered lists again and repeat the exact `Page, ad account` format. Never preserve a partial choice across turns, never auto-select, and never infer either half. Treat selection as successful only when the tool returns both `selected: true` and `verified_persisted: true`.
 
-If the selection tool rejects authorization, do not invent a Meta outage or ask for a chain of generic confirmations such as “sí”, “sí, usar estos”, and “ok”. State plainly that the pair was not saved and ask once for the two numbers in canonical order: Page first, ad account second. A generic confirmation is sufficient only when the backend already reports `authorized_pending_persistence`; otherwise it does not identify a pair.
+If the selection tool rejects authorization, do not invent a Meta outage or ask for a chain of generic confirmations such as “sí”, “sí, usar estos”, and “ok”. State plainly that the pair was not saved, show both lists again, and ask once for the two numbers in canonical order: Page first, ad account second. A generic confirmation never identifies or authorizes the pair.
 
 ## Persistence and continuation
 

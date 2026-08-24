@@ -207,10 +207,6 @@ def _message_hash(raw_message: str, message_sequence: int) -> str:
     return _sha256(_canonical_json(payload))
 
 
-def _combine_evidence_hashes(hashes: Sequence[str]) -> str:
-    return _sha256(_canonical_json(list(hashes)))
-
-
 def _asset_kind_inventory(inventory: Mapping[str, Any], kind: str) -> list[dict[str, Any]]:
     source_key = "accounts" if kind == "account" else "pages"
     raw_assets = inventory.get(source_key, [])
@@ -494,18 +490,18 @@ def _resolve_kind(
 def resolve_selection_message(raw_message: str, inventory: Mapping[str, Any]) -> dict[str, Any]:
     """Resolve explicit buyer evidence without trusting model-supplied IDs."""
 
-    normalized = normalize_selection_text(raw_message)
-    if not normalized:
+    raw = unicodedata.normalize("NFKC", str(raw_message or "")).strip()
+    if not raw:
         return {"status": "rejected", "reason": "empty_message"}
     safe = sanitize_inventory(inventory)
 
     # Canonical compact reply shown by Admira: first Page, then ad account.
     # This is evaluated only while a trusted selection intent is active, so a
     # bare “1, 8” elsewhere in conversation can never mutate the workspace.
-    compact_tokens = [token for token in normalized.split() if token not in {"y", "and"}]
-    if len(compact_tokens) == 2:
-        page_ordinal = _number_value(compact_tokens[0])
-        account_ordinal = _number_value(compact_tokens[1])
+    compact_pair = re.fullmatch(r"([0-9]+)(?:\s*,\s*|\s+)([0-9]+)", raw)
+    if compact_pair:
+        page_ordinal = int(compact_pair.group(1))
+        account_ordinal = int(compact_pair.group(2))
         if (
             page_ordinal is not None
             and account_ordinal is not None
@@ -527,44 +523,8 @@ def resolve_selection_message(raw_message: str, inventory: Mapping[str, Any]) ->
                     "scoped": True,
                 },
             }
-    account = _resolve_kind(safe, "account", normalized)
-    page = _resolve_kind(safe, "page", normalized)
-
-    if account["status"] == "ambiguous" or page["status"] == "ambiguous":
-        return {
-            "status": "ambiguous",
-            "reason": "multiple_assets_match",
-            "account": account,
-            "page": page,
-        }
-
-    account_resolved = account["status"] == "resolved"
-    page_resolved = page["status"] == "resolved"
-    generic = any(phrase in normalized for phrase in _GENERIC_DELEGATIONS)
-    if generic and not account_resolved and not page_resolved:
-        return {"status": "rejected", "reason": "delegated_without_explicit_asset"}
-    if not account_resolved and not page_resolved:
-        return {"status": "rejected", "reason": "no_explicit_asset"}
-
-    # If the same unscoped phrase exactly names one account and one Page, the
-    # buyer has not told us which entity they meant.
-    if account_resolved and page_resolved and not account.get("scoped") and not page.get("scoped"):
-        account_name = normalize_selection_text(account["asset"]["name"])
-        page_name = normalize_selection_text(page["asset"]["name"])
-        if account_name == page_name:
-            return {
-                "status": "ambiguous",
-                "reason": "same_name_across_asset_types",
-                "account": account,
-                "page": page,
-            }
-
-    return {
-        "status": "resolved",
-        "account": account,
-        "page": page,
-    }
-
+        return {"status": "rejected", "reason": "numeric_pair_out_of_range"}
+    return {"status": "rejected", "reason": "numeric_pair_required"}
 
 class MetaSelectionAuthorizer:
     """Persistent selection-intent and one-use ticket manager."""
@@ -755,8 +715,6 @@ class MetaSelectionAuthorizer:
             "current_pair": pair,
             "opened_after_sequence": sequence,
             "last_message_sequence": sequence,
-            "partial": {"ad_account_id": "", "page_id": ""},
-            "evidence_hashes": [],
             "created_at": now,
             "expires_at": now + self.ttl_seconds,
         }
@@ -830,48 +788,16 @@ class MetaSelectionAuthorizer:
             account_id = account_result["asset"]["id"] if account_result["status"] == "resolved" else ""
             page_id = page_result["asset"]["id"] if page_result["status"] == "resolved" else ""
             message_hash = _message_hash(raw_message, sequence)
+            if not account_id or not page_id:
+                raise SelectionAuthorizationError("strict numeric resolution did not produce a complete pair")
 
-            if account_id:
-                intent["partial"]["ad_account_id"] = account_id
-                intent["partial"]["ad_account_evidence_hash"] = message_hash
-            if page_id:
-                intent["partial"]["page_id"] = page_id
-                intent["partial"]["page_evidence_hash"] = message_hash
-            intent["evidence_hashes"].append(message_hash)
-
-            target_account = intent["partial"].get("ad_account_id", "")
-            target_page = intent["partial"].get("page_id", "")
-
-            if intent["mode"] == "switch":
-                # Preserve the other side only when the buyer explicitly scoped
-                # the message to the entity being changed.  An unscoped name is
-                # still useful partial evidence, but cannot silently carry the
-                # other asset into an executable pair.
-                if account_id and not page_id and account_result.get("scoped"):
-                    target_page = intent["current_pair"].get("page_id", "")
-                elif page_id and not account_id and page_result.get("scoped"):
-                    target_account = intent["current_pair"].get("ad_account_id", "")
-
-            if not target_account or not target_page:
-                return {
-                    "status": "partial",
-                    "intent_id": intent_id,
-                    "selected": {
-                        "ad_account_id": target_account,
-                        "page_id": target_page,
-                    },
-                    "missing": "page" if not target_page else "account",
-                    "expires_at": intent["expires_at"],
-                }
-
-            target = {"ad_account_id": target_account, "page_id": target_page}
+            target = {"ad_account_id": account_id, "page_id": page_id}
             if intent["mode"] == "switch" and target == intent["current_pair"]:
                 del state["intents"][intent_id]
                 return {"status": "unchanged", "selected": target}
 
             token = secrets.token_urlsafe(32)
             digest = self._ticket_digest(token)
-            evidence_hash = _combine_evidence_hashes(intent["evidence_hashes"])
             ticket_record = {
                 "chat_id": chat,
                 "session_id": session,
@@ -880,7 +806,7 @@ class MetaSelectionAuthorizer:
                 "old_pair": intent["current_pair"],
                 "new_pair": target,
                 "message_sequence": sequence,
-                "message_hash": evidence_hash,
+                "message_hash": message_hash,
                 "created_at": self._now(),
                 "expires_at": min(intent["expires_at"], self._now() + self.ttl_seconds),
             }
@@ -917,10 +843,6 @@ class MetaSelectionAuthorizer:
                 "mode": intent["mode"],
                 "inventory_hash": intent["inventory_hash"],
                 "current_pair": dict(intent["current_pair"]),
-                "partial": {
-                    "ad_account_id": intent["partial"].get("ad_account_id", ""),
-                    "page_id": intent["partial"].get("page_id", ""),
-                },
                 "opened_after_sequence": intent["opened_after_sequence"],
                 "expires_at": intent["expires_at"],
             }

@@ -70,7 +70,7 @@ class MetaOAuthConnectionTests(unittest.TestCase):
         self.assertIn("https://facebook.example/oauth", sent[0]["text"])
         self.assertNotIn("reply_markup", sent[0])
 
-    def test_workspace_picker_lists_accounts_and_pages_without_buttons(self):
+    def test_workspace_picker_lists_pages_then_accounts_and_requires_numeric_pair(self):
         sent = []
         connection = {
             "accounts": [
@@ -86,9 +86,13 @@ class MetaOAuthConnectionTests(unittest.TestCase):
              patch.object(self.dashboard, "telegram_bot_request", side_effect=lambda _c, _m, payload, **_k: sent.append(payload)):
             self.dashboard._send_meta_oauth_account_picker(self.config, connection, "123")
         self.assertEqual(len(sent), 1)
-        self.assertIn("Cuenta Uno", sent[0]["text"])
-        self.assertIn("Página Dos", sent[0]["text"])
-        self.assertIn("cuenta 1", sent[0]["text"])
+        message = sent[0]["text"]
+        self.assertIn("Cuenta Uno", message)
+        self.assertIn("Página Dos", message)
+        self.assertLess(message.index("PÁGINAS DE FACEBOOK"), message.index("CUENTAS PUBLICITARIAS"))
+        self.assertIn("Responde únicamente con dos números", message)
+        self.assertIn("1, 8", message)
+        self.assertNotIn("nombres exactos", message)
         self.assertNotIn("reply_markup", sent[0])
 
     def test_start_uses_runtime_telegram_chat_when_dashboard_chat_is_not_available(self):
@@ -201,55 +205,18 @@ class MetaOAuthConnectionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.dashboard.social_oauth_select({"ad_account_id": "act_2", "page_id": "page_1"})
 
-    def test_telegram_workspace_selection_requires_account_before_page(self):
+    def test_legacy_telegram_workspace_callbacks_cannot_bypass_numeric_pair(self):
         self.dashboard.write_private_json(self.dashboard.META_OAUTH_CONNECTION_FILE, {
             "connected": True,
             "accounts": [{"id": "act_1", "name": "One", "currency": "USD"}],
             "pages": [{"id": "page_1", "name": "Page", "access_token": "p" * 40}],
         })
-        updates = []
-        with patch.object(self.dashboard, "update_env_values", side_effect=lambda value: updates.append(value)), \
-             patch.object(self.dashboard, "save_setup_config", return_value={"saved": True}), \
-             patch.object(
-                 self.dashboard,
-                 "_verify_meta_oauth_workspace_persistence",
-                 side_effect=lambda *_args: self.dashboard._meta_oauth_connection(),
-             ):
-            account = self.dashboard.social_oauth_select_account("act_1")
-            self.assertEqual(account["pages"][0]["id"], "page_1")
-            result = self.dashboard.social_oauth_select_page("page_1")
-        self.assertTrue(result["selected"])
-        self.assertTrue(result["verified_persisted"])
-        self.assertEqual(updates[-1]["META_AD_ACCOUNT_ID"], "act_1")
+        with self.assertRaisesRegex(ValueError, "par numérico completo"):
+            self.dashboard.social_oauth_select_account("act_1")
+        with self.assertRaisesRegex(ValueError, "par numérico completo"):
+            self.dashboard.social_oauth_select_page("page_1")
 
-    def test_workspace_selection_fails_when_durable_readback_does_not_match(self):
-        connection = {
-            "connected": True,
-            "pending_ad_account_id": "act_1",
-            "accounts": [{"id": "act_1", "name": "One", "currency": "USD"}],
-            "pages": [{"id": "page_1", "name": "Page", "access_token": "p" * 40}],
-        }
-        stale_readback = {
-            **connection,
-            "active_ad_account_id": "",
-            "active_page_id": "",
-        }
-        with patch.object(
-            self.dashboard,
-            "_meta_oauth_connection",
-            side_effect=[connection, stale_readback],
-        ), patch.object(self.dashboard, "write_private_json"), \
-             patch.object(self.dashboard, "update_env_values"), \
-             patch.object(self.dashboard, "save_setup_config", return_value={"saved": True}), \
-             patch.object(
-                 self.dashboard,
-                 "synchronize_selected_ad_account_timezone",
-                 return_value={"ok": True, "changed": False, "account": connection["accounts"][0]},
-             ):
-            with self.assertRaisesRegex(RuntimeError, "no quedó persistida"):
-                self.dashboard.social_oauth_select_page("page_1")
-
-    def test_current_explicit_pair_is_authorized_when_inventory_opens(self):
+    def test_natural_name_pair_is_rejected_until_buyer_sends_numeric_pair(self):
         connection = {
             "connected": True,
             "accounts": [
@@ -269,8 +236,35 @@ class MetaOAuthConnectionTests(unittest.TestCase):
                 "123",
                 "telegram:123",
                 10,
+                "muéstrame las opciones",
+            )
+            status = self.dashboard.social_oauth_status()
+            self.assertEqual(
+                status["selection_authorization"]["status"],
+                "waiting_for_buyer_selection",
+            )
+            natural_name_turn = self.dashboard.record_trusted_buyer_turn(
+                "123",
+                "telegram:123",
+                11,
                 "Usa Dorian Singularity con Rodeo Car Detailing",
             )
+            self.assertEqual(natural_name_turn["meta_selection_authorization"]["status"], "rejected")
+            self.assertEqual(
+                natural_name_turn["meta_selection_authorization"]["reason"],
+                "numeric_pair_required",
+            )
+            self.assertNotIn(
+                "meta_selection_ticket",
+                self.dashboard.read_json(self.dashboard.TRUSTED_BUYER_TURN_FILE, {}),
+            )
+            numeric_turn = self.dashboard.record_trusted_buyer_turn(
+                "123",
+                "telegram:123",
+                12,
+                "2, 2",
+            )
+            self.assertEqual(numeric_turn["meta_selection_authorization"]["status"], "authorized")
             status = self.dashboard.social_oauth_status()
         self.assertEqual(
             status["selection_authorization"]["status"],
@@ -308,7 +302,7 @@ class MetaOAuthConnectionTests(unittest.TestCase):
                 "123",
                 "telegram:123",
                 11,
-                "Usa la cuenta 2 y la página 1",
+                "1, 2",
             )
             self.assertEqual(selection_turn["meta_selection_authorization"]["status"], "authorized")
             repeated_status = self.dashboard.social_oauth_status()
@@ -392,7 +386,7 @@ class MetaOAuthConnectionTests(unittest.TestCase):
             )
             self.dashboard.social_oauth_status()
             authorized_turn = self.dashboard.record_trusted_buyer_turn(
-                "123", "telegram:123", 71, "usa la cuenta 1 y la página 1"
+                "123", "telegram:123", 71, "1, 1"
             )
             self.assertEqual(
                 authorized_turn["meta_selection_authorization"]["status"],
@@ -429,7 +423,7 @@ class MetaOAuthConnectionTests(unittest.TestCase):
         self.assertEqual(latest_turn.get("message"), "hola después de seleccionar")
         self.assertNotIn("meta_selection_ticket", latest_turn)
 
-    def test_text_selection_rejects_missing_ticket_partial_and_replay(self):
+    def test_text_selection_rejects_missing_ticket_non_numeric_replies_and_replay(self):
         connection = {
             "connected": True,
             "accounts": [
@@ -447,11 +441,21 @@ class MetaOAuthConnectionTests(unittest.TestCase):
         with patch.object(self.dashboard, "load_config", return_value=self.config):
             self.dashboard.record_trusted_buyer_turn("123", "telegram:123", 20, "muéstrame las opciones")
             self.dashboard.social_oauth_status()
-            partial = self.dashboard.record_trusted_buyer_turn("123", "telegram:123", 21, "cuenta 2")
-            self.assertEqual(partial["meta_selection_authorization"]["status"], "partial")
+            partial = self.dashboard.record_trusted_buyer_turn("123", "telegram:123", 21, "2")
+            self.assertEqual(partial["meta_selection_authorization"]["status"], "rejected")
+            self.assertEqual(partial["meta_selection_authorization"]["reason"], "numeric_pair_required")
             with self.assertRaisesRegex(ValueError, "no fue autorizada"):
                 self.dashboard.social_oauth_select({"ad_account_id": "act_2", "page_id": "page_1"})
-            completed = self.dashboard.record_trusted_buyer_turn("123", "telegram:123", 22, "página 1")
+
+            scoped_prose = self.dashboard.record_trusted_buyer_turn(
+                "123", "telegram:123", 22, "página 1 y cuenta 2"
+            )
+            self.assertEqual(scoped_prose["meta_selection_authorization"]["status"], "rejected")
+            self.assertEqual(scoped_prose["meta_selection_authorization"]["reason"], "numeric_pair_required")
+            with self.assertRaisesRegex(ValueError, "no fue autorizada"):
+                self.dashboard.social_oauth_select({"ad_account_id": "act_2", "page_id": "page_1"})
+
+            completed = self.dashboard.record_trusted_buyer_turn("123", "telegram:123", 23, "1, 2")
             self.assertEqual(completed["meta_selection_authorization"]["status"], "authorized")
             with patch.object(
                 self.dashboard,
@@ -486,10 +490,11 @@ class MetaOAuthConnectionTests(unittest.TestCase):
                 "123", "telegram:123", 31, "usa lo que veas"
             )
             self.assertEqual(rejected["meta_selection_authorization"]["status"], "rejected")
+            self.assertEqual(rejected["meta_selection_authorization"]["reason"], "numeric_pair_required")
             with self.assertRaisesRegex(ValueError, "no fue autorizada"):
                 self.dashboard.social_oauth_select({"ad_account_id": "act_1", "page_id": "page_1"})
 
-    def test_explicit_switch_listing_can_authorize_one_scoped_side_only(self):
+    def test_explicit_switch_rejects_scoped_partial_until_full_numeric_pair(self):
         connection = {
             "connected": True,
             "accounts": [
@@ -507,10 +512,19 @@ class MetaOAuthConnectionTests(unittest.TestCase):
             self.assertFalse(ordinary["selection_required"])
             switched = self.dashboard.social_oauth_workspaces_for_text_selection(allow_switch=True)
             self.assertEqual(switched["selection_authorization"]["mode"], "switch")
-            authorized = self.dashboard.record_trusted_buyer_turn(
+            scoped_partial = self.dashboard.record_trusted_buyer_turn(
                 "123", "telegram:123", 41, "cambia la cuenta a la 2"
             )
-            self.assertEqual(authorized["meta_selection_authorization"]["status"], "authorized")
+            self.assertEqual(scoped_partial["meta_selection_authorization"]["status"], "rejected")
+            self.assertEqual(scoped_partial["meta_selection_authorization"]["reason"], "numeric_pair_required")
+            self.assertNotIn(
+                "meta_selection_ticket",
+                self.dashboard.read_json(self.dashboard.TRUSTED_BUYER_TURN_FILE, {}),
+            )
+            numeric_pair = self.dashboard.record_trusted_buyer_turn(
+                "123", "telegram:123", 42, "1, 2"
+            )
+            self.assertEqual(numeric_pair["meta_selection_authorization"]["status"], "authorized")
 
     def test_selected_workspace_listing_cannot_open_switch_from_model_choice_alone(self):
         connection = {
@@ -637,9 +651,12 @@ class MetaOAuthConnectionTests(unittest.TestCase):
         self.assertIn("mcp_admira_start_meta_oauth_connection", prompt)
         self.assertIn("URL segura como texto visible normal", prompt)
         self.assertIn("nunca dependas de un botón", prompt)
-        self.assertIn("con números y nombres breves", prompt)
+        self.assertIn("Lista primero todas las Páginas publicables y después todas las cuentas publicitarias", prompt)
+        self.assertIn("Pide exactamente dos números sin texto adicional", prompt)
+        self.assertIn("primero el número de Página y después el número de cuenta publicitaria", prompt)
+        self.assertIn("Nombres, frases, confirmaciones o elecciones parciales no autorizan la selección", prompt)
         self.assertIn("mcp_admira_select_meta_oauth_workspace", prompt)
-        self.assertIn("Nunca selecciones automáticamente la primera Página", prompt)
+        self.assertIn("Nunca selecciones automáticamente ni infieras ningún activo", prompt)
         self.assertIn("verified_persisted: true", prompt)
         self.assertIn("Nunca llames la herramienta nativa `clarify`", prompt)
         onboarding_sequence = "Después de conectar y elegir cuenta/Página: completar el perfil estratégico íntegro asociado a esa Página"
@@ -898,7 +915,7 @@ class MetaOAuthConnectionTests(unittest.TestCase):
             listing = self.dashboard.social_oauth_workspaces_for_text_selection(allow_switch=True)
             self.assertEqual(listing["selection_authorization"]["status"], "waiting_for_buyer_selection")
             authorized_turn = self.dashboard.record_trusted_buyer_turn(
-                "123", "telegram:123", 61, "usa la cuenta 2 y la página 2"
+                "123", "telegram:123", 61, "2, 2"
             )
             self.assertEqual(authorized_turn["meta_selection_authorization"]["status"], "authorized")
 
