@@ -4026,7 +4026,7 @@ def _meta_oauth_selection_authorizer():
     return MetaSelectionAuthorizer(
         META_OAUTH_SELECTION_AUTH_FILE,
         key_path=META_OAUTH_SELECTION_KEY_FILE,
-        ttl_seconds=300,
+        ttl_seconds=1800,
     )
 
 
@@ -4124,9 +4124,37 @@ def _open_meta_oauth_selection_intent_for_trusted_turn(*, allow_switch=False):
         session_id=session_id,
         inventory=inventory,
         current_pair=current_pair,
-        opened_after_sequence=message_sequence,
+        # The current trusted buyer message can already identify both assets.
+        # Inventory only becomes available during this call, so resolve that
+        # message now instead of forcing a redundant confirmation turn.
+        opened_after_sequence=max(0, message_sequence - 1),
         mode="switch" if pair_complete else "initial",
     )
+    try:
+        authorization = authorizer.authorize_current_message(
+            chat_id=chat_id,
+            session_id=session_id,
+            message_sequence=message_sequence,
+            raw_message=str(turn.get("message") or ""),
+            inventory=inventory,
+            current_pair=current_pair,
+        )
+    except (SelectionIntentNotFound, SelectionBindingMismatch, SelectionAuthorizationError):
+        authorization = {}
+    if authorization.get("status") == "authorized" and authorization.get("ticket"):
+        with _trusted_buyer_turn_lock():
+            latest_turn = _trusted_buyer_turn_unlocked()
+            if isinstance(latest_turn, dict) and hmac.compare_digest(
+                str(latest_turn.get("message_hash") or ""),
+                str(turn.get("message_hash") or ""),
+            ):
+                latest_turn["meta_selection_ticket"] = str(authorization["ticket"])
+                latest_turn["meta_selection_authorization"] = _public_meta_selection_authorization(authorization)
+                write_private_json(TRUSTED_BUYER_TURN_FILE, latest_turn)
+        return {
+            **_public_meta_selection_authorization(authorization),
+            "status": "authorized_pending_persistence",
+        }
     return {
         "status": "waiting_for_buyer_selection",
         "mode": opened.get("mode"),

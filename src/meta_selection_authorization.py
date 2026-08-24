@@ -39,9 +39,9 @@ except ImportError:  # pragma: no cover - Windows is not the deployed runtime.
 
 
 STATE_VERSION = 1
-DEFAULT_TTL_SECONDS = 300
+DEFAULT_TTL_SECONDS = 1800
 MIN_TTL_SECONDS = 30
-MAX_TTL_SECONDS = 900
+MAX_TTL_SECONDS = 1800
 MAX_MESSAGE_LENGTH = 4_000
 MAX_ASSETS_PER_KIND = 2_000
 

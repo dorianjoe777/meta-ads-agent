@@ -20,6 +20,8 @@ Communicate only through ordinary chat text. Never use `clarify`, inline choice 
 
 Require an explicit choice for both the ad account and the Page. If the buyer specifies only one, ask one short text question for the missing asset. Never auto-select the first Page, never infer the missing half of the pair, and never call the selection tool until both choices are unambiguous. Treat selection as successful only when the tool returns both `selected: true` and `verified_persisted: true`.
 
+If the selection tool rejects authorization, do not invent a Meta outage or ask for a chain of generic confirmations such as “sí”, “sí, usar estos”, and “ok”. State plainly that the pair was not saved and ask once for the exact account and Page by their displayed names or numbers. A generic confirmation is sufficient only when the backend already reports `authorized_pending_persistence`; otherwise it does not identify a pair.
+
 ## Persistence and continuation
 
 A successful selection is durable across `/reset`, `/restart`, gateway restarts, and model changes. Use it silently afterward. Ask again only when the buyer requests a switch or the backend reports that the binding is missing, inaccessible, or no longer authorized.

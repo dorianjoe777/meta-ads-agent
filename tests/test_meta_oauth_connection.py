@@ -249,6 +249,40 @@ class MetaOAuthConnectionTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "no quedó persistida"):
                 self.dashboard.social_oauth_select_page("page_1")
 
+    def test_current_explicit_pair_is_authorized_when_inventory_opens(self):
+        connection = {
+            "connected": True,
+            "accounts": [
+                {"id": "act_1", "name": "Cuenta Uno", "currency": "USD"},
+                {"id": "act_2", "name": "Dorian Singularity", "currency": "COP"},
+            ],
+            "pages": [
+                {"id": "page_1", "name": "Página Uno", "access_token": "p" * 40},
+                {"id": "page_2", "name": "Rodeo - Car Detailing", "access_token": "q" * 40},
+            ],
+            "active_ad_account_id": "",
+            "active_page_id": "",
+        }
+        self.dashboard.write_private_json(self.dashboard.META_OAUTH_CONNECTION_FILE, connection)
+        with patch.object(self.dashboard, "load_config", return_value=self.config):
+            self.dashboard.record_trusted_buyer_turn(
+                "123",
+                "telegram:123",
+                10,
+                "Usa Dorian Singularity con Rodeo Car Detailing",
+            )
+            status = self.dashboard.social_oauth_status()
+        self.assertEqual(
+            status["selection_authorization"]["status"],
+            "authorized_pending_persistence",
+        )
+        trusted = self.dashboard.read_json(self.dashboard.TRUSTED_BUYER_TURN_FILE, {})
+        self.assertTrue(trusted.get("meta_selection_ticket"))
+        self.assertEqual(
+            trusted["meta_selection_authorization"]["status"],
+            "authorized",
+        )
+
     def test_text_workspace_selection_uses_only_trusted_message_ticket(self):
         connection = {
             "connected": True,
