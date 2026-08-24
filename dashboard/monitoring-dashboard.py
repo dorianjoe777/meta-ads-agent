@@ -9640,6 +9640,48 @@ def _saved_memory_draft_matches(kind, payload, scope):
     return False
 
 
+def _official_brand_payload_matches(payload, scope):
+    """Return whether a brand save is already represented by official memory.
+
+    This is deliberately stricter than merely matching the brand name: every
+    submitted canonical brand field must already have the same value in the
+    official guide.  It exists so a short natural acknowledgement can be an
+    idempotent confirmation of an identity that was already saved, without
+    granting authority to introduce any new or changed brand fact.
+    """
+    active_page = active_meta_page_id()
+    if scope and active_page and str(scope) != str(active_page):
+        return False
+    library = guide_library()
+    if not library.get("general_exists"):
+        return False
+    official = ((library.get("general") or {}).get("fields") or {})
+    submitted = normalize_general_payload(payload or {})
+    comparable = {
+        key: value
+        for key, value in submitted.items()
+        if key in official
+        and key not in _MEMORY_AUTH_INTERNAL_FIELDS
+        and value not in (None, "", [], {})
+    }
+    if not comparable:
+        return False
+    anchor_fields = ("brand_name", "offer", "logo_path")
+    if not any(
+        key in comparable
+        and _canonical_memory_value(comparable.get(key))
+        == _canonical_memory_value(official.get(key))
+        for key in anchor_fields
+    ):
+        return False
+    return all(
+        official.get(key) not in (None, "", [], {})
+        and _canonical_memory_value(value)
+        == _canonical_memory_value(official.get(key))
+        for key, value in comparable.items()
+    )
+
+
 def _business_profile_draft_matches(profile, payload, page_id):
     if payload.get("confirm_master_plan"):
         plan = business_master_plan_for_page(profile, page_id)
@@ -9667,10 +9709,11 @@ def _business_profile_draft_matches(profile, payload, page_id):
 def _trusted_memory_capability(kind, payload, *, scope="", profile=None):
     """Reserve one current-turn store capability and consume it on commit.
 
-    The private nonce never enters an MCP response.  A short acknowledgement
-    may promote only the exact draft already shown to the buyer; a substantive
-    natural-language answer remains flexible and is interpreted by the model,
-    but its full raw text must be copied into ``buyer_evidence``.
+    The private nonce never enters an MCP response. A short acknowledgement
+    may promote only the exact draft already shown to the buyer, or acknowledge
+    an unchanged official brand idempotently. A substantive natural-language
+    answer remains flexible and is interpreted by the model, but its full raw
+    text must be copied into ``buyer_evidence``.
     """
     kind = str(kind or "").strip()
     claimed = str((payload or {}).get("confirmation_state") or "inferred").strip().lower()
@@ -9711,11 +9754,19 @@ def _trusted_memory_capability(kind, payload, *, scope="", profile=None):
                     )
                 else:
                     draft_matches = _saved_memory_draft_matches(kind, payload, scope)
-                if not draft_matches:
+                official_brand_matches = bool(
+                    kind == "brand"
+                    and _official_brand_payload_matches(payload, scope)
+                )
+                if not draft_matches and not official_brand_matches:
                     authorization["reason"] = "short_confirmation_has_no_matching_draft"
                 else:
                     authorization["authorized"] = True
-                    authorization["reason"] = "matching_draft_confirmed"
+                    authorization["reason"] = (
+                        "official_brand_already_confirmed"
+                        if official_brand_matches and not draft_matches
+                        else "matching_draft_confirmed"
+                    )
             else:
                 authorization["authorized"] = True
                 authorization["reason"] = "current_buyer_evidence_verified"
@@ -11434,6 +11485,37 @@ def save_memory_draft(kind, payload, scope=""):
     return {"saved": True, "draft": True, "draft_id": record.get("id"), "kind": key[0], "scope": key[1]}
 
 
+def _memory_draft_record(kind, scope=""):
+    library = read_json(MEMORY_DRAFTS_FILE, {"items": []})
+    items = library.get("items") if isinstance(library, dict) else []
+    candidates = [
+        item for item in (items or [])
+        if isinstance(item, dict)
+        and str(item.get("kind") or "") == str(kind or "")
+        and str(item.get("scope") or "") == str(scope or "")
+    ]
+    candidates.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    return dict(candidates[0]) if candidates else {}
+
+
+def _remove_memory_draft(kind, scope=""):
+    library = read_json(MEMORY_DRAFTS_FILE, {"items": []})
+    if not isinstance(library, dict):
+        return False
+    items = [item for item in library.get("items", []) if isinstance(item, dict)]
+    kept = [
+        item for item in items
+        if not (
+            str(item.get("kind") or "") == str(kind or "")
+            and str(item.get("scope") or "") == str(scope or "")
+        )
+    ]
+    if len(kept) == len(items):
+        return False
+    write_private_json(MEMORY_DRAFTS_FILE, {"updated_at": now_iso(), "items": kept[-200:]})
+    return True
+
+
 def save_ads_campaign_onboarding(payload):
     payload = dict(payload or {})
     scope = active_meta_page_id() or "unscoped"
@@ -11561,13 +11643,108 @@ def initialize_brand_guides(payload):
     return result
 
 
+def _strategic_branding_summary(fields):
+    fields = fields or {}
+    parts = []
+
+    def add(label, value):
+        text = re.sub(r"\s+", " ", str(value or "")).strip()
+        if text:
+            parts.append(f"{label}: {text}")
+
+    add("Marca", fields.get("brand_name"))
+    add("Oferta", fields.get("offer"))
+    add("Colores", fields.get("colors"))
+    add("Tipografía", fields.get("typography"))
+    add("Estilo visual", fields.get("visual_style"))
+    add("Personalidad", fields.get("personality"))
+    add("Tono", fields.get("tone"))
+    if official_brand_logo_path(fields):
+        parts.append("Logo: archivo oficial aprobado y guardado")
+    else:
+        add("Decisión de logo", fields.get("logo_status") or fields.get("logo_notes"))
+    add("Uso del logo", fields.get("logo_usage"))
+    add("Referencias", fields.get("references"))
+    add("Activos reales", fields.get("asset_notes"))
+    return "; ".join(parts)[:1600]
+
+
+def _sync_saved_brand_to_strategic_profile(fields, page_id, trusted_turn=None):
+    """Resolve the Page-scoped branding topic from one official brand save.
+
+    The brand capability is the buyer authorization.  This server-side sync is
+    part of that same transaction, not a second memory decision for the buyer.
+    Detailed creative readiness (references, real assets, product guide) stays
+    independent and may still ask for genuinely missing information later.
+    """
+    page_id = str(page_id or "").strip()
+    summary = _strategic_branding_summary(fields)
+    if not page_id or page_id == "unscoped" or not summary:
+        return {"synced": False, "reason": "strategic_branding_scope_unavailable"}
+    profile = read_json(BUSINESS_PROFILE_FILE, {})
+    if not isinstance(profile, dict):
+        profile = {}
+    strategic = strategic_profile_for_page(profile, page_id=page_id, activate=True)
+    before_revision = int(strategic.get("revision") or 0)
+    turn = trusted_turn if isinstance(trusted_turn, dict) else {}
+    evidence = {
+        "source": "official_brand_memory",
+        "message_hash": str(turn.get("message_hash") or ""),
+        "chat_id": str(turn.get("chat_id") or ""),
+        "session_id": str(turn.get("session_id") or ""),
+        "transport": str(turn.get("transport") or ""),
+        "message_sequence": turn.get("message_sequence"),
+    }
+    strategic = apply_strategic_profile_updates(
+        strategic,
+        {
+            "branding": {
+                "status": "confirmed",
+                "value": summary,
+                "confirmation_state": "buyer_confirmed",
+            },
+        },
+        page_id=page_id,
+        trusted_buyer_confirmation=True,
+        evidence=evidence,
+    )
+    profile = embed_strategic_profile(profile, strategic)
+    profile["updated_at"] = now_iso()
+    write_json(BUSINESS_PROFILE_FILE, profile)
+    readiness = strategic_profile_readiness(strategic, active_page_id=page_id)
+    write_onboarding_questions_memory(
+        profile,
+        "completed" if readiness.get("complete") else "pending",
+    )
+    return {
+        "synced": True,
+        "changed": int(strategic.get("revision") or 0) != before_revision,
+        **readiness,
+    }
+
+
 def save_general_brand_memory(payload):
     payload = dict(payload or {})
     scope = active_meta_page_id() or "unscoped"
     with _trusted_memory_capability("brand", payload, scope=scope) as authorization:
         if not authorization.get("authorized"):
-            result = save_memory_draft("brand", payload, scope=scope)
-            result["saved"] = False if str(payload.get("confirmation_state") or "").lower() == "buyer_confirmed" else True
+            claimed = str(payload.get("confirmation_state") or "").lower()
+            if claimed == "buyer_confirmed":
+                # A failed confirmation must never replace the proposal that
+                # the buyer actually saw. Otherwise every model retry changes
+                # the target and makes a later natural "sí" impossible to
+                # match, which was the source of the repeated-confirmation loop.
+                existing = _memory_draft_record("brand", scope=scope)
+                result = {
+                    "saved": False,
+                    "draft": True,
+                    "draft_id": existing.get("id", ""),
+                    "kind": "brand",
+                    "scope": scope,
+                    "draft_preserved": bool(existing),
+                }
+            else:
+                result = save_memory_draft("brand", payload, scope=scope)
             result["reason"] = authorization.get("reason")
             return result
         official = dict(payload)
@@ -11576,8 +11753,24 @@ def save_general_brand_memory(payload):
         result = save_general_guide(official)
         result["saved"] = True
         result["draft"] = False
+        result["authorization_reason"] = authorization.get("reason")
+        fields = ((result.get("general") or {}).get("fields") or {})
+        result["strategic_profile"] = _sync_saved_brand_to_strategic_profile(
+            fields,
+            scope,
+            trusted_turn=authorization.get("turn"),
+        )
+        result["cleared_draft"] = _remove_memory_draft("brand", scope=scope)
         write_agent_onboarding_plan()
-        log_action("brand_general_save", {"brand_name": result.get("general", {}).get("fields", {}).get("brand_name", "")}, "completed")
+        log_action(
+            "brand_general_save",
+            {
+                "brand_name": fields.get("brand_name", ""),
+                "strategic_branding_synced": bool(result["strategic_profile"].get("synced")),
+                "strategic_branding_changed": bool(result["strategic_profile"].get("changed")),
+            },
+            "completed",
+        )
         authorization["commit"] = True
         return result
 
@@ -17003,11 +17196,18 @@ def handle_save_brand_guide_tool(arguments, chat_payload, tool):
     result = save_general_brand_memory(arguments)
     phase = agent_onboarding_phase()
     if result.get("draft"):
-        reply = chat_reply(
-            chat_payload,
-            "Guardé esta dirección de marca como borrador. Preséntala al comprador y, cuando la confirme o corrija, vuelve a guardarla como buyer_confirmed.",
-            "I saved this brand direction as a draft. Present it to the buyer and save it as buyer_confirmed only after they confirm or correct it.",
-        )
+        if result.get("saved") is False:
+            reply = chat_reply(
+                chat_payload,
+                "No cambié la identidad oficial. Conservé la propuesta que el comprador realmente vio. No pidas una frase especial ni repitas la confirmación: si existe una marca oficial igual, continúa; si propones un cambio real, muéstralo completo antes de pedir una sola aprobación natural.",
+                "I did not change the official identity. I preserved the proposal the buyer actually saw. Do not request a special phrase or repeat confirmation: if the same official brand already exists, continue; if this is a real change, show it completely before asking for one natural approval.",
+            )
+        else:
+            reply = chat_reply(
+                chat_payload,
+                "Guardé esta dirección de marca como borrador. Preséntala completa al comprador y pide una sola confirmación natural antes de guardarla como buyer_confirmed.",
+                "I saved this brand direction as a draft. Present it completely to the buyer and ask for one natural confirmation before saving it as buyer_confirmed.",
+            )
     else:
         reply = chat_reply(chat_payload, f"Listo. Guardé la guía visual y verbal de la marca. Siguiente paso: {phase['next_step']}", f"Done. I saved the brand's visual and verbal guide. Next step: {phase['next_step']}")
     official_saved = result.get("saved") is True and result.get("draft") is not True

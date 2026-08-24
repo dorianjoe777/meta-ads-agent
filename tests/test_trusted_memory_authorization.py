@@ -179,6 +179,156 @@ class TrustedMemoryAuthorizationTests(unittest.TestCase):
         self.assertTrue(changed["draft"])
         self.assertEqual(changed["reason"], "short_confirmation_has_no_matching_draft")
 
+    def test_brand_save_resolves_strategic_branding_and_reconfirmation_is_idempotent(self):
+        fields = {
+            "brand_name": "Rodeo - Car Detailing",
+            "offer": "Detailing automotriz premium",
+            "colors": "Negro mate, gris grafito y naranja cobrizo",
+            "visual_style": "Masculino, moderno, agresivo y limpio",
+            "tone": "Experto, directo y premium",
+            "logo_path": "brand_guides/assets/rodeo-logo.png",
+            "logo_status": "official",
+            "logo_usage": "Usar en todos los anuncios",
+        }
+        library = {
+            "general_exists": True,
+            "general": {"saved": True, "fields": fields},
+            "products": [],
+        }
+        first_message = (
+            "Apruebo esta identidad visual como la identidad oficial de Rodeo"
+        )
+        self.dashboard.record_trusted_buyer_turn(
+            "123",
+            "agent:main:telegram:dm:123",
+            52,
+            first_message,
+            transport="telegram",
+        )
+        with (
+            patch.object(self.dashboard, "save_general_guide", return_value=library),
+            patch.object(self.dashboard, "guide_library", return_value=library),
+        ):
+            first = self.dashboard.save_general_brand_memory({
+                **fields,
+                "confirmation_state": "buyer_confirmed",
+                "buyer_evidence": first_message,
+            })
+            self.assertTrue(first["saved"])
+            self.assertFalse(first["draft"])
+            self.assertTrue(first["strategic_profile"]["synced"])
+            self.assertTrue(first["strategic_profile"]["changed"])
+
+            stored = self.dashboard.read_json(
+                self.dashboard.BUSINESS_PROFILE_FILE, {}
+            )
+            strategic = stored["strategic_profile"]
+            branding = strategic["topics"]["branding"]
+            self.assertEqual(branding["status"], "confirmed")
+            self.assertEqual(
+                branding["confirmation_state"], "buyer_confirmed"
+            )
+            self.assertTrue(branding["trusted_server_evidence"])
+            first_revision = strategic["revision"]
+
+            confirmation = "Confirmo la identidad de Rodeo"
+            self.dashboard.record_trusted_buyer_turn(
+                "123",
+                "agent:main:telegram:dm:123",
+                53,
+                confirmation,
+                transport="telegram",
+            )
+            second = self.dashboard.save_general_brand_memory({
+                **fields,
+                "confirmation_state": "buyer_confirmed",
+                "buyer_evidence": confirmation,
+            })
+
+        self.assertTrue(second["saved"])
+        self.assertFalse(second["draft"])
+        self.assertEqual(
+            second["authorization_reason"], "official_brand_already_confirmed"
+        )
+        self.assertTrue(second["strategic_profile"]["synced"])
+        self.assertFalse(second["strategic_profile"]["changed"])
+        stored = self.dashboard.read_json(self.dashboard.BUSINESS_PROFILE_FILE, {})
+        self.assertEqual(stored["strategic_profile"]["revision"], first_revision)
+
+    def test_failed_short_brand_confirmation_preserves_the_shown_draft(self):
+        shown = {
+            "confirmation_state": "agent_proposal",
+            "brand_name": "Rodeo - Car Detailing",
+            "colors": "Negro y naranja",
+        }
+        saved_draft = self.dashboard.save_memory_draft(
+            "brand", shown, scope="page_1"
+        )
+        before = self.dashboard.read_json(self.dashboard.MEMORY_DRAFTS_FILE, {})
+
+        confirmation = "Sí"
+        self.dashboard.record_trusted_buyer_turn(
+            "123",
+            "agent:main:telegram:dm:123",
+            54,
+            confirmation,
+            transport="telegram",
+        )
+        empty_library = {
+            "general_exists": False,
+            "general": {"saved": False, "fields": {}},
+        }
+        with patch.object(
+            self.dashboard, "guide_library", return_value=empty_library
+        ):
+            rejected = self.dashboard.save_general_brand_memory({
+                "confirmation_state": "buyer_confirmed",
+                "buyer_evidence": confirmation,
+                "brand_name": "Otra marca no mostrada",
+                "colors": "Azul",
+            })
+
+        after = self.dashboard.read_json(self.dashboard.MEMORY_DRAFTS_FILE, {})
+        self.assertFalse(rejected["saved"])
+        self.assertTrue(rejected["draft"])
+        self.assertTrue(rejected["draft_preserved"])
+        self.assertEqual(rejected["draft_id"], saved_draft["draft_id"])
+        self.assertEqual(after, before)
+        self.assertEqual(
+            rejected["reason"], "short_confirmation_has_no_matching_draft"
+        )
+
+    def test_short_brand_confirmation_cannot_change_official_fields(self):
+        official_fields = {
+            "brand_name": "Rodeo - Car Detailing",
+            "colors": "Negro y naranja",
+        }
+        library = {
+            "general_exists": True,
+            "general": {"saved": True, "fields": official_fields},
+        }
+        confirmation = "Confirmo"
+        self.dashboard.record_trusted_buyer_turn(
+            "123",
+            "agent:main:telegram:dm:123",
+            55,
+            confirmation,
+            transport="telegram",
+        )
+        with patch.object(
+            self.dashboard, "guide_library", return_value=library
+        ):
+            rejected = self.dashboard.save_general_brand_memory({
+                "confirmation_state": "buyer_confirmed",
+                "buyer_evidence": confirmation,
+                "brand_name": "Rodeo - Car Detailing",
+                "colors": "Azul y verde",
+            })
+        self.assertFalse(rejected["saved"])
+        self.assertEqual(
+            rejected["reason"], "short_confirmation_has_no_matching_draft"
+        )
+
     def test_review_presentation_requires_every_current_label_status_and_value(self):
         updates = {
             topic: {

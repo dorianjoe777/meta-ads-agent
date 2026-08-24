@@ -19,6 +19,8 @@ Collect and save:
 
 Use `mcp_admira_save_brand_memory`, `mcp_admira_save_product_memory`, `mcp_admira_save_creative_references`, and `mcp_admira_save_content_asset`. Read `memory/Branding onboarding.md` and `brand_guides/Offer map.md` when present. Treat `brand_guides/` and `memory/content_*` files as read-only snapshots; do not manually write them.
 
+One visible brand proposal needs at most one natural buyer confirmation. When `mcp_admira_save_brand_memory` returns `saved: true` and `draft: false`, the identity is official and its strategic `branding` topic is synchronized by the server in that same operation. Do not ask the buyer to repeat a special phrase, do not copy the same identity into `mcp_admira_save_business_memory`, and do not request another confirmation merely because the conversation moves to a campaign. Read the returned next step and ask only for a genuinely missing fact such as references or available real assets. A later “sí”, “listo”, or campaign approval is about the current visible proposal; never reinterpret it as a request to reconfirm already-saved branding.
+
 This phase comes before organic or paid production. If no official logo exists and the buyer wants one, agree on name, category/offer, palette, visual style and tone, then call `mcp_admira_codex_image_generate` with `purpose: logo` (or `brand_exploration`, `moodboard`, `brand_sample`). Show the actual attached result and revise it conversationally. It is only a candidate until the buyer approves it and `mcp_admira_save_brand_memory` confirms the exact real file as official. Never say a blocked Image call is queued or will appear later.
 
 ## Parent brand vs child offers
