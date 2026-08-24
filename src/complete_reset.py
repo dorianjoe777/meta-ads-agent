@@ -309,7 +309,11 @@ def reset_workspace(
     brand_seed = Path(brand_seed_dir)
     ad_config_example = Path(ad_config_example)
     preserved_data = {
-        "license_unlock.json", "hermes-home", "hermes-image-home", *preserve_data_names,
+        # This path is a dedicated Docker volume in cloud and desktop installs.
+        # Deleting the mount point raises EBUSY and aborts the confirmed reset.
+        # Snapshot retention is owned by the updater, so preserve the mount.
+        "license_unlock.json", "hermes-home", "hermes-image-home", "update-snapshots",
+        *preserve_data_names,
     }
 
     for env_path in {Path(item).resolve() for item in env_paths if Path(item).exists()}:
