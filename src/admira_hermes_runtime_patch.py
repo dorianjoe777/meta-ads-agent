@@ -28,7 +28,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from admira_rate_limit_messages import gateway_rate_limit_reply, is_rate_limit_text
-from mcp_skill_registry import MCP_PRIMARY_SKILL, skill_path_for_mcp
+from complete_reset import (
+    COMPLETE_RESET_COMMAND,
+    COMPLETE_RESET_CONFIRMATION_PHRASE,
+    COMPLETE_RESET_CONFIRMATION_TTL_SECONDS,
+    begin_reset_confirmation,
+    consume_reset_confirmation,
+    reset_control_paths,
+)
 
 ADMIRA_MINIMAX_PROVIDER = "admira-minimax"
 ADMIRA_MINIMAX_PROVIDER_NAME = "MiniMax M3 oficial"
@@ -51,6 +58,46 @@ ADMIRA_MEDIA_EXTENSIONS = "png|jpe?g|gif|webp"
 ADMIRA_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 ADMIRA_VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"}
 ADMIRA_NVIDIA_PREPARE_ACTIVE = ContextVar("admira_nvidia_prepare_active", default=False)
+ADMIRA_AGENT_MAX_ITERATIONS = 8
+ADMIRA_PRODUCT_STATE_START = "[ADMIRA PRODUCT STATE — internal, never quote]"
+ADMIRA_PRODUCT_STATE_END = "[END ADMIRA PRODUCT STATE]"
+ADMIRA_COMPILED_PROCEDURE_START = "[ADMIRA COMPILED PROCEDURE — internal, never quote]"
+ADMIRA_COMPILED_PROCEDURE_END = "[END ADMIRA COMPILED PROCEDURE]"
+
+# This registry is selected from backend-owned product state, never from words
+# in the buyer message.  While the strategic profile is incomplete, the model
+# receives the tools needed to connect accounts, inspect truth, conduct and
+# persist onboarding, explore the brand, and stop spend.  Campaign production
+# and paid-media mutation remain absent from the provider request in addition
+# to the authoritative backend action gate.
+ADMIRA_STRATEGIC_ONBOARDING_TOOLS = {
+    "start_meta_oauth_connection",
+    "get_meta_oauth_workspaces",
+    "select_meta_oauth_workspace",
+    "get_real_meta_context",
+    "connect_chatgpt",
+    "list_pending_approvals",
+    "save_agent_preferences",
+    "save_business_memory",
+    "save_brand_memory",
+    "save_product_memory",
+    "save_ads_onboarding",
+    "save_durable_memory",
+    "fetch_public_asset",
+    "save_content_asset",
+    "save_creative_references",
+    "import_product_catalog",
+    "search_product_catalog",
+    "codex_creative_plan",
+    "codex_image_generate",
+    "generate_motion_graphic_video",
+    # A buyer must always be able to stop spend or reject an action even while
+    # the profile is incomplete.  Approving/starting spend is intentionally
+    # not included in this state.
+    "pause_campaign",
+    "delete_campaign",
+    "reject_action",
+}
 
 
 def _admira_freeform_agent_mode():
@@ -82,12 +129,370 @@ def _remove_hermes_personal_state_tools(api_kwargs):
         return api_kwargs
     request = dict(api_kwargs)
     tools = request.get("tools") if isinstance(request.get("tools"), list) else []
-    disabled = {"memory", "skill_manage", "skill_create", "skill_patch"}
+    disabled = {"clarify", "memory", "skill_manage", "skill_create", "skill_patch"}
     request["tools"] = [
         tool for tool in tools
         if str(_nvidia_tool_name(tool) or "").strip().lower() not in disabled
     ]
     return request
+
+
+def _admira_read_json(path):
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _admira_strategic_profile_state(*, product_root=None):
+    """Read the authoritative strategic-onboarding state owned by Admira.
+
+    The language model cannot set this state through prompt text.  The
+    dashboard memory file is the canonical source; the generated Hermes copy
+    is only a read-only fallback for startup races.  A Page-scoped profile is
+    complete only for the currently bound Page and, when revision metadata is
+    present, only for its confirmed current revision.
+    """
+    root = Path(
+        str(product_root or os.environ.get("ADMIRA_PRODUCT_ROOT") or "/app").strip()
+    ).expanduser()
+    profile = {}
+    source = ""
+    for candidate in (
+        root / "dashboard" / "data" / "business_profile.json",
+        root / "dashboard" / "data" / "hermes-workspace" / "current" / "data" / "business_profile.json",
+    ):
+        profile = _admira_read_json(candidate)
+        if profile:
+            source = str(candidate)
+            break
+
+    strategic = profile.get("strategic_profile") if isinstance(profile, dict) else {}
+    if not isinstance(strategic, dict):
+        strategic = {}
+    status = str(strategic.get("status") or "empty").strip().lower()
+    if status not in {"empty", "collecting", "review_required", "complete", "scope_mismatch"}:
+        status = "collecting"
+
+    revision = strategic.get("revision")
+    confirmed_revision = strategic.get("confirmed_revision")
+    review = strategic.get("review") if isinstance(strategic.get("review"), dict) else {}
+    if confirmed_revision in (None, ""):
+        confirmed_revision = review.get("confirmed_revision")
+
+    oauth = _admira_read_json(root / "dashboard" / "data" / "meta_oauth_connection.json")
+    binding = _admira_read_json(root / "dashboard" / "data" / "individual_business_binding.json")
+    # OAuth owns the active Meta workspace.  The older individual-business
+    # binding remains a startup/migration fallback only, otherwise a recent
+    # OAuth Page switch could disagree with the provider-visible tool gate.
+    active_page_id = str(oauth.get("active_page_id") or "").strip()
+    bound_page_id = active_page_id or str(binding.get("page_id") or "").strip()
+    scope = strategic.get("scope") if isinstance(strategic.get("scope"), dict) else {}
+    scope_page_id = str(scope.get("page_id") or strategic.get("page_id") or "").strip()
+    if bound_page_id and scope_page_id and bound_page_id != scope_page_id:
+        status = "scope_mismatch"
+
+    revision_matches = (
+        revision not in (None, "")
+        and confirmed_revision not in (None, "")
+        and str(revision) == str(confirmed_revision)
+    )
+    scope_matches = bool(scope_page_id) and (
+        not bound_page_id or scope_page_id == bound_page_id
+    )
+    complete = status == "complete" and revision_matches and scope_matches
+    return {
+        "status": status,
+        "complete": complete,
+        "revision": revision,
+        "confirmed_revision": confirmed_revision,
+        "scope_page_id": scope_page_id,
+        "bound_page_id": bound_page_id,
+        "source": source,
+    }
+
+
+def _admira_constrain_onboarding_media_tool(tool):
+    """Keep only non-ad Image planning/production visible during onboarding."""
+    if not isinstance(tool, dict):
+        return tool
+    name = _nvidia_normalize_tool_name(_nvidia_tool_name(tool))
+    if name not in {
+        "codex_image_generate",
+        "codex_creative_plan",
+        "generate_motion_graphic_video",
+    }:
+        return tool
+    cloned = copy.deepcopy(tool)
+    function = cloned.get("function") if isinstance(cloned.get("function"), dict) else cloned
+    parameters = function.get("parameters") if isinstance(function, dict) else None
+    properties = parameters.get("properties") if isinstance(parameters, dict) else None
+    purpose = properties.get("purpose") if isinstance(properties, dict) else None
+    if isinstance(purpose, dict):
+        purpose["enum"] = [
+            "logo",
+            "brand_exploration",
+            "moodboard",
+            "brand_sample",
+        ]
+        purpose["description"] = (
+            "Only logo candidates, brand exploration, moodboards, or brand samples while onboarding "
+            "is incomplete. Organic and paid production remain unavailable until branding is confirmed."
+        )
+    if isinstance(function, dict):
+        existing = str(function.get("description") or "").strip()
+        function["description"] = (
+            "During onboarding this tool is limited to logo candidates, brand exploration, "
+            "moodboards, or brand samples. " + existing
+        ).strip()
+    return cloned
+
+
+def _admira_compact_tool_description(tool):
+    """Remove the obsolete read-a-skill ceremony from provider schemas."""
+    if not isinstance(tool, dict):
+        return tool
+    cloned = copy.deepcopy(tool)
+    function = cloned.get("function") if isinstance(cloned.get("function"), dict) else cloned
+    if not isinstance(function, dict):
+        return cloned
+    description = str(function.get("description") or "")
+    if description:
+        description = re.sub(
+            r"^MANDATORY PRIMARY PROCEDURE:\s*read\s+`skills/[^`]+/SKILL\.md`\s+"
+            r"completely before calling this MCP\.\s*Reading it does not itself authorize execution\.\s*",
+            "",
+            description,
+            flags=re.IGNORECASE,
+        ).strip()
+        function["description"] = description
+    parameters = function.get("parameters")
+    if isinstance(parameters, dict):
+        def compact_schema(value):
+            if isinstance(value, list):
+                return [compact_schema(item) for item in value]
+            if not isinstance(value, dict):
+                return value
+            result = {}
+            for key, item in value.items():
+                if key == "description" and isinstance(item, str) and len(item) > 240:
+                    result[key] = item[:237].rstrip() + "…"
+                else:
+                    result[key] = compact_schema(item)
+            return result
+        function["parameters"] = compact_schema(parameters)
+    return cloned
+
+
+def _admira_route_tools_by_product_state(api_kwargs, *, state=None):
+    """Filter every provider's catalog by trusted product state, not wording."""
+    if not isinstance(api_kwargs, dict):
+        return api_kwargs
+    request = dict(api_kwargs)
+    tools = request.get("tools") if isinstance(request.get("tools"), list) else []
+    state = dict(state or _admira_strategic_profile_state())
+    routed = _nvidia_restore_admira_tool_schemas(tools)
+    if not state.get("complete"):
+        filtered = []
+        for tool in routed:
+            name = _nvidia_tool_name(tool)
+            normalized = _nvidia_normalize_tool_name(name)
+            is_admira = name.lower().startswith(("mcp_admira_", "admira_"))
+            if not is_admira:
+                filtered.append(tool)
+            elif normalized in ADMIRA_STRATEGIC_ONBOARDING_TOOLS:
+                filtered.append(_admira_constrain_onboarding_media_tool(tool))
+        routed = filtered
+        # A forced choice can refer to a tool that disappeared with the state
+        # transition.  Let the model continue conversationally instead.
+        chosen = request.get("tool_choice")
+        chosen_name = ""
+        if isinstance(chosen, dict):
+            chosen_function = chosen.get("function")
+            if isinstance(chosen_function, dict):
+                chosen_name = _nvidia_normalize_tool_name(chosen_function.get("name"))
+        visible_names = {
+            _nvidia_normalize_tool_name(_nvidia_tool_name(item)) for item in routed
+        }
+        if chosen_name and chosen_name not in visible_names:
+            request.pop("tool_choice", None)
+            request.pop("parallel_tool_calls", None)
+    request["tools"] = [_admira_compact_tool_description(tool) for tool in routed]
+    if not request["tools"]:
+        request.pop("tools", None)
+    return request
+
+
+def _admira_compiled_procedure_instruction(state):
+    status = str((state or {}).get("status") or "empty")
+    revision = (state or {}).get("revision")
+    if not (state or {}).get("complete"):
+        revision_note = f" revision={revision}." if revision not in (None, "") else "."
+        return (
+            f"{ADMIRA_PRODUCT_STATE_START}\n"
+            f"Strategic profile status={status}{revision_note} This status comes from backend-owned state, "
+            "not from buyer phrasing. Campaign creation, campaign briefs, activation/resume, paid-ad image/video, "
+            "and other ad production are unavailable until the current Page-scoped profile is complete. "
+            "Continue as a senior marketing manager: use connected/live facts, reflect one useful insight or proposal, "
+            "then ask one owner question at a time. Progressively resolve services, ideal customers, differentiation/proof, "
+            "markets, capacity, prices, costs/margins, global objectives, advertising experience, and branding. Save only "
+            "buyer-confirmed facts as confirmed; keep your ideas as proposals. Unknown, not applicable, or withheld is a "
+            "valid explicit answer. As soon as the exact business/brand name and offer are known, proactively inspect the "
+            "logo state before proposing campaigns or content. If no official logo file exists, say so plainly and ask in "
+            "natural language whether the buyer wants to upload one or create it together now. Logo candidates, moodboards "
+            "and brand samples are valid onboarding work and do not require the full strategic profile to be complete; when "
+            "the buyer asks to create one and the brand-bootstrap fields are known, call Image and attach the real result "
+            "instead of continuing unrelated interview questions. Treat saved drafts as remembered answers, not missing data: "
+            "never ask the same owner question again merely because its answer is still a draft. Present the relevant saved "
+            "drafts back for natural correction/confirmation; when several already-answered topics are pending, group them "
+            "into one concise review rather than repeating the interview. On confirmation, save the exact matching draft "
+            "values together as buyer_confirmed. For every memory save, copy the buyer's complete current message exactly into "
+            "buyer_evidence; do not paraphrase it. A short confirmation can promote only the matching draft already shown. "
+            "When every topic is resolved, present the complete canonical review_summary returned by the tool for natural "
+            "confirmation/correction; do not omit values or mark it complete yourself.\n"
+            f"{ADMIRA_PRODUCT_STATE_END}\n"
+            f"{ADMIRA_COMPILED_PROCEDURE_START}\n"
+            "The relevant onboarding procedure is precompiled here. Do not call read_file merely to unlock an MCP. "
+            "Use ordinary conversational text, never clarify/cards. Use the visible tool schema and backend result "
+            "as execution truth. Strategic advice is proactive, but it is not mutation authorization.\n"
+            f"{ADMIRA_COMPILED_PROCEDURE_END}"
+        )
+    return (
+        f"{ADMIRA_PRODUCT_STATE_START}\n"
+        "The current Page-scoped strategic profile is complete. Continue with the buyer-confirmed brand foundation before "
+        "organic or paid production: exact name, approved logo or explicit no-logo choice, palette, visual style, tone, "
+        "references and real assets. Image may create real logo candidates, moodboards and brand samples during this phase; "
+        "attach the file and save it as official only after natural buyer approval. Backend brand readiness remains authoritative.\n"
+        f"{ADMIRA_PRODUCT_STATE_END}\n"
+        f"{ADMIRA_COMPILED_PROCEDURE_START}\n"
+        "Official procedures are precompiled into the root contract and tool descriptions. Do not call read_file merely "
+        "to unlock an MCP. Use ordinary conversational text, never clarify/cards. Choose the smallest tool by semantic "
+        "outcome, follow its current schema, and treat its result as truth. For each genuinely new paid campaign, do not "
+        "inherit another campaign's budget, currency, audience, geography, offer, copy, title, destination message, CTA, "
+        "or creative. First develop the commercial direction with the buyer. Before image/video production, show the exact "
+        "primary text, distinct title, CTA/destination message, and visual concept for natural correction or approval. "
+        "Before campaign creation, the current budget/currency and exact delivered creative must also be resolved and visible. "
+        "A campaign request or budget answer alone authorizes none of those missing values. A successful PAUSED creation must "
+        "include real campaign/ad-set/ad IDs; activation, spend, publishing, destructive work, and other protected mutations "
+        "still follow the backend approval contract.\n"
+        f"{ADMIRA_COMPILED_PROCEDURE_END}"
+    )
+
+
+def _admira_attach_compiled_procedure(api_kwargs, *, state=None):
+    if not isinstance(api_kwargs, dict):
+        return api_kwargs
+    request = dict(api_kwargs)
+    instruction = _admira_compiled_procedure_instruction(
+        state or _admira_strategic_profile_state()
+    )
+    # Hermes has already converted a Codex/OpenAI subscription request to the
+    # Responses API by the time this provider-boundary patch runs.  Such a
+    # request contains ``input`` + ``instructions`` and must never receive a
+    # Chat Completions-only ``messages`` keyword: openai.responses.create()
+    # rejects it before authentication/network I/O.  Preserve the native
+    # payload and extend its system instructions instead.
+    if "input" in request and "messages" not in request:
+        existing = str(request.get("instructions") or "").strip()
+        if ADMIRA_PRODUCT_STATE_START not in existing:
+            request["instructions"] = f"{existing}\n\n{instruction}".strip()
+        return request
+    messages = request.get("messages") if isinstance(request.get("messages"), list) else []
+    if any(
+        ADMIRA_PRODUCT_STATE_START in str(item.get("content") or "")
+        for item in messages if isinstance(item, dict)
+    ):
+        return request
+    request["messages"] = _nvidia_append_private_instruction(
+        messages,
+        instruction,
+    )
+    return request
+
+
+def _admira_compact_receipt_payload(value):
+    """Retain only durable facts from a tool result already consumed."""
+    if not isinstance(value, dict):
+        return {}
+    keep = {
+        "ok", "success", "executed", "status", "reason", "error", "message",
+        "selected", "verified_persisted", "changed", "created", "campaign_id",
+        "campaign_ids", "adset_id", "adset_ids", "ad_id", "ad_ids",
+        "lead_gen_form_id", "page_id", "ad_account_id", "currency", "timezone",
+        "image_path", "media_attachment", "video_path", "approval_id", "next_step",
+    }
+    receipt = {key: value[key] for key in keep if key in value}
+    nested = value.get("result")
+    if isinstance(nested, dict):
+        compact_nested = {key: nested[key] for key in keep if key in nested}
+        if compact_nested:
+            receipt["result"] = compact_nested
+    return receipt
+
+
+def _admira_compact_consumed_observations(messages):
+    """Prune old skill dumps and oversized MCP receipts after a buyer turn."""
+    if not isinstance(messages, list):
+        return messages
+    latest_user = max(
+        (index for index, item in enumerate(messages)
+         if isinstance(item, dict) and str(item.get("role") or "").lower() == "user"),
+        default=-1,
+    )
+    if latest_user <= 0:
+        return messages
+
+    calls = {}
+    for item in messages[:latest_user]:
+        if not isinstance(item, dict) or str(item.get("role") or "").lower() != "assistant":
+            continue
+        for call in item.get("tool_calls") or []:
+            if not isinstance(call, dict):
+                continue
+            function = call.get("function") if isinstance(call.get("function"), dict) else {}
+            calls[str(call.get("id") or "")] = {
+                "name": str(function.get("name") or ""),
+                "arguments": str(function.get("arguments") or ""),
+            }
+
+    compacted = list(messages)
+    for index, item in enumerate(messages[:latest_user]):
+        if not isinstance(item, dict) or str(item.get("role") or "").lower() != "tool":
+            continue
+        call = calls.get(str(item.get("tool_call_id") or ""), {})
+        tool_name = str(item.get("name") or item.get("tool_name") or call.get("name") or "")
+        arguments = str(call.get("arguments") or "")
+        content = item.get("content")
+        serialized = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False, default=str)
+        is_skill_read = (
+            _nvidia_normalize_tool_name(tool_name) == "read_file" or tool_name == "read_file"
+        ) and "SKILL.md" in arguments
+        is_admira = tool_name.lower().startswith(("mcp_admira_", "admira_"))
+        if is_skill_read:
+            replacement = {
+                "ok": True,
+                "procedure_loaded": Path(arguments.split("SKILL.md", 1)[0]).name or "official-skill",
+                "note": "Procedure is represented by the current compiled guidance.",
+            }
+        elif is_admira and len(serialized) > 1800:
+            try:
+                parsed = json.loads(serialized)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed = {}
+            replacement = _admira_compact_receipt_payload(parsed)
+            if not replacement:
+                replacement = {
+                    "ok": True,
+                    "tool": _nvidia_normalize_tool_name(tool_name),
+                    "note": "Previous detailed result was consumed; refresh live state if current truth is needed.",
+                }
+        else:
+            continue
+        clone = dict(item)
+        clone["content"] = json.dumps(replacement, ensure_ascii=False, separators=(",", ":"))
+        compacted[index] = clone
+    return compacted
 
 
 def _session_has_read_primary_skill(session_id, skill_path, *, state_db_path=None):
@@ -209,19 +614,6 @@ ADMIRA_CAMPAIGN_EDIT_SUCCESS_CLAIM_RE = re.compile(
     r"\b(?:presupuesto|budget|cambio|campaign)\b.{0,100}\b(?:aplicado|aplicada|cambiado|cambiada|modificado|"
     r"actualizado|actualizada|applied|changed|updated|set)\b)"
 )
-ADMIRA_WORKSPACE_SELECTION_CLAIM_RE = re.compile(
-    r"(?i)(?:\b(?:hemos|he|ya)\b.{0,45}\b(?:conectad[oa]?|seleccionad[oa]?|elegid[oa]?|guardad[oa]?)\b"
-    r".{0,120}\b(?:cuenta\s+publicitaria|p[aá]gina)\b|"
-    r"\b(?:cuenta\s+publicitaria|p[aá]gina)\b.{0,100}\b(?:qued[oó]|conectad[oa]?|seleccionad[oa]?|elegid[oa]?)\b)"
-)
-ADMIRA_EXISTING_WORKSPACE_DESCRIPTION_RE = re.compile(
-    r"(?i)\b(?:cuenta\s+publicitaria|p[aá]gina)\b.{0,80}"
-    r"\b(?:actualmente|conectad[oa]?|seleccionad[oa]?|activ[oa])\b"
-)
-ADMIRA_NEW_WORKSPACE_SELECTION_RE = re.compile(
-    r"(?i)\b(?:hemos|he|acabo\s+de|acabamos\s+de|ya)\b.{0,55}"
-    r"\b(?:conectad[oa]?|seleccionad[oa]?|elegid[oa]?|guardad[oa]?)\b"
-)
 ADMIRA_IMAGE_UNAVAILABLE_CLAIM_RE = re.compile(
     r"(?i)(?:\b(?:chatgpt|codex|image\s*2|generaci[oó]n\s+de\s+im[aá]genes|"
     r"herramienta\s+de\s+(?:generaci[oó]n|imagen(?:es)?(?:\s+autom[aá]tica)?)|"
@@ -233,7 +625,10 @@ ADMIRA_IMAGE_UNAVAILABLE_CLAIM_RE = re.compile(
 ADMIRA_TELEGRAM_INVISIBLE_RE = re.compile(r"[\u200b\u200c\u2060\ufeff\u202a-\u202e\u2066-\u2069]")
 ADMIRA_MARKDOWN_ONLY_RE = re.compile(r"[\s*_~`#>|:\-=+\\/.,;!?()\[\]{}]+")
 ADMIRA_TABLE_SEPARATOR_CELL_RE = re.compile(r"^:?-{3,}:?$")
-ADMIRA_FINAL_MARKER_RE = re.compile(r"(?im)^\s*\[?ADMIRA\s+FINAL\]?\s*:?[ \t]*$")
+# Models usually place the marker on its own line, but some Codex variants put
+# the buyer answer immediately after it. Match the line prefix as well so the
+# private transport marker can never leak into Telegram.
+ADMIRA_FINAL_MARKER_RE = re.compile(r"(?im)^\s*\[?ADMIRA\s+FINAL\]?\s*:?[ \t]*")
 ADMIRA_REASONING_TAG_RE = re.compile(
     r"(?is)<(?:think|thinking|analysis|reasoning)>.*?</(?:think|thinking|analysis|reasoning)>"
 )
@@ -527,6 +922,45 @@ def _strip_internal_reasoning(value):
         )
     cleaned = text.strip()
     return cleaned, cleaned != original.strip()
+
+
+def _patch_model_aware_compression_threshold():
+    """Keep Gemini's quota guard from leaking into Codex subscription chats.
+
+    Hermes reads one global compression threshold from config.yaml even when a
+    Telegram session selects a different provider/model. Admira intentionally
+    keeps Gemini Flash Lite as the installation default, so without this
+    runtime override Luna/Terra inherit Gemini's 6% threshold and summarize a
+    272K Codex conversation at roughly 16K tokens.
+    """
+    try:
+        from agent import auxiliary_client
+    except Exception:
+        return False
+    original = getattr(auxiliary_client, "_compression_threshold_for_model", None)
+    if not callable(original):
+        return False
+    if getattr(original, "_admira_model_aware_compression_patch", False):
+        return True
+
+    def patched(model, provider=None, *, allow_codex_gpt55_autoraise=True):
+        model_id = str(model or "").strip().lower()
+        provider_id = str(provider or "").strip().lower().replace("_", "-")
+        if provider_id == "openai-codex" and model_id in {
+            "gpt-5.6-luna",
+            "gpt-5.6-terra",
+        }:
+            return 0.85
+        return original(
+            model,
+            provider,
+            allow_codex_gpt55_autoraise=allow_codex_gpt55_autoraise,
+        )
+
+    patched._admira_model_aware_compression_patch = True
+    patched._admira_original_compression_threshold = original
+    auxiliary_client._compression_threshold_for_model = patched
+    return True
 
 
 def _is_codex_pool_quota_error(text):
@@ -877,6 +1311,7 @@ def _append_turn_execution_contract(value):
             f"{ADMIRA_TURN_CONTRACT_START}\n"
             "This buyer-facing turn must feel led by a senior manager, not by a form or a course. "
             "Silently identify the immediate business goal, inspect live Meta/tools/files before asking for anything discoverable, and choose one recommended path. "
+            "If Facebook account/Page are selected but the general business profile is empty, strategic business onboarding is the required next stage before producing, staging, or creating a campaign. Do not offer a skip-to-campaign path. Continue as an engaging manager conversation, using live context and asking one useful owner question at a time while saving confirmed facts. "
             "Advance every safe, already-authorized step now. Before asking, identify all owner-only inputs needed to finish the next deliverable. Ask at most one concise blocking question; if several tightly related owner facts or uploads are essential, request them together once in one compact packet. "
             "For a beginner, state the decision, one business reason or risk, and the concrete next action in at most 180 words. Do not dump alternatives or end with an 'if you want' invitation. "
             "When recommending price or ad budget and costs are known, calculate contribution margin and the approximate incremental sales/leads needed to recover ad spend before choosing the test.\n"
@@ -887,7 +1322,8 @@ def _append_turn_execution_contract(value):
             f"{ADMIRA_TURN_CONTRACT_START}\n"
             "Este turno debe sentirse guiado por un manager senior, no por un formulario ni una clase. "
             "Identifica en silencio el objetivo inmediato, consulta Meta/herramientas/archivos antes de preguntar cualquier dato descubrible y elige una sola ruta recomendada. "
-            "En una campaña nueva, no generes ni selecciones un creativo y no llames a un MCP de creación mientras el cliente no haya visto y resuelto el presupuesto actual, el creativo exacto, el texto principal, el título y el mensaje/destino correspondiente. Una petición de crear campaña no autoriza valores inventados ni el presupuesto de otra campaña; presenta la propuesta y espera su acuerdo natural. Mientras falten el copy o el creativo, tampoco preguntes si desea crearla o dejarla en pausa: presenta primero la propuesta concreta y abre la revisión conjunta. Si usas la herramienta nativa de aclaración para pedir aprobación, la pregunta visible debe incluir el copy completo, el título distinto y el mensaje de destino exactos; nunca escondas el copy detrás de un botón genérico de «aprobar y crear». Primero muestra el creativo y la propuesta para que el cliente corrija o apruebe en conjunto. "
+            "Si la cuenta y Página de Facebook están seleccionadas pero el perfil general del negocio está vacío, el onboarding estratégico es la siguiente etapa obligatoria antes de producir, preparar o crear una campaña. No ofrezcas saltarlo para ir directo a campañas. Continúa como una conversación útil de gestor, usando contexto en vivo, guardando lo confirmado y haciendo una pregunta relevante del dueño por turno. "
+            "En una campaña nueva, no generes ni selecciones un creativo y no llames a un MCP de creación mientras el cliente no haya visto y resuelto el presupuesto actual, el creativo exacto, el texto principal, el título y el mensaje/destino correspondiente. Una petición de crear campaña no autoriza valores inventados ni el presupuesto de otra campaña; presenta la propuesta y espera su acuerdo natural. Mientras falten el copy o el creativo, tampoco preguntes si desea crearla o dejarla en pausa: presenta primero la propuesta concreta y abre la revisión conjunta. La solicitud visible de aprobación debe incluir el copy completo, el título distinto y el mensaje de destino exactos en texto normal; nunca escondas el copy detrás de una opción genérica de «aprobar y crear». Primero muestra el creativo y la propuesta para que el cliente corrija o apruebe en conjunto. "
             "Si el bloque live confirma oauth_workspace.selection_required=false y contiene active_ad_account_id y active_page_id, la conexión y selección ya son hechos persistentes: no los anuncies como novedad ni pidas elegirlos otra vez. La conexión no salta el onboarding: si aún faltan datos del negocio, resume primero un dato concreto de business_profile, una guía de producto/marca o current_campaigns y pide únicamente confirmar o completar lo que falta; nunca preguntes de forma genérica qué negocio tiene el comprador. Si el contexto ya es suficiente, actúa como manager continuo y usa una señal concreta de Meta. "
             "Avanza ahora todo paso seguro ya autorizado. Antes de preguntar, identifica todos los insumos del dueño necesarios para terminar el siguiente entregable. Haz como máximo una pregunta bloqueante; si faltan varios datos o archivos del dueño estrechamente relacionados, pídelos juntos una sola vez en un paquete breve. "
             "Para un principiante, entrega decisión, una razón o riesgo de negocio y la acción concreta siguiente en máximo 180 palabras. No descargues alternativas ni termines con una invitación tipo «si quieres». "
@@ -1100,6 +1536,18 @@ def _strip_admira_runtime_injections(value):
     )
     text = re.sub(
         r"\n*\[ADMIRA SESSION CONTINUITY.*?\[END ADMIRA SESSION CONTINUITY\]\s*",
+        "\n",
+        text,
+        flags=re.DOTALL,
+    )
+    text = re.sub(
+        r"\n*\[ADMIRA PRODUCT STATE.*?\[END ADMIRA PRODUCT STATE\]\s*",
+        "\n",
+        text,
+        flags=re.DOTALL,
+    )
+    text = re.sub(
+        r"\n*\[ADMIRA COMPILED PROCEDURE.*?\[END ADMIRA COMPILED PROCEDURE\]\s*",
         "\n",
         text,
         flags=re.DOTALL,
@@ -1511,13 +1959,39 @@ def _patch_gateway_chatgpt_slash_commands():
 
     async def patched(self, event, _original=original):
         raw = str(getattr(event, "text", "") or "").strip()
+        source = getattr(event, "source", None)
+        # Capture the exact authorized buyer turn at the stable gateway
+        # boundary. Telegram adapters are loaded dynamically after
+        # sitecustomize, so adapter-only patching can miss the real class and
+        # leave every buyer-confirmed memory save as an unauthorised draft.
+        if raw and not bool(getattr(event, "internal", False)) and source is not None:
+            try:
+                authorized = bool(self._is_user_authorized(source))
+            except Exception:
+                authorized = False
+            if authorized:
+                try:
+                    session_key = self._session_key_for_source(source)
+                except Exception:
+                    session_key = ""
+                sequence = getattr(event, "message_id", None)
+                if sequence is None:
+                    sequence = getattr(event, "platform_update_id", None)
+                platform = getattr(source, "platform", "gateway")
+                transport = str(getattr(platform, "value", platform) or "gateway")
+                _record_trusted_buyer_turn(
+                    chat_id=getattr(source, "chat_id", None),
+                    session_id=session_key,
+                    message_sequence=sequence,
+                    raw_message=str(getattr(event, "text", "") or ""),
+                    transport=transport,
+                )
         if _chatgpt_connection_request(raw):
             normalized = raw.lower().replace("\\_", "_")
             command = normalized.split(maxsplit=1)[0].split("@", 1)[0]
             if command in {
                 "/conectar_chatgpt", "/reconectar_chatgpt", "/connect_chatgpt",
             }:
-                source = getattr(event, "source", None)
                 # Let Hermes' normal pairing/authorization response handle an
                 # unauthorized sender; do not expose the login recovery path.
                 try:
@@ -2737,190 +3211,6 @@ def _admira_campaign_compiler_instruction(messages, creator):
     )
 
 
-def _admira_clarify_text(value):
-    """Return human-facing text from a native Hermes clarify argument."""
-    if value is None:
-        return ""
-    if isinstance(value, dict):
-        return " ".join(
-            str(value.get(key) or "")
-            for key in ("label", "description", "text", "title")
-            if str(value.get(key) or "").strip()
-        )
-    if isinstance(value, (list, tuple)):
-        return " ".join(_admira_clarify_text(item) for item in value)
-    return str(value)
-
-
-def _admira_clarify_normalize(value):
-    text = _admira_clarify_text(value)
-    text = unicodedata.normalize("NFKD", text)
-    text = "".join(char for char in text if not unicodedata.combining(char))
-    return text.lower()
-
-
-ADMIRA_CLARIFY_CAMPAIGN_FIELD_LABELS = {
-    "primary_text": (
-        r"texto\s+principal", r"primary\s+text", r"ad\s+text", r"copy"
-    ),
-    "title": (
-        r"titulo(?:\s+del\s+anuncio)?", r"ad\s+title", r"headline"
-    ),
-    "destination_message": (
-        r"mensaje\s+inicial(?:\s+de\s+whatsapp)?", r"mensaje\s+prellenado",
-        r"prefilled(?:\s+message)?", r"whatsapp\s+message", r"welcome\s+message",
-    ),
-}
-
-
-def _admira_clarify_field_value(text, labels):
-    """Extract the value displayed after a proposal field label.
-
-    The native clarify UI only renders the question and choices.  A label
-    without its exact value is therefore not a buyer-visible proposal.  This
-    parser intentionally accepts common Markdown bullets/quotes while stopping
-    at the next labelled field.
-    """
-    all_labels = tuple(
-        label
-        for values in ADMIRA_CLARIFY_CAMPAIGN_FIELD_LABELS.values()
-        for label in values
-    )
-    target = "(?:" + "|".join(labels) + ")"
-    every = "(?:" + "|".join(all_labels) + ")"
-    start_re = re.compile(
-        rf"(?im)(?:^|[\n;])\s*(?:[-*•>#]\s*)?(?:{target})\s*[:\-]\s*"
-    )
-    match = start_re.search(text)
-    if not match:
-        return ""
-    value_start = match.end()
-    end_re = re.compile(
-        rf"(?im)(?=[\n;]\s*(?:[-*•>#]\s*)?(?:{every})\s*[:\-]\s*)"
-    )
-    end_match = end_re.search(text, value_start)
-    value = text[value_start:end_match.start() if end_match else len(text)]
-    value = re.sub(r"[>*_`\"']", "", value)
-    return " ".join(value.split()).strip(" -:;")
-
-
-def _admira_clarify_has_substantive_value(value, minimum_chars):
-    value = " ".join(str(value or "").split()).strip()
-    if len(re.findall(r"[a-z]", value)) < minimum_chars:
-        return False
-    generic = (
-        r"^(?:este|el siguiente|la siguiente|this|the following)\s+"
-        r"(?:copy|texto|creativo|creative|headline|titulo|title|message|mensaje)",
-        r"^(?:copy|texto)\s+(?:enfocado|propuesto|sugerido|generico|generic)",
-        r"^(?:por definir|pendiente|to be defined|tbd|n/?a)$",
-    )
-    return not any(re.search(pattern, value, re.IGNORECASE) for pattern in generic)
-
-
-def _admira_clarify_campaign_approval_needs_proposal(question, choices):
-    """Detect the approval card that must follow a visible ad proposal."""
-    question_text = _admira_clarify_normalize(question)
-    choices_text = _admira_clarify_normalize(choices)
-    combined = f"{question_text} {choices_text}".strip()
-    campaign_terms = r"(?:campan|campaign|anuncio|ad|creativ|creative|copy|texto)"
-    approval = re.search(
-        rf"\b(?:aprobar|aprueba|aprobado|approve|approved|confirmar|confirm)\b"
-        rf".{{0,140}}\b{campaign_terms}", combined, re.IGNORECASE,
-    )
-    create = re.search(
-        rf"\b(?:crear|creacion|create|launch|dejar|leave)\b"
-        rf".{{0,100}}\b(?:campan|campaign|anuncio|ad)\b", combined, re.IGNORECASE,
-    )
-    authorization_to_create = re.search(
-        r"\b(?:autoriz(?:a|as|ar)|deseas|quieres|proced(?:er|amos)|"
-        r"avanz(?:ar|amos)|dejar(?:la|las|los)?|arm(?:ar|emos)|"
-        r"prepar(?:ar|emos))\b"
-        r".{0,160}\b(?:crear|creacion|campan|campaign|estructura|"
-        r"paused|pausa|en\s+pausa)\b",
-        combined,
-        re.IGNORECASE,
-    )
-    return bool(
-        approval
-        or authorization_to_create
-        or (
-            create
-            and re.search(
-                r"\b(?:aprob|approve|confirm|gusta|like)\w*\b",
-                combined,
-                re.IGNORECASE,
-            )
-        )
-    )
-
-
-def _patch_campaign_clarify_gate():
-    """Prevent generic campaign approval buttons before exact copy is shown.
-
-    Hermes' native ``clarify`` tool is intentionally generic.  For campaign
-    work, however, its numbered approval card is only useful after the buyer
-    has seen the exact primary text, distinct title, destination message and
-    the attached creative.  A model can otherwise call clarify with only
-    “approve this copy”, which creates a false sense of shared approval while
-    hiding the copy itself.  Return a tool-level repair instruction so the
-    model emits a normal visible proposal and keeps the conversation natural.
-    """
-    try:
-        clarify_module = importlib.import_module("tools.clarify_tool")
-    except Exception:
-        return False
-    original = getattr(clarify_module, "clarify_tool", None)
-    if not callable(original):
-        return False
-    if getattr(original, "_admira_campaign_clarify_gate", False):
-        return True
-
-    def guarded(question, choices=None, callback=None):
-        if _admira_clarify_campaign_approval_needs_proposal(question, choices):
-            normalized = _admira_clarify_normalize(question) + " " + _admira_clarify_normalize(choices)
-            primary = _admira_clarify_field_value(
-                normalized, ADMIRA_CLARIFY_CAMPAIGN_FIELD_LABELS["primary_text"]
-            )
-            title = _admira_clarify_field_value(
-                normalized, ADMIRA_CLARIFY_CAMPAIGN_FIELD_LABELS["title"]
-            )
-            destination_message = _admira_clarify_field_value(
-                normalized, ADMIRA_CLARIFY_CAMPAIGN_FIELD_LABELS["destination_message"]
-            )
-            messaging_destination = re.search(
-                r"\b(?:whatsapp|messenger|instagram\s+direct|prefilled|"
-                r"mensaje\s+inicial|welcome\s+message)\b",
-                normalized,
-                re.IGNORECASE,
-            )
-            visible_proposal_ready = (
-                _admira_clarify_has_substantive_value(primary, 24)
-                and _admira_clarify_has_substantive_value(title, 6)
-                and (
-                    not messaging_destination
-                    or _admira_clarify_has_substantive_value(destination_message, 12)
-                )
-            )
-            if not visible_proposal_ready:
-                return json.dumps({
-                    "error": (
-                        "CAMPAIGN_CLARIFY_BLOCKED: Before asking for campaign approval, "
-                        "show the exact visible proposal in normal conversation: the full "
-                        "primary text/copy, a distinct ad title, the destination/WhatsApp "
-                        "message, and deliver the actual creative. Do not ask 'approve and "
-                        "create' yet, do not hide the copy behind buttons, and do not infer "
-                        "approval from an older campaign. After the buyer sees it, ask for "
-                        "their natural correction or approval."
-                    )
-                }, ensure_ascii=False)
-        return original(question=question, choices=choices, callback=callback)
-
-    guarded._admira_campaign_clarify_gate = True
-    guarded._admira_original_clarify_tool = original
-    clarify_module.clarify_tool = guarded
-    return True
-
-
 def _admira_campaign_verbatim_source(messages, max_user_turns=3, max_chars=20_000):
     """Keep the buyer's recent campaign words authoritative over a summary.
 
@@ -3513,8 +3803,22 @@ def _patch_nvidia_request_gate():
             # the natural-language interpretation themselves. Backend schemas,
             # authorization and result verification remain deterministic.
             api_kwargs = _remove_hermes_personal_state_tools(api_kwargs)
+            if isinstance(api_kwargs, dict) and isinstance(api_kwargs.get("messages"), list):
+                api_kwargs = dict(api_kwargs)
+                api_kwargs["messages"] = _admira_compact_consumed_observations(
+                    api_kwargs["messages"]
+                )
             if is_nvidia:
                 api_kwargs = _admira_route_request_tools(api_kwargs)
+            strategic_state = _admira_strategic_profile_state()
+            api_kwargs = _admira_route_tools_by_product_state(
+                api_kwargs,
+                state=strategic_state,
+            )
+            api_kwargs = _admira_attach_compiled_procedure(
+                api_kwargs,
+                state=strategic_state,
+            )
             api_kwargs = _admira_gemini_safe_request(api_kwargs, agent)
             _record_nvidia_hook_diagnostic(
                 agent,
@@ -3854,27 +4158,98 @@ def _has_confirmed_durable_save(response):
         if key in response:
             sources.append(response.get(key))
     sources.extend(_current_turn_messages(response.get("messages")))
+    def mappings(value):
+        if isinstance(value, dict):
+            yield value
+            for item in value.values():
+                yield from mappings(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                yield from mappings(item)
+        elif isinstance(value, str):
+            candidate = value.strip()
+            if candidate.startswith(("{", "[")):
+                try:
+                    yield from mappings(json.loads(candidate))
+                except (TypeError, ValueError):
+                    pass
+
     try:
-        text = json.dumps(sources, ensure_ascii=False, default=str).lower()
+        text = json.dumps(sources, ensure_ascii=False, default=str).lower().replace('\\"', '"')
     except (TypeError, ValueError):
         text = str(sources).lower()
-    # Tool content may itself be a JSON string inside the outer response JSON.
-    text = text.replace('\\"', '"')
     has_save_tool = any(marker in text for marker in ADMIRA_DURABLE_TOOL_MARKERS)
-    has_success = any(
-        marker in text
-        for marker in (
-            '"saved": true',
-            '"saved":true',
-            '"ok": true',
-            '"ok":true',
-            '"executed": true',
-            '"executed":true',
-            '"status": "completed"',
-            '"status":"completed"',
-        )
+    authoritative_save = any(
+        item.get("saved") is True
+        and item.get("draft") is not True
+        and item.get("blocked") is not True
+        for source in sources
+        for item in mappings(source)
     )
-    return has_save_tool and has_success
+    return has_save_tool and authoritative_save
+
+
+def _guard_authoritative_image_outcome(response):
+    """Translate the current synchronous Image receipt into buyer truth.
+
+    Image generation has no queued state. A blocked call cannot truthfully be
+    described as sent, processing, or about to appear, and a successful call
+    is not deliverable unless it contains a real generated media path.
+    """
+    if not isinstance(response, dict):
+        return response
+    sources = list(_current_turn_messages(response.get("messages")))
+    if not sources:
+        for key in ("tool_result", "tool_results", "result", "results", "mcp_result", "mcp_results"):
+            if key in response:
+                sources.append(response.get(key))
+    try:
+        evidence = json.dumps(sources, ensure_ascii=False, default=str).replace('\\"', '"')
+    except (TypeError, ValueError):
+        evidence = str(sources)
+    lowered = evidence.lower()
+    if "codex_image_generate" not in lowered:
+        return response
+    blocked = any(marker in lowered for marker in ('"blocked": true', '"blocked":true', '"executed": false', '"executed":false'))
+    failed = blocked or any(marker in lowered for marker in ('"ok": false', '"ok":false'))
+    if failed:
+        error_match = re.search(r'"(?:error|reply)"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', evidence)
+        detail = ""
+        if error_match:
+            try:
+                detail = json.loads(f'"{error_match.group(1)}"').strip()
+            except (TypeError, ValueError):
+                detail = error_match.group(1).strip()
+        language = str(os.environ.get("ADMIRA_GATEWAY_LANGUAGE") or "es").lower()
+        prefix = (
+            "No image was generated or sent in this attempt."
+            if language.startswith("en")
+            else "No se generó ni se envió ninguna imagen en este intento."
+        )
+        response["final_response"] = f"{prefix} {detail}".strip()
+        return response
+    paths = []
+    for source in _current_generated_media_sources(response):
+        _collect_generated_media_paths(source, paths=paths)
+    if not paths:
+        language = str(os.environ.get("ADMIRA_GATEWAY_LANGUAGE") or "es").lower()
+        response["final_response"] = (
+            "The image tool did not return a verifiable file, so I will not report it as generated or sent."
+            if language.startswith("en")
+            else "La herramienta de imagen no devolvió un archivo verificable, así que no la reportaré como generada ni enviada."
+        )
+    return response
+
+
+def _apply_authoritative_tool_result_guards(response):
+    """Always enforce tool truth, including in free-form conversation mode."""
+    result = response
+    for guard in (_guard_unconfirmed_persistence_claim, _guard_authoritative_image_outcome):
+        try:
+            result = guard(result)
+        except Exception:
+            pass
+    return result
 
 
 def _guard_unconfirmed_persistence_claim(response):
@@ -4059,70 +4434,6 @@ def guard_unverified_campaign_edit_text(value, language="es", pending_edit=None)
     )
 
 
-def _meta_oauth_connection_path():
-    configured = str(os.environ.get("ADMIRA_META_OAUTH_CONNECTION_FILE") or "").strip()
-    if configured:
-        return Path(configured).expanduser()
-    root = str(os.environ.get("ADMIRA_PRODUCT_ROOT") or "/app").strip()
-    return Path(root).expanduser() / "dashboard" / "data" / "meta_oauth_connection.json"
-
-
-def _persisted_meta_workspace_selected():
-    path = _meta_oauth_connection_path()
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):
-        return False
-    if not isinstance(payload, dict):
-        return False
-    return bool(
-        str(payload.get("active_ad_account_id") or "").strip()
-        and str(payload.get("active_page_id") or "").strip()
-    )
-
-
-def _guard_unconfirmed_workspace_selection_claim(response):
-    """Never let prose impersonate a persistent OAuth workspace selection."""
-    if not isinstance(response, dict):
-        return response
-    final_response = str(response.get("final_response") or "")
-    if not final_response or not ADMIRA_WORKSPACE_SELECTION_CLAIM_RE.search(final_response):
-        return response
-    # Describing the already-active workspace is not a new persistence claim.
-    # The live OAuth store is authoritative across /reset and model changes.
-    # Continue requiring same-turn tool evidence for phrases such as "we just
-    # selected/saved it", but preserve truthful descriptions such as "the
-    # currently connected Page is ..." when both active IDs are persisted.
-    if (
-        ADMIRA_EXISTING_WORKSPACE_DESCRIPTION_RE.search(final_response)
-        and not ADMIRA_NEW_WORKSPACE_SELECTION_RE.search(final_response)
-        and _persisted_meta_workspace_selected()
-    ):
-        return response
-    sources = list(_current_turn_messages(response.get("messages")))
-    if not sources:
-        for key in ("tool_result", "tool_results", "result", "results", "mcp_result", "mcp_results"):
-            if key in response:
-                sources.append(response.get(key))
-    try:
-        evidence = json.dumps(sources, ensure_ascii=False, default=str).lower().replace('\\"', '"')
-    except (TypeError, ValueError):
-        evidence = str(sources).lower()
-    selected = (
-        ("select_meta_oauth_workspace" in evidence or "admira_select_meta_oauth_workspace" in evidence)
-        and ('"selected": true' in evidence or '"selected":true' in evidence)
-    )
-    if selected:
-        return response
-    language = str(os.environ.get("ADMIRA_GATEWAY_LANGUAGE") or "es").lower()
-    response["final_response"] = (
-        "That ad account and Page were not saved yet. I must confirm the official Meta workspace selection before continuing."
-        if language.startswith("en")
-        else "Esa cuenta publicitaria y esa Página todavía no quedaron guardadas. Debo confirmar la selección oficial de Meta antes de continuar."
-    )
-    return response
-
-
 def _guard_unconfirmed_image_unavailable_claim(response):
     """A remembered/stale image failure must never masquerade as live quota."""
     if not isinstance(response, dict):
@@ -4222,7 +4533,6 @@ def _apply_conversational_output_guards(response):
     result = response
     for guard in (
         _guard_unconfirmed_persistence_claim,
-        _guard_unconfirmed_workspace_selection_claim,
         _guard_unconfirmed_image_unavailable_claim,
         _guard_unconfirmed_campaign_claim,
         _guard_unconfirmed_campaign_edit_claim,
@@ -4778,6 +5088,7 @@ def _patch_gateway_generated_media_delivery():
             }
         else:
             result = await original(self, *tuple(call_args), **kwargs)
+        result = _apply_authoritative_tool_result_guards(result)
         result = _apply_conversational_output_guards(result)
         try:
             result = _normalize_gateway_outbound_response(result)
@@ -4790,6 +5101,21 @@ def _patch_gateway_generated_media_delivery():
             # media afterward guarantees the native directive survives at the
             # end of the buyer-visible answer.
             result = _append_generated_media_attachments(result)
+        except Exception:
+            pass
+        try:
+            visible_text = (
+                result.get("final_response")
+                or result.get("response")
+                or result.get("message")
+                or ""
+                if isinstance(result, dict)
+                else result
+            )
+            _record_strategic_review_presented(
+                session_id=session_key,
+                assistant_text=visible_text,
+            )
         except Exception:
             pass
         try:
@@ -4850,11 +5176,6 @@ def _patch_gateway_inbound_video_frames():
                 result = _append_live_meta_context(result, live_context)
             except Exception:
                 result = _append_live_meta_context(result, {"ok": False, "reason": "live_meta_sync_failed"})
-        if not _admira_freeform_agent_mode():
-            try:
-                result = _append_turn_execution_contract(result)
-            except Exception:
-                pass
         try:
             _append_gateway_turn("user", result)
         except Exception:
@@ -5079,6 +5400,74 @@ def _admira_dashboard_module():
     return module
 
 
+def _record_trusted_buyer_turn(
+    *, chat_id, session_id, message_sequence, raw_message, transport="telegram"
+):
+    """Hand one authorized inbound buyer turn to the selection authorizer.
+
+    The raw message is captured at the transport boundary, before model
+    inference, so a model-authored paraphrase can never become evidence for a
+    Meta account/Page selection.  Older dashboards do not expose the hook;
+    during a rolling update they continue normally without weakening the
+    backend authorization required by the selection tool.
+    """
+    raw = raw_message if isinstance(raw_message, str) else str(raw_message or "")
+    session = str(session_id or "").strip()
+    chat = str(chat_id or "").strip()
+    try:
+        sequence = int(message_sequence)
+    except (TypeError, ValueError):
+        return False
+    if not raw or not chat or not session or sequence < 0:
+        return False
+    try:
+        dashboard = _admira_dashboard_module()
+        recorder = getattr(dashboard, "record_trusted_buyer_turn", None)
+        if not callable(recorder):
+            return False
+        recorder(
+            chat_id=chat,
+            session_id=session,
+            message_sequence=sequence,
+            raw_message=raw,
+            transport=transport,
+        )
+        return True
+    except Exception:
+        # Selection remains fail-closed in the backend if evidence could not
+        # be recorded.  A recorder problem must not silence ordinary chat.
+        try:
+            dashboard = _admira_dashboard_module()
+            clearer = getattr(dashboard, "clear_trusted_buyer_turn", None)
+            if callable(clearer):
+                clearer()
+        except Exception:
+            pass
+        return False
+
+
+def _record_strategic_review_presented(*, session_id, assistant_text, chat_id=""):
+    """Record a fully covered finalized answer; ordinary replies are ignored."""
+    try:
+        dashboard = _admira_dashboard_module()
+        recorder = getattr(dashboard, "record_strategic_review_presented", None)
+        if not callable(recorder):
+            return False
+        result = recorder(
+            session_id=str(session_id or ""),
+            assistant_text=str(assistant_text or ""),
+            chat_id=str(chat_id or ""),
+        )
+        return bool(isinstance(result, dict) and result.get("recorded"))
+    except Exception:
+        return False
+
+
+def _record_trusted_telegram_buyer_turn(**kwargs):
+    """Backward-compatible transport-named alias for focused runtime tests."""
+    return _record_trusted_buyer_turn(**kwargs)
+
+
 def _telegram_adapter_classes():
     classes = []
     for module_name in (
@@ -5117,6 +5506,16 @@ def _patch_telegram_runtime_chat_capture():
                     chat_id = getattr(chat, "id", None)
                     chat_type = "dm" if str(getattr(chat, "type", "") or "").lower() == "private" else "group"
                     pending_key = f"agent:main:telegram:{chat_type}:{chat_id}"
+                    message_sequence = getattr(message, "message_id", None)
+                    if message_sequence is None:
+                        message_sequence = getattr(update, "update_id", None)
+                    _record_trusted_buyer_turn(
+                        chat_id=chat_id,
+                        session_id=pending_key,
+                        message_sequence=message_sequence,
+                        raw_message=incoming,
+                        transport="telegram",
+                    )
                     if not _admira_freeform_agent_mode() and _chatgpt_connection_request(incoming):
                         result = _automatic_codex_recovery(wait_seconds=15, action="switch")
                         if result.get("url") and result.get("code"):
@@ -5139,12 +5538,38 @@ def _patch_telegram_runtime_chat_capture():
     return patched_any
 
 
-def _patch_mcp_primary_skill_gate():
-    """Require the mapped operating skill before any public Admira MCP runs.
+def _obsolete_admira_skill_unlock_block(tool_name, message):
+    """Identify only the retired read-SKILL-then-retry MCP ceremony."""
+    name = str(tool_name or "").strip().lower()
+    if not name.startswith(("mcp_admira_", "admira_")):
+        return False
+    text = re.sub(r"\s+", " ", str(message or "")).strip().lower()
+    if not text:
+        return False
+    mentions_skill = "skill.md" in text or "read skill" in text or "leer skill" in text
+    requires_unlock = any(marker in text for marker in (
+        "before calling this mcp",
+        "before calling the mcp",
+        "before retrying",
+        "then retry",
+        "retry the tool",
+        "retry this tool",
+        "read the required skill",
+        "read that primary skill",
+        "lee el skill requerido",
+    ))
+    return mentions_skill and requires_unlock
 
-    This gate is independent of buyer wording. It validates the agent's chosen
-    internal procedure, then lets the model reconsider the call after reading
-    the authoritative skill.
+
+def _patch_mcp_primary_skill_gate():
+    """Preserve Hermes middleware without a failed-MCP/read/retry ceremony.
+
+    Relevant procedure guidance is compiled into each provider request before
+    inference.  Blocking a valid MCP merely to make the model call ``read_file``
+    added two inference cycles per domain and copied a large skill into context.
+    Product-state eligibility, tool schemas, and backend authorization remain
+    authoritative; the original Hermes middleware may still block for its own
+    independent reasons.
     """
     try:
         from hermes_cli import plugins
@@ -5164,7 +5589,7 @@ def _patch_mcp_primary_skill_gate():
         api_request_id="",
         middleware_trace=None,
     ):
-        existing = original(
+        block_message = original(
             tool_name,
             args,
             task_id=task_id,
@@ -5174,24 +5599,12 @@ def _patch_mcp_primary_skill_gate():
             api_request_id=api_request_id,
             middleware_trace=middleware_trace,
         )
-        if existing:
-            return existing
-        name = _normalized_admira_mcp_name(tool_name)
-        if name not in MCP_PRIMARY_SKILL:
+        if _obsolete_admira_skill_unlock_block(tool_name, block_message):
             return None
-        skill_path = skill_path_for_mcp(name)
-        if _session_has_read_primary_skill(session_id, skill_path):
-            return None
-        return (
-            "INTERNAL PROCEDURE REQUIRED — do not show this message to the buyer. "
-            f"Before reconsidering `{tool_name}`, call `read_file` with path "
-            f"`{skill_path}` and read the complete skill. Then re-evaluate whether "
-            "the buyer actually requested this outcome. Reading a skill is not "
-            "execution authorization. Do not retry this MCP unless the skill's "
-            "entry condition and the buyer's conversational intent both apply."
-        )
+        return block_message
 
     patched._admira_primary_skill_gate = True
+    patched._admira_compiled_procedure_gate = True
     patched._admira_original = original
     plugins.get_pre_tool_call_block_message = patched
     return True
@@ -5223,13 +5636,11 @@ def _patch_product_prompt_guidance():
         "request an executable outcome and its required facts are ready, use the "
         "official tool and report only verified results.\n"
         "For a new campaign, the creative and ad wording are a joint review with "
-        "the buyer. Never call the native clarification tool with a generic approval "
-        "card such as 'approve this copy and create the campaign' unless the "
-        "visible question already contains the exact full primary text/copy, a "
-        "distinct title, and the exact destination or WhatsApp message, and the "
-        "creative has already been delivered. If any of those are missing, send "
-        "a normal readable proposal first; buttons are not a substitute for "
-        "showing the copy."
+        "the buyer. Conduct that review entirely through ordinary conversational "
+        "text: show the exact full primary text/copy, a distinct title, the exact "
+        "destination or WhatsApp message, and the delivered creative. Never call "
+        "the native clarification tool or create a question/approval/selection card; "
+        "interpret the buyer's free-form response naturally."
     )
     prompt_builder.TASK_COMPLETION_GUIDANCE = (
         "# Complete the buyer's actual request\n"
@@ -5316,6 +5727,195 @@ def _write_telegram_update_install_request(payload):
         return False
 
 
+def _patch_telegram_complete_reset_command_menu():
+    """Keep Admira's destructive reset visible without editing Hermes itself."""
+    try:
+        import hermes_cli.commands as command_registry
+    except ImportError:
+        return False
+    original = getattr(command_registry, "telegram_menu_commands", None)
+    if not callable(original):
+        return False
+    if getattr(original, "_admira_complete_reset_menu_patch", False):
+        return True
+
+    def patched(max_commands=100):
+        commands, hidden = original(max_commands=max_commands)
+        name = COMPLETE_RESET_COMMAND.lstrip("/")
+        item = (name, "Reinstalar Admira IA y borrar los datos guardados")
+        filtered = [entry for entry in commands if entry[0] != name]
+        combined = [item, *filtered]
+        limit = max(1, int(max_commands or 100))
+        trimmed = max(0, len(combined) - limit)
+        return combined[:limit], int(hidden or 0) + trimmed
+
+    patched._admira_complete_reset_menu_patch = True
+    patched._admira_original_telegram_menu_commands = original
+    command_registry.telegram_menu_commands = patched
+    return True
+
+
+def _complete_reset_message_identity(message):
+    chat = getattr(message, "chat", None)
+    sender = getattr(message, "from_user", None)
+    chat_id = getattr(message, "chat_id", None) or getattr(chat, "id", None)
+    user_id = getattr(sender, "id", None)
+    return str(chat_id or ""), str(user_id or "")
+
+
+def _patch_telegram_complete_reset_command():
+    """Intercept the reset command and exact confirmation before any LLM turn."""
+    patched_any = False
+    command_pattern = re.compile(r"^/resetear_completamente(?:@[A-Za-z0-9_]+)?\s*$", re.IGNORECASE)
+    for adapter_class in _telegram_adapter_classes():
+        original_command = getattr(adapter_class, "_handle_command", None)
+        original_text = getattr(adapter_class, "_handle_text_message", None)
+        if not callable(original_command) or not callable(original_text):
+            continue
+        if getattr(original_command, "_admira_complete_reset_command_patch", False):
+            patched_any = True
+            continue
+
+        async def patched_command(self, update, context, _original=original_command):
+            message = self._effective_update_message(update)
+            text = str(getattr(message, "text", "") or "") if message is not None else ""
+            if message is None or not text or not self._is_user_authorized_from_message(message):
+                return await _original(self, update, context)
+            chat_id, user_id = _complete_reset_message_identity(message)
+            paths = reset_control_paths()
+            if not command_pattern.fullmatch(text):
+                cancelled = consume_reset_confirmation(
+                    paths["confirmation"], paths["request"], text, chat_id, user_id
+                )
+                if not cancelled.get("matched"):
+                    return await _original(self, update, context)
+                _record_telegram_runtime_chat(chat_id, user_id)
+                if cancelled.get("status") == "expired":
+                    await message.reply_text(
+                        "La confirmación venció y no borré nada. Usa /resetear_completamente para iniciar de nuevo."
+                    )
+                else:
+                    await message.reply_text(
+                        "No reinicié Admira IA porque la respuesta no coincidió exactamente. La solicitud quedó cancelada."
+                    )
+                return None
+            _record_telegram_runtime_chat(chat_id, user_id)
+            pending = begin_reset_confirmation(paths["confirmation"], paths["request"], chat_id, user_id)
+            if pending.get("status") == "already_running":
+                await message.reply_text("Ya hay un reinicio completo en curso. Espera a que Admira IA vuelva a conectarse.")
+                return None
+            minutes = max(1, COMPLETE_RESET_CONFIRMATION_TTL_SECONDS // 60)
+            await message.reply_text(
+                "⚠️ Este reinicio es permanente. Borrará la conexión de Facebook/Meta, el negocio, la memoria, "
+                "sesiones, briefs, creativos locales y cronjobs. No borrará las campañas que ya existen dentro de Meta.\n\n"
+                "Conservaré la licencia, este Telegram, el modelo principal conectado y ChatGPT/Codex para Image 2. "
+                "Después descargaré y reinstalaré la última versión estable oficial.\n\n"
+                f"Para confirmar, responde exactamente dentro de {minutes} minutos:\n{COMPLETE_RESET_CONFIRMATION_PHRASE}\n\n"
+                "Cualquier otra respuesta cancelará el reinicio."
+            )
+            return None
+
+        async def patched_text(self, update, context, _original=original_text):
+            message = self._effective_update_message(update)
+            if message is None or not getattr(message, "text", None):
+                return await _original(self, update, context)
+            if not self._is_user_authorized_from_message(message):
+                return await _original(self, update, context)
+            chat_id, user_id = _complete_reset_message_identity(message)
+            paths = reset_control_paths()
+            result = consume_reset_confirmation(
+                paths["confirmation"], paths["request"], message.text, chat_id, user_id
+            )
+            if not result.get("matched"):
+                return await _original(self, update, context)
+            _record_telegram_runtime_chat(chat_id, user_id)
+            if result.get("status") == "confirmed":
+                await message.reply_text(
+                    "✅ Confirmación válida. Prepararé la última versión estable y reiniciaré Admira IA desde cero. "
+                    "El bot se desconectará unos minutos y volverá a avisarte cuando termine."
+                )
+                return None
+            if result.get("status") == "expired":
+                await message.reply_text(
+                    "La confirmación venció y no borré nada. Usa /resetear_completamente para iniciar de nuevo."
+                )
+                return None
+            await message.reply_text(
+                "No reinicié Admira IA porque la respuesta no coincidió exactamente. La solicitud quedó cancelada."
+            )
+            return None
+
+        patched_command._admira_complete_reset_command_patch = True
+        patched_command._admira_original_handle_command = original_command
+        patched_text._admira_complete_reset_text_patch = True
+        patched_text._admira_original_handle_text_message = original_text
+        adapter_class._handle_command = patched_command
+        adapter_class._handle_text_message = patched_text
+        patched_any = True
+    return patched_any
+
+
+def _patch_gateway_complete_reset_command():
+    """Handle complete reset before Hermes rejects unknown slash commands."""
+    try:
+        import gateway.run as gateway_run
+    except Exception:
+        return False
+    runner = getattr(gateway_run, "GatewayRunner", None)
+    original = getattr(runner, "_handle_message", None) if runner is not None else None
+    if not callable(original):
+        return False
+    if getattr(original, "_admira_complete_reset_gateway_patch", False):
+        return True
+
+    command_pattern = re.compile(r"^/resetear_completamente(?:@[A-Za-z0-9_]+)?\s*$", re.IGNORECASE)
+
+    async def patched(self, event, _original=original):
+        text = str(getattr(event, "text", "") or "").strip()
+        source = getattr(event, "source", None)
+        platform = str(getattr(getattr(source, "platform", None), "value", getattr(source, "platform", "")) or "").lower()
+        if platform != "telegram":
+            return await _original(self, event)
+        chat_id = str(getattr(source, "chat_id", "") or "")
+        user_id = str(getattr(source, "user_id", "") or "")
+        paths = reset_control_paths()
+
+        if command_pattern.fullmatch(text):
+            _record_telegram_runtime_chat(chat_id, user_id)
+            pending = begin_reset_confirmation(paths["confirmation"], paths["request"], chat_id, user_id)
+            if pending.get("status") == "already_running":
+                return "Ya hay un reinicio completo en curso. Espera a que Admira IA vuelva a conectarse."
+            minutes = max(1, COMPLETE_RESET_CONFIRMATION_TTL_SECONDS // 60)
+            return (
+                "⚠️ Este reinicio es permanente. Borrará la conexión de Facebook/Meta, el negocio, la memoria, "
+                "sesiones, briefs, creativos locales y cronjobs. No borrará las campañas que ya existen dentro de Meta.\n\n"
+                "Conservaré la licencia, este Telegram, el modelo principal conectado y ChatGPT/Codex para Image 2. "
+                "Después descargaré y reinstalaré la última versión estable oficial.\n\n"
+                f"Para confirmar, responde exactamente dentro de {minutes} minutos:\n{COMPLETE_RESET_CONFIRMATION_PHRASE}\n\n"
+                "Cualquier otra respuesta cancelará el reinicio."
+            )
+
+        result = consume_reset_confirmation(
+            paths["confirmation"], paths["request"], text, chat_id, user_id
+        )
+        if not result.get("matched"):
+            return await _original(self, event)
+        _record_telegram_runtime_chat(chat_id, user_id)
+        if result.get("status") == "confirmed":
+            return (
+                "✅ Confirmación válida. Prepararé la última versión estable y reiniciaré Admira IA desde cero. "
+                "El bot se desconectará unos minutos y volverá a avisarte cuando termine."
+            )
+        if result.get("status") == "expired":
+            return "La confirmación venció y no borré nada. Usa /resetear_completamente para iniciar de nuevo."
+        return "No reinicié Admira IA porque la respuesta no coincidió exactamente. La solicitud quedó cancelada."
+
+    patched._admira_complete_reset_gateway_patch = True
+    patched._admira_original_handle_message = original
+    runner._handle_message = patched
+    return True
+
+
 def _patch_telegram_update_install_callback():
     """Route Admira's install button through Hermes' *existing* callback loop.
 
@@ -5351,37 +5951,11 @@ def _patch_telegram_update_install_callback():
                     await query.answer(text="No tienes permiso para elegir esta cuenta.")
                     return
                 _record_telegram_runtime_chat(chat_id, user_id)
-                try:
-                    dashboard = _admira_dashboard_module()
-                    kind, selected_id = data.split(":", 1)
-                    if kind == "meta_account":
-                        result = dashboard.social_oauth_select_account(selected_id)
-                        pages = result.get("pages") or []
-                        adapter_module = sys.modules.get(adapter_class.__module__)
-                        button = getattr(adapter_module, "InlineKeyboardButton", None)
-                        markup = getattr(adapter_module, "InlineKeyboardMarkup", None)
-                        keyboard = []
-                        if button and markup:
-                            for page in pages[:25]:
-                                page_id = str(page.get("id") or "").strip()
-                                if page_id:
-                                    keyboard.append([button(str(page.get("name") or page_id)[:48], callback_data=f"meta_page:{page_id}")])
-                        if not keyboard:
-                            raise ValueError("Facebook no devolvió una Página publicable para esta cuenta.")
-                        await query.answer(text="Cuenta seleccionada.")
-                        await message.reply_text("Ahora elige la Página de Facebook que usarás con esta cuenta.", reply_markup=markup(keyboard))
-                        return
-                    result = dashboard.social_oauth_select_page(selected_id)
-                    await query.answer(text="Página seleccionada.")
-                    account = result.get("account") or {}
-                    page = result.get("page") or {}
-                    await message.reply_text(
-                        f"Facebook quedó conectado: {account.get('name') or 'cuenta publicitaria'} + {page.get('name') or 'Página'}. Ya podemos continuar con la marca y la estrategia.",
-                    )
-                    return
-                except Exception:
-                    await query.answer(text="No pude guardar esa selección. Vuelve a conectar Facebook e inténtalo otra vez.")
-                    return
+                await query.answer(text="Este selector anterior fue retirado.")
+                await message.reply_text(
+                    "Ese selector anterior ya no se usa. Escríbeme en este chat qué cuenta publicitaria y qué Página quieres usar; te mostraré las opciones y guardaré la pareja por texto."
+                )
+                return
             if not data.startswith("au:"):
                 return await _original(self, update, context)
             version = data.split(":", 1)[1].strip()
@@ -5445,9 +6019,9 @@ def _patch_telegram_update_install_callback():
 
 
 def apply():
+    compression_patched = _patch_model_aware_compression_threshold()
     product_prompt_patched = _patch_product_prompt_guidance()
     chatgpt_slash_patched = _patch_gateway_chatgpt_slash_commands()
-    campaign_clarify_patched = _patch_campaign_clarify_gate()
     rate_limit_patched = _patch_gateway_rate_limit_reply()
     credential_pool_patched = _patch_credential_pool_failure_assignment()
     same_nvidia_guard_patched = _patch_same_nvidia_model_failover_guard()
@@ -5464,5 +6038,8 @@ def apply():
     cron_run_patched = _patch_cron_job_execution()
     context_patched = _patch_context_truncation_notifications()
     telegram_chat_capture_patched = _patch_telegram_runtime_chat_capture()
+    telegram_reset_menu_patched = _patch_telegram_complete_reset_command_menu()
+    telegram_complete_reset_patched = _patch_telegram_complete_reset_command()
+    gateway_complete_reset_patched = _patch_gateway_complete_reset_command()
     telegram_update_patched = _patch_telegram_update_install_callback()
-    return bool(product_prompt_patched or chatgpt_slash_patched or campaign_clarify_patched or rate_limit_patched or credential_pool_patched or same_nvidia_guard_patched or nvidia_gate_patched or nvidia_title_patched or mcp_result_patched or mcp_skill_gate_patched or minimax_patched or runtime_patched or media_patched or video_patched or reset_scope_patched or cron_create_patched or cron_run_patched or context_patched or telegram_chat_capture_patched or telegram_update_patched)
+    return bool(compression_patched or product_prompt_patched or chatgpt_slash_patched or rate_limit_patched or credential_pool_patched or same_nvidia_guard_patched or nvidia_gate_patched or nvidia_title_patched or mcp_result_patched or mcp_skill_gate_patched or minimax_patched or runtime_patched or media_patched or video_patched or reset_scope_patched or cron_create_patched or cron_run_patched or context_patched or telegram_chat_capture_patched or telegram_reset_menu_patched or telegram_complete_reset_patched or gateway_complete_reset_patched or telegram_update_patched)

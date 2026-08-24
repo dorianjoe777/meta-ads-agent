@@ -65,6 +65,8 @@ If the buyer sends a logo, call `mcp_admira_save_brand_memory` while that image 
 
 If the buyer asks to create a new logo, treat it as `purpose: "logo"`, present options, and wait for explicit approval. Only after approval save that exact generated file as the official logo. Never silently replace an existing official logo.
 
+Logo exploration belongs inside onboarding: it does not require the full strategic profile or its final summary to be complete. Once the exact brand name, business/offer, palette, visual style and tone are known, an explicit request such as “creemos el logo” should generate and attach the real candidate now—not continue asking unrelated audience, location, pricing or margin questions. Before suggesting organic content or campaigns, proactively check whether an official logo exists and ask naturally whether the buyer wants to upload one or create it together.
+
 ## 2. Product/offer discovery
 
 Use `mcp_admira_save_product_memory`. Learn the product, price, inclusions, audience, pains, desires, objections, proof, approved claims, and what should or should not appear visually.

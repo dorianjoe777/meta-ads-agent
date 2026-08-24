@@ -24,6 +24,34 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
     def _admira_tool(name):
         return {"type": "function", "function": {"name": f"mcp_admira_{name}", "description": name}}
 
+    def test_session_selected_codex_models_do_not_inherit_gemini_compression(self):
+        from agent import auxiliary_client
+
+        self.assertTrue(admira_hermes_runtime_patch._patch_model_aware_compression_threshold())
+        threshold = auxiliary_client._compression_threshold_for_model
+        self.assertEqual(threshold("gpt-5.6-luna", "openai-codex"), 0.85)
+        self.assertEqual(threshold("gpt-5.6-terra", "openai_codex"), 0.85)
+        self.assertNotEqual(threshold("gemini-3.5-flash-lite", "gemini"), 0.85)
+
+    def test_assistant_campaign_question_is_not_persisted_as_buyer_decision(self):
+        memory = {
+            "onboarding_plan": "",
+            "brand_guides": {"general_branding": {"name": "Clínica"}, "ad_briefs": []},
+            "business_profile": {"business_name": "Clínica"},
+            "recent_history": {},
+        }
+        latest = {
+            "selected_date": "2026-08-23",
+            "items": [
+                {"role": "user", "content": "hola"},
+                {"role": "agent", "content": "¿Damos de alta la campaña con 40.000 COP?"},
+            ],
+        }
+        workflow = hermes_bridge.active_workflow_payload(memory, latest)
+        self.assertIn("plan comercial concreto", workflow["next_step"])
+        self.assertIn("never buyer decisions", workflow["resume_instruction"])
+        self.assertNotIn("Responder la última pregunta", workflow["next_step"])
+
     def test_freeform_agent_mode_exposes_full_catalog_without_language_routing(self):
         previous = admira_hermes_runtime_patch.os.environ.get("ADMIRA_FREEFORM_AGENT_MODE")
         admira_hermes_runtime_patch.os.environ["ADMIRA_FREEFORM_AGENT_MODE"] = "true"
@@ -249,64 +277,46 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
             else:
                 admira_hermes_runtime_patch.os.environ["ADMIRA_PRODUCT_ROOT"] = original_root
 
-    def test_workspace_selection_claim_requires_current_tool_evidence(self):
-        original_persisted = admira_hermes_runtime_patch._persisted_meta_workspace_selected
-        original_connection_file = admira_hermes_runtime_patch.os.environ.get("ADMIRA_META_OAUTH_CONNECTION_FILE")
-        original_root = admira_hermes_runtime_patch.os.environ.get("ADMIRA_PRODUCT_ROOT")
+    def test_workspace_selection_prose_is_not_rewritten_by_a_transcript_guard(self):
         response = {
             "final_response": "Hemos conectado la cuenta publicitaria SX con la Página seleccionada.",
             "messages": [
                 {"role": "user", "content": "Sí"},
-                {"role": "assistant", "content": "Hemos conectado la cuenta publicitaria SX con la Página seleccionada."},
+                {
+                    "role": "tool",
+                    "name": "mcp_admira_select_meta_oauth_workspace",
+                    "content": (
+                        '<untrusted_tool_result>{"result": '
+                        '"{\\"selected\\": true, \\"verified_persisted\\": true}"}'
+                        "</untrusted_tool_result>"
+                    ),
+                },
+                {
+                    "role": "assistant",
+                    "content": "Hemos conectado la cuenta publicitaria SX con la Página seleccionada.",
+                },
             ],
         }
-        try:
-            admira_hermes_runtime_patch.os.environ.pop("ADMIRA_META_OAUTH_CONNECTION_FILE", None)
-            admira_hermes_runtime_patch.os.environ.pop("ADMIRA_PRODUCT_ROOT", None)
-            self.assertEqual(
-                admira_hermes_runtime_patch._meta_oauth_connection_path(),
-                Path("/app/dashboard/data/meta_oauth_connection.json"),
-            )
-            admira_hermes_runtime_patch._persisted_meta_workspace_selected = lambda: True
-            guarded = admira_hermes_runtime_patch._guard_unconfirmed_workspace_selection_claim(response)
-            self.assertIn("todavía no quedaron guardadas", guarded["final_response"])
+        guarded = admira_hermes_runtime_patch._apply_conversational_output_guards(response)
+        self.assertIs(guarded, response)
+        self.assertIn("Hemos conectado", guarded["final_response"])
+        self.assertNotIn("todavía no quedaron guardadas", guarded["final_response"])
+        self.assertFalse(
+            hasattr(admira_hermes_runtime_patch, "_guard_unconfirmed_workspace_selection_claim")
+        )
 
-            verified = {
-                "final_response": "Hemos conectado la cuenta publicitaria SX con la Página seleccionada.",
-                "messages": [
-                    {"role": "user", "content": "Sí"},
-                    {"role": "tool", "name": "mcp_admira_select_meta_oauth_workspace", "content": '{"selected": true}'},
-                    {"role": "assistant", "content": "Hemos conectado la cuenta publicitaria SX con la Página seleccionada."},
-                ],
-            }
-            kept = admira_hermes_runtime_patch._guard_unconfirmed_workspace_selection_claim(verified)
-            self.assertIn("Hemos conectado", kept["final_response"])
+    def test_native_clarify_toolset_is_disabled_and_legacy_gate_is_removed(self):
+        source = Path(hermes_gateway.__file__).read_text(encoding="utf-8")
+        bridge_source = Path(hermes_bridge.__file__).read_text(encoding="utf-8")
+        runtime_source = Path(admira_hermes_runtime_patch.__file__).read_text(encoding="utf-8")
+        self.assertIn('"    - clarify"', source)
+        self.assertNotIn("clarify_timeout", source)
+        self.assertIn("Never call Hermes' native `clarify` tool", bridge_source)
+        self.assertIn("Never choose the first Page", bridge_source)
+        self.assertIn("`verified_persisted: true`", bridge_source)
+        self.assertNotIn("_patch_campaign_clarify_gate", runtime_source)
 
-            current = {
-                "final_response": "La Página conectada actualmente es E.Q.Perez, no la identidad del anuncio.",
-                "messages": [
-                    {"role": "user", "content": "Listo"},
-                    {"role": "assistant", "content": "La Página conectada actualmente es E.Q.Perez, no la identidad del anuncio."},
-                ],
-            }
-            preserved = admira_hermes_runtime_patch._guard_unconfirmed_workspace_selection_claim(current)
-            self.assertIn("Página conectada actualmente", preserved["final_response"])
-
-            admira_hermes_runtime_patch._persisted_meta_workspace_selected = lambda: False
-            missing = admira_hermes_runtime_patch._guard_unconfirmed_workspace_selection_claim(current)
-            self.assertIn("todavía no quedaron guardadas", missing["final_response"])
-        finally:
-            admira_hermes_runtime_patch._persisted_meta_workspace_selected = original_persisted
-            if original_connection_file is None:
-                admira_hermes_runtime_patch.os.environ.pop("ADMIRA_META_OAUTH_CONNECTION_FILE", None)
-            else:
-                admira_hermes_runtime_patch.os.environ["ADMIRA_META_OAUTH_CONNECTION_FILE"] = original_connection_file
-            if original_root is None:
-                admira_hermes_runtime_patch.os.environ.pop("ADMIRA_PRODUCT_ROOT", None)
-            else:
-                admira_hermes_runtime_patch.os.environ["ADMIRA_PRODUCT_ROOT"] = original_root
-
-    def test_explicit_creative_generation_requires_image_tool(self):
+    def test_explicit_creative_request_keeps_image_tools_without_forcing_one(self):
         for prompt in ("Creemos un creativo", "Debemos crear ese creativo", "Dije creativo"):
             with self.subTest(prompt=prompt):
                 routed = admira_hermes_runtime_patch._admira_route_request_tools({
@@ -316,11 +326,22 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
                         self._admira_tool("codex_creative_plan"),
                     ],
                 })
+                names = {
+                    item.get("function", {}).get("name")
+                    for item in routed.get("tools") or []
+                }
                 self.assertEqual(
-                    routed.get("tool_choice"),
-                    {"type": "function", "function": {"name": "mcp_admira_codex_image_generate"}},
+                    names,
+                    {
+                        "mcp_admira_codex_image_generate",
+                        "mcp_admira_codex_creative_plan",
+                    },
                 )
-                self.assertFalse(routed["parallel_tool_calls"])
+                # Natural-language mode leaves the model free to discuss or
+                # plan an underspecified request.  The provider boundary must
+                # not turn one keyword into a forced mutating tool call.
+                self.assertNotIn("tool_choice", routed)
+                self.assertNotIn("parallel_tool_calls", routed)
 
     def test_campaign_budget_followup_cannot_call_image_until_buyer_requests_it(self):
         original_context = admira_hermes_runtime_patch._admira_latest_campaign_routing_context
@@ -683,13 +704,13 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         messages = [{"role": "user", "content": "En la de WhatsApp bájame el presupuesto a 11 dólares y mantenla pausada"}]
         self.assertTrue(admira_hermes_runtime_patch._admira_campaign_edit_requested(messages))
 
-    def test_cli_query_requires_existing_campaign_edits_to_use_mcp(self):
+    def test_cli_query_preserves_existing_campaign_edit_language_verbatim(self):
         query = hermes_bridge.hermes_user_query(
             {"message": "En la de WhatsApp bájame el presupuesto", "channel": "telegram"},
             {},
         )
-        self.assertIn("debes llamar a mcp_admira_edit_campaign", query)
-        self.assertIn("solicitud original", query)
+        self.assertEqual(query, "En la de WhatsApp bájame el presupuesto")
+        self.assertNotIn("Nota de sistema del producto", query)
 
     def test_campaign_edit_bridge_accepts_natural_brief_alias(self):
         normalized = admira_tool_bridge.normalize_campaign_edit_arguments({
@@ -826,7 +847,10 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
                 process_state["returncode"] = 0
                 completed = dashboard.hermes_browserless_snapshot(config)
                 self.assertEqual(completed.get("status"), "completed")
-                self.assertEqual(delayed_updates[-1]["CODEX_IMAGE_SOURCE"], "main_chatgpt")
+                # Polling is read-only.  The process finalizer owns the single
+                # durable environment update after the replacement login has
+                # actually exited and its credential was imported.
+                self.assertFalse(delayed_updates)
         finally:
             dashboard.hermes_environment = originals["environment"]
             dashboard.browserless_chatgpt_ready = originals["ready"]
@@ -916,8 +940,9 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         }
         self.assertEqual(
             names & admira_hermes_runtime_patch.ADMIRA_CAMPAIGN_CREATOR_TOOLS,
-            {"create_whatsapp_campaign"},
+            set(),
         )
+        self.assertIn("preflight_campaign", names)
         self.assertNotIn("codex_image_generate", names)
         self.assertNotIn("codex_creative_plan", names)
 
@@ -1002,8 +1027,8 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
             else:
                 admira_hermes_runtime_patch.os.environ["ADMIRA_PRODUCT_ROOT"] = original_root
 
-    def test_all_models_receive_one_exact_campaign_destination_contract(self):
-        """Routing is product policy, not an NVIDIA-specific workaround."""
+    def test_initial_campaign_request_resolves_destination_but_stays_in_planning(self):
+        """A destination is understood without exposing premature creation."""
         creator_names = sorted(admira_hermes_runtime_patch.ADMIRA_CAMPAIGN_CREATOR_TOOLS)
         support_names = sorted(admira_hermes_runtime_patch.ADMIRA_CAMPAIGN_CREATION_SUPPORT_TOOLS)
         tools = [self._admira_tool(name) for name in creator_names + support_names]
@@ -1021,6 +1046,12 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         )
         for prompt, expected in cases:
             with self.subTest(expected=expected):
+                self.assertEqual(
+                    admira_hermes_runtime_patch._admira_destination_campaign_creator([
+                        {"role": "user", "content": prompt},
+                    ]),
+                    expected,
+                )
                 routed = admira_hermes_runtime_patch._admira_route_request_tools({
                     "messages": [{"role": "user", "content": prompt}],
                     "tools": tools,
@@ -1032,14 +1063,17 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
                     for tool in routed.get("tools", [])
                 }
                 visible_creators = names & admira_hermes_runtime_patch.ADMIRA_CAMPAIGN_CREATOR_TOOLS
-                self.assertEqual(visible_creators, {expected})
+                self.assertEqual(visible_creators, set())
                 self.assertIn("preflight_campaign", names)
-                self.assertIn("codex_image_generate", names)
+                self.assertNotIn("codex_image_generate", names)
                 self.assertIn("list_recent_creatives", names)
                 self.assertIn("select_meta_oauth_workspace", names)
                 self.assertIn("memory_search", names)
                 self.assertIn("web_search", names)
-                self.assertLessEqual(len(names), len(support_names) + 3)
+                self.assertTrue(any(
+                    "CAMPAIGN STRATEGY-FIRST RULE" in str(message.get("content") or "")
+                    for message in routed.get("messages") or []
+                ))
 
     def test_destination_brief_includes_verbatim_recent_buyer_messages(self):
         messages = [
@@ -1411,7 +1445,7 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
             "model": "z-ai/glm-5.2",
         })
         self.assertEqual(policy["api_max_retries"], 0)
-        self.assertEqual(policy["max_turns"], 10)
+        self.assertEqual(policy["max_turns"], 8)
         self.assertEqual(policy["cron_max_parallel"], 1)
         self.assertEqual(policy["model_context_length"], 80000)
         self.assertEqual(policy["compression_threshold"], 0.45)
@@ -1434,7 +1468,7 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         policy = hermes_bridge.inference_runtime_policy(brain)
         self.assertEqual(policy["compression_threshold"], 0.06)
         self.assertEqual(policy["compression_protect_last_n"], 12)
-        self.assertEqual(policy["compression_hard_message_limit"], 120)
+        self.assertEqual(policy["compression_hard_message_limit"], 400)
         config_text = """
 model:
   provider: "gemini"
@@ -1448,7 +1482,7 @@ compression:
         generated = "\n".join(hermes_bridge.hermes_compression_config_lines(None, brain, policy))
         self.assertIn("threshold: 0.06", generated)
         self.assertIn("protect_last_n: 12", generated)
-        self.assertIn("hygiene_hard_message_limit: 120", generated)
+        self.assertIn("hygiene_hard_message_limit: 400", generated)
 
     def test_nvidia_auxiliary_session_titles_are_suppressed_without_affecting_other_providers(self):
         import sys
@@ -1720,7 +1754,7 @@ compression:
         policy = hermes_bridge.inference_runtime_policy({"brain": "nvidia_nim"})
         self.assertLessEqual(len(profile), policy["context_file_max_chars"])
         self.assertIn("mcp_admira_generate_motion_graphic_video", profile)
-        self.assertIn("skills/core-agent-behavior", profile)
+        self.assertIn("compact compiled procedure", profile)
 
     def test_root_agent_profile_is_concise_outcome_based_and_schema_driven(self):
         profile = hermes_bridge.combined_agent_rules()
@@ -1737,17 +1771,12 @@ compression:
         self.assertNotIn("Live Meta First On Every Turn", profile)
         self.assertNotIn("Before every buyer-facing turn", profile)
 
-    def test_root_agent_profile_maps_every_public_mcp_to_a_primary_skill(self):
+    def test_root_agent_profile_uses_compiled_procedure_instead_of_large_skill_map(self):
         profile = hermes_bridge.combined_agent_rules()
-        start = profile.index("## Mandatory MCP → primary skill map")
-        end = profile.index("This map assigns all official MCPs", start)
-        routing_map = profile[start:end]
-        expected = {name for name, _description in admira_mcp_server.TOOL_DEFINITIONS}
-        mapped = set()
-        for name in expected:
-            if f"`mcp_admira_{name}`" in routing_map:
-                mapped.add(name)
-        self.assertEqual(mapped, expected)
+        self.assertIn("## Compiled operating procedures", profile)
+        self.assertIn("state-based, not phrase-based", profile)
+        self.assertNotIn("## Mandatory MCP → primary skill map", profile)
+        self.assertNotIn("read that primary skill's complete", profile)
 
     def test_every_public_mcp_description_requires_its_primary_skill(self):
         definitions = dict(admira_mcp_server.TOOL_DEFINITIONS)

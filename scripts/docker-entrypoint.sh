@@ -164,6 +164,35 @@ if not configured_device_id:
 path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 PY
 
+# A confirmed complete reset must survive a later Docker recreation. Compose
+# may still contain the installation's original non-empty Meta/business values;
+# unset only the validated keys recorded by the reset so product_config can
+# refill them from the now-clean persistent runtime .env. New onboarding values
+# saved to that file therefore continue to work normally.
+complete_reset_guard="/app/dashboard/data/complete_reset_environment_guard.json"
+if [ -s "$complete_reset_guard" ]; then
+  while IFS= read -r reset_key; do
+    if [[ "$reset_key" =~ ^[A-Z][A-Z0-9_]*$ ]]; then
+      unset "$reset_key"
+    fi
+  done < <(python3 - "$complete_reset_guard" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+try:
+    payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except (OSError, ValueError, json.JSONDecodeError):
+    payload = {}
+for key in payload.get("clear_env_keys", []):
+    key = str(key or "").strip()
+    if re.fullmatch(r"[A-Z][A-Z0-9_]*", key):
+        print(key)
+PY
+  )
+fi
+
 echo "Checking runtime tools..."
 python3 --version
 node --version

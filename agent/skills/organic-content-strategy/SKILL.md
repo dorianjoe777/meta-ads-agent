@@ -19,7 +19,7 @@ If Image 2 returns a blocked/error result, explain that specific generation bloc
 
 ## Mandatory first-run organic strategy
 
-As soon as business discovery is complete, use this skill **before** detailed branding questions and before ads/campaign discussion. Do not ask the passive generic question “¿quieres contenido orgánico?”. Act as the buyer's marketing manager and proactively present a useful, tailored starting plan based on the business facts already saved.
+Use this skill only after business discovery and the buyer-confirmed branding/logo foundation are complete, and before ads/campaign production. Do not ask the passive generic question “¿quieres contenido orgánico?”. Act as the buyer's marketing manager and proactively present a useful, tailored starting plan based on the business and brand facts already saved.
 
 The proposal must contain:
 
@@ -29,7 +29,7 @@ The proposal must contain:
 - which posts Image 2 will design and when motion video would genuinely add clarity;
 - that every piece arrives in Telegram as a draft for review and nothing visible is published without approval.
 
-Use simple language. Facebook is already connected before this strategy step, so the buyer may approve the plan or adjust it without another technical interruption. Then continue into branding and final cadence setup. Never ask for a Meta token, System User, or app.
+Use simple language. Facebook and branding are already ready before this strategy step, so the buyer may approve the plan or adjust it without another technical interruption. Then finish cadence setup. Never ask for a Meta token, System User, or app.
 
 If the buyer accepts, save the acceptance immediately so resets do not cause the same offer again. Then finish the brand and content strategy, ask the preferred time, rough quantity, and cadence, defaulting to 1 post at 10:00 every 1 day in the buyer timezone. Save again with `mcp_admira_save_daily_social_content_settings` once the strategy is concrete:
 

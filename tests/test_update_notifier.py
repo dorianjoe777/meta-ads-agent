@@ -5,7 +5,9 @@ import sys
 import tempfile
 import unittest
 import asyncio
+import importlib.util
 import types
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -16,6 +18,16 @@ sys.path.insert(0, str(ROOT / "src"))
 import hermes_gateway
 import admira_hermes_runtime_patch
 import update_notifier
+
+
+def load_dashboard():
+    spec = importlib.util.spec_from_file_location(
+        "startup_update_dashboard_test",
+        ROOT / "dashboard" / "monitoring-dashboard.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class UpdateNotifierTest(unittest.TestCase):
@@ -145,16 +157,30 @@ class UpdateNotifierTest(unittest.TestCase):
         self.assertIn("open_update=1", link["url"])
         self.assertNotIn("reconnect_model", link["url"])
 
-    def test_dashboard_starts_monitor_and_deep_link_opens_review(self):
+    def test_dashboard_keeps_manual_update_review_without_starting_notifications(self):
         dashboard_source = (ROOT / "dashboard" / "monitoring-dashboard.py").read_text(encoding="utf-8")
+        dashboard_main = dashboard_source.split("def main():", 1)[1]
         dashboard_js = (ROOT / "public" / "dashboard" / "dashboard.js").read_text(encoding="utf-8")
         notifier_source = (ROOT / "src" / "update_notifier.py").read_text(encoding="utf-8")
         self.assertIn("ensure_telegram_update_notification_monitor()", dashboard_source)
+        self.assertNotIn("ensure_telegram_update_notification_monitor()", dashboard_main)
         self.assertIn("openUpdateFromUrl()", dashboard_js)
         self.assertIn("showUpdateDetails()", dashboard_js)
         self.assertIn("update_version", dashboard_js)
         self.assertNotIn("agent_chat", notifier_source)
         self.assertNotIn("hermes", notifier_source.lower())
+
+    def test_desktop_startup_recovers_a_missed_daily_update_window(self):
+        dashboard = load_dashboard()
+        afternoon = datetime(2026, 8, 22, 14, 30)
+        quiet_window = datetime(2026, 8, 22, 4, 0)
+        previous_day = {"attempted_on": "2026-08-21"}
+        today = {"attempted_on": "2026-08-22"}
+
+        self.assertTrue(dashboard.automatic_update_is_due(previous_day, afternoon, startup=True))
+        self.assertFalse(dashboard.automatic_update_is_due(previous_day, afternoon, startup=False))
+        self.assertTrue(dashboard.automatic_update_is_due(previous_day, quiet_window, startup=False))
+        self.assertFalse(dashboard.automatic_update_is_due(today, afternoon, startup=True))
 
     def test_install_button_is_optional_when_version_is_not_known(self):
         keyboard = update_notifier.telegram_update_keyboard(

@@ -7,16 +7,11 @@ description: Produce standalone creative assets or approved raster ad creatives 
 
 ## Compatibility shim
 
-This legacy skill remains for compatibility. Before using it, read:
-
-- `skills/core-agent-behavior/SKILL.md`
-- `skills/session-continuity/SKILL.md`
-- `skills/brand-and-assets/SKILL.md` when logo, references, or real assets matter
-- `skills/creative-production-codex-image/SKILL.md`
+This legacy skill remains for compatibility. The runtime already supplies the compact core, continuity, brand/assets, and creative-production procedure needed for the current trusted product state. Do not load those full files merely to unlock image production.
 
 Use this skill when the buyer asks to produce approved raster ad images, variants, designs, static ad graphics, product showcases, or creative refreshes.
 
-Image 2 is a production capability, not the creative strategy. First read `memory/Agent onboarding plan.md`, `skills/brand-and-assets/SKILL.md`, `skills/creative-strategy/SKILL.md`, and `skills/creative-production-codex-image/SKILL.md`. If the buyer wants a launch-ready ad test, make sure brand discovery, references/assets decisions, and the creative test brief are complete. If the buyer only asks for a standalone image/asset/draft to keep or review, do not block on test budget or a complete ad brief; use the current product/offer context and mark the request as `asset_only: true` or `purpose: "standalone_creative"`.
+Image 2 is a production capability, not the creative strategy. Use `memory/Agent onboarding plan.md` plus the compact brand, strategy, and production procedure already supplied. If the buyer wants a launch-ready ad test, make sure brand discovery, references/assets decisions, and the creative test brief are complete. If the buyer only asks for a standalone image/asset/draft to keep or review, do not block on test budget or a complete ad brief; use the current product/offer context and mark it as a standalone asset.
 
 ## Required Tool Path
 

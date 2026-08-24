@@ -93,6 +93,7 @@ GENERAL_FIELD_LABELS = {
     "promise": "Promesa principal",
     "ideal_customer": "Cliente ideal",
     "logo_path": "Logo de marca",
+    "logo_status": "Estado del logo",
     "logo_notes": "Notas del logo",
     "logo_usage": "Uso del logo",
     "personality": "Personalidad",
@@ -152,6 +153,7 @@ GENERAL_FIELD_ALIASES = {
         "audience",
     ),
     "logo_path": ("Logo path", "logo_path", "official_logo", "official_logo_path"),
+    "logo_status": ("Estado logo", "logo_status", "official_logo_status", "logo_decision_status"),
     "logo_notes": ("logo_decision", "logo_notes", "logo_request", "logo_context"),
     "logo_usage": ("Uso logo", "Uso del logo", "logo_usage", "logo_preference", "logo_use"),
     "personality": ("Personalidad", "Personality", "brand_personality"),
@@ -400,6 +402,7 @@ GENERAL_PAYLOAD_ALIASES = {
     "promise": ("benefit", "main_benefit", "value_prop"),
     "ideal_customer": ("audience", "target_audience", "buyer", "customer", "publico", "público"),
     "logo_path": ("official_logo", "official_logo_path"),
+    "logo_status": ("official_logo_status", "logo_decision_status"),
     "logo_notes": ("logo", "logo_decision", "logo_request", "logo_context"),
     "logo_usage": ("logo_preference", "logo_use"),
     "colors": ("brand_colors", "palette", "paleta", "color_palette"),
@@ -1105,6 +1108,7 @@ Usa este archivo como la base visual y verbal de todos los creativos.
 - Promesa principal: {fields.get('promise', '')}
 - Cliente ideal: {fields.get('ideal_customer', '')}
 - Logo de marca: {fields.get('logo_path', '')}
+- Estado del logo: {fields.get('logo_status', '')}
 - Notas del logo: {fields.get('logo_notes', '')}
 - Uso del logo: {fields.get('logo_usage', '')}
 - Personalidad: {fields.get('personality', '')}
@@ -1649,6 +1653,24 @@ ORGANIC_IMAGE_ROUTES = [
     },
 ]
 
+LOGO_IMAGE_ROUTES = [
+    {
+        "axis": "simbolo-y-wordmark-puro",
+        "composition": "Un solo símbolo de marca y el nombre exacto, centrados y aislados sobre fondo blanco plano.",
+        "experiment": "Evaluar legibilidad, recordación y equilibrio del logotipo sin ninguna presentación publicitaria.",
+    },
+    {
+        "axis": "wordmark-tipografico-puro",
+        "composition": "Un único wordmark con detalle gráfico mínimo integrado, centrado y con amplio espacio de seguridad.",
+        "experiment": "Evaluar personalidad tipográfica y lectura del nombre a tamaños pequeños.",
+    },
+    {
+        "axis": "isotipo-mas-nombre-puro",
+        "composition": "Isotipo simple acompañado únicamente por el nombre oficial; una sola composición horizontal o apilada.",
+        "experiment": "Evaluar si símbolo y nombre funcionan como una identidad reproducible y no como una pieza promocional.",
+    },
+]
+
 FREE_IMAGE_ROUTES = [
     {
         "axis": "editorial-premium",
@@ -1799,20 +1821,23 @@ def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", 
     used_seed = seed or uuid.uuid4().hex
     request_text = str(request or "").strip()
     selected_purpose = normalized_image_purpose(purpose)
+    logo_asset = selected_purpose == "logo"
     organic = image_purpose_is_organic(selected_purpose)
     motion_asset = image_purpose_is_motion(selected_purpose)
-    if organic or motion_asset:
+    if logo_asset:
+        routes = list(LOGO_IMAGE_ROUTES[:count]) if selected_mode == "fixed" else _seeded_routes(LOGO_IMAGE_ROUTES, count, used_seed)
+    elif organic or motion_asset:
         routes = list(ORGANIC_IMAGE_ROUTES[:count]) if selected_mode == "fixed" else _seeded_routes(ORGANIC_IMAGE_ROUTES, count, used_seed)
     else:
         routes = list(FIXED_IMAGE_ROUTES[:count]) if selected_mode == "fixed" else _seeded_routes(FREE_IMAGE_ROUTES, count, used_seed)
-    requested_format = requested_image_format_label(request_text, organic=organic)
+    requested_format = requested_image_format_label(request_text, organic=organic or logo_asset)
     prompt_context = "\n".join(
         part
         for part in [
             f"Pedido puntual del comprador: {request_text}" if request_text else "",
-            f"Producto/oferta: {_text_excerpt(product_text, 1200)}" if product_text else "",
-            f"Brief del anuncio: {_text_excerpt(ad_text, 1200)}" if ad_text else "",
-            f"Mapa de ofertas: {_text_excerpt(offer_map, 900)}" if offer_map else "",
+            f"Producto/oferta: {_text_excerpt(product_text, 1200)}" if product_text and not logo_asset else "",
+            f"Brief del anuncio: {_text_excerpt(ad_text, 1200)}" if ad_text and not logo_asset else "",
+            f"Mapa de ofertas: {_text_excerpt(offer_map, 900)}" if offer_map and not logo_asset else "",
             f"Reglas generales de marca madre: {_text_excerpt(general, 1200)}" if general else "",
             f"Logo de marca: {logo_context}" if logo_context else "",
             f"Referencias aprobadas: {_text_excerpt(references, 900)}" if references else "",
@@ -1820,6 +1845,14 @@ def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", 
         if part
     )
     brand_lock = (
+        "Este encargo es únicamente el activo maestro de un logotipo, no una pieza que anuncie o presente el logo. "
+        "Entrega un solo logotipo aislado: símbolo/isotipo y nombre oficial, más únicamente un descriptor o tagline si "
+        "el comprador lo pidió expresamente como parte permanente de la marca. Fondo blanco completamente plano, amplio "
+        "espacio de seguridad y acabado vectorial limpio. Prohibidos mockups, tarjetas, letreros, paredes, pedestales, "
+        "papelería, escenas, fotografías, dispositivos, marcos publicitarios, encabezados, subtítulos explicativos, slogans "
+        "inventados, CTA, botones, ofertas, precios, llamadas como 'solicita', y cualquier texto externo al logotipo. "
+        "No muestres variantes ni una lámina de presentación: solo el logo final."
+        if logo_asset else
         "Usa el pedido puntual del comprador como fuente principal. Respeta colores, tipografias, "
         "personalidad, elementos bloqueados, referencias aprobadas y cosas prohibidas cuando existan. "
         "La marca madre solo define estilo, tono, logo y restricciones; no importes promesas, audiencia, CTA, "
@@ -1833,6 +1866,9 @@ def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", 
         "placeholders ni imagenes sobre datos faltantes."
     )
     mode_instruction = (
+        "MODO LOGO PURO: explora la identidad dentro de una sola marca, pero cada salida debe ser exclusivamente un "
+        "logotipo aislado y utilizable, nunca un anuncio, mockup o presentación comercial."
+        if logo_asset else
         "MODO FIJO: mantente cerca de la guia. Las variaciones deben sentirse de la misma familia visual; "
         "solo cambia angulo, jerarquia o una pequena composicion para aprender sin romper marca."
         if selected_mode == "fixed"
@@ -1842,6 +1878,9 @@ def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", 
         "La variedad es obligatoria, pero conserva colores, tipografias, promesa, publico, oferta y reglas de marca."
     )
     visible_offer_rule = (
+        "No conviertas el encargo en publicidad. No agregues mensajes promocionales, beneficios, audiencia, ubicación, "
+        "precio, urgencia, CTA ni explicaciones sobre el diseño. El único texto permitido es el que pertenece al logo."
+        if logo_asset else
         (
             "Esta imagen es materia prima visual para un storyboard de motion graphics. No la conviertas en anuncio, poster "
             "ni publicación terminada; no agregues CTA, precio, logo o texto salvo que el pedido puntual lo exija para ese elemento."
@@ -1860,9 +1899,12 @@ def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", 
             "pero no escondas la promocion principal."
         )
     )
-    visual_kind = "asset visual para un storyboard de motion graphics" if motion_asset else ("pieza de contenido orgánico para Facebook/Instagram" if organic else "imagen para Meta Ads")
-    context_kind = "asset de storyboard" if motion_asset else ("pieza orgánica" if organic else "anuncio")
+    visual_kind = "un logotipo puro y aislado" if logo_asset else ("asset visual para un storyboard de motion graphics" if motion_asset else ("pieza de contenido orgánico para Facebook/Instagram" if organic else "imagen para Meta Ads"))
+    context_kind = "logotipo" if logo_asset else ("asset de storyboard" if motion_asset else ("pieza orgánica" if organic else "anuncio"))
     quality_rule = (
+        "Debe funcionar como archivo maestro de identidad: limpio, reproducible, legible y sin elementos ajenos al logo. "
+        if logo_asset
+        else
         "Debe ser un elemento visual limpio, componible y coherente con la receta Shotcraft y el branding indicados. "
         if motion_asset
         else "Debe verse como publicación orgánica profesional y útil para el feed, no necesariamente como anuncio. "
@@ -1883,7 +1925,7 @@ def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", 
                     f"Composicion: {route['composition']} Objetivo del experimento: {route['experiment']} "
                     f"Contexto que debe aparecer en la {context_kind}: {prompt_context or request_text or 'tema u oferta descrita por el comprador'}. "
                     f"{brand_lock} {visible_offer_rule} "
-                    f"{'No agregues texto dentro del asset salvo que el pedido lo requiera expresamente. ' if motion_asset else 'Texto dentro de la imagen: corto, grande y legible. '}"
+                    f"{'No agregues ningún texto salvo el nombre/descriptor aprobado que forme parte permanente del logo. ' if logo_asset else ('No agregues texto dentro del asset salvo que el pedido lo requiera expresamente. ' if motion_asset else 'Texto dentro de la imagen: corto, grande y legible. ')}"
                     f"{quality_rule}"
                     "No escribas 'faltan datos', 'datos clave' ni mensajes de configuracion dentro de la imagen."
                 ),
@@ -1902,7 +1944,7 @@ def build_codex_image_prompt_package(product_guide="", request="", ad_brief="", 
         }
         for item in prompts
     ]
-    codex_prompt = f"""Actua como prompt engineer senior para ChatGPT Image / Image 2 y {'assets de storyboards de motion graphics' if motion_asset else ('contenido orgánico de redes sociales' if organic else 'Meta Ads')}.
+    codex_prompt = f"""Actua como prompt engineer senior para ChatGPT Image / Image 2 y {'diseño de logotipos puros' if logo_asset else ('assets de storyboards de motion graphics' if motion_asset else ('contenido orgánico de redes sociales' if organic else 'Meta Ads'))}.
 
 Tu tarea es convertir memoria de marca, producto y brief en prompts finales de imagen.
 
@@ -1910,7 +1952,7 @@ Tu tarea es convertir memoria de marca, producto y brief en prompts finales de i
 
 Reglas no negociables:
 - Usa solo el contexto incluido abajo.
-- El propósito de esta pieza es `{selected_purpose}`. {'Trátala como materia prima visual componible para el storyboard; no como anuncio terminado.' if motion_asset else ('No la conviertas automáticamente en anuncio pagado ni inventes un CTA de venta.' if organic else 'Trátala como creativo publicitario salvo que el pedido diga lo contrario.')}
+- El propósito de esta pieza es `{selected_purpose}`. {'Devuelve exclusivamente el activo del logotipo, aislado y sin presentación publicitaria, mockup, CTA ni texto externo.' if logo_asset else ('Trátala como materia prima visual componible para el storyboard; no como anuncio terminado.' if motion_asset else ('No la conviertas automáticamente en anuncio pagado ni inventes un CTA de venta.' if organic else 'Trátala como creativo publicitario salvo que el pedido diga lo contrario.'))}
 - Identifica la oferta activa antes de escribir el prompt final. La oferta activa viene del pedido puntual, del brief elegido o de la ficha de producto elegida; no mezcles beneficios, CTA, audiencia, precios ni promesas de otras ofertas bajo la misma marca.
 - Trata la guía general como marca madre: identidad visual, tono, logo, colores y restricciones. No la uses para reemplazar la oferta activa si el comprador está hablando de otro producto/servicio.
 - No leas archivos, credenciales, tokens ni configuracion local.

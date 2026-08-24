@@ -24,6 +24,7 @@ Use this skill when the buyer asks to create, launch, prepare, or publish a Meta
 - Chat can stage a campaign but cannot silently approve it.
 - If information is truly blocking, ask one clear question at a time.
 - If the buyer asked to prepare/create and the remaining choice is safe, reversible, or can be staged paused for approval, proceed instead of asking a redundant permission question.
+- Completing the general business profile or approving the brand/logo does not approve a child campaign's budget, copy, creative or destination. Conversely, do not ask the buyer to reconfirm the general profile when it is already complete: convert it into a concrete campaign plan and resolve only the campaign-specific gaps.
 - Do not say campaign creation is blocked because you lack CLI or terminal access. In Telegram use the MCP tools; in dashboard chat use the JSON tool request contract. The product backend stages supported actions and keeps spend behind approval.
 - Publicación directa is only for approved organic Facebook posts. Campaign creatives use the primary Live Ads app inline; an ads-authorized publishing credential may retry that same inline payload only after an explicit Development-mode error.
 - For new installs, never ask the buyer to create a System User, generate a token, or paste a Meta key. Admira sends a secure Facebook OAuth link to the buyer's connected Telegram. After they connect, show the discovered ad accounts and Pages, recommend the most likely business match when context makes it clear, and ask which one should be active. Store all discovered assets for later switching, but create/manage campaigns only in one explicitly active account/Page at a time. Existing token connections remain a migration fallback only.
@@ -67,13 +68,10 @@ copy principal and a separate title from the active offer, audience, proof,
 objection, and destination. Recommend the strongest version and show the exact
 wording in the chat. Ask the buyer to approve it, edit it, or provide their own
 wording; natural agreement is enough and no magic approval phrase is required.
-If you use Hermes' native clarification/choice UI for that review, the visible
-question must repeat the exact copy principal, distinct title, CTA and
-destination opener/message. Never show a generic “approve this copy and create”
-button while the wording is hidden in the model's context; emit the readable
-proposal first, deliver the actual creative, and let the buyer correct or
-approve the package together in natural language. Buttons are only a convenient
-way to answer an already-visible proposal, not a substitute for the review.
+Conduct this review entirely through ordinary conversational text. Show the
+readable proposal, deliver the actual creative, and let the buyer correct or
+approve the package together in their own words. Never use `clarify`, choice
+cards, or approval buttons, and never hide copy behind interface controls.
 
 - Never copy the campaign name or ad-set name into the title merely because a
   title is missing. The title should sell the benefit, promise, proof, or

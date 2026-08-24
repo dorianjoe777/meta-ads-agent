@@ -268,15 +268,7 @@ function formatChatContent(text){
 function buyerSafeChatContent(value){let text=String(value??'');text=text.replace(/\b(?:aprueba|aprobar)\s+approval_[A-Za-z0-9_-]+\b/gi,'responde “aprobado”');text=text.replace(/\bapprove\s+approval_[A-Za-z0-9_-]+\b/gi,'reply “approved”');text=text.replace(/\bapproval_[A-Za-z0-9_-]+\b/g,'').replace(/[ \t]{2,}/g,' ');return text}
 function setMessageContent(node,text){const raw=fillTemplate(text);const content=node.classList.contains('agent')?buyerSafeChatContent(raw):raw;node.classList.remove('thinking');node.innerHTML=formatChatContent(content);node.dataset.rawContent=content;return content}
 function addMessage(role,text,store=true){const log=qs('#chat-log');const node=document.createElement('div');node.className=`msg ${role}`;const content=setMessageContent(node,text);log.appendChild(node);log.scrollTop=log.scrollHeight;if(store)chatHistory.push({role,content});return node}
-function chatApprovalItems(result){
- const routed=result?.routed_action||{};const items=[];
- if(Array.isArray(result?.approval_choices))items.push(...result.approval_choices);
- if(Array.isArray(routed?.approval_choices))items.push(...routed.approval_choices);
- const candidate=routed?.result;
- if(candidate&&candidate.id&&candidate.status==='pending')items.push(candidate);
- const seen=new Set();
- return items.filter(item=>{const id=item&&item.id;if(!id||seen.has(id))return false;seen.add(id);return true}).slice(0,4);
-}
+function chatApprovalItems(_result){return []}
 function approvalItemName(item){return escapeHtml(item.name||item.payload?.name||item.payload?.campaign_name||item.type||'Decisión pendiente')}
 function appendChatApprovalActions(node,result){
  const items=chatApprovalItems(result);if(!items.length)return;

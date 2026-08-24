@@ -19,6 +19,8 @@ Collect and save:
 
 Use `mcp_admira_save_brand_memory`, `mcp_admira_save_product_memory`, `mcp_admira_save_creative_references`, and `mcp_admira_save_content_asset`. Read `memory/Branding onboarding.md` and `brand_guides/Offer map.md` when present. Treat `brand_guides/` and `memory/content_*` files as read-only snapshots; do not manually write them.
 
+This phase comes before organic or paid production. If no official logo exists and the buyer wants one, agree on name, category/offer, palette, visual style and tone, then call `mcp_admira_codex_image_generate` with `purpose: logo` (or `brand_exploration`, `moodboard`, `brand_sample`). Show the actual attached result and revise it conversationally. It is only a candidate until the buyer approves it and `mcp_admira_save_brand_memory` confirms the exact real file as official. Never say a blocked Image call is queued or will appear later.
+
 ## Parent brand vs child offers
 
 Save colors, logo, tone, typography, visual style, and general restrictions as parent-brand memory. Do not save every new promotion or service by overwriting the brand's core offer. If the buyer introduces a specific package, service, product, seasonal promo, lead magnet, or organic content line, save it as a child offer with `mcp_admira_save_product_memory`.

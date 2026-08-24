@@ -5,7 +5,7 @@ description: Connect Facebook through OAuth, list authorized ad accounts and Pag
 
 # Meta Account Connection
 
-Read this skill before calling `mcp_admira_start_meta_oauth_connection`, `mcp_admira_get_meta_oauth_workspaces`, `mcp_admira_select_meta_oauth_workspace`, or `mcp_admira_get_real_meta_context`.
+The runtime compiles this procedure before exposing the relevant connection tools. Follow that compact procedure and the current schema; do not add a read-file unlock turn.
 
 ## Choose the operation
 
@@ -13,6 +13,12 @@ Read this skill before calling `mcp_admira_start_meta_oauth_connection`, `mcp_ad
 - Need to know whether Facebook is connected or which accounts/Pages OAuth exposed: call `mcp_admira_get_meta_oauth_workspaces`.
 - OAuth is genuinely absent: call `mcp_admira_start_meta_oauth_connection` and send its visible URL. Do not ask for a token or send terminal commands.
 - Buyer chooses an account and Page from the returned inventory: call `mcp_admira_select_meta_oauth_workspace` with those exact IDs. Resolve a natural name or numbered choice against the displayed inventory; never invent IDs.
+
+## Text-only selection
+
+Communicate only through ordinary chat text. Never use `clarify`, inline choice cards, approval cards, or account/Page buttons. List every returned ad account and every publishable Page with short numbers and names, without exposing tokens. The buyer may answer by number, name, approximate spelling, or a natural phrase; resolve the meaning against the displayed inventory.
+
+Require an explicit choice for both the ad account and the Page. If the buyer specifies only one, ask one short text question for the missing asset. Never auto-select the first Page, never infer the missing half of the pair, and never call the selection tool until both choices are unambiguous. Treat selection as successful only when the tool returns both `selected: true` and `verified_persisted: true`.
 
 ## Persistence and continuation
 

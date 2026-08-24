@@ -5,7 +5,7 @@ description: List, create, verify, or manually stage native Meta Instant Forms. 
 
 # Lead Form Management
 
-Read this skill before calling `mcp_admira_list_lead_forms`, `mcp_admira_create_lead_form`, or `mcp_admira_stage_lead_form`.
+The runtime compiles this procedure before exposing the relevant lead-form tools. Follow that compact procedure and the current schema; do not add a read-file unlock turn.
 
 ## Procedure
 

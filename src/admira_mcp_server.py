@@ -32,8 +32,8 @@ _WRITE_LOCK = threading.Lock()
 TOOL_DEFINITIONS = [
     ("get_real_meta_context", "Synchronize directly with Meta and read the current campaign/ad set/ad inventory plus performance context. Supports date_preset=maximum|today|last_7d|custom, custom since/until dates, and detail_level=standard|deep; deep includes placement/device, age/gender and country breakdowns. Read-only transient Graph failures are retried once. Inspect live_sync.connection and live_sync.error_details: if connection.reachable=true, do not claim Meta is disconnected or the token expired. Preserve code, subcode and fbtrace_id for support. Treat local memory and approvals only as candidate workflow context: they never prove what currently exists or runs in Meta, and a failed/incomplete empty response never proves the account has no campaigns."),
     ("start_meta_oauth_connection", "Send the buyer a short-lived secure Facebook OAuth URL as ordinary visible text in their connected Telegram chat. Use as the first technical setup step when get_meta_oauth_workspaces says Facebook is not connected. Never depend on an inline button. Do not ask for a Meta token, System User, or app. This is setup only and never spends money."),
-    ("get_meta_oauth_workspaces", "List the buyer's Facebook OAuth connection plus every ad account and Page it discovered. Tokens are never returned. After the buyer says they finished the OAuth URL, present numbered account/Page choices in the chat and wait for their natural-language default choice; do not select automatically."),
-    ("select_meta_oauth_workspace", "Select one previously discovered Facebook OAuth ad account and Page as the active business, but only after the buyer has naturally chosen that account and Page. Reading inventory, campaign geography, account currency, a budget answer, or the model's own recommendation never authorizes an automatic selection or switch. Only accepts IDs returned by get_meta_oauth_workspaces; never invent or accept an external ID."),
+    ("get_meta_oauth_workspaces", "List the buyer's Facebook OAuth connection plus every ad account and publishable Page it discovered. Tokens are never returned. Present every option as ordinary numbered chat text, never through clarify or a choice card. Wait for explicit natural-language choices for both the ad account and Page; do not select automatically."),
+    ("select_meta_oauth_workspace", "Select one previously discovered Facebook OAuth ad account and Page as the active business, but only after the buyer has naturally and explicitly chosen both. If only one asset was named, ask for the other in ordinary text; never auto-select the first Page. Reading inventory, campaign geography, account currency, a budget answer, or the model's own recommendation never authorizes an automatic selection or switch. Only accepts IDs returned by get_meta_oauth_workspaces; never invent or accept an external ID. Success includes selected=true and verified_persisted=true after a durable backend read-back."),
     ("search_meta_targeting", "Search Meta's live targeting catalog for current interest or location IDs. Use kind=interest with q=<term>, or kind=location. Interest names from memory or web research are only ideas: call this tool and use the returned Meta IDs before staging a targeted audience. Never invent an interest ID."),
     ("inspect_adset_targeting", "Read one exact ad set directly from Meta and verify its persisted interest IDs and Advantage+ audience flag. Pass the numeric adset_id and optionally requested_interest_ids plus advantage_audience. Call this before claiming suggested interests or Advantage+ targeting were applied. It confirms Graph state, not the exact Ads Manager UI wording or placement."),
     ("run_daily_brief", "Run the daily Meta Ads brief and return the safe result."),
@@ -46,7 +46,7 @@ TOOL_DEFINITIONS = [
     ("set_campaign_metric_priorities", "Choose and persist up to six dashboard KPIs for one real Meta campaign. Use after live sync whenever a campaign is new, its objective/event changes, or business context makes the automatic sales/leads/messages/traffic/video/awareness profile incomplete. This changes only dashboard presentation, never spend or Meta delivery."),
     ("preflight_campaign", "Run a read-only expert preflight before campaign staging: account status, policy/rate-limit checks, audiences, existing creatives, placement/device insight availability, signal quality, budget sanity, and dry-run payload preview."),
     ("fetch_public_asset", "Safely inspect or download a buyer-shared public URL, including public Google Drive files, so videos/images/web pages can be used as creative inputs without exposing local networks."),
-    ("codex_image_generate", "Generate standalone assets, organic social posts, approved Meta Ads raster images, or storyboard media through Codex/Image only when the buyer semantically asks to create or revise image media. A campaign goal, budget, destination, unanswered creative-choice question, statement that no creative exists, or the model's own offer to generate one is not a generation request. For a paid campaign, first present and obtain natural correction/approval of the commercial angle, exact primary text, distinct title, CTA/destination message, and visual concept; pass the exact active child offer in product_guide or ad_brief. Never use a prior offer or general brand guide as a silent substitute. For motion videos it may create full-frame imagery, reusable brand/product elements, and one-off story subjects/props that embody the scene's narrative. background_removal=green_screen produces an isolated #00FF00 plate and a deterministic transparent PNG for Remotion composition. reusable_asset archives only genuinely reusable files by product scope and visual role; story elements normally remain one-off. Always send a self-contained request with the exact active topic/offer, desired composition, format, CTA decision, and reference when relevant; never send only 'use saved guides'. Pass buyer-owned real photos in protected_reference_image_paths or content_asset_ids: the backend preserves them pixel-for-pixel. Saved official logos remain protected exact references."),
+    ("codex_image_generate", "Generate logo candidates, brand explorations, moodboards, brand samples, standalone assets, organic social posts, approved Meta Ads raster images, or storyboard media through Codex/Image only when the buyer semantically asks to create or revise image media. During branding, use purpose=logo, brand_exploration, moodboard, or brand_sample and show the actual result for natural approval before saving it as official. Organic and paid production require durable buyer-confirmed branding. A campaign goal, budget, destination, unanswered creative-choice question, statement that no creative exists, or the model's own offer to generate one is not a generation request. For a paid campaign, first present and obtain natural correction/approval of the commercial angle, exact primary text, distinct title, CTA/destination message, and visual concept; pass the exact active child offer in product_guide or ad_brief. Always send a self-contained request with the exact active topic/offer, desired composition, format, CTA decision, and reference when relevant. Pass buyer-owned real photos in protected_reference_image_paths or content_asset_ids; saved official logos remain protected exact references."),
     ("list_recent_creatives", "List generated image creatives from the buyer's short three-day recovery window by natural date such as today or yesterday. Use this when the buyer says 'the ones you created yesterday/Monday'; return choices by preview/date and never ask them to remember an asset ID. Expired unreferenced files are pruned automatically."),
     ("codex_creative_plan", "Create a Codex concept or prompt plan from brand, product, reference, or current buyer context. Budget is optional for standalone creative exploration and only informs how many variants to test or launch."),
     ("search_motion_graphic_recipes", "Search Admira's complete vendored Video Shotcraft catalog before storyboarding. Use narrative constraints such as role, message type, tone, energy, tempo, impact, and category; it returns exact existing card/style names plus trusted Markdown and TSX provenance. Use it to choose motion by communication purpose instead of visual novelty, then read only the selected card/demo references."),
@@ -77,11 +77,11 @@ TOOL_DEFINITIONS = [
     ("record_verified_signal", "Save a local verified-signal ledger event or batch: fake/not interested/wrong audience, qualified, booked, showed, purchased, or high-value outcomes. Does not send to Meta."),
     ("get_verified_signal_summary", "Read the local verified-signal ledger summary: stages, open follow-ups, match/privacy readiness, and recent records."),
     ("verified_signal_feedback_prompt", "Generate the daily exception/outcome feedback prompt for verified-signal mode."),
-    ("save_business_memory", "Save durable business context."),
+    ("save_business_memory", "Save Page-scoped strategic business context. Copy the complete current buyer message exactly into buyer_evidence; never paraphrase it. Every value must declare whether it came from the buyer, is an agent proposal, or is inferred. The backend—not the model—computes readiness across services, ideal customer, differentiators, markets, capacity, pricing, margins, global objectives, advertising experience, and branding. When the tool reports review_required, show its canonical review_summary completely; only a later natural buyer confirmation can confirm that actually delivered revision."),
     ("save_durable_memory", "Save one confirmed durable decision, preference, fact, blocker, next step, or workflow agreement that does not fit a more specific product memory tool. Never use it for secrets."),
-    ("save_ads_onboarding", "Save durable ads/campaign onboarding context, including up to three prioritized success metrics/results such as ROAS, cost per purchase, and cost per initiate checkout."),
-    ("save_brand_memory", "Save the general brand guide. Accepts natural aliases such as name, business_name, brand_colors, style, logo_decision, reference_decision, and real_assets. Use this instead of writing brand_guides files manually."),
-    ("save_product_memory", "Save a product or offer guide. Accepts natural aliases such as product_name, target_audience, problem, benefit, and main_offer. Use this instead of writing brand_guides files manually."),
+    ("save_ads_onboarding", "Save durable ads/campaign onboarding context, including up to three prioritized success metrics/results. Copy the buyer's complete current message exactly into buyer_evidence. A short confirmation can promote only the matching draft already shown."),
+    ("save_brand_memory", "Save the general brand guide. Copy the buyer's complete current message exactly into buyer_evidence. A short confirmation can promote only the matching draft already shown. Accepts natural aliases such as name, business_name, brand_colors, style, logo_decision, reference_decision, and real_assets."),
+    ("save_product_memory", "Save a product or offer guide. Copy the buyer's complete current message exactly into buyer_evidence. A short confirmation can promote only the matching draft already shown. Accepts natural aliases such as product_name, target_audience, problem, benefit, and main_offer."),
     ("import_product_catalog", "Import or update up to 50 products from a buyer-shared PDF, Excel, CSV, TSV, JSON, or a structured products array. Preserve every useful column as product detail, keep each product/offer in its own natural-language guide, and create bundles/combinations as separate child offers with component_products/components instead of overwriting their source products. If a PDF returns needs_agent_structuring=true, read its extracted text and call this tool again with a structured products array before telling the buyer the catalog is ready."),
     ("search_product_catalog", "Search the durable product catalog by product name, SKU, category, tag, benefit, audience, component, or other saved detail. Always use this before answering from memory when a business has multiple products, and use the returned exact product guide for content, creatives, offers, bundles, campaigns, or reporting."),
     ("save_ad_brief", "Save one campaign/ad creative brief and its commercial plan. Accepts natural aliases such as brief_name, product_name, budget, currency, variants, creative_formats, hypothesis, success_metrics, business_outcome, time_horizon, ideal_customer, funnel_follow_up, economics, projection, measurement_plan, primary_text, headline, and destination_message. The KPIs/projection are planning targets and assumptions, never observed Meta performance. Use a unique brief name for each new campaign and reuse its returned ID only for edits to that same campaign. Use this instead of writing brand_guides files manually; save the active offer separately with save_product_memory and use save_ads_onboarding only for account-wide ads history/defaults."),
@@ -218,6 +218,8 @@ TOOL_INPUT_SCHEMAS = {
         "type": "object",
         "additionalProperties": True,
         "properties": {
+            "confirmation_state": _string("buyer_confirmed for facts stated/approved in this current buyer turn; agent_proposal or inferred are retained only as drafts.", enum=("buyer_confirmed", "agent_proposal", "inferred")),
+            "buyer_evidence": _string("Copy the buyer's complete current message exactly, including their natural wording and typos. Never paraphrase it. The backend binds it to a one-use transport turn."),
             "brand_name": _string("Exact brand or business name confirmed by the buyer."),
             "offer": _string("Short description of what the brand sells or provides."),
             "colors": _string("Confirmed brand palette, including color names or codes when known."),
@@ -229,12 +231,15 @@ TOOL_INPUT_SCHEMAS = {
             "asset_notes": _string("Known real photos, products, locations, people, and usage decisions."),
             "what_to_avoid": _string("Visual or verbal elements the brand must avoid."),
         },
+        "required": ["confirmation_state", "buyer_evidence"],
         "anyOf": [{"required": ["brand_name"]}, {"required": ["offer"]}],
     },
     "save_product_memory": {
         "type": "object",
         "additionalProperties": True,
         "properties": {
+            "confirmation_state": _string("buyer_confirmed for facts stated/approved in this current buyer turn; agent_proposal or inferred are retained only as drafts.", enum=("buyer_confirmed", "agent_proposal", "inferred")),
+            "buyer_evidence": _string("Copy the buyer's complete current message exactly; do not correct or paraphrase it."),
             "name": _string("Exact product, service, offer, or bundle name."),
             "target_audience": _string("Who this specific offer is for."),
             "problem": _string("Problem or desire this offer addresses."),
@@ -249,12 +254,14 @@ TOOL_INPUT_SCHEMAS = {
             "motion_show": _string("Elements motion videos for this offer should always show."),
             "motion_avoid": _string("Motion/video elements this offer must avoid."),
         },
-        "required": ["name"],
+        "required": ["name", "confirmation_state", "buyer_evidence"],
     },
     "save_ads_onboarding": {
         "type": "object",
         "additionalProperties": True,
         "properties": {
+            "confirmation_state": _string("buyer_confirmed for account-wide facts stated/approved in this current buyer turn; agent_proposal or inferred are retained only as drafts.", enum=("buyer_confirmed", "agent_proposal", "inferred")),
+            "buyer_evidence": _string("Copy the buyer's complete current message exactly; do not correct or paraphrase it."),
             "campaign_goal": _string("The business result the buyer wants from ads."),
             "objective": _string("Recommended or confirmed Meta campaign objective."),
             "success_metrics": _strings("Up to three prioritized business KPIs, ordered most important first."),
@@ -264,6 +271,7 @@ TOOL_INPUT_SCHEMAS = {
             "optimization_event": _string("Economic outcome or campaign result Meta should optimize for."),
             "notes": _string("Other confirmed campaign decisions and constraints."),
         },
+        "required": ["confirmation_state", "buyer_evidence"],
         "anyOf": [{"required": ["campaign_goal"]}, {"required": ["objective"]}, {"required": ["success_metrics"]}],
     },
     "codex_image_generate": {
@@ -271,7 +279,7 @@ TOOL_INPUT_SCHEMAS = {
         "additionalProperties": True,
         "properties": {
             "request": _string("Self-contained image request with exact active offer/topic, visual concept, desired message, format, and CTA decision."),
-            "purpose": _string("Use ad_creative for paid ads, daily_social_post or organic_social_post for organic content, and standalone_asset for other images."),
+            "purpose": _string("Use logo for a logo candidate; brand_exploration, moodboard, or brand_sample while defining branding; ad_creative for paid ads; daily_social_post or organic_social_post for organic content; and standalone_asset for other images.", enum=("logo", "brand_exploration", "moodboard", "brand_sample", "ad_creative", "daily_social_post", "organic_social_post", "standalone_asset", "motion_graphic_asset")),
             "active_topic": _string("Exact current topic or offer; do not rely only on general brand memory."),
             "product_guide": _string("Exact saved child product/service/offer guide for this image. Required when several offers exist."),
             "ad_brief": _string("Exact saved campaign/ad brief containing the approved commercial direction and creative hypothesis."),
@@ -293,6 +301,11 @@ TOOL_INPUT_SCHEMAS = {
             "product_scope": _string("Exact product/service/offer this element belongs to; blank means reusable parent-brand element."),
             "asset_purpose": _string("Concise future-use description for the durable library."),
             "asset_notes": _string("Composition restrictions, safe zones, color variants, and reuse notes."),
+            "brand_name": _string("Exact brand name for logo/brand exploration during onboarding."),
+            "business_category": _string("What the business offers; use for logo/brand exploration when the general guide is not complete yet."),
+            "colors": _string("Confirmed or buyer-requested palette for logo/brand exploration."),
+            "visual_style": _string("Confirmed visual direction for logo/brand exploration."),
+            "tone": _string("How the brand should feel and communicate."),
         },
         "required": ["request", "purpose"],
     },
@@ -313,6 +326,11 @@ TOOL_INPUT_SCHEMAS = {
         "type": "object",
         "additionalProperties": True,
         "properties": {
+            "purpose": _string(
+                "Use ad_motion_graphics for a paid-ad video, organic_social_post or daily_social_post "
+                "for organic content, and standalone_asset, moodboard, or brand_exploration for "
+                "non-paid visual exploration. The backend uses this purpose to enforce strategic readiness."
+            ),
             "topic": _string("Exact subject or promise the video should explain."),
             "objective": _string("Video purpose.", enum=("educational", "explainer", "promotional", "tutorial", "social_proof", "announcement", "awareness")),
             "product_guide": _string("Exact saved child product/service/offer guide. Required when several offers could match."),
@@ -596,8 +614,77 @@ TOOL_INPUT_SCHEMAS = {
     },
     "save_business_memory": {
         "type": "object", "additionalProperties": True,
-        "properties": {"business_type": _string("Type of business."), "main_offer": _string("Main offer."), "ideal_customer": _string("Ideal customer."), "current_stage": _string("Current business stage."), "what_to_improve": _string("Priority problem/opportunity."), "success_goal": _string("Concrete near-term success goal.")},
-        "anyOf": [{"required": ["main_offer"]}, {"required": ["ideal_customer"]}, {"required": ["current_stage"]}],
+        "properties": {
+            "confirmation_state": _string("Origin of these values. buyer_confirmed only for facts the buyer actually stated or confirmed in this current turn; agent_proposal and inferred remain drafts.", enum=("buyer_confirmed", "agent_proposal", "inferred")),
+            "value_source": _string("Compatibility alias for confirmation_state. Prefer confirmation_state; buyer_confirmed is still verified against the exact current buyer_evidence.", enum=("buyer_confirmed", "agent_proposal", "inferred")),
+            "buyer_evidence": _string("Copy the buyer's complete current message exactly, including natural spelling mistakes. Never summarize or paraphrase it."),
+            "business_type": _string("Type of business stated by the buyer."),
+            "main_offer": _string("Current main offer; also contributes to services."),
+            "services": _strings("Complete set of services/products currently offered."),
+            "ideal_customer": _string("Ideal customers plus buying situations/triggers."),
+            "differentiators": _string("Real differentiators, proof, credentials, or reasons to believe."),
+            "markets": _string("Service locations and markets."),
+            "capacity": _string("Delivery capacity and operational constraints."),
+            "pricing": _string("Prices, useful ranges, or explicitly unknown/withheld."),
+            "margins": _string("Variable costs, contribution margins, closest known economics, or explicitly unknown/withheld."),
+            "global_objectives": _string("Global business and marketing objectives."),
+            "advertising_experience": _string("Prior advertising experience and preferred explanation depth."),
+            "branding": _string("Brand name/logo/colors/tone/references/real assets/restrictions summary."),
+            "current_stage": _string("Current business/advertising stage."),
+            "what_to_improve": _string("Priority problem/opportunity."),
+            "success_goal": _string("Concrete near-term success goal."),
+            "topic_statuses": {
+                "type": "object",
+                "description": "Use unknown, not_applicable, or withheld only when the buyer explicitly resolves a topic that way. Never use a skipped status.",
+                "additionalProperties": False,
+                "properties": {
+                    topic: _string("Resolution status for this strategic topic.", enum=("confirmed", "provisional_confirmed", "unknown", "not_applicable", "withheld"))
+                    for topic in ("services", "ideal_customer", "differentiators", "markets", "capacity", "pricing", "margins", "global_objectives", "advertising_experience", "branding")
+                },
+            },
+            "strategic_topics": {
+                "type": "object",
+                "description": "Canonical topic updates when a status/value needs to be explicit.",
+                "additionalProperties": False,
+                "properties": {
+                    topic: {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "value": {},
+                            "status": _string("Topic status.", enum=("confirmed", "provisional_confirmed", "unknown", "not_applicable", "withheld")),
+                            "confirmation_state": _string("Origin of this topic value.", enum=("buyer_confirmed", "agent_proposal", "inferred")),
+                        },
+                        "required": ["status", "confirmation_state"],
+                    }
+                    for topic in ("services", "ideal_customer", "differentiators", "markets", "capacity", "pricing", "margins", "global_objectives", "advertising_experience", "branding")
+                },
+            },
+            "confirm_profile_review": _boolean("True only after the backend reported review_required, the complete summary was shown, and the buyer naturally confirmed that exact summary in this turn."),
+            "master_plan": {
+                "type": "object",
+                "description": "Page-scoped master marketing plan derived from the confirmed strategic profile. Save first as agent_proposal; confirm only after showing it and receiving natural buyer acceptance.",
+                "additionalProperties": False,
+                "properties": {
+                    field: _string("Concrete master-plan section.")
+                    for field in (
+                        "diagnosis", "commercial_priorities", "positioning", "offer_strategy",
+                        "ideal_customer_strategy", "funnel", "organic_strategy", "paid_media_strategy",
+                        "budget_framework", "objectives_and_kpis", "roadmap", "assumptions_and_risks"
+                    )
+                },
+            },
+            "confirm_master_plan": _boolean("True only when the buyer naturally confirms the complete master plan shown in the preceding conversation."),
+        },
+        "required": ["buyer_evidence"],
+        "anyOf": [
+            {"required": ["main_offer"]}, {"required": ["services"]}, {"required": ["ideal_customer"]},
+            {"required": ["differentiators"]}, {"required": ["markets"]}, {"required": ["capacity"]},
+            {"required": ["pricing"]}, {"required": ["margins"]}, {"required": ["global_objectives"]},
+            {"required": ["advertising_experience"]}, {"required": ["branding"]},
+            {"required": ["strategic_topics"]}, {"required": ["confirm_profile_review"]},
+            {"required": ["master_plan"]}, {"required": ["confirm_master_plan"]},
+        ],
     },
     "save_durable_memory": {
         "type": "object", "additionalProperties": True,

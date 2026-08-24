@@ -102,6 +102,24 @@ CAMPAIGN_CREATION_TOOLS = {
 }
 CAMPAIGN_EDIT_TOOLS = {"admira_edit_campaign"}
 CAMPAIGN_STAGE_TOOLS = {"admira_stage_campaign", *CAMPAIGN_CREATION_TOOLS}
+STRATEGIC_PROFILE_GATED_TOOLS = {
+    **{tool: "campaign_create" for tool in CAMPAIGN_CREATION_TOOLS},
+    "admira_edit_campaign": "campaign_edit",
+    "admira_save_ad_brief": "campaign_brief",
+    "admira_resume_campaign": "campaign_activate",
+    "admira_schedule_campaign_activation": "campaign_activate",
+    "admira_stage_budget_change": "spend_increase",
+    "admira_stage_organic_social_post": "organic_publish",
+}
+STRATEGIC_PROFILE_NONPAID_MEDIA_PURPOSES = {
+    "logo", "brand_exploration", "branding", "brand_asset", "moodboard",
+    "standalone_asset", "organic", "organic_social_post", "daily_social_post",
+    "social_post", "organic_content", "motion_asset", "motion_graphic_asset",
+    "storyboard_asset", "video_design_element",
+}
+BRAND_BOOTSTRAP_MEDIA_PURPOSES = {
+    "logo", "brand_exploration", "branding", "brand_asset", "moodboard", "brand_sample",
+}
 CAMPAIGN_CREATIVE_SOURCE_KEYS = {
     "creative_image_path",
     "image_hash",
@@ -218,6 +236,273 @@ def result_ok(result):
     if "ok" in result:
         return bool(result.get("ok"))
     return True
+
+
+def _safe_mapping(value):
+    return value if isinstance(value, dict) else {}
+
+
+def compact_oauth_workspace_result(result):
+    """Return only the public inventory needed for a conversational choice."""
+    result = _safe_mapping(result)
+    accounts = []
+    for item in result.get("accounts") or []:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        accounts.append({
+            key: item.get(key)
+            for key in ("id", "account_id", "name", "currency", "timezone_name", "account_status")
+            if item.get(key) not in (None, "")
+        })
+    pages = []
+    for item in result.get("pages") or []:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        page = {
+            key: item.get(key)
+            for key in ("id", "name", "category", "can_publish")
+            if item.get(key) not in (None, "")
+        }
+        instagram = item.get("instagram") if isinstance(item.get("instagram"), dict) else {}
+        if instagram.get("id"):
+            page["instagram"] = {
+                key: instagram.get(key)
+                for key in ("id", "username", "name")
+                if instagram.get(key) not in (None, "")
+            }
+        pages.append(page)
+    compact = {
+        "connected": bool(result.get("connected")),
+        "pending": bool(result.get("pending")),
+        "selection_required": bool(
+            result.get("connected")
+            and not (result.get("active_ad_account_id") and result.get("active_page_id"))
+        ),
+        "active_ad_account_id": str(result.get("active_ad_account_id") or ""),
+        "active_page_id": str(result.get("active_page_id") or ""),
+        "accounts": accounts[:50],
+        "pages": pages[:50],
+        "account_count": len(accounts),
+        "page_count": len(pages),
+    }
+    for key in ("selection_intent", "selection_intent_open", "selection_authorization", "reason", "reply"):
+        if result.get(key) not in (None, "", {}):
+            compact[key] = result.get(key)
+    return compact
+
+
+def compact_meta_context(context, detail_level="standard"):
+    """Bound live Meta receipts without weakening live-read semantics.
+
+    The full Graph response remains server-side.  The model receives IDs,
+    names, status, budgets and performance fields needed to reason or select a
+    campaign, without hundreds of duplicated nested objects and OAuth lists.
+    """
+    context = _safe_mapping(context)
+    deep = str(detail_level or "standard").lower() in {"deep", "full", "breakdowns"}
+    campaign_limit, adset_limit, ad_limit = ((100, 200, 300) if deep else (40, 80, 120))
+    compact = {
+        "metrics_source": context.get("metrics_source") or {},
+        "inventory_counts": context.get("inventory_counts") or {},
+        "summary": context.get("summary") or {},
+        "metrics_range": context.get("metrics_range") or {},
+        "data_quality": context.get("data_quality") or {},
+        "campaigns": (context.get("campaigns") or [])[:campaign_limit],
+        "adsets": (context.get("adsets") or [])[:adset_limit],
+        "ads": (context.get("ads") or [])[:ad_limit],
+        "recommendations": (context.get("recommendations") or [])[:6],
+        "fatigue": (context.get("fatigue") or [])[:6],
+    }
+    oauth = _safe_mapping(context.get("oauth_workspace"))
+    compact["oauth_workspace"] = {
+        key: oauth.get(key)
+        for key in (
+            "authorized", "selection_required", "active_ad_account_id", "active_page_id",
+            "account_count", "page_count", "publishable_page_count", "business_count",
+        )
+        if key in oauth
+    }
+    if deep:
+        compact["campaign_tree"] = (context.get("campaign_tree") or [])[:100]
+        compact["breakdowns"] = {
+            name: rows[:60]
+            for name, rows in _safe_mapping(context.get("breakdowns")).items()
+            if isinstance(rows, list)
+        }
+    return compact
+
+
+def compact_agent_tool_result(tool, result):
+    """Make high-volume mutation receipts small while retaining proof/errors."""
+    if not isinstance(result, dict):
+        return result
+    outer = {
+        key: result.get(key)
+        for key in (
+            "type", "executed", "blocked", "reason", "reply", "staged", "status",
+            "campaign_id", "adset_ids", "ad_ids", "approval_id", "selected",
+            "verified_persisted", "saved", "draft", "changed",
+        )
+        if result.get(key) not in (None, "", [], {})
+    }
+    nested = result.get("result") if isinstance(result.get("result"), dict) else result
+    if tool == "admira_save_business_memory":
+        receipt = {
+            key: nested.get(key)
+            for key in ("saved", "draft", "reason")
+            if nested.get(key) not in (None, "")
+        }
+        if isinstance(nested.get("strategic_profile"), dict):
+            receipt["strategic_profile"] = nested["strategic_profile"]
+        if nested.get("review_summary"):
+            # The canonical summary is the one piece of business memory that
+            # must survive compaction: the assistant has to show these exact
+            # current values before a later buyer turn can complete review.
+            receipt["review_summary"] = str(nested.get("review_summary"))[:5000]
+        if nested.get("reply"):
+            receipt["reply"] = str(nested.get("reply"))[:600]
+        outer["result"] = receipt
+        return outer
+    if tool in {
+        "admira_save_brand_memory", "admira_save_product_memory", "admira_save_ads_onboarding",
+        "admira_save_durable_memory", "admira_save_ad_brief", "admira_save_creative_references",
+        "admira_save_content_asset",
+    }:
+        receipt = {
+            key: nested.get(key)
+            for key in (
+                "saved", "draft", "draft_id", "kind", "scope", "product_id", "ad_brief_id",
+                "asset_id", "asset_ids", "imported_count", "product_count", "reason", "status",
+            )
+            if nested.get(key) not in (None, "", [], {})
+        }
+        outer["result"] = receipt
+        return outer
+    if tool in GENERATED_MEDIA_TOOLS or tool == "admira_codex_creative_plan":
+        receipt = {
+            key: nested.get(key)
+            for key in (
+                "ok", "blocked", "reason", "error", "asset_id", "image_path", "video_path",
+                "preview_url", "format", "width", "height", "duration_seconds", "stdout",
+            )
+            if nested.get(key) not in (None, "", [], {})
+        }
+        outer["result"] = receipt
+        return outer
+    if tool in CAMPAIGN_CREATION_TOOLS:
+        creation = _safe_mapping(nested.get("creation")) or nested
+        execution = _safe_mapping(creation.get("execution"))
+        if not execution:
+            execution = _safe_mapping(creation.get("result"))
+        outer["result"] = {
+            "status": creation.get("status") or nested.get("status"),
+            "executed": execution.get("executed", creation.get("executed")),
+            "campaign_id": execution.get("campaign_id") or creation.get("campaign_id"),
+            "adset_ids": execution.get("adset_ids") or creation.get("adset_ids") or [],
+            "ad_ids": execution.get("ad_ids") or creation.get("ad_ids") or [],
+            "reason": creation.get("reason") or creation.get("error") or nested.get("reason") or "",
+        }
+        return outer
+    return result
+
+
+def strategic_profile_action_category(tool, args):
+    category = STRATEGIC_PROFILE_GATED_TOOLS.get(tool, "")
+    if category:
+        return category
+    if tool in CREATIVE_IMAGE_TOOLS:
+        purpose = str((args or {}).get("purpose") or "ad_creative").strip().lower().replace("-", "_")
+        if purpose in BRAND_BOOTSTRAP_MEDIA_PURPOSES:
+            return "brand_exploration"
+        return "organic_creative" if purpose in STRATEGIC_PROFILE_NONPAID_MEDIA_PURPOSES else "paid_creative"
+    if tool == "admira_generate_motion_graphic_video":
+        purpose = str((args or {}).get("purpose") or "ad_motion_graphics").strip().lower().replace("-", "_")
+        return "brand_exploration" if purpose in STRATEGIC_PROFILE_NONPAID_MEDIA_PURPOSES else "ad_motion_graphics"
+    return ""
+
+
+def strategic_profile_gate_result(tool, args, dashboard):
+    category = strategic_profile_action_category(tool, args)
+    if not category:
+        return None
+    checker = getattr(dashboard, "strategic_product_action_eligibility", None)
+    if not callable(checker):
+        return {
+            "ok": False,
+            "tool": tool,
+            "blocked": True,
+            "executed": False,
+            "reason": "strategic_profile_gate_unavailable",
+            "reply": "No ejecuté la acción porque no pude verificar el perfil estratégico del negocio.",
+        }
+    decision = checker(category)
+    if decision.get("allowed"):
+        return None
+    missing = list(decision.get("unresolved_topics") or [])
+    branding_block = decision.get("code") == "branding_required"
+    return {
+        "ok": False,
+        "tool": tool,
+        "blocked": True,
+        "executed": False,
+        "reason": decision.get("code") or "strategic_profile_required",
+        "profile_status": decision.get("profile_status"),
+        "profile_revision": decision.get("revision"),
+        "confirmed_revision": decision.get("confirmed_revision"),
+        "unresolved_topics": missing,
+        "reply": (
+            decision.get("next_question")
+            if branding_block and decision.get("next_question")
+            else "No ejecuté esa acción: primero debemos terminar y confirmar juntos el perfil estratégico del negocio. Podemos seguir conversando, leyendo Meta y guardando respuestas; no hace falta usar comandos ni frases exactas."
+        ),
+    }
+
+
+def strategic_profile_pending_approval_gate(args, dashboard):
+    """Prevent an old pending card from bypassing the current Page profile."""
+    approval_id = str((args or {}).get("approval_id") or "").strip()
+    if not approval_id:
+        return None
+    pending = dashboard.read_json(dashboard.PENDING_FILE, [])
+    item = next(
+        (
+            candidate for candidate in pending
+            if isinstance(candidate, dict)
+            and candidate.get("id") == approval_id
+            and candidate.get("status", "pending") == "pending"
+        ),
+        None,
+    )
+    if not item:
+        return None
+    category = {
+        "create_campaign": "campaign_create",
+        "campaign_edit": "campaign_edit",
+        "resume_campaign": "campaign_activate",
+        "activate_campaign": "campaign_activate",
+        "budget_change": "spend_increase",
+    }.get(str(item.get("type") or ""))
+    if not category:
+        return None
+    checker = getattr(dashboard, "strategic_product_action_eligibility", None)
+    decision = checker(category) if callable(checker) else {"allowed": False, "code": "strategic_profile_gate_unavailable"}
+    if decision.get("allowed"):
+        return None
+    return {
+        "ok": False,
+        "tool": "admira_approve_action",
+        "blocked": True,
+        "executed": False,
+        "reason": decision.get("code") or "strategic_profile_required",
+        "approval_id": approval_id,
+        "profile_status": decision.get("profile_status"),
+        "unresolved_topics": decision.get("unresolved_topics") or [],
+        "reply": (
+            "No ejecuté esa aprobación pendiente porque pertenece a una acción publicitaria y el perfil "
+            "estratégico vigente de esta Página todavía no está completo y confirmado. Pausar, rechazar o "
+            "eliminar siguen disponibles por seguridad."
+        ),
+    }
 
 
 def generated_media_attachment_for_result(tool, result):
@@ -893,6 +1178,9 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
         return empty_tool_arguments_result(tool)
     args = hydrate_archived_content_asset_paths(tool, args)
     dashboard = load_dashboard()
+    profile_block = strategic_profile_gate_result(tool, args, dashboard)
+    if profile_block:
+        return redact_payload(profile_block)
     if tool in CAMPAIGN_EDIT_TOOLS:
         return redact_payload(dashboard.handle_campaign_edit_tool(args, chat_payload(channel, language), tool))
     campaign_compilation = None
@@ -1010,7 +1298,7 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
 
     if tool == "admira_get_real_meta_context":
         date_preset = str(args.get("date_preset") or args.get("range") or "maximum").strip().lower()
-        detail_level = str(args.get("detail_level") or "deep").strip().lower()
+        detail_level = str(args.get("detail_level") or "standard").strip().lower()
         include_breakdowns = detail_level in {"deep", "full", "breakdowns"}
         live_sync = dashboard.refresh_managed_real_metrics(
             reason="agent_live_context",
@@ -1117,19 +1405,31 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
                 "partial": False,
                 "last_confirmed_at": context["live_sync"].get("fetched_at"),
             })
-        return redact_payload(
-            {
-                "ok": True,
-                "tool": tool,
-                "metrics_source": context.get("metrics_source", {}),
-                "live_sync": context.get("live_sync", {}),
-                "context": context,
-            }
-        )
+        compact_context = compact_meta_context(context, detail_level)
+        compact_live_sync = {
+            key: context.get("live_sync", {}).get(key)
+            for key in (
+                "ok", "rows", "partial", "reason", "category", "message", "fetched_at",
+                "cached_confirmed_at", "date_preset", "detail_level", "data_quality",
+            )
+            if context.get("live_sync", {}).get(key) not in (None, "", [], {})
+        }
+        return redact_payload({
+            "ok": True,
+            "tool": tool,
+            "metrics_source": compact_context.get("metrics_source", {}),
+            "live_sync": compact_live_sync,
+            "context": compact_context,
+        })
 
     if tool == "admira_get_meta_oauth_workspaces":
-        result = dashboard.social_oauth_status()
-        return redact_payload({"ok": bool(result.get("connected")), "tool": tool, "result": result})
+        reader = getattr(dashboard, "social_oauth_workspaces_for_text_selection", None)
+        result = reader(allow_switch=True) if callable(reader) else dashboard.social_oauth_status()
+        return redact_payload({
+            "ok": bool(result.get("connected")),
+            "tool": tool,
+            "result": compact_oauth_workspace_result(result),
+        })
 
     if tool == "admira_start_meta_oauth_connection":
         # This sends the buyer's own short-lived Facebook authorization link to
@@ -1140,7 +1440,11 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
 
     if tool == "admira_select_meta_oauth_workspace":
         result = dashboard.social_oauth_select(args)
-        return redact_payload({"ok": bool(result.get("selected")), "tool": tool, "result": result})
+        return redact_payload({
+            "ok": bool(result.get("selected")),
+            "tool": tool,
+            "result": compact_oauth_workspace_result(result),
+        })
 
     if tool == "admira_list_pending_approvals":
         pending = dashboard.read_json(dashboard.PENDING_FILE, [])
@@ -1183,6 +1487,9 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
         })
     if tool == "admira_approve_action":
         product_args["decision"] = "approve"
+        pending_profile_block = strategic_profile_pending_approval_gate(product_args, dashboard)
+        if pending_profile_block:
+            return redact_payload(pending_profile_block)
     elif tool == "admira_reject_action":
         product_args["decision"] = "reject"
 
@@ -1191,7 +1498,7 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
         "ok": result_ok(result),
         "tool": tool,
         "product_tool": product_tool,
-        "result": result,
+        "result": compact_agent_tool_result(tool, result),
     }
     if tool in CAMPAIGN_CREATION_TOOLS:
         if campaign_compilation:
@@ -1220,14 +1527,14 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
         else:
             persist_pending_campaign_workflow(tool, product_args, "", result=result, status="completed")
     if tool == "admira_save_business_memory" and result_ok(result):
-        profile = result.get("profile") if isinstance(result, dict) else {}
-        if isinstance(profile, dict) and profile.get("context_completed_at"):
-            # Business discovery deliberately transitions to a proactive
-            # organic-content proposal first.  OAuth is requested only after
-            # the buyer accepts or adjusts that strategy, so onboarding feels
-            # like useful marketing work rather than connection paperwork.
-            response["organic_content_strategy_required"] = True
-            response["next_onboarding_phase"] = "organic_content_strategy"
+        nested = result.get("result") if isinstance(result, dict) and isinstance(result.get("result"), dict) else result
+        readiness = nested.get("strategic_profile") if isinstance(nested, dict) else {}
+        if isinstance(readiness, dict) and readiness.get("complete"):
+            phase_reader = getattr(dashboard, "agent_onboarding_phase", None)
+            next_phase = phase_reader().get("phase") if callable(phase_reader) else "branding_creatives_creation"
+            response["branding_required"] = next_phase == "branding_creatives_creation"
+            response["organic_content_strategy_required"] = next_phase == "organic_content_strategy"
+            response["next_onboarding_phase"] = next_phase
     media_attachment = generated_media_attachment_for_result(tool, result)
     if media_attachment:
         response["media_attachment"] = media_attachment

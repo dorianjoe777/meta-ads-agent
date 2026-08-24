@@ -1984,6 +1984,9 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                 "<think>Debo revisar SOUL.md y llamar mcp_admira_save_business_memory.</think>\n[ADMIRA FINAL]\nSeguimos con el público principal de la marca.",
                 "es",
             )
+            inline_marker_clean, _ = admira_hermes_runtime_patch.normalize_telegram_outbound_text(
+                "[ADMIRA FINAL] Aquí está la recomendación concreta.", "es"
+            )
             normalized_response = admira_hermes_runtime_patch._normalize_gateway_outbound_response({"final_response": table_reply})
             novice_turn = admira_hermes_runtime_patch._append_turn_execution_contract(
                 "No sé nada de marketing. Tengo una cafetería y quiero más clientes.\n\n"
@@ -1999,6 +2002,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.assert_true(compression_abort == "NO_REPLY" and compression_abort_metadata["suppressed"], "Compression abort diagnostics stay silent in Telegram")
             self.assert_true(reasoning_clean.startswith("Perfecto.") and "MCP" not in reasoning_clean and "Hermes" not in reasoning_clean and "internal_reasoning_removed" in reasoning_metadata["reasons"], "Telegram delivers only the marked final answer when model planning leaks before a divider")
             self.assert_true(tagged_clean == "Seguimos con el público principal de la marca." and "internal_reasoning_removed" in tagged_metadata["reasons"], "Telegram removes tagged reasoning and the internal final marker")
+            self.assert_true(inline_marker_clean == "Aquí está la recomendación concreta.", "Telegram strips the internal final marker when a model writes the answer on the same line")
             self.assert_true("• Base" in normalized_response["final_response"], "Gateway response normalization runs on the final response shape Hermes delivers")
             self.assert_true("ADMIRA TURN EXECUTION CONTRACT" in novice_turn and "máximo 180 palabras" in novice_turn and "insumos del dueño" in novice_turn and "datos o archivos del dueño" in novice_turn and "margen de contribución" in novice_turn, "Each novice Telegram turn gets a recency-edge manager-led response contract")
             self.assert_true(novice_turn_again.count("ADMIRA TURN EXECUTION CONTRACT") == 2, "Novice turn contract is appended only once, including its start and end markers")
@@ -3256,7 +3260,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             nvidia_env = nvidia_env_path.read_text(encoding="utf-8")
             self.assert_true("ADMIRA_NVIDIA_API_KEY=nvapi-cron-private-key" in nvidia_env and "ADMIRA_NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1" in nvidia_env and "ADMIRA_NVIDIA_MODEL=minimaxai/minimax-m3" in nvidia_env, "A fresh unattended NVIDIA cron reload has all provider credentials it needs and starts on MiniMax M3")
             self.assert_true("nvapi-cron-private-key" not in nvidia_yaml and (nvidia_env_path.stat().st_mode & 0o777) == 0o600, "NVIDIA credentials stay out of config.yaml and inside the private env")
-            self.assert_true("  max_turns: 10" in nvidia_yaml and "    - delegation" in nvidia_yaml and "  api_max_retries: 0" in nvidia_yaml, "Hosted NVIDIA conversations cannot spawn subagents or fan one buyer message into an unbounded inference burst or retry a shared 429")
+            self.assert_true("  max_turns: 8" in nvidia_yaml and "    - delegation" in nvidia_yaml and "  api_max_retries: 0" in nvidia_yaml, "Hosted NVIDIA conversations cannot spawn subagents or fan one buyer message into an unbounded inference burst or retry a shared 429")
 
             disconnected_files = hermes_gateway.write_gateway_files(FakeConfig())
             disconnected_env = Path(disconnected_files["env"]).read_text(encoding="utf-8")

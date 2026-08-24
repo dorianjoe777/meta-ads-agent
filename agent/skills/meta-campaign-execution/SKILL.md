@@ -21,11 +21,9 @@ marketer who understands the client's industry, then record the buyer's
 approval or edits in the natural-language brief. Never let Terra, a fallback,
 or a backend default invent missing copy. Never use the campaign name or ad-set
 name as the ad title unless the buyer explicitly chose that wording.
-When using Hermes' native clarification/choice UI, include those exact values
-in the visible question before offering approval. A generic “approve and
-create” card with omitted copy is invalid; show the full proposal and the
-delivered creative first, then accept the buyer's natural correction or
-approval.
+Show the full proposal and delivered creative in ordinary conversational text,
+then accept the buyer's natural correction or approval. Never use `clarify`, a
+choice card, or a generic “approve and create” button.
 
 ## Safe execution
 
@@ -86,7 +84,7 @@ Publicación directa is for approved organic Facebook posts and uses the OAuth c
 
 ## Native lead forms
 
-- Read `skills/lead-form-management/SKILL.md` and use `mcp_admira_list_lead_forms` before campaign creation.
+- Follow the compact lead-form procedure already supplied and use `mcp_admira_list_lead_forms` before campaign creation; do not add a read-file unlock turn.
 - If the required form does not exist and the buyer requests it, use `mcp_admira_create_lead_form` with complete approved arguments. Direct creation is the primary route; success requires a verified real `lead_gen_form_id`.
 - Use `mcp_admira_stage_lead_form` only after direct creation returns a real Meta permission or capability blocker. Do not assume this limitation in advance and do not confuse unrelated license/OAuth/model errors with Meta capability.
 - For a lead-form ad, pass the image/video, copy, CTA, and verified form ID. The backend creates the inline creative directly with `lead_gen_form_id`; no external landing URL or Page post is required.

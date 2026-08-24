@@ -12,7 +12,8 @@ Use this skill when the buyer asks from Telegram or dashboard chat to approve, r
 
 - Approval requires one exact pending approval.
 - Keep approval IDs internal. Never show them in buyer-facing text.
-- A plain `aprobado` refers to the most recent proposal/card just presented. If the buyer names or replies to an older proposal, use that exact one; if the intended item is genuinely unclear, show named choices without IDs.
-- Campaign activation/resume requires the short confirmation phrase shown by the product approval card: `Sí, activar`. No ID is appended.
+- A plain `aprobado` refers to the most recent visible proposal just presented. If the buyer names or replies to an older proposal, use that exact one; if the intended item is genuinely unclear, list named choices in ordinary text without IDs.
+- Campaign activation/resume requires the short natural-language confirmation phrase `Sí, activar`. No ID is appended.
+- Never use `clarify`, question cards, selection cards, or approval/reject buttons. Present every proposal and any ambiguous choices as ordinary chat text.
 - Never invent approval IDs.
 - Never approve your own recommendation without the buyer's explicit decision.

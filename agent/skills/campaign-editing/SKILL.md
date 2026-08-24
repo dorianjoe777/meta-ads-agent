@@ -5,7 +5,7 @@ description: Resolve and edit existing Meta campaigns from natural language, inc
 
 # Campaign Editing
 
-Read this skill before calling `mcp_admira_edit_campaign`, `mcp_admira_stage_budget_change`, `mcp_admira_pause_campaign`, `mcp_admira_resume_campaign`, `mcp_admira_schedule_campaign_activation`, or `mcp_admira_delete_campaign`.
+The runtime compiles this procedure before exposing the relevant campaign-editing tools. Follow that compact procedure and the current schema; do not add a read-file unlock turn.
 
 ## Resolve scope naturally
 

@@ -10,6 +10,7 @@ Open:
 """
 import csv
 import base64
+import contextlib
 import hashlib
 import hmac
 import ipaddress
@@ -41,6 +42,16 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 import zipfile
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Admira containers are Linux.
+    fcntl = None
+
+try:  # Docker/Linux production. The thread lock remains a safe fallback.
+    import fcntl
+except ImportError:  # pragma: no cover - Windows runs this service in Docker.
+    fcntl = None
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
@@ -143,10 +154,23 @@ from product_catalog import import_product_catalog, refresh_catalog_index, searc
 from hermes_gateway import telegram_settings
 from license import activate_license, license_status, mark_license_install_state, normalize_license_entitlements, resolved_device_id, validate_license_key
 from local_store import now_iso, read_json, write_json, write_private_json
+from complete_reset import (
+    parse_utc as parse_complete_reset_time,
+    reset_workspace as reset_complete_workspace,
+    write_private_json as write_complete_reset_json,
+)
 from meta_insights import aggregate_campaigns as aggregate_meta_campaigns, campaign_inventory_tree as meta_campaign_inventory_tree, campaign_is_dashboard_visible, collect_meta_snapshot, graph_error_category as meta_graph_error_category, graph_get as meta_graph_get, normalize_insight_range, save_meta_snapshot
 from motion_graphics import generate_motion_graphic_video, safe_motion_media_path
 from shotcraft_catalog import search_shotcraft_recipes
 from meta_upload import recent_uploads, stage_upload
+from meta_selection_authorization import (
+    MetaSelectionAuthorizer,
+    SelectionAuthorizationError,
+    SelectionBindingMismatch,
+    SelectionIntentNotFound,
+    SelectionTicketInvalid,
+    inventory_fingerprint,
+)
 from optimization_engine import (
     anomaly_diagnostics,
     funnel_diagnostics,
@@ -212,6 +236,20 @@ from expert_campaign import (
 )
 from signal_quality import apply_signal_quality_to_adset, review_signal_quality, signal_quality_reply
 from social_flow_client import SocialFlowClient
+from strategic_profile import (
+    TOPICS as STRATEGIC_PROFILE_TOPICS,
+    StrategicProfileError,
+    StrategicProfileNotReady,
+    StrategicProfileScopeMismatch,
+    action_eligibility as strategic_profile_action_eligibility,
+    apply_topic_updates as apply_strategic_profile_updates,
+    confirm_current_revision as confirm_strategic_profile_revision,
+    embed_profile as embed_strategic_profile,
+    mark_review_presented as mark_strategic_profile_review_presented,
+    migrate_profile as migrate_strategic_profile,
+    new_profile as new_strategic_profile,
+    profile_readiness as strategic_profile_readiness,
+)
 from campaign_editing import mark_draft_status, prepare_campaign_edit, supersede_pending_edit
 from telegram_agent import bot_request as telegram_bot_request
 from telegram_agent import reset_polling_state as reset_telegram_polling_state
@@ -284,9 +322,17 @@ BOOTSTRAP_CONFIG_FILE = ROOT_DIR / "installer" / "release-bootstrap.env"
 UPDATE_SNAPSHOTS_DIR = DATA_DIR / "update-snapshots"
 TELEGRAM_UPDATE_NOTIFICATION_FILE = DATA_DIR / "telegram_update_notifications.json"
 TELEGRAM_UPDATE_INSTALL_REQUEST_FILE = DATA_DIR / "telegram_update_install_request.json"
+TELEGRAM_COMPLETE_RESET_CONFIRMATION_FILE = DATA_DIR / "telegram_complete_reset_confirmation.json"
+TELEGRAM_COMPLETE_RESET_REQUEST_FILE = DATA_DIR / "telegram_complete_reset_request.json"
+TELEGRAM_COMPLETE_RESET_RESULT_FILE = DATA_DIR / "telegram_complete_reset_result.json"
 AUTOMATIC_UPDATE_STATE_FILE = DATA_DIR / "automatic_update_state.json"
 META_OAUTH_PENDING_FILE = DATA_DIR / "meta_oauth_pending.json"
 META_OAUTH_CONNECTION_FILE = DATA_DIR / "meta_oauth_connection.json"
+META_OAUTH_SELECTION_AUTH_FILE = DATA_DIR / "meta_oauth_selection_authorization.json"
+META_OAUTH_SELECTION_KEY_FILE = DATA_DIR / "meta_oauth_selection_authorization.key"
+TRUSTED_BUYER_TURN_FILE = DATA_DIR / "trusted_buyer_turn.json"
+TRUSTED_BUYER_TURN_LOCK_FILE = DATA_DIR / "trusted_buyer_turn.lock"
+MEMORY_DRAFTS_FILE = DATA_DIR / "memory_drafts.json"
 # Hermes owns Telegram polling, so a fresh installation may not have a
 # dashboard-era TELEGRAM_CHAT_ID yet.  The runtime records the real incoming
 # Telegram chat here; it contains only the numeric routing ID, never a token.
@@ -301,6 +347,15 @@ MAX_UPDATE_ARCHIVE_BYTES = 220 * 1024 * 1024
 MAX_UPDATE_UNPACKED_BYTES = 300 * 1024 * 1024
 MAX_MANAGED_META_AD_ACCOUNTS = 5
 META_OAUTH_POLL_LOCK = threading.Lock()
+META_OAUTH_SELECTION_PERSIST_LOCK = threading.RLock()
+TRUSTED_BUYER_TURN_THREAD_LOCK = threading.RLock()
+TRUSTED_BUYER_CAPABILITY_KINDS = (
+    "business",
+    "brand",
+    "product",
+    "ads",
+    "profile_review",
+)
 CURRENT_DASHBOARD_BIND_HOST = ""
 CURRENT_DASHBOARD_BIND_PORT = 0
 CREATIVE_ASSET_ROOT = OUTPUT_DIR / "creatives"
@@ -335,6 +390,9 @@ UPDATE_NOTIFICATION_MONITOR_LOCK = threading.Lock()
 UPDATE_INSTALL_MONITOR_THREAD = None
 UPDATE_INSTALL_MONITOR_STOP = None
 UPDATE_INSTALL_MONITOR_LOCK = threading.Lock()
+COMPLETE_RESET_MONITOR_THREAD = None
+COMPLETE_RESET_MONITOR_STOP = None
+COMPLETE_RESET_MONITOR_LOCK = threading.Lock()
 AUTOMATIC_UPDATE_MONITOR_THREAD = None
 AUTOMATIC_UPDATE_MONITOR_STOP = None
 AUTOMATIC_UPDATE_MONITOR_LOCK = threading.Lock()
@@ -424,6 +482,21 @@ BUSINESS_OUTPUT_DIRS = [
     OUTPUT_DIR / "uploads",
     OUTPUT_DIR / "telegram_uploads",
 ]
+COMPLETE_RESET_CLEAR_ENV_KEYS = {
+    "DASHBOARD_PASSWORD", "DASHBOARD_PASSWORD_HASH", "DASHBOARD_TOKEN",
+    "META_AD_ACCOUNT_ID", "META_ACCESS_TOKEN", "META_ACCESS_TOKEN_KIND",
+    "META_ACCESS_TOKEN_SAVED_AT", "META_PUBLISHING_ACCESS_TOKEN",
+    "META_PUBLISHING_TOKEN_SAVED_AT", "META_OAUTH_CONNECTED_AT",
+    "META_OAUTH_EXPIRES_AT", "META_OAUTH_USER_ID", "META_TARGET_CPA",
+    "META_NOTIFY_CHANNEL", "META_DAILY_BRIEF_TIME", "META_DAILY_BRIEF_TIMEZONE",
+    "SHOPIFY_SHOP_DOMAIN", "SHOPIFY_ADMIN_API_TOKEN", "SHOPIFY_API_VERSION",
+    "DAILY_BRIEF_TIME", "DAILY_BRIEF_TIMEZONE", "DAILY_BRIEF_TIMEZONE_SOURCE",
+    "DAILY_SOCIAL_CONTENT_ENABLED", "DAILY_SOCIAL_CONTENT_DECISION",
+    "DAILY_SOCIAL_CONTENT_TIME", "DAILY_SOCIAL_CONTENT_POSTS_PER_DAY",
+    "DAILY_SOCIAL_CONTENT_INTERVAL_DAYS", "DAILY_SOCIAL_CONTENT_FORMATS",
+    "DAILY_SOCIAL_CONTENT_VIDEO_INTERVAL_DAYS", "AGENT_COMMUNICATION_STYLE",
+    "AGENT_AD_EXPERIENCE_LEVEL",
+}
 PRESERVED_UPDATE_PATHS = {".env", "ad-config.json", "dashboard/data", "logs", "output", "runtime"}
 
 def redact_error_text(value, limit=1200):
@@ -1314,14 +1387,30 @@ def send_scheduled_automatic_update_notice(config, local_now=None):
         return {"sent": False, "reason": "telegram_send_failed"}
 
 
+def automatic_update_is_due(state, local_now, startup=False):
+    """Return whether this process should perform today's release check.
+
+    The 3–9 a.m. window remains the normal schedule.  A desktop installation
+    can be asleep throughout that window, so its first monitor iteration must
+    recover the missed check at any hour instead of waiting for another day.
+    """
+    today = local_now.date().isoformat()
+    if str((state or {}).get("attempted_on") or "") == today:
+        return False
+    return bool(startup or 3 <= local_now.hour < 9)
+
+
 def _automatic_update_loop(stop_event):
+    startup = True
     while not stop_event.is_set():
         config = load_config()
         local_now = datetime.now(automatic_update_timezone(config))
-        # If the machine was asleep at 3:00, run once during the same quiet
-        # maintenance window, never in the client's working day.
-        if 3 <= local_now.hour < 9:
+        # Desktop Docker may start after the maintenance window. Recover that
+        # missed daily check on the first iteration, then use the quiet window
+        # for every subsequent iteration while this process remains alive.
+        if automatic_update_is_due(automatic_update_state(), local_now, startup=startup):
             run_scheduled_automatic_update(config, local_now)
+        startup = False
         if local_now.hour >= 9:
             send_scheduled_automatic_update_notice(config, local_now)
         if stop_event.wait(60):
@@ -1568,6 +1657,250 @@ def stop_telegram_update_install_monitor():
             UPDATE_INSTALL_MONITOR_STOP.set()
         UPDATE_INSTALL_MONITOR_THREAD = None
         UPDATE_INSTALL_MONITOR_STOP = None
+
+
+def _complete_reset_result_text(result, language="es"):
+    english = str(language or "es").lower().startswith("en")
+    version = str((result or {}).get("version") or current_product_version()).strip()
+    if str((result or {}).get("status") or "") == "completed":
+        if english:
+            return (
+                f"✅ Admira IA was reinstalled from the official stable release {version}. "
+                "I kept the license, this Telegram connection, the primary model, and ChatGPT/Codex for Image 2. "
+                "Meta, business memory, sessions, local media, and scheduled jobs were removed."
+            )
+        return (
+            f"✅ Admira IA fue reinstalada desde la versión estable oficial {version}. "
+            "Conservé la licencia, este Telegram, el modelo principal y ChatGPT/Codex para Image 2. "
+            "Se eliminaron Meta, el negocio, la memoria, las sesiones, la multimedia local y los cronjobs."
+        )
+    detail = str((result or {}).get("detail") or "").strip()
+    if "más nueva que el canal estable" in detail or "newer than the stable channel" in detail.lower():
+        if english:
+            return (
+                "I did not reset anything because this canary is newer than the official stable release. "
+                "Publish the current canary as stable first, then run /resetear_completamente again. Your data remains intact."
+            )
+        return (
+            "No reinicié ni borré nada porque este canary es más nuevo que la versión estable oficial. "
+            "Primero hay que publicar el canary actual como estable y después ejecutar nuevamente /resetear_completamente. Tus datos siguen intactos."
+        )
+    if english:
+        return "I could not complete the full reset. I did not report it as completed; run the command again or contact support."
+    return "No pude completar el reinicio total. No lo reportaré como terminado; vuelve a ejecutar el comando o contacta soporte."
+
+
+def process_telegram_complete_reset_result_notification():
+    result = read_json(TELEGRAM_COMPLETE_RESET_RESULT_FILE, {})
+    if not isinstance(result, dict) or not result:
+        return {"ok": True, "action": "none"}
+    notify_after = parse_complete_reset_time(result.get("notify_after"))
+    if notify_after and datetime.now(timezone.utc) < notify_after:
+        return {"ok": True, "action": "waiting"}
+    chat_id = str(result.get("chat_id") or "").strip()
+    config = load_config()
+    configured_chat = str(telegram_settings(config).get("chat_id") or "").strip()
+    if not chat_id or not hmac.compare_digest(chat_id, configured_chat):
+        TELEGRAM_COMPLETE_RESET_RESULT_FILE.unlink(missing_ok=True)
+        return {"ok": False, "action": "invalid_result_owner"}
+    try:
+        telegram_bot_request(config, "sendMessage", {
+            "chat_id": chat_id,
+            "text": _complete_reset_result_text(result, telegram_settings(config).get("language") or "es"),
+            "disable_web_page_preview": "true",
+        }, timeout=15)
+    except Exception:
+        return {"ok": False, "action": "notification_failed"}
+    TELEGRAM_COMPLETE_RESET_RESULT_FILE.unlink(missing_ok=True)
+    return {"ok": True, "action": "notified"}
+
+
+def _extract_official_release_for_complete_reset(release, tmp_root):
+    settings = release_settings(load_config())
+    download_url = str(release.get("download_url") or "").strip()
+    if not download_url or not official_download_url_allowed(download_url, settings):
+        raise ValueError("El servidor oficial no devolvió una descarga válida para reinstalar.")
+    archive_path = tmp_root / "release.zip"
+    download_limited(download_url, archive_path, MAX_UPDATE_ARCHIVE_BYTES)
+    integrity = validate_update_archive_sha256(archive_path, release.get("sha256"))
+    if not integrity.get("verified"):
+        raise ValueError("El servidor oficial no incluyó la firma SHA-256 requerida para reinstalar.")
+    unpack_dir = tmp_root / "unpack"
+    unpack_dir.mkdir()
+    with zipfile.ZipFile(archive_path) as archive:
+        total_size = 0
+        for member in archive.infolist():
+            total_size += int(member.file_size or 0)
+            if total_size > MAX_UPDATE_UNPACKED_BYTES:
+                raise ValueError("La reinstalación oficial es demasiado grande.")
+            if not is_safe_extract_member(unpack_dir, member.filename) or not zip_member_is_safe(member):
+                raise ValueError("La reinstalación contiene rutas no seguras.")
+        archive.extractall(unpack_dir)
+    source_root = update_package_source_root(unpack_dir)
+    validation = validate_update_package_source(source_root, release.get("latest_version"))
+    compile_dir = tmp_root / "compile"
+    compile_dir.mkdir()
+    py_compile.compile(
+        str(source_root / "dashboard" / "monitoring-dashboard.py"),
+        cfile=str(compile_dir / "dashboard.pyc"),
+        doraise=True,
+    )
+    py_compile.compile(
+        str(source_root / "src" / "complete_reset.py"),
+        cfile=str(compile_dir / "complete_reset.pyc"),
+        doraise=True,
+    )
+    return source_root, validation, integrity
+
+
+def reinstall_latest_stable_from_zero():
+    """Install a verified stable package and remove buyer state atomically enough to recover code."""
+    if not UPDATE_OPERATION_LOCK.acquire(blocking=False):
+        raise ValueError("Ya hay una actualización o restauración en curso.")
+    try:
+        release = request_update_release()
+        current_version = current_product_version()
+        latest_version = str(release.get("latest_version") or "").strip()
+        if not latest_version:
+            raise ValueError("El canal estable no devolvió una versión válida.")
+        if version_parts(latest_version) < version_parts(current_version):
+            raise ValueError("Esta instalación es más nueva que el canal estable; publícala antes de reinstalar.")
+        with tempfile.TemporaryDirectory(prefix="admira-complete-reset-") as tmp_name:
+            tmp_root = Path(tmp_name)
+            source_root, validation, integrity = _extract_official_release_for_complete_reset(release, tmp_root)
+            backup_payload = copy_update_snapshot_payload(tmp_root / "source-backup")
+            try:
+                safe_copytree_contents(source_root, ROOT_DIR)
+                runtime_dir = ROOT_DIR / "runtime"
+                reset_complete_workspace(
+                    runtime_dir=runtime_dir,
+                    data_dir=DATA_DIR,
+                    output_dir=OUTPUT_DIR,
+                    logs_dir=ROOT_DIR / "logs",
+                    brand_guides_dir=BRAND_GUIDES_DIR,
+                    brand_seed_dir=source_root / "brand_guides",
+                    ad_config_example=ROOT_DIR / "ad-config.example.json",
+                    env_paths=[ENV_FILE, runtime_dir / ".env"],
+                    clear_env_keys=COMPLETE_RESET_CLEAR_ENV_KEYS,
+                    forced_env_values={
+                        "LIVE_ACTIONS_ENABLED": "false",
+                        "META_ADS_AGENT_MODE": "dry-run",
+                        "META_ADS_AGENT_VERSION": latest_version,
+                    },
+                    preserve_data_names=(TELEGRAM_COMPLETE_RESET_RESULT_FILE.name,),
+                )
+                runtime_ad_config = runtime_dir / "ad-config.json"
+                try:
+                    same_ad_config = AD_CONFIG_FILE.resolve() == runtime_ad_config.resolve()
+                except OSError:
+                    same_ad_config = False
+                if not same_ad_config:
+                    shutil.copy2(runtime_ad_config, AD_CONFIG_FILE)
+                updates = {key: "" for key in COMPLETE_RESET_CLEAR_ENV_KEYS}
+                updates.update({
+                    "LIVE_ACTIONS_ENABLED": "false",
+                    "META_ADS_AGENT_MODE": "dry-run",
+                    "META_ADS_AGENT_VERSION": latest_version,
+                })
+                update_env_values(updates)
+                health = run_update_health_checks(latest_version)
+            except Exception:
+                safe_copytree_contents(backup_payload, ROOT_DIR)
+                raise
+        return {
+            "ok": True,
+            "version": str(validation.get("package_version") or latest_version),
+            "from_version": current_version,
+            "archive_sha256_verified": bool(integrity.get("verified")),
+            "health": health,
+        }
+    finally:
+        UPDATE_OPERATION_LOCK.release()
+
+
+def process_telegram_complete_reset_request():
+    request = read_json(TELEGRAM_COMPLETE_RESET_REQUEST_FILE, {})
+    if not isinstance(request, dict) or not request:
+        return {"ok": True, "action": "none"}
+    if request.get("status") != "pending":
+        return {"ok": True, "action": "ignored"}
+    execute_after = parse_complete_reset_time(request.get("execute_after"))
+    if execute_after and datetime.now(timezone.utc) < execute_after:
+        return {"ok": True, "action": "waiting"}
+    requested_at = parse_complete_reset_time(request.get("requested_at"))
+    if not requested_at or (datetime.now(timezone.utc) - requested_at).total_seconds() > 15 * 60:
+        TELEGRAM_COMPLETE_RESET_REQUEST_FILE.unlink(missing_ok=True)
+        return {"ok": False, "action": "expired"}
+    config = load_config()
+    chat_id = str(request.get("chat_id") or "").strip()
+    configured_chat = str(telegram_settings(config).get("chat_id") or "").strip()
+    if not chat_id or not hmac.compare_digest(chat_id, configured_chat):
+        TELEGRAM_COMPLETE_RESET_REQUEST_FILE.unlink(missing_ok=True)
+        return {"ok": False, "action": "unauthorized"}
+    request.update({"status": "installing", "started_at": now_iso()})
+    write_complete_reset_json(TELEGRAM_COMPLETE_RESET_REQUEST_FILE, request)
+    try:
+        stop_hermes_gateway()
+        result = reinstall_latest_stable_from_zero()
+        notify_after = datetime.now(timezone.utc) + timedelta(seconds=5)
+        write_complete_reset_json(TELEGRAM_COMPLETE_RESET_RESULT_FILE, {
+            "status": "completed",
+            "chat_id": chat_id,
+            "version": result.get("version"),
+            "completed_at": now_iso(),
+            "notify_after": notify_after.isoformat(timespec="seconds"),
+        })
+        threading.Timer(1.2, restart_dashboard_process).start()
+        return {"ok": True, "action": "completed", "version": result.get("version")}
+    except Exception as exc:
+        try:
+            start_hermes_gateway(load_config())
+        except Exception:
+            pass
+        TELEGRAM_COMPLETE_RESET_REQUEST_FILE.unlink(missing_ok=True)
+        write_complete_reset_json(TELEGRAM_COMPLETE_RESET_RESULT_FILE, {
+            "status": "failed",
+            "chat_id": chat_id,
+            "completed_at": now_iso(),
+            "detail": redact_error_text(exc, 220),
+        })
+        return {"ok": False, "action": "failed"}
+
+
+def _telegram_complete_reset_loop(stop_event):
+    while not stop_event.is_set():
+        try:
+            process_telegram_complete_reset_result_notification()
+            process_telegram_complete_reset_request()
+        except Exception:
+            pass
+        if stop_event.wait(1.0):
+            return
+
+
+def ensure_telegram_complete_reset_monitor():
+    global COMPLETE_RESET_MONITOR_THREAD, COMPLETE_RESET_MONITOR_STOP
+    with COMPLETE_RESET_MONITOR_LOCK:
+        if COMPLETE_RESET_MONITOR_THREAD and COMPLETE_RESET_MONITOR_THREAD.is_alive():
+            return {"started": True, "already_running": True}
+        COMPLETE_RESET_MONITOR_STOP = threading.Event()
+        COMPLETE_RESET_MONITOR_THREAD = threading.Thread(
+            target=_telegram_complete_reset_loop,
+            args=(COMPLETE_RESET_MONITOR_STOP,),
+            name="admira-telegram-complete-reset",
+            daemon=True,
+        )
+        COMPLETE_RESET_MONITOR_THREAD.start()
+        return {"started": True, "already_running": False}
+
+
+def stop_telegram_complete_reset_monitor():
+    global COMPLETE_RESET_MONITOR_THREAD, COMPLETE_RESET_MONITOR_STOP
+    with COMPLETE_RESET_MONITOR_LOCK:
+        if COMPLETE_RESET_MONITOR_STOP:
+            COMPLETE_RESET_MONITOR_STOP.set()
+        COMPLETE_RESET_MONITOR_THREAD = None
+        COMPLETE_RESET_MONITOR_STOP = None
 
 
 def notify_model_health_issue(config, issue, _context=None):
@@ -3688,6 +4021,367 @@ def _meta_oauth_connection():
     return value if isinstance(value, dict) else {}
 
 
+def _meta_oauth_selection_authorizer():
+    """Return the private, persistent authorizer used by the Telegram runtime."""
+    return MetaSelectionAuthorizer(
+        META_OAUTH_SELECTION_AUTH_FILE,
+        key_path=META_OAUTH_SELECTION_KEY_FILE,
+        ttl_seconds=300,
+    )
+
+
+def _meta_oauth_selection_inventory(connection=None):
+    """Build the selectable inventory; the authorizer strips all token fields."""
+    connection = connection if isinstance(connection, dict) else _meta_oauth_connection()
+    return {
+        "accounts": [
+            item for item in (connection.get("accounts") or [])
+            if isinstance(item, dict) and clean_ad_account_id(item.get("id"))
+        ],
+        "pages": _oauth_publishable_pages(connection),
+    }
+
+
+def _meta_oauth_selection_current_pair(connection=None):
+    connection = connection if isinstance(connection, dict) else _meta_oauth_connection()
+    return {
+        "ad_account_id": clean_ad_account_id(connection.get("active_ad_account_id")),
+        "page_id": str(connection.get("active_page_id") or "").strip(),
+    }
+
+
+def _public_meta_selection_authorization(result):
+    result = result if isinstance(result, dict) else {}
+    return {
+        key: result.get(key)
+        for key in (
+            "status",
+            "reason",
+            "mode",
+            "missing",
+            "expires_at",
+            "inventory_hash",
+            "message_sequence",
+        )
+        if result.get(key) not in (None, "")
+    }
+
+
+def _open_meta_oauth_selection_intent_for_trusted_turn(*, allow_switch=False):
+    """Open/reuse a selection intent for the current server-recorded turn.
+
+    The ordinary status endpoint opens this only while the OAuth connection
+    still lacks a complete active pair. A trusted runtime handling an explicit
+    workspace-switch workflow may opt into ``allow_switch=True``.
+    """
+    turn = _trusted_buyer_turn()
+    if not turn:
+        return {"status": "unavailable", "reason": "missing_trusted_buyer_turn"}
+    if str(turn.get("meta_selection_ticket") or "").strip():
+        # The buyer's current message already produced a private capability.
+        # Reopening an intent here would correctly revoke that ticket as stale
+        # and would make a normal get-workspaces -> select sequence impossible.
+        return {
+            "status": "authorized_pending_persistence",
+            "message_sequence": turn.get("message_sequence"),
+        }
+    chat_id = str(turn.get("chat_id") or "").strip()
+    session_id = str(turn.get("session_id") or "").strip()
+    try:
+        message_sequence = int(turn.get("message_sequence"))
+    except (TypeError, ValueError):
+        return {"status": "unavailable", "reason": "missing_trusted_message_sequence"}
+    if not chat_id or not session_id:
+        return {"status": "unavailable", "reason": "missing_trusted_runtime_binding"}
+
+    connection = _meta_oauth_connection()
+    inventory = _meta_oauth_selection_inventory(connection)
+    current_pair = _meta_oauth_selection_current_pair(connection)
+    if not connection.get("connected") or not inventory["accounts"] or not inventory["pages"]:
+        return {"status": "unavailable", "reason": "oauth_inventory_not_ready"}
+    pair_complete = bool(current_pair["ad_account_id"] and current_pair["page_id"])
+    if pair_complete and not allow_switch:
+        return {"status": "not_required", "reason": "workspace_already_selected"}
+
+    authorizer = _meta_oauth_selection_authorizer()
+    existing = authorizer.current_intent(chat_id=chat_id, session_id=session_id)
+    expected_hash = inventory_fingerprint(inventory)
+    if existing:
+        if (
+            existing.get("inventory_hash") == expected_hash
+            and existing.get("current_pair") == current_pair
+        ):
+            return {
+                "status": "waiting_for_buyer_selection",
+                "mode": existing.get("mode"),
+                "expires_at": existing.get("expires_at"),
+                "inventory_hash": existing.get("inventory_hash"),
+            }
+        authorizer.clear(chat_id=chat_id, session_id=session_id)
+
+    opened = authorizer.open_intent(
+        chat_id=chat_id,
+        session_id=session_id,
+        inventory=inventory,
+        current_pair=current_pair,
+        opened_after_sequence=message_sequence,
+        mode="switch" if pair_complete else "initial",
+    )
+    return {
+        "status": "waiting_for_buyer_selection",
+        "mode": opened.get("mode"),
+        "expires_at": opened.get("expires_at"),
+        "inventory_hash": opened.get("inventory_hash"),
+    }
+
+
+def _trusted_meta_workspace_switch_requested(turn=None):
+    """Recognize a buyer-led request to inspect or change the active workspace.
+
+    Listing assets is harmless, but opening a switch authorization is not a
+    decision the model may make by itself. This check runs only against the
+    exact transport-captured buyer text. Once an intent exists, the separate
+    authorizer still requires an unambiguous account/Page choice and issues a
+    one-use ticket before anything can be persisted.
+    """
+    turn = turn if isinstance(turn, dict) else _trusted_buyer_turn()
+    raw = str(turn.get("message") or "").strip()
+    if not raw:
+        return False
+    normalized = unicodedata.normalize("NFKD", raw.casefold())
+    normalized = " ".join(
+        re.findall(
+            r"[a-z0-9]+",
+            "".join(char for char in normalized if not unicodedata.combining(char)),
+        )
+    )
+    asset_scope = re.search(
+        r"\b(?:cuenta|cuentas|account|accounts|pagina|paginas|page|pages|"
+        r"facebook|meta|negocio|business|workspace)\b",
+        normalized,
+    )
+    switch_action = re.search(
+        r"\b(?:cambi\w*|switch\w*|eleg\w*|seleccion\w*|escog\w*|"
+        r"usar|usa|use|reemplaz\w*|conect\w*|mostr\w*|muestr\w*|"
+        r"listar|lista|ver|revis\w*)\b",
+        normalized,
+    )
+    other_asset = re.search(
+        r"\b(?:otra|otro|different|distinta|distinto|nueva|nuevo)\b",
+        normalized,
+    )
+    return bool(asset_scope and (switch_action or other_asset))
+
+
+def social_oauth_workspaces_for_text_selection(*, allow_switch=False):
+    """List workspaces and establish the server-owned text-selection intent.
+
+    ``allow_switch`` is trusted runtime workflow state, never an MCP/model
+    argument. The normal first selection needs no flag because no pair exists.
+    """
+    result = social_oauth_status()
+    if result.get("connected"):
+        trusted_switch = bool(allow_switch) and _trusted_meta_workspace_switch_requested()
+        result["selection_authorization"] = _open_meta_oauth_selection_intent_for_trusted_turn(
+            allow_switch=trusted_switch
+        )
+    return result
+
+
+def _trusted_turn_message_hash(raw_message, message_sequence):
+    canonical = json.dumps(
+        {"message": str(raw_message or ""), "message_sequence": int(message_sequence)},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+@contextlib.contextmanager
+def _trusted_buyer_turn_lock():
+    """Serialize turn evidence across dashboard and short-lived MCP processes."""
+    TRUSTED_BUYER_TURN_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with TRUSTED_BUYER_TURN_THREAD_LOCK:
+        with TRUSTED_BUYER_TURN_LOCK_FILE.open("a+", encoding="utf-8") as handle:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _clear_trusted_buyer_turn_unlocked():
+    try:
+        TRUSTED_BUYER_TURN_FILE.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        # An unreadable or unwritable evidence file must never be accepted by
+        # the validation path below.
+        return False
+    return True
+
+
+def clear_trusted_buyer_turn():
+    """Fail closed after any transport-capture failure."""
+    with _trusted_buyer_turn_lock():
+        return _clear_trusted_buyer_turn_unlocked()
+
+
+def _trusted_turn_transport(value, chat_id=""):
+    transport = str(value or "").strip().lower().replace("-", "_")
+    if not transport:
+        prefix = str(chat_id or "").split(":", 1)[0].lower()
+        transport = prefix if prefix in {"dashboard", "simulated_telegram", "legacy_telegram"} else "telegram"
+    if transport not in {"telegram", "dashboard", "simulated_telegram", "legacy_telegram"}:
+        raise ValueError("El transporte del turno confiable no es válido.")
+    return transport
+
+
+def _new_trusted_turn_capabilities():
+    return {
+        kind: {
+            "nonce": secrets.token_urlsafe(24),
+            "used": False,
+            "used_at": "",
+        }
+        for kind in TRUSTED_BUYER_CAPABILITY_KINDS
+    }
+
+
+def _trusted_turn_public_result(turn, *, idempotent=False):
+    authorization = turn.get("meta_selection_authorization") if isinstance(turn, dict) else {}
+    return {
+        "recorded": bool(turn),
+        "idempotent": bool(idempotent),
+        "chat_id": str((turn or {}).get("chat_id") or ""),
+        "session_id": str((turn or {}).get("session_id") or ""),
+        "message_sequence": (turn or {}).get("message_sequence"),
+        "message_hash": str((turn or {}).get("message_hash") or ""),
+        "transport": str((turn or {}).get("transport") or ""),
+        "meta_selection_authorization": _public_meta_selection_authorization(authorization),
+    }
+
+
+def record_trusted_buyer_turn(
+    chat_id,
+    session_id,
+    message_sequence,
+    raw_message,
+    transport="",
+):
+    """Record one real inbound buyer message before it reaches the model.
+
+    If a Meta selection prompt is open, the message is resolved and an opaque
+    ticket is kept privately for ``social_oauth_select``. The ticket is never
+    returned to the model-facing caller.
+    """
+    with _trusted_buyer_turn_lock():
+        try:
+            chat_id = str(chat_id or "").strip()
+            session_id = str(session_id or "").strip()
+            raw_message = str(raw_message or "").strip()
+            transport = _trusted_turn_transport(transport, chat_id)
+            if not chat_id or not session_id or not raw_message:
+                raise ValueError("chat_id, session_id y el mensaje real del comprador son obligatorios.")
+            if len(chat_id) > 256 or len(session_id) > 256 or len(raw_message) > 4000:
+                raise ValueError("El turno confiable excede el tamaño permitido.")
+            if transport == "telegram":
+                configured_chat = _meta_oauth_chat_id(load_config())
+                if configured_chat and configured_chat != chat_id:
+                    raise ValueError("El turno no pertenece al chat de Telegram autorizado.")
+            else:
+                expected_prefix = f"{transport}:"
+                if not chat_id.startswith(expected_prefix):
+                    raise ValueError("El turno no coincide con su transporte confiable.")
+            try:
+                message_sequence = int(message_sequence)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("message_sequence debe ser un entero.") from exc
+            if message_sequence < 0:
+                raise ValueError("message_sequence no puede ser negativo.")
+
+            message_hash = _trusted_turn_message_hash(raw_message, message_sequence)
+            previous = read_json(TRUSTED_BUYER_TURN_FILE, {})
+            if (
+                isinstance(previous, dict)
+                and previous.get("chat_id") == chat_id
+                and previous.get("session_id") == session_id
+                and previous.get("transport") == transport
+            ):
+                try:
+                    previous_sequence = int(previous.get("message_sequence"))
+                except (TypeError, ValueError):
+                    previous_sequence = -1
+                if previous_sequence == message_sequence:
+                    if hmac.compare_digest(str(previous.get("message_hash") or ""), message_hash):
+                        return _trusted_turn_public_result(previous, idempotent=True)
+                    raise ValueError("El mismo message_sequence ya fue usado por otro mensaje.")
+                if previous_sequence > message_sequence:
+                    raise ValueError("El mensaje entrante es anterior al último turno confiable.")
+
+            turn = {
+                "chat_id": chat_id,
+                "session_id": session_id,
+                "transport": transport,
+                "message_sequence": message_sequence,
+                "message": raw_message,
+                "message_hash": message_hash,
+                "capabilities": _new_trusted_turn_capabilities(),
+                "created_at": now_iso(),
+            }
+            authorizer = _meta_oauth_selection_authorizer()
+            try:
+                current_intent = authorizer.current_intent(chat_id=chat_id, session_id=session_id)
+                if current_intent:
+                    connection = _meta_oauth_connection()
+                    authorization = authorizer.authorize_current_message(
+                        chat_id=chat_id,
+                        session_id=session_id,
+                        message_sequence=message_sequence,
+                        raw_message=raw_message,
+                        inventory=_meta_oauth_selection_inventory(connection),
+                        current_pair=_meta_oauth_selection_current_pair(connection),
+                    )
+                    turn["meta_selection_authorization"] = _public_meta_selection_authorization(authorization)
+                    if authorization.get("status") == "authorized" and authorization.get("ticket"):
+                        turn["meta_selection_ticket"] = str(authorization["ticket"])
+            except SelectionIntentNotFound:
+                pass
+            except (SelectionBindingMismatch, SelectionAuthorizationError) as exc:
+                authorizer.clear(chat_id=chat_id, session_id=session_id)
+                turn["meta_selection_authorization"] = {
+                    "status": "rejected",
+                    "reason": type(exc).__name__,
+                }
+            write_private_json(TRUSTED_BUYER_TURN_FILE, turn)
+            return _trusted_turn_public_result(turn)
+        except Exception:
+            # Never leave an older buyer message available after a failed new
+            # capture attempt.
+            _clear_trusted_buyer_turn_unlocked()
+            raise
+
+
+def _clear_meta_oauth_selection_authorization(*, clear_trusted_turn=True):
+    removed = _meta_oauth_selection_authorizer().clear()
+    if clear_trusted_turn:
+        try:
+            TRUSTED_BUYER_TURN_FILE.unlink()
+        except OSError:
+            pass
+    else:
+        turn = read_json(TRUSTED_BUYER_TURN_FILE, {})
+        if isinstance(turn, dict) and turn:
+            turn.pop("meta_selection_ticket", None)
+            turn.pop("meta_selection_authorization", None)
+            write_private_json(TRUSTED_BUYER_TURN_FILE, turn)
+    return removed
+
+
 def _safe_meta_oauth_summary(connection):
     connection = connection if isinstance(connection, dict) else {}
     return {
@@ -3766,6 +4460,18 @@ def social_oauth_status():
         "pending_created_at": str(pending.get("created_at") or ""),
         "legacy_token_connected": bool(config.meta_access_token and str(config.meta_access_token_kind or "").lower() != "oauth"),
     })
+    selection_required = bool(
+        result.get("connected")
+        and not (
+            str(result.get("active_ad_account_id") or "").strip()
+            and str(result.get("active_page_id") or "").strip()
+        )
+    )
+    result["selection_required"] = selection_required
+    if selection_required:
+        result["selection_authorization"] = _open_meta_oauth_selection_intent_for_trusted_turn(
+            allow_switch=False
+        )
     return result
 
 
@@ -3888,27 +4594,312 @@ def synchronize_selected_ad_account_timezone(account=None, reconcile_crons=False
     return {"ok": True, "changed": changed, **state, "meta_timezone": timezone_name, "account": account, "crons": cron_result}
 
 
+_META_OAUTH_SELECTION_TRANSACTION_STATE = threading.local()
+_META_OAUTH_SELECTION_ENV_KEYS = (
+    "META_AD_ACCOUNT_ID",
+    "META_PUBLISHING_ACCESS_TOKEN",
+    "META_PUBLISHING_TOKEN_SAVED_AT",
+    "DAILY_BRIEF_TIMEZONE",
+    "DAILY_BRIEF_TIMEZONE_SOURCE",
+)
+
+
+def _meta_oauth_selection_snapshot_paths():
+    """Files that together define the selected Meta workspace."""
+    return tuple(dict.fromkeys((
+        Path(ENV_FILE),
+        Path(AD_CONFIG_FILE),
+        Path(META_OAUTH_CONNECTION_FILE),
+        Path(MANAGED_AD_ACCOUNTS_FILE),
+        Path(TIMEZONE_PREFERENCE_FILE),
+        Path(INDIVIDUAL_BINDING_FILE),
+    )))
+
+
+def _snapshot_private_files(paths):
+    snapshot = {}
+    for raw_path in paths:
+        path = Path(raw_path)
+        if path.exists():
+            snapshot[path] = {
+                "exists": True,
+                "content": path.read_bytes(),
+                "mode": path.stat().st_mode & 0o777,
+            }
+        else:
+            snapshot[path] = {"exists": False, "content": b"", "mode": 0o600}
+    return snapshot
+
+
+def _restore_private_files(snapshot):
+    for path, original in snapshot.items():
+        if not original["exists"]:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.rollback.", dir=str(path.parent))
+        try:
+            os.fchmod(descriptor, int(original["mode"]))
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(original["content"])
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+            os.chmod(path, int(original["mode"]))
+        except BaseException:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            raise
+
+
+@contextlib.contextmanager
+def _meta_oauth_workspace_transaction():
+    """Serialize and rollback the complete account/Page persistence unit.
+
+    The process-wide file lock protects multiple short-lived MCP/dashboard
+    processes, while the in-process RLock protects threads.  Nested calls in
+    the same thread share the outer snapshot so the selection ticket can be
+    committed inside the same rollback boundary as the configuration files.
+    """
+    depth = int(getattr(_META_OAUTH_SELECTION_TRANSACTION_STATE, "depth", 0) or 0)
+    if depth:
+        _META_OAUTH_SELECTION_TRANSACTION_STATE.depth = depth + 1
+        try:
+            yield
+        finally:
+            _META_OAUTH_SELECTION_TRANSACTION_STATE.depth = depth
+        return
+
+    with META_OAUTH_SELECTION_PERSIST_LOCK:
+        lock_path = Path(META_OAUTH_CONNECTION_FILE).with_suffix(".selection-persist.lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with lock_path.open("a+", encoding="utf-8") as lock_handle:
+            try:
+                os.chmod(lock_path, 0o600)
+            except OSError:
+                pass
+            if fcntl is not None:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            files_before = _snapshot_private_files(_meta_oauth_selection_snapshot_paths())
+            environment_before = {
+                key: (key in os.environ, os.environ.get(key, ""))
+                for key in _META_OAUTH_SELECTION_ENV_KEYS
+            }
+            _META_OAUTH_SELECTION_TRANSACTION_STATE.depth = 1
+            try:
+                yield
+            except BaseException as persistence_error:
+                rollback_error = None
+                try:
+                    _restore_private_files(files_before)
+                except BaseException as exc:  # pragma: no cover - disk failure.
+                    rollback_error = exc
+                finally:
+                    for key, (existed, value) in environment_before.items():
+                        if existed:
+                            os.environ[key] = value
+                        else:
+                            os.environ.pop(key, None)
+                if rollback_error is not None:
+                    raise RuntimeError(
+                        "La selección de Meta falló y no pude restaurar completamente su estado previo."
+                    ) from persistence_error
+                raise
+            finally:
+                _META_OAUTH_SELECTION_TRANSACTION_STATE.depth = 0
+                if fcntl is not None:
+                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+
+
+def _env_file_values():
+    values = {}
+    try:
+        lines = Path(ENV_FILE).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return values
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value
+    return values
+
+
+def _verify_meta_oauth_workspace_persistence(account_id, page_id, page_access_token, timezone_sync):
+    """Read every durable projection back before committing authorization."""
+    persisted = _meta_oauth_connection()
+    if (
+        clean_ad_account_id(persisted.get("active_ad_account_id")) != account_id
+        or str(persisted.get("active_page_id") or "").strip() != page_id
+    ):
+        raise RuntimeError("La selección de Meta no quedó persistida correctamente.")
+
+    env_file = _env_file_values()
+    expected_env = {
+        "META_AD_ACCOUNT_ID": account_id,
+        "META_PUBLISHING_ACCESS_TOKEN": str(page_access_token or ""),
+    }
+    for key, expected in expected_env.items():
+        if env_file.get(key) != expected or os.environ.get(key) != expected:
+            raise RuntimeError("La selección de Meta quedó incompleta en la configuración del proceso.")
+
+    ad_config = read_json(AD_CONFIG_FILE, {})
+    destination = (ad_config.get("creative") or {}).get("destination") or {}
+    if (
+        clean_ad_account_id((ad_config.get("account") or {}).get("id")) != account_id
+        or str(destination.get("page_id") or "").strip() != page_id
+    ):
+        raise RuntimeError("La selección de Meta quedó incompleta en ad-config.json.")
+
+    managed = read_json(MANAGED_AD_ACCOUNTS_FILE, {})
+    if clean_ad_account_id(managed.get("active_ad_account_id")) != account_id:
+        raise RuntimeError("La cuenta activa no quedó sincronizada en el inventario administrado.")
+
+    if isinstance(timezone_sync, dict) and timezone_sync.get("changed"):
+        timezone_state = read_json(TIMEZONE_PREFERENCE_FILE, {})
+        expected_timezone = str(timezone_sync.get("timezone") or "").strip()
+        if (
+            clean_ad_account_id(timezone_state.get("account_id")) != account_id
+            or str(timezone_state.get("timezone") or "").strip() != expected_timezone
+            or env_file.get("DAILY_BRIEF_TIMEZONE") != expected_timezone
+            or os.environ.get("DAILY_BRIEF_TIMEZONE") != expected_timezone
+        ):
+            raise RuntimeError("La zona horaria de la cuenta no quedó sincronizada.")
+    return persisted
+
+
+def _persist_meta_oauth_workspace_pair(
+    account_id,
+    page_id,
+    *,
+    source,
+    connection=None,
+    expected_old_pair=None,
+    defer_post_commit=False,
+):
+    """Persist one already-authorized account/Page pair as a single unit."""
+    account_id = clean_ad_account_id(account_id)
+    page_id = str(page_id or "").strip()
+    with _meta_oauth_workspace_transaction():
+        if isinstance(expected_old_pair, dict):
+            connection = _meta_oauth_connection()
+            if _meta_oauth_selection_current_pair(connection) != {
+                "ad_account_id": clean_ad_account_id(expected_old_pair.get("ad_account_id")),
+                "page_id": str(expected_old_pair.get("page_id") or "").strip(),
+            }:
+                raise ValueError(
+                    "La cuenta o Página activa cambió antes de guardar la selección. "
+                    "Vuelve a listar los espacios de Meta."
+                )
+        else:
+            connection = connection if isinstance(connection, dict) else _meta_oauth_connection()
+        account = next((item for item in connection.get("accounts", []) if clean_ad_account_id(item.get("id")) == account_id), None)
+        page = next((item for item in _oauth_publishable_pages(connection) if str(item.get("id") or "") == page_id), None)
+        if not account or not page:
+            raise ValueError("La cuenta o Página elegida no pertenece a esta conexión de Facebook.")
+        timezone_sync = synchronize_selected_ad_account_timezone(account, reconcile_crons=False)
+        account = timezone_sync.get("account") if isinstance(timezone_sync.get("account"), dict) else account
+
+        # Every dependent configuration write receives the same exact pair.
+        # There is no intermediate pending account in the authorized text path.
+        update_env_values({
+            "META_AD_ACCOUNT_ID": account_id,
+            "META_PUBLISHING_ACCESS_TOKEN": str(page.get("access_token") or ""),
+            "META_PUBLISHING_TOKEN_SAVED_AT": now_iso(),
+        })
+        save_setup_config({
+            "ad_account_id": account_id,
+            "account_name": account.get("name", ""),
+            "account_currency": account.get("currency", ""),
+            "account_timezone": account.get("timezone_name", ""),
+            "account_timezone_offset": account.get("timezone_offset_hours_utc"),
+            "page_id": page_id,
+            "instagram_actor_id": str((page.get("instagram") or {}).get("id") or ""),
+            "_skip_meta_profile_sync": True,
+        })
+
+        next_connection = dict(connection)
+        next_connection["accounts"] = [
+            account if clean_ad_account_id(item.get("id")) == account_id else item
+            for item in connection.get("accounts", [])
+        ]
+        next_connection["active_ad_account_id"] = account_id
+        next_connection["active_page_id"] = page_id
+        next_connection.pop("pending_ad_account_id", None)
+        # This atomic replace is the durable authority for the active pair and
+        # is intentionally the last state write before read-back verification.
+        write_private_json(META_OAUTH_CONNECTION_FILE, next_connection)
+        persisted = _verify_meta_oauth_workspace_persistence(
+            account_id,
+            page_id,
+            str(page.get("access_token") or ""),
+            timezone_sync,
+        )
+        result = {
+            "ok": True,
+            "selected": True,
+            "verified_persisted": True,
+            "account": account,
+            "page": page,
+            **_safe_meta_oauth_summary(persisted),
+        }
+    if defer_post_commit:
+        result["_deferred_timezone_sync"] = timezone_sync
+    else:
+        _finalize_meta_oauth_workspace_persistence(
+            result,
+            account_id=account_id,
+            page_id=page_id,
+            source=source,
+            timezone_sync=timezone_sync,
+        )
+    return result
+
+
+def _finalize_meta_oauth_workspace_persistence(result, *, account_id, page_id, source, timezone_sync):
+    """Run non-authoritative side effects only after the core transaction."""
+    if isinstance(timezone_sync, dict) and timezone_sync.get("changed"):
+        try:
+            timezone_sync["crons"] = reconcile_timezone_crons(load_config())
+        except Exception:
+            # The selected account/Page pair is already durable. A cron can be
+            # reconciled on the next gateway start without invalidating it.
+            timezone_sync["crons"] = {"reconciled": False, "needed": True, "retry_on_gateway_start": True}
+    try:
+        log_action(
+            "meta_oauth_workspace_selected",
+            {"account_id": account_id, "page_id": page_id, "source": str(source or "internal")[:40]},
+            "completed",
+        )
+    except Exception:
+        # Audit logging is useful but cannot invalidate a verified workspace
+        # after its authorization capability has been committed.
+        pass
+    if isinstance(result, dict) and isinstance(timezone_sync, dict):
+        result["timezone_sync"] = timezone_sync
+    return result
+
+
 def social_oauth_select_page(page_id):
+    """Legacy internal Telegram callback path retained for old installations."""
     connection = _meta_oauth_connection()
     account_id = clean_ad_account_id(connection.get("pending_ad_account_id") or connection.get("active_ad_account_id"))
-    page_id = str(page_id or "").strip()
-    account = next((item for item in connection.get("accounts", []) if clean_ad_account_id(item.get("id")) == account_id), None)
-    page = next((item for item in _oauth_publishable_pages(connection) if str(item.get("id") or "") == page_id), None)
-    if not account or not page:
-        raise ValueError("La cuenta o Página elegida no pertenece a esta conexión de Facebook.")
-    timezone_sync = synchronize_selected_ad_account_timezone(account, reconcile_crons=False)
-    account = timezone_sync.get("account") if isinstance(timezone_sync.get("account"), dict) else account
-    connection["accounts"] = [account if clean_ad_account_id(item.get("id")) == account_id else item for item in connection.get("accounts", [])]
-    connection["active_ad_account_id"] = account_id
-    connection["active_page_id"] = page_id
-    connection.pop("pending_ad_account_id", None)
-    write_private_json(META_OAUTH_CONNECTION_FILE, connection)
-    update_env_values({"META_AD_ACCOUNT_ID": account_id, "META_PUBLISHING_ACCESS_TOKEN": str(page.get("access_token") or ""), "META_PUBLISHING_TOKEN_SAVED_AT": now_iso()})
-    save_setup_config({"ad_account_id": account_id, "account_name": account.get("name", ""), "account_currency": account.get("currency", ""), "account_timezone": account.get("timezone_name", ""), "account_timezone_offset": account.get("timezone_offset_hours_utc"), "page_id": page_id, "instagram_actor_id": str((page.get("instagram") or {}).get("id") or ""), "_skip_meta_profile_sync": True})
-    if timezone_sync.get("changed"):
-        timezone_sync["crons"] = reconcile_timezone_crons(load_config())
-    log_action("meta_oauth_workspace_selected", {"account_id": account_id, "page_id": page_id, "source": "telegram"}, "completed")
-    return {"ok": True, "selected": True, "account": account, "page": page, **_safe_meta_oauth_summary(connection)}
+    return _persist_meta_oauth_workspace_pair(
+        account_id,
+        page_id,
+        source="legacy_telegram_callback",
+        connection=connection,
+    )
 
 
 def social_oauth_start(payload=None):
@@ -3963,6 +4954,9 @@ def social_oauth_start(payload=None):
             "link_resent": bool(resent),
             "expires_in_seconds": 900,
         }
+    # A new browser handoff supersedes every outstanding workspace prompt or
+    # capability from an older OAuth inventory.
+    _clear_meta_oauth_selection_authorization()
     handoff_secret = secrets.token_urlsafe(48)
     result = _meta_oauth_request(broker_url, {
         "flow": "start",
@@ -4032,6 +5026,9 @@ def _poll_meta_oauth_in_background():
 def _apply_meta_oauth_credentials(credentials):
     if not isinstance(credentials, dict):
         raise ValueError("La respuesta de Facebook llegó incompleta.")
+    # A completed reconnect invalidates every prompt/ticket issued for the old
+    # OAuth inventory before any new credential state is installed.
+    _clear_meta_oauth_selection_authorization(clear_trusted_turn=False)
     token = str(credentials.get("user_token") or "").strip()
     accounts = [item for item in credentials.get("accounts") or [] if isinstance(item, dict) and item.get("id")]
     pages = []
@@ -4127,17 +5124,92 @@ def social_oauth_poll(payload=None):
 
 
 def social_oauth_select(payload=None):
+    """Consume the server-owned ticket and persist its exact authorized pair.
+
+    ``ad_account_id`` and ``page_id`` supplied by an MCP/model payload are not
+    authorization and are deliberately ignored. They remain accepted in the
+    function signature only so older callers fail safely with a clear missing-
+    ticket response instead of breaking request decoding.
+    """
     payload = payload or {}
-    account_id = clean_ad_account_id(payload.get("ad_account_id"))
-    page_id = str(payload.get("page_id") or "").strip()
-    connection = _meta_oauth_connection()
-    account = next((item for item in connection.get("accounts", []) if clean_ad_account_id(item.get("id")) == account_id), None)
-    page = next((item for item in connection.get("pages", []) if str(item.get("id") or "") == page_id and item.get("access_token")), None)
-    if not account or not page:
-        raise ValueError("La cuenta o Página elegida no pertenece a esta conexión de Facebook.")
-    connection["pending_ad_account_id"] = account_id
-    write_private_json(META_OAUTH_CONNECTION_FILE, connection)
-    return social_oauth_select_page(page_id)
+    turn = _trusted_buyer_turn()
+    ticket = str(turn.get("meta_selection_ticket") or "").strip() if turn else ""
+    if not ticket:
+        raise ValueError(
+            "La selección no fue autorizada por una respuesta reciente del comprador. "
+            "Lista las cuentas y Páginas y espera su elección natural explícita."
+        )
+    authorizer = _meta_oauth_selection_authorizer()
+    try:
+        # The outer workspace transaction snapshots all selected-workspace
+        # files and process environment. The authorizer keeps its own
+        # cross-process lock until persistence and read-back both succeed.
+        # If either ticket commit or persistence fails, files roll back and
+        # the exact private ticket remains available for a bounded retry.
+        with _meta_oauth_workspace_transaction():
+            connection = _meta_oauth_connection()
+            with authorizer.ticket_transaction(
+                ticket=ticket,
+                chat_id=str(turn.get("chat_id") or ""),
+                session_id=str(turn.get("session_id") or ""),
+                inventory=_meta_oauth_selection_inventory(connection),
+                current_pair=_meta_oauth_selection_current_pair(connection),
+            ) as authorized:
+                selection = authorized.get("selection") or {}
+                account_id = clean_ad_account_id(selection.get("ad_account_id"))
+                page_id = str(selection.get("page_id") or "").strip()
+                if not account_id or not page_id:
+                    raise ValueError("La autorización no contiene un par completo de cuenta y Página.")
+                result = _persist_meta_oauth_workspace_pair(
+                    account_id,
+                    page_id,
+                    source="trusted_buyer_text_ticket",
+                    connection=connection,
+                    expected_old_pair=authorized.get("old_selection") or {},
+                    defer_post_commit=True,
+                )
+    except (SelectionTicketInvalid, SelectionBindingMismatch) as exc:
+        raise ValueError(
+            "La autorización de selección venció o ya fue usada. "
+            "Vuelve a listar las cuentas y Páginas y responde con tu elección."
+        ) from exc
+
+    # Persistence and ticket consumption are now both committed. Only now may
+    # the private turn lose its capability; failed writes intentionally leave
+    # it untouched so the same natural-language choice can be retried.
+    # Keep the full read/compare/modify/write under the same cross-process
+    # lock used by ``record_trusted_buyer_turn``. Without this critical
+    # section, a newer buyer message could be persisted after our read and
+    # then be overwritten by the stale ticket-cleanup write below.
+    with _trusted_buyer_turn_lock():
+        latest_turn = _trusted_buyer_turn_unlocked()
+        if isinstance(latest_turn, dict) and hmac.compare_digest(
+            str(latest_turn.get("message_hash") or ""),
+            str(turn.get("message_hash") or ""),
+        ):
+            latest_turn.pop("meta_selection_ticket", None)
+            latest_turn["meta_selection_authorization"] = {
+                **(latest_turn.get("meta_selection_authorization") or {}),
+                "status": "consumed",
+            }
+            write_private_json(TRUSTED_BUYER_TURN_FILE, latest_turn)
+
+    timezone_sync = result.pop("_deferred_timezone_sync", {})
+    _finalize_meta_oauth_workspace_persistence(
+        result,
+        account_id=account_id,
+        page_id=page_id,
+        source="trusted_buyer_text_ticket",
+        timezone_sync=timezone_sync,
+    )
+    model_account_id = clean_ad_account_id(payload.get("ad_account_id"))
+    model_page_id = str(payload.get("page_id") or "").strip()
+    result["selection_authorized_by_trusted_turn"] = True
+    result["model_arguments_ignored"] = bool(
+        (model_account_id and model_account_id != account_id)
+        or (model_page_id and model_page_id != page_id)
+    )
+    return result
 
 
 def social_save_facebook_token(payload):
@@ -8236,12 +9308,579 @@ def scan_business_website(payload):
     return {"saved": True, "profile": profile}
 
 
+def active_meta_page_id():
+    """Return the durably selected Page without polling OAuth or Graph."""
+    connection = _meta_oauth_connection()
+    return str(connection.get("active_page_id") or "").strip()
+
+
+def _profile_scope_page_id(strategic):
+    return str(((strategic or {}).get("scope") or {}).get("page_id") or "").strip()
+
+
+def strategic_profile_for_page(profile=None, page_id="", activate=False):
+    """Resolve one Page-scoped profile while preserving profiles for other Pages.
+
+    Reads never silently reinterpret one business as another.  A confirmed
+    Page switch may activate an archived profile for that same Page, or create
+    a fresh empty profile while keeping the prior Page profile in the archive.
+    """
+    profile = profile if isinstance(profile, dict) else read_json(BUSINESS_PROFILE_FILE, {})
+    if not isinstance(profile, dict):
+        profile = {}
+    page_id = str(page_id or active_meta_page_id()).strip()
+    current_raw = profile.get("strategic_profile")
+    current = migrate_strategic_profile(current_raw if isinstance(current_raw, dict) else profile, page_id=page_id)
+    current_page = _profile_scope_page_id(current)
+    if not page_id or not current_page or current_page == page_id:
+        return current
+
+    archived = profile.get("strategic_profiles") if isinstance(profile.get("strategic_profiles"), dict) else {}
+    candidate = archived.get(page_id)
+    if not activate:
+        # Preserve the mismatch so readiness fails closed until the selected
+        # Page is deliberately activated in the business-memory write path.
+        return current
+
+    archived = dict(archived)
+    archived[current_page] = current
+    selected = migrate_strategic_profile(candidate, page_id=page_id) if isinstance(candidate, dict) else new_strategic_profile(page_id)
+    profile["strategic_profiles"] = archived
+    profile["strategic_profile"] = selected
+    return selected
+
+
+def strategic_business_profile_readiness(profile=None, page_id=""):
+    profile = profile if isinstance(profile, dict) else read_json(BUSINESS_PROFILE_FILE, {})
+    if not isinstance(profile, dict):
+        profile = {}
+    page_id = str(page_id or active_meta_page_id()).strip()
+    strategic = strategic_profile_for_page(profile, page_id=page_id, activate=False)
+    return strategic_profile_readiness(strategic, active_page_id=page_id)
+
+
+def strategic_product_action_eligibility(action_category, profile=None, page_id=""):
+    profile = profile if isinstance(profile, dict) else read_json(BUSINESS_PROFILE_FILE, {})
+    if not isinstance(profile, dict):
+        profile = {}
+    page_id = str(page_id or active_meta_page_id()).strip()
+    strategic = strategic_profile_for_page(profile, page_id=page_id, activate=False)
+    category = str(action_category or "").strip().lower()
+    # Logo candidates, moodboards and other brand exploration are part of
+    # onboarding itself.  They must not depend on the *completed* strategic
+    # profile, otherwise the UI advertises Image during onboarding while this
+    # second gate makes it impossible to use.  The smaller, purpose-specific
+    # brand_exploration_readiness() gate still enforces the actual inputs
+    # needed to create a useful brand asset.
+    if category == "brand_exploration":
+        return {
+            "allowed": True,
+            "code": "brand_exploration_allowed_during_onboarding",
+            "profile_status": strategic.get("status") or "collecting",
+            "revision": strategic.get("revision"),
+            "confirmed_revision": strategic.get("confirmed_revision"),
+            "unresolved_topics": [],
+        }
+    decision = strategic_profile_action_eligibility(
+        strategic,
+        active_page_id=page_id,
+        action_category=action_category,
+    )
+    if not decision.get("allowed"):
+        return decision
+    if category in {
+        "campaign_create", "campaign_edit", "campaign_brief", "campaign_activate",
+        "spend_increase", "paid_creative", "organic_creative", "organic_publish",
+        "ad_motion_graphics",
+    }:
+        branding = branding_creative_readiness(require_product=False, payload=None)
+        if not branding.get("ready"):
+            return {
+                "allowed": False,
+                "code": "branding_required",
+                "profile_status": decision.get("profile_status") or "complete",
+                "revision": decision.get("revision"),
+                "confirmed_revision": decision.get("confirmed_revision"),
+                "unresolved_topics": [item.get("key") for item in branding.get("missing") or []],
+                "next_question": branding.get("next_question") or "Antes de producir, terminemos juntos el branding y el logo.",
+            }
+    return decision
+
+
+def _trusted_buyer_turn_unlocked(max_age_seconds=300):
+    turn = read_json(TRUSTED_BUYER_TURN_FILE, {})
+    if not isinstance(turn, dict) or not str(turn.get("message") or "").strip():
+        return {}
+    try:
+        created = datetime.fromisoformat(str(turn.get("created_at") or "").replace("Z", "+00:00"))
+    except ValueError:
+        return {}
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    if (datetime.now(timezone.utc) - created.astimezone(timezone.utc)).total_seconds() > max_age_seconds:
+        return {}
+    try:
+        transport = _trusted_turn_transport(turn.get("transport"), turn.get("chat_id"))
+    except ValueError:
+        return {}
+    turn_chat = str(turn.get("chat_id") or "").strip()
+    if transport == "telegram":
+        configured_chat = _meta_oauth_chat_id(load_config())
+        if configured_chat and turn_chat and configured_chat != turn_chat:
+            return {}
+    elif not turn_chat.startswith(f"{transport}:"):
+        return {}
+    capabilities = turn.get("capabilities")
+    if not isinstance(capabilities, dict):
+        # Pre-upgrade files do not carry a one-use authorization lifecycle.
+        return {}
+    return turn
+
+
+def _trusted_buyer_turn(max_age_seconds=300):
+    with _trusted_buyer_turn_lock():
+        return _trusted_buyer_turn_unlocked(max_age_seconds=max_age_seconds)
+
+
+def _normalized_confirmation_text(value):
+    text = unicodedata.normalize("NFKD", str(value or "").casefold())
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]+", " ", text)).strip()
+
+
+def trusted_profile_review_confirmation(turn=None):
+    """Recognize a natural review answer only from server-recorded buyer text."""
+    turn = turn if isinstance(turn, dict) else _trusted_buyer_turn()
+    text = _normalized_confirmation_text(turn.get("message"))
+    if not text:
+        return False, {}
+    no_changes = re.search(
+        r"\bno (?:hay|tengo|haria|cambiaria) (?:cambios|correcciones|ajustes|nada)\b",
+        text,
+    )
+    correction = re.search(
+        r"\b(?:pero|excepto|salvo|cambi\w*|corrig\w*|ajust\w*|incorrect\w*|"
+        r"equivoc\w*|falta\w*|not correct|change|except|wrong)\b",
+        text,
+    )
+    negative_start = re.match(r"^no\b", text) and not no_changes
+    if (correction and not no_changes) or negative_start:
+        return False, turn
+    affirmative = bool(re.search(
+        r"(?:^|\b)(?:si+|sip|confirm\w*|correct\w*|todo bien|de acuerdo|esta bien|"
+        r"me parece bien|asi esta bien|asi es|quedo bien|perfecto|perfecta|aprobado|"
+        r"aprobada|adelante|listo|ok|okay|yes|looks good|all correct)(?:\b|$)",
+        text,
+    ))
+    return affirmative, turn
+
+
+def _canonical_buyer_evidence(value):
+    """Canonicalize transport text without paraphrasing or correcting it."""
+    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", str(value or ""))).strip()
+
+
+def _short_natural_confirmation(value):
+    normalized = _normalized_confirmation_text(value)
+    if not normalized or len(normalized.split()) > 8:
+        return False
+    no_changes = re.search(
+        r"\bno (?:hay|tengo|haria|cambiaria) (?:cambios|correcciones|ajustes|nada)\b",
+        normalized,
+    )
+    correction = re.search(
+        r"\b(?:pero|excepto|salvo|cambi\w*|corrig\w*|ajust\w*|incorrect\w*|"
+        r"equivoc\w*|falta\w*|change|except|wrong)\b",
+        normalized,
+    )
+    if correction and not no_changes:
+        return False
+    return bool(re.search(
+        r"(?:^|\b)(?:si+|sip|confirm\w*|correct\w*|todo bien|de acuerdo|esta bien|"
+        r"me parece bien|asi esta bien|asi es|perfecto|perfecta|aprobado|aprobada|"
+        r"adelante|listo|ok|okay|yes|looks good|all correct)(?:\b|$)",
+        normalized,
+    ))
+
+
+def _non_authorizing_buyer_message(value):
+    normalized = _normalized_confirmation_text(value)
+    return bool(re.fullmatch(
+        r"(?:hola|hol+a|hello|hi|hey|buenas|buenos dias|buenas tardes|buenas noches|"
+        r"como estas|que tal|gracias|muchas gracias|que|como|por que|porque)",
+        normalized,
+    ))
+
+
+_MEMORY_AUTH_INTERNAL_FIELDS = {
+    "confirmation_state",
+    "buyer_evidence",
+    "confirm_profile_review",
+    "profile_review_confirmation",
+    "confirm_strategic_profile",
+    "confirm_master_plan",
+}
+
+_MASTER_PLAN_FIELDS = (
+    "diagnosis",
+    "commercial_priorities",
+    "positioning",
+    "offer_strategy",
+    "ideal_customer_strategy",
+    "funnel",
+    "organic_strategy",
+    "paid_media_strategy",
+    "budget_framework",
+    "objectives_and_kpis",
+    "roadmap",
+    "assumptions_and_risks",
+)
+
+
+def _normalize_master_plan(value):
+    if not isinstance(value, dict):
+        return {}
+    normalized = {}
+    for field in _MASTER_PLAN_FIELDS:
+        item = value.get(field)
+        if item in (None, "", [], {}):
+            continue
+        if isinstance(item, str):
+            normalized[field] = re.sub(r"\s+", " ", item).strip()[:4000]
+        else:
+            normalized[field] = redact_payload(item)
+    return normalized
+
+
+def business_master_plan_for_page(profile, page_id=None):
+    page_id = str(page_id or active_meta_page_id() or "").strip()
+    plans = (profile or {}).get("business_master_plans")
+    plan = plans.get(page_id) if isinstance(plans, dict) else None
+    return dict(plan) if isinstance(plan, dict) else {}
+
+
+def business_master_plan_readiness(profile=None, page_id=None):
+    profile = profile if isinstance(profile, dict) else read_json(BUSINESS_PROFILE_FILE, {})
+    page_id = str(page_id or active_meta_page_id() or "").strip()
+    strategic = strategic_profile_for_page(profile, page_id=page_id, activate=False) if page_id else {}
+    strategic_ready = strategic_profile_readiness(strategic, active_page_id=page_id) if strategic else {}
+    plan = business_master_plan_for_page(profile, page_id)
+    current_revision = int(strategic_ready.get("revision") or 0)
+    plan_revision = int(plan.get("profile_revision") or -1)
+    confirmed = str(plan.get("status") or "") == "confirmed"
+    stale = bool(plan and (plan_revision != current_revision or not strategic_ready.get("complete")))
+    return {
+        "status": "stale" if stale else ("confirmed" if confirmed else ("proposed" if plan else "missing")),
+        "ready": bool(confirmed and not stale),
+        "stale": stale,
+        "profile_revision": current_revision,
+        "plan_revision": int(plan.get("revision") or 0),
+        "plan": plan,
+    }
+
+
+def _canonical_memory_value(value):
+    if isinstance(value, dict):
+        return {
+            str(key): _canonical_memory_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+            if key not in _MEMORY_AUTH_INTERNAL_FIELDS and item not in (None, "", [], {})
+        }
+    if isinstance(value, (list, tuple, set)):
+        return [_canonical_memory_value(item) for item in value]
+    if isinstance(value, str):
+        return _normalized_confirmation_text(value)
+    return value
+
+
+def _memory_payload_for_match(payload):
+    return _canonical_memory_value({
+        key: value
+        for key, value in dict(payload or {}).items()
+        if key not in _MEMORY_AUTH_INTERNAL_FIELDS and value not in (None, "", [], {})
+    })
+
+
+def _saved_memory_draft_matches(kind, payload, scope):
+    submitted = _memory_payload_for_match(payload)
+    if not submitted:
+        return False
+    library = read_json(MEMORY_DRAFTS_FILE, {"items": []})
+    items = library.get("items") if isinstance(library, dict) else []
+    candidates = [
+        item for item in (items or [])
+        if isinstance(item, dict)
+        and str(item.get("kind") or "") == str(kind or "")
+        and str(item.get("scope") or "") == str(scope or "")
+    ]
+    candidates.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    for candidate in candidates:
+        draft = _memory_payload_for_match(candidate.get("payload") or {})
+        if submitted == draft:
+            return True
+    return False
+
+
+def _business_profile_draft_matches(profile, payload, page_id):
+    if payload.get("confirm_master_plan"):
+        plan = business_master_plan_for_page(profile, page_id)
+        return bool(plan.get("draft") and str(plan.get("status") or "") == "proposed")
+    strategic = strategic_profile_for_page(profile, page_id=page_id, activate=True)
+    updates = _strategic_topic_updates(payload)
+    if not updates:
+        return False
+    topics = strategic.get("topics") if isinstance(strategic.get("topics"), dict) else {}
+    for topic, update in updates.items():
+        current = topics.get(topic) if isinstance(topics.get(topic), dict) else {}
+        draft = current.get("draft") if isinstance(current.get("draft"), dict) else {}
+        if not draft:
+            return False
+        submitted_status = str(update.get("status") or "confirmed")
+        draft_status = str(draft.get("proposed_status") or "confirmed")
+        if submitted_status != draft_status:
+            return False
+        if _canonical_memory_value(update.get("value")) != _canonical_memory_value(draft.get("value")):
+            return False
+    return True
+
+
+@contextlib.contextmanager
+def _trusted_memory_capability(kind, payload, *, scope="", profile=None):
+    """Reserve one current-turn store capability and consume it on commit.
+
+    The private nonce never enters an MCP response.  A short acknowledgement
+    may promote only the exact draft already shown to the buyer; a substantive
+    natural-language answer remains flexible and is interpreted by the model,
+    but its full raw text must be copied into ``buyer_evidence``.
+    """
+    kind = str(kind or "").strip()
+    claimed = str((payload or {}).get("confirmation_state") or "inferred").strip().lower()
+    authorization = {
+        "authorized": False,
+        "commit": False,
+        "reason": "confirmation_state_not_buyer_confirmed",
+        "turn": {},
+    }
+    with _trusted_buyer_turn_lock():
+        turn = _trusted_buyer_turn_unlocked()
+        authorization["turn"] = turn
+        capability = (
+            (turn.get("capabilities") or {}).get(kind)
+            if isinstance(turn, dict)
+            else None
+        )
+        if claimed == "buyer_confirmed":
+            evidence = _canonical_buyer_evidence((payload or {}).get("buyer_evidence"))
+            exact_message = _canonical_buyer_evidence(turn.get("message") if turn else "")
+            if not turn:
+                authorization["reason"] = "missing_current_trusted_buyer_turn"
+            elif not evidence or not hmac.compare_digest(
+                evidence.encode("utf-8"),
+                exact_message.encode("utf-8"),
+            ):
+                authorization["reason"] = "buyer_evidence_not_exact_current_message"
+            elif not isinstance(capability, dict) or not str(capability.get("nonce") or ""):
+                authorization["reason"] = "trusted_turn_capability_unavailable"
+            elif capability.get("used"):
+                authorization["reason"] = "trusted_turn_capability_already_used"
+            elif _non_authorizing_buyer_message(exact_message):
+                authorization["reason"] = "buyer_message_does_not_confirm_memory"
+            elif _short_natural_confirmation(exact_message) and kind != "profile_review":
+                if kind == "business":
+                    draft_matches = _business_profile_draft_matches(
+                        profile or {}, payload, scope
+                    )
+                else:
+                    draft_matches = _saved_memory_draft_matches(kind, payload, scope)
+                if not draft_matches:
+                    authorization["reason"] = "short_confirmation_has_no_matching_draft"
+                else:
+                    authorization["authorized"] = True
+                    authorization["reason"] = "matching_draft_confirmed"
+            else:
+                authorization["authorized"] = True
+                authorization["reason"] = "current_buyer_evidence_verified"
+        try:
+            yield authorization
+        finally:
+            if authorization.get("authorized") and authorization.get("commit"):
+                latest = _trusted_buyer_turn_unlocked()
+                latest_capability = (
+                    (latest.get("capabilities") or {}).get(kind)
+                    if isinstance(latest, dict)
+                    else None
+                )
+                if (
+                    latest.get("message_hash") == turn.get("message_hash")
+                    and isinstance(latest_capability, dict)
+                    and hmac.compare_digest(
+                        str(latest_capability.get("nonce") or ""),
+                        str(capability.get("nonce") or ""),
+                    )
+                    and not latest_capability.get("used")
+                ):
+                    latest_capability["used"] = True
+                    latest_capability["used_at"] = now_iso()
+                    write_private_json(TRUSTED_BUYER_TURN_FILE, latest)
+
+
+_STRATEGIC_REVIEW_LABELS = {
+    "services": "Servicios y productos",
+    "ideal_customer": "Cliente ideal",
+    "differentiators": "Diferenciadores y prueba",
+    "markets": "Mercados y ubicaciones",
+    "capacity": "Capacidad y restricciones",
+    "pricing": "Precios",
+    "margins": "Costos y márgenes",
+    "global_objectives": "Objetivos globales",
+    "advertising_experience": "Experiencia publicitaria",
+    "branding": "Marca y activos",
+}
+_STRATEGIC_REVIEW_STATUSES = {
+    "confirmed": "confirmado",
+    "provisional_confirmed": "confirmado provisionalmente",
+    "unknown": "desconocido",
+    "not_applicable": "no aplica",
+    "withheld": "reservado por el comprador",
+}
+
+
+def _strategic_review_value(entry):
+    status = str((entry or {}).get("status") or "")
+    value = (entry or {}).get("value")
+    if value in (None, "", [], {}):
+        value = _STRATEGIC_REVIEW_STATUSES.get(status, status or "sin dato")
+    elif isinstance(value, str):
+        value = value.strip()
+    else:
+        value = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return re.sub(r"\s+", " ", str(value or "")).strip()[:320]
+
+
+def strategic_profile_review_summary(profile):
+    canonical = migrate_strategic_profile(profile)
+    revision = int(canonical.get("revision") or 0)
+    lines = [f"Resumen estratégico — revisión {revision}"]
+    topics = canonical.get("topics") if isinstance(canonical.get("topics"), dict) else {}
+    for topic in STRATEGIC_PROFILE_TOPICS:
+        entry = topics.get(topic) if isinstance(topics.get(topic), dict) else {}
+        label = _STRATEGIC_REVIEW_LABELS[topic]
+        status = _STRATEGIC_REVIEW_STATUSES.get(str(entry.get("status") or ""), "pendiente")
+        lines.append(f"- {label} [{status}]: {_strategic_review_value(entry)}")
+    lines.append("Puedes corregir cualquier punto o confirmar este resumen con tus propias palabras.")
+    return "\n".join(lines)
+
+
+def _assistant_summary_covers_strategic_profile(profile, assistant_text):
+    """Require every label/status/value line, never labels alone."""
+    normalized_output = _normalized_confirmation_text(assistant_text)
+    if not normalized_output:
+        return False
+    summary_lines = strategic_profile_review_summary(profile).splitlines()[1:-1]
+    return all(
+        _normalized_confirmation_text(line) in normalized_output
+        for line in summary_lines
+    )
+
+
+def record_strategic_review_presented(session_id, assistant_text, chat_id=""):
+    """Bind an actually finalized outbound summary to the current revision."""
+    with _trusted_buyer_turn_lock():
+        turn = _trusted_buyer_turn_unlocked()
+        if not turn:
+            return {"recorded": False, "reason": "missing_current_trusted_buyer_turn"}
+        if str(session_id or "").strip() != str(turn.get("session_id") or "").strip():
+            return {"recorded": False, "reason": "review_session_mismatch"}
+        if chat_id and str(chat_id).strip() != str(turn.get("chat_id") or "").strip():
+            return {"recorded": False, "reason": "review_chat_mismatch"}
+        page_id = active_meta_page_id()
+        profile = read_json(BUSINESS_PROFILE_FILE, {})
+        if not page_id or not isinstance(profile, dict):
+            return {"recorded": False, "reason": "strategic_profile_scope_unavailable"}
+        strategic = strategic_profile_for_page(profile, page_id=page_id, activate=False)
+        readiness = strategic_profile_readiness(strategic, active_page_id=page_id)
+        if not readiness.get("review_required") or not readiness.get("review_ready"):
+            return {"recorded": False, "reason": "review_not_ready"}
+        if not _assistant_summary_covers_strategic_profile(strategic, assistant_text):
+            return {"recorded": False, "reason": "review_summary_incomplete"}
+        message_hash = hashlib.sha256(
+            str(assistant_text or "").encode("utf-8", errors="replace")
+        ).hexdigest()
+        strategic = mark_strategic_profile_review_presented(
+            strategic,
+            page_id=page_id,
+            after_buyer_message_sequence=turn.get("message_sequence"),
+            assistant_message_hash=message_hash,
+            evidence={
+                "source": "finalized_outbound_transport",
+                "chat_id": str(turn.get("chat_id") or ""),
+                "session_id": str(turn.get("session_id") or ""),
+                "transport": str(turn.get("transport") or ""),
+                "message_sequence": turn.get("message_sequence"),
+            },
+        )
+        profile = embed_strategic_profile(profile, strategic)
+        profile["updated_at"] = now_iso()
+        write_json(BUSINESS_PROFILE_FILE, profile)
+        return {
+            "recorded": True,
+            "revision": strategic.get("revision"),
+            "message_sequence": turn.get("message_sequence"),
+        }
+
+
+def _strategic_topic_updates(payload):
+    payload = payload or {}
+    claimed = str(payload.get("confirmation_state") or "inferred").strip().lower()
+    if claimed not in {"buyer_confirmed", "agent_proposal", "inferred"}:
+        claimed = "inferred"
+    updates = {}
+    explicit = payload.get("strategic_topics")
+    if isinstance(explicit, dict):
+        for topic in STRATEGIC_PROFILE_TOPICS:
+            if topic not in explicit:
+                continue
+            raw = explicit.get(topic)
+            item = dict(raw) if isinstance(raw, dict) else {"value": raw}
+            item.setdefault("confirmation_state", claimed)
+            updates[topic] = item
+    aliases = {
+        "services": ("services", "products_services", "main_offer", "offer"),
+        "ideal_customer": ("ideal_customer", "audience", "buying_situations"),
+        "differentiators": ("differentiators", "proof", "competitive_advantage"),
+        "markets": ("markets", "locations", "service_locations", "countries"),
+        "capacity": ("capacity", "constraints", "operational_constraints"),
+        "pricing": ("pricing", "prices", "price_range"),
+        "margins": ("margins", "costs", "contribution_margin", "unit_economics"),
+        "global_objectives": ("global_objectives", "success_goal", "what_to_improve"),
+        "advertising_experience": ("advertising_experience", "ads_experience", "current_ads", "current_stage"),
+        "branding": ("branding", "brand_assets", "brand_tone", "branding_summary"),
+    }
+    status_map = payload.get("topic_statuses") if isinstance(payload.get("topic_statuses"), dict) else {}
+    for topic, keys in aliases.items():
+        if topic in updates:
+            continue
+        value = next((payload.get(key) for key in keys if payload.get(key) not in (None, "", [], {})), None)
+        requested_status = str(status_map.get(topic) or "confirmed").strip().lower()
+        if value is None and requested_status not in {"unknown", "not_applicable", "withheld"}:
+            continue
+        updates[topic] = {
+            "value": value,
+            "status": requested_status,
+            "confirmation_state": claimed,
+        }
+    return updates
+
+
 def onboarding_interview_status(profile=None):
     profile = profile if isinstance(profile, dict) else read_json(BUSINESS_PROFILE_FILE, {})
     if not isinstance(profile, dict):
         profile = {}
-    if profile.get("context_completed_at"):
+    readiness = strategic_business_profile_readiness(profile)
+    if readiness.get("complete"):
         return "completed"
+    if readiness.get("status") in {"collecting", "review_required", "scope_mismatch"}:
+        return readiness.get("status")
     if profile.get("telegram_onboarding_requested_at"):
         return "pending_telegram"
     if profile.get("website_url") or profile.get("social_links") or profile.get("business_type"):
@@ -8346,7 +9985,7 @@ def creative_image_requires_brief(payload=None, purpose="ad_creative"):
         return truthy_payload_flag(payload.get("require_brief"))
     if any(truthy_payload_flag(payload.get(key)) for key in ("asset_only", "draft_only", "standalone_creative")):
         return False
-    if purpose in {"logo", "brand_exploration", "moodboard", "creative_asset", "standalone_creative", "draft_creative", "asset_only", "motion_graphic_asset", "motion_asset", "storyboard_asset", "video_design_element"}:
+    if purpose in {"logo", "brand_exploration", "moodboard", "brand_sample", "creative_asset", "standalone_creative", "draft_creative", "asset_only", "motion_graphic_asset", "motion_asset", "storyboard_asset", "video_design_element"}:
         return False
     if purpose in {"launch_ad", "campaign_ad", "ad_test", "live_ad", "campaign_ready", "launch_ready"}:
         return True
@@ -8357,9 +9996,29 @@ def creative_image_requires_brief(payload=None, purpose="ad_creative"):
     return False
 
 
-def branding_creative_readiness(require_product=True, payload=None):
+BRAND_EXPLORATION_PURPOSES = {"logo", "brand_exploration", "moodboard", "brand_sample"}
+
+
+def approved_logo_decision(fields):
+    fields = fields or {}
+    if official_brand_logo_path(fields):
+        return True
+    status = str(fields.get("logo_status") or "").strip().lower().replace("-", "_")
+    if status in {"official", "approved", "approved_candidate", "no_logo"}:
+        return True
+    text = " ".join(str(fields.get(key) or "") for key in ("logo_notes", "logo_usage")).lower()
+    return any(phrase in text for phrase in (
+        "trabajar sin logo", "prefiero sin logo", "no usar logo", "sin incluir logo",
+        "without logo", "do not use logo", "no_logo",
+    ))
+
+
+def branding_creative_readiness(require_product=True, payload=None, allow_inline=False):
     payload = payload or {}
-    brand_payload = normalize_general_payload(payload)
+    # Final organic/paid production is authorized only by durable,
+    # buyer-confirmed brand memory. Inline model payload can describe the
+    # active request, but it cannot silently manufacture a finished brand.
+    brand_payload = normalize_general_payload(payload) if allow_inline else {}
     library = guide_library()
     profile = read_json(BUSINESS_PROFILE_FILE, {})
     if not isinstance(profile, dict):
@@ -8373,8 +10032,8 @@ def branding_creative_readiness(require_product=True, payload=None):
         ("tone", bool(general.get("tone") or general.get("personality") or brand_payload.get("tone")), "¿Cómo debe sonar la marca: cercana, experta, directa, divertida u otra combinación?"),
         (
             "logo_decision",
-            bool(general.get("logo_path") or general.get("logo_notes") or general.get("logo_usage") or brand_payload.get("logo_path") or brand_payload.get("logo_notes") or brand_payload.get("logo_usage")),
-            "¿Tienes un logo oficial para subir, quieres crear uno después o prefieres trabajar sin logo?",
+            approved_logo_decision(general) or approved_logo_decision(brand_payload),
+            "¿Quieres subir tu logo oficial, crear y aprobar uno conmigo, o trabajar explícitamente sin logo?",
         ),
         (
             "reference_decision",
@@ -8405,6 +10064,52 @@ def branding_creative_readiness(require_product=True, payload=None):
         "next_question": missing[0]["question"] if missing else "",
         "general": general,
         "library": library,
+    }
+
+
+def brand_exploration_readiness(payload=None, purpose="brand_exploration"):
+    """Reduced bootstrap gate for logo/moodboard work inside branding."""
+    payload = payload or {}
+    incoming = normalize_general_payload(payload)
+    general = ((guide_library().get("general") or {}).get("fields") or {})
+    combined = {key: incoming.get(key) or general.get(key) for key in set(general) | set(incoming)}
+    profile = read_json(BUSINESS_PROFILE_FILE, {})
+    if not isinstance(profile, dict):
+        profile = {}
+    strategic = profile.get("strategic_profile") if isinstance(profile.get("strategic_profile"), dict) else {}
+    topics = strategic.get("topics") if isinstance(strategic.get("topics"), dict) else {}
+
+    def topic_value(key):
+        topic = topics.get(key) if isinstance(topics.get(key), dict) else {}
+        if topic.get("value") not in (None, "", []):
+            return topic.get("value")
+        draft = topic.get("draft") if isinstance(topic.get("draft"), dict) else {}
+        return draft.get("value")
+
+    known_offer = (
+        combined.get("offer")
+        or combined.get("category")
+        or profile.get("main_offer")
+        or profile.get("business_type")
+        or topic_value("services")
+    )
+    missing = []
+    requirements = [
+        ("brand_core", bool(combined.get("brand_name") and known_offer), "Antes de diseñar la marca, ¿cuál es el nombre exacto y qué ofrece el negocio?"),
+        ("colors", bool(combined.get("colors")), "¿Qué colores quieres para la marca, o qué sensación debe transmitir la paleta?"),
+        ("visual_style", bool(combined.get("visual_style")), "¿Qué estilo visual debe tener la marca y qué quieres evitar?"),
+        ("tone", bool(combined.get("tone") or combined.get("personality")), "¿Cómo debe sentirse y sonar la marca?"),
+    ]
+    for key, ready, question in requirements:
+        if not ready:
+            missing.append({"key": key, "question": question})
+    return {
+        "ready": not missing,
+        "purpose": str(purpose or "brand_exploration"),
+        "missing": missing,
+        "next_question": missing[0]["question"] if missing else "",
+        "general": general,
+        "library": guide_library(),
     }
 
 
@@ -8471,9 +10176,11 @@ def creative_test_budget_value(profile, library, payload=None):
 
 def creative_strategy_readiness(require_brief=False, purpose="ad_creative", payload=None):
     purpose = str(purpose or "ad_creative").strip().lower()
-    is_ad = purpose not in {"logo", "brand_exploration", "moodboard"}
+    if purpose in BRAND_EXPLORATION_PURPOSES:
+        return brand_exploration_readiness(payload, purpose=purpose)
+    is_ad = True
     payload = normalize_ad_brief_payload(payload or {})
-    branding = branding_creative_readiness(require_product=is_ad and not image_purpose_is_organic(purpose), payload=payload)
+    branding = branding_creative_readiness(require_product=not image_purpose_is_organic(purpose), payload=None)
     missing = list(branding["missing"])
     library = branding["library"]
     profile = read_json(BUSINESS_PROFILE_FILE, {})
@@ -9031,10 +10738,9 @@ def ads_campaign_onboarding_status(profile=None):
 def organic_content_strategy_status():
     """Return whether the one-time organic strategy decision is resolved.
 
-    This is deliberately separate from readiness.  A buyer can approve the
-    direction before branding is complete; in that case the cron remains
-    disabled, but the onboarding must continue to branding rather than asking
-    the generic organic-content question again after every restart.
+    This is deliberately separate from production readiness. Legacy pending
+    decisions remain readable after update, but the current onboarding order
+    reaches this phase only after the brand foundation is complete.
     """
     decision = str(os.environ.get("DAILY_SOCIAL_CONTENT_DECISION") or "").strip().lower()
     if decision in {"accepted_pending_setup", "enabled", "declined"}:
@@ -9047,6 +10753,8 @@ def agent_onboarding_phase(profile=None):
     if not isinstance(profile, dict):
         profile = {}
     business = onboarding_interview_status(profile)
+    strategic_readiness = strategic_business_profile_readiness(profile)
+    master_plan = business_master_plan_readiness(profile)
     oauth = social_oauth_status()
     organic_content = organic_content_strategy_status()
     branding = branding_creatives_status()
@@ -9066,16 +10774,43 @@ def agent_onboarding_phase(profile=None):
         )
     elif business != "completed":
         phase = "business_discovery"
-        next_step = "Entrevistar al cliente sobre negocio, oferta, cliente ideal, etapa actual, problemas y meta de 30 dias."
+        if strategic_readiness.get("review_required"):
+            next_step = (
+                "Presentar en texto un resumen útil del perfil estratégico completo, invitar correcciones naturales "
+                "y guardar la confirmación del comprador para esta revisión exacta."
+            )
+        elif strategic_readiness.get("status") == "scope_mismatch":
+            next_step = "Retomar o iniciar el perfil estratégico correspondiente a la Página activa; no mezclarlo con el negocio de otra Página."
+        else:
+            missing = strategic_readiness.get("unresolved_topics") or []
+            next_step = (
+                "Continuar la conversación estratégica con una pregunta útil del dueño por turno. Pendientes: "
+                + ", ".join(missing)
+            )
+    elif not master_plan.get("ready"):
+        phase = "business_master_plan"
+        if master_plan.get("status") == "proposed":
+            next_step = (
+                "Presentar el plan maestro completo ya propuesto, explicar sus prioridades y pedir una sola corrección o confirmación natural."
+            )
+        elif master_plan.get("status") == "stale":
+            next_step = (
+                "Actualizar el plan maestro desde la revisión vigente del perfil, mostrar qué cambió y pedir una sola confirmación natural."
+            )
+        else:
+            next_step = (
+                "Convertir ahora el perfil confirmado en un plan maestro visible: diagnóstico, prioridades, posicionamiento, ofertas, embudo, "
+                "contenido, publicidad, marco de presupuesto, KPIs, hoja de ruta y riesgos. Guardarlo como propuesta y mostrárselo al comprador."
+            )
+    elif branding != "completed":
+        phase = "branding_creatives_creation"
+        next_step = creative_readiness.get("next_question") or "Definir y confirmar con el comprador la marca, el logo, referencias, paleta, tono y activos antes de producir contenido o anuncios."
     elif organic_content != "completed":
         phase = "organic_content_strategy"
         next_step = (
-            "Antes de branding o anuncios, proponer una estrategia de contenido orgánico concreta para este negocio: "
-            "pilares, temas, frecuencia, borradores con Image 2 y revisión antes de publicar."
+            "Con el branding ya confirmado, proponer una estrategia de contenido orgánico concreta: "
+            "pilares, temas, frecuencia y piezas con Image 2 que siempre se muestran antes de publicar."
         )
-    elif branding != "completed":
-        phase = "branding_creatives_creation"
-        next_step = creative_readiness.get("next_question") or "Usar el skill branding creatives creation para definir marca, logo, productos, referencias, paletas, fuentes y reglas de creativos."
     elif campaigns != "completed":
         phase = "ads_campaign_onboarding"
         next_step = "Entender que ha promovido antes, resultados, aprendizajes, restricciones y primera estrategia de campanas."
@@ -9091,6 +10826,8 @@ def agent_onboarding_phase(profile=None):
         "oauth_page_count": len(oauth.get("pages") or []),
         "oauth_business_count": len(oauth.get("businesses") or []),
         "business": business,
+        "strategic_profile": strategic_readiness,
+        "master_plan": master_plan,
         "organic_content": organic_content,
         "branding": branding,
         "campaigns": campaigns,
@@ -9109,10 +10846,10 @@ def agent_onboarding_deferred_reasons(profile=None):
     reasons = []
     if phase["business"] != "completed":
         reasons.append("entrevista_negocio")
-    if phase.get("organic_content") != "completed":
-        reasons.append("estrategia_contenido_organico")
     if phase["branding"] != "completed":
         reasons.append("branding_creativos")
+    if phase.get("organic_content") != "completed":
+        reasons.append("estrategia_contenido_organico")
     if phase["campaigns"] != "completed":
         reasons.append("campanas_anuncios")
     return reasons
@@ -9150,8 +10887,8 @@ Siguiente movimiento: {phase["next_step"]}
 Antes de hacer la primera pregunta, explica el camino con palabras simples:
 
 1. Primero conectaremos Facebook de forma segura para leer tus datos reales y no interrumpir el proceso después.
-2. Luego entenderé tu negocio y te propondré una estrategia simple de contenido orgánico: ideas, pilares, frecuencia y borradores con Image 2 para revisión.
-3. Después dejaremos clara la parte visual de la marca y aterrizaremos anuncios: ofertas específicas, estrategia, briefs y próximos pasos.
+2. Luego entenderé tu negocio y definiremos juntos la marca visual: logo real, paleta, estilo, tono, referencias y activos.
+3. Con esa base aprobada, propondré contenido orgánico y después aterrizaremos anuncios: ofertas específicas, estrategia, briefs y próximos pasos.
 
 Despues de explicar esto, pregunta tambien la preferencia global del operador: "Tienes experiencia creando o gestionando anuncios? Quieres que te explique cosas tecnicas con detalle, o prefieres que yo tome las decisiones de mejores practicas y te lo explique en palabras simples? Esto lo puedes cambiar cuando quieras."
 
@@ -9161,7 +10898,7 @@ Cuando responda, guarda esa preferencia con `save_agent_preferences` / `mcp_admi
 
 La primera acción no es una pregunta de negocio: consulta `mcp_admira_get_meta_oauth_workspaces` y, si no hay conexión, llama `mcp_admira_start_meta_oauth_connection` para enviar la URL segura de Facebook como texto visible a Telegram. Nunca pidas tokens, Usuario del sistema, app de Meta ni IDs técnicos. En el siguiente turno del comprador, lista las cuentas/Páginas encontradas, espera su elección en lenguaje natural y selecciona el par indicado. Después haz una sola pregunta clara de negocio: "Que vendes exactamente y cual es tu oferta principal hoy?"
 
-Al terminar el onboarding general de negocio, no saltes a anuncios ni branding. Facebook ya estará conectado y seleccionado; entra en `organic_content_strategy`: lee `skills/organic-content-strategy/SKILL.md` y presenta una propuesta concreta, adaptada al negocio recién entendido. Debe incluir 2-4 pilares, ejemplos de temas, frecuencia recomendada y borradores con Image 2 (y motion video solo cuando aporte) para revisión/aprobación antes de publicar. Cuando el comprador acepte o ajuste esa dirección, guarda `accepted_pending_setup` con `mcp_admira_save_daily_social_content_settings`; después pasa a `Branding onboarding.md` para marca visual, logo, colores, referencias y activos.
+Al terminar y confirmar el onboarding general de negocio, entra primero en `branding_creatives_creation`: usa `Branding onboarding.md` para definir y confirmar logo, colores, estilo, tono, referencias y activos. Durante esta fase Image 2 puede crear candidatos reales de logo, moodboards o muestras de marca; siempre adjunta el archivo y revísalo con el comprador antes de guardarlo como oficial. Solo cuando el branding esté listo pasa a `organic_content_strategy` y presenta pilares, temas, frecuencia y borradores para revisión.
 
 ## Postura experta global
 
@@ -9178,20 +10915,14 @@ Regla asesor-profesional: antes de preguntar cualquier configuracion amplia, pri
 2. business_discovery
    - Entender que vende, oferta principal, productos/servicios prioritarios, cliente ideal, etapa actual, dolores, meta de 30 dias y tono comercial.
    - Preguntar una sola cosa a la vez.
-   - Guardar lo aprendido con `save_business_context`. Cuando ya estén claros oferta principal, cliente ideal, etapa y meta/mejora, guarda también `context_complete=true`: esto cierra la entrevista y abre la fase de estrategia de contenido orgánico.
+   - Guardar lo aprendido con `save_business_context`. La fase termina únicamente cuando el perfil estratégico completo y su revisión actual quedan confirmados; después abre branding.
 
-3. organic_content_strategy
-   - Antes de branding y anuncios, leer `skills/organic-content-strategy/SKILL.md` y proponer, no preguntar de forma genérica, una estrategia concreta para el negocio: pilares, temas de ejemplo, mezcla recomendada de posts educativos/comunidad/promoción, frecuencia y por qué sirve al objetivo del negocio.
-   - Explicar que Image 2 prepara los diseños y que las piezas se envían primero por Telegram para revisión; nada visible se publica sin la aprobación explícita del comprador.
-   - Facebook ya está conectado: cerrar la propuesta indicando que, tras aprobarla o ajustarla, el siguiente paso es branding y cadencia final.
-   - Cuando acepte, cambie o rechace la estrategia, guardar la decisión con `save_daily_social_content_settings`. Una aceptación temprana se guarda como `accepted_pending_setup`, sin activar cron aún.
-   - Tras una aceptación/ajuste, pasar a branding.
-
-4. branding_creatives_creation
+3. branding_creatives_creation
    - Usar el skill `skills/branding-creatives-creation/SKILL.md`.
    - Leer `Branding onboarding.md` como la guia especifica de branding. El onboarding general solo indica que esta fase empieza; el detalle de branding vive separado.
    - Buscar referencias visuales de anuncios del nicho con las herramientas web/browser disponibles.
-   - No generar anuncios todavía. Completar colores, estilo visual, tono, decisión de logo, decisión de referencias y decisión sobre fotos/activos reales.
+   - No generar contenido ni anuncios finales todavía. Completar colores, estilo visual, tono, decisión de logo, decisión de referencias y decisión sobre fotos/activos reales.
+   - Si falta logo y el comprador quiere crearlo, acordar nombre, categoría/oferta, paleta, estilo y tono; generar un candidato con Image 2 usando `purpose=logo`, adjuntarlo y revisarlo. Guardar su archivo como oficial solo después de la aprobación natural del comprador.
    - Preguntar activamente si el cliente quiere subir un logo, diseño de referencia, foto de producto, fundador, cliente, local o empaque.
    - Proponer estilos, paletas, fuentes, sensaciones, uso de logo y reglas visuales solo después de escuchar esas respuestas.
    - Distinguir que es continuo para toda la marca y que cambia por producto, servicio o campana.
@@ -9199,10 +10930,14 @@ Regla asesor-profesional: antes de preguntar cualquier configuracion amplia, pri
    - Si el cliente envia un logo, guardarlo en la guia general como Logo de marca y Notas del logo.
    - Si el cliente aprueba referencias encontradas, generadas o ambas, guardarlas con `save_creative_references`.
    - Si el cliente envia fotos/videos/links/UGC/testimonios/ofertas, guardar su proposito con `save_content_asset`.
-   - Si el comprador ya aprobó contenido orgánico, terminar aquí la base necesaria: logo, colores, estilo, referencias, tono y assets. Después guardar la estrategia concreta (hora, cantidad, frecuencia y formatos) con `save_daily_social_content_settings`, lo que habilita el cron; si no la aprobó, no volver a insistir salvo que cambie de opinión.
    - Guardar la guia general con `save_brand_guide` y fichas por producto con `save_product_guide`.
 
-4. ads_campaign_onboarding
+4. organic_content_strategy
+   - Solo después del branding confirmado, leer `skills/organic-content-strategy/SKILL.md` y proponer una estrategia concreta: pilares, temas, mezcla de contenido, frecuencia y por qué sirve al objetivo.
+   - Explicar que cada pieza real de Image 2 se adjunta primero por Telegram para revisión; nada visible se publica sin aprobación.
+   - Guardar la decisión y cadencia con `save_daily_social_content_settings`.
+
+5. ads_campaign_onboarding
    - Entender que anuncio antes, que resultados tuvo, que cree que fallo, que quiere mantener, presupuesto, CPA/CPL objetivo cuando exista, paises, ofertas y restricciones.
    - Preguntar por los 3 resultados/KPIs mas importantes para juzgar cada campana en orden de prioridad, por ejemplo ROAS, costo por compra y costo por iniciar checkout; guardarlos y pasarlos como `success_metrics`.
    - Preguntar el presupuesto antes de proponer cuantos creativos probar simultaneamente.
@@ -9212,7 +10947,7 @@ Regla asesor-profesional: antes de preguntar cualquier configuracion amplia, pri
    - Guardar contexto con `save_ads_onboarding`.
    - Crear briefs por promocion, campana, conjunto o anuncio con `save_ad_brief`.
 
-5. continuous_ads_manager
+6. continuous_ads_manager
    - Usar metricas, memoria de decisiones, guias de marca, referencias, briefs y contexto de campanas para responder como manager coherente.
    - Si no hay accion clara, decir que conviene esperar y que senal revisar despues.
    - Si hay accion clara, preparar o ejecutar bajo las reglas del backend.
@@ -9256,11 +10991,12 @@ La marca madre incluye:
 ## Flujo recomendado
 
 1. Leer memoria existente: `brand_guides/general_branding.md`, `brand_guides/Offer map.md`, `brand_guides/creative_references.md` y `memory/content_asset_library.json`.
-2. Si falta branding esencial, no crear creativos finales todavía. Preguntar una cosa: logo, colores, referencias, fotos/assets reales, tono o estilo.
-3. Guardar marca madre con `save_brand_guide` / `mcp_admira_save_brand_memory`.
-4. Guardar assets subidos con `save_content_asset` / `mcp_admira_save_content_asset` y una categoría clara.
-5. Guardar referencias aprobadas con `save_creative_references`.
-6. Cuando el branding esté razonablemente claro, pasar a ofertas hijas/productos. No sobrescribir la marca madre para resolver una nueva oferta.
+2. Si falta branding esencial, no crear contenido ni anuncios finales todavía. Preguntar una cosa: logo, colores, referencias, fotos/assets reales, tono o estilo.
+3. Si el comprador necesita logo, usar Image 2 con `purpose=logo` después de acordar nombre, oferta/categoría, paleta, estilo y tono. Adjuntar el resultado real, revisarlo juntos y guardarlo como oficial únicamente tras su aprobación natural. Un bloqueo no es una cola: nunca decir que aparecerá luego.
+4. Guardar marca madre con `save_brand_guide` / `mcp_admira_save_brand_memory`.
+5. Guardar assets subidos con `save_content_asset` / `mcp_admira_save_content_asset` y una categoría clara.
+6. Guardar referencias aprobadas con `save_creative_references`.
+7. Cuando el branding esté confirmado, pasar a contenido orgánico y después a ofertas/campañas. No sobrescribir la marca madre para resolver una nueva oferta.
 
 ## Regla multi-oferta
 
@@ -9336,9 +11072,8 @@ Instrucciones para el agente:
 - Usa los links guardados como contexto, pero deja que el cliente corrija todo.
 - Documenta lo aprendido en el perfil del negocio y en las guias de marca/producto/brief cuando corresponda.
 - Si falta informacion, pregunta lo minimo necesario para poder actuar.
-- Cuando el negocio esté claro, antes de branding y antes de anuncios pasa a `skills/organic-content-strategy/SKILL.md`. No preguntes solo si “quiere contenido”: propone primero una estrategia de contenido orgánico hecha para ese negocio, con pilares, ejemplos de ideas, frecuencia recomendada, diseño con Image 2 y revisión/aprobación por Telegram antes de publicar.
-- En el cierre de esa propuesta explica que, si la dirección le gusta o quiere ajustarla, el siguiente paso será conectar su Página de Facebook para publicar las piezas aprobadas y sincronizar Ads. Al aceptar/ajustar/declinar, guarda la decisión con `save_daily_social_content_settings`; una aceptación temprana queda `accepted_pending_setup` hasta completar branding, sin activar cron todavía.
-- Después de seleccionar la cuenta/Página mediante OAuth y completar la entrevista breve, usa `Branding onboarding.md` para logo, colores, fuentes, referencias y assets; luego presenta la estrategia orgánica y continúa a Ads.
+- Cuando el perfil estratégico esté confirmado, usa primero `Branding onboarding.md` para definir y confirmar logo, colores, fuentes, tono, referencias y assets. Image 2 puede crear candidatos de logo/moodboard durante este trabajo, pero el archivo real debe mostrarse y aprobarse antes de guardarlo como oficial.
+- Solo después del branding, pasa a `skills/organic-content-strategy/SKILL.md`: propone pilares, ideas, frecuencia y revisión/aprobación por Telegram antes de publicar.
 - Si el cliente menciona una nueva oferta, servicio, paquete o promocion despues del onboarding, no lo guardes encima de la marca general. Trátalo como oferta hija y usa/crea `brand_guides/products/` y, si aplica, `brand_guides/ad_briefs/`.
 - Si el cliente comparte archivos, fotos, videos, links, testimonios, ofertas o referencias, pregunta/infiera para que son y guardalos con `save_content_asset` para que se puedan reutilizar en posts, anuncios o estrategia.
 - Despues de branding, pregunta por anuncios/campanas anteriores y guarda aprendizajes antes de proponer la estrategia inicial.
@@ -9355,8 +11090,8 @@ Preguntas que debes cubrir poco a poco:
 
 Despues de estas preguntas:
 - Usa `save_business_context`.
-- Luego propone y guarda/descarta la estrategia de contenido orgánico antes de branding o Ads.
-- Después usa el skill `branding creatives creation`.
+- Luego usa el skill `branding creatives creation` y confirma la base visual/logo.
+- Después propone y guarda/descarta la estrategia de contenido orgánico.
 - Luego usa `save_ads_onboarding`.
 - Solo despues propone una estrategia inicial robusta pero clara.
 
@@ -9455,40 +11190,140 @@ def save_business_links_for_agent(payload):
 
 
 def save_business_context(payload):
+    payload = dict(payload or {})
     profile = read_json(BUSINESS_PROFILE_FILE, {})
     if not isinstance(profile, dict):
         profile = {}
-    for field in ["website_url", "business_type", "business_short", "current_stage", "what_to_improve", "main_offer", "ideal_customer", "offer", "audience", "sales_channel", "current_ads", "biggest_blocker", "success_goal", "budget_comfort", "brand_tone"]:
-        if field in payload:
-            profile[field] = str(payload.get(field) or "").strip()
-    if "website_skipped" in payload:
-        profile["website_skipped"] = bool(payload.get("website_skipped"))
-        profile["onboarding_questions_started"] = True
-    if payload.get("website_url"):
-        profile["website_url"] = normalize_website_url(payload.get("website_url"))
-        profile["website_skipped"] = False
-        save_setup_config({"landing_url": profile["website_url"]})
-    if not profile.get("initial_plan"):
-        context = " ".join(
-            str(profile.get(key) or "")
-            for key in ["current_stage", "what_to_improve", "main_offer", "ideal_customer"]
-        ).strip()
-        profile.update(infer_business_profile(profile.get("website_url", ""), WebsiteSummaryParser(), context))
-    if profile.get("main_offer") and not profile.get("offer"):
-        profile["offer"] = profile["main_offer"]
-    if profile.get("ideal_customer") and not profile.get("audience"):
-        profile["audience"] = profile["ideal_customer"]
-    context_fields = ["main_offer", "ideal_customer", "current_stage", "what_to_improve"]
-    if payload.get("context_complete") and all(str(profile.get(key) or "").strip() for key in context_fields):
-        profile["context_completed_at"] = now_iso()
-    profile.setdefault("source", "manual_context")
-    profile["updated_at"] = now_iso()
-    write_json(BUSINESS_PROFILE_FILE, profile)
-    if profile.get("context_completed_at"):
-        write_onboarding_questions_memory(profile, "completed")
-    write_agent_onboarding_plan(profile)
-    log_action("business_context_save", {"website_url": profile.get("website_url"), "fields": sorted(payload.keys())}, "completed")
-    return {"saved": True, "profile": profile}
+    page_id = active_meta_page_id()
+    if not page_id:
+        raise ValueError("Primero debe quedar seleccionada una Página de Facebook para guardar el perfil estratégico del negocio.")
+    review_requested = bool(
+        payload.get("confirm_profile_review")
+        or payload.get("profile_review_confirmation")
+        or payload.get("confirm_strategic_profile")
+    )
+    capability_kind = "profile_review" if review_requested else "business"
+    claimed_confirmation = str(payload.get("confirmation_state") or "inferred").strip().lower()
+    with _trusted_memory_capability(
+        capability_kind,
+        payload,
+        scope=page_id,
+        profile=profile,
+    ) as authorization:
+        trusted_turn = authorization.get("turn") or {}
+        trusted_buyer_confirmation = bool(authorization.get("authorized"))
+        if trusted_buyer_confirmation and not review_requested:
+            for field in ["website_url", "business_type", "business_short", "current_stage", "what_to_improve", "main_offer", "ideal_customer", "offer", "audience", "sales_channel", "current_ads", "biggest_blocker", "success_goal", "budget_comfort", "brand_tone"]:
+                if field in payload:
+                    profile[field] = str(payload.get(field) or "").strip()
+            if "website_skipped" in payload:
+                profile["website_skipped"] = bool(payload.get("website_skipped"))
+                profile["onboarding_questions_started"] = True
+            if payload.get("website_url"):
+                profile["website_url"] = normalize_website_url(payload.get("website_url"))
+                profile["website_skipped"] = False
+                save_setup_config({"landing_url": profile["website_url"]})
+            if not profile.get("initial_plan"):
+                context = " ".join(str(profile.get(key) or "") for key in ["current_stage", "what_to_improve", "main_offer", "ideal_customer"]).strip()
+                profile.update(infer_business_profile(profile.get("website_url", ""), WebsiteSummaryParser(), context))
+            if profile.get("main_offer") and not profile.get("offer"):
+                profile["offer"] = profile["main_offer"]
+            if profile.get("ideal_customer") and not profile.get("audience"):
+                profile["audience"] = profile["ideal_customer"]
+
+        strategic = strategic_profile_for_page(profile, page_id=page_id, activate=True)
+        updates = _strategic_topic_updates(payload)
+        evidence = {
+            "source": "trusted_buyer_turn" if trusted_buyer_confirmation else "model_claim",
+            "message_hash": str(trusted_turn.get("message_hash") or ""),
+            "chat_id": str(trusted_turn.get("chat_id") or ""),
+            "session_id": str(trusted_turn.get("session_id") or ""),
+            "transport": str(trusted_turn.get("transport") or ""),
+            "message_sequence": trusted_turn.get("message_sequence"),
+        }
+        if updates:
+            strategic = apply_strategic_profile_updates(
+                strategic,
+                updates,
+                page_id=page_id,
+                trusted_buyer_confirmation=trusted_buyer_confirmation and not review_requested,
+                evidence=evidence,
+            )
+        if review_requested:
+            natural_confirmation, _review_turn = trusted_profile_review_confirmation(trusted_turn)
+            strategic = confirm_strategic_profile_revision(
+                strategic,
+                page_id=page_id,
+                trusted_buyer_confirmation=trusted_buyer_confirmation and natural_confirmation,
+                evidence=evidence,
+            )
+        profile = embed_strategic_profile(profile, strategic)
+        if "master_plan" in payload or payload.get("confirm_master_plan"):
+            plans = profile.get("business_master_plans")
+            if not isinstance(plans, dict):
+                plans = {}
+            current = dict(plans.get(page_id) or {})
+            submitted_plan = _normalize_master_plan(payload.get("master_plan"))
+            strategic_state = strategic_profile_readiness(strategic, active_page_id=page_id)
+            if submitted_plan and trusted_buyer_confirmation:
+                current = {
+                    "status": "confirmed",
+                    "revision": int(current.get("revision") or 0) + 1,
+                    "profile_revision": int(strategic_state.get("revision") or 0),
+                    "content": submitted_plan,
+                    "confirmed_at": now_iso(),
+                    "draft": {},
+                }
+            elif submitted_plan:
+                current.update({
+                    "status": "proposed",
+                    "profile_revision": int(strategic_state.get("revision") or 0),
+                    "draft": submitted_plan,
+                    "proposed_at": now_iso(),
+                })
+            elif payload.get("confirm_master_plan") and trusted_buyer_confirmation and current.get("draft"):
+                current = {
+                    "status": "confirmed",
+                    "revision": int(current.get("revision") or 0) + 1,
+                    "profile_revision": int(strategic_state.get("revision") or 0),
+                    "content": dict(current.get("draft") or {}),
+                    "confirmed_at": now_iso(),
+                    "draft": {},
+                }
+            plans[page_id] = current
+            profile["business_master_plans"] = plans
+        profile.setdefault("source", "manual_context")
+        profile["updated_at"] = now_iso()
+        write_json(BUSINESS_PROFILE_FILE, profile)
+        if trusted_buyer_confirmation:
+            authorization["commit"] = True
+        readiness = strategic_profile_readiness(strategic, active_page_id=page_id)
+        if readiness.get("complete"):
+            write_onboarding_questions_memory(profile, "completed")
+        else:
+            write_onboarding_questions_memory(profile, "pending")
+        write_agent_onboarding_plan(profile)
+        log_action("business_context_save", {
+            "website_url": profile.get("website_url"),
+            "fields": sorted(payload.keys()),
+            "strategic_status": readiness.get("status"),
+            "revision": readiness.get("revision"),
+            "trusted_buyer_confirmation": trusted_buyer_confirmation,
+            "authorization_reason": authorization.get("reason"),
+        }, "completed" if trusted_buyer_confirmation or claimed_confirmation != "buyer_confirmed" else "draft")
+        result = {
+            "saved": bool(trusted_buyer_confirmation or claimed_confirmation != "buyer_confirmed"),
+            "draft": not trusted_buyer_confirmation,
+            "profile": profile,
+            "strategic_profile": readiness,
+            "master_plan": business_master_plan_readiness(profile, page_id),
+        }
+        if not trusted_buyer_confirmation:
+            result["reason"] = authorization.get("reason") or "buyer_confirmation_not_authorized"
+            result["reply"] = "Se conservó como borrador; no se convirtió en un hecho confirmado porque faltó evidencia del turno actual o ya se había usado."
+        if readiness.get("review_required"):
+            result["review_summary"] = strategic_profile_review_summary(strategic)
+        return result
 
 
 def save_durable_memory(payload):
@@ -9540,7 +11375,70 @@ def save_durable_memory(payload):
     return {"saved": True, "memory": record}
 
 
+def _memory_confirmation(payload):
+    claimed = str((payload or {}).get("confirmation_state") or "inferred").strip().lower()
+    turn = _trusted_buyer_turn()
+    # Compatibility-only read helper. Official stores below use the locked,
+    # one-use capability transaction instead of trusting this boolean.
+    return claimed, False, turn
+
+
+def save_memory_draft(kind, payload, scope=""):
+    """Keep proposals/inferences useful without making them official truth."""
+    library = read_json(MEMORY_DRAFTS_FILE, {"items": []})
+    if not isinstance(library, dict):
+        library = {"items": []}
+    items = [item for item in library.get("items", []) if isinstance(item, dict)]
+    clean_payload = redact_payload({
+        key: value for key, value in dict(payload or {}).items()
+        if key not in {"access_token", "token", "api_key", "password", "buyer_evidence"}
+    })
+    key = (str(kind or "draft"), str(scope or "default"))
+    record = next(
+        (item for item in items if (str(item.get("kind") or ""), str(item.get("scope") or "")) == key),
+        None,
+    )
+    now = now_iso()
+    values = {
+        "kind": key[0],
+        "scope": key[1],
+        "confirmation_state": str(clean_payload.get("confirmation_state") or "inferred"),
+        "payload": clean_payload,
+        "updated_at": now,
+    }
+    if record is None:
+        record = {"id": f"draft_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}", "created_at": now, **values}
+        items.append(record)
+    else:
+        record.update(values)
+    write_private_json(MEMORY_DRAFTS_FILE, {"updated_at": now, "items": items[-200:]})
+    return {"saved": True, "draft": True, "draft_id": record.get("id"), "kind": key[0], "scope": key[1]}
+
+
 def save_ads_campaign_onboarding(payload):
+    payload = dict(payload or {})
+    scope = active_meta_page_id() or "unscoped"
+    with _trusted_memory_capability("ads", payload, scope=scope) as authorization:
+        if not authorization.get("authorized"):
+            result = save_memory_draft("ads", payload, scope=scope)
+            result["saved"] = False if str(payload.get("confirmation_state") or "").lower() == "buyer_confirmed" else True
+            result["reason"] = authorization.get("reason")
+            return result
+        result = _save_ads_campaign_onboarding_official(payload)
+        authorization["commit"] = True
+        return result
+
+
+def _save_ads_campaign_onboarding_official(payload):
+    payload = dict(payload or {})
+    payload.pop("confirmation_state", None)
+    payload.pop("buyer_evidence", None)
+    if payload.get("budget") not in (None, "") and not payload.get("budget_comfort"):
+        payload["budget_comfort"] = str(payload.get("budget"))
+    if payload.get("notes") and not payload.get("campaign_constraints"):
+        payload["campaign_constraints"] = payload.get("notes")
+    if payload.get("objective") and not payload.get("first_strategy"):
+        payload["first_strategy"] = f"Objetivo recomendado/confirmado: {payload.get('objective')}"
     profile = read_json(BUSINESS_PROFILE_FILE, {})
     if not isinstance(profile, dict):
         profile = {}
@@ -9558,10 +11456,15 @@ def save_ads_campaign_onboarding(payload):
         "primary_success_metric",
         "secondary_success_metric",
         "tertiary_success_metric",
+        "objective",
+        "optimization_event",
+        "budget_level",
+        "notes",
     ]
     changed = {}
     for key in allowed:
-        value = str(payload.get(key) or "").strip()
+        raw_value = payload.get(key)
+        value = ", ".join(str(item) for item in raw_value) if isinstance(raw_value, list) else str(raw_value or "").strip()
         if value:
             profile[key] = value[:1600]
             changed[key] = profile[key]
@@ -9640,21 +11543,50 @@ def initialize_brand_guides(payload):
 
 
 def save_general_brand_memory(payload):
-    result = save_general_guide(payload)
-    write_agent_onboarding_plan()
-    log_action("brand_general_save", {"brand_name": result.get("general", {}).get("fields", {}).get("brand_name", "")}, "completed")
-    return result
+    payload = dict(payload or {})
+    scope = active_meta_page_id() or "unscoped"
+    with _trusted_memory_capability("brand", payload, scope=scope) as authorization:
+        if not authorization.get("authorized"):
+            result = save_memory_draft("brand", payload, scope=scope)
+            result["saved"] = False if str(payload.get("confirmation_state") or "").lower() == "buyer_confirmed" else True
+            result["reason"] = authorization.get("reason")
+            return result
+        official = dict(payload)
+        official.pop("confirmation_state", None)
+        official.pop("buyer_evidence", None)
+        result = save_general_guide(official)
+        result["saved"] = True
+        result["draft"] = False
+        write_agent_onboarding_plan()
+        log_action("brand_general_save", {"brand_name": result.get("general", {}).get("fields", {}).get("brand_name", "")}, "completed")
+        authorization["commit"] = True
+        return result
 
 
 def save_product_brand_memory(payload):
-    result = save_product_guide(payload)
-    write_agent_onboarding_plan()
-    product = next(
-        (item for item in result["library"].get("products", []) if item.get("id") == result.get("product_id")),
-        {},
-    )
-    log_action("brand_product_save", {"product_id": result.get("product_id"), "name": product.get("name", "")}, "completed")
-    return result
+    payload = dict(payload or {})
+    product_name = str((payload or {}).get("name") or (payload or {}).get("product_name") or "offer").strip()
+    scope = f"{active_meta_page_id() or 'unscoped'}:{product_name}"
+    with _trusted_memory_capability("product", payload, scope=scope) as authorization:
+        if not authorization.get("authorized"):
+            result = save_memory_draft("product", payload, scope=scope)
+            result["saved"] = False if str(payload.get("confirmation_state") or "").lower() == "buyer_confirmed" else True
+            result["reason"] = authorization.get("reason")
+            return result
+        official = dict(payload)
+        official.pop("confirmation_state", None)
+        official.pop("buyer_evidence", None)
+        result = save_product_guide(official)
+        result["saved"] = True
+        result["draft"] = False
+        write_agent_onboarding_plan()
+        product = next(
+            (item for item in result["library"].get("products", []) if item.get("id") == result.get("product_id")),
+            {},
+        )
+        log_action("brand_product_save", {"product_id": result.get("product_id"), "name": product.get("name", "")}, "completed")
+        authorization["commit"] = True
+        return result
 
 
 def import_product_catalog_memory(payload):
@@ -9710,7 +11642,7 @@ def codex_creative_plan(payload):
     variations = payload.get("variations") or brief_payload.get("variation_count") or 3
     if not request:
         request = "Crear una estrategia visual y prompts de imagen para Meta Ads usando las guias de marca."
-    context = creative_direct_context(payload)
+    context = "" if purpose == "logo" else creative_direct_context(payload)
     if context and context not in request:
         request = f"{request}\n\n{context}"
     purpose = str(payload.get("purpose") or "ad_creative").strip().lower()
@@ -9824,6 +11756,16 @@ def codex_image_generate(payload):
             f"Composicion: {selected_prompt.get('composition') or ''}\n"
             f"Experimento: {selected_prompt.get('experiment') or ''}\n"
         )
+        if purpose == "logo":
+            image_prompt += (
+                "\nCONTRATO ESTRICTO DE LOGO PURO: genera solamente un único logotipo aislado y utilizable. "
+                "No generes un anuncio acerca del logo ni una lámina de presentación. Sin mockups, tarjetas, paredes, "
+                "pedestales, oficinas, fotografías, escenas, dispositivos, marcos, encabezados, textos explicativos, "
+                "beneficios, ubicación, CTA, botones, precios, ofertas ni frases como 'solicita tu diseño'. El único texto "
+                "permitido es el nombre exacto de la marca y, solamente si fue aprobado como parte permanente del logo, "
+                "su descriptor/tagline. Presenta el logo centrado sobre fondo blanco completamente plano, con amplio margen "
+                "y acabado vectorial limpio; una sola opción, sin variantes alrededor.\n"
+            )
         if background_removal == "green_screen":
             image_prompt += (
                 "\nASSET AISLADO PARA COMPOSICIÓN DE VIDEO: genera únicamente el elemento solicitado, completo y sin recortes, "
@@ -10063,6 +12005,7 @@ def copy_brand_logo_from_path(source_path, logo_notes=""):
     relative = store_brand_logo_bytes(raw, ext, source.name)
     return {
         "logo_path": relative,
+        "logo_status": "official",
         "logo_notes": str(logo_notes or "").strip() or "Logo enviado por el comprador en el chat.",
         "logo_usage": "Usar el logo oficial guardado en futuros creativos salvo que el comprador pida explícitamente sin logo.",
     }
@@ -10085,6 +12028,7 @@ def save_brand_logo_asset(payload):
     existing = (guide_library().get("general", {}) or {}).get("fields", {}) or {}
     update = dict(existing)
     update["logo_path"] = relative
+    update["logo_status"] = "official"
     if (payload or {}).get("logo_notes"):
         update["logo_notes"] = str((payload or {}).get("logo_notes") or "").strip()
     elif not update.get("logo_notes"):
@@ -13442,17 +15386,18 @@ def route_chat_approval_decision(payload):
         if reason == "empty":
             reply_text = chat_reply(payload, "No veo aprobaciones pendientes ahora mismo.", "I do not see pending approvals right now.")
         else:
+            names = [pending_approval_title(item) for item in pending[:4]]
+            numbered = "\n".join(f"{index}. {name}" for index, name in enumerate(names, 1))
             reply_text = chat_reply(
                 payload,
-                "Tengo varias decisiones pendientes. Dime cuál quieres aprobar o usa los botones exactos que te muestro aquí.",
-                "I have several pending decisions. Tell me which one you want to approve or use the exact buttons shown here.",
+                "Tengo varias decisiones pendientes. Dime con tus palabras cuál quieres aprobar:\n" + numbered,
+                "I have several pending decisions. Tell me in your own words which one you want to approve:\n" + numbered,
             )
         return {
             "ok": True,
             "provider": "local-approval-router",
             "fallback": False,
-            "approval_choices": choices,
-            "routed_action": {"type": "approval_decision", "executed": False, "blocked": True, "reason": reason, "approval_choices": choices},
+            "routed_action": {"type": "approval_decision", "executed": False, "blocked": True, "reason": reason},
             "reply": reply_text,
         }
 
@@ -13473,8 +15418,7 @@ def route_chat_approval_decision(payload):
             "ok": True,
             "provider": "local-approval-router",
             "fallback": False,
-            "approval_choices": [choice],
-            "routed_action": {"type": "approval_decision", "executed": False, "blocked": True, "reason": "active_confirmation_required", "approval_id": approval_id, "approval_choices": [choice]},
+            "routed_action": {"type": "approval_decision", "executed": False, "blocked": True, "reason": "active_confirmation_required", "approval_id": approval_id},
             "reply": chat_reply(
                 payload,
                 "Esta aprobación activará anuncios y puede gastar presupuesto real. Para confirmarla por chat, escribe exactamente: Sí, activar.",
@@ -13541,8 +15485,7 @@ def append_staged_approval_instruction(payload, reply, approval):
 
 
 def staged_approval_choices(approval):
-    if isinstance(approval, dict) and approval.get("status") == "pending" and approval.get("id"):
-        return [approval_public_payload(approval)]
+    """Compatibility shim: product chat is text-only and never emits cards."""
     return []
 
 
@@ -13848,7 +15791,7 @@ def route_chat_action(payload):
                 "provider": "local-action-router",
                 "fallback": False,
                 "routed_action": {"type": "clarify_campaign", "executed": False, "reason": reason},
-                "reply": chat_reply(payload, "Puedo hacerlo, pero necesito saber la campaña exacta. Dime el nombre o usa el botón Preguntar desde la tarjeta de esa campaña.", "I can do that, but I need the exact campaign. Tell me the name or use the Ask button from that campaign card."),
+                "reply": chat_reply(payload, "Puedo hacerlo, pero necesito saber la campaña exacta. Dime su nombre con tus palabras.", "I can do that, but I need the exact campaign. Tell me its name in your own words."),
             }
         campaign_id = campaign.get("id")
         if wants_pause:
@@ -13894,11 +15837,10 @@ def handle_agent_approval_tool(arguments, chat_payload, tool):
         False,
         chat_reply(
             chat_payload,
-            "Puedo ayudarte a aprobar, pero necesito una decisión exacta. Responde a la propuesta correspondiente o usa su botón.",
-            "I can help you approve, but I need an exact decision. Reply to the corresponding proposal or use its button.",
+            "Puedo ayudarte a aprobar, pero necesito una decisión exacta. Responde a la propuesta correspondiente o dime su nombre con tus palabras.",
+            "I can help you approve, but I need an exact decision. Reply to the corresponding proposal or name it in your own words.",
         ),
         blocked=True,
-        approval_choices=choices,
     )
 
 
@@ -14936,24 +16878,55 @@ def handle_verified_signal_feedback_prompt_tool(arguments, chat_payload, tool):
 
 
 def handle_save_business_context_tool(arguments, chat_payload, tool):
-    if not any(arguments.get(key) for key in ["main_offer", "ideal_customer", "current_stage", "what_to_improve", "success_goal", "business_type"]):
+    review_requested = any(arguments.get(key) for key in ["confirm_profile_review", "profile_review_confirmation", "confirm_strategic_profile"])
+    plan_requested = bool(arguments.get("master_plan") or arguments.get("confirm_master_plan"))
+    if not review_requested and not plan_requested and not any(arguments.get(key) for key in [
+        "main_offer", "ideal_customer", "current_stage", "what_to_improve", "success_goal", "business_type",
+        "services", "products_services", "differentiators", "markets", "locations", "capacity", "pricing",
+        "margins", "global_objectives", "advertising_experience", "branding", "strategic_topics", "topic_statuses",
+    ]):
         return agent_action_result(
             tool,
             False,
-            chat_reply(chat_payload, "Puedo guardar el perfil, pero necesito al menos oferta, cliente ideal o etapa actual.", "I can save the profile, but I need at least the offer, ideal customer, or current stage."),
+            chat_reply(chat_payload, "Puedo guardar el perfil, pero necesito al menos un dato estratégico o la confirmación del resumen final.", "I can save the profile, but I need at least one strategic fact or confirmation of the final summary."),
             blocked=True,
             reason="missing_business_context",
         )
-    result = save_business_context(arguments)
+    try:
+        result = save_business_context(arguments)
+    except (StrategicProfileError, StrategicProfileNotReady, StrategicProfileScopeMismatch) as exc:
+        return agent_action_result(
+            tool,
+            False,
+            chat_reply(chat_payload, str(exc), str(exc)),
+            blocked=True,
+            reason="strategic_profile_transition_rejected",
+        )
     phase = agent_onboarding_phase(result.get("profile"))
+    readiness = result.get("strategic_profile") or {}
+    master_plan = result.get("master_plan") or {}
+    if plan_requested and master_plan.get("ready"):
+        message_es = "Plan maestro confirmado y vinculado a la revisión vigente del perfil. Los próximos briefs deben derivarse de este plan."
+        message_en = "The master plan is confirmed and linked to the current profile revision. Future campaign briefs must derive from it."
+    elif plan_requested and master_plan.get("status") == "proposed":
+        message_es = "Guardé el plan maestro como propuesta. Muéstralo completo al comprador para corrección o confirmación natural."
+        message_en = "I saved the master plan as a proposal. Show it completely for natural correction or confirmation."
+    elif readiness.get("complete"):
+        message_es = "Perfil estratégico confirmado. El siguiente paso es convertirlo en el plan maestro visible del negocio antes de campañas específicas."
+        message_en = "The strategic profile is confirmed. Next convert it into the visible business master plan before specific campaigns."
+    elif readiness.get("review_required"):
+        message_es = "La entrevista ya cubre todos los temas. Presenta ahora el resumen completo para que el comprador lo corrija o confirme en texto."
+        message_en = "The interview now covers every topic. Present the complete summary so the buyer can correct or confirm it in text."
+    elif str(arguments.get("confirmation_state") or "").lower() in {"agent_proposal", "inferred"}:
+        message_es = "Guardé esa propuesta como borrador; todavía no cuenta como un hecho confirmado por el comprador."
+        message_en = "I saved that proposal as a draft; it does not yet count as a buyer-confirmed fact."
+    else:
+        message_es = f"Guardé esa parte del perfil. Siguiente paso: {phase['next_step']}"
+        message_en = f"I saved that part of the profile. Next step: {phase['next_step']}"
     return agent_action_result(
         tool,
         True,
-        chat_reply(
-            chat_payload,
-            f"Listo. Guardé esa parte del negocio. Siguiente paso: {phase['next_step']}",
-            f"Done. I saved that business context. Next step: {phase['next_step']}",
-        ),
+        chat_reply(chat_payload, message_es, message_en),
         result=result,
     )
 
@@ -14992,6 +16965,14 @@ def handle_save_brand_guide_tool(arguments, chat_payload, tool):
             arguments.update(logo)
         except ValueError:
             arguments.setdefault("logo_notes", "El comprador envio una imagen como referencia de logo, pero no pude guardarla como archivo de logo.")
+    elif arguments.get("logo_path") and not str(arguments.get("logo_path") or "").startswith("brand_guides/assets/"):
+        try:
+            logo = copy_brand_logo_from_path(arguments.get("logo_path"), arguments.get("logo_notes") or "")
+            arguments.update(logo)
+        except ValueError:
+            # Never turn an arbitrary/nonexistent path into an official logo.
+            arguments.pop("logo_path", None)
+            arguments["logo_status"] = "pending"
     if not arguments.get("brand_name") and not arguments.get("offer"):
         return agent_action_result(
             tool,
@@ -15002,10 +16983,23 @@ def handle_save_brand_guide_tool(arguments, chat_payload, tool):
         )
     result = save_general_brand_memory(arguments)
     phase = agent_onboarding_phase()
+    if result.get("draft"):
+        reply = chat_reply(
+            chat_payload,
+            "Guardé esta dirección de marca como borrador. Preséntala al comprador y, cuando la confirme o corrija, vuelve a guardarla como buyer_confirmed.",
+            "I saved this brand direction as a draft. Present it to the buyer and save it as buyer_confirmed only after they confirm or correct it.",
+        )
+    else:
+        reply = chat_reply(chat_payload, f"Listo. Guardé la guía visual y verbal de la marca. Siguiente paso: {phase['next_step']}", f"Done. I saved the brand's visual and verbal guide. Next step: {phase['next_step']}")
+    official_saved = result.get("saved") is True and result.get("draft") is not True
     return agent_action_result(
         tool,
-        True,
-        chat_reply(chat_payload, f"Listo. Guardé la guía visual y verbal de la marca. Siguiente paso: {phase['next_step']}", f"Done. I saved the brand's visual and verbal guide. Next step: {phase['next_step']}"),
+        official_saved,
+        reply,
+        blocked=not official_saved,
+        reason=result.get("reason", "") if not official_saved else "",
+        saved=official_saved,
+        draft=bool(result.get("draft")),
         result=result,
     )
 
@@ -15022,10 +17016,23 @@ def handle_save_product_guide_tool(arguments, chat_payload, tool):
         )
     result = save_product_brand_memory(arguments)
     phase = agent_onboarding_phase()
+    if result.get("draft"):
+        reply = chat_reply(
+            chat_payload,
+            "Guardé esta oferta como borrador. Muéstrala al comprador y solo conviértela en ficha oficial cuando la confirme o corrija.",
+            "I saved this offer as a draft. Show it to the buyer and make it official only after they confirm or correct it.",
+        )
+    else:
+        reply = chat_reply(chat_payload, f"Listo. Guardé la ficha del producto. Siguiente paso: {phase['next_step']}", f"Done. I saved the product guide. Next step: {phase['next_step']}")
+    official_saved = result.get("saved") is True and result.get("draft") is not True
     return agent_action_result(
         tool,
-        True,
-        chat_reply(chat_payload, f"Listo. Guardé la ficha del producto. Siguiente paso: {phase['next_step']}", f"Done. I saved the product guide. Next step: {phase['next_step']}"),
+        official_saved,
+        reply,
+        blocked=not official_saved,
+        reason=result.get("reason", "") if not official_saved else "",
+        saved=official_saved,
+        draft=bool(result.get("draft")),
         result=result,
     )
 
@@ -15092,10 +17099,18 @@ def handle_save_ads_onboarding_tool(arguments, chat_payload, tool):
         )
     result = save_ads_campaign_onboarding(arguments)
     phase = result.get("phase") or agent_onboarding_phase(result.get("profile"))
+    if result.get("draft"):
+        reply = chat_reply(
+            chat_payload,
+            "Guardé esa estrategia o supuesto como borrador; no cuenta todavía como decisión del comprador.",
+            "I saved that strategy or assumption as a draft; it does not yet count as a buyer decision.",
+        )
+    else:
+        reply = chat_reply(chat_payload, f"Listo. Guardé el contexto de campañas. Siguiente paso: {phase['next_step']}", f"Done. I saved the campaign context. Next step: {phase['next_step']}")
     return agent_action_result(
         tool,
         True,
-        chat_reply(chat_payload, f"Listo. Guardé el contexto de campañas. Siguiente paso: {phase['next_step']}", f"Done. I saved the campaign context. Next step: {phase['next_step']}"),
+        reply,
         result=result,
     )
 
@@ -15260,7 +17275,7 @@ def handle_campaign_mutation_tool(arguments, chat_payload, tool):
         return agent_action_result(
             tool,
             False,
-            chat_reply(chat_payload, "Necesito la campaña exacta antes de hacer eso. Usa el botón Preguntar en la tarjeta correcta o dime el nombre exacto.", "I need the exact campaign before doing that. Use the Ask button on the right card or tell me the exact name."),
+            chat_reply(chat_payload, "Necesito la campaña exacta antes de hacer eso. Dime su nombre con tus palabras.", "I need the exact campaign before doing that. Tell me its name in your own words."),
             blocked=True,
             reason="missing_or_unknown_campaign_id",
         )
@@ -15517,7 +17532,34 @@ def normalize_agent_tool_arguments(arguments, depth=0):
                 nested.update(normalize_agent_tool_arguments(parsed, depth + 1))
                 continue
         direct[key] = value
-    return {**nested, **direct}
+    normalized = {**nested, **direct}
+    # Models occasionally use a semantically correct alias even though the
+    # MCP contract names this field confirmation_state.  Do not demote an
+    # exact, current buyer statement to an inferred draft merely because the
+    # provider emitted value_source/source_state.  Authorization still goes
+    # through _trusted_memory_capability: exact buyer_evidence, current turn,
+    # one-use nonce, chat/session binding and short-confirmation matching all
+    # remain mandatory.
+    if not normalized.get("confirmation_state"):
+        alias_value = next((
+            normalized.get(key)
+            for key in ("value_source", "source_state", "fact_source", "origin")
+            if normalized.get(key) not in (None, "")
+        ), "")
+        alias = str(alias_value or "").strip().lower().replace("-", "_").replace(" ", "_")
+        alias_map = {
+            "buyer_confirmed": "buyer_confirmed",
+            "user_confirmed": "buyer_confirmed",
+            "confirmed_by_buyer": "buyer_confirmed",
+            "explicit_user_statement": "buyer_confirmed",
+            "agent_proposal": "agent_proposal",
+            "proposed": "agent_proposal",
+            "inferred": "inferred",
+            "inference": "inferred",
+        }
+        if alias in alias_map:
+            normalized["confirmation_state"] = alias_map[alias]
+    return normalized
 
 
 def execute_agent_tool(tool_request, chat_payload):
@@ -15530,6 +17572,56 @@ def execute_agent_tool(tool_request, chat_payload):
         return None
     tool = str(tool_request.get("tool") or "").strip()
     arguments = normalize_agent_tool_arguments(tool_request.get("arguments") or {})
+
+    category = {
+        "create_campaign_stack": "campaign_create",
+        "edit_campaign": "campaign_edit",
+        "save_ad_brief": "campaign_brief",
+        "resume_campaign": "campaign_activate",
+        "schedule_campaign_activation": "campaign_activate",
+        "set_budget": "spend_increase",
+        "stage_organic_social_post": "organic_publish",
+        "generate_motion_graphic_video": "ad_motion_graphics",
+    }.get(tool, "")
+    if tool in {"codex_image_generate", "codex_creative_plan"}:
+        purpose = str(arguments.get("purpose") or "ad_creative").strip().lower().replace("-", "_")
+        category = "brand_exploration" if purpose in BRAND_EXPLORATION_PURPOSES else (
+            "organic_creative" if image_purpose_is_organic(purpose) else "paid_creative"
+        )
+    if category:
+        decision = strategic_product_action_eligibility(category)
+        if not decision.get("allowed"):
+            branding_block = decision.get("code") == "branding_required"
+            reply = (
+                decision.get("next_question")
+                if branding_block and decision.get("next_question")
+                else "Antes de ejecutar esa acción debemos terminar y confirmar el perfil estratégico de este negocio."
+            )
+            return agent_action_result(
+                tool,
+                False,
+                reply,
+                blocked=True,
+                reason=decision.get("code") or "strategic_profile_required",
+                unresolved_topics=decision.get("unresolved_topics") or [],
+            )
+        if category in {
+            "campaign_create", "campaign_edit", "campaign_brief", "campaign_activate",
+            "spend_increase", "organic_publish", "paid_creative", "ad_motion_graphics",
+        }:
+            plan_state = business_master_plan_readiness()
+            if not plan_state.get("ready"):
+                return agent_action_result(
+                    tool,
+                    False,
+                    (
+                        "El perfil ya está completo, pero falta convertirlo en un plan maestro confirmado. "
+                        "Primero presenta y acuerda diagnóstico, prioridades, embudo, estrategia orgánica/publicitaria, presupuesto, KPIs y hoja de ruta."
+                    ),
+                    blocked=True,
+                    reason="business_master_plan_required",
+                    master_plan=plan_state,
+                )
 
     handler = AGENT_TOOL_HANDLERS.get(tool)
     if handler:
@@ -16485,6 +18577,7 @@ def main():
         reconcile_timezone_crons(config)
     ensure_automatic_update_monitor()
     ensure_telegram_update_install_monitor()
+    ensure_telegram_complete_reset_monitor()
     ensure_model_health_watchdog()
     server = ThreadingHTTPServer((host, port), DashboardHandler)
     CURRENT_DASHBOARD_BIND_HOST = host
@@ -16500,6 +18593,7 @@ def main():
         print("\nStopping dashboard.")
     finally:
         stop_model_health_watchdog()
+        stop_telegram_complete_reset_monitor()
         stop_telegram_update_install_monitor()
         stop_automatic_update_monitor()
         server.server_close()

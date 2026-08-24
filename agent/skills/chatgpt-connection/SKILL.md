@@ -5,7 +5,7 @@ description: Connect or switch the buyer's ChatGPT/Codex subscription through a 
 
 # ChatGPT Connection
 
-Read this skill before calling `mcp_admira_connect_chatgpt`.
+The runtime compiles this procedure before exposing `mcp_admira_connect_chatgpt`. Follow the compact procedure and current schema; do not add a read-file unlock turn.
 
 ## Procedure
 
