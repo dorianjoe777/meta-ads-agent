@@ -391,6 +391,27 @@ def _name_score(name: str, message_tokens: Sequence[str]) -> float:
     return best
 
 
+def _tokens_in_kind_scope(
+    tokens: Sequence[str],
+    scope_positions: Sequence[int],
+    other_scope_positions: Sequence[int],
+) -> list[str]:
+    """Return text governed by this asset noun when both kinds are named.
+
+    In “cuenta Dorian Singularity y página Rodeo”, the account name must not
+    also match a Page named Dorian Singularity. Each explicit scope owns the
+    text after it until the next account/Page scope marker.
+    """
+    if not scope_positions or not other_scope_positions:
+        return list(tokens)
+    all_scopes = sorted(set(scope_positions) | set(other_scope_positions))
+    selected: list[str] = []
+    for position in scope_positions:
+        boundary = min((item for item in all_scopes if item > position), default=len(tokens))
+        selected.extend(tokens[position:boundary])
+    return selected or list(tokens)
+
+
 def _resolve_kind(
     safe_inventory: Mapping[str, list[dict[str, Any]]],
     kind: str,
@@ -403,8 +424,10 @@ def _resolve_kind(
     other_kind = "page" if kind == "account" else "account"
     other_scope_positions = _scope_positions(tokens, other_kind)
     scoped = bool(scope_positions)
+    kind_tokens = _tokens_in_kind_scope(tokens, scope_positions, other_scope_positions)
+    kind_message = " ".join(kind_tokens)
 
-    id_matches = [asset for asset in assets if _id_in_message(asset["id"], normalized_message)]
+    id_matches = [asset for asset in assets if _id_in_message(asset["id"], kind_message)]
     if len(id_matches) > 1:
         return {"status": "ambiguous", "kind": kind, "candidate_ids": [item["id"] for item in id_matches], "scoped": scoped}
     if len(id_matches) == 1:
@@ -422,7 +445,7 @@ def _resolve_kind(
     exact_names: list[dict[str, Any]] = []
     for asset in assets:
         name_norm = normalize_selection_text(asset["name"])
-        if len(name_norm) >= 3 and name_norm in normalized_message:
+        if len(name_norm) >= 3 and name_norm in kind_message:
             exact_names.append(asset)
     if len(exact_names) > 1:
         return {"status": "ambiguous", "kind": kind, "candidate_ids": [item["id"] for item in exact_names], "scoped": scoped}
@@ -430,7 +453,7 @@ def _resolve_kind(
         return {"status": "resolved", "asset": exact_names[0], "evidence": "name", "scoped": scoped}
 
     scored = sorted(
-        ((_name_score(asset["name"], tokens), asset) for asset in assets),
+        ((_name_score(asset["name"], kind_tokens), asset) for asset in assets),
         key=lambda item: item[0],
         reverse=True,
     )

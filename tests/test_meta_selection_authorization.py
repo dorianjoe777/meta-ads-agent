@@ -172,6 +172,22 @@ class MetaSelectionAuthorizationTests(unittest.TestCase):
         self.assertEqual(result["status"], "ambiguous")
         self.assertEqual(result["reason"], "same_name_across_asset_types")
 
+    def test_scoped_names_do_not_cross_match_other_asset_type(self):
+        inventory = {
+            "accounts": [{"id": "act_8", "name": "Dorian Singularity"}],
+            "pages": [
+                {"id": "page_1", "name": "Rodeo - Car Detailing"},
+                {"id": "page_8", "name": "Dorian Singularity"},
+            ],
+        }
+        result = resolve_selection_message(
+            "Quiero usar la cuenta Dorian Singularity y la página Rodeo - Car Detailing",
+            inventory,
+        )
+        self.assertEqual(result["status"], "resolved")
+        self.assertEqual(result["account"]["asset"]["id"], "act_8")
+        self.assertEqual(result["page"]["asset"]["id"], "page_1")
+
     def test_scoped_switch_keeps_only_the_unchanged_other_side(self):
         current = {"ad_account_id": "act_100", "page_id": "1319759131214498"}
         opened = self.open(current=current, mode="switch")
