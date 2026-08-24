@@ -141,6 +141,15 @@ class MetaSelectionAuthorizationTests(unittest.TestCase):
         self.assertEqual(result["status"], "authorized")
         self.assertEqual(result["selection"], {"ad_account_id": "act_200", "page_id": "1319759131214498"})
 
+    def test_two_bare_numbers_use_page_then_ad_account_order(self):
+        opened = self.open()
+        result = self.authorize(opened, "1, 2")
+        self.assertEqual(result["status"], "authorized")
+        self.assertEqual(
+            result["selection"],
+            {"ad_account_id": "act_200", "page_id": "1319759131214498"},
+        )
+
     def test_generic_delegation_never_authorizes(self):
         opened = self.open()
         result = self.authorize(opened, "Usa lo que veas, confío en ti")

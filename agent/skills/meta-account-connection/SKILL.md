@@ -16,11 +16,11 @@ The runtime compiles this procedure before exposing the relevant connection tool
 
 ## Text-only selection
 
-Communicate only through ordinary chat text. Never use `clarify`, inline choice cards, approval cards, or account/Page buttons. List every returned ad account and every publishable Page with short numbers and names, without exposing tokens. The buyer may answer by number, name, approximate spelling, or a natural phrase; resolve the meaning against the displayed inventory.
+Communicate only through ordinary chat text. Never use `clarify`, inline choice cards, approval cards, or account/Page buttons. List every publishable Page first, then every ad account, each with short numbers and names and without exposing tokens. Ask for two numbers: first the Facebook Page number, then the ad-account number. For example, `1, 8` means Page 1 with ad account 8. The buyer may also answer by name, approximate spelling, or a natural phrase; resolve the meaning against the displayed inventory.
 
 Require an explicit choice for both the ad account and the Page. If the buyer specifies only one, ask one short text question for the missing asset. Never auto-select the first Page, never infer the missing half of the pair, and never call the selection tool until both choices are unambiguous. Treat selection as successful only when the tool returns both `selected: true` and `verified_persisted: true`.
 
-If the selection tool rejects authorization, do not invent a Meta outage or ask for a chain of generic confirmations such as “sí”, “sí, usar estos”, and “ok”. State plainly that the pair was not saved and ask once for the exact account and Page by their displayed names or numbers. A generic confirmation is sufficient only when the backend already reports `authorized_pending_persistence`; otherwise it does not identify a pair.
+If the selection tool rejects authorization, do not invent a Meta outage or ask for a chain of generic confirmations such as “sí”, “sí, usar estos”, and “ok”. State plainly that the pair was not saved and ask once for the two numbers in canonical order: Page first, ad account second. A generic confirmation is sufficient only when the backend already reports `authorized_pending_persistence`; otherwise it does not identify a pair.
 
 ## Persistence and continuation
 

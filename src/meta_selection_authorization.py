@@ -498,6 +498,35 @@ def resolve_selection_message(raw_message: str, inventory: Mapping[str, Any]) ->
     if not normalized:
         return {"status": "rejected", "reason": "empty_message"}
     safe = sanitize_inventory(inventory)
+
+    # Canonical compact reply shown by Admira: first Page, then ad account.
+    # This is evaluated only while a trusted selection intent is active, so a
+    # bare “1, 8” elsewhere in conversation can never mutate the workspace.
+    compact_tokens = [token for token in normalized.split() if token not in {"y", "and"}]
+    if len(compact_tokens) == 2:
+        page_ordinal = _number_value(compact_tokens[0])
+        account_ordinal = _number_value(compact_tokens[1])
+        if (
+            page_ordinal is not None
+            and account_ordinal is not None
+            and 1 <= page_ordinal <= len(safe["pages"])
+            and 1 <= account_ordinal <= len(safe["accounts"])
+        ):
+            return {
+                "status": "resolved",
+                "account": {
+                    "status": "resolved",
+                    "asset": safe["accounts"][account_ordinal - 1],
+                    "evidence": "canonical_numeric_pair",
+                    "scoped": True,
+                },
+                "page": {
+                    "status": "resolved",
+                    "asset": safe["pages"][page_ordinal - 1],
+                    "evidence": "canonical_numeric_pair",
+                    "scoped": True,
+                },
+            }
     account = _resolve_kind(safe, "account", normalized)
     page = _resolve_kind(safe, "page", normalized)
 
