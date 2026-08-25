@@ -58,7 +58,10 @@ At `review_required`, present one concise owner-useful business summary covering
 
 The interview produces inputs; it is not finished merely because those inputs
 were summarized. Immediately after the current onboarding summary becomes
-`complete`, convert it into one visible Page-scoped strategic plan containing:
+`complete`, the backend runs one isolated strategic-plan compiler. That call
+receives the confirmed business profile, official brand/product/ads memory and
+a fresh all-time Meta inventory/performance snapshot; it does not receive the
+Hermes conversation, tools or runtime. Its validated draft contains:
 
 - diagnosis and commercial priorities;
 - positioning, offer portfolio and ideal-customer strategy;
@@ -66,21 +69,24 @@ were summarized. Immediately after the current onboarding summary becomes
 - organic-content and paid-media roles;
 - a budget framework tied to prices, contribution margins and capacity;
 - business objectives, leading/lagging KPIs and decision horizons;
-- a phased roadmap, assumptions, risks and what must be validated.
+- a phased short-, medium- and long-term roadmap, assumptions, risks and what
+  must be validated.
 
-Save it through `mcp_admira_save_business_memory.master_plan` first with
-`confirmation_state=agent_proposal`, then paste the useful plan into the chat.
-Let the owner correct it naturally. A later natural acceptance calls the same
-tool with `confirm_master_plan=true`, exact `buyer_evidence`, and
-`confirmation_state=buyer_confirmed`. Do not ask the owner to confirm the
-strategic profile again. The backend records the profile revision as
-provenance, but a later business-profile update does not silently invalidate an
-approved plan. Do not infer a plan update from a new service, price, campaign,
-result, creative request, strategy discussion, or any other ordinary message.
-Only when the buyer directly asks to add, remove, or modify something in the
-saved strategic plan may you prepare and show that requested revision. Preserve
-the last confirmed content until the revised draft receives its own later
-natural confirmation.
+Do not write, abbreviate, or save a competing initial plan yourself. Present
+the exact canonical draft returned by backend state and let the owner discuss
+or correct it naturally. If every compiler route is temporarily unavailable,
+say that the complete plan could not yet be prepared; never replace it with a
+generic WhatsApp/campaign outline. A later natural acceptance calls
+`mcp_admira_save_business_memory` with `confirm_master_plan=true`, exact
+`buyer_evidence`, and `confirmation_state=buyer_confirmed`. Do not ask the
+owner to confirm the strategic profile again. The backend records profile,
+Meta and compiler provenance. A later business-profile update does not
+silently invalidate an approved plan. Do not infer a plan update from a new
+service, price, campaign, result, creative request, strategy discussion, or any
+other ordinary message. Only when the buyer directly asks to add, remove, or
+modify something in the saved strategic plan may you prepare and show that
+requested revision. Preserve the last confirmed content until the revised
+draft receives its own later natural confirmation.
 
 The next buyer-visible step after onboarding completion is a useful complete
 plan proposal, explicitly labelled as a draft/idea that can be discussed or

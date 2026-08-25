@@ -58,6 +58,16 @@ class RuntimePlanContextTests(unittest.TestCase):
         self.assertEqual(state["lifecycle_state"], "active_without_confirmed_strategic_plan")
         self.assertEqual(state["master_plan_status"], "missing")
 
+    def test_missing_plan_is_reserved_for_isolated_compiler_not_hermes_prose(self):
+        root = self._root(self._profile())
+        state = runtime._admira_strategic_profile_state(product_root=root)
+
+        text = runtime._admira_compiled_procedure_instruction(state)
+
+        self.assertIn("isolated server compiler", text)
+        self.assertIn("Do not draft, abbreviate, save, or present a substitute plan yourself", text)
+        self.assertIn("do not reproduce the compiler's job in prose", text)
+
     def test_legacy_partial_confirmed_plan_is_not_injected_as_final(self):
         profile = self._profile()
         profile["business_master_plans"] = {"page-1": {

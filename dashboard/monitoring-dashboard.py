@@ -265,6 +265,12 @@ except ImportError:  # Older installations are upgraded before this module exist
 
     def classify_strategic_plan_update_request(current_plan, buyer_message, **kwargs):
         return {"confirmation": "no", "reason": "classifier_unavailable"}
+
+try:
+    from strategic_plan_compiler import compile_strategic_plan
+except ImportError:  # Rolling updates may load the dashboard before the compiler lands.
+    def compile_strategic_plan(*_args, **_kwargs):
+        return {"ok": False, "reason": "strategic_plan_compiler_unavailable", "attempts": []}
 from campaign_editing import mark_draft_status, prepare_campaign_edit, supersede_pending_edit
 from telegram_agent import bot_request as telegram_bot_request
 from telegram_agent import reset_polling_state as reset_telegram_polling_state
@@ -347,6 +353,7 @@ META_OAUTH_SELECTION_AUTH_FILE = DATA_DIR / "meta_oauth_selection_authorization.
 META_OAUTH_SELECTION_KEY_FILE = DATA_DIR / "meta_oauth_selection_authorization.key"
 TRUSTED_BUYER_TURN_FILE = DATA_DIR / "trusted_buyer_turn.json"
 TRUSTED_BUYER_TURN_LOCK_FILE = DATA_DIR / "trusted_buyer_turn.lock"
+STRATEGIC_PLAN_GENERATION_STATE_FILE = DATA_DIR / "strategic_plan_generation.json"
 MEMORY_DRAFTS_FILE = DATA_DIR / "memory_drafts.json"
 # Hermes owns Telegram polling, so a fresh installation may not have a
 # dashboard-era TELEGRAM_CHAT_ID yet.  The runtime records the real incoming
@@ -9653,7 +9660,11 @@ def _normalize_master_plan(value):
         if item in (None, "", [], {}):
             continue
         if isinstance(item, str):
-            normalized[field] = re.sub(r"\s+", " ", item).strip()[:4000]
+            # Preserve the compiler's readable paragraphs/bullets. Collapsing
+            # everything into one line made a complete plan look like a terse
+            # campaign note when it reached Telegram.
+            lines = [re.sub(r"[ \t]+", " ", line).strip() for line in item.splitlines()]
+            normalized[field] = "\n".join(lines).strip()[:6000]
         else:
             normalized[field] = redact_payload(item)
     return normalized
@@ -10074,6 +10085,487 @@ def _master_plan_is_complete(content):
     return bool(isinstance(content, dict) and not _master_plan_missing_fields(content))
 
 
+def _master_plan_record_is_complete(plan):
+    """Return whether an existing record is safe to preserve as a real plan.
+
+    Old releases could leave partial ``confirmed``/``proposed`` dictionaries.
+    The runtime correctly treats those as missing; the compiler must do the
+    same so an upgrade can repair them instead of being stranded forever.
+    """
+    if not isinstance(plan, dict) or not plan:
+        return False
+    status = str(plan.get("status") or "").strip().lower()
+    if status == "confirmed":
+        material = plan.get("content")
+    elif status == "stale":
+        material = plan.get("draft") or plan.get("content")
+    else:
+        material = plan.get("draft") or plan.get("content")
+    return _master_plan_is_complete(material)
+
+
+def _strategic_plan_generation_time(value):
+    try:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _strategic_plan_business_source(profile, strategic, page_id, account_id=""):
+    """Collect the single-business memory set for isolated plan compilation."""
+    topics = {}
+    for topic in STRATEGIC_PROFILE_TOPICS:
+        item = (strategic.get("topics") or {}).get(topic)
+        if isinstance(item, dict) and item.get("value") not in (None, "", [], {}):
+            topics[topic] = {"status": str(item.get("status") or ""), "value": item.get("value")}
+    meta_assets = profile.get("meta_assets") if isinstance(profile.get("meta_assets"), dict) else {}
+    meta_page = profile.get("meta_page_profile") if isinstance(profile.get("meta_page_profile"), dict) else {}
+    page_name = str(meta_page.get("name") or meta_assets.get("page_name") or "").strip()
+    try:
+        library = guide_library()
+    except Exception:
+        library = {}
+    general = library.get("general") if isinstance(library.get("general"), dict) else {}
+    general_fields = general.get("fields") if isinstance(general.get("fields"), dict) else {}
+    products = []
+    for item in library.get("products") or []:
+        if isinstance(item, dict):
+            products.append({"id": str(item.get("id") or ""), "name": str(item.get("name") or ""), "fields": item.get("fields") if isinstance(item.get("fields"), dict) else {}})
+    ad_briefs = []
+    for item in library.get("ad_briefs") or []:
+        if isinstance(item, dict):
+            ad_briefs.append({"id": str(item.get("id") or ""), "name": str(item.get("name") or ""), "fields": item.get("fields") if isinstance(item.get("fields"), dict) else {}})
+    try:
+        ads_onboarding = ADS_ONBOARDING_FILE.read_text(encoding="utf-8")[:24000]
+    except OSError:
+        ads_onboarding = ""
+    audience_strategy = read_json(AUDIENCE_FILE, {})
+    profitability_context = decision_memory_payload()
+    source = {
+        "page_scope": {"page_id": str(page_id), "page_name": page_name, "ad_account_id": clean_ad_account_id(account_id), "profile_revision": int(strategic.get("revision") or 0)},
+        "confirmed_business_topics": topics,
+        "public_business_context": {"website_url": str(profile.get("website_url") or ""), "social_links": profile.get("social_links") or [], "meta_page_profile": meta_page},
+        "official_brand": general_fields,
+        "official_products_and_services": products,
+        "existing_campaign_briefs": ad_briefs,
+        "ads_onboarding": ads_onboarding,
+        "saved_audience_strategy": audience_strategy,
+        "saved_profitability_context": profitability_context,
+    }
+    return redact_payload(source)
+
+
+def _strategic_plan_live_meta_source(account_id="", timeout=90):
+    """Fetch an all-time, read-only Meta snapshot for plan grounding."""
+    account_id = clean_ad_account_id(account_id or current_configured_ad_account_id())
+    account = managed_account_context(account_id)
+    result_box = {}
+
+    def fetch():
+        try:
+            result_box["result"] = refresh_real_metrics(
+                account_id,
+                reason="strategic_plan_compiler",
+                date_preset="maximum",
+                persist=False,
+                include_breakdowns=False,
+            )
+        except Exception as exc:
+            result_box["result"] = {
+                "ok": False,
+                "reason": "live_meta_sync_failed",
+                "message": type(exc).__name__,
+            }
+
+    reader = threading.Thread(target=fetch, name="strategic-plan-meta-read", daemon=True)
+    reader.start()
+    reader.join(max(0.01, float(timeout or 0.01)))
+    result = result_box.get("result")
+    if not isinstance(result, dict):
+        result = {
+            "ok": False,
+            "reason": "live_meta_sync_timeout",
+            "message": "The bounded all-time Meta read did not finish before plan compilation.",
+        }
+    metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+    campaigns = metrics.get("campaigns") if isinstance(metrics.get("campaigns"), list) else []
+    adsets = metrics.get("adsets") if isinstance(metrics.get("adsets"), list) else []
+    ads = metrics.get("ads") if isinstance(metrics.get("ads"), list) else []
+
+    def status_counts(rows):
+        counts = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            status = str(row.get("effective_status") or row.get("status") or "UNKNOWN").upper()
+            counts[status] = counts.get(status, 0) + 1
+        return counts
+
+    source = {
+        "verified": bool(result.get("ok")),
+        "partial": bool(result.get("partial")),
+        "reason": str(result.get("reason") or ""),
+        "message": str(result.get("message") or "")[:500],
+        "account": account,
+        "account_id": str(result.get("account_id") or account_id or ""),
+        "fetched_at": str(metrics.get("timestamp") or now_iso()),
+        "metrics_range": metrics.get("metrics_range") or {},
+        "data_quality": metrics.get("data_quality") or result.get("data_quality") or {},
+        "inventory_totals": {
+            "campaigns": len(campaigns),
+            "adsets": len(adsets),
+            "ads": len(ads),
+            "campaign_statuses": status_counts(campaigns),
+            "adset_statuses": status_counts(adsets),
+            "ad_statuses": status_counts(ads),
+        },
+        # Campaigns are the strategic evidence. Keep a generous complete view
+        # for normal accounts and declare any safety cap instead of silently
+        # implying that a truncated inventory is exhaustive.
+        "campaigns": campaigns[:500],
+        "adsets": adsets[:750],
+        "ads": ads[:1000],
+        "inventory_truncated": {
+            "campaigns": len(campaigns) > 500,
+            "adsets": len(adsets) > 750,
+            "ads": len(ads) > 1000,
+        },
+        "summary": metrics.get("summary") or {},
+        "errors": result.get("errors") or [],
+    }
+    return redact_payload(source)
+
+
+def _strategic_plan_attempts_for_storage(attempts):
+    clean = []
+    for attempt in attempts or []:
+        if not isinstance(attempt, dict):
+            continue
+        clean.append({
+            "provider": str(attempt.get("provider") or "")[:80],
+            "model": str(attempt.get("model") or "")[:80],
+            "ok": bool(attempt.get("ok")),
+            "reason": str(attempt.get("reason") or "")[:120],
+            "elapsed_ms": int(attempt.get("elapsed_ms") or 0),
+        })
+    return clean[:3]
+
+
+def _strategic_plan_expected_turn_matches(turn, expected_turn):
+    """Bind generation to the exact inbound event currently being handled."""
+    if not isinstance(turn, dict) or not isinstance(expected_turn, dict):
+        return False
+    chat_id = str(expected_turn.get("chat_id") or "").strip()
+    session_id = str(expected_turn.get("session_id") or "").strip()
+    raw_message = str(expected_turn.get("raw_message") or "").strip()
+    raw_transport = str(expected_turn.get("transport") or "").strip().lower().replace("-", "_")
+    if not chat_id or not session_id or not raw_message:
+        return False
+    if raw_transport not in {"telegram", "dashboard", "simulated_telegram", "legacy_telegram"}:
+        return False
+    try:
+        transport = _trusted_turn_transport(raw_transport, chat_id)
+    except ValueError:
+        return False
+    for key, expected in (
+        ("chat_id", chat_id),
+        ("session_id", session_id),
+        ("transport", transport),
+        ("message", raw_message),
+    ):
+        if not hmac.compare_digest(
+            str(turn.get(key) or "").encode("utf-8"),
+            expected.encode("utf-8"),
+        ):
+            return False
+    sequence = expected_turn.get("message_sequence")
+    if sequence in (None, ""):
+        return bool(str(turn.get("message_hash") or ""))
+    try:
+        sequence = int(sequence)
+        stored_sequence = int(turn.get("message_sequence"))
+    except (TypeError, ValueError):
+        return False
+    if sequence != stored_sequence:
+        return False
+    expected_hash = _trusted_turn_message_hash(raw_message, sequence)
+    return hmac.compare_digest(
+        expected_hash,
+        str(turn.get("message_hash") or ""),
+    )
+
+
+def _release_strategic_plan_generation_lease_unlocked(page_id, request_id):
+    state = read_json(STRATEGIC_PLAN_GENERATION_STATE_FILE, {})
+    state = state if isinstance(state, dict) else {}
+    lease = state.get(page_id) if isinstance(state.get(page_id), dict) else {}
+    if str(lease.get("request_id") or "") != str(request_id or ""):
+        return False
+    state.pop(page_id, None)
+    write_private_json(STRATEGIC_PLAN_GENERATION_STATE_FILE, state, ensure_ascii=False)
+    return True
+
+
+def _release_strategic_plan_generation_lease(page_id, request_id):
+    """Release only this request's lease; never delete a newer attempt."""
+    try:
+        with _trusted_buyer_turn_lock():
+            return _release_strategic_plan_generation_lease_unlocked(page_id, request_id)
+    except Exception:
+        return False
+
+
+def ensure_initial_business_master_plan(*, config=None, timeout=300, expected_turn=None):
+    """Compile and atomically store the first plan after onboarding.
+
+    Graph/provider calls deliberately run outside the trusted-turn lock. The
+    final write is a compare-and-swap against the Page, exact buyer turn,
+    profile revision/hash, generation lease, and absence of any existing plan.
+    """
+    config = config or load_config()
+    try:
+        total_timeout = min(300.0, max(1.0, float(timeout)))
+    except (TypeError, ValueError):
+        total_timeout = 300.0
+    deadline = time.monotonic() + total_timeout
+    request_id = secrets.token_hex(12)
+    now = datetime.now(timezone.utc)
+    with _trusted_buyer_turn_lock():
+        page_id = str(active_meta_page_id() or "").strip()
+        turn = _trusted_buyer_turn_unlocked()
+        if not _strategic_plan_expected_turn_matches(turn, expected_turn):
+            return {
+                "ok": False,
+                "attempted": False,
+                "reason": "strategic_plan_turn_not_bound_to_current_event",
+            }
+        profile = read_json(BUSINESS_PROFILE_FILE, {})
+        strategic = strategic_profile_for_page(profile, page_id=page_id, activate=False) if page_id else {}
+        readiness = strategic_profile_readiness(strategic, active_page_id=page_id) if strategic else {}
+        if not page_id or not turn or not readiness.get("complete"):
+            return {"ok": False, "attempted": False, "reason": "business_profile_not_complete"}
+        account_id = clean_ad_account_id(current_configured_ad_account_id())
+        existing = business_master_plan_for_page(profile, page_id)
+        if _master_plan_record_is_complete(existing):
+            return {
+                "ok": True,
+                "attempted": False,
+                "created": False,
+                "reason": "strategic_plan_already_exists",
+                "status": str(existing.get("status") or "proposed"),
+            }
+        profile_identity = _plan_content_hash({
+            "page_id": page_id,
+            "revision": strategic.get("revision"),
+            "status": strategic.get("status"),
+            "topics": strategic.get("topics"),
+        })
+        generation_state = read_json(STRATEGIC_PLAN_GENERATION_STATE_FILE, {})
+        generation_state = generation_state if isinstance(generation_state, dict) else {}
+        lease = generation_state.get(page_id) if isinstance(generation_state.get(page_id), dict) else {}
+        lease_revision = int(lease.get("profile_revision") or 0)
+        if lease_revision == int(strategic.get("revision") or 0):
+            started_at = _strategic_plan_generation_time(lease.get("started_at"))
+            retry_after = _strategic_plan_generation_time(lease.get("retry_after"))
+            if str(lease.get("status") or "") == "generating" and started_at and (now - started_at).total_seconds() < 600:
+                return {"ok": False, "attempted": False, "reason": "strategic_plan_generation_in_progress"}
+            if str(lease.get("status") or "") == "failed" and retry_after and retry_after > now:
+                return {
+                    "ok": False,
+                    "attempted": False,
+                    "reason": "strategic_plan_generation_cooldown",
+                    "retry_after": retry_after.isoformat(timespec="seconds"),
+                }
+        turn_identity = {
+            key: turn.get(key)
+            for key in ("message_hash", "message_sequence", "chat_id", "session_id", "transport")
+        }
+        try:
+            business_source = _strategic_plan_business_source(
+                profile, strategic, page_id, account_id=account_id
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "attempted": True,
+                "created": False,
+                "reason": "strategic_plan_business_source_failed",
+                "error_type": type(exc).__name__,
+            }
+        generation_state[page_id] = {
+            "status": "generating",
+            "request_id": request_id,
+            "profile_revision": int(strategic.get("revision") or 0),
+            "profile_identity": profile_identity,
+            "started_at": now.isoformat(timespec="seconds"),
+        }
+        try:
+            write_private_json(STRATEGIC_PLAN_GENERATION_STATE_FILE, generation_state, ensure_ascii=False)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "attempted": True,
+                "created": False,
+                "reason": "strategic_plan_lease_write_failed",
+                "error_type": type(exc).__name__,
+            }
+
+    attempts = []
+    meta_source = {}
+    try:
+        meta_timeout = min(90.0, max(1.0, total_timeout * 0.30))
+        meta_source = _strategic_plan_live_meta_source(
+            account_id=account_id,
+            timeout=meta_timeout,
+        )
+        compiler_timeout = max(0.0, deadline - time.monotonic())
+        compiled = compile_strategic_plan(
+            business_source,
+            meta_source,
+            config=config,
+            timeout=compiler_timeout,
+        )
+        if not isinstance(compiled, dict):
+            compiled = {"ok": False, "reason": "strategic_plan_compiler_invalid_result"}
+        attempts = _strategic_plan_attempts_for_storage(compiled.get("attempts"))
+
+        with _trusted_buyer_turn_lock():
+            latest_turn = _trusted_buyer_turn_unlocked()
+            latest_page = str(active_meta_page_id() or "").strip()
+            latest_account = clean_ad_account_id(current_configured_ad_account_id())
+            latest_profile = read_json(BUSINESS_PROFILE_FILE, {})
+            latest_strategic = strategic_profile_for_page(
+                latest_profile, page_id=latest_page, activate=False
+            ) if latest_page else {}
+            latest_readiness = strategic_profile_readiness(
+                latest_strategic, active_page_id=latest_page
+            ) if latest_strategic else {}
+            latest_identity = _plan_content_hash({
+                "page_id": latest_page,
+                "revision": latest_strategic.get("revision"),
+                "status": latest_strategic.get("status"),
+                "topics": latest_strategic.get("topics"),
+            })
+            state = read_json(STRATEGIC_PLAN_GENERATION_STATE_FILE, {})
+            state = state if isinstance(state, dict) else {}
+            current_lease = state.get(page_id) if isinstance(state.get(page_id), dict) else {}
+            cas_ok = bool(
+                latest_page == page_id
+                and latest_account == account_id
+                and latest_readiness.get("complete")
+                and latest_identity == profile_identity
+                and _strategic_plan_expected_turn_matches(latest_turn, expected_turn)
+                and _turn_matches_exact_identity(latest_turn, turn_identity)
+                and str(current_lease.get("request_id") or "") == request_id
+                and not _master_plan_record_is_complete(
+                    business_master_plan_for_page(latest_profile, page_id)
+                )
+            )
+            if not cas_ok:
+                _release_strategic_plan_generation_lease_unlocked(page_id, request_id)
+                return {
+                    "ok": False,
+                    "attempted": True,
+                    "created": False,
+                    "reason": "strategic_plan_generation_compare_and_swap_failed",
+                    "attempts": attempts,
+                }
+            if not compiled.get("ok") or not _master_plan_is_complete(compiled.get("plan")):
+                failed_at = datetime.now(timezone.utc)
+                retry_at = failed_at + timedelta(minutes=5)
+                state[page_id] = {
+                    **current_lease,
+                    "status": "failed",
+                    "failed_at": failed_at.isoformat(timespec="seconds"),
+                    "retry_after": retry_at.isoformat(timespec="seconds"),
+                    "reason": str(compiled.get("reason") or "strategic_plan_compiler_failed")[:120],
+                    "attempts": attempts,
+                }
+                write_private_json(STRATEGIC_PLAN_GENERATION_STATE_FILE, state, ensure_ascii=False)
+                log_action("strategic_plan_compile", state[page_id], "blocked")
+                return {
+                    "ok": False,
+                    "attempted": True,
+                    "created": False,
+                    "reason": state[page_id]["reason"],
+                    "retry_after": state[page_id]["retry_after"],
+                    "attempts": attempts,
+                }
+
+            plan = dict(compiled.get("plan") or {})
+            draft_hash = _plan_content_hash(plan)
+            record = {
+                "status": "proposed",
+                "profile_revision": int(latest_strategic.get("revision") or 0),
+                "draft": plan,
+                "draft_hash": draft_hash,
+                "draft_revision": 1,
+                "proposed_at": now_iso(),
+                "presentation": {},
+                "proposal_turn": turn_identity,
+                "generator": {
+                    "kind": "isolated_strategic_plan_compiler",
+                    "provider": str(compiled.get("provider") or ""),
+                    "model": str(compiled.get("model") or ""),
+                    "attempts": attempts,
+                    "meta_verified": bool(meta_source.get("verified")),
+                    "meta_partial": bool(meta_source.get("partial")),
+                    "meta_fetched_at": str(meta_source.get("fetched_at") or ""),
+                    "meta_account_id": str(meta_source.get("account_id") or ""),
+                    "meta_inventory_totals": meta_source.get("inventory_totals") or {},
+                },
+            }
+            latest_profile.setdefault("business_master_plans", {})[page_id] = record
+            latest_profile["updated_at"] = now_iso()
+            write_json(BUSINESS_PROFILE_FILE, latest_profile)
+            state[page_id] = {
+                **current_lease,
+                "status": "completed",
+                "completed_at": now_iso(),
+                "model": str(compiled.get("model") or ""),
+                "provider": str(compiled.get("provider") or ""),
+                "attempts": attempts,
+                "draft_hash": draft_hash,
+            }
+            write_private_json(STRATEGIC_PLAN_GENERATION_STATE_FILE, state, ensure_ascii=False)
+            log_action("strategic_plan_compile", state[page_id], "completed")
+    except Exception as exc:
+        _release_strategic_plan_generation_lease(page_id, request_id)
+        try:
+            log_action(
+                "strategic_plan_compile",
+                {"page_id": page_id, "request_id": request_id, "error_type": type(exc).__name__},
+                "blocked",
+            )
+        except Exception:
+            pass
+        return {
+            "ok": False,
+            "attempted": True,
+            "created": False,
+            "reason": "strategic_plan_compiler_exception",
+            "error_type": type(exc).__name__,
+            "attempts": attempts,
+        }
+
+    try:
+        write_agent_onboarding_plan(latest_profile)
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "attempted": True,
+        "created": True,
+        "status": "proposed",
+        "model": str(compiled.get("model") or ""),
+        "provider": str(compiled.get("provider") or ""),
+        "attempts": attempts,
+    }
+
+
 def _turn_matches_exact_identity(turn, identity):
     """Bind server behavior to one exact trusted buyer event.
 
@@ -10128,19 +10620,32 @@ def render_business_strategic_plan(plan, *, include_state=True):
     ) or {}
     lines = ["Plan estratégico del negocio"]
     if include_state:
-        lines.append(f"Estado: {str(plan.get('status') or 'missing')}")
+        state_label = {
+            "proposed": "borrador para conversar",
+            "draft": "borrador para conversar",
+            "stale": "revisión solicitada",
+            "confirmed": "confirmado",
+        }.get(status, str(plan.get("status") or "missing"))
+        lines.append(f"Estado: {state_label}")
         lines.append(f"Revisión del negocio: {int(plan.get('profile_revision') or 0)}")
         if plan.get("draft_revision"):
             lines.append(f"Borrador: revisión {int(plan.get('draft_revision') or 0)}")
-    for field in _MASTER_PLAN_FIELDS:
+    for index, field in enumerate(_MASTER_PLAN_FIELDS, start=1):
         value = content.get(field) if isinstance(content, dict) else None
         if value in (None, "", [], {}):
             value = "Pendiente"
-        if not isinstance(value, str):
-            value = json.dumps(value, ensure_ascii=False, sort_keys=True)
-        rendered_value = re.sub(r"\s+", " ", str(value)).strip()[:4000]
-        lines.append(f"- {_MASTER_PLAN_LABELS[field]}: {rendered_value}")
-    lines.append("Puedes discutirlo, corregirlo o pedir que lo guarde como plan estratégico final.")
+        if isinstance(value, str):
+            rendered_value = "\n".join(
+                re.sub(r"[ \t]+", " ", line).strip()
+                for line in value.splitlines()
+            ).strip()[:6000]
+        else:
+            rendered_value = json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2)[:6000]
+        lines.extend(["", f"{index}. {_MASTER_PLAN_LABELS[field]}", rendered_value])
+    lines.extend([
+        "",
+        "Este es un borrador: puedes discutirlo, corregirlo, dejarlo para después o confirmarlo como plan estratégico final.",
+    ])
     return "\n".join(lines)
 
 
@@ -10164,14 +10669,21 @@ def _assistant_covers_current_plan_draft(plan, assistant_text):
     normalized_output = _normalized_confirmation_text(assistant_text)
     if not normalized_output:
         return False
-    required_lines = [
-        line for line in render_business_strategic_plan(plan).splitlines()
-        if line.startswith("- ")
-    ]
-    return bool(required_lines) and all(
-        _normalized_confirmation_text(line) in normalized_output
-        for line in required_lines
-    )
+    plan = plan if isinstance(plan, dict) else {}
+    content = plan.get("draft") if str(plan.get("status") or "") in {"proposed", "draft", "stale"} else plan.get("content")
+    content = content if isinstance(content, dict) else {}
+    required_sections = []
+    for field in _MASTER_PLAN_FIELDS:
+        value = content.get(field)
+        if value in (None, "", [], {}):
+            return False
+        rendered = value if isinstance(value, str) else json.dumps(
+            value, ensure_ascii=False, sort_keys=True, indent=2
+        )
+        required_sections.append(
+            _normalized_confirmation_text(f"{_MASTER_PLAN_LABELS[field]} {rendered}")
+        )
+    return bool(required_sections) and all(section in normalized_output for section in required_sections)
 
 
 def business_lifecycle_state(profile=None, page_id=None):

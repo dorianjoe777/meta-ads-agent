@@ -418,6 +418,61 @@ class StrategicPromptPerformanceTests(unittest.TestCase):
         self.assertEqual(calls[0]["message_sequence"], "73")
         self.assertEqual(calls[0]["transport"], "telegram")
 
+    def test_initial_strategic_plan_compilation_skips_hermes_inference(self):
+        class FakeRunner:
+            async def _run_agent(self, *_args, **_kwargs):
+                self.original_calls = getattr(self, "original_calls", 0) + 1
+                return {"final_response": "Hermes improvised a shallow plan", "messages": []}
+
+        gateway_package = ModuleType("gateway")
+        gateway_run = ModuleType("gateway.run")
+        gateway_run.GatewayRunner = FakeRunner
+        gateway_package.run = gateway_run
+        canonical = "Plan estratégico del negocio\n\n1. Diagnóstico\nPlan completo y fundamentado"
+
+        with patch.dict(sys.modules, {"gateway": gateway_package, "gateway.run": gateway_run}), \
+                patch.object(runtime, "_continuity_resume_hint", return_value=""), \
+                patch.object(runtime, "_resolve_business_lifecycle_transition", return_value={}), \
+                patch.object(runtime, "_ensure_initial_business_master_plan", return_value={
+                    "ok": True,
+                    "attempted": True,
+                    "created": True,
+                    "model": "gpt-5.6-sol",
+                }) as ensure_plan, \
+                patch.object(runtime, "_apply_authoritative_tool_result_guards", side_effect=lambda value: value), \
+                patch.object(runtime, "_apply_conversational_output_guards", side_effect=lambda value: value), \
+                patch.object(runtime, "_normalize_gateway_outbound_response", side_effect=lambda value: value), \
+                patch.object(runtime, "_append_generated_media_attachments", side_effect=lambda value: value), \
+                patch.object(runtime, "_admira_strategic_profile_state", return_value={
+                    "complete": True,
+                    "master_plan_status": "proposed",
+                }), \
+                patch.object(runtime, "_ensure_business_lifecycle_artifact_visible", return_value={"text": canonical}), \
+                patch.object(runtime, "_record_business_lifecycle_artifact_presented", return_value=True), \
+                patch.object(runtime, "_append_gateway_turn"):
+            self.assertTrue(runtime._patch_gateway_generated_media_delivery())
+            runner = FakeRunner()
+            result = asyncio.run(runner._run_agent(
+                "sí, el resumen está correcto",
+                session_key="agent:main:telegram:dm:123",
+                persist_user_message="sí, el resumen está correcto",
+                source=SimpleNamespace(
+                    chat_id="123",
+                    platform=SimpleNamespace(value="telegram"),
+                ),
+                event_message_id=20,
+            ))
+
+        self.assertEqual(result["final_response"], canonical)
+        self.assertEqual(getattr(runner, "original_calls", 0), 0)
+        ensure_plan.assert_called_once_with(expected_turn={
+            "chat_id": "123",
+            "session_id": "agent:main:telegram:dm:123",
+            "transport": "telegram",
+            "raw_message": "sí, el resumen está correcto",
+            "message_sequence": 20,
+        })
+
     def test_blocked_image_receipt_cannot_be_narrated_as_queued(self):
         response = {
             "final_response": "Ya envié la orden. En un momento aparecerá la imagen.",

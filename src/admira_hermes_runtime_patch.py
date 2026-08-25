@@ -646,12 +646,12 @@ def _admira_compiled_procedure_instruction(state):
         )
     else:
         plan_instruction = (
-            "The onboarding business summary is complete, but the strategic plan is not final. Propose a complete plan as "
-            "an idea/draft, using the current Page's live Meta inventory, campaigns, history and performance when available. "
-            "Incorporate active campaigns and verified history; if none exists, say so and label the starting assumptions as "
-            "hypotheses rather than inventing performance. "
-            "The buyer may discuss it, save it as a draft, or later confirm it as the business's final strategic plan. Do not "
-            "reconfirm the onboarding summary while doing this.\n"
+            "The onboarding business summary is complete, but no strategic-plan draft is stored yet. The initial plan belongs "
+            "to the isolated server compiler, which grounds it in the confirmed business economics and a fresh all-time Meta "
+            "snapshot. Do not draft, abbreviate, save, or present a substitute plan yourself. If the compiler is temporarily "
+            "unavailable, say so briefly and continue the buyer's safe conversational request without calling the business "
+            "summary a plan or asking to reconfirm it. Once strategic_plan_status becomes proposed, use the exact canonical "
+            "draft supplied by backend state.\n"
         )
     if plan_status == "confirmed":
         foundation_instruction = (
@@ -662,9 +662,9 @@ def _admira_compiled_procedure_instruction(state):
         )
     elif plan_status == "missing":
         foundation_instruction = (
-            "The next lifecycle step is to develop and discuss the strategic plan. Do not branch into a generic branding or "
-            "campaign setup interview in parallel. Branding work can still be handled when the buyer explicitly requests it, "
-            "and the plan should account for the branding foundation before paid/organic production.\n"
+            "The next lifecycle step is for the isolated compiler to materialize the strategic-plan draft and then let the "
+            "buyer discuss it. Do not branch into a generic branding or campaign setup interview and do not reproduce the "
+            "compiler's job in prose. Branding work can still be handled when the buyer explicitly requests it.\n"
         )
     else:
         foundation_instruction = (
@@ -5429,6 +5429,12 @@ def _patch_gateway_generated_media_delivery():
         if message is None and args:
             message = args[0]
         call_args = list(args)
+        source = kwargs.get("source")
+        if source is None and len(args) > 3:
+            source = args[3]
+        event_message_id = kwargs.get("event_message_id")
+        if event_message_id is None and len(args) > 8:
+            event_message_id = args[8]
         session_key = kwargs.get("session_key")
         if session_key is None and len(args) > 5:
             session_key = args[5]
@@ -5476,13 +5482,57 @@ def _patch_gateway_generated_media_delivery():
             # on the previous turn before Hermes builds this turn's prompt.
             # This lets the same model invocation see the newly confirmed
             # onboarding/plan state instead of answering from stale context.
-            await asyncio.to_thread(
+            lifecycle_transition = await asyncio.to_thread(
                 _resolve_business_lifecycle_transition,
                 session_id=session_key,
                 raw_message=clean_persisted,
                 target="",
             )
-            result = await original(self, *tuple(call_args), **kwargs)
+            # A master plan is a backend-owned artefact, not free-form Hermes
+            # prose. Generate it once with the isolated high-capability chain
+            # before inference. This also recovers a complete profile whose
+            # earlier compiler attempt failed: the helper is idempotent and
+            # enforces its own lease/backoff/CAS boundary.
+            expected_plan_turn = _strategic_plan_expected_turn_for_runtime(
+                source=source,
+                session_id=session_key,
+                raw_message=clean_persisted,
+                message_sequence=event_message_id,
+            )
+            if expected_plan_turn:
+                plan_generation = await asyncio.to_thread(
+                    _ensure_initial_business_master_plan,
+                    expected_turn=expected_plan_turn,
+                )
+            else:
+                plan_generation = {
+                    "ok": False,
+                    "attempted": False,
+                    "created": False,
+                    "reason": "strategic_plan_turn_not_bound_to_current_event",
+                }
+            if plan_generation.get("created"):
+                # The finalized-outbound hook below replaces this placeholder
+                # with the exact persisted canonical draft and records its
+                # presentation. Skipping Hermes prevents a shallow competing
+                # plan or an unrelated tool call on the transition turn.
+                result = {
+                    "final_response": "Preparé el borrador completo del plan estratégico para revisarlo contigo.",
+                    "messages": [],
+                }
+            elif plan_generation.get("attempted") and not plan_generation.get("ok") and str(
+                plan_generation.get("reason") or ""
+            ) != "strategic_plan_generation_compare_and_swap_failed":
+                result = {
+                    "final_response": (
+                        "El resumen del negocio quedó confirmado, pero no pude preparar todavía un plan estratégico "
+                        "con la profundidad y evidencia necesarias. No voy a sustituirlo por un esquema superficial. "
+                        "Tu información está guardada y volveré a intentar la compilación de forma segura."
+                    ),
+                    "messages": [],
+                }
+            else:
+                result = await original(self, *tuple(call_args), **kwargs)
         result = _apply_authoritative_tool_result_guards(result)
         # The semantic campaign-claim arbiter is a tiny independent provider
         # call. Run conversational guards off the Telegram event loop so a
@@ -5921,6 +5971,56 @@ def _resolve_business_lifecycle_transition(*, session_id="", chat_id="", raw_mes
         return result if isinstance(result, dict) else {"resolved": bool(result)}
     except Exception:
         return {}
+
+
+def _runtime_source_value(source, key):
+    if isinstance(source, dict):
+        return source.get(key)
+    return getattr(source, key, None) if source is not None else None
+
+
+def _strategic_plan_expected_turn_for_runtime(
+    *, source=None, session_id="", raw_message="", message_sequence=None
+):
+    """Describe the current real buyer event without trusting stale state."""
+    platform = _runtime_source_value(source, "platform")
+    platform = getattr(platform, "value", platform)
+    transport = str(platform or _runtime_source_value(source, "transport") or "")
+    transport = transport.strip().lower().replace("-", "_")
+    chat_id = str(_runtime_source_value(source, "chat_id") or "").strip()
+    session_id = str(session_id or "").strip()
+    raw_message = str(raw_message or "").strip()
+    if (
+        transport not in {"telegram", "dashboard", "simulated_telegram", "legacy_telegram"}
+        or not chat_id
+        or not session_id
+        or not raw_message
+    ):
+        return {}
+    expected = {
+        "chat_id": chat_id,
+        "session_id": session_id,
+        "transport": transport,
+        "raw_message": raw_message,
+    }
+    if message_sequence not in (None, ""):
+        expected["message_sequence"] = message_sequence
+    return expected
+
+
+def _ensure_initial_business_master_plan(*, expected_turn=None):
+    """Ask the backend to materialize the first plan outside Hermes."""
+    try:
+        dashboard = _admira_dashboard_module()
+        ensure = getattr(dashboard, "ensure_initial_business_master_plan", None)
+        if not callable(ensure):
+            return {"ok": False, "attempted": False, "reason": "strategic_plan_compiler_unavailable"}
+        result = ensure(expected_turn=expected_turn)
+        return result if isinstance(result, dict) else {
+            "ok": bool(result), "attempted": bool(result), "created": bool(result)
+        }
+    except Exception:
+        return {"ok": False, "attempted": True, "created": False, "reason": "strategic_plan_compiler_failed"}
 
 
 def _ensure_business_lifecycle_artifact_visible(*, session_id="", chat_id="", assistant_text="", target=""):
