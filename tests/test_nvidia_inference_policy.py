@@ -1393,6 +1393,27 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         self.assertIn("page_id", restored[0]["function"]["parameters"]["properties"])
         self.assertIn("questions", restored[0]["function"]["parameters"]["required"])
 
+    def test_restores_canonical_schema_for_flat_responses_tools(self):
+        original = {
+            "type": "function",
+            "name": "mcp_admira_save_business_memory",
+            "description": "Save business memory",
+            "strict": False,
+            "parameters": {"type": "object", "properties": {}},
+        }
+
+        restored = admira_hermes_runtime_patch._nvidia_restore_admira_tool_schemas(
+            [original]
+        )
+
+        self.assertEqual(original["parameters"], {"type": "object", "properties": {}})
+        parameters = restored[0]["parameters"]
+        self.assertIn("buyer_evidence", parameters["required"])
+        self.assertIn("confirm_profile_review", parameters["properties"])
+        self.assertIn("strategic_topics", parameters["properties"])
+        self.assertEqual(restored[0]["description"], original["description"])
+        self.assertFalse(restored[0]["strict"])
+
     def test_nvidia_plain_lead_form_advice_does_not_force_creation(self):
         prepared = admira_hermes_runtime_patch._nvidia_prepare_request({
             "messages": [{"role": "user", "content": "¿Qué preguntas recomiendas para mi formulario de leads?"}],

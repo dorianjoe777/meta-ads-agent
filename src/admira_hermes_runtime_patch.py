@@ -3376,13 +3376,21 @@ def _nvidia_restore_admira_tool_schemas(tools):
         normalized = _nvidia_normalize_tool_name(name)
         schema = TOOL_INPUT_SCHEMAS.get(normalized)
         function = tool.get("function") if isinstance(tool.get("function"), dict) else None
-        if not schema or function is None or not name.lower().startswith(("mcp_admira_", "admira_")):
+        if not schema or not name.lower().startswith(("mcp_admira_", "admira_")):
             restored.append(tool)
             continue
         cloned = dict(tool)
-        cloned_function = dict(function)
-        cloned_function["parameters"] = copy.deepcopy(schema)
-        cloned["function"] = cloned_function
+        if function is not None:
+            cloned_function = dict(function)
+            cloned_function["parameters"] = copy.deepcopy(schema)
+            cloned["function"] = cloned_function
+        else:
+            # The Responses API represents functions as a flat object:
+            # {type, name, description, parameters, strict}.  Hermes can
+            # flatten MCP tools into this shape before the provider hook, so
+            # looking only under ``function`` silently leaves an empty schema
+            # and lets the model omit required transactional evidence.
+            cloned["parameters"] = copy.deepcopy(schema)
         restored.append(cloned)
     return restored
 
