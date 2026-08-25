@@ -4282,6 +4282,53 @@ def _guard_unconfirmed_persistence_claim(response):
     return response
 
 
+def _classify_campaign_creation_claim_semantically(final_response):
+    """Classify ambiguous campaign prose outside the Hermes agent loop.
+
+    The classifier decides only what the prose communicates. Current-turn
+    campaign-tool evidence remains the sole authority for whether Meta really
+    created anything. Provider failures return an unavailable classification
+    so the deterministic fail-safe can still protect explicit false claims.
+    """
+    try:
+        from campaign_claim_classifier import classify_campaign_creation_claim
+
+        result = classify_campaign_creation_claim(str(final_response or ""))
+    except Exception as exc:
+        return {
+            "ok": False,
+            "confirmation": "",
+            "reason": "campaign_claim_classifier_failed",
+            "error_type": type(exc).__name__,
+        }
+    if not isinstance(result, dict):
+        return {
+            "ok": False,
+            "confirmation": "",
+            "reason": "campaign_claim_classifier_invalid_result",
+        }
+    confirmation = str(result.get("confirmation") or "").strip().lower()
+    if result.get("ok") is not True or confirmation not in {"si", "no"}:
+        return {
+            **result,
+            "ok": False,
+            "confirmation": "",
+            "reason": str(result.get("reason") or "campaign_claim_classifier_invalid_result"),
+        }
+    return {**result, "confirmation": confirmation}
+
+
+def _known_non_success_campaign_phrase(final_response):
+    """Preserve known prospective language if semantic classification fails."""
+    return bool(re.search(
+        r"(?i)\b(?:quedo|quedamos|i\s+remain|i(?:'m|\s+am)\s+ready)\s+"
+        r"(?:atent[oa]s?|pendientes?|list[oa]s?|ready)?\b.{0,120}"
+        r"\b(?:crear|estructurar|preparar|armar|configurar|create|structure|prepare|build|configure)\b"
+        r".{0,100}\b(?:campa[n\u00f1]a|campaign)\b",
+        str(final_response or ""),
+    ))
+
+
 def _guard_unconfirmed_campaign_claim(response):
     """Do not let prose turn a blocked campaign call into a fake success."""
     if not isinstance(response, dict):
@@ -4334,6 +4381,19 @@ def _guard_unconfirmed_campaign_claim(response):
     verified = '"campaign_creation_verified": true' in evidence or '"campaign_creation_verified":true' in evidence
     if verified:
         return response
+    if re.search(r"(?i)\b(?:no\s+(?:se\s+)?cre[eó]|no\s+fue\s+creada|did\s+not\s+create|was\s+not\s+created)\b", final_response):
+        return response
+
+    # The regex above is only a cheap candidate gate. A small independent
+    # structured-output request receives the raw assistant prose without
+    # history or tools and determines whether it actually claims a completed
+    # campaign creation. Semantic "no" preserves natural conversation;
+    # semantic "si" continues into the authoritative evidence check below.
+    semantic = _classify_campaign_creation_claim_semantically(final_response)
+    if semantic.get("ok") is True and semantic.get("confirmation") == "no":
+        return response
+    if semantic.get("ok") is not True and _known_non_success_campaign_phrase(final_response):
+        return response
     if not attempted:
         # This guard validates an outcome, never the buyer's wording. A model
         # may interpret natural language freely, but it cannot report a Meta
@@ -4344,8 +4404,6 @@ def _guard_unconfirmed_campaign_claim(response):
             if language.startswith("en")
             else "No pude verificar una creación en Meta en este turno porque ninguna herramienta de campaña devolvió IDs reales. No la reportaré como creada."
         )
-        return response
-    if re.search(r"(?i)\b(?:no\s+(?:se\s+)?cre[eó]|no\s+fue\s+creada|did\s+not\s+create|was\s+not\s+created)\b", final_response):
         return response
     language = str(os.environ.get("ADMIRA_GATEWAY_LANGUAGE") or "es").lower()
     response["final_response"] = (
@@ -5097,7 +5155,10 @@ def _patch_gateway_generated_media_delivery():
         else:
             result = await original(self, *tuple(call_args), **kwargs)
         result = _apply_authoritative_tool_result_guards(result)
-        result = _apply_conversational_output_guards(result)
+        # The semantic campaign-claim arbiter is a tiny independent provider
+        # call. Run conversational guards off the Telegram event loop so a
+        # slow provider or Codex CLI startup cannot freeze other chats.
+        result = await asyncio.to_thread(_apply_conversational_output_guards, result)
         try:
             result = _normalize_gateway_outbound_response(result)
         except Exception:

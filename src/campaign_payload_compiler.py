@@ -658,7 +658,14 @@ def _gemini_compile(model, prompt, schema, *, api_key, base_url, timeout):
         }
 
 
-def _terra_compile(prompt, schema, *, config, timeout):
+def _terra_compile(prompt, schema, *, config, timeout, model=None):
+    """Run one isolated Codex compilation request.
+
+    ``model`` is optional for compatibility with the campaign compiler.  The
+    independent claim classifier uses the same seam with the active Luna (or
+    other Codex) model, without entering the Hermes conversation loop.
+    """
+    selected_model = str(model or TERRA_COMPILER_MODEL).strip() or TERRA_COMPILER_MODEL
     executable = str(getattr(config, "codex_cli", "codex") or "codex")
     environment = codex_cli_environment(config)
     with tempfile.TemporaryDirectory(prefix="admira-campaign-compiler-") as isolated:
@@ -674,7 +681,7 @@ def _terra_compile(prompt, schema, *, config, timeout):
             "--ignore-rules",
             "--skip-git-repo-check",
             "-C", isolated,
-            "-m", TERRA_COMPILER_MODEL,
+            "-m", selected_model,
             "--output-schema", str(schema_path),
             "-o", str(output_path),
             "-",
@@ -692,7 +699,7 @@ def _terra_compile(prompt, schema, *, config, timeout):
             )
             stdout, stderr = process.communicate(prompt, timeout=timeout)
         except FileNotFoundError:
-            return {"ok": False, "reason": "codex_cli_missing", "model": TERRA_COMPILER_MODEL}
+            return {"ok": False, "reason": "codex_cli_missing", "model": selected_model}
         except subprocess.TimeoutExpired:
             try:
                 os.killpg(process.pid, signal.SIGTERM)
@@ -702,7 +709,7 @@ def _terra_compile(prompt, schema, *, config, timeout):
                     os.killpg(process.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-            return {"ok": False, "reason": "campaign_compiler_timeout", "model": TERRA_COMPILER_MODEL}
+            return {"ok": False, "reason": "campaign_compiler_timeout", "model": selected_model}
 
         if process.returncode != 0:
             return {
@@ -711,13 +718,13 @@ def _terra_compile(prompt, schema, *, config, timeout):
                 "error": codex_cli_error_message(stderr, stdout) or "Terra no pudo compilar el briefing.",
                 "returncode": process.returncode,
                 "diagnostic": (stderr or stdout or "")[-2000:],
-                "model": TERRA_COMPILER_MODEL,
+                "model": selected_model,
             }
         try:
             return {
                 "ok": True,
                 "compiled": json.loads(output_path.read_text(encoding="utf-8")),
-                "model": TERRA_COMPILER_MODEL,
+                "model": selected_model,
             }
         except (OSError, json.JSONDecodeError) as exc:
             return {

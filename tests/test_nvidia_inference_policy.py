@@ -5,6 +5,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 import admira_hermes_runtime_patch
 import admira_mcp_server
@@ -20,6 +21,18 @@ from tools import memory_tool
 
 
 class NvidiaInferencePolicyTests(unittest.TestCase):
+    def setUp(self):
+        # Guard unit tests must never spend buyer provider quota. Individual
+        # semantic-classifier integration cases override this deterministic
+        # unavailable result explicitly.
+        semantic = mock.patch.object(
+            admira_hermes_runtime_patch,
+            "_classify_campaign_creation_claim_semantically",
+            return_value={"ok": False, "confirmation": "", "reason": "unit_test"},
+        )
+        semantic.start()
+        self.addCleanup(semantic.stop)
+
     @staticmethod
     def _admira_tool(name):
         return {"type": "function", "function": {"name": f"mcp_admira_{name}", "description": name}}
@@ -534,6 +547,84 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         }
         guarded = admira_hermes_runtime_patch._guard_unconfirmed_campaign_claim(response)
         self.assertEqual(guarded["final_response"], response["final_response"])
+
+    def test_campaign_guard_uses_semantic_no_for_quedo_atento_false_positive(self):
+        response = {
+            "final_response": (
+                "¡Listo, Dorian! Ya diseñé la pieza publicitaria profesional. "
+                "Quedo atento para estructurar la campaña de mensajes a WhatsApp con este creativo."
+            ),
+            "messages": [
+                {"role": "user", "content": "crear un diseño con eso"},
+                {
+                    "role": "tool",
+                    "name": "mcp_admira_codex_image_generate",
+                    "content": '{"ok":true,"image_path":"/app/output/creatives/fixed-01.png"}',
+                },
+                {"role": "assistant", "content": "Quedo atento para estructurar la campaña."},
+            ],
+        }
+        with mock.patch.object(
+            admira_hermes_runtime_patch,
+            "_classify_campaign_creation_claim_semantically",
+            return_value={"ok": True, "confirmation": "no"},
+        ) as classify:
+            guarded = admira_hermes_runtime_patch._guard_unconfirmed_campaign_claim(response)
+        self.assertEqual(guarded["final_response"], response["final_response"])
+        classify.assert_called_once_with(response["final_response"])
+
+    def test_campaign_guard_semantic_yes_still_requires_real_ids(self):
+        response = {
+            "final_response": "Perfecto, la campaña quedó creada y pausada.",
+            "messages": [
+                {"role": "user", "content": "créala"},
+                {"role": "assistant", "content": "Perfecto, la campaña quedó creada y pausada."},
+            ],
+        }
+        with mock.patch.object(
+            admira_hermes_runtime_patch,
+            "_classify_campaign_creation_claim_semantically",
+            return_value={"ok": True, "confirmation": "si"},
+        ):
+            guarded = admira_hermes_runtime_patch._guard_unconfirmed_campaign_claim(response)
+        self.assertIn("ninguna herramienta de campaña devolvió IDs reales", guarded["final_response"])
+
+    def test_campaign_guard_classifier_failure_preserves_known_prospective_phrase(self):
+        response = {
+            "final_response": "Quedo atento para estructurar la campaña de WhatsApp con este creativo.",
+            "messages": [
+                {"role": "user", "content": "crear un diseño con eso"},
+                {"role": "assistant", "content": "Quedo atento para estructurar la campaña."},
+            ],
+        }
+        with mock.patch.object(
+            admira_hermes_runtime_patch,
+            "_classify_campaign_creation_claim_semantically",
+            return_value={"ok": False, "confirmation": "", "reason": "rate_limit"},
+        ):
+            guarded = admira_hermes_runtime_patch._guard_unconfirmed_campaign_claim(response)
+        self.assertEqual(guarded["final_response"], response["final_response"])
+
+    def test_campaign_guard_verified_ids_skip_semantic_classifier(self):
+        response = {
+            "final_response": "Perfecto, la campaña quedó creada y pausada.",
+            "messages": [
+                {"role": "user", "content": "créala"},
+                {
+                    "role": "tool",
+                    "name": "mcp_admira_create_whatsapp_campaign",
+                    "content": '{"campaign_creation_verified":true,"campaign_id":"1201"}',
+                },
+                {"role": "assistant", "content": "Perfecto, la campaña quedó creada y pausada."},
+            ],
+        }
+        with mock.patch.object(
+            admira_hermes_runtime_patch,
+            "_classify_campaign_creation_claim_semantically",
+        ) as classify:
+            guarded = admira_hermes_runtime_patch._guard_unconfirmed_campaign_claim(response)
+        self.assertEqual(guarded["final_response"], response["final_response"])
+        classify.assert_not_called()
 
     def test_generic_acknowledgement_after_restart_never_surfaces_stale_campaign_failure(self):
         response = {
