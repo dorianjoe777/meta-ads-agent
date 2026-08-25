@@ -10138,10 +10138,8 @@ def render_business_strategic_plan(plan, *, include_state=True):
             value = "Pendiente"
         if not isinstance(value, str):
             value = json.dumps(value, ensure_ascii=False, sort_keys=True)
-        lines.append(
-            f"- {_MASTER_PLAN_LABELS[field]}: "
-            f"{re.sub(r'\s+', ' ', str(value)).strip()[:4000]}"
-        )
+        rendered_value = re.sub(r"\s+", " ", str(value)).strip()[:4000]
+        lines.append(f"- {_MASTER_PLAN_LABELS[field]}: {rendered_value}")
     lines.append("Puedes discutirlo, corregirlo o pedir que lo guarde como plan estratégico final.")
     return "\n".join(lines)
 
