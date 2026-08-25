@@ -199,6 +199,65 @@ class StrategicPromptPerformanceTests(unittest.TestCase):
         self.assertIn("Eres Admira IA.", request["instructions"])
         self.assertIn(runtime.ADMIRA_COMPILED_PROCEDURE_START, request["instructions"])
 
+    def test_business_snapshot_reaches_responses_and_chat_payloads(self):
+        state = {
+            "status": "review_required",
+            "revision": 7,
+            "complete": False,
+            "master_plan_status": "missing",
+            "active_page_name": "Rodeo - Car Detailing",
+            "business_profile_topics": {
+                "markets": {
+                    "status": "confirmed", "memory_state": "resolved",
+                    "value": ["Bogotá Norte"],
+                },
+            },
+            "business_profile_resolved_topics": ["markets"],
+            "business_profile_draft_topics": [],
+            "business_profile_unresolved_topics": [],
+            "business_profile_review_presented": True,
+        }
+        responses = runtime._admira_attach_compiled_procedure(
+            {"input": [{"role": "user", "content": "hola"}], "instructions": "Eres Admira."},
+            state=state,
+        )
+        chat = runtime._admira_attach_compiled_procedure(
+            {"messages": [{"role": "user", "content": "hola"}]}, state=state
+        )
+        self.assertIn("Rodeo - Car Detailing", responses["instructions"])
+        self.assertIn("Bogotá Norte", responses["instructions"])
+        self.assertIn("Rodeo - Car Detailing", json.dumps(chat, ensure_ascii=False))
+        self.assertIn("Bogotá Norte", json.dumps(chat, ensure_ascii=False))
+
+    def test_pending_business_review_precedes_brand_ready_workflow(self):
+        memory = {
+            "business_profile": {"strategic_profile": {
+                "status": "review_required", "revision": 7,
+                "onboarding_completed_at": None,
+            }},
+            "brand_guides": {"general_branding": "Rodeo - Car Detailing"},
+            "recent_history": {},
+            "onboarding_plan": "",
+        }
+        workflow = hermes_bridge.active_workflow_payload(memory, {"items": []})
+
+        self.assertEqual(workflow["phase"], "business_review_pending")
+        self.assertIn("todos sus temas resueltos", workflow["next_step"])
+        self.assertIn("No repetir nombre", workflow["next_step"])
+
+    def test_completed_business_profile_allows_brand_ready_workflow(self):
+        memory = {
+            "business_profile": {"strategic_profile": {
+                "status": "complete", "onboarding_completed_at": "2026-08-25T10:00:00Z",
+            }},
+            "brand_guides": {"general_branding": "Rodeo - Car Detailing"},
+            "recent_history": {},
+            "onboarding_plan": "",
+        }
+        workflow = hermes_bridge.active_workflow_payload(memory, {"items": []})
+
+        self.assertEqual(workflow["phase"], "brand_ready")
+
     def test_admira_skill_unlock_block_is_suppressed_but_other_safety_blocks_survive(self):
         calls = []
 

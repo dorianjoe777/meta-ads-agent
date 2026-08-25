@@ -2027,10 +2027,37 @@ def _latest_by_role(items, role):
     return {}
 
 
+def _initial_business_onboarding_state(memory):
+    """Derive initial onboarding from its canonical strategic profile only."""
+    profile = memory.get("business_profile") if isinstance(memory, dict) else {}
+    profile = profile if isinstance(profile, dict) else {}
+    strategic = profile.get("strategic_profile")
+    strategic = strategic if isinstance(strategic, dict) else {}
+    if strategic.get("onboarding_completed_at") or str(strategic.get("status") or "") == "complete":
+        return "complete"
+    status = str(strategic.get("status") or "").strip().lower()
+    if status == "review_required":
+        return "review_required"
+    if status in {"empty", "collecting", "scope_mismatch"} or strategic:
+        return "collecting"
+    return ""
+
+
 def _infer_next_step(memory, latest_context, blocker=""):
     onboarding_plan = str(memory.get("onboarding_plan") or "")
     if blocker:
         return "Retomar el bloqueo técnico o de datos más reciente y explicar el siguiente intento seguro."
+    onboarding_state = _initial_business_onboarding_state(memory)
+    if onboarding_state == "review_required":
+        return (
+            "El resumen del negocio ya tiene todos sus temas resueltos y espera revisión natural. "
+            "No repetir nombre, ubicación ni la entrevista; retomar desde un dato concreto y permitir corrección o confirmación."
+        )
+    if onboarding_state == "collecting":
+        return (
+            "Continuar el onboarding desde los valores Page-scoped ya guardados y preguntar solamente por un tema realmente pendiente; "
+            "un borrador recordado no es un dato perdido."
+        )
     match = re.search(r"Siguiente paso\s*:\s*([^\n.]+)", onboarding_plan, re.IGNORECASE)
     if match:
         return _text_excerpt(match.group(1), 260)
@@ -2065,8 +2092,13 @@ def active_workflow_payload(memory, latest_context):
     ]
     blocker = blockers[0] if blockers else {}
     brand = memory.get("brand_guides") or {}
+    onboarding_state = _initial_business_onboarding_state(memory)
     if blocker:
         phase = "blocked_or_retrying"
+    elif onboarding_state == "review_required":
+        phase = "business_review_pending"
+    elif onboarding_state == "collecting":
+        phase = "business_onboarding"
     elif recent.get("creative_refreshes"):
         phase = "creative_review"
     elif brand.get("ad_briefs"):

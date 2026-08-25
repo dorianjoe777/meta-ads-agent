@@ -8,11 +8,14 @@ description: Build the Telegram-friendly daily Meta Ads brief from current live 
 Use this skill for the morning brief, "lectura diaria", "resumen diario", or when the buyer asks "que debo vigilar hoy".
 
 Before interpreting results, read the current Page-scoped business lifecycle and
-strategic-plan artifact. If the plan is `proposed`/draft or `stale`, include a
+strategic-plan artifact. These are separate states: `business_profile=review_required`
+means the onboarding/business summary awaits confirmation and must never be described
+as a strategic-plan draft. If `strategic_plan_status=missing`, say that no strategic
+plan exists yet. Only if the plan itself is `proposed`/draft or `stale`, include a
 short useful summary of it and remind the buyer that it is not yet the final
 approved plan. If it is `confirmed`, use it as active context and never ask to
-confirm it again. The business onboarding summary is a separate completed
-baseline and must not be re-requested from the buyer.
+confirm it again. The business onboarding summary is a separate baseline; while
+it is pending review, describe it as such, and once complete never re-request it.
 The daily read is observational: new results, services, campaign changes or
 recommendations never rewrite or invalidate the saved strategic plan. A plan
 revision begins only after a direct buyer request to update that plan.

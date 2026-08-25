@@ -153,6 +153,68 @@ class RuntimePlanContextTests(unittest.TestCase):
         self.assertEqual(state["lifecycle_state"], "onboarding")
         self.assertEqual(state["master_plan_status"], "confirmed")
 
+    def test_review_required_injects_known_business_facts_without_inventing_plan(self):
+        profile = {
+            "strategic_profile": {
+                "status": "review_required",
+                "revision": 7,
+                "confirmed_revision": None,
+                "scope": {"page_id": "page-1"},
+                "review_ready": {"revision": 7},
+                "review_presentation": {"revision": 7},
+                "topics": {
+                    "services": {"status": "confirmed", "value": ["Rodeo Premium"]},
+                    "markets": {"status": "confirmed", "value": ["Bogotá Norte"]},
+                    "branding": {
+                        "status": "confirmed",
+                        "value": "Marca: Rodeo - Car Detailing; logo oficial aprobado",
+                    },
+                },
+            },
+            "business_master_plans": {},
+        }
+        root = self._root(profile)
+        (root / "dashboard" / "data" / "meta_oauth_connection.json").write_text(
+            json.dumps({"active_page_id": "page-1", "pages": [
+                {"id": "page-1", "name": "Rodeo - Car Detailing"}
+            ]}),
+            encoding="utf-8",
+        )
+
+        state = runtime._admira_strategic_profile_state(product_root=root)
+        text = runtime._admira_compiled_procedure_instruction(state)
+
+        self.assertEqual(state["lifecycle_state"], "onboarding")
+        self.assertEqual(state["master_plan_status"], "missing")
+        self.assertTrue(state["business_profile_review_presented"])
+        self.assertIn("Rodeo - Car Detailing", text)
+        self.assertIn("Bogotá Norte", text)
+        self.assertIn("strategic_plan_status=missing", text)
+        self.assertIn("Do not restart discovery", text)
+        self.assertIn("never call the business summary a plan draft", text)
+
+    def test_collecting_profile_distinguishes_drafts_from_missing_topics(self):
+        profile = {
+            "strategic_profile": {
+                "status": "collecting", "revision": 3,
+                "scope": {"page_id": "page-1"},
+                "topics": {
+                    "services": {"status": "confirmed", "value": ["Detailing"]},
+                    "markets": {"draft": {
+                        "value": ["Bogotá"], "proposed_status": "confirmed"
+                    }},
+                },
+            }
+        }
+        state = runtime._admira_strategic_profile_state(product_root=self._root(profile))
+        text = runtime._admira_compiled_procedure_instruction(state)
+
+        self.assertEqual(state["business_profile_draft_topics"], ["markets"])
+        self.assertIn("Bogotá", text)
+        self.assertIn("remembered_draft", text)
+        self.assertIn("not a missing field", text)
+        self.assertIn("ideal_customer", state["business_profile_unresolved_topics"])
+
     def test_single_plan_for_other_page_is_not_injected(self):
         profile = self._profile({
             "status": "confirmed", "page_id": "page-other", "revision": 2,
@@ -179,6 +241,9 @@ class RuntimePlanContextTests(unittest.TestCase):
         text = gateway.daily_brief_prompt()
         self.assertIn("borrador", text)
         self.assertIn("datos live de Meta", text)
+        self.assertIn("business-profile en review_required", text)
+        self.assertIn("strategic_plan_status=missing", text)
+        self.assertIn("no es un plan estratégico", text)
 
     def test_existing_daily_cron_refreshes_changed_prompt_once(self):
         root = Path(tempfile.mkdtemp())

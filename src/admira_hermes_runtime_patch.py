@@ -145,6 +145,91 @@ def _admira_read_json(path):
     return value if isinstance(value, dict) else {}
 
 
+ADMIRA_BUSINESS_PROFILE_TOPICS = (
+    "services",
+    "ideal_customer",
+    "differentiators",
+    "markets",
+    "capacity",
+    "pricing",
+    "margins",
+    "global_objectives",
+    "advertising_experience",
+    "branding",
+)
+
+ADMIRA_BUSINESS_PROFILE_LABELS = {
+    "services": "Services and products",
+    "ideal_customer": "Ideal customer",
+    "differentiators": "Differentiators and proof",
+    "markets": "Markets and locations",
+    "capacity": "Capacity and constraints",
+    "pricing": "Prices",
+    "margins": "Costs and margins",
+    "global_objectives": "Global objectives",
+    "advertising_experience": "Advertising experience",
+    "branding": "Brand and assets",
+}
+
+
+def _admira_profile_topic_context(strategic):
+    """Project canonical topic memory into a bounded provider-safe shape.
+
+    The profile JSON remains the only owner of these values. This projection
+    deliberately avoids creating duplicate business-name/location state: it
+    merely makes the authoritative Page-scoped topics visible at the provider
+    boundary, including remembered drafts that must not be asked again.
+    """
+    strategic = strategic if isinstance(strategic, dict) else {}
+    topics = strategic.get("topics") if isinstance(strategic.get("topics"), dict) else {}
+    snapshot = {}
+    resolved = []
+    drafts = []
+    unresolved = []
+    resolved_statuses = {
+        "confirmed", "provisional_confirmed", "unknown", "not_applicable", "withheld",
+    }
+    for topic in ADMIRA_BUSINESS_PROFILE_TOPICS:
+        entry = topics.get(topic) if isinstance(topics.get(topic), dict) else {}
+        status = str(entry.get("status") or "").strip().lower()
+        value = entry.get("value")
+        if status in resolved_statuses:
+            snapshot[topic] = {
+                "status": status,
+                "memory_state": "resolved",
+                "value": value,
+            }
+            resolved.append(topic)
+            continue
+        draft = entry.get("draft") if isinstance(entry.get("draft"), dict) else {}
+        draft_value = draft.get("value")
+        # Compatibility with a short-lived writer that wrapped a canonical
+        # update inside draft.value. Unwrap only for read-only context.
+        if isinstance(draft_value, dict) and "value" in draft_value:
+            draft_value = draft_value.get("value")
+        if draft_value not in (None, "", [], {}):
+            snapshot[topic] = {
+                "status": str(draft.get("proposed_status") or "draft").strip().lower(),
+                "memory_state": "remembered_draft",
+                "value": draft_value,
+            }
+            drafts.append(topic)
+            continue
+        unresolved.append(topic)
+    return snapshot, resolved, drafts, unresolved
+
+
+def _admira_active_page_name(oauth, active_page_id):
+    oauth = oauth if isinstance(oauth, dict) else {}
+    wanted = str(active_page_id or "").strip()
+    for page in oauth.get("pages") or []:
+        if not isinstance(page, dict):
+            continue
+        if str(page.get("id") or "").strip() == wanted:
+            return re.sub(r"\s+", " ", str(page.get("name") or "")).strip()[:240]
+    return ""
+
+
 def _admira_strategic_profile_state(*, product_root=None):
     """Read the authoritative strategic-onboarding state owned by Admira.
 
@@ -247,6 +332,15 @@ def _admira_strategic_profile_state(*, product_root=None):
         plan_content = plan.get("content")
     if not isinstance(plan_content, dict):
         plan_content = {}
+    topic_context, resolved_topics, draft_topics, unresolved_topics = (
+        _admira_profile_topic_context(strategic)
+    )
+    review_ready = strategic.get("review_ready") if isinstance(strategic.get("review_ready"), dict) else {}
+    review_presentation = (
+        strategic.get("review_presentation")
+        if isinstance(strategic.get("review_presentation"), dict)
+        else {}
+    )
     return {
         "status": status,
         "complete": complete,
@@ -261,7 +355,61 @@ def _admira_strategic_profile_state(*, product_root=None):
         "master_plan_revision": plan.get("revision"),
         "master_plan_profile_revision": plan.get("profile_revision"),
         "master_plan": plan_content,
+        "active_page_name": _admira_active_page_name(oauth, bound_page_id),
+        "business_profile_topics": topic_context,
+        "business_profile_resolved_topics": resolved_topics,
+        "business_profile_draft_topics": draft_topics,
+        "business_profile_unresolved_topics": unresolved_topics,
+        "business_profile_review_ready": bool(
+            review_ready and str(review_ready.get("revision")) == str(revision)
+        ),
+        "business_profile_review_presented": bool(
+            review_presentation
+            and str(review_presentation.get("revision")) == str(revision)
+        ),
     }
+
+
+def _admira_render_business_profile(state, *, max_chars=12000):
+    """Render known onboarding facts without trusting the model to read files."""
+    state = state if isinstance(state, dict) else {}
+    topics = state.get("business_profile_topics")
+    topics = topics if isinstance(topics, dict) else {}
+    active_page_name = re.sub(
+        r"\s+", " ", str(state.get("active_page_name") or "")
+    ).strip()
+    lines = []
+    if active_page_name:
+        lines.append(f"- Active Meta Page name: {active_page_name}")
+    per_topic = max(280, (max_chars - 900) // max(1, len(ADMIRA_BUSINESS_PROFILE_TOPICS)))
+    for topic in ADMIRA_BUSINESS_PROFILE_TOPICS:
+        entry = topics.get(topic) if isinstance(topics.get(topic), dict) else None
+        if not entry:
+            continue
+        value = entry.get("value")
+        rendered = value if isinstance(value, str) else json.dumps(
+            value, ensure_ascii=False, sort_keys=True
+        )
+        rendered = re.sub(r"\s+", " ", str(rendered or "")).strip()
+        if len(rendered) > per_topic:
+            tail = max(100, per_topic // 4)
+            head = max(140, per_topic - tail - 18)
+            rendered = f"{rendered[:head].rstrip()} … {rendered[-tail:].lstrip()}"
+        lines.append(
+            f"- {ADMIRA_BUSINESS_PROFILE_LABELS[topic]} "
+            f"[{entry.get('memory_state')}/{entry.get('status')}]: {rendered or '(explicitly unresolved)'}"
+        )
+    unresolved = state.get("business_profile_unresolved_topics") or []
+    drafts = state.get("business_profile_draft_topics") or []
+    lines.append(
+        "- Genuinely unresolved topics: "
+        + (", ".join(str(item) for item in unresolved) if unresolved else "none")
+    )
+    lines.append(
+        "- Remembered draft topics awaiting correction/confirmation (not missing): "
+        + (", ".join(str(item) for item in drafts) if drafts else "none")
+    )
+    return "\n".join(lines) if lines else "(No Page-scoped business facts are stored yet.)"
 
 
 def _admira_render_master_plan(state, *, max_chars=18000):
@@ -422,16 +570,45 @@ def _admira_compiled_procedure_instruction(state):
     revision = (state or {}).get("revision")
     if not (state or {}).get("complete"):
         revision_note = f" revision={revision}." if revision not in (None, "") else "."
+        plan_status = str((state or {}).get("master_plan_status") or "missing")
+        profile_text = _admira_render_business_profile(state)
+        if status == "review_required":
+            if (state or {}).get("business_profile_review_presented"):
+                review_instruction = (
+                    "All onboarding topics are resolved and the exact current business-summary review was already shown. "
+                    "Do not restart discovery or ask again for name, location, services, audience, pricing, branding, or any "
+                    "other stored topic. A greeting is not confirmation: briefly resume from one concrete fact and explain "
+                    "that the business summary—not a strategic plan—is awaiting natural correction/confirmation. Never "
+                    "require an exact phrase."
+                )
+            else:
+                review_instruction = (
+                    "All onboarding topics are resolved. Do not ask another discovery question. Present the complete current "
+                    "business-summary review for natural correction/confirmation; the finalized transport will canonicalize it."
+                )
+        else:
+            review_instruction = (
+                "Ask only about a genuinely unresolved owner topic. A remembered draft is an existing answer awaiting natural "
+                "correction/confirmation, not a missing field; show it back instead of asking the original question again."
+            )
         return (
             f"{ADMIRA_PRODUCT_STATE_START}\n"
-            f"Onboarding business-profile status={status}{revision_note} lifecycle_state=onboarding. This status comes from backend-owned state, "
+            f"Onboarding business-profile status={status}{revision_note} lifecycle_state=onboarding; "
+            f"strategic_plan_status={plan_status}. This status comes from backend-owned state, "
             "not from buyer phrasing. Campaign creation, campaign briefs, activation/resume, paid-ad image/video, "
             "and other ad production are unavailable until the current Page-scoped profile is complete. "
             "Continue as a senior marketing manager: use connected/live facts, reflect one useful insight or proposal, "
             "then ask one owner question at a time. Progressively resolve services, ideal customers, differentiation/proof, "
             "markets, capacity, prices, costs/margins, global objectives, advertising experience, and branding. Save only "
             "buyer-confirmed facts as confirmed; keep your ideas as proposals. Unknown, not applicable, or withheld is a "
-            "valid explicit answer. As soon as the exact business/brand name and offer are known, proactively inspect the "
+            "valid explicit answer. The Page-scoped snapshot below is read-only authoritative memory for this turn. Use it "
+            "directly even when Hermes session history is empty; never rely on deciding to read a workspace file later. "
+            f"{review_instruction} "
+            "During lifecycle_state=onboarding, review_required always refers to the business/onboarding summary. It never "
+            "means a strategic plan is saved, proposed, or under review. If strategic_plan_status=missing, say that no "
+            "strategic plan exists yet; never call the business summary a plan draft.\n"
+            f"Current Page-scoped business memory:\n{profile_text}\n\n"
+            "As soon as the exact business/brand name and offer are known, proactively inspect the "
             "logo state before proposing campaigns or content. If no official logo file exists, say so plainly and ask in "
             "natural language whether the buyer wants to upload one or create it together now. Logo candidates, moodboards "
             "and brand samples are valid onboarding work and do not require the full strategic profile to be complete; when "
@@ -1359,6 +1536,7 @@ def _continuity_resume_hint(session_key, history=None, message=None):
         except (OSError, sqlite3.Error, TypeError, ValueError):
             return ""
 
+    strategic_state = _admira_strategic_profile_state(product_root=root)
     goal = str(profile.get("campaign_goal") or "").strip()
     goal = re.sub(r"\s+", " ", goal)[:420]
     phase = str(workflow.get("phase") or "").strip()
@@ -1377,6 +1555,9 @@ def _continuity_resume_hint(session_key, history=None, message=None):
         ])
     lines.append("No anuncies ni vuelvas a pedir una conexión o selección Meta que el bloque live marque como ya activa.")
     lines.append("La conexión no salta onboarding: si faltan datos, resume lo que ya se conoce y pide confirmar solo lo que falta; no hagas la pregunta genérica de qué negocio o público tiene.")
+    known_excerpt = _admira_render_business_profile(strategic_state, max_chars=2600)
+    if known_excerpt and "No Page-scoped business facts" not in known_excerpt:
+        lines.append("Memoria Page-scoped ya conocida (no volver a preguntarla):\n" + known_excerpt)
     if goal:
         lines.append(f"Negocio/objetivo ya identificado: {goal}")
     if phase or next_step:

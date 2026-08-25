@@ -1140,10 +1140,13 @@ def start_gateway(config):
 def daily_brief_prompt():
     return """Buenos días. Revisa la cuenta de Meta Ads con datos reales y memoria reciente.
 
-Primero orienta la lectura con el estado del negocio y su plan estratégico guardado. Si el plan está en propuesta/borrador
-o existe una revisión que el comprador pidió abrir explícitamente, incluye un resumen breve y recuerda que todavía no es final;
-no pidas una frase exacta ni repitas el onboarding. Si el plan está confirmado, úsalo como contexto activo y no lo vuelvas a
-confirmar. Para campañas, gasto, rendimiento e inventario, los datos live de Meta siempre tienen prioridad sobre el plan,
+Primero orienta la lectura con los dos estados separados que entrega el runtime: business-profile y strategic-plan. Un
+business-profile en review_required significa que el resumen del negocio espera confirmación; no es un plan estratégico en
+borrador. Menciona un plan en propuesta/borrador únicamente cuando strategic_plan_status=proposed. Si
+strategic_plan_status=missing, di que todavía no existe un plan, sin inventar que está en revisión. Si el plan está en
+propuesta/borrador o existe una revisión del plan que el comprador pidió abrir explícitamente, incluye un resumen breve y
+recuerda que todavía no es final; no pidas una frase exacta ni repitas el onboarding. Si el plan está confirmado, úsalo como
+contexto activo y no lo vuelvas a confirmar. Para campañas, gasto, rendimiento e inventario, los datos live de Meta siempre tienen prioridad sobre el plan,
 briefs y memoria histórica. Esta lectura es observacional: resultados, servicios, campañas o recomendaciones nuevas no
 modifican ni invalidan el plan guardado. Solo una petición directa del comprador para actualizar ese plan abre una revisión.
 
