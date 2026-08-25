@@ -7,6 +7,16 @@ description: Build the Telegram-friendly daily Meta Ads brief from current live 
 
 Use this skill for the morning brief, "lectura diaria", "resumen diario", or when the buyer asks "que debo vigilar hoy".
 
+Before interpreting results, read the current Page-scoped business lifecycle and
+strategic-plan artifact. If the plan is `proposed`/draft or `stale`, include a
+short useful summary of it and remind the buyer that it is not yet the final
+approved plan. If it is `confirmed`, use it as active context and never ask to
+confirm it again. The business onboarding summary is a separate completed
+baseline and must not be re-requested from the buyer.
+The daily read is observational: new results, services, campaign changes or
+recommendations never rewrite or invalidate the saved strategic plan. A plan
+revision begins only after a direct buyer request to update that plan.
+
 ## Tool
 
 Call `mcp_admira_run_daily_brief`.
@@ -31,6 +41,9 @@ Always end exactly with:
 
 - Only use real Meta data from `mcp_admira_get_real_meta_context` or the daily brief tool result.
 - Treat the current Meta inventory and insights as authoritative. Never infer what is active from memory, local campaign plans, created-campaign records, action logs, or old approvals.
+- Treat the live Meta inventory and insights as authoritative for campaigns,
+  spend, delivery and performance; the strategic plan supplies direction and
+  hypotheses, not replacement KPI data.
 - Do not list approvals as a routine daily section. Mention one only when it is the exact current activation or protected change the buyer is already discussing.
 - If real Meta data is missing, say that clearly and do not use demo examples.
 - Never turn an early delivery signal into a winner. Say "evidencia insuficiente" when the experiment tool does.

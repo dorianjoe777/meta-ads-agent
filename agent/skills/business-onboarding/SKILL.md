@@ -3,11 +3,11 @@ name: business-onboarding
 description: "Conduct and persist the mandatory Page-scoped strategic business profile as a useful owner conversation, including revision review and natural confirmation."
 ---
 
-# Strategic Business Onboarding
+# Business Onboarding and Strategic Plan
 
-Use this procedure when the selected Facebook Page has a strategic profile whose status is `empty`, `collecting`, `review_required`, or `scope_mismatch`, and before saving global buyer/operator/ads onboarding memory.
+Use this procedure when the selected Facebook Page has an onboarding business summary whose status is `empty`, `collecting`, `review_required`, or `scope_mismatch`, and before saving global buyer/operator/ads onboarding memory. The onboarding summary describes the business; it is not the strategic plan.
 
-After secure Facebook account/Page selection, begin the strategic business onboarding as a required product stage. Do not offer a skip-to-campaign path. Campaign ideas and useful advice are welcome during discovery, but campaign briefs, paid-ad media, staging, creation, activation, and resume remain unavailable until the current Page-scoped revision is confirmed `complete`.
+After secure Facebook account/Page selection, begin the business onboarding as a required product stage. Do not offer a skip-to-campaign path. Campaign ideas and useful advice are welcome during discovery, but campaign briefs, paid-ad media, staging, creation, activation, and resume remain unavailable until the current Page-scoped revision is confirmed `complete`.
 
 ## Conversation, not questionnaire
 
@@ -52,13 +52,13 @@ Never promote an `agent_proposal` or `inferred` value into official confirmed me
 
 The backend computes readiness; never send or invent `context_complete`. All required topics resolved moves the profile to `review_required`, not `complete`.
 
-At `review_required`, present one concise owner-useful summary covering offer portfolio, priority buyers, differentiation, markets/capacity, economics, objectives, ads experience, and brand direction. Invite a natural correction or confirmation. Only the buyer-confirmed current `revision` may become `complete`, with matching `confirmed_revision`. A correction increments the revision and returns it to review. A Page scope mismatch starts/resumes the profile for the new Page; do not silently reuse another Page's profile.
+At `review_required`, present one concise owner-useful business summary covering offer portfolio, priority buyers, differentiation, markets/capacity, economics, objectives, ads experience, and brand direction. Invite a natural correction or confirmation. Only the buyer-confirmed current `revision` may become `complete`, with matching `confirmed_revision`. A correction made before that initial confirmation increments the revision and returns it to review. A Page scope mismatch starts/resumes the profile for the new Page; do not silently reuse another Page's profile. Once onboarding is complete, it is a permanent lifecycle milestone: later buyer-supplied corrections, services, products, prices or other business facts are saved as normal profile maintenance without reopening or reconfirming the onboarding summary.
 
-## Master plan after profile confirmation
+## Strategic plan after business-summary confirmation
 
 The interview produces inputs; it is not finished merely because those inputs
-were summarized. Immediately after the current profile revision becomes
-`complete`, convert it into one visible Page-scoped master plan containing:
+were summarized. Immediately after the current onboarding summary becomes
+`complete`, convert it into one visible Page-scoped strategic plan containing:
 
 - diagnosis and commercial priorities;
 - positioning, offer portfolio and ideal-customer strategy;
@@ -73,13 +73,29 @@ Save it through `mcp_admira_save_business_memory.master_plan` first with
 Let the owner correct it naturally. A later natural acceptance calls the same
 tool with `confirm_master_plan=true`, exact `buyer_evidence`, and
 `confirmation_state=buyer_confirmed`. Do not ask the owner to confirm the
-strategic profile again. The backend binds the plan to the exact profile
-revision; a later strategic-profile change makes the plan stale and requires
-an updated visible proposal, never silent replacement.
+strategic profile again. The backend records the profile revision as
+provenance, but a later business-profile update does not silently invalidate an
+approved plan. Do not infer a plan update from a new service, price, campaign,
+result, creative request, strategy discussion, or any other ordinary message.
+Only when the buyer directly asks to add, remove, or modify something in the
+saved strategic plan may you prepare and show that requested revision. Preserve
+the last confirmed content until the revised draft receives its own later
+natural confirmation.
 
-Do not proceed to campaign briefs merely because a plan draft exists. Once the
-master plan is confirmed, reuse it instead of proposing the global strategy
-again. Each child campaign still receives its own distinct ad brief.
+The next buyer-visible step after onboarding completion is a useful complete
+plan proposal, explicitly labelled as a draft/idea that can be discussed or
+saved for later. A draft is guidance, not an execution lock: the buyer may then
+ask naturally for creatives, campaign work, reads or edits while the plan stays
+in draft. Read Meta live before drafting: incorporate active campaigns and
+verified results; analyze useful history when it exists; if the account has no
+campaigns or usable history, say so and label starting assumptions as
+hypotheses instead of inventing performance. Once the strategic plan is confirmed, reuse it instead of proposing
+or reconfirming the global strategy again. New services, prices, campaign facts
+or ordinary conversation never alter or invalidate a confirmed plan. Revise it
+only when the owner directly asks to add, remove or change something in the
+saved strategic plan; discuss that requested revision and show the updated
+draft before confirmation. Each child campaign still receives its own distinct
+ad brief.
 
 ## Persistence and delivery
 

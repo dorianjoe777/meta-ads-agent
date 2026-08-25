@@ -250,6 +250,21 @@ from strategic_profile import (
     new_profile as new_strategic_profile,
     profile_readiness as strategic_profile_readiness,
 )
+
+# This classifier is intentionally independent from the Hermes runtime.  It
+# only interprets the exact buyer turn against the exact artifact that was
+# presented; the server-owned state machine below remains authoritative.
+try:
+    from business_lifecycle_classifier import (
+        classify_lifecycle_transition,
+        classify_strategic_plan_update_request,
+    )
+except ImportError:  # Older installations are upgraded before this module exists.
+    def classify_lifecycle_transition(target, presented_artifact, buyer_message, **kwargs):
+        return {"confirmation": "unknown", "reason": "classifier_unavailable"}
+
+    def classify_strategic_plan_update_request(current_plan, buyer_message, **kwargs):
+        return {"confirmation": "no", "reason": "classifier_unavailable"}
 from campaign_editing import mark_draft_status, prepare_campaign_edit, supersede_pending_edit
 from telegram_agent import bot_request as telegram_bot_request
 from telegram_agent import reset_polling_state as reset_telegram_polling_state
@@ -9522,6 +9537,64 @@ def _short_natural_confirmation(value):
     ))
 
 
+def _lifecycle_confirmation(target, artifact_text, buyer_message, config=None):
+    """Classify one later buyer reply, failing closed on all uncertainty."""
+    raw = _canonical_buyer_evidence(buyer_message)
+    if not raw:
+        return False, "empty"
+    # Cheap local recognition is useful when the independent worker is not
+    # available.  It never overrides a correction or a scope/binding check.
+    if _non_authorizing_buyer_message(raw):
+        return False, "non_authorizing"
+    if _short_natural_confirmation(raw):
+        return True, "local_short_confirmation"
+    try:
+        result = classify_lifecycle_transition(
+            str(target), str(artifact_text or ""), raw, config=config
+        )
+    except Exception:
+        return False, "classifier_error"
+    if not isinstance(result, dict):
+        return False, "classifier_invalid"
+    value = str(
+        result.get("confirmation")
+        or result.get("confirmacion")
+        or result.get("confirmed")
+        or result.get("confirmacion_transicion")
+        or result.get("decision")
+        or ""
+    ).strip().lower()
+    if value in {"si", "sí", "yes", "true", "confirmed", "confirmado"}:
+        return True, "semantic_classifier"
+    return False, str(result.get("reason") or "not_confirmed")
+
+
+def _strategic_plan_update_requested(current_plan, buyer_message, config=None):
+    """Fail closed unless this exact buyer turn asks to alter the saved plan."""
+    raw = _canonical_buyer_evidence(buyer_message)
+    if not raw or not isinstance(current_plan, dict) or not current_plan:
+        return False, "missing_plan_or_buyer_message"
+    try:
+        result = classify_strategic_plan_update_request(
+            render_business_strategic_plan(current_plan),
+            raw,
+            config=config,
+        )
+    except Exception:
+        return False, "classifier_error"
+    if not isinstance(result, dict):
+        return False, "classifier_invalid"
+    value = str(
+        result.get("confirmation")
+        or result.get("solicitud_actualizacion_plan")
+        or result.get("decision")
+        or ""
+    ).strip().lower()
+    if value in {"si", "sí", "yes", "true"}:
+        return True, "explicit_buyer_plan_update_request"
+    return False, str(result.get("reason") or "plan_update_not_requested")
+
+
 def _non_authorizing_buyer_message(value):
     normalized = _normalized_confirmation_text(value)
     return bool(re.fullmatch(
@@ -9555,6 +9628,21 @@ _MASTER_PLAN_FIELDS = (
     "assumptions_and_risks",
 )
 
+_MASTER_PLAN_LABELS = {
+    "diagnosis": "Diagnostico",
+    "commercial_priorities": "Prioridades comerciales",
+    "positioning": "Posicionamiento",
+    "offer_strategy": "Estrategia de ofertas",
+    "ideal_customer_strategy": "Estrategia de cliente ideal",
+    "funnel": "Embudo y seguimiento",
+    "organic_strategy": "Estrategia organica",
+    "paid_media_strategy": "Estrategia de pauta",
+    "budget_framework": "Marco de presupuesto",
+    "objectives_and_kpis": "Objetivos y KPI",
+    "roadmap": "Hoja de ruta",
+    "assumptions_and_risks": "Supuestos y riesgos",
+}
+
 
 def _normalize_master_plan(value):
     if not isinstance(value, dict):
@@ -9585,15 +9673,36 @@ def business_master_plan_readiness(profile=None, page_id=None):
     strategic_ready = strategic_profile_readiness(strategic, active_page_id=page_id) if strategic else {}
     plan = business_master_plan_for_page(profile, page_id)
     current_revision = int(strategic_ready.get("revision") or 0)
-    plan_revision = int(plan.get("profile_revision") or -1)
-    confirmed = str(plan.get("status") or "") == "confirmed"
-    stale = bool(plan and (plan_revision != current_revision or not strategic_ready.get("complete")))
+    stored_status = str(plan.get("status") or "").strip().lower()
+    confirmed = stored_status == "confirmed"
+    material = (
+        plan.get("content") if confirmed
+        else plan.get("draft")
+    )
+    material = material if isinstance(material, dict) else {}
+    # ``profile_revision`` is provenance only. New services, prices or other
+    # business facts must not silently alter or invalidate an approved plan.
+    # The plan changes state only when the buyer explicitly asks to revise the
+    # plan and the backend stores a proposal/stale transition for that request.
+    stale = stored_status == "stale"
+    plan_complete = all(
+        (plan.get("content") or {}).get(field) not in (None, "", [], {})
+        for field in _MASTER_PLAN_FIELDS
+    ) if confirmed and isinstance(plan.get("content"), dict) else False
     return {
         "status": "stale" if stale else ("confirmed" if confirmed else ("proposed" if plan else "missing")),
-        "ready": bool(confirmed and not stale),
+        "ready": bool(confirmed and not stale and plan_complete and strategic_ready.get("complete")),
         "stale": stale,
+        "complete": plan_complete,
+        "missing_fields": [
+            field for field in _MASTER_PLAN_FIELDS
+            if material.get(field) in (None, "", [], {})
+        ],
         "profile_revision": current_revision,
         "plan_revision": int(plan.get("revision") or 0),
+        "draft_revision": int(plan.get("draft_revision") or 0),
+        "draft_hash": str(plan.get("draft_hash") or ""),
+        "presented": bool(_plan_presentation_matches_current_draft(plan)),
         "plan": plan,
     }
 
@@ -9827,18 +9936,23 @@ def _strategic_review_value(entry):
     return re.sub(r"\s+", " ", str(value or "")).strip()[:320]
 
 
-def strategic_profile_review_summary(profile):
+def business_profile_review_summary(profile):
     canonical = migrate_strategic_profile(profile)
     revision = int(canonical.get("revision") or 0)
-    lines = [f"Resumen estratégico — revisión {revision}"]
+    lines = [f"Resumen del negocio — revisión {revision}"]
     topics = canonical.get("topics") if isinstance(canonical.get("topics"), dict) else {}
     for topic in STRATEGIC_PROFILE_TOPICS:
         entry = topics.get(topic) if isinstance(topics.get(topic), dict) else {}
         label = _STRATEGIC_REVIEW_LABELS[topic]
         status = _STRATEGIC_REVIEW_STATUSES.get(str(entry.get("status") or ""), "pendiente")
         lines.append(f"- {label} [{status}]: {_strategic_review_value(entry)}")
-    lines.append("Puedes corregir cualquier punto o confirmar este resumen con tus propias palabras.")
+    lines.append("Puedes corregir cualquier punto o confirmar este resumen del negocio con tus propias palabras.")
     return "\n".join(lines)
+
+
+def strategic_profile_review_summary(profile):
+    """Compatibility alias; new user-facing text uses the business label."""
+    return business_profile_review_summary(profile)
 
 
 def _assistant_summary_covers_strategic_profile(profile, assistant_text):
@@ -9846,10 +9960,9 @@ def _assistant_summary_covers_strategic_profile(profile, assistant_text):
     normalized_output = _normalized_confirmation_text(assistant_text)
     if not normalized_output:
         return False
-    summary_lines = strategic_profile_review_summary(profile).splitlines()[1:-1]
     return all(
         _normalized_confirmation_text(line) in normalized_output
-        for line in summary_lines
+        for line in business_profile_review_summary(profile).splitlines()[1:-1]
     )
 
 
@@ -9866,7 +9979,13 @@ def ensure_canonical_strategic_review_visible(assistant_text):
     text = str(assistant_text or "")
     normalized = _normalized_confirmation_text(text)
     review_intent = bool(
-        re.search(r"\b(?:resumen|perfil|revision) estrateg\w*\b", normalized)
+        (
+            re.search(r"\b(?:resumen|perfil|revision) estrateg\w*\b", normalized)
+            or re.search(
+                r"\b(?:resumen|perfil|revision|base) (?:del )?negocio\b",
+                normalized,
+            )
+        )
         and re.search(
             r"\b(?:confirm\w*|correg\w*|correccion\w*|ajust\w*|correct\w*)\b",
             normalized,
@@ -9884,8 +10003,11 @@ def ensure_canonical_strategic_review_visible(assistant_text):
         return text
     if _assistant_summary_covers_strategic_profile(strategic, text):
         return text
-    canonical = strategic_profile_review_summary(strategic)
-    return f"{text.rstrip()}\n\n{canonical}".strip()
+    canonical = business_profile_review_summary(strategic)
+    # Replace an incomplete model artifact instead of sending two competing
+    # summaries.  The model's useful prose is retained only as a short intro.
+    intro = "He consolidado el resumen actual del negocio para revisarlo contigo:"
+    return f"{intro}\n\n{canonical}".strip()
 
 
 def record_strategic_review_presented(session_id, assistant_text, chat_id=""):
@@ -9932,6 +10054,422 @@ def record_strategic_review_presented(session_id, assistant_text, chat_id=""):
             "recorded": True,
             "revision": strategic.get("revision"),
             "message_sequence": turn.get("message_sequence"),
+        }
+
+
+def _plan_content_hash(content):
+    canonical = json.dumps(content or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _master_plan_missing_fields(content):
+    content = content if isinstance(content, dict) else {}
+    return [
+        field for field in _MASTER_PLAN_FIELDS
+        if content.get(field) in (None, "", [], {})
+    ]
+
+
+def _master_plan_is_complete(content):
+    return bool(isinstance(content, dict) and not _master_plan_missing_fields(content))
+
+
+def _turn_matches_exact_identity(turn, identity):
+    """Bind server behavior to one exact trusted buyer event.
+
+    ``message_hash`` already includes the monotonic message sequence.  Older
+    stored proposals may not have the explicit sequence field, so the hash is
+    mandatory while the remaining populated scope fields are compared too.
+    """
+    if not isinstance(turn, dict) or not isinstance(identity, dict):
+        return False
+    expected_hash = str(identity.get("message_hash") or identity.get("buyer_message_hash") or "").strip()
+    if not expected_hash or not hmac.compare_digest(
+        expected_hash.encode("utf-8"),
+        str(turn.get("message_hash") or "").encode("utf-8"),
+    ):
+        return False
+    for key in ("chat_id", "session_id", "transport"):
+        expected = str(identity.get(key) or "").strip()
+        if expected and expected != str(turn.get(key) or ""):
+            return False
+    expected_sequence = identity.get("message_sequence")
+    if expected_sequence not in (None, "") and int(expected_sequence) != int(turn.get("message_sequence") or -1):
+        return False
+    return True
+
+
+def _plan_proposal_turn(plan):
+    if not isinstance(plan, dict):
+        return {}
+    proposal_turn = plan.get("proposal_turn")
+    if isinstance(proposal_turn, dict) and proposal_turn:
+        return proposal_turn
+    authorization = plan.get("update_authorization")
+    return authorization if isinstance(authorization, dict) else {}
+
+
+def _native_media_directives(text):
+    return [
+        line.strip()
+        for line in str(text or "").splitlines()
+        if line.strip().startswith("MEDIA:")
+    ]
+
+
+def render_business_strategic_plan(plan, *, include_state=True):
+    """Render every canonical plan field for buyer review and runtime context."""
+    plan = plan if isinstance(plan, dict) else {}
+    status = str(plan.get("status") or "").strip().lower()
+    content = (
+        plan.get("draft")
+        if status in {"proposed", "draft", "stale"} and plan.get("draft")
+        else plan.get("content")
+    ) or {}
+    lines = ["Plan estratégico del negocio"]
+    if include_state:
+        lines.append(f"Estado: {str(plan.get('status') or 'missing')}")
+        lines.append(f"Revisión del negocio: {int(plan.get('profile_revision') or 0)}")
+        if plan.get("draft_revision"):
+            lines.append(f"Borrador: revisión {int(plan.get('draft_revision') or 0)}")
+    for field in _MASTER_PLAN_FIELDS:
+        value = content.get(field) if isinstance(content, dict) else None
+        if value in (None, "", [], {}):
+            value = "Pendiente"
+        if not isinstance(value, str):
+            value = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        lines.append(
+            f"- {_MASTER_PLAN_LABELS[field]}: "
+            f"{re.sub(r'\s+', ' ', str(value)).strip()[:4000]}"
+        )
+    lines.append("Puedes discutirlo, corregirlo o pedir que lo guarde como plan estratégico final.")
+    return "\n".join(lines)
+
+
+def _plan_presentation_matches_current_draft(plan):
+    if not isinstance(plan, dict) or str(plan.get("status") or "") != "proposed":
+        return False
+    draft = plan.get("draft") if isinstance(plan.get("draft"), dict) else {}
+    presentation = plan.get("presentation") if isinstance(plan.get("presentation"), dict) else {}
+    if not draft or not presentation:
+        return False
+    draft_hash = _plan_content_hash(draft)
+    return bool(
+        str(plan.get("draft_hash") or "") == draft_hash
+        and str(presentation.get("draft_hash") or "") == draft_hash
+        and int(presentation.get("draft_revision") or -1)
+        == int(plan.get("draft_revision") or -2)
+    )
+
+
+def _assistant_covers_current_plan_draft(plan, assistant_text):
+    normalized_output = _normalized_confirmation_text(assistant_text)
+    if not normalized_output:
+        return False
+    required_lines = [
+        line for line in render_business_strategic_plan(plan).splitlines()
+        if line.startswith("- ")
+    ]
+    return bool(required_lines) and all(
+        _normalized_confirmation_text(line) in normalized_output
+        for line in required_lines
+    )
+
+
+def business_lifecycle_state(profile=None, page_id=None):
+    """Expose the three server-owned business lifecycle states."""
+    profile = profile if isinstance(profile, dict) else read_json(BUSINESS_PROFILE_FILE, {})
+    page_id = str(page_id or active_meta_page_id() or "").strip()
+    business = strategic_profile_readiness(
+        strategic_profile_for_page(profile, page_id=page_id, activate=False),
+        active_page_id=page_id,
+    ) if page_id else {"complete": False}
+    if not business.get("complete"):
+        return "onboarding"
+    plan = business_master_plan_readiness(profile, page_id)
+    return (
+        "active_with_confirmed_strategic_plan"
+        if plan.get("ready")
+        else "active_without_confirmed_strategic_plan"
+    )
+
+
+def _turn_matches_presentation(turn, presentation):
+    if not isinstance(turn, dict) or not isinstance(presentation, dict):
+        return False
+    if int(turn.get("message_sequence") or -1) <= int(presentation.get("after_buyer_message_sequence") or -1):
+        return False
+    for key in ("chat_id", "session_id", "transport"):
+        if not str(turn.get(key) or "").strip() or str(turn.get(key) or "") != str(presentation.get(key) or ""):
+            return False
+    return True
+
+
+def record_business_lifecycle_artifact_presented(session_id, assistant_text, chat_id="", target=None):
+    """Bind a finalized outbound business summary or plan draft to a revision."""
+    target = str(target or "business_profile").strip().lower()
+    if target in {"profile", "business", "business_profile", "onboarding"}:
+        return record_strategic_review_presented(session_id, assistant_text, chat_id)
+    if target not in {"strategic_plan", "master_plan", "plan"}:
+        return {"recorded": False, "reason": "unknown_lifecycle_artifact"}
+    with _trusted_buyer_turn_lock():
+        turn = _trusted_buyer_turn_unlocked()
+        if not turn or str(session_id or "") != str(turn.get("session_id") or "") or (chat_id and str(chat_id) != str(turn.get("chat_id") or "")):
+            return {"recorded": False, "reason": "plan_presentation_binding_mismatch"}
+        profile = read_json(BUSINESS_PROFILE_FILE, {})
+        page_id = active_meta_page_id()
+        plan = business_master_plan_for_page(profile, page_id)
+        if str(plan.get("status") or "") != "proposed" or not _master_plan_is_complete(plan.get("draft")):
+            return {"recorded": False, "reason": "plan_draft_missing"}
+        if not _assistant_covers_current_plan_draft(plan, assistant_text):
+            return {"recorded": False, "reason": "plan_presentation_incomplete"}
+        if _plan_presentation_matches_current_draft(plan):
+            # Preserve the first valid presentation boundary for this exact
+            # immutable draft. A retry must not move confirmation to a later
+            # unrelated conversation turn.
+            return {"recorded": True, "idempotent": True, "revision": plan.get("draft_revision")}
+        presentation = plan.get("presentation") if isinstance(plan.get("presentation"), dict) else {}
+        same_presented_turn = (
+            int(presentation.get("after_buyer_message_sequence") or -1)
+            == int(turn.get("message_sequence") or -1)
+            and all(
+                str(presentation.get(key) or "") == str(turn.get(key) or "")
+                for key in ("chat_id", "session_id", "transport")
+            )
+        )
+        if presentation.get("draft_hash") == _plan_content_hash(plan.get("draft")) and same_presented_turn:
+            return {"recorded": True, "idempotent": True, "revision": plan.get("draft_revision")}
+        plan["presentation"] = {
+            "draft_revision": int(plan.get("draft_revision") or 1),
+            "draft_hash": _plan_content_hash(plan.get("draft")),
+            "after_buyer_message_sequence": int(turn.get("message_sequence") or -1),
+            "chat_id": str(turn.get("chat_id") or ""),
+            "session_id": str(turn.get("session_id") or ""),
+            "transport": str(turn.get("transport") or ""),
+            "assistant_message_hash": hashlib.sha256(str(assistant_text or "").encode()).hexdigest(),
+            "presented_at": now_iso(),
+        }
+        profile.setdefault("business_master_plans", {})[page_id] = plan
+        write_json(BUSINESS_PROFILE_FILE, profile)
+        return {"recorded": True, "revision": plan.get("draft_revision"), "status": "proposed"}
+
+
+def ensure_business_lifecycle_artifact_visible(assistant_text, target=None, session_id="", chat_id=""):
+    """Canonicalize a profile/plan review at the finalized outbound boundary."""
+    target = str(target or "").strip().lower()
+    text = str(assistant_text or "")
+    if target in {"profile", "business", "business_profile", "onboarding"}:
+        return ensure_canonical_strategic_review_visible(text)
+    if target in {"strategic_plan", "master_plan", "plan"}:
+        with _trusted_buyer_turn_lock():
+            turn = _trusted_buyer_turn_unlocked()
+            if session_id and str(session_id) != str((turn or {}).get("session_id") or ""):
+                return text
+            if chat_id and str(chat_id) != str((turn or {}).get("chat_id") or ""):
+                return text
+            profile = read_json(BUSINESS_PROFILE_FILE, {})
+            plan = business_master_plan_for_page(profile)
+            if str(plan.get("status") or "") != "proposed" or not _master_plan_is_complete(plan.get("draft")):
+                return text
+            if _plan_presentation_matches_current_draft(plan):
+                # The current draft was already shown. It may remain pending
+                # indefinitely without hijacking unrelated future answers.
+                return text
+            if not _turn_matches_exact_identity(turn, _plan_proposal_turn(plan)):
+                # Never infer this from broad words such as "confirmar" or
+                # "propuesta". Only the exact turn that actually stored this
+                # draft can cause automatic canonical presentation.
+                return text
+            if _assistant_covers_current_plan_draft(plan, text):
+                return text
+            canonical = (
+                "Esta es una propuesta inicial de plan estratégico para discutir contigo:\n\n"
+                + render_business_strategic_plan(plan)
+            )
+            media = _native_media_directives(text)
+            if media:
+                canonical += "\n\n" + "\n".join(media)
+            return canonical
+    return text
+
+
+def resolve_pending_business_lifecycle_transition(
+    *, target=None, profile=None, page_id=None, config=None,
+    session_id="", chat_id="", raw_message="", assistant_text="",
+):
+    """Resolve one presented artifact with compare-and-swap persistence.
+
+    The semantic classifier runs outside the file lock. Before committing, the
+    exact trusted turn, active Page, artifact revision/hash and presentation
+    binding are read again. A concurrent save or a replay therefore fails
+    closed instead of confirming a different business summary or plan.
+    """
+    del profile, assistant_text  # Never trust a caller's stale profile snapshot.
+    target = str(target or "").strip().lower() or "business_profile"
+    profile_targets = {"profile", "business", "business_profile", "onboarding"}
+    plan_targets = {"strategic_plan", "master_plan", "plan"}
+    if target not in profile_targets | plan_targets:
+        current = read_json(BUSINESS_PROFILE_FILE, {})
+        return {
+            "transitioned": False,
+            "reason": "unknown_lifecycle_artifact",
+            "state": business_lifecycle_state(current, page_id),
+        }
+
+    with _trusted_buyer_turn_lock():
+        scoped_page = str(page_id or active_meta_page_id() or "").strip()
+        turn = _trusted_buyer_turn_unlocked()
+        current_profile = read_json(BUSINESS_PROFILE_FILE, {})
+        if not turn or not scoped_page:
+            return {
+                "transitioned": False,
+                "reason": "missing_trusted_turn_or_scope",
+                "state": business_lifecycle_state(current_profile, scoped_page),
+            }
+        if session_id and str(session_id) != str(turn.get("session_id") or ""):
+            return {"transitioned": False, "reason": "trusted_turn_session_mismatch", "state": business_lifecycle_state(current_profile, scoped_page)}
+        if chat_id and str(chat_id) != str(turn.get("chat_id") or ""):
+            return {"transitioned": False, "reason": "trusted_turn_chat_mismatch", "state": business_lifecycle_state(current_profile, scoped_page)}
+        if raw_message and not hmac.compare_digest(
+            _canonical_buyer_evidence(raw_message).encode("utf-8"),
+            _canonical_buyer_evidence(turn.get("message")).encode("utf-8"),
+        ):
+            return {"transitioned": False, "reason": "trusted_turn_message_mismatch", "state": business_lifecycle_state(current_profile, scoped_page)}
+
+        turn_identity = {
+            key: turn.get(key)
+            for key in ("message_hash", "message_sequence", "chat_id", "session_id", "transport")
+        }
+        if target in profile_targets:
+            artifact = strategic_profile_for_page(current_profile, page_id=scoped_page, activate=False)
+            readiness = strategic_profile_readiness(artifact, active_page_id=scoped_page)
+            if readiness.get("complete") or readiness.get("onboarding_completed") or not readiness.get("review_required"):
+                return {
+                    "transitioned": False,
+                    "reason": "business_onboarding_already_complete" if readiness.get("complete") or readiness.get("onboarding_completed") else "business_review_not_pending",
+                    "state": business_lifecycle_state(current_profile, scoped_page),
+                }
+            presentation = artifact.get("review_presentation") if isinstance(artifact, dict) else None
+            bound_presentation = {
+                **(presentation or {}),
+                **((presentation or {}).get("evidence") or {}),
+            }
+            if not isinstance(presentation, dict) or not _turn_matches_presentation(turn, bound_presentation):
+                return {"transitioned": False, "reason": "profile_not_presented_to_later_bound_turn", "state": business_lifecycle_state(current_profile, scoped_page)}
+            artifact_text = business_profile_review_summary(artifact)
+            artifact_identity = _plan_content_hash({
+                "revision": artifact.get("revision"),
+                "status": artifact.get("status"),
+                "presentation": presentation,
+                "artifact": artifact_text,
+            })
+            canonical_target = "business_profile"
+        else:
+            artifact = business_master_plan_for_page(current_profile, scoped_page)
+            presentation = artifact.get("presentation") if isinstance(artifact.get("presentation"), dict) else None
+            strategic = strategic_profile_for_page(current_profile, page_id=scoped_page, activate=False)
+            strategic_readiness = strategic_profile_readiness(strategic, active_page_id=scoped_page)
+            if (
+                not strategic_readiness.get("complete")
+                or str(artifact.get("status") or "") != "proposed"
+                or not _master_plan_is_complete(artifact.get("draft"))
+                or not _plan_presentation_matches_current_draft(artifact)
+                or not _turn_matches_presentation(turn, presentation or {})
+            ):
+                return {"transitioned": False, "reason": "plan_not_presented_to_later_bound_turn", "state": business_lifecycle_state(current_profile, scoped_page)}
+            artifact_text = render_business_strategic_plan(artifact)
+            artifact_identity = _plan_content_hash({
+                "status": artifact.get("status"),
+                "draft_revision": artifact.get("draft_revision"),
+                "draft_hash": artifact.get("draft_hash"),
+                "presentation": presentation,
+            })
+            canonical_target = "strategic_plan"
+
+    confirmed, reason = _lifecycle_confirmation(
+        canonical_target,
+        artifact_text,
+        turn.get("message"),
+        config,
+    )
+    if not confirmed:
+        latest = read_json(BUSINESS_PROFILE_FILE, {})
+        return {"transitioned": False, "reason": reason, "state": business_lifecycle_state(latest, scoped_page)}
+
+    with _trusted_buyer_turn_lock():
+        latest_turn = _trusted_buyer_turn_unlocked()
+        latest_profile = read_json(BUSINESS_PROFILE_FILE, {})
+        latest_page = str(active_meta_page_id() or "").strip()
+        if latest_page != scoped_page or any(
+            latest_turn.get(key) != value for key, value in turn_identity.items()
+        ):
+            return {"transitioned": False, "reason": "lifecycle_compare_and_swap_failed", "state": business_lifecycle_state(latest_profile, latest_page)}
+
+        if canonical_target == "business_profile":
+            latest_artifact = strategic_profile_for_page(latest_profile, page_id=scoped_page, activate=False)
+            latest_readiness = strategic_profile_readiness(latest_artifact, active_page_id=scoped_page)
+            latest_presentation = latest_artifact.get("review_presentation") if isinstance(latest_artifact, dict) else None
+            latest_identity = _plan_content_hash({
+                "revision": latest_artifact.get("revision"),
+                "status": latest_artifact.get("status"),
+                "presentation": latest_presentation,
+                "artifact": business_profile_review_summary(latest_artifact),
+            })
+            if (
+                latest_identity != artifact_identity
+                or latest_readiness.get("complete")
+                or latest_readiness.get("onboarding_completed")
+                or not latest_readiness.get("review_required")
+            ):
+                return {"transitioned": False, "reason": "lifecycle_compare_and_swap_failed", "state": business_lifecycle_state(latest_profile, scoped_page)}
+            evidence = {
+                **((latest_presentation or {}).get("evidence") or {}),
+                "message_sequence": latest_turn.get("message_sequence"),
+                "message_hash": latest_turn.get("message_hash"),
+            }
+            try:
+                latest_artifact = confirm_strategic_profile_revision(
+                    latest_artifact,
+                    page_id=scoped_page,
+                    trusted_buyer_confirmation=True,
+                    evidence=evidence,
+                )
+            except Exception as exc:
+                return {"transitioned": False, "reason": str(exc), "state": business_lifecycle_state(latest_profile, scoped_page)}
+            latest_profile = embed_strategic_profile(latest_profile, latest_artifact)
+        else:
+            latest_artifact = business_master_plan_for_page(latest_profile, scoped_page)
+            latest_strategic = strategic_profile_for_page(latest_profile, page_id=scoped_page, activate=False)
+            latest_strategic_readiness = strategic_profile_readiness(latest_strategic, active_page_id=scoped_page)
+            latest_presentation = latest_artifact.get("presentation") if isinstance(latest_artifact.get("presentation"), dict) else None
+            latest_identity = _plan_content_hash({
+                "status": latest_artifact.get("status"),
+                "draft_revision": latest_artifact.get("draft_revision"),
+                "draft_hash": latest_artifact.get("draft_hash"),
+                "presentation": latest_presentation,
+            })
+            if (
+                latest_identity != artifact_identity
+                or not latest_strategic_readiness.get("complete")
+                or not _master_plan_is_complete(latest_artifact.get("draft"))
+                or not _plan_presentation_matches_current_draft(latest_artifact)
+                or not _turn_matches_presentation(latest_turn, latest_presentation or {})
+            ):
+                return {"transitioned": False, "reason": "lifecycle_compare_and_swap_failed", "state": business_lifecycle_state(latest_profile, scoped_page)}
+            latest_artifact["status"] = "confirmed"
+            latest_artifact["content"] = dict(latest_artifact.get("draft") or {})
+            latest_artifact["confirmed_at"] = now_iso()
+            latest_artifact["confirmed_revision"] = int(latest_artifact.get("draft_revision") or 1)
+            latest_artifact["revision"] = int(latest_artifact.get("revision") or 0) + 1
+            latest_artifact["draft"] = {}
+            latest_profile.setdefault("business_master_plans", {})[scoped_page] = latest_artifact
+        latest_profile["updated_at"] = now_iso()
+        write_json(BUSINESS_PROFILE_FILE, latest_profile)
+        return {
+            "transitioned": True,
+            "target": canonical_target,
+            "state": business_lifecycle_state(latest_profile, scoped_page),
+            "reason": reason,
         }
 
 
@@ -10882,7 +11420,7 @@ def agent_onboarding_phase(profile=None):
         phase = "business_discovery"
         if strategic_readiness.get("review_required"):
             next_step = (
-                "Presentar en texto un resumen útil del perfil estratégico completo, invitar correcciones naturales "
+                "Presentar en texto un resumen del negocio completo, invitar correcciones naturales "
                 "y guardar la confirmación del comprador para esta revisión exacta."
             )
         elif strategic_readiness.get("status") == "scope_mismatch":
@@ -10893,21 +11431,12 @@ def agent_onboarding_phase(profile=None):
                 "Continuar la conversación estratégica con una pregunta útil del dueño por turno. Pendientes: "
                 + ", ".join(missing)
             )
-    elif not master_plan.get("ready"):
-        phase = "business_master_plan"
-        if master_plan.get("status") == "proposed":
-            next_step = (
-                "Presentar el plan maestro completo ya propuesto, explicar sus prioridades y pedir una sola corrección o confirmación natural."
-            )
-        elif master_plan.get("status") == "stale":
-            next_step = (
-                "Actualizar el plan maestro desde la revisión vigente del perfil, mostrar qué cambió y pedir una sola confirmación natural."
-            )
-        else:
-            next_step = (
-                "Convertir ahora el perfil confirmado en un plan maestro visible: diagnóstico, prioridades, posicionamiento, ofertas, embudo, "
-                "contenido, publicidad, marco de presupuesto, KPIs, hoja de ruta y riesgos. Guardarlo como propuesta y mostrárselo al comprador."
-            )
+    elif master_plan.get("status") == "missing":
+        phase = "business_master_plan"  # compatibility phase name
+        next_step = (
+            "Convertir ahora el perfil confirmado en un plan estratégico visible: diagnóstico, prioridades, posicionamiento, ofertas, embudo, "
+            "contenido, publicidad, marco de presupuesto, KPIs, hoja de ruta y riesgos. Guardarlo como propuesta y mostrárselo al comprador."
+        )
     elif branding != "completed":
         phase = "branding_creatives_creation"
         next_step = creative_readiness.get("next_question") or "Definir y confirmar con el comprador la marca, el logo, referencias, paleta, tono y activos antes de producir contenido o anuncios."
@@ -10932,6 +11461,7 @@ def agent_onboarding_phase(profile=None):
         "oauth_page_count": len(oauth.get("pages") or []),
         "oauth_business_count": len(oauth.get("businesses") or []),
         "business": business,
+        "lifecycle_state": business_lifecycle_state(profile),
         "strategic_profile": strategic_readiness,
         "master_plan": master_plan,
         "organic_content": organic_content,
@@ -11303,6 +11833,56 @@ def save_business_context(payload):
     page_id = active_meta_page_id()
     if not page_id:
         raise ValueError("Primero debe quedar seleccionada una Página de Facebook para guardar el perfil estratégico del negocio.")
+    # A plan-update classification may call an external provider. Run it
+    # before reserving the trusted-turn/file lock, then compare the exact turn
+    # and plan hash again inside the transaction before accepting the result.
+    plan_update_authorization = {
+        "required": False,
+        "authorized": False,
+        "reason": "not_applicable",
+        "message_hash": "",
+        "plan_identity": "",
+        "page_id": page_id,
+    }
+    pre_submitted_plan = _normalize_master_plan(payload.get("master_plan"))
+    pre_current_plan = business_master_plan_for_page(profile, page_id)
+    pre_current_material = pre_current_plan.get("draft") or pre_current_plan.get("content") or {}
+    if (
+        pre_submitted_plan
+        and pre_current_material
+        and _plan_content_hash(pre_submitted_plan) != _plan_content_hash(pre_current_material)
+    ):
+        pre_turn = _trusted_buyer_turn()
+        prior_authorization = (
+            pre_current_plan.get("update_authorization")
+            if isinstance(pre_current_plan.get("update_authorization"), dict)
+            else {}
+        )
+        already_consumed = bool(
+            (pre_turn or {}).get("message_hash")
+            and str(prior_authorization.get("message_hash") or prior_authorization.get("buyer_message_hash") or "")
+            == str((pre_turn or {}).get("message_hash") or "")
+        )
+        if already_consumed:
+            requested, request_reason = False, "plan_update_authorization_already_consumed"
+        else:
+            requested, request_reason = _strategic_plan_update_requested(
+                pre_current_plan,
+                (pre_turn or {}).get("message"),
+            )
+        plan_update_authorization = {
+            "required": True,
+            "authorized": bool(requested),
+            "reason": request_reason,
+            "message_hash": str((pre_turn or {}).get("message_hash") or ""),
+            "plan_identity": _plan_content_hash({
+                "status": pre_current_plan.get("status"),
+                "revision": pre_current_plan.get("revision"),
+                "draft_revision": pre_current_plan.get("draft_revision"),
+                "material": pre_current_material,
+            }),
+            "page_id": page_id,
+        }
     review_requested = bool(
         payload.get("confirm_profile_review")
         or payload.get("profile_review_confirmation")
@@ -11316,6 +11896,16 @@ def save_business_context(payload):
         scope=page_id,
         profile=profile,
     ) as authorization:
+        # The plan-update classifier above deliberately runs outside the file
+        # lock. Rebase the whole profile only after entering the serialized
+        # transaction, and fail closed if Meta scope changed meanwhile. This
+        # prevents an old snapshot from reverting a concurrent fact/plan save.
+        current_page_id = str(active_meta_page_id() or "").strip()
+        if current_page_id != str(page_id or ""):
+            raise ValueError("La Página activa cambió durante el guardado; vuelve a intentar en el contexto actual.")
+        profile = read_json(BUSINESS_PROFILE_FILE, {})
+        if not isinstance(profile, dict):
+            profile = {}
         trusted_turn = authorization.get("turn") or {}
         trusted_buyer_confirmation = bool(authorization.get("authorized"))
         if trusted_buyer_confirmation and not review_requested:
@@ -11356,46 +11946,150 @@ def save_business_context(payload):
                 evidence=evidence,
             )
         if review_requested:
-            natural_confirmation, _review_turn = trusted_profile_review_confirmation(trusted_turn)
-            strategic = confirm_strategic_profile_revision(
-                strategic,
-                page_id=page_id,
-                trusted_buyer_confirmation=trusted_buyer_confirmation and natural_confirmation,
-                evidence=evidence,
-            )
+            review_readiness = strategic_profile_readiness(strategic, active_page_id=page_id)
+            if not review_readiness.get("complete") and not review_readiness.get("onboarding_completed"):
+                natural_confirmation, _confirmation_reason = _lifecycle_confirmation(
+                    "business_profile",
+                    business_profile_review_summary(strategic),
+                    (trusted_turn or {}).get("message"),
+                )
+                strategic = confirm_strategic_profile_revision(
+                    strategic,
+                    page_id=page_id,
+                    trusted_buyer_confirmation=(
+                        trusted_buyer_confirmation
+                        and natural_confirmation
+                        and review_readiness.get("review_required")
+                    ),
+                    evidence=evidence,
+                )
         profile = embed_strategic_profile(profile, strategic)
+        plan_operation_reason = ""
         if "master_plan" in payload or payload.get("confirm_master_plan"):
-            plans = profile.get("business_master_plans")
+            latest_persisted_profile = read_json(BUSINESS_PROFILE_FILE, {})
+            plans = latest_persisted_profile.get("business_master_plans")
             if not isinstance(plans, dict):
                 plans = {}
             current = dict(plans.get(page_id) or {})
             submitted_plan = _normalize_master_plan(payload.get("master_plan"))
             strategic_state = strategic_profile_readiness(strategic, active_page_id=page_id)
-            if submitted_plan and trusted_buyer_confirmation:
-                current = {
-                    "status": "confirmed",
-                    "revision": int(current.get("revision") or 0) + 1,
-                    "profile_revision": int(strategic_state.get("revision") or 0),
-                    "content": submitted_plan,
-                    "confirmed_at": now_iso(),
-                    "draft": {},
-                }
-            elif submitted_plan:
-                current.update({
-                    "status": "proposed",
-                    "profile_revision": int(strategic_state.get("revision") or 0),
-                    "draft": submitted_plan,
-                    "proposed_at": now_iso(),
-                })
+            if submitted_plan:
+                # A submitted plan is always a proposal.  Even if the model
+                # claims buyer confirmation in the same turn, there cannot be
+                # a trusted later presentation yet.  This prevents the
+                # recurring 20:41 double-confirmation loop.
+                draft_hash = _plan_content_hash(submitted_plan)
+                current_material = current.get("draft") or current.get("content") or {}
+                current_hash = _plan_content_hash(current_material) if current_material else ""
+                same_draft = bool(current_hash and current_hash == draft_hash)
+                missing_plan_fields = [
+                    field for field in _MASTER_PLAN_FIELDS
+                    if submitted_plan.get(field) in (None, "", [], {})
+                ]
+                has_existing_plan = bool(current_material or current.get("status"))
+                update_requested = False
+                update_reason = "initial_plan_proposal"
+                if has_existing_plan and not same_draft:
+                    current_identity = _plan_content_hash({
+                        "status": current.get("status"),
+                        "revision": current.get("revision"),
+                        "draft_revision": current.get("draft_revision"),
+                        "material": current_material,
+                    })
+                    update_authorization_matches = bool(
+                        plan_update_authorization.get("required")
+                        and plan_update_authorization.get("page_id") == page_id
+                        and plan_update_authorization.get("plan_identity") == current_identity
+                        and plan_update_authorization.get("message_hash")
+                        == str((trusted_turn or {}).get("message_hash") or "")
+                    )
+                    update_requested = bool(
+                        update_authorization_matches
+                        and plan_update_authorization.get("authorized")
+                    )
+                    update_reason = (
+                        str(plan_update_authorization.get("reason") or "")
+                        if update_authorization_matches
+                        else "plan_update_compare_and_swap_failed"
+                    )
+                may_store_proposal = bool(
+                    strategic_state.get("complete")
+                    and not missing_plan_fields
+                    and (not has_existing_plan or update_requested)
+                )
+                same_proposal = (
+                    str(current.get("status") or "") == "proposed"
+                    and str(current.get("draft_hash") or "") == draft_hash
+                )
+                if not strategic_state.get("complete"):
+                    plan_operation_reason = "business_onboarding_not_complete"
+                elif missing_plan_fields:
+                    plan_operation_reason = "strategic_plan_incomplete:" + ",".join(missing_plan_fields)
+                elif has_existing_plan and not same_draft and not update_requested:
+                    # Facts, campaigns, creative requests and spontaneous model
+                    # ideas cannot alter either a confirmed plan or its current
+                    # draft. Only an explicit buyer request about the saved plan
+                    # can open a new revision.
+                    plan_operation_reason = "strategic_plan_update_not_requested"
+                elif same_draft:
+                    plan_operation_reason = "strategic_plan_proposal_unchanged"
+                elif may_store_proposal and not same_proposal:
+                    current.update({
+                        "status": "proposed",
+                        "profile_revision": int(strategic_state.get("revision") or 0),
+                        "draft": submitted_plan,
+                        "draft_hash": draft_hash,
+                        "draft_revision": int(current.get("draft_revision") or 0) + 1,
+                        "proposed_at": now_iso(),
+                        "presentation": {},
+                        "update_authorization": {
+                            "reason": update_reason,
+                            "buyer_message_hash": str((trusted_turn or {}).get("message_hash") or ""),
+                            "message_hash": str((trusted_turn or {}).get("message_hash") or ""),
+                            "message_sequence": (trusted_turn or {}).get("message_sequence"),
+                            "chat_id": str((trusted_turn or {}).get("chat_id") or ""),
+                            "session_id": str((trusted_turn or {}).get("session_id") or ""),
+                            "transport": str((trusted_turn or {}).get("transport") or ""),
+                        },
+                        "proposal_turn": {
+                            key: (trusted_turn or {}).get(key)
+                            for key in ("message_hash", "message_sequence", "chat_id", "session_id", "transport")
+                        },
+                    })
+                    plan_operation_reason = update_reason
             elif payload.get("confirm_master_plan") and trusted_buyer_confirmation and current.get("draft"):
-                current = {
-                    "status": "confirmed",
-                    "revision": int(current.get("revision") or 0) + 1,
-                    "profile_revision": int(strategic_state.get("revision") or 0),
-                    "content": dict(current.get("draft") or {}),
-                    "confirmed_at": now_iso(),
-                    "draft": {},
-                }
+                # Confirmation is accepted only after the independent
+                # lifecycle boundary has recorded a later buyer reply.
+                presentation = current.get("presentation") if isinstance(current.get("presentation"), dict) else {}
+                semantic_ok, _ = _lifecycle_confirmation(
+                    "strategic_plan",
+                    render_business_strategic_plan(current),
+                    (trusted_turn or {}).get("message"),
+                )
+                later_bound = _turn_matches_presentation(
+                    trusted_turn,
+                    presentation,
+                )
+                valid_confirmation_boundary = bool(
+                    strategic_state.get("complete")
+                    and _master_plan_is_complete(current.get("draft"))
+                    and _plan_presentation_matches_current_draft(current)
+                    and later_bound
+                )
+                if semantic_ok and valid_confirmation_boundary:
+                    current = {
+                        "status": "confirmed",
+                        "revision": int(current.get("revision") or 0) + 1,
+                        "profile_revision": int(strategic_state.get("revision") or 0),
+                        "content": dict(current.get("draft") or {}),
+                        "confirmed_at": now_iso(),
+                        "confirmed_revision": int(current.get("draft_revision") or 1),
+                        "draft": {},
+                        "draft_hash": str(current.get("draft_hash") or ""),
+                    }
+                    plan_operation_reason = "strategic_plan_confirmed"
+                else:
+                    plan_operation_reason = "strategic_plan_confirmation_not_bound"
             plans[page_id] = current
             profile["business_master_plans"] = plans
         profile.setdefault("source", "manual_context")
@@ -11424,11 +12118,13 @@ def save_business_context(payload):
             "strategic_profile": readiness,
             "master_plan": business_master_plan_readiness(profile, page_id),
         }
+        if plan_operation_reason:
+            result["master_plan_operation_reason"] = plan_operation_reason
         if not trusted_buyer_confirmation:
             result["reason"] = authorization.get("reason") or "buyer_confirmation_not_authorized"
             result["reply"] = "Se conservó como borrador; no se convirtió en un hecho confirmado porque faltó evidencia del turno actual o ya se había usado."
         if readiness.get("review_required"):
-            result["review_summary"] = strategic_profile_review_summary(strategic)
+            result["review_summary"] = business_profile_review_summary(strategic)
         return result
 
 
@@ -17153,15 +17849,26 @@ def handle_save_business_context_tool(arguments, chat_payload, tool):
     phase = agent_onboarding_phase(result.get("profile"))
     readiness = result.get("strategic_profile") or {}
     master_plan = result.get("master_plan") or {}
-    if plan_requested and master_plan.get("ready"):
-        message_es = "Plan maestro confirmado y vinculado a la revisión vigente del perfil. Los próximos briefs deben derivarse de este plan."
-        message_en = "The master plan is confirmed and linked to the current profile revision. Future campaign briefs must derive from it."
+    plan_reason = str(result.get("master_plan_operation_reason") or "")
+    if plan_reason == "strategic_plan_update_not_requested":
+        message_es = "El plan estratégico guardado no cambió. El cliente no pidió directamente actualizar ese plan; los datos nuevos y el trabajo cotidiano no lo modifican."
+        message_en = "The saved strategic plan did not change. The buyer did not directly request a plan update; new facts and ordinary work do not modify it."
+    elif plan_reason.startswith("strategic_plan_incomplete:"):
+        missing = plan_reason.split(":", 1)[1].replace(",", ", ")
+        message_es = f"No guardé esa propuesta porque el plan debe estar completo. Faltan: {missing}."
+        message_en = f"I did not save that proposal because the plan must be complete. Missing: {missing}."
+    elif plan_reason == "business_onboarding_not_complete":
+        message_es = "Primero termina y confirma el resumen del negocio. El plan estratégico es la fase siguiente."
+        message_en = "First complete and confirm the business summary. The strategic plan is the next phase."
+    elif plan_requested and master_plan.get("ready"):
+        message_es = "Plan estratégico confirmado y vinculado a la revisión vigente del negocio. Los próximos briefs deben derivarse de este plan."
+        message_en = "The strategic plan is confirmed and linked to the current business revision. Future campaign briefs must derive from it."
     elif plan_requested and master_plan.get("status") == "proposed":
-        message_es = "Guardé el plan maestro como propuesta. Muéstralo completo al comprador para corrección o confirmación natural."
-        message_en = "I saved the master plan as a proposal. Show it completely for natural correction or confirmation."
+        message_es = "Guardé el plan estratégico como propuesta. Muéstralo completo al comprador para discutirlo y confirmarlo naturalmente en un turno posterior."
+        message_en = "I saved the strategic plan as a proposal. Show it completely for discussion and confirm it naturally in a later turn."
     elif readiness.get("complete"):
-        message_es = "Perfil estratégico confirmado. El siguiente paso es convertirlo en el plan maestro visible del negocio antes de campañas específicas."
-        message_en = "The strategic profile is confirmed. Next convert it into the visible business master plan before specific campaigns."
+        message_es = "Resumen del negocio confirmado. El siguiente paso es presentar una propuesta de plan estratégico antes de campañas específicas."
+        message_en = "The business summary is confirmed. Next present the complete strategic-plan proposal before specific campaigns."
     elif readiness.get("review_required"):
         message_es = "La entrevista ya cubre todos los temas. Presenta ahora el resumen completo para que el comprador lo corrija o confirme en texto."
         message_en = "The interview now covers every topic. Present the complete summary so the buyer can correct or confirm it in text."
@@ -17860,23 +18567,12 @@ def execute_agent_tool(tool_request, chat_payload):
                 reason=decision.get("code") or "strategic_profile_required",
                 unresolved_topics=decision.get("unresolved_topics") or [],
             )
-        if category in {
-            "campaign_create", "campaign_edit", "campaign_brief", "campaign_activate",
-            "spend_increase", "organic_publish", "paid_creative", "ad_motion_graphics",
-        }:
-            plan_state = business_master_plan_readiness()
-            if not plan_state.get("ready"):
-                return agent_action_result(
-                    tool,
-                    False,
-                    (
-                        "El perfil ya está completo, pero falta convertirlo en un plan maestro confirmado. "
-                        "Primero presenta y acuerda diagnóstico, prioridades, embudo, estrategia orgánica/publicitaria, presupuesto, KPIs y hoja de ruta."
-                    ),
-                    blocked=True,
-                    reason="business_master_plan_required",
-                    master_plan=plan_state,
-                )
+        # The strategic plan guides the manager; it is not an execution lock.
+        # After onboarding, the buyer may keep a plan draft for later and still
+        # request creatives, campaign work, reads or edits. Existing product
+        # gates for branding, exact campaign inputs, approvals and live Meta
+        # evidence remain authoritative. Never turn plan confirmation into a
+        # second onboarding ceremony.
 
     handler = AGENT_TOOL_HANDLERS.get(tool)
     if handler:

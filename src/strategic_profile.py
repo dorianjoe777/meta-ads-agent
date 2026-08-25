@@ -178,6 +178,11 @@ def new_profile(page_id: Any, *, now: Any = None) -> dict[str, Any]:
         "review_ready": None,
         "review_presentation": None,
         "review_confirmation": None,
+        # This durable latch is set only after the first fully presented and
+        # buyer-confirmed business review. Later buyer-confirmed business
+        # facts may revise the baseline, but never invalidate its separate
+        # strategic plan or send the buyer back through initial onboarding.
+        "onboarding_completed_at": None,
         "created_at": _timestamp(now),
         "updated_at": _timestamp(now),
     }
@@ -235,6 +240,8 @@ def migrate_profile(payload: Any, *, page_id: Any = None, now: Any = None) -> di
         result["revision"] = max(0, incoming_revision)
         result["created_at"] = str(source.get("created_at") or result["created_at"])
         result["updated_at"] = str(source.get("updated_at") or result["updated_at"])
+        if str(source.get("onboarding_completed_at") or "").strip():
+            result["onboarding_completed_at"] = str(source["onboarding_completed_at"])
 
         incoming_topics = source.get("topics")
         if isinstance(incoming_topics, Mapping):
@@ -322,12 +329,16 @@ def migrate_profile(payload: Any, *, page_id: Any = None, now: Any = None) -> di
                 reviewed_revision = int(review.get("revision"))
             except (TypeError, ValueError):
                 reviewed_revision = -1
+            standard_review = bool(result.get("review_ready") and result.get("review_presentation"))
+            maintenance_review = bool(
+                result.get("onboarding_completed_at")
+                and review.get("transition") == "post_onboarding_fact_update"
+            )
             if (
                 reviewed_revision == result["revision"]
                 and review.get("confirmation_state") == "buyer_confirmed"
                 and review.get("trusted_server_evidence") is True
-                and result.get("review_ready")
-                and result.get("review_presentation")
+                and (standard_review or maintenance_review)
             ):
                 result["review_confirmation"] = {
                     "revision": reviewed_revision,
@@ -336,7 +347,11 @@ def migrate_profile(payload: Any, *, page_id: Any = None, now: Any = None) -> di
                     "confirmed_at": str(review.get("confirmed_at") or _timestamp(now)),
                     "evidence": deepcopy(review.get("evidence") or {}),
                 }
+                if maintenance_review:
+                    result["review_confirmation"]["transition"] = "post_onboarding_fact_update"
                 result["confirmed_revision"] = reviewed_revision
+                if not result.get("onboarding_completed_at"):
+                    result["onboarding_completed_at"] = result["review_confirmation"]["confirmed_at"]
     else:
         # Preserve useful old answers, but only as drafts.  The old model-owned
         # completion flag had insufficient coverage and cannot be trusted.
@@ -393,7 +408,7 @@ def _computed_status(profile: Mapping[str, Any], active_page_id: Any = None) -> 
         ready = profile.get("review_ready")
         presentation = profile.get("review_presentation")
         revision = _as_int(profile.get("revision"), 0)
-        if (
+        standard_review = bool(
             isinstance(review, Mapping)
             and isinstance(ready, Mapping)
             and isinstance(presentation, Mapping)
@@ -407,7 +422,17 @@ def _computed_status(profile: Mapping[str, Any], active_page_id: Any = None) -> 
             == revision
             and _as_int(profile.get("confirmed_revision"), -1)
             == revision
-        ):
+        )
+        maintenance_review = bool(
+            isinstance(review, Mapping)
+            and profile.get("onboarding_completed_at")
+            and review.get("transition") == "post_onboarding_fact_update"
+            and review.get("confirmation_state") == "buyer_confirmed"
+            and review.get("trusted_server_evidence") is True
+            and _as_int(review.get("revision"), -1) == revision
+            and _as_int(profile.get("confirmed_revision"), -1) == revision
+        )
+        if standard_review or maintenance_review:
             return "complete"
         return "review_required"
     return "collecting" if _has_progress(profile) else "empty"
@@ -449,6 +474,8 @@ def profile_readiness(profile: Any, *, active_page_id: Any = None) -> dict[str, 
             and _as_int(canonical["review_presentation"].get("revision"), -1)
             == _as_int(canonical.get("revision"), 0)
         ),
+        "onboarding_completed": bool(canonical.get("onboarding_completed_at")),
+        "onboarding_completed_at": canonical.get("onboarding_completed_at"),
     }
 
 
@@ -491,6 +518,9 @@ def apply_topic_updates(
     if not _clean_page_id(canonical["scope"].get("page_id")):
         canonical["scope"]["page_id"] = _clean_page_id(page_id)
 
+    was_onboarding_complete = bool(canonical.get("onboarding_completed_at")) or (
+        _computed_status(canonical, page_id) == "complete"
+    )
     official_changed = False
     any_changed = False
     timestamp = _timestamp(now)
@@ -565,6 +595,25 @@ def apply_topic_updates(
         canonical["review_presentation"] = None
         canonical["review_confirmation"] = None
         canonical["confirmed_revision"] = None
+        # Once the initial business review has completed, a later fact stated
+        # by the buyer is an active-profile maintenance update, not a return to
+        # onboarding. The exact trusted turn already authorizes that fact. The
+        # new profile revision becomes current immediately. Strategic plans are
+        # separate artifacts and remain untouched unless the buyer directly
+        # asks to revise the plan itself.
+        if was_onboarding_complete and len(_resolved_topics(canonical)) == len(TOPICS):
+            canonical["onboarding_completed_at"] = str(
+                canonical.get("onboarding_completed_at") or timestamp
+            )
+            canonical["confirmed_revision"] = int(canonical["revision"])
+            canonical["review_confirmation"] = {
+                "revision": int(canonical["revision"]),
+                "confirmation_state": "buyer_confirmed",
+                "trusted_server_evidence": True,
+                "transition": "post_onboarding_fact_update",
+                "confirmed_at": timestamp,
+                "evidence": deepcopy(dict(evidence or {})),
+            }
     if any_changed:
         canonical["updated_at"] = timestamp
     canonical["status"] = _computed_status(canonical)
@@ -737,6 +786,9 @@ def confirm_current_revision(
         "evidence": deepcopy(dict(evidence or {})),
     }
     canonical["confirmed_revision"] = int(canonical.get("revision") or 0)
+    canonical["onboarding_completed_at"] = str(
+        canonical.get("onboarding_completed_at") or timestamp
+    )
     canonical["updated_at"] = timestamp
     canonical["status"] = _computed_status(canonical)
     return canonical

@@ -163,6 +163,7 @@ class StrategicProfileDashboardIntegrationTests(unittest.TestCase):
         self.assertEqual(readiness["revision"], 1)
         self.assertIsNone(readiness["confirmed_revision"])
         self.assertEqual(readiness["status"], "review_required")
+        self.assertFalse(readiness["onboarding_completed"])
         self.assertFalse(readiness["complete"])
 
     def test_trusted_final_confirmation_completes_current_revision(self):
@@ -223,9 +224,10 @@ class StrategicProfileDashboardIntegrationTests(unittest.TestCase):
         )
 
         self.assertEqual(readiness["revision"], 2)
-        self.assertIsNone(readiness["confirmed_revision"])
-        self.assertEqual(readiness["status"], "review_required")
-        self.assertFalse(readiness["complete"])
+        self.assertEqual(readiness["confirmed_revision"], 2)
+        self.assertEqual(readiness["status"], "complete")
+        self.assertTrue(readiness["complete"])
+        self.assertTrue(readiness["onboarding_completed"])
 
     def test_page_change_fails_closed_without_reinterpreting_business(self):
         business_memory = embed_profile({}, reviewed_profile(PAGE_A))

@@ -202,6 +202,51 @@ def _admira_strategic_profile_state(*, product_root=None):
         not bound_page_id or scope_page_id == bound_page_id
     )
     complete = status == "complete" and revision_matches and scope_matches
+
+    # The profile is the onboarding baseline; the strategic plan is a separate
+    # Page-scoped artifact.  Keep this read-only projection in the runtime so
+    # the model sees the same lifecycle after a restart/provider switch.  The
+    # dashboard remains the authority for writing it.
+    plans = profile.get("business_master_plans") if isinstance(profile, dict) else {}
+    if not isinstance(plans, dict):
+        plans = {}
+    plan_page_id = str(scope_page_id or bound_page_id or profile.get("active_strategic_page_id") or "").strip()
+    plan = plans.get(plan_page_id) if plan_page_id else None
+    if not isinstance(plan, dict):
+        plan = {}
+    plan_status = str(plan.get("status") or "missing").strip().lower()
+    if plan_status in {"draft", "proposed", "proposal", "pending", "review_required"}:
+        plan_status = "proposed"
+    elif plan_status not in {"confirmed", "stale", "missing"}:
+        plan_status = "missing"
+    required_plan_fields = (
+        "diagnosis", "commercial_priorities", "positioning", "offer_strategy",
+        "ideal_customer_strategy", "funnel", "organic_strategy", "paid_media_strategy",
+        "budget_framework", "objectives_and_kpis", "roadmap", "assumptions_and_risks",
+    )
+    selected_plan_content = plan.get("content") if plan_status == "confirmed" else plan.get("draft")
+    if plan_status in {"confirmed", "proposed"} and not (
+        isinstance(selected_plan_content, dict)
+        and all(selected_plan_content.get(field) not in (None, "", [], {}) for field in required_plan_fields)
+    ):
+        # Current releases never persist partial plans. Treat an old partial
+        # record as missing rather than injecting it as final direction.
+        plan_status = "missing"
+    # profile_revision is provenance only. A newly learned business fact must
+    # not silently invalidate an already approved plan. The backend may mark a
+    # plan stale explicitly only after the buyer directly requests a plan
+    # change/review.
+    if not complete:
+        lifecycle_state = "onboarding"
+    elif plan_status == "confirmed":
+        lifecycle_state = "active_with_confirmed_strategic_plan"
+    else:
+        lifecycle_state = "active_without_confirmed_strategic_plan"
+    plan_content = plan.get("content") if plan_status == "confirmed" else plan.get("draft")
+    if plan_status == "stale" and not plan_content:
+        plan_content = plan.get("content")
+    if not isinstance(plan_content, dict):
+        plan_content = {}
     return {
         "status": status,
         "complete": complete,
@@ -210,7 +255,55 @@ def _admira_strategic_profile_state(*, product_root=None):
         "scope_page_id": scope_page_id,
         "bound_page_id": bound_page_id,
         "source": source,
+        "lifecycle_state": lifecycle_state,
+        "master_plan_status": plan_status,
+        "master_plan_page_id": plan_page_id,
+        "master_plan_revision": plan.get("revision"),
+        "master_plan_profile_revision": plan.get("profile_revision"),
+        "master_plan": plan_content,
     }
+
+
+def _admira_render_master_plan(state, *, max_chars=18000):
+    """Render every plan section within a predictable context budget."""
+    state = state if isinstance(state, dict) else {}
+    content = state.get("master_plan") if isinstance(state.get("master_plan"), dict) else {}
+    if not content:
+        return "(No hay plan estratégico guardado todavía.)"
+    labels = {
+        "diagnosis": "Diagnóstico", "commercial_priorities": "Prioridades comerciales",
+        "positioning": "Posicionamiento", "offer_strategy": "Estrategia de ofertas",
+        "ideal_customer_strategy": "Cliente ideal", "funnel": "Embudo y seguimiento",
+        "organic_strategy": "Estrategia orgánica", "paid_media_strategy": "Estrategia publicitaria",
+        "budget_framework": "Presupuesto", "objectives_and_kpis": "Objetivos y KPI",
+        "roadmap": "Hoja de ruta", "assumptions_and_risks": "Supuestos y riesgos",
+    }
+    ordered_fields = (
+        "diagnosis", "commercial_priorities", "positioning", "offer_strategy",
+        "ideal_customer_strategy", "funnel", "organic_strategy", "paid_media_strategy",
+        "budget_framework", "objectives_and_kpis", "roadmap", "assumptions_and_risks",
+    )
+    # Divide the budget across fields rather than slicing the combined string;
+    # a long diagnosis must never push roadmap or risks out of every-turn
+    # context. Preserve both ends of an unusually long section.
+    per_field = max(420, (max_chars - 900) // len(ordered_fields))
+
+    def bounded(value):
+        rendered = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, sort_keys=True)
+        rendered = re.sub(r"\s+", " ", str(rendered or "")).strip()
+        if len(rendered) <= per_field:
+            return rendered
+        tail = max(120, per_field // 3)
+        head = max(120, per_field - tail - 18)
+        return f"{rendered[:head].rstrip()} … {rendered[-tail:].lstrip()}"
+
+    lines = []
+    for key in ordered_fields:
+        value = content.get(key)
+        label = labels.get(str(key), str(key).replace("_", " ").capitalize())
+        lines.append(f"- {label}: {bounded(value) if value not in (None, '', [], {}) else '(pendiente)'}")
+    text = "\n".join(lines) or "(No hay plan estratégico guardado todavía.)"
+    return text
 
 
 def _admira_constrain_onboarding_media_tool(tool):
@@ -331,7 +424,7 @@ def _admira_compiled_procedure_instruction(state):
         revision_note = f" revision={revision}." if revision not in (None, "") else "."
         return (
             f"{ADMIRA_PRODUCT_STATE_START}\n"
-            f"Strategic profile status={status}{revision_note} This status comes from backend-owned state, "
+            f"Onboarding business-profile status={status}{revision_note} lifecycle_state=onboarding. This status comes from backend-owned state, "
             "not from buyer phrasing. Campaign creation, campaign briefs, activation/resume, paid-ad image/video, "
             "and other ad production are unavailable until the current Page-scoped profile is complete. "
             "Continue as a senior marketing manager: use connected/live facts, reflect one useful insight or proposal, "
@@ -349,8 +442,8 @@ def _admira_compiled_procedure_instruction(state):
             "into one concise review rather than repeating the interview. On confirmation, save the exact matching draft "
             "values together as buyer_confirmed. For every memory save, copy the buyer's complete current message exactly into "
             "buyer_evidence; do not paraphrase it. A short confirmation can promote only the matching draft already shown. "
-            "When every topic is resolved, present the complete canonical review_summary returned by the tool for natural "
-            "confirmation/correction; do not omit values or mark it complete yourself.\n"
+            "When every topic is resolved, present the complete canonical business-summary review returned by the tool for natural "
+            "confirmation/correction; call this the onboarding/business summary, not the strategic plan. Do not omit values or mark it complete yourself.\n"
             f"{ADMIRA_PRODUCT_STATE_END}\n"
             f"{ADMIRA_COMPILED_PROCEDURE_START}\n"
             "The relevant onboarding procedure is precompiled here. Do not call read_file merely to unlock an MCP. "
@@ -358,12 +451,57 @@ def _admira_compiled_procedure_instruction(state):
             "as execution truth. Strategic advice is proactive, but it is not mutation authorization.\n"
             f"{ADMIRA_COMPILED_PROCEDURE_END}"
         )
+    lifecycle = str((state or {}).get("lifecycle_state") or "active_without_confirmed_strategic_plan")
+    plan_status = str((state or {}).get("master_plan_status") or "missing")
+    plan_text = _admira_render_master_plan(state)
+    if plan_status == "confirmed":
+        plan_instruction = (
+            "The final strategic plan is confirmed and must be actively considered in every turn. Reuse it; never ask to "
+            "reconfirm the onboarding business summary or the plan. New services, facts, campaigns, results or ordinary "
+            "conversation never modify or invalidate it. Only when the buyer directly asks to update the saved strategic "
+            "plan may you open and discuss a revised draft; that revision becomes final only after a later natural confirmation.\n"
+        )
+    elif plan_status == "proposed":
+        plan_instruction = (
+            "A complete strategic-plan draft is already saved and visible in this turn. Do not regenerate, replace, restate "
+            "or demand confirmation of it during ordinary work. The buyer may discuss it, confirm it later, leave it as a "
+            "draft, or proceed with campaigns/creatives. Only a direct request to update the saved plan may change this draft.\n"
+        )
+    else:
+        plan_instruction = (
+            "The onboarding business summary is complete, but the strategic plan is not final. Propose a complete plan as "
+            "an idea/draft, using the current Page's live Meta inventory, campaigns, history and performance when available. "
+            "Incorporate active campaigns and verified history; if none exists, say so and label the starting assumptions as "
+            "hypotheses rather than inventing performance. "
+            "The buyer may discuss it, save it as a draft, or later confirm it as the business's final strategic plan. Do not "
+            "reconfirm the onboarding summary while doing this.\n"
+        )
+    if plan_status == "confirmed":
+        foundation_instruction = (
+            "Continue with the buyer-confirmed brand foundation before organic or paid production: exact name, approved logo "
+            "or explicit no-logo choice, palette, visual style, tone, references and real assets. Image may create real logo "
+            "candidates, moodboards and brand samples during this phase; attach the file and save it as official only after "
+            "natural buyer approval. Backend brand readiness remains authoritative.\n"
+        )
+    elif plan_status == "missing":
+        foundation_instruction = (
+            "The next lifecycle step is to develop and discuss the strategic plan. Do not branch into a generic branding or "
+            "campaign setup interview in parallel. Branding work can still be handled when the buyer explicitly requests it, "
+            "and the plan should account for the branding foundation before paid/organic production.\n"
+        )
+    else:
+        foundation_instruction = (
+            "The strategic plan may remain a draft without blocking ordinary creative, campaign or analysis work. Continue "
+            "with the buyer's current request and the buyer-confirmed brand foundation; do not force another plan review.\n"
+        )
     return (
         f"{ADMIRA_PRODUCT_STATE_START}\n"
-        "The current Page-scoped strategic profile is complete. Continue with the buyer-confirmed brand foundation before "
-        "organic or paid production: exact name, approved logo or explicit no-logo choice, palette, visual style, tone, "
-        "references and real assets. Image may create real logo candidates, moodboards and brand samples during this phase; "
-        "attach the file and save it as official only after natural buyer approval. Backend brand readiness remains authoritative.\n"
+        f"The current Page-scoped onboarding/business profile is complete; lifecycle_state={lifecycle}, master_plan_status={plan_status}.\n"
+        f"{plan_instruction}"
+        f"Current strategic-plan artifact (read-only context for this turn):\n{plan_text}\n\n"
+        "Meta live inventory and performance reads are authoritative for current campaigns, delivery, spend, and results; "
+        "saved briefs or plan KPI assumptions never override live Meta data.\n"
+        f"{foundation_instruction}"
         f"{ADMIRA_PRODUCT_STATE_END}\n"
         f"{ADMIRA_COMPILED_PROCEDURE_START}\n"
         "Official procedures are precompiled into the root contract and tool descriptions. Do not call read_file merely "
@@ -5153,6 +5291,16 @@ def _patch_gateway_generated_media_delivery():
                 "messages": [],
             }
         else:
+            # Resolve a buyer confirmation against the presentation recorded
+            # on the previous turn before Hermes builds this turn's prompt.
+            # This lets the same model invocation see the newly confirmed
+            # onboarding/plan state instead of answering from stale context.
+            await asyncio.to_thread(
+                _resolve_business_lifecycle_transition,
+                session_id=session_key,
+                raw_message=clean_persisted,
+                target="",
+            )
             result = await original(self, *tuple(call_args), **kwargs)
         result = _apply_authoritative_tool_result_guards(result)
         # The semantic campaign-claim arbiter is a tiny independent provider
@@ -5161,10 +5309,6 @@ def _patch_gateway_generated_media_delivery():
         result = await asyncio.to_thread(_apply_conversational_output_guards, result)
         try:
             result = _normalize_gateway_outbound_response(result)
-        except Exception:
-            pass
-        try:
-            result = _ensure_canonical_strategic_review_visible(result)
         except Exception:
             pass
         try:
@@ -5185,10 +5329,26 @@ def _patch_gateway_generated_media_delivery():
                 if isinstance(result, dict)
                 else result
             )
-            _record_strategic_review_presented(
+            # Lifecycle hooks are backend-owned and intentionally run outside
+            # the Telegram event loop. They may classify a natural buyer
+            # confirmation, materialize the next plan/profile artifact, or
+            # record that it was actually shown.
+            lifecycle_state = _admira_strategic_profile_state()
+            lifecycle_target = (
+                "business_profile" if not lifecycle_state.get("complete")
+                else ("strategic_plan" if lifecycle_state.get("master_plan_status") == "proposed" else "")
+            )
+            ensured = await asyncio.to_thread(
+                _ensure_business_lifecycle_artifact_visible,
                 session_id=session_key,
                 assistant_text=visible_text,
+                target=lifecycle_target,
             )
+            if isinstance(ensured, dict) and isinstance(ensured.get("text"), str):
+                visible_text = ensured["text"]
+                if isinstance(result, dict):
+                    result = dict(result)
+                    result["final_response"] = visible_text
         except Exception:
             pass
         try:
@@ -5196,6 +5356,12 @@ def _patch_gateway_generated_media_delivery():
                 _append_gateway_turn("agent", result.get("final_response") or result.get("response") or result.get("message") or "")
             else:
                 _append_gateway_turn("agent", result)
+            await asyncio.to_thread(
+                _record_business_lifecycle_artifact_presented,
+                session_id=session_key,
+                assistant_text=visible_text if "visible_text" in locals() else "",
+                target=lifecycle_target if "lifecycle_target" in locals() else "",
+            )
         except Exception:
             pass
         return result
@@ -5532,6 +5698,90 @@ def _record_strategic_review_presented(*, session_id, assistant_text, chat_id=""
             chat_id=str(chat_id or ""),
         )
         return bool(isinstance(result, dict) and result.get("recorded"))
+    except Exception:
+        return False
+
+
+def _resolve_business_lifecycle_transition(*, session_id="", chat_id="", raw_message="", assistant_text="", target=""):
+    """Best-effort bridge to backend lifecycle resolution hooks.
+
+    The classifier/persistence implementation belongs to the dashboard.  The
+    runtime only forwards the already-recorded turn and tolerates older
+    dashboards during rolling updates.
+    """
+    try:
+        dashboard = _admira_dashboard_module()
+        resolver = getattr(dashboard, "resolve_pending_business_lifecycle_transition", None)
+        if not callable(resolver):
+            return {}
+        payload = {
+            "session_id": str(session_id or ""),
+            "chat_id": str(chat_id or ""),
+            "raw_message": str(raw_message or ""),
+            "assistant_text": str(assistant_text or ""),
+            "target": str(target or ""),
+        }
+        try:
+            result = resolver(**payload)
+        except TypeError:
+            result = resolver(target=payload["target"] or "business_profile")
+        if not payload["target"] and isinstance(result, dict) and not result.get("transitioned"):
+            # A fresh buyer turn can be confirming either artifact. The
+            # dashboard verifies presentation binding before accepting either,
+            # so probing both targets is safe and avoids relying on wording or
+            # the post-response lifecycle snapshot.
+            for candidate in ("strategic_plan", "business_profile"):
+                try:
+                    candidate_result = resolver(target=candidate)
+                except Exception:
+                    continue
+                if isinstance(candidate_result, dict) and candidate_result.get("transitioned"):
+                    return candidate_result
+        return result if isinstance(result, dict) else {"resolved": bool(result)}
+    except Exception:
+        return {}
+
+
+def _ensure_business_lifecycle_artifact_visible(*, session_id="", chat_id="", assistant_text="", target=""):
+    """Allow the backend to append/refresh the current lifecycle artifact."""
+    try:
+        dashboard = _admira_dashboard_module()
+        ensure = getattr(dashboard, "ensure_business_lifecycle_artifact_visible", None)
+        if not callable(ensure):
+            return {}
+        payload = {
+            "session_id": str(session_id or ""),
+            "chat_id": str(chat_id or ""),
+            "assistant_text": str(assistant_text or ""),
+            "target": str(target or ""),
+        }
+        try:
+            result = ensure(**payload)
+        except TypeError:
+            result = ensure(payload["assistant_text"], target=payload["target"] or None)
+        return {"text": result} if isinstance(result, str) else (result if isinstance(result, dict) else {"ensured": bool(result)})
+    except Exception:
+        return {}
+
+
+def _record_business_lifecycle_artifact_presented(*, session_id="", chat_id="", assistant_text="", target=""):
+    """Record the final buyer-visible lifecycle artifact, if supported."""
+    try:
+        dashboard = _admira_dashboard_module()
+        recorder = getattr(dashboard, "record_business_lifecycle_artifact_presented", None)
+        if not callable(recorder):
+            return False
+        payload = {
+            "session_id": str(session_id or ""),
+            "chat_id": str(chat_id or ""),
+            "assistant_text": str(assistant_text or ""),
+            "target": str(target or ""),
+        }
+        try:
+            result = recorder(**payload)
+        except TypeError:
+            result = recorder(payload["session_id"], payload["assistant_text"], target=payload["target"] or None)
+        return bool(result.get("recorded")) if isinstance(result, dict) else bool(result)
     except Exception:
         return False
 

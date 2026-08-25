@@ -316,7 +316,7 @@ def test_review_confirmation_cannot_cross_session_or_transport():
             )
 
 
-def test_correction_increments_revision_and_invalidates_review():
+def test_post_onboarding_fact_update_increments_revision_without_restarting_onboarding():
     profile = apply_topic_updates(
         new_profile(PAGE_A, now=NOW_1),
         all_resolved_updates(),
@@ -327,6 +327,7 @@ def test_correction_increments_revision_and_invalidates_review():
     )
     profile = present_and_confirm(profile, now=NOW_2)
     assert profile_status(profile, active_page_id=PAGE_A) == "complete"
+    assert profile["onboarding_completed_at"] == NOW_2
 
     corrected = apply_topic_updates(
         profile,
@@ -342,9 +343,42 @@ def test_correction_increments_revision_and_invalidates_review():
     )
 
     assert corrected["revision"] == 2
-    assert corrected["confirmed_revision"] is None
-    assert corrected["review_confirmation"] is None
-    assert profile_status(corrected, active_page_id=PAGE_A) == "review_required"
+    assert corrected["confirmed_revision"] == 2
+    assert corrected["review_confirmation"]["transition"] == "post_onboarding_fact_update"
+    assert corrected["onboarding_completed_at"] == NOW_2
+    assert profile_status(corrected, active_page_id=PAGE_A) == "complete"
+
+
+def test_post_onboarding_completion_latch_survives_migration():
+    profile = apply_topic_updates(
+        new_profile(PAGE_A, now=NOW_1),
+        all_resolved_updates(),
+        page_id=PAGE_A,
+        trusted_buyer_confirmation=True,
+        evidence={**BINDING, "message_sequence": 10},
+        now=NOW_1,
+    )
+    profile = present_and_confirm(profile, now=NOW_2)
+    profile = apply_topic_updates(
+        profile,
+        {
+            "services": {
+                "value": ["Ortodoncia", "Diseño de sonrisa"],
+                "confirmation_state": "buyer_confirmed",
+            }
+        },
+        page_id=PAGE_A,
+        trusted_buyer_confirmation=True,
+        evidence={**BINDING, "message_sequence": 14},
+        now=NOW_3,
+    )
+
+    restored = migrate_profile(profile, page_id=PAGE_A)
+
+    assert restored["onboarding_completed_at"] == NOW_2
+    assert restored["confirmed_revision"] == 2
+    assert restored["review_confirmation"]["transition"] == "post_onboarding_fact_update"
+    assert profile_status(restored, active_page_id=PAGE_A) == "complete"
 
 
 def test_identical_confirmed_update_does_not_invalidate_review():

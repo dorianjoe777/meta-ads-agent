@@ -73,6 +73,7 @@ POST_INSTALL_ORGANIC_INTRO_PROMPT_FILE = DATA_DIR / "hermes_post_install_organic
 POST_INSTALL_ORGANIC_INTRO_STATE_FILE = DATA_DIR / "post_install_organic_intro_cron.json"
 RESEARCH_PROMPT_FILE = DATA_DIR / "hermes_optimization_research_prompt.md"
 CRON_TIMEZONE_STATE_FILE = DATA_DIR / "hermes_cron_timezones.json"
+CRON_PROMPT_STATE_FILE = DATA_DIR / "hermes_cron_prompt_hashes.json"
 
 _GATEWAY_PROCESS = None
 _GATEWAY_FINGERPRINT = None
@@ -94,6 +95,26 @@ def _remember_cron_timezone(name, timezone_name):
     state[name] = str(timezone_name or "UTC")
     state["updated_at"] = now_iso()
     write_private_json(CRON_TIMEZONE_STATE_FILE, state, ensure_ascii=False)
+
+
+def _cron_prompt_hash(prompt):
+    return hashlib.sha256(str(prompt or "").encode("utf-8")).hexdigest()
+
+
+def _cron_prompt_state():
+    state = read_json(CRON_PROMPT_STATE_FILE, {})
+    return state if isinstance(state, dict) else {}
+
+
+def _cron_prompt_changed(name, prompt):
+    return str(_cron_prompt_state().get(name) or "") != _cron_prompt_hash(prompt)
+
+
+def _remember_cron_prompt(name, prompt):
+    state = _cron_prompt_state()
+    state[name] = _cron_prompt_hash(prompt)
+    state["updated_at"] = now_iso()
+    write_private_json(CRON_PROMPT_STATE_FILE, state, ensure_ascii=False)
 
 
 def telegram_settings(config):
@@ -1119,6 +1140,13 @@ def start_gateway(config):
 def daily_brief_prompt():
     return """Buenos días. Revisa la cuenta de Meta Ads con datos reales y memoria reciente.
 
+Primero orienta la lectura con el estado del negocio y su plan estratégico guardado. Si el plan está en propuesta/borrador
+o existe una revisión que el comprador pidió abrir explícitamente, incluye un resumen breve y recuerda que todavía no es final;
+no pidas una frase exacta ni repitas el onboarding. Si el plan está confirmado, úsalo como contexto activo y no lo vuelvas a
+confirmar. Para campañas, gasto, rendimiento e inventario, los datos live de Meta siempre tienen prioridad sobre el plan,
+briefs y memoria histórica. Esta lectura es observacional: resultados, servicios, campañas o recomendaciones nuevas no
+modifican ni invalidan el plan guardado. Solo una petición directa del comprador para actualizar ese plan abre una revisión.
+
 Incluye contexto de los últimos días y fluctuaciones importantes. Responde corto y útil:
 
 1. qué cambió
@@ -1707,7 +1735,8 @@ def ensure_daily_brief_cron(config):
     if not hermes_cli:
         return {"configured": False, "detail": "Hermes no está instalado."}
     files = write_gateway_files(config)
-    DAILY_BRIEF_PROMPT_FILE.write_text(daily_brief_prompt(), encoding="utf-8")
+    prompt = daily_brief_prompt()
+    DAILY_BRIEF_PROMPT_FILE.write_text(prompt, encoding="utf-8")
     env = hermes_environment(config)
     env["HERMES_HOME"] = files["hermes_home"]
     timezone_name = str(getattr(config, "daily_brief_timezone", "UTC") or "UTC")
@@ -1726,9 +1755,15 @@ def ensure_daily_brief_cron(config):
     list_output = (list_result.stdout or "") + (list_result.stderr or "")
     existing = _daily_brief_job(list_output, name)
     timezone_changed = _cron_timezone_changed(name, timezone_name)
+    prompt_changed = _cron_prompt_changed(name, prompt)
     if existing:
         desired_delivery = f"telegram:{status['chat_id']}"
-        if existing.get("schedule") == schedule and existing.get("deliver") == desired_delivery and not timezone_changed:
+        if (
+            existing.get("schedule") == schedule
+            and existing.get("deliver") == desired_delivery
+            and not timezone_changed
+            and not prompt_changed
+        ):
             return {"configured": True, "exists": True, "name": name, "job_id": existing["id"], "schedule": schedule, "timezone": timezone_name, **files}
         try:
             edit_result = subprocess.run(
@@ -1758,6 +1793,7 @@ def ensure_daily_brief_cron(config):
             return {"configured": False, "detail": "No pude actualizar la hora de la lectura diaria.", "error": str(exc), "name": name, "schedule": schedule, "timezone": timezone_name, **files}
         if edit_result.returncode == 0:
             _remember_cron_timezone(name, timezone_name)
+            _remember_cron_prompt(name, prompt)
         return {
             "configured": edit_result.returncode == 0,
             "exists": True,
@@ -1767,6 +1803,7 @@ def ensure_daily_brief_cron(config):
             "schedule": schedule,
             "timezone": timezone_name,
             "timezone_updated": bool(timezone_changed and edit_result.returncode == 0),
+            "prompt_updated": bool(prompt_changed and edit_result.returncode == 0),
             "stdout": (edit_result.stdout or "")[-500:],
             "stderr": (edit_result.stderr or "")[-500:],
             **files,
@@ -1800,6 +1837,7 @@ def ensure_daily_brief_cron(config):
         return {"configured": False, "detail": "No pude crear la lectura diaria en Hermes.", "error": str(exc), "name": name, "schedule": schedule, **files}
     if result.returncode == 0:
         _remember_cron_timezone(name, timezone_name)
+        _remember_cron_prompt(name, prompt)
     return {
         "configured": result.returncode == 0,
         "exists": False,

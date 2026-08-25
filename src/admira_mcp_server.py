@@ -663,7 +663,7 @@ TOOL_INPUT_SCHEMAS = {
             "confirm_profile_review": _boolean("True only after the backend reported review_required, the complete summary was shown, and the buyer naturally confirmed that exact summary in this turn."),
             "master_plan": {
                 "type": "object",
-                "description": "Page-scoped master marketing plan derived from the confirmed strategic profile. Save first as agent_proposal; confirm only after showing it and receiving natural buyer acceptance.",
+                "description": "Complete Page-scoped strategic plan derived from the confirmed business summary and live Meta evidence. The first plan may be saved as agent_proposal. Never submit a changed plan later unless the buyer directly asked to update the saved strategic plan; confirm a revision only after showing it and receiving later natural acceptance.",
                 "additionalProperties": False,
                 "properties": {
                     field: _string("Concrete master-plan section.")
@@ -673,8 +673,13 @@ TOOL_INPUT_SCHEMAS = {
                         "budget_framework", "objectives_and_kpis", "roadmap", "assumptions_and_risks"
                     )
                 },
+                "required": [
+                    "diagnosis", "commercial_priorities", "positioning", "offer_strategy",
+                    "ideal_customer_strategy", "funnel", "organic_strategy", "paid_media_strategy",
+                    "budget_framework", "objectives_and_kpis", "roadmap", "assumptions_and_risks",
+                ],
             },
-            "confirm_master_plan": _boolean("True only when the buyer naturally confirms the complete master plan shown in the preceding conversation."),
+            "confirm_master_plan": _boolean("True only when the buyer naturally confirms the complete strategic-plan draft shown in the preceding conversation. New facts or ordinary work never count as a plan-update request."),
         },
         "required": ["buyer_evidence"],
         "anyOf": [

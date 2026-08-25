@@ -451,8 +451,10 @@ class TrustedMemoryAuthorizationTests(unittest.TestCase):
 
         visible = self.dashboard.ensure_canonical_strategic_review_visible(compact)
 
-        self.assertTrue(visible.startswith(compact))
-        self.assertIn("Resumen estratégico — revisión", visible)
+        self.assertFalse(visible.startswith(compact))
+        self.assertEqual(visible.count("Resumen del negocio — revisión"), 1)
+        self.assertNotIn("Resumen estratégico de la marca", visible)
+        self.assertIn("Resumen del negocio — revisión", visible)
         for label in self.dashboard._STRATEGIC_REVIEW_LABELS.values():
             self.assertIn(label, visible)
         self.assertEqual(

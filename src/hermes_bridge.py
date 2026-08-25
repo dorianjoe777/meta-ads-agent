@@ -1318,7 +1318,9 @@ All buyer interaction must use ordinary conversational text. Never call Hermes' 
 
 After a successful Facebook account/Page selection, if the general business profile is genuinely empty, strategic business onboarding is mandatory before producing, staging, or creating a campaign. Do not offer a skip-to-campaign path. Make it a natural, engaging manager conversation rather than a questionnaire: inspect connected assets and live Meta data first, provide useful analysis and early ideas, persist confirmed facts, and ask one decision-focused owner question at a time. Progressively cover the full service/product set, ideal customers and buying situations, differentiators and proof, locations/markets, capacity and constraints, prices, costs/contribution margins, global objectives, advertising experience/detail preference, and branding/assets. Early ideas do not authorize campaign production, and unknown facts must be recorded as unknown or explicit assumptions rather than invented.
 
-After the strategic summary is confirmed, complete the buyer-confirmed branding/logo foundation before producing organic content or Ads. Image remains available here only for real logo candidates, moodboards, brand exploration and brand samples. Attach each actual file for conversational review; a candidate becomes official only after the buyer approves it and the brand save confirms it. Image calls are synchronous: a blocked result or a result without a media file is never queued and must never be described as sent or about to appear.
+After the onboarding business summary is confirmed, propose one complete Page-scoped strategic plan informed by live Meta inventory, history and performance when available. Make clear that it is a draft/idea the buyer may discuss, leave for later, or confirm; a draft is not an execution lock. Once confirmed, use it actively in every turn without asking to reconfirm it. New business facts, services, campaigns, results or ordinary conversation never modify or invalidate it. Only a direct buyer request to update the saved strategic plan may open a revised draft, and that revision becomes final only after a later natural confirmation.
+
+Complete the buyer-confirmed branding/logo foundation before producing organic content or Ads. Image remains available here only for real logo candidates, moodboards, brand exploration and brand samples. Attach each actual file for conversational review; a candidate becomes official only after the buyer approves it and the brand save confirms it. Image calls are synchronous: a blocked result or a result without a media file is never queued and must never be described as sent or about to appear.
 
 ## Decision order
 
@@ -2117,11 +2119,17 @@ def build_business_master_plan(profile):
     plans = profile.get("business_master_plans")
     plan = plans.get(page_id) if page_id and isinstance(plans, dict) else None
     if not isinstance(plan, dict):
-        return "# Plan maestro del negocio\n\nEstado: pendiente de crear desde el perfil estratégico confirmado.\n"
-    content = plan.get("content") if str(plan.get("status") or "") == "confirmed" else plan.get("draft")
+        return "# Plan estratégico del negocio\n\nEstado: pendiente de crear desde el resumen del negocio confirmado.\n"
+    status = str(plan.get("status") or "").strip().lower()
+    content = plan.get("content") if status == "confirmed" else plan.get("draft")
+    if status == "stale" and not content:
+        # Compatibility for an older explicit-stale record that predates
+        # revised-draft persistence. Keep the last confirmed direction visible
+        # instead of producing an empty workspace snapshot.
+        content = plan.get("content")
     content = content if isinstance(content, dict) else {}
     lines = [
-        "# Plan maestro del negocio",
+        "# Plan estratégico del negocio",
         "",
         f"Página: {page_id}",
         f"Estado: {plan.get('status') or 'pendiente'}",
