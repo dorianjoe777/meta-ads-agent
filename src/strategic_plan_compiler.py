@@ -193,12 +193,18 @@ def _validate_plan(candidate: Any) -> tuple[bool, str, dict[str, str]]:
         return False, "strategic_plan_too_shallow", {}
 
     roadmap = plan["roadmap"].casefold()
-    horizon_groups = (
-        ("corto plazo", "0-90", "primeros 90", "0 a 90"),
-        ("mediano plazo", "3-6", "3 a 6"),
-        ("largo plazo", "6-12", "6 a 12", "12+"),
+    # Models commonly render numeric ranges with an en dash, spaces, or words
+    # ("meses 3 a 6") even when the prompt uses an ASCII hyphen.  Validate the
+    # actual three decision horizons, not one typography.  Depth and the full
+    # twelve-section schema remain mandatory above.
+    roadmap = re.sub(r"[\u2010-\u2015\u2212]", "-", roadmap)
+    roadmap = re.sub(r"\s+", " ", roadmap)
+    horizon_patterns = (
+        r"\bcorto\s+plazo\b|\b(?:0\s*(?:-|a|al)\s*)?90\s*d[ií]as\b|\bprimeros?\s+90\b",
+        r"\bmediano\s+plazo\b|\b(?:mes(?:es)?\s*)?3\s*(?:-|a|al)\s*6\b",
+        r"\blargo\s+plazo\b|\b(?:mes(?:es)?\s*)?6\s*(?:-|a|al)\s*12\+?\b|\b12\+?\s*mes(?:es)?\b",
     )
-    if any(not any(marker in roadmap for marker in markers) for markers in horizon_groups):
+    if any(not re.search(pattern, roadmap) for pattern in horizon_patterns):
         return False, "strategic_plan_missing_horizons", {}
     return True, "", plan
 

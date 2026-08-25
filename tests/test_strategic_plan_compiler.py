@@ -163,6 +163,23 @@ class StrategicPlanCompilerTests(unittest.TestCase):
             "strategic_plan_missing_horizons",
         )
 
+    def test_accepts_equivalent_horizon_wording_and_unicode_ranges(self):
+        plan = complete_plan()
+        plan["roadmap"] = (
+            "Fase inicial, primeros 90 días: instrumentar medición, validar oferta, capacidad y seguimiento con "
+            "responsables, entregables y una puerta de decisión basada en economía unitaria. "
+            "Fase de crecimiento, meses 3–6: escalar únicamente segmentos y creativos validados, reforzar cierre, "
+            "recurrencia, prueba social y control de margen. "
+            "Fase de consolidación, meses 6 a 12: fortalecer cartera, automatización, retención y expansión rentable "
+            "sin sobrepasar la capacidad operativa. "
+            + complete_plan()["diagnosis"]
+        )
+
+        valid, reason, normalized = compiler._validate_plan(plan)
+
+        self.assertTrue(valid, reason)
+        self.assertEqual(normalized["roadmap"], plan["roadmap"].strip())
+
     def test_deadline_zero_makes_no_provider_call(self):
         with mock.patch.object(compiler, "_terra_compile") as codex, \
              mock.patch.object(compiler, "_gemini_compile") as gemini:
