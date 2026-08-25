@@ -172,6 +172,12 @@ class StrategicPlanCompilerTests(unittest.TestCase):
         codex.assert_not_called()
         gemini.assert_not_called()
 
+    def test_primary_model_receives_main_window_with_fallback_reserves(self):
+        with mock.patch.object(compiler.time, "monotonic", return_value=100.0):
+            self.assertEqual(compiler._attempt_timeout(340.0, 3), 180)
+            self.assertEqual(compiler._attempt_timeout(340.0, 2), 210)
+            self.assertEqual(compiler._attempt_timeout(340.0, 1), 240)
+
     def test_result_returned_after_deadline_is_discarded(self):
         def slow_codex(*_args, **_kwargs):
             time.sleep(0.02)

@@ -214,9 +214,16 @@ def _attempt_timeout(deadline: float, providers_left: int) -> int:
     remaining = max(0.0, deadline - time.monotonic())
     if remaining <= 0:
         return 0
-    # Preserve a fair slice for every remaining fallback. A slow Sol request
-    # therefore cannot consume the entire transaction deadline.
-    return max(1, int(remaining / max(1, providers_left)))
+    # This is an ordered quality fallback, not a round-robin workload.  Sol
+    # needs the principal window to produce twelve substantive sections; an
+    # equal split cancelled healthy real requests while they were still
+    # generating.  Preserve a small bounded reserve for each later provider,
+    # but give the current (higher-priority) model the rest.  Fast auth/rate
+    # failures therefore leave almost the full window to Terra/Gemini, while a
+    # genuinely slow Sol request still cannot consume the complete deadline.
+    later_providers = max(0, int(providers_left) - 1)
+    fallback_reserve = min(30.0, remaining / max(1, later_providers + 1))
+    return max(1, int(remaining - (fallback_reserve * later_providers)))
 
 
 def compile_strategic_plan(
