@@ -9621,33 +9621,19 @@ _MEMORY_AUTH_INTERNAL_FIELDS = {
 }
 
 _MASTER_PLAN_FIELDS = (
-    "diagnosis",
-    "commercial_priorities",
-    "positioning",
-    "offer_strategy",
-    "ideal_customer_strategy",
-    "funnel",
-    "organic_strategy",
-    "paid_media_strategy",
-    "budget_framework",
-    "objectives_and_kpis",
-    "roadmap",
-    "assumptions_and_risks",
+    "advertising_opportunity",
+    "audience_and_message",
+    "campaign_and_creative_plan",
+    "budget_and_measurement",
+    "next_steps_and_questions",
 )
 
 _MASTER_PLAN_LABELS = {
-    "diagnosis": "Diagnostico",
-    "commercial_priorities": "Prioridades comerciales",
-    "positioning": "Posicionamiento",
-    "offer_strategy": "Estrategia de ofertas",
-    "ideal_customer_strategy": "Estrategia de cliente ideal",
-    "funnel": "Embudo y seguimiento",
-    "organic_strategy": "Estrategia organica",
-    "paid_media_strategy": "Estrategia de pauta",
-    "budget_framework": "Marco de presupuesto",
-    "objectives_and_kpis": "Objetivos y KPI",
-    "roadmap": "Hoja de ruta",
-    "assumptions_and_risks": "Supuestos y riesgos",
+    "advertising_opportunity": "Oportunidad publicitaria",
+    "audience_and_message": "Audiencia y mensaje",
+    "campaign_and_creative_plan": "Campaña y conceptos creativos",
+    "budget_and_measurement": "Presupuesto y medición",
+    "next_steps_and_questions": "Próximos pasos para pulirlo",
 }
 
 
@@ -9664,7 +9650,7 @@ def _normalize_master_plan(value):
             # everything into one line made a complete plan look like a terse
             # campaign note when it reached Telegram.
             lines = [re.sub(r"[ \t]+", " ", line).strip() for line in item.splitlines()]
-            normalized[field] = "\n".join(lines).strip()[:6000]
+            normalized[field] = "\n".join(lines).strip()[:420]
         else:
             normalized[field] = redact_payload(item)
     return normalized
@@ -9691,24 +9677,31 @@ def business_master_plan_readiness(profile=None, page_id=None):
         else plan.get("draft")
     )
     material = material if isinstance(material, dict) else {}
+    missing_fields = [
+        field for field in _MASTER_PLAN_FIELDS
+        if material.get(field) in (None, "", [], {})
+    ]
+    material_complete = not missing_fields
     # ``profile_revision`` is provenance only. New services, prices or other
     # business facts must not silently alter or invalidate an approved plan.
     # The plan changes state only when the buyer explicitly asks to revise the
     # plan and the backend stores a proposal/stale transition for that request.
     stale = stored_status == "stale"
-    plan_complete = all(
-        (plan.get("content") or {}).get(field) not in (None, "", [], {})
-        for field in _MASTER_PLAN_FIELDS
-    ) if confirmed and isinstance(plan.get("content"), dict) else False
+    plan_complete = bool(confirmed and material_complete)
+    if not plan or not material_complete:
+        effective_status = "missing"
+    elif stale:
+        effective_status = "stale"
+    elif confirmed:
+        effective_status = "confirmed"
+    else:
+        effective_status = "proposed"
     return {
-        "status": "stale" if stale else ("confirmed" if confirmed else ("proposed" if plan else "missing")),
+        "status": effective_status,
         "ready": bool(confirmed and not stale and plan_complete and strategic_ready.get("complete")),
         "stale": stale,
         "complete": plan_complete,
-        "missing_fields": [
-            field for field in _MASTER_PLAN_FIELDS
-            if material.get(field) in (None, "", [], {})
-        ],
+        "missing_fields": missing_fields,
         "profile_revision": current_revision,
         "plan_revision": int(plan.get("revision") or 0),
         "draft_revision": int(plan.get("draft_revision") or 0),
@@ -10247,6 +10240,7 @@ def _strategic_plan_attempts_for_storage(attempts):
         clean.append({
             "provider": str(attempt.get("provider") or "")[:80],
             "model": str(attempt.get("model") or "")[:80],
+            "reasoning_effort": str(attempt.get("reasoning_effort") or "")[:20],
             "ok": bool(attempt.get("ok")),
             "reason": str(attempt.get("reason") or "")[:120],
             "elapsed_ms": int(attempt.get("elapsed_ms") or 0),
@@ -10510,6 +10504,7 @@ def ensure_initial_business_master_plan(*, config=None, timeout=300, expected_tu
                     "kind": "isolated_strategic_plan_compiler",
                     "provider": str(compiled.get("provider") or ""),
                     "model": str(compiled.get("model") or ""),
+                    "reasoning_effort": str(compiled.get("reasoning_effort") or ""),
                     "attempts": attempts,
                     "meta_verified": bool(meta_source.get("verified")),
                     "meta_partial": bool(meta_source.get("partial")),
@@ -10527,6 +10522,7 @@ def ensure_initial_business_master_plan(*, config=None, timeout=300, expected_tu
                 "completed_at": now_iso(),
                 "model": str(compiled.get("model") or ""),
                 "provider": str(compiled.get("provider") or ""),
+                "reasoning_effort": str(compiled.get("reasoning_effort") or ""),
                 "attempts": attempts,
                 "draft_hash": draft_hash,
             }
@@ -10562,6 +10558,7 @@ def ensure_initial_business_master_plan(*, config=None, timeout=300, expected_tu
         "status": "proposed",
         "model": str(compiled.get("model") or ""),
         "provider": str(compiled.get("provider") or ""),
+        "reasoning_effort": str(compiled.get("reasoning_effort") or ""),
         "attempts": attempts,
     }
 
@@ -10618,7 +10615,7 @@ def render_business_strategic_plan(plan, *, include_state=True):
         if status in {"proposed", "draft", "stale"} and plan.get("draft")
         else plan.get("content")
     ) or {}
-    lines = ["Plan estratégico del negocio"]
+    lines = ["Propuesta inicial de anuncios"]
     if include_state:
         state_label = {
             "proposed": "borrador para conversar",
@@ -10627,9 +10624,6 @@ def render_business_strategic_plan(plan, *, include_state=True):
             "confirmed": "confirmado",
         }.get(status, str(plan.get("status") or "missing"))
         lines.append(f"Estado: {state_label}")
-        lines.append(f"Revisión del negocio: {int(plan.get('profile_revision') or 0)}")
-        if plan.get("draft_revision"):
-            lines.append(f"Borrador: revisión {int(plan.get('draft_revision') or 0)}")
     for index, field in enumerate(_MASTER_PLAN_FIELDS, start=1):
         value = content.get(field) if isinstance(content, dict) else None
         if value in (None, "", [], {}):
@@ -10638,13 +10632,13 @@ def render_business_strategic_plan(plan, *, include_state=True):
             rendered_value = "\n".join(
                 re.sub(r"[ \t]+", " ", line).strip()
                 for line in value.splitlines()
-            ).strip()[:6000]
+            ).strip()[:420]
         else:
-            rendered_value = json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2)[:6000]
+            rendered_value = json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2)[:420]
         lines.extend(["", f"{index}. {_MASTER_PLAN_LABELS[field]}", rendered_value])
     lines.extend([
         "",
-        "Este es un borrador: puedes discutirlo, corregirlo, dejarlo para después o confirmarlo como plan estratégico final.",
+        "Es un punto de partida. Dime qué parte cambiarías y lo pulimos juntos antes de convertirlo en el plan publicitario acordado.",
     ])
     return "\n".join(lines)
 
@@ -10793,7 +10787,7 @@ def ensure_business_lifecycle_artifact_visible(assistant_text, target=None, sess
             if _assistant_covers_current_plan_draft(plan, text):
                 return text
             canonical = (
-                "Esta es una propuesta inicial de plan estratégico para discutir contigo:\n\n"
+                "Preparé esta propuesta inicial de anuncios para que la pulamos juntos:\n\n"
                 + render_business_strategic_plan(plan)
             )
             media = _native_media_directives(text)
@@ -11944,8 +11938,8 @@ def agent_onboarding_phase(profile=None):
     elif master_plan.get("status") == "missing":
         phase = "business_master_plan"  # compatibility phase name
         next_step = (
-            "Convertir ahora el perfil confirmado en un plan estratégico visible: diagnóstico, prioridades, posicionamiento, ofertas, embudo, "
-            "contenido, publicidad, marco de presupuesto, KPIs, hoja de ruta y riesgos. Guardarlo como propuesta y mostrárselo al comprador."
+            "Convertir ahora el perfil confirmado en una propuesta publicitaria breve: oportunidad, audiencia y mensaje, "
+            "campaña y creativos, presupuesto y medición, y preguntas para pulirla con el comprador."
         )
     elif branding != "completed":
         phase = "branding_creatives_creation"
@@ -18361,24 +18355,24 @@ def handle_save_business_context_tool(arguments, chat_payload, tool):
     master_plan = result.get("master_plan") or {}
     plan_reason = str(result.get("master_plan_operation_reason") or "")
     if plan_reason == "strategic_plan_update_not_requested":
-        message_es = "El plan estratégico guardado no cambió. El cliente no pidió directamente actualizar ese plan; los datos nuevos y el trabajo cotidiano no lo modifican."
-        message_en = "The saved strategic plan did not change. The buyer did not directly request a plan update; new facts and ordinary work do not modify it."
+        message_es = "El plan publicitario guardado no cambió. El cliente no pidió directamente actualizarlo; los datos nuevos y el trabajo cotidiano no lo modifican."
+        message_en = "The saved advertising plan did not change. The buyer did not directly request an update; new facts and ordinary work do not modify it."
     elif plan_reason.startswith("strategic_plan_incomplete:"):
         missing = plan_reason.split(":", 1)[1].replace(",", ", ")
         message_es = f"No guardé esa propuesta porque el plan debe estar completo. Faltan: {missing}."
         message_en = f"I did not save that proposal because the plan must be complete. Missing: {missing}."
     elif plan_reason == "business_onboarding_not_complete":
-        message_es = "Primero termina y confirma el resumen del negocio. El plan estratégico es la fase siguiente."
-        message_en = "First complete and confirm the business summary. The strategic plan is the next phase."
+        message_es = "Primero termina y confirma el resumen del negocio. La propuesta publicitaria es la fase siguiente."
+        message_en = "First complete and confirm the business summary. The advertising proposal is the next phase."
     elif plan_requested and master_plan.get("ready"):
-        message_es = "Plan estratégico confirmado y vinculado a la revisión vigente del negocio. Los próximos briefs deben derivarse de este plan."
-        message_en = "The strategic plan is confirmed and linked to the current business revision. Future campaign briefs must derive from it."
+        message_es = "Plan publicitario confirmado. Las próximas campañas deben tomarlo como dirección inicial."
+        message_en = "The advertising plan is confirmed. Future campaigns should use it as their initial direction."
     elif plan_requested and master_plan.get("status") == "proposed":
-        message_es = "Guardé el plan estratégico como propuesta. Muéstralo completo al comprador para discutirlo y confirmarlo naturalmente en un turno posterior."
-        message_en = "I saved the strategic plan as a proposal. Show it completely for discussion and confirm it naturally in a later turn."
+        message_es = "Guardé la propuesta publicitaria. Muéstrala completa para discutirla y confirmarla naturalmente en un turno posterior."
+        message_en = "I saved the advertising proposal. Show it completely for discussion and confirm it naturally in a later turn."
     elif readiness.get("complete"):
-        message_es = "Resumen del negocio confirmado. El siguiente paso es presentar una propuesta de plan estratégico antes de campañas específicas."
-        message_en = "The business summary is confirmed. Next present the complete strategic-plan proposal before specific campaigns."
+        message_es = "Resumen del negocio confirmado. El siguiente paso es presentar una propuesta publicitaria breve para pulirla juntos."
+        message_en = "The business summary is confirmed. Next present a compact advertising proposal to refine together."
     elif readiness.get("review_required"):
         message_es = "La entrevista ya cubre todos los temas. Presenta ahora el resumen completo para que el comprador lo corrija o confirme en texto."
         message_en = "The interview now covers every topic. Present the complete summary so the buyer can correct or confirm it in text."

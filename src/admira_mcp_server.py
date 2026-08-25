@@ -663,23 +663,23 @@ TOOL_INPUT_SCHEMAS = {
             "confirm_profile_review": _boolean("True only after the backend reported review_required, the complete summary was shown, and the buyer naturally confirmed that exact summary in this turn."),
             "master_plan": {
                 "type": "object",
-                "description": "Complete Page-scoped strategic plan derived from the confirmed business summary and live Meta evidence. The first plan may be saved as agent_proposal. Never submit a changed plan later unless the buyer directly asked to update the saved strategic plan; confirm a revision only after showing it and receiving later natural acceptance.",
+                "description": "Compact Page-scoped advertising proposal derived from relevant confirmed business facts and live Meta evidence. Keep it simple enough for one medium-long buyer message and focused on ads. The first proposal may be saved as agent_proposal. Never submit a changed plan later unless the buyer directly asked to refine the saved advertising plan; confirm a revision only after showing it and receiving later natural acceptance.",
                 "additionalProperties": False,
                 "properties": {
-                    field: _string("Concrete master-plan section.")
+                    field: _string("Concrete, plain-language advertising-plan section.")
                     for field in (
-                        "diagnosis", "commercial_priorities", "positioning", "offer_strategy",
-                        "ideal_customer_strategy", "funnel", "organic_strategy", "paid_media_strategy",
-                        "budget_framework", "objectives_and_kpis", "roadmap", "assumptions_and_risks"
+                        "advertising_opportunity", "audience_and_message",
+                        "campaign_and_creative_plan", "budget_and_measurement",
+                        "next_steps_and_questions"
                     )
                 },
                 "required": [
-                    "diagnosis", "commercial_priorities", "positioning", "offer_strategy",
-                    "ideal_customer_strategy", "funnel", "organic_strategy", "paid_media_strategy",
-                    "budget_framework", "objectives_and_kpis", "roadmap", "assumptions_and_risks",
+                    "advertising_opportunity", "audience_and_message",
+                    "campaign_and_creative_plan", "budget_and_measurement",
+                    "next_steps_and_questions",
                 ],
             },
-            "confirm_master_plan": _boolean("True only when the buyer naturally confirms the complete strategic-plan draft shown in the preceding conversation. New facts or ordinary work never count as a plan-update request."),
+            "confirm_master_plan": _boolean("True only when the buyer naturally confirms the complete compact advertising-plan draft shown in the preceding conversation. New facts or ordinary work never count as a plan-update request."),
         },
         "required": ["buyer_evidence"],
         "anyOf": [

@@ -37,10 +37,12 @@ brand foundation:
   the useful recommendation.
 
 Read the confirmed `memory/Business master plan.md` before designing the child
-campaign. Explain which master-plan priority this campaign advances. Reuse the
-global diagnosis, positioning, funnel and KPI hierarchy; do not regenerate the
-master plan. Campaign-specific budget, offer, audience slice, copy, creative,
-destination and hypothesis remain isolated in that campaign's own ad brief.
+campaign. Treat it as a compact paid-media starting point, not an exhaustive
+business strategy. Reuse its advertising opportunity, audience/message,
+creative direction and measurement idea when relevant, then let the buyer
+refine the current campaign naturally. Campaign-specific budget, offer,
+audience slice, copy, creative, destination and hypothesis remain isolated in
+that campaign's own ad brief.
 
 A suggested budget range is advice, not a selected budget. Never convert a
 range such as 30,000–50,000 COP into 40,000 COP merely because the buyer says

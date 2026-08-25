@@ -658,7 +658,9 @@ def _gemini_compile(model, prompt, schema, *, api_key, base_url, timeout):
         }
 
 
-def _terra_compile(prompt, schema, *, config, timeout, model=None):
+def _terra_compile(
+    prompt, schema, *, config, timeout, model=None, reasoning_effort=None,
+):
     """Run one isolated Codex compilation request.
 
     ``model`` is optional for compatibility with the campaign compiler.  The
@@ -666,6 +668,9 @@ def _terra_compile(prompt, schema, *, config, timeout, model=None):
     other Codex) model, without entering the Hermes conversation loop.
     """
     selected_model = str(model or TERRA_COMPILER_MODEL).strip() or TERRA_COMPILER_MODEL
+    selected_effort = str(reasoning_effort or "").strip().lower()
+    if selected_effort not in {"none", "low", "medium", "high", "xhigh", "max"}:
+        selected_effort = ""
     executable = str(getattr(config, "codex_cli", "codex") or "codex")
     environment = codex_cli_environment(config)
     with tempfile.TemporaryDirectory(prefix="admira-campaign-compiler-") as isolated:
@@ -673,8 +678,12 @@ def _terra_compile(prompt, schema, *, config, timeout, model=None):
         schema_path = isolated_path / "output-schema.json"
         output_path = isolated_path / "compiled-payload.json"
         schema_path.write_text(json.dumps(schema, ensure_ascii=False), encoding="utf-8")
-        command = [
-            executable, "exec",
+        command = [executable, "exec"]
+        if selected_effort:
+            command.extend([
+                "-c", f'model_reasoning_effort="{selected_effort}"',
+            ])
+        command.extend([
             "--sandbox", "read-only",
             "--ephemeral",
             "--ignore-user-config",
@@ -685,7 +694,7 @@ def _terra_compile(prompt, schema, *, config, timeout, model=None):
             "--output-schema", str(schema_path),
             "-o", str(output_path),
             "-",
-        ]
+        ])
         try:
             process = subprocess.Popen(
                 command,

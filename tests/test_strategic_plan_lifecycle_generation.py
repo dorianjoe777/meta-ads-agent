@@ -211,9 +211,9 @@ class StrategicPlanLifecycleGenerationTests(unittest.TestCase):
             "Preparando una respuesta", "strategic_plan",
             session_id="session-1", chat_id="123",
         )
-        self.assertIn("Esta es una propuesta inicial de plan estratégico", visible)
-        self.assertIn("1. Diagnostico", visible)
-        self.assertIn("12. Supuestos y riesgos", visible)
+        self.assertIn("Preparé esta propuesta inicial de anuncios", visible)
+        self.assertIn("1. Oportunidad publicitaria", visible)
+        self.assertIn("5. Próximos pasos para pulirlo", visible)
         self.assertNotIn('{"', visible)
 
     def test_provider_failure_leaves_plan_missing_and_enforces_cooldown(self):

@@ -305,9 +305,9 @@ def _admira_strategic_profile_state(*, product_root=None):
     elif plan_status not in {"confirmed", "stale", "missing"}:
         plan_status = "missing"
     required_plan_fields = (
-        "diagnosis", "commercial_priorities", "positioning", "offer_strategy",
-        "ideal_customer_strategy", "funnel", "organic_strategy", "paid_media_strategy",
-        "budget_framework", "objectives_and_kpis", "roadmap", "assumptions_and_risks",
+        "advertising_opportunity", "audience_and_message",
+        "campaign_and_creative_plan", "budget_and_measurement",
+        "next_steps_and_questions",
     )
     selected_plan_content = plan.get("content") if plan_status == "confirmed" else plan.get("draft")
     if plan_status in {"confirmed", "proposed"} and not (
@@ -330,6 +330,11 @@ def _admira_strategic_profile_state(*, product_root=None):
     plan_content = plan.get("content") if plan_status == "confirmed" else plan.get("draft")
     if plan_status == "stale" and not plan_content:
         plan_content = plan.get("content")
+    if plan_status == "missing":
+        # Never inject an obsolete broad plan after the compact advertising
+        # contract ships. The next bound turn atomically replaces it; until
+        # then it is treated as missing rather than conversational context.
+        plan_content = {}
     if not isinstance(plan_content, dict):
         plan_content = {}
     topic_context, resolved_topics, draft_topics, unresolved_topics = (
@@ -412,28 +417,26 @@ def _admira_render_business_profile(state, *, max_chars=12000):
     return "\n".join(lines) if lines else "(No Page-scoped business facts are stored yet.)"
 
 
-def _admira_render_master_plan(state, *, max_chars=18000):
-    """Render every plan section within a predictable context budget."""
+def _admira_render_master_plan(state, *, max_chars=3600):
+    """Render the compact advertising direction within a small context budget."""
     state = state if isinstance(state, dict) else {}
     content = state.get("master_plan") if isinstance(state.get("master_plan"), dict) else {}
     if not content:
         return "(No hay plan estratégico guardado todavía.)"
     labels = {
-        "diagnosis": "Diagnóstico", "commercial_priorities": "Prioridades comerciales",
-        "positioning": "Posicionamiento", "offer_strategy": "Estrategia de ofertas",
-        "ideal_customer_strategy": "Cliente ideal", "funnel": "Embudo y seguimiento",
-        "organic_strategy": "Estrategia orgánica", "paid_media_strategy": "Estrategia publicitaria",
-        "budget_framework": "Presupuesto", "objectives_and_kpis": "Objetivos y KPI",
-        "roadmap": "Hoja de ruta", "assumptions_and_risks": "Supuestos y riesgos",
+        "advertising_opportunity": "Oportunidad publicitaria",
+        "audience_and_message": "Audiencia y mensaje",
+        "campaign_and_creative_plan": "Campaña y conceptos creativos",
+        "budget_and_measurement": "Presupuesto y medición",
+        "next_steps_and_questions": "Próximos pasos para pulirlo",
     }
     ordered_fields = (
-        "diagnosis", "commercial_priorities", "positioning", "offer_strategy",
-        "ideal_customer_strategy", "funnel", "organic_strategy", "paid_media_strategy",
-        "budget_framework", "objectives_and_kpis", "roadmap", "assumptions_and_risks",
+        "advertising_opportunity", "audience_and_message",
+        "campaign_and_creative_plan", "budget_and_measurement",
+        "next_steps_and_questions",
     )
-    # Divide the budget across fields rather than slicing the combined string;
-    # a long diagnosis must never push roadmap or risks out of every-turn
-    # context. Preserve both ends of an unusually long section.
+    # Divide the budget across fields rather than slicing the combined string,
+    # so one long section cannot hide the remaining advertising direction.
     per_field = max(420, (max_chars - 900) // len(ordered_fields))
 
     def bounded(value):
@@ -633,22 +636,22 @@ def _admira_compiled_procedure_instruction(state):
     plan_text = _admira_render_master_plan(state)
     if plan_status == "confirmed":
         plan_instruction = (
-            "The final strategic plan is confirmed and must be actively considered in every turn. Reuse it; never ask to "
+            "The compact advertising plan is confirmed and must be actively considered in every turn. Reuse it; never ask to "
             "reconfirm the onboarding business summary or the plan. New services, facts, campaigns, results or ordinary "
             "conversation never modify or invalidate it. Only when the buyer directly asks to update the saved strategic "
             "plan may you open and discuss a revised draft; that revision becomes final only after a later natural confirmation.\n"
         )
     elif plan_status == "proposed":
         plan_instruction = (
-            "A complete strategic-plan draft is already saved and visible in this turn. Do not regenerate, replace, restate "
-            "or demand confirmation of it during ordinary work. The buyer may discuss it, confirm it later, leave it as a "
-            "draft, or proceed with campaigns/creatives. Only a direct request to update the saved plan may change this draft.\n"
+            "A compact advertising-plan draft is already saved and visible in this turn. Do not regenerate or demand "
+            "confirmation. Discuss it naturally with the buyer and use the normal conversational model to refine only the "
+            "parts they directly question or change. It may remain a draft while campaign or creative work continues.\n"
         )
     else:
         plan_instruction = (
-            "The onboarding business summary is complete, but no strategic-plan draft is stored yet. The initial plan belongs "
-            "to the isolated server compiler, which grounds it in the confirmed business economics and a fresh all-time Meta "
-            "snapshot. Do not draft, abbreviate, save, or present a substitute plan yourself. If the compiler is temporarily "
+            "The onboarding business summary is complete, but no compact advertising-plan draft is stored yet. The initial "
+            "proposal belongs to the isolated Sol-low compiler, grounded in relevant confirmed business facts and a fresh "
+            "Meta snapshot. Do not draft, abbreviate, save, or present a substitute yourself. If it is temporarily "
             "unavailable, say so briefly and continue the buyer's safe conversational request without calling the business "
             "summary a plan or asking to reconfirm it. Once strategic_plan_status becomes proposed, use the exact canonical "
             "draft supplied by backend state.\n"
@@ -662,7 +665,7 @@ def _admira_compiled_procedure_instruction(state):
         )
     elif plan_status == "missing":
         foundation_instruction = (
-            "The next lifecycle step is for the isolated compiler to materialize the strategic-plan draft and then let the "
+            "The next lifecycle step is for the isolated compiler to materialize the compact advertising proposal and then let the "
             "buyer discuss it. Do not branch into a generic branding or campaign setup interview and do not reproduce the "
             "compiler's job in prose. Branding work can still be handled when the buyer explicitly requests it.\n"
         )
@@ -675,7 +678,7 @@ def _admira_compiled_procedure_instruction(state):
         f"{ADMIRA_PRODUCT_STATE_START}\n"
         f"The current Page-scoped onboarding/business profile is complete; lifecycle_state={lifecycle}, master_plan_status={plan_status}.\n"
         f"{plan_instruction}"
-        f"Current strategic-plan artifact (read-only context for this turn):\n{plan_text}\n\n"
+        f"Current compact advertising-plan artifact (read-only context for this turn):\n{plan_text}\n\n"
         "Meta live inventory and performance reads are authoritative for current campaigns, delivery, spend, and results; "
         "saved briefs or plan KPI assumptions never override live Meta data.\n"
         f"{foundation_instruction}"
@@ -5517,7 +5520,7 @@ def _patch_gateway_generated_media_delivery():
                 # presentation. Skipping Hermes prevents a shallow competing
                 # plan or an unrelated tool call on the transition turn.
                 result = {
-                    "final_response": "Preparé el borrador completo del plan estratégico para revisarlo contigo.",
+                "final_response": "Preparé una propuesta inicial de anuncios para que la pulamos juntos.",
                     "messages": [],
                 }
             elif plan_generation.get("attempted") and not plan_generation.get("ok") and str(
@@ -5525,8 +5528,8 @@ def _patch_gateway_generated_media_delivery():
             ) != "strategic_plan_generation_compare_and_swap_failed":
                 result = {
                     "final_response": (
-                        "El resumen del negocio quedó confirmado, pero no pude preparar todavía un plan estratégico "
-                        "con la profundidad y evidencia necesarias. No voy a sustituirlo por un esquema superficial. "
+                        "El resumen del negocio quedó confirmado, pero no pude preparar todavía la propuesta publicitaria "
+                        "con la evidencia necesaria. No voy a inventar una dirección genérica. "
                         "Tu información está guardada y volveré a intentar la compilación de forma segura."
                     ),
                     "messages": [],

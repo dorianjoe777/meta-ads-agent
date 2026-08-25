@@ -132,7 +132,7 @@ class BusinessLifecycleBackendTests(unittest.TestCase):
         readiness = self.dashboard.business_master_plan_readiness(profile, "page-1")
 
         self.assertFalse(readiness["ready"])
-        self.assertIn("roadmap", readiness["missing_fields"])
+        self.assertIn("next_steps_and_questions", readiness["missing_fields"])
 
     def test_plan_submission_is_always_proposed_and_same_turn_cannot_confirm(self):
         profile = self._complete_profile()
@@ -292,7 +292,7 @@ class BusinessLifecycleBackendTests(unittest.TestCase):
         self.dashboard.write_json(self.dashboard.BUSINESS_PROFILE_FILE, profile)
         self._turn(32, "Muéstrame tu propuesta de plan")
         result = self.dashboard.save_business_context({
-            "master_plan": {"diagnosis": "Diagnóstico solamente"},
+            "master_plan": {"advertising_opportunity": "Oportunidad solamente"},
             "confirmation_state": "agent_proposal",
         })
         stored = self.dashboard.read_json(self.dashboard.BUSINESS_PROFILE_FILE, {})

@@ -162,10 +162,10 @@ class BusinessLifecycleInvariantTests(unittest.TestCase):
 
         rendered = self.dashboard.render_business_strategic_plan(plan)
 
-        self.assertIn("new-diagnosis", rendered)
-        self.assertIn("new-roadmap", rendered)
-        self.assertNotIn("old-diagnosis", rendered)
-        self.assertNotIn("old-roadmap", rendered)
+        self.assertIn("new-advertising_opportunity", rendered)
+        self.assertIn("new-next_steps_and_questions", rendered)
+        self.assertNotIn("old-advertising_opportunity", rendered)
+        self.assertNotIn("old-next_steps_and_questions", rendered)
 
     def test_stale_or_mismatched_presentation_hash_or_revision_cannot_confirm(self):
         for mismatch in ("hash", "revision"):
@@ -289,7 +289,7 @@ class BusinessLifecycleInvariantTests(unittest.TestCase):
 
         self.assertEqual(result, output)
         self.assertIn("MEDIA:/tmp/creative.png", result)
-        self.assertNotIn("Plan estratégico del negocio", result)
+        self.assertNotIn("Propuesta inicial de anuncios", result)
 
     def test_same_turn_plan_proposal_is_canonicalized_once(self):
         profile = self._complete_profile()
@@ -312,9 +312,9 @@ class BusinessLifecycleInvariantTests(unittest.TestCase):
         )
 
         self.assertEqual(first, second)
-        self.assertEqual(first.count("Esta es una propuesta inicial"), 1)
-        self.assertEqual(first.count("Plan estratégico del negocio"), 1)
-        self.assertIn("value-diagnosis", first)
+        self.assertEqual(first.count("Preparé esta propuesta inicial de anuncios"), 1)
+        self.assertEqual(first.count("Propuesta inicial de anuncios"), 1)
+        self.assertIn("value-advertising_opportunity", first)
 
 
 if __name__ == "__main__":

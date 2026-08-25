@@ -15,19 +15,12 @@ import strategic_plan_compiler as compiler
 
 def complete_plan(marker="detalle"):
     base = (
-        "Hecho verificado y análisis específico del negocio. "
-        "Esta sección conecta precios, costos totales, margen, capacidad, demanda, oferta y decisiones "
-        "con acciones medibles, dependencias claras y criterios concretos para avanzar sin inventar resultados. "
+        "Lectura verificada del negocio y de sus anuncios. "
+        "Esta propuesta conecta oferta, público, mensaje, presupuesto y medición con acciones concretas, "
+        "sin inventar resultados ni afirmar que algo ya fue ejecutado. "
         f"Referencia {marker}. "
     )
-    plan = {field: (base * 3) for field in compiler.PLAN_FIELDS}
-    plan["roadmap"] = (
-        "Corto plazo (0-90 días): validar oferta, medición y capacidad con entregables y una puerta de decisión. "
-        "Mediano plazo (3-6 meses): escalar solo lo validado, reforzar seguimiento, recurrencia y rentabilidad. "
-        "Largo plazo (6-12+ meses): consolidar cartera, marca, automatización operativa y expansión rentable. "
-        + base * 2
-    )
-    return plan
+    return {field: base for field in compiler.PLAN_FIELDS}
 
 
 class StrategicPlanCompilerTests(unittest.TestCase):
@@ -44,8 +37,8 @@ class StrategicPlanCompilerTests(unittest.TestCase):
     def test_codex_order_is_sol_then_terra_and_valid_result_stops_chain(self):
         calls = []
 
-        def codex(prompt, schema, *, config, timeout, model=None):
-            calls.append((model, prompt, schema, timeout))
+        def codex(prompt, schema, *, config, timeout, model=None, **kwargs):
+            calls.append((model, prompt, schema, timeout, kwargs.get("reasoning_effort")))
             if model == compiler.SOL_MODEL:
                 return {"ok": False, "reason": "rate_limit"}
             return {"ok": True, "compiled": complete_plan(model)}
@@ -61,15 +54,21 @@ class StrategicPlanCompilerTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual([call[0] for call in calls], [compiler.SOL_MODEL, compiler.TERRA_MODEL])
+        self.assertEqual([call[4] for call in calls], ["low", "low"])
         self.assertEqual(result["model"], compiler.TERRA_MODEL)
         self.assertEqual(result["provider"], "openai-codex")
+        self.assertEqual(result["reasoning_effort"], "low")
         self.assertEqual(len(result["attempts"]), 2)
+        self.assertEqual(
+            [attempt["reasoning_effort"] for attempt in result["attempts"]],
+            ["low", "low"],
+        )
         gemini.assert_not_called()
 
     def test_invalid_sol_plan_falls_back_to_terra(self):
         calls = []
 
-        def codex(_prompt, _schema, *, config, timeout, model=None):
+        def codex(_prompt, _schema, *, config, timeout, model=None, **kwargs):
             calls.append(model)
             if model == compiler.SOL_MODEL:
                 return {"ok": True, "compiled": {"diagnosis": "demasiado corto"}}
@@ -86,10 +85,10 @@ class StrategicPlanCompilerTests(unittest.TestCase):
     def test_oversized_sol_section_falls_back_to_terra(self):
         calls = []
         oversized = complete_plan("oversized")
-        oversized["diagnosis"] = "análisis estratégico " * 400
-        self.assertGreater(len(oversized["diagnosis"]), compiler.MAX_SECTION_CHARS)
+        oversized["advertising_opportunity"] = "análisis publicitario " * 400
+        self.assertGreater(len(oversized["advertising_opportunity"]), compiler.MAX_SECTION_CHARS)
 
-        def codex(_prompt, _schema, *, config, timeout, model=None):
+        def codex(_prompt, _schema, *, config, timeout, model=None, **kwargs):
             calls.append(model)
             if model == compiler.SOL_MODEL:
                 return {"ok": True, "compiled": oversized}
@@ -149,36 +148,12 @@ class StrategicPlanCompilerTests(unittest.TestCase):
         gemini.assert_called_once()
         self.assertEqual(result["model"], compiler.GEMINI_MODEL)
 
-    def test_rejects_shallow_plan_and_missing_roadmap_horizons(self):
+    def test_rejects_shallow_plan_and_unsupported_schema(self):
         shallow = {field: "texto breve" for field in compiler.PLAN_FIELDS}
-        deep_without_horizons = complete_plan()
-        deep_without_horizons["roadmap"] = (
-            "Una secuencia profunda de acciones, responsables, dependencias, entregables, métricas y puertas de "
-            "decisión para organizar el crecimiento del negocio sin inventar resultados observados. " * 4
-        )
-
         self.assertEqual(compiler._validate_plan(shallow)[1], "strategic_plan_too_shallow")
-        self.assertEqual(
-            compiler._validate_plan(deep_without_horizons)[1],
-            "strategic_plan_missing_horizons",
-        )
-
-    def test_accepts_equivalent_horizon_wording_and_unicode_ranges(self):
-        plan = complete_plan()
-        plan["roadmap"] = (
-            "Fase inicial, primeros 90 días: instrumentar medición, validar oferta, capacidad y seguimiento con "
-            "responsables, entregables y una puerta de decisión basada en economía unitaria. "
-            "Fase de crecimiento, meses 3–6: escalar únicamente segmentos y creativos validados, reforzar cierre, "
-            "recurrencia, prueba social y control de margen. "
-            "Fase de consolidación, meses 6 a 12: fortalecer cartera, automatización, retención y expansión rentable "
-            "sin sobrepasar la capacidad operativa. "
-            + complete_plan()["diagnosis"]
-        )
-
-        valid, reason, normalized = compiler._validate_plan(plan)
-
-        self.assertTrue(valid, reason)
-        self.assertEqual(normalized["roadmap"], plan["roadmap"].strip())
+        unsupported = complete_plan()
+        unsupported["organic_strategy"] = "contenido orgánico no permitido"
+        self.assertEqual(compiler._validate_plan(unsupported)[1], "strategic_plan_invalid_schema")
 
     def test_deadline_zero_makes_no_provider_call(self):
         with mock.patch.object(compiler, "_terra_compile") as codex, \
@@ -242,17 +217,49 @@ class StrategicPlanCompilerTests(unittest.TestCase):
         self.assertNotIn(secret, json.dumps(result))
         self.assertEqual(result["reason"], "strategic_plan_provider_failed")
 
-    def test_schema_has_exactly_twelve_required_top_level_strings(self):
+    def test_schema_has_exactly_five_required_top_level_strings(self):
         schema = compiler.strategic_plan_schema()
         self.assertEqual(tuple(schema["properties"]), compiler.PLAN_FIELDS)
         self.assertEqual(schema["required"], list(compiler.PLAN_FIELDS))
         self.assertFalse(schema["additionalProperties"])
         self.assertTrue(all(item["type"] == "string" for item in schema["properties"].values()))
-        self.assertTrue(
-            all(
-                item["maxLength"] == compiler.MAX_SECTION_CHARS
-                for item in schema["properties"].values()
-            )
+        self.assertTrue(all(
+            item["maxLength"] > compiler.MAX_SECTION_CHARS
+            for item in schema["properties"].values()
+        ))
+        self.assertEqual(
+            compiler.PLAN_FIELDS,
+            (
+                "advertising_opportunity",
+                "audience_and_message",
+                "campaign_and_creative_plan",
+                "budget_and_measurement",
+                "next_steps_and_questions",
+            ),
+        )
+
+    def test_prompt_is_compact_ads_focused_and_discussable(self):
+        prompt = compiler._build_prompt(
+            {"business": "Rodeo", "price": "$110.000 COP"},
+            {"campaigns": [{"status": "PAUSED"}]},
+        )
+        for field in compiler.PLAN_FIELDS:
+            self.assertIn(field, prompt)
+        self.assertIn("propuesta inicial de anuncios", prompt.lower())
+        self.assertIn("propuesta inicial", prompt.lower())
+        self.assertIn("anuncios", prompt.lower())
+        self.assertIn("no incluyas referidos", prompt.lower())
+        self.assertIn("estrategia orgánica", prompt.lower())
+
+    def test_rejects_a_section_cut_off_mid_sentence(self):
+        plan = complete_plan("frase-completa")
+        plan["advertising_opportunity"] = (
+            "Esta sección tiene suficiente profundidad y explica una oportunidad publicitaria concreta, "
+            "pero termina abruptamente sin cerrar la última idea"
+        )
+        self.assertEqual(
+            compiler._validate_plan(plan)[1],
+            "strategic_plan_incomplete_sentence",
         )
 
 

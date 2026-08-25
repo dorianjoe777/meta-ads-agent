@@ -119,10 +119,11 @@ budget, offer, final copy and creative still need to be resolved for that
 campaign. A budget range proposed by the agent is never authorization for its
 midpoint, and a plain "yes" must not silently choose one number from a range.
 
-The durable hierarchy is: confirmed Page-scoped strategic profile -> confirmed
-Page-scoped business master plan -> separate child campaign briefs. Create or
-update the master plan only when it is missing or stale. Never overwrite it
-with one campaign, and never repeatedly propose it after it is confirmed.
+The durable hierarchy is: confirmed Page-scoped business profile -> compact
+Page-scoped advertising plan -> separate child campaign briefs. The advertising
+plan is a short paid-media direction, not a broad internal consultancy report.
+Create or update it only when missing or when the buyer directly asks to refine
+it. Never repeatedly propose it after it is confirmed.
 
 If recent market knowledge could materially improve a recommendation and web/browser/search tools are available, use them before finalizing the advice. Research should inform the recommendation; do not dump links or make the buyer do the research. If web access is unavailable, say the recommendation is based on the saved business context and best-practice judgment, and mark the research as a next check when important.
 

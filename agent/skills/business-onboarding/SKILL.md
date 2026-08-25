@@ -58,19 +58,22 @@ At `review_required`, present one concise owner-useful business summary covering
 
 The interview produces inputs; it is not finished merely because those inputs
 were summarized. Immediately after the current onboarding summary becomes
-`complete`, the backend runs one isolated strategic-plan compiler. That call
-receives the confirmed business profile, official brand/product/ads memory and
-a fresh all-time Meta inventory/performance snapshot; it does not receive the
-Hermes conversation, tools or runtime. Its validated draft contains:
+`complete`, the backend runs one isolated Codex plan compiler. That call
+receives the confirmed business profile, official product/ads memory and a
+fresh all-time Meta inventory/performance snapshot; it does not receive the
+Hermes conversation, tools or runtime. Sol runs with low reasoning effort,
+then Terra and Gemini 3.7 are fallbacks. The validated draft has exactly five
+plain-Spanish, ads-focused sections:
 
-- diagnosis and commercial priorities;
-- positioning, offer portfolio and ideal-customer strategy;
-- funnel, qualification, follow-up and capacity implications;
-- organic-content and paid-media roles;
-- a budget framework tied to prices, contribution margins and capacity;
-- business objectives, leading/lagging KPIs and decision horizons;
-- a phased short-, medium- and long-term roadmap, assumptions, risks and what
-  must be validated.
+- `advertising_opportunity`: the most useful advertising opportunity now;
+- `audience_and_message`: priority audience, problem, promise and message;
+- `campaign_and_creative_plan`: recommended campaign, funnel and creative;
+- `budget_and_measurement`: budget logic, economics and practical KPIs;
+- `next_steps_and_questions`: immediate actions and questions to discuss.
+
+The draft is medium-long and readable in one normal Telegram response. It
+must not add organic strategy, referrals, operational expansion, or unsupported
+business claims. It is a discussion proposal, not an execution report.
 
 Do not write, abbreviate, or save a competing initial plan yourself. Present
 the exact canonical draft returned by backend state and let the owner discuss

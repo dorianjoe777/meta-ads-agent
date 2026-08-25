@@ -8,16 +8,16 @@ description: Build the Telegram-friendly daily Meta Ads brief from current live 
 Use this skill for the morning brief, "lectura diaria", "resumen diario", or when the buyer asks "que debo vigilar hoy".
 
 Before interpreting results, read the current Page-scoped business lifecycle and
-strategic-plan artifact. These are separate states: `business_profile=review_required`
+compact advertising-plan artifact. These are separate states: `business_profile=review_required`
 means the onboarding/business summary awaits confirmation and must never be described
-as a strategic-plan draft. If `strategic_plan_status=missing`, say that no strategic
-plan exists yet. Only if the plan itself is `proposed`/draft or `stale`, include a
-short useful summary of it and remind the buyer that it is not yet the final
-approved plan. If it is `confirmed`, use it as active context and never ask to
+as an advertising-plan draft. If `strategic_plan_status=missing`, say that no advertising
+plan exists yet. Only if the plan itself is `proposed`/draft or `stale`, mention it
+briefly only when relevant and remind the buyer that it is not yet final. If it is
+`confirmed`, use it as active paid-media context and never ask to
 confirm it again. The business onboarding summary is a separate baseline; while
 it is pending review, describe it as such, and once complete never re-request it.
 The daily read is observational: new results, services, campaign changes or
-recommendations never rewrite or invalidate the saved strategic plan. A plan
+recommendations never rewrite or invalidate the saved advertising plan. A plan
 revision begins only after a direct buyer request to update that plan.
 
 ## Tool
@@ -45,7 +45,7 @@ Always end exactly with:
 - Only use real Meta data from `mcp_admira_get_real_meta_context` or the daily brief tool result.
 - Treat the current Meta inventory and insights as authoritative. Never infer what is active from memory, local campaign plans, created-campaign records, action logs, or old approvals.
 - Treat the live Meta inventory and insights as authoritative for campaigns,
-  spend, delivery and performance; the strategic plan supplies direction and
+  spend, delivery and performance; the compact advertising plan supplies direction and
   hypotheses, not replacement KPI data.
 - Do not list approvals as a routine daily section. Mention one only when it is the exact current activation or protected change the buyer is already discussing.
 - If real Meta data is missing, say that clearly and do not use demo examples.

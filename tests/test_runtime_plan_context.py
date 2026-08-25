@@ -21,9 +21,9 @@ gateway = importlib.import_module("hermes_gateway")
 
 class RuntimePlanContextTests(unittest.TestCase):
     PLAN_FIELDS = (
-        "diagnosis", "commercial_priorities", "positioning", "offer_strategy",
-        "ideal_customer_strategy", "funnel", "organic_strategy", "paid_media_strategy",
-        "budget_framework", "objectives_and_kpis", "roadmap", "assumptions_and_risks",
+        "advertising_opportunity", "audience_and_message",
+        "campaign_and_creative_plan", "budget_and_measurement",
+        "next_steps_and_questions",
     )
 
     def _root(self, profile):
@@ -64,8 +64,8 @@ class RuntimePlanContextTests(unittest.TestCase):
 
         text = runtime._admira_compiled_procedure_instruction(state)
 
-        self.assertIn("isolated server compiler", text)
-        self.assertIn("Do not draft, abbreviate, save, or present a substitute plan yourself", text)
+        self.assertIn("isolated Sol-low compiler", text)
+        self.assertIn("Do not draft, abbreviate, save, or present a substitute", text)
         self.assertIn("do not reproduce the compiler's job in prose", text)
 
     def test_legacy_partial_confirmed_plan_is_not_injected_as_final(self):
@@ -83,7 +83,7 @@ class RuntimePlanContextTests(unittest.TestCase):
     def test_confirmed_plan_is_injected_and_live_meta_has_authority(self):
         root = self._root(self._profile({
             "status": "confirmed", "revision": 1, "profile_revision": 2,
-            "content": {"diagnosis": "Prioridad WhatsApp", "roadmap": ["Prueba", "Optimiza"]},
+            "content": {"advertising_opportunity": "Prioridad WhatsApp", "next_steps_and_questions": "Prueba y optimiza"},
         }))
         state = runtime._admira_strategic_profile_state(product_root=root)
         self.assertEqual(state["lifecycle_state"], "active_with_confirmed_strategic_plan")
@@ -107,8 +107,7 @@ class RuntimePlanContextTests(unittest.TestCase):
         for field in self.PLAN_FIELDS:
             self.assertIn(f"HEAD-{field}", rendered)
             self.assertIn(f"TAIL-{field}", rendered)
-        self.assertIn("Hoja de ruta", rendered)
-        self.assertIn("Supuestos y riesgos", rendered)
+        self.assertIn("Próximos pasos para pulirlo", rendered)
 
     def test_confirmed_plan_reaches_responses_and_chat_completion_payloads(self):
         plan = {field: f"live-{field}" for field in self.PLAN_FIELDS}
@@ -125,15 +124,15 @@ class RuntimePlanContextTests(unittest.TestCase):
             state=state,
         )
 
-        self.assertIn("live-diagnosis", responses["instructions"])
+        self.assertIn("live-advertising_opportunity", responses["instructions"])
         serialized_chat = json.dumps(chat["messages"], ensure_ascii=False)
-        self.assertIn("live-diagnosis", serialized_chat)
-        self.assertIn("live-assumptions_and_risks", serialized_chat)
+        self.assertIn("live-advertising_opportunity", serialized_chat)
+        self.assertIn("live-next_steps_and_questions", serialized_chat)
 
     def test_confirmed_plan_keeps_status_when_profile_revision_changes(self):
         root = self._root(self._profile({
             "status": "confirmed", "revision": 1, "profile_revision": 1,
-            "content": {"diagnosis": "Plan antiguo"},
+            "content": {"advertising_opportunity": "Plan antiguo"},
         }))
         profile = json.loads((root / "dashboard" / "data" / "business_profile.json").read_text())
         profile["strategic_profile"]["revision"] = 2
@@ -146,17 +145,17 @@ class RuntimePlanContextTests(unittest.TestCase):
     def test_proposed_plan_is_draft_and_never_reopens_onboarding(self):
         root = self._root(self._profile({
             "status": "proposed", "revision": 1, "profile_revision": 2,
-            "draft": {"diagnosis": "Falta seguimiento"},
+            "draft": {"advertising_opportunity": "Falta seguimiento"},
         }))
         state = runtime._admira_strategic_profile_state(product_root=root)
         self.assertEqual(state["lifecycle_state"], "active_without_confirmed_strategic_plan")
         text = runtime._admira_compiled_procedure_instruction(state)
-        self.assertIn("draft is already saved", text)
-        self.assertIn("Only a direct request to update the saved plan", text)
+        self.assertIn("compact advertising-plan draft is already saved", text)
+        self.assertIn("directly question or change", text)
         self.assertIn("without blocking ordinary creative, campaign or analysis work", text)
 
     def test_incomplete_profile_is_onboarding_even_with_plan_record(self):
-        profile = self._profile({"status": "confirmed", "content": {"diagnosis": "x"}})
+        profile = self._profile({"status": "confirmed", "content": {"advertising_opportunity": "x"}})
         profile["strategic_profile"]["status"] = "review_required"
         root = self._root(profile)
         state = runtime._admira_strategic_profile_state(product_root=root)
@@ -228,7 +227,7 @@ class RuntimePlanContextTests(unittest.TestCase):
     def test_single_plan_for_other_page_is_not_injected(self):
         profile = self._profile({
             "status": "confirmed", "page_id": "page-other", "revision": 2,
-            "profile_revision": 2, "content": {"diagnosis": "Otro negocio"},
+            "profile_revision": 2, "content": {"advertising_opportunity": "Otro negocio"},
         })
         profile["business_master_plans"] = {"page-other": profile["business_master_plans"]["page-1"]}
         root = self._root(profile)
@@ -239,12 +238,12 @@ class RuntimePlanContextTests(unittest.TestCase):
     def test_pending_plan_state_prioritizes_plan_over_branding(self):
         root = self._root(self._profile({
             "status": "proposed", "revision": 1, "profile_revision": 2,
-            "draft": {"diagnosis": "Prioridad"},
+            "draft": {"advertising_opportunity": "Prioridad"},
         }))
         state = runtime._admira_strategic_profile_state(product_root=root)
         text = runtime._admira_compiled_procedure_instruction(state)
-        self.assertIn("draft is already saved", text)
-        self.assertIn("proceed with campaigns/creatives", text)
+        self.assertIn("compact advertising-plan draft is already saved", text)
+        self.assertIn("Continue with the buyer's current request", text)
         self.assertNotIn("Continue with the buyer-confirmed brand foundation before", text)
 
     def test_daily_prompt_mentions_draft_and_live_authority(self):
