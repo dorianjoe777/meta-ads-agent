@@ -593,7 +593,15 @@ def mark_review_presented(
 
     Callers must verify summary coverage before invoking this function.  The
     state machine still verifies that the summary belongs to the current
-    review-ready revision and to the buyer turn that made it ready.
+    revision and to a trusted finalized outbound turn.
+
+    A fully resolved profile can legitimately lack ``review_ready`` when its
+    final topic was synchronized by another official store (for example, an
+    already-approved brand migrated into the Page-scoped profile).  In that
+    case the finalized outbound boundary is the first server-owned moment at
+    which the complete revision can be reviewed.  Establish ``review_ready``
+    and ``review_presentation`` together instead of leaving the revision in an
+    impossible state that no later buyer confirmation can complete.
     """
 
     canonical = migrate_profile(profile, page_id=page_id, now=now)
@@ -602,17 +610,40 @@ def mark_review_presented(
         raise StrategicProfileNotReady(
             "Strategic profile is not waiting for a current revision review."
         )
+    revision = _as_int(canonical.get("revision"), 0)
+    sequence = _as_int(after_buyer_message_sequence, -1)
+    if sequence < 0:
+        raise StrategicProfileNotReady(
+            "Review presentation requires a trusted buyer-turn sequence."
+        )
     ready = canonical.get("review_ready")
     if not isinstance(ready, Mapping) or ready.get("trusted_server_evidence") is not True:
-        raise StrategicProfileNotReady(
-            "Current revision has no trusted review-ready boundary."
+        boundary_evidence = evidence if isinstance(evidence, Mapping) else {}
+        evidence_sequence = _as_int(boundary_evidence.get("message_sequence"), -1)
+        binding_complete = all(
+            str(boundary_evidence.get(key) or "").strip()
+            for key in ("chat_id", "session_id", "transport")
         )
-    revision = _as_int(canonical.get("revision"), 0)
+        if (
+            boundary_evidence.get("source") != "finalized_outbound_transport"
+            or boundary_evidence.get("trusted_server_evidence") is not True
+            or evidence_sequence != sequence
+            or not binding_complete
+        ):
+            raise StrategicProfileNotReady(
+                "Current revision has no trusted review-ready boundary."
+            )
+        canonical["review_ready"] = {
+            "revision": revision,
+            "ready_after_sequence": sequence,
+            "trusted_server_evidence": True,
+            "ready_at": _timestamp(now),
+        }
+        ready = canonical["review_ready"]
     if _as_int(ready.get("revision"), -1) != revision:
         raise StrategicProfileNotReady(
             "Review-ready evidence belongs to another revision."
         )
-    sequence = _as_int(after_buyer_message_sequence, -1)
     if sequence < _as_int(ready.get("ready_after_sequence"), -1):
         raise StrategicProfileNotReady(
             "Review summary cannot precede the turn that completed the revision."

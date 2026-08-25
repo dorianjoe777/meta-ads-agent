@@ -369,6 +369,103 @@ class TrustedMemoryAuthorizationTests(unittest.TestCase):
         )
         self.assertTrue(accepted["recorded"])
 
+    def test_missing_ready_boundary_is_repaired_and_next_confirmation_completes(self):
+        updates = {
+            topic: {
+                "status": "confirmed",
+                "value": f"Valor real {topic}",
+                "confirmation_state": "buyer_confirmed",
+            }
+            for topic in self.dashboard.STRATEGIC_PROFILE_TOPICS
+        }
+        strategic = self.dashboard.apply_strategic_profile_updates(
+            self.dashboard.new_strategic_profile("page_1"),
+            updates,
+            page_id="page_1",
+            trusted_buyer_confirmation=True,
+            evidence={
+                "chat_id": "123",
+                "session_id": "agent:main:telegram:dm:123",
+                "transport": "telegram",
+                "message_sequence": 70,
+            },
+        )
+        strategic["review_ready"] = None
+        profile = self.dashboard.embed_strategic_profile({}, strategic)
+        self.dashboard.write_json(self.dashboard.BUSINESS_PROFILE_FILE, profile)
+        self.dashboard.record_trusted_buyer_turn(
+            "123", "agent:main:telegram:dm:123", 71, "Último dato", transport="telegram"
+        )
+
+        presented = self.dashboard.record_strategic_review_presented(
+            "agent:main:telegram:dm:123",
+            self.dashboard.strategic_profile_review_summary(strategic),
+            chat_id="123",
+        )
+        self.assertTrue(presented["recorded"])
+
+        confirmation = "Lo confirmo"
+        self.dashboard.record_trusted_buyer_turn(
+            "123", "agent:main:telegram:dm:123", 72, confirmation, transport="telegram"
+        )
+        completed = self.dashboard.save_business_context({
+            "buyer_evidence": confirmation,
+            "confirm_profile_review": True,
+            "confirmation_state": "buyer_confirmed",
+        })
+        self.assertTrue(completed["saved"])
+        self.assertTrue(completed["strategic_profile"]["complete"])
+
+    def test_natural_compact_review_gets_canonical_transaction_summary(self):
+        updates = {
+            topic: {
+                "status": "confirmed",
+                "value": f"Valor real {topic}",
+                "confirmation_state": "buyer_confirmed",
+            }
+            for topic in self.dashboard.STRATEGIC_PROFILE_TOPICS
+        }
+        strategic = self.dashboard.apply_strategic_profile_updates(
+            self.dashboard.new_strategic_profile("page_1"),
+            updates,
+            page_id="page_1",
+            trusted_buyer_confirmation=True,
+            evidence={
+                "chat_id": "123",
+                "session_id": "agent:main:telegram:dm:123",
+                "transport": "telegram",
+                "message_sequence": 80,
+            },
+        )
+        strategic["review_ready"] = None
+        self.dashboard.write_json(
+            self.dashboard.BUSINESS_PROFILE_FILE,
+            self.dashboard.embed_strategic_profile({}, strategic),
+        )
+        compact = (
+            "Resumen estratégico de la marca\n"
+            "- Servicios y precios\n- Cliente ideal\n- Ubicación\n"
+            "- Diferenciadores\n- Identidad de marca\n"
+            "¿Confirmas este resumen para continuar?"
+        )
+
+        visible = self.dashboard.ensure_canonical_strategic_review_visible(compact)
+
+        self.assertTrue(visible.startswith(compact))
+        self.assertIn("Resumen estratégico — revisión", visible)
+        for label in self.dashboard._STRATEGIC_REVIEW_LABELS.values():
+            self.assertIn(label, visible)
+        self.assertEqual(
+            self.dashboard.ensure_canonical_strategic_review_visible(visible),
+            visible,
+        )
+        self.assertEqual(
+            self.dashboard.ensure_canonical_strategic_review_visible(
+                "Sigamos con la pregunta sobre capacidad."
+            ),
+            "Sigamos con la pregunta sobre capacidad.",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -9853,6 +9853,41 @@ def _assistant_summary_covers_strategic_profile(profile, assistant_text):
     )
 
 
+def ensure_canonical_strategic_review_visible(assistant_text):
+    """Append the canonical review only when the agent is already requesting it.
+
+    The model may naturally combine several topics into fewer buyer-friendly
+    bullets.  That is fine conversationally, but the confirmation transaction
+    must bind to every current official value.  At the finalized outbound
+    boundary, add the canonical server-owned summary if (and only if) the
+    agent's own response clearly presents a strategic review and asks the
+    buyer to confirm or correct it.  Ordinary onboarding replies are untouched.
+    """
+    text = str(assistant_text or "")
+    normalized = _normalized_confirmation_text(text)
+    review_intent = bool(
+        re.search(r"\b(?:resumen|perfil|revision) estrateg\w*\b", normalized)
+        and re.search(
+            r"\b(?:confirm\w*|correg\w*|correccion\w*|ajust\w*|correct\w*)\b",
+            normalized,
+        )
+    )
+    if not review_intent:
+        return text
+    page_id = active_meta_page_id()
+    profile = read_json(BUSINESS_PROFILE_FILE, {})
+    if not page_id or not isinstance(profile, dict):
+        return text
+    strategic = strategic_profile_for_page(profile, page_id=page_id, activate=False)
+    readiness = strategic_profile_readiness(strategic, active_page_id=page_id)
+    if not readiness.get("review_required"):
+        return text
+    if _assistant_summary_covers_strategic_profile(strategic, text):
+        return text
+    canonical = strategic_profile_review_summary(strategic)
+    return f"{text.rstrip()}\n\n{canonical}".strip()
+
+
 def record_strategic_review_presented(session_id, assistant_text, chat_id=""):
     """Bind an actually finalized outbound summary to the current revision."""
     with _trusted_buyer_turn_lock():
@@ -9869,7 +9904,7 @@ def record_strategic_review_presented(session_id, assistant_text, chat_id=""):
             return {"recorded": False, "reason": "strategic_profile_scope_unavailable"}
         strategic = strategic_profile_for_page(profile, page_id=page_id, activate=False)
         readiness = strategic_profile_readiness(strategic, active_page_id=page_id)
-        if not readiness.get("review_required") or not readiness.get("review_ready"):
+        if not readiness.get("review_required"):
             return {"recorded": False, "reason": "review_not_ready"}
         if not _assistant_summary_covers_strategic_profile(strategic, assistant_text):
             return {"recorded": False, "reason": "review_summary_incomplete"}
@@ -9887,6 +9922,7 @@ def record_strategic_review_presented(session_id, assistant_text, chat_id=""):
                 "session_id": str(turn.get("session_id") or ""),
                 "transport": str(turn.get("transport") or ""),
                 "message_sequence": turn.get("message_sequence"),
+                "trusted_server_evidence": True,
             },
         )
         profile = embed_strategic_profile(profile, strategic)

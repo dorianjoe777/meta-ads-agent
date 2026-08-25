@@ -5095,6 +5095,10 @@ def _patch_gateway_generated_media_delivery():
         except Exception:
             pass
         try:
+            result = _ensure_canonical_strategic_review_visible(result)
+        except Exception:
+            pass
+        try:
             # Normalize first: the model can place MEDIA before its internal
             # [ADMIRA FINAL] marker, and reasoning cleanup intentionally drops
             # everything before that marker. Re-collecting current-turn tool
@@ -5461,6 +5465,28 @@ def _record_strategic_review_presented(*, session_id, assistant_text, chat_id=""
         return bool(isinstance(result, dict) and result.get("recorded"))
     except Exception:
         return False
+
+
+def _ensure_canonical_strategic_review_visible(result):
+    """Keep natural prose while making a requested profile review complete."""
+    dashboard = _admira_dashboard_module()
+    ensure_visible = getattr(
+        dashboard, "ensure_canonical_strategic_review_visible", None
+    )
+    if not callable(ensure_visible):
+        return result
+    if isinstance(result, dict):
+        for key in ("final_response", "response", "message"):
+            if key in result and isinstance(result.get(key), str):
+                updated = ensure_visible(result.get(key))
+                if updated != result.get(key):
+                    result = dict(result)
+                    result[key] = updated
+                break
+        return result
+    if isinstance(result, str):
+        return ensure_visible(result)
+    return result
 
 
 def _record_trusted_telegram_buyer_turn(**kwargs):

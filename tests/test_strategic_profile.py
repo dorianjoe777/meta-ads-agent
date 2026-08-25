@@ -79,6 +79,42 @@ def test_new_profile_is_empty_and_page_scoped():
     assert profile_readiness(profile, active_page_id=PAGE_A)["unresolved_topics"] == list(TOPICS)
 
 
+def test_finalized_review_atomically_repairs_missing_ready_boundary():
+    profile = apply_topic_updates(
+        new_profile(PAGE_A, now=NOW_1),
+        all_resolved_updates(),
+        page_id=PAGE_A,
+        trusted_buyer_confirmation=True,
+        evidence={**BINDING, "message_sequence": 10},
+        now=NOW_2,
+    )
+    # Reproduce an official cross-store/migrated profile whose topics are all
+    # trusted but whose final update did not carry a transport sequence.
+    profile["review_ready"] = None
+
+    repaired = mark_review_presented(
+        profile,
+        page_id=PAGE_A,
+        after_buyer_message_sequence=11,
+        assistant_message_hash="summary-hash",
+        evidence={
+            **BINDING,
+            "source": "finalized_outbound_transport",
+            "message_sequence": 11,
+            "trusted_server_evidence": True,
+        },
+        now=NOW_3,
+    )
+
+    assert repaired["review_ready"] == {
+        "revision": repaired["revision"],
+        "ready_after_sequence": 11,
+        "trusted_server_evidence": True,
+        "ready_at": NOW_3,
+    }
+    assert repaired["review_presentation"]["revision"] == repaired["revision"]
+
+
 def test_legacy_four_fields_and_model_completion_flag_never_complete_profile():
     legacy = {
         "main_offer": "Diseño de sonrisa",
