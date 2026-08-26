@@ -974,6 +974,7 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         ):
             staged = admira_hermes_runtime_patch._guard_unconfirmed_campaign_edit_claim({
                 "final_response": "He dejado configurado el presupuesto diario de la campaña en 11 USD.",
+                "buyer_message": "En la campaña Rodeo cambia el presupuesto a 11 USD.",
                 "messages": [{
                     "role": "tool",
                     "name": "mcp_admira_edit_campaign",
@@ -988,6 +989,7 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         ):
             applied = admira_hermes_runtime_patch._guard_unconfirmed_campaign_edit_claim({
                 "final_response": "He dejado configurado el presupuesto diario de la campaña en 11 USD.",
+                "buyer_message": "En la campaña Rodeo cambia el presupuesto a 11 USD.",
                 "messages": [{
                     "role": "tool",
                     "name": "mcp_admira_stage_budget_change",
@@ -1015,6 +1017,7 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         ):
             guarded = admira_hermes_runtime_patch._guard_unconfirmed_campaign_edit_claim({
                 "final_response": original,
+                "buyer_message": "En la campaña Rodeo actualiza el creativo.",
                 "messages": [],
             })
         self.assertEqual(guarded["final_response"], original)
@@ -1141,6 +1144,7 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         ):
             guarded = admira_hermes_runtime_patch._guard_unconfirmed_campaign_edit_claim({
                 "final_response": original,
+                "buyer_message": "En la campaña Rodeo cambia el presupuesto.",
                 "messages": [],
                 admira_hermes_runtime_patch.ADMIRA_CURRENT_TURN_TOOL_RECEIPTS_KEY: receipts,
             })
@@ -1203,6 +1207,7 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         ):
             guarded = admira_hermes_runtime_patch._guard_unconfirmed_campaign_edit_claim({
                 "final_response": original,
+                "buyer_message": "En la campaña Rodeo cambia el presupuesto.",
                 "messages": [],
                 admira_hermes_runtime_patch.ADMIRA_CURRENT_TURN_TOOL_RECEIPTS_KEY: [{
                     "role": "tool",
@@ -1469,6 +1474,7 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
             "final_response": raw.final_response,
             "messages": raw.messages,
         }
+        normalized["buyer_message"] = "En la campaña Rodeo cambia el presupuesto."
         with mock.patch.object(
             campaign_claim_classifier,
             "classify_campaign_edit_claim",
@@ -1476,6 +1482,20 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         ):
             guarded = admira_hermes_runtime_patch._guard_unconfirmed_campaign_edit_claim(normalized)
         self.assertIn("todavía no lo apliqué", guarded["final_response"])
+
+    def test_campaign_edit_guard_without_buyer_provenance_preserves_response(self):
+        original = "Ya actualicé la campaña de Rodeo correctamente."
+        with mock.patch.object(
+            campaign_claim_classifier,
+            "classify_campaign_edit_claim",
+            return_value={"ok": True, "confirmation": "si"},
+        ) as classifier:
+            guarded = admira_hermes_runtime_patch._guard_unconfirmed_campaign_edit_claim({
+                "final_response": original,
+                "messages": [],
+            })
+        self.assertEqual(guarded["final_response"], original)
+        classifier.assert_not_called()
 
     def test_cli_edit_text_without_structured_evidence_is_not_reported_as_applied(self):
         corrected = admira_hermes_runtime_patch.guard_unverified_campaign_edit_text(
