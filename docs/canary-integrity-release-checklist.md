@@ -92,6 +92,13 @@ versión equivalente). `unknown`, `local` y una tag vieja no son válidos para
 un canary cerrado. El checker exige estos labels; así un contenedor no puede
 parecer correcto sólo porque `/app/VERSION` fue reemplazado.
 
+Los argumentos y labels que cambian en cada `rXX` deben declararse después de
+las capas pesadas de dependencias en el `Dockerfile`. La versión nueva siempre
+reconstruye el source y su procedencia, pero no debe reinstalar el sistema,
+Hermes, Codex, Python ni el navegador si sus versiones fijadas no cambiaron.
+Esto evita reconstrucciones largas sin sacrificar la correspondencia exacta
+entre commit e imagen.
+
 ## Verificaciones finales
 
 1. Ejecutar `scripts/verify-canary-integrity.sh CONTENEDOR`.

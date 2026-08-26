@@ -3,15 +3,6 @@ FROM node:22-bookworm-slim
 ARG CODEX_CLI_VERSION=0.147.0
 ARG HERMES_AGENT_VERSION=0.18.0
 ARG MCP_SDK_VERSION=2.0.0
-ARG ADMIRA_BUILD_VERSION=unknown
-ARG ADMIRA_BUILD_SHA=unknown
-ARG ADMIRA_SOURCE_MANIFEST=unknown
-
-LABEL org.opencontainers.image.title="Admira IA" \
-      org.opencontainers.image.version="${ADMIRA_BUILD_VERSION}" \
-      org.opencontainers.image.revision="${ADMIRA_BUILD_SHA}" \
-      org.opencontainers.image.source-manifest="${ADMIRA_SOURCE_MANIFEST}" \
-      org.opencontainers.image.description="Admira IA agent runtime"
 
 ENV PYTHONUNBUFFERED=1 \
     DASHBOARD_HOST=0.0.0.0 \
@@ -52,6 +43,19 @@ RUN python3 -m pip install --break-system-packages --no-cache-dir \
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts \
     && npx remotion browser ensure
+
+# Release-specific metadata belongs after the expensive, version-independent
+# dependency layers.  A new rXX/SHA must rebuild the source/provenance layers,
+# but must not reinstall the OS, Hermes, Codex, Python and browser toolchains.
+ARG ADMIRA_BUILD_VERSION=unknown
+ARG ADMIRA_BUILD_SHA=unknown
+ARG ADMIRA_SOURCE_MANIFEST=unknown
+
+LABEL org.opencontainers.image.title="Admira IA" \
+      org.opencontainers.image.version="${ADMIRA_BUILD_VERSION}" \
+      org.opencontainers.image.revision="${ADMIRA_BUILD_SHA}" \
+      org.opencontainers.image.source-manifest="${ADMIRA_SOURCE_MANIFEST}" \
+      org.opencontainers.image.description="Admira IA agent runtime"
 
 COPY . .
 RUN chmod +x scripts/*.sh \
