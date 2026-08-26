@@ -46,7 +46,8 @@ git diff --quiet --ignore-submodules -- || die "tracked worktree changes are not
 git diff --cached --quiet --ignore-submodules -- || die "staged worktree changes are not committed"
 untracked="$(git ls-files --others --exclude-standard)"
 [[ -z "$untracked" ]] || die "untracked source files remain: $untracked"
-git rev-parse --verify --quiet "refs/tags/$version" >/dev/null || die "missing exact version tag: $version"
+tag_commit="$(git rev-parse --verify --quiet "refs/tags/$version^{commit}" 2>/dev/null || true)"
+[[ "$tag_commit" == "$commit_sha" ]] || die "tag '$version' points to '$tag_commit' instead of HEAD '$commit_sha'"
 
 source_manifest="$(python3 scripts/source_manifest.py)"
 printf 'CANARY SOURCE: version=%s commit=%s manifest=%s\n' "$version" "$commit_sha" "$source_manifest"
@@ -72,8 +73,11 @@ actual_container="$(docker inspect --format '{{.Name}}' "$CONTAINER" 2>/dev/null
 
 mount_name_at() {
   local destination="$1"
-  docker inspect --format '{{range .Mounts}}{{println .Destination "|" .Name}}{{end}}' "$CONTAINER" 2>/dev/null \
-    | awk -F ' \| ' -v wanted="$destination" '$1 == wanted { print $2; exit }'
+  # Emit a literal tab from the Go template. A printable delimiter such as
+  # " | " is not portable across awk implementations: mawk can parse the
+  # expression as a regex and return the delimiter itself instead of `.Name`.
+  docker inspect --format '{{range .Mounts}}{{printf "%s\t%s\n" .Destination .Name}}{{end}}' "$CONTAINER" 2>/dev/null \
+    | awk -F '\t' -v wanted="$destination" '$1 == wanted { print $2; exit }'
 }
 
 while IFS='|' read -r destination suffix; do
