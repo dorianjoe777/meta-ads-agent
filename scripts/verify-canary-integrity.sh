@@ -13,6 +13,30 @@ need() { command -v "$1" >/dev/null 2>&1 || die "missing command: $1"; }
 need git
 need python3
 
+# Read only individual non-secret identity keys.  Sourcing the buyer's whole
+# .env would execute shell syntax and could leak credentials into this check.
+read_dotenv_value() {
+  local key="$1"
+  local file="$2"
+  [[ -f "$file" ]] || return 0
+  awk -F= -v wanted="$key" '
+    /^[[:space:]]*(#|$)/ { next }
+    {
+      lhs=$1
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", lhs)
+      if (lhs != wanted) { next }
+      value=$0
+      sub(/^[^=]*=/, "", value)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      if (value ~ /^".*"$/ || value ~ /^'"'"'.*'"'"'$/) {
+        value=substr(value, 2, length(value)-2)
+      }
+      print value
+      exit
+    }
+  ' "$file"
+}
+
 version="$(tr -d '[:space:]' < VERSION)"
 [[ "$version" =~ ^r[0-9]+$ ]] || die "VERSION must be one canonical rXX value (got '$version')"
 env_version="$(sed -n 's/^META_ADS_AGENT_VERSION=//p' .env.example | head -n 1 | tr -d '[:space:]')"
@@ -35,6 +59,36 @@ fi
 
 need docker
 docker inspect "$CONTAINER" >/dev/null 2>&1 || die "container not found: $CONTAINER"
+configured_project="$(read_dotenv_value ADMIRA_COMPOSE_PROJECT_NAME .env)"
+configured_container="$(read_dotenv_value ADMIRA_CONTAINER_NAME .env)"
+configured_volume_prefix="$(read_dotenv_value ADMIRA_VOLUME_PREFIX .env)"
+configured_project="${configured_project:-admira-ia}"
+configured_container="${configured_container:-admira-ia}"
+configured_volume_prefix="${configured_volume_prefix:-meta_ads}"
+actual_project="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$CONTAINER" 2>/dev/null || true)"
+actual_container="$(docker inspect --format '{{.Name}}' "$CONTAINER" 2>/dev/null | sed 's#^/##')"
+[[ "$actual_project" == "$configured_project" ]] || die "container Compose project '$actual_project' != configured '$configured_project'"
+[[ "$actual_container" == "$configured_container" ]] || die "container name '$actual_container' != configured '$configured_container'"
+
+mount_name_at() {
+  local destination="$1"
+  docker inspect --format '{{range .Mounts}}{{println .Destination "|" .Name}}{{end}}' "$CONTAINER" 2>/dev/null \
+    | awk -F ' \| ' -v wanted="$destination" '$1 == wanted { print $2; exit }'
+}
+
+while IFS='|' read -r destination suffix; do
+  actual_mount="$(mount_name_at "$destination")"
+  expected_mount="${configured_volume_prefix}_${suffix}"
+  [[ "$actual_mount" == "$expected_mount" ]] || die "mount '$destination' uses '$actual_mount' != configured '$expected_mount'"
+done <<'MOUNTS'
+/app/runtime|config
+/app/dashboard/data|data
+/app/dashboard/data/update-snapshots|update_snapshots
+/app/output|output
+/app/logs|logs
+/app/brand_guides|brand_guides
+MOUNTS
+
 image="$(docker inspect --format '{{.Config.Image}}' "$CONTAINER")"
 [[ -n "$image" ]] || die "container has no image reference"
 image_version="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$image" 2>/dev/null || true)"

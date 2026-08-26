@@ -53,14 +53,42 @@ fi
 export ADMIRA_BUILD_SHA="${ADMIRA_BUILD_SHA:-unknown}"
 export ADMIRA_SOURCE_MANIFEST="${ADMIRA_SOURCE_MANIFEST:-unknown}"
 
-# Every installation has its own Compose project/container/volume namespace.
-# Older installations keep the original defaults, while new profiles can set
-# these values in .env without affecting any other instance on the machine.
-compose_project="${ADMIRA_COMPOSE_PROJECT_NAME:-admira-ia}"
-
 if [ ! -f .env ]; then
   cp .env.example .env
   echo "Created .env from .env.example for Docker Compose."
+fi
+
+# Compose loads .env after the shell has already started.  We need the project
+# name for `docker compose -p` ourselves, so read only this one safe key rather
+# than sourcing the complete file (which may contain secrets or shell syntax).
+# Preserve Compose's precedence: an explicitly exported environment value wins
+# over .env, and the product default is used only when neither has a value.
+read_dotenv_value() {
+  local key="$1"
+  local file="$2"
+  awk -F= -v wanted="$key" '
+    /^[[:space:]]*(#|$)/ { next }
+    {
+      lhs=$1
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", lhs)
+      if (lhs != wanted) { next }
+      value=$0
+      sub(/^[^=]*=/, "", value)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      if (value ~ /^".*"$/ || value ~ /^'"'"'.*'"'"'$/) {
+        value=substr(value, 2, length(value)-2)
+      }
+      print value
+      exit
+    }
+  ' "$file"
+}
+
+if [[ -n "${ADMIRA_COMPOSE_PROJECT_NAME+x}" && -n "$ADMIRA_COMPOSE_PROJECT_NAME" ]]; then
+  compose_project="$ADMIRA_COMPOSE_PROJECT_NAME"
+else
+  compose_project="$(read_dotenv_value ADMIRA_COMPOSE_PROJECT_NAME .env)"
+  compose_project="${compose_project:-admira-ia}"
 fi
 
 compose_args=(up)

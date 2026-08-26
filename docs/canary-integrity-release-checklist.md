@@ -43,6 +43,12 @@ La salida debe incluir el mismo `version`, commit completo y
 con archivos posteriores falla explícitamente porque su versión, commit o
 manifest no coincide.
 
+El verificador también compara la identidad operativa de `.env` con el
+contenedor: proyecto Compose, nombre del contenedor y los seis volúmenes
+persistentes. Esto evita que una actualización construya correctamente una
+imagen nueva pero intente iniciarla bajo el proyecto predeterminado
+`admira-ia`, dejando el contenedor anterior activo o montando datos vacíos.
+
 ## Qué debe existir antes de construir
 
 - `git status --short` vacío, incluyendo índice y archivos no rastreados.
@@ -52,6 +58,10 @@ manifest no coincide.
 - El cambio está commiteado y subido al remoto antes de empaquetar.
 - No se permite hot-patch como cierre. Si hubo un parche de soporte, hay que
   pasarlo al source, commitearlo y reconstruir desde ese commit.
+- `scripts/run-docker.sh` debe obtener `ADMIRA_COMPOSE_PROJECT_NAME` con esta
+  precedencia exacta: entorno explícito, `.env` de la instalación y, sólo si
+  ambos faltan, `admira-ia`. Nunca se debe cargar el `.env` completo con
+  `source`, porque contiene credenciales y no es código de shell confiable.
 
 El empaquetado ya bloquea un worktree sucio:
 
@@ -85,13 +95,16 @@ parecer correcto sólo porque `/app/VERSION` fue reemplazado.
 ## Verificaciones finales
 
 1. Ejecutar `scripts/verify-canary-integrity.sh CONTENEDOR`.
-2. Ejecutar `python3 scripts/release_canary.py` y el smoke test acotado de
+2. Confirmar que el proyecto Compose, el nombre del contenedor y cada volumen
+   coinciden con `ADMIRA_COMPOSE_PROJECT_NAME`, `ADMIRA_CONTAINER_NAME` y
+   `ADMIRA_VOLUME_PREFIX` del `.env` activo.
+3. Ejecutar `python3 scripts/release_canary.py` y el smoke test acotado de
    `scripts/run-canary-release.sh` según el runbook.
-3. Comprobar que el smoke test no dejó procesos, cambios de estado ni acciones
+4. Comprobar que el smoke test no dejó procesos, cambios de estado ni acciones
    reales en Meta.
-4. Guardar en la nota de cierre: versión, SHA, source-manifest, digest de la
+5. Guardar en la nota de cierre: versión, SHA, source-manifest, digest de la
    imagen, nombre del contenedor y resultados de los smoke tests.
-5. Sólo después de todo lo anterior, empaquetar/publicar el release o mover el
+6. Sólo después de todo lo anterior, empaquetar/publicar el release o mover el
    canal stable. El commit de cada cambio debe quedar visible en GitHub.
 
 Si el checker falla por worktree sucio, no se debe ignorar con una variable ni
