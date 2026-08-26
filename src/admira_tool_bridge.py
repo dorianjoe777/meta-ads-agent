@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Safe product-tool bridge for Hermes MCP calls."""
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -395,17 +396,28 @@ def compact_agent_tool_result(tool, result):
         execution = _safe_mapping(creation.get("execution"))
         if not execution:
             execution = _safe_mapping(creation.get("result"))
+        graph_verification = _safe_mapping(execution.get("graph_verification"))
         receipt = {
             "status": creation.get("status") or nested.get("status"),
             "executed": execution.get("executed", creation.get("executed")),
             "campaign_id": execution.get("campaign_id") or creation.get("campaign_id"),
             "adset_ids": execution.get("adset_ids") or creation.get("adset_ids") or [],
             "ad_ids": execution.get("ad_ids") or creation.get("ad_ids") or [],
+            "graph_readback_verified": graph_verification.get("ok") is True,
+            "graph_http_statuses": [
+                item.get("http_status")
+                for item in (graph_verification.get("objects") or [])
+                if isinstance(item, dict)
+            ],
             "reason": creation.get("reason") or creation.get("error") or nested.get("reason") or "",
         }
-        failure = campaign_creation_failure_receipt(result)
-        if failure:
-            receipt["failure"] = failure
+        # Warnings nested in successful Graph steps are not creation
+        # failures.  Only attach a failure receipt when the complete paused
+        # stack was not verified.
+        if not verified_paused_campaign_result(result):
+            failure = campaign_creation_failure_receipt(result)
+            if failure:
+                receipt["failure"] = failure
         outer["result"] = receipt
         return outer
     return result
@@ -1279,17 +1291,26 @@ def persist_pending_campaign_workflow(tool, args, reason, *, result=None, status
         "missing_prefilled_message": "Propose the exact WhatsApp prefilled message and show it to the buyer.",
         "prefilled_message_not_approved": "Show the exact WhatsApp prefilled message and obtain explicit approval.",
     }
+    creation_receipt = paused_campaign_creation_receipt(result)
+    completed_verified = status == "completed" and bool(creation_receipt)
     payload = {
         "status": status,
         "destination": destination,
         "tool": tool,
+        "creation_fingerprint": campaign_creation_fingerprint(tool, source),
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "campaign_contract": contract,
-        "blocker": str(reason or "campaign_creation_not_verified"),
-        "blocker_details": _campaign_blocker_details(result),
-        "next_step": next_step_by_reason.get(str(reason or ""), "Resolve the exact blocker and resume this campaign; do not restart onboarding."),
-        "meta_creation_verified": status == "completed",
+        "blocker": "" if completed_verified else str(reason or "campaign_creation_not_verified"),
+        "blocker_details": [] if completed_verified else _campaign_blocker_details(result),
+        "next_step": (
+            "The campaign is verified in Meta and paused; do not create a duplicate."
+            if completed_verified
+            else next_step_by_reason.get(str(reason or ""), "Resolve the exact blocker and resume this campaign; do not restart onboarding.")
+        ),
+        "meta_creation_verified": completed_verified,
     }
+    if creation_receipt:
+        payload["creation_receipt"] = creation_receipt
     proposal_brief = str(proposal_markdown or source.get("brief_markdown") or "").strip()
     if proposal_brief:
         # Keep the exact held proposal private so a later short “sí” can
@@ -1323,23 +1344,131 @@ def campaign_has_verified_creative(args, reference_paths=()):
 
 def verified_paused_campaign_result(result):
     """Require a materialized PAUSED campaign, ad set and ad from Meta."""
-    if not isinstance(result, dict) or not result.get("executed"):
+    if not isinstance(result, dict):
         return False
-    creation = result.get("result")
-    if not isinstance(creation, dict):
+    creation = result
+    if str(creation.get("status") or "") != "created_paused":
+        nested = creation.get("result")
+        creation = nested if isinstance(nested, dict) else {}
+    if str(creation.get("status") or "") != "created_paused" or creation.get("executed") is not True:
         return False
     execution = creation.get("result")
+    if not isinstance(execution, dict):
+        execution = creation.get("execution")
     if not isinstance(execution, dict):
         return False
     campaign_id = str(execution.get("campaign_id") or "").strip()
     adset_ids = [str(value).strip() for value in (execution.get("adset_ids") or []) if str(value).strip()]
     ad_ids = [str(value).strip() for value in (execution.get("ad_ids") or []) if str(value).strip()]
     return bool(
-        creation.get("status") == "created_paused"
-        and creation.get("executed") is True
-        and execution.get("executed") is True
+        execution.get("executed") is True
         and campaign_id and adset_ids and ad_ids
+        and isinstance(execution.get("graph_verification"), dict)
+        and execution["graph_verification"].get("ok") is True
     )
+
+
+def paused_campaign_creation_receipt(result):
+    """Return the durable proof fields for one verified PAUSED creation."""
+    if not verified_paused_campaign_result(result):
+        return {}
+    creation = result
+    if str(creation.get("status") or "") != "created_paused":
+        creation = creation.get("result") if isinstance(creation.get("result"), dict) else {}
+    execution = creation.get("result")
+    if not isinstance(execution, dict):
+        execution = creation.get("execution")
+    graph_verification = execution.get("graph_verification") if isinstance(execution.get("graph_verification"), dict) else {}
+    return {
+        "campaign_id": str(execution.get("campaign_id") or "").strip(),
+        "adset_ids": [
+            str(value).strip()
+            for value in (execution.get("adset_ids") or [])
+            if str(value).strip()
+        ],
+        "ad_ids": [
+            str(value).strip()
+            for value in (execution.get("ad_ids") or [])
+            if str(value).strip()
+        ],
+        "final_status": "PAUSED",
+        "graph_readback_verified": graph_verification.get("ok") is True,
+        "graph_http_statuses": [
+            item.get("http_status")
+            for item in (graph_verification.get("objects") or [])
+            if isinstance(item, dict)
+        ],
+    }
+
+
+def campaign_creation_fingerprint(tool, args):
+    """Stable identity for one approved creation, independent of chat prose."""
+    source = args if isinstance(args, dict) else {}
+    keys = (
+        "name", "objective", "daily_budget", "budget_confirmation", "account_currency",
+        "primary_text", "headline", "prefilled_message", "message_destination",
+        "landing_url", "lead_gen_form_id", "app_id", "creative_asset_id",
+        "content_asset_id", "content_asset_ids", "creative_image_path", "image_hash",
+        "image_url", "video_path", "video_url", "video_id", "object_story_id",
+    )
+    identity = {
+        "destination": str(tool or "").removeprefix("admira_create_").removesuffix("_campaign"),
+        "contract": {
+            key: source.get(key)
+            for key in keys
+            if source.get(key) not in (None, "", [], {})
+        },
+    }
+    encoded = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def completed_campaign_workflow_readback(tool, args, dashboard):
+    """Re-read a matching completed receipt before any duplicate Meta write."""
+    try:
+        workflow = json.loads(PENDING_CAMPAIGN_WORKFLOW_FILE.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        return {"matched": False}
+    if not isinstance(workflow, dict):
+        return {"matched": False}
+    if workflow.get("status") != "completed" or workflow.get("meta_creation_verified") is not True:
+        return {"matched": False}
+    destination = str(tool or "").removeprefix("admira_create_").removesuffix("_campaign")
+    if str(workflow.get("destination") or "") != destination:
+        return {"matched": False}
+    contract = workflow.get("campaign_contract") if isinstance(workflow.get("campaign_contract"), dict) else {}
+    expected_name = " ".join(str(contract.get("name") or "").casefold().split())
+    current_name = " ".join(str((args or {}).get("name") or "").casefold().split())
+    if not expected_name or expected_name != current_name:
+        return {"matched": False}
+    expected_fingerprint = str(workflow.get("creation_fingerprint") or "").strip()
+    if expected_fingerprint and expected_fingerprint != campaign_creation_fingerprint(tool, args):
+        return {"matched": False}
+    receipt = workflow.get("creation_receipt") if isinstance(workflow.get("creation_receipt"), dict) else {}
+    execution = {
+        "executed": True,
+        "campaign_id": str(receipt.get("campaign_id") or "").strip(),
+        "adset_ids": [str(value).strip() for value in (receipt.get("adset_ids") or []) if str(value).strip()],
+        "ad_ids": [str(value).strip() for value in (receipt.get("ad_ids") or []) if str(value).strip()],
+    }
+    if not execution["campaign_id"] or not execution["adset_ids"] or not execution["ad_ids"]:
+        return {"matched": True, "verified": False, "reason": "completed_campaign_receipt_incomplete"}
+    try:
+        client = dashboard.SocialFlowClient(dashboard.load_config())
+        graph_verification = dashboard.verify_campaign_stack_with_graph(client, execution)
+    except Exception as exc:
+        return {
+            "matched": True,
+            "verified": False,
+            "reason": f"completed_campaign_readback_exception:{type(exc).__name__}",
+        }
+    return {
+        "matched": True,
+        "verified": graph_verification.get("ok") is True,
+        "reason": str(graph_verification.get("reason") or ""),
+        "receipt": execution,
+        "graph_verification": graph_verification,
+    }
 
 
 def call_tool(name, arguments=None, channel="telegram", language="es"):
@@ -1656,6 +1785,45 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
     product_tool = TOOL_MAP[tool]
     product_args = dict(args)
     if tool in CAMPAIGN_CREATION_TOOLS:
+        completed_readback = completed_campaign_workflow_readback(tool, product_args, dashboard)
+        if completed_readback.get("matched"):
+            if completed_readback.get("verified"):
+                receipt = completed_readback["receipt"]
+                graph_verification = completed_readback["graph_verification"]
+                return redact_payload({
+                    "ok": True,
+                    "tool": tool,
+                    "product_tool": product_tool,
+                    "executed": False,
+                    "reused_existing": True,
+                    "status": "already_created_paused",
+                    "campaign_creation_verified": True,
+                    "campaign_id": receipt["campaign_id"],
+                    "adset_ids": receipt["adset_ids"],
+                    "ad_ids": receipt["ad_ids"],
+                    "graph_readback_verified": True,
+                    "graph_http_statuses": [
+                        item.get("http_status")
+                        for item in (graph_verification.get("objects") or [])
+                        if isinstance(item, dict)
+                    ],
+                    "reply": (
+                        "La campaña ya existe en Meta, su campaña, conjuntos y anuncios fueron "
+                        "confirmados nuevamente por Graph y siguen en pausa. No la dupliqué."
+                    ),
+                })
+            return redact_payload({
+                "ok": False,
+                "tool": tool,
+                "product_tool": product_tool,
+                "blocked": True,
+                "executed": False,
+                "reason": completed_readback.get("reason") or "completed_campaign_graph_readback_failed",
+                "reply": (
+                    "Encontré el recibo de la creación anterior, pero Graph no confirmó ahora los tres objetos "
+                    "en pausa. No crearé un duplicado mientras se reconcilia ese estado."
+                ),
+            })
         message_validation = validate_campaign_customer_messages(product_args)
         if not message_validation.get("ok"):
             validation = message_validation.get("validation") or {}

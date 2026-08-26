@@ -14541,6 +14541,113 @@ def verified_campaign_stack_execution(result):
     return bool(campaign_id and adset_ids and ad_ids)
 
 
+def verify_campaign_stack_with_graph(client, result):
+    """Read back every created object and require Meta HTTP 200 + PAUSED.
+
+    A successful write response is necessary but not sufficient evidence for
+    buyer-facing success.  This independent read verifies the exact IDs Meta
+    returned for the campaign, every ad set, and every ad.  Only configured
+    ``status`` is authoritative here; ``effective_status`` may temporarily be
+    IN_PROCESS/PENDING_REVIEW even though no object can spend while PAUSED.
+    """
+    if not verified_campaign_stack_execution(result):
+        return {
+            "ok": False,
+            "verified_by": "graph_readback",
+            "reason": "campaign_stack_ids_incomplete",
+            "objects": [],
+        }
+    requested = [
+        ("campaign", str(result.get("campaign_id") or "").strip()),
+        *[("adset", str(value).strip()) for value in (result.get("adset_ids") or []) if str(value).strip()],
+        *[("ad", str(value).strip()) for value in (result.get("ad_ids") or []) if str(value).strip()],
+    ]
+    requested_ids = [object_id for _kind, object_id in requested]
+    if len(requested_ids) != len(set(requested_ids)):
+        return {
+            "ok": False,
+            "verified_by": "graph_readback",
+            "reason": "campaign_stack_ids_not_unique",
+            "objects": [],
+        }
+    campaign_id = str(result.get("campaign_id") or "").strip()
+    requested_adset_ids = {
+        str(value).strip()
+        for value in (result.get("adset_ids") or [])
+        if str(value).strip()
+    }
+    objects = []
+    for kind, object_id in requested:
+        fields = "id,name,status,effective_status"
+        if kind == "adset":
+            fields += ",campaign_id"
+        elif kind == "ad":
+            fields += ",campaign_id,adset_id"
+        try:
+            readback = client.get_graph(object_id, {"fields": fields})
+        except Exception as exc:
+            objects.append({
+                "kind": kind,
+                "requested_id": object_id,
+                "ok": False,
+                "http_status": 0,
+                "reason": f"graph_readback_exception:{type(exc).__name__}",
+            })
+            continue
+        body = readback.get("body") if isinstance(readback, dict) and isinstance(readback.get("body"), dict) else {}
+        http_status = int(readback.get("status") or 0) if isinstance(readback, dict) else 0
+        returned_id = str(body.get("id") or "").strip()
+        configured_status = str(body.get("status") or "").strip().upper()
+        parent_campaign_id = str(body.get("campaign_id") or "").strip()
+        parent_adset_id = str(body.get("adset_id") or "").strip()
+        parent_matches = True
+        if kind == "adset":
+            parent_matches = parent_campaign_id == campaign_id
+        elif kind == "ad":
+            parent_matches = (
+                parent_campaign_id == campaign_id
+                and parent_adset_id in requested_adset_ids
+            )
+        verified = bool(
+            readback.get("ok") is True
+            and http_status == 200
+            and returned_id == object_id
+            and configured_status == "PAUSED"
+            and parent_matches
+        )
+        objects.append({
+            "kind": kind,
+            "requested_id": object_id,
+            "returned_id": returned_id,
+            "ok": verified,
+            "http_status": http_status,
+            "status": configured_status,
+            "effective_status": str(body.get("effective_status") or "").strip().upper(),
+            "campaign_id": parent_campaign_id,
+            "adset_id": parent_adset_id,
+            "parent_matches": parent_matches,
+        })
+    covered_adset_ids = {
+        item.get("adset_id")
+        for item in objects
+        if item.get("kind") == "ad" and item.get("adset_id")
+    }
+    hierarchy_complete = requested_adset_ids.issubset(covered_adset_ids)
+    verified_all = bool(
+        objects
+        and len(objects) == len(requested)
+        and all(item.get("ok") for item in objects)
+        and hierarchy_complete
+    )
+    return {
+        "ok": verified_all,
+        "verified_by": "graph_readback",
+        "reason": "" if verified_all else "campaign_stack_graph_readback_failed",
+        "hierarchy_complete": hierarchy_complete,
+        "objects": objects,
+    }
+
+
 def campaign_location_selection_source(payload):
     """Return structured Meta locations regardless of the model's valid key."""
     explicit = payload.get("targeting_locations_json") or payload.get("targeting_locations")
@@ -15052,7 +15159,8 @@ def create_campaign(payload):
             }
         else:
             require_cloud_license("Paused campaign creation requires an active license")
-            execution_result = execute_campaign_creation(str(out_path), SocialFlowClient(config), approved=True)
+            campaign_client = SocialFlowClient(config)
+            execution_result = execute_campaign_creation(str(out_path), campaign_client, approved=True)
             if execution_result.get("ok") and not execution_result.get("executed"):
                 execution_result = {
                     **execution_result,
@@ -15061,10 +15169,29 @@ def create_campaign(payload):
                     "reason": "paused_campaign_creation_not_materialized",
                     "message": "Paused campaign creation must materialize Meta objects or return a real blocker; dry-run planned is not a valid success state for this flow.",
                 }
+            if verified_campaign_stack_execution(execution_result):
+                graph_verification = verify_campaign_stack_with_graph(campaign_client, execution_result)
+                execution_result = {
+                    **execution_result,
+                    "graph_verification": graph_verification,
+                    "campaign_creation_verified": bool(graph_verification.get("ok")),
+                }
+                if not graph_verification.get("ok"):
+                    execution_result = {
+                        **execution_result,
+                        "ok": False,
+                        "blocked": True,
+                        "reason": "campaign_creation_graph_readback_failed",
+                        "message": (
+                            "Meta returned creation IDs, but the independent read-back did not confirm "
+                            "HTTP 200 and PAUSED for the complete campaign stack."
+                        ),
+                    }
         succeeded = (
             bool(execution_result.get("ok"))
             and not execution_result.get("blocked")
             and verified_campaign_stack_execution(execution_result)
+            and bool((execution_result.get("graph_verification") or {}).get("ok"))
         )
         if execution_result.get("ok") and execution_result.get("executed") and not succeeded:
             execution_result = {

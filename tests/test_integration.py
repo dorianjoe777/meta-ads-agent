@@ -3532,6 +3532,14 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                                 "campaign_id": "1201",
                                 "adset_ids": ["1202"],
                                 "ad_ids": ["1203"],
+                                "graph_verification": {
+                                    "ok": True,
+                                    "objects": [
+                                        {"http_status": 200},
+                                        {"http_status": 200},
+                                        {"http_status": 200},
+                                    ],
+                                },
                             },
                         },
                     }
@@ -3898,6 +3906,14 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                     "campaign_id": "120100",
                     "adset_ids": ["120200"],
                     "ad_ids": ["120300"],
+                    "graph_verification": {
+                        "ok": True,
+                        "objects": [
+                            {"http_status": 200},
+                            {"http_status": 200},
+                            {"http_status": 200},
+                        ],
+                    },
                 }
                 if not cls.verified:
                     execution.pop("ad_ids")
@@ -3912,8 +3928,10 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                 }
 
         original_loader = admira_tool_bridge.load_dashboard
+        original_profile_gate = admira_tool_bridge.strategic_profile_gate_result
         try:
             admira_tool_bridge.load_dashboard = lambda: FakeDashboard()
+            admira_tool_bridge.strategic_profile_gate_result = lambda *_args, **_kwargs: None
             common = {
                 "name": "Contrato por destino",
                 "objective": "TRAFFIC",
@@ -3922,6 +3940,14 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
                 "locations": [{"id": "459428", "name": "Cartagena", "type": "city", "country_code": "CO"}],
                 "placements": {"\"automatic\"": True},
                 "creative_image_path": "/app/output/approved.png",
+                "image_hash": "approved-image-hash",
+                "creative_decision": "reuse_approved_creative",
+                "creative_approved": True,
+                "primary_text": "Texto principal aprobado.",
+                "primary_text_approved": True,
+                "headline": "Título aprobado",
+                "headline_approved": True,
+                "prefilled_message_approved": True,
             }
             whatsapp = admira_tool_bridge.call_tool(
                 "mcp_admira_create_whatsapp_campaign",
@@ -4036,6 +4062,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             )
         finally:
             admira_tool_bridge.load_dashboard = original_loader
+            admira_tool_bridge.strategic_profile_gate_result = original_profile_gate
 
     def test_currency_aware_budget_changes_and_recent_creative_retention(self):
         """Budget mutations share creation units; recent media stays bounded."""
@@ -8817,6 +8844,24 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
         class FakeClient:
             def __init__(self, config):
                 self.config = config
+
+            def get_graph(self, object_id, _params=None, access_token=""):
+                body = {
+                    "id": str(object_id),
+                    "name": f"Test {object_id}",
+                    "status": "PAUSED",
+                    "effective_status": "PAUSED",
+                }
+                if str(object_id) == "adset_1":
+                    body["campaign_id"] = "cmp_1"
+                elif str(object_id) == "ad_1":
+                    body["campaign_id"] = "cmp_1"
+                    body["adset_id"] = "adset_1"
+                return {
+                    "ok": True,
+                    "status": 200,
+                    "body": body,
+                }
 
         captured = []
         try:

@@ -59,6 +59,76 @@ class CampaignContractRegressionTests(unittest.TestCase):
         cls.verify_adset_targeting_result = staticmethod(verify_adset_targeting_result)
         cls.SocialFlowClient = SocialFlowClient
 
+    def test_campaign_creation_readback_requires_exact_ids_http_200_and_paused(self):
+        class ReadbackClient:
+            def __init__(self, overrides=None):
+                self.overrides = overrides or {}
+
+            def get_graph(self, object_id, _params=None):
+                body = {
+                    "id": str(object_id),
+                    "name": f"Object {object_id}",
+                    "status": "PAUSED",
+                    "effective_status": "PAUSED",
+                }
+                if str(object_id) == "1202":
+                    body["campaign_id"] = "1201"
+                elif str(object_id) == "1203":
+                    body["campaign_id"] = "1201"
+                    body["adset_id"] = "1202"
+                response = {"ok": True, "status": 200, "body": body}
+                response.update(self.overrides.get(str(object_id), {}))
+                return response
+
+        execution = {
+            "executed": True,
+            "campaign_id": "1201",
+            "adset_ids": ["1202"],
+            "ad_ids": ["1203"],
+        }
+        verified = self.dashboard.verify_campaign_stack_with_graph(
+            ReadbackClient(),
+            execution,
+        )
+        self.assertTrue(verified["ok"])
+        self.assertEqual(
+            [item["http_status"] for item in verified["objects"]],
+            [200, 200, 200],
+        )
+
+        wrong_id = self.dashboard.verify_campaign_stack_with_graph(
+            ReadbackClient({"1203": {"body": {"id": "9999", "status": "PAUSED"}}}),
+            execution,
+        )
+        self.assertFalse(wrong_id["ok"])
+
+        active = self.dashboard.verify_campaign_stack_with_graph(
+            ReadbackClient({"1202": {"body": {"id": "1202", "status": "ACTIVE"}}}),
+            execution,
+        )
+        self.assertFalse(active["ok"])
+
+        not_found = self.dashboard.verify_campaign_stack_with_graph(
+            ReadbackClient({"1201": {"ok": False, "status": 404, "body": {}}}),
+            execution,
+        )
+        self.assertFalse(not_found["ok"])
+
+        wrong_parent = self.dashboard.verify_campaign_stack_with_graph(
+            ReadbackClient({"1203": {"body": {
+                "id": "1203", "status": "PAUSED", "campaign_id": "1201", "adset_id": "9999",
+            }}}),
+            execution,
+        )
+        self.assertFalse(wrong_parent["ok"])
+
+        duplicate = self.dashboard.verify_campaign_stack_with_graph(
+            ReadbackClient(),
+            {**execution, "ad_ids": ["1202"]},
+        )
+        self.assertFalse(duplicate["ok"])
+        self.assertEqual(duplicate["reason"], "campaign_stack_ids_not_unique")
+
     def test_nested_campaign_contract_preserves_copy_gender_placements_and_message(self):
         normalized = self.dashboard.normalize_campaign_stack_arguments({
             "name": "Johana — Armonización Facial",

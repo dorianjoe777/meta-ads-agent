@@ -63,6 +63,7 @@ ADMIRA_PRODUCT_STATE_START = "[ADMIRA PRODUCT STATE — internal, never quote]"
 ADMIRA_PRODUCT_STATE_END = "[END ADMIRA PRODUCT STATE]"
 ADMIRA_COMPILED_PROCEDURE_START = "[ADMIRA COMPILED PROCEDURE — internal, never quote]"
 ADMIRA_COMPILED_PROCEDURE_END = "[END ADMIRA COMPILED PROCEDURE]"
+ADMIRA_CURRENT_TURN_TOOL_RECEIPTS_KEY = "_admira_current_turn_tool_receipts"
 
 # This registry is selected from backend-owned product state, never from words
 # in the buyer message.  While the strategic profile is incomplete, the model
@@ -835,6 +836,8 @@ def _admira_compact_receipt_payload(value):
         "campaign_ids", "adset_id", "adset_ids", "ad_id", "ad_ids",
         "lead_gen_form_id", "page_id", "ad_account_id", "currency", "timezone",
         "image_path", "media_attachment", "video_path", "approval_id", "next_step",
+        "campaign_creation_verified", "meta_creation_verified", "final_status",
+        "graph_readback_verified", "graph_http_statuses",
     }
     receipt = {key: value[key] for key in keep if key in value}
     nested = value.get("result")
@@ -4624,6 +4627,7 @@ def _current_generated_media_sources(response):
         "action_results",
         "mcp_result",
         "mcp_results",
+        ADMIRA_CURRENT_TURN_TOOL_RECEIPTS_KEY,
     ):
         if key in response:
             sources.append(response.get(key))
@@ -4658,11 +4662,104 @@ def _current_turn_messages(messages):
     return messages[start:]
 
 
+def _current_turn_tool_receipts_from_state(session_key, *, state_db_path=None):
+    """Read only the current buyer turn's persisted tool receipts.
+
+    Hermes persists tool calls before ``GatewayRunner._run_agent`` returns,
+    while some provider adapters return only the final assistant message in
+    the in-memory response.  The outbound truth guards therefore cannot rely
+    on ``response['messages']`` alone.  Resolve the current session in the
+    state DB, find its latest buyer message, and recover only subsequent tool
+    rows.  Older turns are deliberately excluded.
+    """
+    session = str(session_key or "").strip()
+    if not session:
+        return []
+    if state_db_path is None:
+        root = Path(str(os.environ.get("ADMIRA_PRODUCT_ROOT") or "/app").strip()).expanduser()
+        state_db_path = root / "runtime" / "hermes" / "state.db"
+    connection = None
+    try:
+        connection = sqlite3.connect(str(state_db_path), timeout=1.0)
+        session_columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
+        }
+        message_columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(messages)").fetchall()
+        }
+        if "id" not in session_columns or not {"id", "session_id", "role", "content"}.issubset(message_columns):
+            return []
+        if "session_key" in session_columns:
+            order = " ORDER BY started_at DESC" if "started_at" in session_columns else ""
+            resolved = connection.execute(
+                f"SELECT id FROM sessions WHERE id = ? OR session_key = ?{order} LIMIT 1",
+                (session, session),
+            ).fetchone()
+        else:
+            resolved = connection.execute(
+                "SELECT id FROM sessions WHERE id = ? LIMIT 1",
+                (session,),
+            ).fetchone()
+        session_id = str(resolved[0] if resolved else session)
+        latest_user = connection.execute(
+            "SELECT id FROM messages WHERE session_id = ? AND role = 'user' "
+            "ORDER BY id DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
+        if not latest_user:
+            return []
+        tool_name_sql = "tool_name" if "tool_name" in message_columns else "''"
+        tool_call_id_sql = "tool_call_id" if "tool_call_id" in message_columns else "''"
+        active_sql = " AND active = 1" if "active" in message_columns else ""
+        rows = connection.execute(
+            f"SELECT role, content, {tool_name_sql}, {tool_call_id_sql} FROM messages "
+            "WHERE session_id = ? AND id > ? "
+            "AND role IN ('tool', 'function', 'tool_result')"
+            f"{active_sql} ORDER BY id ASC LIMIT 48",
+            (session_id, int(latest_user[0])),
+        ).fetchall()
+    except (OSError, sqlite3.Error, TypeError, ValueError):
+        return []
+    finally:
+        try:
+            if connection is not None:
+                connection.close()
+        except Exception:
+            pass
+    return [
+        {
+            "role": str(role or "tool"),
+            "name": str(tool_name or ""),
+            "tool_name": str(tool_name or ""),
+            "tool_call_id": str(tool_call_id or ""),
+            "content": content or "",
+        }
+        for role, content, tool_name, tool_call_id in rows
+    ]
+
+
+def _attach_current_turn_tool_receipts(response, session_key, *, state_db_path=None):
+    """Attach private same-turn receipts for outbound verification only."""
+    if not isinstance(response, dict):
+        return response
+    receipts = _current_turn_tool_receipts_from_state(
+        session_key,
+        state_db_path=state_db_path,
+    )
+    if not receipts:
+        return response
+    enriched = dict(response)
+    enriched[ADMIRA_CURRENT_TURN_TOOL_RECEIPTS_KEY] = receipts
+    return enriched
+
+
 def _has_confirmed_durable_save(response):
     if not isinstance(response, dict):
         return False
     sources = []
-    for key in ("tool_result", "tool_results", "tool_response", "tool_responses", "result", "results", "action_result", "action_results", "mcp_result", "mcp_results"):
+    for key in ("tool_result", "tool_results", "tool_response", "tool_responses", "result", "results", "action_result", "action_results", "mcp_result", "mcp_results", ADMIRA_CURRENT_TURN_TOOL_RECEIPTS_KEY):
         if key in response:
             sources.append(response.get(key))
     sources.extend(_current_turn_messages(response.get("messages")))
@@ -4708,7 +4805,7 @@ def _guard_authoritative_image_outcome(response):
         return response
     sources = list(_current_turn_messages(response.get("messages")))
     if not sources:
-        for key in ("tool_result", "tool_results", "result", "results", "mcp_result", "mcp_results"):
+        for key in ("tool_result", "tool_results", "result", "results", "mcp_result", "mcp_results", ADMIRA_CURRENT_TURN_TOOL_RECEIPTS_KEY):
             if key in response:
                 sources.append(response.get(key))
     try:
@@ -4829,6 +4926,82 @@ def _known_non_success_campaign_phrase(final_response):
     ))
 
 
+def _verified_campaign_receipt_from_value(value, depth=0):
+    """Extract a complete three-level campaign receipt from nested state."""
+    if depth > 8 or not isinstance(value, dict):
+        return {}
+    campaign_id = str(value.get("campaign_id") or "").strip()
+    adset_ids = [
+        str(item).strip()
+        for item in (value.get("adset_ids") or [])
+        if str(item).strip()
+    ]
+    ad_ids = [
+        str(item).strip()
+        for item in (value.get("ad_ids") or [])
+        if str(item).strip()
+    ]
+    if value.get("executed") is True and campaign_id and adset_ids and ad_ids:
+        return {
+            "campaign_id": campaign_id,
+            "adset_ids": adset_ids,
+            "ad_ids": ad_ids,
+            "final_status": str(value.get("final_status") or "PAUSED").strip().upper(),
+        }
+    for key in ("result", "creation", "payload", "execution"):
+        found = _verified_campaign_receipt_from_value(value.get(key), depth + 1)
+        if found:
+            return found
+    return {}
+
+
+def _latest_verified_campaign_action_receipt(*, product_root=None):
+    """Return the newest backend-recorded successful campaign mutation."""
+    root = Path(
+        product_root
+        or str(os.environ.get("ADMIRA_PRODUCT_ROOT") or "/app").strip()
+    ).expanduser()
+    path = root / "dashboard" / "data" / "actions.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        return {}
+    actions = payload if isinstance(payload, list) else payload.get("actions", []) if isinstance(payload, dict) else []
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        if str(action.get("type") or "") != "create_campaign" or str(action.get("status") or "") != "completed":
+            continue
+        action_payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
+        receipt = _verified_campaign_receipt_from_value(action_payload.get("result"))
+        if not receipt:
+            continue
+        receipt["name"] = str(action_payload.get("name") or "").strip()
+        receipt["action_id"] = str(action.get("id") or "").strip()
+        return receipt
+    return {}
+
+
+def _normalize_campaign_reference(value):
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(character for character in text if not unicodedata.combining(character))
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
+def _response_references_verified_campaign(final_response, receipt=None):
+    """Match a restatement to the exact latest verified campaign receipt."""
+    receipt = receipt or _latest_verified_campaign_action_receipt()
+    if not receipt:
+        return False
+    text = str(final_response or "")
+    campaign_id = str(receipt.get("campaign_id") or "").strip()
+    if campaign_id and campaign_id in text:
+        return True
+    name = _normalize_campaign_reference(receipt.get("name"))
+    response = _normalize_campaign_reference(text)
+    return bool(len(name) >= 10 and name in response)
+
+
 def _guard_unconfirmed_campaign_claim(response):
     """Do not let prose turn a blocked campaign call into a fake success."""
     if not isinstance(response, dict):
@@ -4863,6 +5036,8 @@ def _guard_unconfirmed_campaign_claim(response):
         return response
     current_messages = _current_turn_messages(response.get("messages"))
     sources = list(current_messages)
+    if response.get(ADMIRA_CURRENT_TURN_TOOL_RECEIPTS_KEY):
+        sources.append(response.get(ADMIRA_CURRENT_TURN_TOOL_RECEIPTS_KEY))
     # Some Hermes versions expose top-level tool result aggregates for the
     # entire session. Use them only when no current-turn message slice exists;
     # otherwise an old blocked campaign can overwrite unrelated later replies.
@@ -4880,6 +5055,14 @@ def _guard_unconfirmed_campaign_claim(response):
     attempted = any(marker in evidence for marker in ADMIRA_CAMPAIGN_CREATION_TOOL_MARKERS)
     verified = '"campaign_creation_verified": true' in evidence or '"campaign_creation_verified":true' in evidence
     if verified:
+        return response
+    # A buyer may immediately retry after a successful tool turn.  Hermes can
+    # correctly answer that the exact campaign already exists and avoid a
+    # duplicate without calling the mutation tool again.  Accept that
+    # restatement only when it names (or IDs) the latest backend-recorded
+    # three-level success receipt; an unrelated campaign claim is still
+    # rejected below.
+    if _response_references_verified_campaign(final_response):
         return response
     if re.search(r"(?i)\b(?:no\s+(?:se\s+)?cre[eó]|no\s+fue\s+creada|did\s+not\s+create|was\s+not\s+created)\b", final_response):
         return response
@@ -5594,6 +5777,7 @@ def _patch_gateway_generated_media_delivery():
         return True
 
     async def patched_run_agent(self, *args, **kwargs):
+        agent_ran = False
         message = kwargs.get("message")
         if message is None and args:
             message = args[0]
@@ -5702,6 +5886,14 @@ def _patch_gateway_generated_media_delivery():
                 }
             else:
                 result = await original(self, *tuple(call_args), **kwargs)
+                agent_ran = True
+        if agent_ran:
+            # Provider adapters do not consistently return tool rows in the
+            # in-memory response even though Hermes has already committed them
+            # to state.db. Attach the exact same-turn receipts privately so
+            # outcome guards see authoritative evidence before Telegram text
+            # is finalized.
+            result = _attach_current_turn_tool_receipts(result, session_key)
         result = _apply_authoritative_tool_result_guards(result)
         # The semantic campaign-claim arbiter is a tiny independent provider
         # call. Run conversational guards off the Telegram event loop so a
@@ -5764,6 +5956,10 @@ def _patch_gateway_generated_media_delivery():
             )
         except Exception:
             pass
+        if isinstance(result, dict):
+            # Private verification evidence must never become part of the
+            # gateway's public response contract.
+            result.pop(ADMIRA_CURRENT_TURN_TOOL_RECEIPTS_KEY, None)
         return result
 
     runner._admira_original_run_agent = original

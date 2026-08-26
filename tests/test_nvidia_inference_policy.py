@@ -686,6 +686,254 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         self.assertEqual(guarded["final_response"], response["final_response"])
         classify.assert_not_called()
 
+    def test_campaign_guard_recovers_same_turn_receipt_from_hermes_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_db = Path(directory) / "state.db"
+            with sqlite3.connect(state_db) as connection:
+                connection.execute(
+                    "CREATE TABLE sessions (id TEXT PRIMARY KEY, session_key TEXT, started_at REAL)"
+                )
+                connection.execute(
+                    "CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, "
+                    "content TEXT, tool_name TEXT, tool_call_id TEXT, active INTEGER)"
+                )
+                connection.execute(
+                    "INSERT INTO sessions VALUES (?, ?, ?)",
+                    ("session-1", "telegram-chat-1", 1.0),
+                )
+                connection.execute(
+                    "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (1, "session-1", "user", "créala", "", "", 1),
+                )
+                connection.execute(
+                    "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        2,
+                        "session-1",
+                        "tool",
+                        '{"campaign_creation_verified":true,"campaign_id":"1201"}',
+                        "mcp_admira_create_whatsapp_campaign",
+                        "call-1",
+                        1,
+                    ),
+                )
+            response = {
+                "final_response": "Perfecto, la campaña quedó creada y pausada.",
+                # This matches the real provider shape that exposed the bug:
+                # the final response omitted tool rows even though state.db
+                # already contained them.
+                "messages": [{"role": "assistant", "content": "Campaña creada."}],
+            }
+            enriched = admira_hermes_runtime_patch._attach_current_turn_tool_receipts(
+                response,
+                "telegram-chat-1",
+                state_db_path=state_db,
+            )
+            guarded = admira_hermes_runtime_patch._guard_unconfirmed_campaign_claim(enriched)
+        self.assertEqual(guarded["final_response"], response["final_response"])
+        self.assertEqual(
+            guarded[admira_hermes_runtime_patch.ADMIRA_CURRENT_TURN_TOOL_RECEIPTS_KEY][0]["name"],
+            "mcp_admira_create_whatsapp_campaign",
+        )
+
+    def test_campaign_guard_preserves_exact_latest_verified_restatement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory) / "dashboard" / "data"
+            data_dir.mkdir(parents=True)
+            (data_dir / "actions.json").write_text(json.dumps([{
+                "id": "act-1",
+                "type": "create_campaign",
+                "status": "completed",
+                "payload": {
+                    "name": "Rodeo - Full Detail en Taller (WhatsApp)",
+                    "result": {
+                        "ok": True,
+                        "executed": True,
+                        "campaign_id": "120250882548000425",
+                        "adset_ids": ["120250882548160425"],
+                        "ad_ids": ["120250882549100425"],
+                    },
+                },
+            }]), encoding="utf-8")
+            with mock.patch.dict(
+                admira_hermes_runtime_patch.os.environ,
+                {"ADMIRA_PRODUCT_ROOT": directory},
+            ):
+                response = {
+                    "final_response": (
+                        "La campaña Rodeo - Full Detail en Taller (WhatsApp) ya existe en Meta y está pausada; "
+                        "no la volveré a duplicar."
+                    ),
+                    "messages": [
+                        {"role": "user", "content": "intenta de nuevo crear la campaña"},
+                        {"role": "assistant", "content": "La campaña ya existe."},
+                    ],
+                }
+                guarded = admira_hermes_runtime_patch._guard_unconfirmed_campaign_claim(response)
+        self.assertEqual(guarded["final_response"], response["final_response"])
+
+    def test_campaign_guard_does_not_reuse_receipt_for_another_campaign(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory) / "dashboard" / "data"
+            data_dir.mkdir(parents=True)
+            (data_dir / "actions.json").write_text(json.dumps([{
+                "id": "act-1",
+                "type": "create_campaign",
+                "status": "completed",
+                "payload": {
+                    "name": "Rodeo - Full Detail en Taller (WhatsApp)",
+                    "result": {
+                        "executed": True,
+                        "campaign_id": "1201",
+                        "adset_ids": ["1202"],
+                        "ad_ids": ["1203"],
+                    },
+                },
+            }]), encoding="utf-8")
+            with mock.patch.dict(
+                admira_hermes_runtime_patch.os.environ,
+                {"ADMIRA_PRODUCT_ROOT": directory},
+            ):
+                guarded = admira_hermes_runtime_patch._guard_unconfirmed_campaign_claim({
+                    "final_response": "La campaña Nueva Oferta de Medellín quedó creada y pausada.",
+                    "messages": [
+                        {"role": "user", "content": "crea otra campaña"},
+                        {"role": "assistant", "content": "La campaña quedó creada."},
+                    ],
+                })
+        self.assertIn("ninguna herramienta de campaña devolvió IDs reales", guarded["final_response"])
+
+    def test_completed_campaign_workflow_keeps_graph_receipt_without_blocker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workflow_path = Path(directory) / "pending_campaign_workflow.json"
+            result = {
+                "executed": True,
+                "result": {
+                    "status": "created_paused",
+                    "executed": True,
+                    "result": {
+                        "ok": True,
+                        "executed": True,
+                        "campaign_id": "1201",
+                        "adset_ids": ["1202"],
+                        "ad_ids": ["1203"],
+                        "graph_verification": {
+                            "ok": True,
+                            "objects": [
+                                {"http_status": 200},
+                                {"http_status": 200},
+                                {"http_status": 200},
+                            ],
+                        },
+                    },
+                },
+            }
+            with mock.patch.object(
+                admira_tool_bridge,
+                "PENDING_CAMPAIGN_WORKFLOW_FILE",
+                workflow_path,
+            ):
+                saved = admira_tool_bridge.persist_pending_campaign_workflow(
+                    "admira_create_whatsapp_campaign",
+                    {"name": "Campaign", "daily_budget": 10},
+                    "",
+                    result=result,
+                    status="completed",
+                )
+            persisted = json.loads(workflow_path.read_text(encoding="utf-8"))
+        self.assertTrue(saved)
+        self.assertTrue(persisted["meta_creation_verified"])
+        self.assertEqual(persisted["blocker"], "")
+        self.assertEqual(persisted["blocker_details"], [])
+        self.assertEqual(persisted["creation_receipt"]["campaign_id"], "1201")
+        self.assertEqual(persisted["creation_receipt"]["graph_http_statuses"], [200, 200, 200])
+        self.assertEqual(len(persisted["creation_fingerprint"]), 64)
+
+    def test_identical_completed_campaign_retry_reads_graph_and_never_mutates(self):
+        args = {
+            "name": "Rodeo - Full Detail en Taller (WhatsApp)",
+            "objective": "OUTCOME_ENGAGEMENT",
+            "daily_budget": 50000,
+            "budget_confirmation": "50000 COP",
+            "primary_text": "Full Detail profesional.",
+            "headline": "Agenda tu Full Detail",
+            "prefilled_message": "Hola, quiero agendar el diagnóstico del Full Detail.",
+            "image_hash": "hash-approved",
+        }
+        tool = "admira_create_whatsapp_campaign"
+
+        class FakeClient:
+            def __init__(self, _config):
+                pass
+
+        class FakeDashboard:
+            SocialFlowClient = FakeClient
+            execute_calls = 0
+
+            @staticmethod
+            def load_config():
+                return SimpleNamespace()
+
+            @staticmethod
+            def verify_campaign_stack_with_graph(_client, execution):
+                return {
+                    "ok": execution["campaign_id"] == "1201",
+                    "objects": [
+                        {"http_status": 200},
+                        {"http_status": 200},
+                        {"http_status": 200},
+                    ],
+                }
+
+            @classmethod
+            def execute_agent_tool(cls, _request, _payload):
+                cls.execute_calls += 1
+                raise AssertionError("an identical verified retry must not mutate Meta")
+
+        with tempfile.TemporaryDirectory() as directory:
+            workflow_path = Path(directory) / "pending_campaign_workflow.json"
+            workflow_path.write_text(json.dumps({
+                "status": "completed",
+                "destination": "whatsapp",
+                "tool": tool,
+                "meta_creation_verified": True,
+                "creation_fingerprint": admira_tool_bridge.campaign_creation_fingerprint(tool, args),
+                "campaign_contract": {"name": args["name"]},
+                "creation_receipt": {
+                    "campaign_id": "1201",
+                    "adset_ids": ["1202"],
+                    "ad_ids": ["1203"],
+                },
+            }), encoding="utf-8")
+            with (
+                mock.patch.object(admira_tool_bridge, "PENDING_CAMPAIGN_WORKFLOW_FILE", workflow_path),
+                mock.patch.object(admira_tool_bridge, "load_dashboard", return_value=FakeDashboard()),
+                mock.patch.object(admira_tool_bridge, "strategic_profile_gate_result", return_value=None),
+                mock.patch.object(
+                    admira_tool_bridge,
+                    "compile_campaign_brief",
+                    return_value={
+                        "ok": True,
+                        "payload": args,
+                        "model": "test-compiler",
+                        "destination": "whatsapp",
+                    },
+                ),
+                mock.patch.object(
+                    admira_tool_bridge,
+                    "destination_campaign_arguments",
+                    side_effect=lambda _tool, values, **_kwargs: (dict(values), None),
+                ),
+            ):
+                response = admira_tool_bridge.call_tool(tool, {"brief_markdown": "brief canónico aprobado"})
+
+        self.assertTrue(response["ok"])
+        self.assertTrue(response["campaign_creation_verified"])
+        self.assertTrue(response["reused_existing"])
+        self.assertFalse(response["executed"])
+        self.assertEqual(response["campaign_id"], "1201")
+        self.assertEqual(FakeDashboard.execute_calls, 0)
+
     def test_generic_acknowledgement_after_restart_never_surfaces_stale_campaign_failure(self):
         response = {
             "final_response": "Listo, la campaña quedó configurada en pausa.",

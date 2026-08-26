@@ -106,6 +106,16 @@ class CompactToolReceiptTests(unittest.TestCase):
                     "campaign_id": "1201",
                     "adset_ids": ["2201", "2202"],
                     "ad_ids": ["3201", "3202"],
+                    "graph_verification": {
+                        "ok": True,
+                        "objects": [
+                            {"http_status": 200},
+                            {"http_status": 200},
+                            {"http_status": 200},
+                            {"http_status": 200},
+                            {"http_status": 200},
+                        ],
+                    },
                     "raw_graph": {"large": "x" * 100_000},
                 },
             },
