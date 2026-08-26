@@ -258,6 +258,53 @@ class StrategicPromptPerformanceTests(unittest.TestCase):
 
         self.assertEqual(workflow["phase"], "brand_ready")
 
+    def test_history_only_does_not_create_active_campaign_workflow(self):
+        memory = {
+            "business_profile": {},
+            "brand_guides": {"general_branding": "", "ad_briefs": []},
+            "recent_history": {
+                "actions": [{"type": "campaign_edit", "status": "failed"}],
+                "chat": [{"role": "agent", "content": "No pude verificar la edición."}],
+            },
+        }
+        workflow = hermes_bridge.active_workflow_payload(
+            memory, {"items": [{"role": "agent", "content": "No pude verificar la edición."}]}
+        )
+        self.assertFalse(workflow["has_active_workflow"])
+        self.assertEqual(workflow["phase"], "")
+        self.assertEqual(workflow["recent_blocker"], {})
+
+    def test_terminal_transaction_is_history_not_active_workflow(self):
+        memory = {
+            "business_profile": {},
+            "brand_guides": {"general_branding": "", "ad_briefs": []},
+            "recent_history": {},
+            "transactional_workflow": {
+                "type": "campaign_edit", "status": "failed",
+                "campaign_id": "cmp-123", "account_id": "act-123",
+                "blocker": "old failure",
+            },
+        }
+        workflow = hermes_bridge.active_workflow_payload(memory, {"items": []})
+        self.assertFalse(workflow["has_active_workflow"])
+        self.assertEqual(workflow["phase"], "")
+
+    def test_identity_bound_pending_transaction_is_active(self):
+        memory = {
+            "business_profile": {},
+            "brand_guides": {"general_branding": "", "ad_briefs": []},
+            "recent_history": {},
+            "transactional_workflow": {
+                "type": "campaign_edit", "status": "pending",
+                "campaign_id": "cmp-123", "account_id": "act-123",
+                "blocker": "awaiting readback",
+            },
+        }
+        workflow = hermes_bridge.active_workflow_payload(memory, {"items": []})
+        self.assertTrue(workflow["has_active_workflow"])
+        self.assertEqual(workflow["phase"], "blocked_or_retrying")
+        self.assertEqual(workflow["recent_blocker"]["campaign_id"], "cmp-123")
+
     def test_admira_skill_unlock_block_is_suppressed_but_other_safety_blocks_survive(self):
         calls = []
 

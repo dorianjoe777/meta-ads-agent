@@ -2164,25 +2164,97 @@ def _infer_next_step(memory, latest_context, blocker=""):
     return ""
 
 
+_TERMINAL_WORKFLOW_STATUSES = {
+    "applied", "completed", "failed", "cancelled", "cancelled_by_conversation_reset",
+    "superseded", "rejected", "resolved", "archived", "deleted",
+}
+
+
+def _workflow_record_has_identity(record):
+    """Require explicit transaction identity before exposing active work.
+
+    Recent actions and assistant prose are deliberately not considered here.
+    A campaign creation receipt has a tool/destination/fingerprint; an edit
+    transaction has a campaign/target identity.  This keeps terminal history
+    from becoming ambient workflow state after a restart.
+    """
+    if not isinstance(record, dict):
+        return False
+    payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+    values = {record.get(key) for key in (
+        "workflow_id", "id", "creation_fingerprint", "campaign_id", "target_id",
+        "account_id", "tool", "destination",
+    )}
+    values.update(payload.get(key) for key in (
+        "workflow_id", "id", "campaign_id", "target_id", "account_id", "tool",
+    ))
+    return any(str(value or "").strip() for value in values)
+
+
+def _explicit_transactional_workflow(memory):
+    """Return one non-terminal, identity-bound campaign/edit transaction.
+
+    The generated ``active_workflow.json`` must not be its own source of
+    truth.  The source is an explicit pending transaction/approval record.
+    Filesystem reads are intentionally narrow and tolerate missing stores.
+    """
+    candidates = []
+    in_memory = memory.get("transactional_workflow") if isinstance(memory, dict) else None
+    if isinstance(in_memory, dict):
+        candidates.append(in_memory)
+    if "transactional_workflow" in memory:
+        # The caller supplied the authoritative transaction snapshot,
+        # including an empty snapshot.  Do not merge a different installation
+        # file into it.
+        for candidate in candidates:
+            record_type = str(candidate.get("type") or "").strip().lower()
+            if record_type and record_type not in {"campaign_edit", "campaign_creation", "campaign_workflow"}:
+                continue
+            status = str(candidate.get("status") or "pending").strip().lower()
+            if status not in _TERMINAL_WORKFLOW_STATUSES and _workflow_record_has_identity(candidate):
+                return candidate
+        return {}
+    # Unit callers may provide a reduced memory fixture.  Filesystem state is
+    # only ambient for the complete snapshot assembled by
+    # ``business_memory_context`` (which includes latest_day_context).
+    if "transactional_workflow" not in memory and "latest_day_context" not in memory:
+        return {}
+    pending_campaign = read_json(DATA_DIR / "pending_campaign_workflow.json", {})
+    if isinstance(pending_campaign, dict):
+        candidates.append(pending_campaign)
+    pending_approvals = read_json(DATA_DIR / "pending_approvals.json", [])
+    if isinstance(pending_approvals, list):
+        candidates.extend(
+            item for item in pending_approvals
+            if isinstance(item, dict) and item.get("type") == "campaign_edit"
+        )
+    for candidate in candidates:
+        record_type = str(candidate.get("type") or "").strip().lower()
+        if record_type and record_type not in {"campaign_edit", "campaign_creation", "campaign_workflow"}:
+            continue
+        status = str(candidate.get("status") or "pending").strip().lower()
+        if status in _TERMINAL_WORKFLOW_STATUSES or not _workflow_record_has_identity(candidate):
+            continue
+        return candidate
+    return {}
+
+
 def active_workflow_payload(memory, latest_context):
     items = latest_context.get("items") or []
     recent = memory.get("recent_history") or {}
-    blockers = [
-        item
-        for item in reversed(items)
-        if re.search(r"(?i)\b(error|fall[óo]|bloque|missing|falta|rate limit|timeout|not logged|page_not_found|creative_production_not_ready)\b", item.get("content") or "")
-    ]
-    blocker = blockers[0] if blockers else {}
+    transaction = _explicit_transactional_workflow(memory)
+    # A failure/claim in recent chat or action history is evidence for
+    # diagnostics, not an active operation.  Only the explicit transaction
+    # record can supply a current blocker or campaign/edit scope.
+    blocker = transaction if transaction.get("blocker") else {}
     brand = memory.get("brand_guides") or {}
     onboarding_state = _initial_business_onboarding_state(memory)
-    if blocker:
+    if transaction:
         phase = "blocked_or_retrying"
     elif onboarding_state == "review_required":
         phase = "business_review_pending"
     elif onboarding_state == "collecting":
         phase = "business_onboarding"
-    elif recent.get("creative_refreshes"):
-        phase = "creative_review"
     elif brand.get("ad_briefs"):
         phase = "creative_or_campaign_brief"
     elif brand.get("general_branding"):
@@ -2193,7 +2265,9 @@ def active_workflow_payload(memory, latest_context):
         phase = ""
     next_step = _infer_next_step(memory, latest_context, blocker.get("content", ""))
     return {
-        "has_active_workflow": bool(phase or items),
+        # Chat history by itself is not a workflow.  Durable onboarding/brand
+        # state and an explicit non-terminal transaction remain valid context.
+        "has_active_workflow": bool(phase),
         "phase": phase,
         "last_day_context_date": latest_context.get("selected_date", ""),
         "last_user_message": _latest_by_role(items, "user"),
