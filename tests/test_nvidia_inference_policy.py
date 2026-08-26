@@ -1420,7 +1420,12 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
             "final_response": raw.final_response,
             "messages": raw.messages,
         }
-        guarded = admira_hermes_runtime_patch._guard_unconfirmed_campaign_edit_claim(normalized)
+        with mock.patch.object(
+            campaign_claim_classifier,
+            "classify_campaign_edit_claim",
+            return_value={"ok": True, "confirmation": "si"},
+        ):
+            guarded = admira_hermes_runtime_patch._guard_unconfirmed_campaign_edit_claim(normalized)
         self.assertIn("todavía no lo apliqué", guarded["final_response"])
 
     def test_cli_edit_text_without_structured_evidence_is_not_reported_as_applied(self):
