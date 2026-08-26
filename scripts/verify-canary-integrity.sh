@@ -48,12 +48,20 @@ runtime_version="$(docker exec "$CONTAINER" sh -lc 'tr -d "[:space:]" < /app/VER
 [[ "$runtime_version" == "$version" ]] || die "container /app/VERSION '$runtime_version' != '$version'"
 runtime_env_version="$(docker exec "$CONTAINER" sh -lc 'sed -n "s/^META_ADS_AGENT_VERSION=//p" /app/.env.example | head -n 1 | tr -d "[:space:]"' 2>/dev/null || true)"
 [[ "$runtime_env_version" == "$version" ]] || die "container .env.example version '$runtime_env_version' != '$version'"
+container_product_version="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER" | sed -n 's/^META_ADS_AGENT_VERSION=//p' | head -n 1 | tr -d '[:space:]')"
+container_build_version="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER" | sed -n 's/^ADMIRA_BUILD_VERSION=//p' | head -n 1 | tr -d '[:space:]')"
+container_image_version="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER" | sed -n 's/^ADMIRA_IMAGE_VERSION=//p' | head -n 1 | tr -d '[:space:]')"
+[[ "$container_product_version" == "$version" ]] || die "container META_ADS_AGENT_VERSION '$container_product_version' != '$version'"
+[[ "$container_build_version" == "$version" ]] || die "container ADMIRA_BUILD_VERSION '$container_build_version' != '$version'"
+[[ "$container_image_version" == "$version" ]] || die "container ADMIRA_IMAGE_VERSION '$container_image_version' != '$version'"
 # Production images intentionally exclude .git, so the build must persist the
 # digest as a tiny immutable provenance file. Do not recompute from the
 # container's filesystem: ignored runtime state must never affect the source
 # identity.
 container_manifest="$(docker exec "$CONTAINER" sh -lc 'tr -d "[:space:]" < /app/source-manifest.sha256' 2>/dev/null || true)"
 [[ "$container_manifest" == "$source_manifest" ]] || die "container source manifest '$container_manifest' != '$source_manifest'"
+container_revision="$(docker exec "$CONTAINER" sh -lc 'tr -d "[:space:]" < /app/build-commit.sha' 2>/dev/null || true)"
+[[ "$container_revision" == "$commit_sha" ]] || die "container build commit '$container_revision' != '$commit_sha'"
 
 printf 'CANARY IMAGE: image=%s version=%s revision=%s manifest=%s\n' "$image" "$image_version" "$image_revision" "$image_manifest"
 echo "CANARY INTEGRITY PASS: source, image, and container are one exact build."

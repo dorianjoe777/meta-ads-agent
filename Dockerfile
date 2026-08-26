@@ -4,9 +4,13 @@ ARG CODEX_CLI_VERSION=0.147.0
 ARG HERMES_AGENT_VERSION=0.18.0
 ARG MCP_SDK_VERSION=2.0.0
 ARG ADMIRA_BUILD_VERSION=unknown
+ARG ADMIRA_BUILD_SHA=unknown
+ARG ADMIRA_SOURCE_MANIFEST=unknown
 
 LABEL org.opencontainers.image.title="Admira IA" \
       org.opencontainers.image.version="${ADMIRA_BUILD_VERSION}" \
+      org.opencontainers.image.revision="${ADMIRA_BUILD_SHA}" \
+      org.opencontainers.image.source-manifest="${ADMIRA_SOURCE_MANIFEST}" \
       org.opencontainers.image.description="Admira IA agent runtime"
 
 ENV PYTHONUNBUFFERED=1 \
@@ -51,6 +55,8 @@ RUN npm ci --ignore-scripts \
 
 COPY . .
 RUN chmod +x scripts/*.sh \
+    && printf '%s\n' "${ADMIRA_SOURCE_MANIFEST}" > /app/source-manifest.sha256 \
+    && printf '%s\n' "${ADMIRA_BUILD_SHA}" > /app/build-commit.sha \
     && mkdir -p brand_guides \
     && cp -R brand_guides /app/brand_guides_seed \
     && mkdir -p /app/runtime /app/dashboard/data /app/output /app/logs

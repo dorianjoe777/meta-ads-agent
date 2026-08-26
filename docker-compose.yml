@@ -6,6 +6,8 @@ services:
       context: .
       args:
         ADMIRA_BUILD_VERSION: ${ADMIRA_BUILD_VERSION:-unknown}
+        ADMIRA_BUILD_SHA: ${ADMIRA_BUILD_SHA:-unknown}
+        ADMIRA_SOURCE_MANIFEST: ${ADMIRA_SOURCE_MANIFEST:-unknown}
     image: ${ADMIRA_IMAGE_NAME:-admira-ia:${ADMIRA_BUILD_VERSION:-local}}
     container_name: ${ADMIRA_CONTAINER_NAME:-admira-ia}
     ports:
@@ -18,6 +20,8 @@ services:
       ALLOW_PUBLIC_DASHBOARD: "true"
       ADMIRA_HOST_LAN_IP: ${ADMIRA_HOST_LAN_IP:-}
       ADMIRA_IMAGE_VERSION: ${ADMIRA_BUILD_VERSION:-unknown}
+      ADMIRA_BUILD_VERSION: ${ADMIRA_BUILD_VERSION:-unknown}
+      META_ADS_AGENT_VERSION: ${ADMIRA_BUILD_VERSION:-unknown}
       CODEX_CREATIVE_ENABLED: "true"
       CODEX_CLI: codex
       CODEX_HOME: /app/runtime/hermes/codex-auth

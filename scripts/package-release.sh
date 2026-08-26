@@ -118,6 +118,11 @@ rsync -a "$ROOT_DIR/" "$STAGING_DIR/" \
   --exclude "*.pyc" \
   --exclude "*.log"
 
+# Persist the exact Git provenance in source packages, whose staging tree does
+# not contain .git. Docker builds from the ZIP reuse these immutable values.
+git -C "$ROOT_DIR" rev-parse HEAD > "$STAGING_DIR/build-commit.sha"
+python3 "$ROOT_DIR/scripts/source_manifest.py" --root "$ROOT_DIR" > "$STAGING_DIR/source-manifest.sha256"
+
 python3 - "$STAGING_DIR" <<'PY'
 import sys
 from pathlib import Path

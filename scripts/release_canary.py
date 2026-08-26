@@ -170,11 +170,31 @@ def main() -> None:
     verify_chatgpt_gateway_contract()
 
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     installer = (ROOT / "scripts" / "install-local.sh").read_text(encoding="utf-8")
     if "ARG MCP_SDK_VERSION=" not in dockerfile or '"mcp==${MCP_SDK_VERSION}"' not in dockerfile:
         fail("Docker installs must pin the MCP SDK exactly")
     if 'MCP_SDK_VERSION="${MCP_SDK_VERSION:-' not in installer or '"mcp==${MCP_SDK_VERSION}"' not in installer:
         fail("native installs must pin the MCP SDK exactly")
+    provenance_contract = (
+        "ARG ADMIRA_BUILD_SHA=",
+        "ARG ADMIRA_SOURCE_MANIFEST=",
+        "org.opencontainers.image.revision=",
+        "org.opencontainers.image.source-manifest=",
+        "/app/source-manifest.sha256",
+        "/app/build-commit.sha",
+    )
+    missing_provenance = [item for item in provenance_contract if item not in dockerfile]
+    if missing_provenance:
+        fail("Docker provenance contract is incomplete: " + ", ".join(missing_provenance))
+    compose_contract = (
+        "ADMIRA_BUILD_SHA: ${ADMIRA_BUILD_SHA:-unknown}",
+        "ADMIRA_SOURCE_MANIFEST: ${ADMIRA_SOURCE_MANIFEST:-unknown}",
+        "META_ADS_AGENT_VERSION: ${ADMIRA_BUILD_VERSION:-unknown}",
+    )
+    missing_compose = [item for item in compose_contract if item not in compose]
+    if missing_compose:
+        fail("Compose provenance contract is incomplete: " + ", ".join(missing_compose))
     if admira_mcp_server.create_fastmcp_server() is not None:
         fail("Admira must default to the protocol-owned MCP transport")
 

@@ -74,7 +74,7 @@ org.opencontainers.image.source-manifest = <scripts/source_manifest.py>
 ```
 
 Como la imagen excluye `.git`, el build también debe escribir el mismo digest
-en `/app/source-manifest.sha256`. Ese archivo es sólo procedencia de build; no
+en `/app/source-manifest.sha256` y el SHA en `/app/build-commit.sha`. Esos archivos son sólo procedencia de build; no
 es memoria ni configuración del comprador.
 
 El nombre/tag de la imagen también debe contener `r80` (o la variable de
