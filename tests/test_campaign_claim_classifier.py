@@ -153,6 +153,63 @@ class CampaignClaimClassifierTests(unittest.TestCase):
         self.assertEqual(result["confirmation"], "si")
         self.assertEqual(invoke.call_args.kwargs["model"], "gpt-5.6-luna")
 
+    def test_edit_classifier_binds_historical_claim_to_current_buyer_turn(self):
+        """A real greeting must not be treated as authorization for old edit prose."""
+        config = {"provider": "gemini", "model": "gemini-3.5-flash-lite"}
+        prompts = []
+
+        def semantic_call(prompt, **_kwargs):
+            prompts.append(prompt)
+            # This models the contract: the current buyer turn is the source
+            # of relevance, not the assistant's historical wording.
+            value = "no" if "<current_buyer_message>\nHola\n" in prompt else "si"
+            return {"ok": True, "compiled": {"confirmacion_edicion_campana": value}}
+
+        config["llm"] = semantic_call
+        result = classifier.classify_campaign_edit_claim(
+            "Ya actualicé el presupuesto de la campaña de Rodeo.",
+            buyer_message="Hola",
+            config=config,
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["confirmation"], "no")
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("Decide whether the assistant's claim is a result", prompts[0])
+
+    def test_edit_classifier_accepts_current_turn_edit_result_for_receipt_check(self):
+        config = {"provider": "gemini", "model": "gemini-3.5-flash-lite"}
+        seen = []
+
+        def semantic_call(prompt, **_kwargs):
+            seen.append(prompt)
+            return {"ok": True, "compiled": {"confirmacion_edicion_campana": "si"}}
+
+        config["llm"] = semantic_call
+        result = classifier.classify_campaign_edit_claim(
+            "Ya apliqué el cambio de presupuesto de la campaña Rodeo en Meta.",
+            buyer_message="En la campaña Rodeo cambia el presupuesto a 12 USD y aplícalo.",
+            config=config,
+        )
+        self.assertEqual(result["confirmation"], "si")
+        self.assertIn("cambia el presupuesto", seen[0])
+
+    def test_edit_classifier_keeps_natural_short_approval_eligible_for_receipt_check(self):
+        config = {"provider": "gemini", "model": "gemini-3.5-flash-lite"}
+        seen = []
+
+        def semantic_call(prompt, **_kwargs):
+            seen.append(prompt)
+            return {"ok": True, "compiled": {"confirmacion_edicion_campana": "si"}}
+
+        config["llm"] = semantic_call
+        result = classifier.classify_campaign_edit_claim(
+            "Listo, apliqué el nuevo texto en el anuncio de la campaña.",
+            buyer_message="sí, me gusta; aplícalo",
+            config=config,
+        )
+        self.assertEqual(result["confirmation"], "si")
+        self.assertIn("short natural acknowledgement", seen[0])
+
 
 if __name__ == "__main__":
     unittest.main()

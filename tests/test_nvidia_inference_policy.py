@@ -1019,6 +1019,55 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
             })
         self.assertEqual(guarded["final_response"], original)
 
+    def test_campaign_edit_guard_does_not_rewrite_historical_claim_after_greeting(self):
+        """The latest buyer turn, not stale session prose, defines relevance."""
+        original = "Ya actualicé la campaña de Rodeo correctamente."
+        with mock.patch.object(
+            campaign_claim_classifier,
+            "classify_campaign_edit_claim",
+            return_value={"ok": True, "confirmation": "no"},
+        ) as classifier:
+            guarded = admira_hermes_runtime_patch._guard_unconfirmed_campaign_edit_claim({
+                "final_response": original,
+                "messages": [
+                    {"role": "user", "content": "En la campaña Rodeo cambia el presupuesto."},
+                    {"role": "assistant", "content": "Ya actualicé la campaña de Rodeo correctamente."},
+                    {"role": "user", "content": "Hola"},
+                ],
+            })
+        self.assertEqual(guarded["final_response"], original)
+        self.assertEqual(classifier.call_args.kwargs["buyer_message"], "Hola")
+
+    def test_campaign_edit_guard_requires_current_turn_receipt_after_semantic_yes(self):
+        original = "Ya apliqué el cambio de presupuesto en la campaña Rodeo."
+        with mock.patch.object(
+            campaign_claim_classifier,
+            "classify_campaign_edit_claim",
+            return_value={"ok": True, "confirmation": "si"},
+        ):
+            guarded = admira_hermes_runtime_patch._guard_unconfirmed_campaign_edit_claim({
+                "final_response": original,
+                "buyer_message": "En la campaña Rodeo cambia el presupuesto a 12 USD.",
+                "messages": [],
+            })
+        self.assertIn("No pude verificar", guarded["final_response"])
+
+    def test_campaign_edit_guard_is_idempotent_without_language_matching(self):
+        response = {
+            "final_response": "No pude verificar una edición de campaña en este turno.",
+            admira_hermes_runtime_patch.ADMIRA_CAMPAIGN_EDIT_GUARD_APPLIED_KEY: True,
+        }
+        with mock.patch.object(
+            campaign_claim_classifier,
+            "classify_campaign_edit_claim",
+        ) as classifier:
+            guarded = admira_hermes_runtime_patch._guard_unconfirmed_campaign_edit_claim(
+                response,
+                buyer_message="hola",
+            )
+        self.assertIs(guarded, response)
+        classifier.assert_not_called()
+
     def test_campaign_edit_guard_preserves_success_from_nested_private_approval_receipt(self):
         """A successful approval after a pending stage must not be rewritten.
 

@@ -2181,14 +2181,24 @@ def _workflow_record_has_identity(record):
     if not isinstance(record, dict):
         return False
     payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
-    values = {record.get(key) for key in (
-        "workflow_id", "id", "creation_fingerprint", "campaign_id", "target_id",
-        "account_id", "tool", "destination",
-    )}
-    values.update(payload.get(key) for key in (
-        "workflow_id", "id", "campaign_id", "target_id", "account_id", "tool",
-    ))
-    return any(str(value or "").strip() for value in values)
+    transaction_identity = any(
+        str(value or "").strip()
+        for value in (
+            record.get("transaction_id"), record.get("workflow_id"), record.get("edit_id"),
+            record.get("creation_fingerprint"), record.get("id"),
+            payload.get("transaction_id"), payload.get("workflow_id"), payload.get("edit_id"),
+        )
+    )
+    target_identity = any(
+        str(value or "").strip()
+        for value in (
+            record.get("campaign_id"), record.get("target_id"), record.get("account_id"),
+            record.get("tool"), record.get("destination"),
+            payload.get("campaign_id"), payload.get("target_id"), payload.get("account_id"),
+            payload.get("tool"), payload.get("destination"),
+        )
+    )
+    return transaction_identity and target_identity
 
 
 def _explicit_transactional_workflow(memory):
@@ -2241,16 +2251,18 @@ def _explicit_transactional_workflow(memory):
 
 def active_workflow_payload(memory, latest_context):
     items = latest_context.get("items") or []
-    recent = memory.get("recent_history") or {}
     transaction = _explicit_transactional_workflow(memory)
     # A failure/claim in recent chat or action history is evidence for
     # diagnostics, not an active operation.  Only the explicit transaction
     # record can supply a current blocker or campaign/edit scope.
-    blocker = transaction if transaction.get("blocker") else {}
+    blocker_text = str(transaction.get("blocker") or transaction.get("error") or "").strip()
+    blocker = transaction if blocker_text else {}
     brand = memory.get("brand_guides") or {}
     onboarding_state = _initial_business_onboarding_state(memory)
-    if transaction:
+    if blocker:
         phase = "blocked_or_retrying"
+    elif transaction:
+        phase = "campaign_transaction_pending"
     elif onboarding_state == "review_required":
         phase = "business_review_pending"
     elif onboarding_state == "collecting":
@@ -2263,7 +2275,7 @@ def active_workflow_payload(memory, latest_context):
         phase = "business_onboarding"
     else:
         phase = ""
-    next_step = _infer_next_step(memory, latest_context, blocker.get("content", ""))
+    next_step = _infer_next_step(memory, latest_context, blocker_text)
     return {
         # Chat history by itself is not a workflow.  Durable onboarding/brand
         # state and an explicit non-terminal transaction remain valid context.
@@ -3377,7 +3389,10 @@ def library_chat(config, payload):
                     _guard_unconfirmed_campaign_edit_claim,
                 )
                 guarded_result = _guard_unconfirmed_campaign_claim(guarded_result)
-                guarded_result = _guard_unconfirmed_campaign_edit_claim(guarded_result)
+                guarded_result = _guard_unconfirmed_campaign_edit_claim(
+                    guarded_result,
+                    buyer_message=str(payload.get("message") or "")[:5000],
+                )
             except Exception:
                 pass
             return str(guarded_result.get("final_response") or guarded_result.get("response") or "").strip()

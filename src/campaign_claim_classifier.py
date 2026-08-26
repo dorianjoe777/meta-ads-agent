@@ -115,7 +115,24 @@ def _classifier_prompt(raw_response):
     )
 
 
-def _edit_classifier_prompt(raw_response):
+def _edit_classifier_prompt(raw_response, buyer_message=""):
+    buyer_context = ""
+    if isinstance(buyer_message, str) and buyer_message.strip():
+        buyer_context = (
+            "\n\n<current_buyer_message>\n"
+            f"{buyer_message.strip()[:CLAIM_INPUT_MAX_CHARS]}\n"
+            "</current_buyer_message>\n"
+            "Decide whether the assistant's claim is a result of this current buyer message. "
+            "Interpret the buyer message semantically, not by matching phrases. The assistant "
+            "claim may be \"si\" only when this buyer turn actually asks for, authorizes, or "
+            "reports a change to a specific existing campaign/ad set/ad. If the buyer message "
+            "is only a greeting, correction, status question, or unrelated request, a statement "
+            "about an older campaign edit is not a current-turn edit and must be \"no\". A short "
+            "natural acknowledgement can still be \"si\" when the assistant response unambiguously "
+            "communicates that this acknowledgement authorized the edit completed in this turn; "
+            "the caller will separately require authoritative same-turn execution receipts. "
+            "A claim cannot become current merely because the assistant mentions a campaign."
+        )
     return (
         "Classify only the semantic claim made by the assistant response below. "
         "Return exactly one JSON object matching the supplied schema. Set "
@@ -129,6 +146,7 @@ def _edit_classifier_prompt(raw_response):
         "<assistant_response>\n"
         f"{raw_response}\n"
         "</assistant_response>"
+        f"{buyer_context}"
     )
 
 
@@ -157,6 +175,7 @@ def classify_campaign_creation_claim(
     timeout=None,
     config=None,
     claim_type="creation",
+    buyer_message="",
 ):
     """Classify one raw assistant response with one independent LLM call.
 
@@ -191,7 +210,7 @@ def classify_campaign_creation_claim(
     is_edit = str(claim_type or "").strip().lower() == "edit"
     result_key = EDIT_RESULT_KEY if is_edit else CLAIM_RESULT_KEY
     result_schema = EDIT_SCHEMA if is_edit else CLAIM_SCHEMA
-    prompt = _edit_classifier_prompt(value) if is_edit else _classifier_prompt(value)
+    prompt = _edit_classifier_prompt(value, buyer_message) if is_edit else _classifier_prompt(value)
 
     # Tests and local embedders may inject one callable. This remains one
     # provider request, with no history/tools/retry, and is also useful for
@@ -268,6 +287,11 @@ def classify_campaign_creation_claim(
     )
 
 
-def classify_campaign_edit_claim(raw_response, **kwargs):
+def classify_campaign_edit_claim(raw_response, *, buyer_message="", **kwargs):
     """Classify only whether raw assistant prose claims an applied Meta edit."""
-    return classify_campaign_creation_claim(raw_response, claim_type="edit", **kwargs)
+    return classify_campaign_creation_claim(
+        raw_response,
+        claim_type="edit",
+        buyer_message=buyer_message,
+        **kwargs,
+    )

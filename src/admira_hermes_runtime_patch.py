@@ -64,6 +64,8 @@ ADMIRA_PRODUCT_STATE_END = "[END ADMIRA PRODUCT STATE]"
 ADMIRA_COMPILED_PROCEDURE_START = "[ADMIRA COMPILED PROCEDURE — internal, never quote]"
 ADMIRA_COMPILED_PROCEDURE_END = "[END ADMIRA COMPILED PROCEDURE]"
 ADMIRA_CURRENT_TURN_TOOL_RECEIPTS_KEY = "_admira_current_turn_tool_receipts"
+ADMIRA_CURRENT_BUYER_MESSAGE_KEY = "_admira_current_buyer_message"
+ADMIRA_CAMPAIGN_EDIT_GUARD_APPLIED_KEY = "_admira_campaign_edit_guard_applied"
 
 # This registry is selected from backend-owned product state, never from words
 # in the buyer message.  While the strategic profile is incomplete, the model
@@ -5303,9 +5305,11 @@ def _campaign_edit_receipt_state(sources):
     }
 
 
-def _guard_unconfirmed_campaign_edit_claim(response):
+def _guard_unconfirmed_campaign_edit_claim(response, buyer_message=None):
     """Keep staged/blocked edits from being narrated as already applied."""
     if not isinstance(response, dict):
+        return response
+    if response.get(ADMIRA_CAMPAIGN_EDIT_GUARD_APPLIED_KEY) is True:
         return response
     final_response = str(response.get("final_response") or "")
     # Stage 1 is intentionally narrow: inspect only the assistant response and
@@ -5317,13 +5321,31 @@ def _guard_unconfirmed_campaign_edit_claim(response):
         return response
     if re.search(r"(?i)\b(?:no\s+(?:apliqu[eé]|modifiqu[eé]|cambi[eé])|todav[ií]a\s+no|awaiting|pending|espera(?:ndo)?\s+aprobaci[oó]n)\b", final_response):
         return response
-    # Stage 2 is one isolated structured-output call with only the raw
-    # assistant prose. Unless it explicitly returns semantic "si", preserve
-    # the response byte-for-byte and never consult campaign tool evidence.
+    # Stage 2 is one isolated structured-output call with only the current
+    # buyer turn and raw assistant prose. Unless it explicitly returns
+    # semantic "si", preserve the response byte-for-byte and never consult
+    # campaign tool evidence.
+    # Prefer an explicitly supplied trusted buyer turn. When the caller did
+    # not provide one, recover the newest user message from the result if the
+    # adapter exposed it; never treat older assistant text as the buyer turn.
+    if buyer_message is None:
+        buyer_message = response.get("buyer_message") or response.get("current_buyer_message")
+    if buyer_message is None:
+        messages = response.get("messages")
+        if isinstance(messages, list):
+            for message in reversed(messages):
+                if isinstance(message, dict) and str(message.get("role") or "").strip().lower() == "user":
+                    buyer_message = message.get("content") or ""
+                    break
+    # A semantic relationship cannot be established without the current
+    # buyer turn. Do not let an assistant claim from an older turn trigger the
+    # edit guard when an adapter omitted that provenance.
+    if not isinstance(buyer_message, str) or not buyer_message.strip():
+        return response
     try:
         from campaign_claim_classifier import classify_campaign_edit_claim
 
-        semantic = classify_campaign_edit_claim(final_response)
+        semantic = classify_campaign_edit_claim(final_response, buyer_message=buyer_message or "")
     except Exception:
         return response
     if not isinstance(semantic, dict):
@@ -5362,6 +5384,7 @@ def _guard_unconfirmed_campaign_edit_claim(response):
             if language.startswith("en")
             else "No pude verificar una edición de campaña en este turno, así que no la reportaré como aplicada."
         )
+    response[ADMIRA_CAMPAIGN_EDIT_GUARD_APPLIED_KEY] = True
     return response
 
 
@@ -5459,16 +5482,18 @@ def _guard_unconfirmed_image_unavailable_claim(response):
     return response
 
 
-def _apply_conversational_output_guards(response):
+def _apply_conversational_output_guards(response, buyer_message=None):
     """Apply legacy prose classifiers unless the canary delegates language to the model."""
     if _admira_freeform_agent_mode():
         return response
+    if buyer_message is None and isinstance(response, dict):
+        buyer_message = response.get(ADMIRA_CURRENT_BUYER_MESSAGE_KEY)
     result = response
     for guard in (
         _guard_unconfirmed_persistence_claim,
         _guard_unconfirmed_image_unavailable_claim,
         _guard_unconfirmed_campaign_claim,
-        _guard_unconfirmed_campaign_edit_claim,
+        lambda value: _guard_unconfirmed_campaign_edit_claim(value, buyer_message=buyer_message),
     ):
         try:
             result = guard(result)
@@ -6094,6 +6119,12 @@ def _patch_gateway_generated_media_delivery():
         # The semantic campaign-claim arbiter is a tiny independent provider
         # call. Run conversational guards off the Telegram event loop so a
         # slow provider or Codex CLI startup cannot freeze other chats.
+        if isinstance(result, dict):
+            # Keep the exact, sanitized buyer turn alongside the private
+            # receipts while the semantic edit classifier runs. This prevents
+            # a stale historical edit claim from being attributed to a new
+            # greeting or unrelated turn.
+            result[ADMIRA_CURRENT_BUYER_MESSAGE_KEY] = clean_persisted
         result = await asyncio.to_thread(_apply_conversational_output_guards, result)
         try:
             result = _normalize_gateway_outbound_response(result)
@@ -6156,6 +6187,8 @@ def _patch_gateway_generated_media_delivery():
             # Private verification evidence must never become part of the
             # gateway's public response contract.
             result.pop(ADMIRA_CURRENT_TURN_TOOL_RECEIPTS_KEY, None)
+            result.pop(ADMIRA_CURRENT_BUYER_MESSAGE_KEY, None)
+            result.pop(ADMIRA_CAMPAIGN_EDIT_GUARD_APPLIED_KEY, None)
         return result
 
     runner._admira_original_run_agent = original

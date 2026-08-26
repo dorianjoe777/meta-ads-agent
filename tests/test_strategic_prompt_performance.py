@@ -274,6 +274,60 @@ class StrategicPromptPerformanceTests(unittest.TestCase):
         self.assertEqual(workflow["phase"], "")
         self.assertEqual(workflow["recent_blocker"], {})
 
+    def test_library_chat_binds_edit_guard_to_exact_current_buyer_turn(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        workspace = Path(temporary.name)
+        original = {
+            "final_response": "La campaña conserva el creativo y el texto ajustado.",
+            "messages": [
+                {"role": "user", "content": "hola"},
+                {"role": "assistant", "content": "La campaña conserva el creativo y el texto ajustado."},
+            ],
+        }
+
+        class FakeAgent:
+            def __init__(self, **_kwargs):
+                pass
+
+            def run_conversation(self, **_kwargs):
+                return dict(original)
+
+        fake_run_agent = ModuleType("run_agent")
+        fake_run_agent.AIAgent = FakeAgent
+        config = SimpleNamespace(
+            hermes_max_iterations=8,
+            hermes_enabled_toolsets="",
+            hermes_disabled_toolsets="",
+        )
+        with patch.dict(sys.modules, {"run_agent": fake_run_agent}), patch.object(
+            hermes_bridge, "_record_bridge_trusted_buyer_turn", side_effect=lambda value: value
+        ), patch.object(
+            hermes_bridge,
+            "prepare_hermes_workspace",
+            return_value={"path": str(workspace), "files": [], "image_paths": []},
+        ), patch.object(
+            hermes_bridge, "hermes_brain_settings", return_value={}
+        ), patch.object(
+            hermes_bridge,
+            "inference_runtime_policy",
+            return_value={"max_turns": 8, "disable_delegation": False},
+        ), patch.object(
+            hermes_bridge, "admira_inference_fallback_chain", return_value=[]
+        ), patch.object(
+            hermes_bridge, "hermes_environment", return_value={}
+        ), patch.object(
+            hermes_bridge, "hermes_prompt", return_value="system"
+        ), patch.object(
+            runtime, "_guard_unconfirmed_campaign_claim", side_effect=lambda value: value
+        ), patch.object(
+            runtime, "_guard_unconfirmed_campaign_edit_claim", side_effect=lambda value, **_kwargs: value
+        ) as edit_guard:
+            reply = hermes_bridge.library_chat(config, {"message": "hola", "channel": "telegram"})
+
+        self.assertEqual(reply, original["final_response"])
+        self.assertEqual(edit_guard.call_args.kwargs["buyer_message"], "hola")
+
     def test_terminal_transaction_is_history_not_active_workflow(self):
         memory = {
             "business_profile": {},
@@ -281,6 +335,7 @@ class StrategicPromptPerformanceTests(unittest.TestCase):
             "recent_history": {},
             "transactional_workflow": {
                 "type": "campaign_edit", "status": "failed",
+                "edit_id": "edit-123",
                 "campaign_id": "cmp-123", "account_id": "act-123",
                 "blocker": "old failure",
             },
@@ -296,6 +351,7 @@ class StrategicPromptPerformanceTests(unittest.TestCase):
             "recent_history": {},
             "transactional_workflow": {
                 "type": "campaign_edit", "status": "pending",
+                "edit_id": "edit-123",
                 "campaign_id": "cmp-123", "account_id": "act-123",
                 "blocker": "awaiting readback",
             },
@@ -304,6 +360,21 @@ class StrategicPromptPerformanceTests(unittest.TestCase):
         self.assertTrue(workflow["has_active_workflow"])
         self.assertEqual(workflow["phase"], "blocked_or_retrying")
         self.assertEqual(workflow["recent_blocker"]["campaign_id"], "cmp-123")
+
+    def test_identity_bound_pending_transaction_without_error_is_not_a_blocker(self):
+        memory = {
+            "business_profile": {},
+            "brand_guides": {"general_branding": "", "ad_briefs": []},
+            "recent_history": {},
+            "transactional_workflow": {
+                "type": "campaign_edit", "status": "pending",
+                "edit_id": "edit-456", "campaign_id": "cmp-456",
+            },
+        }
+        workflow = hermes_bridge.active_workflow_payload(memory, {"items": []})
+        self.assertTrue(workflow["has_active_workflow"])
+        self.assertEqual(workflow["phase"], "campaign_transaction_pending")
+        self.assertEqual(workflow["recent_blocker"], {})
 
     def test_admira_skill_unlock_block_is_suppressed_but_other_safety_blocks_survive(self):
         calls = []
