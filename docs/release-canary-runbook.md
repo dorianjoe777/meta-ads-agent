@@ -49,6 +49,12 @@ installation.
 
 ## Required sequence
 
+Before the sequence below, run
+`./scripts/verify-canary-integrity.sh CONTAINER` as the final provenance gate.
+It confirms that the clean worktree, commit, version tag, image labels, and
+running container all describe one source manifest. The full operator
+checklist is in `docs/canary-integrity-release-checklist.md`.
+
 1. Implement the change and add a regression test for the observed failure.
 2. Pin every dependency whose compatibility matters. Do not introduce an
    unbounded `latest`, branch, or `>=` dependency for Hermes or MCP.
