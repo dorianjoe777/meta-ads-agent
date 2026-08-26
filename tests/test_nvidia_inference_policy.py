@@ -11,6 +11,7 @@ import admira_hermes_runtime_patch
 import admira_mcp_server
 import admira_tool_bridge
 import campaign_editing
+import campaign_claim_classifier
 import hermes_bridge
 import hermes_gateway
 import mcp_skill_registry
@@ -440,7 +441,7 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
             ],
         }
         guarded = admira_hermes_runtime_patch._guard_unconfirmed_image_unavailable_claim(stale)
-        self.assertIn("No hay evidencia de un límite actual", guarded["final_response"])
+        self.assertIn("No hay evidencia de un límite ni de un fallo de conexión", guarded["final_response"])
 
         irrelevant_empty_call = {
             "final_response": "La herramienta de generación no está autenticada; no puedo generar la imagen.",
@@ -452,9 +453,7 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
             ],
         }
         corrected_budget = admira_hermes_runtime_patch._guard_unconfirmed_image_unavailable_claim(irrelevant_empty_call)
-        self.assertIn("40 mil pesos", corrected_budget["final_response"])
-        self.assertIn("presupuesto diario", corrected_budget["final_response"])
-        self.assertIn("¿WhatsApp, formulario de prospectos o sitio web?", corrected_budget["final_response"])
+        self.assertIn("No hay evidencia", corrected_budget["final_response"])
         self.assertNotIn("autenticada", corrected_budget["final_response"])
 
         invented_auth = {
@@ -465,8 +464,8 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
             ],
         }
         corrected_creative = admira_hermes_runtime_patch._guard_unconfirmed_image_unavailable_claim(invented_auth)
-        self.assertIn("todavía no tenemos el creativo", corrected_creative["final_response"])
-        self.assertIn("Puedo generarlo aquí con Image 2", corrected_creative["final_response"])
+        self.assertIn("No hay evidencia", corrected_creative["final_response"])
+        self.assertNotIn("todavía no tenemos el creativo", corrected_creative["final_response"])
         self.assertNotIn("autenticación", corrected_creative["final_response"])
 
         invented_credentials = {
@@ -477,7 +476,8 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
             ],
         }
         corrected_credentials = admira_hermes_runtime_patch._guard_unconfirmed_image_unavailable_claim(invented_credentials)
-        self.assertIn("Puedo generarlo aquí con Image 2", corrected_credentials["final_response"])
+        self.assertIn("No hay evidencia", corrected_credentials["final_response"])
+        self.assertNotIn("todavía no tenemos el creativo", corrected_credentials["final_response"])
         self.assertNotIn("credenciales", corrected_credentials["final_response"])
 
         current_timeout = {
@@ -502,6 +502,58 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         }
         kept = admira_hermes_runtime_patch._guard_unconfirmed_image_unavailable_claim(current_quota)
         self.assertIn("alcanzó el límite", kept["final_response"])
+
+    def test_missing_creative_correction_is_reconciled_by_agent_not_canned_guard(self):
+        rules = hermes_bridge.combined_agent_rules()
+        self.assertIn("reconcile that statement with the current campaign evidence", rules)
+        compiled = admira_hermes_runtime_patch._admira_compiled_procedure_instruction({
+            "complete": True,
+            "status": "complete",
+            "master_plan_status": "confirmed",
+            "lifecycle_state": "active_with_confirmed_strategic_plan",
+        })
+        self.assertIn("do not accept either the buyer's statement or old memory blindly", compiled)
+        self.assertIn("show or re-attach it", compiled)
+        self.assertIn("do not mix budget, audience, service, location", compiled)
+        strategy_skill = (
+            Path(hermes_bridge.AGENT_SKILLS_DIR)
+            / "campaign-strategy"
+            / "SKILL.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("Do not blindly accept the statement", strategy_skill)
+        self.assertIn("show or re-attach it", strategy_skill)
+
+        unsupported_failure = {
+            "final_response": "Codex en este servidor requiere autenticación activa para generar imágenes.",
+            "messages": [
+                {"role": "user", "content": "aunque no hemos creado creativo"},
+                {"role": "assistant", "content": "Codex requiere autenticación."},
+            ],
+        }
+        guarded = admira_hermes_runtime_patch._guard_unconfirmed_image_unavailable_claim(
+            unsupported_failure
+        )
+        self.assertIn("No hay evidencia", guarded["final_response"])
+        self.assertNotIn("todavía no tenemos el creativo", guarded["final_response"])
+        self.assertNotIn("Puedo generarlo", guarded["final_response"])
+
+    def test_recent_generated_creatives_enter_continuity_without_implying_approval(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            recent = root / "output" / "creatives" / "codex-recent" / "fixed-01.png"
+            recent.parent.mkdir(parents=True)
+            recent.write_bytes(b"png")
+            unrelated = root / "output" / "creatives" / "codex-recent" / "notes.txt"
+            unrelated.write_text("not media", encoding="utf-8")
+            previous_root = hermes_bridge.ROOT_DIR
+            hermes_bridge.ROOT_DIR = root
+            try:
+                items = hermes_bridge.recent_generated_creative_context()
+            finally:
+                hermes_bridge.ROOT_DIR = previous_root
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["file_path"], str(recent.resolve()))
+        self.assertEqual(items[0]["approval_state"], "file_exists_only_not_campaign_approval")
 
     def test_old_campaign_failure_does_not_replace_current_technical_detail(self):
         response = {
@@ -659,24 +711,57 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
                 self.assertIn("ninguna herramienta de campaña devolvió IDs reales", guarded["final_response"])
 
     def test_campaign_edit_outcome_guard_distinguishes_staged_from_applied(self):
-        staged = admira_hermes_runtime_patch._guard_unconfirmed_campaign_edit_claim({
-            "final_response": "He dejado configurado el presupuesto diario en 11 USD.",
-            "messages": [{
-                "role": "tool",
-                "name": "mcp_admira_edit_campaign",
-                "content": '{"executed":false,"staged":true,"reason":"campaign_edit_pending_approval"}',
-            }],
-        })
+        with mock.patch.object(
+            campaign_claim_classifier,
+            "classify_campaign_edit_claim",
+            return_value={"ok": True, "confirmation": "si"},
+        ):
+            staged = admira_hermes_runtime_patch._guard_unconfirmed_campaign_edit_claim({
+                "final_response": "He dejado configurado el presupuesto diario de la campaña en 11 USD.",
+                "messages": [{
+                    "role": "tool",
+                    "name": "mcp_admira_edit_campaign",
+                    "content": '{"executed":false,"staged":true,"reason":"campaign_edit_pending_approval"}',
+                }],
+            })
         self.assertIn("todavía no lo apliqué", staged["final_response"])
-        applied = admira_hermes_runtime_patch._guard_unconfirmed_campaign_edit_claim({
-            "final_response": "He dejado configurado el presupuesto diario en 11 USD.",
-            "messages": [{
-                "role": "tool",
-                "name": "mcp_admira_stage_budget_change",
-                "content": '{"executed":true,"ok":true,"blocked":false}',
-            }],
-        })
+        with mock.patch.object(
+            campaign_claim_classifier,
+            "classify_campaign_edit_claim",
+            return_value={"ok": True, "confirmation": "si"},
+        ):
+            applied = admira_hermes_runtime_patch._guard_unconfirmed_campaign_edit_claim({
+                "final_response": "He dejado configurado el presupuesto diario de la campaña en 11 USD.",
+                "messages": [{
+                    "role": "tool",
+                    "name": "mcp_admira_stage_budget_change",
+                    "content": '{"executed":true,"ok":true,"blocked":false}',
+                }],
+            })
         self.assertIn("He dejado configurado", applied["final_response"])
+
+    def test_campaign_edit_guard_never_classifies_response_without_campaign_word(self):
+        original = "Hola, Dorian. Ya habíamos creado el logo."
+        with mock.patch.object(campaign_claim_classifier, "classify_campaign_edit_claim") as classifier:
+            guarded = admira_hermes_runtime_patch._guard_unconfirmed_campaign_edit_claim({
+                "final_response": original,
+                "messages": [{"role": "user", "content": "hola"}],
+            })
+        self.assertEqual(guarded["final_response"], original)
+        classifier.assert_not_called()
+
+    def test_campaign_edit_guard_semantic_no_passes_original_response(self):
+        original = "Podemos revisar la campaña después de terminar el creativo."
+        with mock.patch.object(
+            campaign_claim_classifier,
+            "classify_campaign_edit_claim",
+            return_value={"ok": True, "confirmation": "no"},
+        ):
+            guarded = admira_hermes_runtime_patch._guard_unconfirmed_campaign_edit_claim({
+                "final_response": original,
+                "messages": [],
+            })
+        self.assertEqual(guarded["final_response"], original)
 
     def test_campaign_edit_backend_fills_only_unambiguous_missing_ids(self):
         snapshot = {
@@ -851,6 +936,72 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
             "es",
         )
         self.assertEqual(text, "Cambio preparado.")
+
+    def test_recent_creative_path_becomes_native_attachment_not_visible_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "output" / "creatives" / "codex-test" / "fixed-01.png"
+            output.parent.mkdir(parents=True)
+            output.write_bytes(b"png")
+            previous = admira_hermes_runtime_patch.os.environ.get("ADMIRA_PRODUCT_ROOT")
+            admira_hermes_runtime_patch.os.environ["ADMIRA_PRODUCT_ROOT"] = str(root)
+            try:
+                text, metadata = admira_hermes_runtime_patch.normalize_telegram_outbound_text(
+                    f"Ya existe este creativo: `{output}`. Podemos reutilizarlo o crear otro.",
+                    "es",
+                )
+            finally:
+                if previous is None:
+                    admira_hermes_runtime_patch.os.environ.pop("ADMIRA_PRODUCT_ROOT", None)
+                else:
+                    admira_hermes_runtime_patch.os.environ["ADMIRA_PRODUCT_ROOT"] = previous
+        self.assertNotIn(str(output), text.split("MEDIA:", 1)[0])
+        self.assertIn("el archivo adjunto", text)
+        self.assertTrue(text.endswith(f"MEDIA:{output.resolve()}"))
+        self.assertIn("internal_media_path_attached", metadata["reasons"])
+
+    def test_existing_media_directive_is_not_duplicated_when_path_also_leaks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "output" / "creatives" / "codex-test" / "fixed-01.png"
+            output.parent.mkdir(parents=True)
+            output.write_bytes(b"png")
+            previous = admira_hermes_runtime_patch.os.environ.get("ADMIRA_PRODUCT_ROOT")
+            admira_hermes_runtime_patch.os.environ["ADMIRA_PRODUCT_ROOT"] = str(root)
+            try:
+                text, _metadata = admira_hermes_runtime_patch.normalize_telegram_outbound_text(
+                    f"MEDIA:{output}\nYa existe `{output}` y podemos reutilizarlo.",
+                    "es",
+                )
+            finally:
+                if previous is None:
+                    admira_hermes_runtime_patch.os.environ.pop("ADMIRA_PRODUCT_ROOT", None)
+                else:
+                    admira_hermes_runtime_patch.os.environ["ADMIRA_PRODUCT_ROOT"] = previous
+        self.assertEqual(text.count("MEDIA:"), 1)
+        self.assertNotIn(f"`{output}`", text)
+
+    def test_duplicate_native_media_directives_are_removed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "output" / "creatives" / "codex-test" / "fixed-01.png"
+            output.parent.mkdir(parents=True)
+            output.write_bytes(b"png")
+            previous = admira_hermes_runtime_patch.os.environ.get("ADMIRA_PRODUCT_ROOT")
+            admira_hermes_runtime_patch.os.environ["ADMIRA_PRODUCT_ROOT"] = str(root)
+            try:
+                text, metadata = admira_hermes_runtime_patch.normalize_telegram_outbound_text(
+                    f"Dos opciones recientes:\nMEDIA:{output}\nMEDIA:{output}\n¿Cuál prefieres?",
+                    "es",
+                )
+            finally:
+                if previous is None:
+                    admira_hermes_runtime_patch.os.environ.pop("ADMIRA_PRODUCT_ROOT", None)
+                else:
+                    admira_hermes_runtime_patch.os.environ["ADMIRA_PRODUCT_ROOT"] = previous
+        self.assertEqual(text.count(f"MEDIA:{output.resolve()}"), 1)
+        self.assertIn("¿Cuál prefieres?", text)
+        self.assertIn("duplicate_media_directive_removed", metadata["reasons"])
 
     def test_campaign_edit_guard_accepts_hermes_result_object_shape(self):
         raw = SimpleNamespace(
@@ -2071,7 +2222,7 @@ compression:
                 })
                 self.assertEqual(chain, [{
                     "provider": "openai-codex",
-                    "model": "gpt-5.6-terra",
+                    "model": "gpt-5.6-luna",
                 }])
         finally:
             hermes_bridge.agent_model_connections = original_connections
@@ -2176,7 +2327,7 @@ compression:
             hermes_bridge.agent_model_connections = original_connections
             hermes_bridge.codex_credential_health = original_codex_health
 
-    def test_gemini_uses_only_terra_subscription_fallback_and_omits_nvidia_catalog(self):
+    def test_gemini_uses_only_luna_subscription_fallback_and_omits_nvidia_catalog(self):
         original_connections = hermes_bridge.agent_model_connections
         original_health = hermes_bridge.codex_credential_health
         try:
@@ -2197,7 +2348,7 @@ compression:
             }
             self.assertEqual(
                 hermes_bridge.admira_inference_fallback_chain(object(), brain),
-                [{"provider": "openai-codex", "model": "gpt-5.6-terra"}],
+                [{"provider": "openai-codex", "model": "gpt-5.6-luna"}],
             )
             config_text = "\n".join(hermes_bridge.admira_connected_model_config_lines(object(), brain))
             self.assertNotIn("admira-nvidia", config_text)

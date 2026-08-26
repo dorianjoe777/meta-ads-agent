@@ -2,8 +2,10 @@
 
 import importlib
 import json
+import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -128,6 +130,57 @@ class RuntimePlanContextTests(unittest.TestCase):
         serialized_chat = json.dumps(chat["messages"], ensure_ascii=False)
         self.assertIn("live-advertising_opportunity", serialized_chat)
         self.assertIn("live-next_steps_and_questions", serialized_chat)
+
+    def test_recent_generated_creative_reaches_provider_context_without_approval(self):
+        root = self._root(self._profile({
+            "status": "confirmed", "revision": 1, "profile_revision": 2,
+            "content": {"advertising_opportunity": "Full Detail por WhatsApp"},
+        }))
+        recent = root / "output" / "creatives" / "codex-full-detail" / "fixed-01.png"
+        recent.parent.mkdir(parents=True)
+        recent.write_bytes(b"image")
+        old = root / "output" / "creatives" / "codex-old" / "fixed-02.png"
+        old.parent.mkdir(parents=True)
+        old.write_bytes(b"old")
+        old_time = time.time() - (5 * 86400)
+        os.utime(old, (old_time, old_time))
+
+        state = runtime._admira_strategic_profile_state(product_root=root)
+        text = runtime._admira_compiled_procedure_instruction(state)
+
+        self.assertEqual(len(state["recent_generated_creatives"]), 1)
+        self.assertEqual(
+            state["recent_generated_creatives"][0]["asset_id"],
+            "codex-full-detail/fixed-01.png",
+        )
+        self.assertEqual(
+            state["recent_generated_creatives"][0]["approval_state"],
+            "file_exists_only_not_campaign_approval",
+        )
+        self.assertIn("codex-full-detail/fixed-01.png", text)
+        self.assertIn("proves only that each file exists", text)
+        self.assertNotIn("codex-old/fixed-02.png", text)
+        self.assertNotIn(str(root), text)
+
+    def test_recent_generated_creative_also_reaches_onboarding_context(self):
+        profile = {
+            "strategic_profile": {
+                "status": "collecting", "revision": 1,
+                "scope": {"page_id": "page-1"}, "topics": {},
+            }
+        }
+        root = self._root(profile)
+        recent = root / "output" / "creatives" / "codex-logo" / "fixed-01.png"
+        recent.parent.mkdir(parents=True)
+        recent.write_bytes(b"image")
+
+        state = runtime._admira_strategic_profile_state(product_root=root)
+        text = runtime._admira_compiled_procedure_instruction(state)
+
+        self.assertFalse(state["complete"])
+        self.assertIn("codex-logo/fixed-01.png", text)
+        self.assertIn("use list_recent_creatives to inspect or re-attach", text)
+        self.assertIn("never proves selection, approval", text)
 
     def test_confirmed_plan_keeps_status_when_profile_revision_changes(self):
         root = self._root(self._profile({

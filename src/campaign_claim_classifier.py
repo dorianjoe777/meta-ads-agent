@@ -34,6 +34,15 @@ CLAIM_SCHEMA = {
     },
     "required": [CLAIM_RESULT_KEY],
 }
+EDIT_RESULT_KEY = "confirmacion_edicion_campana"
+EDIT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        EDIT_RESULT_KEY: {"type": "string", "enum": list(CLAIM_ENUM)},
+    },
+    "required": [EDIT_RESULT_KEY],
+}
 
 _GEMINI_PROVIDERS = {"gemini", "google", "google-ai-studio", "google-ai-studio-api"}
 _CODEX_PROVIDERS = {"openai-codex", "openai_codex", "codex"}
@@ -106,6 +115,23 @@ def _classifier_prompt(raw_response):
     )
 
 
+def _edit_classifier_prompt(raw_response):
+    return (
+        "Classify only the semantic claim made by the assistant response below. "
+        "Return exactly one JSON object matching the supplied schema. Set "
+        f'{EDIT_RESULT_KEY}="si" only when the assistant explicitly communicates '
+        "that a change to an existing Meta advertising campaign, ad set, or ad "
+        "was successfully applied inside Meta as an accomplished outcome. Set it "
+        'to "no" for greetings, questions, proposals, plans, future actions, drafts, '
+        "pending approvals, failed changes, campaign creation, creative/image/copy "
+        "work, or any response that merely mentions a campaign. Do not infer an "
+        "applied edit from the word campaign alone. Do not add keys or prose.\n\n"
+        "<assistant_response>\n"
+        f"{raw_response}\n"
+        "</assistant_response>"
+    )
+
+
 def _safe_result(*, ok, confirmation=None, provider="", model="", reason=""):
     result = {
         "ok": bool(ok),
@@ -130,6 +156,7 @@ def classify_campaign_creation_claim(
     model="",
     timeout=None,
     config=None,
+    claim_type="creation",
 ):
     """Classify one raw assistant response with one independent LLM call.
 
@@ -161,7 +188,10 @@ def classify_campaign_creation_claim(
     except (TypeError, ValueError):
         limit = CLAIM_TIMEOUT_SECONDS
     limit = max(1.0, min(20.0, limit))
-    prompt = _classifier_prompt(value)
+    is_edit = str(claim_type or "").strip().lower() == "edit"
+    result_key = EDIT_RESULT_KEY if is_edit else CLAIM_RESULT_KEY
+    result_schema = EDIT_SCHEMA if is_edit else CLAIM_SCHEMA
+    prompt = _edit_classifier_prompt(value) if is_edit else _classifier_prompt(value)
 
     # Tests and local embedders may inject one callable. This remains one
     # provider request, with no history/tools/retry, and is also useful for
@@ -173,7 +203,7 @@ def classify_campaign_creation_claim(
                 prompt,
                 provider=selected_provider,
                 model=selected_model,
-                schema=CLAIM_SCHEMA,
+                schema=result_schema,
                 timeout=limit,
             )
         except TimeoutError:
@@ -187,7 +217,7 @@ def classify_campaign_creation_claim(
                 candidate = {"ok": True, "compiled": json.loads(candidate)}
             except (TypeError, ValueError, json.JSONDecodeError):
                 return _safe_result(ok=False, provider=selected_provider, model=selected_model, reason="malformed_json")
-        elif isinstance(candidate, dict) and CLAIM_RESULT_KEY in candidate and "compiled" not in candidate:
+        elif isinstance(candidate, dict) and result_key in candidate and "compiled" not in candidate:
             candidate = {"ok": True, "compiled": candidate}
         if not isinstance(candidate, dict) or not candidate.get("ok"):
             return _safe_result(ok=False, provider=selected_provider, model=selected_model, reason="provider_error")
@@ -199,7 +229,7 @@ def classify_campaign_creation_claim(
             candidate = _gemini_compile(
                 selected_model,
                 prompt,
-                CLAIM_SCHEMA,
+                result_schema,
                 api_key=api_key,
                 base_url=_gemini_base_url(config) or GEMINI_COMPILER_BASE_URL,
                 timeout=limit,
@@ -210,7 +240,7 @@ def classify_campaign_creation_claim(
         try:
             candidate = _terra_compile(
                 prompt,
-                CLAIM_SCHEMA,
+                result_schema,
                 config=config,
                 timeout=limit,
                 model=selected_model,
@@ -224,9 +254,9 @@ def classify_campaign_creation_claim(
         reason = str(candidate.get("reason") or "provider_failed") if isinstance(candidate, dict) else "provider_failed"
         return _safe_result(ok=False, provider=selected_provider, model=selected_model, reason=reason)
     compiled = candidate.get("compiled")
-    if not isinstance(compiled, dict) or set(compiled) != {CLAIM_RESULT_KEY}:
+    if not isinstance(compiled, dict) or set(compiled) != {result_key}:
         return _safe_result(ok=False, provider=selected_provider, model=selected_model, reason="invalid_schema")
-    confirmation = compiled.get(CLAIM_RESULT_KEY)
+    confirmation = compiled.get(result_key)
     if confirmation not in CLAIM_ENUM:
         return _safe_result(ok=False, provider=selected_provider, model=selected_model, reason="invalid_enum")
     return _safe_result(
@@ -236,3 +266,8 @@ def classify_campaign_creation_claim(
         model=selected_model,
         reason="classified",
     )
+
+
+def classify_campaign_edit_claim(raw_response, **kwargs):
+    """Classify only whether raw assistant prose claims an applied Meta edit."""
+    return classify_campaign_creation_claim(raw_response, claim_type="edit", **kwargs)

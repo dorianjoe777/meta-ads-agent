@@ -81,7 +81,7 @@ ADMIRA_MINIMAX_PROVIDER_NAME = "MiniMax M3 oficial"
 ADMIRA_NVIDIA_KEY_ENV = "ADMIRA_NVIDIA_API_KEY"
 ADMIRA_NVIDIA_BASE_URL_ENV = "ADMIRA_NVIDIA_BASE_URL"
 ADMIRA_NVIDIA_PROVIDER = "admira-nvidia"
-ADMIRA_CODEX_SUBSCRIPTION_FALLBACK_MODEL = "gpt-5.6-terra"
+ADMIRA_CODEX_SUBSCRIPTION_FALLBACK_MODEL = "gpt-5.6-luna"
 ADMIRA_NVIDIA_PROVIDER_NAME = "NVIDIA NIM API"
 ADMIRA_NVIDIA_DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
 ADMIRA_NVIDIA_DEFAULT_MODEL = DEFAULT_NVIDIA_NIM_MODEL
@@ -701,7 +701,7 @@ def admira_inference_fallback_chain(config, primary_settings=None):
 
     Admira no longer fails over to NVIDIA/NIM or another API provider. A
     connected ChatGPT/Codex subscription may provide one fallback route through
-    Terra. The buyer selected this exact model; it is therefore not inferred
+    Luna. The buyer selected this exact model; it is therefore not inferred
     from an unordered cache and never silently changes to another Codex tier.
     """
     brain = dict(primary_settings or hermes_brain_settings(config))
@@ -1330,7 +1330,7 @@ Before the first MCP call in a workflow: (1) classify the outcome as answer, rea
 
 A business goal, idea, missing input, answer to your question, or discussion about a future action is not permission to execute that action. “I want to attract clients” requests advice or planning; it does not create a campaign. A budget supplied after you asked for budget fills that field; it does not authorize image generation or campaign creation. Generate media only when the buyer semantically requests generation. Create or edit Meta objects only when the buyer semantically asks to create or change them. This is meaning-based, not phrase matching: typos and any natural wording are valid.
 
-For a new campaign or a newly mentioned offer, behave as the owner's senior marketing manager before behaving as a payload executor. Read live Meta and the saved business/product/ads context; understand the commercial outcome and time horizon, exact offer and capacity, ideal buyer/trigger/objection, funnel and follow-up, price/cost/margin assumptions, and budget currency. Recommend up to three success metrics, simple break-even logic, and conservative/base/upside test expectations, labelling unknowns as ranges or assumptions. Save stable business facts with `mcp_admira_save_business_memory`, the child offer with `mcp_admira_save_product_memory`, account-wide ads history/defaults only with `mcp_admira_save_ads_onboarding`, and this campaign's goals/KPIs, budget/currency, hypothesis and plan with a uniquely named `mcp_admira_save_ad_brief`. Reuse a returned brief ID only when editing the same campaign. Before any paid image/video call, show the positioning, exact primary text, distinct title, CTA/destination message, and visual concept for natural correction or approval. A campaign request, service name, budget answer, or mention that a creative is needed is not an image-production order.
+For a new campaign or a newly mentioned offer, behave as the owner's senior marketing manager before behaving as a payload executor. Read live Meta and the saved business/product/ads context; understand the commercial outcome and time horizon, exact offer and capacity, ideal buyer/trigger/objection, funnel and follow-up, price/cost/margin assumptions, and budget currency. Recommend up to three success metrics, simple break-even logic, and conservative/base/upside test expectations, labelling unknowns as ranges or assumptions. Save stable business facts with `mcp_admira_save_business_memory`, the child offer with `mcp_admira_save_product_memory`, account-wide ads history/defaults only with `mcp_admira_save_ads_onboarding`, and this campaign's goals/KPIs, budget/currency, hypothesis and plan with a uniquely named `mcp_admira_save_ad_brief`. Reuse a returned brief ID only when editing the same campaign. Before any paid image/video call, show the positioning, exact primary text, distinct title, CTA/destination message, and visual concept for natural correction or approval. A campaign request, service name, budget answer, or mention that a creative is needed is not an image-production order. If the buyer says a creative does not exist, reconcile that statement with the current campaign evidence and recent generated assets before acting: show a relevant existing asset and ask whether to keep or replace it, or propose creation only when no verifiable asset exists. Never treat file existence as approval, and never discard, approve, or regenerate an asset merely because of that statement.
 
 - Current Meta inventory, status, performance, account, Page, timezone, currency, or available campaigns: use `mcp_admira_get_real_meta_context` when a fresh read is needed.
 - Facebook connection, inventory listing, or account/Page selection: use the relevant Meta OAuth/list/select tool described in the catalog.
@@ -1539,6 +1539,80 @@ def business_memory_files():
     return files, product_guides, ad_briefs
 
 
+def recent_generated_creative_context(retention_days=3, limit=MEMORY_ITEM_LIMIT):
+    """Return factual short-window generated media for conversational recall.
+
+    The recovery MCP scans the filesystem, while continuity historically read
+    only ``output/creatives/index.json``. Image 2 outputs are not guaranteed to
+    be written to that legacy index, which let Hermes say no creative existed
+    even while a recent PNG was present. Keep this read-only inventory small
+    and explicitly separate file existence from campaign approval.
+    """
+    root = ROOT_DIR / "output" / "creatives"
+    if not root.exists():
+        return []
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=max(1, int(retention_days or 3)))
+    timezone_name, buyer_tz = _continuity_timezone()
+    local_today = now.astimezone(buyer_tz).date()
+    candidates = []
+    for path in root.glob("codex-*/*"):
+        if not path.is_file() or path.suffix.lower() not in IMAGE_EXTENSIONS:
+            continue
+        try:
+            stat = path.stat()
+            created_at = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
+            resolved = path.resolve(strict=True)
+            asset_id = str(resolved.relative_to(root.resolve(strict=True)))
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if created_at < cutoff:
+            continue
+        local_date = created_at.astimezone(buyer_tz).date()
+        age_days = max(0, (local_today - local_date).days)
+        relative_day = "today" if age_days == 0 else "yesterday" if age_days == 1 else f"{age_days}_days_ago"
+        candidates.append((created_at, {
+            "asset_id": asset_id,
+            "file_path": str(resolved),
+            "created_at": created_at.isoformat(timespec="seconds"),
+            "created_local": created_at.astimezone(buyer_tz).isoformat(timespec="seconds"),
+            "relative_day": relative_day,
+            "timezone": timezone_name,
+            "file_name": resolved.name,
+            "size_bytes": stat.st_size,
+            "approval_state": "file_exists_only_not_campaign_approval",
+        }))
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return [item for _created_at, item in candidates[:max(1, min(24, int(limit or MEMORY_ITEM_LIMIT)))]]
+
+
+def recent_creative_memory_context():
+    """Merge physical recent outputs with any legacy indexed refresh records."""
+    physical = recent_generated_creative_context()
+    indexed = read_json(ROOT_DIR / "output" / "creatives" / "index.json", [])
+    indexed = list(reversed(indexed[-MEMORY_ITEM_LIMIT:])) if isinstance(indexed, list) else []
+    merged = []
+    seen = set()
+    for item in [*physical, *indexed]:
+        if not isinstance(item, dict):
+            continue
+        key = str(
+            item.get("file_path")
+            or item.get("image_path")
+            or item.get("asset_id")
+            or item.get("id")
+            or ""
+        ).strip()
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        merged.append(item)
+        if len(merged) >= MEMORY_ITEM_LIMIT:
+            break
+    return scrub_memory(redact_payload(merged))
+
+
 def business_memory_context():
     files, product_guides, ad_briefs = business_memory_files()
     memory = {
@@ -1572,7 +1646,7 @@ def business_memory_context():
             "telegram_legacy": scrub_memory(redact_payload(read_json(DATA_DIR / "telegram_chat_history.json", {}))),
             "telegram_gateway": scrub_memory(redact_payload(read_json(DATA_DIR / "hermes_gateway_recent_turns.json", [])[-(MEMORY_ITEM_LIMIT * 4):])),
             "actions": scrub_memory(redact_payload(read_json(DATA_DIR / "actions.json", [])[-MEMORY_ITEM_LIMIT:])),
-            "creative_refreshes": scrub_memory(redact_payload(read_json(ROOT_DIR / "output" / "creatives" / "index.json", [])[-MEMORY_ITEM_LIMIT:])),
+            "creative_refreshes": recent_creative_memory_context(),
         },
         "profitability_memory": scrub_memory(redact_payload(decision_memory_payload())),
         "creative_experiments": scrub_memory(redact_payload(experiment_review_payload())),
@@ -1861,10 +1935,18 @@ def _redact_text(value):
 
 
 def _continuity_timezone():
+    configured_timezone = ""
+    try:
+        from product_config import load_config
+
+        configured_timezone = str(getattr(load_config(), "daily_brief_timezone", "") or "").strip()
+    except Exception:
+        configured_timezone = ""
     raw = (
         os.environ.get("HERMES_TIMEZONE")
         or os.environ.get("DAILY_BRIEF_TIMEZONE")
         or os.environ.get("META_DAILY_BRIEF_TIMEZONE")
+        or configured_timezone
         or os.environ.get("TZ")
         or "UTC"
     )
@@ -3169,6 +3251,14 @@ def library_chat(config, payload):
         kwargs["api_key"] = brain["api_key"]
     if brain.get("model"):
         kwargs["model"] = brain["model"]
+    # The CLI reads fallback_providers from the generated Hermes config. The
+    # direct Python runtime constructs AIAgent itself, so it must receive the
+    # same credential-checked chain explicitly. Otherwise a Gemini 429 stops
+    # the Telegram turn instead of continuing through the connected Codex
+    # fallback account.
+    fallback_chain = admira_inference_fallback_chain(config, brain)
+    if fallback_chain:
+        kwargs["fallback_model"] = fallback_chain
     enabled = controlled_hermes_toolsets(split_csv(getattr(config, "hermes_enabled_toolsets", "")))
     disabled = split_csv(getattr(config, "hermes_disabled_toolsets", ""))
     for protected in ("clarify", "skills"):

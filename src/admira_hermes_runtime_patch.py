@@ -84,6 +84,7 @@ ADMIRA_STRATEGIC_ONBOARDING_TOOLS = {
     "save_ads_onboarding",
     "save_durable_memory",
     "fetch_public_asset",
+    "list_recent_creatives",
     "save_content_asset",
     "save_creative_references",
     "import_product_catalog",
@@ -230,6 +231,56 @@ def _admira_active_page_name(oauth, active_page_id):
     return ""
 
 
+def _admira_recent_generated_creatives(*, product_root=None, retention_days=3, limit=8):
+    """Project recent generated image files into bounded provider context.
+
+    This is factual continuity only.  A file on disk is not proof that the
+    buyer selected or approved it for any campaign.  The provider-bound
+    projection exists because weaker brains do not reliably decide to open the
+    workspace inventory before answering a buyer who misremembers whether a
+    creative was generated.
+    """
+    root = Path(
+        str(product_root or os.environ.get("ADMIRA_PRODUCT_ROOT") or "/app").strip()
+    ).expanduser()
+    creative_root = root / "output" / "creatives"
+    try:
+        resolved_root = creative_root.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return []
+    try:
+        retention_seconds = max(1, int(retention_days or 3)) * 86400
+        bounded_limit = max(1, min(8, int(limit or 8)))
+    except (TypeError, ValueError):
+        retention_seconds = 3 * 86400
+        bounded_limit = 8
+    cutoff = time.time() - retention_seconds
+    candidates = []
+    for candidate in creative_root.glob("codex-*/*"):
+        if not candidate.is_file() or candidate.suffix.lower() not in ADMIRA_IMAGE_EXTENSIONS:
+            continue
+        try:
+            resolved = candidate.resolve(strict=True)
+            asset_id = str(resolved.relative_to(resolved_root))
+            stat = resolved.stat()
+        except (OSError, RuntimeError, ValueError):
+            # Exclude broken links and any symlink escaping the product output
+            # root; only backend-owned generated files may enter this context.
+            continue
+        if stat.st_mtime < cutoff:
+            continue
+        candidates.append((stat.st_mtime, {
+            "asset_id": asset_id,
+            "file_name": resolved.name,
+            "created_at": datetime.fromtimestamp(
+                stat.st_mtime, tz=timezone.utc
+            ).isoformat(timespec="seconds"),
+            "approval_state": "file_exists_only_not_campaign_approval",
+        }))
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return [item for _mtime, item in candidates[:bounded_limit]]
+
+
 def _admira_strategic_profile_state(*, product_root=None):
     """Read the authoritative strategic-onboarding state owned by Admira.
 
@@ -372,6 +423,9 @@ def _admira_strategic_profile_state(*, product_root=None):
             review_presentation
             and str(review_presentation.get("revision")) == str(revision)
         ),
+        "recent_generated_creatives": _admira_recent_generated_creatives(
+            product_root=root
+        ),
     }
 
 
@@ -455,6 +509,27 @@ def _admira_render_master_plan(state, *, max_chars=3600):
         lines.append(f"- {label}: {bounded(value) if value not in (None, '', [], {}) else '(pendiente)'}")
     text = "\n".join(lines) or "(No hay plan estratégico guardado todavía.)"
     return text
+
+
+def _admira_render_recent_creatives(state):
+    """Render existence evidence without leaking paths or inferring approval."""
+    items = (state or {}).get("recent_generated_creatives")
+    items = items if isinstance(items, list) else []
+    if not items:
+        return "- none found in the recent generated-output window"
+    lines = []
+    for item in items[:8]:
+        if not isinstance(item, dict):
+            continue
+        asset_id = re.sub(r"\s+", " ", str(item.get("asset_id") or "")).strip()
+        created_at = re.sub(r"\s+", " ", str(item.get("created_at") or "")).strip()
+        if not asset_id:
+            continue
+        lines.append(
+            f"- asset_id={asset_id}; created_at={created_at or 'unknown'}; "
+            "approval_state=file_exists_only_not_campaign_approval"
+        )
+    return "\n".join(lines) or "- none found in the recent generated-output window"
 
 
 def _admira_constrain_onboarding_media_tool(tool):
@@ -571,6 +646,7 @@ def _admira_route_tools_by_product_state(api_kwargs, *, state=None):
 def _admira_compiled_procedure_instruction(state):
     status = str((state or {}).get("status") or "empty")
     revision = (state or {}).get("revision")
+    recent_creatives_text = _admira_render_recent_creatives(state)
     if not (state or {}).get("complete"):
         revision_note = f" revision={revision}." if revision not in (None, "") else "."
         plan_status = str((state or {}).get("master_plan_status") or "missing")
@@ -611,6 +687,12 @@ def _admira_compiled_procedure_instruction(state):
             "means a strategic plan is saved, proposed, or under review. If strategic_plan_status=missing, say that no "
             "strategic plan exists yet; never call the business summary a plan draft.\n"
             f"Current Page-scoped business memory:\n{profile_text}\n\n"
+            "Recent generated creative evidence (read-only orientation, maximum eight files from the last three days):\n"
+            f"{recent_creatives_text}\n"
+            "This proves only that each file exists; it never proves selection, approval, or association with a campaign. "
+            "When the buyer questions whether a creative exists, use list_recent_creatives to inspect or re-attach the likely "
+            "asset and keep that reply focused on one natural keep/review/replace decision before other campaign details. "
+            "Never expose asset IDs or internal paths in visible prose.\n\n"
             "As soon as the exact business/brand name and offer are known, proactively inspect the "
             "logo state before proposing campaigns or content. If no official logo file exists, say so plainly and ask in "
             "natural language whether the buyer wants to upload one or create it together now. Logo candidates, moodboards "
@@ -681,6 +763,12 @@ def _admira_compiled_procedure_instruction(state):
         f"Current compact advertising-plan artifact (read-only context for this turn):\n{plan_text}\n\n"
         "Meta live inventory and performance reads are authoritative for current campaigns, delivery, spend, and results; "
         "saved briefs or plan KPI assumptions never override live Meta data.\n"
+        "Recent generated creative evidence (read-only orientation, maximum eight files from the last three days):\n"
+        f"{recent_creatives_text}\n"
+        "This inventory proves only that each file exists. It never proves selection, approval, or association with the "
+        "current campaign. When its relevance is uncertain, use list_recent_creatives to inspect or re-attach the likely "
+        "asset, then reconcile it naturally with the buyer before proposing another creative. Never expose asset IDs or "
+        "internal paths in visible prose.\n"
         f"{foundation_instruction}"
         f"{ADMIRA_PRODUCT_STATE_END}\n"
         f"{ADMIRA_COMPILED_PROCEDURE_START}\n"
@@ -691,7 +779,15 @@ def _admira_compiled_procedure_instruction(state):
         "or creative. First develop the commercial direction with the buyer. Before image/video production, show the exact "
         "primary text, distinct title, CTA/destination message, and visual concept for natural correction or approval. "
         "Before campaign creation, the current budget/currency and exact delivered creative must also be resolved and visible. "
-        "A campaign request or budget answer alone authorizes none of those missing values. A successful PAUSED creation must "
+        "A campaign request or budget answer alone authorizes none of those missing values. When the buyer questions or "
+        "corrects whether a campaign input—especially its creative—already exists, do not accept either the buyer's statement "
+        "or old memory blindly. Reconcile the current campaign brief with verifiable recent assets; use list_recent_creatives "
+        "when the exact asset is not already visible. Distinguish an existing file from a creative selected and approved for "
+        "this exact campaign. If a relevant asset exists, show or re-attach it and ask whether to keep it or prepare another; "
+        "if none exists, say so and propose creating one. Resolve that discrepancy before returning to budget, audience, offer, "
+        "or execution. Keep that reply focused on the creative evidence and one natural keep/review/replace question; do not "
+        "mix budget, audience, service, location, or execution questions into the same reply. Never generate or mutate merely "
+        "to settle it. A successful PAUSED creation must "
         "include real campaign/ad-set/ad IDs; activation, spend, publishing, destructive work, and other protected mutations "
         "still follow the backend approval contract.\n"
         f"{ADMIRA_COMPILED_PROCEDURE_END}"
@@ -1391,6 +1487,82 @@ def _has_visible_telegram_content(value):
     return any(character.isalnum() or unicodedata.category(character).startswith("S") for character in candidate)
 
 
+def _attach_safe_media_paths_leaked_in_visible_text(value, language=None):
+    """Turn safe output paths into native attachments without exposing them.
+
+    A model may correctly choose an existing recent creative but repeat the
+    tool's private ``/app/output/...`` path in prose. This is a transport
+    formatting concern, not an intent router: preserve the surrounding answer,
+    replace only verified product-media paths with buyer-readable wording, and
+    append the native MEDIA directive Telegram already understands.
+    """
+    text = str(value or "")
+    matches = []
+    for match in ADMIRA_OUTPUT_IMAGE_RE.finditer(text):
+        safe_path = _safe_generated_media_path(match.group("path"))
+        if not safe_path:
+            continue
+        prefix = text[max(0, match.start() - 6):match.start()].upper()
+        already_directive = prefix.endswith("MEDIA:")
+        start, end = match.start(), match.end()
+        # Remove a Markdown code wrapper together with the private path so the
+        # visible sentence says “el archivo adjunto”, not “`el archivo adjunto`”.
+        if not already_directive and start > 0 and end < len(text):
+            if text[start - 1] == "`" and text[end] == "`":
+                start -= 1
+                end += 1
+        matches.append((start, end, safe_path, already_directive))
+    if not matches:
+        return text, False
+
+    visible = text
+    attachment_label = (
+        "the attached media"
+        if str(language or "es").lower().startswith("en")
+        else "el archivo adjunto"
+    )
+    for start, end, _path, already_directive in reversed(matches):
+        if not already_directive:
+            visible = visible[:start] + attachment_label + visible[end:]
+
+    existing_directives = {
+        path for _start, _end, path, already_directive in matches if already_directive
+    }
+    directives = []
+    seen = set()
+    for _start, _end, path, already_directive in matches:
+        if path in seen or path in existing_directives or already_directive:
+            continue
+        seen.add(path)
+        directives.append(f"MEDIA:{path}")
+    if directives:
+        visible = (visible.rstrip() + "\n" + "\n".join(directives)).strip()
+    return visible, visible != text
+
+
+def _dedupe_native_media_directives(value):
+    """Keep only the first native attachment directive for each safe file."""
+    text = str(value or "")
+    seen = set()
+    changed = False
+
+    def replace(match):
+        nonlocal changed
+        safe_path = _safe_generated_media_path(match.group("path"))
+        if not safe_path or safe_path not in seen:
+            if safe_path:
+                seen.add(safe_path)
+            return match.group(0)
+        changed = True
+        return ""
+
+    clean = ADMIRA_MEDIA_TAG_RE.sub(replace, text)
+    if changed:
+        clean = re.sub(r"\n[ \t]*\n[ \t]*\n+", "\n\n", clean)
+        clean = re.sub(r"[ \t]+\n", "\n", clean).strip()
+    return clean, changed
+
+
 def normalize_telegram_outbound_text(value, language=None):
     """Return non-empty Telegram-safe text plus delivery diagnostics metadata."""
     original = str(value or "")
@@ -1398,6 +1570,8 @@ def normalize_telegram_outbound_text(value, language=None):
     cleaned, context_notice_removed = _strip_internal_context_notices(cleaned)
     cleaned, internal_reasoning_removed = _strip_internal_reasoning(cleaned)
     cleaned, table_changed = _render_markdown_tables_as_text(cleaned)
+    cleaned, media_path_attached = _attach_safe_media_paths_leaked_in_visible_text(cleaned, language)
+    cleaned, duplicate_media_removed = _dedupe_native_media_directives(cleaned)
     cleaned = re.sub(r"[ \t]+\n", "\n", cleaned).strip()
     fallback = False
     suppressed = context_notice_removed and not _has_visible_telegram_content(cleaned)
@@ -1420,6 +1594,10 @@ def normalize_telegram_outbound_text(value, language=None):
         reasons.append("internal_context_notice_removed")
     if internal_reasoning_removed:
         reasons.append("internal_reasoning_removed")
+    if media_path_attached:
+        reasons.append("internal_media_path_attached")
+    if duplicate_media_removed:
+        reasons.append("duplicate_media_directive_removed")
     if ADMIRA_TELEGRAM_INVISIBLE_RE.search(original):
         reasons.append("invisible_characters_removed")
     if fallback:
@@ -4741,9 +4919,27 @@ def _guard_unconfirmed_campaign_edit_claim(response):
     if not isinstance(response, dict):
         return response
     final_response = str(response.get("final_response") or "")
-    if not final_response or not ADMIRA_CAMPAIGN_EDIT_SUCCESS_CLAIM_RE.search(final_response):
+    # Stage 1 is intentionally narrow: inspect only the assistant response and
+    # do nothing unless it explicitly contains campaign/campaña.
+    if not final_response or not re.search(
+        r"(?i)\b(?:campa[nñ]a(?:s)?|campaign(?:s)?)\b",
+        final_response,
+    ):
         return response
     if re.search(r"(?i)\b(?:no\s+(?:apliqu[eé]|modifiqu[eé]|cambi[eé])|todav[ií]a\s+no|awaiting|pending|espera(?:ndo)?\s+aprobaci[oó]n)\b", final_response):
+        return response
+    # Stage 2 is one isolated structured-output call with only the raw
+    # assistant prose. Unless it explicitly returns semantic "si", preserve
+    # the response byte-for-byte and never consult campaign tool evidence.
+    try:
+        from campaign_claim_classifier import classify_campaign_edit_claim
+
+        semantic = classify_campaign_edit_claim(final_response)
+    except Exception:
+        return response
+    if not isinstance(semantic, dict):
+        return response
+    if semantic.get("ok") is not True or str(semantic.get("confirmation") or "").strip().lower() != "si":
         return response
     sources = list(_current_turn_messages(response.get("messages")))
     if not sources:
@@ -4875,41 +5071,11 @@ def _guard_unconfirmed_image_unavailable_claim(response):
             else "La generación de la imagen agotó el tiempo de espera en este intento; no hay evidencia de que la cuota de la cuenta esté agotada."
         )
     else:
-        latest_user = ""
-        for message in reversed(response.get("messages") or []):
-            if isinstance(message, dict) and str(message.get("role") or "").lower() == "user":
-                latest_user = _strip_admira_runtime_injections(str(message.get("content") or "")).strip()
-                break
-        budget_turn = bool(re.search(
-            r"(?i)\b\d[\d\s.,]*(?:\s*mil)?\s*(?:cop|usd|eur|mxn|"
-            r"pesos?|d[oó]lares?|euros?)\b.*\b(?:d[ií]a|diari[oa]|daily)\b",
-            latest_user,
-        ))
-        missing_creative_turn = bool(re.search(
-            r"(?i)\b(?:no\s+(?:tenemos|tengo|hay)|sin)\b.{0,45}\b(?:creativo|imagen|dise[nñ]o)\b",
-            latest_user,
-        ))
-        if missing_creative_turn:
-            replacement = (
-                "Understood: we do not have the creative yet. I can generate it here with Image 2 using the campaign offer and brand style, or you can send me a photo/image to use. Which do you prefer?"
-                if language.startswith("en")
-                else "Entendido: todavía no tenemos el creativo. Puedo generarlo aquí con Image 2 usando la oferta y el estilo de la marca, o puedes enviarme una foto/imagen para usarla. ¿Qué prefieres?"
-            )
-        elif budget_turn:
-            compact_budget = re.sub(r"\s+", " ", latest_user).strip()[:180]
-            replacement = (
-                f'Understood: I will use “{compact_budget}” as the approximate daily budget. '
-                "We still need to define the campaign destination: WhatsApp, lead form, or website?"
-                if language.startswith("en")
-                else f'Entendido: tomo «{compact_budget}» como presupuesto diario aproximado. '
-                "Falta definir el destino de la campaña: ¿WhatsApp, formulario de prospectos o sitio web?"
-            )
-        else:
-            replacement = (
-                "There is no evidence of a current Image limit in this turn. I will continue with your request without assuming image generation is blocked."
-                if language.startswith("en")
-                else "No hay evidencia de un límite actual de Image en este turno. Continuaré con tu solicitud sin asumir que la generación está bloqueada."
-            )
+        replacement = (
+            "There is no evidence of a current Image limit or connection failure in this turn. I will continue without assuming image generation is blocked."
+            if language.startswith("en")
+            else "No hay evidencia de un límite ni de un fallo de conexión de Image en este turno. Continuaré sin asumir que la generación está bloqueada."
+        )
     response["final_response"] = replacement
     return response
 
