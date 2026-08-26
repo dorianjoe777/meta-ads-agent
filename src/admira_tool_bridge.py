@@ -23,6 +23,7 @@ from agent_chat import account_context  # noqa: E402
 from campaign_payload_compiler import compile_campaign_brief  # noqa: E402
 from hermes_bridge import safe_image_paths  # noqa: E402
 from security import redact_payload  # noqa: E402
+from social_flow_client import SocialFlowClient  # noqa: E402
 
 
 TOOL_MAP = {
@@ -394,7 +395,7 @@ def compact_agent_tool_result(tool, result):
         execution = _safe_mapping(creation.get("execution"))
         if not execution:
             execution = _safe_mapping(creation.get("result"))
-        outer["result"] = {
+        receipt = {
             "status": creation.get("status") or nested.get("status"),
             "executed": execution.get("executed", creation.get("executed")),
             "campaign_id": execution.get("campaign_id") or creation.get("campaign_id"),
@@ -402,6 +403,10 @@ def compact_agent_tool_result(tool, result):
             "ad_ids": execution.get("ad_ids") or creation.get("ad_ids") or [],
             "reason": creation.get("reason") or creation.get("error") or nested.get("reason") or "",
         }
+        failure = campaign_creation_failure_receipt(result)
+        if failure:
+            receipt["failure"] = failure
+        outer["result"] = receipt
         return outer
     return result
 
@@ -1062,7 +1067,10 @@ def _campaign_blocker_details(value, details=None, depth=0):
         return details
     if isinstance(value, dict):
         for key, item in value.items():
-            if key in {"reason", "error", "message", "missing", "missing_requirements"} and item not in (None, "", [], {}):
+            if key in {
+                "reason", "error", "message", "missing", "missing_requirements",
+                "failed_step", "error_code", "code", "subcode", "error_user_msg",
+            } and item not in (None, "", [], {}):
                 rendered = json.dumps(item, ensure_ascii=False) if not isinstance(item, str) else item
                 if rendered not in details:
                     details.append(rendered[:1000])
@@ -1073,7 +1081,181 @@ def _campaign_blocker_details(value, details=None, depth=0):
     return details[:12]
 
 
-def persist_pending_campaign_workflow(tool, args, reason, *, result=None, status="pending"):
+def _safe_failure_text(value, limit=1000):
+    """Return a buyer-safe technical string without exposing credentials."""
+    if value in (None, "", [], {}):
+        return ""
+    if isinstance(value, (dict, list)):
+        value = json.dumps(redact_payload(value), ensure_ascii=False)
+    text = str(value)
+    # Error strings sometimes contain a query-string token even when the
+    # surrounding field is named only ``stderr``. Keep the useful diagnostic
+    # while removing common credential forms before it reaches the model.
+    import re
+    text = re.sub(r"(?i)(access_token|api[_-]?key|token|password)=([^&\s,}]+)", r"\1=[redacted]", text)
+    return text[:limit]
+
+
+def campaign_creation_failure_receipt(result):
+    """Extract the real failed step, safe Meta error and cleanup outcome.
+
+    This is deliberately separate from the generic ``campaign_creation_not_verified``
+    state. Verification can fail after a concrete Meta error, and that evidence
+    must survive in the MCP receipt and pending workflow for a truthful retry.
+    """
+    receipt = {}
+
+    def decoded_mapping(value):
+        if isinstance(value, dict):
+            return value
+        if not isinstance(value, str) or not value.strip():
+            return {}
+        try:
+            decoded = json.loads(value)
+        except (TypeError, ValueError):
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
+
+    def capture_error(value):
+        if not isinstance(value, dict):
+            return
+        nested_error = value.get("error")
+        if isinstance(nested_error, dict):
+            capture_error(nested_error)
+        if not receipt.get("error_code"):
+            for key in ("error_code", "code", "subcode"):
+                if value.get(key) not in (None, "") and isinstance(value.get(key), (str, int, float)):
+                    receipt["error_code"] = str(value.get(key))[:100]
+                    break
+        if not receipt.get("error_message"):
+            for key in ("error_user_msg", "message", "error_message", "detail"):
+                candidate = value.get(key)
+                if candidate not in (None, "", [], {}) and not isinstance(candidate, (dict, list)):
+                    receipt["error_message"] = _safe_failure_text(candidate)
+                    break
+        for stream in ("stderr", "stdout"):
+            parsed = decoded_mapping(value.get(stream))
+            if parsed:
+                capture_error(parsed)
+
+    def capture_cleanup(value):
+        if not isinstance(value, dict) or "cleanup" in receipt:
+            return
+        cleanup = value.get("cleanup") or value.get("partial_cleanup")
+        if not isinstance(cleanup, dict):
+            return
+        receipt["cleanup"] = {
+            key: cleanup.get(key)
+            for key in (
+                "attempted", "ok", "failed_step", "partial_deleted", "deleted",
+                "status", "campaign_id",
+            )
+            if cleanup.get(key) not in (None, "", [], {})
+        }
+        if value.get("partial_campaign_deleted") not in (None, ""):
+            receipt["cleanup"]["partial_campaign_deleted"] = bool(value.get("partial_campaign_deleted"))
+        result_data = cleanup.get("result")
+        if isinstance(result_data, dict):
+            receipt["cleanup"].update({
+                key: result_data.get(key)
+                for key in ("mode", "executed", "returncode", "ok")
+                if result_data.get(key) not in (None, "", [], {})
+            })
+
+    def find_failed_step(value, depth=0):
+        if depth > 10 or not isinstance(value, (dict, list)):
+            return ""
+        if isinstance(value, dict):
+            if value.get("failed_step") not in (None, ""):
+                return str(value.get("failed_step"))[:200]
+            for item in value.values():
+                found = find_failed_step(item, depth + 1)
+                if found:
+                    return found
+        else:
+            for item in value:
+                found = find_failed_step(item, depth + 1)
+                if found:
+                    return found
+        return ""
+
+    receipt["failed_step"] = find_failed_step(result)
+
+    def capture_failed_operation(value, depth=0):
+        if depth > 10 or not isinstance(value, (dict, list)):
+            return False
+        if isinstance(value, dict):
+            if (
+                receipt.get("failed_step")
+                and str(value.get("step") or "") == receipt["failed_step"]
+                and value.get("ok") is False
+            ):
+                capture_error(value)
+                return True
+            for item in value.values():
+                if capture_failed_operation(item, depth + 1):
+                    return True
+        else:
+            for item in value:
+                if capture_failed_operation(item, depth + 1):
+                    return True
+        return False
+
+    capture_failed_operation(result)
+
+    def walk(value, depth=0):
+        if depth > 10 or not isinstance(value, (dict, list)):
+            return
+        if isinstance(value, dict):
+            capture_cleanup(value)
+            if not receipt.get("error_message") or not receipt.get("error_code"):
+                capture_error(value)
+            for item in value.values():
+                walk(item, depth + 1)
+        else:
+            for item in value:
+                walk(item, depth + 1)
+
+    walk(result)
+    return {key: value for key, value in receipt.items() if value not in (None, "", [], {})}
+
+
+def validate_campaign_customer_messages(args):
+    """Validate every campaign/ad-set/ad customer message before Meta mutation."""
+    if not isinstance(args, dict):
+        return {"ok": True}
+    candidates = []
+
+    def collect(value, location):
+        if not isinstance(value, dict):
+            return
+        candidates.append((location, value))
+        for collection_key in ("ad_sets", "adsets", "ads", "creatives"):
+            collection = value.get(collection_key)
+            if not isinstance(collection, list):
+                continue
+            for index, item in enumerate(collection):
+                if isinstance(item, dict):
+                    collect(item, f"{location}.{collection_key}[{index}]")
+
+    collect(args, "campaign")
+    for location, item in candidates:
+        if "prefilled_message" not in item and "welcome_message" not in item:
+            continue
+        validation = SocialFlowClient.validate_page_welcome_message(
+            item.get("prefilled_message", ""), item.get("welcome_message", "")
+        )
+        if not validation.get("ok"):
+            return {
+                "ok": False,
+                "reason": validation.get("error") or "invalid_customer_message",
+                "location": location,
+                "validation": validation,
+            }
+    return {"ok": True}
+
+
+def persist_pending_campaign_workflow(tool, args, reason, *, result=None, status="pending", proposal_markdown=""):
     """Keep one structured buyer workflow across /reset without claiming Meta creation."""
     if tool not in CAMPAIGN_CREATION_TOOLS:
         return False
@@ -1108,7 +1290,7 @@ def persist_pending_campaign_workflow(tool, args, reason, *, result=None, status
         "next_step": next_step_by_reason.get(str(reason or ""), "Resolve the exact blocker and resume this campaign; do not restart onboarding."),
         "meta_creation_verified": status == "completed",
     }
-    proposal_brief = str(source.get("brief_markdown") or "").strip()
+    proposal_brief = str(proposal_markdown or source.get("brief_markdown") or "").strip()
     if proposal_brief:
         # Keep the exact held proposal private so a later short “sí” can
         # approve what was shown, without treating an empty pending blocker as
@@ -1191,7 +1373,9 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
             campaign_compilation = compile_campaign_brief(tool, brief_markdown)
             if not campaign_compilation.get("ok"):
                 reason = str(campaign_compilation.get("reason") or "campaign_compiler_failed")
-                persist_pending_campaign_workflow(tool, original_campaign_args, reason)
+                persist_pending_campaign_workflow(
+                    tool, original_campaign_args, reason, proposal_markdown=brief_markdown
+                )
                 missing = campaign_compilation.get("missing_fields") or []
                 if reason == "campaign_brief_incomplete":
                     labels = {
@@ -1224,7 +1408,9 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
             budget_contract=getattr(dashboard, "confirmed_budget_contract", None),
         )
         if destination_error:
-            persist_pending_campaign_workflow(tool, original_campaign_args, destination_error)
+            persist_pending_campaign_workflow(
+                tool, original_campaign_args, destination_error, proposal_markdown=brief_markdown
+            )
             replies = {
                 "missing_creative_decision": "No se creó nada en Meta: primero pregunta si el cliente quiere crear un creativo nuevo, reutilizar uno reciente o usar una imagen subida.",
                 "creative_not_approved": "No se creó nada en Meta: falta terminar y aprobar el creativo exacto que llevará el anuncio.",
@@ -1469,10 +1655,39 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
 
     product_tool = TOOL_MAP[tool]
     product_args = dict(args)
+    if tool in CAMPAIGN_CREATION_TOOLS:
+        message_validation = validate_campaign_customer_messages(product_args)
+        if not message_validation.get("ok"):
+            validation = message_validation.get("validation") or {}
+            proposal = validation.get("safe_short_proposal") or "Hola, quiero más información."
+            persist_pending_campaign_workflow(
+                tool,
+                product_args,
+                message_validation.get("reason") or "invalid_customer_message",
+                result=message_validation,
+                proposal_markdown=brief_markdown,
+            )
+            return redact_payload({
+                "ok": False,
+                "tool": tool,
+                "product_tool": product_tool,
+                "blocked": True,
+                "executed": False,
+                "reason": message_validation.get("reason") or "invalid_customer_message",
+                "validation": validation,
+                "safe_short_proposal": proposal,
+                "reply": (
+                    "No se creó nada en Meta: el mensaje inicial para el cliente supera el límite de 80 caracteres. "
+                    f"El texto aprobado se conserva sin cambios. Propuesta breve para revisar: «{proposal}»; "
+                    "debes aprobarla explícitamente antes de reintentar."
+                ),
+            })
     if tool in CAMPAIGN_STAGE_TOOLS and reference_paths and not any(product_args.get(key) for key in CAMPAIGN_CREATIVE_SOURCE_KEYS):
         product_args["creative_image_path"] = reference_paths[0]
     if tool in CAMPAIGN_CREATION_TOOLS and not campaign_has_verified_creative(product_args, reference_paths):
-        persist_pending_campaign_workflow(tool, product_args, "missing_verified_creative")
+        persist_pending_campaign_workflow(
+            tool, product_args, "missing_verified_creative", proposal_markdown=brief_markdown
+        )
         return redact_payload({
             "ok": False,
             "tool": tool,
@@ -1514,16 +1729,45 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
             response["ok"] = False
             response["blocked"] = True
             response["executed"] = False
-            response["reason"] = (
-                result.get("reason") if isinstance(result, dict) and result.get("reason")
-                else "campaign_creation_not_verified"
+            failure = campaign_creation_failure_receipt(result)
+            # ``campaign_creation_not_verified`` is only the outer state. Do
+            # not overwrite a concrete failed_step, Meta code/message, or
+            # cleanup result with it.
+            response["reason"] = "campaign_creation_not_verified"
+            if failure:
+                response["failure"] = failure
+            failed_step = failure.get("failed_step") if failure else ""
+            error_code = failure.get("error_code") if failure else ""
+            error_message = failure.get("error_message") if failure else ""
+            if failed_step or error_code or error_message:
+                detail = f" Falló en el paso técnico «{failed_step}»." if failed_step else ""
+                if error_code:
+                    detail += f" Código de Meta: {error_code}."
+                if error_message:
+                    detail += f" Mensaje: {error_message}."
+                cleanup = failure.get("cleanup") if failure else {}
+                if cleanup:
+                    if cleanup.get("ok") is True or cleanup.get("deleted") is True or cleanup.get("partial_deleted") is True:
+                        detail += " La parte parcial fue limpiada y no quedó activa."
+                    elif cleanup.get("attempted"):
+                        detail += " La limpieza de la parte parcial también requiere revisión."
+                response["reply"] = (
+                    "No se creó la campaña en Meta porque ocurrió un error técnico durante la creación."
+                    + detail
+                    + " Conservé el brief, las aprobaciones y este error para reintentar sin pedirte que repitas el trabajo."
+                )
+            else:
+                response["reply"] = (
+                    "No se pudo verificar la creación completa en Meta. Conservé el brief y las aprobaciones "
+                    "para reintentar; no reportaré la campaña como creada, preparada ni en pausa."
+                )
+            persist_pending_campaign_workflow(
+                tool,
+                product_args,
+                response["reason"],
+                result=result,
+                proposal_markdown=brief_markdown,
             )
-            response["reply"] = (
-                "No se creó la campaña en Meta. La herramienta no confirmó una campaña, "
-                "un conjunto y un anuncio PAUSED con IDs reales; conserva el error exacto "
-                "y no digas que quedó preparada, configurada ni en pausa."
-            )
-            persist_pending_campaign_workflow(tool, product_args, response["reason"], result=result)
         else:
             persist_pending_campaign_workflow(tool, product_args, "", result=result, status="completed")
     if tool == "admira_save_business_memory" and result_ok(result):

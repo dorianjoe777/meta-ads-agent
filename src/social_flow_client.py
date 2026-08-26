@@ -16,6 +16,12 @@ from security import redact_payload
 
 
 class SocialFlowClient:
+    # Meta's native page_welcome_message schema stores the customer action as
+    # an ice-breaker title.  Meta rejects titles over 80 characters.  Keep the
+    # limit explicit here so a failed creative never becomes a partial Meta
+    # object merely because the approved WhatsApp opener was too long.
+    META_PAGE_WELCOME_ACTION_MAX_LENGTH = 80
+
     def __init__(self, config):
         self.config = config
 
@@ -724,6 +730,39 @@ class SocialFlowClient:
             "surface": "visual_editor_new",
             "ice_breakers_edited": True,
             "autofill_message_edited": False,
+        }
+
+    @classmethod
+    def validate_page_welcome_message(cls, prefilled_message, welcome_message=""):
+        """Validate the native customer action without changing buyer text.
+
+        Meta applies the 80-character limit to the Visual Editor ice-breaker
+        title, not to the ad's primary text or headline.  Return a structured
+        retryable diagnostic with the exact approved value and a separate,
+        generic short proposal.  The proposal is never substituted silently.
+        """
+        message = str(prefilled_message or "").strip()
+        welcome = str(welcome_message or "").strip()
+        customer_action = message or welcome
+        if not customer_action:
+            return {"ok": True, "customer_action": "", "length": 0}
+
+        maximum = cls.META_PAGE_WELCOME_ACTION_MAX_LENGTH
+        length = len(customer_action)
+        if length <= maximum:
+            return {"ok": True, "customer_action": customer_action, "length": length}
+
+        return {
+            "ok": False,
+            "error": "meta_page_welcome_message_too_long",
+            "field": "page_welcome_message.text_format.message.ice_breakers[0].title",
+            "max_length": maximum,
+            "length": length,
+            "approved_value": customer_action,
+            # This is only a proposal.  It must be shown to the buyer and
+            # explicitly approved before a retry; never replace approved_value.
+            "safe_short_proposal": "Hola, quiero más información.",
+            "retryable": True,
         }
 
     @staticmethod
@@ -2023,6 +2062,38 @@ class SocialFlowClient:
         approved=False,
     ):
         normalized_message_destination = self.normalize_message_destination(message_destination)
+        welcome_validation = self.validate_page_welcome_message(prefilled_message, welcome_message)
+        if not welcome_validation.get("ok"):
+            operation = [
+                "meta-graph", "marketing", "create-creative",
+                str(ad_account_id or ""),
+            ]
+            body = {
+                "ok": False,
+                "error": welcome_validation["error"],
+                "message": "The approved customer message exceeds Meta's 80-character ice-breaker title limit.",
+                "validation": welcome_validation,
+                "preserved_inputs": {
+                    "prefilled_message": str(prefilled_message or "").strip(),
+                    "welcome_message": str(welcome_message or "").strip(),
+                    "body_text": str(body_text or ""),
+                    "headline": str(headline or ""),
+                    "page_id": str(page_id or ""),
+                    "message_destination": normalized_message_destination,
+                },
+                "next_step": "Ask the buyer to approve a shorter customer message, then retry with all other approved fields unchanged.",
+            }
+            record = {
+                "command": operation,
+                "operation": operation[1:],
+                "mode": self.config.mode,
+                "approved_execution": bool(approved),
+                "executed": False,
+                "returncode": 422,
+                "stdout": "",
+                "stderr": "",
+            }
+            return self.graph_local_record(record, "adcreatives:validation", body, ok=False, status=422)
         # A Page-only Messenger/WhatsApp ad must not inherit a stale Instagram
         # identity from the global account binding. Ads Manager represents
         # this as "Use Facebook Page". Sending instagram_actor_id anyway can

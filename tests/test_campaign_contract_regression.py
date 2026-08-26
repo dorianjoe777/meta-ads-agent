@@ -590,6 +590,200 @@ class CampaignContractRegressionTests(unittest.TestCase):
                 compiler.CONTRACT_FILE = original["CONTRACT_FILE"]
                 compiler.subprocess.Popen = original["Popen"]
 
+    def test_pending_campaign_proposal_accepts_natural_multifield_approval_without_repeating_budget(self):
+        """A same-campaign proposal preserves its resolved budget on natural approval."""
+        import campaign_payload_compiler as compiler
+
+        proposal = (
+            "Presupuesto diario: 50.000 COP. Texto principal: Reserva tu Full Detail. "
+            "Título: Full Detail Premium. Mensaje inicial: Hola, quiero agendar. "
+            "Creativo: reutilizar /app/output/creatives/full-detail.png."
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data_dir = root / "dashboard" / "data"
+            data_dir.mkdir(parents=True)
+            (data_dir / "pending_campaign_workflow.json").write_text(
+                json.dumps({
+                    "status": "pending",
+                    "destination": "whatsapp",
+                    "proposal_brief_markdown": proposal,
+                }),
+                encoding="utf-8",
+            )
+            with mock.patch.object(compiler, "ROOT_DIR", root):
+                gaps = compiler._buyer_decision_gaps(
+                    "whatsapp",
+                    authoritative_buyer_brief(
+                        "Apruebo él creativo, él texto, el título y él mensaje"
+                    ),
+                )
+            self.assertEqual(gaps, [])
+
+    def test_pending_campaign_proposal_is_scoped_to_destination(self):
+        """A proposal for another destination cannot authorize this campaign."""
+        import campaign_payload_compiler as compiler
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data_dir = root / "dashboard" / "data"
+            data_dir.mkdir(parents=True)
+            (data_dir / "pending_campaign_workflow.json").write_text(
+                json.dumps({
+                    "status": "pending",
+                    "destination": "website",
+                    "proposal_brief_markdown": (
+                        "Presupuesto diario: 50.000 COP. Texto principal: Oferta. "
+                        "Título: Oferta. Creativo: /app/output/a.png."
+                    ),
+                }),
+                encoding="utf-8",
+            )
+            with mock.patch.object(compiler, "ROOT_DIR", root):
+                gaps = compiler._buyer_decision_gaps(
+                    "whatsapp",
+                    authoritative_buyer_brief("Apruebo el creativo, el texto, el título y el mensaje"),
+                )
+            self.assertIn("budget_confirmation", gaps)
+            self.assertIn("prefilled_message_approval", gaps)
+
+    def test_compiler_injects_pending_proposal_and_semantically_preserves_or_rejects_it(self):
+        """The model sees the held proposal and decides accept vs correction."""
+        import campaign_payload_compiler as compiler
+
+        proposal = (
+            "Presupuesto diario: 50.000 COP. Texto principal: Reserva tu Full Detail. "
+            "Título: Full Detail Premium. Mensaje inicial: Hola, quiero agendar. "
+            "Creativo: reutilizar /app/output/creatives/full-detail.png."
+        )
+        accepted_payload = {
+            "name": "Rodeo Full Detail",
+            "daily_budget": 50000,
+            "budget_confirmation": "50.000 COP diarios",
+            "creative_image_path": "/app/output/creatives/full-detail.png",
+            "locations": ["Bogotá"],
+            "placements": {"automatic": True},
+            "primary_text": "Reserva tu Full Detail.",
+            "headline": "Full Detail Premium",
+            "primary_text_approved": True,
+            "headline_approved": True,
+            "creative_decision": "Reutilizar el creativo aprobado",
+            "creative_approved": True,
+            "prefilled_message": "Hola, quiero agendar.",
+            "prefilled_message_approved": True,
+        }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data_dir = root / "dashboard" / "data"
+            data_dir.mkdir(parents=True)
+            (data_dir / "pending_campaign_workflow.json").write_text(
+                json.dumps({
+                    "status": "pending",
+                    "destination": "whatsapp",
+                    "proposal_brief_markdown": proposal,
+                }),
+                encoding="utf-8",
+            )
+            captured = []
+
+            def fake_gemini(model, prompt, schema, **kwargs):
+                captured.append(prompt)
+                if "No, cambia el presupuesto a 80.000 COP" in prompt or "Hola" in prompt and "Apruebo" not in prompt:
+                    compiled = {"ready": False, "missing_fields": ["budget_confirmation"], "payload_json": "{}"}
+                else:
+                    compiled = {"ready": True, "missing_fields": [], "payload_json": json.dumps(accepted_payload)}
+                return {"ok": True, "model": model, "compiled": compiled}
+
+            original = {
+                "ROOT_DIR": compiler.ROOT_DIR,
+                "LATEST_BRIEF_FILE": compiler.LATEST_BRIEF_FILE,
+                "LATEST_PAYLOAD_FILE": compiler.LATEST_PAYLOAD_FILE,
+                "CONTRACT_FILE": compiler.CONTRACT_FILE,
+                "gemini": compiler._gemini_compile,
+            }
+            try:
+                compiler.ROOT_DIR = root
+                compiler.LATEST_BRIEF_FILE = data_dir / "campaign-compiler" / "latest-campaign.md"
+                compiler.LATEST_PAYLOAD_FILE = data_dir / "campaign-compiler" / "latest-campaign-payload.json"
+                compiler.CONTRACT_FILE = root / "campaign-contract.md"
+                compiler.CONTRACT_FILE.write_text("Never guess.", encoding="utf-8")
+                compiler._gemini_compile = fake_gemini
+                config = SimpleNamespace(
+                    gemini_api_key="test-key",
+                    agent_chat_base_url="https://generativelanguage.googleapis.com/v1beta",
+                )
+
+                accepted = compiler.compile_campaign_brief(
+                    "create_whatsapp_campaign",
+                    authoritative_buyer_brief(
+                        "Apruebo él creativo, él texto, el título y él mensaje"
+                    ),
+                    config=config,
+                )
+                self.assertTrue(accepted["ok"])
+                self.assertEqual(accepted["payload"]["daily_budget"], 50000)
+                self.assertIn("<pending_campaign_proposal>", captured[-1])
+                self.assertIn("never authorization", captured[-1])
+                self.assertIn(proposal, captured[-1])
+
+                changed = compiler.compile_campaign_brief(
+                    "create_whatsapp_campaign",
+                    authoritative_buyer_brief("No, cambia el presupuesto a 80.000 COP"),
+                    config=config,
+                )
+                self.assertFalse(changed["ok"])
+                self.assertEqual(changed["reason"], "campaign_brief_incomplete")
+
+                unrelated = compiler.compile_campaign_brief(
+                    "create_whatsapp_campaign",
+                    authoritative_buyer_brief("Hola, ¿cómo estás?"),
+                    config=config,
+                )
+                self.assertFalse(unrelated["ok"])
+                self.assertEqual(unrelated["reason"], "campaign_brief_incomplete")
+
+                shortened_payload = dict(accepted_payload)
+                shortened_payload["prefilled_message"] = "Hola, quiero información sobre Full Detail."
+
+                def fake_shortened_message(model, prompt, schema, **kwargs):
+                    self.assertIn("preserve every other accepted field", prompt)
+                    self.assertIn("Hola, quiero información sobre Full Detail.", prompt)
+                    return {
+                        "ok": True,
+                        "model": model,
+                        "compiled": {
+                            "ready": True,
+                            "missing_fields": [],
+                            "payload_json": json.dumps(shortened_payload),
+                        },
+                    }
+
+                compiler._gemini_compile = fake_shortened_message
+                shortened = compiler.compile_campaign_brief(
+                    "create_whatsapp_campaign",
+                    authoritative_buyer_brief(
+                        "Apruebo el mensaje corto: Hola, quiero información sobre Full Detail."
+                    ),
+                    config=config,
+                )
+                self.assertTrue(shortened["ok"])
+                self.assertEqual(shortened["payload"]["daily_budget"], 50000)
+                self.assertEqual(
+                    shortened["payload"]["prefilled_message"],
+                    "Hola, quiero información sobre Full Detail.",
+                )
+                self.assertEqual(
+                    shortened["payload"]["creative_image_path"],
+                    "/app/output/creatives/full-detail.png",
+                )
+            finally:
+                compiler.ROOT_DIR = original["ROOT_DIR"]
+                compiler.LATEST_BRIEF_FILE = original["LATEST_BRIEF_FILE"]
+                compiler.LATEST_PAYLOAD_FILE = original["LATEST_PAYLOAD_FILE"]
+                compiler.CONTRACT_FILE = original["CONTRACT_FILE"]
+                compiler._gemini_compile = original["gemini"]
+
     def test_terra_incomplete_result_reports_only_semantic_missing_facts(self):
         import campaign_payload_compiler as compiler
 
