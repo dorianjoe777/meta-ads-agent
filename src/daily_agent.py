@@ -42,6 +42,7 @@ from security import redact_payload
 from shopify_connector import sync_shopify
 from setup_status import build_setup_status
 from campaign_editing import execute_campaign_edit, mark_draft_status
+from scheduled_campaign_actions import verify_campaign_activation
 from adset_controls import PLACEMENT_TARGETING_KEYS, apply_placement_targeting, deprecated_manual_placements, normalize_placement_config
 from expert_campaign import (
     boolish,
@@ -2584,7 +2585,18 @@ def execute_pending(item, client):
         if edit_payload.get("draft_path"):
             mark_draft_status(edit_payload.get("draft_path"), "applied" if result.get("ok") else "failed", result=result)
     elif command[0] == "resume":
-        result = client.resume(command[1], command[2], approved=True)
+        campaign_id = str(command[2] or "").strip()
+        mutation_result = client.resume(command[1], campaign_id, approved=True)
+        readback_result = client.campaign_details(campaign_id) if hasattr(client, "campaign_details") else {}
+        verification = verify_campaign_activation(campaign_id, mutation_result, readback_result)
+        result = {
+            "ok": bool(verification.get("verified")),
+            "executed": bool(mutation_result.get("executed")),
+            "campaign_id": campaign_id,
+            "mutation_result": mutation_result,
+            "verification": verification,
+            "verified": bool(verification.get("verified")),
+        }
     elif command[0] == "pause":
         result = client.pause(command[1], command[2], approved=True)
     elif command[0] == "delete":

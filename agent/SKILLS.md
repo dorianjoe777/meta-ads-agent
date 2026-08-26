@@ -286,7 +286,7 @@ Arguments:
 
 ### `resume_campaign`
 
-Use when the user asks to reactivate a specific paused campaign.
+Use when the user asks to reactivate a specific paused campaign now or as soon as possible. This immediate path never creates a cron. Understand equivalent natural wording and minor spelling errors semantically; do not require a fixed phrase. The backend must confirm the resulting live Meta status before the agent claims activation.
 
 Arguments:
 
@@ -788,7 +788,7 @@ Show the pending choices by human-readable name only. Never request or expose an
 
 - The chat may request an action, but it cannot bypass backend protection.
 - Chat and Telegram keep approval IDs internal. A normal pending decision can be approved with a natural `aprobado` resolved from the latest visible proposal context.
-- Activating or resuming a campaign that can spend requires the exact short phrase `Sí, activar`. The backend still receives the hidden approval ID.
+- Activating or resuming a campaign that can spend requires clear buyer approval tied to the exact current campaign/action. Natural equivalents and minor spelling errors are valid; do not demand a fixed phrase or exact spelling. The backend still receives the hidden approval ID. A future date/time selects the scheduler; immediate intent selects `mcp_admira_resume_campaign`.
 
 ## Codex Creative Skill
 

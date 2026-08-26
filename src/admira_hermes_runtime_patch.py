@@ -1831,6 +1831,7 @@ def _append_turn_execution_contract(value):
             "Avanza ahora todo paso seguro ya autorizado. Antes de preguntar, identifica todos los insumos del dueño necesarios para terminar el siguiente entregable. Haz como máximo una pregunta bloqueante; si faltan varios datos o archivos del dueño estrechamente relacionados, pídelos juntos una sola vez en un paquete breve. "
             "Para un principiante, entrega decisión, una razón o riesgo de negocio y la acción concreta siguiente en máximo 180 palabras. No descargues alternativas ni termines con una invitación tipo «si quieres». "
             "Si recomiendas precio o presupuesto y ya conoces los costos, calcula el margen de contribución y las ventas/leads adicionales aproximados necesarios para recuperar la pauta antes de elegir el test.\n"
+            "Para activar inmediatamente una campaña usa la acción de reanudación/activación y espera la confirmación Graph ACTIVE; nunca crees una programación o cronjob para una petición de activación inmediata. Usa schedule_campaign_activation únicamente cuando el cliente haya pedido una fecha u hora futura concreta. Una programación exitosa significa que la campaña permanece PAUSED hasta esa fecha; no la describas como activa.\n"
             f"{ADMIRA_TURN_CONTRACT_END}"
         )
     return f"{text}\n\n{contract}"

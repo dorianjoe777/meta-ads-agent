@@ -64,8 +64,8 @@ TOOL_DEFINITIONS = [
     ("connect_chatgpt", "Start or switch the ChatGPT/Codex subscription and return the secure OpenAI device URL and code in chat. Never give terminal commands."),
     ("stage_budget_change", "Stage a guarded budget change using the exact buyer-facing amount and currency. The backend verifies the live ad-account currency, uses the same currency-unit engine as campaign creation, and rereads Meta after approval before reporting success."),
     ("pause_campaign", "Stage or execute a guarded campaign pause."),
-    ("resume_campaign", "Stage or execute a guarded campaign resume."),
-    ("schedule_campaign_activation", "Schedule one exact PAUSED Meta campaign to become ACTIVE at an authorized local date/time. Requires the real numeric Meta campaign_id, buyer authorization to spend, confirmation that final creatives are ready, timezone, and scheduled_at. The due action runs deterministically without an inference/model call."),
+    ("resume_campaign", "Activate one exact PAUSED Meta campaign now after explicit buyer approval. Use for immediate intent such as turn it on, start it, enable it, or begin now, including natural wording and typos. Do not create a cron for immediate activation. The backend must verify the resulting ACTIVE state directly from Meta before reporting success."),
+    ("schedule_campaign_activation", "Schedule one exact PAUSED Meta campaign to become ACTIVE at an explicitly requested future local date/time. Use only when the buyer's intent is future-dated; ordinary approval or 'now/immediately' belongs to resume_campaign. Requires the real numeric Meta campaign_id, buyer authorization to spend, confirmation that final creatives are ready, timezone, scheduled_at, and schedule_request_evidence: a short literal quote from the buyer proving the future timing. The due action runs deterministically without an inference/model call and must verify ACTIVE directly from Meta."),
     ("delete_campaign", "Stage deletion/archival of an exact Meta campaign ID. Use for buyer-approved cleanup of incomplete paused campaigns; never delete active or external campaigns silently."),
     ("list_pending_approvals", "List pending approval cards."),
     ("approve_action", "Approve one exact pending action."),
@@ -579,8 +579,8 @@ TOOL_INPUT_SCHEMAS = {
     },
     "schedule_campaign_activation": {
         "type": "object", "additionalProperties": True,
-        "properties": {"campaign_id": _string("Exact numeric Meta campaign ID."), "scheduled_at": _string("Authorized ISO date/time with timezone."), "timezone": _string("Buyer timezone."), "buyer_authorized": _boolean("Explicit buyer approval to activate spend."), "creative_ready_confirmed": _boolean("Final creatives, destination, and tracking were reviewed.")},
-        "required": ["campaign_id", "scheduled_at", "buyer_authorized", "creative_ready_confirmed"],
+        "properties": {"campaign_id": _string("Exact numeric Meta campaign ID."), "scheduled_at": _string("Authorized ISO date/time with timezone in the future."), "timezone": _string("Buyer timezone."), "buyer_authorized": _boolean("Explicit buyer approval to activate spend."), "creative_ready_confirmed": _boolean("Final creatives, destination, and tracking were reviewed."), "schedule_request_evidence": _string("Short literal quotation from the buyer's message proving that activation was requested for a future date/time; never invent this quote and do not use it for immediate activation.")},
+        "required": ["campaign_id", "scheduled_at", "buyer_authorized", "creative_ready_confirmed", "schedule_request_evidence"],
     },
     "delete_campaign": {
         "type": "object", "additionalProperties": True,

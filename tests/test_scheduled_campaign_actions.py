@@ -37,7 +37,7 @@ class ScheduledCampaignActionsTest(unittest.TestCase):
                 def __init__(self, _config):
                     pass
                 def campaign_details(self, _campaign_id):
-                    return {"returncode": 0, "stdout": json.dumps({"id": "120250293867690096", "name": "Campaña lista", "status": "PAUSED"})}
+                    return {"ok": True, "returncode": 0, "status": 200, "stdout": json.dumps({"id": "120250293867690096", "name": "Campaña lista", "status": "PAUSED"})}
 
             command = []
             def fake_run(args, **_kwargs):
@@ -58,6 +58,9 @@ class ScheduledCampaignActionsTest(unittest.TestCase):
                     "timezone": "America/Bogota",
                     "buyer_authorized": True,
                     "creative_ready_confirmed": True,
+                    "activation_intent_verified": True,
+                    "authorization_source": "trusted_buyer_turn_semantic",
+                    "schedule_request_evidence": "Actívala dentro de una hora",
                 }, base / "hermes-home", "12345")
 
             stored = json.loads(scheduled_file.read_text(encoding="utf-8"))["actions"][0]
@@ -91,10 +94,10 @@ class ScheduledCampaignActionsTest(unittest.TestCase):
                 def campaign_details(self, _campaign_id):
                     self.__class__.calls += 1
                     status = "PAUSED" if self.__class__.calls == 1 else "ACTIVE"
-                    return {"returncode": 0, "stdout": json.dumps({"id": "120250293867690096", "name": "Campaña lista", "status": status})}
+                    return {"ok": True, "returncode": 0, "status": 200, "stdout": json.dumps({"id": "120250293867690096", "name": "Campaña lista", "status": status})}
                 def resume(self, target_type, target_id, approved=False):
                     self.last_resume = (target_type, target_id, approved)
-                    return {"executed": True, "returncode": 0}
+                    return {"ok": True, "executed": True, "returncode": 0, "status": 200}
 
             config = SimpleNamespace(license_required_for_live=False)
             with patch.object(scheduled, "SCHEDULED_ACTIONS_FILE", scheduled_file), \
@@ -109,6 +112,183 @@ class ScheduledCampaignActionsTest(unittest.TestCase):
             self.assertEqual(record["status"], "completed")
             self.assertEqual(record["verified_status"], "ACTIVE")
             self.assertEqual(audit["status"], "completed")
+
+    def test_due_activation_requires_graph_200_for_mutation_and_readback(self):
+        """An activation is complete only after POST 2xx and an exact GET 2xx ACTIVE readback."""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            scheduled_file = base / "scheduled.json"
+            actions_file = base / "actions.json"
+            scheduled_file.write_text(json.dumps({"actions": [{
+                "id": "activation-http-contract",
+                "type": "activate_campaign",
+                "status": "scheduled",
+                "campaign_id": "120250293867690096",
+                "campaign_name": "Campaña lista",
+            }]}), encoding="utf-8")
+
+            class FakeClient:
+                def __init__(self, _config):
+                    self.reads = 0
+
+                def campaign_details(self, _campaign_id):
+                    self.reads += 1
+                    status = "PAUSED" if self.reads == 1 else "ACTIVE"
+                    return {
+                        "returncode": 0,
+                        "status": 200,
+                        "ok": True,
+                        "stdout": json.dumps({
+                            "id": "120250293867690096",
+                            "name": "Campaña lista",
+                            "status": status,
+                        }),
+                    }
+
+                def resume(self, target_type, target_id, approved=False):
+                    self.resume_call = (target_type, target_id, approved)
+                    return {
+                        "executed": True,
+                        "ok": True,
+                        "returncode": 0,
+                        "status": 200,
+                        "body": {"id": target_id, "status": "ACTIVE"},
+                    }
+
+            config = SimpleNamespace(license_required_for_live=False)
+            with patch.object(scheduled, "SCHEDULED_ACTIONS_FILE", scheduled_file), \
+                 patch.object(scheduled, "ACTIONS_FILE", actions_file), \
+                 patch.object(scheduled, "SocialFlowClient", FakeClient), \
+                 patch.object(scheduled, "load_config", lambda: config):
+                code = scheduled.run_scheduled_activation("activation-http-contract")
+
+            record = json.loads(scheduled_file.read_text(encoding="utf-8"))["actions"][0]
+            self.assertEqual(code, 0)
+            self.assertEqual(record["status"], "completed")
+            self.assertEqual(record["verified_status"], "ACTIVE")
+
+    def test_due_activation_http_200_but_paused_is_not_success(self):
+        """A successful HTTP response is insufficient when Meta still reports PAUSED."""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            scheduled_file = base / "scheduled.json"
+            actions_file = base / "actions.json"
+            scheduled_file.write_text(json.dumps({"actions": [{
+                "id": "activation-still-paused",
+                "type": "activate_campaign",
+                "status": "scheduled",
+                "campaign_id": "120250293867690096",
+                "campaign_name": "Campaña lista",
+            }]}), encoding="utf-8")
+
+            class FakeClient:
+                def __init__(self, _config):
+                    pass
+
+                def campaign_details(self, _campaign_id):
+                    return {
+                        "returncode": 0,
+                        "status": 200,
+                        "ok": True,
+                        "stdout": json.dumps({
+                            "id": "120250293867690096",
+                            "name": "Campaña lista",
+                            "status": "PAUSED",
+                            "adsets": {"data": [{"id": "220250293867000425", "status": "ACTIVE"}]},
+                            "ads": {"data": [{"id": "330250293867000425", "status": "ACTIVE"}]},
+                        }),
+                    }
+
+                def resume(self, target_type, target_id, approved=False):
+                    return {
+                        "executed": True,
+                        "ok": True,
+                        "returncode": 0,
+                        "status": 200,
+                        "body": {"id": target_id, "status": "PAUSED"},
+                    }
+
+            config = SimpleNamespace(license_required_for_live=False)
+            with patch.object(scheduled, "SCHEDULED_ACTIONS_FILE", scheduled_file), \
+                 patch.object(scheduled, "ACTIONS_FILE", actions_file), \
+                 patch.object(scheduled, "SocialFlowClient", FakeClient), \
+                 patch.object(scheduled, "load_config", lambda: config):
+                code = scheduled.run_scheduled_activation("activation-still-paused")
+
+            record = json.loads(scheduled_file.read_text(encoding="utf-8"))["actions"][0]
+            self.assertNotEqual(code, 0)
+            self.assertEqual(record["status"], "failed")
+            self.assertEqual(record["verified_status"], "PAUSED")
+
+    def test_campaign_activation_does_not_require_paused_descendants_to_be_active(self):
+        mutation = {"ok": True, "executed": True, "returncode": 0, "status": 200}
+        readback = {
+            "ok": True,
+            "returncode": 0,
+            "status": 200,
+            "stdout": json.dumps({
+                "id": "120250293867690096",
+                "status": "ACTIVE",
+                "effective_status": "PENDING_REVIEW",
+                "adsets": {"data": [{"id": "220250293867000425", "configured_status": "PAUSED"}]},
+                "ads": {"data": [{"id": "330250293867000425", "configured_status": "PAUSED"}]},
+            }),
+        }
+        receipt = scheduled.verify_campaign_activation("120250293867690096", mutation, readback)
+        self.assertTrue(receipt["verified"])
+        self.assertFalse(receipt["hierarchy"]["ok"])
+        self.assertEqual(receipt["effective_status"], "PENDING_REVIEW")
+
+    def test_future_activation_only_schedules_and_does_not_claim_active(self):
+        """A future request means queued, not activated; narrative must remain explicit."""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            actions_file = base / "actions.json"
+            scheduled_file = base / "scheduled.json"
+            metrics_file = base / "metrics.json"
+            actions_file.write_text("[]", encoding="utf-8")
+            metrics_file.write_text('{"campaigns": []}', encoding="utf-8")
+
+            class FakeClient:
+                def __init__(self, _config):
+                    pass
+
+                def campaign_details(self, _campaign_id):
+                    return {
+                        "returncode": 0,
+                        "status": 200,
+                        "ok": True,
+                        "stdout": json.dumps({"id": "120250293867690096", "name": "Campaña lista", "status": "PAUSED"}),
+                    }
+
+            command = []
+            def fake_run(args, **_kwargs):
+                command.extend(args)
+                return SimpleNamespace(returncode=0, stdout="Created job activate123456", stderr="")
+
+            due = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+            with patch.object(scheduled, "ACTIONS_FILE", actions_file), \
+                 patch.object(scheduled, "SCHEDULED_ACTIONS_FILE", scheduled_file), \
+                 patch.object(scheduled, "METRICS_FILE", metrics_file), \
+                 patch.object(scheduled, "SocialFlowClient", FakeClient), \
+                 patch.object(scheduled, "load_config", lambda: SimpleNamespace()), \
+                 patch.object(scheduled.shutil, "which", lambda _name: "/usr/local/bin/hermes"), \
+                 patch.object(scheduled.subprocess, "run", fake_run):
+                result = scheduled.schedule_campaign_activation({
+                    "campaign_id": "120250293867690096",
+                    "scheduled_at": due,
+                    "timezone": "America/Bogota",
+                    "buyer_authorized": True,
+                    "creative_ready_confirmed": True,
+                    "activation_intent_verified": True,
+                    "authorization_source": "trusted_buyer_turn_semantic",
+                    "schedule_request_evidence": "Actívala dentro de dos horas",
+                }, base / "hermes-home", "12345")
+
+            self.assertTrue(result["ok"])
+            self.assertTrue(result["scheduled"])
+            self.assertNotIn("ACTIVE", json.dumps(result).upper())
+            self.assertIn("--no-agent", command)
 
     def test_cron_jobs_are_repinned_to_selected_model(self):
         captured = {}

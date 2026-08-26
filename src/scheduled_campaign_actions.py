@@ -113,11 +113,92 @@ def _graph_body(result):
         return {}
 
 
+def _http_2xx(result):
+    """Return whether a Graph connector receipt proves an HTTP 2xx response."""
+    if not isinstance(result, dict) or result.get("returncode") not in {0, None}:
+        return False
+    status = result.get("http_status", result.get("status"))
+    return isinstance(status, int) and 200 <= status < 300
+
+
+def _status(body):
+    if not isinstance(body, dict):
+        return ""
+    # configured_status is the buyer-controlled setting. effective_status may
+    # legitimately be PENDING_REVIEW after activation and is not a reason to
+    # report the campaign as still paused.
+    return str(body.get("configured_status") or body.get("status") or "").strip().upper()
+
+
+def _active_hierarchy(body, campaign_id):
+    """Validate optional campaign children when Graph returned them."""
+    if not isinstance(body, dict):
+        return {"available": False, "ok": True, "children": []}
+    children = []
+    for relation, key in (("adsets", "adset"), ("ads", "ad")):
+        relation_body = body.get(relation)
+        rows = relation_body.get("data") if isinstance(relation_body, dict) else None
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict) or not str(row.get("id") or "").strip():
+                continue
+            configured = _status(row)
+            children.append({
+                "type": key,
+                "id": str(row.get("id")),
+                "configured_status": configured,
+                "effective_status": str(row.get("effective_status") or "").strip().upper(),
+                "ok": configured == "ACTIVE",
+            })
+    return {"available": bool(children), "ok": all(item["ok"] for item in children), "children": children, "campaign_id": campaign_id}
+
+
+def verify_campaign_activation(campaign_id, mutation_result, readback_result):
+    """Build the authoritative receipt for a campaign activation.
+
+    Success requires a successful Graph mutation *and* an independent Graph
+    readback of the exact campaign ID.  A 200 response that leaves configured
+    status PAUSED is deliberately a failure.
+    """
+    expected_id = str(campaign_id or "").strip()
+    body = _graph_body(readback_result)
+    readback_id = str(body.get("id") or "").strip() if isinstance(body, dict) else ""
+    configured_status = _status(body)
+    hierarchy = _active_hierarchy(body, expected_id)
+    mutation_http_ok = _http_2xx(mutation_result)
+    readback_http_ok = _http_2xx(readback_result)
+    campaign_active = readback_id == expected_id and configured_status == "ACTIVE"
+    # Meta's campaign-level activation is a distinct mutation. Ad sets and ads
+    # may intentionally remain paused (for staged rollout or creative review),
+    # so their state is reported as hierarchy evidence but must not invalidate
+    # a verified campaign resume.
+    verified = bool(mutation_http_ok and readback_http_ok and campaign_active)
+    return {
+        "ok": verified,
+        "verified": verified,
+        "campaign_id": expected_id,
+        "mutation_http_ok": mutation_http_ok,
+        "mutation_http_status": mutation_result.get("http_status", mutation_result.get("status")) if isinstance(mutation_result, dict) else None,
+        "readback_http_ok": readback_http_ok,
+        "readback_http_status": readback_result.get("http_status", readback_result.get("status")) if isinstance(readback_result, dict) else None,
+        "readback_id": readback_id,
+        "configured_status": configured_status,
+        "verified_status": configured_status,
+        "effective_status": str(body.get("effective_status") or "").strip().upper() if isinstance(body, dict) else "",
+        "campaign_active": campaign_active,
+        "hierarchy": hierarchy,
+        "reason": "verified_active" if verified else "campaign_not_confirmed_active",
+    }
+
+
 def schedule_campaign_activation(payload, hermes_home, telegram_chat_id, hermes_cli="hermes"):
     if not bool(payload.get("buyer_authorized") or payload.get("active_spend_confirmed")):
         return {"ok": False, "blocked": True, "reason": "activation_authorization_required"}
     if not bool(payload.get("creative_ready_confirmed")):
         return {"ok": False, "blocked": True, "reason": "creative_readiness_confirmation_required"}
+    if not bool(payload.get("activation_intent_verified")) or str(payload.get("authorization_source") or "") != "trusted_buyer_turn_semantic" or not str(payload.get("schedule_request_evidence") or "").strip():
+        return {"ok": False, "blocked": True, "reason": "future_activation_intent_not_verified"}
     resolved = resolve_campaign_reference(payload.get("campaign_id"), payload.get("campaign_name"))
     if not resolved.get("ok"):
         return {"ok": False, "blocked": True, **resolved}
@@ -132,7 +213,7 @@ def schedule_campaign_activation(payload, hermes_home, telegram_chat_id, hermes_
     config = load_config()
     details = SocialFlowClient(config).campaign_details(resolved["campaign_id"])
     body = _graph_body(details)
-    if details.get("returncode") != 0 or str(body.get("id") or "") != resolved["campaign_id"]:
+    if not _http_2xx(details) or str(body.get("id") or "") != resolved["campaign_id"]:
         return {"ok": False, "blocked": True, "reason": "meta_campaign_not_verified"}
     actual_name = str(body.get("name") or resolved.get("campaign_name") or "")
     requested_name = str(payload.get("campaign_name") or "").strip()
@@ -150,6 +231,9 @@ def schedule_campaign_activation(payload, hermes_home, telegram_chat_id, hermes_
         "timezone": timezone_name,
         "buyer_authorized": True,
         "creative_ready_confirmed": True,
+        "schedule_request_evidence": str(payload.get("schedule_request_evidence") or "").strip(),
+        "activation_intent_verified": bool(payload.get("activation_intent_verified")),
+        "authorization_source": str(payload.get("authorization_source") or "").strip(),
         "budget_snapshot": str(payload.get("budget_snapshot") or payload.get("daily_budget") or ""),
         "created_at": now_iso(),
     }
@@ -199,19 +283,21 @@ def run_scheduled_activation(action_id):
         print("No activé la campaña porque la licencia no pudo validarse.")
         return 1
     client = SocialFlowClient(config)
-    before = _graph_body(client.campaign_details(record["campaign_id"]))
-    if str(before.get("id") or "") != record["campaign_id"] or (record.get("campaign_name") and str(before.get("name") or "").casefold() != str(record["campaign_name"]).casefold()):
+    before_result = client.campaign_details(record["campaign_id"])
+    before = _graph_body(before_result)
+    if not _http_2xx(before_result) or str(before.get("id") or "") != record["campaign_id"] or (record.get("campaign_name") and str(before.get("name") or "").casefold() != str(record["campaign_name"]).casefold()):
         record.update({"status": "blocked", "reason": "campaign_identity_changed", "updated_at": now_iso()}); _save_record(record)
         print("No activé la campaña porque su identidad ya no coincide con la autorización guardada.")
         return 1
-    if str(before.get("status") or before.get("configured_status") or "").upper() == "ACTIVE":
+    if _status(before) == "ACTIVE":
         record.update({"status": "completed", "result": "already_active", "completed_at": now_iso()}); _save_record(record)
         print(f"La campaña {record['campaign_name']} ya estaba activa.")
         return 0
     result = client.resume("campaign", record["campaign_id"], approved=True)
-    after = _graph_body(client.campaign_details(record["campaign_id"]))
-    active = result.get("executed") and result.get("returncode") == 0 and str(after.get("status") or after.get("configured_status") or "").upper() == "ACTIVE"
-    record.update({"status": "completed" if active else "failed", "completed_at": now_iso(), "verified_status": after.get("status") or after.get("configured_status") or "", "updated_at": now_iso()})
+    after_result = client.campaign_details(record["campaign_id"])
+    verification = verify_campaign_activation(record["campaign_id"], result, after_result)
+    active = bool(verification.get("verified"))
+    record.update({"status": "completed" if active else "failed", "completed_at": now_iso(), "verified_status": verification.get("configured_status") or "", "verification": verification, "updated_at": now_iso()})
     _save_record(record)
     actions = read_json(ACTIONS_FILE, [])
     if not isinstance(actions, list):

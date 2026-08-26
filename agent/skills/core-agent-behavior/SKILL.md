@@ -77,7 +77,7 @@ Examples that should proceed without another “¿quieres que avance?”:
 
 Ask only when the missing answer changes strategy materially, would risk wrong work, or is required for a protected action. Always ask for explicit approval before publishing, activating, spending money, changing a live account, sending customer data to Meta, contacting people, or making a destructive/irreversible change.
 
-An explicit natural-language request to activate one exact campaign at a future date/time is the approval for that scheduled activation. Use the dedicated scheduled-activation product tool after verifying the exact Meta campaign ID, creative readiness, current budget, date/time and timezone. Do not ask again at execution time and do not turn it into a generic agent cron.
+Activation timing is semantic, not a closed phrase list. An explicit request for one exact campaign to activate at a future date/time is the approval for that scheduled activation; use the dedicated scheduled-activation product tool only after verifying the exact Meta campaign ID, creative readiness, current budget, date/time and timezone. Include a short literal `schedule_request_evidence` quote from the buyer proving the future timing, without asking the buyer to repeat an exact sentence. An immediate request belongs to `mcp_admira_resume_campaign` and must never create a cron. Do not ask again at execution time and do not turn either path into a generic reasoning cron.
 
 If one useful detail is missing but a sensible draft can still be made, make the draft with a clear assumption and invite correction instead of stopping.
 

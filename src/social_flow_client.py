@@ -79,10 +79,13 @@ class SocialFlowClient:
 
     def graph_record(self, record, endpoint, result):
         stdout = json.dumps(result.get("body") if isinstance(result.get("body"), dict) else {"error": result.get("body")}, ensure_ascii=False)
+        http_status = result.get("status")
         return {
             **record,
             "connector": "graph_api",
             "graph_endpoint": endpoint,
+            "http_status": http_status,
+            "status": http_status,
             "returncode": 0 if result.get("ok") else int(result.get("status") or 1),
             "stdout": stdout if result.get("ok") else "",
             "stderr": "" if result.get("ok") else stdout,
@@ -94,6 +97,8 @@ class SocialFlowClient:
             **record,
             "connector": "graph_api",
             "graph_endpoint": endpoint,
+            "http_status": status,
+            "status": status,
             "returncode": 0 if ok else int(status or 1),
             "stdout": stdout if ok else "",
             "stderr": "" if ok else stdout,
@@ -1416,7 +1421,7 @@ class SocialFlowClient:
             if action == "campaign-details":
                 campaign_id = self.positional(args, 2, "")
                 endpoint = campaign_id
-                return self.graph_record(record, endpoint, self.get_graph(endpoint, {"fields": "id,name,status,effective_status,configured_status,daily_budget,lifetime_budget,bid_strategy"}))
+                return self.graph_record(record, endpoint, self.get_graph(endpoint, {"fields": "id,name,account_id,status,effective_status,configured_status,daily_budget,lifetime_budget,bid_strategy,adsets.limit(100){id,name,status,effective_status,configured_status},ads.limit(100){id,name,status,effective_status,configured_status}"}))
             if action == "adset-details":
                 adset_id = self.positional(args, 2, "")
                 endpoint = adset_id

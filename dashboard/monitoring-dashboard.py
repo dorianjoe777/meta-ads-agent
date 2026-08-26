@@ -183,7 +183,8 @@ from optimization_engine import (
     unlock_status as optimization_unlock_status,
 )
 from optimization_research import RESEARCH_FILE, load_research, save_research_item, seed_current_research
-from scheduled_campaign_actions import schedule_campaign_activation
+from scheduled_campaign_actions import schedule_campaign_activation, verify_campaign_activation
+from activation_intent_classifier import classify_activation_intent
 from product_config import (
     DEFAULT_NVIDIA_NIM_MODEL,
     ENV_FILE,
@@ -18859,7 +18860,99 @@ def handle_save_existing_adset_tool(arguments, chat_payload, tool):
     return save_existing_adset_action(arguments.get("adset_id") or arguments.get("default_adset_id"), chat_payload)
 
 
+def _activation_turn_authorization(arguments, chat_payload):
+    """Authorize only from the server-recorded buyer turn, never model prose."""
+    if boolish((arguments or {}).get("active_spend_confirmed")) is not True:
+        return {"ok": False, "reason": "active_spend_confirmation_required"}
+    turn = _trusted_buyer_turn()
+    message = str((turn or {}).get("message") or "").strip()
+    if not message:
+        return {"ok": False, "reason": "missing_current_trusted_buyer_turn"}
+    intent = classify_activation_intent(message)
+    if intent.get("intent") != "immediate":
+        return {"ok": False, "reason": "activation_intent_not_immediate", "intent": intent.get("intent")}
+    return {"ok": True, "intent": intent, "turn": turn, "message": message}
+
+
+def _live_campaign_for_activation(campaign_id, config):
+    """Fetch and bind an exact campaign to the currently selected ad account."""
+    campaign_id = str(campaign_id or "").strip()
+    if not re.fullmatch(r"\d{12,24}", campaign_id):
+        return {"ok": False, "reason": "exact_numeric_meta_id_required"}
+    client = SocialFlowClient(config)
+    details = client.campaign_details(campaign_id)
+    try:
+        body = json.loads(details.get("stdout") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        body = {}
+    details_status = details.get("http_status", details.get("status"))
+    details_http_ok = isinstance(details_status, int) and 200 <= details_status < 300
+    if not details_http_ok or details.get("returncode") != 0 or not isinstance(body, dict) or str(body.get("id") or "") != campaign_id:
+        return {"ok": False, "reason": "meta_campaign_not_verified"}
+    # Older campaign-details connectors omit account_id from their field set.
+    # Request it independently before binding the mutation to the active account.
+    if not (body.get("ad_account_id") or body.get("account_id") or body.get("owner_account_id")):
+        try:
+            account_read = client.get_graph(campaign_id, {"fields": "id,name,account_id"})
+            account_body = account_read.get("body") if isinstance(account_read, dict) else {}
+            account_status = account_read.get("status") if isinstance(account_read, dict) else None
+            if bool(account_read.get("ok")) and isinstance(account_status, int) and 200 <= account_status < 300 and isinstance(account_body, dict) and str(account_body.get("id") or "") == campaign_id:
+                body.update({key: account_body.get(key) for key in ("account_id", "ad_account_id", "owner_account_id") if account_body.get(key)})
+        except Exception:
+            pass
+    active_account = clean_ad_account_id(getattr(config, "ad_account_id", "") or "")
+    campaign_account = clean_ad_account_id(
+        body.get("ad_account_id") or body.get("account_id") or body.get("owner_account_id") or ""
+    )
+    if not active_account or not campaign_account or active_account != campaign_account:
+        return {"ok": False, "reason": "campaign_not_in_active_ad_account", "campaign_id": campaign_id}
+    return {"ok": True, "campaign": {"id": campaign_id, "name": body.get("name") or campaign_id, "ad_account_id": campaign_account}, "details": details, "body": body}
+
+
+def _execute_immediate_activation(arguments, chat_payload, tool):
+    authorization = _activation_turn_authorization(arguments, chat_payload)
+    if not authorization.get("ok"):
+        # An exact resume request carrying spend confirmation must terminate
+        # here when semantics are unavailable/negative; it must not silently
+        # become the ordinary cache-backed pending-approval route.
+        if boolish((arguments or {}).get("active_spend_confirmed")) is True:
+            return agent_action_result(tool, False, "No activé la campaña: el turno confiable no confirmó semánticamente una activación inmediata.", blocked=True, reason=authorization.get("reason"), intent=authorization.get("intent", "unknown"))
+        return None
+    config = load_config()
+    live = _live_campaign_for_activation(arguments.get("campaign_id") or arguments.get("target_id"), config)
+    if not live.get("ok"):
+        return agent_action_result(tool, False, chat_reply(chat_payload, "No activé la campaña: no pude verificar en vivo su ID y pertenencia a la cuenta activa.", "I did not activate the campaign: I could not verify its live ID and ownership by the active ad account."), blocked=True, reason=live.get("reason"), result=live)
+    campaign = live["campaign"]
+    action_payload = {"campaign_id": campaign["id"], "name": campaign["name"], "active_spend_confirmed": True, "trusted_buyer_turn": True, "intent": "immediate"}
+    try:
+        # This is the one-use trusted-turn approval boundary; do not route it
+        # through apply_action(), which intentionally stages unapproved resumes.
+        require_cloud_license("resume_campaign requires an active license")
+        approved_client = SocialFlowClient(config)
+        mutation = approved_client.resume("campaign", campaign["id"], approved=True)
+        action_payload["connector"] = "graph_api"
+        action_payload["result"] = mutation
+        action_payload["executed"] = bool(mutation.get("executed") and mutation.get("returncode") == 0)
+        if not action_payload["executed"]:
+            log_action("resume_campaign", action_payload, "failed")
+            raise ValueError("No pude confirmar el cambio en Meta. La campaña no fue marcada como activa.")
+        executed = action_payload
+    except (ValueError, RuntimeError) as exc:
+        return agent_action_result(tool, False, str(exc), blocked=True, reason="activation_failed", campaign_id=campaign["id"])
+    receipt = verify_campaign_activation(campaign["id"], executed.get("result"), approved_client.campaign_details(campaign["id"]))
+    executed["verification"] = receipt
+    if not receipt.get("verified"):
+        log_action("resume_campaign", executed, "failed")
+        return agent_action_result(tool, False, "Meta no confirmó que la campaña quedó activa; no reporto una activación exitosa.", blocked=True, reason="activation_not_verified", campaign_id=campaign["id"], receipt=receipt)
+    audit = log_action("resume_campaign", executed, "completed")
+    return agent_action_result(tool, True, chat_reply(chat_payload, f"Listo. Activé {campaign['name']} ahora y confirmé ACTIVE en Meta para la cuenta activa.", f"Done. I activated {campaign['name']} now and confirmed ACTIVE in Meta for the active account."), campaign_id=campaign["id"], receipt=receipt, result=executed, audit=audit)
+
+
 def handle_campaign_mutation_tool(arguments, chat_payload, tool):
+    if tool == "resume_campaign" and re.fullmatch(r"\d{12,24}", str((arguments or {}).get("campaign_id") or (arguments or {}).get("target_id") or "").strip()):
+        immediate = _execute_immediate_activation(arguments, chat_payload, tool)
+        if immediate is not None:
+            return immediate
     campaign_id = arguments.get("campaign_id") or arguments.get("target_id")
     campaign = campaign_by_id(load_metrics(), campaign_id)
     if not campaign and tool == "delete_campaign" and campaign_id:
@@ -19014,6 +19107,19 @@ def handle_connect_chatgpt_tool(arguments, chat_payload, tool="connect_chatgpt")
 
 
 def handle_schedule_campaign_activation_tool(arguments, chat_payload, tool):
+    # A model-generated date is not authorization.  Scheduling is allowed only
+    # when the exact buyer turn contains a literal citation and unambiguously
+    # asks for a future activation; immediate language must never reach cron.
+    turn = _trusted_buyer_turn()
+    buyer_message = str((turn or {}).get("message") or "")
+    evidence = str((arguments or {}).get("schedule_request_evidence") or "")
+    intent = classify_activation_intent(buyer_message)
+    if not evidence or not buyer_message or evidence not in buyer_message or intent.get("intent") != "future":
+        reason = "schedule_request_evidence_required" if not evidence or evidence not in buyer_message else "activation_intent_not_future"
+        return agent_action_result(tool, False, "No programé nada: necesito una cita literal del turno confiable que pida una activación futura. La fecha generada por el modelo no basta.", blocked=True, reason=reason, intent=intent.get("intent"))
+    arguments = dict(arguments or {})
+    arguments["activation_intent_verified"] = True
+    arguments["authorization_source"] = "trusted_buyer_turn_semantic"
     config = load_config()
     status = telegram_settings(config)
     chat_id = str(status.get("chat_id") or "").strip()
@@ -19033,6 +19139,7 @@ def handle_schedule_campaign_activation_tool(arguments, chat_payload, tool):
     messages = {
         "activation_authorization_required": "Antes de programarla necesito tu autorización explícita para que empiece a gastar a esa hora.",
         "creative_readiness_confirmation_required": "Antes de programarla necesito confirmar que los creativos finales ya están puestos; no activaré placeholders temporales.",
+        "future_activation_intent_not_verified": "No programé nada porque el turno actual no confirmó semánticamente una activación futura.",
         "missing_exact_meta_campaign_id": "No encontré un ID numérico único de Meta para esa campaña. Primero consultaré la campaña real y usaré su ID exacto.",
         "ambiguous_campaign": "Encontré más de una campaña con esa referencia. Necesito identificar una sola por su ID real de Meta.",
         "campaign_name_mismatch": "El nombre que devuelve Meta no coincide con la campaña autorizada, así que no la programé.",

@@ -41,6 +41,12 @@ choice card, or a generic “approve and create” button.
 
 ## Scheduled activation
 
+Choose the activation tool from the buyer's intended timing, not from a fixed phrase list. An immediate request means the buyer wants the campaign to start now (or as soon as Meta accepts the live mutation): use `mcp_admira_resume_campaign`. Natural wording, spelling mistakes, and equivalent expressions such as asking to turn it on, start it, enable it, or have it begin now all belong to this path when no future date/time is supplied.
+
+Use `mcp_admira_schedule_campaign_activation` only when the buyer explicitly asks for a future activation and provides, or is in the process of specifying, a concrete date/time (including a relative future time that can be resolved unambiguously in the buyer's timezone). Do not interpret a normal activation approval, “de inmediato”, “ya”, or “ahora” as scheduling. Never create a cron for an immediate activation.
+
+When calling the scheduler, include `schedule_request_evidence` containing a short literal quotation from the buyer's message that establishes the future timing. The quotation is audit evidence, not a buyer-facing confirmation ritual; do not force an exact reply format or ask the buyer to repeat the sentence.
+
 When the buyer asks to activate an existing campaign at a future time, never create a generic reasoning cron and never place a campaign name/local draft ID in a free-form reminder.
 
 - Read real Meta context first and resolve exactly one numeric Meta `campaign_id`.
@@ -48,6 +54,8 @@ When the buyer asks to activate an existing campaign at a future time, never cre
 - Then call `mcp_admira_schedule_campaign_activation` with `campaign_id`, `campaign_name`, `scheduled_at`, `timezone`, `buyer_authorized: true`, `active_spend_confirmed: true`, `creative_ready_confirmed: true`, and a budget snapshot.
 - The scheduling request itself is the activation approval. Do not request a second approval when the due time arrives.
 - This product tool executes deterministically without inference, verifies the campaign identity again, activates only that campaign, and confirms `ACTIVE` from Meta. Do not substitute `mcp_admira_resume_campaign` inside a generic cron.
+
+For an immediate request, call `mcp_admira_resume_campaign` for the exact numeric campaign ID after the buyer's approval. Do not call the scheduler first and do not describe the result as “programmed” unless a scheduled action was actually created. In either path, report success only from the tool's Meta confirmation; a plan, approval record, or HTTP request without a verified resulting status is not activation.
 
 ## Native creative route
 
