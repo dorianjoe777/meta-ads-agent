@@ -1019,6 +1019,154 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
             })
         self.assertEqual(guarded["final_response"], original)
 
+    def test_campaign_edit_guard_preserves_success_from_nested_private_approval_receipt(self):
+        """A successful approval after a pending stage must not be rewritten.
+
+        Some Hermes adapters expose the current-turn receipts only in the
+        private gateway field.  The approval result is itself JSON encoded
+        inside the action envelope, so this reproduces the real nested and
+        escaped shape seen after a successful Meta read-back.
+        """
+        original = "Actualicé la campaña y su presupuesto correctamente."
+        successful_result = {
+            "ok": True,
+            "executed": True,
+            "verified": True,
+            "campaign_id": "120250882548000425",
+            "applied": [{
+                "entity_type": "ad",
+                "entity_id": "120250882549100425",
+                "fields": ["creative"],
+                "creative_id": "1409761134411839",
+            }],
+            "verification": [{
+                "target_id": "120250882549100425",
+                "ok": True,
+                "http_status": 200,
+            }],
+            "results": [{
+                "ok": True,
+                "status": 200,
+                "body": {"success": True},
+            }],
+        }
+        approve_envelope = {
+            "ok": True,
+            "result": json.dumps({
+                "type": "approval_decision",
+                "executed": True,
+                "decision": "approve",
+                "result": [{
+                    "type": "campaign_edit",
+                    "status": "approved",
+                    "result": successful_result,
+                }],
+            }),
+        }
+        receipts = [
+            {
+                "role": "tool",
+                "name": "mcp_admira_edit_campaign",
+                "content": json.dumps({
+                    "executed": False,
+                    "staged": True,
+                    "reason": "campaign_edit_pending_approval",
+                }),
+            },
+            {
+                "role": "tool",
+                "name": "mcp_admira_approve_action",
+                # The wrapper plus encoded result reproduces the two escaping
+                # layers present in the real state.db receipt.
+                "content": (
+                    '<untrusted_tool_result source="mcp_admira_approve_action">\n'
+                    + json.dumps(json.dumps(approve_envelope))
+                    + "\n</untrusted_tool_result>"
+                ),
+            },
+        ]
+        with mock.patch.object(
+            campaign_claim_classifier,
+            "classify_campaign_edit_claim",
+            return_value={"ok": True, "confirmation": "si"},
+        ):
+            guarded = admira_hermes_runtime_patch._guard_unconfirmed_campaign_edit_claim({
+                "final_response": original,
+                "messages": [],
+                admira_hermes_runtime_patch.ADMIRA_CURRENT_TURN_TOOL_RECEIPTS_KEY: receipts,
+            })
+        self.assertEqual(guarded["final_response"], original)
+
+    def test_campaign_edit_receipt_rejects_success_for_a_different_campaign(self):
+        staged = {
+            "role": "tool",
+            "name": "mcp_admira_edit_campaign",
+            "content": json.dumps({
+                "campaign_id": "campaign-a",
+                "executed": False,
+                "staged": True,
+                "reason": "campaign_edit_pending_approval",
+            }),
+        }
+        unrelated_success = {
+            "role": "tool",
+            "name": "mcp_admira_approve_action",
+            "content": json.dumps({
+                "campaign_id": "campaign-b",
+                "ok": True,
+                "executed": True,
+                "verified": True,
+                "verification": [{"target_id": "ad-b", "ok": True, "http_status": 200}],
+                "results": [{"ok": True, "status": 200}],
+            }),
+        }
+
+        state = admira_hermes_runtime_patch._campaign_edit_receipt_state([
+            staged,
+            unrelated_success,
+        ])
+
+        self.assertTrue(state["attempted"])
+        self.assertTrue(state["staged"])
+        self.assertFalse(state["applied"])
+
+    def test_direct_edit_receipt_requires_verified_graph_readback(self):
+        state = admira_hermes_runtime_patch._campaign_edit_receipt_state([{
+            "role": "tool",
+            "name": "mcp_admira_edit_campaign",
+            "content": json.dumps({
+                "campaign_id": "campaign-a",
+                "ok": True,
+                "executed": True,
+            }),
+        }])
+
+        self.assertTrue(state["attempted"])
+        self.assertFalse(state["applied"])
+
+    def test_campaign_edit_guard_keeps_real_pending_receipt_blocked(self):
+        """A pending edit without an executed approval remains pending."""
+        original = "Actualicé la campaña y su presupuesto correctamente."
+        with mock.patch.object(
+            campaign_claim_classifier,
+            "classify_campaign_edit_claim",
+            return_value={"ok": True, "confirmation": "si"},
+        ):
+            guarded = admira_hermes_runtime_patch._guard_unconfirmed_campaign_edit_claim({
+                "final_response": original,
+                "messages": [],
+                admira_hermes_runtime_patch.ADMIRA_CURRENT_TURN_TOOL_RECEIPTS_KEY: [{
+                    "role": "tool",
+                    "name": "mcp_admira_edit_campaign",
+                    "content": json.dumps({
+                        "executed": False,
+                        "staged": True,
+                        "reason": "campaign_edit_pending_approval",
+                    }),
+                }],
+            })
+        self.assertIn("todavía no lo apliqué", guarded["final_response"])
+
     def test_campaign_edit_backend_fills_only_unambiguous_missing_ids(self):
         snapshot = {
             "campaign": {"id": "120000000000001"},

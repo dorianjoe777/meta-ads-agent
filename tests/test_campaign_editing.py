@@ -50,6 +50,34 @@ class FakeClient:
         return {"ok": True, "body": {"success": True}, "status": 200}
 
 
+class FakeCreativeClient(FakeClient):
+    def __init__(self, entities, *, tamper_readback=False):
+        super().__init__(entities)
+        self.created_specs = {}
+        self.tamper_readback = tamper_readback
+
+    def create_creative(self, account_id, name, page_id, *args, object_story_spec=None, **kwargs):
+        creative_id = "440000000000002"
+        self.created_specs[creative_id] = deepcopy(object_story_spec or {})
+        return {"ok": True, "status": 200, "stdout": json.dumps({"id": creative_id})}
+
+    def post_graph_form(self, endpoint, fields):
+        result = super().post_graph_form(endpoint, fields)
+        creative = fields.get("creative") if isinstance(fields.get("creative"), dict) else {}
+        creative_id = str(creative.get("creative_id") or "")
+        if creative_id:
+            spec = deepcopy(self.created_specs[creative_id])
+            if self.tamper_readback:
+                container = spec.get("link_data") if isinstance(spec.get("link_data"), dict) else {}
+                container["message"] = "Texto distinto devuelto por Meta"
+            self.entities[str(endpoint)]["creative"] = {
+                "id": creative_id,
+                "name": "Replacement creative",
+                "object_story_spec": spec,
+            }
+        return result
+
+
 class CampaignReferenceTests(unittest.TestCase):
     def test_current_message_unique_city_selects_different_campaign(self):
         result = editing.resolve_campaign_reference(
@@ -224,6 +252,105 @@ class ExecutionTests(unittest.TestCase):
         self.assertTrue(result["verified"])
         self.assertEqual(client.entities[entity_id]["name"], "New")
         self.assertEqual(client.entities[entity_id]["daily_budget"], 1200)
+
+    def test_primary_text_edit_requires_graph_200_and_exact_readback(self):
+        entity_id = "320000000000001"
+        current = {
+            "id": entity_id,
+            "name": "Anuncio Full Detail",
+            "status": "PAUSED",
+            "creative": {
+                "id": "440000000000001",
+                "name": "Original creative",
+                "object_story_spec": {
+                    "page_id": "1201206426419368",
+                    "link_data": {"message": "Texto anterior"},
+                },
+            },
+        }
+        client = FakeCreativeClient({entity_id: current})
+        _result, live = editing._read_entity(client, "ad", entity_id)
+        requested = "Nuevo texto exacto aprobado por el cliente."
+        result = editing.execute_campaign_edit({
+            "campaign_id": CAMPAIGNS[0]["id"],
+            "account_id": "77",
+            "operations": [{
+                "entity_type": "ad",
+                "entity_id": entity_id,
+                "changes": {"primary_text": requested},
+            }],
+            "preconditions": {entity_id: editing._fingerprint(live)},
+        }, client)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["verification"], [{
+            "target_id": entity_id,
+            "ok": True,
+            "http_status": 200,
+        }])
+        self.assertEqual(
+            client.entities[entity_id]["creative"]["object_story_spec"]["link_data"]["message"],
+            requested,
+        )
+
+    def test_primary_text_edit_rejects_graph_200_with_wrong_value(self):
+        entity_id = "320000000000001"
+        current = {
+            "id": entity_id,
+            "name": "Anuncio Full Detail",
+            "status": "PAUSED",
+            "creative": {
+                "id": "440000000000001",
+                "name": "Original creative",
+                "object_story_spec": {
+                    "page_id": "1201206426419368",
+                    "link_data": {"message": "Texto anterior"},
+                },
+            },
+        }
+        client = FakeCreativeClient({entity_id: current}, tamper_readback=True)
+        _result, live = editing._read_entity(client, "ad", entity_id)
+        result = editing.execute_campaign_edit({
+            "campaign_id": CAMPAIGNS[0]["id"],
+            "account_id": "77",
+            "operations": [{
+                "entity_type": "ad",
+                "entity_id": entity_id,
+                "changes": {"primary_text": "Nuevo texto exacto aprobado por el cliente."},
+            }],
+            "preconditions": {entity_id: editing._fingerprint(live)},
+        }, client)
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["verified"])
+        self.assertIn("creative.primary_text", result["verification"][0]["mismatches"])
+
+    def test_edit_rejects_non_2xx_post_even_when_client_sets_ok_true(self):
+        class ContradictoryClient(FakeClient):
+            def post_graph_form(self, endpoint, fields):
+                result = super().post_graph_form(endpoint, fields)
+                result["ok"] = True
+                result["status"] = 500
+                return result
+
+        entity_id = CAMPAIGNS[0]["id"]
+        current = {"id": entity_id, "name": "Old", "status": "PAUSED"}
+        client = ContradictoryClient({entity_id: current})
+        _result, live = editing._read_entity(client, "campaign", entity_id)
+        result = editing.execute_campaign_edit({
+            "campaign_id": entity_id,
+            "account_id": "77",
+            "operations": [{
+                "entity_type": "campaign",
+                "entity_id": entity_id,
+                "changes": {"name": "New"},
+            }],
+            "preconditions": {entity_id: editing._fingerprint(live)},
+        }, client)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "campaign_edit_graph_update_failed")
 
     def test_stale_snapshot_blocks_before_write(self):
         entity_id = CAMPAIGNS[0]["id"]

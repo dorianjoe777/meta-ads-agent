@@ -5097,6 +5097,211 @@ def _guard_unconfirmed_campaign_claim(response):
     return response
 
 
+def _nested_receipt_mappings(value, *, max_depth=10):
+    """Decode mappings hidden inside nested/escaped Hermes tool receipts.
+
+    Depending on the provider adapter, an MCP result can arrive as a mapping,
+    a JSON string, a JSON string containing another JSON string, or JSON inside
+    Hermes' ``<untrusted_tool_result>`` wrapper.  Outcome guards must reason
+    over the structured receipt rather than over a fixed number of backslash
+    replacements.  Decoding is bounded and read-only because these strings are
+    untrusted tool data.
+    """
+    mappings = []
+    seen = set()
+    decoder = json.JSONDecoder()
+
+    def visit(item, depth):
+        if depth > max_depth:
+            return
+        if isinstance(item, dict):
+            identity = id(item)
+            if identity in seen:
+                return
+            seen.add(identity)
+            mappings.append(item)
+            for nested in item.values():
+                visit(nested, depth + 1)
+            return
+        if isinstance(item, (list, tuple)):
+            identity = id(item)
+            if identity in seen:
+                return
+            seen.add(identity)
+            for nested in item:
+                visit(nested, depth + 1)
+            return
+        if isinstance(item, str):
+            candidate = item.strip()
+            if not candidate:
+                return
+            wrapper = re.search(
+                r"<untrusted_tool_result\b[^>]*>\s*(.*?)\s*</untrusted_tool_result>",
+                candidate,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            if wrapper:
+                visit(wrapper.group(1), depth + 1)
+                return
+            starts = [0] if candidate[:1] in {'{', '[', '"'} else []
+            if not starts:
+                starts = sorted(
+                    position
+                    for position in (candidate.find("{"), candidate.find("["))
+                    if position >= 0
+                )
+            for start in starts:
+                try:
+                    decoded, _end = decoder.raw_decode(candidate[start:])
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if decoded == item:
+                    continue
+                visit(decoded, depth + 1)
+                break
+            return
+
+        # A few Hermes versions expose message objects rather than dicts.
+        # Select only receipt-bearing public attributes; never execute methods
+        # or serialize the provider object wholesale.
+        attributes = {}
+        for key in ("role", "name", "tool_name", "content", "result", "results"):
+            try:
+                nested = getattr(item, key)
+            except (AttributeError, TypeError):
+                continue
+            attributes[key] = nested
+        if attributes:
+            visit(attributes, depth + 1)
+
+    visit(value, 0)
+    return mappings
+
+
+def _campaign_edit_receipt_state(sources):
+    """Return authoritative attempted/staged/applied state for one edit turn."""
+    attempted = False
+    staged = False
+    applied_candidates = []
+    staged_campaign_ids = set()
+
+    receipt_sources = []
+    for source in sources:
+        if isinstance(source, (list, tuple)):
+            receipt_sources.extend(source)
+        else:
+            receipt_sources.append(source)
+
+    records = []
+    for source in receipt_sources:
+        try:
+            source_text = json.dumps(source, ensure_ascii=False, default=str).lower()
+        except (TypeError, ValueError):
+            source_text = str(source).lower()
+        if isinstance(source, dict):
+            source_tool_name = str(source.get("name") or source.get("tool_name") or "").strip().lower()
+        else:
+            source_tool_name = str(
+                getattr(source, "name", "") or getattr(source, "tool_name", "") or ""
+            ).strip().lower()
+        tool_scope = source_tool_name or source_text
+        direct_edit_source = any(
+            marker in tool_scope for marker in ADMIRA_CAMPAIGN_EDIT_TOOL_MARKERS
+        )
+        approval_source = "approve_action" in tool_scope
+        attempted = attempted or direct_edit_source
+
+        mappings = _nested_receipt_mappings(source)
+        if not mappings:
+            staged = staged or "campaign_edit_pending_approval" in source_text
+            continue
+
+        structured_text = json.dumps(
+            mappings,
+            ensure_ascii=False,
+            default=str,
+        ).lower()
+        attempted = attempted or any(
+            marker in structured_text for marker in ADMIRA_CAMPAIGN_EDIT_TOOL_MARKERS
+        )
+        source_staged = any(
+            item.get("staged") is True
+            or str(item.get("reason") or "").strip() == "campaign_edit_pending_approval"
+            or str(item.get("status") or "").strip().lower() == "pending"
+            for item in mappings
+        )
+        staged = staged or source_staged
+        source_campaign_ids = {
+            str(item.get("campaign_id") or "").strip()
+            for item in mappings
+            if str(item.get("campaign_id") or "").strip()
+        }
+        if direct_edit_source and source_staged:
+            staged_campaign_ids.update(source_campaign_ids)
+        requires_verified_readback = "edit_campaign" in tool_scope
+        records.append((
+            direct_edit_source,
+            approval_source,
+            requires_verified_readback,
+            source_campaign_ids,
+            mappings,
+        ))
+
+    for direct_edit_source, approval_source, requires_verified_readback, source_campaign_ids, mappings in records:
+        for item in mappings:
+            if item.get("executed") is not True or item.get("ok") is not True or item.get("blocked") is True:
+                continue
+            item_campaign_id = str(item.get("campaign_id") or "").strip()
+            candidate_campaign_ids = {item_campaign_id} if item_campaign_id else source_campaign_ids
+            verification = item.get("verification")
+            graph_results = item.get("results")
+            verification_ok = (
+                isinstance(verification, list)
+                and bool(verification)
+                and all(
+                    isinstance(check, dict)
+                    and check.get("ok") is True
+                    and 200 <= int(check.get("http_status") or 0) < 300
+                    for check in verification
+                )
+            )
+            graph_ok = (
+                isinstance(graph_results, list)
+                and bool(graph_results)
+                and all(
+                    isinstance(result, dict)
+                    and result.get("ok") is True
+                    and 200 <= int(result.get("status") or 0) < 300
+                    for result in graph_results
+                )
+            )
+            verified_edit = item.get("verified") is True and verification_ok and graph_ok
+            if direct_edit_source and (verified_edit or not requires_verified_readback):
+                applied_candidates.append((candidate_campaign_ids, True))
+                break
+            if approval_source and verified_edit:
+                # The outer approval_decision merely records that approval
+                # was accepted. Only its nested, read-back edit result proves
+                # that Meta contains the requested value.
+                applied_candidates.append((candidate_campaign_ids, True))
+                break
+
+    applied = any(
+        confirmed
+        and (
+            not staged_campaign_ids
+            or bool(staged_campaign_ids.intersection(source_campaign_ids))
+        )
+        for source_campaign_ids, confirmed in applied_candidates
+    )
+
+    return {
+        "attempted": attempted,
+        "staged": staged,
+        "applied": applied,
+    }
+
+
 def _guard_unconfirmed_campaign_edit_claim(response):
     """Keep staged/blocked edits from being narrated as already applied."""
     if not isinstance(response, dict):
@@ -5125,26 +5330,16 @@ def _guard_unconfirmed_campaign_edit_claim(response):
     if semantic.get("ok") is not True or str(semantic.get("confirmation") or "").strip().lower() != "si":
         return response
     sources = list(_current_turn_messages(response.get("messages")))
+    if response.get(ADMIRA_CURRENT_TURN_TOOL_RECEIPTS_KEY):
+        sources.append(response.get(ADMIRA_CURRENT_TURN_TOOL_RECEIPTS_KEY))
     if not sources:
         for key in ("tool_result", "tool_results", "result", "results", "mcp_result", "mcp_results"):
             if key in response:
                 sources.append(response.get(key))
-    try:
-        evidence = json.dumps(sources, ensure_ascii=False, default=str).lower().replace('\\"', '"')
-    except (TypeError, ValueError):
-        evidence = str(sources).lower()
-    attempted = any(marker in evidence for marker in ADMIRA_CAMPAIGN_EDIT_TOOL_MARKERS)
-    applied = (
-        ('"executed": true' in evidence or '"executed":true' in evidence)
-        and ('"ok": true' in evidence or '"ok":true' in evidence)
-        and '"blocked": true' not in evidence
-        and '"blocked":true' not in evidence
-    )
-    staged = (
-        '"staged": true' in evidence or '"staged":true' in evidence
-        or "campaign_edit_pending_approval" in evidence
-        or '"status": "pending"' in evidence or '"status":"pending"' in evidence
-    )
+    receipt_state = _campaign_edit_receipt_state(sources)
+    attempted = receipt_state["attempted"]
+    applied = receipt_state["applied"]
+    staged = receipt_state["staged"]
     if applied:
         return response
     language = str(os.environ.get("ADMIRA_GATEWAY_LANGUAGE") or "es").lower()

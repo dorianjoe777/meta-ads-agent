@@ -634,6 +634,42 @@ def _canonical_graph_value(value):
     return value
 
 
+def _creative_story_container(creative):
+    """Return the live Graph story container that owns ad copy fields."""
+    creative = creative if isinstance(creative, dict) else {}
+    spec = creative.get("object_story_spec") if isinstance(creative.get("object_story_spec"), dict) else {}
+    for key in ("link_data", "photo_data", "video_data", "template_data"):
+        container = spec.get(key)
+        if isinstance(container, dict):
+            return container
+    return {}
+
+
+def _creative_change_mismatches(changes, creative):
+    """Compare buyer-requested creative fields with the independent Graph GET."""
+    changes = changes if isinstance(changes, dict) else {}
+    container = _creative_story_container(creative)
+    mismatches = []
+    mapping = {
+        "primary_text": "message",
+        "headline": "name",
+        "description": "description",
+        "link_url": "link",
+        "image_hash": "image_hash",
+        "video_id": "video_id",
+    }
+    for requested_field, graph_field in mapping.items():
+        if requested_field not in changes:
+            continue
+        if str(container.get(graph_field) or "") != str(changes.get(requested_field) or ""):
+            mismatches.append(f"creative.{requested_field}")
+    if "call_to_action_type" in changes:
+        call_to_action = container.get("call_to_action") if isinstance(container.get("call_to_action"), dict) else {}
+        if str(call_to_action.get("type") or "").upper() != str(changes.get("call_to_action_type") or "").upper():
+            mismatches.append("creative.call_to_action_type")
+    return mismatches
+
+
 def _parse_stdout_id(result):
     try:
         body = json.loads(result.get("stdout") or "{}")
@@ -790,7 +826,11 @@ def execute_campaign_edit(payload, client, *, dashboard_contract=None):
             continue
         graph_fields["access_token"] = getattr(client.config, "meta_access_token", "")
         result = client.post_graph_form(entity_id, graph_fields)
-        if not result.get("ok"):
+        try:
+            mutation_status = int(result.get("status") or 0)
+        except (TypeError, ValueError):
+            mutation_status = 0
+        if not result.get("ok") or not 200 <= mutation_status < 300:
             return {"ok": False, "blocked": True, "error": "campaign_edit_graph_update_failed", "target_id": entity_id, "result": result, "applied": applied}
         expected_graph.setdefault(entity_id, {}).update({
             key: value for key, value in graph_fields.items() if key != "access_token"
@@ -804,7 +844,17 @@ def execute_campaign_edit(payload, client, *, dashboard_contract=None):
         live_result, live = _read_entity(client, entity_type, entity_id)
         if not live_result.get("ok"):
             return {"ok": False, "blocked": True, "error": "campaign_edit_readback_failed", "target_id": entity_id, "applied": applied}
-        checks = {"target_id": entity_id, "ok": True}
+        try:
+            readback_status = int(live_result.get("status") or 0)
+        except (TypeError, ValueError):
+            readback_status = 0
+        checks = {
+            "target_id": entity_id,
+            "ok": 200 <= readback_status < 300,
+            "http_status": readback_status,
+        }
+        if not checks["ok"]:
+            checks.setdefault("mismatches", []).append("graph_get_http_status")
         changes = operation.get("changes") or {}
         for field in ("name", "status", "start_time", "end_time"):
             if field in changes and str(live.get(field) or "") != str(changes[field] or ""):
@@ -850,6 +900,10 @@ def execute_campaign_edit(payload, client, *, dashboard_contract=None):
             if str(actual_creative.get("id") or "") != str(expected_creative["creative_id"]):
                 checks["ok"] = False
                 checks.setdefault("mismatches", []).append("creative.id")
+            creative_mismatches = _creative_change_mismatches(changes, actual_creative)
+            if creative_mismatches:
+                checks["ok"] = False
+                checks.setdefault("mismatches", []).extend(creative_mismatches)
         verification.append(checks)
     ok = all(item.get("ok") for item in verification)
     return {"ok": ok, "executed": True, "verified": ok, "campaign_id": payload.get("campaign_id"), "applied": applied, "verification": verification, "results": results}
