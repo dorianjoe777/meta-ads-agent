@@ -83,8 +83,16 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
                 "tool_choice": {"type": "function", "function": {"name": "mcp_admira_codex_image_generate"}},
                 "parallel_tool_calls": False,
             }
-            routed = admira_hermes_runtime_patch._admira_route_request_tools(request)
-            prepared = admira_hermes_runtime_patch._nvidia_prepare_request(request)
+            # A unit test must not inherit a real buyer's durable campaign
+            # workflow from the mounted canary data volume.  That context is
+            # covered separately by the campaign-continuation tests below.
+            with mock.patch.object(
+                admira_hermes_runtime_patch,
+                "_admira_latest_campaign_routing_context",
+                return_value="",
+            ):
+                routed = admira_hermes_runtime_patch._admira_route_request_tools(request)
+                prepared = admira_hermes_runtime_patch._nvidia_prepare_request(request)
             expected = {
                 "create_whatsapp_campaign", "codex_image_generate",
                 "edit_campaign", "connect_chatgpt",
