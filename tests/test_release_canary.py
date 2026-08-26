@@ -38,6 +38,8 @@ class ReleaseCanaryTest(unittest.TestCase):
             self.assertIn("canary_home=", candidate)
             self.assertIn("mktemp -d", candidate)
             self.assertNotIn("mcp_admira_preflight_campaign exactly once", candidate)
+        self.assertIn('HERMES_HOME_PATH="${2:-/app/runtime/hermes}"', local_script)
+        self.assertNotIn('HERMES_HOME_PATH="${2:-/app/dashboard/data/hermes-home}"', local_script)
         self.assertIn("not** a stable", runbook)
         self.assertIn("Only after the remote canary passes", runbook)
 

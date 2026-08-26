@@ -5,7 +5,7 @@ set -euo pipefail
 # container. It never changes a buyer's Meta account, generates images, or
 # sends Telegram messages. Use it before declaring an update successful.
 CONTAINER="${1:?Usage: $0 <canary-container> [hermes-home]}"
-HERMES_HOME_PATH="${2:-/app/dashboard/data/hermes-home}"
+HERMES_HOME_PATH="${2:-/app/runtime/hermes}"
 # A real model invocation is useful, but must never inherit a buyer session or
 # accumulate on a small canary host. A timeout is a failed gate, never a retry.
 AGENT_TIMEOUT_SECONDS="${ADMIRA_CANARY_AGENT_TIMEOUT_SECONDS:-45}"

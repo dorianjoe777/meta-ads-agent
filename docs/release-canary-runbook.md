@@ -78,6 +78,11 @@ checklist is in `docs/canary-integrity-release-checklist.md`.
    create/edit/delete Meta objects, send a Telegram message, generate media,
    or restart the Gateway. A timeout is a failed gate; never rerun it in a
    loop on the canary.
+
+   For a direct check from the canary host, `run-canary-release.sh` defaults
+   to the Docker runtime home `/app/runtime/hermes`. The legacy
+   `/app/dashboard/data/hermes-home` path is migration input only and must not
+   be used as the active smoke-test configuration.
 7. Inspect the result and container logs. If any check fails, keep the release
    off the stable registry, write the regression test, and repeat from step 1.
 8. Only after the remote canary passes may the operator publish the package to
