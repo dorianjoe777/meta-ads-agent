@@ -21,6 +21,13 @@ if [[ "$ready" != true ]]; then
 fi
 
 docker compose --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compose.yaml" exec -T postgres \
-  sh -ec 'export PGPASSWORD="$(cat /run/secrets/postgres_password)"; for migration in /docker-entrypoint-initdb.d/*.sql; do psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f "$migration"; done; psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f /control-bootstrap/bootstrap_service_roles.sql'
+  sh -ec 'export PGPASSWORD="$(cat /run/secrets/postgres_password)"; for migration in /docker-entrypoint-initdb.d/*.sql; do psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f "$migration"; done'
+
+# Feed this file over stdin instead of bind-mounting one inode. Atomic release
+# copies may replace the host inode while a long-lived PostgreSQL container
+# still sees the former file through its original bind mount.
+docker compose --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compose.yaml" exec -T postgres \
+  sh -ec 'export PGPASSWORD="$(cat /run/secrets/postgres_password)"; exec psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+  < "$ROOT_DIR/db/bootstrap_service_roles.sql"
 
 printf '%s\n' 'Control-plane migrations and least-privilege service roles are current.'

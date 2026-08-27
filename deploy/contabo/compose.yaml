@@ -51,7 +51,6 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - postgres_auth:/run/admira-db-secrets:ro
       - ./db/migrations:/docker-entrypoint-initdb.d:ro
-      - ./db/bootstrap_service_roles.sql:/control-bootstrap/bootstrap_service_roles.sql:ro
     networks:
       - control_private
     healthcheck:

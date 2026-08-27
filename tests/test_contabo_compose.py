@@ -20,7 +20,10 @@ class ContaboComposeTests(unittest.TestCase):
 
     def test_postgres_migration_directory_matches_repository(self):
         self.assertIn("./db/migrations:/docker-entrypoint-initdb.d:ro", self.text)
+        self.assertNotIn("bootstrap_service_roles.sql:/control-bootstrap", self.text)
         self.assertTrue((COMPOSE.parent / "db" / "migrations" / "001_initial_multitenant.sql").is_file())
+        apply_script = (COMPOSE.parent / "apply-control-plane.sh").read_text(encoding="utf-8")
+        self.assertIn('< "$ROOT_DIR/db/bootstrap_service_roles.sql"', apply_script)
 
     def test_redis_runs_unprivileged_after_secret_staging(self):
         redis = self.text.split("  redis:\n", 1)[1].split("\n  # Docker secrets", 1)[0]
