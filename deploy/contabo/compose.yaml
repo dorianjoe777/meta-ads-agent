@@ -36,6 +36,9 @@ services:
   postgres:
     image: ${POSTGRES_IMAGE:-postgres:16-bookworm}
     restart: unless-stopped
+    depends_on:
+      postgres-secrets-init:
+        condition: service_completed_successfully
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-admira_control}
       POSTGRES_USER: ${POSTGRES_USER:-admira_control}
@@ -49,6 +52,7 @@ services:
       - provisioner_db_password
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - postgres_auth:/run/admira-db-secrets:ro
       - ./db/migrations:/docker-entrypoint-initdb.d:ro
       - ./db/bootstrap_service_roles.sql:/control-bootstrap/bootstrap_service_roles.sql:ro
     networks:
@@ -64,6 +68,41 @@ services:
     pids_limit: 256
     mem_limit: ${POSTGRES_MEMORY_LIMIT:-1g}
     cpus: 1.0
+
+  # File-backed Compose secrets keep host ownership/mode. Stage the service
+  # role passwords into a PostgreSQL-owned private volume so the server-side
+  # pg_read_file() calls never require making host secrets world-readable.
+  postgres-secrets-init:
+    image: ${POSTGRES_IMAGE:-postgres:16-bookworm}
+    restart: "no"
+    user: "0:0"
+    network_mode: none
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        install -d -m 0700 -o 999 -g 999 /postgres-auth;
+        for secret_name in ingress_db_password runtime_db_password delivery_db_password scheduler_db_password provisioner_db_password;
+        do install -m 0400 -o 999 -g 999 "/run/secrets/$${secret_name}" "/postgres-auth/$${secret_name}"; done
+    secrets:
+      - ingress_db_password
+      - runtime_db_password
+      - delivery_db_password
+      - scheduler_db_password
+      - provisioner_db_password
+    volumes:
+      - postgres_auth:/postgres-auth
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    pids_limit: 32
+    mem_limit: 64m
+    cpus: 0.1
 
   redis:
     image: ${REDIS_IMAGE:-redis:7.4-bookworm}
@@ -232,6 +271,7 @@ networks:
 
 volumes:
   postgres_data:
+  postgres_auth:
   redis_data:
   redis_auth:
 

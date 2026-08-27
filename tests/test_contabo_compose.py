@@ -56,6 +56,19 @@ class ContaboComposeTests(unittest.TestCase):
     def test_redis_auth_volume_is_declared(self):
         self.assertIn("  redis_auth:\n", self.text)
 
+    def test_postgres_service_passwords_are_staged_without_network(self):
+        init = self.text.split("\n  postgres-secrets-init:\n", 1)[1].split("\n\n  redis:\n", 1)[0]
+        postgres = self.text.split("\n  postgres:\n", 1)[1].split("\n\n  postgres-secrets-init:\n", 1)[0]
+        self.assertIn("network_mode: none", init)
+        self.assertIn('user: "0:0"', init)
+        self.assertIn("-m 0400 -o 999 -g 999", init)
+        self.assertIn("postgres_auth:/postgres-auth", init)
+        self.assertIn("postgres-secrets-init:\n        condition: service_completed_successfully", postgres)
+        self.assertIn("postgres_auth:/run/admira-db-secrets:ro", postgres)
+        self.assertNotIn("environment:", init)
+        for capability in ("CHOWN", "DAC_OVERRIDE", "FOWNER"):
+            self.assertIn(f"      - {capability}", init)
+
     def _service(self, name: str, next_name: str | None = None) -> str:
         value = self.text.split(f"\n  {name}:\n", 1)[1]
         return value.split("\nnetworks:\n", 1)[0] if next_name is None else value.split(f"\n  {next_name}:\n", 1)[0]

@@ -6,11 +6,11 @@ DECLARE
   password_value text;
 BEGIN
   FOR item IN SELECT * FROM (VALUES
-    ('admira_ingress_login',  'admira_ingress',  '/run/secrets/ingress_db_password'),
-    ('admira_runtime_login',  'admira_runtime',  '/run/secrets/runtime_db_password'),
-    ('admira_delivery_login', 'admira_delivery', '/run/secrets/delivery_db_password'),
-    ('admira_scheduler_login','admira_scheduler','/run/secrets/scheduler_db_password'),
-    ('admira_provisioner_login','admira_provisioner','/run/secrets/provisioner_db_password')
+    ('admira_ingress_login',  'admira_ingress',  '/run/admira-db-secrets/ingress_db_password'),
+    ('admira_runtime_login',  'admira_runtime',  '/run/admira-db-secrets/runtime_db_password'),
+    ('admira_delivery_login', 'admira_delivery', '/run/admira-db-secrets/delivery_db_password'),
+    ('admira_scheduler_login','admira_scheduler','/run/admira-db-secrets/scheduler_db_password'),
+    ('admira_provisioner_login','admira_provisioner','/run/admira-db-secrets/provisioner_db_password')
   ) AS roles(login_role, group_role, secret_path)
   LOOP
     password_value := btrim(pg_read_file(item.secret_path));
