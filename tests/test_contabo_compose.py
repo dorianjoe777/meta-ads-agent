@@ -56,6 +56,51 @@ class ContaboComposeTests(unittest.TestCase):
     def test_redis_auth_volume_is_declared(self):
         self.assertIn("  redis_auth:\n", self.text)
 
+    def _service(self, name: str, next_name: str | None = None) -> str:
+        value = self.text.split(f"\n  {name}:\n", 1)[1]
+        return value.split("\nnetworks:\n", 1)[0] if next_name is None else value.split(f"\n  {next_name}:\n", 1)[0]
+
+    def test_buyer_services_are_opt_in_and_token_isolated(self):
+        poller = self._service("telegram-poller", "runtime-worker")
+        runtime = self._service("runtime-worker", "telegram-delivery")
+        delivery = self._service("telegram-delivery", "scheduler-worker")
+        scheduler = self._service("scheduler-worker")
+        for service in (poller, runtime, delivery, scheduler):
+            self.assertIn('profiles: ["buyers"]', service)
+            self.assertIn("read_only: true", self.text.split("services:", 1)[0])
+        for token_holder in (poller, delivery):
+            self.assertIn("telegram_bot_token", token_holder)
+            self.assertIn("telegram_egress", token_holder)
+            self.assertNotIn("runtime_broker_key", token_holder)
+            self.assertNotIn("admira-runtime-broker", token_holder)
+        for runtime_holder in (runtime, scheduler):
+            self.assertIn("runtime_broker_key", runtime_holder)
+            self.assertIn("admira-runtime-broker", runtime_holder)
+            self.assertNotIn("telegram_bot_token", runtime_holder)
+            self.assertNotIn("telegram_egress", runtime_holder)
+            self.assertIn("ADMIRA_BROKER_GID", runtime_holder)
+        for spool_holder in (poller, delivery):
+            self.assertIn("ADMIRA_SPOOL_GID", spool_holder)
+
+    def test_buyer_services_have_distinct_database_roles(self):
+        expected = {
+            "telegram-poller": "admira_ingress_login",
+            "runtime-worker": "admira_runtime_login",
+            "telegram-delivery": "admira_delivery_login",
+            "scheduler-worker": "admira_scheduler_login",
+        }
+        names = list(expected)
+        for index, name in enumerate(names):
+            next_name = names[index + 1] if index + 1 < len(names) else None
+            self.assertIn(f"ADMIRA_DB_USER: {expected[name]}", self._service(name, next_name))
+
+    def test_tenants_and_control_services_never_mount_docker_socket(self):
+        self.assertNotIn("/var/run/docker.sock", self.text)
+
+    def test_only_telegram_services_receive_external_network(self):
+        self.assertIn("telegram_egress:", self.text)
+        self.assertIn("control_private:\n    internal: true", self.text)
+
 
 if __name__ == "__main__":
     unittest.main()

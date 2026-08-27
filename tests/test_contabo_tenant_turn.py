@@ -26,10 +26,16 @@ class TenantTurnTests(unittest.TestCase):
         for payload in (
             {"message": "Hola", "chat_id": "not-an-id"},
             {"message": "Hola", "chat_id": "123", "image_path": "/tmp/secret"},
+            {"message": "Hola", "chat_id": "123", "image_paths": ["/etc/passwd"]},
             {"message": "Hola", "chat_id": "123", "update_id": -1},
         ):
             with self.assertRaises(ValueError):
                 tenant_turn.validate_turn(payload)
+
+    def test_accepts_only_broker_materialized_images(self):
+        path = "/app/output/telegram_uploads/a1b2c3d4e5f60718/0011223344556677.png"
+        result = tenant_turn.validate_turn({"message": "Mira esto", "chat_id": "123", "image_paths": [path]})
+        self.assertEqual(result["image_paths"], [path])
 
     def test_run_turn_uses_stdin_and_sanitizes_runtime_errors(self):
         with tempfile.TemporaryDirectory() as raw:

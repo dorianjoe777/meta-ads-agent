@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Run one isolated Hermes turn for a tenant.
 
-This is intentionally a host-side bridge, not a Telegram bot.  A future
-central ingress resolves ``chat_id -> tenant_id`` in the control plane and
-passes a JSON message on stdin.  The tenant never receives the shared bot
-token and the message is not placed in the process list.
+This is intentionally a host-side bridge, not a Telegram bot. The central
+runtime worker has already resolved ``chat_id -> tenant_id`` in PostgreSQL
+before passing a JSON message on stdin. The tenant never receives the shared
+bot token and the message is not placed in the process list.
 """
 
 from __future__ import annotations
@@ -25,6 +25,10 @@ from tenantctl import DEFAULT_BASE, compose_argv, tenant_path, validate_tenant_i
 MESSAGE_LIMIT = 5000
 CHAT_ID_RE = re.compile(r"^-?[0-9]{1,32}$")
 MEDIA_RE = re.compile(r"(?m)^\s*MEDIA:(/app/output/[^\s]+)\s*$")
+INBOUND_IMAGE_RE = re.compile(
+    r"^/app/output/telegram_uploads/[a-f0-9]{16,64}/[a-f0-9]{16,64}\.(?:jpg|jpeg|png|webp|gif)$",
+    re.IGNORECASE,
+)
 INNER_SCRIPT = r'''
 import json
 import sys
@@ -70,11 +74,18 @@ def validate_turn(payload: object) -> dict[str, object]:
             raise ValueError("update_id must be an integer") from exc
         if update_id < 0:
             raise ValueError("update_id must be non-negative")
-    # Media upload support will be added only after the text-only boundary is
-    # tested. Do not let a caller smuggle arbitrary host/container paths.
-    if payload.get("image_path") or payload.get("image_paths") or payload.get("document_path"):
-        raise ValueError("media turns are not enabled in the text-only bridge")
-    return {
+    if payload.get("image_path") or payload.get("document_path"):
+        raise ValueError("singular or document paths are not accepted")
+    raw_images = payload.get("image_paths") or []
+    if not isinstance(raw_images, list) or len(raw_images) > 4:
+        raise ValueError("image_paths must contain at most four images")
+    images = []
+    for value in raw_images:
+        candidate = str(value or "").strip()
+        if not INBOUND_IMAGE_RE.fullmatch(candidate):
+            raise ValueError("image path is outside the hosted Telegram inbox")
+        images.append(candidate)
+    request = {
         "message": message,
         "language": language,
         "channel": "telegram",
@@ -84,6 +95,9 @@ def validate_turn(payload: object) -> dict[str, object]:
         "_admira_trusted_chat_id": f"hosted:telegram:{chat_id}",
         "_admira_trusted_session_id": f"agent:main:telegram:dm:{chat_id}",
     }
+    if images:
+        request["image_paths"] = images
+    return request
 
 
 def _public_runtime_result(raw: object) -> dict[str, object]:

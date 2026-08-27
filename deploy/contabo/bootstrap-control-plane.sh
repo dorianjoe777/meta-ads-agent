@@ -18,7 +18,19 @@ if [[ ! -s "$SECRETS_DIR/redis_users.acl" ]]; then
   unset redis_password
 fi
 
-chmod 600 "$SECRETS_DIR/postgres_password.txt" "$SECRETS_DIR/redis_users.acl"
+for secret_name in ingress_db_password runtime_db_password delivery_db_password scheduler_db_password provisioner_db_password runtime_broker_key; do
+  secret_path="$SECRETS_DIR/${secret_name}.txt"
+  if [[ ! -s "$secret_path" ]]; then
+    openssl rand -base64 48 | tr -d '\n' > "$secret_path"
+    printf '\n' >> "$secret_path"
+  fi
+done
+
+# Buyer traffic is deliberately disabled until this file contains the shared
+# bot token and the Compose `buyers` profile is explicitly started.
+touch "$SECRETS_DIR/telegram_bot_token.txt"
+
+chmod 600 "$SECRETS_DIR"/*.txt "$SECRETS_DIR/redis_users.acl"
 
 if [[ ! -f "$ROOT_DIR/.env" ]]; then
   install -m 600 "$ROOT_DIR/.env.example" "$ROOT_DIR/.env"

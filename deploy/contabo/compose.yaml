@@ -1,5 +1,37 @@
 name: admira-control-plane
 
+x-control-common: &control-common
+  image: ${CONTROL_IMAGE:-admira-control-plane:r1}
+  build:
+    context: .
+    dockerfile: Control.Dockerfile
+  restart: unless-stopped
+  init: true
+  user: "${ADMIRA_SERVICE_UID:-1001}:${ADMIRA_SERVICE_GID:-1001}"
+  read_only: true
+  depends_on:
+    postgres:
+      condition: service_healthy
+  environment: &control-environment
+    ADMIRA_DB_HOST: postgres
+    ADMIRA_DB_PORT: "5432"
+    ADMIRA_DB_NAME: ${POSTGRES_DB:-admira_control}
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=32m
+  pids_limit: 96
+  mem_limit: ${CONTROL_SERVICE_MEMORY_LIMIT:-256m}
+  cpus: ${CONTROL_SERVICE_CPU_LIMIT:-0.50}
+  stop_grace_period: 30s
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
 services:
   postgres:
     image: ${POSTGRES_IMAGE:-postgres:16-bookworm}
@@ -10,9 +42,15 @@ services:
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
     secrets:
       - postgres_password
+      - ingress_db_password
+      - runtime_db_password
+      - delivery_db_password
+      - scheduler_db_password
+      - provisioner_db_password
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./db/migrations:/docker-entrypoint-initdb.d:ro
+      - ./db/bootstrap_service_roles.sql:/control-bootstrap/bootstrap_service_roles.sql:ro
     networks:
       - control_private
     healthcheck:
@@ -87,9 +125,110 @@ services:
     mem_limit: 64m
     cpus: 0.1
 
+  # Telegram network boundary. Only this process receives the shared token,
+  # and it can only stage inbound media plus write to the durable inbox.
+  telegram-poller:
+    <<: *control-common
+    profiles: ["buyers"]
+    command: ["poller"]
+    environment:
+      <<: *control-environment
+      ADMIRA_DB_USER: admira_ingress_login
+      ADMIRA_DB_PASSWORD_FILE: /run/secrets/ingress_db_password
+      TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
+      ADMIRA_SPOOL_ROOT: /srv/admira-spool
+    secrets:
+      - ingress_db_password
+      - telegram_bot_token
+    group_add:
+      - "${ADMIRA_SPOOL_GID:-19092}"
+    volumes:
+      - type: bind
+        source: /srv/admira/shared/telegram-spool/inbound
+        target: /srv/admira-spool/inbound
+    networks:
+      - control_private
+      - telegram_egress
+
+  # This process owns durable turn dispatch but has neither Telegram's token
+  # nor Docker access. The authenticated host broker exposes only narrow
+  # tenant lifecycle and turn operations over a Unix socket.
+  runtime-worker:
+    <<: *control-common
+    profiles: ["buyers"]
+    command: ["runtime"]
+    environment:
+      <<: *control-environment
+      ADMIRA_DB_USER: admira_runtime_login
+      ADMIRA_DB_PASSWORD_FILE: /run/secrets/runtime_db_password
+      ADMIRA_BROKER_SOCKET: /run/admira-runtime-broker/broker.sock
+      ADMIRA_BROKER_KEY_FILE: /run/secrets/runtime_broker_key
+    secrets:
+      - runtime_db_password
+      - runtime_broker_key
+    group_add:
+      - "${ADMIRA_BROKER_GID:-19091}"
+    volumes:
+      - type: bind
+        source: /run/admira-runtime-broker
+        target: /run/admira-runtime-broker
+        read_only: true
+    networks:
+      - control_private
+
+  # Delivery is the only other token holder. It can read only the outbound
+  # spool and cannot reach the runtime broker or any tenant directory.
+  telegram-delivery:
+    <<: *control-common
+    profiles: ["buyers"]
+    command: ["delivery"]
+    environment:
+      <<: *control-environment
+      ADMIRA_DB_USER: admira_delivery_login
+      ADMIRA_DB_PASSWORD_FILE: /run/secrets/delivery_db_password
+      TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
+      ADMIRA_SPOOL_ROOT: /srv/admira-spool
+    secrets:
+      - delivery_db_password
+      - telegram_bot_token
+    group_add:
+      - "${ADMIRA_SPOOL_GID:-19092}"
+    volumes:
+      - type: bind
+        source: /srv/admira/shared/telegram-spool/outbound
+        target: /srv/admira-spool/outbound
+    networks:
+      - control_private
+      - telegram_egress
+
+  scheduler-worker:
+    <<: *control-common
+    profiles: ["buyers"]
+    command: ["scheduler"]
+    environment:
+      <<: *control-environment
+      ADMIRA_DB_USER: admira_scheduler_login
+      ADMIRA_DB_PASSWORD_FILE: /run/secrets/scheduler_db_password
+      ADMIRA_BROKER_SOCKET: /run/admira-runtime-broker/broker.sock
+      ADMIRA_BROKER_KEY_FILE: /run/secrets/runtime_broker_key
+      ADMIRA_RUNTIME_IDLE_SECONDS: ${ADMIRA_RUNTIME_IDLE_SECONDS:-900}
+    secrets:
+      - scheduler_db_password
+      - runtime_broker_key
+    group_add:
+      - "${ADMIRA_BROKER_GID:-19091}"
+    volumes:
+      - type: bind
+        source: /run/admira-runtime-broker
+        target: /run/admira-runtime-broker
+        read_only: true
+    networks:
+      - control_private
+
 networks:
   control_private:
     internal: true
+  telegram_egress:
 
 volumes:
   postgres_data:
@@ -101,3 +240,17 @@ secrets:
     file: ./secrets/postgres_password.txt
   redis_users_acl:
     file: ./secrets/redis_users.acl
+  ingress_db_password:
+    file: ./secrets/ingress_db_password.txt
+  runtime_db_password:
+    file: ./secrets/runtime_db_password.txt
+  delivery_db_password:
+    file: ./secrets/delivery_db_password.txt
+  scheduler_db_password:
+    file: ./secrets/scheduler_db_password.txt
+  provisioner_db_password:
+    file: ./secrets/provisioner_db_password.txt
+  runtime_broker_key:
+    file: ./secrets/runtime_broker_key.txt
+  telegram_bot_token:
+    file: ./secrets/telegram_bot_token.txt
