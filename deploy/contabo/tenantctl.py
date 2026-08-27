@@ -87,6 +87,13 @@ def compose_text(
             "      - no-new-privileges:true",
             "    cap_drop:",
             "      - ALL",
+            # The image entrypoint runs as UID 0 and creates its runtime
+            # layout. Tenant bind mounts are deliberately 0700 and owned by
+            # the host service account (uid 1001); DAC_OVERRIDE is the
+            # minimum capability needed for that access. Do not add FOWNER,
+            # CHOWN, or any broader capability.
+            "    cap_add:",
+            "      - DAC_OVERRIDE",
             f"    pids_limit: {pids_limit}",
             f"    mem_limit: {memory_limit}",
             f"    cpus: {cpu_limit}",
