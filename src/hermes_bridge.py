@@ -2716,7 +2716,10 @@ def freeform_agent_mode_enabled():
             "1", "true", "yes", "on", "enabled"
         }
     except OSError:
-        return False
+        # Natural-language behavior is the durable default.  Resetting a
+        # tenant may remove runtime markers, but it must not re-enable legacy
+        # keyword routing or canned response rewriting.
+        return True
 
 
 def hermes_user_query(payload, workspace_info):

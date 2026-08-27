@@ -105,7 +105,7 @@ ADMIRA_STRATEGIC_ONBOARDING_TOOLS = {
 
 
 def _admira_freeform_agent_mode():
-    """Enable the canary experiment that leaves language interpretation to the model."""
+    """Leave language interpretation to the model unless legacy mode is explicit."""
     configured = str(os.environ.get("ADMIRA_FREEFORM_AGENT_MODE") or "").strip().lower()
     if configured:
         return configured in {"1", "true", "yes", "on", "enabled"}
@@ -116,7 +116,10 @@ def _admira_freeform_agent_mode():
             "1", "true", "yes", "on", "enabled"
         }
     except OSError:
-        return False
+        # Natural conversation is the product default.  A full reset may
+        # legitimately remove the old runtime marker; that must not silently
+        # reactivate legacy keyword routers and prose-replacement guards.
+        return True
 
 
 def _normalized_admira_mcp_name(tool_name):
@@ -1032,14 +1035,6 @@ ADMIRA_CAMPAIGN_EDIT_SUCCESS_CLAIM_RE = re.compile(
     r".{0,100}\b(?:presupuesto|campa[nñ]a|cambio|modificaci[oó]n|pausad[ao]|paused|budget)\b|"
     r"\b(?:presupuesto|budget|cambio|campaign)\b.{0,100}\b(?:aplicado|aplicada|cambiado|cambiada|modificado|"
     r"actualizado|actualizada|applied|changed|updated|set)\b)"
-)
-ADMIRA_IMAGE_UNAVAILABLE_CLAIM_RE = re.compile(
-    r"(?i)(?:\b(?:chatgpt|codex|image\s*2|generaci[oó]n\s+de\s+im[aá]genes|"
-    r"herramienta\s+de\s+(?:generaci[oó]n|imagen(?:es)?(?:\s+autom[aá]tica)?)|"
-    r"generador(?:\s+de\s+im[aá]genes)?(?:\s+autom[aá]tico)?)\b"
-    r".{0,140}\b(?:l[ií]mite|cuota|rate\s*limit|sin\s+acceso|no\s+est[aá]\s+disponible|no\s+puedo\s+generar|"
-    r"requiere\s+autenticaci[oó]n|no\s+est[aá]\s+autenticad[oa]|credenciales?)\b|"
-    r"\bno\s+puedo\s+generar\b.{0,100}\b(?:imagen|creativo|archivo\s+gr[aá]fico)\b)"
 )
 ADMIRA_TELEGRAM_INVISIBLE_RE = re.compile(r"[\u200b\u200c\u2060\ufeff\u202a-\u202e\u2066-\u2069]")
 ADMIRA_MARKDOWN_ONLY_RE = re.compile(r"[\s*_~`#>|:\-=+\\/.,;!?()\[\]{}]+")
@@ -5420,68 +5415,6 @@ def guard_unverified_campaign_edit_text(value, language="es", pending_edit=None)
     )
 
 
-def _guard_unconfirmed_image_unavailable_claim(response):
-    """A remembered/stale image failure must never masquerade as live quota."""
-    if not isinstance(response, dict):
-        return response
-    final_response = str(response.get("final_response") or "")
-    if not final_response or not ADMIRA_IMAGE_UNAVAILABLE_CLAIM_RE.search(final_response):
-        return response
-    current_messages = list(_current_turn_messages(response.get("messages")))
-    sources = list(current_messages)
-    tool_sources = [
-        message for message in current_messages
-        if isinstance(message, dict)
-        and str(message.get("role") or "").strip().lower() in {"tool", "function"}
-    ]
-    if not current_messages:
-        for key in ("tool_result", "tool_results", "result", "results", "mcp_result", "mcp_results"):
-            if key in response:
-                sources.append(response.get(key))
-                tool_sources.append(response.get(key))
-    try:
-        evidence = json.dumps(sources, ensure_ascii=False, default=str).lower().replace('\\"', '"')
-        tool_evidence = json.dumps(tool_sources, ensure_ascii=False, default=str).lower().replace('\\"', '"')
-    except (TypeError, ValueError):
-        evidence = str(sources).lower()
-        tool_evidence = str(tool_sources).lower()
-    attempted = "codex_image_generate" in evidence
-    quota_claim = bool(re.search(r"(?i)\b(l[ií]mite|cuota|rate\s*limit|usage\s*limit|429)\b", final_response))
-    quota_evidence = any(marker in tool_evidence for marker in (
-        "usage limit", "usage_limit", "rate limit", "rate_limit", "quota", "429",
-    ))
-    timeout_evidence = "timeout" in tool_evidence or "tiempo de espera" in tool_evidence or "tardó demasiado" in tool_evidence
-    availability_evidence = any(marker in tool_evidence for marker in (
-        "not_authenticated", "not authenticated", "authentication_required", "login_required",
-        "unauthorized", "invalid_grant", "credential_revoked", "provider_unavailable",
-        "service_unavailable", "not configured",
-    ))
-    failed = any(marker in tool_evidence for marker in (
-        '"ok": false', '"ok":false', '"blocked": true', '"blocked":true',
-        '"success": false', '"success":false', '"error_type"',
-    ))
-    if attempted and failed and (
-        (quota_claim and quota_evidence)
-        or (not quota_claim and availability_evidence)
-    ):
-        return response
-    language = str(os.environ.get("ADMIRA_GATEWAY_LANGUAGE") or "es").lower()
-    if timeout_evidence:
-        replacement = (
-            "Image generation timed out in this attempt; there is no evidence that the account quota was exhausted."
-            if language.startswith("en")
-            else "La generación de la imagen agotó el tiempo de espera en este intento; no hay evidencia de que la cuota de la cuenta esté agotada."
-        )
-    else:
-        replacement = (
-            "There is no evidence of a current Image limit or connection failure in this turn. I will continue without assuming image generation is blocked."
-            if language.startswith("en")
-            else "No hay evidencia de un límite ni de un fallo de conexión de Image en este turno. Continuaré sin asumir que la generación está bloqueada."
-        )
-    response["final_response"] = replacement
-    return response
-
-
 def _apply_conversational_output_guards(response, buyer_message=None):
     """Apply legacy prose classifiers unless the canary delegates language to the model."""
     if _admira_freeform_agent_mode():
@@ -5491,7 +5424,6 @@ def _apply_conversational_output_guards(response, buyer_message=None):
     result = response
     for guard in (
         _guard_unconfirmed_persistence_claim,
-        _guard_unconfirmed_image_unavailable_claim,
         _guard_unconfirmed_campaign_claim,
         lambda value: _guard_unconfirmed_campaign_edit_claim(value, buyer_message=buyer_message),
     ):
