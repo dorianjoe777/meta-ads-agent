@@ -26,6 +26,25 @@ DEFAULT_CPU_LIMIT = "1.0"
 DEFAULT_PIDS_LIMIT = 256
 MEMORY_RE = re.compile(r"^[1-9][0-9]*(?:b|k|m|g)?$", re.IGNORECASE)
 CPU_RE = re.compile(r"^(?:0\.[1-9][0-9]*|[1-9][0-9]*(?:\.[0-9]+)?)$")
+INITIAL_RUNTIME_ENV = """# Admira hosted tenant bootstrap. Buyer credentials are added by onboarding.
+META_ADS_AGENT_MODE=dry-run
+LIVE_ACTIONS_ENABLED=false
+TELEGRAM_AGENT_ENABLED=false
+AGENT_BRAIN_PROVIDER=gemini
+AGENT_CHAT_PROVIDER=hermes
+AGENT_CHAT_BASE_URL=https://generativelanguage.googleapis.com/v1beta
+AGENT_CHAT_API=gemini-native
+AGENT_CHAT_MODEL=gemini-3.5-flash-lite
+GEMINI_API_KEY=
+HERMES_HOME=/app/runtime/hermes
+CODEX_HOME=/app/runtime/hermes/codex-auth
+HERMES_MODEL=gpt-5.6-luna
+HERMES_MODEL_USER_SELECTED=false
+HERMES_USE_PYTHON_LIBRARY=true
+HERMES_REQUIRE_CODEX_AUTH=false
+HERMES_RESPONSE_TIMEOUT_SECONDS=300
+HERMES_TIMEOUT_SECONDS=300
+"""
 
 
 def validate_tenant_id(value: str) -> str:
@@ -101,6 +120,7 @@ def compose_text(
             f"      ADMIRA_TENANT_ID: {tenant_id}",
             "      HERMES_HOME: /app/runtime/hermes",
             "      CODEX_HOME: /app/runtime/hermes/codex-auth",
+            "      TELEGRAM_AGENT_ENABLED: \"false\"",
             "    volumes:",
             *mounts,
             "    tmpfs:",
@@ -155,6 +175,10 @@ def provision(
             path = root / name
             path.mkdir(exist_ok=True)
             path.chmod(0o700)
+        runtime_env = root / "runtime" / ".env"
+        if not runtime_env.exists():
+            runtime_env.write_text(INITIAL_RUNTIME_ENV, encoding="utf-8")
+            runtime_env.chmod(0o600)
         compose = root / "compose.yaml"
         compose.write_text(
             compose_text(

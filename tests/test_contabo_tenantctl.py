@@ -37,6 +37,14 @@ class TenantCtlTests(unittest.TestCase):
             tenantctl.provision(base, "client-001")
             root = base / "client-001"
             self.assertEqual({p.name for p in root.iterdir()}, set(tenantctl.DIRS) | {"compose.yaml"})
+            runtime_env = root / "runtime" / ".env"
+            self.assertEqual(runtime_env.stat().st_mode & 0o777, 0o600)
+            env_text = runtime_env.read_text()
+            self.assertIn("AGENT_BRAIN_PROVIDER=gemini", env_text)
+            self.assertIn("AGENT_CHAT_MODEL=gemini-3.5-flash-lite", env_text)
+            self.assertNotIn("nvidia", env_text.lower())
+            tenantctl.provision(base, "client-001")
+            self.assertEqual(runtime_env.read_text(), env_text)
             for name in tenantctl.DIRS:
                 self.assertEqual((root / name).stat().st_mode & 0o777, 0o700)
             self.assertEqual(root.stat().st_mode & 0o777, 0o700)

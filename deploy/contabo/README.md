@@ -15,6 +15,12 @@ Each tenant owns an exclusive directory below `/srv/admira/tenants/<tenant>`:
 - `brand_guides/` for the buyer's approved brand assets
 - `logs/` for that runtime only
 
+New tenants are bootstrapped with Gemini 3.5 Flash Lite as the text brain,
+without a Telegram token and with live Meta actions disabled. A buyer can later
+choose a ChatGPT/Codex subscription or another supported provider through the
+normal onboarding flow; that choice is written to the tenant's private
+`runtime/.env` and is not overwritten by a restart.
+
 The shared r90 image is read-only product code. A tenant container never mounts
 the Docker socket, another tenant directory or a host-wide credential file.
 Suspending a tenant removes only that tenant's ephemeral container and network;
@@ -32,6 +38,22 @@ publishes no tenant port, and gives every tenant a unique Compose project.
 ./tenantctl.py start client-001
 ./tenantctl.py suspend client-001
 ```
+
+`tenant_turn.py` is the text-only bridge used by the future central Telegram
+ingress. It accepts one JSON request on stdin and runs `hermes_bridge.chat` in
+the already-running tenant container; the caller must resolve the tenant from
+the control plane first. It derives a stable session from the Telegram chat
+ID, rejects media until the text path is proven, and never returns raw provider
+errors to Telegram:
+
+```bash
+printf '%s\n' '{"message":"Hola","chat_id":"123","language":"es","update_id":42}' \
+  | ./tenant_turn.py client-001
+```
+
+The shared Telegram bot token is intentionally absent from every tenant
+runtime. The central ingress, durable `tenant_telegram_updates` ledger and a
+future outbox are required before enabling buyer traffic.
 
 ## Control plane
 
