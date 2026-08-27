@@ -13,7 +13,10 @@ BEGIN
     ('admira_provisioner_login','admira_provisioner','/run/admira-db-secrets/provisioner_db_password')
   ) AS roles(login_role, group_role, secret_path)
   LOOP
-    password_value := btrim(pg_read_file(item.secret_path));
+    -- bootstrap-control-plane.sh terminates each secret with one newline.
+    -- Remove only line endings so the server password exactly matches the
+    -- value returned by the workers' secret-file readers.
+    password_value := regexp_replace(pg_read_file(item.secret_path), E'[\\r\\n]+$', '', 'g');
     IF length(password_value) < 32 THEN
       RAISE EXCEPTION 'service database password is missing or too short';
     END IF;

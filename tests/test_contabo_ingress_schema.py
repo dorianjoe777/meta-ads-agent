@@ -86,3 +86,10 @@ def test_registration_is_separate_least_privilege_operator_path():
     assert "GRANT EXECUTE ON FUNCTION admira.claim_telegram_tenant" in text
     assert "OWNER TO admira_control_owner" in text
     assert "bot_token" not in text.lower()
+
+
+def test_service_role_passwords_strip_only_secret_file_line_endings():
+    bootstrap = ROOT / "deploy" / "contabo" / "db" / "bootstrap_service_roles.sql"
+    text = bootstrap.read_text(encoding="utf-8")
+    assert "regexp_replace(pg_read_file(item.secret_path), E'[\\\\r\\\\n]+$', '', 'g')" in text
+    assert "btrim(pg_read_file(item.secret_path))" not in text
