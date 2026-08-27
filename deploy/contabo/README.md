@@ -56,6 +56,9 @@ runtime.
 
 ## Control plane
 
+For the complete current-state inventory, activation gate, update/rollback
+procedure and incident runbook, see [`OPERATIONS.md`](./OPERATIONS.md).
+
 `compose.yaml` starts PostgreSQL and Redis on an internal-only Docker network.
 It publishes no host ports. PostgreSQL is the canonical source for tenant,
 trial, entitlement, Telegram binding, inbox, outbox, runtime lease and
