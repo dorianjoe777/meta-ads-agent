@@ -1,0 +1,66 @@
+name: admira-control-plane
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16-bookworm}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-admira_control}
+      POSTGRES_USER: ${POSTGRES_USER:-admira_control}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
+    networks:
+      - control_private
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: ${POSTGRES_MEMORY_LIMIT:-1g}
+    cpus: 1.0
+
+  redis:
+    image: ${REDIS_IMAGE:-redis:7.4-bookworm}
+    restart: unless-stopped
+    command: ["redis-server", "--aclfile", "/run/secrets/redis_users_acl", "--appendonly", "yes", "--appendfsync", "everysec"]
+    secrets:
+      - redis_users_acl
+    volumes:
+      - redis_data:/data
+    networks:
+      - control_private
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$(sed -n 's/^user default on >\\([^ ]*\\).*/\\1/p' /run/secrets/redis_users_acl)\" ping | grep -qx PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    mem_limit: ${REDIS_MEMORY_LIMIT:-256m}
+    cpus: 0.5
+
+networks:
+  control_private:
+    internal: true
+
+volumes:
+  postgres_data:
+  redis_data:
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password.txt
+  redis_users_acl:
+    file: ./secrets/redis_users.acl
