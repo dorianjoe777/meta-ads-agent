@@ -150,6 +150,11 @@ class RuntimeBrokerTests(unittest.TestCase):
                     {"action": "status", "tenant_id": "client-001"}
                 )
             self.assertEqual(result, {"ok": True, "running": True})
+            with patch.object(broker, "status", return_value={"ok": False, "output": "missing compose file"}):
+                result = broker.BrokerCore(tenants_base=base, spool_base=spool).handle(
+                    {"action": "status", "tenant_id": "client-001"}
+                )
+            self.assertEqual(result, {"ok": False, "running": False})
             with self.assertRaisesRegex(ValueError, "unsupported_action"):
                 broker.BrokerCore(tenants_base=base, spool_base=spool).handle(
                     {"action": "delete_everything", "tenant_id": "client-001"}

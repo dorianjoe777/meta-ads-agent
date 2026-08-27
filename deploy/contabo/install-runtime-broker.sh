@@ -79,6 +79,9 @@ WantedBy=multi-user.target
 UNIT
 
 systemctl daemon-reload
-systemctl enable --now admira-runtime-broker.service
+systemctl enable admira-runtime-broker.service
+# Always reload the versioned Python module after a release copy. `enable
+# --now` alone leaves an already-running broker on its former in-memory code.
+systemctl restart admira-runtime-broker.service
 systemctl is-active --quiet admira-runtime-broker.service
 printf '%s\n' 'Admira runtime broker installed and active.'

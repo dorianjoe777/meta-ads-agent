@@ -115,6 +115,11 @@ class ContaboComposeTests(unittest.TestCase):
         self.assertIn("build:\n      context: .\n      dockerfile: Control.Dockerfile", poller)
         self.assertEqual(self.text.count("dockerfile: Control.Dockerfile"), 1)
 
+    def test_broker_installer_restarts_versioned_code(self):
+        installer = (COMPOSE.parent / "install-runtime-broker.sh").read_text(encoding="utf-8")
+        self.assertIn("systemctl restart admira-runtime-broker.service", installer)
+        self.assertNotIn("enable --now admira-runtime-broker.service", installer)
+
     def test_tenants_and_control_services_never_mount_docker_socket(self):
         self.assertNotIn("/var/run/docker.sock", self.text)
 

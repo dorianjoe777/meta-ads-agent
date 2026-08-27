@@ -318,7 +318,8 @@ class BrokerCore:
                 return {"ok": bool(result.get("ok")), "error_code": "" if result.get("ok") else "runtime_suspend_failed"}
             if action == "status":
                 result = status(self.tenants_base, tenant_id)
-                return {"ok": bool(result.get("ok")), "running": bool(result.get("output"))}
+                valid = bool(result.get("ok"))
+                return {"ok": valid, "running": valid and bool(str(result.get("output") or "").strip())}
         raise ValueError("unsupported_action")
 
 
