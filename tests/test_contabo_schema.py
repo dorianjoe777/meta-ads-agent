@@ -41,6 +41,10 @@ class ContaboSchemaTests(unittest.TestCase):
         self.assertIn("REFERENCES admira.tenant_scheduled_jobs (tenant_id, id)", self.sql)
         self.assertIn("tenant_scheduled_jobs_tenant_id_id_uq", self.sql)
 
+        unique_pos = self.sql.index("tenant_scheduled_jobs_tenant_id_id_uq")
+        runs_pos = self.sql.index("CREATE TABLE IF NOT EXISTS admira.tenant_scheduled_job_runs")
+        self.assertLess(unique_pos, runs_pos)
+
     def test_telegram_updates_are_durable_and_deduplicated(self):
         block = self._table_block("tenant_telegram_updates")
         self.assertRegex(block, r"tenant_id\s+uuid\s+NOT NULL")

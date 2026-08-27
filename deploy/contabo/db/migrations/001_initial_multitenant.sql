@@ -114,6 +114,11 @@ CREATE TABLE IF NOT EXISTS admira.tenant_scheduled_jobs (
   UNIQUE (tenant_id, job_key)
 );
 
+-- The composite FK in tenant_scheduled_job_runs requires this referenced
+-- pair to be unique before that table is created.
+CREATE UNIQUE INDEX IF NOT EXISTS tenant_scheduled_jobs_tenant_id_id_uq
+  ON admira.tenant_scheduled_jobs (tenant_id, id);
+
 CREATE TABLE IF NOT EXISTS admira.tenant_scheduled_job_runs (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id uuid NOT NULL REFERENCES admira.tenants(id) ON DELETE CASCADE,
@@ -147,11 +152,6 @@ CREATE TABLE IF NOT EXISTS admira.tenant_audit_events (
   payload jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now()
 );
-
--- The composite FK above needs the referenced pair to be unique.  This is
--- separate from the tenant-local job key so job IDs can still be opaque.
-CREATE UNIQUE INDEX IF NOT EXISTS tenant_scheduled_jobs_tenant_id_id_uq
-  ON admira.tenant_scheduled_jobs (tenant_id, id);
 
 CREATE INDEX IF NOT EXISTS tenant_telegram_bindings_tenant_idx
   ON admira.tenant_telegram_bindings (tenant_id);
