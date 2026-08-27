@@ -30,15 +30,18 @@ services:
   redis:
     image: ${REDIS_IMAGE:-redis:7.4-bookworm}
     restart: unless-stopped
-    command: ["redis-server", "--aclfile", "/run/secrets/redis_users_acl", "--appendonly", "yes", "--appendfsync", "everysec"]
-    secrets:
-      - redis_users_acl
+    user: "999:999"
+    depends_on:
+      redis-init:
+        condition: service_completed_successfully
+    command: ["redis-server", "--aclfile", "/run/redis-auth/redis_users.acl", "--appendonly", "yes", "--appendfsync", "everysec"]
     volumes:
       - redis_data:/data
+      - redis_auth:/run/redis-auth:ro
     networks:
       - control_private
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$(sed -n 's/^user default on >\\([^ ]*\\).*/\\1/p' /run/secrets/redis_users_acl)\" ping | grep -qx PONG"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$(sed -n 's/^user default on >\\([^ ]*\\).*/\\1/p' /run/redis-auth/redis_users.acl)\" redis-cli --no-auth-warning ping | grep -qx PONG"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -47,16 +50,42 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    # The official image starts as root only long enough to fix /data ownership
-    # and become the unprivileged redis user. These are the exact capabilities
-    # required for that transition; no networking/admin capability is restored.
-    cap_add:
-      - CHOWN
-      - SETGID
-      - SETUID
+    read_only: true
     pids_limit: 128
     mem_limit: ${REDIS_MEMORY_LIMIT:-256m}
     cpus: 0.5
+
+  # Docker secrets are mounted read-only as root-owned files.  The official
+  # Redis image drops to uid 999, so stage the ACL into a private named volume
+  # once, then let Redis read that volume without root or extra capabilities.
+  redis-init:
+    image: ${REDIS_IMAGE:-redis:7.4-bookworm}
+    restart: "no"
+    user: "0:0"
+    network_mode: none
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        install -d -m 0700 -o 999 -g 999 /redis-auth /data;
+        install -m 0400 -o 999 -g 999 /run/secrets/redis_users_acl /redis-auth/redis_users.acl;
+        chown -R 999:999 /data
+    secrets:
+      - redis_users_acl
+    volumes:
+      - redis_auth:/redis-auth
+      - redis_data:/data
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    pids_limit: 32
+    mem_limit: 64m
+    cpus: 0.1
 
 networks:
   control_private:
@@ -65,6 +94,7 @@ networks:
 volumes:
   postgres_data:
   redis_data:
+  redis_auth:
 
 secrets:
   postgres_password:
