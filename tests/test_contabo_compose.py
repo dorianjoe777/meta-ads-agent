@@ -107,6 +107,11 @@ class ContaboComposeTests(unittest.TestCase):
             next_name = names[index + 1] if index + 1 < len(names) else None
             self.assertIn(f"ADMIRA_DB_USER: {expected[name]}", self._service(name, next_name))
 
+    def test_shared_control_image_has_one_build_owner(self):
+        poller = self._service("telegram-poller", "runtime-worker")
+        self.assertIn("build:\n      context: .\n      dockerfile: Control.Dockerfile", poller)
+        self.assertEqual(self.text.count("dockerfile: Control.Dockerfile"), 1)
+
     def test_tenants_and_control_services_never_mount_docker_socket(self):
         self.assertNotIn("/var/run/docker.sock", self.text)
 

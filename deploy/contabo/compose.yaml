@@ -2,9 +2,6 @@ name: admira-control-plane
 
 x-control-common: &control-common
   image: ${CONTROL_IMAGE:-admira-control-plane:r1}
-  build:
-    context: .
-    dockerfile: Control.Dockerfile
   restart: unless-stopped
   init: true
   user: "${ADMIRA_SERVICE_UID:-1001}:${ADMIRA_SERVICE_GID:-1001}"
@@ -169,6 +166,11 @@ services:
   telegram-poller:
     <<: *control-common
     profiles: ["buyers"]
+    # Build the shared image exactly once. The remaining workers consume this
+    # same tag and must not race while exporting parallel identical builds.
+    build:
+      context: .
+      dockerfile: Control.Dockerfile
     command: ["poller"]
     environment:
       <<: *control-environment
