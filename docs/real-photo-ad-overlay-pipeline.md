@@ -218,6 +218,59 @@ caja del logo, el **100 %** de los píxeles donde el alfa era cero permaneció
 idéntico al anuncio sin logo; hubo **0 píxeles modificados** fuera de la forma
 visible del logo.
 
+### Bullets dentro de la fotografía y variantes cromáticas del logo
+
+Se hizo una segunda prueba de overlay para comprobar que Image 2 puede diseñar
+elementos dentro de la futura zona fotográfica. La instrucción describió la
+zona verde/transparente como una fotografía real futura y pidió una tarjeta
+compacta en el tercio izquierdo con estos textos exactos:
+
+- `Aspirado profundo`
+- `Eliminación de manchas`
+- `Desinfección interior`
+
+El modelo mantuvo libre el resto de la fotografía y la esquina superior
+derecha, no incluyó logo ni nombre de marca y devolvió alfa real. El centro del
+overlay siguió transparente. La salida se guardó como
+`ad-overlay-bullets-generated-source.png` y el compuesto sin logo como
+`ad-bullets-no-logo.png`.
+
+Para el logo se generaron por código cinco activos RGBA, todos a partir del
+mismo archivo aprobado:
+
+1. normal, con sus colores originales;
+2. blanco sólido `#FFFFFF`;
+3. negro sólido `#000000`;
+4. color primario de marca, naranja `#D95A02`;
+5. color secundario de contraste del sistema visual, plata `#D7DCE2`.
+
+Las cinco versiones conservaron el mismo tamaño (`1162 x 877`) y el mismo hash
+del canal alfa
+`a9f3ca6d05b67e05ffbbe7cb3041ddffe5dadc49f8722a9a4f08f5c2fec7457d`.
+Es decir, no cambió geometría, contorno ni transparencia; únicamente se
+reemplazaron los valores RGB de los píxeles visibles. No se volvió a llamar al
+modelo para crear ninguna variante.
+
+Se probaron las cinco sobre la misma foto, en `(950, 338)` y a `260 x 196`.
+Por contraste medio medido contra el fondo local, blanco fue la mejor opción
+de esta composición (`6,174:1`); negro obtuvo `5,647:1`, normal `4,882:1`,
+plata `4,639:1` y naranja `2,156:1`. Esto no establece un color global: la
+elección debe repetirse para la zona concreta donde vaya a colocarse el logo.
+
+La selección automática recomendada es:
+
+1. renderizar o simular las variantes permitidas sobre la zona de destino;
+2. medir contraste local usando la máscara alfa real del logo;
+3. escoger la variante aprobada con mejor contraste;
+4. si ninguna alcanza el umbral, mover el logo a otra zona antes de añadir un
+   fondo, contorno o placa;
+5. no inventar colores de marca: las variantes primaria y secundaria sólo
+   existen cuando esos colores están guardados en el perfil de branding.
+
+La comparación visual quedó en
+`ad-bullets-logo-variants-contact-sheet.png`; los cinco anuncios individuales
+usan el prefijo `ad-bullets-logo-`.
+
 ## Puntos de dolor y fallbacks
 
 - **Croma contaminado:** si la marca usa verde o la escena contiene mucho
