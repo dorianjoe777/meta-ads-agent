@@ -198,7 +198,7 @@ Archivos de evidencia:
 - `output/prototypes/real-photo-logo-composite-20260827/logo-generated-chroma-green-transparent.png`
 - `output/prototypes/real-photo-logo-composite-20260827/logo-generated-transparent-cropped.png`
 - `output/prototypes/real-photo-logo-composite-20260827/ad-overlay-generated-source.png`
-- `output/prototypes/real-photo-logo-composite-20260827/rodeo-real-photo-ad-programmatic-logo.png`
+- `output/prototypes/real-photo-logo-composite-20260827/rodeo-real-photo-ad-transparent-logo-v2.png`
 
 El compuesto final es RGB `1254 x 1254`; la fotografía fuente conservó su
 SHA-256 original
@@ -207,6 +207,16 @@ Esta prueba confirma la arquitectura recomendada: una vez que el cliente
 aprueba un logo generado, se guarda como activo oficial y todos los diseños
 posteriores deben omitirlo durante la generación e insertarlo después por
 código.
+
+La primera composición, `rodeo-real-photo-ad-programmatic-logo.png`, se
+rechazó porque el compositor añadió una placa blanca detrás del logo para
+crear contraste. El logo fuente sí era transparente; la placa fue una decisión
+posterior de composición y no provenía del modelo ni de la extracción. La
+variante corregida usa el PNG RGBA directamente, sin rectángulo, placa, fondo
+ni color añadido: se escaló a `260 x 196` y se colocó en `(950, 230)`. En la
+caja del logo, el **100 %** de los píxeles donde el alfa era cero permaneció
+idéntico al anuncio sin logo; hubo **0 píxeles modificados** fuera de la forma
+visible del logo.
 
 ## Puntos de dolor y fallbacks
 
