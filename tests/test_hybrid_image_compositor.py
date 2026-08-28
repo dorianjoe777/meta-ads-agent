@@ -1,0 +1,130 @@
+import hashlib
+import tempfile
+import unittest
+from pathlib import Path
+
+try:
+    from PIL import Image, ImageDraw
+except ImportError:  # pragma: no cover - product image runtime supplies Pillow
+    Image = None
+
+if Image is not None:
+    from hybrid_image_compositor import (
+        build_overlay_prompt,
+        choose_key_colors,
+        compose_overlay,
+        composite_logo,
+        prepare_logo,
+    )
+
+
+@unittest.skipIf(Image is None, "Pillow is required by the image runtime")
+class HybridImageCompositorTests(unittest.TestCase):
+    def test_key_selection_excludes_green_brand_and_supports_six(self):
+        keys = choose_key_colors(6, [(20, 180, 40), (255, 255, 255), (20, 20, 20)])
+        self.assertEqual(len(keys), 6)
+        brand_hue = __import__("colorsys").rgb_to_hsv(20 / 255, 180 / 255, 40 / 255)[0]
+        for key in keys:
+            hue = __import__("colorsys").rgb_to_hsv(*(v / 255 for v in key))[0]
+            distance = min(abs(hue - brand_hue), 1 - abs(hue - brand_hue)) * 360
+            self.assertGreaterEqual(distance, 58)
+
+    def _prompt(self, mode="none"):
+        return build_overlay_prompt(
+            layout="before_after",
+            slots=[
+                {"slot_id": "before", "label": "ANTES", "key_rgb": (255, 0, 255)},
+                {"slot_id": "after", "label": "DESPUÉS", "key_rgb": (0, 255, 255)},
+            ],
+            visual_direction="editorial asymmetric composition",
+            text_content={"headline": "Detailing Premium"},
+            style_reference_mode=mode,
+        )
+    def test_prompt_has_exact_slots_and_reference_is_opt_in(self):
+        prompt = self._prompt()
+        self.assertIn("slot_id=before", prompt)
+        self.assertIn("#FF00FF", prompt)
+        self.assertIn("Do not use any saved style reference", prompt)
+        self.assertIn("Detailing Premium", prompt)
+
+    def test_prompt_reference_modes_are_explicit(self):
+        self.assertIn("one shuffled approved graphic-design reference", self._prompt("pool"))
+        self.assertIn("one explicitly selected approved graphic-design reference", self._prompt("explicit"))
+        with self.assertRaises(ValueError):
+            self._prompt("sometimes")
+
+    def test_composition_maps_two_sources_and_emits_hash_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            overlay = Image.new("RGB", (300, 180), (18, 24, 36))
+            draw = ImageDraw.Draw(overlay)
+            draw.rectangle((10, 30, 140, 160), fill=(255, 0, 255))
+            draw.rectangle((160, 30, 290, 160), fill=(0, 255, 255))
+            overlay_path = root / "overlay.png"
+            overlay.save(overlay_path)
+            sources = []
+            for color, name in [((220, 20, 20), "before"), ((20, 20, 220), "after")]:
+                source = Image.new("RGB", (80, 60), color)
+                path = root / f"{name}.png"
+                source.save(path)
+                sources.append(path)
+            output = root / "composite.png"
+            evidence = compose_overlay(overlay_path, [
+                {"slot_id": "before", "label": "ANTES", "key_rgb": (255, 0, 255), "source": sources[0]},
+                {"slot_id": "after", "label": "DESPUÉS", "key_rgb": (0, 255, 255), "source": sources[1]},
+            ], output)
+            self.assertTrue(evidence["pass"], evidence)
+            self.assertEqual(evidence["slots"][0]["source_sha256"], hashlib.sha256(sources[0].read_bytes()).hexdigest())
+            self.assertEqual(Image.open(output).getpixel((50, 80))[:3], (220, 20, 20))
+            self.assertEqual(Image.open(output).getpixel((220, 80))[:3], (20, 20, 220))
+
+    def test_tiny_key_speckle_is_ignored_but_meaningful_extra_component_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.png"
+            Image.new("RGB", (20, 20), (30, 140, 220)).save(source)
+            def run(extra_box, name):
+                overlay = Image.new("RGB", (200, 120), (15, 20, 30))
+                draw = ImageDraw.Draw(overlay)
+                draw.rectangle((20, 20, 150, 100), fill=(255, 0, 255))
+                if extra_box:
+                    draw.rectangle(extra_box, fill=(255, 0, 255))
+                path = root / f"{name}.png"
+                overlay.save(path)
+                return compose_overlay(path, [{"slot_id": "hero", "key_rgb": (255, 0, 255), "source": source}], root / f"{name}-out.png")
+            tiny = run((180, 5, 180, 5), "tiny")
+            self.assertTrue(tiny["pass"], tiny)
+            self.assertEqual(tiny["slots"][0]["meaningful_extra_component_count"], 0)
+            large = run((175, 5, 190, 20), "large")
+            self.assertFalse(large["pass"])
+            self.assertEqual(large["slots"][0]["meaningful_extra_component_count"], 1)
+
+    def test_logo_variants_keep_alpha_and_auto_contrast_has_no_plate(self):
+        base = Image.new("RGB", (300, 200), (245, 245, 245))
+        logo = Image.new("RGBA", (80, 40), (0, 0, 0, 0))
+        ImageDraw.Draw(logo).rectangle((10, 10, 70, 30), fill=(15, 20, 30, 255))
+        white = prepare_logo(logo, "white")
+        self.assertEqual(white.getpixel((0, 0))[3], 0)
+        self.assertEqual(white.getpixel((30, 20))[:3], (255, 255, 255))
+        result = composite_logo(base, logo, mode="auto_contrast", position="top_left")
+        self.assertEqual(result.getpixel((5, 5))[:3], (245, 245, 245))
+        self.assertNotEqual(result.getpixel((30, 40))[:3], (245, 245, 245))
+
+        dark = Image.new("RGB", (300, 200), (20, 20, 20))
+        auto = composite_logo(dark, logo, mode="auto_contrast", position="auto", margin=24)
+        self.assertEqual(auto.size, dark.size)
+        named = composite_logo(base, logo, mode="auto_contrast", position="bottom_right", margin=24)
+        self.assertEqual(named.size, base.size)
+        # The transparent canvas remains untouched and logo placement is fully
+        # inside the image even when the requested margin is larger than it.
+        bounded = composite_logo(base, logo, mode="white", position="top_right", margin=500)
+        self.assertEqual(bounded.size, base.size)
+
+        opaque = Image.new("RGB", (80, 40), (20, 30, 40))
+        with self.assertRaisesRegex(ValueError, "transparent PNG"):
+            prepare_logo(opaque, "white")
+        self.assertEqual(prepare_logo(opaque, "original").getpixel((0, 0))[:3], (20, 30, 40))
+
+
+if __name__ == "__main__":
+    unittest.main()

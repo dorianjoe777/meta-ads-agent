@@ -118,6 +118,7 @@ Also read the focused product skills under `skills/` before acting. Use this rou
 - Organic social posts/content calendar: `organic-content-strategy`.
 - Creative ideas/tests: `creative-strategy`.
 - Codex/Image generation: `creative-production-codex-image`.
+- Hybrid designs with buyer-owned real photos: use `creative-production-codex-image` and read its `references/hybrid-real-media-contract.md`; Image 2 creates the keyed overlay, while photos and the official logo are composited programmatically.
 - Campaign planning: `campaign-strategy`.
 - Meta Graph execution, native inline creatives, lead forms, messaging destinations, paused creation, and activation approvals: `meta-campaign-execution`.
 - Results, budgets, experiments, daily brief, feedback loop: `measurement-optimization`.
@@ -393,7 +394,7 @@ Arguments:
 
 If the buyer uploaded a reference image, first use vision to describe it briefly, then include that description in `reference_image_summary`. Do not pass arbitrary local file paths to Codex.
 
-Also pass safe uploaded workspace images in `reference_image_paths`. When an official logo is saved, future creatives should use that exact saved file by default unless the buyer explicitly asks for no logo. The backend attaches it as a protected reference and explicitly requires pixel-level accurate reproduction, pixel-faithful reproduction (fiel píxel por píxel), without changes to wording, symbols, geometry, proportions, colors, or internal layout. Never ask Image 2 to approximate a logo. Inspect the result; if the mark is visibly altered, retry with `logo_render_mode: "exact_composite"` so the exact saved file is applied after the logo-free base is generated. For people, products, locations, food, interiors, or other real-world subjects, require photorealism unless the buyer explicitly chose illustration.
+Also pass safe uploaded workspace images in `reference_image_paths` only when they are ordinary inspiration. If buyer-owned photos must remain exact in the result, use the hybrid `real_media` contract from `creative-production-codex-image`; Image 2 designs keyed windows and the backend inserts the original photos afterward. When an official logo is saved, future creatives should use that exact saved file by default unless the buyer explicitly asks for no logo. Never ask Image 2 to approximate a logo. Use the canonical `logo_color_mode` so the exact saved file is applied after the logo-free base is generated. For people, products, locations, food, interiors, or other real-world subjects, require photorealism unless the buyer explicitly chose illustration.
 
 ### `save_business_context`
 

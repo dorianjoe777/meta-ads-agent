@@ -100,6 +100,13 @@ from codex_brand_guides import (
     save_general_guide,
     save_product_guide,
 )
+from hybrid_image_compositor import (
+    build_image2_overlay_prompt,
+    choose_key_colors,
+    compose_real_media,
+    composite_logo,
+    prepare_logo,
+)
 from creative_refresh import (
     CREATIVE_IMAGE_STORAGE_POLICY,
     asset_storage_state,
@@ -13089,12 +13096,12 @@ def codex_creative_plan(payload):
     request = str(payload.get("request") or "").strip()
     mode = str(payload.get("mode") or payload.get("image_mode") or "fixed").strip().lower()
     variations = payload.get("variations") or brief_payload.get("variation_count") or 3
+    purpose = str(payload.get("purpose") or "ad_creative").strip().lower()
     if not request:
         request = "Crear una estrategia visual y prompts de imagen para Meta Ads usando las guias de marca."
     context = "" if purpose == "logo" else creative_direct_context(payload)
     if context and context not in request:
         request = f"{request}\n\n{context}"
-    purpose = str(payload.get("purpose") or "ad_creative").strip().lower()
     readiness = creative_strategy_readiness(require_brief=False, purpose=purpose, payload=payload)
     if not readiness["ready"]:
         result = creative_not_ready_result("creative_strategy_not_ready", readiness)
@@ -13138,6 +13145,207 @@ def codex_creative_plan(payload):
         result = {"ok": False, "error": str(exc)}
     log_action("codex_creative_plan", {"product_guide": product_guide, "mode": mode, "variations": variations, "ok": result.get("ok"), "error": result.get("error", "")}, "completed" if result.get("ok") else "blocked")
     return result
+
+
+HYBRID_STYLE_SHUFFLE_FILE = DATA_DIR / "hybrid_style_reference_shuffle.json"
+
+HYBRID_NAMED_COLORS = {
+    "azul marino": (0, 35, 102),
+    "navy blue": (0, 35, 102),
+    "naranja cobrizo": (191, 88, 24),
+    "copper orange": (191, 88, 24),
+    "gris grafito": (54, 69, 79),
+    "graphite gray": (54, 69, 79),
+    "negro mate": (18, 18, 18),
+    "matte black": (18, 18, 18),
+    "verde esmeralda": (0, 138, 100),
+    "emerald green": (0, 138, 100),
+    "verde": (0, 150, 70),
+    "green": (0, 150, 70),
+    "lima": (80, 220, 40),
+    "lime": (80, 220, 40),
+    "turquesa": (0, 175, 170),
+    "turquoise": (0, 175, 170),
+    "cian": (0, 210, 230),
+    "cyan": (0, 210, 230),
+    "azul": (20, 105, 210),
+    "blue": (20, 105, 210),
+    "naranja": (240, 115, 20),
+    "orange": (240, 115, 20),
+    "cobre": (184, 92, 46),
+    "copper": (184, 92, 46),
+    "rojo": (215, 40, 40),
+    "red": (215, 40, 40),
+    "coral": (255, 99, 71),
+    "rosa": (240, 95, 155),
+    "rosado": (240, 95, 155),
+    "pink": (240, 95, 155),
+    "magenta": (230, 0, 190),
+    "morado": (125, 55, 180),
+    "purpura": (125, 55, 180),
+    "violeta": (125, 55, 180),
+    "purple": (125, 55, 180),
+    "violet": (125, 55, 180),
+    "amarillo": (240, 205, 20),
+    "yellow": (240, 205, 20),
+    "dorado": (205, 160, 35),
+    "gold": (205, 160, 35),
+    "marron": (125, 80, 50),
+    "cafe": (125, 80, 50),
+    "brown": (125, 80, 50),
+    "negro": (15, 15, 15),
+    "black": (15, 15, 15),
+    "blanco": (245, 245, 245),
+    "white": (245, 245, 245),
+    "gris": (128, 128, 128),
+    "gray": (128, 128, 128),
+    "grey": (128, 128, 128),
+}
+
+
+def _hybrid_rgb_palette(values):
+    """Normalize explicit RGB/hex values and common named brand colors."""
+    result = []
+    for value in values or []:
+        if isinstance(value, (list, tuple)) and len(value) == 3:
+            try:
+                result.append(tuple(max(0, min(255, int(v))) for v in value))
+            except (TypeError, ValueError):
+                continue
+            continue
+        text = str(value or "").strip()
+        for raw in re.findall(r"(?i)(?:#|\b)([0-9a-f]{6})\b", text):
+            color = tuple(int(raw[i:i + 2], 16) for i in (0, 2, 4))
+            if color not in result:
+                result.append(color)
+        normalized = unicodedata.normalize("NFKD", text.lower()).encode("ascii", "ignore").decode("ascii")
+        occupied = []
+        for name, color in sorted(HYBRID_NAMED_COLORS.items(), key=lambda item: len(item[0]), reverse=True):
+            match = re.search(rf"(?<![a-z]){re.escape(name)}(?![a-z])", normalized)
+            if not match or any(match.start() < end and match.end() > start for start, end in occupied):
+                continue
+            occupied.append(match.span())
+            if color not in result:
+                result.append(color)
+    return result
+
+
+def _hybrid_real_media(payload, purpose="ad_creative"):
+    """Resolve only classified, durable buyer assets; arbitrary paths are rejected."""
+    raw = payload.get("real_media")
+    if not isinstance(raw, list):
+        return [], None
+    if not 1 <= len(raw) <= 6:
+        raise ValueError("real_media debe contener entre 1 y 6 imágenes.")
+    by_id = {str(item.get("id")): item for item in load_content_asset_library().get("items", []) if isinstance(item, dict)}
+    organic = image_purpose_is_organic(purpose)
+    required_approval = "approved_for_daily_content" if organic else "approved_for_ads"
+    allowed_paths = {}
+    for item in by_id.values():
+        if item.get("classification_status") != "classified" or item.get("preservation_mode") != "pixel_locked":
+            continue
+        if not item.get(required_approval):
+            continue
+        for path in safe_image_paths({"image_paths": item.get("file_paths") or []}, limit=8):
+            allowed_paths[str(Path(path).resolve())] = item
+    slots = []
+    seen = set()
+    slot_ids = set()
+    for index, entry in enumerate(raw, 1):
+        if not isinstance(entry, dict):
+            raise ValueError("Cada elemento de real_media debe ser un objeto.")
+        slot_id = str(entry.get("slot_id") or f"slot-{index}").strip()
+        if not slot_id or slot_id in slot_ids:
+            raise ValueError("Cada slot de real_media debe tener un slot_id distinto.")
+        slot_ids.add(slot_id)
+        asset_id = str(entry.get("content_asset_id") or entry.get("asset_id") or "").strip()
+        item = by_id.get(asset_id) if asset_id else None
+        candidate_paths = safe_image_paths({"image_paths": item.get("file_paths") if item else [entry.get("file_path")]}, limit=2)
+        candidate = next((p for p in candidate_paths if str(Path(p).resolve()) in allowed_paths), None)
+        if not candidate:
+            raise ValueError(f"No pude validar la foto real del slot {entry.get('slot_id') or index} en la biblioteca aprobada.")
+        if candidate in seen:
+            raise ValueError("Cada slot de real_media debe apuntar a una foto distinta.")
+        seen.add(candidate)
+        slots.append({
+            "slot_id": slot_id,
+            "label": str(entry.get("label") or entry.get("role") or "").strip(),
+            "role": str(entry.get("role") or "supporting").strip(),
+            "source": candidate,
+            "asset_id": str(allowed_paths[str(Path(candidate).resolve())].get("id") or asset_id),
+        })
+    return slots, by_id
+
+
+def _hybrid_style_reference(payload, by_id, purpose="ad_creative"):
+    policy = payload.get("style_reference")
+    if not isinstance(policy, dict):
+        policy = {"mode": "none"}
+    mode = str(policy.get("mode") or "none").strip().lower()
+    if mode == "none":
+        return None, {"mode": "none"}
+    candidates = []
+    required_approval = "approved_for_daily_content" if image_purpose_is_organic(purpose) else "approved_for_ads"
+    item = None
+    if mode == "explicit":
+        item = by_id.get(str(policy.get("asset_id") or "").strip())
+        if item and item.get("category") == "style_reference" and item.get("preservation_mode") == "style_only" and item.get("classification_status") == "classified" and item.get(required_approval):
+            candidates = safe_image_paths({"image_paths": item.get("file_paths") or []}, limit=1)
+        if not candidates and policy.get("file_path"):
+            requested = str(Path(str(policy.get("file_path")).strip()).resolve())
+            for candidate_item in by_id.values():
+                if candidate_item.get("category") != "style_reference" or candidate_item.get("preservation_mode") != "style_only" or candidate_item.get("classification_status") != "classified" or not candidate_item.get(required_approval):
+                    continue
+                paths = safe_image_paths({"image_paths": candidate_item.get("file_paths") or []}, limit=8)
+                if any(str(Path(path).resolve()) == requested for path in paths):
+                    item = candidate_item
+                    candidates = [path for path in paths if str(Path(path).resolve()) == requested]
+                    break
+        if not candidates:
+            raise ValueError("La referencia de diseño explícita no está clasificada y aprobada.")
+    elif mode == "pool":
+        items = [item for item in by_id.values() if item.get("category") == "style_reference" and item.get("preservation_mode") == "style_only" and item.get("classification_status") == "classified" and item.get(required_approval)]
+        for item in items:
+            paths = safe_image_paths({"image_paths": item.get("file_paths") or []}, limit=1)
+            if paths:
+                candidates.append((str(item.get("id")), paths[0]))
+        if not candidates:
+            raise ValueError("No hay referencias gráficas aprobadas para usar en el pool.")
+        state = read_json(HYBRID_STYLE_SHUFFLE_FILE, {"remaining": [], "last": ""})
+        remaining = [str(x) for x in state.get("remaining", []) if str(x) in {x[0] for x in candidates}]
+        if not remaining:
+            remaining = [x[0] for x in candidates]
+            secrets.SystemRandom().shuffle(remaining)
+            last_id = str(state.get("last") or "")
+            if len(remaining) > 1 and remaining[0] == last_id:
+                remaining[0], remaining[1] = remaining[1], remaining[0]
+        selected_id = remaining.pop(0)
+        selected = next(path for asset_id, path in candidates if asset_id == selected_id)
+        write_json(HYBRID_STYLE_SHUFFLE_FILE, {"remaining": remaining, "last": selected_id, "updated_at": now_iso()}, ensure_ascii=False)
+        return selected, {"mode": "pool", "asset_id": selected_id}
+    else:
+        raise ValueError("style_reference.mode debe ser none, pool o explicit.")
+    return candidates[0], {"mode": mode, "asset_id": str((item or {}).get("id") or policy.get("asset_id") or "")}
+
+
+def _hybrid_public_evidence(slots, composition):
+    """Keep audit identifiers/hashes while never returning buyer filesystem paths."""
+    composition = composition if isinstance(composition, dict) else {}
+    public_slots = []
+    evidence_slots = composition.get("slots") if isinstance(composition.get("slots"), list) else []
+    for slot in slots:
+        match = next((item for item in evidence_slots if item.get("slot_id") == slot.get("slot_id")), {})
+        public_slots.append({
+            "slot_id": slot.get("slot_id"),
+            "label": slot.get("label"),
+            "role": slot.get("role"),
+            "asset_id": slot.get("asset_id"),
+            "key_rgb": slot.get("key_rgb"),
+            "source_sha256": match.get("source_sha256"),
+        })
+    public_composition = {key: value for key, value in composition.items() if key != "slots"}
+    public_composition["slots"] = [{key: value for key, value in item.items() if key not in {"source"}} for item in evidence_slots]
+    return public_slots, public_composition
 
 
 def codex_image_generate(payload):
@@ -13184,6 +13392,112 @@ def codex_image_generate(payload):
         )
         return result
     try:
+        hybrid_requested = bool(payload.get("real_media"))
+        if hybrid_requested:
+            slots, asset_index = _hybrid_real_media(payload, purpose=purpose)
+            if not slots:
+                raise ValueError("El modo híbrido necesita al menos una foto real validada.")
+            style_path, style_evidence = _hybrid_style_reference(payload, asset_index, purpose=purpose)
+            default_layout = "hero" if len(slots) == 1 else "before_after" if len(slots) == 2 and {s.get("role") for s in slots} == {"before", "after"} else "services" if len(slots) == 2 else "collage"
+            layout = str(payload.get("layout_intent") or default_layout).strip().lower()
+            layout_limits = {
+                "hero": (1, 1), "before_after": (2, 2), "services": (2, 6),
+                "collage": (3, 6), "freeform": (1, 6),
+            }
+            if layout not in layout_limits:
+                raise ValueError("layout_intent debe ser hero, before_after, services, collage o freeform.")
+            low, high = layout_limits[layout]
+            if not low <= len(slots) <= high:
+                raise ValueError(f"layout_intent={layout} requiere entre {low} y {high} fotos reales.")
+            if layout == "before_after" and {s.get("role") for s in slots} != {"before", "after"}:
+                raise ValueError("layout_intent=before_after requiere exactamente una foto con role=before y otra con role=after.")
+            text_content = payload.get("text_content") if isinstance(payload.get("text_content"), dict) else {}
+            brand_fields = (guide_library().get("general") or {}).get("fields") or {}
+            official_logo = official_brand_logo_path()
+            explicit_logo_value = payload.get("include_logo")
+            explicit_logo_requested = (isinstance(explicit_logo_value, str) and explicit_logo_value.strip().lower() in {"1", "true", "yes", "si", "sí", "on"}) or explicit_logo_value is True
+            logo_color_mode = str(payload.get("logo_color_mode") or "original").strip().lower()
+            logo_position = str(payload.get("logo_position") or "auto").strip().lower().replace("-", "_")
+            if logo_color_mode not in {"original", "white", "black", "brand_primary", "brand_secondary", "auto_contrast"}:
+                raise ValueError("logo_color_mode no es una variante válida del logo oficial.")
+            if logo_position not in {"auto", "top_left", "top_right", "bottom_left", "bottom_right"}:
+                raise ValueError("logo_position debe ser auto o una esquina válida.")
+            if explicit_logo_requested and not official_logo:
+                raise ValueError("Se solicitó el logo oficial, pero no hay un logo clasificado guardado.")
+            if explicit_logo_value is None:
+                logo_usage = str(brand_fields.get("logo_usage") or "").lower()
+                include_logo = bool(not image_purpose_is_motion(purpose) and official_logo and not logo_text_disables_official_use(request.lower()) and not logo_text_disables_official_use(logo_usage))
+            else:
+                include_logo = explicit_logo_requested
+            if include_logo and official_logo:
+                # Validate transparency-dependent solid modes before spending
+                # an Image 2 generation. `original` remains valid for opaque
+                # official files; recolored variants require a transparent PNG.
+                prepare_logo(official_logo, logo_color_mode)
+            palette_values = payload.get("brand_colors") or brand_fields.get("colors") or []
+            if isinstance(palette_values, str):
+                palette_values = [x.strip() for x in re.split(r"[,;|]", palette_values) if x.strip()]
+            key_colors = choose_key_colors(len(slots), _hybrid_rgb_palette(palette_values))
+            keyed_slots = [dict(slot, key_rgb=list(key)) for slot, key in zip(slots, key_colors)]
+            image_prompt = build_image2_overlay_prompt(
+                layout=layout,
+                slots=keyed_slots,
+                visual_direction=str(payload.get("visual_direction") or request),
+                text_content=text_content,
+                brand_palette=[str(x) for x in palette_values],
+                style_reference_mode=str(style_evidence.get("mode") or "none"),
+            )
+            # Deliberately only the opt-in style reference enters the provider.
+            hybrid_refs = [style_path] if style_path else []
+            raw_result = call_codex_image_cli(
+                image_prompt,
+                model=load_config().codex_creative_model,
+                output_root=CREATIVE_ASSET_ROOT,
+                output_name=payload.get("output_name") or "hybrid-meta-ad-creative",
+                reference_image_paths=hybrid_refs,
+                purpose=purpose,
+            )
+            result = raw_result if isinstance(raw_result, dict) else {"ok": False, "error": "Image 2 devolvió una respuesta no estructurada."}
+            if not result.get("ok") or not result.get("image_path"):
+                public_slots, _ = _hybrid_public_evidence(keyed_slots, {})
+                result["hybrid"] = {"ok": False, "slots": public_slots, "style_reference": style_evidence, "provider_reference_count": len(hybrid_refs)}
+            else:
+                overlay_path = result["image_path"]
+                final_path = Path(overlay_path).with_name(Path(overlay_path).stem + "-composited.png")
+                composition = compose_real_media(overlay_path, keyed_slots, final_path)
+                if not composition.get("pass"):
+                    raise ValueError("La validación de máscaras del diseño híbrido no pasó; no entregaré una composición ambigua.")
+                result["image_path"] = str(final_path)
+                result["asset_id"] = str(final_path.resolve().relative_to(CREATIVE_ASSET_ROOT.resolve()))
+                public_slots, public_composition = _hybrid_public_evidence(keyed_slots, composition)
+                result["hybrid"] = {"ok": True, "layout_intent": layout, "slots": public_slots, "composition": public_composition, "style_reference": style_evidence, "provider_reference_count": len(hybrid_refs)}
+                if include_logo and not official_logo:
+                    raise ValueError("Se solicitó el logo oficial, pero no hay un logo clasificado guardado.")
+                if include_logo and official_logo:
+                    brand_rgb = _hybrid_rgb_palette(palette_values)
+                    logo_image = composite_logo(result["image_path"], official_logo, mode=logo_color_mode, position=logo_position, brand_primary=brand_rgb[0] if brand_rgb else (255, 128, 0), brand_secondary=brand_rgb[1] if len(brand_rgb) > 1 else (0, 128, 255))
+                    logo_image.save(final_path, "PNG")
+                    result["hybrid"]["logo"] = {"applied": True, "mode": logo_color_mode}
+                if isinstance(result.get("hybrid", {}).get("composition"), dict):
+                    composition_evidence = result["hybrid"]["composition"]
+                    pre_logo_hash = composition_evidence.get("output_sha256")
+                    composition_evidence["pre_logo_output_sha256"] = pre_logo_hash
+                    composition_evidence["output_sha256"] = content_asset_sha256(final_path)
+                    result["output_sha256"] = composition_evidence["output_sha256"]
+                result["preview_url"] = f"/api/creative-asset?id={urllib.parse.quote(result['asset_id'])}"
+            result["prompt_package"] = {"hybrid": True, "layout_intent": layout, "real_media_count": len(slots), "style_reference": style_evidence, "reference_image_count": len(hybrid_refs), "provider_reference_count": len(hybrid_refs), "real_media_provider_excluded": True, "official_logo_provider_excluded": True}
+            if result.get("ok") and result.get("image_path") and _truthy_payload_value(payload, "reusable_asset", False):
+                reusable = save_content_asset_memory({"file_path": result["image_path"], "category": str(payload.get("reusable_category") or "brand_graphic_element"), "purpose": str(payload.get("asset_purpose") or request)[:1200], "notes": "Composición híbrida con fotos reales insertadas programáticamente.", "preservation_mode": "pixel_locked", "source": "codex_hybrid_composite", "approved_for_ads": bool(payload.get("approved_for_ads"))})
+                result["reusable_content_asset"] = reusable.get("asset")
+            log_action("codex_image_generate", {"purpose": purpose, "hybrid": True, "ok": result.get("ok"), "asset_id": result.get("asset_id", "")}, "completed" if result.get("ok") else "blocked")
+            if result.get("ok"):
+                retention = recent_generated_creatives(when="last_3_days", limit=24, cleanup=True)
+                result["recent_recovery"] = {
+                    "retention_days": retention.get("retention_days", RECENT_CREATIVE_RETENTION_DAYS),
+                    "expired_removed": retention.get("expired_removed", 0),
+                    "instruction": "El comprador puede pedir los creativos de hoy, ayer o los últimos tres días sin recordar IDs.",
+                }
+            return result
         prompt_package = build_codex_image_prompt_package(
             product_guide=product_guide,
             request=request,
@@ -13374,7 +13688,7 @@ def codex_image_generate(payload):
                 "expired_removed": retention.get("expired_removed", 0),
                 "instruction": "El comprador puede pedir los creativos de hoy, ayer o los últimos tres días sin recordar IDs.",
             }
-    except ValueError as exc:
+    except (ValueError, OSError) as exc:
         result = {"ok": False, "error": str(exc)}
     log_action(
         "codex_image_generate",

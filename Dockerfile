@@ -3,6 +3,7 @@ FROM node:22-bookworm-slim
 ARG CODEX_CLI_VERSION=0.147.0
 ARG HERMES_AGENT_VERSION=0.18.0
 ARG MCP_SDK_VERSION=2.0.0
+ARG PILLOW_VERSION=12.2.0
 
 ENV PYTHONUNBUFFERED=1 \
     DASHBOARD_HOST=0.0.0.0 \
@@ -37,6 +38,7 @@ RUN python3 -m pip install --break-system-packages --no-cache-dir \
     "openpyxl>=3.1,<4" \
     "pypdf>=5,<7" \
     "xlrd>=2,<3" \
+    "Pillow==${PILLOW_VERSION}" \
     "hermes-agent==${HERMES_AGENT_VERSION}" \
     && hermes --version
 

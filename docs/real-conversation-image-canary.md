@@ -28,6 +28,13 @@ This is not a direct call to `codex_image_generate`. The test only passes when
 Hermes independently selects and calls the MCP image tool during a natural
 conversation.
 
+For a hybrid real-photo test, first make sure the test photos are already
+classified through the official content-asset tool as `pixel_locked` and
+approved for the requested use. Then ask naturally for a design that must use
+those exact photos. Do not put private filesystem paths in the conversation;
+Hermes must use the asset IDs returned by the product tools and construct
+`real_media` itself.
+
 ## Safety rules
 
 - Run only on the requested canary droplet/container, never in the local repo.
@@ -38,6 +45,9 @@ conversation.
   call, because duplicate calls consume the buyer's subscription quota.
 - Do not reset or overwrite a real dashboard or Telegram conversation.
 - Never print credentials, OAuth artifacts, dashboard passwords, or tokens.
+- Hybrid verification must confirm the provider received zero real-photo/logo
+  references. A single optional style-only reference is valid only when the
+  prompt explicitly requested saved design references.
 
 ## Preconditions
 
@@ -134,6 +144,17 @@ for path in sorted(Path(\"/app/output/creatives\").glob(\"codex-*/*\")):
 
 Visually inspect the new image before declaring success. Confirm it follows the
 requested subject, ratio, no-text requirement, and basic commercial quality.
+
+For hybrid output, also inspect the MCP receipt/evidence and verify:
+
+- every requested `slot_id` appears exactly once;
+- source hashes correspond to the selected content assets;
+- `real_media_provider_excluded=true` and
+  `official_logo_provider_excluded=true`;
+- `provider_reference_count=0` by default;
+- mask validation passes and final `output_sha256` matches the attached
+  `*-composited.png` file;
+- before/after or service labels still refer to the correct source photos.
 
 ## Pass/fail contract
 

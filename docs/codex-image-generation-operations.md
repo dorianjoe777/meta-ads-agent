@@ -63,6 +63,63 @@ compatibility fallback, not the normal image worker and not the pixel model.
 This distinction matters because the direct CLI consumes the account's Codex
 agent/reasoning allowance before it can invoke image generation.
 
+## Hybrid designs with real buyer photos
+
+When real buyer-owned photos must remain literal, the existing image MCP can
+use its `real_media` contract. This is a branch inside the same provider path,
+not another image service and not a Codex reasoning runtime:
+
+```text
+natural Telegram request
+  -> main model reads creative-production-codex-image
+  -> mcp_admira_codex_image_generate(real_media=[1..6 ordered slots])
+  -> select non-brand chroma key per slot
+  -> existing gpt-image-2-medium provider creates one dynamic overlay
+  -> validate connected masks and slot mapping
+  -> insert exact buyer photos locally (crop/scale/mask only)
+  -> insert exact saved logo locally
+  -> return and attach the final composited PNG
+```
+
+Supported layouts are one-photo `hero`, two-photo `before_after`, two or more
+independent `services`, three-to-six-photo `collage`, and one-to-six-photo
+`freeform`. Image 2 remains free to vary hierarchy, frames, typography,
+negative space, bullets and CTA. The slot IDs and chroma colors are technical
+coordinates, not a fixed visual template.
+
+Real photos and the official logo are never sent to Image 2 in this branch.
+At most one style-only reference is sent, and only when the main model
+explicitly supplies `style_reference.mode=pool|explicit`; the default is
+`none`. Pool selection is a persisted shuffled bag with no immediate repeat.
+
+Technical acceptance checks masks, overlap, meaningful duplicate regions,
+residual chroma, source hashes and final output hash. It does not classify the
+buyer conversation and does not add an approval card. OCR is advisory because
+stylized text recognition is unreliable; the buyer's visual review remains
+the aesthetic/text decision.
+
+Logo modes are `original`, `white`, `black`, `brand_primary`,
+`brand_secondary`, and `auto_contrast`. Solid/recolored modes require an
+official transparent PNG. An opaque JPG is allowed only in `original` mode;
+the product does not guess which white pixels are background because doing so
+could damage the real logo.
+
+First places to inspect when this branch fails:
+
+- `real_media` asset is not classified `pixel_locked` or not approved for the
+  requested paid/organic purpose;
+- a slot ID is duplicated, or before/after roles are swapped/missing;
+- stored brand colors are absent, causing poor chroma selection;
+- Image 2 reused a key color outside its slot, omitted a slot, or produced
+  more than one meaningful keyed component;
+- a recolored logo mode was requested from an opaque logo;
+- the overlay succeeded but the final `MEDIA:` attachment hook did not send
+  the composited `*-composited.png` file.
+
+The full contract and prototype evidence are in
+[`IMAGE2_REAL_MEDIA_MULTISLOT_PROTOTYPE_2026-08-27.md`](IMAGE2_REAL_MEDIA_MULTISLOT_PROTOTYPE_2026-08-27.md)
+and [`real-photo-ad-overlay-pipeline.md`](real-photo-ad-overlay-pipeline.md).
+
 ## Current canary contract
 
 As of 2026-08-18, the known-good canary contract is:

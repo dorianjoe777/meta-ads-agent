@@ -24,14 +24,30 @@ Use this skill when the buyer asks to generate, revise, or deliver image creativ
 
 ## References and logos
 
-- Pass safe uploaded images in `reference_image_paths`.
+For hybrid compositions that combine buyer-owned photos with an Image 2 graphic overlay, read [references/hybrid-real-media-contract.md](references/hybrid-real-media-contract.md). It defines the ordered slot contract, layout modes, chroma-key rules, logo rendering modes, and reference-selection semantics. The existing Codex/Image provider and bridge remain the only generation path; this reference describes MCP arguments and post-generation composition, not a replacement provider.
+
+- For ordinary non-hybrid inspiration only, pass safe uploaded images in `reference_image_paths`.
 - Use `memory/content_asset_library.json` to choose only assets approved for the requested purpose.
-- For buyer-owned real photos that must appear, pass their paths in `protected_reference_image_paths` or their IDs in `content_asset_ids`. These are `pixel_locked`, not inspiration.
+- For compatibility, ordinary non-hybrid calls can still resolve saved photos through `protected_reference_image_paths` or `content_asset_ids`. When a buyer-owned real photo must remain exact and visible in the final bitmap, use the `real_media` hybrid contract below; do not rely on Image 2 to reproduce the photo.
 - When the buyer wants a real photo as the base/background, set `use_reference_as_background: true`; this automatically makes the base a protected real asset.
-- For every protected real asset, the request must require `pixel by pixel accuracy`, `pixel-level accurate reproduction`, and `pixel-faithful` use. Allowed operations are crop, scale, position, frame, boundary mask, and text/graphic overlays above or around the source. Never permit Image 2 to redraw, regenerate, retouch, relight, recolor, beautify, remove/add objects, or change people, products, packaging, text, architecture, or other visible photo content.
+- For every protected real asset, preserve the source programmatically. Allowed operations are crop, scale, position, frame, boundary mask, and text/graphic overlays above or around the source. Never permit Image 2 to redraw, regenerate, retouch, relight, recolor, beautify, remove/add objects, or change people, products, packaging, text, architecture, or other visible photo content.
 - Pass inspiration-only material as ordinary `reference_image_paths` and classify it as `style_only`; do not confuse it with protected buyer photography.
 - When an official logo is saved and should appear, set `include_logo: true` and require `pixel-level accurate` reproduction.
-- If the logo is altered, retry with `logo_render_mode: "exact_composite"`.
+- If the logo is altered, use the canonical `logo_color_mode` and let the backend apply the exact saved logo after the logo-free base is generated.
+
+## Hybrid real-media compositions
+
+When the buyer wants a designed graphic that contains real photos, use the hybrid composition contract. This is appropriate for a single hero photo, before/after, multiple unrelated services, or a collage/freeform layout. Preserve each buyer-owned photo exactly by inserting it programmatically after Image 2 returns the overlay; in hybrid mode do not pass real photos or the official logo to Image 2 as generative references. Image 2 receives only the visual direction, text, CTA, brand guidance, and keyed placeholder instructions.
+
+- Build an ordered `real_media` array with stable `slot_id` values and the exact source asset for each slot. Include the semantic role/label (`hero`, `before`, `after`, or a service name) so the compositor cannot swap photos.
+- Let the main model express layout intent naturally as `hero`, `before_after`, `services`, `collage`, or `freeform`; do not impose keyword-based conversation rules or a separate visual-brief approval ceremony.
+- Use one photo for a hero. Use two photos as before/after when the conversation establishes that relationship; otherwise treat them as two independent service slots. Use 3–6 photos as a collage or another layout selected from the buyer's visual direction. More than two photos are not automatically before/after.
+- Ask Image 2 to create all overlay typography, bullets/features, titles, CTA and graphic composition while reserving one distinct keyed placeholder per ordered slot. The prompt must include the slot-to-color mapping and tell Image 2 not to draw a logo or any real photographic content.
+- Select saturated key colors away from every confirmed brand hue. If the brand uses green, never key with green. Use tolerant color clustering and connected-component detection rather than exact RGB matching; Image 2 may slightly shift requested RGB values. Remove keyed regions, insert the matching source photo by slot, and retain the overlay outside each mask. Reject or revise only when a slot is missing, duplicated, contaminated, or cannot be mapped safely.
+- The official logo is composited programmatically from the saved original file, never regenerated or approximated by Image 2. Support `original` (multicolor source), `white`, `black`, `brand_primary`, `brand_secondary`, and `auto_contrast` render modes. `auto_contrast` chooses among the saved solid variants based on the local background; it must not invent a new logo color.
+- Variations are deliberately dynamic: keep the same offer, copy constraints, slot mapping, and brand rules, but allow Image 2 to vary composition, hierarchy, framing, card geometry, negative space, typography arrangement, and CTA treatment. A request for another variation should generate another image, not ask the buyer to reconfigure a template.
+- Style references are opt-in. Pass `style_reference: {"mode": "none"}` by default. Use `{"mode": "pool"}` only when the buyer explicitly asks to use saved graphic-design references; use one shuffled eligible reference without immediate repetition. An explicitly selected reference uses `{"mode": "explicit", ...}` and overrides the pool. Never place real photos or logos in this pool.
+- Review the final composited bitmap and attach it. A deterministic media/mask/source-integrity check is useful, but natural-language understanding remains with the main model and user review remains the final aesthetic decision.
 
 ## Output
 
