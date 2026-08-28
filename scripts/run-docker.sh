@@ -33,11 +33,14 @@ legacy_detached_var="ADMI""RO_DOCKER_DETACHED"
 export ADMIRA_HOST_LAN_IP="${ADMIRA_HOST_LAN_IP:-${!legacy_host_lan_var:-$(detect_lan_ip)}}"
 
 # Keep the Docker image label, runtime environment and application payload on
-# the same release.  Without this explicit build value, Compose can continue
-# tagging a rebuilt image as `local` (or retain a previous version tag), which
-# makes a successful in-container update look like a stale installation.
+# the same release.  VERSION is authoritative whenever this is run from a
+# versioned source tree: an exported value from a previous install must not
+# make a newer checkout build under an older release tag.
 if [ -f "$ROOT_DIR/VERSION" ]; then
-  export ADMIRA_BUILD_VERSION="${ADMIRA_BUILD_VERSION:-$(tr -d '[:space:]' < "$ROOT_DIR/VERSION")}"
+  canonical_version="$(tr -d '[:space:]' < "$ROOT_DIR/VERSION")"
+  if [ -n "$canonical_version" ]; then
+    export ADMIRA_BUILD_VERSION="$canonical_version"
+  fi
 fi
 if git -C "$ROOT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   export ADMIRA_BUILD_SHA="${ADMIRA_BUILD_SHA:-$(git -C "$ROOT_DIR" rev-parse HEAD)}"
@@ -83,6 +86,16 @@ read_dotenv_value() {
     }
   ' "$file"
 }
+
+# A previous shell or .env can retain the image name from an older release.
+# Update only the conventional release tags (:rNN); custom tags such as
+# `:staging` remain user-controlled.  This keeps registry/repository prefixes
+# intact while preventing a stale canary image from being selected.
+dotenv_image_name="$(read_dotenv_value ADMIRA_IMAGE_NAME .env)"
+image_name="${ADMIRA_IMAGE_NAME:-$dotenv_image_name}"
+if [[ "$image_name" =~ ^(.+):r[0-9]+$ && -n "${canonical_version:-}" ]]; then
+  export ADMIRA_IMAGE_NAME="${BASH_REMATCH[1]}:$canonical_version"
+fi
 
 if [[ -n "${ADMIRA_COMPOSE_PROJECT_NAME+x}" && -n "$ADMIRA_COMPOSE_PROJECT_NAME" ]]; then
   compose_project="$ADMIRA_COMPOSE_PROJECT_NAME"

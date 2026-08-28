@@ -95,6 +95,16 @@ MOUNTS
 
 image="$(docker inspect --format '{{.Config.Image}}' "$CONTAINER")"
 [[ -n "$image" ]] || die "container has no image reference"
+# The immutable labels below are necessary but not sufficient: Compose can
+# accidentally keep an older `ADMIRA_IMAGE_NAME` from `.env`, leaving a
+# container on (for example) `admira-ia:r95` while its labels and payload say
+# r96.  Require the active image's tag itself to be the source VERSION.  A
+# digest suffix is allowed, but an untagged image (or any other tag) is not.
+image_without_digest="${image%@*}"
+image_leaf="${image_without_digest##*/}"
+[[ "$image_leaf" == *:* ]] || die "active image '$image' has no explicit release tag; expected '$version'"
+image_tag="${image_leaf##*:}"
+[[ "$image_tag" == "$version" ]] || die "active image tag '$image_tag' != source '$version' (image '$image')"
 image_version="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$image" 2>/dev/null || true)"
 image_revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image" 2>/dev/null || true)"
 image_manifest="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.source-manifest"}}' "$image" 2>/dev/null || true)"
@@ -121,5 +131,5 @@ container_manifest="$(docker exec "$CONTAINER" sh -lc 'tr -d "[:space:]" < /app/
 container_revision="$(docker exec "$CONTAINER" sh -lc 'tr -d "[:space:]" < /app/build-commit.sha' 2>/dev/null || true)"
 [[ "$container_revision" == "$commit_sha" ]] || die "container build commit '$container_revision' != '$commit_sha'"
 
-printf 'CANARY IMAGE: image=%s version=%s revision=%s manifest=%s\n' "$image" "$image_version" "$image_revision" "$image_manifest"
+printf 'CANARY IMAGE: image=%s tag=%s version=%s revision=%s manifest=%s\n' "$image" "$image_tag" "$image_version" "$image_revision" "$image_manifest"
 echo "CANARY INTEGRITY PASS: source, image, and container are one exact build."
