@@ -168,6 +168,46 @@ de cada píxel, el logo debe colocarse a escala 1:1. Si se redimensiona, deja de
 ser identidad binaria de píxeles por el remuestreo, aunque sigue siendo una
 transformación determinista del activo oficial y no un redibujo generativo.
 
+### Prueba completa: generar el logo una vez y reutilizarlo por composición
+
+Se probó también el flujo alternativo propuesto: generar un logo nuevo una
+sola vez, extraerlo y reutilizar exactamente ese archivo en un anuncio.
+
+1. El generador recibió `logo.jpg` como dirección visual y produjo un nuevo
+   logo de Rodeo. Aunque se pidió una placa verde, esta salida llegó como PNG
+   RGBA con alfa real (`1536 x 1024`), lo cual elimina la necesidad técnica del
+   croma en ese caso.
+2. Para verificar igualmente el fallback solicitado, el PNG se aplanó sobre
+   `#00FF00` y se procesó con
+   `remove_green_screen_background(tolerance=70, edge_softness=50)`.
+3. El logo extraído quedó con **85,287 %** de píxeles completamente
+   transparentes y **0 %** de verde dominante visible en el contenido.
+4. En una llamada separada se creó un overlay de anuncio sin logo ni nombre de
+   marca, pero con los textos `INTERIOR IMPECABLE`,
+   `Limpieza profunda de tapicería` y `AGENDA TU CITA`. También llegó con alfa
+   real: **69,942 %** de transparencia y alfa cero en el centro.
+5. El compositor colocó la fotografía real, luego el overlay y finalmente el
+   logo extraído como un archivo independiente. El modelo nunca recibió la
+   fotografía en esta fase ni tuvo oportunidad de redibujar el logo dentro del
+   anuncio.
+
+Archivos de evidencia:
+
+- `output/prototypes/real-photo-logo-composite-20260827/logo-generated-source.png`
+- `output/prototypes/real-photo-logo-composite-20260827/logo-generated-chroma-green.png`
+- `output/prototypes/real-photo-logo-composite-20260827/logo-generated-chroma-green-transparent.png`
+- `output/prototypes/real-photo-logo-composite-20260827/logo-generated-transparent-cropped.png`
+- `output/prototypes/real-photo-logo-composite-20260827/ad-overlay-generated-source.png`
+- `output/prototypes/real-photo-logo-composite-20260827/rodeo-real-photo-ad-programmatic-logo.png`
+
+El compuesto final es RGB `1254 x 1254`; la fotografía fuente conservó su
+SHA-256 original
+`d5c30216ec849c07960755724a3a50b050a958b1a26550bc4ba50b76b93c21a6`.
+Esta prueba confirma la arquitectura recomendada: una vez que el cliente
+aprueba un logo generado, se guarda como activo oficial y todos los diseños
+posteriores deben omitirlo durante la generación e insertarlo después por
+código.
+
 ## Puntos de dolor y fallbacks
 
 - **Croma contaminado:** si la marca usa verde o la escena contiene mucho
