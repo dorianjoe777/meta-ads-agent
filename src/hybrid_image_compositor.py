@@ -97,6 +97,25 @@ def _safe_key_drift(rgb: RGB, key: RGB, *, max_hue_degrees: float = 16.0) -> boo
     )
 
 
+def _safe_key_fringe(rgb: RGB, key: RGB, *, max_hue_degrees: float = 18.0) -> bool:
+    """Recognise a dark chroma-key fringe produced by antialiasing.
+
+    A generated overlay can alpha-blend a saturated key edge with a dark
+    background.  The resulting pixel keeps the key hue/saturation but has a
+    much lower value (for example magenta ``#6F0978``), so
+    :func:`_safe_key_drift` intentionally rejects it.  This predicate is only
+    used while expanding pixels immediately adjacent to an already validated
+    slot, never for discovering a mask or validating arbitrary artwork.
+    """
+    h, saturation, value = _hue(rgb)
+    key_h, key_saturation, _ = _hue(key)
+    return (
+        key_saturation >= 0.70 and saturation >= 0.55 and value >= 0.08
+        and hue_distance(h, key_h) * 360 <= max_hue_degrees
+        and saturation >= key_saturation * 0.45
+    )
+
+
 def _key_matches(rgb: RGB, keys: Sequence[RGB], tolerance: float) -> list[int]:
     """Return exact matches, or one unambiguous chromatic-drift match."""
     exact = [index for index, key in enumerate(keys) if _distance(rgb, key) <= tolerance]
@@ -221,7 +240,8 @@ def compose_overlay(
                         continue
                     rgb = pixels[nx, ny][:3]
                     if (_distance(rgb, keys[index]) <= cleanup_limit
-                            or _safe_key_drift(rgb, keys[index], max_hue_degrees=20)):
+                            or _safe_key_drift(rgb, keys[index], max_hue_degrees=20)
+                            or _safe_key_fringe(rgb, keys[index])):
                         expanded.add((nx, ny))
         # A dark letter or a small decorative mark can punch a hole through a
         # otherwise valid window.  Fill only regions enclosed by the selected

@@ -111,6 +111,13 @@ class HybridImageCompositorTests(unittest.TestCase):
             # Image 2's magenta has drifted to (245, 7, 215).  The black
             # mark is an enclosed text-like hole in the otherwise flat slot.
             draw.rectangle((20, 20, 120, 80), fill=(245, 7, 215))
+            # A one-pixel dark chroma fringe can appear when Image 2 blends
+            # the magenta key edge with the surrounding charcoal artwork.
+            # It is adjacent to the valid slot but too dark for ordinary key
+            # drift matching.
+            draw.line((19, 20, 19, 80), fill=(111, 9, 120))
+            draw.line((121, 20, 121, 80), fill=(111, 9, 120))
+            draw.line((18, 20, 18, 80), fill=(140, 55, 5))
             draw.rectangle((54, 40, 86, 60), fill=(0, 0, 0))
             overlay_path = root / "overlay.png"
             overlay.save(overlay_path)
@@ -119,7 +126,11 @@ class HybridImageCompositorTests(unittest.TestCase):
                 "slot_id": "hero", "key_rgb": (255, 0, 255), "source": source,
             }], output)
             self.assertTrue(evidence["pass"], evidence)
-            self.assertEqual(Image.open(output).getpixel((70, 50))[:3], (220, 20, 20))
+            composed = Image.open(output)
+            self.assertEqual(composed.getpixel((70, 50))[:3], (220, 20, 20))
+            self.assertEqual(composed.getpixel((19, 50))[:3], (220, 20, 20))
+            self.assertEqual(composed.getpixel((121, 50))[:3], (220, 20, 20))
+            self.assertEqual(composed.getpixel((18, 50))[:3], (140, 55, 5))
 
     def test_failed_validation_does_not_write_output(self):
         with tempfile.TemporaryDirectory() as tmp:
