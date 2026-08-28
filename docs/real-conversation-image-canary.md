@@ -28,12 +28,13 @@ This is not a direct call to `codex_image_generate`. The test only passes when
 Hermes independently selects and calls the MCP image tool during a natural
 conversation.
 
-For a hybrid real-photo test, first make sure the test photos are already
-classified through the official content-asset tool as `pixel_locked` and
-approved for the requested use. Then ask naturally for a design that must use
-those exact photos. Do not put private filesystem paths in the conversation;
-Hermes must use the asset IDs returned by the product tools and construct
-`real_media` itself.
+For a hybrid real-photo test, attach the photos to the simulated Telegram turn
+and ask naturally for a design that must use those exact photos. Hermes must
+inspect/classify them with the official content-asset tool as `pixel_locked`,
+use the returned asset IDs, and construct `real_media` itself. Do not put
+private filesystem paths in the conversation. The trace must show the save
+before generation; a short-lived same-turn backend receipt may bridge an
+omitted optional ad-use boolean, but must never become permanent approval.
 
 ## Safety rules
 

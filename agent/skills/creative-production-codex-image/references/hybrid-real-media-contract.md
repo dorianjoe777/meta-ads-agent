@@ -26,6 +26,8 @@ The natural-language manager supplies a self-contained visual direction and an o
 
 `slot_id` order is authoritative. The backend resolves each asset and inserts it into the matching keyed region; never infer a slot from visual similarity after generation.
 
+For photos attached in the current buyer turn, inspect and classify the whole batch first with `mcp_admira_save_content_asset`, using `pixel_locked` and making the semantic `approved_for_ads` decision from the buyer's actual requested use. Feed the returned IDs directly into `real_media`. If an older model/client omits that optional boolean, the backend may issue a five-minute, exact-ID capability bound to the same trusted chat/session/message; it is not permanent ad approval, cannot cross turns, and is consumed only after a successful hybrid composition. A provider failure leaves it available for a same-turn retry.
+
 ## Layout semantics
 
 - One source: a hero/photo-led composition.

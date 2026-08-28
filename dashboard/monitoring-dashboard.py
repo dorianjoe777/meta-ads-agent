@@ -361,6 +361,8 @@ META_OAUTH_SELECTION_AUTH_FILE = DATA_DIR / "meta_oauth_selection_authorization.
 META_OAUTH_SELECTION_KEY_FILE = DATA_DIR / "meta_oauth_selection_authorization.key"
 TRUSTED_BUYER_TURN_FILE = DATA_DIR / "trusted_buyer_turn.json"
 TRUSTED_BUYER_TURN_LOCK_FILE = DATA_DIR / "trusted_buyer_turn.lock"
+HYBRID_TURN_ASSET_CAPABILITY_FILE = DATA_DIR / "hybrid_turn_asset_capability.json"
+HYBRID_TURN_ASSET_CAPABILITY_LOCK_FILE = DATA_DIR / "hybrid_turn_asset_capability.lock"
 STRATEGIC_PLAN_GENERATION_STATE_FILE = DATA_DIR / "strategic_plan_generation.json"
 MEMORY_DRAFTS_FILE = DATA_DIR / "memory_drafts.json"
 # Hermes owns Telegram polling, so a fresh installation may not have a
@@ -379,6 +381,7 @@ MAX_MANAGED_META_AD_ACCOUNTS = 5
 META_OAUTH_POLL_LOCK = threading.Lock()
 META_OAUTH_SELECTION_PERSIST_LOCK = threading.RLock()
 TRUSTED_BUYER_TURN_THREAD_LOCK = threading.RLock()
+HYBRID_TURN_ASSET_CAPABILITY_THREAD_LOCK = threading.RLock()
 TRUSTED_BUYER_CAPABILITY_KINDS = (
     "business",
     "brand",
@@ -9589,6 +9592,155 @@ def _trusted_buyer_turn(max_age_seconds=300):
         return _trusted_buyer_turn_unlocked(max_age_seconds=max_age_seconds)
 
 
+@contextlib.contextmanager
+def _hybrid_turn_asset_capability_lock():
+    """Serialize the one-turn real-asset capability across MCP processes."""
+    HYBRID_TURN_ASSET_CAPABILITY_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with HYBRID_TURN_ASSET_CAPABILITY_THREAD_LOCK:
+        with HYBRID_TURN_ASSET_CAPABILITY_LOCK_FILE.open("a+", encoding="utf-8") as handle:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _hybrid_turn_asset_receipts_unlocked():
+    """Read the receipt collection, accepting the first single-receipt format."""
+    stored = read_json(HYBRID_TURN_ASSET_CAPABILITY_FILE, {})
+    if isinstance(stored, dict) and isinstance(stored.get("receipts"), list):
+        return [item for item in stored["receipts"] if isinstance(item, dict)]
+    if isinstance(stored, dict) and isinstance(stored.get("asset_ids"), list):
+        return [stored]
+    return []
+
+
+def _hybrid_turn_identity_matches(receipt, turn):
+    for key in ("chat_id", "session_id", "transport", "message_hash"):
+        if not hmac.compare_digest(str(receipt.get(key) or ""), str(turn.get(key) or "")):
+            return False
+    try:
+        return int(receipt.get("message_sequence")) == int(turn.get("message_sequence"))
+    except (TypeError, ValueError):
+        return False
+
+
+def _hybrid_turn_receipt_is_live(receipt, turn):
+    if not isinstance(receipt, dict) or receipt.get("used") or not _hybrid_turn_identity_matches(receipt, turn):
+        return False
+    try:
+        expires = datetime.fromisoformat(str(receipt.get("expires_at") or "").replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return bool(expires.tzinfo and expires.astimezone(timezone.utc) > datetime.now(timezone.utc))
+
+
+def _record_hybrid_turn_asset_capability(asset_ids, turn=None, ttl_seconds=300):
+    """Grant exact saved assets a short-lived, same-turn hybrid-use receipt.
+
+    This is deliberately not an ads approval.  It only bridges the immediate
+    save-asset -> hybrid-generate tool sequence when the model omitted the
+    optional ``approved_for_ads`` field.  The current trusted turn identity is
+    persisted so another chat/session/message cannot reuse the receipt.
+    """
+    ids = [str(value or "").strip() for value in (asset_ids or []) if str(value or "").strip()]
+    if not 1 <= len(ids) <= 6 or len(set(ids)) != len(ids):
+        return {"recorded": False, "reason": "invalid_asset_ids"}
+    turn = turn if isinstance(turn, dict) else _trusted_buyer_turn()
+    if not turn:
+        return {"recorded": False, "reason": "missing_current_trusted_buyer_turn"}
+    try:
+        sequence = int(turn.get("message_sequence"))
+    except (TypeError, ValueError):
+        return {"recorded": False, "reason": "invalid_trusted_turn_sequence"}
+    receipt = {
+        "nonce": secrets.token_urlsafe(24),
+        "asset_ids": ids,
+        "chat_id": str(turn.get("chat_id") or ""),
+        "session_id": str(turn.get("session_id") or ""),
+        "transport": str(turn.get("transport") or ""),
+        "message_sequence": sequence,
+        "message_hash": str(turn.get("message_hash") or ""),
+        "created_at": now_iso(),
+        "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=max(1, int(ttl_seconds)))).isoformat(),
+        "used": False,
+    }
+    with _hybrid_turn_asset_capability_lock():
+        receipts = _hybrid_turn_asset_receipts_unlocked()
+        live_same_turn = [item for item in receipts if _hybrid_turn_receipt_is_live(item, turn)]
+        if any(item.get("asset_ids") == ids for item in live_same_turn):
+            return {"recorded": True, "idempotent": True, "asset_ids": ids}
+        receipts.append(receipt)
+        combined_ids = []
+        for item in [*live_same_turn, receipt]:
+            for asset_id in item.get("asset_ids") or []:
+                if asset_id not in combined_ids:
+                    combined_ids.append(asset_id)
+        if 1 < len(combined_ids) <= 6 and combined_ids != ids and not any(
+            item.get("asset_ids") == combined_ids for item in live_same_turn
+        ):
+            combined = dict(receipt)
+            combined["nonce"] = secrets.token_urlsafe(24)
+            combined["asset_ids"] = combined_ids
+            receipts.append(combined)
+        # Cap historical debris while retaining every live receipt for the
+        # current turn. New inbound turns make prior entries unusable anyway.
+        write_private_json(HYBRID_TURN_ASSET_CAPABILITY_FILE, {"receipts": receipts[-24:]})
+    return {"recorded": True, "asset_ids": ids}
+
+
+def _hybrid_turn_asset_capability_for_ids(asset_ids, turn=None):
+    """Return a valid receipt only for the exact current trusted turn/IDs."""
+    ids = [str(value or "").strip() for value in (asset_ids or []) if str(value or "").strip()]
+    if not 1 <= len(ids) <= 6 or len(set(ids)) != len(ids):
+        return None
+    turn = turn if isinstance(turn, dict) else _trusted_buyer_turn()
+    if not turn:
+        return None
+    with _hybrid_turn_asset_capability_lock():
+        receipts = _hybrid_turn_asset_receipts_unlocked()
+    return next((
+        receipt for receipt in reversed(receipts)
+        if receipt.get("asset_ids") == ids and _hybrid_turn_receipt_is_live(receipt, turn)
+    ), None)
+
+
+def _consume_hybrid_turn_asset_capability(asset_ids, turn=None):
+    """Consume only after a successful hybrid composition/provider result."""
+    turn = turn if isinstance(turn, dict) else _trusted_buyer_turn()
+    receipt = _hybrid_turn_asset_capability_for_ids(asset_ids, turn=turn)
+    if not receipt:
+        return False
+    with _hybrid_turn_asset_capability_lock():
+        receipts = _hybrid_turn_asset_receipts_unlocked()
+        match = next((
+            item for item in receipts
+            if hmac.compare_digest(str(item.get("nonce") or ""), str(receipt.get("nonce") or ""))
+            and item == receipt and not item.get("used")
+        ), None)
+        if not match:
+            return False
+        used_ids = set(asset_ids)
+        for item in receipts:
+            if not _hybrid_turn_identity_matches(item, turn):
+                continue
+            item_ids = list(item.get("asset_ids") or [])
+            if not used_ids.intersection(item_ids):
+                continue
+            remaining_ids = [asset_id for asset_id in item_ids if asset_id not in used_ids]
+            if remaining_ids:
+                # A combined receipt may contain assets saved by separate MCP
+                # calls. Consuming one image must not revoke the unused image.
+                item["asset_ids"] = remaining_ids
+            else:
+                item["used"] = True
+                item["used_at"] = now_iso()
+        write_private_json(HYBRID_TURN_ASSET_CAPABILITY_FILE, {"receipts": receipts})
+    return True
+
+
 def _normalized_confirmation_text(value):
     text = unicodedata.normalize("NFKD", str(value or "").casefold())
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
@@ -13328,7 +13480,7 @@ def _hybrid_rgb_palette(values):
     return result
 
 
-def _hybrid_real_media(payload, purpose="ad_creative"):
+def _hybrid_real_media(payload, purpose="ad_creative", turn_capability=None):
     """Resolve only classified, durable buyer assets; arbitrary paths are rejected."""
     raw = payload.get("real_media")
     if not isinstance(raw, list):
@@ -13342,7 +13494,12 @@ def _hybrid_real_media(payload, purpose="ad_creative"):
     for item in by_id.values():
         if item.get("classification_status") != "classified" or item.get("preservation_mode") != "pixel_locked":
             continue
-        if not item.get(required_approval):
+        capability_allowed = bool(
+            turn_capability
+            and not organic
+            and str(item.get("id") or "") in set(turn_capability.get("asset_ids") or [])
+        )
+        if not item.get(required_approval) and not capability_allowed:
             continue
         for path in safe_image_paths({"image_paths": item.get("file_paths") or []}, limit=8):
             allowed_paths[str(Path(path).resolve())] = item
@@ -13492,7 +13649,13 @@ def codex_image_generate(payload):
     try:
         hybrid_requested = bool(payload.get("real_media"))
         if hybrid_requested:
-            slots, asset_index = _hybrid_real_media(payload, purpose=purpose)
+            requested_asset_ids = [
+                str(entry.get("content_asset_id") or entry.get("asset_id") or "").strip()
+                for entry in (payload.get("real_media") or [])
+                if isinstance(entry, dict)
+            ]
+            turn_capability = _hybrid_turn_asset_capability_for_ids(requested_asset_ids)
+            slots, asset_index = _hybrid_real_media(payload, purpose=purpose, turn_capability=turn_capability)
             if not slots:
                 raise ValueError("El modo híbrido necesita al menos una foto real validada.")
             style_path, style_evidence = _hybrid_style_reference(payload, asset_index, purpose=purpose)
@@ -13587,6 +13750,8 @@ def codex_image_generate(payload):
             if result.get("ok") and result.get("image_path") and _truthy_payload_value(payload, "reusable_asset", False):
                 reusable = save_content_asset_memory({"file_path": result["image_path"], "category": str(payload.get("reusable_category") or "brand_graphic_element"), "purpose": str(payload.get("asset_purpose") or request)[:1200], "notes": "Composición híbrida con fotos reales insertadas programáticamente.", "preservation_mode": "pixel_locked", "source": "codex_hybrid_composite", "approved_for_ads": bool(payload.get("approved_for_ads"))})
                 result["reusable_content_asset"] = reusable.get("asset")
+            if result.get("ok") and result.get("image_path") and result.get("hybrid", {}).get("ok") and turn_capability:
+                _consume_hybrid_turn_asset_capability(requested_asset_ids)
             log_action("codex_image_generate", {"purpose": purpose, "hybrid": True, "ok": result.get("ok"), "asset_id": result.get("asset_id", "")}, "completed" if result.get("ok") else "blocked")
             if result.get("ok"):
                 retention = recent_generated_creatives(when="last_3_days", limit=24, cleanup=True)
@@ -18797,6 +18962,20 @@ def handle_stage_organic_social_post_tool(arguments, chat_payload, tool):
 def handle_save_content_asset_tool(arguments, chat_payload, tool):
     payload = dict(arguments or {})
     result = save_content_asset_memory(payload, chat_payload)
+    # A model may omit the optional ads-approval field while explicitly
+    # classifying an attached photo for the immediately following hybrid
+    # creative.  Keep that bridge scoped to this trusted turn and exact IDs;
+    # do not mutate the durable ``approved_for_ads`` decision.
+    eligible_ids = [
+        str(item.get("id") or "")
+        for item in (result.get("assets") or [])
+        if item.get("classification_status") == "classified"
+        and item.get("preservation_mode") == "pixel_locked"
+        and item.get("file_paths")
+        and str(item.get("id") or "")
+    ]
+    if result.get("saved") and eligible_ids:
+        _record_hybrid_turn_asset_capability(eligible_ids, turn=_trusted_buyer_turn())
     category = result.get("asset", {}).get("category") or "other"
     saved_count = int(result.get("saved_asset_count") or 1)
     preservation_mode = result.get("asset", {}).get("preservation_mode") or ""

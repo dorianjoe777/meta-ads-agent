@@ -53,6 +53,14 @@ class CodexImageMcpSchemaTests(unittest.TestCase):
         self.assertIn("real_media", save_description)
         self.assertIn("this or the next tool turn", codex)
 
+    def test_pixel_locked_save_exposes_a_semantic_ads_decision_without_keyword_rules(self):
+        save_schema = TOOL_INPUT_SCHEMAS["save_content_asset"]
+        self.assertNotIn("allOf", save_schema)
+        decision = save_schema["properties"]["approved_for_ads"]["description"].lower()
+        self.assertIn("semantic tool decision", decision)
+        self.assertIn("not a keyword rule", decision)
+        self.assertIn("short-lived same-turn capability", decision)
+
     def test_style_reference_is_opt_in_and_supports_pool_or_explicit(self):
         ref = self.schema["properties"]["style_reference"]
         self.assertEqual(ref["properties"]["mode"]["enum"], ["none", "pool", "explicit"])

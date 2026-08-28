@@ -196,7 +196,9 @@ TOOL_INPUT_SCHEMAS = {
                 "pixel_locked for buyer-owned real photos/logos; style_only for inspiration; pending_classification if unclear; prohibited when it must not be used.",
                 enum=("pixel_locked", "style_only", "pending_classification", "prohibited"),
             ),
-            "approved_for_ads": _boolean("Whether the buyer approved this exact asset for paid ads."),
+            "approved_for_ads": _boolean(
+                "Set true when the main model understands that the buyer is assigning this exact photo/logo to the current paid creative; set false otherwise. This is a semantic tool decision, not a keyword rule or a new buyer confirmation. If omitted by an older client, the backend may issue only a short-lived same-turn capability and never permanent approval."
+            ),
             "approved_for_daily_content": _boolean("Whether this asset may be reused in recurring organic content."),
             "product_scope": _string("Exact product/service/offer this reusable element belongs to; blank means parent brand."),
             "visual_role": _string("How it should be composed, such as background, foreground cutout, badge, texture, divider, icon, or transition element."),
