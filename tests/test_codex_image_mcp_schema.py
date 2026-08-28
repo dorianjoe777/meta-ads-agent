@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 
 from admira_mcp_server import TOOL_INPUT_SCHEMAS, TOOL_DEFINITIONS
 
@@ -79,6 +80,23 @@ class CodexImageMcpSchemaTests(unittest.TestCase):
             ["original", "white", "black", "brand_primary", "brand_secondary", "auto_contrast"],
         )
         self.assertIn("logo_position", props)
+
+    def test_hybrid_prompt_refinement_is_an_explicit_skill_contract(self):
+        description = self.description.lower()
+        self.assertIn("refine even a short natural buyer request", description)
+        self.assertIn("not a generation request", description)
+        self.assertIn("fresh composition", description)
+        self.assertIn("semantically refined", self.schema["properties"]["request"]["description"].lower())
+
+        root = Path(__file__).resolve().parents[1]
+        skill = (root / "agent" / "skills" / "creative-production-codex-image" / "SKILL.md").read_text(encoding="utf-8")
+        playbook = root / "agent" / "skills" / "creative-production-codex-image" / "references" / "hybrid-prompt-refinement-playbook.md"
+        self.assertIn("hybrid-prompt-refinement-playbook.md", skill)
+        text = playbook.read_text(encoding="utf-8")
+        for placeholder in ("[ACTIVE_OFFER_NAME]", "[BRAND_PALETTE]", "[COMMUNICATION_OBJECTIVE]", "[ANY_EXTRA_DETAIL_REQUESTED_BY_BUYER]"):
+            self.assertIn(placeholder, text)
+        for family in ("`hero`", "`before_after`", "`services`", "`collage`", "`freeform`"):
+            self.assertIn(family, text)
 
 
 if __name__ == "__main__":

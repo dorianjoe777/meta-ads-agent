@@ -87,6 +87,18 @@ independent `services`, three-to-six-photo `collage`, and one-to-six-photo
 negative space, bullets and CTA. The slot IDs and chroma colors are technical
 coordinates, not a fixed visual template.
 
+The buyer does not need to write an Image 2 prompt. Before the MCP call, the
+creative skill expands a short natural request into a semantic art direction
+using the exact active offer, confirmed parent branding, objective, audience,
+format, on-image text and ordered photos. The backend rebuilds any sparse
+optional context from the same exact saved brand/product/brief references. It
+never selects the first saved offer as a fallback and never invents a price,
+promotion, guarantee, testimonial, credential or result. The reusable prompt
+families and placeholders live in
+`agent/skills/creative-production-codex-image/references/hybrid-prompt-refinement-playbook.md`.
+They constrain meaning, not geometry, so repeated generations may remain
+materially different.
+
 Real photos and the official logo are never sent to Image 2 in this branch.
 At most one style-only reference is sent, and only when the main model
 explicitly supplies `style_reference.mode=pool|explicit`; the default is

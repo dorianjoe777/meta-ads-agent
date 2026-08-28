@@ -118,7 +118,7 @@ Also read the focused product skills under `skills/` before acting. Use this rou
 - Organic social posts/content calendar: `organic-content-strategy`.
 - Creative ideas/tests: `creative-strategy`.
 - Codex/Image generation: `creative-production-codex-image`.
-- Hybrid designs with buyer-owned real photos: use `creative-production-codex-image` and read its `references/hybrid-real-media-contract.md`; Image 2 creates the keyed overlay, while photos and the official logo are composited programmatically.
+- Hybrid designs with buyer-owned real photos: use `creative-production-codex-image`, apply its `references/hybrid-prompt-refinement-playbook.md`, and then its `references/hybrid-real-media-contract.md`. The first turns a brief natural request into dynamic brand/offer-aware art direction; the second preserves the exact ordered media contract. Image 2 creates the keyed overlay, while photos and the official logo are composited programmatically.
 - When a Telegram turn contains buyer-uploaded photos for a requested creative, follow the attachment handoff in `creative-production-codex-image`: inspect the batch, classify/save it with `mcp_admira_save_content_asset`, then call the hybrid `mcp_admira_codex_image_generate` with the returned `real_media` asset IDs in the same or immediately following tool turn. Pending archival status is not a terminal state. This is semantic sequencing by the main model; do not add a keyword filter or a separate approval ceremony.
 - Campaign planning: `campaign-strategy`.
 - Meta Graph execution, native inline creatives, lead forms, messaging destinations, paused creation, and activation approvals: `meta-campaign-execution`.

@@ -55,6 +55,55 @@ class HybridImageCompositorTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self._prompt("sometimes")
 
+    def test_sparse_request_receives_brand_offer_and_safe_copy_refinement(self):
+        prompt = build_overlay_prompt(
+            layout="hero",
+            slots=[{"slot_id": "hero", "label": "SERVICIO PREMIUM", "key_rgb": (255, 0, 255)}],
+            visual_direction="Haz algo atractivo con esta foto.",
+            active_offer="Rodeo Premium; Precio confirmado: 110.000 COP; Incluye: limpieza profunda",
+            objective="Conseguir conversaciones calificadas por WhatsApp",
+            audience="Propietarios de vehículos en Bogotá norte",
+            format_hint="4:5",
+            brand_palette=["negro mate", "gris grafito", "naranja cobrizo"],
+            brand_context={
+                "brand_name": "Rodeo - Car Detailing",
+                "visual_style": "automotriz premium, limpio y moderno",
+                "typography": "sans serif condensada y contundente",
+                "avoid_always": "caballos o estética western literal",
+            },
+        )
+        self.assertIn("Treat a short buyer request as intent to refine", prompt)
+        self.assertIn("Haz algo atractivo con esta foto", prompt)
+        self.assertIn("Output format/aspect ratio: 4:5", prompt)
+        self.assertIn("Rodeo Premium", prompt)
+        self.assertIn("Rodeo - Car Detailing", prompt)
+        self.assertIn("naranja cobrizo", prompt)
+        self.assertIn("single media window as the visual hero", prompt)
+        self.assertIn("Never invent a price, discount, guarantee", prompt)
+        self.assertIn("Choose a fresh visual solution", prompt)
+
+    def test_each_layout_family_keeps_dynamic_not_fixed_guidance(self):
+        cases = {
+            "hero": (1, "full-bleed, offset, framed, arched"),
+            "before_after": (2, "equal split, diagonal comparison"),
+            "services": (2, "dynamic card system, editorial split"),
+            "collage": (3, "one visual anchor with supporting images"),
+            "freeform": (1, "Resolve the freeform layout"),
+        }
+        for layout, (count, expected) in cases.items():
+            slots = []
+            for index in range(count):
+                role = "before" if layout == "before_after" and index == 0 else "after" if layout == "before_after" else "service"
+                slots.append({
+                    "slot_id": f"slot-{index}",
+                    "label": role.upper(),
+                    "role": role,
+                    "key_rgb": ((255, 0, 255), (0, 255, 255), (255, 128, 0))[index],
+                })
+            prompt = build_overlay_prompt(layout=layout, slots=slots, visual_direction="Dirección libre")
+            self.assertIn(expected, prompt)
+            self.assertIn("do not use a fixed template", prompt)
+
     def test_composition_maps_two_sources_and_emits_hash_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

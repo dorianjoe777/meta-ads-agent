@@ -223,6 +223,180 @@ class HybridImageDashboardIntegrationTests(unittest.TestCase):
             distance = min(abs(key_hue - green_hue), 1 - abs(key_hue - green_hue)) * 360
             self.assertGreaterEqual(distance, 58)
 
+    def test_sparse_hybrid_request_is_enriched_from_exact_brand_offer_and_brief(self):
+        prompts = []
+
+        def provider(prompt, **kwargs):
+            prompts.append(prompt)
+            out = Path(kwargs["output_root"]) / "sparse-enriched-overlay.png"
+            Image.new("RGB", (180, 180), (255, 0, 255)).save(out)
+            return {"ok": True, "image_path": str(out)}
+
+        brand_library = {
+            "general": {"fields": {
+                "brand_name": "Rodeo - Car Detailing",
+                "colors": "negro mate, gris grafito, naranja cobrizo",
+                "typography": "sans serif condensada y contundente",
+                "visual_style": "automotriz premium, limpio y moderno",
+                "tone": "directo y confiable",
+                "avoid_always": "caballos o estética western literal",
+            }},
+            "products": [{
+                "id": "rodeo-premium",
+                "name": "Rodeo Premium",
+                "guide": "brand_guides/products/rodeo-premium.md",
+                "fields": {
+                    "name": "Rodeo Premium",
+                    "price": "$110.000 COP",
+                    "includes": "limpieza profunda y protección con cera",
+                    "audience": "propietarios de vehículos en Bogotá norte",
+                    "desire": "recuperar una apariencia impecable",
+                },
+            }],
+            "ad_briefs": [{
+                "id": "premium-whatsapp",
+                "name": "Premium WhatsApp",
+                "guide": "brand_guides/ad_briefs/premium-whatsapp.md",
+                "fields": {
+                    "objective": "Conseguir conversaciones calificadas por WhatsApp",
+                    "headline": "Tu carro merece un cuidado premium",
+                    "cta": "Agenda por WhatsApp",
+                    "formats": "4:5",
+                },
+            }],
+        }
+        payload = {
+            "request": "Haz algo atractivo con esta foto.",
+            "purpose": "ad_creative",
+            "product_guide": "rodeo-premium",
+            "ad_brief": "premium-whatsapp",
+            "layout_intent": "hero",
+            "real_media": [{"slot_id": "hero", "content_asset_id": "photo-before", "role": "hero"}],
+            "style_reference": {"mode": "none"},
+            "include_logo": False,
+        }
+        with patch.object(dashboard, "load_content_asset_library", return_value=self.library), \
+             patch.object(dashboard, "selected_product_guide_for_creative", return_value=("rodeo-premium", "explicit_product_guide")), \
+             patch.object(dashboard, "creative_direct_context", return_value=""), \
+             patch.object(dashboard, "creative_strategy_readiness", return_value={"ready": True}), \
+             patch.object(dashboard, "guide_library", return_value=brand_library), \
+             patch.object(dashboard, "official_brand_logo_path", return_value=None), \
+             patch.object(dashboard, "call_codex_image_cli", side_effect=provider):
+            result = dashboard.codex_image_generate(payload)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(len(prompts), 1)
+        prompt = prompts[0]
+        self.assertIn("Haz algo atractivo con esta foto", prompt)
+        self.assertIn("Rodeo Premium", prompt)
+        self.assertIn("$110.000 COP", prompt)
+        self.assertIn("Conseguir conversaciones calificadas por WhatsApp", prompt)
+        self.assertIn("propietarios de vehículos en Bogotá norte", prompt)
+        self.assertIn("Rodeo - Car Detailing", prompt)
+        self.assertIn("automotriz premium, limpio y moderno", prompt)
+        self.assertIn("Output format/aspect ratio: 4:5", prompt)
+        self.assertIn("Tu carro merece un cuidado premium", prompt)
+        self.assertIn("Agenda por WhatsApp", prompt)
+        self.assertIn("Do not use any saved style reference", prompt)
+        self.assertNotIn(str(self.photo_a), prompt)
+
+    def test_explicit_hybrid_text_and_extra_direction_are_never_replaced(self):
+        context = dashboard._hybrid_semantic_prompt_context(
+            {
+                "visual_direction": "Añade una insignia discreta y deja aire arriba.",
+                "desired_on_image_message": "Mensaje de respaldo que no debe reemplazar el título",
+                "cta_decision": "Escríbenos",
+                "text_content": {
+                    "title": "FULL DETAIL",
+                    "bullets": ["Pulido", "Protección"],
+                    "cta": "Agenda tu diagnóstico",
+                },
+            },
+            {"general": {"fields": {"brand_name": "Rodeo"}}},
+        )
+        self.assertEqual(context["text_content"]["title"], "FULL DETAIL")
+        self.assertEqual(context["text_content"]["bullets"], ["Pulido", "Protección"])
+        self.assertEqual(context["text_content"]["cta"], "Agenda tu diagnóstico")
+
+    def test_minimal_request_uses_only_the_already_selected_offer(self):
+        prompts = []
+
+        def provider(prompt, **kwargs):
+            prompts.append(prompt)
+            out = Path(kwargs["output_root"]) / "minimal-selected-offer-overlay.png"
+            Image.new("RGB", (180, 180), (255, 0, 255)).save(out)
+            return {"ok": True, "image_path": str(out)}
+
+        library = {
+            "general": {"fields": {"brand_name": "Rodeo", "colors": "negro, naranja"}},
+            "products": [
+                {
+                    "id": "rodeo-express",
+                    "name": "Rodeo Express",
+                    "guide": "brand_guides/products/rodeo-express.md",
+                    "fields": {
+                        "name": "Rodeo Express",
+                        "price": "$45.000 COP",
+                        "desire": "lavado rápido",
+                        "audience": "conductores con poco tiempo",
+                    },
+                },
+                {
+                    "id": "rodeo-premium",
+                    "name": "Rodeo Premium",
+                    "guide": "brand_guides/products/rodeo-premium.md",
+                    "fields": {
+                        "name": "Rodeo Premium",
+                        "price": "$110.000 COP",
+                        "desire": "protección y limpieza profunda",
+                        "audience": "propietarios que cuidan cada detalle",
+                    },
+                },
+            ],
+            "ad_briefs": [],
+        }
+        payload = {
+            "request": "Haz otro diseño atractivo con esta foto.",
+            "purpose": "ad_creative",
+            "real_media": [{"slot_id": "hero", "content_asset_id": "photo-before", "role": "hero"}],
+        }
+        with patch.object(dashboard, "load_content_asset_library", return_value=self.library), \
+             patch.object(dashboard, "selected_product_guide_for_creative", return_value=("rodeo-premium", "selected_context")), \
+             patch.object(dashboard, "creative_direct_context", return_value=""), \
+             patch.object(dashboard, "creative_strategy_readiness", return_value={"ready": True}), \
+             patch.object(dashboard, "guide_library", return_value=library), \
+             patch.object(dashboard, "official_brand_logo_path", return_value=None), \
+             patch.object(dashboard, "call_codex_image_cli", side_effect=provider):
+            result = dashboard.codex_image_generate(payload)
+        self.assertTrue(result["ok"], result)
+        prompt = prompts[0]
+        self.assertIn("Rodeo Premium", prompt)
+        self.assertIn("$110.000 COP", prompt)
+        self.assertIn("protección y limpieza profunda", prompt)
+        self.assertNotIn("Rodeo Express", prompt)
+        self.assertNotIn("$45.000 COP", prompt)
+        self.assertNotIn("lavado rápido", prompt)
+
+    def test_selected_ad_brief_can_resolve_its_exact_product_without_duplicate_field(self):
+        library = {
+            "general": {"fields": {"brand_name": "Rodeo"}},
+            "products": [{
+                "id": "rodeo-premium",
+                "name": "Rodeo Premium",
+                "guide": "brand_guides/products/rodeo-premium.md",
+                "fields": {"name": "Rodeo Premium", "price": "$110.000 COP"},
+            }],
+            "ad_briefs": [{
+                "id": "premium-whatsapp",
+                "name": "Premium WhatsApp",
+                "guide": "brand_guides/ad_briefs/premium-whatsapp.md",
+                "fields": {"product_guide": "rodeo-premium", "objective": "Mensajes de WhatsApp"},
+            }],
+        }
+        context = dashboard._hybrid_semantic_prompt_context({"ad_brief": "premium-whatsapp"}, library)
+        self.assertIn("Rodeo Premium", context["active_offer"])
+        self.assertIn("$110.000 COP", context["active_offer"])
+        self.assertEqual(context["objective"], "Mensajes de WhatsApp")
+
 
 if __name__ == "__main__":
     unittest.main()

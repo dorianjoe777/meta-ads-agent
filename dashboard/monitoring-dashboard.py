@@ -11883,6 +11883,124 @@ def selected_product_guide_for_creative(payload):
     return "", "library_default"
 
 
+def _hybrid_library_fields(cards, reference):
+    """Resolve one explicitly selected product/brief card without guessing.
+
+    The general brand is shared by every offer, but product facts must remain
+    offer-scoped.  Matching only an explicit reference prevents the hybrid
+    prompt fallback from silently borrowing the first saved offer.
+    """
+    raw = str(reference or "").strip()
+    if not raw:
+        return {}
+
+    def token(value):
+        value = str(value or "").strip().replace("\\", "/")
+        value = value.rsplit("/", 1)[-1]
+        if value.lower().endswith(".md"):
+            value = value[:-3]
+        return re.sub(r"[^a-z0-9]+", "-", unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii").lower()).strip("-")
+
+    wanted = token(raw)
+    for card in cards or []:
+        if not isinstance(card, dict):
+            continue
+        candidates = (card.get("id"), card.get("name"), card.get("guide"))
+        if wanted and any(token(value) == wanted for value in candidates if value):
+            return dict(card.get("fields") or {})
+    return {}
+
+
+def _hybrid_semantic_prompt_context(payload, library, selected_product=""):
+    """Compile safe semantic context for Image 2's hybrid overlay prompt.
+
+    Hermes remains responsible for understanding the conversation.  This is
+    not an intent classifier or an approval gate: it simply prevents a sparse
+    tool payload from losing already confirmed brand/offer facts.
+    """
+    payload = payload or {}
+    library = library or {}
+    saved_general = ((library.get("general") or {}).get("fields") or {})
+
+    explicit_brief = str(payload.get("ad_brief") or "").strip()
+    saved_brief = _hybrid_library_fields(library.get("ad_briefs"), explicit_brief)
+
+    def merge_current(saved, normalized_current):
+        merged = dict(saved or {})
+        for key, value in (normalized_current or {}).items():
+            if value not in (None, "", [], {}):
+                merged[key] = value
+        return merged
+
+    general = merge_current(saved_general, normalize_general_payload(payload))
+    brief = merge_current(saved_brief, normalize_ad_brief_payload(payload))
+
+    # A selected ad brief may identify its product even when Hermes correctly
+    # omits a redundant top-level product_guide.  The already-resolved
+    # `selected_product` is also safe to try as a library reference; arbitrary
+    # inline context simply will not match a card.  We never choose card zero.
+    explicit_product = str(payload.get("product_guide") or brief.get("product_guide") or selected_product or "").strip()
+    saved_product = _hybrid_library_fields(library.get("products"), explicit_product)
+    product = merge_current(saved_product, normalize_product_payload(payload))
+
+    def compact(value, limit=420):
+        return compact_creative_context_value(value, limit=limit)
+
+    offer_parts = []
+    for label, value in (
+        ("Tema/oferta solicitada", payload.get("active_topic")),
+        ("Oferta", product.get("name") or brief.get("offer_details")),
+        ("Resumen", product.get("short_description") or product.get("description")),
+        ("Precio confirmado", product.get("price")),
+        ("Incluye", product.get("includes") or product.get("features")),
+        ("Beneficio/deseo", product.get("desire")),
+        ("Debe mostrar", product.get("show") or brief.get("required_assets")),
+        ("Promoción confirmada", brief.get("promotion")),
+    ):
+        value = compact(value)
+        if value:
+            offer_parts.append(f"{label}: {value}")
+    if not offer_parts and selected_product:
+        selected = compact(selected_product, limit=900)
+        if selected:
+            offer_parts.append(selected)
+
+    objective = compact(payload.get("objective") or brief.get("objective") or brief.get("business_outcome"))
+    audience = compact(product.get("audience") or brief.get("ideal_customer") or brief.get("audience_slice") or general.get("ideal_customer"))
+    format_hint = compact(payload.get("format") or brief.get("formats"), limit=120)
+
+    brand_context = {}
+    for key in (
+        "brand_name", "category", "market", "personality", "colors",
+        "avoid_colors", "typography", "visual_style", "energy", "tone",
+        "words_use", "words_avoid", "sales_energy", "authority",
+        "show_always", "avoid_always",
+    ):
+        value = compact(general.get(key))
+        if value:
+            brand_context[key] = value
+
+    text_content = dict(payload.get("text_content") or {}) if isinstance(payload.get("text_content"), dict) else {}
+    desired_message = compact(payload.get("desired_on_image_message"))
+    if desired_message and not any(str(text_content.get(key) or "").strip() for key in ("title", "headline")):
+        text_content["title"] = desired_message
+    approved_headline = compact(brief.get("headline"))
+    if approved_headline and not any(str(text_content.get(key) or "").strip() for key in ("title", "headline")):
+        text_content["title"] = approved_headline
+    cta = compact(payload.get("cta_decision") or brief.get("cta"), limit=160)
+    if cta and cta.lower() not in {"no", "none", "ninguno", "ninguna", "sin cta", "no cta"} and not str(text_content.get("cta") or "").strip():
+        text_content["cta"] = cta
+
+    return {
+        "active_offer": " | ".join(offer_parts),
+        "objective": objective,
+        "audience": audience,
+        "format_hint": format_hint,
+        "brand_context": brand_context,
+        "text_content": text_content,
+    }
+
+
 def organic_image_request_is_specific(value):
     text = re.sub(r"\s+", " ", str(value or "").strip()).lower()
     if len(text) < 20:
@@ -13785,8 +13903,10 @@ def codex_image_generate(payload):
                 raise ValueError(f"layout_intent={layout} requiere entre {low} y {high} fotos reales.")
             if layout == "before_after" and {s.get("role") for s in slots} != {"before", "after"}:
                 raise ValueError("layout_intent=before_after requiere exactamente una foto con role=before y otra con role=after.")
-            text_content = payload.get("text_content") if isinstance(payload.get("text_content"), dict) else {}
-            brand_fields = (guide_library().get("general") or {}).get("fields") or {}
+            library = guide_library()
+            semantic_context = _hybrid_semantic_prompt_context(payload, library, selected_product=product_guide)
+            text_content = semantic_context["text_content"]
+            brand_fields = (library.get("general") or {}).get("fields") or {}
             official_logo = official_brand_logo_path()
             explicit_logo_value = payload.get("include_logo")
             explicit_logo_requested = (isinstance(explicit_logo_value, str) and explicit_logo_value.strip().lower() in {"1", "true", "yes", "si", "sí", "on"}) or explicit_logo_value is True
@@ -13819,6 +13939,11 @@ def codex_image_generate(payload):
                 visual_direction=str(payload.get("visual_direction") or request),
                 text_content=text_content,
                 brand_palette=[str(x) for x in palette_values],
+                brand_context=semantic_context["brand_context"],
+                active_offer=semantic_context["active_offer"],
+                objective=semantic_context["objective"],
+                audience=semantic_context["audience"],
+                format_hint=semantic_context["format_hint"],
                 style_reference_mode=str(style_evidence.get("mode") or "none"),
             )
             # Deliberately only the opt-in style reference enters the provider.

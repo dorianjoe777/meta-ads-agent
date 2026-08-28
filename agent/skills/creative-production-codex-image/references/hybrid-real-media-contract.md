@@ -7,6 +7,8 @@ description: Contract for composing Image 2 graphic overlays with ordered buyer-
 
 Use this reference only when a creative combines an Image 2-generated graphic overlay with one or more buyer-owned photos. The generation provider and existing Codex/Image bridge are unchanged.
 
+Before building this technical request, apply [hybrid-prompt-refinement-playbook.md](hybrid-prompt-refinement-playbook.md). It defines how a short natural buyer request becomes a rich brand/offer-aware visual direction. That semantic refinement does not change the slot or source-integrity rules below.
+
 ## Request shape
 
 The natural-language manager supplies a self-contained visual direction and an ordered payload equivalent to:

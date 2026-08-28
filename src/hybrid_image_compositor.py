@@ -319,6 +319,11 @@ def build_overlay_prompt(
     visual_direction: str = "",
     text_content: Mapping[str, Any] | None = None,
     brand_palette: Sequence[str] | None = None,
+    brand_context: Mapping[str, Any] | None = None,
+    active_offer: str = "",
+    objective: str = "",
+    audience: str = "",
+    format_hint: str = "",
     style_reference_mode: str = "none",
     use_style_reference_pool: bool | None = None,
 ) -> str:
@@ -341,15 +346,39 @@ def build_overlay_prompt(
         raise ValueError("style_reference_mode must be none, pool, or explicit")
     if not 1 <= len(slots) <= 6:
         raise ValueError("slots must contain between 1 and 6 items")
-    lines = ["Create one polished advertising graphic, preserving the supplied natural-language visual direction.",
-             "Keep the composition dynamic and editorial; do not use a fixed template or add a logo.",
-             f"Layout intent: {layout}."]
+    lines = [
+        "Create one polished advertising graphic from the semantic creative brief below.",
+        "Treat a short buyer request as intent to refine, not as the complete art-direction prompt. Preserve every explicit buyer instruction, then complete the hierarchy and composition from confirmed brand, offer, audience, objective, format, text, and media-slot context.",
+        "Keep the composition dynamic and editorial; do not use a fixed template or add a logo.",
+        "Choose a fresh visual solution for this generation. You may vary composition, hierarchy, framing, card geometry, negative space, typography arrangement, accents, and CTA treatment while preserving confirmed facts and the ordered media slots.",
+        f"Layout family: {layout}.",
+    ]
+    if format_hint:
+        lines.append(f"Output format/aspect ratio: {format_hint}.")
+    if active_offer:
+        lines.append(f"Active offer/topic: {active_offer}")
+    if objective:
+        lines.append(f"Communication objective: {objective}")
+    if audience:
+        lines.append(f"Audience: {audience}")
     if visual_direction:
-        lines.append(f"Visual direction: {visual_direction}")
+        lines.append(f"Buyer and manager visual direction: {visual_direction}")
+    if brand_context:
+        confirmed_brand = {
+            str(key): value
+            for key, value in brand_context.items()
+            if str(value or "").strip()
+        }
+        if confirmed_brand:
+            lines.append("Confirmed brand context; replace generic styling with these values: " + json.dumps(confirmed_brand, ensure_ascii=False))
     if brand_palette:
         lines.append("Brand palette to respect: " + ", ".join(brand_palette) + ".")
     if text_content:
-        lines.append("Render this exact text clearly and legibly: " + json.dumps(dict(text_content), ensure_ascii=False))
+        lines.append("Render this supplied text clearly and legibly; preserve its facts and wording: " + json.dumps(dict(text_content), ensure_ascii=False))
+    else:
+        lines.append(
+            "No structured on-image text was supplied. Derive only a concise, commercially useful title, up to three short benefit/feature lines, and a fitting CTA from the confirmed buyer request and active-offer context. Omit any element that lacks support. Never invent a price, discount, guarantee, testimonial, credential, measurable result, promotion, or business fact, and never describe generated wording as buyer-approved."
+        )
     lines.append("Replaceable media windows are EMPTY RESERVED SLOTS. Do not place any text, letters, numbers, labels, icons, logos, borders, patterns, gradients, textures, shadows, glow, or artwork inside a slot. Put every label (including ANTES/DESPUÉS and service names) fully outside the slot, in the surrounding composition, with visible separation.")
     lines.append("Use each key colour exactly once, as one uninterrupted contiguous flat solid fill per slot, and nowhere else in the artwork. Keep every other graphic and every character visibly distinct from every key colour; do not punch holes or add marks inside a slot.")
     for slot in slots:
@@ -357,11 +386,15 @@ def build_overlay_prompt(
         hex_colour = "#%02X%02X%02X" % colour
         lines.append(f"- slot_id={slot.get('slot_id', 'slot')}; label={slot.get('label', '')}; key={hex_colour}; shape and placement may be creative.")
     if layout == "before_after":
-        lines.append("Use clearly distinct windows labelled ANTES and DESPUÉS.")
+        lines.append("Use clearly distinct windows labelled ANTES and DESPUÉS. The treatment may be an equal split, diagonal comparison, reveal, overlapping cards, or a result-dominant layout; keep both slots unambiguous and all labels outside them.")
     elif layout == "services":
-        lines.append("Give each service its own distinct window and preserve the supplied service labels.")
+        lines.append("Give each service its own distinct window and preserve the supplied service labels. Choose a dynamic card system, editorial split, staggered band, or asymmetric service showcase; never imply before/after unless the brief says so.")
     elif layout == "collage":
-        lines.append("Arrange the windows as a coherent collage or mosaic; vary scale and composition naturally.")
+        lines.append("Arrange the windows as a coherent collage or mosaic. Choose either one visual anchor with supporting images or a balanced editorial grid, and vary scale, crop windows, rhythm, and composition naturally.")
+    elif layout == "hero":
+        lines.append("Use the single media window as the visual hero. It may be full-bleed, offset, framed, arched, or integrated into an asymmetric editorial composition, while leaving clear hierarchy for the title, supporting message, and CTA.")
+    else:
+        lines.append("Resolve the freeform layout from the buyer's visual direction while keeping every media slot distinct, legible, and compositionally intentional.")
     if style_reference_mode == "pool":
         lines.append("Use exactly one shuffled approved graphic-design reference selected by the application as stylistic inspiration only; never copy its logo or photography.")
     elif style_reference_mode == "explicit":
