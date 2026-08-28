@@ -9,7 +9,7 @@ except ImportError:  # native lightweight test environments may omit Pillow
 
 from admira_mcp_server import TOOL_INPUT_SCHEMAS, TOOL_DEFINITIONS
 import hermes_bridge
-from hermes_bridge import _attachment_manifest, _make_hermes_contact_sheet, safe_image_paths
+from hermes_bridge import _attachment_manifest, _attachment_turn_token, _make_hermes_contact_sheet, safe_image_paths
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +22,12 @@ class HybridAttachmentWorkflowTests(unittest.TestCase):
     public MCP/skill contract exposes the required sequence and both common
     mappings, without introducing a keyword classifier.
     """
+
+    def test_contact_sheet_transport_name_is_unique_per_turn(self):
+        first = _attachment_turn_token({"message_sequence": 10, "message": "usa ambas", "chat_id": "a"})
+        second = _attachment_turn_token({"message_sequence": 11, "message": "usa ambas", "chat_id": "a"})
+        self.assertRegex(first, r"^[0-9a-f]{16}$")
+        self.assertNotEqual(first, second)
 
     def test_hero_attachment_maps_one_saved_asset(self):
         schema = TOOL_INPUT_SCHEMAS["codex_image_generate"]
@@ -93,7 +99,7 @@ class HybridAttachmentWorkflowTests(unittest.TestCase):
         }
         original_subprocess_run = hermes_bridge.subprocess.run
         try:
-            sheet = "/workspace/uploads/hermes-attachments-contact-sheet.png"
+            sheet = "/workspace/uploads/hermes-attachments-contact-sheet-1234567890abcdef.png"
             originals = ["/workspace/uploads/photo-1.png", "/workspace/uploads/photo-2.png"]
             hermes_bridge._record_bridge_trusted_buyer_turn = lambda payload: payload
             hermes_bridge.prepare_hermes_workspace = lambda payload: {

@@ -78,6 +78,44 @@ def _distance(a: RGB, b: RGB) -> float:
     return math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b)))
 
 
+def _safe_key_drift(rgb: RGB, key: RGB, *, max_hue_degrees: float = 16.0) -> bool:
+    """Accept Image 2's small chroma drift without accepting nearby artwork.
+
+    Image 2 sometimes turns an exact key such as magenta into a nearby,
+    anti-aliased chromatic value.  Hue, saturation, and value are a safer
+    signal for that case than increasing the RGB radius (which can absorb
+    text, shadows, or brand colours).  The caller still resolves competing
+    keys by nearest hue and keeps overlap evidence.
+    """
+    h, saturation, value = _hue(rgb)
+    key_h, key_saturation, key_value = _hue(key)
+    return (
+        key_saturation >= 0.70 and saturation >= 0.70 and value >= 0.60
+        and hue_distance(h, key_h) * 360 <= max_hue_degrees
+        and abs(saturation - key_saturation) <= 0.35
+        and abs(value - key_value) <= 0.35
+    )
+
+
+def _key_matches(rgb: RGB, keys: Sequence[RGB], tolerance: float) -> list[int]:
+    """Return exact matches, or one unambiguous chromatic-drift match."""
+    exact = [index for index, key in enumerate(keys) if _distance(rgb, key) <= tolerance]
+    if exact:
+        return exact
+    candidates = [
+        (hue_distance(_hue(rgb)[0], _hue(key)[0]), index)
+        for index, key in enumerate(keys) if _safe_key_drift(rgb, key)
+    ]
+    if not candidates:
+        return []
+    candidates.sort()
+    # Do not classify a hue midpoint as two slots.  A four-degree margin also
+    # keeps two deliberately close key families from swallowing each other.
+    if len(candidates) > 1 and (candidates[1][0] - candidates[0][0]) * 360 < 4:
+        return []
+    return [candidates[0][1]]
+
+
 def _components(points: set[tuple[int, int]]) -> list[set[tuple[int, int]]]:
     result: list[set[tuple[int, int]]] = []
     while points:
@@ -139,7 +177,7 @@ def compose_overlay(
         for x in range(base.width):
             rgb = pixels[x, y][:3]
             distances = [_distance(rgb, key) for key in keys]
-            matches = [i for i, d in enumerate(distances) if d <= tolerance]
+            matches = _key_matches(rgb, keys, tolerance)
             if len(matches) > 1:
                 overlap += 1
             if matches:
@@ -173,7 +211,6 @@ def compose_overlay(
         # Expand only chromatic pixels immediately beside the selected region;
         # this removes Image 2's anti-aliased one-pixel key fringe safely.
         expanded = set(chosen)
-        key_h, _, _ = _hue(keys[index])
         for x, y in chosen:
             for dy in range(-edge_radius, edge_radius + 1):
                 for dx in range(-edge_radius, edge_radius + 1):
@@ -183,9 +220,39 @@ def compose_overlay(
                     if not (0 <= nx < base.width and 0 <= ny < base.height) or (nx, ny) in all_keyed:
                         continue
                     rgb = pixels[nx, ny][:3]
-                    h, sat, _ = _hue(rgb)
-                    if _distance(rgb, keys[index]) <= cleanup_limit or (sat >= 0.45 and hue_distance(h, key_h) <= 20 / 360):
+                    if (_distance(rgb, keys[index]) <= cleanup_limit
+                            or _safe_key_drift(rgb, keys[index], max_hue_degrees=20)):
                         expanded.add((nx, ny))
+        # A dark letter or a small decorative mark can punch a hole through a
+        # otherwise valid window.  Fill only regions enclosed by the selected
+        # component's bounding box; anything connected to the box boundary is
+        # left alone and therefore remains visible to residual validation.
+        xs0, ys0 = zip(*chosen)
+        hole_box = (min(xs0), min(ys0), max(xs0) + 1, max(ys0) + 1)
+        hx0, hy0, hx1, hy1 = hole_box
+        outside: set[tuple[int, int]] = set()
+        queue: deque[tuple[int, int]] = deque()
+        for hx in range(hx0, hx1):
+            for hy in (hy0, hy1 - 1):
+                if (hx, hy) not in chosen and (hx, hy) not in outside:
+                    outside.add((hx, hy)); queue.append((hx, hy))
+        for hy in range(hy0, hy1):
+            for hx in (hx0, hx1 - 1):
+                if (hx, hy) not in chosen and (hx, hy) not in outside:
+                    outside.add((hx, hy)); queue.append((hx, hy))
+        while queue:
+            hx, hy = queue.popleft()
+            for nx, ny in ((hx - 1, hy), (hx + 1, hy), (hx, hy - 1), (hx, hy + 1)):
+                if not (hx0 <= nx < hx1 and hy0 <= ny < hy1):
+                    continue
+                if (nx, ny) in chosen or (nx, ny) in outside:
+                    continue
+                outside.add((nx, ny)); queue.append((nx, ny))
+        enclosed_holes = {
+            (hx, hy) for hx in range(hx0, hx1) for hy in range(hy0, hy1)
+            if (hx, hy) not in chosen and (hx, hy) not in outside
+        }
+        expanded.update(enclosed_holes)
         expanded_masks.append(expanded)
         xs, ys = zip(*expanded)
         box = (min(xs), min(ys), max(xs) + 1, max(ys) + 1)
@@ -209,15 +276,19 @@ def compose_overlay(
         for x in range(output_image.width):
             if (x, y) in intended or (x, y) in ignored_tiny_components:
                 continue
-            if any(_distance(output_image.getpixel((x, y))[:3], key) <= tolerance for key in keys):
+            if _key_matches(output_image.getpixel((x, y))[:3], keys, tolerance):
                 residual += 1
+    passed = overlap == 0 and residual == 0 and all(s["pass"] for s in evidence["slots"])
     destination = Path(output)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    output_image.save(destination, "PNG")
-    evidence.update({"output": str(destination), "output_sha256": _sha256(destination),
+    if passed:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        output_image.save(destination, "PNG")
+    evidence.update({"output": str(destination), "output_sha256": _sha256(destination) if passed else None,
                      "remaining_key_pixels_outside_masks": residual,
                      "min_extra_component_ratio": min_extra_component_ratio,
-                     "pass": overlap == 0 and residual == 0 and all(s["pass"] for s in evidence["slots"])})
+                     "pass": passed})
+    if not passed:
+        evidence["output_sha256"] = None
     return evidence
 
 
@@ -259,8 +330,8 @@ def build_overlay_prompt(
         lines.append("Brand palette to respect: " + ", ".join(brand_palette) + ".")
     if text_content:
         lines.append("Render this exact text clearly and legibly: " + json.dumps(dict(text_content), ensure_ascii=False))
-    lines.append("Replaceable media windows (do not place photographs, logos, gradients, textures, shadows, or glow inside them):")
-    lines.append("Use each key colour exactly once, as one contiguous flat solid fill per slot, and nowhere else in the artwork. Keep all other graphics and text visibly distinct from every key colour.")
+    lines.append("Replaceable media windows are EMPTY RESERVED SLOTS. Do not place any text, letters, numbers, labels, icons, logos, borders, patterns, gradients, textures, shadows, glow, or artwork inside a slot. Put every label (including ANTES/DESPUÉS and service names) fully outside the slot, in the surrounding composition, with visible separation.")
+    lines.append("Use each key colour exactly once, as one uninterrupted contiguous flat solid fill per slot, and nowhere else in the artwork. Keep every other graphic and every character visibly distinct from every key colour; do not punch holes or add marks inside a slot.")
     for slot in slots:
         colour = tuple(slot["key_rgb"])
         hex_colour = "#%02X%02X%02X" % colour

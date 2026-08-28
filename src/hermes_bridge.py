@@ -1069,6 +1069,22 @@ def _attachment_manifest(image_paths):
     ]
 
 
+def _attachment_turn_token(payload):
+    """Give each turn's visual transport a non-reusable filename."""
+    canonical = json.dumps(
+        {
+            "message_sequence": payload.get("message_sequence"),
+            "message": str(payload.get("message") or ""),
+            "chat_id": str(payload.get("_admira_trusted_chat_id") or payload.get("chat_id") or ""),
+            "session_id": str(payload.get("_admira_trusted_session_id") or payload.get("session_id") or ""),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
 def _make_hermes_contact_sheet(image_paths, output_path):
     """Create a labelled vision sheet without changing any source image.
 
@@ -2749,7 +2765,7 @@ Use the compact procedure injected for the current trusted product state and the
         )
         cli_image_path = _make_hermes_contact_sheet(
             workspace_images,
-            uploads_dir / "hermes-attachments-contact-sheet.png",
+            uploads_dir / f"hermes-attachments-contact-sheet-{_attachment_turn_token(payload)}.png",
         )
     elif workspace_images:
         manifest_path = write_workspace_file(
@@ -2845,6 +2861,34 @@ def hermes_user_query(payload, workspace_info):
     # buyer-authored message. Product state and procedure guidance are added at
     # the provider boundary, so a per-message execution nudge cannot turn an
     # ordinary answer (for example, a budget) into campaign authorization.
+    # The legacy Hermes CLI accepts one visual flag, so multi-attachment turns
+    # use a labelled contact sheet. Keep the authoritative ordered originals
+    # in the query as backend-generated metadata so the agent passes exact
+    # files/IDs to the MCP instead of archiving the transport sheet.
+    manifest = workspace_info.get("attachment_manifest") or []
+    if manifest:
+        public_manifest = [
+            {"index": item.get("index"), "basename": item.get("basename")}
+            for item in manifest if isinstance(item, dict)
+        ]
+        is_contact_sheet = Path(str(workspace_info.get("cli_image_path") or "")).name.startswith("hermes-attachments-contact-sheet-")
+        metadata = {
+            "count": len(manifest),
+            "ordered_originals": public_manifest,
+            "contact_sheet": is_contact_sheet,
+            "contact_sheet_role": "transport_only" if is_contact_sheet else "not_used",
+            "save_instruction": (
+                "Classify/save the attached transport image; the backend expands it to the ordered originals and returns their durable asset IDs."
+                if is_contact_sheet else
+                "Classify/save the attached original image and use the returned durable asset ID."
+            ),
+        }
+        return (
+            f"{message}\n\n"
+            "[ADMIRA_BACKEND_ATTACHMENT_METADATA_JSON]\n"
+            f"{json.dumps(metadata, ensure_ascii=False, separators=(',', ':'))}\n"
+            "[/ADMIRA_BACKEND_ATTACHMENT_METADATA_JSON]"
+        )
     return message
 
 

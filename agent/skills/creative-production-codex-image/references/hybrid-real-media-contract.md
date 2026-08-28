@@ -28,6 +28,8 @@ The natural-language manager supplies a self-contained visual direction and an o
 
 For photos attached in the current buyer turn, inspect and classify the whole batch first with `mcp_admira_save_content_asset`, using `pixel_locked` and making the semantic `approved_for_ads` decision from the buyer's actual requested use. Feed the returned IDs directly into `real_media`. If an older model/client omits that optional boolean, the backend may issue a five-minute, exact-ID capability bound to the same trusted chat/session/message; it is not permanent ad approval, cannot cross turns, and is consumed only after a successful hybrid composition. A provider failure leaves it available for a same-turn retry.
 
+Hermes CLI versions that accept only one visual attachment may send a labelled `hermes-attachments-contact-sheet-<turn>.png`. This is a vision transport artifact, never a source asset. Classify/save the attached transport image once; the backend validates the turn-specific sheet, expands it to the ordered originals, and returns their individual IDs. Use those IDs for `real_media`. Never composite the contact sheet itself.
+
 ## Layout semantics
 
 - One source: a hero/photo-led composition.
@@ -57,6 +59,8 @@ After Image 2 returns the overlay:
 3. Insert the exact source photo associated with that `slot_id`; crop, scale, position, frame, and mask boundaries are allowed, but photo content is pixel-locked.
 4. Composite the saved logo programmatically in the requested render mode.
 5. Inspect the final bitmap and attach it. OCR may be advisory only; stylized text should not be blocked solely by weak OCR.
+
+If a model accidentally falls back to ordinary generation with the exact IDs from the current same-turn receipt, the backend returns `hybrid_required` without invoking Image 2. Retry the same request with `real_media`. This narrow compatibility behavior does not affect durable approved assets or ordinary requests from another turn.
 
 ## References
 

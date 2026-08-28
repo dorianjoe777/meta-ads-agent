@@ -87,6 +87,7 @@ class HybridImageDashboardIntegrationTests(unittest.TestCase):
         self.assertTrue(Path(result["image_path"]).exists())
         self.assertTrue(result["prompt_package"]["real_media_provider_excluded"])
         self.assertEqual(result["output_sha256"], dashboard.content_asset_sha256(Path(result["image_path"])))
+        self.assertFalse((Path(dashboard.CREATIVE_ASSET_ROOT) / "provider-overlay.png").exists())
         self.assertNotIn(str(self.photo_a), json.dumps(result["hybrid"], ensure_ascii=False))
         self.assertNotIn(str(self.photo_b), json.dumps(result["hybrid"], ensure_ascii=False))
 
@@ -108,6 +109,41 @@ class HybridImageDashboardIntegrationTests(unittest.TestCase):
             _, evidence = dashboard._hybrid_style_reference({"style_reference": {"mode": "pool"}}, {item["id"]: item for item in self.library["items"]})
             sequence.append(evidence["asset_id"])
         self.assertTrue(all(left != right for left, right in zip(sequence, sequence[1:])))
+
+    def test_failed_hybrid_mask_leaves_no_provider_overlay_or_false_final(self):
+        provider_overlay = Path(dashboard.CREATIVE_ASSET_ROOT) / "invalid-provider-overlay.png"
+        false_final = provider_overlay.with_name("invalid-provider-overlay-composited.png")
+        provider_overlay.unlink(missing_ok=True)
+        false_final.unlink(missing_ok=True)
+
+        def invalid_provider(_prompt, **kwargs):
+            Path(kwargs["output_root"]).mkdir(parents=True, exist_ok=True)
+            canvas = Image.new("RGB", (240, 180), (18, 24, 36))
+            draw = ImageDraw.Draw(canvas)
+            draw.rectangle((20, 20, 180, 160), fill=(255, 0, 255))
+            draw.rectangle((200, 5, 230, 35), fill=(255, 0, 255))
+            canvas.save(provider_overlay)
+            return {"ok": True, "image_path": str(provider_overlay)}
+
+        payload = {
+            "request": "Diseño con una foto real",
+            "purpose": "ad_creative",
+            "layout_intent": "hero",
+            "real_media": [{"slot_id": "hero", "content_asset_id": "photo-before", "role": "hero"}],
+            "style_reference": {"mode": "none"},
+            "include_logo": False,
+        }
+        with patch.object(dashboard, "load_content_asset_library", return_value=self.library), \
+             patch.object(dashboard, "selected_product_guide_for_creative", return_value=("", "test")), \
+             patch.object(dashboard, "creative_direct_context", return_value=""), \
+             patch.object(dashboard, "creative_strategy_readiness", return_value={"ready": True}), \
+             patch.object(dashboard, "official_brand_logo_path", return_value=None), \
+             patch.object(dashboard, "call_codex_image_cli", side_effect=invalid_provider):
+            result = dashboard.codex_image_generate(payload)
+        self.assertFalse(result["ok"], result)
+        self.assertIn("máscaras", result["error"])
+        self.assertFalse(provider_overlay.exists())
+        self.assertFalse(false_final.exists())
 
     def test_layout_counts_and_logo_default_behavior(self):
         payload = {

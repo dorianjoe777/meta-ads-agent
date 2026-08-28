@@ -1,8 +1,10 @@
 import importlib.util
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from PIL import Image, ImageDraw
@@ -23,6 +25,7 @@ class HybridTurnAssetCapabilityTests(unittest.TestCase):
         self.library_file = self.root / "content_asset_library.json"
         self.capability_file = self.root / "hybrid_turn_asset_capability.json"
         self.capability_lock = self.root / "hybrid_turn_asset_capability.lock"
+        self.context_file = self.root / "CURRENT_CONTEXT.json"
         self.turn = {
             "chat_id": "-1001",
             "session_id": "session-a",
@@ -43,6 +46,7 @@ class HybridTurnAssetCapabilityTests(unittest.TestCase):
             patch.object(dashboard, "HYBRID_TURN_ASSET_CAPABILITY_FILE", self.capability_file),
             patch.object(dashboard, "HYBRID_TURN_ASSET_CAPABILITY_LOCK_FILE", self.capability_lock),
             patch.object(dashboard, "CONTENT_ASSET_LIBRARY_FILE", self.library_file),
+            patch.object(dashboard, "HERMES_CURRENT_CONTEXT_FILE", self.context_file),
             patch.object(dashboard, "_trusted_buyer_turn", lambda max_age_seconds=300: dict(self.turn)),
         ]
         for item in self.patches:
@@ -129,6 +133,73 @@ class HybridTurnAssetCapabilityTests(unittest.TestCase):
         self.assertFalse(dashboard._record_hybrid_turn_asset_capability(["x"] * 2)["recorded"])
         self.assertFalse(dashboard._record_hybrid_turn_asset_capability([str(i) for i in range(7)])["recorded"])
 
+    def test_contact_sheet_save_expands_ordered_originals_and_never_saves_sheet(self):
+        uploads = self.root / "uploads"
+        uploads.mkdir()
+        before = uploads / "before.jpg"
+        after = uploads / "after.jpg"
+        Image.new("RGB", (40, 30), (200, 10, 10)).save(before)
+        Image.new("RGB", (40, 30), (10, 20, 200)).save(after)
+        sheet = uploads / "hermes-attachments-contact-sheet-1234567890abcdef.png"
+        Image.new("RGB", (80, 30), (20, 20, 20)).save(sheet)
+        self.context_file.write_text(json.dumps({"cli_image_path": str(sheet), "attachment_manifest": [
+            {"index": 1, "source_path": str(before), "basename": "before.jpg"},
+            {"index": 2, "source_path": str(after), "basename": "after.jpg"},
+        ]}), encoding="utf-8")
+        saved = dashboard.save_content_asset_memory({
+            "file_path": str(sheet), "category": "product", "purpose": "fotos reales antes y despues",
+            "preservation_mode": "pixel_locked", "classification_status": "classified",
+        })
+        self.assertEqual(saved["saved_asset_count"], 2)
+        self.assertEqual([Path(item["file_paths"][0]).name.split("-", 1)[-1] for item in saved["assets"]], ["before.jpg", "after.jpg"])
+        self.assertEqual(len({item["source_sha256"] for item in saved["assets"]}), 2)
+        self.assertFalse(any(Path(item["file_paths"][0]).name.startswith("hermes-attachments-contact-sheet-") for item in saved["assets"]))
+
+    def test_same_basename_outside_current_uploads_fails_closed(self):
+        uploads = self.root / "uploads"
+        uploads.mkdir()
+        before = uploads / "before.jpg"
+        after = uploads / "after.jpg"
+        trusted_sheet = uploads / "hermes-attachments-contact-sheet-1234567890abcdef.png"
+        impostor = self.root / "hermes-attachments-contact-sheet-1234567890abcdef.png"
+        for path, colour in ((before, (200, 10, 10)), (after, (10, 20, 200)),
+                             (trusted_sheet, (20, 20, 20)), (impostor, (40, 40, 40))):
+            Image.new("RGB", (40, 30), colour).save(path)
+        self.context_file.write_text(json.dumps({"cli_image_path": str(trusted_sheet), "attachment_manifest": [
+            {"index": 1, "source_path": str(before)},
+            {"index": 2, "source_path": str(after)},
+        ]}), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "no coincide"):
+            dashboard.save_content_asset_memory({"file_path": str(impostor), "purpose": "prueba"})
+
+    def test_manifest_source_outside_current_uploads_fails_closed(self):
+        uploads = self.root / "uploads"
+        uploads.mkdir()
+        trusted_sheet = uploads / "hermes-attachments-contact-sheet-1234567890abcdef.png"
+        outside = self.root / "outside.jpg"
+        Image.new("RGB", (40, 30), (20, 20, 20)).save(trusted_sheet)
+        Image.new("RGB", (40, 30), (200, 10, 10)).save(outside)
+        self.context_file.write_text(json.dumps({"cli_image_path": str(trusted_sheet), "attachment_manifest": [
+            {"index": 1, "source_path": str(outside)},
+        ]}), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "no pertenece"):
+            dashboard.save_content_asset_memory({"file_path": str(trusted_sheet), "purpose": "prueba"})
+
+    def test_stale_current_context_fails_closed(self):
+        uploads = self.root / "uploads"
+        uploads.mkdir()
+        before = uploads / "before.jpg"
+        sheet = uploads / "hermes-attachments-contact-sheet-1234567890abcdef.png"
+        Image.new("RGB", (40, 30), (200, 10, 10)).save(before)
+        Image.new("RGB", (40, 30), (20, 20, 20)).save(sheet)
+        self.context_file.write_text(json.dumps({"cli_image_path": str(sheet), "attachment_manifest": [
+            {"index": 1, "source_path": str(before)},
+        ]}), encoding="utf-8")
+        old = self.context_file.stat().st_mtime - 601
+        os.utime(self.context_file, (old, old))
+        with self.assertRaisesRegex(ValueError, "vencido"):
+            dashboard.save_content_asset_memory({"file_path": str(sheet), "purpose": "prueba"})
+
     def test_provider_failure_does_not_consume_but_successful_composition_does(self):
         dashboard._record_hybrid_turn_asset_capability(["asset-hero"])
         payload = {
@@ -176,6 +247,49 @@ class HybridTurnAssetCapabilityTests(unittest.TestCase):
         finally:
             for item in reversed(common):
                 item.stop()
+
+    def test_same_turn_ordinary_fallback_is_rejected_without_calling_provider(self):
+        dashboard._record_hybrid_turn_asset_capability(["asset-hero"])
+        with patch.object(dashboard, "call_codex_image_cli") as provider:
+            result = dashboard.codex_image_generate({
+                "request": "Crear diseño usando la foto real",
+                "purpose": "ad_creative",
+                "content_asset_ids": ["asset-hero"],
+                "reference_image_paths": [str(self.asset_path)],
+            })
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "hybrid_required")
+        provider.assert_not_called()
+
+    def test_other_turn_ordinary_request_remains_compatible(self):
+        dashboard._record_hybrid_turn_asset_capability(["asset-hero"])
+        prompt_package = {
+            "mode": "fixed", "purpose": "ad_creative", "seed": "test",
+            "variation_count": 1, "variation_ledger": [], "product_guide": "",
+            "ad_brief": "", "logo_context": "", "prompts": [{
+                "image_prompt": "ordinary prompt", "variant_id": "ordinary",
+                "design_axis": "", "composition": "", "experiment": "",
+            }],
+        }
+        with patch.object(dashboard, "_trusted_buyer_turn", lambda max_age_seconds=300: dict(self.turn, message_sequence=8)), \
+             patch.object(dashboard, "selected_product_guide_for_creative", return_value=("", "test")), \
+             patch.object(dashboard, "creative_direct_context", return_value=""), \
+             patch.object(dashboard, "creative_strategy_readiness", return_value={"ready": True}), \
+             patch.object(dashboard, "build_codex_image_prompt_package", return_value=prompt_package), \
+             patch.object(dashboard, "official_brand_logo_path", return_value=None), \
+             patch.object(dashboard, "guide_library", return_value={"general": {"fields": {}}}), \
+             patch.object(dashboard, "load_config", return_value=SimpleNamespace(codex_creative_model="gpt-image-2")), \
+             patch.object(dashboard, "recent_generated_creatives", return_value={"retention_days": 3, "expired_removed": 0}), \
+             patch.object(dashboard, "log_action", lambda *args, **kwargs: None), \
+             patch.object(dashboard, "call_codex_image_cli", return_value={"ok": True, "asset_id": "ordinary.png"}) as provider:
+            result = dashboard.codex_image_generate({
+                "request": "Crear una variación ordinaria",
+                "purpose": "ad_creative",
+                "content_asset_ids": ["asset-hero"],
+            })
+        self.assertTrue(result["ok"], result)
+        self.assertNotEqual(result.get("reason"), "hybrid_required")
+        provider.assert_called_once()
 
 
 if __name__ == "__main__":

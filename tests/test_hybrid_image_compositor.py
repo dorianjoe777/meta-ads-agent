@@ -46,6 +46,8 @@ class HybridImageCompositorTests(unittest.TestCase):
         self.assertIn("#FF00FF", prompt)
         self.assertIn("Do not use any saved style reference", prompt)
         self.assertIn("Detailing Premium", prompt)
+        self.assertIn("Do not place any text, letters, numbers, labels", prompt)
+        self.assertIn("fully outside the slot", prompt)
 
     def test_prompt_reference_modes_are_explicit(self):
         self.assertIn("one shuffled approved graphic-design reference", self._prompt("pool"))
@@ -98,6 +100,45 @@ class HybridImageCompositorTests(unittest.TestCase):
             large = run((175, 5, 190, 20), "large")
             self.assertFalse(large["pass"])
             self.assertEqual(large["slots"][0]["meaningful_extra_component_count"], 1)
+
+    def test_chromatic_key_drift_and_enclosed_text_hole_are_replaced(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.png"
+            Image.new("RGB", (30, 20), (220, 20, 20)).save(source)
+            overlay = Image.new("RGB", (140, 100), (15, 20, 30))
+            draw = ImageDraw.Draw(overlay)
+            # Image 2's magenta has drifted to (245, 7, 215).  The black
+            # mark is an enclosed text-like hole in the otherwise flat slot.
+            draw.rectangle((20, 20, 120, 80), fill=(245, 7, 215))
+            draw.rectangle((54, 40, 86, 60), fill=(0, 0, 0))
+            overlay_path = root / "overlay.png"
+            overlay.save(overlay_path)
+            output = root / "composite.png"
+            evidence = compose_overlay(overlay_path, [{
+                "slot_id": "hero", "key_rgb": (255, 0, 255), "source": source,
+            }], output)
+            self.assertTrue(evidence["pass"], evidence)
+            self.assertEqual(Image.open(output).getpixel((70, 50))[:3], (220, 20, 20))
+
+    def test_failed_validation_does_not_write_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.png"
+            Image.new("RGB", (20, 20), (220, 20, 20)).save(source)
+            overlay = Image.new("RGB", (160, 100), (15, 20, 30))
+            draw = ImageDraw.Draw(overlay)
+            draw.rectangle((10, 20, 100, 80), fill=(255, 0, 255))
+            draw.rectangle((120, 5, 140, 25), fill=(255, 0, 255))
+            overlay_path = root / "invalid.png"
+            overlay.save(overlay_path)
+            output = root / "must-not-exist.png"
+            evidence = compose_overlay(overlay_path, [{
+                "slot_id": "hero", "key_rgb": (255, 0, 255), "source": source,
+            }], output)
+            self.assertFalse(evidence["pass"], evidence)
+            self.assertIsNone(evidence["output_sha256"])
+            self.assertFalse(output.exists())
 
     def test_logo_variants_keep_alpha_and_auto_contrast_has_no_plate(self):
         base = Image.new("RGB", (300, 200), (245, 245, 245))

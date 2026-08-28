@@ -363,6 +363,7 @@ TRUSTED_BUYER_TURN_FILE = DATA_DIR / "trusted_buyer_turn.json"
 TRUSTED_BUYER_TURN_LOCK_FILE = DATA_DIR / "trusted_buyer_turn.lock"
 HYBRID_TURN_ASSET_CAPABILITY_FILE = DATA_DIR / "hybrid_turn_asset_capability.json"
 HYBRID_TURN_ASSET_CAPABILITY_LOCK_FILE = DATA_DIR / "hybrid_turn_asset_capability.lock"
+HERMES_CURRENT_CONTEXT_FILE = DATA_DIR / "hermes-workspace" / "current" / "CURRENT_CONTEXT.json"
 STRATEGIC_PLAN_GENERATION_STATE_FILE = DATA_DIR / "strategic_plan_generation.json"
 MEMORY_DRAFTS_FILE = DATA_DIR / "memory_drafts.json"
 # Hermes owns Telegram polling, so a fresh installation may not have a
@@ -3507,6 +3508,97 @@ def _content_asset_file_inputs(value):
     return values
 
 
+def _expand_hermes_contact_sheet_paths(values):
+    """Replace the current Hermes transport sheet with trusted originals.
+
+    Basenames are not sufficient here: an old/stale sheet or a similarly
+    named upload must never cause a different turn's originals to be saved.
+    """
+    requested = [str(value).strip() for value in (values or []) if str(value).strip()]
+    def is_transport_sheet(value):
+        name = Path(value).name.casefold()
+        return bool(re.fullmatch(r"hermes-attachments-contact-sheet-[0-9a-f]{16}\.png", name))
+
+    sheet_values = [value for value in requested if is_transport_sheet(value)]
+    if not sheet_values:
+        return requested
+    try:
+        context = json.loads(HERMES_CURRENT_CONTEXT_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError):
+        raise ValueError("No pude validar la hoja de transporte del turno actual; reenvía las imágenes originales.")
+    if not isinstance(context, dict):
+        raise ValueError("No pude validar la hoja de transporte del turno actual; reenvía las imágenes originales.")
+    # The context is a short-lived, backend-written turn record. Reject an
+    # old copy rather than letting a reused filename select another turn.
+    try:
+        if time.time() - HERMES_CURRENT_CONTEXT_FILE.stat().st_mtime > 10 * 60:
+            raise ValueError("La hoja de transporte pertenece a un turno vencido; reenvía las imágenes originales.")
+    except OSError:
+        raise ValueError("No pude validar la vigencia de la hoja de transporte; reenvía las imágenes originales.")
+    trusted_uploads = HERMES_CURRENT_CONTEXT_FILE.parent / "uploads"
+    try:
+        trusted_uploads = trusted_uploads.resolve(strict=True)
+    except (FileNotFoundError, OSError, RuntimeError):
+        raise ValueError("No pude validar los adjuntos originales del turno; reenvía las imágenes.")
+
+    def trusted_file(raw):
+        candidate = Path(raw)
+        try:
+            # Reject symlinks in the candidate path and every directory from
+            # uploads to the file, even when resolution lands inside uploads.
+            cursor = candidate
+            while True:
+                if cursor.is_symlink():
+                    return None
+                if cursor == cursor.parent:
+                    break
+                cursor = cursor.parent
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(trusted_uploads)
+            if not resolved.is_file():
+                return None
+            return resolved
+        except (FileNotFoundError, OSError, RuntimeError, ValueError):
+            return None
+
+    cli_raw = str(context.get("cli_image_path") or "").strip()
+    cli_path = trusted_file(cli_raw) if cli_raw else None
+    if not cli_path or not is_transport_sheet(cli_path):
+        raise ValueError("La hoja indicada no coincide con el transporte del turno actual; reenvía las imágenes.")
+    # Expansion is allowed only when the requested path resolves to the exact
+    # backend-selected sheet, not merely when its basename happens to match.
+    exact_sheet = []
+    for value in sheet_values:
+        resolved = trusted_file(value)
+        if resolved is None or resolved != cli_path:
+            raise ValueError("La hoja indicada no coincide con el transporte del turno actual; reenvía las imágenes.")
+        exact_sheet.append(resolved)
+    manifest = context.get("attachment_manifest")
+    if not isinstance(manifest, list):
+        raise ValueError("Falta el manifiesto confiable de los adjuntos; reenvía las imágenes.")
+    originals = []
+    for entry in sorted((item for item in manifest if isinstance(item, dict)), key=lambda item: int(item.get("index") or 0)):
+        path = str(entry.get("source_path") or "").strip()
+        if not path or is_transport_sheet(path):
+            raise ValueError("El manifiesto de adjuntos del turno no es válido; reenvía las imágenes.")
+        trusted = trusted_file(path)
+        if trusted is None:
+            raise ValueError("Un adjunto original no pertenece al turno actual; reenvía las imágenes.")
+        originals.append(str(trusted))
+    if not originals:
+        raise ValueError("El manifiesto no contiene imágenes originales; reenvía las imágenes.")
+    expanded = []
+    for value in requested:
+        expanded.extend(originals if is_transport_sheet(value) else [value])
+    deduped = []
+    seen = set()
+    for value in expanded:
+        if value not in seen:
+            seen.add(value)
+            deduped.append(value)
+    return deduped
+
+
 def resolve_content_asset_file_paths(values, library=None):
     """Resolve an ephemeral Hermes upload to one unambiguous durable asset.
 
@@ -3619,7 +3711,9 @@ def _upsert_content_asset_item(library, *, category, purpose, notes, file_record
 
 def save_content_asset_memory(payload, chat_payload=None):
     payload = payload or {}
-    explicit_file_inputs = _content_asset_file_inputs(payload) + _content_asset_file_inputs(chat_payload or {})
+    explicit_file_inputs = _expand_hermes_contact_sheet_paths(
+        _content_asset_file_inputs(payload) + _content_asset_file_inputs(chat_payload or {})
+    )
     unique_explicit_inputs = []
     seen_explicit_inputs = set()
     for raw_path in explicit_file_inputs:
@@ -3641,8 +3735,8 @@ def save_content_asset_memory(payload, chat_payload=None):
             "Reenvía los archivos no disponibles o usa sus IDs durables."
         )
     image_paths = []
-    image_paths.extend(safe_image_paths(payload, limit=32))
-    image_paths.extend(safe_image_paths(chat_payload or {}, limit=32))
+    image_paths.extend(safe_image_paths({"image_paths": _expand_hermes_contact_sheet_paths(safe_image_paths(payload, limit=32))}, limit=32))
+    image_paths.extend(safe_image_paths({"image_paths": _expand_hermes_contact_sheet_paths(safe_image_paths(chat_payload or {}, limit=32))}, limit=32))
     image_paths.extend(durable_recovered_paths)
     raw_frame_paths = [
         str(item)
@@ -13632,6 +13726,25 @@ def codex_image_generate(payload):
         return result
     if not request:
         request = "Crear una imagen final para Meta Ads usando las guias de marca disponibles."
+    # An older model can accidentally retry a just-saved pixel-locked photo
+    # through the ordinary image path. Reject only the exact same-turn receipt;
+    # durable approvals and ordinary requests on other turns are unchanged.
+    fallback_asset_ids = requested_content_asset_ids(payload)
+    same_turn_capability = (
+        _hybrid_turn_asset_capability_for_ids(fallback_asset_ids)
+        if fallback_asset_ids and not payload.get("real_media")
+        else None
+    )
+    if same_turn_capability and (fallback_asset_ids or payload.get("reference_image_paths")):
+        return {
+            "ok": False,
+            "blocked": True,
+            "reason": "hybrid_required",
+            "hybrid_required": True,
+            "error": "La foto real del turno actual debe enviarse mediante real_media para conservarla exactamente.",
+            "retry_instruction": "Reintenta con real_media usando los mismos content_asset_id y sus slots ordenados.",
+            "content_asset_ids": fallback_asset_ids,
+        }
     product_guide, product_context_source = selected_product_guide_for_creative(payload)
     context = creative_direct_context(payload)
     if context and context not in request:
@@ -13725,7 +13838,20 @@ def codex_image_generate(payload):
             else:
                 overlay_path = result["image_path"]
                 final_path = Path(overlay_path).with_name(Path(overlay_path).stem + "-composited.png")
-                composition = compose_real_media(overlay_path, keyed_slots, final_path)
+                try:
+                    composition = compose_real_media(overlay_path, keyed_slots, final_path)
+                finally:
+                    # The provider overlay contains chroma placeholders and is
+                    # never a buyer-facing creative. Remove only the exact
+                    # provider file inside the creative root, whether mask
+                    # validation succeeds or fails, so scanners cannot later
+                    # mistake it for a finished asset.
+                    try:
+                        overlay_resolved = Path(overlay_path).resolve(strict=True)
+                        overlay_resolved.relative_to(CREATIVE_ASSET_ROOT.resolve())
+                        overlay_resolved.unlink()
+                    except (FileNotFoundError, OSError, RuntimeError, ValueError):
+                        pass
                 if not composition.get("pass"):
                     raise ValueError("La validación de máscaras del diseño híbrido no pasó; no entregaré una composición ambigua.")
                 result["image_path"] = str(final_path)
@@ -19380,6 +19506,19 @@ def handle_codex_image_generate_tool(arguments, chat_payload, tool):
             f"Done. I generated a final image with Codex/Image and saved it in Creatives. Preview: {preview}",
         )
         return agent_action_result(tool, True, reply, result=result)
+    if result.get("reason") == "hybrid_required":
+        hybrid_message = (
+            f"{result.get('error') or 'La foto real debe conservarse mediante el flujo híbrido.'} "
+            f"{result.get('retry_instruction') or 'Reintenta usando real_media.'}"
+        )
+        return agent_action_result(
+            tool,
+            False,
+            chat_reply(chat_payload, hybrid_message, hybrid_message),
+            blocked=True,
+            reason="hybrid_required",
+            result=result,
+        )
     return agent_action_result(
         tool,
         False,
