@@ -39,6 +39,20 @@ class CodexImageMcpSchemaTests(unittest.TestCase):
         )
         self.assertEqual(len(item["anyOf"]), 3)
 
+    def test_attached_photo_handoff_is_explicitly_classify_then_hybrid(self):
+        codex = self.description.lower()
+        save_description = dict(TOOL_DEFINITIONS)["save_content_asset"].lower()
+        # These are semantic operating instructions for Hermes, not a
+        # conversational keyword gate. They prevent an attachment that was
+        # archived as pending_agent_review from being silently routed through
+        # ordinary Image 2 generation.
+        self.assertIn("first inspect the batch", codex)
+        self.assertIn("save_content_asset", codex)
+        self.assertIn("returned asset ids", codex)
+        self.assertIn("pending review", save_description)
+        self.assertIn("real_media", save_description)
+        self.assertIn("this or the next tool turn", codex)
+
     def test_style_reference_is_opt_in_and_supports_pool_or_explicit(self):
         ref = self.schema["properties"]["style_reference"]
         self.assertEqual(ref["properties"]["mode"]["enum"], ["none", "pool", "explicit"])

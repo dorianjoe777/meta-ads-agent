@@ -3487,6 +3487,75 @@ def _content_asset_item_id(source_hash, category, index):
     return f"asset_{suffix}_{re.sub(r'[^a-z0-9]+', '-', category.lower()).strip('-')}"
 
 
+def _content_asset_file_inputs(value):
+    """Collect only explicit file/path fields, preserving their input order."""
+    if not isinstance(value, dict):
+        return []
+    values = []
+    for key in (
+        "file_path", "file_paths", "image_path", "image_paths",
+        "reference_image_paths", "video_frame_paths", "video_preview_frame_paths",
+    ):
+        raw = value.get(key)
+        if isinstance(raw, (list, tuple)):
+            values.extend(str(item).strip() for item in raw if str(item).strip())
+        elif raw not in (None, ""):
+            values.append(str(raw).strip())
+    return values
+
+
+def resolve_content_asset_file_paths(values, library=None):
+    """Resolve an ephemeral Hermes upload to one unambiguous durable asset.
+
+    Telegram/Hermes may retain only ``hermes-workspace/.../uploads/name.jpg``
+    after compaction.  Match that path only by exact source basename or an
+    explicit SHA prefix.  Ambiguous matches are intentionally left unresolved;
+    this function never guesses which business asset the model meant.
+    """
+    requested = [str(value).strip() for value in (values or []) if str(value).strip()]
+    if not requested:
+        return []
+    library = library if isinstance(library, dict) else load_content_asset_library()
+    indexed = []
+    for item in library.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        durable = safe_image_paths({"image_paths": item.get("file_paths") or []}, limit=32)
+        if not durable:
+            continue
+        names = {Path(path).name.casefold() for path in durable}
+        source_name = str(item.get("source_file_name") or "").strip()
+        if source_name:
+            names.add(Path(source_name).name.casefold())
+        indexed.append((item, durable, names, str(item.get("source_sha256") or "").casefold()))
+
+    resolved = []
+    for raw in requested:
+        direct = safe_image_paths({"image_paths": [raw]}, limit=1)
+        if direct:
+            resolved.extend(direct)
+            continue
+        basename = Path(raw).name.casefold()
+        match = re.search(r"(?<![0-9a-f])([0-9a-f]{8,64})(?![0-9a-f])", basename)
+        sha_prefix = match.group(1) if match else ""
+        candidates = []
+        for item, durable, names, source_sha in indexed:
+            basename_match = basename in names
+            hash_match = bool(sha_prefix and source_sha.startswith(sha_prefix))
+            if basename_match or hash_match:
+                candidates.append((item, durable))
+        if len(candidates) != 1:
+            continue
+        resolved.extend(candidates[0][1])
+    deduped = []
+    seen = set()
+    for path in resolved:
+        if path not in seen:
+            seen.add(path)
+            deduped.append(path)
+    return deduped
+
+
 def _upsert_content_asset_item(library, *, category, purpose, notes, file_record=None, url="", payload=None):
     payload = payload or {}
     items = library.setdefault("items", [])
@@ -3547,9 +3616,31 @@ def _upsert_content_asset_item(library, *, category, purpose, notes, file_record
 
 def save_content_asset_memory(payload, chat_payload=None):
     payload = payload or {}
+    explicit_file_inputs = _content_asset_file_inputs(payload) + _content_asset_file_inputs(chat_payload or {})
+    unique_explicit_inputs = []
+    seen_explicit_inputs = set()
+    for raw_path in explicit_file_inputs:
+        normalized = str(raw_path).strip()
+        if normalized and normalized not in seen_explicit_inputs:
+            seen_explicit_inputs.add(normalized)
+            unique_explicit_inputs.append(normalized)
+    durable_recovered_paths = []
+    unresolved_explicit_inputs = []
+    for raw_path in unique_explicit_inputs:
+        resolved_paths = resolve_content_asset_file_paths([raw_path])
+        if not resolved_paths:
+            unresolved_explicit_inputs.append(raw_path)
+            continue
+        durable_recovered_paths.extend(resolved_paths)
+    if unresolved_explicit_inputs:
+        raise ValueError(
+            "No pude resolver todos los archivos indicados; no guardaré un lote parcial. "
+            "Reenvía los archivos no disponibles o usa sus IDs durables."
+        )
     image_paths = []
     image_paths.extend(safe_image_paths(payload, limit=32))
     image_paths.extend(safe_image_paths(chat_payload or {}, limit=32))
+    image_paths.extend(durable_recovered_paths)
     raw_frame_paths = [
         str(item)
         for item in (payload.get("video_frame_paths") or payload.get("video_preview_frame_paths") or [])
@@ -3562,6 +3653,11 @@ def save_content_asset_memory(payload, chat_payload=None):
         if path not in seen:
             seen.add(path)
             deduped_paths.append(path)
+    if unique_explicit_inputs and not deduped_paths:
+        raise ValueError(
+            "No pude resolver ningún archivo indicado; no declararé que el asset quedó guardado. "
+            "Reenvía el archivo o usa el ID del asset durable."
+        )
     urls = [
         str(payload.get(key) or "").strip()
         for key in ("url", "asset_url", "source_url", "public_url", "video_url", "direct_url")
@@ -3624,6 +3720,8 @@ def save_content_asset_memory(payload, chat_payload=None):
     )
     return {
         "saved": True,
+        "asset_id": str(saved_items[0].get("id") or ""),
+        "asset_ids": [str(item.get("id") or "") for item in saved_items if str(item.get("id") or "")],
         "asset": saved_items[0],
         "assets": saved_items,
         "saved_asset_count": len(saved_items),
