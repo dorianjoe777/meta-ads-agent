@@ -669,7 +669,7 @@ del proveedor.
 
 ## 15. Evidencia local y pendientes antes de vender/activar
 
-El candidato tiene 134 pruebas automatizadas para resolución de identidad, dos raíces
+El candidato tiene 135 pruebas automatizadas para resolución de identidad, dos raíces
 tenant distintas, sesiones separadas, comandos nativos, autorización de reset,
 medios, cursor durable, fencing/reintentos, scheduler, límite de capacidad,
 bloqueo de instancia y gate de tenants activos. También pasan la compilación

@@ -40,8 +40,15 @@ if [[ "$ready" != true ]]; then
   exit 1
 fi
 
-docker compose --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compose.yaml" exec -T postgres \
-  sh -ec 'export PGPASSWORD="$(cat /run/secrets/postgres_password)"; for migration in /docker-entrypoint-initdb.d/*.sql; do psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f "$migration"; done'
+# Stream every migration from this exact release. A long-lived PostgreSQL
+# container can retain the former bind-mount inode after an atomic directory
+# swap, so reading /docker-entrypoint-initdb.d here could silently miss a new
+# migration from the candidate release.
+for migration in "$ROOT_DIR"/db/migrations/*.sql; do
+  docker compose --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compose.yaml" exec -T postgres \
+    sh -ec 'export PGPASSWORD="$(cat /run/secrets/postgres_password)"; exec psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+    < "$migration"
+done
 
 # Feed this file over stdin instead of bind-mounting one inode. Atomic release
 # copies may replace the host inode while a long-lived PostgreSQL container

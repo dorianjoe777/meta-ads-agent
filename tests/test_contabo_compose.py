@@ -139,6 +139,12 @@ class ContaboComposeTests(unittest.TestCase):
         self.assertIn("/etc/admira/hosted-gemini-api-key", installer)
         self.assertIn("rm -f /etc/admira/hosted-gemini-api-key", installer)
 
+    def test_apply_streams_migrations_from_the_exact_release(self):
+        apply_script = (COMPOSE.parent / "apply-control-plane.sh").read_text(encoding="utf-8")
+        self.assertIn('for migration in "$ROOT_DIR"/db/migrations/*.sql', apply_script)
+        self.assertIn('< "$migration"', apply_script)
+        self.assertNotIn('for migration in /docker-entrypoint-initdb.d/*.sql', apply_script)
+
     def test_tenants_and_control_services_never_mount_docker_socket(self):
         self.assertNotIn("/var/run/docker.sock", self.text)
 
