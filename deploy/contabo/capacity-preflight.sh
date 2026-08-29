@@ -10,7 +10,18 @@ printf '%s\n' 'Admira Contabo capacity preflight (read-only)'
 if command -v nproc >/dev/null 2>&1; then printf 'cpu_count=%s\n' "$(nproc)"; fi
 
 if command -v free >/dev/null 2>&1; then
-  free -b | awk 'NR==1 || NR==2 || NR==3 {print "memory_" tolower($1) "_bytes=" $2 " used_bytes=" $3 " available_bytes=" $7}'
+  free -b | awk '
+    $1 == "Mem:" {
+      print "memory_total_bytes=" $2 \
+        " memory_used_bytes=" $3 \
+        " memory_available_bytes=" $7
+    }
+    $1 == "Swap:" {
+      print "swap_total_bytes=" $2 \
+        " swap_used_bytes=" $3 \
+        " swap_free_bytes=" $4
+    }
+  '
 else
   printf '%s\n' 'WARN memory=free command unavailable'
 fi

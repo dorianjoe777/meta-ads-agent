@@ -193,7 +193,10 @@ canary is approved should an operator run:
 ```bash
 docker compose --profile buyers build
 docker compose --profile buyers up -d \
-  --scale telegram-poller=1 --scale telegram-delivery=1
+  --scale telegram-poller=1 \
+  --scale runtime-worker=1 \
+  --scale telegram-delivery=1 \
+  --scale scheduler-worker=1
 ```
 
 Do not run that activation command during infrastructure preparation.

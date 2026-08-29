@@ -18,14 +18,14 @@ convierten este despliegue en el futuro producto SaaS.
 | Elemento | Valor |
 | --- | --- |
 | Rama de trabajo | `feat/contabo-multitenant` |
-| Último commit funcional desplegado | `e607f0437516723f36774a34d31311c68044ee8e` |
+| Último commit funcional desplegado | `3babd8b7989827512dea0ceeb8234cb99aa41312` |
 | SHA exacto activo | `/srv/admira/control-plane/DEPLOYED_COMMIT` |
 | Imagen de cada tenant | `admira-ia:r90` |
 | Commit de la imagen tenant | `d03707465a5fedf7e5d1bb6b528365b299795540` |
 | Manifiesto de la imagen tenant | `5df0e07e8b4a10e59a5b9c3659336f9b3a55ab556beaa67c2faba218dabc99db` |
 | Servidor | Contabo Cloud VPS 4, Ubuntu 24.04, Docker 29.1.3 |
 | Bot central canario | `@admiraia_bot` (`bot_id=8884068904`) |
-| Estado de compradores | **Canary activo**: cuatro workers, un binding canario y un claim privado pendiente |
+| Estado de compradores | **Canary activo**: cuatro servicios singleton, un `runtime-worker`, un binding canario y un claim privado pendiente |
 
 El 29 de agosto de 2026 se recuperó el acceso SSH autorizado y se desplegó el
 commit funcional `a11ea43` desde un archive verificado por SHA-256. Se guardó
@@ -59,6 +59,16 @@ efímero y privado en `/run/admira-runtime-broker/docker-config` (directorio
 se suspendió `canary-one` y el broker lo despertó por sí mismo con cero
 reinicios; luego se recuperó únicamente el update `Hola`. Los dos `/start`
 fallidos quedaron `dead` deliberadamente para no duplicar la bienvenida.
+
+El 29 de agosto de 2026 se desplegó después `3babd8b` desde un archive con 28
+archivos verificados. Antes del cambio se guardaron y validaron el dump
+PostgreSQL y el release anterior en
+`/srv/admira/backups/deploy-3babd8b-20260829T225759Z/`; desde ese release se
+reconstruyó además la imagen etiquetada de reversión. La migración 006 quedó
+aplicada, el broker reinició con normal/hard `4/4` y los cuatro servicios del
+control plane quedaron en la imagen nueva con cero reinicios. El perfil live
+continúa deliberadamente con un solo `runtime-worker`; el perfil 6/8 sigue sin
+activar hasta completar el soak.
 
 ## 2. Qué se construyó
 
@@ -385,7 +395,7 @@ modo restrictivo; no se copian archivos sueltos desde una versión anterior.
 ## 8. Último estado verificado de la instalación Contabo
 
 La siguiente verificación se hizo sobre el servidor Contabo
-(`169.58.246.232`) después de desplegar `e607f04`:
+(`169.58.246.232`) después de desplegar `3babd8b`:
 
 - Host `vmi3537882`; Docker responde correctamente.
 - PostgreSQL y Redis están activos y saludables.
@@ -404,22 +414,20 @@ La siguiente verificación se hizo sobre el servidor Contabo
   permanecen `dead`; no se reencolaron porque la bienvenida ya había sido
   entregada. La recuperación transaccional seleccionó exactamente un `Hola`
   sin outbox previo y conservó su contador de intentos.
-- Las migraciones 004 y 005 están aplicadas. El gate activo del tenant y la
-  rama durable de `telegram_rate_limited` son visibles en las funciones reales.
-- La migración 006 y el perfil 6+2 descritos más abajo pertenecen al candidato
-  actual: se validaron en PostgreSQL 16 desechable, pero todavía no están
-  aplicados ni activados en la base live de esta fotografía. Live conserva un
-  `runtime-worker` y el límite legacy de cuatro hasta completar backup,
-  despliegue y soak escalonado.
+- Las migraciones 004, 005 y 006 están aplicadas. El gate activo del tenant, la
+  rama durable de `telegram_rate_limited`, los contadores separados de espera
+  por capacidad y los claims LRU con fencing son visibles en las funciones
+  reales. Live conserva un `runtime-worker` y normal/hard `4/4`; el perfil 6/8
+  descrito más abajo sigue siendo candidato y no está activado.
 - La imagen compartida `admira-control-plane:r1` fue reconstruida y
   `admira-ia:r90` sigue presente y fijada para los tenants.
-- Los 25 archivos versionados coinciden con el manifiesto del release; ambos
-  marcadores remotos quedaron reconciliados con `e607f04`.
+- Los 28 archivos versionados coinciden con el manifiesto del release; ambos
+  marcadores remotos quedaron reconciliados con `3babd8b`.
 - El dump PostgreSQL previo se validó con `pg_restore --list`; el código y las
-  raíces tenant previas están en
-  `/srv/admira/backups/deploy-e607f04-20260829T170158Z/`. Los archivos tenant
-  que requieren root se copiaron con privilegio acotado y el tar resultante se
-  validó; los secretos y `.env` conservaron sus fingerprints durante la copia.
+  dos copias recuperables del control plane previo están en
+  `/srv/admira/backups/deploy-3babd8b-20260829T225759Z/`. Las raíces tenant no
+  se modificaron durante este despliegue; los secretos y `.env` del release
+  activo conservaron permisos privados.
 
 Esto significa que la infraestructura y el bot ya completaron un turno real
 con la identidad canaria vinculada a `canary-one`. `canary-two` continúa sin
@@ -684,10 +692,11 @@ claims LRU distintos y que un claim `stopping` expirado se recupera. Una prueba
 separada confirmó que un 429 agotado continúa en `retry` mientras un error
 genérico agotado termina en `dead`.
 
-En Contabo se verificaron además hashes del release, backup, migraciones 004/005,
-imagen de workers, imagen tenant r90, broker/socket, límite de cuatro runtimes,
-salud de PostgreSQL/Redis, despertar en frío controlado por el broker, un turno
-Telegram completo y las cuatro réplicas `buyers` sin reinicios ni errores.
+En Contabo se verificaron además hashes del release, backup, migraciones
+004/005/006, imagen de workers, imagen tenant r90, broker/socket, normal/hard
+`4/4`, salud de PostgreSQL/Redis, despertar en frío controlado por el broker,
+un turno Telegram completo y una réplica de cada uno de los cuatro servicios
+`buyers` sin reinicios ni errores.
 
 Eso no sustituye estas evidencias externas todavía pendientes:
 
