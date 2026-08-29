@@ -49,6 +49,17 @@ class HybridImageCompositorTests(unittest.TestCase):
         self.assertIn("Do not place any text, letters, numbers, labels", prompt)
         self.assertIn("fully outside the slot", prompt)
 
+    def test_prompt_reserves_named_logo_zone_without_asking_image2_to_draw_it(self):
+        prompt = build_overlay_prompt(
+            layout="hero",
+            slots=[{"slot_id": "hero", "label": "Servicio", "key_rgb": (255, 0, 255)}],
+            visual_direction="Diseño premium",
+            logo_safe_zone="top_right",
+        )
+        self.assertIn("official-logo safe zone in the top-right corner", prompt)
+        self.assertIn("place the exact official transparent logo programmatically", prompt)
+        self.assertIn("Do not draw a logo", prompt)
+
     def test_prompt_reference_modes_are_explicit(self):
         self.assertIn("one shuffled approved graphic-design reference", self._prompt("pool"))
         self.assertIn("one explicitly selected approved graphic-design reference", self._prompt("explicit"))
@@ -225,6 +236,39 @@ class HybridImageCompositorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "transparent PNG"):
             prepare_logo(opaque, "white")
         self.assertEqual(prepare_logo(opaque, "original").getpixel((0, 0))[:3], (20, 30, 40))
+
+    def test_logo_auto_position_avoids_text_like_clutter(self):
+        base = Image.new("RGB", (420, 300), (95, 95, 95))
+        draw = ImageDraw.Draw(base)
+        # High-contrast text-like strokes make the top-left visually occupied.
+        for y in range(28, 108, 12):
+            draw.rectangle((24, y, 112, y + 5), fill=(245, 245, 245))
+        # A clean dark corner should win despite both regions supporting white.
+        draw.rectangle((278, 188, 396, 276), fill=(28, 28, 28))
+        logo = Image.new("RGBA", (100, 50), (0, 0, 0, 0))
+        ImageDraw.Draw(logo).rectangle((8, 8, 92, 42), fill=(20, 25, 30, 255))
+
+        result = composite_logo(base, logo, mode="auto_contrast", position="auto", margin=24)
+
+        # The cluttered top-left remains untouched while the clean bottom-right
+        # receives the exact solid logo variant.
+        self.assertEqual(result.getpixel((55, 45))[:3], base.getpixel((55, 45)))
+        self.assertNotEqual(result.getpixel((330, 250))[:3], base.getpixel((330, 250)))
+
+    def test_logo_auto_position_prefers_uniform_field_over_clutter_with_same_luminance(self):
+        base = Image.new("RGB", (420, 300), (120, 120, 120))
+        draw = ImageDraw.Draw(base)
+        draw.rectangle((24, 24, 142, 112), fill=(30, 30, 30))
+        draw.rectangle((278, 188, 396, 276), fill=(30, 30, 30))
+        for x in range(282, 394, 10):
+            draw.line((x, 190, x, 274), fill=(210, 210, 210), width=4)
+        logo = Image.new("RGBA", (100, 50), (0, 0, 0, 0))
+        ImageDraw.Draw(logo).ellipse((8, 8, 92, 42), fill=(20, 25, 30, 255))
+
+        result = composite_logo(base, logo, mode="auto_contrast", position="auto", margin=24)
+
+        self.assertNotEqual(result.getpixel((70, 50))[:3], base.getpixel((70, 50)))
+        self.assertEqual(result.getpixel((330, 250))[:3], base.getpixel((330, 250)))
 
 
 if __name__ == "__main__":

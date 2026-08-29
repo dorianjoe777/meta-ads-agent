@@ -13923,6 +13923,7 @@ def codex_image_generate(payload):
                 include_logo = bool(not image_purpose_is_motion(purpose) and official_logo and not logo_text_disables_official_use(request.lower()) and not logo_text_disables_official_use(logo_usage))
             else:
                 include_logo = explicit_logo_requested
+            resolved_logo_position = logo_position if logo_position != "auto" else "top_right"
             if include_logo and official_logo:
                 # Validate transparency-dependent solid modes before spending
                 # an Image 2 generation. `original` remains valid for opaque
@@ -13944,6 +13945,7 @@ def codex_image_generate(payload):
                 objective=semantic_context["objective"],
                 audience=semantic_context["audience"],
                 format_hint=semantic_context["format_hint"],
+                logo_safe_zone=resolved_logo_position if include_logo else "",
                 style_reference_mode=str(style_evidence.get("mode") or "none"),
             )
             # Deliberately only the opt-in style reference enters the provider.
@@ -13987,9 +13989,9 @@ def codex_image_generate(payload):
                     raise ValueError("Se solicitó el logo oficial, pero no hay un logo clasificado guardado.")
                 if include_logo and official_logo:
                     brand_rgb = _hybrid_rgb_palette(palette_values)
-                    logo_image = composite_logo(result["image_path"], official_logo, mode=logo_color_mode, position=logo_position, brand_primary=brand_rgb[0] if brand_rgb else (255, 128, 0), brand_secondary=brand_rgb[1] if len(brand_rgb) > 1 else (0, 128, 255))
+                    logo_image = composite_logo(result["image_path"], official_logo, mode=logo_color_mode, position=resolved_logo_position, brand_primary=brand_rgb[0] if brand_rgb else (255, 128, 0), brand_secondary=brand_rgb[1] if len(brand_rgb) > 1 else (0, 128, 255))
                     logo_image.save(final_path, "PNG")
-                    result["hybrid"]["logo"] = {"applied": True, "mode": logo_color_mode}
+                    result["hybrid"]["logo"] = {"applied": True, "mode": logo_color_mode, "position": resolved_logo_position}
                 if isinstance(result.get("hybrid", {}).get("composition"), dict):
                     composition_evidence = result["hybrid"]["composition"]
                     pre_logo_hash = composition_evidence.get("output_sha256")

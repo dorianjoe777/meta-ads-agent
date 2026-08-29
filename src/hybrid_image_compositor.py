@@ -324,6 +324,7 @@ def build_overlay_prompt(
     objective: str = "",
     audience: str = "",
     format_hint: str = "",
+    logo_safe_zone: str = "",
     style_reference_mode: str = "none",
     use_style_reference_pool: bool | None = None,
 ) -> str:
@@ -378,6 +379,15 @@ def build_overlay_prompt(
     else:
         lines.append(
             "No structured on-image text was supplied. Derive only a concise, commercially useful title, up to three short benefit/feature lines, and a fitting CTA from the confirmed buyer request and active-offer context. Omit any element that lacks support. Never invent a price, discount, guarantee, testimonial, credential, measurable result, promotion, or business fact, and never describe generated wording as buyer-approved."
+        )
+    if logo_safe_zone:
+        normalized_logo_zone = str(logo_safe_zone).strip().lower().replace("-", "_")
+        if normalized_logo_zone not in {"top_left", "top_right", "bottom_left", "bottom_right"}:
+            raise ValueError("logo_safe_zone must be a named corner")
+        readable_zone = normalized_logo_zone.replace("_", "-")
+        lines.append(
+            f"Reserve a clean official-logo safe zone in the {readable_zone} corner, sized for a logo up to roughly 22% of canvas width with proportional height. "
+            "Keep all text, CTA elements, media slots, faces, products, and critical artwork outside that zone. Continue the surrounding background naturally through it, but keep it visually calm and high-contrast. Do not draw a logo, logo-like symbol, placeholder, box, label, or watermark there; the application will place the exact official transparent logo programmatically after generation."
         )
     lines.append("Replaceable media windows are EMPTY RESERVED SLOTS. Do not place any text, letters, numbers, labels, icons, logos, borders, patterns, gradients, textures, shadows, glow, or artwork inside a slot. Put every label (including ANTES/DESPUÉS and service names) fully outside the slot, in the surrounding composition, with visible separation.")
     lines.append("Use each key colour exactly once, as one uninterrupted contiguous flat solid fill per slot, and nowhere else in the artwork. Keep every other graphic and every character visibly distinct from every key colour; do not punch holes or add marks inside a slot.")
@@ -439,21 +449,45 @@ def composite_logo(base: str | Path | Image.Image, logo: str | Path | Image.Imag
     positions = {name: (max(0, min(canvas.width - prepared.width, x)),
                         max(0, min(canvas.height - prepared.height, y)))
                  for name, (x, y) in positions.items()}
-    def region_luminance(xy: tuple[int, int]) -> float:
+    def region_metrics(xy: tuple[int, int]) -> tuple[float, float, float]:
         x0, y0 = xy
-        values = []
-        # Sample a small grid in the actual post-resize logo rectangle. This
-        # avoids passing a position name as variadic coordinates and ensures
-        # every auto choice remains on-canvas.
-        for gy in range(0, max(1, prepared.height), max(1, prepared.height // 5)):
-            for gx in range(0, max(1, prepared.width), max(1, prepared.width // 5)):
-                r, g, b, _ = canvas.getpixel((x0 + gx, y0 + gy))
-                values.append((0.2126 * r + 0.7152 * g + 0.0722 * b) / 255)
-        return sum(values) / len(values)
+        x1 = min(canvas.width, x0 + prepared.width)
+        y1 = min(canvas.height, y0 + prepared.height)
+        region = canvas.crop((x0, y0, max(x0 + 1, x1), max(y0 + 1, y1))).convert("L")
+        # Downsample the actual logo rectangle so the score is inexpensive and
+        # stable across output sizes. Contrast alone used to prefer text-heavy
+        # corners; local edges and variance now penalize visually occupied
+        # regions without needing OCR, another model, or a fixed layout rule.
+        region.thumbnail((32, 32), Image.Resampling.BILINEAR)
+        width, height = region.size
+        values = [value / 255 for value in region.getdata()]
+        mean = sum(values) / max(1, len(values))
+        variance = math.sqrt(sum((value - mean) ** 2 for value in values) / max(1, len(values)))
+        edge_total = 0.0
+        edge_count = 0
+        pixels = region.load()
+        for y in range(height):
+            for x in range(width):
+                if x:
+                    edge_total += abs(pixels[x, y] - pixels[x - 1, y]) / 255
+                    edge_count += 1
+                if y:
+                    edge_total += abs(pixels[x, y] - pixels[x, y - 1]) / 255
+                    edge_count += 1
+        edge_density = edge_total / max(1, edge_count)
+        return mean, edge_density, min(1.0, variance * 2)
+
+    def region_luminance(xy: tuple[int, int]) -> float:
+        return region_metrics(xy)[0]
+
+    def placement_score(xy: tuple[int, int]) -> float:
+        luminance, edge_density, variance = region_metrics(xy)
+        best_solid_contrast = max(luminance, 1 - luminance)
+        return best_solid_contrast - 0.35 * edge_density - 0.15 * variance
     if position == "auto":
-        # Prefer a corner with a clearly light or dark local field, which lets
-        # a solid white/black logo achieve stronger contrast without a plate.
-        xy = max(positions.values(), key=lambda candidate: abs(region_luminance(candidate) - 0.5))
+        # Prefer a clean corner where either a white or black exact logo has
+        # strong contrast. Existing text and texture reduce the score.
+        xy = max(positions.values(), key=placement_score)
         position = xy
     if mode == "auto_contrast":
         local_luminance = region_luminance(tuple(position) if not isinstance(position, str) else positions[position])
