@@ -18,25 +18,26 @@ convierten este despliegue en el futuro producto SaaS.
 | Elemento | Valor |
 | --- | --- |
 | Rama de trabajo | `feat/contabo-multitenant` |
-| Último commit desplegado | `7136bed64e68a6007c3bc647d68e802dbbbd856b` |
+| Último commit funcional desplegado | `a11ea43a8b18c84d3ad6b852e5bb79b4c7a27727` |
+| SHA exacto activo | `/srv/admira/control-plane/DEPLOYED_COMMIT` |
 | Imagen de cada tenant | `admira-ia:r90` |
 | Commit de la imagen tenant | `d03707465a5fedf7e5d1bb6b528365b299795540` |
 | Manifiesto de la imagen tenant | `5df0e07e8b4a10e59a5b9c3659336f9b3a55ab556beaa67c2faba218dabc99db` |
 | Servidor | Contabo Cloud VPS 4, Ubuntu 24.04, Docker 29.1.3 |
 | Estado de compradores | **Desactivado**: no hay token central instalado y no se inició el perfil `buyers` |
 
-El commit `7136bed` es el último código que se desplegó en el servidor. Tanto
-la documentación de `7a34e2f` como la implementación posterior descrita aquí
-pertenecen al candidato y no deben asumirse presentes en Contabo. Antes de una
-actualización se debe repetir la verificación de integridad indicada abajo.
+El 29 de agosto de 2026 se recuperó el acceso SSH autorizado y se desplegó el
+commit funcional `a11ea43` desde un archive verificado por SHA-256. Se guardó
+un dump validado de PostgreSQL y una copia recuperable del release anterior en
+`/srv/admira/backups/deploy-a11ea43-20260829T152412Z/`; después se aplicaron las
+cuatro migraciones, se reconstruyó la imagen compartida de workers y se
+reinició el broker con el código nuevo.
 
-Los cambios posteriores a `7a34e2f` que cierran la experiencia Telegram están
-en el candidato de release actual y todavía no están desplegados. El 29 de
-agosto de 2026 el servidor no pudo revalidarse porque todas las identidades SSH
-disponibles fueron rechazadas por `publickey`; además, el archivo local del
-token central sigue vacío. Hasta registrar un nuevo SHA en `DEPLOYED_COMMIT`,
-el estado remoto continúa siendo el último estado documentado de `7136bed`, no
-el candidato actual descrito en las secciones de verificación.
+`DEPLOYED_COMMIT` es la fuente autoritativa del SHA exacto activo y puede incluir
+un commit posterior limitado a documentación. El código funcional de
+`a11ea43` ya está en Contabo; lo que sigue desactivado deliberadamente es el
+tráfico real de compradores porque el token central permanece vacío y todavía
+no existen los dos tenants canarios.
 
 ## 2. Qué se construyó
 
@@ -344,9 +345,8 @@ modo restrictivo; no se copian archivos sueltos desde una versión anterior.
 
 ## 8. Último estado verificado de la instalación Contabo
 
-La siguiente es la última verificación histórica hecha sobre el servidor
-Contabo (`169.58.246.232`), correspondiente al despliegue `7136bed`; no afirma
-que el candidato local actual ya esté allí:
+La siguiente verificación se hizo sobre el servidor Contabo
+(`169.58.246.232`) después de desplegar `a11ea43`:
 
 - Host `vmi3537882`; Docker responde correctamente.
 - Sólo están activos `admira-control-plane-postgres-1` y
@@ -357,10 +357,14 @@ que el candidato local actual ya esté allí:
   están arrancados.
 - PostgreSQL está limpio: `tenants=0`, `bindings=0`, `inbox=0`, `outbox=0`,
   `claims=0`.
-- Los cinco logins de servicio autentican y la validación de privilegio reporta
-  `least_privilege=true`.
-- Se conservaron sólo `r90` y el release actual del control plane como activos;
-  releases intermedios están fuera de la ruta activa en backups recuperables.
+- La migración 004 está aplicada y las tres funciones de dispatch/lease exigen
+  que el tenant esté activo; los roles restringidos fueron actualizados.
+- La imagen compartida `admira-control-plane:r1` fue reconstruida y
+  `admira-ia:r90` sigue presente y fijada para los tenants.
+- Los 24 archivos desplegables coinciden byte por byte con el commit funcional;
+  ambos marcadores remotos quedaron reconciliados al mismo SHA.
+- El release anterior y el dump previo están en el backup recuperable indicado
+  en la sección 1.
 
 Esto significa que todavía no hay compradores activos ni tráfico real de
 Telegram. Es intencional, no un fallo de entrega.
@@ -545,24 +549,27 @@ en un reinicio del host ni aumentar el límite sin una medición dirigida.
 
 ## 15. Evidencia local y pendientes antes de vender/activar
 
-El candidato local ya tiene pruebas automatizadas para resolución de identidad,
-dos raíces tenant distintas, sesiones separadas, comandos nativos, autorización
-de reset, medios, cursor durable, fencing/reintentos, scheduler, límite de
-capacidad, bloqueo de instancia y gate de tenants activos. También pasan la
-compilación Python/Bash, `git diff --check` y ambos perfiles de
+El release tiene pruebas automatizadas para resolución de identidad, dos raíces
+tenant distintas, sesiones separadas, comandos nativos, autorización de reset,
+medios, cursor durable, fencing/reintentos, scheduler, límite de capacidad,
+bloqueo de instancia y gate de tenants activos. También pasan la compilación
+Python/Bash, `git diff --check` y ambos perfiles de
 `docker compose config --quiet`. Las cuatro migraciones se aplicaron desde cero
 en PostgreSQL 16 desechable; el fixture completo confirmó claim, binding,
 inbox, lease, outbox, scheduler, roles restringidos y el gate de tenant
 inactivo.
 
+En Contabo se verificaron además hashes del release, backup, migración 004,
+imagen de workers, imagen tenant r90, broker/socket, límite de cuatro runtimes,
+salud de PostgreSQL/Redis, base vacía y ausencia de cualquier worker `buyers`.
+
 Eso no sustituye estas evidencias externas todavía pendientes:
 
-1. Recuperar acceso SSH autorizado al VPS y desplegar el candidato como un
-   release completo, con backup previo y un nuevo `DEPLOYED_COMMIT`.
-2. Instalar el token central real. El archivo disponible durante esta revisión
+1. Instalar el token central real. El archivo disponible durante esta revisión
    tiene cero bytes, así que no puede hacerse tráfico de Telegram real.
-3. Aplicar la migración 004 mediante el despliegue controlado y ejecutar el
-   canary dirigido de la sección 10 con dos tenants: comandos,
+2. Provisionar los dos tenants canarios del operador y ejecutar
+   `release-preflight.sh --server` hasta que el gate completo pase.
+3. Ejecutar el canary dirigido de la sección 10 con esos dos tenants: comandos,
    conexión del modelo, OAuth de Meta en dry-run, foto/video/PDF, generación y
    entrega de creativos, scheduler, suspensión/despertar y recuperación de un
    worker interrumpido.
@@ -570,7 +577,7 @@ Eso no sustituye estas evidencias externas todavía pendientes:
    cronjob o respuesta cruzó de un canario al otro y observar recursos/colas
    antes de emitir claims a compradores reales.
 
-Hasta cerrar esos puntos, el control plane debe considerarse **candidato de
-release listo para canary, con despliegue externo bloqueado**, no un servicio
-comercial activado. Ninguno de estos pendientes requiere construir dashboard o
-el futuro producto SaaS.
+Hasta cerrar esos puntos, el control plane debe considerarse **infraestructura
+desplegada y lista para canary, con activación bloqueada por el token y las
+evidencias canarias**, no un servicio comercial activado. Ninguno de estos
+pendientes requiere construir dashboard o el futuro producto SaaS.
