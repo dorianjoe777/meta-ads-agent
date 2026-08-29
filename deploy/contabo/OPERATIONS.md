@@ -18,14 +18,14 @@ convierten este despliegue en el futuro producto SaaS.
 | Elemento | Valor |
 | --- | --- |
 | Rama de trabajo | `feat/contabo-multitenant` |
-| Último commit funcional desplegado | `d4766cbf475ece16c7a7440a23ae739396cdecda` |
+| Último commit funcional desplegado | `e607f0437516723f36774a34d31311c68044ee8e` |
 | SHA exacto activo | `/srv/admira/control-plane/DEPLOYED_COMMIT` |
 | Imagen de cada tenant | `admira-ia:r90` |
 | Commit de la imagen tenant | `d03707465a5fedf7e5d1bb6b528365b299795540` |
 | Manifiesto de la imagen tenant | `5df0e07e8b4a10e59a5b9c3659336f9b3a55ab556beaa67c2faba218dabc99db` |
 | Servidor | Contabo Cloud VPS 4, Ubuntu 24.04, Docker 29.1.3 |
 | Bot central canario | `@admiraia_bot` (`bot_id=8884068904`) |
-| Estado de compradores | **Canary activo**: cuatro workers, dos claims privados pendientes y cero bindings |
+| Estado de compradores | **Canary activo**: cuatro workers, un binding canario y un claim privado pendiente |
 
 El 29 de agosto de 2026 se recuperó el acceso SSH autorizado y se desplegó el
 commit funcional `a11ea43` desde un archive verificado por SHA-256. Se guardó
@@ -42,12 +42,23 @@ manifiesto verificados. Antes del cambio se creó y validó el backup
 `/srv/admira/backups/deploy-d4766cb-20260829T163522Z/`. La migración 005, el
 registro seguro de claims por stdin y la cadencia durable del bot compartido
 quedaron activos; el perfil `buyers` se arrancó con exactamente una réplica de
-cada worker después del gate de servidor. Los dos claims canarios aún no se
-han consumido, por lo que no existe tráfico ni binding de comprador real.
+cada worker después del gate de servidor. En ese corte inicial, los dos claims
+canarios todavía estaban sin consumir. Después, `canary-one` se vinculó durante
+la prueba real descrita abajo; `canary-two` continúa reservado y sin binding.
 
 El token instalado sirve sólo para este canary. Como el valor original pasó
 por una conversación de soporte, se debe revocar/rotar en BotFather e instalar
 el reemplazo por un canal fuera del chat antes de admitir compradores reales.
+
+El primer mensaje real descubrió que `ProtectHome=true` impedía a la CLI de
+Docker localizar Compose cuando el broker intentaba despertar un tenant. El
+commit `e607f04` conserva esa protección y configura un `DOCKER_CONFIG` vacío,
+efímero y privado en `/run/admira-runtime-broker/docker-config` (directorio
+0700, archivo 0600). También conserva códigos operativos seguros como
+`runtime_start_failed`, sin devolver stderr de Docker. Después del despliegue
+se suspendió `canary-one` y el broker lo despertó por sí mismo con cero
+reinicios; luego se recuperó únicamente el update `Hola`. Los dos `/start`
+fallidos quedaron `dead` deliberadamente para no duplicar la bienvenida.
 
 ## 2. Qué se construyó
 
@@ -352,6 +363,7 @@ inodos obsoletos de mounts de un solo archivo durante una actualización.
 /srv/admira/shared/telegram-spool/outbound/ # medios salientes (GID 19092)
 /run/admira-runtime-broker/broker.sock      # socket HMAC (GID 19091, modo 660)
 /run/admira-runtime-broker/broker.lock      # exclusión de instancia, modo 600
+/run/admira-runtime-broker/docker-config/   # config CLI privada; permite Compose con ProtectHome
 /etc/admira/runtime-broker.key              # clave del servicio systemd (modo 600)
 /etc/admira/hosted-gemini-api-key           # proveedor opcional para tenants nuevos
 /srv/admira/backups/                         # dumps y copias de recuperación
@@ -364,7 +376,7 @@ modo restrictivo; no se copian archivos sueltos desde una versión anterior.
 ## 8. Último estado verificado de la instalación Contabo
 
 La siguiente verificación se hizo sobre el servidor Contabo
-(`169.58.246.232`) después de desplegar `d4766cb`:
+(`169.58.246.232`) después de desplegar `e607f04`:
 
 - Host `vmi3537882`; Docker responde correctamente.
 - PostgreSQL y Redis están activos y saludables.
@@ -376,21 +388,29 @@ La siguiente verificación se hizo sobre el servidor Contabo
   `telegram-poller`, `runtime-worker`, `telegram-delivery` y
   `scheduler-worker`; sus logs de arranque no muestran conflicto, excepción ni
   error de autorización.
-- PostgreSQL contiene `tenants=2`, `claims_sin_usar=2`, `bindings=0`, `inbox=0`
-  y `outbox=0`: sólo `canary-one` y `canary-two` están provisionados.
+- PostgreSQL contiene dos tenants: `canary-one` tiene un binding, su `Hola`
+  está `processed` y todos sus envíos tienen ACK de Telegram; `canary-two`
+  conserva un claim sin usar y cero bindings. No hay inbox/outbox pendientes.
+- Los dos updates `/start` que agotaron intentos durante el fallo inicial
+  permanecen `dead`; no se reencolaron porque la bienvenida ya había sido
+  entregada. La recuperación transaccional seleccionó exactamente un `Hola`
+  sin outbox previo y conservó su contador de intentos.
 - Las migraciones 004 y 005 están aplicadas. El gate activo del tenant y la
   rama durable de `telegram_rate_limited` son visibles en las funciones reales.
 - La imagen compartida `admira-control-plane:r1` fue reconstruida y
   `admira-ia:r90` sigue presente y fijada para los tenants.
 - Los 25 archivos versionados coinciden con el manifiesto del release; ambos
-  marcadores remotos quedaron reconciliados con `d4766cb`.
+  marcadores remotos quedaron reconciliados con `e607f04`.
 - El dump PostgreSQL previo se validó con `pg_restore --list`; el código y las
-  raíces tenant previas están en el backup recuperable indicado en la sección
-  1. Los secretos y `.env` conservaron sus fingerprints durante la copia.
+  raíces tenant previas están en
+  `/srv/admira/backups/deploy-e607f04-20260829T170158Z/`. Los archivos tenant
+  que requieren root se copiaron con privilegio acotado y el tar resultante se
+  validó; los secretos y `.env` conservaron sus fingerprints durante la copia.
 
-Esto significa que la infraestructura y el bot están escuchando para canary,
-pero todavía no hay identidades vinculadas ni compradores reales. Es
-intencional, no un fallo de entrega.
+Esto significa que la infraestructura y el bot ya completaron un turno real
+con la identidad canaria vinculada a `canary-one`. `canary-two` continúa sin
+identidad y no hay compradores reales; esa reserva es intencional hasta poder
+probar el aislamiento con una segunda cuenta de Telegram.
 
 ## 9. Procedimiento de instalación inicial
 
@@ -579,7 +599,7 @@ en un reinicio del host ni aumentar el límite sin una medición dirigida.
 
 ## 15. Evidencia local y pendientes antes de vender/activar
 
-El release tiene 111 pruebas automatizadas para resolución de identidad, dos raíces
+El release tiene 114 pruebas automatizadas para resolución de identidad, dos raíces
 tenant distintas, sesiones separadas, comandos nativos, autorización de reset,
 medios, cursor durable, fencing/reintentos, scheduler, límite de capacidad,
 bloqueo de instancia y gate de tenants activos. También pasan la compilación
@@ -592,14 +612,15 @@ mientras un error genérico agotado termina en `dead`.
 
 En Contabo se verificaron además hashes del release, backup, migraciones 004/005,
 imagen de workers, imagen tenant r90, broker/socket, límite de cuatro runtimes,
-salud de PostgreSQL/Redis, dos tenants canarios y las cuatro réplicas `buyers`
-sin reinicios ni errores de arranque.
+salud de PostgreSQL/Redis, despertar en frío controlado por el broker, un turno
+Telegram completo y las cuatro réplicas `buyers` sin reinicios ni errores.
 
 Eso no sustituye estas evidencias externas todavía pendientes:
 
-1. Abrir los dos deep-links privados pendientes desde dos identidades privadas
-   de Telegram diferentes y comprobar dos bindings/claims consumidos.
-2. Ejecutar el canary dirigido de la sección 10 con esos dos tenants: comandos,
+1. Abrir el claim todavía pendiente de `canary-two` desde una segunda identidad
+   privada de Telegram y comprobar dos bindings distintos. Una misma identidad
+   no se reutiliza para fingir esta evidencia de aislamiento.
+2. Continuar el canary dirigido de la sección 10: comandos,
    conexión del modelo, OAuth de Meta en dry-run, foto/video/PDF, generación y
    entrega de creativos, scheduler, suspensión/despertar y recuperación de un
    worker interrumpido.

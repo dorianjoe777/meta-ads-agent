@@ -126,6 +126,12 @@ runtime/scheduler receive the broker key and socket group. None mounts
 `/var/run/docker.sock`; that remains confined to the sandboxed host broker.
 All database roles have function-only permissions and no direct table access.
 
+The broker keeps `ProtectHome=true`. Its installer gives the Docker CLI a
+private, empty `DOCKER_CONFIG` below `/run/admira-runtime-broker` so Compose can
+wake a tenant without exposing the service user's home or registry credentials.
+Broker dependency failures expose only stable machine codes; Docker stderr is
+never returned through Telegram.
+
 Keep exactly one `telegram-poller` and one `telegram-delivery` replica. Telegram
 user concurrency is handled by the durable inbox/outbox and isolated tenant
 runtimes, not by duplicating token-owning workers; the poller has one long-poll
