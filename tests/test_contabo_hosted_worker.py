@@ -38,8 +38,11 @@ class Broker:
 
 
 class DeliveryStore:
-    def __init__(self, items): self.items, self.events = list(items), []
-    def claim_outbox(self, **_): result, self.items = self.items, []; return result
+    def __init__(self, items): self.items, self.events, self.claim_limits = list(items), [], []
+    def claim_outbox(self, **kwargs):
+        self.claim_limits.append(kwargs["limit"])
+        result, self.items = self.items[:kwargs["limit"]], self.items[kwargs["limit"]:]
+        return result
     def ack_outbox(self, item, **data): self.events.append((item.row_id, data)); return True
 
 
@@ -48,6 +51,19 @@ class Telegram:
     def send_text(self, bot, chat, text): self.calls.append(("text", chat, text)); return 10
     def send_media(self, bot, chat, kind, ref, caption="", sha256=""): self.calls.append((kind, chat, ref)); return 11
     def cleanup_media(self, ref): self.calls.append(("cleanup", ref))
+
+
+class RateLimitSignal(RuntimeError):
+    error_code = "telegram_rate_limited"
+    def __init__(self, retry_after):
+        self.retry_after = retry_after
+        super().__init__(self.error_code)
+
+
+class FakeClock:
+    def __init__(self): self.value, self.sleeps = 0.0, []
+    def now(self): return self.value
+    def sleep(self, amount): self.sleeps.append(amount); self.value += amount
 
 
 class SchedulerStore:
@@ -89,6 +105,7 @@ class HostedWorkerTests(unittest.TestCase):
         store, telegram = DeliveryStore([item]), Telegram()
         result = worker.OutboxWorker(store, telegram).process_once()
         self.assertEqual(result, {"sent": 1, "retried": 0})
+        self.assertEqual(store.claim_limits, [1])
         self.assertEqual([call[0] for call in telegram.calls], ["photo", "cleanup"])
         self.assertTrue(store.events[0][1]["success"])
 
@@ -111,6 +128,62 @@ class HostedWorkerTests(unittest.TestCase):
         result = worker.OutboxWorker(store, telegram).process_once()
         self.assertEqual(result, {"sent": 0, "retried": 1})
         self.assertNotIn("cleanup", [call[0] for call in telegram.calls])
+
+    def test_outbox_rate_limit_uses_bounded_retry_and_extended_attempt_budget(self):
+        item = worker.OutboxItem("o1", "t1", "bot", "123", "text", "hello", "", "", "", 8, "lease")
+        store = DeliveryStore([item])
+        class Limited:
+            def send_text(self, bot, chat, text):
+                raise RateLimitSignal(37)
+        result = worker.OutboxWorker(store, Limited(), limiter=worker.DeliveryRateLimiter(global_interval=0, chat_interval=0)).process_once()
+        self.assertEqual(result, {"sent": 0, "retried": 1})
+        self.assertEqual(store.events[0][1]["delay_seconds"], 37)
+        self.assertEqual(store.events[0][1]["max_attempts"], 20)
+        self.assertEqual(store.events[0][1]["error_code"], "telegram_rate_limited")
+
+    def test_delivery_rate_limiter_paces_global_and_per_chat(self):
+        clock = FakeClock()
+        limiter = worker.DeliveryRateLimiter(global_interval=0.5, chat_interval=1.0,
+                                             clock=clock.now, sleeper=clock.sleep)
+        limiter.before_send("chat-a")
+        limiter.before_send("chat-b")
+        limiter.before_send("chat-a")
+        self.assertEqual(clock.sleeps, [0.5, 0.5])
+
+    def test_rate_limit_defers_next_different_chat_before_claim(self):
+        clock = FakeClock()
+        limiter = worker.DeliveryRateLimiter(global_interval=0, chat_interval=0,
+                                             clock=clock.now, sleeper=clock.sleep)
+        first = worker.OutboxItem("o1", "t1", "bot", "123", "text", "one", "", "", "", 1, "l1")
+        second = worker.OutboxItem("o2", "t2", "bot", "456", "text", "two", "", "", "", 1, "l2")
+        class Telegram429ThenOK:
+            def __init__(self): self.calls = []
+            def send_text(self, bot, chat, text):
+                self.calls.append(chat)
+                if len(self.calls) == 1: raise RateLimitSignal(7)
+                return 2
+        store = DeliveryStore([first, second])
+        telegram = Telegram429ThenOK()
+        delivery = worker.OutboxWorker(store, telegram, limiter=limiter)
+        first_result = delivery.process_once()
+        second_result = delivery.process_once()
+        self.assertEqual(first_result, {"sent": 0, "retried": 1})
+        self.assertEqual(second_result, {"sent": 1, "retried": 0})
+        self.assertEqual(clock.sleeps, [7])
+        self.assertEqual(telegram.calls, ["123", "456"])
+        self.assertEqual(store.claim_limits, [1, 1])
+
+    def test_delivery_never_holds_a_batch_lease_through_backpressure(self):
+        clock = FakeClock()
+        limiter = worker.DeliveryRateLimiter(global_interval=0, chat_interval=0,
+                                             clock=clock.now, sleeper=clock.sleep)
+        items = [worker.OutboxItem(f"o{i}", "t1", "bot", str(i), "text", "x", "", "", "", 1, f"l{i}")
+                 for i in range(3)]
+        store = DeliveryStore(items)
+        delivery = worker.OutboxWorker(store, Telegram(), limiter=limiter)
+        delivery.process_once(limit=99)
+        self.assertEqual(store.claim_limits, [1])
+        self.assertEqual(len(store.items), 2)
 
     def test_scheduler_executes_and_uses_runtime_next_run(self):
         work = worker.ScheduledWork("j-db", "tenant-uuid", "client-001", "hermes-1", {"chat_id": "123"},

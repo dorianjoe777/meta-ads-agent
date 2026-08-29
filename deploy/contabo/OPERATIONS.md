@@ -267,6 +267,7 @@ db/migrations/001_initial_multitenant.sql
 db/migrations/002_telegram_ingress_control.sql
 db/migrations/003_hosted_tenant_registration.sql
 db/migrations/004_active_tenant_runtime_gate.sql
+db/migrations/005_telegram_rate_limit_retry.sql
 ```
 
 La migración 004 exige estado `active` para nuevas decisiones de claim y lease.
@@ -275,6 +276,13 @@ inactivo al reclamar/adquirir el runtime. Este gate no cancela trabajo que ya
 estaba en vuelo durante el cambio exacto de estado; para una revocación
 estricta, primero se drenan los workers del tenant y después se cambia su
 estado.
+
+La migración 005 trata `telegram_rate_limited` como backpressure del proveedor,
+no como un fallo terminal: conserva la fila de outbox en `retry` aunque supere
+el presupuesto normal de intentos. El delivery respeta el `retry_after`
+acotado que entrega Telegram, pausa globalmente nuevos envíos y además limita
+la cadencia global y por chat; errores distintos conservan su límite normal y
+pueden terminar en `dead` para no reintentarse eternamente.
 
 Las tablas con `tenant_id` tienen RLS activado y forzado. El contexto
 `admira.tenant_id` es fail-closed cuando no está definido. Los roles de servicio
@@ -414,8 +422,15 @@ La activación es un cambio deliberado y separado de la instalación:
 
    ```bash
    docker compose --profile buyers build
-   docker compose --profile buyers up -d
+   docker compose --profile buyers up -d \
+     --scale telegram-poller=1 --scale telegram-delivery=1
    ```
+
+   Se mantiene exactamente una réplica de `telegram-poller` y una de
+   `telegram-delivery`. La concurrencia de usuarios vive en PostgreSQL y en
+   runtimes aislados; no se escalan los dos procesos que poseen el token porque
+   el poller tiene un único cursor de long polling y delivery posee el estado
+   global de cadencia/backpressure.
 
 5. Abrir ambos deep-links desde dos identidades privadas de Telegram. Confirmar
    en PostgreSQL que existen dos bindings distintos y que cada claim fue

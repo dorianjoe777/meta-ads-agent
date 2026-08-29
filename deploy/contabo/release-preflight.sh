@@ -35,6 +35,7 @@ for file in compose.yaml Control.Dockerfile app-requirements.txt \
   hosted_service.py hosted_worker.py tenant_admin.py tenantctl.py \
   db/migrations/001_initial_multitenant.sql db/migrations/002_telegram_ingress_control.sql \
   db/migrations/003_hosted_tenant_registration.sql db/migrations/004_active_tenant_runtime_gate.sql \
+  db/migrations/005_telegram_rate_limit_retry.sql \
   db/bootstrap_service_roles.sql; do
   need_file "$ROOT_DIR/$file"
 done
@@ -93,9 +94,24 @@ WHERE n.nspname = 'admira'
   else
     fail 'active-tenant migration is not visible in PostgreSQL'
   fi
+  rate_limit_check_sql="SELECT count(*) = 1
+FROM pg_proc AS p
+JOIN pg_namespace AS n ON n.oid = p.pronamespace
+WHERE n.nspname = 'admira'
+  AND p.proname = 'ack_telegram_outbox'
+  AND pg_get_functiondef(p.oid) LIKE '%p_error_code = ''telegram_rate_limited''%';"
+  if printf '%s\n' "$rate_limit_check_sql" | \
+      docker compose --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compose.yaml" exec -T postgres \
+      sh -ec 'export PGPASSWORD="$(cat /run/secrets/postgres_password)"; exec psql -qAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+      2>/dev/null | grep -qx t; then
+    ok 'Telegram rate-limit retry migration is visible in PostgreSQL'
+  else
+    fail 'Telegram rate-limit retry migration is not visible in PostgreSQL'
+  fi
 else
   grep -q 'admira-ia:r90' "$ROOT_DIR/tenantctl.py" && ok 'tenant image pin is admira-ia:r90' || fail 'tenant image pin is not admira-ia:r90'
   grep -q 'status = '\''active'\''' "$ROOT_DIR/db/migrations/004_active_tenant_runtime_gate.sql" && ok 'active-tenant migration contains gate' || fail 'active-tenant migration gate missing'
+  grep -q "p_error_code = 'telegram_rate_limited'" "$ROOT_DIR/db/migrations/005_telegram_rate_limit_retry.sql" && ok 'Telegram rate-limit migration preserves retries' || fail 'Telegram rate-limit retry migration gate missing'
 fi
 
 if [[ -n "$TENANT_A" || -n "$TENANT_B" ]]; then

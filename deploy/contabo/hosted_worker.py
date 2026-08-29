@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import random
 import re
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -78,7 +79,7 @@ class RuntimeStore(Protocol):
 class DeliveryStore(Protocol):
     def claim_outbox(self, *, worker_id: str, limit: int) -> Sequence[OutboxItem]: ...
     def ack_outbox(self, item: OutboxItem, *, success: bool, message_id: int | None = None,
-                   delay_seconds: int = 30, error_code: str = "") -> bool: ...
+                   delay_seconds: int = 30, error_code: str = "", max_attempts: int = 8) -> bool: ...
 
 
 class SchedulerStore(Protocol):
@@ -100,6 +101,48 @@ class TelegramTransport(Protocol):
     def send_text(self, bot_id: str, chat_id: str, text: str) -> int: ...
     def send_media(self, bot_id: str, chat_id: str, kind: str, media_ref: str, caption: str = "", sha256: str = "") -> int: ...
     def cleanup_media(self, media_ref: str) -> None: ...
+
+
+class DeliveryRateLimiter:
+    """Serialize sends, pace the shared bot globally, and pace each chat."""
+
+    def __init__(self, *, global_interval: float = 0.05, chat_interval: float = 1.0,
+                 clock: Callable[[], float] = time.monotonic,
+                 sleeper: Callable[[float], None] = time.sleep) -> None:
+        self.global_interval = max(0.0, float(global_interval))
+        self.chat_interval = max(0.0, float(chat_interval))
+        self.clock, self.sleeper = clock, sleeper
+        self._lock = threading.Lock()
+        self._last_global = float("-inf")
+        self._blocked_until = float("-inf")
+        self._last_chat: dict[str, float] = {}
+
+    def before_send(self, chat_id: str) -> None:
+        with self._lock:
+            now = self.clock()
+            chat_last = self._last_chat.get(chat_id, float("-inf"))
+            wait = max(self._blocked_until - now,
+                       self._last_global + self.global_interval - now,
+                       chat_last + self.chat_interval - now, 0.0)
+            if wait:
+                self.sleeper(wait)
+                now = self.clock()
+            self._last_global = now
+            self._last_chat[chat_id] = now
+
+    def before_claim(self) -> None:
+        """Apply shared-bot backpressure before acquiring an outbox lease."""
+        with self._lock:
+            now = self.clock()
+            wait = max(self._blocked_until - now,
+                       self._last_global + self.global_interval - now, 0.0)
+            if wait:
+                self.sleeper(wait)
+
+    def defer(self, seconds: int) -> None:
+        """Pause every subsequent send after a Telegram rate-limit response."""
+        with self._lock:
+            self._blocked_until = max(self._blocked_until, self.clock() + max(1, int(seconds)))
 
 
 def _safe_error(value: object, fallback: str) -> str:
@@ -175,15 +218,21 @@ class RuntimeWorker:
 
 class OutboxWorker:
     def __init__(self, store: DeliveryStore, telegram: TelegramTransport, *, worker_id: str | None = None,
-                 rng: random.Random | None = None) -> None:
+                 rng: random.Random | None = None, limiter: DeliveryRateLimiter | None = None) -> None:
         self.store, self.telegram = store, telegram
         self.worker_id = worker_id or f"delivery-{uuid.uuid4().hex}"
         self.rng = rng or random.Random()
+        self.limiter = limiter or DeliveryRateLimiter()
 
     def process_once(self, *, limit: int = 20) -> dict[str, int]:
         sent = retried = 0
-        for item in self.store.claim_outbox(worker_id=self.worker_id, limit=limit):
+        # Never hold a batch of leases while Telegram backpressure is active.
+        # In particular, retry_after may be many minutes long.
+        self.limiter.before_claim()
+        claimed = self.store.claim_outbox(worker_id=self.worker_id, limit=1)
+        for item in claimed:
             try:
+                self.limiter.before_send(item.chat_id)
                 if item.kind == "text":
                     message_id = self.telegram.send_text(item.bot_id, item.chat_id, item.body)
                 else:
@@ -196,10 +245,20 @@ class OutboxWorker:
                     self.telegram.cleanup_media(item.media_ref)
                 sent += 1
             except Exception as exc:
+                rate_after = getattr(exc, "retry_after", None)
+                is_rate_limit = isinstance(rate_after, int) and getattr(exc, "error_code", "") == "telegram_rate_limited"
+                if is_rate_limit:
+                    self.limiter.defer(rate_after)
                 try:
                     self.store.ack_outbox(
-                        item, success=False, delay_seconds=retry_delay(item.attempts, rng=self.rng),
-                        error_code=_safe_error(str(exc), type(exc).__name__.lower()),
+                        item, success=False,
+                        delay_seconds=rate_after if is_rate_limit else retry_delay(item.attempts, rng=self.rng),
+                        error_code="telegram_rate_limited" if is_rate_limit else _safe_error(str(exc), type(exc).__name__.lower()),
+                        # The SQL function bounds this parameter at 20. Keep
+                        # rate-limited messages on the longest supported retry
+                        # budget instead of accidentally leaving the lease
+                        # stuck with an invalid request.
+                        max_attempts=20 if is_rate_limit else 8,
                     )
                 except Exception:
                     # A lost fencing token must not crash delivery or delete

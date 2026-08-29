@@ -37,6 +37,9 @@ class TenantAdminTests(unittest.TestCase):
         self.assertIn("admira_provisioner_login", " ".join(command))
         self.assertNotIn("telegram_bot_token", " ".join(command))
         self.assertNotIn("postgres_password", " ".join(command))
+        self.assertNotIn(" -c ", " ".join(command))
+        self.assertIn("register_hosted_tenant", run.call_args.kwargs["input"])
+        self.assertIn(":'runtime_key'", run.call_args.kwargs["input"])
 
     def test_rejects_invalid_identifiers_before_writes(self):
         with tempfile.TemporaryDirectory() as raw, patch.object(tenant_admin, "provision") as provision:
@@ -59,6 +62,9 @@ class TenantAdminTests(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertNotIn("A" * 32, command)
         self.assertIn(tenant_admin.hashlib.sha256(("A" * 32).encode()).hexdigest(), command)
+        self.assertNotIn(" -c ", " ".join(command))
+        self.assertIn("issue_telegram_tenant_claim", run.call_args.kwargs["input"])
+        self.assertNotIn("A" * 32, run.call_args.kwargs["input"])
 
 
 if __name__ == "__main__":

@@ -124,6 +124,11 @@ runtime/scheduler receive the broker key and socket group. None mounts
 `/var/run/docker.sock`; that remains confined to the sandboxed host broker.
 All database roles have function-only permissions and no direct table access.
 
+Keep exactly one `telegram-poller` and one `telegram-delivery` replica. Telegram
+user concurrency is handled by the durable inbox/outbox and isolated tenant
+runtimes, not by duplicating token-owning workers; the poller has one long-poll
+cursor and the delivery process owns the shared pacing state.
+
 PostgreSQL transactions provide deduplication, per-tenant turn ordering,
 fencing leases, ordered response parts, retries and scheduler run history. A
 container can sleep after the configured idle period without losing the
@@ -131,6 +136,12 @@ Hermes session: `runtime/`, `data/`, `output/` and brand files remain on disk.
 Inbound spool objects expire after seven days and outbound objects after
 fourteen days; successful outbound media is removed immediately after the
 fenced outbox acknowledgement.
+
+The single delivery process serializes sends, paces the shared bot globally
+and per chat, and honors Telegram's bounded `retry_after` response. Telegram
+rate limiting remains durable backpressure in the outbox instead of consuming
+the normal dead-letter attempt budget; unrelated delivery failures retain a
+finite retry budget.
 
 If Telegram media download fails, the poller retries staging twice and then
 durably enqueues a text-only resend request. The Telegram cursor advances only

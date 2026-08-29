@@ -69,14 +69,19 @@ def register(
     shell = (
         'export PGPASSWORD="$(cat /run/secrets/provisioner_db_password)"; '
         'exec psql -v ON_ERROR_STOP=1 -X -qAt -U admira_provisioner_login -d "$POSTGRES_DB" '
-        '-v runtime_key="$1" -v display_name="$2" -v bot_id="$3" -v chat_id="$4" -v user_id="$5" -c "$6"'
+        '-v runtime_key="$1" -v display_name="$2" -v bot_id="$3" -v chat_id="$4" -v user_id="$5"'
     )
     command = [
         "docker", "compose", "--project-directory", str(ROOT), "-f", str(COMPOSE),
         "exec", "-T", "postgres", "sh", "-ec", shell, "admira-register",
-        tenant_key, display_name, bot_id, chat_id, user_id, sql,
+        tenant_key, display_name, bot_id, chat_id, user_id,
     ]
-    completed = subprocess.run(command, check=False, text=True, capture_output=True)
+    # psql does not interpolate :'variables' inside a -c argument. Feed the
+    # reviewed statement over stdin so psql performs safe variable quoting and
+    # the SQL never appears in the process list.
+    completed = subprocess.run(
+        command, input=sql, check=False, text=True, capture_output=True
+    )
     if completed.returncode != 0:
         return {
             "ok": False,
@@ -140,14 +145,16 @@ def issue_claim(
     shell = (
         'export PGPASSWORD="$(cat /run/secrets/provisioner_db_password)"; '
         'exec psql -v ON_ERROR_STOP=1 -X -qAt -U admira_provisioner_login -d "$POSTGRES_DB" '
-        '-v runtime_key="$1" -v display_name="$2" -v token_hash="$3" -v ttl_seconds="$4" -c "$5"'
+        '-v runtime_key="$1" -v display_name="$2" -v token_hash="$3" -v ttl_seconds="$4"'
     )
     command = [
         "docker", "compose", "--project-directory", str(ROOT), "-f", str(COMPOSE),
         "exec", "-T", "postgres", "sh", "-ec", shell, "admira-claim",
-        tenant_key, display_name, token_hash, str(int(ttl_seconds)), sql,
+        tenant_key, display_name, token_hash, str(int(ttl_seconds)),
     ]
-    completed = subprocess.run(command, check=False, text=True, capture_output=True)
+    completed = subprocess.run(
+        command, input=sql, check=False, text=True, capture_output=True
+    )
     if completed.returncode != 0:
         return {
             "ok": False,

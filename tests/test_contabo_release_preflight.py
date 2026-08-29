@@ -16,8 +16,10 @@ class ReleasePreflightTests(unittest.TestCase):
         self.assertNotIn("CREATE TENANT", text)
         self.assertIn("admira-ia:r90", text)
         self.assertIn("004_active_tenant_runtime_gate.sql", text)
+        self.assertIn("005_telegram_rate_limit_retry.sql", text)
         self.assertIn("count(*) = 3", text)
         self.assertIn("tenant.status = ''active''", text)
+        self.assertIn("p_error_code = ''telegram_rate_limited''", text)
         self.assertIn("ADMIRA_TENANTS_BASE", text)
         self.assertIn("--profile buyers config --quiet", text)
         self.assertIn("two canary tenant IDs are required in server mode", text)
@@ -27,12 +29,17 @@ class ReleasePreflightTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--server", result.stdout)
 
-    def test_local_preflight_reports_missing_token_without_printing_value(self):
+    def test_local_preflight_reports_token_state_without_printing_value(self):
         result = subprocess.run([str(SCRIPT), "--local"], text=True, capture_output=True)
-        # Local preparation is allowed to omit the real bot token, but all
-        # structural checks should remain green.
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Telegram token is intentionally absent", result.stdout)
+        self.assertTrue(
+            "Telegram token is intentionally absent" in result.stdout
+            or "Telegram token is present with private permissions" in result.stdout
+        )
+        token_path = SCRIPT.parent / "secrets" / "telegram_bot_token.txt"
+        token = token_path.read_text(encoding="utf-8").strip() if token_path.is_file() else ""
+        if token:
+            self.assertNotIn(token, result.stdout + result.stderr)
         self.assertNotIn("BOT_TOKEN", result.stdout)
 
     def test_invalid_canary_ids_are_rejected_without_path_inspection(self):

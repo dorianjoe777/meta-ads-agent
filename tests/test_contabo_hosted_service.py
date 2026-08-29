@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -112,6 +113,77 @@ class StopAfterPolls:
 
 
 class HostedServiceTests(unittest.TestCase):
+    def test_telegram_429_is_typed_and_retry_after_is_bounded(self):
+        signal = service._telegram_rate_limit(
+            {"ok": False, "error_code": 429, "parameters": {"retry_after": 999999}}
+        )
+        self.assertIsInstance(signal, service.TelegramRateLimit)
+        self.assertEqual(signal.error_code, "telegram_rate_limited")
+        self.assertEqual(signal.retry_after, 900)
+        self.assertIsNone(service._telegram_rate_limit("not-json"))
+        self.assertIsNone(service._telegram_rate_limit({"ok": False, "error_code": 400}))
+
+    def test_delivery_store_passes_max_attempts_to_ack_function(self):
+        class DB:
+            def __init__(self): self.calls = []
+            def query(self, sql, params):
+                self.calls.append((sql, params))
+                return [{"acknowledged": True}]
+        db = DB()
+        store = service.DeliveryStore(db)
+        item = worker_module.OutboxItem("row", "tenant", "bot", "123", "text", "body", "", "", "", 8, "lease")
+        self.assertTrue(store.ack_outbox(item, success=False, delay_seconds=37,
+                                         error_code="telegram_rate_limited", max_attempts=20))
+        self.assertEqual(db.calls[0][1][-2:], (37, 20))
+
+    def test_telegram_request_http_429_never_exposes_response_body(self):
+        api = object.__new__(service.TelegramAPI)
+        api.token, api._bot_id = "redacted-test-token", ""
+        error = urllib.error.HTTPError(
+            "https://api.telegram.org", 429, "too many", {},
+            __import__("io").BytesIO(b'{"ok":false,"error_code":429,"parameters":{"retry_after":4},"description":"secret body"}'),
+        )
+        with patch.object(service.urllib.request, "urlopen", side_effect=error):
+            with self.assertRaises(service.TelegramRateLimit) as raised:
+                api._request("sendMessage", {"chat_id": "123", "text": "hello"})
+        self.assertEqual(raised.exception.retry_after, 4)
+        self.assertEqual(str(raised.exception), "telegram_rate_limited")
+
+    def test_multipart_non_json_429_is_typed_rate_limit(self):
+        class Response:
+            status = 429
+            def read(self): return b"temporarily blocked"
+        class Connection:
+            def __init__(self, *args, **kwargs): pass
+            def __getattr__(self, name): return lambda *args, **kwargs: None
+            def getresponse(self): return Response()
+            def close(self): pass
+        api = object.__new__(service.TelegramAPI)
+        api.token, api._bot_id = "redacted-test-token", ""
+        with tempfile.TemporaryDirectory() as raw, patch.object(service.http.client, "HTTPSConnection", Connection):
+            path = Path(raw) / "x.png"
+            path.write_bytes(b"image")
+            with self.assertRaises(service.TelegramRateLimit) as raised:
+                api.send_file("123", "photo", path)
+        self.assertEqual(raised.exception.retry_after, 1)
+
+    def test_multipart_non_dict_400_is_generic_media_rejection(self):
+        class Response:
+            status = 400
+            def read(self): return b"[]"
+        class Connection:
+            def __init__(self, *args, **kwargs): pass
+            def __getattr__(self, name): return lambda *args, **kwargs: None
+            def getresponse(self): return Response()
+            def close(self): pass
+        api = object.__new__(service.TelegramAPI)
+        api.token, api._bot_id = "redacted-test-token", ""
+        with tempfile.TemporaryDirectory() as raw, patch.object(service.http.client, "HTTPSConnection", Connection):
+            path = Path(raw) / "x.png"
+            path.write_bytes(b"image")
+            with self.assertRaisesRegex(service.TelegramError, "telegram_media_rejected"):
+                api.send_file("123", "photo", path)
+
     def test_poller_advances_cursor_for_queued_duplicate_unbound_and_invalid(self):
         api = PollerAPI([update(11), update(12), update(13), update(14)])
         store = CursorStore()

@@ -38,6 +38,7 @@ MAX_MEDIA_BYTES = 50 * 1024 * 1024
 JANITOR_INTERVAL_SECONDS = 3600
 INBOUND_RETENTION_SECONDS = 7 * 86400
 OUTBOUND_RETENTION_SECONDS = 14 * 86400
+MAX_TELEGRAM_RETRY_AFTER_SECONDS = 900
 
 
 def _read_secret(path: str | Path) -> str:
@@ -170,9 +171,9 @@ class DeliveryStore:
         ) for row in rows]
 
     def ack_outbox(self, item: OutboxItem, *, success: bool, message_id: int | None = None,
-                   delay_seconds: int = 30, error_code: str = "") -> bool:
+                   delay_seconds: int = 30, error_code: str = "", max_attempts: int = 8) -> bool:
         rows = self.db.query("SELECT admira.ack_telegram_outbox(%s,%s,%s,%s,%s,%s,%s) AS acknowledged",
-                             (item.row_id, item.lease_token, success, message_id, error_code or None, delay_seconds, 8))
+                             (item.row_id, item.lease_token, success, message_id, error_code or None, delay_seconds, max_attempts))
         return bool(rows and rows[0]["acknowledged"])
 
 
@@ -221,6 +222,28 @@ class TelegramError(RuntimeError):
     pass
 
 
+class TelegramRateLimit(TelegramError):
+    """A Telegram 429 with a bounded, machine-readable retry delay."""
+
+    error_code = "telegram_rate_limited"
+
+    def __init__(self, retry_after: object = 1) -> None:
+        try:
+            value = int(retry_after)
+        except (TypeError, ValueError):
+            value = 1
+        self.retry_after = max(1, min(MAX_TELEGRAM_RETRY_AFTER_SECONDS, value))
+        super().__init__(self.error_code)
+
+
+def _telegram_rate_limit(body: object, *, status: int | None = None) -> TelegramRateLimit | None:
+    if status == 429 or (isinstance(body, dict) and body.get("error_code") == 429):
+        parameters = body.get("parameters") if isinstance(body, dict) else {}
+        retry_after = parameters.get("retry_after", 1) if isinstance(parameters, dict) else 1
+        return TelegramRateLimit(retry_after)
+    return None
+
+
 class TelegramAPI:
     def __init__(self, token_file: str | Path) -> None:
         self.token = _read_secret(token_file)
@@ -232,9 +255,24 @@ class TelegramAPI:
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 body = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            body: object = {}
+            try:
+                body = json.loads(exc.read().decode("utf-8"))
+            except (OSError, UnicodeDecodeError, ValueError):
+                pass
+            finally:
+                exc.close()
+            rate_limit = _telegram_rate_limit(body, status=exc.code)
+            if rate_limit is not None:
+                raise rate_limit from exc
+            raise TelegramError("telegram_transport_error") from exc
         except (urllib.error.URLError, TimeoutError, ValueError) as exc:
             raise TelegramError("telegram_transport_error") from exc
         if not isinstance(body, dict) or not body.get("ok"):
+            rate_limit = _telegram_rate_limit(body)
+            if rate_limit is not None:
+                raise rate_limit
             raise TelegramError("telegram_api_rejected")
         return body.get("result")
 
@@ -296,6 +334,8 @@ class TelegramAPI:
         prefix.extend(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{field}\"; filename=\"{path.name}\"\r\nContent-Type: {mime}\r\n\r\n".encode())
         suffix = f"\r\n--{boundary}--\r\n".encode()
         connection = http.client.HTTPSConnection("api.telegram.org", timeout=120)
+        response_status: int | None = None
+        result: object = None
         try:
             connection.putrequest("POST", f"/bot{self.token}/{method}")
             connection.putheader("Content-Type", f"multipart/form-data; boundary={boundary}")
@@ -307,12 +347,20 @@ class TelegramAPI:
                     connection.send(chunk)
             connection.send(suffix)
             response = connection.getresponse()
-            result = json.loads(response.read().decode("utf-8"))
+            response_status = response.status
+            raw_body = response.read()
         except Exception as exc:
             raise TelegramError("telegram_media_delivery_failed") from exc
         finally:
             connection.close()
-        if not result.get("ok"):
+        try:
+            result = json.loads(raw_body.decode("utf-8"))
+        except (AttributeError, UnicodeDecodeError, ValueError):
+            result = None
+        rate_limit = _telegram_rate_limit(result, status=response_status)
+        if rate_limit is not None:
+            raise rate_limit
+        if not isinstance(result, dict) or not result.get("ok"):
             raise TelegramError("telegram_media_rejected")
         return int((result.get("result") or {}).get("message_id") or 0)
 
