@@ -448,10 +448,12 @@ una versión antigua:
 3. Confirmar que todos los archivos desplegables pertenecen al mismo commit;
    no mezclar un `runtime_broker.py` de un release con un `compose.yaml` de otro.
 4. Crear un commit descriptivo y subirlo a GitHub.
-5. Registrar el SHA en `DEPLOYED_COMMIT` y guardar un backup del control plane y
-   de la base antes de copiar el release.
-6. Copiar el release completo a una carpeta nueva, cambiar el puntero/ruta de
-   forma atómica y ejecutar:
+5. Guardar un backup recuperable del control plane y de la base antes de copiar
+   o activar el release. No modificar todavía `DEPLOYED_COMMIT`.
+6. Copiar el release completo a una carpeta nueva y validar allí sus hashes,
+   permisos, sintaxis y configuraciones Compose. Actualizar la ruta activa
+   desde esa única carpeta, sin mezclar archivos de releases distintos, y
+   ejecutar:
 
    ```bash
    ./apply-control-plane.sh
@@ -464,7 +466,11 @@ una versión antigua:
    como `telegram-poller`; los otros servicios reutilizan el mismo tag. No se
    deben lanzar builds paralelos del mismo tag.
 8. Verificar hashes remotos, logs, socket, permisos y `docker compose ps`.
-9. Sólo después habilitar o reiniciar `buyers` si la prueba controlada pasó.
+9. Sólo cuando todas las verificaciones anteriores hayan pasado, escribir el
+   SHA nuevo en `DEPLOYED_COMMIT` mediante reemplazo atómico y conservar el
+   marcador anterior dentro del backup. Un despliegue fallido nunca debe
+   anunciar el candidato como activo.
+10. Sólo después habilitar o reiniciar `buyers` si la prueba controlada pasó.
 
 El runtime de un tenant nunca debe hacer `pull` o `build` al despertar:
 `tenantctl.py` usa `--no-build --pull never` y mantiene la imagen r90 fijada.
