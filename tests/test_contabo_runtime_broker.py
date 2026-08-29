@@ -191,6 +191,62 @@ class RuntimeBrokerTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "runtime_capacity_exhausted"):
                     core._ensure_running("client-003")
 
+    def test_candidate_capacity_uses_six_normal_slots(self):
+        with patch.dict(os.environ, {
+            "ADMIRA_NORMAL_ACTIVE_TENANTS": "6",
+            "ADMIRA_HARD_MAX_ACTIVE_TENANTS": "8",
+            "ADMIRA_BURST_MIN_AVAILABLE_MB": "2048",
+        }, clear=True):
+            self.assertEqual(broker.BrokerCore._capacity_config(), (6, 8, 2048))
+
+    def test_unconfigured_broker_keeps_safe_starter_capacity(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(broker.BrokerCore._capacity_config(), (4, 4, 2048))
+
+    def test_burst_slots_require_memavailable_headroom(self):
+        with patch.dict(os.environ, {
+            "ADMIRA_NORMAL_ACTIVE_TENANTS": "6",
+            "ADMIRA_HARD_MAX_ACTIVE_TENANTS": "8",
+            "ADMIRA_BURST_MIN_AVAILABLE_MB": "2048",
+        }, clear=True), patch.object(broker.BrokerCore, "_mem_available_bytes", return_value=3 * 1024**3):
+            self.assertTrue(broker.BrokerCore._capacity_allows(6))
+        with patch.dict(os.environ, {
+            "ADMIRA_NORMAL_ACTIVE_TENANTS": "6",
+            "ADMIRA_HARD_MAX_ACTIVE_TENANTS": "8",
+            "ADMIRA_BURST_MIN_AVAILABLE_MB": "2048",
+        }, clear=True), patch.object(broker.BrokerCore, "_mem_available_bytes", return_value=1024**3):
+            self.assertFalse(broker.BrokerCore._capacity_allows(6))
+
+    def test_unreadable_memavailable_rejects_only_burst_capacity(self):
+        with patch.dict(os.environ, {
+            "ADMIRA_NORMAL_ACTIVE_TENANTS": "6",
+            "ADMIRA_HARD_MAX_ACTIVE_TENANTS": "8",
+        }, clear=True), patch.object(
+            broker.BrokerCore, "_mem_available_bytes",
+            side_effect=RuntimeError("memory_headroom_unavailable"),
+        ):
+            self.assertIsNone(broker.BrokerCore._capacity_rejection(5))
+            self.assertEqual(
+                broker.BrokerCore._capacity_rejection(6),
+                "runtime_capacity_headroom_low",
+            )
+
+    def test_capacity_hard_ceiling_and_bad_config_fail_closed(self):
+        with patch.dict(os.environ, {
+            "ADMIRA_NORMAL_ACTIVE_TENANTS": "6",
+            "ADMIRA_HARD_MAX_ACTIVE_TENANTS": "8",
+        }, clear=True):
+            self.assertFalse(broker.BrokerCore._capacity_allows(8))
+        with patch.dict(os.environ, {"ADMIRA_NORMAL_ACTIVE_TENANTS": "bad"}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "capacity_config_invalid"):
+                broker.BrokerCore._capacity_config()
+        with patch.dict(os.environ, {
+            "ADMIRA_NORMAL_ACTIVE_TENANTS": "7",
+            "ADMIRA_HARD_MAX_ACTIVE_TENANTS": "6",
+        }, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "capacity_config_invalid"):
+                broker.BrokerCore._capacity_config()
+
     def test_capacity_check_failure_is_retryable_and_does_not_start(self):
         with tempfile.TemporaryDirectory() as raw:
             base, spool = Path(raw) / "tenants", Path(raw) / "spool"

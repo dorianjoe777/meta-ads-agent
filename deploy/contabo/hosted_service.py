@@ -156,6 +156,34 @@ class RuntimeStore:
         self.db.query("SELECT admira.retry_telegram_update(%s,%s,%s,%s,%s)",
                       (update.row_id, update.lease_token, error_code, delay_seconds, 5))
 
+    def defer_update_capacity(self, update: RuntimeUpdate, *, delay_seconds: int, error_code: str) -> None:
+        self.db.query("SELECT admira.defer_telegram_update_capacity(%s,%s,%s,%s)",
+                      (update.row_id, update.lease_token, error_code, delay_seconds))
+
+    def claim_idle_runtime(self, *, worker_id: str, idle_seconds: int, claim_seconds: int):
+        rows = self.db.query(
+            "SELECT * FROM admira.claim_idle_runtime(%s,%s,%s)",
+            (worker_id, idle_seconds, claim_seconds),
+        )
+        return [
+            (str(row["tenant_id"]), str(row["runtime_key"]), str(row["eviction_token"]))
+            for row in rows
+        ]
+
+    def complete_idle_runtime(self, tenant_id: str, eviction_token: str) -> bool:
+        rows = self.db.query(
+            "SELECT admira.complete_idle_runtime(%s,%s) AS completed",
+            (tenant_id, eviction_token),
+        )
+        return bool(rows and rows[0]["completed"])
+
+    def release_idle_runtime_claim(self, tenant_id: str, eviction_token: str) -> bool:
+        rows = self.db.query(
+            "SELECT admira.release_idle_runtime_claim(%s,%s) AS released",
+            (tenant_id, eviction_token),
+        )
+        return bool(rows and rows[0]["released"])
+
 
 class DeliveryStore:
     def __init__(self, db: Pg) -> None:
@@ -209,6 +237,12 @@ class SchedulerStore:
     def retry_job(self, work: ScheduledWork, *, delay_seconds: int, error_code: str) -> None:
         self.db.query("SELECT admira.retry_scheduled_job_run(%s,%s,%s,%s,%s,%s)",
                       (work.job_id, work.run_id, work.lease_token, error_code, delay_seconds, 5))
+
+    def defer_job_capacity(self, work: ScheduledWork, *, delay_seconds: int, error_code: str) -> None:
+        self.db.query(
+            "SELECT admira.defer_scheduled_job_capacity(%s,%s,%s,%s,%s)",
+            (work.job_id, work.run_id, work.lease_token, error_code, delay_seconds),
+        )
 
     def idle_runtimes(self, *, idle_seconds: int):
         rows = self.db.query("SELECT * FROM admira.list_idle_runtime_keys(%s)", (idle_seconds,))

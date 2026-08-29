@@ -3,6 +3,26 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+resolve_runtime_worker_replicas() {
+  local resolved="${RUNTIME_WORKER_REPLICAS:-}" config_key config_value
+  if [[ -z "$resolved" && -r "$ROOT_DIR/.env" ]]; then
+    while IFS='=' read -r config_key config_value; do
+      config_value="${config_value%$'\r'}"
+      if [[ "$config_key" == "RUNTIME_WORKER_REPLICAS" ]]; then
+        resolved="$config_value"
+      fi
+    done < "$ROOT_DIR/.env"
+  fi
+  printf '%s' "${resolved:-1}"
+}
+
+RUNTIME_WORKER_REPLICAS="$(resolve_runtime_worker_replicas)"
+if [[ ! "$RUNTIME_WORKER_REPLICAS" =~ ^[1-8]$ ]]; then
+  printf '%s\n' 'RUNTIME_WORKER_REPLICAS must be an integer from 1 through 8.' >&2
+  exit 2
+fi
+export RUNTIME_WORKER_REPLICAS
+
 docker compose --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compose.yaml" up -d postgres redis
 
 ready=false

@@ -97,6 +97,21 @@ class ContaboComposeTests(unittest.TestCase):
             self.assertIn("ADMIRA_BROKER_GID", runtime_holder)
         for spool_holder in (poller, delivery):
             self.assertIn("ADMIRA_SPOOL_GID", spool_holder)
+        self.assertIn("scale: ${RUNTIME_WORKER_REPLICAS:-1}", runtime)
+        self.assertNotIn("scale:", poller)
+        self.assertNotIn("scale:", delivery)
+        self.assertNotIn("scale:", scheduler)
+
+    def test_capacity_preflight_is_read_only_and_does_not_touch_secrets(self):
+        preflight = (COMPOSE.parent / "capacity-preflight.sh").read_text(encoding="utf-8")
+        self.assertIn("docker stats --no-stream", preflight)
+        self.assertIn("docker inspect --format", preflight)
+        self.assertIn("MemAvailable", preflight)
+        self.assertIn("swapon --show", preflight)
+        self.assertIn("/proc/sys/vm/swappiness", preflight)
+        self.assertNotIn("swapon -a", preflight)
+        self.assertNotIn("docker compose up", preflight)
+        self.assertNotIn("TELEGRAM_BOT_TOKEN", preflight)
 
     def test_buyer_services_have_distinct_database_roles(self):
         expected = {

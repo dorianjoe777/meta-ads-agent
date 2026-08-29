@@ -20,6 +20,13 @@ class RuntimeBrokerInstallerTests(unittest.TestCase):
         self.assertNotIn("cat \"$BROKER_KEY_SOURCE\"", text)
         self.assertNotIn("docker login", text)
 
+    def test_systemd_unit_propagates_bounded_adaptive_capacity(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("ADMIRA_NORMAL_ACTIVE_TENANTS", text)
+        self.assertIn("ADMIRA_HARD_MAX_ACTIVE_TENANTS", text)
+        self.assertIn("ADMIRA_BURST_MIN_AVAILABLE_MB", text)
+        self.assertIn("HARD_MAX_ACTIVE_TENANTS > 8", text)
+
 
 if __name__ == "__main__":
     unittest.main()

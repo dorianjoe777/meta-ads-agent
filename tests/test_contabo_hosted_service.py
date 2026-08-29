@@ -313,7 +313,7 @@ class HostedServiceTests(unittest.TestCase):
         self.assertNotIn("TelegramAPI", inspect.getsource(service.run_runtime))
         self.assertNotIn("TELEGRAM_BOT_TOKEN_FILE", inspect.getsource(worker_module.RuntimeWorker))
         worker = worker_module.RuntimeWorker(Store(), Broker())
-        self.assertEqual(worker.process_once(), {"completed": 0, "retried": 0, "busy": 0})
+        self.assertEqual(worker.process_once(), {"completed": 0, "retried": 0, "busy": 0, "deferred": 0, "evicted": 0})
 
     def test_delivery_accepts_only_opaque_reference_and_verifies_hash(self):
         class API:

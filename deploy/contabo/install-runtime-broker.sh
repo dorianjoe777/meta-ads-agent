@@ -10,14 +10,31 @@ SPOOL_GID="${ADMIRA_SPOOL_GID:-19092}"
 BROKER_KEY_SOURCE="$ROOT_DIR/secrets/runtime_broker_key.txt"
 HOSTED_GEMINI_KEY_SOURCE="$ROOT_DIR/secrets/hosted_gemini_api_key.txt"
 MAX_ACTIVE_TENANTS="${ADMIRA_MAX_ACTIVE_TENANTS:-}"
-if [[ -z "$MAX_ACTIVE_TENANTS" && -r "$ROOT_DIR/.env" ]]; then
+NORMAL_ACTIVE_TENANTS="${ADMIRA_NORMAL_ACTIVE_TENANTS:-}"
+HARD_MAX_ACTIVE_TENANTS="${ADMIRA_HARD_MAX_ACTIVE_TENANTS:-}"
+BURST_MIN_AVAILABLE_MB="${ADMIRA_BURST_MIN_AVAILABLE_MB:-}"
+FILE_MAX_ACTIVE_TENANTS=""
+FILE_NORMAL_ACTIVE_TENANTS=""
+FILE_HARD_MAX_ACTIVE_TENANTS=""
+FILE_BURST_MIN_AVAILABLE_MB=""
+if [[ -r "$ROOT_DIR/.env" ]]; then
   while IFS='=' read -r config_key config_value; do
-    if [[ "$config_key" == "ADMIRA_MAX_ACTIVE_TENANTS" ]]; then
-      MAX_ACTIVE_TENANTS="$config_value"
-    fi
+    config_value="${config_value%$'\r'}"
+    case "$config_key" in
+      ADMIRA_MAX_ACTIVE_TENANTS) FILE_MAX_ACTIVE_TENANTS="$config_value" ;;
+      ADMIRA_NORMAL_ACTIVE_TENANTS) FILE_NORMAL_ACTIVE_TENANTS="$config_value" ;;
+      ADMIRA_HARD_MAX_ACTIVE_TENANTS) FILE_HARD_MAX_ACTIVE_TENANTS="$config_value" ;;
+      ADMIRA_BURST_MIN_AVAILABLE_MB) FILE_BURST_MIN_AVAILABLE_MB="$config_value" ;;
+    esac
   done < "$ROOT_DIR/.env"
 fi
-MAX_ACTIVE_TENANTS="${MAX_ACTIVE_TENANTS:-4}"
+MAX_ACTIVE_TENANTS="${MAX_ACTIVE_TENANTS:-${FILE_MAX_ACTIVE_TENANTS:-4}}"
+NORMAL_ACTIVE_TENANTS="${NORMAL_ACTIVE_TENANTS:-$FILE_NORMAL_ACTIVE_TENANTS}"
+HARD_MAX_ACTIVE_TENANTS="${HARD_MAX_ACTIVE_TENANTS:-$FILE_HARD_MAX_ACTIVE_TENANTS}"
+BURST_MIN_AVAILABLE_MB="${BURST_MIN_AVAILABLE_MB:-$FILE_BURST_MIN_AVAILABLE_MB}"
+NORMAL_ACTIVE_TENANTS="${NORMAL_ACTIVE_TENANTS:-$MAX_ACTIVE_TENANTS}"
+HARD_MAX_ACTIVE_TENANTS="${HARD_MAX_ACTIVE_TENANTS:-$MAX_ACTIVE_TENANTS}"
+BURST_MIN_AVAILABLE_MB="${BURST_MIN_AVAILABLE_MB:-2048}"
 
 if [[ "$(id -u)" -ne 0 ]]; then
   printf '%s\n' 'Run this installer with sudo.' >&2
@@ -31,8 +48,12 @@ if [[ ! -s "$BROKER_KEY_SOURCE" ]]; then
   printf '%s\n' 'Generate control-plane secrets before installing the broker.' >&2
   exit 1
 fi
-if [[ ! "$MAX_ACTIVE_TENANTS" =~ ^[1-9][0-9]*$ ]] || (( MAX_ACTIVE_TENANTS > 64 )); then
-  printf '%s\n' 'ADMIRA_MAX_ACTIVE_TENANTS must be between 1 and 64.' >&2
+if [[ ! "$MAX_ACTIVE_TENANTS" =~ ^[1-9][0-9]*$ ]] ||
+   [[ ! "$NORMAL_ACTIVE_TENANTS" =~ ^[1-9][0-9]*$ ]] ||
+   [[ ! "$HARD_MAX_ACTIVE_TENANTS" =~ ^[1-9][0-9]*$ ]] ||
+   [[ ! "$BURST_MIN_AVAILABLE_MB" =~ ^[0-9]+$ ]] ||
+   (( MAX_ACTIVE_TENANTS > 8 || NORMAL_ACTIVE_TENANTS > HARD_MAX_ACTIVE_TENANTS || HARD_MAX_ACTIVE_TENANTS > 8 )); then
+  printf '%s\n' 'Capacity settings must satisfy 1 <= normal <= hard <= 8.' >&2
   exit 1
 fi
 
@@ -92,6 +113,9 @@ Restart=on-failure
 RestartSec=3
 UMask=0077
 Environment=ADMIRA_MAX_ACTIVE_TENANTS=$MAX_ACTIVE_TENANTS
+Environment=ADMIRA_NORMAL_ACTIVE_TENANTS=$NORMAL_ACTIVE_TENANTS
+Environment=ADMIRA_HARD_MAX_ACTIVE_TENANTS=$HARD_MAX_ACTIVE_TENANTS
+Environment=ADMIRA_BURST_MIN_AVAILABLE_MB=$BURST_MIN_AVAILABLE_MB
 Environment=DOCKER_CONFIG=$DOCKER_CONFIG_DIR
 NoNewPrivileges=true
 PrivateTmp=true

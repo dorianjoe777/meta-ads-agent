@@ -289,6 +289,7 @@ db/migrations/002_telegram_ingress_control.sql
 db/migrations/003_hosted_tenant_registration.sql
 db/migrations/004_active_tenant_runtime_gate.sql
 db/migrations/005_telegram_rate_limit_retry.sql
+db/migrations/006_runtime_capacity_queue.sql
 ```
 
 La migración 004 exige estado `active` para nuevas decisiones de claim y lease.
@@ -304,6 +305,14 @@ el presupuesto normal de intentos. El delivery respeta el `retry_after`
 acotado que entrega Telegram, pausa globalmente nuevos envíos y además limita
 la cadencia global y por chat; errores distintos conservan su límite normal y
 pueden terminar en `dead` para no reintentarse eternamente.
+
+La migración 006 separa la espera por capacidad de un fallo real de ejecución.
+`tenant_busy`, `runtime_capacity_exhausted` y
+`runtime_capacity_headroom_low` devuelven el turno o cronjob a una cola durable,
+incrementan `capacity_deferrals` y revierten el incremento del contador finito
+de intentos. También implementa el claim LRU con fencing: sólo un worker puede
+reclamar un runtime sin holder ni trabajo elegible, y un claim `stopping`
+abandonado se recupera automáticamente al expirar.
 
 Las tablas con `tenant_id` tienen RLS activado y forzado. El contexto
 `admira.tenant_id` es fail-closed cuando no está definido. Los roles de servicio
@@ -397,6 +406,11 @@ La siguiente verificación se hizo sobre el servidor Contabo
   sin outbox previo y conservó su contador de intentos.
 - Las migraciones 004 y 005 están aplicadas. El gate activo del tenant y la
   rama durable de `telegram_rate_limited` son visibles en las funciones reales.
+- La migración 006 y el perfil 6+2 descritos más abajo pertenecen al candidato
+  actual: se validaron en PostgreSQL 16 desechable, pero todavía no están
+  aplicados ni activados en la base live de esta fotografía. Live conserva un
+  `runtime-worker` y el límite legacy de cuatro hasta completar backup,
+  despliegue y soak escalonado.
 - La imagen compartida `admira-control-plane:r1` fue reconstruida y
   `admira-ia:r90` sigue presente y fijada para los tenants.
 - Los 25 archivos versionados coinciden con el manifiesto del release; ambos
@@ -465,7 +479,9 @@ La activación es un cambio deliberado y separado de la instalación:
    `telegram-delivery`. La concurrencia de usuarios vive en PostgreSQL y en
    runtimes aislados; no se escalan los dos procesos que poseen el token porque
    el poller tiene un único cursor de long polling y delivery posee el estado
-   global de cadencia/backpressure.
+   global de cadencia/backpressure. `scheduler-worker` también permanece
+   singleton. Sólo `runtime-worker` usa `RUNTIME_WORKER_REPLICAS`, validado en el
+   rango 1–8.
 
 5. Abrir ambos deep-links desde dos identidades privadas de Telegram. Confirmar
    en PostgreSQL que existen dos bindings distintos y que cada claim fue
@@ -484,9 +500,17 @@ La activación es un cambio deliberado y separado de la instalación:
 10. Detener una vez `runtime-worker` después de reclamar trabajo y reiniciarlo;
    verificar lease/fencing, reintento sin doble entrega y recuperación del
    cursor. Luego repetir con un fallo temporal de descarga de medio.
-11. Mantener sólo los dos canarios hasta observar recursos y colas bajo el
-    límite de cuatro runtimes activos; emitir claims reales únicamente después
-    de aprobar y registrar estas evidencias.
+11. Mantener sólo los dos canarios y ejecutar la rampa de capacidad, sin saltar
+    etapas:
+
+    - starter: 1 worker, normal/hard 4;
+    - concurrencia base: 4 workers, normal/hard 4;
+    - normal ampliado: 6 workers, normal/hard 6;
+    - candidato final: 8 workers, normal 6, hard 8 y headroom 2048 MiB.
+
+    En cada etapa registrar RSS por tenant, `MemAvailable`, swap usado, p95 de
+    despertar/respuesta, edad máxima de inbox y ausencia de OOM/reinicios. Emitir
+    claims reales únicamente después de aprobar esas evidencias.
 
 No se debe activar el perfil sólo porque el contenedor base esté saludable. La
 ausencia del token y del perfil `buyers` es el guardarraíl de lanzamiento.
@@ -587,28 +611,78 @@ Telegram.
 - Máximo por medio: 50 MiB; limpieza acotada para no bloquear al worker.
 - Idle por defecto: 900 segundos. Suspender libera CPU/RAM, no memoria ni
   sesiones persistentes.
-- Máximo inicial: cuatro contenedores tenant simultáneamente activos. Se
-  configura con `ADMIRA_MAX_ACTIVE_TENANTS` (1–64) y el instalador lo fija en
-  systemd; capacidad agotada es un error reintentable, no pérdida del mensaje.
 
-La capacidad depende de cuántos tenants estén activos simultáneamente, no sólo
-del número registrado. El nodo inicial de 8 GiB debe operar con el límite por
-tenant y escala a cero; antes de aumentar compradores hay que medir RAM, CPU,
-latencia del proveedor y longitud de las colas. No arrancar todos los tenants
-en un reinicio del host ni aumentar el límite sin una medición dirigida.
+Los perfiles de concurrencia son deliberadamente distintos del número total de
+clientes registrados:
+
+| Perfil | `RUNTIME_WORKER_REPLICAS` | Normal | Hard | Admisión de burst |
+| --- | ---: | ---: | ---: | --- |
+| Starter desplegado | 1 | 4 | 4 | no |
+| Candidato final | 8 | 6 | 8 | slots 7–8 sólo con `MemAvailable` ≥ 2048 MiB |
+
+`ADMIRA_MAX_ACTIVE_TENANTS=4` se conserva como alias legacy seguro para el
+starter. El perfil nuevo usa `ADMIRA_NORMAL_ACTIVE_TENANTS`,
+`ADMIRA_HARD_MAX_ACTIVE_TENANTS` y `ADMIRA_BURST_MIN_AVAILABLE_MB`; el instalador
+exige `1 <= normal <= hard <= 8`. El techo de runtimes y las réplicas de worker
+son controles distintos: un runtime caliente conserva un workspace en RAM,
+mientras una réplica procesa como máximo un turno durable a la vez.
+
+Ante contención:
+
+1. Si el mismo tenant ya tiene un turno/job en curso, se difiere como
+   `tenant_busy`; no se desaloja a ningún otro cliente.
+2. Si el broker cuenta el techo real de contenedores o rechaza burst por
+   headroom, el worker reclama con fencing el LRU realmente idle y lo suspende.
+   No son elegibles runtimes con holder, update procesándose, update listo para
+   ejecutar ni cronjob due/leased.
+3. El turno se vuelve a intentar después de liberar el slot. Si todos los
+   runtimes continúan ocupados, vuelve a la inbox durable con dos segundos de
+   espera. PostgreSQL conserva orden por disponibilidad/recepción y serializa
+   cada tenant; no termina en `dead` por esperar capacidad.
+4. Los cronjobs usan la misma separación de contador, pero no desalojan
+   interactivos: esperan durablemente y el scheduler sigue aplicando la
+   suspensión idle ordinaria.
+
+La suspensión ejecuta Compose `down` sin `--volumes`. Cuando el cliente vuelve,
+se despierta exactamente su misma raíz persistente y continúa con su historial,
+memoria, archivos y conexiones. El tiempo visible será despertar frío más
+latencia del proveedor; todavía debe medirse p50/p95 con tenants reales antes de
+publicar un SLA.
+
+Snapshot de sólo lectura del VPS el 2026-08-29, sin tenant activo durante la
+medición: 4 CPU, 7.8 GiB RAM total, aproximadamente 7.0 GiB `MemAvailable`, 4
+GiB swap SSD existente (0 usado), `vm.swappiness=60`, 85 GiB de disco libre y
+aproximadamente 194 MiB RSS sumados en los servicios Docker base. Esto justifica
+probar el perfil 6+2, no activarlo sin soak. Swap es sólo colchón de emergencia:
+el broker decide burst con `MemAvailable` y nunca cuenta swap como RAM normal.
+
+Ejecutar antes y después de cada etapa, sin mutar el host ni leer secretos:
+
+```bash
+./capacity-preflight.sh
+docker compose --profile buyers ps
+```
+
+No arrancar todos los tenants en un reinicio ni aumentar simultáneamente hard y
+workers sin registrar RAM, CPU, OOM/reinicios, edad de cola, despertar y latencia
+del proveedor.
 
 ## 15. Evidencia local y pendientes antes de vender/activar
 
-El release tiene 114 pruebas automatizadas para resolución de identidad, dos raíces
+El candidato tiene 134 pruebas automatizadas para resolución de identidad, dos raíces
 tenant distintas, sesiones separadas, comandos nativos, autorización de reset,
 medios, cursor durable, fencing/reintentos, scheduler, límite de capacidad,
 bloqueo de instancia y gate de tenants activos. También pasan la compilación
 Python/Bash, `git diff --check` y ambos perfiles de
-`docker compose config --quiet`. Las cinco migraciones se aplicaron desde cero
+`docker compose config --quiet`. Las seis migraciones se aplicaron desde cero y
+se reaplicaron idempotentemente
 en PostgreSQL 16 desechable; el fixture completo confirmó claim, binding,
 inbox, lease, outbox, scheduler, roles restringidos y el gate de tenant
-inactivo. Una prueba separada confirmó que un 429 agotado continúa en `retry`
-mientras un error genérico agotado termina en `dead`.
+inactivo. Pruebas dinámicas adicionales confirmaron que Telegram y cron
+conservan el presupuesto de fallos durante contención, que dos workers obtienen
+claims LRU distintos y que un claim `stopping` expirado se recupera. Una prueba
+separada confirmó que un 429 agotado continúa en `retry` mientras un error
+genérico agotado termina en `dead`.
 
 En Contabo se verificaron además hashes del release, backup, migraciones 004/005,
 imagen de workers, imagen tenant r90, broker/socket, límite de cuatro runtimes,

@@ -196,6 +196,9 @@ services:
   runtime-worker:
     <<: *control-common
     profiles: ["buyers"]
+    # Compose scales only this non-token-owning worker. Keep the default at
+    # one; operators may raise it to eight after capacity testing.
+    scale: ${RUNTIME_WORKER_REPLICAS:-1}
     command: ["runtime"]
     environment:
       <<: *control-environment

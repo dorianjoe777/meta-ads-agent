@@ -14,6 +14,11 @@ API, CRM/booking/ecommerce integration layer, webhook product, customer CLI or
 official MCP service in this phase. Those possible SaaS surfaces are explicitly
 outside this job.
 
+An operator-only console for trial capacity, licensing, provider-secret rotation
+and Telegram identity recovery is a separate proposed operational extension,
+not a buyer SaaS dashboard. Its not-yet-deployed design is documented in
+[`TRIAL_LICENSING_DESIGN.md`](./TRIAL_LICENSING_DESIGN.md).
+
 The intended experience is nevertheless the complete Admira/Hermes experience:
 each buyer keeps their own model connection, Meta connection, memory, sessions,
 files, brand state and scheduled work as though they had a dedicated server.
@@ -114,8 +119,10 @@ The implementation is split into four independently credentialed processes:
 
 1. `telegram-poller` owns the shared bot token, downloads inbound media and
    inserts a sanitized Telegram update.
-2. `runtime-worker` owns no bot token and no Docker socket. It claims one turn
-   per tenant and calls the authenticated host broker over a Unix socket.
+2. Each `runtime-worker` replica owns no bot token and no Docker socket. It
+   claims one durable turn at a time and calls the authenticated host broker
+   over a Unix socket. This is the only buyer worker that may scale from one to
+   eight replicas.
 3. `telegram-delivery` owns the bot token, reads only opaque outbound spool
    references, verifies SHA-256 and sends ordered text/media from the outbox.
 4. `scheduler-worker` owns no bot token. It claims due Hermes jobs, wakes the
@@ -132,8 +139,9 @@ wake a tenant without exposing the service user's home or registry credentials.
 Broker dependency failures expose only stable machine codes; Docker stderr is
 never returned through Telegram.
 
-Keep exactly one `telegram-poller` and one `telegram-delivery` replica. Telegram
-user concurrency is handled by the durable inbox/outbox and isolated tenant
+Keep exactly one `telegram-poller`, one `telegram-delivery` and one
+`scheduler-worker` replica. Telegram user concurrency is handled by the durable
+inbox/outbox, one-to-eight `runtime-worker` replicas and isolated tenant
 runtimes, not by duplicating token-owning workers; the poller has one long-poll
 cursor and the delivery process owns the shared pacing state.
 
@@ -190,11 +198,27 @@ docker compose --profile buyers up -d \
 
 Do not run that activation command during infrastructure preparation.
 
-The starter broker admits at most four simultaneously running tenant
-containers by default (`ADMIRA_MAX_ACTIVE_TENANTS=4`). The limit is enforced
-by the single locked broker process and can be raised only after measuring the
-node. Registered tenants beyond that limit remain durable and retry until a
-runtime slot is available.
+The deployed starter profile remains conservative: one runtime worker and at
+most four simultaneously running tenant containers
+(`ADMIRA_MAX_ACTIVE_TENANTS=4`). The prepared capacity profile uses six normal
+slots, an absolute ceiling of eight, and up to eight runtime-worker replicas.
+Slots 7–8 are admitted only while Linux `MemAvailable` remains at or above
+`ADMIRA_BURST_MIN_AVAILABLE_MB` (2048 MiB by default). The locked broker, not
+Compose, owns this admission decision.
+
+When a new turn reaches a full node, PostgreSQL may fence and select the
+least-recently-used runtime that is actually idle. A runtime with a current
+holder, a processing turn, an eligible queued update, or leased/due scheduled
+work cannot be evicted. Suspending the selected container does not remove the
+tenant filesystem, conversation history, memory, provider connections or
+outputs; the next turn wakes the same workspace. If every slot is busy, the
+turn and scheduled job remain in durable retry state. Capacity deferrals have a
+separate counter and do not consume the finite execution-failure budget.
+
+Do not activate the 6+2 profile merely because it is configured. First run a
+staged multi-tenant soak and record cold-wake latency, active-tenant RSS, queue
+age and provider latency. Host swap is an emergency cushion only and is never
+counted as normal or burst admission memory.
 
 ### Verification
 
@@ -205,7 +229,12 @@ starts buyer workers, creates tenants, changes PostgreSQL or prints secrets:
 ```bash
 ./release-preflight.sh --local
 ./release-preflight.sh --server --tenant-a canary-one --tenant-b canary-two
+./capacity-preflight.sh
 ```
+
+`capacity-preflight.sh` is read-only. It reports CPU, RAM, swap, swappiness,
+disk, cgroup memory and Docker RSS/limits without reading environment files or
+printing credentials.
 
 `db/validate_control_plane.sql` is a destructive fixture intended only for a
 disposable PostgreSQL database. It proves the claim, binding, inbox, runtime

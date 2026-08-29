@@ -14,6 +14,12 @@ from typing import Callable, Protocol, Sequence
 
 
 MEDIA_REF_RE = re.compile(r"^[a-f0-9]{32,64}\.(?:jpg|jpeg|png|webp|gif|mp4|mov|pdf|bin)$")
+CAPACITY_ERROR_CODES = frozenset({"runtime_capacity_exhausted", "runtime_capacity_headroom_low"})
+CAPACITY_DEFER_SECONDS = 2
+# The intended 6-normal/8-hard profile needs at most three idle evictions to
+# drain burst and replace one warm runtime. Eight keeps every valid 1..8 custom
+# profile correct while the loop still stops immediately after admission.
+MAX_CAPACITY_EVICTIONS = 8
 
 
 def utcnow() -> datetime:
@@ -74,6 +80,11 @@ class RuntimeStore(Protocol):
     def sync_jobs(self, update: RuntimeUpdate, runtime_lease_token: str, jobs: list[dict[str, object]]) -> None: ...
     def complete_update(self, update: RuntimeUpdate, *, reply: str, media: list[dict[str, str]]) -> None: ...
     def retry_update(self, update: RuntimeUpdate, *, delay_seconds: int, error_code: str) -> None: ...
+    def defer_update_capacity(self, update: RuntimeUpdate, *, delay_seconds: int, error_code: str) -> None: ...
+    def claim_idle_runtime(self, *, worker_id: str, idle_seconds: int,
+                           claim_seconds: int) -> Sequence[tuple[str, str, str]]: ...
+    def complete_idle_runtime(self, tenant_id: str, eviction_token: str) -> bool: ...
+    def release_idle_runtime_claim(self, tenant_id: str, eviction_token: str) -> bool: ...
 
 
 class DeliveryStore(Protocol):
@@ -89,6 +100,8 @@ class SchedulerStore(Protocol):
     def complete_job(self, work: ScheduledWork, *, next_run_at: str | None,
                      reply: str, media: list[dict[str, str]], result: dict[str, object]) -> None: ...
     def retry_job(self, work: ScheduledWork, *, delay_seconds: int, error_code: str) -> None: ...
+    def defer_job_capacity(self, work: ScheduledWork, *, delay_seconds: int,
+                           error_code: str) -> None: ...
     def idle_runtimes(self, *, idle_seconds: int) -> Sequence[tuple[str, str]]: ...
     def mark_suspended(self, tenant_id: str) -> None: ...
 
@@ -174,19 +187,26 @@ class RuntimeWorker:
         self.worker_id = worker_id or f"runtime-{uuid.uuid4().hex}"
         self.rng = rng or random.Random()
 
-    def process_once(self, *, limit: int = 4) -> dict[str, int]:
-        completed = retried = busy = 0
-        for update in self.store.claim_updates(worker_id=self.worker_id, limit=limit):
+    def process_once(self, *, limit: int = 1) -> dict[str, int]:
+        completed = retried = busy = deferred = evicted = 0
+        claimed = self.store.claim_updates(worker_id=self.worker_id, limit=1)
+        for update in claimed[:1]:
             runtime_lease = self.store.acquire_runtime(update.tenant_id, holder=self.worker_id)
             if not runtime_lease:
-                self.store.retry_update(update, delay_seconds=1, error_code="tenant_busy")
+                # This is serialization for the same tenant, not host
+                # capacity. Evicting another tenant cannot make this lease
+                # available and would cause needless churn.
+                self.store.defer_update_capacity(
+                    update, delay_seconds=CAPACITY_DEFER_SECONDS, error_code="tenant_busy"
+                )
                 busy += 1
+                deferred += 1
                 continue
             try:
                 message = str(update.payload.get("message") or "").strip()
                 if not message:
                     message = "El comprador adjuntó un archivo. Analízalo y responde según el contexto."
-                result = self.broker.request({
+                turn_request = {
                     "action": "turn",
                     "tenant_id": update.runtime_key,
                     "turn": {
@@ -197,23 +217,72 @@ class RuntimeWorker:
                         "update_id": update.update_id,
                     },
                     "media": list(update.payload.get("media") or []),
-                })
+                }
+                result = self.broker.request(turn_request)
+                error_code = _safe_error(result.get("error_code"), "runtime_failure")
+
+                # Capacity is known only after the broker counts real Docker
+                # runtimes. Claim and suspend the least-recently-used runtime
+                # that PostgreSQL has fenced as truly idle, then retry the
+                # turn. Never evict merely because this tenant's lease is busy.
+                for _attempt in range(MAX_CAPACITY_EVICTIONS):
+                    if result.get("ok") or error_code not in CAPACITY_ERROR_CODES:
+                        break
+                    candidates = self.store.claim_idle_runtime(
+                        worker_id=self.worker_id, idle_seconds=0, claim_seconds=60
+                    )
+                    if not candidates:
+                        break
+                    idle_tenant, idle_runtime, eviction_token = candidates[0]
+                    eviction_completed = False
+                    try:
+                        suspension = self.broker.request({"action": "suspend", "tenant_id": idle_runtime})
+                        if suspension.get("ok"):
+                            eviction_completed = self.store.complete_idle_runtime(idle_tenant, eviction_token)
+                    except Exception:
+                        # The original turn is already known to be blocked on
+                        # capacity. A failed eviction must release its fence
+                        # and defer, not spend the turn's execution budget.
+                        pass
+                    finally:
+                        if not eviction_completed:
+                            self.store.release_idle_runtime_claim(idle_tenant, eviction_token)
+                    if not eviction_completed:
+                        break
+                    evicted += 1
+                    result = self.broker.request(turn_request)
+                    error_code = _safe_error(result.get("error_code"), "runtime_failure")
+
+                if not result.get("ok") and error_code in CAPACITY_ERROR_CODES:
+                    self.store.defer_update_capacity(
+                        update, delay_seconds=CAPACITY_DEFER_SECONDS, error_code=error_code
+                    )
+                    busy += 1
+                    deferred += 1
+                    continue
                 reply = str(result.get("reply") or "").strip()
                 media = _safe_media(result.get("media"))
                 if not result.get("ok") and not reply and not media:
-                    raise RuntimeError(_safe_error(result.get("error_code"), "runtime_failure"))
+                    raise RuntimeError(error_code)
                 jobs = result.get("cron_jobs") if isinstance(result.get("cron_jobs"), list) else []
                 self.store.sync_jobs(update, runtime_lease, jobs)
                 self.store.complete_update(update, reply=reply, media=media)
                 completed += 1
             except Exception as exc:
-                delay = retry_delay(update.attempts, rng=self.rng)
-                self.store.retry_update(update, delay_seconds=delay,
-                                        error_code=_safe_error(str(exc), type(exc).__name__.lower()))
-                retried += 1
+                error_code = _safe_error(str(exc), type(exc).__name__.lower())
+                if error_code in CAPACITY_ERROR_CODES:
+                    self.store.defer_update_capacity(
+                        update, delay_seconds=CAPACITY_DEFER_SECONDS, error_code=error_code
+                    )
+                    busy += 1
+                    deferred += 1
+                else:
+                    delay = retry_delay(update.attempts, rng=self.rng)
+                    self.store.retry_update(update, delay_seconds=delay, error_code=error_code)
+                    retried += 1
             finally:
                 self.store.release_runtime(update.tenant_id, runtime_lease)
-        return {"completed": completed, "retried": retried, "busy": busy}
+        return {"completed": completed, "retried": retried, "busy": busy, "deferred": deferred, "evicted": evicted}
 
 
 class OutboxWorker:
@@ -276,19 +345,26 @@ class SchedulerWorker:
         self.rng = rng or random.Random()
 
     def process_once(self, *, limit: int = 4) -> dict[str, int]:
-        completed = retried = busy = 0
+        completed = retried = busy = deferred = 0
         for work in self.store.claim_jobs(worker_id=self.worker_id, limit=limit):
             runtime_lease = self.store.acquire_runtime(work.tenant_id, holder=self.worker_id)
             if not runtime_lease:
-                self.store.retry_job(work, delay_seconds=1, error_code="tenant_busy")
+                self.store.defer_job_capacity(work, delay_seconds=5, error_code="tenant_busy")
                 busy += 1
+                deferred += 1
                 continue
             try:
                 result = self.broker.request({"action": "run_job", "tenant_id": work.runtime_key, "job_id": work.job_key})
                 reply = str(result.get("reply") or "").strip()
                 media = _safe_media(result.get("media"))
                 if not result.get("ok") and not reply and not media:
-                    raise RuntimeError(_safe_error(result.get("error_code"), "cron_execution_failed"))
+                    error_code = _safe_error(result.get("error_code"), "cron_execution_failed")
+                    if error_code in CAPACITY_ERROR_CODES:
+                        self.store.defer_job_capacity(work, delay_seconds=5, error_code=error_code)
+                        busy += 1
+                        deferred += 1
+                        continue
+                    raise RuntimeError(error_code)
                 next_run = None
                 for job in result.get("cron_jobs") if isinstance(result.get("cron_jobs"), list) else []:
                     if isinstance(job, dict) and str(job.get("id") or "") == work.job_key and bool(job.get("enabled", True)):
@@ -298,12 +374,21 @@ class SchedulerWorker:
                                         result={"runtime_ok": bool(result.get("ok"))})
                 completed += 1
             except Exception as exc:
-                self.store.retry_job(work, delay_seconds=retry_delay(work.attempts, base=30, rng=self.rng),
-                                     error_code=_safe_error(str(exc), type(exc).__name__.lower()))
-                retried += 1
+                error_code = _safe_error(str(exc), type(exc).__name__.lower())
+                if error_code in CAPACITY_ERROR_CODES:
+                    self.store.defer_job_capacity(work, delay_seconds=5, error_code=error_code)
+                    busy += 1
+                    deferred += 1
+                else:
+                    self.store.retry_job(
+                        work,
+                        delay_seconds=retry_delay(work.attempts, base=30, rng=self.rng),
+                        error_code=error_code,
+                    )
+                    retried += 1
             finally:
                 self.store.release_runtime(work.tenant_id, runtime_lease)
-        return {"completed": completed, "retried": retried, "busy": busy}
+        return {"completed": completed, "retried": retried, "busy": busy, "deferred": deferred}
 
     def suspend_idle_once(self, *, idle_seconds: int = 900) -> int:
         suspended = 0

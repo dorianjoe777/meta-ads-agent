@@ -22,19 +22,38 @@ def runtime_update(attempts=1):
 
 
 class RuntimeStore:
-    def __init__(self, items, runtime_lease="runtime-lease"):
+    def __init__(self, items, runtime_lease="runtime-lease", idle_candidates=()):
         self.items, self.runtime_lease, self.events = list(items), runtime_lease, []
-    def claim_updates(self, **_): result, self.items = self.items, []; return result
+        self.idle_candidates = list(idle_candidates)
+    def claim_updates(self, **kwargs):
+        result, self.items = self.items[:kwargs.get("limit", 1)], self.items[kwargs.get("limit", 1):]
+        return result
     def acquire_runtime(self, tenant_id, **_): self.events.append(("acquire", tenant_id)); return self.runtime_lease
     def release_runtime(self, tenant_id, lease): self.events.append(("release", tenant_id, lease))
     def sync_jobs(self, update, lease, jobs): self.events.append(("sync", update.row_id, lease, jobs))
     def complete_update(self, update, **data): self.events.append(("complete", update.row_id, data))
     def retry_update(self, update, **data): self.events.append(("retry", update.row_id, data["error_code"]))
+    def defer_update_capacity(self, update, **data): self.events.append(("defer", update.row_id, data["error_code"]))
+    def claim_idle_runtime(self, **kwargs):
+        self.events.append(("evict-claim", kwargs))
+        return self.idle_candidates[:1]
+    def complete_idle_runtime(self, tenant_id, token):
+        self.events.append(("evict-complete", tenant_id, token))
+        if self.idle_candidates:
+            self.idle_candidates.pop(0)
+        return True
+    def release_idle_runtime_claim(self, tenant_id, token):
+        self.events.append(("evict-release", tenant_id, token))
+        return True
 
 
 class Broker:
-    def __init__(self, result): self.result, self.calls = result, []
-    def request(self, body): self.calls.append(body); return self.result
+    def __init__(self, result):
+        self.results = list(result) if isinstance(result, list) else [result]
+        self.calls = []
+    def request(self, body):
+        self.calls.append(body)
+        return self.results.pop(0) if len(self.results) > 1 else self.results[0]
 
 
 class DeliveryStore:
@@ -67,12 +86,14 @@ class FakeClock:
 
 
 class SchedulerStore:
-    def __init__(self, items): self.items, self.events = list(items), []
+    def __init__(self, items, runtime_lease="runtime-lease"):
+        self.items, self.events, self.runtime_lease = list(items), [], runtime_lease
     def claim_jobs(self, **_): result, self.items = self.items, []; return result
-    def acquire_runtime(self, tenant_id, **_): return "runtime-lease"
+    def acquire_runtime(self, tenant_id, **_): return self.runtime_lease
     def release_runtime(self, tenant_id, lease): self.events.append(("release", tenant_id))
     def complete_job(self, work, **data): self.events.append(("complete", work.run_id, data))
     def retry_job(self, work, **data): self.events.append(("retry", work.run_id, data["error_code"]))
+    def defer_job_capacity(self, work, **data): self.events.append(("defer", work.run_id, data["error_code"]))
     def idle_runtimes(self, **_): return [("tenant-uuid", "client-001")]
     def mark_suspended(self, tenant_id): self.events.append(("suspended", tenant_id))
 
@@ -82,7 +103,7 @@ class HostedWorkerTests(unittest.TestCase):
         store = RuntimeStore([runtime_update()])
         broker = Broker({"ok": True, "reply": "respuesta", "media": [], "cron_jobs": [{"id": "j1"}]})
         result = worker.RuntimeWorker(store, broker, rng=random.Random(1)).process_once()
-        self.assertEqual(result, {"completed": 1, "retried": 0, "busy": 0})
+        self.assertEqual(result, {"completed": 1, "retried": 0, "busy": 0, "deferred": 0, "evicted": 0})
         self.assertEqual(broker.calls[0]["tenant_id"], "client-001")
         self.assertEqual(broker.calls[0]["turn"]["user_id"], "123")
         self.assertEqual([event[0] for event in store.events], ["acquire", "sync", "complete", "release"])
@@ -94,10 +115,66 @@ class HostedWorkerTests(unittest.TestCase):
         self.assertIn(("retry", "u1", "runtime_timeout"), store.events)
 
     def test_busy_runtime_does_not_call_broker(self):
-        store, broker = RuntimeStore([runtime_update()], runtime_lease=None), Broker({"ok": True})
+        store = RuntimeStore(
+            [runtime_update()], runtime_lease=None,
+            idle_candidates=[("idle-tenant", "client-idle", "eviction-token")],
+        )
+        broker = Broker({"ok": True})
         result = worker.RuntimeWorker(store, broker).process_once()
         self.assertEqual(result["busy"], 1)
+        self.assertEqual(result["deferred"], 1)
+        self.assertIn(("defer", "u1", "tenant_busy"), store.events)
+        self.assertNotIn("evict-claim", [event[0] for event in store.events])
         self.assertFalse(broker.calls)
+
+    def test_capacity_failure_evicts_one_fenced_idle_runtime_and_retries(self):
+        store = RuntimeStore(
+            [runtime_update()],
+            idle_candidates=[("idle-tenant", "client-idle", "eviction-token")],
+        )
+        broker = Broker([
+            {"ok": False, "error_code": "runtime_capacity_exhausted"},
+            {"ok": True},
+            {"ok": True, "reply": "respuesta", "media": []},
+        ])
+        result = worker.RuntimeWorker(store, broker, worker_id="worker-1").process_once()
+        self.assertEqual(result["completed"], 1)
+        self.assertEqual(result["evicted"], 1)
+        self.assertEqual([call["action"] for call in broker.calls], ["turn", "suspend", "turn"])
+        claim = next(event for event in store.events if event[0] == "evict-claim")
+        self.assertEqual(claim[1], {"worker_id": "worker-1", "idle_seconds": 0, "claim_seconds": 60})
+        self.assertIn(("evict-complete", "idle-tenant", "eviction-token"), store.events)
+
+    def test_capacity_headroom_without_idle_runtime_is_durably_deferred(self):
+        store = RuntimeStore([runtime_update()])
+        result = worker.RuntimeWorker(
+            store, Broker({"ok": False, "error_code": "runtime_capacity_headroom_low"})
+        ).process_once()
+        self.assertEqual(result["retried"], 0)
+        self.assertEqual(result["deferred"], 1)
+        self.assertIn(("defer", "u1", "runtime_capacity_headroom_low"), store.events)
+
+    def test_failed_suspend_releases_fenced_claim_and_defers(self):
+        store = RuntimeStore(
+            [runtime_update()],
+            idle_candidates=[("idle-tenant", "client-idle", "eviction-token")],
+        )
+        broker = Broker([
+            {"ok": False, "error_code": "runtime_capacity_exhausted"},
+            {"ok": False, "error_code": "runtime_suspend_failed"},
+        ])
+        result = worker.RuntimeWorker(store, broker).process_once()
+        self.assertEqual(result["deferred"], 1)
+        self.assertEqual(result["evicted"], 0)
+        self.assertIn(("evict-release", "idle-tenant", "eviction-token"), store.events)
+
+    def test_runtime_worker_claims_one_update_per_cycle(self):
+        second = worker.RuntimeUpdate("u2", "tenant-uuid", "client-001", "bot-1", 8, "123", "123",
+                                      {"message": "dos", "language": "es", "media": []}, 1, "lease-2")
+        store = RuntimeStore([runtime_update(), second])
+        result = worker.RuntimeWorker(store, Broker({"ok": True, "reply": "ok", "media": []})).process_once(limit=4)
+        self.assertEqual(result["completed"], 1)
+        self.assertEqual(len(store.items), 1)
 
     def test_outbox_delivers_opaque_media_and_cleans_after_ack(self):
         ref = "a" * 32 + ".png"
@@ -195,6 +272,27 @@ class HostedWorkerTests(unittest.TestCase):
         self.assertEqual(result["completed"], 1)
         self.assertEqual(store.events[0][0], "complete")
         self.assertEqual(store.events[0][2]["next_run_at"], "2026-08-28T08:00:00+00:00")
+
+    def test_scheduler_capacity_does_not_spend_failure_budget(self):
+        work = worker.ScheduledWork("j-db", "tenant-uuid", "client-001", "hermes-1", {},
+                                    datetime.now(timezone.utc), "run-1", 5, "job-lease")
+        store = SchedulerStore([work])
+        result = worker.SchedulerWorker(
+            store, Broker({"ok": False, "error_code": "runtime_capacity_exhausted"})
+        ).process_once()
+        self.assertEqual(result["retried"], 0)
+        self.assertEqual(result["deferred"], 1)
+        self.assertIn(("defer", "run-1", "runtime_capacity_exhausted"), store.events)
+
+    def test_scheduler_same_tenant_contention_is_deferred(self):
+        work = worker.ScheduledWork("j-db", "tenant-uuid", "client-001", "hermes-1", {},
+                                    datetime.now(timezone.utc), "run-1", 5, "job-lease")
+        store = SchedulerStore([work], runtime_lease=None)
+        broker = Broker({"ok": True})
+        result = worker.SchedulerWorker(store, broker).process_once()
+        self.assertEqual(result["deferred"], 1)
+        self.assertIn(("defer", "run-1", "tenant_busy"), store.events)
+        self.assertFalse(broker.calls)
 
     def test_idle_runtime_is_suspended_only_after_broker_success(self):
         store = SchedulerStore([])

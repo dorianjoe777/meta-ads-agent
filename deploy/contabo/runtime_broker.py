@@ -38,8 +38,10 @@ from tenantctl import DEFAULT_BASE, compose_argv, lifecycle, status, tenant_path
 DEFAULT_SOCKET = Path("/run/admira-runtime-broker/broker.sock")
 DEFAULT_KEY_FILE = Path("/etc/admira/runtime-broker.key")
 DEFAULT_SPOOL = Path("/srv/admira/shared/telegram-spool")
-DEFAULT_MAX_ACTIVE_TENANTS = 4
-MAX_CONFIGURED_ACTIVE_TENANTS = 64
+DEFAULT_NORMAL_ACTIVE_TENANTS = 4
+DEFAULT_HARD_MAX_ACTIVE_TENANTS = 4
+DEFAULT_BURST_MIN_AVAILABLE_MB = 2048
+MAX_CONFIGURED_ACTIVE_TENANTS = 8
 MAX_WIRE_BYTES = 524_288
 MAX_MEDIA_BYTES = 50 * 1024 * 1024
 MEDIA_REF_RE = re.compile(r"^[a-f0-9]{32,64}\.(?:jpg|jpeg|png|webp|gif|mp4|mov|pdf|bin)$", re.IGNORECASE)
@@ -245,17 +247,67 @@ class BrokerCore:
             return self._locks.setdefault(tenant_id, threading.Lock())
 
     @staticmethod
-    def _max_active_tenants() -> int:
-        """Return a bounded admission limit for the starter VPS.
+    def _capacity_config() -> tuple[int, int, int]:
+        """Read bounded capacity settings, failing closed on bad input.
 
-        A malformed setting fails closed to the documented starter-node
-        default; operators can raise it deliberately after measuring load.
+        ``ADMIRA_MAX_ACTIVE_TENANTS`` remains a compatibility hard cap for the
+        starter deployment.  The candidate profile uses normal=6, hard=8 and
+        only admits slots 7/8 when MemAvailable has the configured headroom.
         """
+        legacy = os.environ.get("ADMIRA_MAX_ACTIVE_TENANTS")
+        normal_raw = os.environ.get("ADMIRA_NORMAL_ACTIVE_TENANTS", legacy or str(DEFAULT_NORMAL_ACTIVE_TENANTS))
+        hard_raw = os.environ.get("ADMIRA_HARD_MAX_ACTIVE_TENANTS", legacy or str(DEFAULT_HARD_MAX_ACTIVE_TENANTS))
+        headroom_raw = os.environ.get("ADMIRA_BURST_MIN_AVAILABLE_MB", str(DEFAULT_BURST_MIN_AVAILABLE_MB))
         try:
-            value = int(os.environ.get("ADMIRA_MAX_ACTIVE_TENANTS", str(DEFAULT_MAX_ACTIVE_TENANTS)))
-        except (TypeError, ValueError):
-            return DEFAULT_MAX_ACTIVE_TENANTS
-        return max(1, min(MAX_CONFIGURED_ACTIVE_TENANTS, value))
+            normal, hard, headroom_mb = int(normal_raw), int(hard_raw), int(headroom_raw)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("capacity_config_invalid") from exc
+        if not 1 <= normal <= hard <= MAX_CONFIGURED_ACTIVE_TENANTS or headroom_mb < 0:
+            raise RuntimeError("capacity_config_invalid")
+        return normal, hard, headroom_mb
+
+    @classmethod
+    def _max_active_tenants(cls) -> int:
+        """Return the configured hard ceiling (kept for compatibility/tests)."""
+        return cls._capacity_config()[1]
+
+    @staticmethod
+    def _mem_available_bytes() -> int:
+        """Read MemAvailable from procfs; absence or malformed data fails closed."""
+        try:
+            for line in Path("/proc/meminfo").read_text(encoding="ascii").splitlines():
+                if line.startswith("MemAvailable:"):
+                    parts = line.split()
+                    if len(parts) == 3 and parts[2] == "kB":
+                        value = int(parts[1])
+                        if value >= 0:
+                            return value * 1024
+                    break
+        except (OSError, UnicodeError, ValueError):
+            pass
+        raise RuntimeError("memory_headroom_unavailable")
+
+    @classmethod
+    def _capacity_rejection(cls, active_count: int) -> str | None:
+        normal, hard, headroom_mb = cls._capacity_config()
+        if active_count >= hard:
+            return "runtime_capacity_exhausted"
+        if active_count < normal:
+            return None
+        try:
+            available = cls._mem_available_bytes()
+        except RuntimeError:
+            # Procfs is the admission signal for burst capacity. If it cannot
+            # be trusted, keep the normal slots available and reject only the
+            # burst request with durable backpressure.
+            return "runtime_capacity_headroom_low"
+        if available < headroom_mb * 1024 * 1024:
+            return "runtime_capacity_headroom_low"
+        return None
+
+    @classmethod
+    def _capacity_allows(cls, active_count: int) -> bool:
+        return cls._capacity_rejection(active_count) is None
 
     @staticmethod
     def _active_managed_tenants() -> set[str]:
@@ -282,8 +334,9 @@ class BrokerCore:
             active = self._active_managed_tenants()
             if tenant_id in active:
                 return root
-            if len(active) >= self._max_active_tenants():
-                raise RuntimeError("runtime_capacity_exhausted")
+            rejection = self._capacity_rejection(len(active))
+            if rejection is not None:
+                raise RuntimeError(rejection)
             result = lifecycle(self.tenants_base, tenant_id, "start")
             if not result.get("ok"):
                 raise RuntimeError("runtime_start_failed")
