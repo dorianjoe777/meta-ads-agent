@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import stat
@@ -25,6 +26,36 @@ KEY = b"k" * 32
 
 
 class RuntimeBrokerTests(unittest.TestCase):
+    def test_handler_preserves_safe_runtime_errors_but_masks_unexpected_failures(self):
+        class FakeServer:
+            replay = broker.ReplayWindow()
+            key = KEY
+
+            def __init__(self, failure):
+                self.core = type("Core", (), {"handle": lambda _self, _body: (_ for _ in ()).throw(failure)})()
+
+        class FakeHandler:
+            def __init__(self, failure):
+                self.rfile = io.BytesIO(
+                    json.dumps(broker.sign_body(KEY, {"action": "status", "tenant_id": "client-001"})).encode()
+                    + b"\n"
+                )
+                self.server = FakeServer(failure)
+                self.response = None
+
+            def _send(self, response):
+                self.response = response
+
+        for failure, expected in (
+            (RuntimeError("runtime_start_failed"), "runtime_start_failed"),
+            (RuntimeError("provider stderr must stay private"), "broker_failure"),
+            (ValueError("runtime_capacity_exhausted"), "runtime_capacity_exhausted"),
+            (Exception("unexpected"), "broker_failure"),
+        ):
+            handler = FakeHandler(failure)
+            broker._Handler.handle(handler)
+            self.assertEqual(handler.response, {"ok": False, "error_code": expected})
+
     def test_cron_snapshot_rejects_tenant_symlink(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw) / "client-001"

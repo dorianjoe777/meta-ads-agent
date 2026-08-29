@@ -705,6 +705,12 @@ class _Handler(socketserver.StreamRequestHandler):
         except (ValueError, OSError) as exc:
             code = str(exc) if re.fullmatch(r"[a-z0-9_]{3,80}", str(exc)) else "invalid_request"
             response = {"ok": False, "error_code": code}
+        except RuntimeError as exc:
+            # BrokerCore raises stable snake-case dependency/control-plane
+            # codes. Preserve those for retry policy, but never turn an
+            # arbitrary internal exception message into a client response.
+            code = str(exc) if re.fullmatch(r"[a-z0-9_]{3,80}", str(exc)) else "broker_failure"
+            response = {"ok": False, "error_code": code}
         except Exception:
             response = {"ok": False, "error_code": "broker_failure"}
         self._send(response)

@@ -56,6 +56,12 @@ ensure_group "$SPOOL_GROUP" "$SPOOL_GID"
 usermod -a -G "$BROKER_GROUP,$SPOOL_GROUP" "$SERVICE_USER"
 
 install -d -m 0750 -o "$SERVICE_USER" -g "$BROKER_GROUP" /run/admira-runtime-broker
+DOCKER_CONFIG_DIR=/run/admira-runtime-broker/docker-config
+# Docker's CLI may otherwise consult a home-directory config. Keep the
+# broker's rootless CLI state in its explicitly writable, private runtime
+# directory; root performs the installation, but the broker user owns it.
+install -d -m 0700 -o "$SERVICE_USER" -g "$SERVICE_USER" "$DOCKER_CONFIG_DIR"
+printf '%s\n' '{}' | install -m 0600 -o "$SERVICE_USER" -g "$SERVICE_USER" /dev/stdin "$DOCKER_CONFIG_DIR/config.json"
 install -d -m 0700 -o "$SERVICE_USER" -g "$SERVICE_USER" /etc/admira
 install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_USER" /srv/admira/shared/telegram-spool
 install -d -m 0770 -o "$SERVICE_USER" -g "$SPOOL_GROUP" /srv/admira/shared/telegram-spool/inbound
@@ -86,6 +92,7 @@ Restart=on-failure
 RestartSec=3
 UMask=0077
 Environment=ADMIRA_MAX_ACTIVE_TENANTS=$MAX_ACTIVE_TENANTS
+Environment=DOCKER_CONFIG=$DOCKER_CONFIG_DIR
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
