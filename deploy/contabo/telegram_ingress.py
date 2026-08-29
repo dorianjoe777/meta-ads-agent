@@ -175,12 +175,22 @@ class TelegramIngress:
         try:
             for item in message.media:
                 staged.append(self.media.stage(item))
+        except Exception:
+            return {
+                # The poller may retry this boundedly and then enqueue a
+                # text-only recovery notice.  Do not expose staging details.
+                "status": "media_failed", "tenant_id": tenant_id,
+                "update_id": message.update_id,
+            }
+        try:
             inserted = self.inbox.ingest(
                 message=message,
                 tenant_id=tenant_id,
                 payload=sanitized_payload(message, staged),
             )
         except Exception as exc:
+            # A durable-store failure must leave the Telegram cursor parked;
+            # unlike media staging, it cannot be safely papered over.
             return {
                 "status": "failed", "tenant_id": tenant_id,
                 "update_id": message.update_id, "error_code": type(exc).__name__[:80],
@@ -190,3 +200,30 @@ class TelegramIngress:
             "tenant_id": tenant_id,
             "update_id": message.update_id,
         }
+
+    def enqueue_media_fallback(
+        self, raw: object, *, bot_id: str, expected_tenant_id: str
+    ) -> bool | None:
+        """Durably queue a text-only notice after attachment recovery fails.
+
+        ``None`` means the binding no longer resolves to the tenant that was
+        originally selected; callers must keep the Telegram cursor parked.
+        A boolean is the inbox insert result (false is an idempotent duplicate,
+        which is still durably handled).
+        """
+        message = parse_update(raw, bot_id=bot_id)
+        if message is None or not message.media:
+            return None
+        tenant_id = self.resolver.resolve(
+            bot_id=message.bot_id, chat_id=message.chat_id, user_id=message.user_id
+        )
+        if tenant_id != expected_tenant_id:
+            return None
+        payload = sanitized_payload(message, ())
+        original = message.text.strip()
+        payload["message"] = (
+            f"{original}\n\n" if original else ""
+        ) + "No pude recuperar el archivo adjunto. Puedes volver a enviarlo, por favor."
+        # Do not catch this exception: a DB/inbox failure must block cursor
+        # advancement and be retried by the next poller iteration.
+        return self.inbox.ingest(message=message, tenant_id=tenant_id, payload=payload)

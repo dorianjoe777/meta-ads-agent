@@ -8,6 +8,16 @@ BROKER_GID="${ADMIRA_BROKER_GID:-19091}"
 SPOOL_GROUP="${ADMIRA_SPOOL_GROUP:-admira-spool}"
 SPOOL_GID="${ADMIRA_SPOOL_GID:-19092}"
 BROKER_KEY_SOURCE="$ROOT_DIR/secrets/runtime_broker_key.txt"
+HOSTED_GEMINI_KEY_SOURCE="$ROOT_DIR/secrets/hosted_gemini_api_key.txt"
+MAX_ACTIVE_TENANTS="${ADMIRA_MAX_ACTIVE_TENANTS:-}"
+if [[ -z "$MAX_ACTIVE_TENANTS" && -r "$ROOT_DIR/.env" ]]; then
+  while IFS='=' read -r config_key config_value; do
+    if [[ "$config_key" == "ADMIRA_MAX_ACTIVE_TENANTS" ]]; then
+      MAX_ACTIVE_TENANTS="$config_value"
+    fi
+  done < "$ROOT_DIR/.env"
+fi
+MAX_ACTIVE_TENANTS="${MAX_ACTIVE_TENANTS:-4}"
 
 if [[ "$(id -u)" -ne 0 ]]; then
   printf '%s\n' 'Run this installer with sudo.' >&2
@@ -19,6 +29,10 @@ if ! id "$SERVICE_USER" >/dev/null 2>&1; then
 fi
 if [[ ! -s "$BROKER_KEY_SOURCE" ]]; then
   printf '%s\n' 'Generate control-plane secrets before installing the broker.' >&2
+  exit 1
+fi
+if [[ ! "$MAX_ACTIVE_TENANTS" =~ ^[1-9][0-9]*$ ]] || (( MAX_ACTIVE_TENANTS > 64 )); then
+  printf '%s\n' 'ADMIRA_MAX_ACTIVE_TENANTS must be between 1 and 64.' >&2
   exit 1
 fi
 
@@ -47,6 +61,13 @@ install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_USER" /srv/admira/shared/tele
 install -d -m 0770 -o "$SERVICE_USER" -g "$SPOOL_GROUP" /srv/admira/shared/telegram-spool/inbound
 install -d -m 0770 -o "$SERVICE_USER" -g "$SPOOL_GROUP" /srv/admira/shared/telegram-spool/outbound
 install -m 0600 -o "$SERVICE_USER" -g "$SERVICE_USER" "$BROKER_KEY_SOURCE" /etc/admira/runtime-broker.key
+if [[ -s "$HOSTED_GEMINI_KEY_SOURCE" ]]; then
+  install -m 0600 -o "$SERVICE_USER" -g "$SERVICE_USER" "$HOSTED_GEMINI_KEY_SOURCE" /etc/admira/hosted-gemini-api-key
+else
+  # Emptying the control-plane source is an explicit revocation for future
+  # tenant provisioning; never leave an older host-funded key installed.
+  rm -f /etc/admira/hosted-gemini-api-key
+fi
 
 install -m 0644 /dev/stdin /etc/systemd/system/admira-runtime-broker.service <<UNIT
 [Unit]
@@ -64,6 +85,7 @@ ExecStart=/usr/bin/python3 $ROOT_DIR/runtime_broker.py serve --socket-gid $BROKE
 Restart=on-failure
 RestartSec=3
 UMask=0077
+Environment=ADMIRA_MAX_ACTIVE_TENANTS=$MAX_ACTIVE_TENANTS
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true

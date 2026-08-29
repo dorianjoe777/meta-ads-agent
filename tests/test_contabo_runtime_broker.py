@@ -8,6 +8,7 @@ import stat
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -24,6 +25,28 @@ KEY = b"k" * 32
 
 
 class RuntimeBrokerTests(unittest.TestCase):
+    def test_cron_snapshot_rejects_tenant_symlink(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "client-001"
+            cron = root / "runtime" / "hermes" / "cron"
+            cron.mkdir(parents=True)
+            outside = Path(raw) / "outside.json"
+            outside.write_text('[{"id":"leak","name":"host data"}]', encoding="utf-8")
+            (cron / "jobs.json").symlink_to(outside)
+            self.assertEqual(broker._cron_snapshot(root), [])
+
+    def test_single_broker_process_lock_rejects_a_second_instance(self):
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "broker.lock"
+            first = broker._acquire_instance_lock(path)
+            try:
+                with self.assertRaisesRegex(RuntimeError, "broker_already_running"):
+                    broker._acquire_instance_lock(path)
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            finally:
+                broker.fcntl.flock(first.fileno(), broker.fcntl.LOCK_UN)
+                first.close()
+
     def test_signed_envelope_verifies_and_replay_is_rejected(self):
         envelope = broker.sign_body(KEY, {"action": "status", "tenant_id": "client-001"}, now=1000, nonce="a" * 32)
         replay = broker.ReplayWindow()
@@ -79,16 +102,275 @@ class RuntimeBrokerTests(unittest.TestCase):
             core = broker.BrokerCore(tenants_base=base, spool_base=spool)
             self.assertEqual(stat.S_IMODE((spool / "inbound").stat().st_mode), 0o770)
             self.assertEqual(stat.S_IMODE((spool / "outbound").stat().st_mode), 0o770)
-            image_paths = core._prepare_inbound(
+            inbound = core._prepare_inbound(
                 root,
-                [{"ref": photo_ref}, {"ref": video_ref}],
+                [{"ref": photo_ref, "kind": "photo", "mime_type": "image/jpeg"},
+                 {"ref": video_ref, "kind": "video", "mime_type": "video/mp4"}],
                 17,
             )
-            self.assertEqual(len(image_paths), 1)
-            self.assertTrue(image_paths[0].startswith("/app/output/telegram_uploads/"))
-            materialized = root / "output" / Path(image_paths[0]).relative_to("/app/output")
+            self.assertEqual(len(inbound["image_paths"]), 1)
+            self.assertEqual([item["kind"] for item in inbound["attachments"]], ["photo", "video"])
+            self.assertEqual(inbound["attachments"][1]["mime_type"], "video/mp4")
+            self.assertTrue(inbound["image_paths"][0].startswith("/app/output/telegram_uploads/"))
+            materialized = root / "output" / Path(inbound["image_paths"][0]).relative_to("/app/output")
             self.assertEqual(materialized.read_bytes(), b"photo-bytes")
             self.assertEqual(stat.S_IMODE(materialized.stat().st_mode), 0o600)
+
+    def test_turn_forwards_bounded_inbound_attachment_contract(self):
+        with tempfile.TemporaryDirectory() as raw:
+            base, spool = Path(raw) / "tenants", Path(raw) / "spool"
+            root = base / "client-001"
+            (root / "output").mkdir(parents=True)
+            (root / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            inbound = spool / "inbound"
+            inbound.mkdir(parents=True)
+            ref = "a" * 32 + ".pdf"
+            (inbound / ref).write_bytes(b"pdf-bytes")
+            core = broker.BrokerCore(tenants_base=base, spool_base=spool)
+            seen = {}
+            def fake_turn(_base, _tenant, payload):
+                seen["payload"] = payload
+                return {"ok": True, "reply": "ok"}
+            with patch.object(core, "_active_managed_tenants", return_value={}), \
+                 patch.object(broker, "lifecycle", return_value={"ok": True}), \
+                 patch.object(broker, "run_turn", side_effect=fake_turn):
+                result = core.handle({"action": "turn", "tenant_id": "client-001", "turn": {"message": "analiza", "chat_id": "1", "update_id": 1}, "media": [{"ref": ref, "kind": "document", "mime_type": "application/pdf"}]})
+            self.assertTrue(result["ok"])
+            self.assertNotIn("image_paths", seen["payload"])
+            attachment = seen["payload"]["attachments"][0]
+            self.assertEqual(attachment["kind"], "document")
+            self.assertEqual(attachment["mime_type"], "application/pdf")
+            self.assertTrue(str(attachment["path"]).startswith("/app/output/telegram_uploads/"))
+            self.assertEqual(list((root / "output" / "telegram_uploads").iterdir()), [])
+
+    def test_capacity_guard_allows_existing_and_rejects_new_tenant(self):
+        with tempfile.TemporaryDirectory() as raw, patch.dict(os.environ, {"ADMIRA_MAX_ACTIVE_TENANTS": "2"}):
+            base, spool = Path(raw) / "tenants", Path(raw) / "spool"
+            root = base / "client-001"
+            (root / "output").mkdir(parents=True)
+            (root / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            other = base / "client-003"
+            (other / "output").mkdir(parents=True)
+            (other / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            core = broker.BrokerCore(tenants_base=base, spool_base=spool)
+            with patch.object(core, "_active_managed_tenants", return_value={"client-001", "client-002"}), \
+                 patch.object(broker, "lifecycle") as start:
+                core._ensure_running("client-001")
+                start.assert_not_called()
+                with self.assertRaisesRegex(RuntimeError, "runtime_capacity_exhausted"):
+                    core._ensure_running("client-003")
+
+    def test_capacity_check_failure_is_retryable_and_does_not_start(self):
+        with tempfile.TemporaryDirectory() as raw:
+            base, spool = Path(raw) / "tenants", Path(raw) / "spool"
+            root = base / "client-001"
+            (root / "output").mkdir(parents=True)
+            (root / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            core = broker.BrokerCore(tenants_base=base, spool_base=spool)
+            with patch.object(core, "_active_managed_tenants", side_effect=RuntimeError("runtime_capacity_check_failed")), \
+                 patch.object(broker, "lifecycle") as start:
+                with self.assertRaisesRegex(RuntimeError, "runtime_capacity_check_failed"):
+                    core._ensure_running("client-001")
+                start.assert_not_called()
+
+    def test_capacity_admission_does_not_restart_an_active_tenant(self):
+        with tempfile.TemporaryDirectory() as raw:
+            base, spool = Path(raw) / "tenants", Path(raw) / "spool"
+            root = base / "client-001"
+            root.mkdir(parents=True)
+            (root / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            core = broker.BrokerCore(tenants_base=base, spool_base=spool)
+            with patch.object(core, "_active_managed_tenants", return_value={"client-001"}), \
+                 patch.object(broker, "lifecycle") as lifecycle:
+                self.assertEqual(core._ensure_running("client-001"), root)
+                lifecycle.assert_not_called()
+
+    def test_complete_reset_requires_fresh_private_request_and_restarts_pinned_runtime(self):
+        with tempfile.TemporaryDirectory() as raw:
+            base, spool = Path(raw) / "tenants", Path(raw) / "spool"
+            root = base / "client-001"
+            (root / "runtime").mkdir(parents=True)
+            (root / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            request = root / "runtime" / broker.HOSTED_RESET_REQUEST
+            request.write_text(json.dumps({
+                "status": "pending",
+                "chat_id": "123",
+                "user_id": "456",
+                "requested_at": datetime.now(timezone.utc).isoformat(),
+                "hosted_update_id": 99,
+            }), encoding="utf-8")
+            request.chmod(0o600)
+            core = broker.BrokerCore(tenants_base=base, spool_base=spool)
+            completed = type("Completed", (), {"returncode": 0, "stdout": '{"ok": true}', "stderr": ""})()
+            with patch.object(core, "_active_managed_tenants", return_value={"client-001"}), \
+                 patch.object(broker.subprocess, "run", return_value=completed) as run, \
+                 patch.object(broker, "lifecycle", side_effect=[{"ok": True}, {"ok": True}]) as lifecycle:
+                core._perform_complete_reset(
+                    root, {"chat_id": "123", "user_id": "456", "update_id": 99}
+                )
+            self.assertIn("run", run.call_args.args[0])
+            self.assertIn("--pull", run.call_args.args[0])
+            self.assertEqual(run.call_args.args[0][-3:-1], ["admira", "-c"])
+            self.assertEqual([call.args[2] for call in lifecycle.call_args_list], ["suspend", "start"])
+            receipt = root / broker.HOSTED_RESET_RECEIPT
+            self.assertEqual(json.loads(receipt.read_text(encoding="utf-8"))["update_id"], 99)
+            self.assertEqual(stat.S_IMODE(receipt.stat().st_mode), 0o600)
+
+            request.write_text(json.dumps({
+                "status": "pending", "chat_id": "123", "user_id": "456",
+                "requested_at": "2020-01-01T00:00:00+00:00", "hosted_update_id": 99,
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "hosted_reset_not_authorized"):
+                core._validated_reset_request(
+                    root, {"chat_id": "123", "user_id": "456", "update_id": 99}
+                )
+
+            request.write_text(json.dumps({
+                "status": "pending", "chat_id": "123", "user_id": "456",
+                "requested_at": datetime.now(timezone.utc).isoformat(), "hosted_update_id": 99,
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "hosted_reset_not_authorized"):
+                core._validated_reset_request(
+                    root, {"chat_id": "123", "user_id": "999", "update_id": 99}
+                )
+
+    def test_turn_executes_only_whitelisted_complete_reset_action(self):
+        with tempfile.TemporaryDirectory() as raw:
+            base, spool = Path(raw) / "tenants", Path(raw) / "spool"
+            root = base / "client-001"
+            (root / "output").mkdir(parents=True)
+            (root / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            core = broker.BrokerCore(tenants_base=base, spool_base=spool)
+            run_result = {"ok": True, "reply": "confirmed", "control_action": "complete_reset"}
+            with patch.object(core, "_active_managed_tenants", return_value={"client-001"}), \
+                 patch.object(broker, "run_turn", return_value=run_result), \
+                 patch.object(core, "_perform_complete_reset") as reset:
+                result = core.handle({
+                    "action": "turn", "tenant_id": "client-001",
+                    "turn": {"message": "confirm", "chat_id": "123", "user_id": "456", "update_id": 1},
+                    "media": [],
+                })
+            reset.assert_called_once_with(
+                root, {"message": "confirm", "chat_id": "123", "user_id": "456", "update_id": 1}
+            )
+            self.assertTrue(result["ok"])
+            self.assertIn("Reinicié completamente", result["reply"])
+
+    def test_completed_reset_receipt_replays_success_without_model(self):
+        with tempfile.TemporaryDirectory() as raw:
+            base, spool = Path(raw) / "tenants", Path(raw) / "spool"
+            root = base / "client-001"
+            root.mkdir(parents=True)
+            (root / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            core = broker.BrokerCore(tenants_base=base, spool_base=spool)
+            turn = {"message": "Si quiero resetear completamente", "chat_id": "123", "user_id": "456", "update_id": 77, "language": "en"}
+            core._write_reset_receipt(root, turn)
+            with patch.object(core, "_active_managed_tenants", return_value={"client-001"}), \
+                 patch.object(broker, "run_turn") as run_turn:
+                result = core.handle({"action": "turn", "tenant_id": "client-001", "turn": turn, "media": []})
+            run_turn.assert_not_called()
+            self.assertTrue(result["ok"])
+            self.assertIn("completely reset", result["reply"])
+
+    def test_completed_reset_replay_bypasses_full_capacity(self):
+        with tempfile.TemporaryDirectory() as raw:
+            base, spool = Path(raw) / "tenants", Path(raw) / "spool"
+            root = base / "client-001"
+            root.mkdir(parents=True)
+            (root / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            core = broker.BrokerCore(tenants_base=base, spool_base=spool)
+            turn = {"message": "confirm", "chat_id": "123", "user_id": "456", "update_id": 80}
+            core._write_reset_receipt(root, turn)
+            with patch.object(core, "_active_managed_tenants") as active, \
+                 patch.object(broker, "run_turn") as run_turn, \
+                 patch.object(broker, "lifecycle") as lifecycle:
+                result = core.handle({
+                    "action": "turn", "tenant_id": "client-001", "turn": turn, "media": []
+                })
+            active.assert_not_called()
+            run_turn.assert_not_called()
+            lifecycle.assert_not_called()
+            self.assertTrue(result["ok"])
+
+    def test_in_progress_reset_receipt_resumes_without_model_or_request_file(self):
+        with tempfile.TemporaryDirectory() as raw:
+            base, spool = Path(raw) / "tenants", Path(raw) / "spool"
+            root = base / "client-001"
+            root.mkdir(parents=True)
+            (root / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            core = broker.BrokerCore(tenants_base=base, spool_base=spool)
+            turn = {
+                "message": "Si quiero resetear completamente",
+                "chat_id": "123", "user_id": "456", "update_id": 78,
+            }
+            core._write_reset_receipt(root, turn, status_value="in_progress")
+            completed = type(
+                "Completed", (), {"returncode": 0, "stdout": '{"ok": true}', "stderr": ""}
+            )()
+            with patch.object(core, "_active_managed_tenants", return_value={"client-001"}), \
+                 patch.object(broker, "run_turn") as run_turn, \
+                 patch.object(broker.subprocess, "run", return_value=completed), \
+                 patch.object(broker, "lifecycle", side_effect=[{"ok": True}, {"ok": True}]):
+                result = core.handle({
+                    "action": "turn", "tenant_id": "client-001", "turn": turn, "media": []
+                })
+            run_turn.assert_not_called()
+            self.assertTrue(result["ok"])
+            receipt = json.loads((root / broker.HOSTED_RESET_RECEIPT).read_text(encoding="utf-8"))
+            self.assertEqual(receipt["status"], "completed")
+
+    def test_in_progress_reset_finishes_but_stays_asleep_when_capacity_is_full(self):
+        with tempfile.TemporaryDirectory() as raw, patch.dict(
+            os.environ, {"ADMIRA_MAX_ACTIVE_TENANTS": "2"}
+        ):
+            base, spool = Path(raw) / "tenants", Path(raw) / "spool"
+            root = base / "client-001"
+            root.mkdir(parents=True)
+            (root / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            core = broker.BrokerCore(tenants_base=base, spool_base=spool)
+            turn = {"message": "confirm", "chat_id": "123", "user_id": "456", "update_id": 81}
+            core._write_reset_receipt(root, turn, status_value="in_progress")
+            completed = type(
+                "Completed", (), {"returncode": 0, "stdout": '{"ok": true}', "stderr": ""}
+            )()
+            with patch.object(core, "_active_managed_tenants", return_value={"client-002", "client-003"}), \
+                 patch.object(broker.subprocess, "run", return_value=completed), \
+                 patch.object(broker, "run_turn") as run_turn, \
+                 patch.object(broker, "lifecycle", return_value={"ok": True}) as lifecycle:
+                result = core.handle({
+                    "action": "turn", "tenant_id": "client-001", "turn": turn, "media": []
+                })
+            run_turn.assert_not_called()
+            self.assertTrue(result["ok"])
+            self.assertEqual([call.args[2] for call in lifecycle.call_args_list], ["suspend"])
+            receipt = json.loads((root / broker.HOSTED_RESET_RECEIPT).read_text(encoding="utf-8"))
+            self.assertEqual(receipt["status"], "completed")
+
+    def test_failed_reset_keeps_in_progress_receipt_for_safe_retry(self):
+        with tempfile.TemporaryDirectory() as raw:
+            base, spool = Path(raw) / "tenants", Path(raw) / "spool"
+            root = base / "client-001"
+            (root / "runtime").mkdir(parents=True)
+            (root / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            turn = {"chat_id": "123", "user_id": "456", "update_id": 79}
+            request = root / "runtime" / broker.HOSTED_RESET_REQUEST
+            request.write_text(json.dumps({
+                "status": "pending", "chat_id": "123", "user_id": "456",
+                "hosted_update_id": 79,
+                "requested_at": datetime.now(timezone.utc).isoformat(),
+            }), encoding="utf-8")
+            request.chmod(0o600)
+            core = broker.BrokerCore(tenants_base=base, spool_base=spool)
+            failed = type(
+                "Completed", (), {"returncode": 1, "stdout": "", "stderr": "reset failed"}
+            )()
+            with patch.object(core, "_active_managed_tenants", return_value={"client-001"}), \
+                 patch.object(broker.subprocess, "run", return_value=failed), \
+                 patch.object(broker, "lifecycle", side_effect=[{"ok": True}, {"ok": True}]):
+                with self.assertRaisesRegex(RuntimeError, "hosted_reset_failed"):
+                    core._perform_complete_reset(root, turn)
+            receipt = json.loads((root / broker.HOSTED_RESET_RECEIPT).read_text(encoding="utf-8"))
+            self.assertEqual(receipt["status"], "in_progress")
 
     def test_stage_outbound_returns_opaque_ref_kind_and_sha256(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -129,7 +411,7 @@ class RuntimeBrokerTests(unittest.TestCase):
                 "media_paths": ["/app/output/result.png"],
                 "error_code": "",
             }
-            with patch.object(broker, "lifecycle", return_value={"ok": True}), patch.object(
+            with patch.object(core, "_active_managed_tenants", return_value=set()), patch.object(broker, "lifecycle", return_value={"ok": True}), patch.object(
                 broker, "run_turn", return_value=run_result
             ):
                 result = core.handle({"action": "turn", "tenant_id": "client-001", "turn": {"message": "hola", "chat_id": "1", "update_id": 1}, "media": []})

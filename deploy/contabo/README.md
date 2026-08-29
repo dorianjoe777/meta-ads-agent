@@ -5,6 +5,21 @@ It deliberately preserves the proven r90 product boundary: one immutable image
 is shared by the host, while every buyer receives a separate process,
 environment and persistent filesystem.
 
+## Current product scope
+
+This deployment is the hosted Telegram experience only. Buyers interact with
+one central bot in a private DM; the control plane resolves that Telegram
+identity to one private tenant runtime. There is no buyer dashboard, public
+API, CRM/booking/ecommerce integration layer, webhook product, customer CLI or
+official MCP service in this phase. Those possible SaaS surfaces are explicitly
+outside this job.
+
+The intended experience is nevertheless the complete Admira/Hermes experience:
+each buyer keeps their own model connection, Meta connection, memory, sessions,
+files, brand state and scheduled work as though they had a dedicated server.
+Group chats are rejected because one private Telegram identity controls one
+private workspace.
+
 ## Isolation boundary
 
 Each tenant owns an exclusive directory below `/srv/admira/tenants/<tenant>`:
@@ -15,11 +30,16 @@ Each tenant owns an exclusive directory below `/srv/admira/tenants/<tenant>`:
 - `brand_guides/` for the buyer's approved brand assets
 - `logs/` for that runtime only
 
-New tenants are bootstrapped with Gemini 3.5 Flash Lite as the text brain,
-without a Telegram token and with live Meta actions disabled. A buyer can later
-choose a ChatGPT/Codex subscription or another supported provider through the
-normal onboarding flow; that choice is written to the tenant's private
-`runtime/.env` and is not overwritten by a restart.
+The host also owns that tenant's private `compose.yaml` and, only after a
+complete reset, a 0600 idempotency receipt outside every container mount.
+
+New tenants select Gemini 3.5 Flash Lite as the initial text-brain configuration,
+without a Telegram token and with live Meta actions disabled. An operator may
+optionally seed a private host-funded Gemini key into newly provisioned tenant
+environments. If no working provider is present, Telegram deterministically
+guides the buyer to `/conectar_chatgpt`; the secure ChatGPT/Codex connection
+flow happens in the same DM. Provider choices live in the tenant's private
+`runtime/.env` and are not overwritten by restart or scale-to-zero.
 
 The shared r90 image is read-only product code. A tenant container never mounts
 the Docker socket, another tenant directory or a host-wide credential file.
@@ -42,12 +62,15 @@ publishes no tenant port, and gives every tenant a unique Compose project.
 `tenant_turn.py` is the narrow bridge used by the central Telegram runtime
 worker. It accepts one JSON request on stdin and runs `hermes_bridge.chat` in
 the already-running tenant container. It derives a stable session from the
-Telegram chat ID, accepts only broker-materialized image paths below the
-tenant's own `/app/output/telegram_uploads/` directory, and never returns raw
-provider errors to Telegram:
+Telegram chat ID, accepts only broker-materialized attachments below the
+tenant's own `/app/output/telegram_uploads/` directory, extracts bounded video
+preview frames, routes PDFs through the existing document/catalog behavior and
+never returns raw provider errors to Telegram. `/restart`, `/reset`,
+`/conectar_chatgpt` and the two-step `/resetear_completamente` flow are handled
+deterministically before model inference:
 
 ```bash
-printf '%s\n' '{"message":"Hola","chat_id":"123","language":"es","update_id":42}' \
+printf '%s\n' '{"message":"Hola","chat_id":"123","user_id":"456","language":"es","update_id":42}' \
   | ./tenant_turn.py client-001
 ```
 
@@ -65,6 +88,10 @@ trial, entitlement, Telegram binding, inbox, outbox, runtime lease and
 scheduled-work state. Redis is transient coordination only; it is not the
 durable source of truth.
 
+Trial/entitlement fields are reserved control-plane data, not a dashboard or
+billing product in this phase. Runtime dispatch currently fails closed on the
+tenant's active/inactive status.
+
 Prepare secrets once:
 
 ```bash
@@ -75,6 +102,9 @@ sudo ./install-runtime-broker.sh
 
 The generated `secrets/` directory and `.env` are git-ignored and must be
 backed up through the server's encrypted backup process, never committed.
+`secrets/hosted_gemini_api_key.txt` is optional. Leaving it empty means buyers
+connect ChatGPT in Telegram; if it is used, the operator owns its spend,
+rotation and per-tenant abuse boundary.
 
 ## Central Telegram path
 
@@ -101,6 +131,12 @@ Hermes session: `runtime/`, `data/`, `output/` and brand files remain on disk.
 Inbound spool objects expire after seven days and outbound objects after
 fourteen days; successful outbound media is removed immediately after the
 fenced outbox acknowledgement.
+
+If Telegram media download fails, the poller retries staging twice and then
+durably enqueues a text-only resend request. The Telegram cursor advances only
+after the original update or that fallback is durably handled; database
+failures keep the cursor parked. Broker materializations inside a tenant are
+removed after the turn completes.
 
 ### Tenant claim and `chat_id → tenant_id`
 
@@ -134,7 +170,22 @@ docker compose --profile buyers up -d
 
 Do not run that activation command during infrastructure preparation.
 
+The starter broker admits at most four simultaneously running tenant
+containers by default (`ADMIRA_MAX_ACTIVE_TENANTS=4`). The limit is enforced
+by the single locked broker process and can be raised only after measuring the
+node. Registered tenants beyond that limit remain durable and retry until a
+runtime slot is available.
+
 ### Verification
+
+Run the non-mutating release gate locally before packaging, then on Contabo
+after installing the release and two operator-owned canary tenants. It never
+starts buyer workers, creates tenants, changes PostgreSQL or prints secrets:
+
+```bash
+./release-preflight.sh --local
+./release-preflight.sh --server --tenant-a canary-one --tenant-b canary-two
+```
 
 `db/validate_control_plane.sql` is a destructive fixture intended only for a
 disposable PostgreSQL database. It proves the claim, binding, inbox, runtime

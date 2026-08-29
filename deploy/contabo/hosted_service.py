@@ -429,6 +429,31 @@ def run_poller(*, once: bool = False) -> None:
                 result = ingress.handle_update(raw, bot_id=bot_id)
             except ValueError:
                 result = {"status": "invalid"}
+            if result.get("status") == "media_failed":
+                # Telegram media can transiently fail during getFile/download.
+                # Retry only staging; never hide a durable DB failure.
+                for _attempt in range(2):
+                    try:
+                        result = ingress.handle_update(raw, bot_id=bot_id)
+                    except ValueError:
+                        result = {"status": "invalid"}
+                    if result.get("status") != "media_failed":
+                        break
+                if result.get("status") == "media_failed":
+                    try:
+                        fallback = ingress.enqueue_media_fallback(
+                            raw,
+                            bot_id=bot_id,
+                            expected_tenant_id=str(result.get("tenant_id") or ""),
+                        )
+                    except Exception:
+                        # The fallback itself must be durable before the
+                        # cursor advances; retry it on a later poll iteration.
+                        break
+                    if fallback is None:
+                        # Binding disappeared or update was malformed; do not
+                        # guess a tenant and do not advance the cursor.
+                        break
             if result.get("status") == "failed":
                 break
             store.advance(bot_id, update_id + 1)

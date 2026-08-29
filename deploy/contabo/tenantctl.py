@@ -11,8 +11,10 @@ import argparse
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Iterable
 
@@ -24,6 +26,7 @@ DIRS = ("runtime", "data", "output", "logs", "brand_guides")
 DEFAULT_MEMORY_LIMIT = "1g"
 DEFAULT_CPU_LIMIT = "1.0"
 DEFAULT_PIDS_LIMIT = 256
+DEFAULT_GEMINI_KEY_FILE = Path("/etc/admira/hosted-gemini-api-key")
 MEMORY_RE = re.compile(r"^[1-9][0-9]*(?:b|k|m|g)?$", re.IGNORECASE)
 CPU_RE = re.compile(r"^(?:0\.[1-9][0-9]*|[1-9][0-9]*(?:\.[0-9]+)?)$")
 INITIAL_RUNTIME_ENV = """# Admira hosted tenant bootstrap. Buyer credentials are added by onboarding.
@@ -45,6 +48,55 @@ HERMES_REQUIRE_CODEX_AUTH=false
 HERMES_RESPONSE_TIMEOUT_SECONDS=300
 HERMES_TIMEOUT_SECONDS=300
 """
+
+
+def _private_secret(path: Path) -> str:
+    """Read one optional host secret without ever placing it in Compose."""
+    try:
+        details = path.lstat()
+    except FileNotFoundError:
+        return ""
+    if not stat.S_ISREG(details.st_mode) or path.is_symlink() or stat.S_IMODE(details.st_mode) & 0o077:
+        raise ValueError("hosted Gemini key file must be a private regular file")
+    raw = path.read_text(encoding="utf-8")
+    value = raw.strip()
+    if not value:
+        return ""
+    if not 20 <= len(value) <= 512 or any(ord(char) < 33 or ord(char) > 126 for char in value):
+        raise ValueError("hosted Gemini key file is invalid")
+    return value
+
+
+def _set_env_if_blank(path: Path, key: str, value: str) -> bool:
+    if not value:
+        return False
+    lines = path.read_text(encoding="utf-8").splitlines()
+    changed = False
+    found = False
+    for index, line in enumerate(lines):
+        if line.startswith(f"{key}="):
+            found = True
+            if not line.split("=", 1)[1].strip():
+                lines[index] = f"{key}={value}"
+                changed = True
+            break
+    if not found:
+        lines.append(f"{key}={value}")
+        changed = True
+    if not changed:
+        return False
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(lines).rstrip() + "\n")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+    return True
 
 
 def validate_tenant_id(value: str) -> str:
@@ -166,9 +218,14 @@ def provision(
     memory_limit: str | None = None,
     cpu_limit: str | None = None,
     pids_limit: int | None = None,
+    gemini_key_file: Path | None = None,
 ) -> dict[str, object]:
     root = tenant_path(base, tenant_id)
     if not dry_run:
+        key_path = gemini_key_file or Path(
+            os.environ.get("ADMIRA_HOSTED_GEMINI_KEY_FILE", str(DEFAULT_GEMINI_KEY_FILE))
+        )
+        hosted_gemini_key = _private_secret(key_path)
         root.mkdir(parents=True, exist_ok=True)
         root.chmod(0o700)
         for name in DIRS:
@@ -179,6 +236,7 @@ def provision(
         if not runtime_env.exists():
             runtime_env.write_text(INITIAL_RUNTIME_ENV, encoding="utf-8")
             runtime_env.chmod(0o600)
+        _set_env_if_blank(runtime_env, "GEMINI_API_KEY", hosted_gemini_key)
         compose = root / "compose.yaml"
         compose.write_text(
             compose_text(
@@ -226,6 +284,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--memory-limit", default=None, help=f"per-tenant memory limit (default: {DEFAULT_MEMORY_LIMIT})")
     p.add_argument("--cpu-limit", default=None, help=f"per-tenant CPU limit (default: {DEFAULT_CPU_LIMIT})")
     p.add_argument("--pids-limit", default=None, type=int, help=f"per-tenant PID limit (default: {DEFAULT_PIDS_LIMIT})")
+    p.add_argument("--gemini-key-file", default=None, type=Path,
+                   help="private host file used only to seed a blank tenant Gemini credential")
     p.add_argument("--dry-run", action="store_true", help="show the operation without writing or running Docker")
     return p
 
@@ -243,6 +303,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 memory_limit=args.memory_limit,
                 cpu_limit=args.cpu_limit,
                 pids_limit=args.pids_limit,
+                gemini_key_file=args.gemini_key_file,
             )
         elif args.command in ("start", "suspend"):
             result = lifecycle(args.base_dir, args.tenant_id, args.command, dry_run=args.dry_run)

@@ -119,6 +119,10 @@ class ContaboComposeTests(unittest.TestCase):
         installer = (COMPOSE.parent / "install-runtime-broker.sh").read_text(encoding="utf-8")
         self.assertIn("systemctl restart admira-runtime-broker.service", installer)
         self.assertNotIn("enable --now admira-runtime-broker.service", installer)
+        self.assertIn("Environment=ADMIRA_MAX_ACTIVE_TENANTS=", installer)
+        self.assertIn('done < "$ROOT_DIR/.env"', installer)
+        self.assertIn("/etc/admira/hosted-gemini-api-key", installer)
+        self.assertIn("rm -f /etc/admira/hosted-gemini-api-key", installer)
 
     def test_tenants_and_control_services_never_mount_docker_socket(self):
         self.assertNotIn("/var/run/docker.sock", self.text)

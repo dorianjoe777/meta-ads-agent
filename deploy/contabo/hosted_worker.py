@@ -150,6 +150,7 @@ class RuntimeWorker:
                         "message": message,
                         "language": str(update.payload.get("language") or "es"),
                         "chat_id": update.chat_id,
+                        "user_id": update.user_id,
                         "update_id": update.update_id,
                     },
                     "media": list(update.payload.get("media") or []),

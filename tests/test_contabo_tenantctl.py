@@ -76,6 +76,29 @@ class TenantCtlTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             tenantctl.compose_text(Path("/tmp/client-001"), "client-001", pids_limit=0)
 
+    def test_optional_private_gemini_key_seeds_only_a_blank_tenant_env(self):
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw) / "tenants"
+            secret = Path(raw) / "gemini.key"
+            secret.write_text("a-secure-gemini-key-value-12345\n", encoding="utf-8")
+            secret.chmod(0o600)
+            tenantctl.provision(base, "client-001", gemini_key_file=secret)
+            runtime_env = base / "client-001" / "runtime" / ".env"
+            self.assertIn("GEMINI_API_KEY=a-secure-gemini-key-value-12345", runtime_env.read_text())
+            secret.write_text("a-different-secure-key-value-67890\n", encoding="utf-8")
+            tenantctl.provision(base, "client-001", gemini_key_file=secret)
+            self.assertNotIn("a-different", runtime_env.read_text())
+            self.assertNotIn("a-secure-gemini", (base / "client-001" / "compose.yaml").read_text())
+
+    def test_gemini_seed_rejects_non_private_secret_file(self):
+        with tempfile.TemporaryDirectory() as raw:
+            secret = Path(raw) / "gemini.key"
+            secret.write_text("a-secure-gemini-key-value-12345\n", encoding="utf-8")
+            secret.chmod(0o644)
+            with self.assertRaisesRegex(ValueError, "private regular file"):
+                tenantctl.provision(Path(raw) / "tenants", "client-001", gemini_key_file=secret)
+            self.assertFalse((Path(raw) / "tenants" / "client-001").exists())
+
     def test_lifecycle_uses_argv_and_tenant_compose(self):
         with tempfile.TemporaryDirectory() as raw, patch.object(tenantctl, "run") as run:
             run.return_value = type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()

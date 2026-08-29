@@ -29,6 +29,9 @@ done
 # Buyer traffic is deliberately disabled until this file contains the shared
 # bot token and the Compose `buyers` profile is explicitly started.
 touch "$SECRETS_DIR/telegram_bot_token.txt"
+# Optional operator-funded first-turn brain. If this remains empty, the
+# hosted Telegram bridge guides the buyer through /conectar_chatgpt instead.
+touch "$SECRETS_DIR/hosted_gemini_api_key.txt"
 
 chmod 600 "$SECRETS_DIR"/*.txt "$SECRETS_DIR/redis_users.acl"
 

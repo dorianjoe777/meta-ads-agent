@@ -119,6 +119,36 @@ class TelegramIngressTests(unittest.TestCase):
         self.assertFalse(inbox.items)
         self.assertFalse(stager.calls)
 
+    def test_media_stage_failure_is_distinct_from_inbox_failure(self):
+        class FailingStager(Stager):
+            def stage(self, media):
+                raise OSError("temporary download detail")
+
+        class FailingInbox(Inbox):
+            def ingest(self, **_kwargs):
+                raise OSError("database detail")
+
+        raw = update()
+        raw["message"]["photo"] = [{"file_id": "photo_file_123", "file_size": 10}]
+        result = ingress_module.TelegramIngress(Resolver(), Inbox(), FailingStager()).handle_update(raw, bot_id="bot-1")
+        self.assertEqual(result["status"], "media_failed")
+        self.assertNotIn("detail", result)
+        result = ingress_module.TelegramIngress(Resolver(), FailingInbox(), Stager()).handle_update(update(), bot_id="bot-1")
+        self.assertEqual(result["status"], "failed")
+
+    def test_media_fallback_is_text_only_and_idempotent_store_result(self):
+        inbox, stager = Inbox(), Stager()
+        raw = update("hazlo con esta imagen")
+        raw["message"]["photo"] = [{"file_id": "photo_file_123", "file_size": 10}]
+        ingress = ingress_module.TelegramIngress(Resolver(), inbox, stager)
+        result = ingress.enqueue_media_fallback(raw, bot_id="bot-1", expected_tenant_id="tenant-a")
+        self.assertTrue(result)
+        payload = inbox.items[0][1]
+        self.assertIn("No pude recuperar el archivo adjunto", payload["message"])
+        self.assertEqual(payload["media"], [])
+        self.assertNotIn("photo_file_123", repr(payload))
+        self.assertIsNone(ingress.enqueue_media_fallback(raw, bot_id="other", expected_tenant_id="tenant-a"))
+
 
 if __name__ == "__main__":
     unittest.main()

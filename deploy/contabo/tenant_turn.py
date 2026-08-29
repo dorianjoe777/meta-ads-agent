@@ -11,9 +11,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 # Keep the controller import independent of the caller's working directory;
@@ -29,16 +32,182 @@ INBOUND_IMAGE_RE = re.compile(
     r"^/app/output/telegram_uploads/[a-f0-9]{16,64}/[a-f0-9]{16,64}\.(?:jpg|jpeg|png|webp|gif)$",
     re.IGNORECASE,
 )
+INBOUND_ATTACHMENT_RE = re.compile(
+    r"^/app/output/telegram_uploads/[a-f0-9]{16,64}/[a-f0-9]{16,64}\.(?:jpg|jpeg|png|webp|gif|mp4|mov|pdf|bin)$",
+    re.IGNORECASE,
+)
+ATTACHMENT_KINDS = {"photo", "video", "document"}
+ATTACHMENT_LIMIT = 8
+ATTACHMENT_SIZE_LIMIT = 50 * 1024 * 1024
 INNER_SCRIPT = r'''
 import json
 import sys
+from pathlib import Path
 
 sys.path.insert(0, "/app/src")
 from hermes_bridge import chat
 from product_config import load_config
 
+def hosted_command(payload):
+    """Handle commands which cannot be delegated to the language model."""
+    command = str(payload.get("command") or "").strip().lower()
+    text = str(payload.get("message") or "").strip()
+    language = str(payload.get("language") or "es").lower()
+    session_key = str(payload.get("session_key") or "")
+    chat_id = str(payload.get("chat_id") or "")
+    user_id = str(payload.get("user_id") or "")
+    english = language.startswith("en")
+    reset_commands = {"nuevo", "new", "reset", "restart"}
+    chatgpt_commands = {"conectar_chatgpt", "reconectar_chatgpt", "connect_chatgpt"}
+    complete_reset_phrase = "Si quiero resetear completamente"
+    try:
+        from admira_hermes_runtime_patch import (
+            _automatic_codex_recovery, _chatgpt_connection_reply,
+            _chatgpt_connection_request, _chatgpt_login_confirmation_request,
+            _chatgpt_login_confirmation_reply, _remember_chatgpt_login_pending,
+        )
+        from complete_reset import (
+            COMPLETE_RESET_CONFIRMATION_PHRASE,
+            COMPLETE_RESET_CONFIRMATION_TTL_SECONDS,
+            begin_reset_confirmation,
+            consume_reset_confirmation,
+            write_private_json,
+        )
+    except Exception:
+        if command in chatgpt_commands | {"resetear_completamente"} or text == complete_reset_phrase:
+            return {"ok": True, "reply": (
+                "I could not open that protected connection/reset flow right now. Nothing was changed; please try again." if english
+                else "No pude abrir ese flujo protegido de conexión o reinicio en este momento. No cambié nada; inténtalo otra vez."
+            )}
+        if command in reset_commands:
+            return {"ok": True, "reply": (
+                "Done. I started a fresh conversation; your Meta connections, accounts, Page, and saved work remain." if english
+                else "Listo. Reinicié solo el contexto de esta conversación; tus conexiones de Meta, cuentas, Página y trabajo guardado siguen intactos."
+            )}
+        return None
+    paths = {
+        "confirmation": Path("/app/runtime/telegram_hosted_reset_confirmation.json"),
+        "request": Path("/app/runtime/telegram_hosted_reset_request.json"),
+    }
+    if command == "resetear_completamente":
+        pending = begin_reset_confirmation(paths["confirmation"], paths["request"], chat_id, user_id)
+        if pending.get("status") == "already_running":
+            return {"ok": True, "reply": "Ya hay un reinicio completo en curso. Espera a que Admira vuelva a conectarse."}
+        minutes = max(1, COMPLETE_RESET_CONFIRMATION_TTL_SECONDS // 60)
+        return {"ok": True, "reply": (
+            f"⚠️ Este reinicio es permanente y borra la configuración y memoria de este espacio, pero no las campañas ya existentes en Meta.\n\nResponde exactamente dentro de {minutes} minutos:\n{COMPLETE_RESET_CONFIRMATION_PHRASE}"
+        )}
+    # Any response other than the exact phrase cancels a pending destructive
+    # reset before another native command or a model turn is allowed to run.
+    result = consume_reset_confirmation(paths["confirmation"], paths["request"], text, chat_id, user_id)
+    if result.get("matched") and result.get("status") == "confirmed":
+        # Bind the destructive broker request to this exact durable Telegram
+        # update.  The host validates all three identity fields independently
+        # before it is allowed to stop or reset the tenant.
+        request = result.get("request") if isinstance(result.get("request"), dict) else {}
+        request["hosted_update_id"] = payload.get("update_id")
+        write_private_json(paths["request"], request)
+        return {"ok": True, "control_action": "complete_reset", "reply": "✅ Confirmación válida. Prepararé el reinicio completo de este espacio."}
+    if result.get("matched"):
+        return {"ok": True, "reply": "La confirmación venció o fue cancelada; no borré nada."}
+    try:
+        pending = json.loads(paths["request"].read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        pending = {}
+    if (
+        isinstance(pending, dict)
+        and pending.get("status") == "pending"
+        and str(pending.get("chat_id") or "") == chat_id
+        and str(pending.get("user_id") or "") == user_id
+        and str(pending.get("hosted_update_id")) == str(payload.get("update_id"))
+    ):
+        # A broker restart after confirmation must resume the same reset
+        # instead of sending the confirmation phrase to the model.
+        return {"ok": True, "control_action": "complete_reset", "reply": "✅ Confirmación válida. Prepararé el reinicio completo de este espacio."}
+    if command in reset_commands:
+        try:
+            from campaign_editing import reset_conversation_edit_context
+            reset_conversation_edit_context(chat_id)
+        except Exception:
+            pass
+        return {"ok": True, "reply": (
+            "Done. I started a fresh conversation; your Meta connections, accounts, Page, and saved work remain." if english
+            else "Listo. Reinicié solo el contexto de esta conversación; tus conexiones de Meta, cuentas, Página y trabajo guardado siguen intactos."
+        )}
+    if command in chatgpt_commands or _chatgpt_connection_request(text):
+        recovery = _automatic_codex_recovery(wait_seconds=15, action="switch")
+        if recovery.get("url") and recovery.get("code"):
+            _remember_chatgpt_login_pending(session_key)
+        return {"ok": True, "reply": _chatgpt_connection_reply(recovery, language)}
+    if _chatgpt_login_confirmation_request(text, session_key):
+        return {"ok": True, "reply": _chatgpt_login_confirmation_reply(session_key, language)}
+    return None
+
+def prepare_attachments(payload):
+    """Turn hosted videos/documents into useful, bounded Hermes context."""
+    attachments = payload.get("attachments") if isinstance(payload.get("attachments"), list) else []
+    if not attachments:
+        return payload
+    images = list(payload.get("image_paths") or [])[:4]
+    notes = []
+    documents = []
+    for item in attachments[:8]:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("kind") or "")
+        path = str(item.get("path") or "")
+        if kind == "video":
+            try:
+                from public_asset_fetcher import extract_video_preview_frames
+                preview = extract_video_preview_frames(path, output_dir=Path(path).parent / f"{Path(path).stem}_admira_frames", max_frames=4)
+            except Exception:
+                preview = {"frames": [], "reason": "frame_extraction_failed"}
+            frames = [str(value) for value in (preview.get("frames") or []) if str(value).strip()]
+            for frame in frames:
+                if frame not in images and len(images) < 4:
+                    images.append(frame)
+            if frames:
+                duration = preview.get("duration_seconds") or 0
+                notes.append(
+                    f"[ADMIRA HOSTED VIDEO — internal] The buyer attached a video. "
+                    f"Admira extracted {len(frames)} representative frames for visual review"
+                    + (f" from about {duration:g} seconds" if duration else "")
+                    + ". Review every attached frame; the MP4/MOV remains the original creative asset. [END HOSTED VIDEO]"
+                )
+            else:
+                notes.append("[ADMIRA HOSTED VIDEO — internal] The buyer attached a video, but representative frames could not be extracted. Ask them to resend the video or a few screenshots if visual inspection is essential. [END HOSTED VIDEO]")
+        elif kind == "document" and Path(path).suffix.lower() == ".pdf":
+            documents.append(path)
+        elif kind == "document":
+            notes.append("[ADMIRA HOSTED DOCUMENT — internal] The buyer attached a document whose format is not directly inspectable. Ask for a PDF, CSV, spreadsheet, or images if its contents are needed. [END HOSTED DOCUMENT]")
+    if documents:
+        listed = "\n".join(f"- {path}" for path in documents)
+        notes.append(
+            "[ADMIRA HOSTED PRODUCT DOCUMENT — internal, never quote paths] The buyer attached PDF document(s). "
+            "If they contain products, services, prices, offers, bundles, or catalog information, call "
+            "mcp_admira_import_product_catalog in this turn with these file_paths. Otherwise inspect only as needed and answer the buyer naturally.\n"
+            f"{listed}\n[END HOSTED PRODUCT DOCUMENT]"
+        )
+    if images:
+        payload["image_paths"] = images[:4]
+    if notes:
+        payload["message"] = ("\n\n".join(notes) + "\n\n" + str(payload.get("message") or "")).strip()
+    return payload
+
 payload = json.load(sys.stdin)
-result = chat(load_config(), payload)
+result = hosted_command(payload)
+if result is None:
+    result = chat(load_config(), prepare_attachments(payload))
+    if (
+        isinstance(result, dict)
+        and not result.get("ok")
+        and "hermes brain is not ready" in str(result.get("error") or "").lower()
+    ):
+        language = str(payload.get("language") or "es").lower()
+        result = {"ok": True, "reply": (
+            "To start your private Admira agent, send /connect_chatgpt. I will give you a secure ChatGPT login link and temporary code here in Telegram." if language.startswith("en")
+            else "Para iniciar tu agente privado de Admira, envía /conectar_chatgpt. Te daré aquí en Telegram un enlace seguro de ChatGPT y un código temporal."
+        )}
 if not isinstance(result, dict):
     result = {"ok": bool(result), "reply": str(result or "")}
 print(json.dumps(result, ensure_ascii=False))
@@ -63,6 +232,9 @@ def validate_turn(payload: object) -> dict[str, object]:
     chat_id = str(payload.get("chat_id") or "").strip()
     if not CHAT_ID_RE.fullmatch(chat_id):
         raise ValueError("chat_id must be a Telegram numeric ID")
+    user_id = str(payload.get("user_id") or "").strip()
+    if not CHAT_ID_RE.fullmatch(user_id):
+        raise ValueError("user_id must be a Telegram numeric ID")
     language = str(payload.get("language") or "es").strip().lower()
     if not re.fullmatch(r"[a-z]{2,12}", language):
         raise ValueError("language must be a short alphabetic code")
@@ -90,6 +262,8 @@ def validate_turn(payload: object) -> dict[str, object]:
         "language": language,
         "channel": "telegram",
         "chat_id": chat_id,
+        "user_id": user_id,
+        "command": _command_name(message),
         "update_id": update_id,
         "session_key": f"agent:main:telegram:dm:{chat_id}",
         "_admira_trusted_chat_id": f"hosted:telegram:{chat_id}",
@@ -97,7 +271,110 @@ def validate_turn(payload: object) -> dict[str, object]:
     }
     if images:
         request["image_paths"] = images
+    raw_attachments = payload.get("attachments") or []
+    if not isinstance(raw_attachments, list) or len(raw_attachments) > ATTACHMENT_LIMIT:
+        raise ValueError(f"attachments must contain at most {ATTACHMENT_LIMIT} items")
+    attachments = []
+    for item in raw_attachments:
+        if not isinstance(item, dict):
+            raise ValueError("attachment must be an object")
+        kind = str(item.get("kind") or "").strip().lower()
+        path = str(item.get("path") or "").strip()
+        mime_type = str(item.get("mime_type") or "").strip().lower()
+        digest = str(item.get("sha256") or "").strip().lower()
+        try:
+            size = int(item.get("size") or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("attachment size must be an integer") from exc
+        if kind not in ATTACHMENT_KINDS or not INBOUND_ATTACHMENT_RE.fullmatch(path):
+            raise ValueError("attachment is outside the hosted Telegram inbox")
+        if not 0 <= size <= ATTACHMENT_SIZE_LIMIT:
+            raise ValueError("attachment exceeds the hosted size limit")
+        if mime_type and (len(mime_type) > 120 or not re.fullmatch(r"[a-z0-9.+-]+/[a-z0-9.+-]+", mime_type)):
+            raise ValueError("attachment MIME type is invalid")
+        if not re.fullmatch(r"[a-f0-9]{64}", digest):
+            raise ValueError("attachment digest is invalid")
+        attachments.append({
+            "kind": kind,
+            "path": path,
+            "mime_type": mime_type,
+            "size": size,
+            "sha256": digest,
+        })
+    if attachments:
+        request["attachments"] = attachments
     return request
+
+
+def _command_name(message: str) -> str:
+    if not message.startswith("/"):
+        return ""
+    token = message.split(maxsplit=1)[0].lower()
+    return token[1:].split("@", 1)[0]
+
+
+def _session_generation(
+    path: Path,
+    chat_id: str,
+    *,
+    increment: bool = False,
+    update_id: int | None = None,
+) -> int:
+    try:
+        details = path.lstat()
+        if (
+            path.is_symlink()
+            or not stat.S_ISREG(details.st_mode)
+            or details.st_size > 256 * 1024
+        ):
+            raise ValueError("invalid session generation ledger")
+        values = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        values = {}
+    if not isinstance(values, dict):
+        values = {}
+    key = str(chat_id)
+    stored = values.get(key)
+    if isinstance(stored, dict):
+        raw_generation = stored.get("generation") or 0
+        last_reset_update_id = stored.get("last_reset_update_id")
+    else:
+        raw_generation = stored or 0
+        last_reset_update_id = None
+    try:
+        generation = int(raw_generation)
+    except (TypeError, ValueError):
+        generation = 0
+    if generation < 0 or generation > 1_000_000_000:
+        generation = 0
+    if last_reset_update_id is not None:
+        try:
+            last_reset_update_id = int(last_reset_update_id)
+        except (TypeError, ValueError):
+            last_reset_update_id = None
+    if increment:
+        # Broker and database retries may execute the same Telegram update more
+        # than once. Rotate the conversation exactly once per durable update,
+        # while retaining compatibility with support/CLI calls that have no ID.
+        if update_id is None or last_reset_update_id != update_id:
+            generation += 1
+        values[key] = {
+            "generation": generation,
+            "last_reset_update_id": update_id,
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(values, handle, separators=(",", ":"))
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, path)
+        finally:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+    return generation
 
 
 def _public_runtime_result(raw: object) -> dict[str, object]:
@@ -109,6 +386,8 @@ def _public_runtime_result(raw: object) -> dict[str, object]:
         "reply": reply,
         "media_paths": MEDIA_RE.findall(reply),
     }
+    if raw.get("control_action") == "complete_reset":
+        result["control_action"] = "complete_reset"
     if not result["ok"]:
         result["error_code"] = str(raw.get("error_type") or "runtime_turn_failed")[:80]
     return result
@@ -124,6 +403,16 @@ def run_turn(base: Path, tenant_id: str, payload: object, *, timeout: int = 330)
     compose_file = root / "compose.yaml"
     if not compose_file.is_file():
         return _error("tenant_not_provisioned")
+    generation_file = root / "runtime" / "telegram_session_generations.json"
+    command_name = str(request.get("command") or "")
+    generation = _session_generation(
+        generation_file,
+        str(request["chat_id"]),
+        increment=command_name in {"nuevo", "new", "reset", "restart"},
+        update_id=request.get("update_id") if isinstance(request.get("update_id"), int) else None,
+    )
+    request["session_key"] = f"agent:main:telegram:dm:{request['chat_id']}:g{generation}"
+    request["_admira_trusted_session_id"] = request["session_key"]
     timeout = max(30, min(360, int(timeout)))
     command = compose_argv(root, "exec", "-T", "admira", "python3", "-c", INNER_SCRIPT)
     try:

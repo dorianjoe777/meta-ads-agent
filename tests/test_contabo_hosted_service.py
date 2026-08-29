@@ -73,6 +73,44 @@ class FakeIngress:
         return {"status": self.statuses[int(raw["update_id"])]}
 
 
+class MediaRetryIngress:
+    def __init__(self, handle_statuses: list[str], fallback_result: object = True,
+                 fallback_error: Exception | None = None) -> None:
+        self.handle_statuses = iter(handle_statuses)
+        self.fallback_result = fallback_result
+        self.fallback_error = fallback_error
+        self.handle_calls = 0
+        self.fallback_calls = 0
+
+    def handle_update(self, raw: object, *, bot_id: str) -> dict[str, object]:
+        self.handle_calls += 1
+        return {"status": next(self.handle_statuses), "tenant_id": "tenant-a"}
+
+    def enqueue_media_fallback(self, raw: object, *, bot_id: str, expected_tenant_id: str):
+        self.fallback_calls += 1
+        if self.fallback_error:
+            raise self.fallback_error
+        return self.fallback_result
+
+
+class SequencePollerAPI(PollerAPI):
+    def __init__(self, update_batches: list[list[dict[str, object]]]) -> None:
+        super().__init__([])
+        self.update_batches = iter(update_batches)
+
+    def get_updates(self, *, offset: int, timeout: int) -> list[dict[str, object]]:
+        self.calls.append((offset, timeout))
+        return next(self.update_batches)
+
+
+class StopAfterPolls:
+    def __init__(self, api: SequencePollerAPI, polls: int) -> None:
+        self.api, self.polls = api, polls
+
+    def is_set(self) -> bool:
+        return len(self.api.calls) >= self.polls
+
+
 class HostedServiceTests(unittest.TestCase):
     def test_poller_advances_cursor_for_queued_duplicate_unbound_and_invalid(self):
         api = PollerAPI([update(11), update(12), update(13), update(14)])
@@ -89,7 +127,7 @@ class HostedServiceTests(unittest.TestCase):
         self.assertEqual(store.advanced, [("bot-1", 12), ("bot-1", 13), ("bot-1", 14), ("bot-1", 15)])
         self.assertEqual(api.calls, [(10, 1)])
 
-    def test_poller_does_not_advance_after_media_stage_failure(self):
+    def test_poller_does_not_advance_after_inbox_database_failure(self):
         api = PollerAPI([update(11), update(12), update(13)])
         store = CursorStore()
         ingress = FakeIngress({11: "queued", 12: "failed", 13: "queued"})
@@ -102,6 +140,63 @@ class HostedServiceTests(unittest.TestCase):
              patch.object(service, "_stop_event", return_value=__import__("threading").Event()):
             service.run_poller(once=True)
         self.assertEqual(store.advanced, [("bot-1", 12)])
+
+    def test_media_retry_then_durable_text_fallback_advances_cursor(self):
+        api = PollerAPI([update(11)])
+        store = CursorStore()
+        ingress = MediaRetryIngress(["media_failed", "media_failed", "media_failed"], fallback_result=True)
+        with patch.object(service, "TelegramAPI", return_value=api), \
+             patch.object(service, "Pg", return_value=object()), \
+             patch.object(service, "IngressStore", return_value=store), \
+             patch.object(service, "TelegramIngress", return_value=ingress), \
+             patch.object(service, "TelegramMediaStager"), \
+             patch.dict(service.os.environ, {"TELEGRAM_BOT_TOKEN_FILE": "/not-read"}), \
+             patch.object(service, "_stop_event", return_value=__import__("threading").Event()):
+            service.run_poller(once=True)
+        self.assertEqual(ingress.handle_calls, 3)
+        self.assertEqual(ingress.fallback_calls, 1)
+        self.assertEqual(store.advanced, [("bot-1", 12)])
+
+    def test_media_fallback_db_failure_or_binding_change_keeps_cursor_parked(self):
+        for fallback_result, fallback_error in ((None, None), (None, RuntimeError("db_down"))):
+            with self.subTest(fallback_result=fallback_result, fallback_error=fallback_error):
+                api = PollerAPI([update(11)])
+                store = CursorStore()
+                ingress = MediaRetryIngress(
+                    ["media_failed", "media_failed", "media_failed"],
+                    fallback_result=fallback_result,
+                    fallback_error=fallback_error,
+                )
+                with patch.object(service, "TelegramAPI", return_value=api), \
+                     patch.object(service, "Pg", return_value=object()), \
+                     patch.object(service, "IngressStore", return_value=store), \
+                     patch.object(service, "TelegramIngress", return_value=ingress), \
+                     patch.object(service, "TelegramMediaStager"), \
+                     patch.dict(service.os.environ, {"TELEGRAM_BOT_TOKEN_FILE": "/not-read"}), \
+                     patch.object(service, "_stop_event", return_value=__import__("threading").Event()):
+                    service.run_poller(once=True)
+                self.assertEqual(ingress.fallback_calls, 1)
+                self.assertEqual(store.advanced, [])
+
+    def test_later_media_retry_success_advances_without_fallback(self):
+        api = SequencePollerAPI([[update(11)], [update(11)]])
+        store = CursorStore()
+        ingress = MediaRetryIngress(
+            ["media_failed", "media_failed", "media_failed", "queued"],
+            fallback_error=RuntimeError("db_down"),
+        )
+        stop = StopAfterPolls(api, 2)
+        with patch.object(service, "TelegramAPI", return_value=api), \
+             patch.object(service, "Pg", return_value=object()), \
+             patch.object(service, "IngressStore", return_value=store), \
+             patch.object(service, "TelegramIngress", return_value=ingress), \
+             patch.object(service, "TelegramMediaStager"), \
+             patch.dict(service.os.environ, {"TELEGRAM_BOT_TOKEN_FILE": "/not-read"}), \
+             patch.object(service, "_stop_event", return_value=stop):
+            service.run_poller()
+        self.assertEqual(ingress.fallback_calls, 1)
+        self.assertEqual(store.advanced, [("bot-1", 12)])
+        self.assertEqual(api.calls, [(10, 25), (10, 25)])
 
     def test_resolution_and_ingest_receive_bot_chat_and_user_identity(self):
         calls: dict[str, object] = {}

@@ -68,6 +68,7 @@ class HostedWorkerTests(unittest.TestCase):
         result = worker.RuntimeWorker(store, broker, rng=random.Random(1)).process_once()
         self.assertEqual(result, {"completed": 1, "retried": 0, "busy": 0})
         self.assertEqual(broker.calls[0]["tenant_id"], "client-001")
+        self.assertEqual(broker.calls[0]["turn"]["user_id"], "123")
         self.assertEqual([event[0] for event in store.events], ["acquire", "sync", "complete", "release"])
 
     def test_runtime_failure_retries_with_safe_code(self):
