@@ -102,6 +102,8 @@ sudo ./install-runtime-broker.sh
 
 The generated `secrets/` directory and `.env` are git-ignored and must be
 backed up through the server's encrypted backup process, never committed.
+Any bot token pasted into a ticket, chat or transcript is canary-only and must
+be revoked and replaced out of band before commercial traffic.
 `secrets/hosted_gemini_api_key.txt` is optional. Leaving it empty means buyers
 connect ChatGPT in Telegram; if it is used, the operator owns its spend,
 rotation and per-tenant abuse boundary.
@@ -176,7 +178,8 @@ canary is approved should an operator run:
 
 ```bash
 docker compose --profile buyers build
-docker compose --profile buyers up -d
+docker compose --profile buyers up -d \
+  --scale telegram-poller=1 --scale telegram-delivery=1
 ```
 
 Do not run that activation command during infrastructure preparation.

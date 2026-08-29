@@ -18,13 +18,14 @@ convierten este despliegue en el futuro producto SaaS.
 | Elemento | Valor |
 | --- | --- |
 | Rama de trabajo | `feat/contabo-multitenant` |
-| Último commit funcional desplegado | `a11ea43a8b18c84d3ad6b852e5bb79b4c7a27727` |
+| Último commit funcional desplegado | `d4766cbf475ece16c7a7440a23ae739396cdecda` |
 | SHA exacto activo | `/srv/admira/control-plane/DEPLOYED_COMMIT` |
 | Imagen de cada tenant | `admira-ia:r90` |
 | Commit de la imagen tenant | `d03707465a5fedf7e5d1bb6b528365b299795540` |
 | Manifiesto de la imagen tenant | `5df0e07e8b4a10e59a5b9c3659336f9b3a55ab556beaa67c2faba218dabc99db` |
 | Servidor | Contabo Cloud VPS 4, Ubuntu 24.04, Docker 29.1.3 |
-| Estado de compradores | **Desactivado**: no hay token central instalado y no se inició el perfil `buyers` |
+| Bot central canario | `@admiraia_bot` (`bot_id=8884068904`) |
+| Estado de compradores | **Canary activo**: cuatro workers, dos claims privados pendientes y cero bindings |
 
 El 29 de agosto de 2026 se recuperó el acceso SSH autorizado y se desplegó el
 commit funcional `a11ea43` desde un archive verificado por SHA-256. Se guardó
@@ -34,10 +35,19 @@ cuatro migraciones, se reconstruyó la imagen compartida de workers y se
 reinició el broker con el código nuevo.
 
 `DEPLOYED_COMMIT` es la fuente autoritativa del SHA exacto activo y puede incluir
-un commit posterior limitado a documentación. El código funcional de
-`a11ea43` ya está en Contabo; lo que sigue desactivado deliberadamente es el
-tráfico real de compradores porque el token central permanece vacío y todavía
-no existen los dos tenants canarios.
+un commit posterior limitado a documentación.
+
+El 29 de agosto de 2026 también se desplegó `d4766cb` desde un archive y
+manifiesto verificados. Antes del cambio se creó y validó el backup
+`/srv/admira/backups/deploy-d4766cb-20260829T163522Z/`. La migración 005, el
+registro seguro de claims por stdin y la cadencia durable del bot compartido
+quedaron activos; el perfil `buyers` se arrancó con exactamente una réplica de
+cada worker después del gate de servidor. Los dos claims canarios aún no se
+han consumido, por lo que no existe tráfico ni binding de comprador real.
+
+El token instalado sirve sólo para este canary. Como el valor original pasó
+por una conversación de soporte, se debe revocar/rotar en BotFather e instalar
+el reemplazo por un canal fuera del chat antes de admitir compradores reales.
 
 ## 2. Qué se construyó
 
@@ -354,28 +364,33 @@ modo restrictivo; no se copian archivos sueltos desde una versión anterior.
 ## 8. Último estado verificado de la instalación Contabo
 
 La siguiente verificación se hizo sobre el servidor Contabo
-(`169.58.246.232`) después de desplegar `a11ea43`:
+(`169.58.246.232`) después de desplegar `d4766cb`:
 
 - Host `vmi3537882`; Docker responde correctamente.
-- Sólo están activos `admira-control-plane-postgres-1` y
-  `admira-control-plane-redis-1`.
+- PostgreSQL y Redis están activos y saludables.
 - `admira-runtime-broker.service` está activo y escucha en el socket indicado.
 - Los spools existen con el grupo de servicio correcto.
-- El token `telegram_bot_token.txt` está vacío; los cuatro workers `buyers` no
-  están arrancados.
-- PostgreSQL está limpio: `tenants=0`, `bindings=0`, `inbox=0`, `outbox=0`,
-  `claims=0`.
-- La migración 004 está aplicada y las tres funciones de dispatch/lease exigen
-  que el tenant esté activo; los roles restringidos fueron actualizados.
+- El token de `@admiraia_bot` está instalado con modo 0600, no se imprime en
+  los gates y no existe dentro de ningún tenant.
+- Hay exactamente una réplica en ejecución y cero reinicios de
+  `telegram-poller`, `runtime-worker`, `telegram-delivery` y
+  `scheduler-worker`; sus logs de arranque no muestran conflicto, excepción ni
+  error de autorización.
+- PostgreSQL contiene `tenants=2`, `claims_sin_usar=2`, `bindings=0`, `inbox=0`
+  y `outbox=0`: sólo `canary-one` y `canary-two` están provisionados.
+- Las migraciones 004 y 005 están aplicadas. El gate activo del tenant y la
+  rama durable de `telegram_rate_limited` son visibles en las funciones reales.
 - La imagen compartida `admira-control-plane:r1` fue reconstruida y
   `admira-ia:r90` sigue presente y fijada para los tenants.
-- Los 24 archivos desplegables coinciden byte por byte con el commit funcional;
-  ambos marcadores remotos quedaron reconciliados al mismo SHA.
-- El release anterior y el dump previo están en el backup recuperable indicado
-  en la sección 1.
+- Los 25 archivos versionados coinciden con el manifiesto del release; ambos
+  marcadores remotos quedaron reconciliados con `d4766cb`.
+- El dump PostgreSQL previo se validó con `pg_restore --list`; el código y las
+  raíces tenant previas están en el backup recuperable indicado en la sección
+  1. Los secretos y `.env` conservaron sus fingerprints durante la copia.
 
-Esto significa que todavía no hay compradores activos ni tráfico real de
-Telegram. Es intencional, no un fallo de entrega.
+Esto significa que la infraestructura y el bot están escuchando para canary,
+pero todavía no hay identidades vinculadas ni compradores reales. Es
+intencional, no un fallo de entrega.
 
 ## 9. Procedimiento de instalación inicial
 
@@ -564,35 +579,39 @@ en un reinicio del host ni aumentar el límite sin una medición dirigida.
 
 ## 15. Evidencia local y pendientes antes de vender/activar
 
-El release tiene pruebas automatizadas para resolución de identidad, dos raíces
+El release tiene 111 pruebas automatizadas para resolución de identidad, dos raíces
 tenant distintas, sesiones separadas, comandos nativos, autorización de reset,
 medios, cursor durable, fencing/reintentos, scheduler, límite de capacidad,
 bloqueo de instancia y gate de tenants activos. También pasan la compilación
 Python/Bash, `git diff --check` y ambos perfiles de
-`docker compose config --quiet`. Las cuatro migraciones se aplicaron desde cero
+`docker compose config --quiet`. Las cinco migraciones se aplicaron desde cero
 en PostgreSQL 16 desechable; el fixture completo confirmó claim, binding,
 inbox, lease, outbox, scheduler, roles restringidos y el gate de tenant
-inactivo.
+inactivo. Una prueba separada confirmó que un 429 agotado continúa en `retry`
+mientras un error genérico agotado termina en `dead`.
 
-En Contabo se verificaron además hashes del release, backup, migración 004,
+En Contabo se verificaron además hashes del release, backup, migraciones 004/005,
 imagen de workers, imagen tenant r90, broker/socket, límite de cuatro runtimes,
-salud de PostgreSQL/Redis, base vacía y ausencia de cualquier worker `buyers`.
+salud de PostgreSQL/Redis, dos tenants canarios y las cuatro réplicas `buyers`
+sin reinicios ni errores de arranque.
 
 Eso no sustituye estas evidencias externas todavía pendientes:
 
-1. Instalar el token central real. El archivo disponible durante esta revisión
-   tiene cero bytes, así que no puede hacerse tráfico de Telegram real.
-2. Provisionar los dos tenants canarios del operador y ejecutar
-   `release-preflight.sh --server` hasta que el gate completo pase.
-3. Ejecutar el canary dirigido de la sección 10 con esos dos tenants: comandos,
+1. Abrir los dos deep-links privados pendientes desde dos identidades privadas
+   de Telegram diferentes y comprobar dos bindings/claims consumidos.
+2. Ejecutar el canary dirigido de la sección 10 con esos dos tenants: comandos,
    conexión del modelo, OAuth de Meta en dry-run, foto/video/PDF, generación y
    entrega de creativos, scheduler, suspensión/despertar y recuperación de un
    worker interrumpido.
-4. Conservar evidencia de que ningún archivo, sesión, memoria, credential,
+3. Conservar evidencia de que ningún archivo, sesión, memoria, credencial,
    cronjob o respuesta cruzó de un canario al otro y observar recursos/colas
    antes de emitir claims a compradores reales.
+4. Revocar el token canario que pasó por la conversación de soporte, instalar
+   el token reemplazado sin pegarlo en chat y repetir el gate de identidad del
+   bot antes de la primera admisión comercial.
 
 Hasta cerrar esos puntos, el control plane debe considerarse **infraestructura
-desplegada y lista para canary, con activación bloqueada por el token y las
-evidencias canarias**, no un servicio comercial activado. Ninguno de estos
-pendientes requiere construir dashboard o el futuro producto SaaS.
+desplegada con workers canarios activos, pero bloqueada para compradores por
+las evidencias canarias y la rotación final del token**, no un servicio
+comercial aprobado. Ninguno de estos pendientes requiere construir dashboard
+o el futuro producto SaaS.
