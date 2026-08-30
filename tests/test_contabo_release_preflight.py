@@ -59,6 +59,11 @@ class ReleasePreflightTests(unittest.TestCase):
         self.assertIn("central Codex auth pool must declare 2-8 unique account IDs", text)
         self.assertIn("central Codex auth.json is missing or empty", text)
         self.assertIn("central Codex auth home must be mode 0700", text)
+        self.assertIn("central_codex_account_pool.py", text)
+        self.assertIn("auth_mode\" =~ ^(0*600|0*400)$", text)
+        self.assertIn('[[ -L "$central_codex_host_root"', text)
+        self.assertIn('[[ -L "$account_home"', text)
+        self.assertIn('[[ -L "$auth_json"', text)
 
     def test_recovery_defaults_are_dormant_and_activation_is_fail_closed(self):
         env_example = (SCRIPT.parent / ".env.example").read_text(encoding="utf-8")

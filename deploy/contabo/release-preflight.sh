@@ -89,7 +89,7 @@ for file in compose.yaml Control.Dockerfile app-requirements.txt \
   apply-control-plane.sh runtime_broker.py tenant_turn.py telegram_ingress.py \
   hosted_service.py hosted_worker.py tenant_admin.py tenantctl.py provider_admin.py \
   gemini_pool_admin.py \
-  image_broker.py central_image_service.py prepare-central-image-broker.sh \
+  image_broker.py central_image_service.py central_codex_account_pool.py prepare-central-image-broker.sh \
   recovery_identity.py recovery_service.py recovery_email_worker.py recovery_smtp.py \
   capacity-preflight.sh \
   db/migrations/001_initial_multitenant.sql db/migrations/002_telegram_ingress_control.sql \
@@ -108,7 +108,7 @@ import ast
 import pathlib
 import sys
 root = pathlib.Path(sys.argv[1])
-names = ("runtime_broker.py", "tenant_turn.py", "telegram_ingress.py", "hosted_service.py", "hosted_worker.py", "tenant_admin.py", "tenantctl.py", "provider_admin.py", "gemini_pool_admin.py", "image_broker.py", "central_image_service.py", "recovery_identity.py", "recovery_service.py", "recovery_email_worker.py", "recovery_smtp.py")
+names = ("runtime_broker.py", "tenant_turn.py", "telegram_ingress.py", "hosted_service.py", "hosted_worker.py", "tenant_admin.py", "tenantctl.py", "provider_admin.py", "gemini_pool_admin.py", "image_broker.py", "central_image_service.py", "central_codex_account_pool.py", "recovery_identity.py", "recovery_service.py", "recovery_email_worker.py", "recovery_smtp.py")
 files = [root / name for name in names]
 for path in files:
     ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -175,7 +175,10 @@ if [[ "$MODE" == server && "$CENTRAL_IMAGE_READY" == true ]]; then
   # source is fixed and private; never accept a caller-selected path here.
   central_codex_host_root="/srv/admira/shared/central-codex-auth"
   central_codex_service_uid="$(resolve_compose_value ADMIRA_SERVICE_UID 1001)"
-  if [[ ! -d "$central_codex_host_root" ]]; then
+  if [[ "$CENTRAL_CODEX_AUTH_ROOT" != "/app/runtime/hermes/codex-auth-pool" ]]; then
+    fail 'ADMIRA_CENTRAL_CODEX_AUTH_ROOT must be /app/runtime/hermes/codex-auth-pool'
+  fi
+  if [[ -L "$central_codex_host_root" || ! -d "$central_codex_host_root" ]]; then
     fail "central Codex auth pool root is missing: $central_codex_host_root"
   else
     pool_mode=$(stat -c '%a' "$central_codex_host_root" 2>/dev/null || stat -f '%Lp' "$central_codex_host_root")
@@ -187,7 +190,7 @@ if [[ "$MODE" == server && "$CENTRAL_IMAGE_READY" == true ]]; then
       for account_id in "${CENTRAL_CODEX_ACCOUNTS[@]}"; do
         account_home="$central_codex_host_root/$account_id"
         auth_json="$account_home/auth.json"
-        if [[ ! -d "$account_home" ]]; then
+        if [[ -L "$account_home" || ! -d "$account_home" ]]; then
           fail "central Codex auth home is missing: $account_id"
         else
           home_mode=$(stat -c '%a' "$account_home" 2>/dev/null || stat -f '%Lp' "$account_home")
@@ -195,12 +198,12 @@ if [[ "$MODE" == server && "$CENTRAL_IMAGE_READY" == true ]]; then
           [[ "$home_mode" =~ ^0*700$ && "$home_owner" == "$central_codex_service_uid" ]] \
             && ok "central Codex auth home is private: $account_id" \
             || fail "central Codex auth home must be mode 0700 and service-owned: $account_id"
-          if [[ ! -f "$auth_json" || ! -s "$auth_json" ]]; then
+          if [[ -L "$auth_json" || ! -f "$auth_json" || ! -s "$auth_json" ]]; then
             fail "central Codex auth.json is missing or empty: $account_id"
           else
             auth_mode=$(stat -c '%a' "$auth_json" 2>/dev/null || stat -f '%Lp' "$auth_json")
             auth_owner=$(stat -c '%u' "$auth_json" 2>/dev/null || stat -f '%u' "$auth_json")
-            [[ "$auth_mode" =~ ^0*600$|^0*400$ && "$auth_owner" == "$central_codex_service_uid" ]] \
+            [[ "$auth_mode" =~ ^(0*600|0*400)$ && "$auth_owner" == "$central_codex_service_uid" ]] \
               && ok "central Codex auth.json is private: $account_id" \
               || fail "central Codex auth.json must be mode 0600/0400 and service-owned: $account_id"
           fi
