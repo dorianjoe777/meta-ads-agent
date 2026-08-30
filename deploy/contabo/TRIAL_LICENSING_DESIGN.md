@@ -214,6 +214,47 @@ por tenant. Si se utiliza temporalmente una suscripción ChatGPT, debe permanece
 centralizada y su uso multi-cliente debe confirmarse expresamente con el plan y
 las condiciones aplicables antes de basar el servicio comercial en ella.
 
+### Pool central mínimo para pruebas
+
+Para trials y el primer mes patrocinado se prepara un mínimo de **dos cuentas
+centrales autorizadas**, aisladas entre sí. No son cuentas de los tenants ni se
+copian sus archivos de autenticación. El broker selecciona una cuenta sana por
+trabajo y permite como máximo un intento de fallback por solicitud: si la cuenta
+primaria falla por indisponibilidad transitoria, autenticación inválida o
+timeout, se prueba una sola vez la otra cuenta elegible. Si ambas fallan, el
+trabajo queda en cola/error recuperable; no se rota indefinidamente ni se usa el
+fallback para esquivar una cuota.
+
+Cada cuenta tiene su propio directorio privado de autenticación, identidad,
+fingerprint, estado y métricas. Un fallo de cuota, autenticación o timeout pone
+esa cuenta en cooldown con backoff; el cooldown y la causa se auditan sin
+guardar prompts, tokens, cookies ni respuestas crudas. Las cuotas y condiciones
+del proveedor siguen siendo la autoridad: el pool no convierte varias cuentas
+en una cuota garantizada.
+
+El pool central permanece **dormant** (`ADMIRA_CENTRAL_IMAGE_READY=false`) hasta
+que las dos autenticaciones hayan sido instaladas fuera de banda, verificadas
+por separado y un canary real haya demostrado selección, fallback acotado,
+cooldown, idempotencia y aislamiento. No se actualizan los tenants live de r90
+como parte de esta preparación.
+
+#### Instalación segura de las autenticaciones
+
+El operador debe iniciar sesión manualmente en el host, usando el método de
+autenticación autorizado por el proveedor, en terminal privada y sin pegar
+credenciales en chat, tickets, comandos, argumentos, variables de entorno,
+logs o capturas. Cada sesión debe escribir únicamente en su directorio propio,
+por ejemplo `/etc/admira/central-image-auth/account-01/` y
+`/etc/admira/central-image-auth/account-02/`, con propietario del servicio,
+modo de directorio 0700 y archivos de credenciales 0600. Nunca se reutiliza o
+se copia un `auth.json` entre cuentas, tenants o releases.
+
+Después de cada login, el operador verifica permisos, fingerprint y una
+solicitud mínima de salud desde el broker; la salida sólo puede indicar
+`account-01/02`, estado y timestamp. El broker recibe ambos mounts de sólo
+lectura y nunca expone su contenido al tenant. La activación del flag y el
+canary real son pasos separados y requieren evidencia de ambas cuentas.
+
 ## 7. Recuperación desde otro Telegram
 
 El núcleo preparado puede ofrecer a un chat no reconocido una respuesta

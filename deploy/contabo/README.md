@@ -176,13 +176,23 @@ Repeat for each tenant that should be prepared. This changes no readiness flag
 and does not start the central broker or a tenant.
 
 The safe activation sequence is: verify the separate r91 build and manifest;
-install the authorized central provider connection out of band into the
-central-only auth location; apply and verify migration 008; start exactly one
+install two authorized central provider connections out of band into separate
+central-only auth locations; apply and verify migration 008; start exactly one
 broker in the `central-images` profile for an operator-owned canary; exercise
-one sponsored image and failure/retry cases; inspect the ledger, output hash,
-tenant boundaries and resource usage; then enable the route only after the
-canary passes. Until every gate is complete, leave the profile stopped and
-`ADMIRA_CENTRAL_IMAGE_READY=false`.
+one sponsored image plus the single-fallback and cooldown cases; inspect the
+ledger, output hash, tenant boundaries and resource usage; then enable the route
+only after both accounts and the canary pass. Until every gate is complete,
+leave the profile stopped and `ADMIRA_CENTRAL_IMAGE_READY=false`.
+
+The trial/first-month image pool requires at least two independently authorized
+central accounts. Each account has its own private 0700 auth directory and
+0600 credential files, mounted read-only only into the broker. Login is
+performed out of band in a private terminal; credentials must never appear in
+chat, commands, arguments, environment variables, logs, PostgreSQL, Git or a
+tenant. The broker may try the other account at most once per request, only for
+transient availability, auth or timeout errors. Quota failures trigger a
+per-account cooldown and are never a reason to bypass provider limits. Tenants
+remain pinned to `admira-ia:r90` while this central canary is pending.
 
 #### Hosted clean-canary evidence
 

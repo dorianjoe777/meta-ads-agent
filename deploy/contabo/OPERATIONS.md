@@ -413,6 +413,39 @@ Los tenants live siguen fijados a `r90`. El
 broker usa HMAC por tenant sobre un socket Unix y un
 intercambio aislado por tenant; ningún tenant recibe la credencial central.
 
+#### Pool central de cuentas para trials
+
+La preparación comercial exige como mínimo **dos cuentas centrales autorizadas**
+para trials y el primer mes patrocinado. Cada una usa un directorio de auth
+privado distinto (`/etc/admira/central-image-auth/account-01/` y
+`account-02/`), permisos 0700/0600 y un mount de sólo lectura exclusivo del
+broker. No se copia `auth.json`, cookies, tokens ni cualquier otro secreto a un
+tenant, a PostgreSQL, al repositorio o a los logs.
+
+La política de selección es deliberadamente acotada: una cuenta primaria y,
+como máximo, un fallback a la otra cuenta por solicitud. El fallback sólo se
+permite para indisponibilidad transitoria, autenticación inválida o timeout;
+una señal de cuota activa cooldown y no se usa para saltar límites del
+proveedor. Cada cuenta conserva salud, fingerprint, causa del último fallo,
+cooldown y contador de intentos por separado. Si ambas no son elegibles, el
+trabajo se encola o falla de forma recuperable.
+
+El broker sigue dormant (`ADMIRA_CENTRAL_IMAGE_READY=false`) hasta completar
+los dos logins fuera de banda, verificar cada cuenta individualmente y ejecutar
+un canary real que cubra selección, fallback único, cooldown, idempotencia y
+aislamiento. Esta preparación no cambia los tenants, que permanecen en
+`admira-ia:r90`.
+
+Procedimiento de login fuera de banda: el operador abre una terminal privada en
+el VPS y completa el login autorizado del proveedor sin enviar credenciales por
+chat ni incluirlas en comandos, argumentos, variables, logs o capturas. Cada
+login se guarda directamente en su directorio privado correspondiente; nunca
+se copia un archivo de autenticación entre cuentas. Después se comprueban
+propietario/permisos y se ejecuta sólo el health check redactado del broker,
+que devuelve cuenta, estado y timestamp, nunca el contenido secreto. El flag
+de disponibilidad se mantiene falso hasta que ambas cuentas y el canary real
+sean verificables.
+
 La preparación host-only es:
 
 ```bash
