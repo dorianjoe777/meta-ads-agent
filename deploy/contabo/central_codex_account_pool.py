@@ -35,6 +35,7 @@ _DEFAULT_COOLDOWNS = {
     "unknown": 15.0,
 }
 _SAFE_RESULT_KEYS = {"image_path", "path", "asset_id", "preview_url", "output_ref", "sha256", "size"}
+MAX_ATTEMPTS_PER_REQUEST = 2
 
 
 class AccountPoolConfigError(ValueError):
@@ -209,6 +210,8 @@ class CentralCodexAccountPool:
         attempted = 0
         last_category = "provider_unavailable"
         for slot in self._ordered_slots(started):
+            if attempted >= MAX_ATTEMPTS_PER_REQUEST:
+                break
             if not slot.lock.acquire(blocking=False):
                 continue
             try:

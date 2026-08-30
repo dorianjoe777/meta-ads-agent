@@ -108,6 +108,18 @@ class CentralCodexAccountPoolTests(unittest.TestCase):
             self.assertEqual(result, {"ok": False, "failure_category": "codex_usage_limit"})
             self.assertNotIn("secret", repr(result))
 
+    def test_three_account_pool_attempts_at_most_two_accounts_per_request(self):
+        with tempfile.TemporaryDirectory() as raw:
+            calls = []
+            def provider(prompt, **kwargs):
+                calls.append(kwargs["codex_home"].name)
+                return {"ok": False, "failure_category": "provider_failed"}
+            pool = CentralCodexAccountPool(self._accounts(Path(raw), 3), provider=provider)
+            result = pool.generate("x")
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["attempted_accounts"], 2)
+            self.assertEqual(len(calls), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
