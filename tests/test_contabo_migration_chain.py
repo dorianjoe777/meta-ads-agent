@@ -21,6 +21,11 @@ class MigrationChainValidationTests(unittest.TestCase):
         self.assertIn("never connects to PostgreSQL and never applies SQL", source)
         self.assertNotIn("docker compose", source)
 
+    def test_checker_uses_portable_host_tools_and_standalone_env_path(self):
+        source = CHECK.read_text(encoding="utf-8")
+        self.assertNotIn(" rg ", source)
+        self.assertIn('if [[ -f "$ROOT_DIR/.env.example" ]]', source)
+
 
 if __name__ == "__main__":
     unittest.main()

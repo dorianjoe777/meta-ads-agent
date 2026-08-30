@@ -41,7 +41,7 @@ for name in "${expected[@]}"; do
   [[ "$content" == *"pg_advisory_xact_lock(hashtextextended('admira:"* ]] \
     && pass "advisory lock: $name" \
     || fail "advisory lock missing: $name"
-  if printf '%s' "$content" | rg -qi '(api[_ -]?key|bearer[[:space:]]+token|secret[_ -]?value)[[:space:]]+(text|json|bytea)'; then
+  if printf '%s' "$content" | grep -Eqi '(api[_ -]?key|bearer[[:space:]]+token|secret[_ -]?value)[[:space:]]+(text|json|bytea)'; then
     fail "possible provider secret column in: $name"
   else
     pass "no provider secret column pattern: $name"
@@ -49,8 +49,12 @@ for name in "${expected[@]}"; do
 done
 
 # 009 creates recovery schema but must not be the switch that activates it.
-env_example="$ROOT_DIR/../.env.example"
-if [[ -f "$env_example" ]] && rg -q '^ADMIRA_TELEGRAM_RECOVERY_READY=false$' "$env_example"; then
+if [[ -f "$ROOT_DIR/.env.example" ]]; then
+  env_example="$ROOT_DIR/.env.example"
+else
+  env_example="$ROOT_DIR/../.env.example"
+fi
+if [[ -f "$env_example" ]] && grep -Eq '^ADMIRA_TELEGRAM_RECOVERY_READY=false$' "$env_example"; then
   pass 'recovery remains dormant by default'
 else
   fail 'recovery default must remain ADMIRA_TELEGRAM_RECOVERY_READY=false'
