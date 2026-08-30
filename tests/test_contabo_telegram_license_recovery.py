@@ -112,6 +112,12 @@ class TelegramLicenseRecoveryMigrationTests(unittest.TestCase):
         self.assertIn("admira.ack_recovery_email_outbox(uuid, uuid, boolean, text, integer, integer) TO admira_email_delivery;", SQL)
         self.assertNotRegex(SQL, r"GRANT .* ON TABLE .*tenant_recovery_delivery_outbox.* TO admira_email_delivery")
 
+    def test_chat_outbox_claim_qualifies_return_columns(self):
+        chat_claim = SQL.split("CREATE OR REPLACE FUNCTION admira.claim_recovery_chat_outbox", 1)[1]
+        chat_claim = chat_claim.split("CREATE OR REPLACE FUNCTION admira.ack_recovery_chat_outbox", 1)[0]
+        self.assertIn("SELECT claimed.id, claimed.request_id, claimed.bot_id", chat_claim)
+        self.assertNotIn("SELECT id, request_id, bot_id, chat_id", chat_claim)
+
     def test_recovery_requires_an_existing_binding_for_the_requester_bot(self):
         begin = SQL.split("CREATE OR REPLACE FUNCTION admira.begin_telegram_recovery", 1)[1]
         begin = begin.split("CREATE OR REPLACE FUNCTION admira.claim_recovery_chat_outbox", 1)[0]

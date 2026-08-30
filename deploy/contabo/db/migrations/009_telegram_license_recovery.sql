@@ -495,7 +495,9 @@ BEGIN
     RETURNING o.id, o.request_id, o.bot_id, o.chat_id, o.user_id, o.template_code,
       o.body, o.attempt_count, o.lease_token
   )
-  SELECT id, request_id, bot_id, chat_id, user_id, template_code, body, attempt_count, lease_token
+  SELECT claimed.id, claimed.request_id, claimed.bot_id, claimed.chat_id,
+         claimed.user_id, claimed.template_code, claimed.body,
+         claimed.attempt_count, claimed.lease_token
   FROM claimed;
 END;
 $$;
