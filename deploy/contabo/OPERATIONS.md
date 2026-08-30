@@ -417,10 +417,12 @@ intercambio aislado por tenant; ningún tenant recibe la credencial central.
 
 La preparación comercial exige como mínimo **dos cuentas centrales autorizadas**
 para trials y el primer mes patrocinado. Cada una usa un directorio de auth
-privado distinto (`/etc/admira/central-image-auth/account-01/` y
-`account-02/`), permisos 0700/0600 y un mount de sólo lectura exclusivo del
-broker. No se copia `auth.json`, cookies, tokens ni cualquier otro secreto a un
-tenant, a PostgreSQL, al repositorio o a los logs.
+privado distinto bajo `/srv/admira/shared/central-codex-auth/`:
+`primary/` y `secondary/`, con permisos 0700/0600 y propiedad del usuario del
+servicio. Compose monta esa raíz en `/app/runtime/hermes/codex-auth-pool` sólo
+en el broker; el mount es escribible porque Codex puede refrescar su home, pero
+ningún tenant monta esa ruta. No se copia `auth.json`, cookies, tokens ni
+cualquier otro secreto a un tenant, a PostgreSQL, al repositorio o a los logs.
 
 La política de selección es deliberadamente acotada: una cuenta primaria y,
 como máximo, un fallback a la otra cuenta por solicitud (dos intentos de
@@ -442,10 +444,10 @@ el VPS y completa el login autorizado del proveedor sin enviar credenciales por
 chat ni incluirlas en comandos, argumentos, variables, logs o capturas. Cada
 login se guarda directamente en su directorio privado correspondiente; nunca
 se copia un archivo de autenticación entre cuentas. Después se comprueban
-propietario/permisos y se ejecuta sólo el health check redactado del broker,
-que devuelve cuenta, estado y timestamp, nunca el contenido secreto. El flag
-de disponibilidad se mantiene falso hasta que ambas cuentas y el canary real
-sean verificables.
+propietario/permisos. No existe un health endpoint independiente que valide
+ChatGPT: la verificación funcional es el canary real del broker, cuya salida
+debe estar redactada y nunca contener el secreto. El flag de disponibilidad se
+mantiene falso hasta que ambas cuentas y el canary real sean verificables.
 
 La preparación host-only es:
 

@@ -245,16 +245,19 @@ El operador debe iniciar sesión manualmente en el host, usando el método de
 autenticación autorizado por el proveedor, en terminal privada y sin pegar
 credenciales en chat, tickets, comandos, argumentos, variables de entorno,
 logs o capturas. Cada sesión debe escribir únicamente en su directorio propio,
-por ejemplo `/etc/admira/central-image-auth/account-01/` y
-`/etc/admira/central-image-auth/account-02/`, con propietario del servicio,
-modo de directorio 0700 y archivos de credenciales 0600. Nunca se reutiliza o
-se copia un `auth.json` entre cuentas, tenants o releases.
+por ejemplo `/srv/admira/shared/central-codex-auth/primary/` y
+`/srv/admira/shared/central-codex-auth/secondary/`, con propietario del
+servicio, modo de directorio 0700 y archivos de credenciales 0600. Compose
+monta esa raíz en `/app/runtime/hermes/codex-auth-pool` sólo en el broker y de
+forma escribible para permitir los archivos de estado/refresco de Codex. Nunca
+se reutiliza o se copia un `auth.json` entre cuentas, tenants o releases.
 
-Después de cada login, el operador verifica permisos, fingerprint y una
-solicitud mínima de salud desde el broker; la salida sólo puede indicar
-`account-01/02`, estado y timestamp. El broker recibe ambos mounts de sólo
-lectura y nunca expone su contenido al tenant. La activación del flag y el
-canary real son pasos separados y requieren evidencia de ambas cuentas.
+Después de cada login, el operador verifica permisos y fingerprint. No hay un
+health endpoint independiente que valide ChatGPT: la verificación funcional es
+el canary real del broker, con salida redactada que sólo puede indicar la cuenta,
+estado y timestamp, nunca el contenido secreto. El broker recibe ambos homes y
+nunca expone su contenido al tenant. La activación del flag y el canary real
+son pasos separados y requieren evidencia de ambas cuentas.
 
 ## 7. Recuperación desde otro Telegram
 

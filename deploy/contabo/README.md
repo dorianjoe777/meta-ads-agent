@@ -186,7 +186,10 @@ leave the profile stopped and `ADMIRA_CENTRAL_IMAGE_READY=false`.
 
 The trial/first-month image pool requires at least two independently authorized
 central accounts. Each account has its own private 0700 auth directory and
-0600 credential files, mounted read-only only into the broker. Login is
+0600 credential files under the host root
+`/srv/admira/shared/central-codex-auth/{primary,secondary}/`, mounted into the
+broker at `/app/runtime/hermes/codex-auth-pool`. This bind mount is writable by
+the service because Codex may refresh its home; no tenant mounts it. Login is
 performed out of band in a private terminal; credentials must never appear in
 chat, commands, arguments, environment variables, logs, PostgreSQL, Git or a
 tenant. The broker may try the other account at most once per request, for a
