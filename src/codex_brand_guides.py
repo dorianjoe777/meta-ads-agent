@@ -2679,6 +2679,7 @@ def call_codex_image_cli_direct(prompt, timeout=270, model=None, output_root=Non
 
 def call_codex_image_cli(prompt, timeout=270, model=None, output_root=None, output_name="creative", reference_image_paths=None, purpose="ad_creative"):
     """Generate a real image through Hermes' ChatGPT/Codex image provider."""
+    started_at = time.monotonic()
     request = str(prompt or "").strip()
     if not request:
         return {"ok": False, "error": "Necesito una descripcion del creativo antes de generar la imagen."}
@@ -2788,8 +2789,14 @@ def call_codex_image_cli(prompt, timeout=270, model=None, output_root=None, outp
         )
         fallback.setdefault("bridge_warning", raw_error)
         fallback.setdefault("bridge_error_type", error_type)
+        if not fallback.get("ok"):
+            fallback.update(_image_failure_metadata(
+                fallback.get("error"), fallback.get("error_type"),
+                backend="codex-cli-direct", provider=fallback.get("provider", "codex-cli-direct"),
+                started_at=started_at,
+            ))
         return fallback
-    return {
+    result = {
         "ok": False,
         "error": image_generation_error_message(raw_error, error_type),
         "error_type": error_type,
@@ -2797,6 +2804,11 @@ def call_codex_image_cli(prompt, timeout=270, model=None, output_root=None, outp
         "command": bridge.get("command", ["hermes", "image_generate"]),
         "backend": "hermes-openai-codex",
     }
+    result.update(_image_failure_metadata(
+        raw_error, error_type, backend="hermes-openai-codex",
+        provider=bridge.get("provider", "openai-codex"), started_at=started_at,
+    ))
+    return result
 
 
 def image_rate_limit_retry_hint(error):
@@ -2834,6 +2846,89 @@ def image_generation_error_message(error, error_type=""):
             "Vuelve a revisar la conexión de ChatGPT/Codex desde Configuración y prueba de nuevo."
         )
     return f"No pude generar la imagen con la conexión ChatGPT/Codex actual: {text}"
+
+
+IMAGE_FAILURE_CATEGORIES = frozenset({
+    "codex_usage_limit",
+    "chatgpt_images_limit",
+    "provider_auth",
+    "provider_unavailable",
+    "provider_timeout",
+    "unknown",
+})
+
+
+def classify_image_failure(error="", error_type="", *, backend="", provider=""):
+    """Classify an image failure without retaining provider response content.
+
+    The provider often uses the same generic ``usage limit`` wording for
+    different products.  We therefore only claim a Codex or ChatGPT Images
+    category when the response contains an explicit product marker; otherwise
+    the safe result is ``unknown``.  Callers may persist this category and the
+    backend, but must not persist the raw error, prompt, token, stdout, or
+    stderr.
+    """
+    text = " ".join(str(value or "") for value in (error, error_type, provider, backend)).lower()
+    kind = str(error_type or "").strip().lower()
+    if kind in {"timeout", "timed_out", "provider_timeout"} or any(
+        marker in text for marker in ("timed out", "timeout", "tiempo de espera")
+    ):
+        return "provider_timeout"
+    if kind in {"auth_required", "authentication_required", "provider_auth"} or any(
+        marker in text for marker in (
+            "not authenticated", "not_authenticated", "authentication required",
+            "authentication_required", "login required", "login_required",
+            "unauthorized", "invalid_grant", "credential_revoked", "token_invalidated",
+        )
+    ):
+        return "provider_auth"
+    if any(marker in text for marker in (
+        "provider unavailable", "provider_unavailable", "service unavailable",
+        "service_unavailable", "provider not registered", "not configured",
+        "connection refused", "connection reset",
+    )):
+        return "provider_unavailable"
+    limit = any(marker in text for marker in (
+        "usage limit", "usage_limit", "quota exceeded", "quota_exceeded",
+        "rate limit", "rate_limit", "rate limited", "429", "limit reached",
+    ))
+    if limit:
+        # Explicit image wording wins.  Generic limits are intentionally not
+        # guessed: an image provider can share a Codex subscription session.
+        if any(marker in text for marker in (
+            "image limit", "image quota", "images limit", "images quota",
+            "image generation limit", "image_generation_limit", "gpt-image",
+        )):
+            return "chatgpt_images_limit"
+        # The direct fallback is an actual Codex CLI session.  When it reports
+        # a generic rate/usage limit there is no separate ChatGPT Images quota
+        # to attribute it to; classify it as the Codex usage window while
+        # keeping Hermes' ambiguous provider responses as ``unknown``.
+        if "codex-cli-direct" in text:
+            return "codex_usage_limit"
+        if any(marker in text for marker in (
+            "codex quota", "codex usage", "codex limit", "codex allowance",
+            "5 hours", "5-hour", "five hours",
+        )):
+            return "codex_usage_limit"
+    return "unknown"
+
+
+def _image_failure_metadata(error="", error_type="", *, backend="", provider="", started_at=None):
+    """Return only bounded, non-sensitive diagnostics for an image attempt."""
+    elapsed = None
+    if started_at is not None:
+        try:
+            elapsed = max(0, min(86_400_000, int((time.monotonic() - started_at) * 1000)))
+        except (TypeError, ValueError):
+            elapsed = None
+    metadata = {
+        "backend": str(backend or "unknown")[:40],
+        "failure_category": classify_image_failure(error, error_type, backend=backend, provider=provider),
+    }
+    if elapsed is not None:
+        metadata["duration_ms"] = elapsed
+    return metadata
 
 
 def datetime_like_slug():

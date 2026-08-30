@@ -15,6 +15,34 @@ import hosted_central_image_client as central_client  # noqa: E402
 
 
 class CentralImageHookTests(unittest.TestCase):
+    def test_image_failure_classifier_is_conservative_and_product_specific(self):
+        self.assertEqual(
+            brand.classify_image_failure("Codex usage limit reached after 5 hours", provider="openai-codex"),
+            "codex_usage_limit",
+        )
+        self.assertEqual(
+            brand.classify_image_failure("ChatGPT image generation limit reached", provider="openai-codex"),
+            "chatgpt_images_limit",
+        )
+        self.assertEqual(
+            brand.classify_image_failure("usage limit reached", error_type="rate_limit", backend="codex-cli-direct"),
+            "codex_usage_limit",
+        )
+        self.assertEqual(brand.classify_image_failure("usage limit reached", provider="openai-codex"), "unknown")
+        self.assertEqual(brand.classify_image_failure("401 unauthorized", error_type="auth_required"), "provider_auth")
+        self.assertEqual(brand.classify_image_failure("connection refused"), "provider_unavailable")
+        self.assertEqual(brand.classify_image_failure("timed out", error_type="timeout"), "provider_timeout")
+
+    def test_failure_metadata_contains_no_raw_provider_content(self):
+        metadata = brand._image_failure_metadata(
+            "secret-token prompt text usage limit reached", "model_usage_limit",
+            backend="hermes-openai-codex", provider="openai-codex",
+        )
+        self.assertEqual(metadata["backend"], "hermes-openai-codex")
+        self.assertEqual(metadata["failure_category"], "unknown")
+        self.assertNotIn("secret-token", repr(metadata))
+        self.assertNotIn("prompt text", repr(metadata))
+
     def _local_patches(self, bridge_result=None):
         config = type("Config", (), {"hermes_home": ""})()
         return (
