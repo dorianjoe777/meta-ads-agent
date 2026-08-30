@@ -2,16 +2,22 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
 
 from deploy.contabo.central_codex_account_pool import (
     AccountPoolConfigError,
     CentralCodexAccountPool,
 )
+import codex_brand_guides as brand
 
 
 class CentralCodexAccountPoolTests(unittest.TestCase):
@@ -85,6 +91,22 @@ class CentralCodexAccountPoolTests(unittest.TestCase):
             self.assertEqual(peak, 2)
             self.assertEqual(sum(result["ok"] for result in results), 2)
             self.assertEqual(sum(result.get("error_type") == "provider_unavailable" for result in results), 2)
+
+    def test_default_provider_classifies_direct_codex_limit_without_raw_output(self):
+        with tempfile.TemporaryDirectory() as raw:
+            accounts = self._accounts(Path(raw))
+            pool = CentralCodexAccountPool(accounts)
+            with patch.object(
+                brand, "call_codex_image_cli_direct",
+                return_value={"ok": False, "error": "generic usage limit; secret", "error_type": "rate_limit", "stdout": "secret"},
+            ):
+                result = pool._default_provider(
+                    "private prompt", codex_home=Path(accounts[0]["codex_home"]),
+                    timeout=1, model=None, output_root=None, output_name="x",
+                    reference_image_paths=(), purpose="ad_creative",
+                )
+            self.assertEqual(result, {"ok": False, "failure_category": "codex_usage_limit"})
+            self.assertNotIn("secret", repr(result))
 
 
 if __name__ == "__main__":

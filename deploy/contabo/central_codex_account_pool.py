@@ -173,12 +173,27 @@ class CentralCodexAccountPool:
                           model: str | None, output_root: Path | None,
                           output_name: str, reference_image_paths: Sequence[str],
                           purpose: str) -> object:
-        from codex_brand_guides import call_codex_image_cli_direct
-        return call_codex_image_cli_direct(
+        from codex_brand_guides import call_codex_image_cli_direct, classify_image_failure
+        result = call_codex_image_cli_direct(
             prompt, timeout=timeout, model=model, output_root=output_root,
             output_name=output_name, reference_image_paths=reference_image_paths,
             purpose=purpose, codex_home=codex_home,
         )
+        if isinstance(result, Mapping) and result.get("ok") is not True:
+            # Reduce the provider response immediately.  In particular, do
+            # not hand stdout/stderr/prompt-shaped error text to the pool or
+            # any caller.  The classifier sees it only transiently.
+            category = classify_image_failure(
+                result.get("error", ""), result.get("error_type", ""),
+                backend="codex-cli-direct", provider=result.get("provider", ""),
+            )
+            safe: dict[str, Any] = {"ok": False, "failure_category": category}
+            for key in ("retry_after_seconds", "retry_seconds", "retry_after"):
+                if key in result:
+                    safe[key] = result[key]
+                    break
+            return safe
+        return result
 
     def _ordered_slots(self, now: float) -> list[_Slot]:
         with self._selection_lock:
