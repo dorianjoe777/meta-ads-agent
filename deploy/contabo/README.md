@@ -201,10 +201,13 @@ Tenants remain pinned to `admira-ia:r90` while this central canary is pending.
 #### Hosted clean-canary evidence
 
 On 2026-08-30, the hosted clean canary was validated in a disposable clone of
-the live control plane. Migrations 007–010 were then applied twice on the VPS
-and every validator returned `PASS`. The control plane is live at commit
-`665a93399097a01462f4075a18717933fb9cbc24`, while tenant runtimes remain
-deliberately pinned to `admira-ia:r90`.
+the live control plane. Migrations 001–010 are current on the VPS and were
+applied idempotently; the server preflight returned `PASS`. The deployed
+control-plane marker is commit `d9a623a6388b62df369ab97091386f6692e0c231`,
+with image `admira-control-plane:r91-d9a623a6388b`; tenant runtimes remain
+deliberately pinned to `admira-ia:r90`. The dormant hosted image is
+`admira-ia-hosted:r91-canary-d9a623a6388b`; its deployed source manifest is
+`908d1bdd4cce784339588535b85f8188cc7ef9be882686edb8afa9f90b13d993`.
 
 The synthetic/code canary uses two fake isolated auth homes and a fake provider:
 it forces a primary image-limit failure, verifies exactly one fallback attempt
@@ -212,8 +215,13 @@ to the secondary account, cooldown bookkeeping, idempotency and tenant
 isolation. This is only a local pool/code result; it does not verify real
 ChatGPT authentication. The separate real-provider canary exercises the
 external image route and requires both central-provider authentications; that
-authentication is still pending. Recovery and capacity soak remain deferred
-and off.
+authentication is still pending: both central auth directories are prepared
+0700 but their `auth.json` files are absent, so the central service is stopped
+and `ADMIRA_CENTRAL_IMAGE_READY=false`. Recovery and capacity soak remain
+deferred and off. The real-provider canary is blocked only on the two
+authorized out-of-band logins and that canary; this is not commercial
+readiness. The promotion backup is
+`/srv/admira/backups/deploy-d9a623a-20260830T230305Z/`.
 
 ## Central Telegram path
 

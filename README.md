@@ -71,16 +71,22 @@ python3 src/daily_agent.py approve APPROVAL_ID
 ## Hosted clean canary status
 
 The hosted r91 clean canary was validated on 2026-08-30 in a disposable clone
-of the live control plane. Migrations 007–010 were then applied twice on
-Contabo and every validator returned `PASS`. The control plane is now live at
-commit `665a93399097a01462f4075a18717933fb9cbc24`; tenant runtimes remain
-deliberately pinned to image `r90`.
+of the live control plane. Migrations 001–010 are current on Contabo and were
+applied idempotently; the server preflight returned `PASS`. The control plane
+is live at deployed commit `d9a623a6388b62df369ab97091386f6692e0c231` with
+image `admira-control-plane:r91-d9a623a6388b`; tenant runtimes remain
+deliberately pinned to image `r90`. The dormant hosted image is
+`admira-ia-hosted:r91-canary-d9a623a6388b`.
 
 The synthetic/code canary uses a fake provider and verifies local contracts,
 idempotency, and tenant isolation. A separate real-provider canary is required
 to verify the external route; it remains pending central-provider
-authentication. Recovery and soak are deferred/off. This hosted canary does
-not publish a buyer dashboard or turn the deployment into a SaaS product.
+authentication. Both central auth directories are prepared 0700 but lack
+`auth.json`, so the central service remains stopped and
+`ADMIRA_CENTRAL_IMAGE_READY=false`. The real-provider canary is blocked only
+on the two authorized out-of-band logins and their canary; this is not
+commercial readiness. Recovery and soak are deferred/off. This hosted canary
+does not publish a buyer dashboard or turn the deployment into a SaaS product.
 
 ## Docs
 

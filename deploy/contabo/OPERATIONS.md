@@ -14,24 +14,33 @@ convierten este despliegue en el futuro producto SaaS.
 
 ## 1. Punto de control actual
 
-Último estado de código verificado antes de esta documentación (la marca
-`DEPLOYED_COMMIT` en el servidor es la autoridad durante un despliegue):
+Estado live verificado tras el último despliegue (la marca
+`DEPLOYED_COMMIT` en el servidor es la autoridad):
 
 | Elemento | Valor |
 | --- | --- |
 | Rama de trabajo | `feat/contabo-multitenant` |
-| Último commit funcional desplegado | `665a93399097a01462f4075a18717933fb9cbc24` |
+| Último commit desplegado | `d9a623a6388b62df369ab97091386f6692e0c231` |
 | SHA exacto activo | `/srv/admira/control-plane/DEPLOYED_COMMIT` (mismo SHA) |
-| Imagen del control plane | `admira-control-plane:r91-665a93399097` |
-| Imagen hosted canaria de imágenes | `admira-ia-hosted:r91-canary-665a93399097` (construida/pinneada, ruta dormida) |
-| Manifiesto del release desplegado | `f25e71a0ab463e79f4391b9cc73973f469fdb0a9b8b37c355d951a6d35efb492` |
-| Migraciones live | `001`–`010` aplicadas (007–010 verificadas de forma idempotente) |
+| Imagen del control plane | `admira-control-plane:r91-d9a623a6388b` |
+| Imagen hosted canaria de imágenes | `admira-ia-hosted:r91-canary-d9a623a6388b` (presente, ruta dormida) |
+| Manifiesto del release desplegado | `908d1bdd4cce784339588535b85f8188cc7ef9be882686edb8afa9f90b13d993` |
+| Migraciones live | `001`–`010` actuales y aplicadas idempotentemente |
 | Imagen de cada tenant live | `admira-ia:r90` |
 | Commit de la imagen tenant | `d03707465a5fedf7e5d1bb6b528365b299795540` |
 | Manifiesto de la imagen tenant | `5df0e07e8b4a10e59a5b9c3659336f9b3a55ab556beaa67c2faba218dabc99db` |
 | Servidor | Contabo Cloud VPS 4, Ubuntu 24.04, Docker 29.1.3 |
 | Bot central canario | `@admiraia_bot` (`bot_id=8884068904`) |
-| Estado de compradores | **Canary operativo**: cuatro servicios singleton estables, un `runtime-worker`, `canary-one` vinculado y `canary-two` reservado |
+| Estado de compradores | **Canary operativo**: cuatro buyer workers activos, cero reinicios, un `runtime-worker`; tenants aún en `r90` |
+
+Backup de esta promoción: `/srv/admira/backups/deploy-d9a623a-20260830T230305Z/`.
+El server preflight terminó en `PASS`. Las raíces de auth central
+`/srv/admira/shared/central-codex-auth/primary` y `secondary` están preparadas
+con modo 0700, pero todavía no contienen `auth.json`; por eso el servicio
+central está detenido, `ADMIRA_CENTRAL_IMAGE_READY=false` y la autenticación de
+recuperación también permanece desactivada. El canary real-provider está
+bloqueado únicamente por instalar fuera de banda las dos autenticaciones
+autorizadas y ejecutar su canary; esto no constituye readiness comercial.
 
 ### Acceso SSH operativo
 
