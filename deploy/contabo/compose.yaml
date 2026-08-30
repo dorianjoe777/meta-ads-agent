@@ -198,7 +198,11 @@ services:
       ADMIRA_CENTRAL_IMAGE_KEY_ROOT: /etc/admira/central-image-keys
       ADMIRA_CENTRAL_IMAGE_MAX_GLOBAL: ${ADMIRA_CENTRAL_IMAGE_MAX_GLOBAL:-2}
       ADMIRA_CENTRAL_IMAGE_MAX_CLIENTS: ${ADMIRA_CENTRAL_IMAGE_MAX_CLIENTS:-32}
-      CODEX_HOME: /app/runtime/hermes/codex-auth
+      # The broker receives a private, operator-managed pool. Each account
+      # lives below this root; the service selects an account explicitly.
+      ADMIRA_CENTRAL_CODEX_AUTH_ROOT: ${ADMIRA_CENTRAL_CODEX_AUTH_ROOT:-/app/runtime/hermes/codex-auth-pool}
+      ADMIRA_CENTRAL_CODEX_ACCOUNT_IDS: ${ADMIRA_CENTRAL_CODEX_ACCOUNT_IDS:-primary,secondary}
+      CODEX_HOME: /app/runtime/hermes/codex-auth-pool/primary
       PYTHONPATH: /app/src:/app/deploy/contabo
     secrets:
       - image_db_password
@@ -215,7 +219,7 @@ services:
         target: /srv/admira-central-image-exchange
       - type: bind
         source: /srv/admira/shared/central-codex-auth
-        target: /app/runtime/hermes/codex-auth
+        target: /app/runtime/hermes/codex-auth-pool
     networks:
       - control_private
       - image_provider_egress

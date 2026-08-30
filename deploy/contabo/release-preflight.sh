@@ -66,6 +66,10 @@ resolve_compose_value() {
       [[ -n "${ADMIRA_CENTRAL_IMAGE_READY+x}" ]] && { printf '%s' "$ADMIRA_CENTRAL_IMAGE_READY"; return; } ;;
     CENTRAL_IMAGE_IMAGE)
       [[ -n "${CENTRAL_IMAGE_IMAGE+x}" ]] && { printf '%s' "$CENTRAL_IMAGE_IMAGE"; return; } ;;
+    ADMIRA_CENTRAL_CODEX_AUTH_ROOT)
+      [[ -n "${ADMIRA_CENTRAL_CODEX_AUTH_ROOT+x}" ]] && { printf '%s' "$ADMIRA_CENTRAL_CODEX_AUTH_ROOT"; return; } ;;
+    ADMIRA_CENTRAL_CODEX_ACCOUNT_IDS)
+      [[ -n "${ADMIRA_CENTRAL_CODEX_ACCOUNT_IDS+x}" ]] && { printf '%s' "$ADMIRA_CENTRAL_CODEX_ACCOUNT_IDS"; return; } ;;
   esac
   if [[ -r "$ROOT_DIR/.env" ]]; then
     while IFS='=' read -r config_key config_value; do
@@ -144,6 +148,69 @@ fi
 CENTRAL_IMAGE_PLACEHOLDER='admira-ia-hosted:r91-canary-000000000000'
 CENTRAL_IMAGE_IMAGE="$(resolve_compose_value CENTRAL_IMAGE_IMAGE "$CENTRAL_IMAGE_PLACEHOLDER")"
 CENTRAL_IMAGE_READY="$(resolve_compose_value ADMIRA_CENTRAL_IMAGE_READY false | tr '[:upper:]' '[:lower:]')"
+CENTRAL_CODEX_ACCOUNT_IDS="$(resolve_compose_value ADMIRA_CENTRAL_CODEX_ACCOUNT_IDS 'primary,secondary')"
+CENTRAL_CODEX_AUTH_ROOT="$(resolve_compose_value ADMIRA_CENTRAL_CODEX_AUTH_ROOT '/app/runtime/hermes/codex-auth-pool')"
+IFS=',' read -r -a CENTRAL_CODEX_ACCOUNTS <<< "$CENTRAL_CODEX_ACCOUNT_IDS"
+central_codex_pool_valid=true
+central_codex_seen=','
+if (( ${#CENTRAL_CODEX_ACCOUNTS[@]} < 2 || ${#CENTRAL_CODEX_ACCOUNTS[@]} > 8 )); then
+  central_codex_pool_valid=false
+else
+  for account_id in "${CENTRAL_CODEX_ACCOUNTS[@]}"; do
+    if [[ ! "$account_id" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ || "$central_codex_seen" == *",$account_id,"* ]]; then
+      central_codex_pool_valid=false
+    fi
+    central_codex_seen="$central_codex_seen$account_id,"
+  done
+fi
+if [[ "$central_codex_pool_valid" == true ]]; then
+  ok "central Codex auth pool declares ${#CENTRAL_CODEX_ACCOUNTS[@]} accounts"
+elif [[ "$MODE" == server && "$CENTRAL_IMAGE_READY" == true ]]; then
+  fail 'central Codex auth pool must declare 2-8 unique account IDs when central images are enabled'
+else
+  warn 'central Codex auth pool must declare 2-8 unique account IDs before activation'
+fi
+if [[ "$MODE" == server && "$CENTRAL_IMAGE_READY" == true ]]; then
+  # The Compose variable is the in-container mount. On the host, the bind
+  # source is fixed and private; never accept a caller-selected path here.
+  central_codex_host_root="/srv/admira/shared/central-codex-auth"
+  central_codex_service_uid="$(resolve_compose_value ADMIRA_SERVICE_UID 1001)"
+  if [[ ! -d "$central_codex_host_root" ]]; then
+    fail "central Codex auth pool root is missing: $central_codex_host_root"
+  else
+    pool_mode=$(stat -c '%a' "$central_codex_host_root" 2>/dev/null || stat -f '%Lp' "$central_codex_host_root")
+    pool_owner=$(stat -c '%u' "$central_codex_host_root" 2>/dev/null || stat -f '%u' "$central_codex_host_root")
+    [[ "$pool_mode" =~ ^0*700$ && "$pool_owner" == "$central_codex_service_uid" ]] \
+      && ok 'central Codex auth pool root is private and service-owned' \
+      || fail 'central Codex auth pool root must be mode 0700 and service-owned'
+    if [[ "$central_codex_pool_valid" == true ]]; then
+      for account_id in "${CENTRAL_CODEX_ACCOUNTS[@]}"; do
+        account_home="$central_codex_host_root/$account_id"
+        auth_json="$account_home/auth.json"
+        if [[ ! -d "$account_home" ]]; then
+          fail "central Codex auth home is missing: $account_id"
+        else
+          home_mode=$(stat -c '%a' "$account_home" 2>/dev/null || stat -f '%Lp' "$account_home")
+          home_owner=$(stat -c '%u' "$account_home" 2>/dev/null || stat -f '%u' "$account_home")
+          [[ "$home_mode" =~ ^0*700$ && "$home_owner" == "$central_codex_service_uid" ]] \
+            && ok "central Codex auth home is private: $account_id" \
+            || fail "central Codex auth home must be mode 0700 and service-owned: $account_id"
+          if [[ ! -f "$auth_json" || ! -s "$auth_json" ]]; then
+            fail "central Codex auth.json is missing or empty: $account_id"
+          else
+            auth_mode=$(stat -c '%a' "$auth_json" 2>/dev/null || stat -f '%Lp' "$auth_json")
+            auth_owner=$(stat -c '%u' "$auth_json" 2>/dev/null || stat -f '%u' "$auth_json")
+            [[ "$auth_mode" =~ ^0*600$|^0*400$ && "$auth_owner" == "$central_codex_service_uid" ]] \
+              && ok "central Codex auth.json is private: $account_id" \
+              || fail "central Codex auth.json must be mode 0600/0400 and service-owned: $account_id"
+          fi
+        fi
+      done
+    fi
+  fi
+elif [[ "$central_codex_pool_valid" == true ]]; then
+  warn 'central Codex auth homes are checked only when central images are enabled in server mode'
+fi
 if [[ "$CENTRAL_IMAGE_IMAGE" == "$CENTRAL_IMAGE_PLACEHOLDER" && "$CENTRAL_IMAGE_READY" == true ]]; then
   fail 'central images cannot be enabled with the all-zero image placeholder'
 elif [[ "$CENTRAL_IMAGE_IMAGE" == "$CENTRAL_IMAGE_PLACEHOLDER" ]]; then

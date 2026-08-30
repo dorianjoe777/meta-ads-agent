@@ -202,6 +202,9 @@ class ContaboComposeTests(unittest.TestCase):
         self.assertIn("ADMIRA_DB_USER: admira_image_login", central)
         self.assertIn("image_db_password", central)
         self.assertIn("central-codex-auth", central)
+        self.assertIn("ADMIRA_CENTRAL_CODEX_AUTH_ROOT", central)
+        self.assertIn("ADMIRA_CENTRAL_CODEX_ACCOUNT_IDS", central)
+        self.assertIn("codex-auth-pool", central)
         self.assertIn("central-image-keys", central)
         self.assertIn("central-image-exchange", central)
         self.assertIn("image_provider_egress", central)
@@ -217,6 +220,8 @@ class ContaboComposeTests(unittest.TestCase):
         script = (COMPOSE.parent / "prepare-central-image-broker.sh").read_text(encoding="utf-8")
         self.assertIn("/etc/admira/central-image-keys", script)
         self.assertIn("/srv/admira/shared/central-codex-auth", script)
+        self.assertIn("2-8 accounts", script)
+        self.assertIn('for account_id in "${account_ids[@]}"', script)
         self.assertIn('CENTRAL_IMAGE_GID="${ADMIRA_CENTRAL_IMAGE_GID:-19093}"', script)
         self.assertIn("groupadd --system --gid", script)
         self.assertIn('install -d -m "$mode" -o "$SERVICE_USER" -g "$CENTRAL_IMAGE_GROUP"', script)
@@ -228,6 +233,8 @@ class ContaboComposeTests(unittest.TestCase):
         self.assertIn("ADMIRA_CENTRAL_IMAGE_GID=19093", env)
         self.assertIn("ADMIRA_CENTRAL_IMAGE_MAX_CLIENTS=32", env)
         self.assertIn("ADMIRA_CENTRAL_IMAGE_GID", self.text)
+        self.assertIn("ADMIRA_CENTRAL_CODEX_AUTH_ROOT=/app/runtime/hermes/codex-auth-pool", env)
+        self.assertIn("ADMIRA_CENTRAL_CODEX_ACCOUNT_IDS=primary,secondary", env)
 
     def test_shared_control_image_has_one_build_owner(self):
         poller = self._service("telegram-poller", "runtime-worker")

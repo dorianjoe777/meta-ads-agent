@@ -56,6 +56,9 @@ class ReleasePreflightTests(unittest.TestCase):
         self.assertIn("admira_email_delivery", text)
         self.assertIn("recovery_db_password.txt", text)
         self.assertIn("two canary tenant IDs are required in server mode", text)
+        self.assertIn("central Codex auth pool must declare 2-8 unique account IDs", text)
+        self.assertIn("central Codex auth.json is missing or empty", text)
+        self.assertIn("central Codex auth home must be mode 0700", text)
 
     def test_recovery_defaults_are_dormant_and_activation_is_fail_closed(self):
         env_example = (SCRIPT.parent / ".env.example").read_text(encoding="utf-8")
