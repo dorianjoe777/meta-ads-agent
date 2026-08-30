@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from deploy.contabo.central_codex_account_pool import CentralCodexAccountPool
 from deploy.contabo.central_image_service import CentralImageServer
 from deploy.contabo.image_broker import ImageBroker, sign_request
 from src.hosted_central_image_client import maybe_generate_central_image
@@ -51,6 +52,45 @@ def run_synthetic_canary() -> dict[str, Any]:
         tenants.mkdir(mode=0o700)
         keys.mkdir(mode=0o700)
         exchange.mkdir(mode=0o700)
+
+        # Exercise the release's account selector without using a real
+        # credential. The first isolated slot reports an image quota failure;
+        # the second must be tried exactly once and must produce the output.
+        auth_root = root / "central-auth"
+        auth_root.mkdir(mode=0o700)
+        accounts = []
+        for account_id in ("primary", "secondary"):
+            home = auth_root / account_id
+            home.mkdir(mode=0o700)
+            auth = home / "auth.json"
+            auth.write_text("{}", encoding="utf-8")
+            auth.chmod(0o600)
+            accounts.append({"id": account_id, "codex_home": str(home)})
+        account_calls: list[str] = []
+
+        def fake_account_provider(prompt: str, **kwargs: Any) -> dict[str, Any]:
+            account_calls.append(kwargs["codex_home"].name)
+            if len(account_calls) == 1:
+                return {
+                    "ok": False,
+                    "failure_category": "chatgpt_images_limit",
+                    "stderr": "synthetic-secret-that-must-not-escape",
+                }
+            image = Path(kwargs["output_root"]) / "pool-canary.png"
+            image.write_bytes(PNG)
+            return {"ok": True, "image_path": str(image), "stdout": "synthetic-secret"}
+
+        pool_work = root / "pool-work"
+        pool_work.mkdir(mode=0o700)
+        pool_result = CentralCodexAccountPool(accounts, provider=fake_account_provider).generate(
+            "synthetic private prompt", output_root=pool_work, output_name="pool-canary",
+        )
+        if not pool_result.get("ok") or account_calls != ["primary", "secondary"]:
+            raise AssertionError("central_account_pool_fallback_failed")
+        if Path(str(pool_result.get("image_path"))).read_bytes() != PNG:
+            raise AssertionError("central_account_pool_output_failed")
+        if "synthetic-secret" in repr(pool_result) or "private prompt" in repr(pool_result):
+            raise AssertionError("central_account_pool_result_leaked")
         outputs: dict[str, Path] = {}
         access: dict[str, Path] = {}
         client_keys: dict[str, Path] = {}
@@ -164,6 +204,8 @@ def run_synthetic_canary() -> dict[str, Any]:
                 "cross_tenant_key_rejected": True,
                 "reference_snapshots_verified": True,
                 "idempotency_verified": True,
+                "account_pool_fallback_verified": True,
+                "account_pool_size_verified": len(accounts),
                 "external_provider_verified": False,
             }
         finally:

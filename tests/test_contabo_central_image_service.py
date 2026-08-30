@@ -12,8 +12,9 @@ import unittest
 from pathlib import Path
 
 from deploy.contabo.central_image_service import (CentralImageServer, EntitlementStore,
-    PostgresCentralImageLedger, _private_password, central_codex_provider,
-    postgres_connect_factory_from_env)
+    PostgresCentralImageLedger, _private_password, central_codex_account_pool_from_env,
+    central_codex_provider, postgres_connect_factory_from_env)
+from deploy.contabo.central_codex_account_pool import CentralCodexAccountPool
 from deploy.contabo.image_broker import ImageBroker, sign_request
 
 
@@ -61,6 +62,19 @@ class CentralImageServiceTests(unittest.TestCase):
             client.connect(str(self.socket_path))
             client.sendall(json.dumps(payload).encode() + b"\n")
             return json.loads(client.makefile("rb").readline())
+
+    def central_accounts(self):
+        root = Path(self.tmp.name) / "central-auth"
+        root.mkdir(mode=0o700, exist_ok=True)
+        accounts = []
+        for account_id in ("primary", "secondary"):
+            home = root / account_id
+            home.mkdir(mode=0o700, exist_ok=True)
+            auth = home / "auth.json"
+            auth.write_text("{}", encoding="utf-8")
+            auth.chmod(0o600)
+            accounts.append({"id": account_id, "codex_home": str(home)})
+        return root, accounts
 
     def test_socket_permissions_and_success(self):
         self.assertTrue(stat.S_ISSOCK(self.socket_path.stat().st_mode))
@@ -224,7 +238,43 @@ class CentralImageServiceTests(unittest.TestCase):
         from deploy.contabo import central_image_service as module
         source = inspect.getsource(module.main)
         self.assertIn("ledger=ledger", source)
+        self.assertIn("central_codex_account_pool_from_env()", source)
+        self.assertIn("partial(central_codex_provider, pool=account_pool)", source)
         self.assertNotIn("CentralImageServer(broker, Path(args.socket), ledger=", source)
+
+    def test_pool_from_env_requires_two_private_authenticated_homes(self):
+        root, _ = self.central_accounts()
+        old = dict(os.environ)
+        try:
+            os.environ["ADMIRA_CENTRAL_CODEX_AUTH_ROOT"] = str(root)
+            os.environ["ADMIRA_CENTRAL_CODEX_ACCOUNT_IDS"] = "primary,secondary"
+            pool = central_codex_account_pool_from_env()
+            self.assertEqual([item.account_id for item in pool.accounts], ["primary", "secondary"])
+            os.environ["ADMIRA_CENTRAL_CODEX_ACCOUNT_IDS"] = "primary"
+            with self.assertRaisesRegex(RuntimeError, "central_codex_pool_invalid"):
+                central_codex_account_pool_from_env()
+        finally:
+            os.environ.clear()
+            os.environ.update(old)
+
+    def test_production_provider_falls_back_without_exposing_account(self):
+        _, accounts = self.central_accounts()
+        calls = []
+
+        def provider(prompt, **kwargs):
+            calls.append(kwargs["codex_home"].name)
+            if len(calls) == 1:
+                return {"ok": False, "failure_category": "chatgpt_images_limit", "stderr": "secret"}
+            output = kwargs["output_root"] / "central.png"
+            output.write_bytes(PNG)
+            return {"ok": True, "image_path": str(output), "account_id": "must-not-escape"}
+
+        pool = CentralCodexAccountPool(accounts, provider=provider)
+        result = central_codex_provider({"prompt": "x", "references": []}, Path(self.tmp.name), pool=pool)
+        self.assertEqual(Path(result).read_bytes(), PNG)
+        self.assertEqual(calls, ["primary", "secondary"])
+        self.assertNotIn("primary", str(result))
+        self.assertNotIn("secondary", str(result))
 
     def test_password_file_is_private_and_database_url_is_not_used(self):
         password = Path(self.tmp.name) / "db-password"
@@ -259,9 +309,11 @@ class CentralImageServiceTests(unittest.TestCase):
         previous = sys.modules.get("codex_brand_guides")
         sys.modules["codex_brand_guides"] = FakeCodex
         try:
+            _, accounts = self.central_accounts()
+            pool = CentralCodexAccountPool(accounts)
             with self.assertRaises(RuntimeError) as raised:
-                central_codex_provider({"prompt": "x", "references": []}, Path(self.tmp.name))
-            self.assertEqual(str(raised.exception), "provider secret")
+                central_codex_provider({"prompt": "x", "references": []}, Path(self.tmp.name), pool=pool)
+            self.assertEqual(str(raised.exception), "provider_failed")
         finally:
             if previous is None:
                 sys.modules.pop("codex_brand_guides", None)

@@ -13,6 +13,8 @@ class CentralImageCanaryHarnessTests(unittest.TestCase):
         self.assertTrue(result["cross_tenant_key_rejected"])
         self.assertTrue(result["reference_snapshots_verified"])
         self.assertTrue(result["idempotency_verified"])
+        self.assertTrue(result["account_pool_fallback_verified"])
+        self.assertEqual(result["account_pool_size_verified"], 2)
         self.assertFalse(result["external_provider_verified"])
 
 

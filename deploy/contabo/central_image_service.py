@@ -10,6 +10,7 @@ provider responses.  It is not enabled by the default Compose profile.
 from __future__ import annotations
 
 import argparse
+from functools import partial
 import json
 import os
 import signal
@@ -25,12 +26,19 @@ try:  # service is copied beside image_broker.py in the container
 except ImportError:  # package imports used by tests
     from deploy.contabo.image_broker import ImageBroker
 
+try:  # service is copied beside central_codex_account_pool.py in the container
+    from central_codex_account_pool import CentralCodexAccountPool
+except ImportError:  # package imports used by tests
+    from deploy.contabo.central_codex_account_pool import CentralCodexAccountPool
+
 
 MAX_LINE = 128 * 1024
 DEFAULT_SOCKET = "/run/admira-central-image-broker/broker.sock"
 DEFAULT_TENANTS_ROOT = "/srv/admira/shared/central-image-exchange"
 DEFAULT_KEY_ROOT = "/etc/admira/central-image-keys"
 DEFAULT_DB_USER = "admira_image_login"
+DEFAULT_CODEX_AUTH_ROOT = "/app/runtime/hermes/codex-auth-pool"
+DEFAULT_CODEX_ACCOUNT_IDS = "primary,secondary"
 
 
 class EntitlementStore:
@@ -143,19 +151,38 @@ def postgres_connect_factory_from_env() -> Callable[[], Any]:
     return connect
 
 
-def central_codex_provider(body: Mapping[str, Any], workdir: Path) -> Path | str:
-    """Generate with the central r91 ChatGPT/Codex auth and return its file.
+def central_codex_account_pool_from_env() -> CentralCodexAccountPool:
+    """Build the central account pool once, failing closed on unsafe homes."""
+    root = Path(os.environ.get("ADMIRA_CENTRAL_CODEX_AUTH_ROOT", DEFAULT_CODEX_AUTH_ROOT))
+    if not root.is_absolute():
+        raise RuntimeError("central_codex_pool_invalid")
+    try:
+        details = root.lstat()
+    except OSError as exc:
+        raise RuntimeError("central_codex_pool_invalid") from exc
+    if root.is_symlink() or not stat.S_ISDIR(details.st_mode) or stat.S_IMODE(details.st_mode) & 0o077:
+        raise RuntimeError("central_codex_pool_invalid")
+    account_ids = os.environ.get("ADMIRA_CENTRAL_CODEX_ACCOUNT_IDS", DEFAULT_CODEX_ACCOUNT_IDS).split(",")
+    accounts = [{"id": account_id, "codex_home": str(root / account_id)} for account_id in account_ids]
+    try:
+        return CentralCodexAccountPool(accounts)
+    except Exception as exc:
+        # Configuration details are deliberately not copied into service or
+        # tenant responses. The activation preflight reports the exact slot.
+        raise RuntimeError("central_codex_pool_invalid") from exc
+
+
+def central_codex_provider(body: Mapping[str, Any], workdir: Path, *,
+                           pool: CentralCodexAccountPool | None = None) -> Path | str:
+    """Generate through the isolated central account pool and return its file.
 
     This function is only loaded by the explicitly enabled central service;
-    tenant credentials are not read.  ``call_codex_image_cli_direct`` writes
-    the result into the broker-owned temporary work directory.
+    tenant credentials are not read. The pool writes the result into the
+    broker-owned temporary work directory and tries each account at most once.
     """
-    try:
-        from codex_brand_guides import call_codex_image_cli_direct
-    except ImportError as exc:
-        raise RuntimeError("provider_unavailable") from exc
+    selected_pool = pool or central_codex_account_pool_from_env()
     references = [str(item) for item in body.get("references", []) if isinstance(item, str)]
-    result = call_codex_image_cli_direct(
+    result = selected_pool.generate(
         str(body.get("prompt") or ""),
         timeout=270,
         output_root=workdir,
@@ -329,9 +356,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     connect = postgres_connect_factory_from_env()
     ledger = PostgresCentralImageLedger(connect)
-    broker = ImageBroker(Path(args.tenants_root), Path(args.key_root), central_codex_provider,
+    account_pool = central_codex_account_pool_from_env()
+    provider = partial(central_codex_provider, pool=account_pool)
+    max_global = min(
+        int(os.environ.get("ADMIRA_CENTRAL_IMAGE_MAX_GLOBAL", "2")),
+        len(account_pool.accounts),
+    )
+    broker = ImageBroker(Path(args.tenants_root), Path(args.key_root), provider,
                          lambda tenant, purpose: "central_sponsored",
-                         max_global=int(os.environ.get("ADMIRA_CENTRAL_IMAGE_MAX_GLOBAL", "2")),
+                         max_global=max_global,
                          ledger=ledger)
     server = CentralImageServer(
         broker,
