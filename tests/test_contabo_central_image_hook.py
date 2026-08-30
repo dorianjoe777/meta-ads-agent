@@ -122,6 +122,20 @@ class CentralImageHookTests(unittest.TestCase):
         central.assert_called_once()
         local.assert_not_called()
 
+    def test_explicit_central_codex_home_never_falls_back_to_main_home(self):
+        config = type("Config", (), {"hermes_home": "/main/hermes"})()
+        with patch.dict(
+            brand.os.environ,
+            {"ADMIRA_CODEX_AUTH_HOME": "/main/hermes/codex-auth"},
+            clear=False,
+        ), patch.object(brand, "image_codex_config", return_value=config), patch.object(
+            brand, "codex_auth_artifact_present", return_value=False
+        ):
+            env = brand.codex_cli_environment(
+                config, use_image_home=True, codex_home="/pool/slot-a"
+            )
+        self.assertEqual(env["CODEX_HOME"], "/pool/slot-a")
+
 
 if __name__ == "__main__":
     unittest.main()

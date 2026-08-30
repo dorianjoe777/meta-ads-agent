@@ -2060,8 +2060,9 @@ def codex_cli_environment(config, use_image_home=False, codex_home=None):
         # Hermes auth.json contains Gemini/provider credentials and is not a
         # valid Codex CLI auth.json. Sharing the two files can make `login
         # status` appear healthy while the image subprocess receives a 401.
+        explicit_codex_home = str(codex_home or "").strip()
         configured_codex_home = (
-            str(codex_home or "").strip()
+            explicit_codex_home
             or
             os.environ.get("ADMIRA_CODEX_AUTH_HOME")
             or os.environ.get("CODEX_AUTH_HOME")
@@ -2070,6 +2071,11 @@ def codex_cli_environment(config, use_image_home=False, codex_home=None):
         codex_home = configured_codex_home or str(Path(resolved) / "codex-auth")
         env["CODEX_HOME"] = str(Path(codex_home).expanduser())
     if use_image_home and not codex_auth_artifact_present(env):
+        # An explicitly selected central-pool slot is an isolation boundary.
+        # Never silently charge the main Hermes account when that slot's
+        # auth.json disappears or becomes invalid.
+        if explicit_codex_home:
+            return env
         # A workspace may retain the legacy ``dedicated_chatgpt`` preference
         # even though that optional home was never connected.  Do not reject
         # image generation when the buyer's active Hermes/ChatGPT session is
