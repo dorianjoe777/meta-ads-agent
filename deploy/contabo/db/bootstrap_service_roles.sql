@@ -1,6 +1,14 @@
 -- Environment-specific login roles. Passwords are read by PostgreSQL from
 -- Docker secrets and never appear in repository files, argv, or psql output.
 DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'admira_image') THEN
+    CREATE ROLE admira_image NOLOGIN;
+  END IF;
+END;
+$$;
+
+DO $$
 DECLARE
   item record;
   password_value text;
@@ -10,7 +18,10 @@ BEGIN
     ('admira_runtime_login',  'admira_runtime',  '/run/admira-db-secrets/runtime_db_password'),
     ('admira_delivery_login', 'admira_delivery', '/run/admira-db-secrets/delivery_db_password'),
     ('admira_scheduler_login','admira_scheduler','/run/admira-db-secrets/scheduler_db_password'),
-    ('admira_provisioner_login','admira_provisioner','/run/admira-db-secrets/provisioner_db_password')
+    ('admira_provisioner_login','admira_provisioner','/run/admira-db-secrets/provisioner_db_password'),
+    ('admira_image_login',    'admira_image',    '/run/admira-db-secrets/image_db_password'),
+    ('admira_recovery_login','admira_recovery','/run/admira-db-secrets/recovery_db_password'),
+    ('admira_email_delivery_login','admira_email_delivery','/run/admira-db-secrets/email_delivery_db_password')
   ) AS roles(login_role, group_role, secret_path)
   LOOP
     -- bootstrap-control-plane.sh terminates each secret with one newline.

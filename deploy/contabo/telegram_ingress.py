@@ -63,6 +63,11 @@ class InboxStore(Protocol):
     def ingest(self, *, message: TelegramMessage, tenant_id: str, payload: dict[str, object]) -> bool: ...
 
 
+class RecoveryHandler(Protocol):
+    def handle_unbound(self, *, update_id: int, bot_id: str, chat_id: str,
+                       user_id: str, text: str) -> object | None: ...
+
+
 def _numeric(value: Any, label: str) -> str:
     text = str(value).strip()
     if not ID_RE.fullmatch(text):
@@ -149,9 +154,26 @@ def sanitized_payload(message: TelegramMessage, staged: Sequence[StagedMedia]) -
     }
 
 
+def _safe_recovery_result(value: object) -> dict[str, object]:
+    """Keep only non-sensitive, fixed-shape recovery metadata.
+
+    Recovery handlers deal with email, license numbers, OTPs, and database
+    envelopes.  None of those values belongs in the ingress result, logs, or
+    poller response.  The public template outcome is safe to retain because
+    the delivery worker resolves its text from a fixed template table.
+    """
+    if not isinstance(value, dict):
+        return {}
+    outcome = value.get("public_outcome")
+    if not isinstance(outcome, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", outcome):
+        return {}
+    return {"public_outcome": outcome}
+
+
 class TelegramIngress:
-    def __init__(self, resolver: TenantResolver, inbox: InboxStore, media: MediaStager):
-        self.resolver, self.inbox, self.media = resolver, inbox, media
+    def __init__(self, resolver: TenantResolver, inbox: InboxStore, media: MediaStager,
+                 recovery: RecoveryHandler | None = None):
+        self.resolver, self.inbox, self.media, self.recovery = resolver, inbox, media, recovery
 
     def handle_update(self, raw: object, *, bot_id: str) -> dict[str, object]:
         message = parse_update(raw, bot_id=bot_id)
@@ -170,6 +192,29 @@ class TelegramIngress:
             if tenant_id:
                 return {"status": "claimed", "tenant_id": tenant_id, "update_id": message.update_id}
         if not tenant_id:
+            if self.recovery is not None:
+                try:
+                    recovery_result = self.recovery.handle_unbound(
+                        update_id=message.update_id,
+                        bot_id=message.bot_id,
+                        chat_id=message.chat_id,
+                        user_id=message.user_id,
+                        text=message.text,
+                    )
+                except Exception as exc:
+                    # Recovery must be durable before the Telegram cursor can
+                    # advance.  Return only a stable error class, never the
+                    # database/provider detail or submitted recovery factors.
+                    return {
+                        "status": "failed", "update_id": message.update_id,
+                        "error_code": type(exc).__name__[:80],
+                    }
+                if recovery_result is not None:
+                    return {
+                        "status": "recovery",
+                        "update_id": message.update_id,
+                        **_safe_recovery_result(recovery_result),
+                    }
             return {"status": "unbound", "update_id": message.update_id}
         staged: list[StagedMedia] = []
         try:

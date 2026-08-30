@@ -8,11 +8,11 @@ BROKER_GID="${ADMIRA_BROKER_GID:-19091}"
 SPOOL_GROUP="${ADMIRA_SPOOL_GROUP:-admira-spool}"
 SPOOL_GID="${ADMIRA_SPOOL_GID:-19092}"
 BROKER_KEY_SOURCE="$ROOT_DIR/secrets/runtime_broker_key.txt"
-HOSTED_GEMINI_KEY_SOURCE="$ROOT_DIR/secrets/hosted_gemini_api_key.txt"
 MAX_ACTIVE_TENANTS="${ADMIRA_MAX_ACTIVE_TENANTS:-}"
 NORMAL_ACTIVE_TENANTS="${ADMIRA_NORMAL_ACTIVE_TENANTS:-}"
 HARD_MAX_ACTIVE_TENANTS="${ADMIRA_HARD_MAX_ACTIVE_TENANTS:-}"
 BURST_MIN_AVAILABLE_MB="${ADMIRA_BURST_MIN_AVAILABLE_MB:-}"
+CENTRAL_IMAGE_IMAGE="${CENTRAL_IMAGE_IMAGE:-}"
 FILE_MAX_ACTIVE_TENANTS=""
 FILE_NORMAL_ACTIVE_TENANTS=""
 FILE_HARD_MAX_ACTIVE_TENANTS=""
@@ -25,6 +25,7 @@ if [[ -r "$ROOT_DIR/.env" ]]; then
       ADMIRA_NORMAL_ACTIVE_TENANTS) FILE_NORMAL_ACTIVE_TENANTS="$config_value" ;;
       ADMIRA_HARD_MAX_ACTIVE_TENANTS) FILE_HARD_MAX_ACTIVE_TENANTS="$config_value" ;;
       ADMIRA_BURST_MIN_AVAILABLE_MB) FILE_BURST_MIN_AVAILABLE_MB="$config_value" ;;
+      CENTRAL_IMAGE_IMAGE) CENTRAL_IMAGE_IMAGE="$config_value" ;;
     esac
   done < "$ROOT_DIR/.env"
 fi
@@ -35,6 +36,14 @@ BURST_MIN_AVAILABLE_MB="${BURST_MIN_AVAILABLE_MB:-$FILE_BURST_MIN_AVAILABLE_MB}"
 NORMAL_ACTIVE_TENANTS="${NORMAL_ACTIVE_TENANTS:-$MAX_ACTIVE_TENANTS}"
 HARD_MAX_ACTIVE_TENANTS="${HARD_MAX_ACTIVE_TENANTS:-$MAX_ACTIVE_TENANTS}"
 BURST_MIN_AVAILABLE_MB="${BURST_MIN_AVAILABLE_MB:-2048}"
+
+# This installer never builds or pulls tenant images. If the optional
+# central-images profile is configured, reject mutable/ambiguous references
+# before a later operator activation can select one accidentally.
+if [[ -n "$CENTRAL_IMAGE_IMAGE" ]] && [[ ! "$CENTRAL_IMAGE_IMAGE" =~ ^admira-ia-hosted:r91-canary-[0-9a-f]{12}$ ]]; then
+  printf '%s\n' 'CENTRAL_IMAGE_IMAGE must be an exact admira-ia-hosted:r91-canary-<12 lowercase commit hex> tag.' >&2
+  exit 1
+fi
 
 if [[ "$(id -u)" -ne 0 ]]; then
   printf '%s\n' 'Run this installer with sudo.' >&2
@@ -88,14 +97,6 @@ install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_USER" /srv/admira/shared/tele
 install -d -m 0770 -o "$SERVICE_USER" -g "$SPOOL_GROUP" /srv/admira/shared/telegram-spool/inbound
 install -d -m 0770 -o "$SERVICE_USER" -g "$SPOOL_GROUP" /srv/admira/shared/telegram-spool/outbound
 install -m 0600 -o "$SERVICE_USER" -g "$SERVICE_USER" "$BROKER_KEY_SOURCE" /etc/admira/runtime-broker.key
-if [[ -s "$HOSTED_GEMINI_KEY_SOURCE" ]]; then
-  install -m 0600 -o "$SERVICE_USER" -g "$SERVICE_USER" "$HOSTED_GEMINI_KEY_SOURCE" /etc/admira/hosted-gemini-api-key
-else
-  # Emptying the control-plane source is an explicit revocation for future
-  # tenant provisioning; never leave an older host-funded key installed.
-  rm -f /etc/admira/hosted-gemini-api-key
-fi
-
 install -m 0644 /dev/stdin /etc/systemd/system/admira-runtime-broker.service <<UNIT
 [Unit]
 Description=Admira isolated tenant runtime broker

@@ -80,6 +80,37 @@ class TenantTurnTests(unittest.TestCase):
         self.assertEqual(result["session_key"], "agent:main:telegram:dm:-100123")
         self.assertEqual(result["update_id"], 7)
 
+    def test_validate_turn_accepts_only_bounded_server_image_access(self):
+        result = tenant_turn.validate_turn({
+            "message": "/conectar_chatgpt",
+            "chat_id": "123",
+            "user_id": "456",
+            "image_access": {
+                "route": "central_sponsored",
+                "lifecycle_state": "trial",
+                "image_sponsorship_ends_at": "2026-09-03T12:00:00+00:00",
+                "central_ready": True,
+            },
+        })
+        self.assertEqual(result["image_access"]["route"], "central_sponsored")
+        self.assertTrue(result["image_access"]["central_ready"])
+        for route, state in (("shared_secret", "trial"), ("personal_chatgpt", "unknown")):
+            with self.assertRaises(ValueError):
+                tenant_turn.validate_turn({
+                    "message": "/conectar_chatgpt", "chat_id": "123", "user_id": "456",
+                    "image_access": {"route": route, "lifecycle_state": state},
+                })
+
+    def test_hosted_chatgpt_command_is_sponsorship_aware_and_tenant_local(self):
+        script = tenant_turn.INNER_SCRIPT
+        self.assertIn('image_route == "central_sponsored"', script)
+        self.assertIn('image_route == "blocked"', script)
+        self.assertIn('image_route == "personal_chatgpt"', script)
+        self.assertIn("http://127.0.0.1:7871/api/internal/model-recovery", script)
+        self.assertIn("/app/dashboard/data/internal_model_recovery.token", script)
+        self.assertNotIn('os.environ.setdefault(\n    "ADMIRA_INTERNAL_MODEL_RECOVERY', script)
+        self.assertNotIn("To start your private Admira agent, send /connect_chatgpt", script)
+
     def test_rejects_paths_and_malformed_ids(self):
         for payload in (
             {"message": "Hola", "chat_id": "not-an-id", "user_id": "456"},

@@ -53,6 +53,17 @@ class Stager:
         return ingress_module.StagedMedia(media.kind, "a" * 32 + ".jpg", media.file_name, media.mime_type, 10, "b" * 64)
 
 
+class Recovery:
+    def __init__(self, result=None, error=None):
+        self.calls, self.result, self.error = [], result, error
+
+    def handle_unbound(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.error:
+            raise self.error
+        return self.result
+
+
 class TelegramIngressTests(unittest.TestCase):
     def test_parses_private_command_and_largest_photo(self):
         raw = update("/restart@my_bot now")
@@ -101,6 +112,69 @@ class TelegramIngressTests(unittest.TestCase):
         result = ingress_module.TelegramIngress(Resolver(), inbox, stager).handle_update(raw, bot_id="other")
         self.assertEqual(result["status"], "unbound")
         self.assertFalse(stager.calls)
+
+    def test_recovery_handles_command_without_staging_or_tenant_inbox(self):
+        inbox, stager = Inbox(), Stager()
+        recovery = Recovery({
+            "request_id": "4c6d1a2e-1111-4222-8333-123456789abc",
+            "public_outcome": "recovery_pending",
+            "email": "secret@example.test",
+            "license_id": "LIC-SECRET",
+            "otp": "123456",
+        })
+        raw = update("/recuperar secret@example.test LIC-SECRET")
+        raw["message"]["photo"] = [{"file_id": "photo_file_123", "file_size": 10}]
+        result = ingress_module.TelegramIngress(Resolver(), inbox, stager, recovery).handle_update(
+            raw, bot_id="other"
+        )
+        self.assertEqual(result, {
+            "status": "recovery", "update_id": 7,
+            "public_outcome": "recovery_pending",
+        })
+        self.assertEqual(recovery.calls[0]["text"], "/recuperar secret@example.test LIC-SECRET")
+        self.assertFalse(stager.calls)
+        self.assertFalse(inbox.items)
+        self.assertNotIn("secret@example.test", repr(result))
+        self.assertNotIn("LIC-SECRET", repr(result))
+        self.assertNotIn("123456", repr(result))
+
+    def test_recovery_unknown_command_preserves_unbound(self):
+        recovery = Recovery(None)
+        result = ingress_module.TelegramIngress(Resolver(), Inbox(), Stager(), recovery).handle_update(
+            update("/ayuda"), bot_id="other"
+        )
+        self.assertEqual(result, {"status": "unbound", "update_id": 7})
+        self.assertEqual(recovery.calls[0]["text"], "/ayuda")
+
+    def test_recovery_durable_failure_blocks_cursor_without_detail(self):
+        recovery = Recovery(error=OSError("postgres password=raw-secret"))
+        result = ingress_module.TelegramIngress(Resolver(), Inbox(), Stager(), recovery).handle_update(
+            update("/recuperar a@b.test LIC-123"), bot_id="other"
+        )
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["error_code"], "OSError")
+        self.assertNotIn("raw-secret", repr(result))
+
+    def test_start_claim_has_precedence_over_recovery(self):
+        class ClaimOnlyResolver:
+            def resolve(self, **_kwargs):
+                return None
+
+            def claim(self, **kwargs):
+                return "tenant-a" if kwargs["token"] == "a" * 32 else None
+
+        recovery = Recovery(error=AssertionError("must not run"))
+        result = ingress_module.TelegramIngress(ClaimOnlyResolver(), Inbox(), Stager(), recovery).handle_update(
+            update("/start " + "a" * 32), bot_id="bot-1"
+        )
+        self.assertEqual(result["status"], "claimed")
+        self.assertFalse(recovery.calls)
+
+    def test_default_recovery_none_keeps_unbound_compatibility(self):
+        result = ingress_module.TelegramIngress(Resolver(), Inbox(), Stager()).handle_update(
+            update("/recuperar a@b.test LIC-123"), bot_id="other"
+        )
+        self.assertEqual(result, {"status": "unbound", "update_id": 7})
 
     def test_one_time_start_claim_is_not_sent_to_the_model(self):
         class ClaimResolver:

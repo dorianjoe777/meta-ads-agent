@@ -8,6 +8,7 @@ import tempfile
 import time
 import unittest
 import urllib.error
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -113,6 +114,115 @@ class StopAfterPolls:
 
 
 class HostedServiceTests(unittest.TestCase):
+    def test_recovery_store_calls_only_security_definer_functions(self):
+        class DB:
+            def __init__(self): self.calls = []
+            def query(self, sql, params):
+                self.calls.append((sql, params))
+                if "confirm_telegram_recovery" in sql:
+                    return [{"completed": True, "public_outcome": "recovery_completed"}]
+                return [{"public_outcome": "recovery_pending"}]
+
+        db = DB()
+        store = service.RecoveryStore(db)
+        request_id = __import__("uuid").uuid4()
+        pending = store.begin_telegram_recovery(
+            request_id, "123", "456", "456", "a" * 64, "b" * 64,
+            "c" * 64, b"encrypted", "v1",
+        )
+        completed = store.confirm_telegram_recovery(
+            request_id, "123", "456", "456", "c" * 64,
+        )
+        store.enqueue_public_reply(
+            request_id, "123", "456", "456", "recovery_instructions",
+        )
+        self.assertEqual(pending["public_outcome"], "recovery_pending")
+        self.assertTrue(completed["completed"])
+        self.assertEqual([call[0].split("admira.", 1)[1].split("(", 1)[0] for call in db.calls], [
+            "begin_telegram_recovery", "confirm_telegram_recovery",
+            "enqueue_telegram_recovery_public_reply",
+        ])
+        self.assertNotIn("encrypted", repr(pending) + repr(completed))
+
+    def test_recovery_email_store_maps_ciphertext_and_fenced_ack(self):
+        class DB:
+            def __init__(self): self.calls = []
+            def query(self, sql, params):
+                self.calls.append((sql, params))
+                if "claim_recovery_email_outbox" in sql:
+                    return [{
+                        "outbox_id": "outbox", "challenge_id": "challenge",
+                        "request_id": "123e4567-e89b-12d3-a456-426614174000",
+                        "delivery_ref": "sealed-envelope://v1",
+                        "template_code": "telegram_recovery_otp",
+                        "encrypted_payload": memoryview(b"ciphertext"),
+                        "delivery_key_version": "v1", "attempt_count": 2,
+                        "lease_token": "lease",
+                    }]
+                return [{"acknowledged": True}]
+
+        db = DB()
+        store = service.RecoveryEmailStore(db)
+        item = store.claim_recovery_email_outbox(worker_id="email-1", limit=1)[0]
+        self.assertEqual(item.request_id, "123e4567-e89b-12d3-a456-426614174000")
+        self.assertEqual(item.ciphertext, b"ciphertext")
+        self.assertTrue(store.ack_recovery_email_outbox(
+            item, success=False, error_code="provider_unavailable",
+            retry_after_seconds=45,
+        ))
+        self.assertIn("ack_recovery_email_outbox", db.calls[-1][0])
+        self.assertEqual(db.calls[-1][1], (
+            "outbox", "lease", False, "provider_unavailable", 45, 5,
+        ))
+
+    def test_runtime_claim_expires_trials_before_leasing_updates(self):
+        class DB:
+            def __init__(self): self.calls = []
+            def query(self, sql, params=()):
+                self.calls.append((sql, params))
+                return []
+
+        db = DB()
+        self.assertEqual(service.RuntimeStore(db).claim_updates(worker_id="runtime-1", limit=2), [])
+        self.assertEqual(db.calls, [
+            ("SELECT admira.expire_due_trials()", ()),
+            ("SELECT * FROM admira.claim_telegram_updates(%s,%s,%s)", ("runtime-1", 2, 360)),
+        ])
+
+    def test_scheduler_claim_expires_trials_before_leasing_jobs(self):
+        class DB:
+            def __init__(self): self.calls = []
+            def query(self, sql, params=()):
+                self.calls.append((sql, params))
+                return []
+
+        db = DB()
+        self.assertEqual(service.SchedulerStore(db).claim_jobs(worker_id="scheduler-1", limit=3), [])
+        self.assertEqual(db.calls, [
+            ("SELECT admira.expire_due_trials()", ()),
+            ("SELECT * FROM admira.claim_due_scheduled_jobs(%s,%s,%s)", ("scheduler-1", 3, 900)),
+        ])
+
+    def test_scheduler_image_access_fails_closed_and_serializes_deadline(self):
+        class DB:
+            def __init__(self, rows): self.rows = rows
+            def query(self, sql, params=()):
+                self.sql, self.params = sql, params
+                return self.rows
+
+        empty = DB([])
+        self.assertEqual(service.SchedulerStore(empty).image_access("tenant-a"), {
+            "lifecycle_state": "suspended", "route": "blocked",
+            "image_sponsorship_ends_at": "",
+        })
+        db = DB([{
+            "lifecycle_state": "licensed", "route": "central_sponsored",
+            "image_sponsorship_ends_at": datetime(2026, 9, 28, tzinfo=timezone.utc),
+        }])
+        resolved = service.SchedulerStore(db).image_access("tenant-a")
+        self.assertEqual(resolved["route"], "central_sponsored")
+        self.assertEqual(resolved["image_sponsorship_ends_at"], "2026-09-28T00:00:00+00:00")
+
     def test_telegram_429_is_typed_and_retry_after_is_bounded(self):
         signal = service._telegram_rate_limit(
             {"ok": False, "error_code": 429, "parameters": {"retry_after": 999999}}
@@ -135,6 +245,26 @@ class HostedServiceTests(unittest.TestCase):
         self.assertTrue(store.ack_outbox(item, success=False, delay_seconds=37,
                                          error_code="telegram_rate_limited", max_attempts=20))
         self.assertEqual(db.calls[0][1][-2:], (37, 20))
+
+    def test_delivery_store_claims_and_acks_recovery_chat_outbox(self):
+        class DB:
+            def __init__(self): self.calls = []
+            def query(self, sql, params):
+                self.calls.append((sql, params))
+                if "claim_recovery_chat_outbox" in sql:
+                    return [{"outbox_id": "row", "request_id": "request", "bot_id": "bot-1",
+                             "chat_id": "123", "user_id": "456", "template_code": "recovery_pending",
+                             "body": "Código enviado.", "attempt_count": 1, "lease_token": "lease"}]
+                return [{"acknowledged": True}]
+        db = DB()
+        store = service.DeliveryStore(db)
+        item = store.claim_recovery_outbox(worker_id="delivery-1", limit=1)[0]
+        self.assertIsInstance(item, worker_module.RecoveryOutboxItem)
+        self.assertEqual(item.body, "Código enviado.")
+        self.assertTrue(store.ack_recovery_outbox(item, success=False,
+                                                   error_code="telegram_unavailable", delay_seconds=12))
+        self.assertIn("ack_recovery_chat_outbox", db.calls[-1][0])
+        self.assertEqual(db.calls[-1][1][-2:], (12, 5))
 
     def test_telegram_request_http_429_never_exposes_response_body(self):
         api = object.__new__(service.TelegramAPI)

@@ -1,6 +1,7 @@
 # Diseño operativo de pruebas, licencias e identidad
 
-Estado: **propuesto; todavía no desplegado**.
+Estado: **diseño operativo; no implica que el broker central de imágenes esté
+activado**.
 
 Este documento define el plano de control mínimo para admitir tres clientes
 nuevos por día con una prueba de cinco días. No describe un dashboard para el
@@ -61,7 +62,9 @@ implementación debe ampliar ese fundamento con tablas o campos equivalentes.
   normalizado para búsqueda, verificación y versión de identidad.
 - `tenant_entitlements`: estado comercial, identificador de licencia aleatorio,
   hash/HMAC de la prueba de licencia, `licensed_at` e
-  `image_sponsorship_ends_at`.
+  `image_sponsorship_ends_at`. El identificador de licencia sí se almacena en
+  PostgreSQL porque forma parte de la identidad recuperable; nunca se almacenan
+  aquí la clave Gemini ni credenciales de ChatGPT/Codex.
 
 ### Credenciales de proveedor
 
@@ -84,7 +87,7 @@ fuera del repositorio. PostgreSQL conserva referencias, estado y auditoría.
 
 ## 4. Alta diaria y expiración
 
-El panel/CLI de operador debe ofrecer una operación `Crear prueba` que:
+La CLI privada de operador debe ofrecer una operación `Crear prueba` que:
 
 1. cree o valide el tenant durable;
 2. asigne una entrada sana del pool Gemini sin exponer su valor;
@@ -96,9 +99,10 @@ El panel/CLI de operador debe ofrecer una operación `Crear prueba` que:
 Al consumir el claim, una única transacción inicia `trial_started_at`, fija
 `trial_ends_at = trial_started_at + 5 días` y activa el entitlement. Un trabajo
 periódico vence pruebas, drena trabajo en curso y bloquea nuevos turns y cronjobs.
-No debe depender solamente de esconder comandos en el dashboard.
+No debe depender solamente de ocultar comandos en una interfaz; la regla debe
+estar aplicada en el plano de control.
 
-El panel debe mostrar como mínimo:
+Los comandos de consulta y reportes de la CLI deben mostrar como mínimo:
 
 - altas de hoy frente al objetivo de tres;
 - pruebas activas, por vencer y vencidas;
@@ -110,9 +114,24 @@ El panel debe mostrar como mínimo:
 ## 5. Gemini: prueba y conversión a licencia
 
 No se deben pegar claves en chat, tickets, argumentos de proceso o logs. La
-entrada segura debe ser un campo de secreto HTTPS del panel privado o stdin sin
-eco desde la CLI. Después de guardarla, la interfaz sólo muestra proveedor,
+entrada segura en esta fase es stdin sin eco o un archivo privado regular 0600
+leído por la CLI. Después de guardarla, la salida sólo muestra proveedor,
 fingerprint, origen y fecha de validación.
+
+La validación automática de `gemini-set` y `gemini-license` (salvo dry-run) es
+un health check acotado al endpoint oficial `GET
+https://generativelanguage.googleapis.com/v1beta/models?pageSize=1`. La clave
+se envía sólo mediante el header `x-goog-api-key`, con
+`x-goog-api-client: admira-hosted/r91`, nunca en URL, argumentos, logs o errores.
+`--allow-unverified` existe sólo como excepción explícita de operador y no debe
+usarse para preparar cuentas listas para clientes; dry-run no contacta la red.
+La política de preparación exige auth keys. Según la [documentación oficial de
+claves de Gemini](https://ai.google.dev/gemini-api/docs/api-key), las nuevas
+claves de AI Studio son auth keys, las standard sin restricción son rechazadas y
+las standard serán rechazadas por completo en septiembre de 2026. Por eso una
+respuesta exitosa del endpoint con una standard legacy no basta para admitirla
+en el pool. No se afirma aquí que ya existan claves reales confirmadas ni que el
+pool esté activo.
 
 La conversión `trial -> licensed` debe ser una operación transaccional e
 idempotente:
@@ -128,28 +147,65 @@ idempotente:
 8. retirar la asignación Gemini de Admira sólo después de comprobar la nueva;
 9. registrar auditoría sin valores secretos.
 
+El comando operativo actual es `gemini-license`; exige `--email-file` además de
+la credencial Gemini. El archivo de correo debe ser regular y 0600, se consume
+sólo en memoria y se normaliza antes de calcular el HMAC con la clave central
+privada `secrets/recovery_hmac_key.txt` por defecto. La licencia, contacto HMAC,
+referencia/fingerprint Gemini y auditoría se registran atómicamente; no se
+almacena el correo ni ninguna clave del proveedor en PostgreSQL.
+
 Si falla cualquier paso anterior al corte, la prueba conserva su credencial
-anterior y no queda a medio migrar.
+anterior y no queda a medio migrar. Si la transición ya cambió el estado, el
+rollback debe seguir el backup y runbook de `OPERATIONS.md`; no se revierte
+editando SQL o archivos de tenant a mano.
 
 La cuota de Gemini se aplica por proyecto, no por clave. Crear muchas claves
 dentro del mismo proyecto no crea capacidad independiente. El pool debe conocer
 el proyecto real y aplicar presupuesto por tenant antes de llegar al límite.
 
+Migration `010_operator_gemini_pool.sql` convierte esa regla en estado durable:
+`gemini_pool_projects` representa el límite por proyecto, mientras
+`gemini_pool_credentials` conserva sólo fingerprint, tipo y referencia opaca
+del secreto. `gemini_pool_assignments` permite una asignación activa por tenant
+y sus funciones hosted reciben `runtime_key`, validan el tenant y dejan
+auditoría de asignación/liberación. La capacidad no se libera manualmente si
+el tenant sigue activo con una asignación finalizada; los cambios de lifecycle
+son los que pueden liberar automáticamente. El validator es exclusivamente
+para una PostgreSQL desechable. La CLI y el pool real no están declarados live
+hasta crear y verificar proyectos y auth keys reales fuera del repositorio.
+
+Toda rotación de Gemini sigue el fence `suspend -> write -> health -> metadata`.
+El bypass `--runtime-already-stopped` sólo vale cuando el operador ya verificó
+que el runtime está detenido y queda explícito en la operación. Un fallo al
+suspender deja intacta la credencial anterior.
+
 ## 6. Generación central de imágenes
+
+La integración central permanece desactivada hasta completar un canary del
+broker y de su proveedor. `ADMIRA_CENTRAL_IMAGE_READY=false` es obligatorio
+mientras tanto; la descripción siguiente define el destino del flujo, no un
+servicio ya disponible.
 
 No se debe copiar un mismo `auth.json` de ChatGPT/Codex a los tenants. Eso
 multiplicaría una credencial de alto valor y haría difícil revocar, rotar,
 atribuir consumo y garantizar aislamiento.
 
-La ruta mínima segura es un broker central de imágenes:
+La ruta mínima segura es el servicio `central-image-broker`, actualmente
+implementado pero dormido en el perfil Compose `central-images` y aún sin
+activar. Requiere construir y verificar r91, una conexión central autorizada y
+un canary controlado. Migration `008_central_image_jobs.sql` es su ledger
+durable; no se debe considerar disponible sólo porque el código y el esquema
+existan. El flujo previsto es:
 
-1. el tenant envía un trabajo autenticado con `tenant_id`, prompt, referencias y
-   un identificador idempotente;
-2. el broker valida entitlement y cuota antes de usar el proveedor;
+1. el tenant envía un trabajo autenticado con runtime key, prompt, referencias
+   y un identificador idempotente;
+2. el broker vuelve a resolver el tenant activo y valida entitlement y cuota;
 3. la cuenta o proyecto financiado por Admira vive sólo en el broker;
-4. cada trabajo usa un directorio temporal aislado;
+4. cada trabajo usa un directorio temporal aislado y un intercambio HMAC/Unix
+   socket por tenant;
 5. la salida se copia al `output/` del tenant correcto tras validar hash y tipo;
-6. el broker registra unidades, estado y latencia, no credenciales;
+6. el ledger registra unidades, estado y latencia, no credenciales, prompts ni
+   respuestas del proveedor;
 7. al terminar el patrocinio, rechaza el trabajo o usa una conexión del cliente
    según su entitlement.
 
@@ -160,13 +216,17 @@ las condiciones aplicables antes de basar el servicio comercial en ella.
 
 ## 7. Recuperación desde otro Telegram
 
-Un chat no reconocido puede recibir una respuesta genérica que ofrezca
-`/recuperar`, sin confirmar si una cuenta existe. El flujo es:
+El núcleo preparado puede ofrecer a un chat no reconocido una respuesta
+genérica con `/recuperar`, sin confirmar si una cuenta existe. En live sigue
+apagado mientras `ADMIRA_TELEGRAM_RECOVERY_READY=false`; el correo sólo se
+procesa mediante el perfil opt-in `recovery-email`. Cuando se canarie, el flujo
+será:
 
 1. solicitar correo de licencia y número de licencia;
 2. comparar representaciones normalizadas mediante hash/HMAC;
 3. responder de forma uniforme aunque los datos no existan;
-4. enviar un OTP o enlace mágico de un solo uso al correo ya verificado;
+4. entregar un OTP de un solo uso al correo ya verificado mediante el outbox
+   SMTP; el usuario responde en el mismo Telegram con `/codigo REQUEST_ID OTP`;
 5. limitar intentos por chat, correo hash y licencia hash;
 6. al confirmar, bloquear el tenant en una transacción;
 7. revocar el binding anterior y crear el nuevo binding primario;
@@ -174,29 +234,34 @@ Un chat no reconocido puede recibir una respuesta genérica que ofrezca
 9. registrar el resultado en el audit log;
 10. continuar con el mismo tenant y todo su estado previo.
 
+El núcleo SQL, el adaptador HMAC/cifrado y los workers de outbox SMTP/Telegram
+están preparados, pero no hay una integración live hasta registrar proveedor
+SMTP autorizado, remitente/dominio con SPF/DKIM/DMARC, secretos privados,
+backup/migración revisados, segunda identidad Telegram y evidencia de canary.
+No inventar credenciales ni activar la bandera como sustituto de esas pruebas.
+
 Correo más licencia no es suficiente para cambiar el binding: ambos datos pueden
 ser copiados o reenviados. La confirmación enviada al correo registrado es el
 segundo factor que prueba control actual.
 
-## 8. Panel privado del operador
+## 8. Herramientas privadas del operador
 
-El panel no se publica como puerto abierto de Contabo. Debe quedar detrás de VPN,
-túnel SSH o un proxy de acceso con MFA, sesiones cortas, CSRF, rate limiting y
-auditoría. Sus operaciones mínimas son:
+No existe ni se requiere un dashboard para compradores u operadores en esta
+fase. La herramienta de operación es una CLI host-only accesible por SSH
+autorizado y no se publica como puerto de Contabo. Sus operaciones mínimas son:
 
 - crear una prueba y copiar el deep-link;
 - ver capacidad, vencimientos y salud de proveedor;
 - convertir una prueba a licencia;
-- ingresar/reemplazar Gemini mediante un campo de secreto de una sola vista;
+- ingresar/reemplazar Gemini por stdin sin eco o archivo privado 0600;
 - reenviar el correo de licencia;
 - suspender/reactivar un tenant;
 - revisar y aprobar casos excepcionales de recuperación;
 - consultar auditoría sin revelar credenciales.
 
-La lógica debe vivir en un servicio común y ser usada primero por una CLI
-administrativa. El panel sólo llama a esas mismas operaciones. Esto permite
-iniciar la cadencia de tres altas diarias antes de terminar la interfaz sin crear
-dos implementaciones distintas.
+La lógica debe vivir en servicios comunes y ser invocada por una CLI
+administrativa. Esto permite iniciar la cadencia de tres altas diarias sin
+construir ni mantener una interfaz web en este trabajo.
 
 ## 9. Capacidad y aceptación antes de compradores
 
@@ -222,12 +287,15 @@ Un tenant canario nuevo debe pasar por el mismo camino que un comprador:
 
 ## 10. Orden de implementación
 
-1. Corregir y completar el canary funcional actual, incluido el enlace de
-   conexión de modelo, media, Meta y scheduler.
-2. Añadir migración y servicio común para entitlements, contactos, referencias
-   de secretos, auditoría y expiración.
-3. Añadir CLI segura para crear pruebas, instalar/validar claves y licenciar.
-4. Implementar el broker central de imágenes y sus cuotas.
-5. Construir el panel privado sobre las mismas operaciones.
-6. Integrar correo transaccional y recuperación/rebinding.
-7. Ejecutar el canary de ciclo completo y sólo entonces admitir compradores.
+1. Completar el canary funcional actual, incluido el enlace de conexión de
+   modelo, media, Meta y scheduler.
+2. Mantener el lifecycle trial/licencia y la CLI segura como las operaciones
+   actuales de control plane.
+3. Construir y verificar r91, preparar el host con
+   `prepare-central-image-broker.sh` e instalar la conexión central autorizada
+   sólo en el broker.
+4. Aplicar y validar migration 008 y ejecutar el canary de
+   `central-image-broker`; mantener `ADMIRA_CENTRAL_IMAGE_READY=false` hasta
+   que pase.
+5. Integrar correo transaccional y recuperación/rebinding.
+6. Ejecutar el canary de ciclo completo y sólo entonces admitir compradores.

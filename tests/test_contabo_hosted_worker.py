@@ -28,6 +28,13 @@ class RuntimeStore:
     def claim_updates(self, **kwargs):
         result, self.items = self.items[:kwargs.get("limit", 1)], self.items[kwargs.get("limit", 1):]
         return result
+    def image_access(self, tenant_id):
+        self.events.append(("image-access", tenant_id))
+        return {
+            "lifecycle_state": "trial",
+            "route": "central_sponsored",
+            "image_sponsorship_ends_at": "",
+        }
     def acquire_runtime(self, tenant_id, **_): self.events.append(("acquire", tenant_id)); return self.runtime_lease
     def release_runtime(self, tenant_id, lease): self.events.append(("release", tenant_id, lease))
     def sync_jobs(self, update, lease, jobs): self.events.append(("sync", update.row_id, lease, jobs))
@@ -65,6 +72,19 @@ class DeliveryStore:
     def ack_outbox(self, item, **data): self.events.append((item.row_id, data)); return True
 
 
+class RecoveryDeliveryStore(DeliveryStore):
+    def __init__(self, items):
+        super().__init__([])
+        self.recovery_items, self.recovery_events = list(items), []
+    def claim_recovery_outbox(self, **kwargs):
+        self.claim_limits.append(("recovery", kwargs["limit"]))
+        result, self.recovery_items = self.recovery_items[:kwargs["limit"]], self.recovery_items[kwargs["limit"]:]
+        return result
+    def ack_recovery_outbox(self, item, **data):
+        self.recovery_events.append((item.row_id, data))
+        return True
+
+
 class Telegram:
     def __init__(self): self.calls = []
     def send_text(self, bot, chat, text): self.calls.append(("text", chat, text)); return 10
@@ -89,6 +109,12 @@ class SchedulerStore:
     def __init__(self, items, runtime_lease="runtime-lease"):
         self.items, self.events, self.runtime_lease = list(items), [], runtime_lease
     def claim_jobs(self, **_): result, self.items = self.items, []; return result
+    def image_access(self, tenant_id):
+        return {
+            "lifecycle_state": "licensed",
+            "route": "central_sponsored",
+            "image_sponsorship_ends_at": "2026-09-28T00:00:00+00:00",
+        }
     def acquire_runtime(self, tenant_id, **_): return self.runtime_lease
     def release_runtime(self, tenant_id, lease): self.events.append(("release", tenant_id))
     def complete_job(self, work, **data): self.events.append(("complete", work.run_id, data))
@@ -106,7 +132,15 @@ class HostedWorkerTests(unittest.TestCase):
         self.assertEqual(result, {"completed": 1, "retried": 0, "busy": 0, "deferred": 0, "evicted": 0})
         self.assertEqual(broker.calls[0]["tenant_id"], "client-001")
         self.assertEqual(broker.calls[0]["turn"]["user_id"], "123")
-        self.assertEqual([event[0] for event in store.events], ["acquire", "sync", "complete", "release"])
+        self.assertEqual(broker.calls[0]["turn"]["image_access"]["route"], "central_sponsored")
+        self.assertFalse(broker.calls[0]["turn"]["image_access"]["central_ready"])
+        self.assertEqual([event[0] for event in store.events], ["acquire", "image-access", "sync", "complete", "release"])
+
+    def test_runtime_marks_central_image_service_ready_only_when_explicit(self):
+        store = RuntimeStore([runtime_update()])
+        broker = Broker({"ok": True, "reply": "respuesta", "media": []})
+        worker.RuntimeWorker(store, broker, central_image_ready=True).process_once()
+        self.assertTrue(broker.calls[0]["turn"]["image_access"]["central_ready"])
 
     def test_runtime_failure_retries_with_safe_code(self):
         store = RuntimeStore([runtime_update()])
@@ -218,6 +252,70 @@ class HostedWorkerTests(unittest.TestCase):
         self.assertEqual(store.events[0][1]["max_attempts"], 20)
         self.assertEqual(store.events[0][1]["error_code"], "telegram_rate_limited")
 
+    def test_recovery_outbox_sends_fixed_body_and_acks(self):
+        item = worker.RecoveryOutboxItem("r1", "request-1", "bot", "123", "456",
+                                         "recovery_pending", "Código enviado.", 1, "lease")
+        store, telegram = RecoveryDeliveryStore([item]), Telegram()
+        result = worker.OutboxWorker(
+            store, telegram, limiter=worker.DeliveryRateLimiter(global_interval=0, chat_interval=0)
+        ).process_once()
+        self.assertEqual(result, {"sent": 1, "retried": 0})
+        self.assertEqual(telegram.calls, [("text", "123", "Código enviado.")])
+        self.assertEqual(store.recovery_events[0][1]["success"], True)
+
+    def test_recovery_outbox_rate_limit_uses_allowed_code(self):
+        item = worker.RecoveryOutboxItem("r1", "request-1", "bot", "123", "456",
+                                         "recovery_failed", "No se pudo.", 1, "lease")
+        class LimitedTelegram:
+            def send_text(self, bot, chat, text): raise RateLimitSignal(37)
+        store = RecoveryDeliveryStore([item])
+        result = worker.OutboxWorker(
+            store, LimitedTelegram(), limiter=worker.DeliveryRateLimiter(global_interval=0, chat_interval=0)
+        ).process_once()
+        self.assertEqual(result, {"sent": 0, "retried": 1})
+        self.assertEqual(store.recovery_events[0][1]["error_code"], "telegram_rate_limited")
+        self.assertEqual(store.recovery_events[0][1]["delay_seconds"], 37)
+
+    def test_recovery_outbox_provider_error_is_safe_and_retryable(self):
+        item = worker.RecoveryOutboxItem("r1", "request-1", "bot", "123", "456",
+                                         "recovery_failed", "No se pudo.", 1, "lease")
+        class FailedTelegram:
+            def send_text(self, bot, chat, text): raise RuntimeError("secret provider detail")
+        store = RecoveryDeliveryStore([item])
+        result = worker.OutboxWorker(store, FailedTelegram(), rng=random.Random(1),
+                                      limiter=worker.DeliveryRateLimiter(global_interval=0, chat_interval=0)).process_once()
+        self.assertEqual(result["retried"], 1)
+        self.assertEqual(store.recovery_events[0][1]["error_code"], "internal_error")
+
+    def test_recovery_outbox_uses_transport_bot_identity_fence(self):
+        item = worker.RecoveryOutboxItem("r1", "request-1", "wrong-bot", "123", "456",
+                                         "recovery_failed", "No se pudo.", 1, "lease")
+        class IdentityCheckingTelegram:
+            def send_text(self, bot, chat, text):
+                if bot != "bot-1":
+                    error = RuntimeError("telegram_bot_mismatch")
+                    error.error_code = "telegram_bot_mismatch"
+                    raise error
+                return 1
+        store = RecoveryDeliveryStore([item])
+        worker.OutboxWorker(store, IdentityCheckingTelegram(),
+                            limiter=worker.DeliveryRateLimiter(global_interval=0, chat_interval=0)).process_once()
+        self.assertEqual(store.recovery_events[0][1]["error_code"], "telegram_unavailable")
+
+    def test_recovery_outbox_does_not_ack_after_lost_lease(self):
+        item = worker.RecoveryOutboxItem("r1", "request-1", "bot", "123", "456",
+                                         "recovery_completed", "Listo.", 1, "lease")
+        class LostLeaseStore(RecoveryDeliveryStore):
+            def ack_recovery_outbox(self, item, **data):
+                self.recovery_events.append((item.row_id, data))
+                return False
+        store = LostLeaseStore([item])
+        result = worker.OutboxWorker(store, Telegram(), limiter=worker.DeliveryRateLimiter(global_interval=0, chat_interval=0)).process_once()
+        self.assertEqual(result, {"sent": 0, "retried": 1})
+        # The second acknowledgement is the durable retry attempt; it must
+        # still use the recovery-safe error enum rather than exception text.
+        self.assertEqual(store.recovery_events[-1][1]["error_code"], "internal_error")
+
     def test_delivery_rate_limiter_paces_global_and_per_chat(self):
         clock = FakeClock()
         limiter = worker.DeliveryRateLimiter(global_interval=0.5, chat_interval=1.0,
@@ -270,8 +368,19 @@ class HostedWorkerTests(unittest.TestCase):
                          "cron_jobs": [{"id": "hermes-1", "enabled": True, "next_run_at": "2026-08-28T08:00:00+00:00"}]})
         result = worker.SchedulerWorker(store, broker).process_once()
         self.assertEqual(result["completed"], 1)
+        self.assertEqual(broker.calls[0]["image_access"]["route"], "central_sponsored")
+        self.assertFalse(broker.calls[0]["image_access"]["central_ready"])
         self.assertEqual(store.events[0][0], "complete")
         self.assertEqual(store.events[0][2]["next_run_at"], "2026-08-28T08:00:00+00:00")
+
+    def test_scheduler_marks_central_image_service_ready_only_when_explicit(self):
+        work = worker.ScheduledWork("j-db", "tenant-uuid", "client-001", "hermes-1", {},
+                                    datetime.now(timezone.utc), "run-1", 1, "job-lease")
+        broker = Broker({"ok": True, "reply": "", "media": [], "cron_jobs": []})
+        worker.SchedulerWorker(
+            SchedulerStore([work]), broker, central_image_ready=True
+        ).process_once()
+        self.assertTrue(broker.calls[0]["image_access"]["central_ready"])
 
     def test_scheduler_capacity_does_not_spend_failure_budget(self):
         work = worker.ScheduledWork("j-db", "tenant-uuid", "client-001", "hermes-1", {},

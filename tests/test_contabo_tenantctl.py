@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,6 +22,27 @@ class TenantCtlTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     tenantctl.validate_tenant_id(value)
         self.assertEqual(tenantctl.validate_tenant_id("client-001"), "client-001")
+
+    def test_runtime_image_defaults_to_r90_and_accepts_only_exact_hosted_canary(self):
+        self.assertEqual(tenantctl.selected_runtime_image(), "admira-ia:r90")
+        canary = "admira-ia-hosted:r91-canary-0123456789ab"
+        self.assertEqual(tenantctl.validate_runtime_image(canary), canary)
+        for value in ("latest", "admira-ia:r91", "admira-ia-hosted:r91-canary-latest",
+                      "admira-ia-hosted:r91-canary-aa3313f80bc", "admira-ia-hosted:r91-canary-AA3313F80BCB"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    tenantctl.validate_runtime_image(value)
+
+    def test_operator_can_pin_one_tenant_to_exact_hosted_canary(self):
+        canary = "admira-ia-hosted:r91-canary-0123456789ab"
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            tenantctl.provision(base, "client-001", runtime_image=canary)
+            compose = (base / "client-001" / "compose.yaml").read_text()
+            self.assertIn(f"image: {canary}", compose)
+            self.assertIn(f'com.admira.image: "{canary}"', compose)
+            tenantctl.provision(base, "client-002")
+            self.assertIn("image: admira-ia:r90", (base / "client-002" / "compose.yaml").read_text())
 
     def test_dry_run_never_writes_or_runs(self):
         with tempfile.TemporaryDirectory() as raw, patch.object(tenantctl, "run") as run:
@@ -60,11 +82,160 @@ class TenantCtlTests(unittest.TestCase):
             self.assertNotIn("read_only: true", text)
             self.assertIn("HERMES_HOME: /app/runtime/hermes", text)
             self.assertIn("CODEX_HOME: /app/runtime/hermes/codex-auth", text)
+            self.assertNotIn("/run/admira-central-image-broker", text)
+            self.assertNotIn("/run/admira-central-images", text)
+            self.assertNotIn("ADMIRA_CENTRAL_IMAGE_CLIENT_KEY_FILE", text)
             self.assertNotIn("/opt/admira", text)
             self.assertIn("/app/dashboard/data", text)
             self.assertNotIn("docker.sock", text)
             self.assertNotIn("ports:", text)
             self.assertNotIn("API_KEY", text)
+
+    def test_central_image_client_keys_are_private_idempotent_and_tenant_scoped(self):
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw) / "tenants"
+            keys = Path(raw) / "broker-keys"
+            exchange = Path(raw) / "exchange"
+            socket_dir = Path(raw) / "broker-socket"
+            keys.mkdir(mode=0o700)
+            exchange.mkdir(mode=0o700)
+            socket_dir.mkdir(mode=0o750)
+            tenantctl.provision(
+                base, "client-001", central_image_key_root=keys,
+                central_image_exchange_root=exchange, central_image_socket_dir=socket_dir,
+            )
+            verifier = keys / "client-001"
+            client = base / "client-001" / "runtime" / tenantctl.CENTRAL_IMAGE_CLIENT_KEY
+            before = verifier.read_bytes()
+            self.assertEqual(before, client.read_bytes())
+            self.assertEqual(verifier.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(client.stat().st_mode & 0o777, 0o600)
+            self.assertEqual((exchange / "client-001" / "output").stat().st_mode & 0o777, 0o700)
+            compose = (base / "client-001" / "compose.yaml").read_text()
+            self.assertIn('group_add:\n      - "${ADMIRA_CENTRAL_IMAGE_GID:-19093}"', compose)
+            self.assertIn(f'"{socket_dir}:/run/admira-central-image-broker:ro"', compose)
+            self.assertIn(
+                f'"{exchange / "client-001" / "output"}:/run/admira-central-images"',
+                compose,
+            )
+            self.assertNotIn(
+                f'"{exchange / "client-001"}:/run/admira-central-images"',
+                compose,
+            )
+            tenantctl.provision(
+                base, "client-001", central_image_key_root=keys,
+                central_image_exchange_root=exchange, central_image_socket_dir=socket_dir,
+            )
+            self.assertEqual(before, verifier.read_bytes())
+
+    def test_central_image_client_rejects_mismatched_or_public_keys(self):
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw) / "tenants"
+            keys = Path(raw) / "broker-keys"
+            exchange = Path(raw) / "exchange"
+            socket_dir = Path(raw) / "broker-socket"
+            keys.mkdir(mode=0o700)
+            exchange.mkdir(mode=0o700)
+            socket_dir.mkdir(mode=0o750)
+            tenantctl.provision(
+                base, "client-001", central_image_key_root=keys,
+                central_image_exchange_root=exchange, central_image_socket_dir=socket_dir,
+            )
+            client = base / "client-001" / "runtime" / tenantctl.CENTRAL_IMAGE_CLIENT_KEY
+            client.write_text("f" * 64 + "\n", encoding="ascii")
+            client.chmod(0o600)
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                tenantctl.provision(
+                    base, "client-001", central_image_key_root=keys,
+                    central_image_exchange_root=exchange, central_image_socket_dir=socket_dir,
+                )
+            client.chmod(0o644)
+            with self.assertRaisesRegex(ValueError, "private regular file"):
+                tenantctl.provision(
+                    base, "client-001", central_image_key_root=keys,
+                    central_image_exchange_root=exchange, central_image_socket_dir=socket_dir,
+                )
+
+    def test_provision_rejects_tenant_and_exchange_symlinks(self):
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw) / "tenants"
+            outside = Path(raw) / "outside"
+            base.mkdir(mode=0o700)
+            outside.mkdir(mode=0o700)
+            (base / "client-001").symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "tenant root"):
+                tenantctl.provision(base, "client-001")
+            self.assertFalse((outside / "compose.yaml").exists())
+
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw) / "tenants"
+            keys = Path(raw) / "keys"
+            exchange = Path(raw) / "exchange"
+            socket_dir = Path(raw) / "socket"
+            outside = Path(raw) / "outside"
+            for directory in (keys, exchange, socket_dir, outside):
+                directory.mkdir(mode=0o700)
+            (exchange / "client-001").symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "tenant central image exchange"):
+                tenantctl.provision(
+                    base, "client-001", central_image_key_root=keys,
+                    central_image_exchange_root=exchange, central_image_socket_dir=socket_dir,
+                )
+            self.assertFalse((outside / "output").exists())
+
+            (exchange / "client-001").unlink()
+            (exchange / "client-001").mkdir(mode=0o700)
+            (exchange / "client-001" / "output").symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "tenant central image output"):
+                tenantctl.provision(
+                    base, "client-001", central_image_key_root=keys,
+                    central_image_exchange_root=exchange, central_image_socket_dir=socket_dir,
+                )
+
+    def test_provision_rejects_tenant_subdirectory_and_file_symlinks(self):
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw) / "tenants"
+            root = base / "client-001"
+            outside = Path(raw) / "outside"
+            root.mkdir(parents=True, mode=0o700)
+            outside.mkdir(mode=0o700)
+            (root / "runtime").symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "tenant runtime"):
+                tenantctl.provision(base, "client-001")
+            self.assertFalse((outside / ".env").exists())
+
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw) / "tenants"
+            tenantctl.provision(base, "client-001")
+            root = base / "client-001"
+            outside = Path(raw) / "outside"
+            outside.write_text("unchanged", encoding="utf-8")
+            (root / "runtime" / ".env").unlink()
+            (root / "runtime" / ".env").symlink_to(outside)
+            with self.assertRaisesRegex(ValueError, "runtime environment"):
+                tenantctl.provision(base, "client-001")
+            self.assertEqual(outside.read_text(encoding="utf-8"), "unchanged")
+
+            (root / "runtime" / ".env").unlink()
+            (root / "runtime" / ".env").write_text(tenantctl.INITIAL_RUNTIME_ENV, encoding="utf-8")
+            (root / "runtime" / ".env").chmod(0o600)
+            (root / "compose.yaml").unlink()
+            (root / "compose.yaml").symlink_to(outside)
+            with self.assertRaisesRegex(ValueError, "tenant Compose"):
+                tenantctl.provision(base, "client-001")
+            self.assertEqual(outside.read_text(encoding="utf-8"), "unchanged")
+
+    def test_mount_roots_must_be_absolute(self):
+        with self.assertRaisesRegex(ValueError, "tenant base must be absolute"):
+            tenantctl.provision(Path("relative-tenants"), "client-001", dry_run=True)
+        with self.assertRaisesRegex(ValueError, "central image mount roots must be absolute"):
+            tenantctl.compose_text(
+                Path("/srv/admira/tenants/client-001"), "client-001",
+                central_image_enabled=True,
+                central_image_exchange_root=Path("relative-exchange"),
+            )
+        with self.assertRaisesRegex(ValueError, "tenant_id"):
+            tenantctl.compose_text(Path("/srv/admira/tenants/client-001"), "../escape")
 
     def test_limits_are_configurable_but_validated(self):
         text = tenantctl.compose_text(Path("/srv/admira/tenants/client-001"), "client-001", memory_limit="1g", cpu_limit="2.5", pids_limit=512)
@@ -76,28 +247,18 @@ class TenantCtlTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             tenantctl.compose_text(Path("/tmp/client-001"), "client-001", pids_limit=0)
 
-    def test_optional_private_gemini_key_seeds_only_a_blank_tenant_env(self):
+    def test_provision_never_seeds_legacy_gemini_key(self):
         with tempfile.TemporaryDirectory() as raw:
             base = Path(raw) / "tenants"
-            secret = Path(raw) / "gemini.key"
-            secret.write_text("a-secure-gemini-key-value-12345\n", encoding="utf-8")
-            secret.chmod(0o600)
-            tenantctl.provision(base, "client-001", gemini_key_file=secret)
+            legacy = Path(raw) / "legacy-gemini.key"
+            legacy.write_text("a-secure-gemini-key-value-12345\n", encoding="utf-8")
+            legacy.chmod(0o600)
+            with patch.dict(os.environ, {"ADMIRA_HOSTED_GEMINI_KEY_FILE": str(legacy)}):
+                tenantctl.provision(base, "client-001")
             runtime_env = base / "client-001" / "runtime" / ".env"
-            self.assertIn("GEMINI_API_KEY=a-secure-gemini-key-value-12345", runtime_env.read_text())
-            secret.write_text("a-different-secure-key-value-67890\n", encoding="utf-8")
-            tenantctl.provision(base, "client-001", gemini_key_file=secret)
-            self.assertNotIn("a-different", runtime_env.read_text())
-            self.assertNotIn("a-secure-gemini", (base / "client-001" / "compose.yaml").read_text())
-
-    def test_gemini_seed_rejects_non_private_secret_file(self):
-        with tempfile.TemporaryDirectory() as raw:
-            secret = Path(raw) / "gemini.key"
-            secret.write_text("a-secure-gemini-key-value-12345\n", encoding="utf-8")
-            secret.chmod(0o644)
-            with self.assertRaisesRegex(ValueError, "private regular file"):
-                tenantctl.provision(Path(raw) / "tenants", "client-001", gemini_key_file=secret)
-            self.assertFalse((Path(raw) / "tenants" / "client-001").exists())
+            self.assertIn("GEMINI_API_KEY=\n", runtime_env.read_text())
+            self.assertNotIn("a-secure-gemini", runtime_env.read_text())
+            self.assertNotIn("gemini-key-file", tenantctl.parser().format_help())
 
     def test_lifecycle_uses_argv_and_tenant_compose(self):
         with tempfile.TemporaryDirectory() as raw, patch.object(tenantctl, "run") as run:

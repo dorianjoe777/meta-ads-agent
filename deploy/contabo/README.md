@@ -14,9 +14,14 @@ API, CRM/booking/ecommerce integration layer, webhook product, customer CLI or
 official MCP service in this phase. Those possible SaaS surfaces are explicitly
 outside this job.
 
-An operator-only console for trial capacity, licensing, provider-secret rotation
-and Telegram identity recovery is a separate proposed operational extension,
-not a buyer SaaS dashboard. Its not-yet-deployed design is documented in
+Operator-only tooling for trial capacity, licensing and provider-secret rotation
+is part of the control-plane work; it is not a buyer SaaS dashboard. The
+recovery core is now prepared: the poller can route `/recuperar email licencia`
+and `/codigo request_id otp`, and the recovery database/outbox and SMTP worker
+are implemented. It remains deliberately dormant: `ADMIRA_TELEGRAM_RECOVERY_READY=false`
+and the `recovery-email` Compose profile is opt-in, so this is not a live
+recovery service until the provider, domain, secrets, second Telegram identity
+and canary gates are complete. Its scope and remaining work are documented in
 [`TRIAL_LICENSING_DESIGN.md`](./TRIAL_LICENSING_DESIGN.md).
 
 The intended experience is nevertheless the complete Admira/Hermes experience:
@@ -39,12 +44,16 @@ The host also owns that tenant's private `compose.yaml` and, only after a
 complete reset, a 0600 idempotency receipt outside every container mount.
 
 New tenants select Gemini 3.5 Flash Lite as the initial text-brain configuration,
-without a Telegram token and with live Meta actions disabled. An operator may
-optionally seed a private host-funded Gemini key into newly provisioned tenant
-environments. If no working provider is present, Telegram deterministically
-guides the buyer to `/conectar_chatgpt`; the secure ChatGPT/Codex connection
-flow happens in the same DM. Provider choices live in the tenant's private
-`runtime/.env` and are not overwritten by restart or scale-to-zero.
+with live Meta actions disabled. During the five-day trial, the operator may
+assign a private, host-funded Gemini key. On licensing, `gemini-license`
+atomically records the customer's Gemini credential and changes the tenant to
+licensed state; the tenant directory and Telegram binding remain the same.
+Admira-sponsored central image access is entitled for 30 days from the first
+license. After that period, `/conectar_chatgpt` is the customer-facing path for
+connecting the customer's own ChatGPT/Codex image connection. It is not a
+replacement for the tenant's Gemini text credential. Provider choices live in
+the tenant's private `runtime/.env` and are not overwritten by restart or
+scale-to-zero.
 
 The shared r90 image is read-only product code. A tenant container never mounts
 the Docker socket, another tenant directory or a host-wide credential file.
@@ -100,6 +109,8 @@ tenant's active/inactive status.
 Prepare secrets once:
 
 ```bash
+# Run as admiraops (the service UID), never as root/sudo: file-backed 0600
+# secrets must remain readable by the UID 1001 control-plane workers.
 ./bootstrap-control-plane.sh
 ./apply-control-plane.sh
 sudo ./install-runtime-broker.sh
@@ -109,9 +120,82 @@ The generated `secrets/` directory and `.env` are git-ignored and must be
 backed up through the server's encrypted backup process, never committed.
 Any bot token pasted into a ticket, chat or transcript is canary-only and must
 be revoked and replaced out of band before commercial traffic.
-`secrets/hosted_gemini_api_key.txt` is optional. Leaving it empty means buyers
-connect ChatGPT in Telegram; if it is used, the operator owns its spend,
-rotation and per-tenant abuse boundary.
+Gemini trial keys are never seeded by provisioning or by a host-wide secret.
+Only `gemini_pool_admin.py register` and `gemini_pool_admin.py assign` may
+install an audited operator-pool credential after its project quota and auth
+key type have been verified. The central image route remains explicitly disabled until the broker has passed its canary:
+`ADMIRA_CENTRAL_IMAGE_READY=false`.
+
+Migration `010_operator_gemini_pool.sql` reserves the durable operator pool for
+trial onboarding. It tracks Gemini projects (the quota boundary), auth-key
+credentials, one active assignment per tenant and auditable release events.
+Several keys in one project do not create independent quota. Only auth keys
+may be assigned to customer-ready trials; standard/legacy keys are not a
+commercial fallback. The pool CLI, when present, must use the hosted
+assignment functions and never print or store key material in PostgreSQL.
+Migration 010 and its disposable validator are present in this worktree, but
+the pool is not claimed deployed or live until real projects and keys have
+been created, restricted and validated out of band.
+
+### Central image broker: prepared but dormant
+
+The central image path is implemented behind the `central-images` Compose
+profile, but it is not currently started. It requires a separately built and
+verified hosted canary image tagged exactly
+`admira-ia-hosted:r91-canary-<12sha>`; the live tenant image remains pinned to
+`admira-ia:r90`.
+Migration `008_central_image_jobs.sql` provides the durable, idempotent job
+ledger and fenced leases. Only the `admira_image` database role can call its
+runtime-keyed functions; it can enqueue or claim work only after the control
+plane re-resolves the active tenant and its `central_sponsored` entitlement.
+
+Prepare only the host boundaries with:
+
+```bash
+sudo ./prepare-central-image-broker.sh
+```
+
+This creates private directories for the broker socket, verifier keys, the
+tenant-scoped exchange, and central Codex authentication. It never starts
+Compose, enables `ADMIRA_CENTRAL_IMAGE_READY`, logs in to a provider, or copies
+central credentials into a tenant. The service receives the central provider
+credential only through its own restricted mount; tenants receive only a
+per-tenant HMAC key, the Unix socket, and their own exchange directory.
+
+Before these host boundaries exist, `tenantctl.py` deliberately omits the
+central-image socket, exchange mount and client key from a tenant Compose file;
+Docker must never autocreate those paths as root. After preparation, run the
+normal idempotent provisioning operation once for each existing tenant so it
+creates the tenant HMAC key and the exact `<tenant>/output` exchange mount:
+
+```bash
+./tenantctl.py provision client-001
+```
+
+Repeat for each tenant that should be prepared. This changes no readiness flag
+and does not start the central broker or a tenant.
+
+The safe activation sequence is: verify the separate r91 build and manifest;
+install the authorized central provider connection out of band into the
+central-only auth location; apply and verify migration 008; start exactly one
+broker in the `central-images` profile for an operator-owned canary; exercise
+one sponsored image and failure/retry cases; inspect the ledger, output hash,
+tenant boundaries and resource usage; then enable the route only after the
+canary passes. Until every gate is complete, leave the profile stopped and
+`ADMIRA_CENTRAL_IMAGE_READY=false`.
+
+#### Hosted clean-canary evidence
+
+On 2026-08-30, the hosted clean canary was validated in a disposable clone of
+the live control plane. Migrations 007–010 were applied twice and every
+validator returned `PASS`. This clone evidence does not promote the live
+environment: live remains on `admira-ia:r90` with migrations 001–006.
+
+The synthetic/code canary uses a fake provider to exercise local contracts,
+idempotency and tenant isolation. The separate real-provider canary exercises
+the external image route and requires central-provider authentication; that
+authentication is still pending. Recovery and capacity soak remain deferred
+and off.
 
 ## Central Telegram path
 
@@ -239,14 +323,94 @@ starts buyer workers, creates tenants, changes PostgreSQL or prints secrets:
 disk, cgroup memory and Docker RSS/limits without reading environment files or
 printing credentials.
 
-`db/validate_control_plane.sql` is a destructive fixture intended only for a
-disposable PostgreSQL database. It proves the claim, binding, inbox, runtime
-lease, outbox and scheduled-run path while switching to the same restricted
-roles used in production. Never run it against the live control database.
+`db/validate_control_plane.sql` and `db/validate_trial_lifecycle.sql` are
+destructive fixtures intended only for disposable PostgreSQL databases. They
+prove the claim, binding, inbox, runtime lease, outbox, scheduled-work and
+trial/license transitions while switching to restricted roles. Never run them
+against the live control database.
+
+`db/validate_telegram_license_recovery.sql` is also destructive and disposable
+only. It validates the recovery identity schema, generic decoy responses,
+rate-limit state, OTP fencing and binding history. Unit/integration tests cover
+the prepared `/recuperar` and `/codigo` routing and SMTP/outbox boundaries, but
+they do not prove a live Telegram recovery until the readiness flag is enabled
+in a canary with an authorized SMTP provider.
+
+## Trial and licensing operator flow
+
+Migration `007_trial_provider_lifecycle.sql` makes the lifecycle durable. A
+claim starts the five-day clock exactly once; preparing a tenant does not start
+it. Expired trials are suspended and cannot be bypassed by issuing a new claim.
+The same durable tenant is licensed in place.
+
+The supported credential CLI accepts the Gemini key only from stdin or a
+private regular file (mode 0600); it never accepts a key in an argument:
+
+```bash
+./gemini_pool_admin.py register my-gemini-project --capacity 15 --key-kind auth --key-file /secure/operator-gemini.txt
+./gemini_pool_admin.py assign buyer-001
+./provider_admin.py gemini-set buyer-001 --source customer --key-file /secure/customer-gemini.txt --replace
+./provider_admin.py gemini-license buyer-001 --source customer --key-file /secure/customer-gemini.txt \
+  --email-file /secure/customer-recovery-email.txt
+```
+
+`gemini-license` generates a license ID unless `--license-file` supplies one;
+the one-time JSON result contains that license ID, so deliver it through a
+private operator channel. `--email-file` is required for `gemini-license`; it
+must be a regular mode-0600 file and is consumed only in memory. The command
+uses the central recovery HMAC key at `secrets/recovery_hmac_key.txt` by
+default. License ID, normalized-contact HMACs and provider metadata are
+recorded atomically; PostgreSQL never stores the email, Gemini key or any
+ChatGPT/Codex credential. The lifecycle validator is disposable-DB-only and is
+not an operational migration command.
+
+Every non-dry-run `gemini-set` and `gemini-license` performs a bounded health
+check using Google's official `GET /v1beta/models?pageSize=1` endpoint. The key
+is sent only in the `x-goog-api-key` header, together with
+`x-goog-api-client: admira-hosted/r91`; it is never placed in a URL, argument,
+log, or returned error. `--allow-unverified` is an explicit emergency/operator
+exception and must not be used when preparing customer-ready accounts. Dry-run
+does not call the network. See Google's [Gemini API key guidance](https://ai.google.dev/gemini-api/docs/api-key).
+
+Provider replacement is fenced: suspend the tenant runtime, write the private
+secret, run the health check, and only then update PostgreSQL metadata.
+`--runtime-already-stopped` is an explicit operator bypass for a separately
+verified stopped runtime, not a routine shortcut. If the suspend fence fails,
+no credential is changed.
+
+### Telegram recovery readiness
+
+The prepared user flow is private-chat only. An unbound Telegram identity is
+given a generic instruction to send `/recuperar EMAIL LICENCIA`; if the factors
+match a licensed contact, the encrypted delivery outbox sends an OTP by email.
+The user then sends `/codigo REQUEST_ID OTP`. A successful confirmation revokes
+the old binding and atomically binds the same durable tenant to the new private
+Telegram identity. Invalid or unknown factors receive the same generic public
+outcome and are rate-limited.
+
+This flow is not enabled in the current deployment. Keep
+`ADMIRA_TELEGRAM_RECOVERY_READY=false` and do not start `recovery-email` until
+all of the following are recorded: an authorized SMTP provider, a verified
+sender/domain with SPF, DKIM and DMARC, private recovery HMAC/delivery/SMTP
+secrets, a backup and reviewed migration state, a second operator-owned
+Telegram identity, and a canary showing request idempotency, OTP fencing and
+atomic rebind. Start and verify the email worker while the flag is still
+`false`; then set it to `true`, rerun the server preflight, recreate the poller
+and perform the end-to-end canary. For rollback, stop the poller and email
+worker first, set the flag back to `false`, and recreate only the poller;
+restore the pre-canary backup only if the canary changed data.
+
+The customer-ready preparation pool must use authorization (auth) keys. New
+AI Studio keys are auth keys; unrestricted standard keys are rejected, and
+Google plans to reject all standard keys in September 2026. A health response
+from a legacy standard key is therefore not commercial readiness, even if the
+endpoint still answers. This repository does not claim to contain confirmed
+real pool keys or a live pool; operators must create and restrict keys out of
+band before admitting accounts.
 
 ## Release integrity
 
-The first server image must remain exactly:
+The live tenant image must remain exactly:
 
 - version: `r90`
 - commit: `d03707465a5fedf7e5d1bb6b528365b299795540`
@@ -255,3 +419,9 @@ The first server image must remain exactly:
 Future images require the same three-way verification before any runtime is
 restarted. Never patch a running tenant container or copy files from an older
 release directory.
+
+The isolated hosted central-image candidate is identified only by the exact
+canary tag `admira-ia-hosted:r91-canary-<12sha>`. Building or smoke-testing it
+does not make it live: tenant runtimes stay pinned to `admira-ia:r90`, and the
+canary tag may not be promoted until the real-provider authentication and
+remaining promotion gates have passed.

@@ -41,12 +41,68 @@ ATTACHMENT_LIMIT = 8
 ATTACHMENT_SIZE_LIMIT = 50 * 1024 * 1024
 INNER_SCRIPT = r'''
 import json
+import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, "/app/src")
 from hermes_bridge import chat
 from product_config import load_config
+
+# Every hosted tenant runs its own dashboard process and owns its own durable
+# recovery token under /app/dashboard/data.  Point the injected command bridge
+# at that same-container loopback endpoint; no central credential or token is
+# shared between tenants.
+os.environ["ADMIRA_INTERNAL_MODEL_RECOVERY_URL"] = (
+    "http://127.0.0.1:7871/api/internal/model-recovery"
+)
+os.environ["ADMIRA_INTERNAL_MODEL_RECOVERY_TOKEN_FILE"] = (
+    "/app/dashboard/data/internal_model_recovery.token"
+)
+
+
+def sponsored_image_reply(access, language):
+    english = str(language or "es").lower().startswith("en")
+    ready = access.get("central_ready") is True
+    lifecycle = str(access.get("lifecycle_state") or "")
+    ends_at = str(access.get("image_sponsorship_ends_at") or "").strip()
+    if lifecycle == "trial":
+        period = "during your free trial" if english else "durante tu prueba gratis"
+    elif ends_at:
+        period = (f"until {ends_at}" if english else f"hasta {ends_at}")
+    else:
+        period = "during your sponsored period" if english else "durante tu período patrocinado"
+    if ready:
+        return (
+            f"✅ You do not need to connect ChatGPT yet. Admira includes image generation {period}. "
+            "When that benefit ends, this same command will let you connect your own ChatGPT account."
+            if english else
+            f"✅ Todavía no necesitas conectar ChatGPT. Admira incluye la generación de imágenes {period}. "
+            "Cuando termine ese beneficio, este mismo comando te permitirá conectar tu propia cuenta de ChatGPT."
+        )
+    return (
+        f"You do not need to connect your own ChatGPT account yet. Your sponsored image generation applies {period}, "
+        "but the central image service is still being enabled. Admira will not ask you for a personal login before it is ready."
+        if english else
+        f"Todavía no necesitas conectar tu propia cuenta de ChatGPT. Tu generación de imágenes patrocinada aplica {period}, "
+        "pero el servicio central aún se está habilitando. Admira no te pedirá un login personal antes de que esté listo."
+    )
+
+
+def blocked_image_reply(access, language):
+    english = str(language or "es").lower().startswith("en")
+    lifecycle = str(access.get("lifecycle_state") or "")
+    if lifecycle == "trial_expired":
+        return (
+            "Your free trial has ended. Activate your license to continue; after the sponsored image month, this command will let you connect your own ChatGPT account."
+            if english else
+            "Tu prueba gratis terminó. Activa tu licencia para continuar; después del mes patrocinado de imágenes, este comando te permitirá conectar tu propia cuenta de ChatGPT."
+        )
+    return (
+        "Image generation is not enabled for this workspace right now. Contact Admira support; no ChatGPT login was requested."
+        if english else
+        "La generación de imágenes no está habilitada para este espacio ahora. Contacta a soporte de Admira; no se solicitó ningún login de ChatGPT."
+    )
 
 def hosted_command(payload):
     """Handle commands which cannot be delegated to the language model."""
@@ -57,9 +113,17 @@ def hosted_command(payload):
     chat_id = str(payload.get("chat_id") or "")
     user_id = str(payload.get("user_id") or "")
     english = language.startswith("en")
+    image_access = payload.get("image_access") if isinstance(payload.get("image_access"), dict) else {}
+    image_route = str(image_access.get("route") or "legacy")
     reset_commands = {"nuevo", "new", "reset", "restart"}
     chatgpt_commands = {"conectar_chatgpt", "reconectar_chatgpt", "connect_chatgpt"}
     complete_reset_phrase = "Si quiero resetear completamente"
+    # Sponsored and blocked slash commands do not depend on importing the
+    # personal ChatGPT recovery implementation from the tenant image.
+    if command in chatgpt_commands and image_route == "central_sponsored":
+        return {"ok": True, "reply": sponsored_image_reply(image_access, language)}
+    if command in chatgpt_commands and image_route == "blocked":
+        return {"ok": True, "reply": blocked_image_reply(image_access, language)}
     try:
         from admira_hermes_runtime_patch import (
             _automatic_codex_recovery, _chatgpt_connection_reply,
@@ -135,10 +199,16 @@ def hosted_command(payload):
             else "Listo. Reinicié solo el contexto de esta conversación; tus conexiones de Meta, cuentas, Página y trabajo guardado siguen intactos."
         )}
     if command in chatgpt_commands or _chatgpt_connection_request(text):
-        recovery = _automatic_codex_recovery(wait_seconds=15, action="switch")
-        if recovery.get("url") and recovery.get("code"):
-            _remember_chatgpt_login_pending(session_key)
-        return {"ok": True, "reply": _chatgpt_connection_reply(recovery, language)}
+        if image_route == "central_sponsored":
+            return {"ok": True, "reply": sponsored_image_reply(image_access, language)}
+        if image_route == "blocked":
+            return {"ok": True, "reply": blocked_image_reply(image_access, language)}
+        if image_route == "personal_chatgpt" or image_route == "legacy":
+            recovery = _automatic_codex_recovery(wait_seconds=15, action="switch")
+            if recovery.get("url") and recovery.get("code"):
+                _remember_chatgpt_login_pending(session_key)
+            return {"ok": True, "reply": _chatgpt_connection_reply(recovery, language)}
+        return {"ok": True, "reply": blocked_image_reply(image_access, language)}
     if _chatgpt_login_confirmation_request(text, session_key):
         return {"ok": True, "reply": _chatgpt_login_confirmation_reply(session_key, language)}
     return None
@@ -205,8 +275,9 @@ if result is None:
     ):
         language = str(payload.get("language") or "es").lower()
         result = {"ok": True, "reply": (
-            "To start your private Admira agent, send /connect_chatgpt. I will give you a secure ChatGPT login link and temporary code here in Telegram." if language.startswith("en")
-            else "Para iniciar tu agente privado de Admira, envía /conectar_chatgpt. Te daré aquí en Telegram un enlace seguro de ChatGPT y un código temporal."
+            "I could not start Admira's text model yet. Your workspace and history are safe; try again shortly or contact Admira support. ChatGPT connection is only for image generation when your sponsored period has ended."
+            if language.startswith("en") else
+            "Todavía no pude iniciar el modelo de texto de Admira. Tu espacio y tu historial están seguros; inténtalo de nuevo en un momento o contacta a soporte. La conexión de ChatGPT sólo se usa para imágenes cuando haya terminado tu período patrocinado."
         )}
 if not isinstance(result, dict):
     result = {"ok": bool(result), "reply": str(result or "")}
@@ -269,6 +340,27 @@ def validate_turn(payload: object) -> dict[str, object]:
         "_admira_trusted_chat_id": f"hosted:telegram:{chat_id}",
         "_admira_trusted_session_id": f"agent:main:telegram:dm:{chat_id}",
     }
+    raw_image_access = payload.get("image_access") or {}
+    if not isinstance(raw_image_access, dict):
+        raise ValueError("image_access must be an object")
+    if raw_image_access:
+        route = str(raw_image_access.get("route") or "").strip()
+        lifecycle_state = str(raw_image_access.get("lifecycle_state") or "").strip()
+        if route not in {"central_sponsored", "personal_chatgpt", "blocked"}:
+            raise ValueError("image access route is invalid")
+        if lifecycle_state not in {
+            "pending_claim", "trial", "trial_expired", "licensed", "suspended", "cancelled"
+        }:
+            raise ValueError("image access lifecycle state is invalid")
+        sponsorship_ends_at = str(raw_image_access.get("image_sponsorship_ends_at") or "").strip()
+        if len(sponsorship_ends_at) > 64 or sponsorship_ends_at and not re.fullmatch(r"[0-9T:+.Z-]{10,64}", sponsorship_ends_at):
+            raise ValueError("image sponsorship timestamp is invalid")
+        request["image_access"] = {
+            "route": route,
+            "lifecycle_state": lifecycle_state,
+            "image_sponsorship_ends_at": sponsorship_ends_at,
+            "central_ready": raw_image_access.get("central_ready") is True,
+        }
     if images:
         request["image_paths"] = images
     raw_attachments = payload.get("attachments") or []

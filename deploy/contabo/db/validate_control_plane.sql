@@ -36,11 +36,11 @@ RESET ROLE;
 
 SET ROLE admira_delivery;
 SELECT outbox_id AS first_outbox, lease_token AS first_outbox_lease
-FROM admira.claim_telegram_outbox('delivery-test', 20, 180) \gset
+FROM admira.claim_telegram_outbox('delivery-test', 1, 180) \gset
 SELECT admira.ack_telegram_outbox(
   :'first_outbox', :'first_outbox_lease', true, 1001, NULL, 30, 8);
 SELECT outbox_id AS second_outbox, lease_token AS second_outbox_lease
-FROM admira.claim_telegram_outbox('delivery-test', 20, 180) \gset
+FROM admira.claim_telegram_outbox('delivery-test', 1, 180) \gset
 SELECT admira.ack_telegram_outbox(
   :'second_outbox', :'second_outbox_lease', true, 1002, NULL, 30, 8);
 RESET ROLE;
@@ -60,7 +60,7 @@ RESET ROLE;
 
 SET ROLE admira_delivery;
 SELECT outbox_id AS cron_outbox, lease_token AS cron_outbox_lease
-FROM admira.claim_telegram_outbox('delivery-test', 20, 180) \gset
+FROM admira.claim_telegram_outbox('delivery-test', 1, 180) \gset
 SELECT admira.ack_telegram_outbox(
   :'cron_outbox', :'cron_outbox_lease', true, 1003, NULL, 30, 8);
 RESET ROLE;

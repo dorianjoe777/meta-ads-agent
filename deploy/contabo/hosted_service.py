@@ -26,7 +26,11 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from hosted_worker import OutboxItem, OutboxWorker, RuntimeUpdate, RuntimeWorker, ScheduledWork, SchedulerWorker
+from hosted_worker import OutboxItem, OutboxWorker, RecoveryOutboxItem, RuntimeUpdate, RuntimeWorker, ScheduledWork, SchedulerWorker
+from recovery_email_worker import RecoveryEmailItem, RecoveryEmailWorker
+from recovery_identity import read_private_hmac_key
+from recovery_service import RecoveryEnvelopeCipher, TelegramRecoveryService, read_private_envelope_key
+from recovery_smtp import SMTPRecoveryEmailTransport
 from runtime_broker import BrokerClient, DEFAULT_KEY_FILE, DEFAULT_SOCKET
 from telegram_ingress import IncomingMedia, StagedMedia, TelegramIngress
 
@@ -49,12 +53,13 @@ def _read_secret(path: str | Path) -> str:
 
 
 class Pg:
-    def __init__(self) -> None:
+    def __init__(self, *, user: str | None = None,
+                 password_file: str | Path | None = None) -> None:
         self.host = os.environ.get("ADMIRA_DB_HOST", "postgres")
         self.port = int(os.environ.get("ADMIRA_DB_PORT", "5432"))
         self.dbname = os.environ.get("ADMIRA_DB_NAME", "admira_control")
-        self.user = os.environ["ADMIRA_DB_USER"]
-        self.password_file = os.environ["ADMIRA_DB_PASSWORD_FILE"]
+        self.user = user or os.environ["ADMIRA_DB_USER"]
+        self.password_file = str(password_file or os.environ["ADMIRA_DB_PASSWORD_FILE"])
         self._connection = None
 
     def _connect(self):
@@ -119,17 +124,77 @@ class IngressStore:
         return int(rows[0]["value"])
 
 
+class RecoveryStore:
+    """Function-only adapter for the separately credentialed recovery role."""
+
+    def __init__(self, db: Pg) -> None:
+        self.db = db
+
+    def begin_telegram_recovery(
+        self, request_id, bot_id: str, chat_id: str, user_id: str,
+        email_hmac_hex: str, license_hmac_hex: str, otp_hash_hex: str,
+        otp_ciphertext: bytes, delivery_key_version: str,
+    ) -> dict[str, object]:
+        rows = self.db.query(
+            "SELECT * FROM admira.begin_telegram_recovery(%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (request_id, bot_id, chat_id, user_id, email_hmac_hex,
+             license_hmac_hex, otp_hash_hex, otp_ciphertext,
+             delivery_key_version),
+        )
+        return dict(rows[0]) if rows else {"public_outcome": "recovery_pending"}
+
+    def confirm_telegram_recovery(
+        self, request_id, bot_id: str, chat_id: str, user_id: str,
+        otp_hash_hex: str,
+    ) -> dict[str, object]:
+        rows = self.db.query(
+            "SELECT * FROM admira.confirm_telegram_recovery(%s,%s,%s,%s,%s)",
+            (request_id, bot_id, chat_id, user_id, otp_hash_hex),
+        )
+        return dict(rows[0]) if rows else {
+            "completed": False, "public_outcome": "recovery_failed",
+        }
+
+    def enqueue_public_reply(
+        self, request_id, bot_id: str, chat_id: str, user_id: str,
+        template_code: str,
+    ) -> dict[str, object]:
+        rows = self.db.query(
+            "SELECT admira.enqueue_telegram_recovery_public_reply(%s,%s,%s,%s,%s) AS public_outcome",
+            (request_id, bot_id, chat_id, user_id, template_code),
+        )
+        return dict(rows[0]) if rows else {"public_outcome": template_code}
+
+
 class RuntimeStore:
     def __init__(self, db: Pg) -> None:
         self.db = db
 
     def claim_updates(self, *, worker_id: str, limit: int):
+        # Expiry is enforced immediately before the active-tenant claim.  The
+        # database function is idempotent, so every runtime replica may call
+        # it without racing or extending a trial.
+        self.db.query("SELECT admira.expire_due_trials()")
         rows = self.db.query("SELECT * FROM admira.claim_telegram_updates(%s,%s,%s)", (worker_id, limit, 360))
         return [RuntimeUpdate(
             str(row["update_row_id"]), str(row["tenant_id"]), str(row["runtime_key"]), str(row["bot_id"]),
             int(row["update_id"]), str(row["telegram_chat_id"]), str(row["telegram_user_id"]),
             dict(row["payload"] or {}), int(row["attempt_count"]), str(row["lease_token"]),
         ) for row in rows]
+
+    def image_access(self, tenant_id: str) -> dict[str, object]:
+        rows = self.db.query("SELECT * FROM admira.resolve_tenant_image_access(%s)", (tenant_id,))
+        if not rows:
+            return {"lifecycle_state": "suspended", "route": "blocked", "image_sponsorship_ends_at": ""}
+        row = rows[0]
+        ends_at = row.get("image_sponsorship_ends_at")
+        if hasattr(ends_at, "isoformat"):
+            ends_at = ends_at.isoformat()
+        return {
+            "lifecycle_state": str(row.get("lifecycle_state") or "suspended"),
+            "route": str(row.get("route") or row.get("image_route") or "blocked"),
+            "image_sponsorship_ends_at": str(ends_at or ""),
+        }
 
     def acquire_runtime(self, tenant_id: str, *, holder: str) -> str | None:
         rows = self.db.query("SELECT * FROM admira.acquire_runtime_lease(%s,%s,%s)", (tenant_id, holder, 900))
@@ -204,18 +269,86 @@ class DeliveryStore:
                              (item.row_id, item.lease_token, success, message_id, error_code or None, delay_seconds, max_attempts))
         return bool(rows and rows[0]["acknowledged"])
 
+    def claim_recovery_outbox(self, *, worker_id: str, limit: int):
+        rows = self.db.query(
+            "SELECT * FROM admira.claim_recovery_chat_outbox(%s,%s,%s)",
+            (worker_id, limit, 120),
+        )
+        return [RecoveryOutboxItem(
+            str(row["outbox_id"]), str(row["request_id"]), str(row["bot_id"]),
+            str(row["chat_id"]), str(row["user_id"]), str(row["template_code"]),
+            str(row["body"] or ""), int(row["attempt_count"]), str(row["lease_token"]),
+        ) for row in rows]
+
+    def ack_recovery_outbox(self, item: RecoveryOutboxItem, *, success: bool,
+                            delay_seconds: int = 30, error_code: str = "",
+                            max_attempts: int = 5) -> bool:
+        rows = self.db.query(
+            "SELECT admira.ack_recovery_chat_outbox(%s,%s,%s,%s,%s,%s) AS acknowledged",
+            (item.row_id, item.lease_token, success, error_code or None,
+             delay_seconds, max_attempts),
+        )
+        return bool(rows and rows[0]["acknowledged"])
+
+
+class RecoveryEmailStore:
+    """Function-only adapter; it cannot select recovery tables directly."""
+
+    def __init__(self, db: Pg) -> None:
+        self.db = db
+
+    def claim_recovery_email_outbox(self, *, worker_id: str, limit: int):
+        rows = self.db.query(
+            "SELECT * FROM admira.claim_recovery_email_outbox(%s,%s,%s)",
+            (worker_id, limit, 120),
+        )
+        return [RecoveryEmailItem(
+            str(row["outbox_id"]), str(row["challenge_id"]),
+            str(row["request_id"]), str(row["delivery_ref"]),
+            str(row["template_code"]), bytes(row["encrypted_payload"]),
+            str(row["delivery_key_version"]), int(row["attempt_count"]),
+            str(row["lease_token"]),
+        ) for row in rows]
+
+    def ack_recovery_email_outbox(
+        self, item: RecoveryEmailItem, *, success: bool, error_code: str = "",
+        retry_after_seconds: int = 60, max_attempts: int = 5,
+    ) -> bool:
+        rows = self.db.query(
+            "SELECT admira.ack_recovery_email_outbox(%s,%s,%s,%s,%s,%s) AS acknowledged",
+            (item.outbox, item.lease, success, error_code or None,
+             retry_after_seconds, max_attempts),
+        )
+        return bool(rows and rows[0]["acknowledged"])
 
 class SchedulerStore:
     def __init__(self, db: Pg) -> None:
         self.db = db
 
     def claim_jobs(self, *, worker_id: str, limit: int):
+        # Scheduled work must obey the same five-day boundary as Telegram
+        # turns; expired trials are suspended before any job is leased.
+        self.db.query("SELECT admira.expire_due_trials()")
         rows = self.db.query("SELECT * FROM admira.claim_due_scheduled_jobs(%s,%s,%s)", (worker_id, limit, 900))
         return [ScheduledWork(
             str(row["job_id"]), str(row["tenant_id"]), str(row["runtime_key"]), str(row["job_key"]),
             dict(row["payload"] or {}), row["scheduled_for"], str(row["run_id"]),
             int(row["attempt_count"]), str(row["lease_token"]),
         ) for row in rows]
+
+    def image_access(self, tenant_id: str) -> dict[str, object]:
+        rows = self.db.query("SELECT * FROM admira.resolve_tenant_image_access(%s)", (tenant_id,))
+        if not rows:
+            return {"lifecycle_state": "suspended", "route": "blocked", "image_sponsorship_ends_at": ""}
+        row = rows[0]
+        ends_at = row.get("image_sponsorship_ends_at")
+        if hasattr(ends_at, "isoformat"):
+            ends_at = ends_at.isoformat()
+        return {
+            "lifecycle_state": str(row.get("lifecycle_state") or "suspended"),
+            "route": str(row.get("route") or row.get("image_route") or "blocked"),
+            "image_sponsorship_ends_at": str(ends_at or ""),
+        }
 
     def acquire_runtime(self, tenant_id: str, *, holder: str) -> str | None:
         rows = self.db.query("SELECT * FROM admira.acquire_runtime_lease(%s,%s,%s)", (tenant_id, holder, 1200))
@@ -495,8 +628,21 @@ def clean_spool(directory: Path, *, retention_seconds: int, now: float | None = 
 def run_poller(*, once: bool = False) -> None:
     spool = Path(os.environ.get("ADMIRA_SPOOL_ROOT", DEFAULT_SPOOL))
     api, store = TelegramAPI(os.environ["TELEGRAM_BOT_TOKEN_FILE"]), IngressStore(Pg())
+    recovery = None
+    if str(os.environ.get("ADMIRA_TELEGRAM_RECOVERY_READY") or "false").strip().lower() == "true":
+        recovery = TelegramRecoveryService(
+            RecoveryStore(Pg(
+                user=os.environ.get("ADMIRA_RECOVERY_DB_USER", "admira_recovery_login"),
+                password_file=os.environ["ADMIRA_RECOVERY_DB_PASSWORD_FILE"],
+            )),
+            read_private_hmac_key(os.environ["ADMIRA_RECOVERY_HMAC_KEY_FILE"]),
+            read_private_envelope_key(os.environ["ADMIRA_RECOVERY_DELIVERY_KEY_FILE"]),
+            envelope_key_version=os.environ.get("ADMIRA_RECOVERY_DELIVERY_KEY_VERSION", "v1"),
+        )
     bot_id = api.bot_id()
-    ingress = TelegramIngress(store, store, TelegramMediaStager(api, spool))
+    ingress = TelegramIngress(
+        store, store, TelegramMediaStager(api, spool), recovery=recovery,
+    )
     stop = _stop_event()
     last_janitor = 0.0
     while not stop.is_set():
@@ -549,7 +695,10 @@ def _broker() -> BrokerClient:
 
 
 def run_runtime(*, once: bool = False) -> None:
-    worker, stop = RuntimeWorker(RuntimeStore(Pg()), _broker()), _stop_event()
+    central_image_ready = str(os.environ.get("ADMIRA_CENTRAL_IMAGE_READY") or "false").strip().lower() == "true"
+    worker, stop = RuntimeWorker(
+        RuntimeStore(Pg()), _broker(), central_image_ready=central_image_ready
+    ), _stop_event()
     while not stop.is_set():
         result = worker.process_once()
         if once:
@@ -573,8 +722,34 @@ def run_delivery(*, once: bool = False) -> None:
         stop.wait(0.2 if any(result.values()) else 1.0)
 
 
+def run_recovery_email(*, once: bool = False) -> None:
+    envelope_cipher = RecoveryEnvelopeCipher(
+        read_private_envelope_key(os.environ["ADMIRA_RECOVERY_DELIVERY_KEY_FILE"])
+    )
+    transport = SMTPRecoveryEmailTransport(
+        os.environ["ADMIRA_SMTP_HOST"], int(os.environ["ADMIRA_SMTP_PORT"]),
+        os.environ["ADMIRA_SMTP_FROM"],
+        security=os.environ["ADMIRA_SMTP_SECURITY"],
+        username_file=os.environ.get("ADMIRA_SMTP_USERNAME_FILE"),
+        password_file=os.environ.get("ADMIRA_SMTP_PASSWORD_FILE"),
+    )
+    worker = RecoveryEmailWorker(
+        RecoveryEmailStore(Pg()), transport, envelope_cipher.decrypt,
+        expected_key_version=os.environ.get("ADMIRA_RECOVERY_DELIVERY_KEY_VERSION", "v1"),
+    )
+    stop = _stop_event()
+    while not stop.is_set():
+        result = worker.process_once(limit=1)
+        if once:
+            return
+        stop.wait(0.5 if any(result.values()) else 2.0)
+
+
 def run_scheduler(*, once: bool = False) -> None:
-    worker, stop = SchedulerWorker(SchedulerStore(Pg()), _broker()), _stop_event()
+    central_image_ready = str(os.environ.get("ADMIRA_CENTRAL_IMAGE_READY") or "false").strip().lower() == "true"
+    worker, stop = SchedulerWorker(
+        SchedulerStore(Pg()), _broker(), central_image_ready=central_image_ready
+    ), _stop_event()
     last_idle = 0.0
     while not stop.is_set():
         result = worker.process_once()
@@ -588,10 +763,15 @@ def run_scheduler(*, once: bool = False) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Admira hosted control-plane service")
-    parser.add_argument("command", choices=("poller", "runtime", "delivery", "scheduler"))
+    parser.add_argument(
+        "command", choices=("poller", "runtime", "delivery", "recovery-email", "scheduler")
+    )
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args(argv)
-    {"poller": run_poller, "runtime": run_runtime, "delivery": run_delivery, "scheduler": run_scheduler}[args.command](once=args.once)
+    {
+        "poller": run_poller, "runtime": run_runtime, "delivery": run_delivery,
+        "recovery-email": run_recovery_email, "scheduler": run_scheduler,
+    }[args.command](once=args.once)
     return 0
 
 

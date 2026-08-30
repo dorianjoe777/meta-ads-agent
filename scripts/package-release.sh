@@ -63,6 +63,33 @@ rm -f "$RELEASE_DIR/$ZIP_STABLE_NAME" "$RELEASE_DIR/$ZIP_VERSIONED_NAME" "$RELEA
 
 rsync -a "$ROOT_DIR/" "$STAGING_DIR/" \
   --exclude ".env" \
+  --exclude "deploy/contabo/.env" \
+  --exclude "deploy/contabo/secrets" \
+  --exclude "deploy/contabo/secrets/*" \
+  --exclude "*/secrets" \
+  --exclude "*/secrets/*" \
+  --exclude "auth.json" \
+  --exclude "*/auth.json" \
+  --exclude "credentials.json" \
+  --exclude "*/credentials.json" \
+  --exclude "token.json" \
+  --exclude "*/token.json" \
+  --exclude "service-account.json" \
+  --exclude "*/service-account.json" \
+  --exclude "client_secret.json" \
+  --exclude "*/client_secret.json" \
+  --exclude "*.pem" \
+  --exclude "*.key" \
+  --exclude "*.p8" \
+  --exclude "*.p12" \
+  --exclude "*.pfx" \
+  --exclude "*.crt" \
+  --exclude "*.cer" \
+  --exclude "*.der" \
+  --exclude "*.csr" \
+  --exclude "*.jks" \
+  --exclude "*.keystore" \
+  --exclude "*.mobileprovision" \
   --exclude "ad-config.json" \
   --exclude "brand_guides" \
   --exclude ".git" \
@@ -117,6 +144,66 @@ rsync -a "$ROOT_DIR/" "$STAGING_DIR/" \
   --exclude "tests/integration_test_results.json" \
   --exclude "*.pyc" \
   --exclude "*.log"
+
+# Defense in depth: rsync exclusions above protect the normal path, while
+# this scan prevents a future exclusion regression (or a differently named
+# operational secret) from being shipped.  `.example` files are intentionally
+# allowed and are not inspected as secret-bearing runtime files.
+python3 - "$STAGING_DIR" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+forbidden_names = {
+    ".env",
+    "auth.json",
+    "credentials.json",
+    "token.json",
+    "service-account.json",
+    "client_secret.json",
+}
+forbidden_dirs = {"secrets", ".secrets"}
+forbidden_suffixes = {
+    ".pem", ".key", ".p8", ".p12", ".pfx", ".crt", ".cer", ".der",
+    ".csr", ".jks", ".keystore", ".mobileprovision",
+}
+private_key = re.compile(rb"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")
+telegram_token = re.compile(rb"\b\d{8,12}:[A-Za-z0-9_-]{30,}\b")
+gemini_key = re.compile(rb"\bAIza[0-9A-Za-z_-]{20,}\b")
+violations = []
+
+for path in root.rglob("*"):
+    if not path.is_file():
+        continue
+    relative = path.relative_to(root)
+    parts = relative.parts
+    lower_name = path.name.lower()
+    if lower_name in forbidden_names:
+        violations.append(f"forbidden runtime secret path: {relative}")
+        continue
+    if any(part.lower() in forbidden_dirs for part in parts):
+        violations.append(f"forbidden secret directory: {relative}")
+        continue
+    if any(lower_name.endswith(suffix) for suffix in forbidden_suffixes):
+        violations.append(f"forbidden credential file suffix: {relative}")
+        continue
+    if path.name.endswith(".example"):
+        continue
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise SystemExit(f"Release blocked: cannot inspect staged file {relative}: {exc}")
+    if private_key.search(data):
+        violations.append(f"private key material detected: {relative}")
+    if telegram_token.search(data):
+        violations.append(f"Telegram bot token pattern detected: {relative}")
+    if gemini_key.search(data):
+        violations.append(f"Google API key pattern detected: {relative}")
+
+if violations:
+    raise SystemExit("Release blocked: staged package contains secrets:\n" + "\n".join(violations))
+PY
 
 # Persist the exact Git provenance in source packages, whose staging tree does
 # not contain .git. Docker builds from the ZIP reuse these immutable values.

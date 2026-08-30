@@ -26,6 +26,32 @@ KEY = b"k" * 32
 
 
 class RuntimeBrokerTests(unittest.TestCase):
+    def test_hosted_image_access_is_private_atomic_and_fails_closed(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "client-001"
+            root.mkdir()
+            path = broker._write_hosted_image_access(root, "client-001", {
+                "route": "central_sponsored",
+                "lifecycle_state": "trial",
+                "central_ready": True,
+                "image_sponsorship_ends_at": "2026-09-03T00:00:00+00:00",
+            }, request_marker=17)
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["tenant_id"], "client-001")
+            self.assertEqual(payload["route"], "central_sponsored")
+            self.assertTrue(payload["central_ready"])
+            self.assertEqual(payload["update_id"], "17")
+
+            broker._write_hosted_image_access(root, "client-001", {
+                "route": "invented", "lifecycle_state": "invented", "central_ready": "true",
+            })
+            failed_closed = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(failed_closed["route"], "blocked")
+            self.assertEqual(failed_closed["lifecycle_state"], "suspended")
+            self.assertFalse(failed_closed["central_ready"])
+
     def test_handler_preserves_safe_runtime_errors_but_masks_unexpected_failures(self):
         class FakeServer:
             replay = broker.ReplayWindow()

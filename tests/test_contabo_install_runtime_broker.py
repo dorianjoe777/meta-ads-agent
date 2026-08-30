@@ -27,6 +27,13 @@ class RuntimeBrokerInstallerTests(unittest.TestCase):
         self.assertIn("ADMIRA_BURST_MIN_AVAILABLE_MB", text)
         self.assertIn("HARD_MAX_ACTIVE_TENANTS > 8", text)
 
+    def test_optional_central_image_reference_is_strictly_pinned(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("CENTRAL_IMAGE_IMAGE", text)
+        self.assertIn("admira-ia-hosted:r91-canary-[0-9a-f]{12}", text)
+        self.assertNotIn("docker pull", text)
+        self.assertNotIn("docker build", text)
+
 
 if __name__ == "__main__":
     unittest.main()

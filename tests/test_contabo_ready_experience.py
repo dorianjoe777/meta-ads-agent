@@ -29,9 +29,10 @@ class ContaboReadyExperienceTests(unittest.TestCase):
     def test_two_buyers_get_distinct_persistent_roots_and_sessions(self):
         with tempfile.TemporaryDirectory() as raw:
             base = Path(raw) / "tenants"
-            missing_key = Path(raw) / "no-hosted-provider-key"
-            tenantctl.provision(base, "buyer-one", gemini_key_file=missing_key)
-            tenantctl.provision(base, "buyer-two", gemini_key_file=missing_key)
+            # Gemini credentials are intentionally absent at tenant creation;
+            # the operator pool/licensing workflow installs them later.
+            tenantctl.provision(base, "buyer-one")
+            tenantctl.provision(base, "buyer-two")
 
             first = base / "buyer-one"
             second = base / "buyer-two"
@@ -67,9 +68,7 @@ class ContaboReadyExperienceTests(unittest.TestCase):
         self.assertIn("ln -sf /app/runtime/.env /app/.env", entrypoint)
         with tempfile.TemporaryDirectory() as raw:
             base = Path(raw) / "tenants"
-            tenantctl.provision(
-                base, "buyer-env", gemini_key_file=Path(raw) / "missing-key"
-            )
+            tenantctl.provision(base, "buyer-env")
             compose = (base / "buyer-env" / "compose.yaml").read_text(encoding="utf-8")
             self.assertIn(":/app/runtime", compose)
             self.assertNotIn("env_file:", compose)

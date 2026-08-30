@@ -18,7 +18,7 @@ if [[ ! -s "$SECRETS_DIR/redis_users.acl" ]]; then
   unset redis_password
 fi
 
-for secret_name in ingress_db_password runtime_db_password delivery_db_password scheduler_db_password provisioner_db_password runtime_broker_key; do
+for secret_name in ingress_db_password runtime_db_password delivery_db_password scheduler_db_password provisioner_db_password image_db_password recovery_db_password email_delivery_db_password runtime_broker_key recovery_hmac_key; do
   secret_path="$SECRETS_DIR/${secret_name}.txt"
   if [[ ! -s "$secret_path" ]]; then
     openssl rand -base64 48 | tr -d '\n' > "$secret_path"
@@ -26,13 +26,19 @@ for secret_name in ingress_db_password runtime_db_password delivery_db_password 
   fi
 done
 
+# AES-256-GCM key, stored as strict base64 so the Python boundary can validate
+# exact key length before constructing the recovery envelope cipher.
+if [[ ! -s "$SECRETS_DIR/recovery_delivery_key.txt" ]]; then
+  openssl rand -base64 32 | tr -d '\n' > "$SECRETS_DIR/recovery_delivery_key.txt"
+  printf '\n' >> "$SECRETS_DIR/recovery_delivery_key.txt"
+fi
+
 # Buyer traffic is deliberately disabled until this file contains the shared
 # bot token and the Compose `buyers` profile is explicitly started.
 touch "$SECRETS_DIR/telegram_bot_token.txt"
-# Optional operator-funded first-turn brain. If this remains empty, the
-# hosted Telegram bridge guides the buyer through /conectar_chatgpt instead.
-touch "$SECRETS_DIR/hosted_gemini_api_key.txt"
-
+# Real SMTP credentials are operator-supplied only. Empty files keep Compose
+# configuration renderable without pretending that email delivery is ready.
+touch "$SECRETS_DIR/smtp_username.txt" "$SECRETS_DIR/smtp_password.txt"
 chmod 600 "$SECRETS_DIR"/*.txt "$SECRETS_DIR/redis_users.acl"
 
 if [[ ! -f "$ROOT_DIR/.env" ]]; then

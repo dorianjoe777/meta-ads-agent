@@ -37,6 +37,7 @@ RUN python3 -m pip install --break-system-packages --no-cache-dir \
     "openpyxl>=3.1,<4" \
     "pypdf>=5,<7" \
     "xlrd>=2,<3" \
+    "psycopg[binary]==3.3.4" \
     "hermes-agent==${HERMES_AGENT_VERSION}" \
     && hermes --version
 

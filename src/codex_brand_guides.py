@@ -2683,6 +2683,31 @@ def call_codex_image_cli(prompt, timeout=270, model=None, output_root=None, outp
     if not request:
         return {"ok": False, "error": "Necesito una descripcion del creativo antes de generar la imagen."}
     safe_references = safe_creative_reference_paths(reference_image_paths)
+    # Hosted r91 may route only the sponsored image operation through Admira's
+    # isolated central broker.  The helper is inert on ordinary/canary installs
+    # and returns ``None`` after sponsorship so the buyer's own ChatGPT/Codex
+    # connection remains the normal local path.  A blocked/not-ready central
+    # route returns a real failure and must never fall back to the tenant's
+    # local account, which would silently charge or expose the wrong account.
+    try:
+        from hosted_central_image_client import maybe_generate_central_image
+
+        central_root = Path(output_root or (ROOT_DIR / "output" / "creatives"))
+        central_root.mkdir(parents=True, exist_ok=True)
+        central = maybe_generate_central_image(
+            request,
+            output_root=central_root,
+            output_name=output_name,
+            reference_image_paths=[str(path) for path in safe_references],
+            purpose=purpose,
+            timeout=timeout,
+        )
+        if central is not None:
+            return central
+    except ImportError:
+        # r90 does not contain the opt-in client. Its established personal
+        # ChatGPT/Codex behavior remains unchanged.
+        pass
     config = load_config()
     # The subscription-native OpenAI-Codex image provider is the primary
     # route. It calls the image model directly and uses the buyer's image

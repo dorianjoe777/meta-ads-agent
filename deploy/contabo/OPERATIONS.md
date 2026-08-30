@@ -13,14 +13,15 @@ convierten este despliegue en el futuro producto SaaS.
 
 ## 1. Punto de control actual
 
-Último estado de código verificado antes de esta documentación:
+Último estado de código verificado antes de esta documentación (la marca
+`DEPLOYED_COMMIT` en el servidor es la autoridad durante un despliegue):
 
 | Elemento | Valor |
 | --- | --- |
 | Rama de trabajo | `feat/contabo-multitenant` |
-| Último commit funcional desplegado | `3babd8b7989827512dea0ceeb8234cb99aa41312` |
+| Último commit funcional desplegado | valor autoritativo en `/srv/admira/control-plane/DEPLOYED_COMMIT` |
 | SHA exacto activo | `/srv/admira/control-plane/DEPLOYED_COMMIT` |
-| Imagen de cada tenant | `admira-ia:r90` |
+| Imagen de cada tenant live | `admira-ia:r90` |
 | Commit de la imagen tenant | `d03707465a5fedf7e5d1bb6b528365b299795540` |
 | Manifiesto de la imagen tenant | `5df0e07e8b4a10e59a5b9c3659336f9b3a55ab556beaa67c2faba218dabc99db` |
 | Servidor | Contabo Cloud VPS 4, Ubuntu 24.04, Docker 29.1.3 |
@@ -31,7 +32,7 @@ El 29 de agosto de 2026 se recuperó el acceso SSH autorizado y se desplegó el
 commit funcional `a11ea43` desde un archive verificado por SHA-256. Se guardó
 un dump validado de PostgreSQL y una copia recuperable del release anterior en
 `/srv/admira/backups/deploy-a11ea43-20260829T152412Z/`; después se aplicaron las
-cuatro migraciones, se reconstruyó la imagen compartida de workers y se
+migraciones 001–004, se reconstruyó la imagen compartida de workers y se
 reinició el broker con el código nuevo.
 
 `DEPLOYED_COMMIT` es la fuente autoritativa del SHA exacto activo y puede incluir
@@ -69,6 +70,15 @@ aplicada, el broker reinició con normal/hard `4/4` y los cuatro servicios del
 control plane quedaron en la imagen nueva con cero reinicios. El perfil live
 continúa deliberadamente con un solo `runtime-worker`; el perfil 6/8 sigue sin
 activar hasta completar el soak.
+
+Este historial no implica que las migraciones nuevas de este worktree estén en
+producción: el control plane live sigue en el SHA indicado por
+`DEPLOYED_COMMIT`, con tenants en `r90` y sólo 001–006 aplicadas. El
+`hosted clean canary` de r91 se validó el 2026-08-30 en un clon desechable del
+entorno live: se aplicaron 007–010 dos veces y todos los validators terminaron
+en `PASS`. Esa evidencia permite evaluar la promoción, pero no la ejecuta.
+Recovery y soak continúan diferidos/apagados; el canary contra el proveedor
+real sigue pendiente de instalar y validar la autenticación central.
 
 ## 2. Qué se construyó
 
@@ -244,14 +254,31 @@ Cada cliente tiene exactamente este árbol en el host:
 └── .hosted-reset-receipt.json  # opcional, host-only e idempotencia de reset
 ```
 
-Los cinco directorios son los únicos mounts del contenedor. El recibo opcional
-vive fuera de esos mounts, modo 0600, y contiene sólo estado/identidad de
-idempotencia; nunca contiene tokens ni contenido del comprador.
+Los cinco directorios son los mounts base del contenedor. Cuando las tres
+fronteras centrales ya están preparadas, se añaden únicamente los mounts
+opcionales del socket, la clave HMAC del tenant y su intercambio propio. El
+recibo opcional vive fuera de esos mounts, modo 0600, y contiene sólo
+estado/identidad de idempotencia; nunca contiene tokens ni contenido del
+comprador.
 
 `tenantctl.py` genera `/srv/admira/tenants/<tenant_id>/compose.yaml` con un
 proyecto único `admira-tenant-<tenant_id>`, sin puertos publicados, sin token de
-Telegram, sin socket Docker y sin mounts hacia otro tenant. El contenedor usa
+Telegram, sin socket Docker y sin mounts hacia otro tenant. Si las tres
+fronteras host del broker central (socket, claves y exchange) no están
+preparadas, omite deliberadamente el socket central, el exchange y la clave
+HMAC; así Docker no puede autocrear esas rutas como root. El contenedor usa
 `restart: "no"`: el host no despierta todos los tenants después de un reboot.
+
+Después de ejecutar `prepare-central-image-broker.sh`, reprovisiona
+idempotentemente cada tenant que deba quedar preparado:
+
+```bash
+./tenantctl.py provision client-001
+```
+
+La reprovisión crea la clave HMAC privada y el mount exacto
+`/srv/admira/shared/central-image-exchange/<tenant>/output`, sin iniciar el
+tenant, el broker central ni cambiar `ADMIRA_CENTRAL_IMAGE_READY=false`.
 
 El entorno inicial queda así (las credenciales se agregan sólo durante el
 onboarding del cliente):
@@ -270,14 +297,12 @@ HERMES_RESPONSE_TIMEOUT_SECONDS=300
 HERMES_TIMEOUT_SECONDS=300
 ```
 
-`GEMINI_API_KEY` empieza vacío. Si
-`secrets/hosted_gemini_api_key.txt` contiene un archivo regular privado 0600,
-el instalador lo coloca fuera del control plane y `tenantctl.py` lo copia sólo
-al `.env` vacío de tenants nuevos; nunca reemplaza la elección del comprador ni
-lo añade al Compose. Usar esa opción convierte el consumo y posible abuso de
-esa clave compartida en responsabilidad del operador. La opción de menor
-acoplamiento es dejarla vacía y hacer que cada comprador use
-`/conectar_chatgpt` desde Telegram.
+`GEMINI_API_KEY` empieza siempre vacío. El aprovisionamiento no lee variables
+heredadas ni archivos de clave globales. Durante una prueba, sólo
+`gemini_pool_admin.py register`/`assign` puede instalar una credencial auth del
+pool de operador, con cuota, fingerprint, health check y auditoría; nunca se
+pega una clave en chat, argumentos o logs. La credencial del cliente se instala
+después mediante `provider_admin.py` y la conversión a licencia.
 
 El entrypoint enlaza `/app/runtime/.env` a `/app/.env`, por lo que el runtime sí
 consume ese archivo persistente sin `env_file:` (que expondría valores mediante
@@ -300,6 +325,10 @@ db/migrations/003_hosted_tenant_registration.sql
 db/migrations/004_active_tenant_runtime_gate.sql
 db/migrations/005_telegram_rate_limit_retry.sql
 db/migrations/006_runtime_capacity_queue.sql
+db/migrations/007_trial_provider_lifecycle.sql
+db/migrations/008_central_image_jobs.sql
+db/migrations/009_telegram_license_recovery.sql
+db/migrations/010_operator_gemini_pool.sql
 ```
 
 La migración 004 exige estado `active` para nuevas decisiones de claim y lease.
@@ -334,14 +363,169 @@ admira_runtime_login
 admira_delivery_login
 admira_scheduler_login
 admira_provisioner_login
+admira_image_login
 ```
 
 `admira_control_owner` es el dueño confiable de migraciones/funciones. No se
-debe otorgar `BYPASSRLS` a ningún worker.
+debe otorgar `BYPASSRLS` a ningún worker. `admira_image` es el rol grupal
+`NOLOGIN`; `admira_image_login` es su login de servicio y sólo debe recibir la
+contraseña mediante el secreto de Compose.
+
+La migración 008 añade `admira.central_image_jobs`, un ledger durable que guarda
+estado, leases y metadatos opacos del artefacto (hash, tamaño y MIME), pero no
+prompts, respuestas del proveedor ni credenciales. Su clave idempotente es
+`(tenant_id, request_id)` y sus leases están protegidos por token. El servicio
+central sólo inicia un trabajo mediante `runtime_key`: la función resuelve el
+tenant activo y vuelve a comprobar que la ruta sea `central_sponsored`. El rol
+`admira_image` sólo ejecuta esas funciones; no tiene acceso directo a tablas.
+
+El broker central vive en el servicio `central-image-broker`, dentro del perfil
+Compose `central-images`. Está deliberadamente dormido: r91 ya tiene un
+`hosted clean canary` limpio, pero aún no está promovido. Los tenants live
+siguen fijados a `r90`. El
+broker usa HMAC por tenant sobre un socket Unix y un
+intercambio aislado por tenant; ningún tenant recibe la credencial central.
+
+La preparación host-only es:
+
+```bash
+sudo ./prepare-central-image-broker.sh
+```
+
+El script prepara y valida las raíces privadas de socket, claves, intercambio y
+auth central, pero no arranca servicios, no habilita el flag de disponibilidad
+y no realiza login alguno. La conexión autorizada del proveedor debe
+instalarse por un procedimiento externo y restringido únicamente en el mount
+del broker, jamás en `runtime/.env` de un tenant. El canary se realiza en este
+orden: verificar r91/manifest, preparar límites, confirmar migration 008 y el
+rol `admira_image`, iniciar un solo broker de canary, procesar un trabajo
+patrocinado, comprobar reintento/idempotencia/hash/aislamiento y observar
+recursos; sólo después se evalúa habilitar el route. No se activa mientras
+falte cualquiera de esas evidencias.
+
+### Canary sintético/code y canary real de imágenes
+
+El canary sintético/code está automatizado en
+`python3 -m deploy.contabo.central_image_canary --mode synthetic`. Arranca un
+broker efímero con un proveedor falso y comprueba dos tenants, aislamiento de
+salidas, copias privadas de referencias y que repetir el mismo `update_id` no
+llame dos veces al proveedor. Es una prueba del contrato y de seguridad local;
+demuestra comportamiento del código, pero no demuestra que la autenticación
+central externa de ChatGPT/Codex funcione.
+
+El canary real-provider es una sola solicitud de imagen contra el broker central
+ya configurado. Se ejecuta con `--mode real`, usando exclusivamente la
+identidad y el socket del tenant configurado en su entorno. Requiere que el
+proveedor central esté autenticado previamente en el servicio del broker; esa
+autenticación aún está pendiente. Nunca se pasa un token al tenant ni se
+imprime en la salida. Sólo un resultado `provider_verified` permite afirmar que
+la ruta externa respondió. Si falta autorización o entitlement, el comando
+queda bloqueado y no debe interpretarse como fallo del código.
+
+```bash
+python3 -m deploy.contabo.central_image_canary --mode synthetic
+python3 -m deploy.contabo.central_image_canary --mode real \
+  --output-root /srv/admira/tenants/<tenant>/output \
+  --update-id manual-canary
+```
+
+El primer comando no muta el VPS ni la base de datos. El segundo puede crear
+una imagen canaria para el tenant indicado y sólo debe ejecutarse con una
+entitlement de prueba autorizada. Recuperación por email y prueba de capacidad
+no forman parte de este gate.
+
+### Trial, licencia y acceso a imágenes
+
+La migración 007 es la fuente durable del ciclo comercial actual (no es un
+dashboard público):
+
+- al consumir un claim se inicia una sola vez una prueba de cinco días;
+- al vencer, el tenant queda suspendido y no puede reactivarse con otro claim;
+- `gemini-license` cambia el mismo tenant a `licensed` y registra la credencial
+  Gemini del cliente mediante referencia/fingerprint, sin guardar la clave. El
+  identificador de licencia sí se conserva en PostgreSQL para permitir la
+  recuperación; nunca se guardan allí claves Gemini ni credenciales
+  ChatGPT/Codex;
+- la ruta de imágenes central queda patrocinada durante 30 días desde la
+  primera licencia; después, `/conectar_chatgpt` permite al cliente conectar su
+  propia conexión ChatGPT/Codex para imágenes;
+- `ADMIRA_CENTRAL_IMAGE_READY=false` permanece obligatorio hasta que el broker
+  central real complete su canary. El núcleo de broker existente es una base de
+  integración y no constituye todavía un servicio central activado.
+
+La migración 009 (`telegram_license_recovery`) ya define el contrato de datos
+para recuperar una licencia desde otro Telegram y ya está conectada al núcleo
+del poller y a sus outboxes. El flujo preparado es `/recuperar EMAIL LICENCIA`,
+seguido por `/codigo REQUEST_ID OTP` después de que el correo entregue el
+código. La integración permanece apagada en live:
+`ADMIRA_TELEGRAM_RECOVERY_READY=false`; el worker SMTP está en el perfil
+opt-in `recovery-email` y no se anuncia como funcional hasta su canary. Con la
+bandera apagada, el camino disponible sigue siendo el claim inicial
+`/start <claim>` descrito arriba.
+
+La migración 010 (`operator_gemini_pool`) añade el inventario durable del pool
+de prueba: proyectos Gemini con límite de cuota, credenciales por fingerprint,
+una asignación activa por tenant y auditoría de asignación/liberación. La cuota
+se aplica al proyecto, no a cada clave. Sólo auth keys pueden entrar al pool
+comercial; una standard legacy que responda al health check no es suficiente.
+Las funciones hosted asignan por `runtime_key`, verifican el tenant durable y
+registran el resultado sin guardar la clave. La CLI/pool no se considera
+desplegada o live hasta validar proyectos/keys reales y el validator en una
+base desechable.
+
+La operación segura de licencia es host-only. La clave se lee por stdin o desde
+un archivo regular 0600; `--replace` es obligatorio para sustituir una clave
+distinta:
+
+```bash
+./provider_admin.py gemini-license buyer-001 --source customer \
+  --key-file /secure/customer-gemini.txt \
+  --email-file /secure/customer-recovery-email.txt
+```
+
+El comando genera una licencia si no se entrega `--license-file`; el JSON de
+ éxito contiene el identificador de una sola entrega. No se debe guardar ese
+ JSON en tickets o logs compartidos. `--email-file` es obligatorio para
+ `gemini-license`, debe ser un archivo regular 0600 y nunca entra en argv,
+ stdout, SQL ni logs. Se calcula su HMAC con la clave central privada
+ `secrets/recovery_hmac_key.txt` por defecto. La transición PostgreSQL registra
+ atómicamente licencia, contacto HMAC y referencias/fingerprints; hace rollback
+ del `.env` si falla y nunca guarda el email, la clave Gemini ni credenciales de
+ ChatGPT/Codex. `db/validate_trial_lifecycle.sql` es destructivo y sólo sirve
+ para una base desechable; nunca se ejecuta contra el control plane live.
+
+Cada `gemini-set` y `gemini-license` que no sea dry-run ejecuta por defecto un
+health check acotado contra el endpoint oficial `GET
+https://generativelanguage.googleapis.com/v1beta/models?pageSize=1`. La clave
+viaja únicamente en `x-goog-api-key` y el cliente se identifica como
+`x-goog-api-client: admira-hosted/r91`; nunca se incluye la clave en URL,
+argumentos, logs ni errores devueltos. `--allow-unverified` es una excepción
+explícita de emergencia para operador y no debe usarse para cuentas listas para
+clientes; dry-run no hace llamadas de red. Véase la [guía oficial de claves de
+Gemini](https://ai.google.dev/gemini-api/docs/api-key).
+
+La sustitución de proveedor tiene un fence obligatorio: `suspend` del runtime,
+escritura del secreto, health check y actualización de metadatos, en ese orden.
+`--runtime-already-stopped` permite omitir el primer paso sólo cuando el
+operador ya verificó el runtime detenido; es un bypass explícito y auditable,
+no el flujo normal. Si falla `suspend`, no se modifica ningún secreto.
+
+Para preparación comercial, el pool debe admitir únicamente claves de
+autorización (auth keys). Google indica que las claves nuevas de AI Studio son
+auth keys, que las standard sin restricción son rechazadas y que todas las
+standard serán rechazadas en septiembre de 2026. Que una clave standard legacy
+responda al health endpoint no la convierte en una credencial aceptable para el
+pool. Actualmente no se afirma que existan claves reales confirmadas ni que el
+pool esté live; deben crearse y restringirse fuera del repositorio antes de
+admitir cuentas.
 
 ### Archivos sensibles
 
-`deploy/contabo/secrets/` es privado, con modo 0600 y git-ignored. Contiene:
+`deploy/contabo/secrets/` es privado, con modo 0600 y git-ignored. Bootstrap
+genera contraseñas reales para PostgreSQL/servicios, la clave HMAC de
+recuperación, la clave AES de delivery y las demás claves internas aunque sus
+workers permanezcan dormidos. Las credenciales SMTP externas se mantienen
+vacías hasta elegir y autorizar el proveedor; la recuperación sigue apagada:
 
 ```text
 postgres_password.txt
@@ -353,19 +537,33 @@ scheduler_db_password.txt
 provisioner_db_password.txt
 runtime_broker_key.txt
 telegram_bot_token.txt
-hosted_gemini_api_key.txt       # opcional; vacío por defecto
+recovery_db_password.txt        # runtime integrado; recuperación aún dormida
+email_delivery_db_password.txt  # worker SMTP preparado; perfil aún dormido
+recovery_hmac_key.txt           # HMAC central de identidad; privado
+recovery_delivery_key.txt       # cifrado del envelope de correo; privado
+smtp_username.txt               # credencial SMTP; vacía hasta proveedor autorizado
+smtp_password.txt               # credencial SMTP; vacía hasta proveedor autorizado
+image_db_password.txt           # reservado; broker central aún dormido
 ```
 
-El token central debe permanecer vacío hasta la activación explícita. El
-init-container copia las contraseñas de servicio a un volumen privado de
+Bootstrap crea `telegram_bot_token.txt` vacío. Para el canary actual se instaló
+un token de canary; ese token no autoriza tráfico comercial y el valor que pasó
+por esta conversación debe revocarse/rotarse antes de instalar el reemplazo y
+activar `buyers` para clientes. El init-container copia las contraseñas de servicio a un volumen privado de
 PostgreSQL propiedad de UID 999; así no se relaja el modo de los secretos del
 host. El bootstrap de roles se transmite por stdin para evitar el problema de
 inodos obsoletos de mounts de un solo archivo durante una actualización.
+Ejecuta `bootstrap-control-plane.sh` y `apply-control-plane.sh` como
+`admiraops` (o el UID de servicio configurado), nunca como `sudo root`: los
+secretos file-backed 0600 conservan su propietario y los workers de control
+corren con UID 1001. Usa `sudo` sólo para la instalación del broker systemd.
 
 ### Red y privilegios
 
 - La red `control_private` es interna y no publica puertos.
 - Sólo poller y delivery se conectan a `telegram_egress`.
+- Sólo `recovery-email` se conecta a `email_egress`; ningún tenant, poller,
+  delivery o runtime recibe acceso a esa red.
 - Sólo runtime y scheduler reciben el grupo/socket del broker.
 - Los workers usan UID/GID 1001, filesystem raíz de sólo lectura, tmpfs,
   `no-new-privileges`, todas las capabilities retiradas y límites de CPU/RAM.
@@ -384,9 +582,15 @@ inodos obsoletos de mounts de un solo archivo durante una actualización.
 /run/admira-runtime-broker/broker.lock      # exclusión de instancia, modo 600
 /run/admira-runtime-broker/docker-config/   # config CLI privada; permite Compose con ProtectHome
 /etc/admira/runtime-broker.key              # clave del servicio systemd (modo 600)
-/etc/admira/hosted-gemini-api-key           # proveedor opcional para tenants nuevos
+/etc/admira/gemini-pool/                      # credenciales auth del pool, registradas por gemini_pool_admin.py
 /srv/admira/backups/                         # dumps y copias de recuperación
 ```
+
+Antes de habilitar el pool, si una instalación anterior conserva
+`secrets/hosted_gemini_api_key.txt` o `/etc/admira/hosted-gemini-api-key`,
+registra esa credencial por el CLI nuevo (sólo si se confirmó que es auth) y
+elimina manualmente las copias heredadas. El preflight del servidor falla
+mientras cualquiera exista; nunca imprime ni elimina su contenido.
 
 La carpeta `control-plane` debe contener una marca `DEPLOYED_COMMIT` después de
 cada despliegue. Las carpetas de release intermedias se mueven a backups con
@@ -677,33 +881,67 @@ del proveedor.
 
 ## 15. Evidencia local y pendientes antes de vender/activar
 
-El candidato tiene 135 pruebas automatizadas para resolución de identidad, dos raíces
-tenant distintas, sesiones separadas, comandos nativos, autorización de reset,
-medios, cursor durable, fencing/reintentos, scheduler, límite de capacidad,
-bloqueo de instancia y gate de tenants activos. También pasan la compilación
-Python/Bash, `git diff --check` y ambos perfiles de
-`docker compose config --quiet`. Las seis migraciones se aplicaron desde cero y
-se reaplicaron idempotentemente
-en PostgreSQL 16 desechable; el fixture completo confirmó claim, binding,
-inbox, lease, outbox, scheduler, roles restringidos y el gate de tenant
-inactivo. Pruebas dinámicas adicionales confirmaron que Telegram y cron
-conservan el presupuesto de fallos durante contención, que dos workers obtienen
-claims LRU distintos y que un claim `stopping` expirado se recupera. Una prueba
-separada confirmó que un 429 agotado continúa en `retry` mientras un error
-genérico agotado termina en `dead`.
+La base durable de lifecycle trial/licencia y la CLI segura de administración
+Gemini están implementadas. El núcleo del broker y migrations 008–009 también
+están presentes como componentes de esquema, pero eso no equivale a
+disponibilidad comercial: el servicio
+`central-image-broker` sigue dormido en `central-images`; r91 pasó el
+`hosted clean canary` en un clon, pero no está activado. Los tenants live
+continúan en r90 y 001–006. La validación del clon (007–010 aplicadas dos veces,
+todos los validators `PASS`) no sustituye el canary real-provider, que sigue
+pendiente de auth central.
 
-En Contabo se verificaron además hashes del release, backup, migraciones
-004/005/006, imagen de workers, imagen tenant r90, broker/socket, normal/hard
-`4/4`, salud de PostgreSQL/Redis, despertar en frío controlado por el broker,
-un turno Telegram completo y una réplica de cada uno de los cuatro servicios
-`buyers` sin reinicios ni errores.
+Migration `009_telegram_license_recovery.sql` reserva la identidad licenciada,
+los challenges, el historial de bindings y dos outboxes separados. El núcleo
+de runtime, la captura efímera de email/licencia, HMAC fuera de PostgreSQL, el
+adaptador SMTP, la confirmación OTP y el rebind atómico ya están preparados y
+cubiertos por pruebas. Eso no equivale a disponibilidad live: el poller exige
+`ADMIRA_TELEGRAM_RECOVERY_READY=true` y el worker de correo sólo existe en el
+perfil opt-in `recovery-email`. Actualmente la bandera es `false`; un chat no
+reconocido no debe recibir una promesa de recuperación.
+
+### Activación y rollback de recuperación
+
+No activar durante un despliegue ordinario. Antes de un canary, documentar el
+backup validado y la migración aplicada; instalar fuera del repositorio los
+secretos privados (HMAC, clave de cifrado de delivery, credenciales SMTP y
+contraseñas de servicio); verificar un proveedor SMTP autorizado y un remitente
+con SPF, DKIM y DMARC; y reservar una segunda identidad Telegram del operador.
+Con la bandera todavía en `false`, iniciar sólo el perfil `recovery-email` y
+verificar su salud y el transporte SMTP. Después cambiar la bandera a `true`,
+repetir `release-preflight.sh --server`, recrear `telegram-poller` para que
+reciba la configuración nueva y recién entonces ejecutar un único canary de
+extremo a extremo. El canary debe comprobar `/recuperar`, entrega de
+`/codigo request_id otp`, rate limits, idempotencia y rebind sin cruzar tenants.
+
+Para rollback, detener primero `telegram-poller` y `recovery-email`, volver a
+`ADMIRA_TELEGRAM_RECOVERY_READY=false` y recrear sólo el poller. Confirmar que
+el chat no reconocido vuelve al camino seguro y dejar el worker de correo
+detenido. Si el canary llegó a mutar datos, restaurar el backup validado
+siguiendo la sección 12 y conservar los logs/auditoría; no borrar challenges,
+outboxes o bindings manualmente ni activar con credenciales inventadas.
+
+Antes de vender o activar imágenes patrocinadas todavía se necesita: instalar
+una conexión central autorizada sólo en el mount del broker; preparar las
+raíces host-only; aplicar y validar migration 008 y el rol `admira_image`; y
+ejecutar el canary real-provider con un tenant operador. El clean canary de r91
+ya verificó en clon la cadena 007–010 (dos aplicaciones, todos los validators
+`PASS`), idempotencia y aislamiento; aún debe conservarse evidencia equivalente
+del proveedor real, leases/reintentos, hash/tipo de salida y recursos. Recovery
+y soak permanecen diferidos/apagados.
+
+En Contabo se verificaron hashes del release, backup, imagen tenant r90,
+broker/socket, salud de PostgreSQL/Redis y el flujo Telegram canario; esos datos
+no prueban el broker central ni la activación comercial.
 
 Eso no sustituye estas evidencias externas todavía pendientes:
 
 1. Abrir el claim todavía pendiente de `canary-two` desde una segunda identidad
    privada de Telegram y comprobar dos bindings distintos. Una misma identidad
    no se reutiliza para fingir esta evidencia de aislamiento.
-2. Continuar el canary dirigido de la sección 10: comandos,
+2. Configurar y canariar el flujo de recuperación ya preparado de migration 009
+   (manteniendo la bandera apagada hasta que existan proveedor SMTP, dominio,
+   secretos y segunda identidad), y después continuar el canary dirigido de la sección 10: comandos,
    conexión del modelo, OAuth de Meta en dry-run, foto/video/PDF, generación y
    entrega de creativos, scheduler, suspensión/despertar y recuperación de un
    worker interrumpido.

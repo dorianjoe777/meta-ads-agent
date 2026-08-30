@@ -46,13 +46,56 @@ resolve_runtime_worker_replicas() {
 RUNTIME_WORKER_REPLICAS="$(resolve_runtime_worker_replicas)"
 export RUNTIME_WORKER_REPLICAS
 
+# Compose precedence is environment, then project .env, then the inline
+# default. Keep this read-only resolver aligned with the values the server
+# will actually receive; do not source .env because it is not shell code.
+resolve_compose_value() {
+  local key="$1" fallback="$2" config_key config_value
+  case "$key" in
+    ADMIRA_TELEGRAM_RECOVERY_READY)
+      [[ -n "${ADMIRA_TELEGRAM_RECOVERY_READY+x}" ]] && { printf '%s' "$ADMIRA_TELEGRAM_RECOVERY_READY"; return; } ;;
+    ADMIRA_SMTP_HOST)
+      [[ -n "${ADMIRA_SMTP_HOST+x}" ]] && { printf '%s' "$ADMIRA_SMTP_HOST"; return; } ;;
+    ADMIRA_SMTP_FROM)
+      [[ -n "${ADMIRA_SMTP_FROM+x}" ]] && { printf '%s' "$ADMIRA_SMTP_FROM"; return; } ;;
+    ADMIRA_SMTP_SECURITY)
+      [[ -n "${ADMIRA_SMTP_SECURITY+x}" ]] && { printf '%s' "$ADMIRA_SMTP_SECURITY"; return; } ;;
+    ADMIRA_SERVICE_UID)
+      [[ -n "${ADMIRA_SERVICE_UID+x}" ]] && { printf '%s' "$ADMIRA_SERVICE_UID"; return; } ;;
+    ADMIRA_CENTRAL_IMAGE_READY)
+      [[ -n "${ADMIRA_CENTRAL_IMAGE_READY+x}" ]] && { printf '%s' "$ADMIRA_CENTRAL_IMAGE_READY"; return; } ;;
+    CENTRAL_IMAGE_IMAGE)
+      [[ -n "${CENTRAL_IMAGE_IMAGE+x}" ]] && { printf '%s' "$CENTRAL_IMAGE_IMAGE"; return; } ;;
+  esac
+  if [[ -r "$ROOT_DIR/.env" ]]; then
+    while IFS='=' read -r config_key config_value; do
+      config_value="${config_value%$'\r'}"
+      if [[ "$config_key" == "$key" ]]; then
+        config_value="${config_value#\"}"; config_value="${config_value%\"}"
+        config_value="${config_value#\'}"; config_value="${config_value%\'}"
+        printf '%s' "$config_value"
+        return
+      fi
+    done < "$ROOT_DIR/.env"
+  fi
+  printf '%s' "$fallback"
+}
+
 for file in compose.yaml Control.Dockerfile app-requirements.txt \
   apply-control-plane.sh runtime_broker.py tenant_turn.py telegram_ingress.py \
-  hosted_service.py hosted_worker.py tenant_admin.py tenantctl.py capacity-preflight.sh \
+  hosted_service.py hosted_worker.py tenant_admin.py tenantctl.py provider_admin.py \
+  gemini_pool_admin.py \
+  image_broker.py central_image_service.py prepare-central-image-broker.sh \
+  recovery_identity.py recovery_service.py recovery_email_worker.py recovery_smtp.py \
+  capacity-preflight.sh \
   db/migrations/001_initial_multitenant.sql db/migrations/002_telegram_ingress_control.sql \
   db/migrations/003_hosted_tenant_registration.sql db/migrations/004_active_tenant_runtime_gate.sql \
   db/migrations/005_telegram_rate_limit_retry.sql db/migrations/006_runtime_capacity_queue.sql \
-  db/bootstrap_service_roles.sql; do
+  db/migrations/007_trial_provider_lifecycle.sql db/bootstrap_service_roles.sql \
+  db/migrations/008_central_image_jobs.sql db/validate_trial_lifecycle.sql \
+  db/validate_central_image_jobs.sql db/migrations/009_telegram_license_recovery.sql \
+  db/validate_telegram_license_recovery.sql db/migrations/010_operator_gemini_pool.sql \
+  db/validate_operator_gemini_pool.sql; do
   need_file "$ROOT_DIR/$file"
 done
 
@@ -61,12 +104,13 @@ import ast
 import pathlib
 import sys
 root = pathlib.Path(sys.argv[1])
-files = [root / name for name in ("runtime_broker.py", "tenant_turn.py", "telegram_ingress.py", "hosted_service.py", "hosted_worker.py", "tenant_admin.py", "tenantctl.py")]
+names = ("runtime_broker.py", "tenant_turn.py", "telegram_ingress.py", "hosted_service.py", "hosted_worker.py", "tenant_admin.py", "tenantctl.py", "provider_admin.py", "gemini_pool_admin.py", "image_broker.py", "central_image_service.py", "recovery_identity.py", "recovery_service.py", "recovery_email_worker.py", "recovery_smtp.py")
+files = [root / name for name in names]
 for path in files:
     ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 PY
 then ok 'Python syntax'; else fail 'Python syntax'; fi
-if bash -n "$ROOT_DIR/bootstrap-control-plane.sh" "$ROOT_DIR/install-runtime-broker.sh" "$ROOT_DIR/apply-control-plane.sh" "$ROOT_DIR/capacity-preflight.sh"; then
+if bash -n "$ROOT_DIR/bootstrap-control-plane.sh" "$ROOT_DIR/install-runtime-broker.sh" "$ROOT_DIR/prepare-central-image-broker.sh" "$ROOT_DIR/apply-control-plane.sh" "$ROOT_DIR/capacity-preflight.sh"; then
   ok 'shell syntax'
 else
   fail 'shell syntax'
@@ -79,10 +123,35 @@ fi
 
 if docker compose --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compose.yaml" config --quiet >/dev/null 2>&1 \
     && docker compose --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compose.yaml" \
-      --profile buyers config --quiet >/dev/null 2>&1; then
-  ok 'control-plane and buyers Compose configurations'
+      --profile buyers config --quiet >/dev/null 2>&1 \
+    && docker compose --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compose.yaml" \
+      --profile central-images config --quiet >/dev/null 2>&1; then
+  ok 'control-plane, buyers and dormant central-image Compose configurations'
 else
-  fail 'control-plane or buyers Compose configuration (check .env and secret files)'
+  fail 'control-plane, buyers or central-image Compose configuration (check .env and secret files)'
+fi
+if docker compose --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compose.yaml" \
+    --profile recovery-email config --quiet >/dev/null 2>&1; then
+  ok 'opt-in recovery-email Compose configuration'
+else
+  fail 'recovery-email Compose configuration (check .env and private secret files)'
+fi
+if [[ -r "$ROOT_DIR/.env.example" ]] && grep -Eq '^ADMIRA_TELEGRAM_RECOVERY_READY=false$' "$ROOT_DIR/.env.example"; then
+  ok 'Telegram recovery is disabled by default in .env.example'
+else
+  fail 'Telegram recovery must remain disabled by default in .env.example'
+fi
+CENTRAL_IMAGE_PLACEHOLDER='admira-ia-hosted:r91-canary-000000000000'
+CENTRAL_IMAGE_IMAGE="$(resolve_compose_value CENTRAL_IMAGE_IMAGE "$CENTRAL_IMAGE_PLACEHOLDER")"
+CENTRAL_IMAGE_READY="$(resolve_compose_value ADMIRA_CENTRAL_IMAGE_READY false | tr '[:upper:]' '[:lower:]')"
+if [[ "$CENTRAL_IMAGE_IMAGE" == "$CENTRAL_IMAGE_PLACEHOLDER" && "$CENTRAL_IMAGE_READY" == true ]]; then
+  fail 'central images cannot be enabled with the all-zero image placeholder'
+elif [[ "$CENTRAL_IMAGE_IMAGE" == "$CENTRAL_IMAGE_PLACEHOLDER" ]]; then
+  warn 'central image uses the dormant all-zero placeholder; install the clean canary tag before activation'
+elif [[ "$CENTRAL_IMAGE_IMAGE" =~ ^admira-ia-hosted:r91-canary-[0-9a-f]{12}$ ]]; then
+  ok "central image is pinned to exact hosted canary tag: $CENTRAL_IMAGE_IMAGE"
+else
+  fail 'CENTRAL_IMAGE_IMAGE must be an exact admira-ia-hosted:r91-canary-<12 lowercase commit hex> tag'
 fi
 
 TOKEN="$ROOT_DIR/secrets/telegram_bot_token.txt"
@@ -93,6 +162,15 @@ else
   if [[ "$MODE" == server ]]; then fail 'Telegram token is absent or empty'; else warn 'Telegram token is intentionally absent in local preparation'; fi
 fi
 
+LEGACY_GEMINI_SOURCE="$ROOT_DIR/secrets/hosted_gemini_api_key.txt"
+if [[ -e "$LEGACY_GEMINI_SOURCE" ]]; then
+  if [[ "$MODE" == server ]]; then
+    fail 'legacy hosted Gemini seed file must be migrated to the audited pool and removed'
+  else
+    warn 'legacy hosted Gemini seed file exists; it is ignored and must not ship'
+  fi
+fi
+
 if [[ "$MODE" == server ]]; then
   if systemctl is-active --quiet admira-runtime-broker.service; then ok 'runtime broker is active'; else fail 'runtime broker is not active'; fi
   if [[ -S /run/admira-runtime-broker/broker.sock ]]; then ok 'runtime broker socket exists'; else fail 'runtime broker socket is missing'; fi
@@ -100,7 +178,21 @@ if [[ "$MODE" == server ]]; then
     key_mode=$(stat -c '%a' /etc/admira/runtime-broker.key 2>/dev/null || stat -f '%Lp' /etc/admira/runtime-broker.key)
     [[ "$key_mode" =~ ^0*600$ ]] && ok 'broker key is private' || fail 'broker key permissions must be 0600'
   else fail 'broker key is missing'; fi
+  if [[ -e /etc/admira/hosted-gemini-api-key ]]; then
+    fail 'legacy host-wide Gemini key must be migrated to /etc/admira/gemini-pool and removed'
+  else
+    ok 'legacy host-wide Gemini key is absent'
+  fi
   if docker image inspect admira-ia:r90 >/dev/null 2>&1; then ok 'tenant image admira-ia:r90 is present'; else fail 'tenant image admira-ia:r90 is missing'; fi
+  if [[ "$CENTRAL_IMAGE_IMAGE" == "$CENTRAL_IMAGE_PLACEHOLDER" ]]; then
+    warn 'pinned central canary image is not selected; central images remain dormant'
+  elif docker image inspect "$CENTRAL_IMAGE_IMAGE" >/dev/null 2>&1; then
+    ok "pinned central canary image is present: $CENTRAL_IMAGE_IMAGE"
+  elif [[ "$CENTRAL_IMAGE_READY" == true ]]; then
+    fail "pinned central canary image is missing while central images are enabled: $CENTRAL_IMAGE_IMAGE"
+  else
+    warn "pinned central canary image is not installed; central images remain dormant: $CENTRAL_IMAGE_IMAGE"
+  fi
   migration_check_sql="SELECT count(*) = 3
 FROM pg_proc AS p
 JOIN pg_namespace AS n ON n.oid = p.pronamespace
@@ -154,6 +246,104 @@ WHERE n.nspname = 'admira'
   else
     fail 'durable capacity queue migration is not visible in PostgreSQL'
   fi
+  lifecycle_check_sql="SELECT
+  EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'admira' AND table_name = 'tenant_entitlements'
+      AND column_name = 'image_sponsorship_ends_at'
+  )
+  AND to_regclass('admira.tenant_provider_credentials') IS NOT NULL
+  AND (
+    SELECT count(*) = 4
+    FROM pg_proc AS p
+    JOIN pg_namespace AS n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'admira'
+      AND p.proname IN (
+        'resolve_tenant_image_access', 'expire_due_trials',
+        'record_tenant_provider_credential', 'transition_hosted_tenant_to_licensed'
+      )
+  )
+  AND EXISTS (
+    SELECT 1 FROM pg_proc AS p JOIN pg_namespace AS n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'admira' AND p.proname = 'resolve_tenant_image_access'
+      AND pg_get_functiondef(p.oid) LIKE '%personal_chatgpt%'
+      AND pg_get_functiondef(p.oid) LIKE '%t.status <> ''active''%'
+  );"
+  if printf '%s\n' "$lifecycle_check_sql" | \
+      docker compose --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compose.yaml" exec -T postgres \
+      sh -ec 'export PGPASSWORD="$(cat /run/secrets/postgres_password)"; exec psql -qAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+      2>/dev/null | grep -qx t; then
+    ok 'trial, licensing and sponsored-image lifecycle is visible in PostgreSQL'
+  else
+    fail 'trial/licensing lifecycle migration is not visible in PostgreSQL'
+  fi
+  central_image_check_sql="SELECT
+  to_regclass('admira.central_image_jobs') IS NOT NULL
+  AND (
+    SELECT count(*) = 3
+    FROM pg_proc AS p JOIN pg_namespace AS n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'admira'
+      AND p.proname IN (
+        'begin_central_image_job_for_runtime',
+        'complete_central_image_job',
+        'fail_central_image_job'
+      )
+  )
+  AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'admira_image')
+  AND NOT has_table_privilege('admira_image', 'admira.central_image_jobs', 'SELECT');"
+  if printf '%s\n' "$central_image_check_sql" | \
+      docker compose --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compose.yaml" exec -T postgres \
+      sh -ec 'export PGPASSWORD="$(cat /run/secrets/postgres_password)"; exec psql -qAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+      2>/dev/null | grep -qx t; then
+    ok 'durable central-image ledger and least-privilege role are visible in PostgreSQL'
+  else
+    fail 'central-image ledger migration is not visible in PostgreSQL'
+  fi
+  recovery_check_sql="SELECT
+  to_regclass('admira.tenant_license_contacts') IS NOT NULL
+  AND to_regclass('admira.tenant_recovery_challenges') IS NOT NULL
+  AND to_regclass('admira.telegram_recovery_chat_outbox') IS NOT NULL
+  AND to_regclass('admira.tenant_recovery_delivery_outbox') IS NOT NULL
+  AND (
+    SELECT count(*) = 6
+    FROM pg_proc AS p JOIN pg_namespace AS n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'admira'
+      AND p.proname IN (
+        'register_verified_license_contact', 'begin_telegram_recovery',
+        'confirm_telegram_recovery', 'claim_recovery_chat_outbox',
+        'claim_recovery_email_outbox', 'ack_recovery_email_outbox'
+      )
+  )
+  AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'admira_recovery')
+  AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'admira_email_delivery')
+  AND NOT has_table_privilege('admira_ingress', 'admira.tenant_license_contacts', 'SELECT')
+  AND NOT has_table_privilege('admira_email_delivery', 'admira.tenant_recovery_delivery_outbox', 'SELECT');"
+  if printf '%s\n' "$recovery_check_sql" | \
+      docker compose --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compose.yaml" exec -T postgres \
+      sh -ec 'export PGPASSWORD="$(cat /run/secrets/postgres_password)"; exec psql -qAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+      2>/dev/null | grep -qx t; then
+    ok 'Telegram license-recovery schema and least-privilege role are visible in PostgreSQL'
+  else
+    fail 'Telegram license-recovery migration is not visible in PostgreSQL'
+  fi
+  pool_check_sql="SELECT
+  to_regclass('admira.gemini_pool_projects') IS NOT NULL
+  AND to_regclass('admira.gemini_pool_credentials') IS NOT NULL
+  AND to_regclass('admira.gemini_pool_assignments') IS NOT NULL
+  AND (
+    SELECT count(*) = 3
+    FROM pg_proc AS p JOIN pg_namespace AS n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'admira'
+      AND p.proname IN ('assign_hosted_gemini_trial', 'finalize_hosted_gemini_trial', 'release_hosted_gemini_trial')
+  );"
+  if printf '%s\n' "$pool_check_sql" | \
+      docker compose --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compose.yaml" exec -T postgres \
+      sh -ec 'export PGPASSWORD="$(cat /run/secrets/postgres_password)"; exec psql -qAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+      2>/dev/null | grep -qx t; then
+    ok 'Gemini operator pool migration and hosted assignment functions are visible in PostgreSQL'
+  else
+    fail 'Gemini operator pool migration is not visible in PostgreSQL'
+  fi
 else
   grep -q 'admira-ia:r90' "$ROOT_DIR/tenantctl.py" && ok 'tenant image pin is admira-ia:r90' || fail 'tenant image pin is not admira-ia:r90'
   grep -q 'status = '\''active'\''' "$ROOT_DIR/db/migrations/004_active_tenant_runtime_gate.sql" && ok 'active-tenant migration contains gate' || fail 'active-tenant migration gate missing'
@@ -162,6 +352,122 @@ else
     && grep -q 'FOR UPDATE OF runtime SKIP LOCKED' "$ROOT_DIR/db/migrations/006_runtime_capacity_queue.sql" \
     && ok 'capacity migration preserves failure budget and fences LRU claims' \
     || fail 'capacity migration safety gates missing'
+  grep -q "e.trial_ends_at > now()" "$ROOT_DIR/db/migrations/007_trial_provider_lifecycle.sql" \
+    && grep -q "CASE WHEN e.licensed_at IS NULL" "$ROOT_DIR/db/migrations/007_trial_provider_lifecycle.sql" \
+    && grep -q "THEN 'personal_chatgpt'" "$ROOT_DIR/db/migrations/007_trial_provider_lifecycle.sql" \
+    && grep -q "t.status <> 'active' THEN 'blocked'" "$ROOT_DIR/db/migrations/007_trial_provider_lifecycle.sql" \
+    && ok 'trial/licensing migration preserves five-day, thirty-day and personal ChatGPT boundaries' \
+    || fail 'trial/licensing migration safety gates missing'
+  grep -q 'ADMIRA_CENTRAL_IMAGE_READY.*:-false' "$ROOT_DIR/compose.yaml" \
+    && ok 'central image service remains fail-closed by default' \
+    || fail 'central image service default must remain false'
+  grep -q 'begin_central_image_job_for_runtime' "$ROOT_DIR/db/migrations/008_central_image_jobs.sql" \
+    && grep -q 'TO admira_image' "$ROOT_DIR/db/migrations/008_central_image_jobs.sql" \
+    && grep -q "existing.available_at > now()" "$ROOT_DIR/db/migrations/008_central_image_jobs.sql" \
+    && ok 'central image ledger is runtime-keyed, fenced and backoff-aware' \
+    || fail 'central image ledger safety gates missing'
+  grep -q 'CREATE TABLE IF NOT EXISTS admira.tenant_license_contacts' "$ROOT_DIR/db/migrations/009_telegram_license_recovery.sql" \
+    && grep -q 'CREATE TABLE IF NOT EXISTS admira.tenant_recovery_challenges' "$ROOT_DIR/db/migrations/009_telegram_license_recovery.sql" \
+    && grep -q 'CREATE TABLE IF NOT EXISTS admira.telegram_recovery_chat_outbox' "$ROOT_DIR/db/migrations/009_telegram_license_recovery.sql" \
+    && grep -q 'CREATE OR REPLACE FUNCTION admira.begin_telegram_recovery' "$ROOT_DIR/db/migrations/009_telegram_license_recovery.sql" \
+    && grep -q 'CREATE OR REPLACE FUNCTION admira.confirm_telegram_recovery' "$ROOT_DIR/db/migrations/009_telegram_license_recovery.sql" \
+    && grep -q 'GRANT EXECUTE ON FUNCTION admira.begin_telegram_recovery' "$ROOT_DIR/db/migrations/009_telegram_license_recovery.sql" \
+    && grep -q "'recovery_pending'" "$ROOT_DIR/db/migrations/009_telegram_license_recovery.sql" \
+    && ok 'Telegram recovery migration and database boundaries are present' \
+    || fail 'Telegram recovery migration safety gates missing'
+  if grep -q 'CREATE TABLE IF NOT EXISTS admira.gemini_pool_projects' "$ROOT_DIR/db/migrations/010_operator_gemini_pool.sql" \
+    && grep -q 'key_kind.*auth' "$ROOT_DIR/db/migrations/010_operator_gemini_pool.sql" \
+    && grep -q 'assign_hosted_gemini_trial' "$ROOT_DIR/db/migrations/010_operator_gemini_pool.sql" \
+    && grep -q 'finalize_hosted_gemini_trial' "$ROOT_DIR/db/migrations/010_operator_gemini_pool.sql" \
+    && grep -q 'release_hosted_gemini_trial' "$ROOT_DIR/db/migrations/010_operator_gemini_pool.sql" \
+    && grep -q 'project-fixture' "$ROOT_DIR/db/validate_operator_gemini_pool.sql"; then
+    ok 'Gemini operator pool migration and disposable validator are present'
+  else
+    fail 'Gemini operator pool safety gates missing'
+  fi
+  grep -q 'assign_hosted_gemini_trial' "$ROOT_DIR/gemini_pool_admin.py" \
+    && grep -q 'runtime_fence' "$ROOT_DIR/gemini_pool_admin.py" \
+    && grep -q 'record_metadata=record_metadata' "$ROOT_DIR/gemini_pool_admin.py" \
+    && grep -q 'cleanup_pending' "$ROOT_DIR/gemini_pool_admin.py" \
+    && grep -q 'explicit operator assertion' "$ROOT_DIR/gemini_pool_admin.py" \
+    && ok 'operator pool CLI enforces hosted assignment, runtime fence, DB finalization and cleanup reporting' \
+    || fail 'operator pool CLI safety gates missing'
+  if grep -q 'GEMINI_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1"' "$ROOT_DIR/provider_admin.py" \
+    && grep -q 'x-goog-api-client.*admira-hosted/r91' "$ROOT_DIR/provider_admin.py" \
+    && grep -q 'x-goog-api-key' "$ROOT_DIR/provider_admin.py" \
+    && grep -q 'allow-unverified' "$ROOT_DIR/provider_admin.py" \
+    && grep -q 'effective_health_check = health_check or gemini_health_check' "$ROOT_DIR/provider_admin.py"; then
+    ok 'Gemini credential health check is official-endpoint, header-only and required by default'
+  else
+    fail 'Gemini credential health-check gate is missing'
+  fi
+fi
+
+if grep -q 'RecoveryHandler' "$ROOT_DIR/telegram_ingress.py" \
+  && grep -q 'handle_unbound' "$ROOT_DIR/telegram_ingress.py" \
+  && grep -q 'recovery_email' "$ROOT_DIR/hosted_service.py"; then
+  ok 'Telegram recovery runtime and email-worker integration is present'
+else
+  fail 'Telegram recovery runtime or email-worker integration is missing'
+fi
+
+if [[ "$MODE" == server ]]; then
+  recovery_ready="$(resolve_compose_value ADMIRA_TELEGRAM_RECOVERY_READY false | tr '[:upper:]' '[:lower:]')"
+  case "$recovery_ready" in
+    false|0|no|off|'')
+      warn 'Telegram recovery is dormant; enable only after SMTP/domain and recovery canaries pass'
+      ;;
+    true|1|yes|on)
+      ok 'Telegram recovery readiness flag is explicitly enabled'
+      recovery_smtp_host="$(resolve_compose_value ADMIRA_SMTP_HOST '')"
+      recovery_smtp_from="$(resolve_compose_value ADMIRA_SMTP_FROM '')"
+      recovery_smtp_security="$(resolve_compose_value ADMIRA_SMTP_SECURITY starttls)"
+      if [[ -n "$recovery_smtp_host" && -n "$recovery_smtp_from" ]]; then
+        ok 'recovery SMTP host and sender are configured'
+      else
+        fail 'ADMIRA_SMTP_HOST and ADMIRA_SMTP_FROM are required when recovery is enabled'
+      fi
+      case "$recovery_smtp_security" in
+        starttls|ssl) ok 'recovery SMTP transport requires encrypted security' ;;
+        *) fail 'ADMIRA_SMTP_SECURITY must be starttls or ssl when recovery is enabled' ;;
+      esac
+      recovery_service_uid="$(resolve_compose_value ADMIRA_SERVICE_UID 1001)"
+      if [[ "$recovery_service_uid" =~ ^[0-9]+$ ]]; then
+        ok "recovery service UID configured: $recovery_service_uid"
+      else
+        fail 'ADMIRA_SERVICE_UID must be a numeric UID when recovery is enabled'
+      fi
+      for recovery_secret in recovery_hmac_key.txt recovery_delivery_key.txt recovery_db_password.txt email_delivery_db_password.txt smtp_username.txt smtp_password.txt; do
+        recovery_secret_path="$ROOT_DIR/secrets/$recovery_secret"
+        if [[ -s "$recovery_secret_path" ]]; then
+          recovery_secret_mode=$(stat -c '%a' "$recovery_secret_path" 2>/dev/null || stat -f '%Lp' "$recovery_secret_path")
+          if [[ "$recovery_secret_mode" =~ ^0*600$ ]]; then
+            ok "recovery secret is present with mode 0600: $recovery_secret"
+          else
+            fail "recovery secret permissions must be exactly 0600: $recovery_secret"
+          fi
+          recovery_secret_owner=$(stat -c '%u' "$recovery_secret_path" 2>/dev/null || stat -f '%u' "$recovery_secret_path")
+          if [[ "$recovery_secret_owner" == "$recovery_service_uid" ]]; then
+            ok "recovery secret owner matches service UID: $recovery_secret"
+          else
+            fail "recovery secret owner UID must be $recovery_service_uid: $recovery_secret"
+          fi
+        else
+          fail "recovery secret is absent or empty: $recovery_secret"
+        fi
+      done
+      # The worker and SMTP are prepared and running before the readiness flag
+      # is flipped. Then rerun preflight with true, recreate the poller, and
+      # only after that perform the end-to-end recovery canary.
+      if docker compose --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compose.yaml" \
+          --profile recovery-email ps --status running --services 2>/dev/null | grep -qx 'recovery-email'; then
+        ok 'recovery-email worker is running while recovery is enabled'
+      else
+        fail 'recovery-email worker is not running while recovery is enabled'
+      fi
+      ;;
+    *) fail 'ADMIRA_TELEGRAM_RECOVERY_READY must be false or true' ;;
+  esac
 fi
 
 if [[ -n "$TENANT_A" || -n "$TENANT_B" ]]; then

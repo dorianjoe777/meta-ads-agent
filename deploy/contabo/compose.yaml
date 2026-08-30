@@ -47,6 +47,9 @@ services:
       - delivery_db_password
       - scheduler_db_password
       - provisioner_db_password
+      - image_db_password
+      - recovery_db_password
+      - email_delivery_db_password
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - postgres_auth:/run/admira-db-secrets:ro
@@ -77,7 +80,7 @@ services:
     command:
       - >-
         install -d -m 0700 -o 999 -g 999 /postgres-auth;
-        for secret_name in ingress_db_password runtime_db_password delivery_db_password scheduler_db_password provisioner_db_password;
+        for secret_name in ingress_db_password runtime_db_password delivery_db_password scheduler_db_password provisioner_db_password image_db_password recovery_db_password email_delivery_db_password;
         do install -m 0400 -o 999 -g 999 "/run/secrets/$${secret_name}" "/postgres-auth/$${secret_name}"; done
     secrets:
       - ingress_db_password
@@ -85,6 +88,9 @@ services:
       - delivery_db_password
       - scheduler_db_password
       - provisioner_db_password
+      - image_db_password
+      - recovery_db_password
+      - email_delivery_db_password
     volumes:
       - postgres_auth:/postgres-auth
     read_only: true
@@ -160,6 +166,75 @@ services:
     mem_limit: 64m
     cpus: 0.1
 
+  # Dormant r91 service for Admira-sponsored image generation. It is in its
+  # own profile and never starts with the buyer workers. The central Codex
+  # credential is mounted only here; tenant runtimes receive only a scoped
+  # HMAC key, the Unix socket and their own exchange directory.
+  central-image-broker:
+    profiles: ["central-images"]
+    # There is no mutable/default central image. The operator must pin the
+    # exact output of build-hosted-runtime.sh in .env before enabling this
+    # dormant profile; r90 tenant runtimes remain the normal default.
+    image: ${CENTRAL_IMAGE_IMAGE:-admira-ia-hosted:r91-canary-000000000000}
+    restart: unless-stopped
+    init: true
+    # The broker's primary group is deliberately separate from the control
+    # plane group. Tenant containers receive this GID explicitly when they
+    # need to connect to the 0660 Unix socket; no DAC_OVERRIDE is required.
+    user: "${ADMIRA_SERVICE_UID:-1001}:${ADMIRA_CENTRAL_IMAGE_GID:-19093}"
+    read_only: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["python3", "/app/deploy/contabo/central_image_service.py"]
+    environment:
+      ADMIRA_DB_HOST: postgres
+      ADMIRA_DB_PORT: "5432"
+      ADMIRA_DB_NAME: ${POSTGRES_DB:-admira_control}
+      ADMIRA_DB_USER: admira_image_login
+      ADMIRA_DB_PASSWORD_FILE: /run/secrets/image_db_password
+      ADMIRA_CENTRAL_IMAGE_SOCKET: /run/admira-central-image-broker/broker.sock
+      ADMIRA_CENTRAL_IMAGE_EXCHANGE_ROOT: /srv/admira-central-image-exchange
+      ADMIRA_CENTRAL_IMAGE_KEY_ROOT: /etc/admira/central-image-keys
+      ADMIRA_CENTRAL_IMAGE_MAX_GLOBAL: ${ADMIRA_CENTRAL_IMAGE_MAX_GLOBAL:-2}
+      ADMIRA_CENTRAL_IMAGE_MAX_CLIENTS: ${ADMIRA_CENTRAL_IMAGE_MAX_CLIENTS:-32}
+      CODEX_HOME: /app/runtime/hermes/codex-auth
+      PYTHONPATH: /app/src:/app/deploy/contabo
+    secrets:
+      - image_db_password
+    volumes:
+      - type: bind
+        source: /run/admira-central-image-broker
+        target: /run/admira-central-image-broker
+      - type: bind
+        source: /etc/admira/central-image-keys
+        target: /etc/admira/central-image-keys
+        read_only: true
+      - type: bind
+        source: /srv/admira/shared/central-image-exchange
+        target: /srv/admira-central-image-exchange
+      - type: bind
+        source: /srv/admira/shared/central-codex-auth
+        target: /app/runtime/hermes/codex-auth
+    networks:
+      - control_private
+      - image_provider_egress
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m
+    pids_limit: 256
+    mem_limit: ${CENTRAL_IMAGE_MEMORY_LIMIT:-1536m}
+    cpus: ${CENTRAL_IMAGE_CPU_LIMIT:-2.0}
+    stop_grace_period: 45s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   # Telegram network boundary. Only this process receives the shared token,
   # and it can only stage inbound media plus write to the durable inbox.
   telegram-poller:
@@ -177,9 +252,18 @@ services:
       ADMIRA_DB_PASSWORD_FILE: /run/secrets/ingress_db_password
       TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
       ADMIRA_SPOOL_ROOT: /srv/admira-spool
+      ADMIRA_TELEGRAM_RECOVERY_READY: "${ADMIRA_TELEGRAM_RECOVERY_READY:-false}"
+      ADMIRA_RECOVERY_DB_USER: admira_recovery_login
+      ADMIRA_RECOVERY_DB_PASSWORD_FILE: /run/secrets/recovery_db_password
+      ADMIRA_RECOVERY_HMAC_KEY_FILE: /run/secrets/recovery_hmac_key
+      ADMIRA_RECOVERY_DELIVERY_KEY_FILE: /run/secrets/recovery_delivery_key
+      ADMIRA_RECOVERY_DELIVERY_KEY_VERSION: "${ADMIRA_RECOVERY_DELIVERY_KEY_VERSION:-v1}"
     secrets:
       - ingress_db_password
       - telegram_bot_token
+      - recovery_db_password
+      - recovery_hmac_key
+      - recovery_delivery_key
     group_add:
       - "${ADMIRA_SPOOL_GID:-19092}"
     volumes:
@@ -206,6 +290,10 @@ services:
       ADMIRA_DB_PASSWORD_FILE: /run/secrets/runtime_db_password
       ADMIRA_BROKER_SOCKET: /run/admira-runtime-broker/broker.sock
       ADMIRA_BROKER_KEY_FILE: /run/secrets/runtime_broker_key
+      # Remains false until the central image broker passes its own canary.
+      # `/conectar_chatgpt` then explains sponsorship without promising a
+      # service that has not been activated yet.
+      ADMIRA_CENTRAL_IMAGE_READY: "${ADMIRA_CENTRAL_IMAGE_READY:-false}"
     secrets:
       - runtime_db_password
       - runtime_broker_key
@@ -244,6 +332,33 @@ services:
       - control_private
       - telegram_egress
 
+  # Provider-neutral recovery email delivery. It stays outside the buyers
+  # profile so recovery cannot be advertised before SMTP/domain canaries pass.
+  recovery-email:
+    <<: *control-common
+    profiles: ["recovery-email"]
+    command: ["recovery-email"]
+    environment:
+      <<: *control-environment
+      ADMIRA_DB_USER: admira_email_delivery_login
+      ADMIRA_DB_PASSWORD_FILE: /run/secrets/email_delivery_db_password
+      ADMIRA_RECOVERY_DELIVERY_KEY_FILE: /run/secrets/recovery_delivery_key
+      ADMIRA_RECOVERY_DELIVERY_KEY_VERSION: "${ADMIRA_RECOVERY_DELIVERY_KEY_VERSION:-v1}"
+      ADMIRA_SMTP_HOST: "${ADMIRA_SMTP_HOST:-}"
+      ADMIRA_SMTP_PORT: "${ADMIRA_SMTP_PORT:-587}"
+      ADMIRA_SMTP_SECURITY: "${ADMIRA_SMTP_SECURITY:-starttls}"
+      ADMIRA_SMTP_FROM: "${ADMIRA_SMTP_FROM:-}"
+      ADMIRA_SMTP_USERNAME_FILE: /run/secrets/smtp_username
+      ADMIRA_SMTP_PASSWORD_FILE: /run/secrets/smtp_password
+    secrets:
+      - email_delivery_db_password
+      - recovery_delivery_key
+      - smtp_username
+      - smtp_password
+    networks:
+      - control_private
+      - email_egress
+
   scheduler-worker:
     <<: *control-common
     profiles: ["buyers"]
@@ -255,6 +370,9 @@ services:
       ADMIRA_BROKER_SOCKET: /run/admira-runtime-broker/broker.sock
       ADMIRA_BROKER_KEY_FILE: /run/secrets/runtime_broker_key
       ADMIRA_RUNTIME_IDLE_SECONDS: ${ADMIRA_RUNTIME_IDLE_SECONDS:-900}
+      # Scheduled image work follows the same fail-closed readiness gate as
+      # interactive Telegram turns.
+      ADMIRA_CENTRAL_IMAGE_READY: "${ADMIRA_CENTRAL_IMAGE_READY:-false}"
     secrets:
       - scheduler_db_password
       - runtime_broker_key
@@ -272,6 +390,8 @@ networks:
   control_private:
     internal: true
   telegram_egress:
+  image_provider_egress:
+  email_egress:
 
 volumes:
   postgres_data:
@@ -294,6 +414,20 @@ secrets:
     file: ./secrets/scheduler_db_password.txt
   provisioner_db_password:
     file: ./secrets/provisioner_db_password.txt
+  image_db_password:
+    file: ./secrets/image_db_password.txt
+  recovery_db_password:
+    file: ./secrets/recovery_db_password.txt
+  email_delivery_db_password:
+    file: ./secrets/email_delivery_db_password.txt
+  recovery_hmac_key:
+    file: ./secrets/recovery_hmac_key.txt
+  recovery_delivery_key:
+    file: ./secrets/recovery_delivery_key.txt
+  smtp_username:
+    file: ./secrets/smtp_username.txt
+  smtp_password:
+    file: ./secrets/smtp_password.txt
   runtime_broker_key:
     file: ./secrets/runtime_broker_key.txt
   telegram_bot_token:

@@ -89,6 +89,11 @@ result = reset_workspace(
 )
 print(json.dumps({"ok": bool(result.get("ok"))}))
 '''
+HOSTED_IMAGE_ACCESS_FILE = "hosted_image_access.json"
+HOSTED_IMAGE_ROUTES = {"central_sponsored", "personal_chatgpt", "blocked"}
+HOSTED_LIFECYCLE_STATES = {
+    "pending_claim", "trial", "trial_expired", "licensed", "suspended", "cancelled",
+}
 
 CRON_RUN_SCRIPT = r'''
 import json
@@ -224,6 +229,71 @@ def _cron_snapshot(root: Path) -> list[dict[str, object]]:
             "timezone": str(item.get("timezone") or "UTC")[:100],
         })
     return result[:100]
+
+
+def _write_hosted_image_access(
+    root: Path, tenant_id: str, raw: object, *, request_marker: object = ""
+) -> Path:
+    """Persist one trusted, non-secret image route for the tenant tool process.
+
+    The central service independently rechecks the database entitlement.  This
+    file only prevents r91 from accidentally selecting a local ChatGPT account
+    during a sponsored or blocked turn, and is rewritten before every turn/job
+    so a persistent MCP process cannot retain stale authorization.
+    """
+    tenant_id = validate_tenant_id(tenant_id)
+    values = raw if isinstance(raw, dict) else {}
+    route = str(values.get("route") or "blocked")
+    lifecycle_state = str(values.get("lifecycle_state") or "suspended")
+    if route not in HOSTED_IMAGE_ROUTES:
+        route = "blocked"
+    if lifecycle_state not in HOSTED_LIFECYCLE_STATES:
+        lifecycle_state = "suspended"
+        route = "blocked"
+    marker = str(request_marker or "")
+    if len(marker) > 128 or any(ord(char) < 32 or ord(char) == 127 for char in marker):
+        marker = ""
+    sponsorship_end = str(values.get("image_sponsorship_ends_at") or "")[:80]
+    if any(ord(char) < 32 or ord(char) == 127 for char in sponsorship_end):
+        sponsorship_end = ""
+    payload = {
+        "tenant_id": tenant_id,
+        "route": route,
+        "lifecycle_state": lifecycle_state,
+        "central_ready": values.get("central_ready") is True,
+        "image_sponsorship_ends_at": sponsorship_end,
+        "update_id": marker,
+    }
+    root_details = root.lstat()
+    if root.is_symlink() or not stat.S_ISDIR(root_details.st_mode):
+        raise ValueError("tenant_not_provisioned")
+    runtime = root / "runtime"
+    runtime.mkdir(mode=0o700, exist_ok=True)
+    runtime_details = runtime.lstat()
+    if runtime.is_symlink() or not stat.S_ISDIR(runtime_details.st_mode):
+        raise ValueError("tenant_not_provisioned")
+    runtime.chmod(0o700)
+    destination = runtime / HOSTED_IMAGE_ACCESS_FILE
+    fd, temporary = tempfile.mkstemp(prefix=".hosted-image-access.", dir=str(runtime))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, destination)
+        directory_fd = os.open(runtime, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+    return destination
 
 
 class BrokerCore:
@@ -622,6 +692,10 @@ class BrokerCore:
                 "cron_jobs": _cron_snapshot(root),
             }
         root = self._ensure_running(tenant_id)
+        _write_hosted_image_access(
+            root, tenant_id, payload.get("image_access"),
+            request_marker=payload.get("update_id"),
+        )
         inbound = self._prepare_inbound(root, request.get("media") or [], payload.get("update_id"))
         try:
             if inbound["image_paths"]:
@@ -663,6 +737,9 @@ class BrokerCore:
         job_id = str(request.get("job_id") or "")
         if not JOB_ID_RE.fullmatch(job_id):
             raise ValueError("invalid_job_id")
+        _write_hosted_image_access(
+            root, tenant_id, request.get("image_access"), request_marker=job_id,
+        )
         command = compose_argv(root, "exec", "-T", "admira", "python3", "-c", CRON_RUN_SCRIPT)
         try:
             completed = subprocess.run(

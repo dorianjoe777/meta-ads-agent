@@ -68,6 +68,20 @@ python3 src/daily_agent.py approve APPROVAL_ID
 - The buyer creates their own dashboard password at the end of onboarding.
 - `.env`, logs, output, and dashboard data are private after install.
 
+## Hosted clean canary status
+
+The hosted r91 clean canary was validated on 2026-08-30 in a disposable clone
+of the live control plane. Migrations 007–010 were applied twice and every
+validator returned `PASS`. This validates the code and migration chain only:
+live remains on tenant image `r90` with migrations 001–006 until an explicit
+promotion.
+
+The synthetic/code canary uses a fake provider and verifies local contracts,
+idempotency, and tenant isolation. A separate real-provider canary is required
+to verify the external route; it remains pending central-provider
+authentication. Recovery and soak are deferred/off. This hosted canary does
+not publish a buyer dashboard or turn the deployment into a SaaS product.
+
 ## Docs
 
 - `docs/setup-local-vps.md`
