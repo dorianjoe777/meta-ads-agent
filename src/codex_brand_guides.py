@@ -2047,7 +2047,7 @@ def codex_cli_error_message(stderr, stdout=""):
     return ""
 
 
-def codex_cli_environment(config, use_image_home=False):
+def codex_cli_environment(config, use_image_home=False, codex_home=None):
     main_config = config
     if use_image_home:
         config = image_codex_config(config)
@@ -2061,6 +2061,8 @@ def codex_cli_environment(config, use_image_home=False):
         # valid Codex CLI auth.json. Sharing the two files can make `login
         # status` appear healthy while the image subprocess receives a 401.
         configured_codex_home = (
+            str(codex_home or "").strip()
+            or
             os.environ.get("ADMIRA_CODEX_AUTH_HOME")
             or os.environ.get("CODEX_AUTH_HOME")
             or ""
@@ -2555,7 +2557,7 @@ Pedido del comprador:
 """
 
 
-def call_codex_image_cli_direct(prompt, timeout=270, model=None, output_root=None, output_name="creative", reference_image_paths=None, purpose="ad_creative"):
+def call_codex_image_cli_direct(prompt, timeout=270, model=None, output_root=None, output_name="creative", reference_image_paths=None, purpose="ad_creative", codex_home=None):
     """Legacy fallback: generate a real image through a direct Codex CLI session."""
     request = str(prompt or "").strip()
     if not request:
@@ -2563,7 +2565,7 @@ def call_codex_image_cli_direct(prompt, timeout=270, model=None, output_root=Non
     config = load_config()
     executable = getattr(config, "codex_cli", "codex")
     selected_model = str(model or getattr(config, "codex_creative_model", "") or getattr(config, "hermes_model", "") or "").strip()
-    env = codex_cli_environment(config, use_image_home=True)
+    env = codex_cli_environment(config, use_image_home=True, codex_home=codex_home)
     codex_home = Path(env.get("CODEX_HOME") or os.environ.get("CODEX_HOME") or (Path.home() / ".codex")).expanduser()
     generated_root = codex_home / "generated_images"
     auth = codex_cli_auth_status(env=env)
