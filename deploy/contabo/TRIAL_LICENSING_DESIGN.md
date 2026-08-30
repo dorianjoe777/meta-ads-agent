@@ -192,7 +192,7 @@ atribuir consumo y garantizar aislamiento.
 
 La ruta mínima segura es el servicio `central-image-broker`, actualmente
 implementado pero dormido en el perfil Compose `central-images` y aún sin
-activar. Requiere construir y verificar r91, una conexión central autorizada y
+activar. Requiere construir y verificar r91, dos conexiones centrales autorizadas y
 un canary controlado. Migration `008_central_image_jobs.sql` es su ledger
 durable; no se debe considerar disponible sólo porque el código y el esquema
 existan. El flujo previsto es:
@@ -220,10 +220,11 @@ Para trials y el primer mes patrocinado se prepara un mínimo de **dos cuentas
 centrales autorizadas**, aisladas entre sí. No son cuentas de los tenants ni se
 copian sus archivos de autenticación. El broker selecciona una cuenta sana por
 trabajo y permite como máximo un intento de fallback por solicitud: si la cuenta
-primaria falla por indisponibilidad transitoria, autenticación inválida o
-timeout, se prueba una sola vez la otra cuenta elegible. Si ambas fallan, el
-trabajo queda en cola/error recuperable; no se rota indefinidamente ni se usa el
-fallback para esquivar una cuota.
+primaria falla, incluso por cuota o límite de imágenes, se prueba una sola vez
+la otra cuenta elegible. El límite total es de dos intentos de proveedor por
+solicitud. La cuenta que reportó cuota, autenticación o indisponibilidad entra
+en cooldown; si ambas fallan, el trabajo queda en cola/error recuperable y no
+se rota indefinidamente.
 
 Cada cuenta tiene su propio directorio privado de autenticación, identidad,
 fingerprint, estado y métricas. Un fallo de cuota, autenticación o timeout pone

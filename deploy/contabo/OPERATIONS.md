@@ -423,12 +423,13 @@ broker. No se copia `auth.json`, cookies, tokens ni cualquier otro secreto a un
 tenant, a PostgreSQL, al repositorio o a los logs.
 
 La política de selección es deliberadamente acotada: una cuenta primaria y,
-como máximo, un fallback a la otra cuenta por solicitud. El fallback sólo se
-permite para indisponibilidad transitoria, autenticación inválida o timeout;
-una señal de cuota activa cooldown y no se usa para saltar límites del
-proveedor. Cada cuenta conserva salud, fingerprint, causa del último fallo,
-cooldown y contador de intentos por separado. Si ambas no son elegibles, el
-trabajo se encola o falla de forma recuperable.
+como máximo, un fallback a la otra cuenta por solicitud (dos intentos de
+proveedor como máximo). El fallback también puede ocurrir si la primaria
+reporta cuota o límite de imágenes; esa cuenta entra simultáneamente en
+cooldown y no se hacen más intentos contra ella durante ese período. Cada
+cuenta conserva salud, fingerprint, causa del último fallo, cooldown y
+contador de intentos por separado. Si ambas fallan, el trabajo se encola o
+falla de forma recuperable.
 
 El broker sigue dormant (`ADMIRA_CENTRAL_IMAGE_READY=false`) hasta completar
 los dos logins fuera de banda, verificar cada cuenta individualmente y ejecutar
@@ -467,11 +468,13 @@ falte cualquiera de esas evidencias.
 
 El canary sintético/code está automatizado en
 `python3 -m deploy.contabo.central_image_canary --mode synthetic`. Arranca un
-broker efímero con un proveedor falso y comprueba dos tenants, aislamiento de
-salidas, copias privadas de referencias y que repetir el mismo `update_id` no
-llame dos veces al proveedor. Es una prueba del contrato y de seguridad local;
-demuestra comportamiento del código, pero no demuestra que la autenticación
-central externa de ChatGPT/Codex funcione.
+broker efímero con dos homes/auth falsos y un proveedor falso: fuerza un límite
+de imágenes en la cuenta primaria y comprueba exactamente un fallback a la
+secundaria, además de dos tenants, aislamiento de salidas, copias privadas de
+referencias y que repetir el mismo `update_id` no llame dos veces al proveedor.
+Es una prueba del contrato y de seguridad local; demuestra el comportamiento
+del pool, pero no demuestra que la autenticación central externa de
+ChatGPT/Codex funcione.
 
 El canary real-provider es una sola solicitud de imagen contra el broker central
 ya configurado. Se ejecuta con `--mode real`, usando exclusivamente la
@@ -981,7 +984,7 @@ siguiendo la sección 12 y conservar los logs/auditoría; no borrar challenges,
 outboxes o bindings manualmente ni activar con credenciales inventadas.
 
 Antes de vender o activar imágenes patrocinadas todavía se necesita: instalar
-una conexión central autorizada sólo en el mount del broker; preparar las
+dos conexiones centrales autorizadas sólo en los mounts del broker; preparar las
 raíces host-only; aplicar y validar migration 008 y el rol `admira_image`; y
 ejecutar el canary real-provider con un tenant operador. El clean canary de r91
 ya verificó en clon la cadena 007–010 (dos aplicaciones, todos los validators

@@ -189,10 +189,11 @@ central accounts. Each account has its own private 0700 auth directory and
 0600 credential files, mounted read-only only into the broker. Login is
 performed out of band in a private terminal; credentials must never appear in
 chat, commands, arguments, environment variables, logs, PostgreSQL, Git or a
-tenant. The broker may try the other account at most once per request, only for
-transient availability, auth or timeout errors. Quota failures trigger a
-per-account cooldown and are never a reason to bypass provider limits. Tenants
-remain pinned to `admira-ia:r90` while this central canary is pending.
+tenant. The broker may try the other account at most once per request, for a
+maximum of two provider attempts total, including when the primary reports a
+quota or image-limit failure. The failed account enters its per-account
+cooldown, and no further attempt is made against it during that cooldown.
+Tenants remain pinned to `admira-ia:r90` while this central canary is pending.
 
 #### Hosted clean-canary evidence
 
@@ -202,9 +203,12 @@ and every validator returned `PASS`. The control plane is live at commit
 `665a93399097a01462f4075a18717933fb9cbc24`, while tenant runtimes remain
 deliberately pinned to `admira-ia:r90`.
 
-The synthetic/code canary uses a fake provider to exercise local contracts,
-idempotency and tenant isolation. The separate real-provider canary exercises
-the external image route and requires central-provider authentication; that
+The synthetic/code canary uses two fake isolated auth homes and a fake provider:
+it forces a primary image-limit failure, verifies exactly one fallback attempt
+to the secondary account, cooldown bookkeeping, idempotency and tenant
+isolation. This is only a local pool/code result; it does not verify real
+ChatGPT authentication. The separate real-provider canary exercises the
+external image route and requires both central-provider authentications; that
 authentication is still pending. Recovery and capacity soak remain deferred
 and off.
 
