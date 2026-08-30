@@ -187,9 +187,10 @@ canary passes. Until every gate is complete, leave the profile stopped and
 #### Hosted clean-canary evidence
 
 On 2026-08-30, the hosted clean canary was validated in a disposable clone of
-the live control plane. Migrations 007–010 were applied twice and every
-validator returned `PASS`. This clone evidence does not promote the live
-environment: live remains on `admira-ia:r90` with migrations 001–006.
+the live control plane. Migrations 007–010 were then applied twice on the VPS
+and every validator returned `PASS`. The control plane is live at commit
+`665a93399097a01462f4075a18717933fb9cbc24`, while tenant runtimes remain
+deliberately pinned to `admira-ia:r90`.
 
 The synthetic/code canary uses a fake provider to exercise local contracts,
 idempotency and tenant isolation. The separate real-provider canary exercises

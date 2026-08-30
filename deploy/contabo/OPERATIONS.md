@@ -2,8 +2,9 @@
 
 Este documento describe exactamente dónde quedó la infraestructura de
 alojamiento multiusuario y cómo operarla de forma segura. Es el complemento
-operativo de [`README.md`](./README.md). Documenta el procedimiento de canary,
-pero no lo da por aprobado ni autoriza tráfico real por sí solo.
+operativo de [`README.md`](./README.md). El commit de código indicado abajo es
+el que está desplegado; las rutas que siguen apagadas siguen siendo gates
+operativos, no funcionalidades anunciadas.
 
 El alcance comercial de esta fase es únicamente el bot central de Telegram con
 un runtime Admira/Hermes privado por comprador. No se publica dashboard al
@@ -19,14 +20,33 @@ convierten este despliegue en el futuro producto SaaS.
 | Elemento | Valor |
 | --- | --- |
 | Rama de trabajo | `feat/contabo-multitenant` |
-| Último commit funcional desplegado | valor autoritativo en `/srv/admira/control-plane/DEPLOYED_COMMIT` |
-| SHA exacto activo | `/srv/admira/control-plane/DEPLOYED_COMMIT` |
+| Último commit funcional desplegado | `665a93399097a01462f4075a18717933fb9cbc24` |
+| SHA exacto activo | `/srv/admira/control-plane/DEPLOYED_COMMIT` (mismo SHA) |
+| Imagen del control plane | `admira-control-plane:r91-665a93399097` |
+| Imagen hosted canaria de imágenes | `admira-ia-hosted:r91-canary-665a93399097` (construida/pinneada, ruta dormida) |
+| Manifiesto del release desplegado | `f25e71a0ab463e79f4391b9cc73973f469fdb0a9b8b37c355d951a6d35efb492` |
+| Migraciones live | `001`–`010` aplicadas (007–010 verificadas de forma idempotente) |
 | Imagen de cada tenant live | `admira-ia:r90` |
 | Commit de la imagen tenant | `d03707465a5fedf7e5d1bb6b528365b299795540` |
 | Manifiesto de la imagen tenant | `5df0e07e8b4a10e59a5b9c3659336f9b3a55ab556beaa67c2faba218dabc99db` |
 | Servidor | Contabo Cloud VPS 4, Ubuntu 24.04, Docker 29.1.3 |
 | Bot central canario | `@admiraia_bot` (`bot_id=8884068904`) |
-| Estado de compradores | **Canary activo**: cuatro servicios singleton, un `runtime-worker`, un binding canario y un claim privado pendiente |
+| Estado de compradores | **Canary operativo**: cuatro servicios singleton estables, un `runtime-worker`, `canary-one` vinculado y `canary-two` reservado |
+
+### Acceso SSH operativo
+
+- Alias local: `admira-contabo`
+- Host: `169.58.246.232`
+- Usuario: `admiraops`
+- Llave local: `/Users/macminim1/.ssh/contabo_admira` (modo `0600`)
+- Huella pública: `SHA256:HYWtXoqFzymI19xUWilh2uH5qZlYIKNhWmrq/icEgbA`
+- Comprobación: `ssh -o BatchMode=yes admira-contabo true`
+
+`Permission denied (publickey)` significa que el host respondió pero la
+combinación usuario/llave no fue autorizada. `Connection refused` significa
+que se alcanzó el host pero el puerto SSH no aceptó conexiones; no es una
+prueba de que la llave esté perdida. No guardar contraseñas, tokens ni el
+contenido de la clave privada en este repositorio.
 
 El 29 de agosto de 2026 se recuperó el acceso SSH autorizado y se desplegó el
 commit funcional `a11ea43` desde un archive verificado por SHA-256. Se guardó
@@ -71,14 +91,20 @@ control plane quedaron en la imagen nueva con cero reinicios. El perfil live
 continúa deliberadamente con un solo `runtime-worker`; el perfil 6/8 sigue sin
 activar hasta completar el soak.
 
-Este historial no implica que las migraciones nuevas de este worktree estén en
-producción: el control plane live sigue en el SHA indicado por
-`DEPLOYED_COMMIT`, con tenants en `r90` y sólo 001–006 aplicadas. El
-`hosted clean canary` de r91 se validó el 2026-08-30 en un clon desechable del
-entorno live: se aplicaron 007–010 dos veces y todos los validators terminaron
-en `PASS`. Esa evidencia permite evaluar la promoción, pero no la ejecuta.
-Recovery y soak continúan diferidos/apagados; el canary contra el proveedor
-real sigue pendiente de instalar y validar la autenticación central.
+El 30 de agosto de 2026 se promovió el hosted clean canary al control plane
+live con el commit `665a93399097a01462f4075a18717933fb9cbc24`. Antes de la
+promoción se validó el backup
+`/srv/admira/backups/deploy-234d386-20260830T180610Z/` y se conservaron los
+releases anteriores. Las migraciones 007–010 se aplicaron dos veces de forma
+idempotente en el VPS y los validators terminaron en `PASS`. Los tenants no se
+reemplazaron: continúan fijados a `admira-ia:r90`.
+
+Durante la primera activación se corrigió la ambigüedad SQL de
+`claim_recovery_chat_outbox`; el hotfix forma parte de `665a933`, se reconstruyó
+la imagen y se reiniciaron los servicios. El delivery quedó estable con cero
+reinicios/errores en la verificación posterior. La ruta central de imágenes y
+la recuperación por email siguen deliberadamente apagadas; el canary
+real-provider y el soak de capacidad continúan pendientes.
 
 ## 2. Qué se construyó
 
@@ -380,9 +406,10 @@ tenant activo y vuelve a comprobar que la ruta sea `central_sponsored`. El rol
 `admira_image` sólo ejecuta esas funciones; no tiene acceso directo a tablas.
 
 El broker central vive en el servicio `central-image-broker`, dentro del perfil
-Compose `central-images`. Está deliberadamente dormido: r91 ya tiene un
-`hosted clean canary` limpio, pero aún no está promovido. Los tenants live
-siguen fijados a `r90`. El
+Compose `central-images`. Está deliberadamente dormido: el control plane r91 ya
+está promovido y la imagen hosted clean canary está construida/pinneada, pero la
+ruta no se activa hasta instalar auth central y pasar el canary real-provider.
+Los tenants live siguen fijados a `r90`. El
 broker usa HMAC por tenant sobre un socket Unix y un
 intercambio aislado por tenant; ningún tenant recibe la credencial central.
 
@@ -599,7 +626,7 @@ modo restrictivo; no se copian archivos sueltos desde una versión anterior.
 ## 8. Último estado verificado de la instalación Contabo
 
 La siguiente verificación se hizo sobre el servidor Contabo
-(`169.58.246.232`) después de desplegar `3babd8b`:
+(`169.58.246.232`) después de desplegar `665a93399097a01462f4075a18717933fb9cbc24`:
 
 - Host `vmi3537882`; Docker responde correctamente.
 - PostgreSQL y Redis están activos y saludables.
@@ -618,20 +645,22 @@ La siguiente verificación se hizo sobre el servidor Contabo
   permanecen `dead`; no se reencolaron porque la bienvenida ya había sido
   entregada. La recuperación transaccional seleccionó exactamente un `Hola`
   sin outbox previo y conservó su contador de intentos.
-- Las migraciones 004, 005 y 006 están aplicadas. El gate activo del tenant, la
-  rama durable de `telegram_rate_limited`, los contadores separados de espera
-  por capacidad y los claims LRU con fencing son visibles en las funciones
-  reales. Live conserva un `runtime-worker` y normal/hard `4/4`; el perfil 6/8
-  descrito más abajo sigue siendo candidato y no está activado.
-- La imagen compartida `admira-control-plane:r1` fue reconstruida y
-  `admira-ia:r90` sigue presente y fijada para los tenants.
-- Los 28 archivos versionados coinciden con el manifiesto del release; ambos
-  marcadores remotos quedaron reconciliados con `3babd8b`.
-- El dump PostgreSQL previo se validó con `pg_restore --list`; el código y las
-  dos copias recuperables del control plane previo están en
-  `/srv/admira/backups/deploy-3babd8b-20260829T225759Z/`. Las raíces tenant no
-  se modificaron durante este despliegue; los secretos y `.env` del release
-  activo conservaron permisos privados.
+- Las migraciones 001–010 están aplicadas. El gate activo del tenant, la rama
+  durable de `telegram_rate_limited`, los contadores separados de espera por
+  capacidad, lifecycle trial/licencia, ledger central, recuperación y pool de
+  Gemini están visibles en las funciones reales. Live conserva un
+  `runtime-worker` y normal/hard `4/4`; el perfil 6/8 sigue sin activarse.
+- Las imágenes activas son `admira-control-plane:r91-665a93399097` y
+  `admira-ia:r90` para los tenants. La imagen central
+  `admira-ia-hosted:r91-canary-665a93399097` está presente, pero su perfil no
+  está iniciado y `ADMIRA_CENTRAL_IMAGE_READY=false`.
+- El release desplegado coincide con el manifiesto
+  `f25e71a0ab463e79f4391b9cc73973f469fdb0a9b8b37c355d951a6d35efb492` y ambos
+  marcadores remotos contienen `665a93399097a01462f4075a18717933fb9cbc24`.
+- El dump PostgreSQL previo se validó con `pg_restore --list`; el backup y las
+  copias recuperables de los releases previos están en
+  `/srv/admira/backups/deploy-234d386-20260830T180610Z/`. Las raíces tenant no
+  se modificaron y los secretos/.env conservaron permisos privados.
 
 Esto significa que la infraestructura y el bot ya completaron un turno real
 con la identidad canaria vinculada a `canary-one`. `canary-two` continúa sin
@@ -882,14 +911,11 @@ del proveedor.
 ## 15. Evidencia local y pendientes antes de vender/activar
 
 La base durable de lifecycle trial/licencia y la CLI segura de administración
-Gemini están implementadas. El núcleo del broker y migrations 008–009 también
-están presentes como componentes de esquema, pero eso no equivale a
-disponibilidad comercial: el servicio
-`central-image-broker` sigue dormido en `central-images`; r91 pasó el
-`hosted clean canary` en un clon, pero no está activado. Los tenants live
-continúan en r90 y 001–006. La validación del clon (007–010 aplicadas dos veces,
-todos los validators `PASS`) no sustituye el canary real-provider, que sigue
-pendiente de auth central.
+Gemini están implementadas y las migraciones 007–010 ya están aplicadas en
+live. El servicio `central-image-broker` sigue dormido en `central-images` y
+`ADMIRA_CENTRAL_IMAGE_READY=false`: la imagen hosted canaria está construida y
+pinneada, pero falta autenticación central autorizada y el canary
+real-provider. Los tenants live continúan en `admira-ia:r90`.
 
 Migration `009_telegram_license_recovery.sql` reserva la identidad licenciada,
 los challenges, el historial de bindings y dos outboxes separados. El núcleo
@@ -931,8 +957,9 @@ del proveedor real, leases/reintentos, hash/tipo de salida y recursos. Recovery
 y soak permanecen diferidos/apagados.
 
 En Contabo se verificaron hashes del release, backup, imagen tenant r90,
-broker/socket, salud de PostgreSQL/Redis y el flujo Telegram canario; esos datos
-no prueban el broker central ni la activación comercial.
+imagen hosted canaria, broker/socket, salud de PostgreSQL/Redis y el flujo
+Telegram canario. Esto prueba la base multiusuario y el control plane, pero no
+el broker central real ni la activación comercial de imágenes patrocinadas.
 
 Eso no sustituye estas evidencias externas todavía pendientes:
 

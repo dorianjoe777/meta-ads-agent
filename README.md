@@ -71,10 +71,10 @@ python3 src/daily_agent.py approve APPROVAL_ID
 ## Hosted clean canary status
 
 The hosted r91 clean canary was validated on 2026-08-30 in a disposable clone
-of the live control plane. Migrations 007–010 were applied twice and every
-validator returned `PASS`. This validates the code and migration chain only:
-live remains on tenant image `r90` with migrations 001–006 until an explicit
-promotion.
+of the live control plane. Migrations 007–010 were then applied twice on
+Contabo and every validator returned `PASS`. The control plane is now live at
+commit `665a93399097a01462f4075a18717933fb9cbc24`; tenant runtimes remain
+deliberately pinned to image `r90`.
 
 The synthetic/code canary uses a fake provider and verifies local contracts,
 idempotency, and tenant isolation. A separate real-provider canary is required
