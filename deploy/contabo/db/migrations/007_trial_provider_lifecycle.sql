@@ -350,9 +350,13 @@ AS $$
   SELECT e.lifecycle_state,
          CASE
            WHEN t.status <> 'active' THEN 'blocked'
-           WHEN e.lifecycle_state = 'trial' AND e.trial_ends_at > now() THEN 'central_sponsored'
+           WHEN e.lifecycle_state = 'trial'
+                AND e.trial_ends_at > now()
+                AND coalesce(e.image_sponsorship_ends_at, e.trial_ends_at) > now()
+             THEN 'central_sponsored'
            WHEN e.lifecycle_state = 'licensed'
-                AND e.image_sponsorship_ends_at > now() THEN 'central_sponsored'
+                AND coalesce(e.image_sponsorship_ends_at, e.trial_ends_at) > now()
+             THEN 'central_sponsored'
            WHEN e.lifecycle_state = 'licensed'
              THEN 'personal_chatgpt'
            ELSE 'blocked'
@@ -399,7 +403,11 @@ BEGIN
       licensed_at = coalesce(e.licensed_at, now_value),
       paid_through = greatest(coalesce(e.paid_through, now_value), now_value),
       image_sponsorship_ends_at = CASE WHEN e.licensed_at IS NULL
-        THEN now_value + interval '30 days' ELSE e.image_sponsorship_ends_at END,
+        -- Buying never restarts the sponsored-image clock.  The default benefit
+        -- is the same five-day period that started with the initial claim; an
+        -- explicit operator extension, if already present, is preserved.
+        THEN coalesce(e.image_sponsorship_ends_at, e.trial_ends_at, now_value)
+        ELSE e.image_sponsorship_ends_at END,
       updated_at = now_value
   WHERE e.tenant_id = p_tenant_id
   RETURNING e.lifecycle_state INTO result_state;

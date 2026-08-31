@@ -2346,9 +2346,9 @@ def _chatgpt_login_confirmation_reply(session_key, language="es"):
     if authenticated or status == "completed":
         _clear_chatgpt_login_pending(session_key)
         return (
-            "✅ ChatGPT connected. The new account is ready for Image 2 and the Terra fallback."
+            "✅ ChatGPT connected. The new account is ready for Image 2 and the Luna fallback."
             if english
-            else "✅ ChatGPT conectado. La nueva cuenta ya está lista para Image 2 y el fallback Terra."
+            else "✅ ChatGPT conectado. La nueva cuenta ya está lista para Image 2 y el fallback Luna."
         )
     urls = [_safe_openai_login_url(item) for item in (result.get("urls") or [])]
     login_url = next((item for item in urls if item), "")
@@ -2426,12 +2426,12 @@ def _chatgpt_connection_reply(result, language="es"):
             return (
                 "🔐 Open this secure ChatGPT login:\n"
                 f"{result['url']}\n\nTemporary code: {result['code']}\n\n"
-                "Finish the login with the account you want Admira to use for Image 2 and the Terra fallback."
+                "Finish the login with the account you want Admira to use for Image 2 and the Luna fallback."
             )
         return (
             "🔐 Abre este login seguro de ChatGPT:\n"
             f"{result['url']}\n\nCódigo temporal: {result['code']}\n\n"
-            "Termina el login con la cuenta que quieres que Admira use para Image 2 y el fallback Terra."
+            "Termina el login con la cuenta que quieres que Admira use para Image 2 y el fallback Luna."
         )
     if result.get("device_auth_settings"):
         return (

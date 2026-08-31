@@ -128,16 +128,16 @@ BEGIN
   END IF;
   IF (SELECT route FROM admira.resolve_tenant_image_access(
         (SELECT id FROM admira.tenants WHERE external_customer_id = 'trial-cycle-001')
-      )) <> 'central_sponsored'
+      )) <> 'personal_chatgpt'
      OR (SELECT image_sponsorship_ends_at FROM lifecycle_sponsorship_snapshot)
         <> (SELECT image_sponsorship_ends_at FROM admira.tenant_entitlements
             WHERE tenant_id = (SELECT id FROM admira.tenants WHERE external_customer_id = 'trial-cycle-001')) THEN
-    RAISE EXCEPTION 'license retry changed sponsored image access';
+    RAISE EXCEPTION 'late license retry changed personal image access';
   END IF;
   IF (SELECT image_sponsorship_ends_at FROM lifecycle_sponsorship_snapshot)
-       NOT BETWEEN now() + interval '29 days 23 hours'
-                   AND now() + interval '30 days 1 minute' THEN
-    RAISE EXCEPTION 'first sponsorship is not thirty days';
+       <> (SELECT trial_ends_at FROM admira.tenant_entitlements
+           WHERE tenant_id = (SELECT id FROM admira.tenants WHERE external_customer_id = 'trial-cycle-001')) THEN
+    RAISE EXCEPTION 'licensing restarted the original five-day sponsorship';
   END IF;
   IF (SELECT count(*) FROM admira.tenant_provider_credentials
       WHERE tenant_id = (SELECT id FROM admira.tenants WHERE external_customer_id = 'trial-cycle-001')

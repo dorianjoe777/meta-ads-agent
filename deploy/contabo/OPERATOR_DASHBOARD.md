@@ -13,12 +13,14 @@ from those containers. Root and the host service user remain trusted operators.
 ## Prepare the exact release
 
 Make a private recovery backup of PostgreSQL and the existing `secrets/`
-directory; encrypt the backup before any off-host export. Rehearse migrations 001–011 on a disposable
-database and run `db/validate_operator_dashboard.sql` there; the validator rolls
-its fixtures back. Never run disposable validators on production. Migration 011
-does not alter tenant data or weaken forced RLS. It grants the dedicated
-`admira_operator` role only project registration, credential metadata
-registration, and a status projection without secrets or tenant identifiers.
+directory; encrypt the backup before any off-host export. Rehearse migrations
+001–012 on a disposable database and run `db/validate_operator_dashboard.sql`
+and `db/validate_personal_chatgpt_sponsorship.sql` there; both validators roll
+their fixtures back. Never run disposable validators on production. Migration
+011 creates the dedicated `admira_operator` boundary. Migration 012 adds only a
+secret-free tenant sponsorship projection and an exact, audited extension
+operation; the role still has no direct table access and cannot provision,
+license, recover or delete a tenant.
 
 As `admiraops` (the configured service UID, normally 1001):
 
@@ -142,6 +144,21 @@ cancel support. It never exposes raw CLI output or `auth.json`. Device URLs/code
 are temporary and cleared from expired/finished jobs. Disconnect removes only
 that selected slot's auth file; the other account is preserved. A connected
 status alone does not establish usable image quota or successful failover.
+
+## Extend one customer's sponsored-image period
+
+The normal central-image benefit is the same five days that start with the
+customer's first Telegram claim. Licensing never restarts it, and the customer
+may use `/conectar_chatgpt` at any time without cancelling that benefit.
+
+The sponsorship section lists a bounded, secret-free view of tenants. Select an
+active trial/licensed customer and set the exact new end date. The server accepts
+only timezone-qualified timestamps in the future, at most 365 days ahead, and
+never allows shortening the existing effective end. Repeating the same exact
+date is idempotent; a real change writes one tenant audit event. It changes only
+`image_sponsorship_ends_at`: it does not extend the trial itself, change a
+license, rotate Gemini, choose a model or alter the customer's tenant-local
+ChatGPT connection.
 
 ## Status, stop, and activation boundary
 

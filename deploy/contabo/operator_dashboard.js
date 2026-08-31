@@ -14,10 +14,13 @@
     authenticated: false,
     gemini: null,
     codex: null,
+    sponsorship: null,
     geminiError: false,
     codexError: false,
+    sponsorshipError: false,
     geminiRequest: null,
     codexRequest: null,
+    sponsorshipRequest: null,
     accountBusy: new Set(),
     device: null,
     confirmResolve: null,
@@ -47,6 +50,9 @@
       gemini_health_check_failed: "Gemini no validó la clave. Revisa sus permisos y vuelve a introducirla.",
       gemini_registration_failed: "La clave no pudo registrarse. Revisa el servicio de control e inténtalo de nuevo.",
       gemini_status_unavailable: "No se pudo consultar el inventario Gemini. Vuelve a intentarlo.",
+      sponsorship_status_unavailable: "No se pudo consultar la vigencia de los clientes.",
+      invalid_sponsorship_extension: "Elige un cliente activo y una fecha posterior a su vigencia actual, dentro de los próximos 365 días.",
+      sponsorship_update_failed: "No se pudo guardar la ampliación. Revisa el estado del servicio antes de reintentar.",
       codex_cli_unavailable: "El servicio de autenticación Codex no está disponible. Revisa la instalación del servidor.",
       codex_login_in_progress: "Esta cuenta tiene una autenticación en curso. Cancélala antes de desconectar.",
       codex_disconnect_failed: "No se pudo desconectar la cuenta. Su estado no fue modificado.",
@@ -83,7 +89,7 @@
 
   function setFormBusy(form, busy) {
     form.setAttribute("aria-busy", String(busy));
-    form.querySelectorAll("input, .reveal-button").forEach((control) => {
+    form.querySelectorAll("input, select, .reveal-button").forEach((control) => {
       control.disabled = busy;
     });
   }
@@ -101,7 +107,7 @@
   function validateForm(form, errorElement) {
     clearInvalid(form);
     errorElement.textContent = "";
-    const invalid = Array.from(form.querySelectorAll("input")).find((input) => !input.validity.valid);
+    const invalid = Array.from(form.querySelectorAll("input, select")).find((input) => !input.validity.valid);
     if (!invalid) return true;
     let message = "Completa los campos obligatorios.";
     if (invalid.validity.rangeUnderflow || invalid.validity.rangeOverflow || invalid.validity.stepMismatch) {
@@ -588,6 +594,141 @@
     return state.codexRequest;
   }
 
+  function sponsorshipRoute(route) {
+    if (route === "central_sponsored") return { label: "Central patrocinada", tone: "ready" };
+    if (route === "personal_chatgpt") return { label: "ChatGPT personal", tone: "neutral" };
+    return { label: "Bloqueada", tone: "error" };
+  }
+
+  function lifecycleLabel(value) {
+    const labels = {
+      pending_claim: "Sin activar", trial: "Prueba", trial_expired: "Prueba vencida",
+      licensed: "Con licencia", suspended: "Suspendida", cancelled: "Cancelada",
+    };
+    return labels[value] || "Desconocido";
+  }
+
+  function localDateTimeValue(date) {
+    const adjusted = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+    return adjusted.toISOString().slice(0, 16);
+  }
+
+  function updateSponsorshipDateBounds() {
+    const input = $("#sponsorship-end");
+    const tenant = (state.sponsorship || []).find((item) => item.runtime_key === $("#sponsorship-tenant").value);
+    const effective = Date.parse(tenant?.effective_sponsorship_ends_at || "");
+    const minimum = new Date(Math.max(Date.now() + 60000, Number.isFinite(effective) ? effective + 60000 : 0));
+    const maximum = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
+    input.min = localDateTimeValue(minimum);
+    input.max = localDateTimeValue(maximum);
+  }
+
+  function renderSponsorship() {
+    const tenants = Array.isArray(state.sponsorship) ? state.sponsorship : [];
+    const tbody = $("#sponsorship-rows");
+    const selected = $("#sponsorship-tenant").value;
+    tbody.replaceChildren();
+    if (!tenants.length) {
+      const row = document.createElement("tr");
+      const cell = textElement("td", "", state.sponsorshipError ? "No se pudo cargar el inventario." : "Todavía no hay clientes preparados.");
+      cell.colSpan = 4;
+      row.append(cell);
+      tbody.append(row);
+    } else {
+      tenants.forEach((tenant) => {
+        const row = document.createElement("tr");
+        const customer = document.createElement("td");
+        customer.append(textElement("strong", "", String(tenant.runtime_key || "")));
+        customer.append(textElement("span", "table-secondary", String(tenant.display_name || "")));
+        const status = textElement("td", "", lifecycleLabel(tenant.lifecycle_state));
+        const end = textElement("td", "", formatDate(tenant.effective_sponsorship_ends_at));
+        const route = document.createElement("td");
+        const routeInfo = sponsorshipRoute(tenant.route);
+        route.append(badge(routeInfo.label, routeInfo.tone));
+        row.append(customer, status, end, route);
+        tbody.append(row);
+      });
+    }
+
+    const selector = $("#sponsorship-tenant");
+    selector.replaceChildren(new Option("Selecciona un cliente", ""));
+    tenants.filter((tenant) => ["trial", "licensed"].includes(tenant.lifecycle_state)).forEach((tenant) => {
+      const label = String(tenant.runtime_key || "") + (tenant.display_name ? " · " + String(tenant.display_name) : "");
+      selector.append(new Option(label, String(tenant.runtime_key || "")));
+    });
+    if (Array.from(selector.options).some((option) => option.value === selected)) selector.value = selected;
+    updateSponsorshipDateBounds();
+  }
+
+  async function refreshSponsorship({ announce = false } = {}) {
+    if (state.sponsorshipRequest) return state.sponsorshipRequest;
+    const sessionVersion = state.sessionVersion;
+    $("#sponsorship-section").setAttribute("aria-busy", "true");
+    setBusy($("#sponsorship-refresh"), true, "Consultando…");
+    state.sponsorshipRequest = (async () => {
+      try {
+        const data = await request("/api/operator/sponsorship/status");
+        if (!state.authenticated || sessionVersion !== state.sessionVersion) return false;
+        state.sponsorship = Array.isArray(data?.tenants) ? data.tenants : [];
+        state.sponsorshipError = false;
+        $("#sponsorship-error").textContent = "";
+        renderSponsorship();
+        if (announce) setNotice("Vigencias de patrocinio actualizadas.", "success");
+        return true;
+      } catch (error) {
+        if (!state.authenticated || sessionVersion !== state.sessionVersion) return false;
+        state.sponsorshipError = true;
+        $("#sponsorship-error").textContent = messageFor(error, "No se pudo consultar la vigencia de los clientes.");
+        renderSponsorship();
+        return false;
+      } finally {
+        $("#sponsorship-section").setAttribute("aria-busy", "false");
+        setBusy($("#sponsorship-refresh"), false);
+        state.sponsorshipRequest = null;
+      }
+    })();
+    return state.sponsorshipRequest;
+  }
+
+  async function extendSponsorship(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const errorElement = $("#sponsorship-error");
+    if (form.getAttribute("aria-busy") === "true" || !validateForm(form, errorElement)) return;
+    const runtimeKey = $("#sponsorship-tenant").value;
+    const rawEnd = $("#sponsorship-end").value;
+    const requestedEnd = new Date(rawEnd);
+    const tenant = (state.sponsorship || []).find((item) => item.runtime_key === runtimeKey);
+    const currentEnd = Date.parse(tenant?.effective_sponsorship_ends_at || "");
+    if (!tenant || Number.isNaN(requestedEnd.getTime()) || requestedEnd.getTime() <= Date.now()
+        || (Number.isFinite(currentEnd) && requestedEnd.getTime() <= currentEnd)) {
+      invalidField($("#sponsorship-end"), errorElement, "Elige una fecha posterior a la vigencia actual del cliente.");
+      return;
+    }
+    const confirmed = await confirmAction({
+      title: "¿Ampliar el patrocinio central?",
+      description: runtimeKey + " podrá seguir usando las cuentas centrales de imágenes hasta " + dateFormat.format(requestedEnd) + ". Su conexión ChatGPT personal no se modifica.",
+      accept: "Guardar ampliación",
+    });
+    if (!confirmed || !state.authenticated) return;
+    setBusy($("#sponsorship-submit"), true, "Guardando…");
+    setFormBusy(form, true);
+    try {
+      await request("/api/operator/sponsorship/extend", {
+        method: "POST",
+        body: JSON.stringify({ runtime_key: runtimeKey, ends_at: requestedEnd.toISOString() }),
+      });
+      $("#sponsorship-end").value = "";
+      await refreshSponsorship();
+      setNotice("Patrocinio ampliado para " + runtimeKey + ". La conexión personal del cliente no cambió.", "success");
+    } catch (error) {
+      errorElement.textContent = messageFor(error, "No se pudo guardar la ampliación.");
+    } finally {
+      setFormBusy(form, false);
+      setBusy($("#sponsorship-submit"), false);
+    }
+  }
+
   function finishConfirmation(accepted) {
     const resolve = state.confirmResolve;
     state.confirmResolve = null;
@@ -923,7 +1064,7 @@
   }
 
   async function refreshAll() {
-    await Promise.all([refreshGemini(), refreshCodex()]);
+    await Promise.all([refreshGemini(), refreshCodex(), refreshSponsorship()]);
   }
 
   document.querySelectorAll("[data-password-toggle]").forEach((button) => {
@@ -938,7 +1079,7 @@
     });
   });
 
-  document.querySelectorAll("input").forEach((input) => {
+  document.querySelectorAll("input, select").forEach((input) => {
     input.addEventListener("input", () => input.removeAttribute("aria-invalid"));
   });
 
@@ -948,6 +1089,9 @@
   $("#gemini-form").addEventListener("submit", registerGemini);
   $("#gemini-refresh").addEventListener("click", () => refreshGemini({ announce: true }));
   $("#codex-refresh").addEventListener("click", () => refreshCodex({ announce: true }));
+  $("#sponsorship-form").addEventListener("submit", extendSponsorship);
+  $("#sponsorship-refresh").addEventListener("click", () => refreshSponsorship({ announce: true }));
+  $("#sponsorship-tenant").addEventListener("change", updateSponsorshipDateBounds);
   $("#notice-close").addEventListener("click", () => setNotice(""));
   $("#codex-slots").addEventListener("click", (event) => {
     const button = event.target.closest("[data-slot-action]");

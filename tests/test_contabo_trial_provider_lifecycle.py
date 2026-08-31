@@ -40,11 +40,13 @@ class TrialProviderLifecycleMigrationTests(unittest.TestCase):
         self.assertIn("SET status = 'suspended'", SQL)
         transition = SQL.split("FUNCTION admira.transition_tenant_to_licensed", 1)[1]
         self.assertIn("SET status = 'active'", transition)
-        self.assertIn("interval '30 days'", transition)
+        self.assertNotIn("interval '30 days'", transition)
+        self.assertIn("coalesce(e.image_sponsorship_ends_at, e.trial_ends_at, now_value)", transition)
 
     def test_license_sponsorship_does_not_extend_on_retry(self):
         transition = SQL.split("FUNCTION admira.transition_tenant_to_licensed", 1)[1]
         self.assertIn("CASE WHEN e.licensed_at IS NULL", transition)
+        self.assertIn("Buying never restarts the sponsored-image clock", transition)
         self.assertNotIn("greatest(coalesce(image_sponsorship_ends_at", transition)
         self.assertIn("WHERE NOT EXISTS (SELECT 1 FROM admira.tenant_audit_events", transition)
         self.assertIn("tenant already has a different license", transition)
@@ -58,6 +60,7 @@ class TrialProviderLifecycleMigrationTests(unittest.TestCase):
         self.assertIn("central_sponsored", route)
         self.assertIn("t.status <> 'active' THEN 'blocked'", route)
         self.assertIn("e.trial_ends_at > now()", route)
+        self.assertIn("coalesce(e.image_sponsorship_ends_at, e.trial_ends_at) > now()", route)
         self.assertIn("THEN 'personal_chatgpt'", route)
         self.assertIn("ELSE 'blocked'", route)
         self.assertNotIn("EXISTS (SELECT 1 FROM admira.tenant_provider_credentials", route)

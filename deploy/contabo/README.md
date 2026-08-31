@@ -48,12 +48,18 @@ with live Meta actions disabled. During the five-day trial, the operator may
 assign a private, host-funded Gemini key. On licensing, `gemini-license`
 atomically records the customer's Gemini credential and changes the tenant to
 licensed state; the tenant directory and Telegram binding remain the same.
-Admira-sponsored central image access is entitled for 30 days from the first
-license. After that period, `/conectar_chatgpt` is the customer-facing path for
-connecting the customer's own ChatGPT/Codex image connection. It is not a
-replacement for the tenant's Gemini text credential. Provider choices live in
-the tenant's private `runtime/.env` and are not overwritten by restart or
-scale-to-zero.
+Admira-sponsored central image access follows the same five-day clock that
+starts with the first Telegram claim. Licensing never restarts that clock. A
+private operator may extend its exact end date for one customer through the
+internal dashboard; the change is durable, audited, idempotent and cannot
+shorten an existing benefit. `/conectar_chatgpt` remains available from day one
+and stores the customer's personal ChatGPT/Codex session only inside that
+tenant. Connecting it does not cancel sponsored images. The customer may use
+an account-advertised Codex model as the primary through `/model`; when Gemini
+is primary, the tenant may use `gpt-5.6-luna` as its single personal Codex
+fallback. This is independent from the customer's Gemini text credential.
+Provider choices live in the tenant's private `runtime/.env` and are not
+overwritten by restart or scale-to-zero.
 
 The shared r90 image is read-only product code. A tenant container never mounts
 the Docker socket, another tenant directory or a host-wide credential file.
@@ -203,7 +209,7 @@ ledger, output hash, tenant boundaries and resource usage; then enable the route
 only after both accounts and the canary pass. Until every gate is complete,
 leave the profile stopped and `ADMIRA_CENTRAL_IMAGE_READY=false`.
 
-The trial/first-month image pool requires at least two independently authorized
+The trial/explicit-extension image pool requires at least two independently authorized
 central accounts. Each account has its own private 0700 auth directory and
 0600 credential files under the host root
 `/srv/admira/shared/central-codex-auth/{primary,secondary}/`, mounted into the

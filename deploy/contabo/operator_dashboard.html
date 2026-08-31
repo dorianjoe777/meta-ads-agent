@@ -255,6 +255,58 @@
               <p id="codex-error" class="form-message form-message-error" role="alert"></p>
             </div>
           </section>
+
+          <section id="sponsorship-section" class="operation-card panel" aria-labelledby="sponsorship-title" aria-busy="true">
+            <div class="operation-rail" aria-hidden="true"><span>03</span><span>TIME</span></div>
+            <div class="operation-body">
+              <div class="operation-head">
+                <div>
+                  <p class="eyebrow">Beneficio de imágenes · Control por cliente</p>
+                  <h2 id="sponsorship-title">Patrocinio central</h2>
+                  <p>Todos reciben 5 días desde su primera activación. Conectar su ChatGPT personal no elimina el beneficio. Usa este control sólo para ampliar una fecha; nunca puede acortarla.</p>
+                </div>
+                <button id="sponsorship-refresh" class="button button-quiet" type="button"><span class="button-label">Actualizar clientes</span></button>
+              </div>
+
+              <form id="sponsorship-form" class="gemini-form sponsorship-form" novalidate>
+                <div class="field-group">
+                  <label for="sponsorship-tenant">Cliente</label>
+                  <select id="sponsorship-tenant" name="runtime_key" required aria-describedby="sponsorship-tenant-help sponsorship-error">
+                    <option value="">Selecciona un cliente</option>
+                  </select>
+                  <p id="sponsorship-tenant-help" class="field-help">Se muestra la referencia interna y el nombre operativo; nunca credenciales ni licencia.</p>
+                </div>
+                <div class="field-group">
+                  <label for="sponsorship-end">Nueva fecha de finalización</label>
+                  <input id="sponsorship-end" name="ends_at" type="datetime-local" required step="60" aria-describedby="sponsorship-end-help sponsorship-error">
+                  <p id="sponsorship-end-help" class="field-help">Debe ser posterior a la vigencia actual y no más de 365 días hacia adelante.</p>
+                </div>
+                <div class="form-actions">
+                  <button id="sponsorship-submit" class="button button-primary" type="submit"><span class="button-label">Ampliar patrocinio</span></button>
+                </div>
+                <p id="sponsorship-error" class="form-message form-message-error form-wide" role="alert"></p>
+              </form>
+
+              <div class="inventory-head">
+                <div>
+                  <h3>Vigencia por cliente</h3>
+                  <p id="sponsorship-inventory-description">La conexión ChatGPT personal es independiente y puede realizarse desde el primer día.</p>
+                </div>
+                <span class="redacted-chip"><span aria-hidden="true"></span>SIN SECRETOS</span>
+              </div>
+              <div class="table-wrap" tabindex="0" role="region" aria-label="Vigencia de patrocinio desplazable" aria-describedby="sponsorship-inventory-description">
+                <table>
+                  <caption class="sr-only">Clientes y fecha efectiva de patrocinio central de imágenes</caption>
+                  <thead>
+                    <tr><th scope="col">Cliente</th><th scope="col">Estado</th><th scope="col">Fin efectivo</th><th scope="col">Ruta de imágenes</th></tr>
+                  </thead>
+                  <tbody id="sponsorship-rows">
+                    <tr class="loading-row"><td colspan="4"><span class="skeleton-line"></span><span class="sr-only">Cargando clientes</span></td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
         </div>
 
         <aside class="handoff-note" aria-label="Siguiente paso operativo">

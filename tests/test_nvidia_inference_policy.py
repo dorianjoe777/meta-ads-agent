@@ -253,7 +253,7 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         )
         self.assertIn("https://auth.openai.com/device", reply)
         self.assertIn("ABCD-EFGH", reply)
-        self.assertIn("fallback Terra", reply)
+        self.assertIn("fallback Luna", reply)
 
     def test_chatgpt_login_confirmation_is_scoped_and_never_reaches_campaign_tools(self):
         original_file = admira_hermes_runtime_patch.os.environ.get("ADMIRA_CHATGPT_LOGIN_PENDING_FILE")

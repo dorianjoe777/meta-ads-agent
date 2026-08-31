@@ -15,8 +15,11 @@ comprador ni amplía Admira a API pública, CRM, ecommerce, webhooks o MCP.
   Telegram.
 - La prueba dura cinco días y usa capacidad de Gemini financiada por Admira.
 - Al licenciar, Gemini cambia de forma atómica a una credencial del cliente.
-- La generación de imágenes financiada por Admira puede continuar durante los
-  primeros 30 días de licencia.
+- La generación de imágenes financiada por Admira dura los mismos cinco días
+  iniciales; licenciar no reinicia el reloj. El operador puede ampliar una
+  fecha exacta por cliente desde el panel privado.
+- El cliente puede conectar su propia cuenta ChatGPT/Codex desde el primer día;
+  esa conexión no cancela ni sustituye el patrocinio central vigente.
 - Si cambia el teléfono, número o cuenta de Telegram, el cliente puede recuperar
   el mismo tenant mediante la identidad de licencia y una confirmación enviada
   al correo verificado.
@@ -34,7 +37,7 @@ El estado comercial no debe confundirse con el origen de cada proveedor.
 | Preparado | `pending_claim` | sin consumo | sin consumo |
 | Prueba activa | `trial` | pool de Admira | servicio central patrocinado |
 | Prueba vencida | `trial_expired` | bloqueado | bloqueado |
-| Licenciado, primeros 30 días | `licensed` | credencial del cliente | servicio central patrocinado |
+| Licenciado, dentro de los 5 días o extensión | `licensed` | credencial del cliente | servicio central patrocinado |
 | Licenciado después del beneficio | `licensed` | credencial del cliente | conexión del cliente, add-on o bloqueado |
 | Suspendido/cancelado | `suspended`/`cancelled` | bloqueado | bloqueado |
 
@@ -216,7 +219,7 @@ las condiciones aplicables antes de basar el servicio comercial en ella.
 
 ### Pool central mínimo para pruebas
 
-Para trials y el primer mes patrocinado se prepara un mínimo de **dos cuentas
+Para trials y ampliaciones explícitas se prepara un mínimo de **dos cuentas
 centrales autorizadas**, aisladas entre sí. No son cuentas de los tenants ni se
 copian sus archivos de autenticación. El broker selecciona una cuenta sana por
 trabajo y permite como máximo un intento de fallback por solicitud: si la cuenta

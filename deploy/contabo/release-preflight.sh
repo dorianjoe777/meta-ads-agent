@@ -104,7 +104,8 @@ for file in compose.yaml Control.Dockerfile app-requirements.txt \
   db/validate_central_image_jobs.sql db/migrations/009_telegram_license_recovery.sql \
   db/validate_telegram_license_recovery.sql db/migrations/010_operator_gemini_pool.sql \
   db/validate_operator_gemini_pool.sql db/migrations/011_operator_dashboard.sql \
-  db/validate_operator_dashboard.sql; do
+  db/validate_operator_dashboard.sql db/migrations/012_personal_chatgpt_sponsorship.sql \
+  db/validate_personal_chatgpt_sponsorship.sql; do
   need_file "$ROOT_DIR/$file"
 done
 
@@ -506,6 +507,8 @@ WHERE n.nspname = 'admira'
   fi
   operator_check_sql="SELECT
   to_regprocedure('admira.operator_gemini_pool_status()') IS NOT NULL
+  AND to_regprocedure('admira.operator_tenant_sponsorship_status()') IS NOT NULL
+  AND to_regprocedure('admira.operator_set_image_sponsorship_end(text,timestamp with time zone)') IS NOT NULL
   AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'admira_operator' AND NOT rolcanlogin AND NOT rolsuper AND NOT rolbypassrls)
   AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'admira_operator_login' AND rolcanlogin AND NOT rolsuper AND NOT rolbypassrls)
   AND pg_has_role('admira_operator_login', 'admira_operator', 'MEMBER')
@@ -513,8 +516,11 @@ WHERE n.nspname = 'admira'
   AND has_function_privilege('admira_operator', 'admira.operator_gemini_pool_status()', 'EXECUTE')
   AND has_function_privilege('admira_operator', 'admira.register_gemini_pool_project(text,integer,text)', 'EXECUTE')
   AND has_function_privilege('admira_operator', 'admira.register_gemini_pool_credential(uuid,text,text,text,text)', 'EXECUTE')
+  AND has_function_privilege('admira_operator', 'admira.operator_tenant_sponsorship_status()', 'EXECUTE')
+  AND has_function_privilege('admira_operator', 'admira.operator_set_image_sponsorship_end(text,timestamp with time zone)', 'EXECUTE')
   AND NOT has_function_privilege('admira_operator', 'admira.assign_hosted_gemini_trial(text)', 'EXECUTE')
   AND NOT has_table_privilege('admira_operator', 'admira.gemini_pool_projects', 'SELECT,INSERT,UPDATE,DELETE')
+  AND NOT has_table_privilege('admira_operator', 'admira.tenant_entitlements', 'SELECT,INSERT,UPDATE,DELETE')
   AND NOT has_table_privilege('admira_operator', 'admira.tenant_license_contacts', 'SELECT');"
   if printf '%s\n' "$operator_check_sql" | \
       docker compose --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compose.yaml" exec -T postgres \
@@ -534,9 +540,10 @@ else
     || fail 'capacity migration safety gates missing'
   grep -q "e.trial_ends_at > now()" "$ROOT_DIR/db/migrations/007_trial_provider_lifecycle.sql" \
     && grep -q "CASE WHEN e.licensed_at IS NULL" "$ROOT_DIR/db/migrations/007_trial_provider_lifecycle.sql" \
+    && grep -q "coalesce(e.image_sponsorship_ends_at, e.trial_ends_at, now_value)" "$ROOT_DIR/db/migrations/007_trial_provider_lifecycle.sql" \
     && grep -q "THEN 'personal_chatgpt'" "$ROOT_DIR/db/migrations/007_trial_provider_lifecycle.sql" \
     && grep -q "t.status <> 'active' THEN 'blocked'" "$ROOT_DIR/db/migrations/007_trial_provider_lifecycle.sql" \
-    && ok 'trial/licensing migration preserves five-day, thirty-day and personal ChatGPT boundaries' \
+    && ok 'trial/licensing migration preserves one five-day sponsorship and personal ChatGPT boundaries' \
     || fail 'trial/licensing migration safety gates missing'
   grep -q 'ADMIRA_CENTRAL_IMAGE_READY.*:-false' "$ROOT_DIR/compose.yaml" \
     && ok 'central image service remains fail-closed by default' \
@@ -567,9 +574,12 @@ else
   fi
   if grep -q 'CREATE ROLE admira_operator NOLOGIN NOBYPASSRLS' "$ROOT_DIR/db/migrations/011_operator_dashboard.sql" \
     && grep -q 'operator_gemini_pool_status' "$ROOT_DIR/db/migrations/011_operator_dashboard.sql" \
+    && grep -q 'operator_set_image_sponsorship_end' "$ROOT_DIR/db/migrations/012_personal_chatgpt_sponsorship.sql" \
+    && grep -q 'sponsorship cannot be shortened' "$ROOT_DIR/db/migrations/012_personal_chatgpt_sponsorship.sql" \
     && grep -q 'REVOKE admira_provisioner FROM admira_operator_login' "$ROOT_DIR/db/bootstrap_service_roles.sql" \
-    && grep -q 'operator_dashboard_validation=passed' "$ROOT_DIR/db/validate_operator_dashboard.sql"; then
-    ok 'operator dashboard migration, dedicated role and disposable validator are present'
+    && grep -q 'operator_dashboard_validation=passed' "$ROOT_DIR/db/validate_operator_dashboard.sql" \
+    && grep -q 'personal_chatgpt_sponsorship_validation=passed' "$ROOT_DIR/db/validate_personal_chatgpt_sponsorship.sql"; then
+    ok 'operator dashboard, sponsorship policy and disposable validators are present'
   else
     fail 'operator dashboard database boundary is missing'
   fi

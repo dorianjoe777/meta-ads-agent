@@ -74,6 +74,8 @@ class ContaboOperatorDashboardTests(unittest.TestCase):
         cls.bootstrap = (DEPLOY / "bootstrap-control-plane.sh").read_text(encoding="utf-8")
         cls.preflight = (DEPLOY / "release-preflight.sh").read_text(encoding="utf-8")
         cls.dashboard = (DEPLOY / "operator_dashboard.py").read_text(encoding="utf-8")
+        cls.html = (DEPLOY / "operator_dashboard.html").read_text(encoding="utf-8")
+        cls.javascript = (DEPLOY / "operator_dashboard.js").read_text(encoding="utf-8")
 
     def test_operator_profile_is_loopback_and_isolated(self):
         service = self.compose.split("  operator-dashboard:\n", 1)[1].split("\n  telegram-poller:\n", 1)[0]
@@ -110,6 +112,21 @@ class ContaboOperatorDashboardTests(unittest.TestCase):
         self.assertIn("login_backoff", self.dashboard)
         self.assertIn("MAX_BODY = 16 * 1024", self.dashboard)
         self.assertIsNotNone(tree)
+
+    def test_sponsorship_ui_is_labeled_bounded_and_keeps_personal_auth_independent(self):
+        for element_id in (
+            'id="sponsorship-section"', 'id="sponsorship-form"',
+            'id="sponsorship-tenant"', 'id="sponsorship-end"',
+            'id="sponsorship-error"', 'id="sponsorship-rows"',
+        ):
+            self.assertIn(element_id, self.html)
+        self.assertIn('label for="sponsorship-tenant"', self.html)
+        self.assertIn('label for="sponsorship-end"', self.html)
+        self.assertIn("Conectar su ChatGPT personal no elimina el beneficio", self.html)
+        self.assertIn("/api/operator/sponsorship/status", self.javascript)
+        self.assertIn("/api/operator/sponsorship/extend", self.javascript)
+        self.assertIn("365 * 24 * 60 * 60 * 1000", self.javascript)
+        self.assertIn("Su conexión ChatGPT personal no se modifica", self.javascript)
 
     def test_bootstrap_prepares_private_storage_without_password(self):
         self.assertIn("--prepare-operator-host-dirs", self.bootstrap)
@@ -338,6 +355,47 @@ class OperatorProviderTests(PrivateFixture):
         self.assertNotIn("FROM admira.gemini_pool_projects", cursor.execute.call_args.args[0])
         self.assertEqual(set(result[0]), {"project_ref", "capacity", "health", "health_checked_at"})
 
+    def test_sponsorship_status_uses_bounded_secret_free_projection(self):
+        now = datetime.now(timezone.utc)
+        cursor = mock.MagicMock()
+        cursor.__enter__.return_value = cursor
+        cursor.fetchall.return_value = [
+            ("buyer-001", "Buyer One", "trial", now, None, now, "central_sponsored")
+        ]
+        connection = mock.MagicMock()
+        connection.__enter__.return_value = connection
+        connection.cursor.return_value = cursor
+        self.state.connect = lambda: connection
+        result = self.state.sponsorship_status()
+        statement = cursor.execute.call_args.args[0]
+        self.assertIn("admira.operator_tenant_sponsorship_status()", statement)
+        self.assertNotIn("FROM admira.tenants", statement)
+        self.assertEqual(result[0]["runtime_key"], "buyer-001")
+        for forbidden in ("secret", "fingerprint", "license_id", "telegram"):
+            self.assertNotIn(forbidden, json.dumps(result).lower())
+
+    def test_sponsorship_extension_requires_timezone_and_uses_exact_database_function(self):
+        prior = datetime(2026, 9, 3, tzinfo=timezone.utc)
+        requested = datetime(2026, 9, 8, tzinfo=timezone.utc)
+        cursor = mock.MagicMock()
+        cursor.__enter__.return_value = cursor
+        cursor.fetchone.return_value = (
+            "buyer-001", "trial", prior, requested, "central_sponsored"
+        )
+        connection = mock.MagicMock()
+        connection.__enter__.return_value = connection
+        connection.cursor.return_value = cursor
+        self.state.connect = lambda: connection
+        with self.assertRaisesRegex(ValueError, "invalid_sponsorship_extension"):
+            self.state.extend_sponsorship("buyer-001", "2026-09-08T12:00:00")
+        result = self.state.extend_sponsorship("buyer-001", "2026-09-08T12:00:00+00:00")
+        statement, parameters = cursor.execute.call_args.args
+        self.assertIn("admira.operator_set_image_sponsorship_end", statement)
+        self.assertEqual(parameters[0], "buyer-001")
+        self.assertEqual(parameters[1], datetime(2026, 9, 8, 12, tzinfo=timezone.utc))
+        connection.commit.assert_called_once()
+        self.assertEqual(result["image_sponsorship_ends_at"], requested.isoformat())
+
     def test_codex_status_requires_real_private_token_shape_not_file_presence(self):
         path = self.auth_file()
         result = self.state.login.account_status()
@@ -491,6 +549,52 @@ class OperatorHTTPTests(PrivateFixture):
         self.assertIn("Max-Age=0", headers["Set-Cookie"])
         status, _headers, _body = self.request("GET", "/api/operator/codex/status", headers={"Cookie": cookie})
         self.assertEqual(status, 401)
+
+    def test_sponsorship_routes_require_operator_session_and_csrf(self):
+        status, _headers, _body = self.request("GET", "/api/operator/sponsorship/status")
+        self.assertEqual(status, 401)
+        cookie, csrf = self.login()
+        fixture = [{
+            "runtime_key": "buyer-001", "display_name": "Buyer One",
+            "lifecycle_state": "trial", "trial_ends_at": "2026-09-03T00:00:00+00:00",
+            "image_sponsorship_ends_at": None,
+            "effective_sponsorship_ends_at": "2026-09-03T00:00:00+00:00",
+            "route": "central_sponsored",
+        }]
+        with mock.patch.object(self.state, "sponsorship_status", return_value=fixture):
+            status, _headers, body = self.request(
+                "GET", "/api/operator/sponsorship/status", headers={"Cookie": cookie}
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["tenants"], fixture)
+        status, _headers, _body = self.request(
+            "POST", "/api/operator/sponsorship/extend",
+            {"runtime_key": "buyer-001", "ends_at": "2026-09-08T00:00:00Z"},
+            {"Cookie": cookie},
+        )
+        self.assertEqual(status, 403)
+        with mock.patch.object(self.state, "extend_sponsorship", return_value={
+            "ok": True, "runtime_key": "buyer-001",
+            "image_sponsorship_ends_at": "2026-09-08T00:00:00+00:00",
+        }) as extend:
+            status, _headers, body = self.request(
+                "POST", "/api/operator/sponsorship/extend",
+                {"runtime_key": "buyer-001", "ends_at": "2026-09-08T00:00:00Z"},
+                {"Cookie": cookie, "X-CSRF-Token": csrf},
+            )
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["ok"])
+        extend.assert_called_once_with("buyer-001", "2026-09-08T00:00:00Z")
+
+        with mock.patch.object(self.state, "extend_sponsorship", side_effect=ValueError("private detail")):
+            status, _headers, body = self.request(
+                "POST", "/api/operator/sponsorship/extend",
+                {"runtime_key": "buyer-001", "ends_at": "invalid"},
+                {"Cookie": cookie, "X-CSRF-Token": csrf},
+            )
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body)["error_code"], "invalid_sponsorship_extension")
+        self.assertNotIn("private detail", body.decode())
 
     def test_host_and_fetch_site_reject_dns_rebinding_and_cross_site_requests(self):
         for headers in ({"Host": "attacker.example"}, {"Host": "127.0.0.1.evil.example"},

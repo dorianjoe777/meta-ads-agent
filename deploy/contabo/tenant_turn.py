@@ -61,7 +61,7 @@ os.environ["ADMIRA_INTERNAL_MODEL_RECOVERY_TOKEN_FILE"] = (
 )
 
 
-def sponsored_image_reply(access, language):
+def personal_connection_ready_reply(reply, access, language):
     english = str(language or "es").lower().startswith("en")
     ready = access.get("central_ready") is True
     lifecycle = str(access.get("lifecycle_state") or "")
@@ -72,37 +72,24 @@ def sponsored_image_reply(access, language):
         period = (f"until {ends_at}" if english else f"hasta {ends_at}")
     else:
         period = "during your sponsored period" if english else "durante tu período patrocinado"
-    if ready:
-        return (
-            f"✅ You do not need to connect ChatGPT yet. Admira includes image generation {period}. "
-            "When that benefit ends, this same command will let you connect your own ChatGPT account."
-            if english else
-            f"✅ Todavía no necesitas conectar ChatGPT. Admira incluye la generación de imágenes {period}. "
-            "Cuando termine ese beneficio, este mismo comando te permitirá conectar tu propia cuenta de ChatGPT."
-        )
-    return (
-        f"You do not need to connect your own ChatGPT account yet. Your sponsored image generation applies {period}, "
-        "but the central image service is still being enabled. Admira will not ask you for a personal login before it is ready."
+    sponsored = (
+        f" Admira will still use its sponsored image accounts {period}"
+        + ("." if ready else ", although that central service is still being enabled.")
         if english else
-        f"Todavía no necesitas conectar tu propia cuenta de ChatGPT. Tu generación de imágenes patrocinada aplica {period}, "
-        "pero el servicio central aún se está habilitando. Admira no te pedirá un login personal antes de que esté listo."
+        f" Admira seguirá usando sus cuentas patrocinadas para imágenes {period}"
+        + ("." if ready else ", aunque ese servicio central todavía se está habilitando.")
     )
+    return str(reply or "").rstrip() + sponsored
 
 
-def blocked_image_reply(access, language):
-    english = str(language or "es").lower().startswith("en")
-    lifecycle = str(access.get("lifecycle_state") or "")
-    if lifecycle == "trial_expired":
-        return (
-            "Your free trial has ended. Activate your license to continue; after the sponsored image month, this command will let you connect your own ChatGPT account."
-            if english else
-            "Tu prueba gratis terminó. Activa tu licencia para continuar; después del mes patrocinado de imágenes, este comando te permitirá conectar tu propia cuenta de ChatGPT."
-        )
+def current_personal_chatgpt_copy(reply):
+    """Normalize legacy r90 handoff copy to the hosted Luna fallback policy."""
     return (
-        "Image generation is not enabled for this workspace right now. Contact Admira support; no ChatGPT login was requested."
-        if english else
-        "La generación de imágenes no está habilitada para este espacio ahora. Contacta a soporte de Admira; no se solicitó ningún login de ChatGPT."
+        str(reply or "")
+        .replace("Terra fallback", "Luna fallback")
+        .replace("fallback Terra", "fallback Luna")
     )
+
 
 def hosted_command(payload):
     """Handle commands which cannot be delegated to the language model."""
@@ -118,12 +105,6 @@ def hosted_command(payload):
     reset_commands = {"nuevo", "new", "reset", "restart"}
     chatgpt_commands = {"conectar_chatgpt", "reconectar_chatgpt", "connect_chatgpt"}
     complete_reset_phrase = "Si quiero resetear completamente"
-    # Sponsored and blocked slash commands do not depend on importing the
-    # personal ChatGPT recovery implementation from the tenant image.
-    if command in chatgpt_commands and image_route == "central_sponsored":
-        return {"ok": True, "reply": sponsored_image_reply(image_access, language)}
-    if command in chatgpt_commands and image_route == "blocked":
-        return {"ok": True, "reply": blocked_image_reply(image_access, language)}
     try:
         from admira_hermes_runtime_patch import (
             _automatic_codex_recovery, _chatgpt_connection_reply,
@@ -199,18 +180,27 @@ def hosted_command(payload):
             else "Listo. Reinicié solo el contexto de esta conversación; tus conexiones de Meta, cuentas, Página y trabajo guardado siguen intactos."
         )}
     if command in chatgpt_commands or _chatgpt_connection_request(text):
+        # Personal authentication is tenant-local and independent from Admira's
+        # sponsored image entitlement.  A buyer may connect on day one and use
+        # an account-advertised Codex model through /model while central images
+        # continue to use the sponsored pool until its durable end timestamp.
+        recovery = _automatic_codex_recovery(wait_seconds=15, action="switch")
+        if recovery.get("url") and recovery.get("code"):
+            _remember_chatgpt_login_pending(session_key)
+        # Existing r90 tenant images still carry an older Terra label. The
+        # hosted routing contract uses Luna, so normalize that legacy copy at
+        # the host boundary until every tenant is upgraded to r91 or newer.
+        reply = current_personal_chatgpt_copy(_chatgpt_connection_reply(recovery, language))
         if image_route == "central_sponsored":
-            return {"ok": True, "reply": sponsored_image_reply(image_access, language)}
-        if image_route == "blocked":
-            return {"ok": True, "reply": blocked_image_reply(image_access, language)}
-        if image_route == "personal_chatgpt" or image_route == "legacy":
-            recovery = _automatic_codex_recovery(wait_seconds=15, action="switch")
-            if recovery.get("url") and recovery.get("code"):
-                _remember_chatgpt_login_pending(session_key)
-            return {"ok": True, "reply": _chatgpt_connection_reply(recovery, language)}
-        return {"ok": True, "reply": blocked_image_reply(image_access, language)}
+            reply = personal_connection_ready_reply(reply, image_access, language)
+        return {"ok": True, "reply": reply}
     if _chatgpt_login_confirmation_request(text, session_key):
-        return {"ok": True, "reply": _chatgpt_login_confirmation_reply(session_key, language)}
+        return {
+            "ok": True,
+            "reply": current_personal_chatgpt_copy(
+                _chatgpt_login_confirmation_reply(session_key, language)
+            ),
+        }
     return None
 
 def prepare_attachments(payload):
@@ -275,9 +265,9 @@ if result is None:
     ):
         language = str(payload.get("language") or "es").lower()
         result = {"ok": True, "reply": (
-            "I could not start Admira's text model yet. Your workspace and history are safe; try again shortly or contact Admira support. ChatGPT connection is only for image generation when your sponsored period has ended."
+            "I could not start Admira's text model yet. Your workspace and history are safe; try again shortly or contact Admira support. You may connect your own ChatGPT account at any time with /conectar_chatgpt."
             if language.startswith("en") else
-            "Todavía no pude iniciar el modelo de texto de Admira. Tu espacio y tu historial están seguros; inténtalo de nuevo en un momento o contacta a soporte. La conexión de ChatGPT sólo se usa para imágenes cuando haya terminado tu período patrocinado."
+            "Todavía no pude iniciar el modelo de texto de Admira. Tu espacio y tu historial están seguros; inténtalo de nuevo en un momento o contacta a soporte. Puedes conectar tu propia cuenta de ChatGPT en cualquier momento con /conectar_chatgpt."
         )}
 if not isinstance(result, dict):
     result = {"ok": bool(result), "reply": str(result or "")}

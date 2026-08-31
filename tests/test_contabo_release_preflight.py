@@ -45,6 +45,8 @@ class ReleasePreflightTests(unittest.TestCase):
         self.assertIn("--profile operator-dashboard config --quiet", text)
         self.assertIn("operator_dashboard.py", text)
         self.assertIn("011_operator_dashboard.sql", text)
+        self.assertIn("012_personal_chatgpt_sponsorship.sql", text)
+        self.assertIn("operator_set_image_sponsorship_end", text)
         self.assertIn("operator_gemini_pool_status()", text)
         self.assertIn("operator_private", text)
         self.assertIn("operator_provider_egress", text)

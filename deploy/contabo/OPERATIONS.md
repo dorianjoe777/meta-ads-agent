@@ -437,7 +437,7 @@ intercambio aislado por tenant; ningún tenant recibe la credencial central.
 #### Pool central de cuentas para trials
 
 La preparación comercial exige como mínimo **dos cuentas centrales autorizadas**
-para trials y el primer mes patrocinado. Cada una usa un directorio de auth
+para los cinco días de trial y las ampliaciones explícitas. Cada una usa un directorio de auth
 privado distinto bajo `/srv/admira/shared/central-codex-auth/`:
 `primary/` y `secondary/`, con permisos 0700/0600 y propiedad del usuario del
 servicio. Compose monta esa raíz en `/app/runtime/hermes/codex-auth-pool` sólo
@@ -535,9 +535,14 @@ dashboard público):
   identificador de licencia sí se conserva en PostgreSQL para permitir la
   recuperación; nunca se guardan allí claves Gemini ni credenciales
   ChatGPT/Codex;
-- la ruta de imágenes central queda patrocinada durante 30 días desde la
-  primera licencia; después, `/conectar_chatgpt` permite al cliente conectar su
-  propia conexión ChatGPT/Codex para imágenes;
+- la ruta de imágenes central sigue el mismo reloj de cinco días iniciado por
+  el primer claim. Licenciar no lo reinicia. Migration 012 permite al operador
+  ampliar una fecha exacta por cliente desde el panel, con auditoría y sin poder
+  acortarla;
+- `/conectar_chatgpt` está disponible desde el primer día y guarda el login sólo
+  dentro del tenant. La conexión personal no modifica la ruta patrocinada ni su
+  fecha. `/model` puede usar un modelo Codex que la cuenta anuncie; si Gemini es
+  el principal, Luna puede ser el fallback personal único;
 - `ADMIRA_CENTRAL_IMAGE_READY=false` permanece obligatorio hasta que el broker
   central real complete su canary. El núcleo de broker existente es una base de
   integración y no constituye todavía un servicio central activado.
@@ -562,11 +567,13 @@ registran el resultado sin guardar la clave. La CLI/pool no se considera
 desplegada o live hasta validar proyectos/keys reales y el validator en una
 base desechable.
 
-La migración 011 (`operator_dashboard`) añade exclusivamente el acceso limitado
+La migración 011 (`operator_dashboard`) añade el acceso limitado
 del panel interno: registrar proyectos/credenciales Gemini y consultar su
-estado sin secretos. No cambia los datos ni permisos de los clientes. El panel
-permite guardar claves y conectar las dos cuentas centrales, pero no crea
-clientes, asigna sus claves, cambia licencias ni activa imágenes. Se accede por
+estado sin secretos. Migration 012 añade sólo la proyección de vigencia y la
+operación auditada para ampliar el fin del patrocinio de un cliente activo; no
+expone credenciales, licencia ni contactos y no puede acortar fechas. El panel
+permite guardar claves, conectar las dos cuentas centrales y realizar esa
+ampliación, pero no crea clientes, asigna sus claves, cambia licencias ni activa imágenes. Se accede por
 SSH a `127.0.0.1:8791`; nunca se publica el puerto en Internet. El procedimiento
 de primera contraseña, conexión y mantenimiento está en
 [OPERATOR_DASHBOARD.md](OPERATOR_DASHBOARD.md). En el Mac configurado,
@@ -998,6 +1005,57 @@ cubiertos por pruebas. Eso no equivale a disponibilidad live: el poller exige
 `ADMIRA_TELEGRAM_RECOVERY_READY=true` y el worker de correo sólo existe en el
 perfil opt-in `recovery-email`. Actualmente la bandera es `false`; un chat no
 reconocido no debe recibir una promesa de recuperación.
+
+### Canary dirigido para continuar mañana: ocho pasos
+
+Este recorrido valida la experiencia que se venderá, no el futuro SaaS. Usar
+tenants desechables del operador y registrar por paso: hora UTC, `runtime_key`,
+`update_id`/job id, imagen del contenedor, resultado, latencia y recursos. Nunca
+registrar API keys, tokens, códigos de dispositivo, correos ni contenido de
+`auth.json`.
+
+1. **Instalar el candidato como una sola unidad.** Guardar backup recuperable,
+   aplicar migraciones 001–012, ejecutar los validators sólo en PostgreSQL
+   desechable y pasar `release-preflight.sh --server --operator-dashboard`.
+   Confirmar roles sin acceso directo a tablas, tenants aún fijados a r90 y los
+   flags de imágenes/recovery apagados.
+2. **Crear y reclamar un tenant canario nuevo.** Consumir un claim desde
+   Telegram y comprobar una sola identidad/binding, `trial_started_at` y
+   `trial_ends_at = inicio + 5 días`, ruta `central_sponsored` y ninguna
+   ampliación implícita.
+3. **Probar continuidad y entradas reales.** Conversar, guardar un dato
+   reconocible, enviar foto, video corto y PDF, ejecutar un job programado,
+   suspender y despertar el runtime. Confirmar el mismo historial, memoria,
+   archivos, binding y conexiones después del despertar, sin cruces con un
+   segundo tenant.
+4. **Conectar ChatGPT personal durante el día uno.** Ejecutar
+   `/conectar_chatgpt`, completar el device login oficial y comprobar que la
+   credencial queda sólo en el `CODEX_HOME` de ese tenant. La ruta de imágenes y
+   su fin de cinco días deben permanecer `central_sponsored` e inalterados.
+5. **Validar selección de modelo y fallback personal.** Con `/model`, elegir un
+   modelo Codex que la cuenta conectada anuncie y confirmar que funciona como
+   principal. Volver a Gemini como principal, provocar un fallo recuperable y
+   comprobar un solo fallback a `gpt-5.6-luna`. No esperar una segunda cadena
+   Luna automática cuando otro modelo Codex ya es el principal.
+6. **Validar las dos cuentas centrales de imágenes.** Generar una imagen con la
+   primaria, provocar un fallo/cooldown controlado y confirmar exactamente un
+   intento en la secundaria. Verificar idempotencia, hash/MIME, entrega al
+   tenant correcto y que ninguna autenticación central aparece en su runtime.
+7. **Ampliar un caso desde el dashboard.** Elegir el canario, fijar una fecha
+   posterior y refrescar el inventario. Repetir exactamente la misma fecha:
+   debe ser no-op, dejar un solo evento real, no cambiar `trial_ends_at`, el
+   modelo, el login personal ni otro tenant, y rechazar fecha anterior,
+   suspendido o más de 365 días.
+8. **Convertir el mismo tenant a licencia y cruzar el límite.** Instalar la key
+   Gemini del cliente con `gemini-license`; conservar Telegram, memoria,
+   archivos, jobs y ChatGPT personal. Confirmar que comprar no reinicia los
+   cinco días ni borra una ampliación manual. Al vencer la fecha efectiva, la
+   ruta debe pasar a `personal_chatgpt`; una prueba expirada sin licencia sigue
+   suspendida.
+
+El canary se aprueba sólo si los ocho pasos tienen evidencia y no hubo fuga de
+datos, doble efecto, autenticación central dentro de un tenant, OOM ni entrega
+cruzada. Un fallo detiene la promoción y conserva estado/logs para diagnóstico.
 
 ### Activación y rollback de recuperación
 

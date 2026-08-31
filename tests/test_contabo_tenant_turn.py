@@ -101,15 +101,17 @@ class TenantTurnTests(unittest.TestCase):
                     "image_access": {"route": route, "lifecycle_state": state},
                 })
 
-    def test_hosted_chatgpt_command_is_sponsorship_aware_and_tenant_local(self):
+    def test_hosted_chatgpt_connection_is_always_tenant_local_and_independent(self):
         script = tenant_turn.INNER_SCRIPT
         self.assertIn('image_route == "central_sponsored"', script)
-        self.assertIn('image_route == "blocked"', script)
-        self.assertIn('image_route == "personal_chatgpt"', script)
+        self.assertIn("personal_connection_ready_reply", script)
+        self.assertIn('recovery = _automatic_codex_recovery(wait_seconds=15, action="switch")', script)
+        self.assertNotIn('if command in chatgpt_commands and image_route', script)
+        self.assertNotIn('image_route == "personal_chatgpt"', script)
         self.assertIn("http://127.0.0.1:7871/api/internal/model-recovery", script)
         self.assertIn("/app/dashboard/data/internal_model_recovery.token", script)
         self.assertNotIn('os.environ.setdefault(\n    "ADMIRA_INTERNAL_MODEL_RECOVERY', script)
-        self.assertNotIn("To start your private Admira agent, send /connect_chatgpt", script)
+        self.assertIn("A buyer may connect on day one", script)
 
     def test_rejects_paths_and_malformed_ids(self):
         for payload in (

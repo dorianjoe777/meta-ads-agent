@@ -30,6 +30,7 @@ import time
 import tomllib
 import urllib.parse
 from dataclasses import dataclass, field
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Mapping
@@ -704,6 +705,68 @@ class OperatorState:
         return [{"project_ref": str(row[0])[:200], "capacity": int(row[1]), "health": str(row[2])[:32],
                  "health_checked_at": row[3].isoformat() if hasattr(row[3], "isoformat") else None} for row in rows[:1000]]
 
+    def sponsorship_status(self) -> list[dict[str, Any]]:
+        """Return only the bounded operator projection, never tenant secrets."""
+        connect = self.connect or _default_connect
+        try:
+            with connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT runtime_key, display_name, lifecycle_state, trial_ends_at, "
+                        "image_sponsorship_ends_at, effective_sponsorship_ends_at, route "
+                        "FROM admira.operator_tenant_sponsorship_status() ORDER BY runtime_key"
+                    )
+                    rows = cur.fetchall()
+        except Exception:
+            raise RuntimeError("sponsorship_status_unavailable") from None
+        return [{
+            "runtime_key": str(row[0])[:63],
+            "display_name": str(row[1])[:200],
+            "lifecycle_state": str(row[2])[:32],
+            "trial_ends_at": row[3].isoformat() if hasattr(row[3], "isoformat") else None,
+            "image_sponsorship_ends_at": row[4].isoformat() if hasattr(row[4], "isoformat") else None,
+            "effective_sponsorship_ends_at": row[5].isoformat() if hasattr(row[5], "isoformat") else None,
+            "route": str(row[6])[:32],
+        } for row in rows[:1000]]
+
+    def extend_sponsorship(self, runtime_key: str, ends_at: str) -> dict[str, Any]:
+        if (not isinstance(runtime_key, str)
+                or not re.fullmatch(r"[a-z0-9][a-z0-9-]{2,62}", runtime_key)
+                or not isinstance(ends_at, str) or not 20 <= len(ends_at) <= 64):
+            raise ValueError("invalid_sponsorship_extension")
+        try:
+            parsed = datetime.fromisoformat(ends_at.replace("Z", "+00:00"))
+        except ValueError:
+            raise ValueError("invalid_sponsorship_extension") from None
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("invalid_sponsorship_extension")
+        connect = self.connect or _default_connect
+        try:
+            with connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT runtime_key, lifecycle_state, previous_ends_at, "
+                        "image_sponsorship_ends_at, route "
+                        "FROM admira.operator_set_image_sponsorship_end(%s, %s)",
+                        (runtime_key, parsed),
+                    )
+                    row = cur.fetchone()
+                conn.commit()
+        except Exception as exc:
+            if getattr(exc, "sqlstate", "") in {"22023", "55000"}:
+                raise ValueError("invalid_sponsorship_extension") from None
+            raise RuntimeError("sponsorship_update_failed") from None
+        if not row:
+            raise RuntimeError("sponsorship_update_failed")
+        return {
+            "ok": True,
+            "runtime_key": str(row[0])[:63],
+            "lifecycle_state": str(row[1])[:32],
+            "previous_ends_at": row[2].isoformat() if hasattr(row[2], "isoformat") else None,
+            "image_sponsorship_ends_at": row[3].isoformat() if hasattr(row[3], "isoformat") else None,
+            "route": str(row[4])[:32],
+        }
+
 
 def _default_connect():
     import psycopg
@@ -925,6 +988,12 @@ class OperatorHandler(BaseHTTPRequestHandler):
         self._auth()
         if path == "/api/operator/gemini/status":
             self._json({"ok": True, "projects": self.state.gemini_status()})
+        elif path == "/api/operator/sponsorship/status":
+            try:
+                tenants = self.state.sponsorship_status()
+            except RuntimeError:
+                raise RequestError("sponsorship_status_unavailable", 503) from None
+            self._json({"ok": True, "tenants": tenants})
         elif path == "/api/operator/codex/status":
             self._json({"ok": True, "accounts": self.state.login.account_status(), "broker_ready": False})
         elif match := re.fullmatch(r"/api/operator/codex/(primary|secondary)/status", path):
@@ -968,6 +1037,15 @@ class OperatorHandler(BaseHTTPRequestHandler):
         if path == "/api/operator/gemini/register":
             result = self.state.register_gemini(self._string(body, "api_key", body.get("key", "")),
                                                 self._string(body, "project_ref"), body.get("capacity", 1))
+        elif path == "/api/operator/sponsorship/extend":
+            try:
+                result = self.state.extend_sponsorship(
+                    self._string(body, "runtime_key"), self._string(body, "ends_at")
+                )
+            except ValueError:
+                raise RequestError("invalid_sponsorship_extension", 400) from None
+            except RuntimeError:
+                raise RequestError("sponsorship_update_failed", 503) from None
         elif path == "/api/operator/codex/login":
             result = self.state.login.start(self._string(body, "account", body.get("slot", "")))
         elif match := re.fullmatch(r"/api/operator/codex/(primary|secondary)/login", path):

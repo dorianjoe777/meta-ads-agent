@@ -64,7 +64,8 @@ body::before {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -435,7 +436,8 @@ label {
   letter-spacing: 0.01em;
 }
 
-input {
+input,
+select {
   width: 100%;
   min-height: 48px;
   padding: 11px 13px;
@@ -448,25 +450,33 @@ input {
   transition: border-color 150ms ease, box-shadow 150ms ease, background 150ms ease;
 }
 
-input:hover {
+input:hover,
+select:hover {
   border-color: #536a74;
 }
 
-input:focus {
+input:focus,
+select:focus {
   border-color: var(--mint);
   background: #0b1518;
   box-shadow: var(--focus);
+}
+
+select {
+  color-scheme: dark;
 }
 
 input::placeholder {
   color: #82959d;
 }
 
-input[aria-invalid="true"] {
+input[aria-invalid="true"],
+select[aria-invalid="true"] {
   border-color: var(--red);
 }
 
-input[aria-invalid="true"]:focus {
+input[aria-invalid="true"]:focus,
+select[aria-invalid="true"]:focus {
   box-shadow: 0 0 0 3px rgb(255 133 135 / 25%);
 }
 
@@ -926,6 +936,10 @@ input[aria-invalid="true"]:focus {
   background: var(--surface-muted);
 }
 
+.sponsorship-form {
+  grid-template-columns: minmax(240px, 1fr) minmax(260px, 1fr);
+}
+
 .input-with-unit {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1034,6 +1048,14 @@ td {
 td:first-child {
   color: var(--text);
   font-family: var(--font-mono);
+}
+
+.table-secondary {
+  display: block;
+  margin-top: 3px;
+  color: var(--quiet);
+  font-family: var(--font-body);
+  font-size: 0.7rem;
 }
 
 tr:last-child td {
