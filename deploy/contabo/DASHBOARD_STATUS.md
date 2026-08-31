@@ -26,15 +26,37 @@ backend del dashboard permanecen en la imagen inmutable `e6fa…`. Se comprobaro
 los hashes de `operator_dashboard.html`, `operator_dashboard.js` y
 `operator_dashboard.py` entre la imagen live y el código fuente: son iguales.
 
-## Acceso práctico
+## Acceso práctico y persistente desde este Mac
 
 El panel real vive sólo en el loopback del VPS (`127.0.0.1:8791`). No se publica
-en Internet porque permite altas, expiraciones y licencias. El acceso fácil es
-ejecutar o abrir `open-operator-dashboard.command` en este checkout: abre un
-túnel SSH usando `admira-contabo`, elige un puerto local libre y abre el
-navegador. La URL que imprime el script es una vista segura del **panel live del
-VPS**, no una aplicación local. Debe conservarse abierta esa terminal mientras
-se usa el panel.
+en Internet porque permite altas, expiraciones y licencias.
+
+En el Mac configurado se instaló el LaunchAgent por usuario
+`com.admira.operator-dashboard-tunnel`. Mantiene el túnel
+`127.0.0.1:18793` → VPS `127.0.0.1:8791`, arranca al iniciar sesión y se
+reconecta si SSH se cae o el Mac despierta. La URL fija
+`http://127.0.0.1:18793/` es una vista segura del **panel live del VPS**, no una
+aplicación local ni una URL pública.
+
+El agente usa la llave existente sólo con autenticación de clave pública,
+verificación estricta del host, `BatchMode`, `ExitOnForwardFailure`, keepalive y
+sin agent forwarding. Su plist está en
+`/Users/macminim1/Library/LaunchAgents/com.admira.operator-dashboard-tunnel.plist`
+con modo `0600`; registra sólo errores SSH en una carpeta `0700` y enlaza sólo
+el loopback, por lo que ni la LAN ni Internet pueden abrir el panel.
+
+El servicio sólo puede estar activo cuando este Mac está encendido y el usuario
+ha iniciado sesión; esa es la alternativa segura a instalar un daemon root. Para
+verificarlo o reiniciarlo sin tocar el VPS:
+
+```bash
+launchctl print gui/$(id -u)/com.admira.operator-dashboard-tunnel
+launchctl kickstart -k gui/$(id -u)/com.admira.operator-dashboard-tunnel
+```
+
+El launcher [open-operator-dashboard.command](open-operator-dashboard.command)
+sigue disponible como respaldo manual; elige un puerto temporal distinto y no
+debe ser necesario mientras el LaunchAgent esté sano.
 
 ## Qué contiene el panel live
 
