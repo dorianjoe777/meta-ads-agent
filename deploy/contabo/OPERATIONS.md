@@ -34,6 +34,9 @@ Estado live verificado tras el último despliegue (la marca
 | Estado de compradores | **Canary operativo**: cuatro buyer workers activos, cero reinicios, un `runtime-worker`; tenants aún en `r90` |
 | Panel interno | Activo sólo en `127.0.0.1:8791`; protegido por la contraseña inicial; pool Gemini y cuentas centrales siguen siendo configuración del operador |
 
+El inventario secret-free del panel, la relación exacta entre marker/imagen y
+los gates pendientes están en [DASHBOARD_STATUS.md](DASHBOARD_STATUS.md).
+
 Backup privado validado de esta promoción:
 `/srv/admira/backups/operator-lifecycle-caeb723-20260831T201433Z/`.
 El server preflight terminó en `PASS` después de fijar la marca activa. Las

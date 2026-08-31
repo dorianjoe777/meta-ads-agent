@@ -8,6 +8,10 @@ the dashboard itself still has no direct Docker, tenant-root, pool-secret, or
 provisioner-database authority. Never open 8791 in a firewall or put this
 service behind a public reverse proxy.
 
+For the current verified VPS deployment, inventory and remaining gates, read
+[DASHBOARD_STATUS.md](DASHBOARD_STATUS.md) before changing accounts or provider
+configuration.
+
 The dashboard receives the socket directory read-only at
 `/run/admira-tenant-provisioner`. The HMAC key is mounted separately at
 `/run/admira-tenant-provisioner.key`; keeping the file outside that read-only

@@ -1,0 +1,105 @@
+# Estado actual del dashboard de operador
+
+Este documento es el punto de control conciso del **dashboard privado del
+operador** que está desplegado en Contabo. No es un dashboard para compradores
+y no convierte el panel en una URL pública. La fecha/hora de la última lectura
+directa del VPS fue `2026-08-31T21:08:35Z`.
+
+## Despliegue live verificado
+
+| Elemento | Estado |
+| --- | --- |
+| Release activo del VPS | `d1bef249927c96e38cbd1ccd51bad1fe17f31b00` |
+| Imagen inmutable del dashboard | `admira-ia-hosted:r91-canary-e6fa64f85138` |
+| Contenedor del dashboard | En ejecución; `GET /` respondió `200` |
+| Broker de runtimes | `admira-runtime-broker.service` activo |
+| Provisioner de lifecycle | `admira-tenant-provisioner.service` activo |
+| API de licencias | Salud `ok`; backend Upstash y Blob configurados |
+| Imagen de tenants existentes | `admira-ia:r90` (sin reemplazo por el dashboard) |
+| Migraciones del control plane | `001`–`013`, verificadas al promover el release |
+| Backup recuperable | `/srv/admira/backups/operator-lifecycle-caeb723-20260831T201433Z/` |
+
+El marcador `d1bef…` y la imagen `e6fa…` no indican dos dashboards distintos.
+`d1bef…` contiene la corrección de Compose que permite montar la clave del
+provisioner sin tocar el directorio de socket de sólo lectura; la interfaz y
+backend del dashboard permanecen en la imagen inmutable `e6fa…`. Se comprobaron
+los hashes de `operator_dashboard.html`, `operator_dashboard.js` y
+`operator_dashboard.py` entre la imagen live y el código fuente: son iguales.
+
+## Acceso práctico
+
+El panel real vive sólo en el loopback del VPS (`127.0.0.1:8791`). No se publica
+en Internet porque permite altas, expiraciones y licencias. El acceso fácil es
+ejecutar o abrir `open-operator-dashboard.command` en este checkout: abre un
+túnel SSH usando `admira-contabo`, elige un puerto local libre y abre el
+navegador. La URL que imprime el script es una vista segura del **panel live del
+VPS**, no una aplicación local. Debe conservarse abierta esa terminal mientras
+se usa el panel.
+
+## Qué contiene el panel live
+
+La interfaz tiene las pestañas separadas **Pruebas** y **Licenciadas**. Las
+rutas y assets que se verificaron en el contenedor live permiten:
+
+1. Crear la cuenta real de un cliente como prueba; los cinco días exactos se
+   anclan a `tenant.created_at`.
+2. Asignar una entrada sana del pool Gemini antes de emitir el claim.
+3. Mostrar o reemitir el enlace temporal de Telegram sin mover el vencimiento.
+4. Ampliar a una fecha exacta futura o caducar manualmente la prueba; caducar
+   suspende el runtime de forma fail-closed.
+5. Convertir la misma cuenta, aun vencida, a licenciada con la Gemini API key
+   del cliente. El provisioner llama al bridge Vercel, que crea un registro
+   idempotente en Upstash; el panel entrega el código una sola vez.
+6. Conservar tenant, historial, binding Telegram y ChatGPT personal. La
+   conversión no reinicia los cinco días de imágenes patrocinadas.
+
+La pestaña **Licenciadas** muestra sólo metadatos seguros: cliente, referencia
+de licencia redactada, fecha de licencia, fecha efectiva de patrocinio y estado.
+Nunca muestra API keys, correo, autenticación ChatGPT ni el código completo otra
+vez.
+
+## Inventario observado en el snapshot
+
+Estos números no incluyen secretos ni nombres de clientes:
+
+| Inventario | Valor |
+| --- | --- |
+| Cuentas en **Pruebas** | 2 |
+| Estados de esas pruebas | 1 `pending_claim`, 1 `trial` |
+| Cuentas en **Licenciadas** | 0 |
+| Proyectos Gemini saludables registrados | 1 |
+| Credenciales Gemini activas/saludables | 1 |
+| Capacidad saludable declarada de prueba | 2 |
+| Asignaciones Gemini de pool activas | 0 |
+
+Por tanto, el mecanismo está live, pero la capacidad registrada actual es sólo
+dos pruebas; todavía no representa el objetivo operativo de al menos tres altas
+nuevas por día ni quince pruebas simultáneas. Antes de ofrecer ese volumen hay
+que registrar y verificar más capacidad Gemini en el panel, sin copiar claves a
+chat, Git o PostgreSQL.
+
+## Lo que está configurado y lo que sigue pendiente
+
+Configurado: contraseña de operador (hash privado), panel, broker, provisioner,
+base de datos/migraciones, el bridge de licencia y un proyecto Gemini saludable.
+
+Pendiente deliberadamente:
+
+- La segunda autenticación central de ChatGPT/Codex. Sólo la raíz `primary`
+  contiene `auth.json`; `secondary` sigue vacía.
+- El canary real de generación de imágenes y fallback. No hay verificadores de
+  imagen central por tenant y `ADMIRA_CENTRAL_IMAGE_READY=false`.
+- Recuperación por correo/Telegram: `ADMIRA_TELEGRAM_RECOVERY_READY=false`.
+- La prueba de capacidad/colas (soak) para el volumen comercial.
+
+El dashboard no recibe Docker, el árbol de tenants, el token del bot, las API
+keys del pool ni la clave del bridge. Sus mutaciones cruzan únicamente un socket
+Unix HMAC hacia el provisioner host-only.
+
+## Alcance de la evidencia
+
+Esta lectura verificó el contenedor, HTTP, servicios, flags, inventario
+secret-free y presencia de las rutas/UI. La promoción anterior pasó el
+preflight del servidor y la suite de lifecycle. No se creó ni licenció un cliente
+nuevo durante este snapshot: eso requerirá una prueba operativa autorizada con
+una identidad Telegram y una Gemini API key real.

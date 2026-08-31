@@ -301,22 +301,23 @@ segundo factor que prueba control actual.
 
 ## 8. Herramientas privadas del operador
 
-No existe ni se requiere un dashboard para compradores u operadores en esta
-fase. La herramienta de operación es una CLI host-only accesible por SSH
-autorizado y no se publica como puerto de Contabo. Sus operaciones mínimas son:
+No existe ni se requiere un dashboard para compradores en esta fase. Sí existe
+un dashboard **privado del operador**, desplegado en el loopback del VPS y
+accesible sólo mediante SSH. Es la ruta normal para crear una prueba real,
+consultar capacidad/estado, reemitir el deep-link, ampliar/caducar una prueba y
+convertir el mismo tenant a licencia. No se publica como puerto de Internet ni
+entrega Docker, roots de tenants, claves de pool ni secretos de licencias al
+proceso web.
 
-- crear una prueba y copiar el deep-link;
-- ver capacidad, vencimientos y salud de proveedor;
-- convertir una prueba a licencia;
-- ingresar/reemplazar Gemini por stdin sin eco o archivo privado 0600;
-- reenviar el correo de licencia;
-- suspender/reactivar un tenant;
-- revisar y aprobar casos excepcionales de recuperación;
-- consultar auditoría sin revelar credenciales.
+La CLI host-only sigue siendo una herramienta de reparación/operación legacy
+revisada. Puede consultar auditoría o realizar tareas explícitas que no estén
+en el panel, siempre sin revelar credenciales. No se debe sustituir la
+conversión normal **Pruebas** → **Licenciadas** por la CLI ni prometer reenvío
+de correo/recovery: ese flujo permanece apagado hasta su canary SMTP.
 
-La lógica debe vivir en servicios comunes y ser invocada por una CLI
-administrativa. Esto permite iniciar la cadencia de tres altas diarias sin
-construir ni mantener una interfaz web en este trabajo.
+La lógica crítica vive en servicios comunes y el panel invoca sólo el
+provisioner HMAC permitido. Esto permite la cadencia de tres altas diarias sin
+crear una interfaz para compradores ni ampliar el producto al futuro SaaS.
 
 ## 9. Capacidad y aceptación antes de compradores
 

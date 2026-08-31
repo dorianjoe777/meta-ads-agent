@@ -95,7 +95,7 @@ for file in compose.yaml Control.Dockerfile app-requirements.txt \
   apply-control-plane.sh runtime_broker.py tenant_turn.py telegram_ingress.py \
   hosted_service.py hosted_worker.py tenant_admin.py tenantctl.py provider_admin.py \
   gemini_pool_admin.py tenant_provisioner.py install-tenant-provisioner.sh TENANT_PROVISIONER.md \
-  operator_dashboard.py operator_dashboard.html operator_dashboard.css operator_dashboard.js OPERATOR_DASHBOARD.md open-operator-dashboard.command \
+  operator_dashboard.py operator_dashboard.html operator_dashboard.css operator_dashboard.js OPERATOR_DASHBOARD.md DASHBOARD_STATUS.md open-operator-dashboard.command \
   image_broker.py central_image_service.py central_codex_account_pool.py prepare-central-image-broker.sh \
   recovery_identity.py recovery_service.py recovery_email_worker.py recovery_smtp.py \
   capacity-preflight.sh \

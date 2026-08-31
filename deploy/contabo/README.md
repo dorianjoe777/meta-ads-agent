@@ -156,6 +156,8 @@ The opt-in `operator-dashboard` profile serves a Spanish operator panel on
 the exact private-directory, migration, first-password and SSH-tunnel sequence.
 On the configured Mac, [open-operator-dashboard.command](open-operator-dashboard.command)
 opens that tunnel using the existing `admira-contabo` alias.
+For the verified VPS snapshot, actual customer inventory and the difference
+between configured and pending work, see [DASHBOARD_STATUS.md](DASHBOARD_STATUS.md).
 
 The live panel registers Gemini keys without returning them, runs the official
 device-login flow separately for `primary` and `secondary`, and manages actual
