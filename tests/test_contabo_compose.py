@@ -14,7 +14,9 @@ class ContaboComposeTests(unittest.TestCase):
         cls.text = COMPOSE.read_text(encoding="utf-8")
 
     def test_control_plane_is_not_published_to_the_host(self):
-        self.assertNotIn("ports:", self.text)
+        self.assertNotIn('"0.0.0.0:', self.text)
+        self.assertIn('"127.0.0.1:${ADMIRA_OPERATOR_PORT:-8791}:8791"', self.text)
+        self.assertEqual(self.text.count("    ports:\n"), 1)
         self.assertIn("internal: true", self.text)
         self.assertIn("no-new-privileges:true", self.text)
 
@@ -138,7 +140,11 @@ class ContaboComposeTests(unittest.TestCase):
 
     def _service(self, name: str, next_name: str | None = None) -> str:
         value = self.text.split(f"\n  {name}:\n", 1)[1]
-        return value.split("\nnetworks:\n", 1)[0] if next_name is None else value.split(f"\n  {next_name}:\n", 1)[0]
+        # A new opt-in service may be inserted between former neighbours.
+        # Parse only this service block so an isolation assertion never
+        # accidentally includes the following service's secrets/networks.
+        import re
+        return re.split(r"\n  [a-z][a-z0-9-]*:\n|\nnetworks:\n", value, maxsplit=1)[0]
 
     def test_buyer_services_are_opt_in_and_token_isolated(self):
         poller = self._service("telegram-poller", "runtime-worker")

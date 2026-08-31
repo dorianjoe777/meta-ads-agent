@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b1014">
+  <title>Admira · Consola de preparación</title>
+  <link rel="stylesheet" href="/operator_dashboard.css">
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Saltar al contenido</a>
+
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="#main-content" aria-label="Admira IA, ir al contenido principal">
+        <span class="brand-mark" aria-hidden="true"><span>A</span></span>
+        <span class="brand-copy">
+          <strong>ADMIRA / OPS</strong>
+          <span>Consola de preparación</span>
+        </span>
+      </a>
+
+      <div class="environment" aria-label="Entorno interno">
+        <span class="signal-dot" aria-hidden="true"></span>
+        <span>INTERNO · LOOPBACK</span>
+      </div>
+
+      <div id="session-tools" class="session-tools hidden">
+        <span class="operator-chip"><span aria-hidden="true">OP</span><span id="operator-label">Operador</span></span>
+        <button id="logout-button" class="button button-quiet button-compact" type="button">Cerrar sesión</button>
+      </div>
+    </header>
+
+    <main id="main-content" tabindex="-1">
+      <section id="boot-view" class="access-view" aria-labelledby="boot-title" aria-busy="true">
+        <div class="access-layout">
+          <div class="access-context" aria-hidden="true">
+            <span class="context-kicker">ACCESO PRIVADO / 8791</span>
+            <p class="context-number">00</p>
+            <p>Secuencia segura de inicio</p>
+          </div>
+          <div class="access-card panel">
+            <div class="loader" aria-hidden="true"><span></span><span></span><span></span></div>
+            <p class="eyebrow">Verificando sesión</p>
+            <h1 id="boot-title">Preparando la consola</h1>
+            <p class="lede">Comprobando el estado de acceso y las credenciales del operador.</p>
+            <p class="boot-note">La consola no guarda contraseñas, claves ni códigos en este navegador.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="setup-view" class="access-view hidden" aria-labelledby="setup-title">
+        <div class="access-layout">
+          <div class="access-context" aria-hidden="true">
+            <span class="context-kicker">SECUENCIA / PRIMER ACCESO</span>
+            <p class="context-number">01</p>
+            <p>Crear credencial de operador</p>
+          </div>
+          <div class="access-card panel">
+            <p class="eyebrow">Primera configuración</p>
+            <h1 id="setup-title" tabindex="-1">Protege esta consola</h1>
+            <p class="lede">Crea la única contraseña de operador. El servidor conserva sólo su hash; el navegador no la almacena.</p>
+
+            <form id="setup-form" class="stack-form" novalidate>
+              <div class="field-group">
+                <label for="setup-secret">Nueva contraseña</label>
+                <div class="password-field">
+                  <input id="setup-secret" name="password" type="password" autocomplete="new-password" minlength="16" maxlength="256" required aria-describedby="setup-help setup-error">
+                  <button class="reveal-button" type="button" data-password-toggle="setup-secret" aria-pressed="false" aria-label="Mostrar nueva contraseña">Mostrar</button>
+                </div>
+                <p id="setup-help" class="field-help">Mínimo 16 caracteres. Usa una frase única y difícil de adivinar.</p>
+              </div>
+
+              <div class="field-group">
+                <label for="setup-confirm">Confirmar contraseña</label>
+                <div class="password-field">
+                  <input id="setup-confirm" name="confirmation" type="password" autocomplete="new-password" minlength="16" maxlength="256" required aria-describedby="setup-error">
+                  <button class="reveal-button" type="button" data-password-toggle="setup-confirm" aria-pressed="false" aria-label="Mostrar confirmación de contraseña">Mostrar</button>
+                </div>
+              </div>
+
+              <p id="setup-error" class="form-message form-message-error" role="alert"></p>
+              <button id="setup-submit" class="button button-primary button-full" type="submit">
+                <span class="button-label">Crear acceso seguro</span>
+              </button>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <section id="login-view" class="access-view hidden" aria-labelledby="login-title">
+        <div class="access-layout">
+          <div class="access-context" aria-hidden="true">
+            <span class="context-kicker">ACCESO / RESTRINGIDO</span>
+            <p class="context-number">OP</p>
+            <p>Operaciones de infraestructura</p>
+          </div>
+          <div class="access-card panel">
+            <p class="eyebrow">Identificación requerida</p>
+            <h1 id="login-title" tabindex="-1">Acceso de operador</h1>
+            <p class="lede">Administra capacidad Gemini y dos cuentas centrales ChatGPT/Codex desde una sesión protegida.</p>
+            <p id="login-notice" class="access-notice" role="status" hidden></p>
+
+            <form id="login-form" class="stack-form" novalidate>
+              <div class="field-group">
+                <label for="login-secret">Contraseña del operador</label>
+                <div class="password-field">
+                  <input id="login-secret" name="password" type="password" autocomplete="current-password" maxlength="256" required aria-describedby="login-error">
+                  <button class="reveal-button" type="button" data-password-toggle="login-secret" aria-pressed="false" aria-label="Mostrar contraseña del operador">Mostrar</button>
+                </div>
+              </div>
+              <p id="login-error" class="form-message form-message-error" role="alert"></p>
+              <button id="login-submit" class="button button-primary button-full" type="submit">
+                <span class="button-label">Entrar a la consola</span>
+              </button>
+            </form>
+
+            <div class="security-inline">
+              <span class="security-icon" aria-hidden="true"></span>
+              <p>Sesión mediante cookie HttpOnly · escrituras protegidas con CSRF</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="dashboard-view" class="dashboard hidden" aria-labelledby="page-title">
+        <div class="page-heading">
+          <div class="heading-copy">
+            <p class="eyebrow">Control interno · Secuencia de alistamiento</p>
+            <h1 id="page-title" tabindex="-1">Preparar cuentas de prueba</h1>
+            <p class="lede">Valida el pool Gemini y conecta las dos cuentas antes de ejecutar una prueba real de imágenes.</p>
+          </div>
+          <div id="global-status" class="status-badge status-loading" role="status" aria-live="polite">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span>Cargando estado</span>
+          </div>
+        </div>
+
+        <div id="notice" class="notice" data-kind="info" role="status" hidden>
+          <span class="notice-mark" aria-hidden="true"></span>
+          <p id="notice-text" aria-live="polite" aria-atomic="true"></p>
+          <button id="notice-close" class="icon-button" type="button" aria-label="Cerrar notificación">×</button>
+        </div>
+
+        <section class="overview" aria-labelledby="overview-title">
+          <div class="section-label">
+            <span>00</span>
+            <h2 id="overview-title">Estado de preparación</h2>
+          </div>
+          <div class="summary-grid">
+            <article class="summary-card panel">
+              <div class="summary-topline"><span>GEMINI / POOL</span><span class="summary-signal" id="summary-gemini-signal" aria-hidden="true"></span></div>
+              <strong id="summary-gemini">Consultando…</strong>
+              <p id="summary-gemini-detail">Verificando proyectos</p>
+            </article>
+            <article class="summary-card panel">
+              <div class="summary-topline"><span>CODEX / CUENTAS</span><span class="summary-signal" id="summary-codex-signal" aria-hidden="true"></span></div>
+              <strong id="summary-codex">Consultando…</strong>
+              <p id="summary-codex-detail">Verificando autenticación</p>
+            </article>
+            <article class="summary-card panel">
+              <div class="summary-topline"><span>IMÁGENES / PRUEBA</span><span class="summary-signal" id="summary-broker-signal" aria-hidden="true"></span></div>
+              <strong id="summary-broker">Bloqueado</strong>
+              <p id="summary-broker-detail">La prueba real de imágenes se ejecuta fuera de este panel</p>
+            </article>
+          </div>
+        </section>
+
+        <div class="operation-stack">
+          <section id="gemini-section" class="operation-card panel" aria-labelledby="gemini-title" aria-busy="true">
+            <div class="operation-rail" aria-hidden="true"><span>01</span><span>GEM</span></div>
+            <div class="operation-body">
+              <div class="operation-head">
+                <div>
+                  <p class="eyebrow">Proveedor de texto · Registro de una vía</p>
+                  <h2 id="gemini-title">Pool Gemini de pruebas</h2>
+                  <p>La clave se valida al enviarla y se borra del formulario. Queda disponible en el pool; no crea clientes ni cambia claves ya asignadas.</p>
+                </div>
+                <span id="gemini-health" class="status-badge status-loading">
+                  <span class="status-dot" aria-hidden="true"></span><span>Consultando</span>
+                </span>
+              </div>
+
+              <form id="gemini-form" class="gemini-form" novalidate>
+                <div class="field-group">
+                  <label for="gemini-project">Referencia del proyecto</label>
+                  <input id="gemini-project" name="project_ref" type="text" autocomplete="off" spellcheck="false" required maxlength="200" placeholder="proyecto-pruebas-01" aria-describedby="gemini-project-help gemini-error">
+                  <p id="gemini-project-help" class="field-help">Identificador operativo, sin secretos ni datos personales.</p>
+                </div>
+                <div class="field-group compact-field">
+                  <label for="gemini-capacity">Capacidad</label>
+                  <div class="input-with-unit">
+                    <input id="gemini-capacity" name="capacity" type="number" inputmode="numeric" min="1" max="10000" value="15" required aria-describedby="capacity-help gemini-error">
+                    <span aria-hidden="true">PRUEBAS</span>
+                  </div>
+                  <p id="capacity-help" class="field-help">Máximo de clientes que compartirán este proyecto; no amplía la cuota de Google. Entre 1 y 10.000.</p>
+                </div>
+                <div class="field-group key-field">
+                  <label for="gemini-key">API key de Gemini</label>
+                  <div class="password-field">
+                    <input id="gemini-key" name="api_key" type="password" autocomplete="off" spellcheck="false" required maxlength="512" aria-describedby="gemini-key-help gemini-error">
+                    <button class="reveal-button" type="button" data-password-toggle="gemini-key" aria-pressed="false" aria-label="Mostrar API key de Gemini">Mostrar</button>
+                  </div>
+                  <p id="gemini-key-help" class="field-help">Nunca se devuelve ni se persiste en este navegador.</p>
+                </div>
+                <div class="form-actions">
+                  <button id="gemini-submit" class="button button-primary" type="submit"><span class="button-label">Validar y registrar</span></button>
+                  <button id="gemini-refresh" class="button button-quiet" type="button"><span class="button-label">Actualizar inventario</span></button>
+                </div>
+                <p id="gemini-error" class="form-message form-message-error form-wide" role="alert"></p>
+              </form>
+
+              <div class="inventory-head">
+                <div>
+                  <h3>Inventario de salud</h3>
+                  <p id="gemini-inventory-description">Vista redactada: las claves y huellas completas nunca se muestran.</p>
+                </div>
+                <span class="redacted-chip"><span aria-hidden="true"></span>DATOS REDACTADOS</span>
+              </div>
+              <div class="table-wrap" tabindex="0" role="region" aria-label="Inventario Gemini desplazable" aria-describedby="gemini-inventory-description">
+                <table>
+                  <caption class="sr-only">Proyectos Gemini registrados y su salud; no incluye claves</caption>
+                  <thead>
+                    <tr><th scope="col">Proyecto</th><th scope="col">Capacidad</th><th scope="col">Salud</th><th scope="col">Última revisión</th></tr>
+                  </thead>
+                  <tbody id="gemini-rows">
+                    <tr class="loading-row"><td colspan="4"><span class="skeleton-line"></span><span class="sr-only">Cargando inventario Gemini</span></td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+
+          <section id="codex-section" class="operation-card panel" aria-labelledby="codex-title" aria-busy="true">
+            <div class="operation-rail" aria-hidden="true"><span>02</span><span>IMG</span></div>
+            <div class="operation-body">
+              <div class="operation-head">
+                <div>
+                  <p class="eyebrow">Proveedor de imágenes · Fallback dual</p>
+                  <h2 id="codex-title">Cuentas ChatGPT/Codex</h2>
+                  <p>Dos cuentas autorizadas en perfiles separados. El servicio elige una disponible y puede probar la otra si es necesario. Guardar una conexión no confirma la generación de imágenes ni la cuota disponible.</p>
+                </div>
+                <button id="codex-refresh" class="button button-quiet" type="button"><span class="button-label">Revisar ambas</span></button>
+              </div>
+
+              <div id="codex-slots" class="account-grid" aria-live="polite" aria-atomic="false">
+                <article class="account-card is-loading" aria-label="Cuenta Primaria, cargando">
+                  <span class="skeleton-line"></span><span class="skeleton-line short"></span>
+                </article>
+                <article class="account-card is-loading" aria-label="Cuenta Secundaria, cargando">
+                  <span class="skeleton-line"></span><span class="skeleton-line short"></span>
+                </article>
+              </div>
+              <p id="codex-error" class="form-message form-message-error" role="alert"></p>
+            </div>
+          </section>
+        </div>
+
+        <aside class="handoff-note" aria-label="Siguiente paso operativo">
+          <span class="handoff-index" aria-hidden="true">→</span>
+          <div><strong>Siguiente paso</strong><p>Este panel prepara credenciales; no activa el servicio de imágenes ni asigna clientes. Después de validar Gemini y guardar las dos conexiones, ejecuta la prueba real de imágenes antes de habilitar el servicio desde el procedimiento de operaciones.</p></div>
+        </aside>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="device-dialog" class="dialog device-dialog" aria-labelledby="device-title" aria-describedby="device-detail">
+    <div class="dialog-frame">
+      <div class="dialog-head">
+        <div>
+          <p class="eyebrow">Autorización por dispositivo</p>
+          <h2 id="device-title">Conectar cuenta</h2>
+        </div>
+        <button id="device-close" class="icon-button" type="button" aria-label="Cerrar autorización">×</button>
+      </div>
+      <p id="device-detail" class="dialog-description">Abre el portal oficial, ingresa el código y vuelve a esta ventana. Admira nunca solicita la contraseña de ChatGPT.</p>
+
+      <div class="device-progress" aria-live="polite">
+        <span class="device-step">CÓDIGO TEMPORAL</span>
+        <div class="device-code-row">
+          <code id="device-code" tabindex="0">Esperando…</code>
+          <button id="copy-code" class="button button-quiet" type="button" disabled><span class="button-label">Copiar código</span></button>
+        </div>
+        <a id="device-url" class="button button-primary button-full hidden" href="#" target="_blank" rel="noopener noreferrer">Abrir portal de autorización<span aria-hidden="true"> ↗</span></a>
+      </div>
+
+      <div class="ttl-row">
+        <div><span>Ventana de autenticación</span><strong id="device-phase">Iniciando proceso</strong></div>
+        <div class="ttl-value"><span>EXPIRA EN</span><strong id="device-ttl">10:00</strong></div>
+      </div>
+
+      <p id="device-error" class="form-message form-message-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button id="cancel-login" class="button button-danger" type="button"><span class="button-label">Cancelar autenticación</span></button>
+        <button id="device-done" class="button button-quiet" type="button">Ocultar y seguir revisando</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="confirm-dialog" class="dialog confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-description">
+    <div class="dialog-frame">
+      <p id="confirm-kicker" class="eyebrow">Confirmación operativa</p>
+      <h2 id="confirm-title">Confirmar acción</h2>
+      <p id="confirm-description" class="dialog-description"></p>
+      <div class="dialog-actions">
+        <button id="confirm-cancel" class="button button-quiet" type="button">Volver</button>
+        <button id="confirm-accept" class="button button-primary" type="button">Confirmar</button>
+      </div>
+    </div>
+  </dialog>
+
+  <div id="assertive-status" class="sr-only" role="alert" aria-live="assertive" aria-atomic="true"></div>
+  <noscript><p class="noscript-message">Esta consola necesita JavaScript para autenticarse y consultar el estado operativo.</p></noscript>
+  <script src="/operator_dashboard.js" defer></script>
+</body>
+</html>

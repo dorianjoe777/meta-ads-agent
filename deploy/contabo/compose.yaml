@@ -50,12 +50,14 @@ services:
       - image_db_password
       - recovery_db_password
       - email_delivery_db_password
+      - operator_db_password
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - postgres_auth:/run/admira-db-secrets:ro
       - ./db/migrations:/docker-entrypoint-initdb.d:ro
     networks:
       - control_private
+      - operator_private
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
@@ -80,7 +82,7 @@ services:
     command:
       - >-
         install -d -m 0700 -o 999 -g 999 /postgres-auth;
-        for secret_name in ingress_db_password runtime_db_password delivery_db_password scheduler_db_password provisioner_db_password image_db_password recovery_db_password email_delivery_db_password;
+        for secret_name in ingress_db_password runtime_db_password delivery_db_password scheduler_db_password provisioner_db_password image_db_password recovery_db_password email_delivery_db_password operator_db_password;
         do install -m 0400 -o 999 -g 999 "/run/secrets/$${secret_name}" "/postgres-auth/$${secret_name}"; done
     secrets:
       - ingress_db_password
@@ -91,6 +93,7 @@ services:
       - image_db_password
       - recovery_db_password
       - email_delivery_db_password
+      - operator_db_password
     volumes:
       - postgres_auth:/postgres-auth
     read_only: true
@@ -168,8 +171,9 @@ services:
 
   # Dormant r91 service for Admira-sponsored image generation. It is in its
   # own profile and never starts with the buyer workers. The central Codex
-  # credential is mounted only here; tenant runtimes receive only a scoped
-  # HMAC key, the Unix socket and their own exchange directory.
+  # credential pool is mounted only here and in the internal operator
+  # dashboard; tenant runtimes receive only a scoped HMAC key, the Unix socket
+  # and their own exchange directory.
   central-image-broker:
     profiles: ["central-images"]
     # There is no mutable/default central image. The operator must pin the
@@ -233,6 +237,83 @@ services:
     mem_limit: ${CENTRAL_IMAGE_MEMORY_LIMIT:-1536m}
     cpus: ${CENTRAL_IMAGE_CPU_LIMIT:-2.0}
     stop_grace_period: 45s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Internal-only operator control surface. Reach it remotely through an SSH
+  # tunnel; the hosted image supplies the Codex CLI for bounded device auth.
+  operator-dashboard:
+    profiles: ["operator-dashboard"]
+    # This is the same immutable hosted canary selected for the dormant image
+    # broker. It contains the pinned Codex CLI; preflight rejects mutable or
+    # malformed CENTRAL_IMAGE_IMAGE values before operators enable the profile.
+    image: ${CENTRAL_IMAGE_IMAGE:-admira-ia-hosted:r91-canary-000000000000}
+    restart: unless-stopped
+    init: true
+    user: "${ADMIRA_SERVICE_UID:-1001}:${ADMIRA_SERVICE_GID:-1001}"
+    read_only: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["python3", "/app/deploy/contabo/operator_dashboard.py"]
+    environment:
+      ADMIRA_DB_HOST: postgres
+      ADMIRA_DB_PORT: "5432"
+      ADMIRA_DB_NAME: ${POSTGRES_DB:-admira_control}
+      ADMIRA_DB_USER: admira_operator_login
+      ADMIRA_OPERATOR_DB_PASSWORD_FILE: /run/secrets/operator_db_password
+      # The file is created exactly once by loopback-only first-run setup. The
+      # enclosing host directory is private and persistent; no default
+      # password or plaintext password secret exists.
+      ADMIRA_OPERATOR_PASSWORD_FILE: /var/lib/admira/operator-password/password.hash
+      ADMIRA_OPERATOR_BIND: 0.0.0.0
+      ADMIRA_OPERATOR_PORT: "8791"
+      # Plain HTTP is encrypted by the SSH tunnel. The Host/Origin allowlist
+      # permits loopback names only, and the port is never publicly published.
+      ADMIRA_OPERATOR_COOKIE_SECURE: "false"
+      ADMIRA_OPERATOR_ALLOWED_HOSTS: "localhost,127.0.0.1,::1"
+      # Docker may present a bridge gateway for tunnel requests. Pin only its
+      # observed /32 (or /128) during setup; never trust forwarded headers.
+      ADMIRA_OPERATOR_SETUP_CIDRS: "${ADMIRA_OPERATOR_SETUP_CIDRS:-127.0.0.1/32,::1/128}"
+      ADMIRA_GEMINI_POOL_ROOT: /etc/admira/gemini-pool
+      ADMIRA_CENTRAL_CODEX_AUTH_ROOT: /app/runtime/hermes/codex-auth-pool
+      PYTHONPATH: /app/deploy/contabo
+    secrets:
+      - operator_db_password
+    volumes:
+      - type: bind
+        source: /etc/admira/gemini-pool
+        target: /etc/admira/gemini-pool
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /srv/admira/shared/central-codex-auth
+        target: /app/runtime/hermes/codex-auth-pool
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./secrets/operator-password
+        target: /var/lib/admira/operator-password
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=0700,uid=${ADMIRA_SERVICE_UID:-1001},gid=${ADMIRA_SERVICE_GID:-1001}
+    ports:
+      - "127.0.0.1:${ADMIRA_OPERATOR_PORT:-8791}:8791"
+    networks:
+      - operator_private
+      - operator_provider_egress
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    mem_limit: ${OPERATOR_SERVICE_MEMORY_LIMIT:-512m}
+    cpus: ${OPERATOR_SERVICE_CPU_LIMIT:-1.0}
+    stop_grace_period: 15s
     logging:
       driver: json-file
       options:
@@ -393,6 +474,11 @@ services:
 networks:
   control_private:
     internal: true
+  # First-run password setup must not be reachable from buyer workers or the
+  # image broker. Only Postgres shares the internal operator network.
+  operator_private:
+    internal: true
+  operator_provider_egress:
   telegram_egress:
   image_provider_egress:
   email_egress:
@@ -424,6 +510,8 @@ secrets:
     file: ./secrets/recovery_db_password.txt
   email_delivery_db_password:
     file: ./secrets/email_delivery_db_password.txt
+  operator_db_password:
+    file: ./secrets/operator_db_password.txt
   recovery_hmac_key:
     file: ./secrets/recovery_hmac_key.txt
   recovery_delivery_key:

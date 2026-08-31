@@ -429,11 +429,11 @@ para trials y el primer mes patrocinado. Cada una usa un directorio de auth
 privado distinto bajo `/srv/admira/shared/central-codex-auth/`:
 `primary/` y `secondary/`, con permisos 0700/0600 y propiedad del usuario del
 servicio. Compose monta esa raíz en `/app/runtime/hermes/codex-auth-pool` sólo
-en el broker; el mount es escribible porque Codex puede refrescar su home, pero
+en el broker y el panel privado del operador; el mount es escribible porque Codex puede refrescar su home, pero
 ningún tenant monta esa ruta. No se copia `auth.json`, cookies, tokens ni
 cualquier otro secreto a un tenant, a PostgreSQL, al repositorio o a los logs.
 
-La política de selección es deliberadamente acotada: una cuenta primaria y,
+La política de selección es deliberadamente acotada: una cuenta disponible y,
 como máximo, un fallback a la otra cuenta por solicitud (dos intentos de
 proveedor como máximo). El fallback también puede ocurrir si la primaria
 reporta cuota o límite de imágenes; esa cuenta entra simultáneamente en
@@ -448,8 +448,9 @@ un canary real que cubra selección, fallback único, cooldown, idempotencia y
 aislamiento. Esta preparación no cambia los tenants, que permanecen en
 `admira-ia:r90`.
 
-Procedimiento de login fuera de banda: el operador abre una terminal privada en
-el VPS y completa el login autorizado del proveedor sin enviar credenciales por
+Procedimiento de login fuera de banda: el operador usa el panel privado descrito
+en [OPERATOR_DASHBOARD.md](OPERATOR_DASHBOARD.md), o una terminal privada en el
+VPS, y completa el login autorizado del proveedor sin enviar credenciales por
 chat ni incluirlas en comandos, argumentos, variables, logs o capturas. Cada
 login se guarda directamente en su directorio privado correspondiente; nunca
 se copia un archivo de autenticación entre cuentas. Después se comprueban
@@ -457,6 +458,8 @@ propietario/permisos. No existe un health endpoint independiente que valide
 ChatGPT: la verificación funcional es el canary real del broker, cuya salida
 debe estar redactada y nunca contener el secreto. El flag de disponibilidad se
 mantiene falso hasta que ambas cuentas y el canary real sean verificables.
+El broker debe estar detenido antes de reconectar o desconectar una cuenta:
+todavía no comparte el bloqueo de rotación de credenciales con el panel.
 
 La preparación host-only es:
 
@@ -546,6 +549,17 @@ Las funciones hosted asignan por `runtime_key`, verifican el tenant durable y
 registran el resultado sin guardar la clave. La CLI/pool no se considera
 desplegada o live hasta validar proyectos/keys reales y el validator en una
 base desechable.
+
+La migración 011 (`operator_dashboard`) añade exclusivamente el acceso limitado
+del panel interno: registrar proyectos/credenciales Gemini y consultar su
+estado sin secretos. No cambia los datos ni permisos de los clientes. El panel
+permite guardar claves y conectar las dos cuentas centrales, pero no crea
+clientes, asigna sus claves, cambia licencias ni activa imágenes. Se accede por
+SSH a `127.0.0.1:8791`; nunca se publica el puerto en Internet. El procedimiento
+de primera contraseña, conexión y mantenimiento está en
+[OPERATOR_DASHBOARD.md](OPERATOR_DASHBOARD.md). En el Mac configurado,
+[open-operator-dashboard.command](open-operator-dashboard.command) abre el
+túnel y el navegador sin manejar contraseñas o claves de proveedor.
 
 La operación segura de licencia es host-only. La clave se lee por stdin o desde
 un archivo regular 0600; `--replace` es obligatorio para sustituir una clave

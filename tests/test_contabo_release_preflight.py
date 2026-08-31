@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import subprocess
 import unittest
 
@@ -41,6 +42,12 @@ class ReleasePreflightTests(unittest.TestCase):
         self.assertIn("--profile buyers config --quiet", text)
         self.assertIn("--profile central-images config --quiet", text)
         self.assertIn("--profile recovery-email config --quiet", text)
+        self.assertIn("--profile operator-dashboard config --quiet", text)
+        self.assertIn("operator_dashboard.py", text)
+        self.assertIn("011_operator_dashboard.sql", text)
+        self.assertIn("operator_gemini_pool_status()", text)
+        self.assertIn("operator_private", text)
+        self.assertIn("operator_provider_egress", text)
         self.assertIn("recovery_identity.py", text)
         self.assertIn("recovery_service.py", text)
         self.assertIn("recovery_email_worker.py", text)
@@ -95,6 +102,23 @@ class ReleasePreflightTests(unittest.TestCase):
         result = subprocess.run([str(SCRIPT), "--help"], text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--server", result.stdout)
+        self.assertIn("--operator-dashboard", result.stdout)
+
+    def test_operator_preflight_rejects_wide_setup_ranges(self):
+        result = subprocess.run(
+            [str(SCRIPT), "--local"], text=True, capture_output=True,
+            env={**os.environ, "ADMIRA_OPERATOR_SETUP_CIDRS": "10.0.0.0/8"},
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("exact /32 or /128", result.stderr)
+
+    def test_operator_preflight_rejects_dormant_image_when_requested(self):
+        result = subprocess.run(
+            [str(SCRIPT), "--local", "--operator-dashboard"], text=True, capture_output=True,
+            env={**os.environ, "CENTRAL_IMAGE_IMAGE": "admira-ia-hosted:r91-canary-000000000000"},
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("requires a real pinned CENTRAL_IMAGE_IMAGE", result.stderr)
 
     def test_local_preflight_reports_token_state_without_printing_value(self):
         result = subprocess.run([str(SCRIPT), "--local"], text=True, capture_output=True)

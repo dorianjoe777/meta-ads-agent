@@ -88,6 +88,19 @@ on the two authorized out-of-band logins and their canary; this is not
 commercial readiness. Recovery and soak are deferred/off. This hosted canary
 does not publish a buyer dashboard or turn the deployment into a SaaS product.
 
+## Private hosted operator panel
+
+The [internal operator panel](deploy/contabo/OPERATOR_DASHBOARD.md) registers
+Gemini trial keys and connects two separate central ChatGPT accounts through
+the official device-login flow. It is reachable only through an SSH tunnel to
+VPS loopback. The operator creates the first password; there is no default.
+The [Mac launcher](deploy/contabo/open-operator-dashboard.command) uses the
+existing `admira-contabo` SSH alias without handling provider credentials.
+
+This panel prepares credentials only. It does not create customer accounts,
+change customer licenses, activate sponsored images, or expose a buyer UI.
+Stored connections are not proof of image quota or a successful live image.
+
 ## Docs
 
 - `docs/setup-local-vps.md`

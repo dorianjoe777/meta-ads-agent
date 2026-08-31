@@ -5,18 +5,20 @@ set -euo pipefail
 # creates tenants, touches secrets, or writes to PostgreSQL.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODE=local
+CHECK_OPERATOR=false
 TENANT_BASE="${ADMIRA_TENANTS_BASE:-/srv/admira/tenants}"
 TENANT_A=""
 TENANT_B=""
 FAILURES=0
 
 usage() {
-  printf '%s\n' "Usage: $0 [--local|--server] [--tenant-a ID --tenant-b ID] [--tenant-base PATH]"
+  printf '%s\n' "Usage: $0 [--local|--server] [--operator-dashboard] [--tenant-a ID --tenant-b ID] [--tenant-base PATH]"
 }
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --local) MODE=local; shift ;;
     --server) MODE=server; shift ;;
+    --operator-dashboard) CHECK_OPERATOR=true; shift ;;
     --tenant-a) TENANT_A="${2:?missing tenant id}"; shift 2 ;;
     --tenant-b) TENANT_B="${2:?missing tenant id}"; shift 2 ;;
     --tenant-base) TENANT_BASE="${2:?missing tenant base}"; shift 2 ;;
@@ -70,6 +72,8 @@ resolve_compose_value() {
       [[ -n "${ADMIRA_CENTRAL_CODEX_AUTH_ROOT+x}" ]] && { printf '%s' "$ADMIRA_CENTRAL_CODEX_AUTH_ROOT"; return; } ;;
     ADMIRA_CENTRAL_CODEX_ACCOUNT_IDS)
       [[ -n "${ADMIRA_CENTRAL_CODEX_ACCOUNT_IDS+x}" ]] && { printf '%s' "$ADMIRA_CENTRAL_CODEX_ACCOUNT_IDS"; return; } ;;
+    ADMIRA_OPERATOR_SETUP_CIDRS)
+      [[ -n "${ADMIRA_OPERATOR_SETUP_CIDRS+x}" ]] && { printf '%s' "$ADMIRA_OPERATOR_SETUP_CIDRS"; return; } ;;
   esac
   if [[ -r "$ROOT_DIR/.env" ]]; then
     while IFS='=' read -r config_key config_value; do
@@ -88,7 +92,7 @@ resolve_compose_value() {
 for file in compose.yaml Control.Dockerfile app-requirements.txt \
   apply-control-plane.sh runtime_broker.py tenant_turn.py telegram_ingress.py \
   hosted_service.py hosted_worker.py tenant_admin.py tenantctl.py provider_admin.py \
-  gemini_pool_admin.py \
+  gemini_pool_admin.py operator_dashboard.py operator_dashboard.html operator_dashboard.css operator_dashboard.js OPERATOR_DASHBOARD.md open-operator-dashboard.command \
   image_broker.py central_image_service.py central_codex_account_pool.py prepare-central-image-broker.sh \
   recovery_identity.py recovery_service.py recovery_email_worker.py recovery_smtp.py \
   capacity-preflight.sh \
@@ -99,7 +103,8 @@ for file in compose.yaml Control.Dockerfile app-requirements.txt \
   db/migrations/008_central_image_jobs.sql db/validate_trial_lifecycle.sql \
   db/validate_central_image_jobs.sql db/migrations/009_telegram_license_recovery.sql \
   db/validate_telegram_license_recovery.sql db/migrations/010_operator_gemini_pool.sql \
-  db/validate_operator_gemini_pool.sql; do
+  db/validate_operator_gemini_pool.sql db/migrations/011_operator_dashboard.sql \
+  db/validate_operator_dashboard.sql; do
   need_file "$ROOT_DIR/$file"
 done
 
@@ -108,13 +113,13 @@ import ast
 import pathlib
 import sys
 root = pathlib.Path(sys.argv[1])
-names = ("runtime_broker.py", "tenant_turn.py", "telegram_ingress.py", "hosted_service.py", "hosted_worker.py", "tenant_admin.py", "tenantctl.py", "provider_admin.py", "gemini_pool_admin.py", "image_broker.py", "central_image_service.py", "central_codex_account_pool.py", "recovery_identity.py", "recovery_service.py", "recovery_email_worker.py", "recovery_smtp.py")
+names = ("runtime_broker.py", "tenant_turn.py", "telegram_ingress.py", "hosted_service.py", "hosted_worker.py", "tenant_admin.py", "tenantctl.py", "provider_admin.py", "gemini_pool_admin.py", "operator_dashboard.py", "image_broker.py", "central_image_service.py", "central_codex_account_pool.py", "recovery_identity.py", "recovery_service.py", "recovery_email_worker.py", "recovery_smtp.py")
 files = [root / name for name in names]
 for path in files:
     ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 PY
 then ok 'Python syntax'; else fail 'Python syntax'; fi
-if bash -n "$ROOT_DIR/bootstrap-control-plane.sh" "$ROOT_DIR/install-runtime-broker.sh" "$ROOT_DIR/prepare-central-image-broker.sh" "$ROOT_DIR/apply-control-plane.sh" "$ROOT_DIR/capacity-preflight.sh"; then
+if bash -n "$ROOT_DIR/bootstrap-control-plane.sh" "$ROOT_DIR/install-runtime-broker.sh" "$ROOT_DIR/prepare-central-image-broker.sh" "$ROOT_DIR/apply-control-plane.sh" "$ROOT_DIR/capacity-preflight.sh" "$ROOT_DIR/open-operator-dashboard.command"; then
   ok 'shell syntax'
 else
   fail 'shell syntax'
@@ -139,6 +144,41 @@ if docker compose --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compose.yaml" \
   ok 'opt-in recovery-email Compose configuration'
 else
   fail 'recovery-email Compose configuration (check .env and private secret files)'
+fi
+if docker compose --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compose.yaml" \
+    --profile operator-dashboard config --quiet >/dev/null 2>&1; then
+  ok 'opt-in operator-dashboard Compose configuration'
+else
+  fail 'operator-dashboard Compose configuration (check .env and private bind sources)'
+fi
+# Inspect the rendered topology, not only YAML spelling. No secret contents
+# are present in Compose config and the JSON is never printed.
+if docker compose --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compose.yaml" \
+    --profile '*' config --format json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    config = json.load(sys.stdin)
+    services = config["services"]
+    operator = services["operator-dashboard"]
+    ports = operator.get("ports", [])
+    assert len(ports) == 1 and ports[0]["host_ip"] == "127.0.0.1" and ports[0]["target"] == 8791
+    assert set(operator["networks"]) == {"operator_private", "operator_provider_egress"}
+    assert config["networks"]["operator_private"]["internal"] is True
+    assert not config["networks"]["operator_provider_egress"].get("internal", False)
+    assert {name for name, svc in services.items() if "operator_private" in svc.get("networks", {})} == {"postgres", "operator-dashboard"}
+    assert {name for name, svc in services.items() if "operator_provider_egress" in svc.get("networks", {})} == {"operator-dashboard"}
+    assert all(not svc.get("ports") for name, svc in services.items() if name != "operator-dashboard")
+    assert operator["read_only"] is True and operator["cap_drop"] == ["ALL"]
+    assert "no-new-privileges:true" in operator["security_opt"] and operator.get("tmpfs")
+    assert {entry["source"] for entry in operator["secrets"]} == {"operator_db_password"}
+    assert operator["environment"]["ADMIRA_DB_USER"] == "admira_operator_login"
+    assert all("docker.sock" not in mount.get("source", "") for mount in operator["volumes"])
+except (KeyError, TypeError, ValueError, AssertionError):
+    sys.exit(1)
+'; then
+  ok 'operator dashboard is loopback-published, network-isolated and least-privilege'
+else
+  fail 'operator dashboard rendered security boundary is invalid'
 fi
 if [[ -r "$ROOT_DIR/.env.example" ]] && grep -Eq '^ADMIRA_TELEGRAM_RECOVERY_READY=false$' "$ROOT_DIR/.env.example"; then
   ok 'Telegram recovery is disabled by default in .env.example'
@@ -224,6 +264,56 @@ else
   fail 'CENTRAL_IMAGE_IMAGE must be an exact admira-ia-hosted:r91-canary-<12 lowercase commit hex> tag'
 fi
 
+if [[ "$MODE" == server ]] && docker compose --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compose.yaml" \
+    --profile operator-dashboard ps --status running --services 2>/dev/null | grep -qx operator-dashboard; then
+  CHECK_OPERATOR=true
+fi
+if [[ "$CHECK_OPERATOR" == true && "$CENTRAL_IMAGE_IMAGE" == "$CENTRAL_IMAGE_PLACEHOLDER" ]]; then
+  fail 'operator dashboard requires a real pinned CENTRAL_IMAGE_IMAGE, not the dormant placeholder'
+fi
+operator_setup_cidrs="$(resolve_compose_value ADMIRA_OPERATOR_SETUP_CIDRS '127.0.0.1/32,::1/128')"
+if python3 - "$operator_setup_cidrs" <<'PY'
+import ipaddress, sys
+try:
+    networks = [ipaddress.ip_network(value.strip(), strict=True) for value in sys.argv[1].split(',')]
+    assert 1 <= len(networks) <= 8
+    assert all(net.prefixlen == net.max_prefixlen and not net.network_address.is_unspecified for net in networks)
+except (ValueError, AssertionError):
+    sys.exit(1)
+PY
+then ok 'operator setup source allowlist contains exact IPs only'; else fail 'ADMIRA_OPERATOR_SETUP_CIDRS must contain only exact /32 or /128 addresses'; fi
+if [[ "$MODE" == server && "$CHECK_OPERATOR" == true ]]; then
+  operator_uid="$(resolve_compose_value ADMIRA_SERVICE_UID 1001)"
+  for operator_dir in "$ROOT_DIR/secrets/operator-password" /etc/admira/gemini-pool /srv/admira/shared/central-codex-auth /srv/admira/shared/central-codex-auth/primary /srv/admira/shared/central-codex-auth/secondary; do
+    if [[ -L "$operator_dir" || ! -d "$operator_dir" ]]; then
+      fail "operator private directory is absent or unsafe: $operator_dir"
+      continue
+    fi
+    operator_mode=$(stat -c '%a' "$operator_dir" 2>/dev/null || stat -f '%Lp' "$operator_dir")
+    operator_owner=$(stat -c '%u' "$operator_dir" 2>/dev/null || stat -f '%u' "$operator_dir")
+    [[ "$operator_mode" =~ ^0*700$ && "$operator_owner" == "$operator_uid" ]] \
+      && ok "operator private directory is service-owned: $operator_dir" \
+      || fail "operator private directory must be mode 0700 and service-owned: $operator_dir"
+  done
+  for operator_secret in "$ROOT_DIR/secrets/operator_db_password.txt" "$ROOT_DIR/secrets/operator-password/password.hash"; do
+    if [[ "$operator_secret" == */password.hash && ! -e "$operator_secret" && ! -L "$operator_secret" ]]; then
+      warn 'operator first-run password setup is pending; complete it through the SSH tunnel'
+      continue
+    fi
+    if [[ -L "$operator_secret" || ! -f "$operator_secret" || ! -s "$operator_secret" ]]; then
+      fail 'operator secret is absent, empty or unsafe'
+      continue
+    fi
+    operator_mode=$(stat -c '%a' "$operator_secret" 2>/dev/null || stat -f '%Lp' "$operator_secret")
+    operator_owner=$(stat -c '%u' "$operator_secret" 2>/dev/null || stat -f '%u' "$operator_secret")
+    [[ "$operator_mode" =~ ^(0*600|0*400)$ && "$operator_owner" == "$operator_uid" ]] \
+      && ok 'operator secret is private and service-owned' \
+      || fail 'operator secret must be mode 0600/0400 and service-owned'
+  done
+elif [[ "$CHECK_OPERATOR" != true ]]; then
+  warn 'operator profile remains opt-in; use --operator-dashboard for its host readiness gate'
+fi
+
 TOKEN="$ROOT_DIR/secrets/telegram_bot_token.txt"
 if [[ -f "$TOKEN" && -s "$TOKEN" ]]; then
   mode=$(stat -c '%a' "$TOKEN" 2>/dev/null || stat -f '%Lp' "$TOKEN")
@@ -258,8 +348,8 @@ if [[ "$MODE" == server ]]; then
     warn 'pinned central canary image is not selected; central images remain dormant'
   elif docker image inspect "$CENTRAL_IMAGE_IMAGE" >/dev/null 2>&1; then
     ok "pinned central canary image is present: $CENTRAL_IMAGE_IMAGE"
-  elif [[ "$CENTRAL_IMAGE_READY" == true ]]; then
-    fail "pinned central canary image is missing while central images are enabled: $CENTRAL_IMAGE_IMAGE"
+  elif [[ "$CENTRAL_IMAGE_READY" == true || "$CHECK_OPERATOR" == true ]]; then
+    fail "pinned central canary image is missing while central images or operator dashboard are requested: $CENTRAL_IMAGE_IMAGE"
   else
     warn "pinned central canary image is not installed; central images remain dormant: $CENTRAL_IMAGE_IMAGE"
   fi
@@ -414,6 +504,26 @@ WHERE n.nspname = 'admira'
   else
     fail 'Gemini operator pool migration is not visible in PostgreSQL'
   fi
+  operator_check_sql="SELECT
+  to_regprocedure('admira.operator_gemini_pool_status()') IS NOT NULL
+  AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'admira_operator' AND NOT rolcanlogin AND NOT rolsuper AND NOT rolbypassrls)
+  AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'admira_operator_login' AND rolcanlogin AND NOT rolsuper AND NOT rolbypassrls)
+  AND pg_has_role('admira_operator_login', 'admira_operator', 'MEMBER')
+  AND NOT pg_has_role('admira_operator_login', 'admira_provisioner', 'MEMBER')
+  AND has_function_privilege('admira_operator', 'admira.operator_gemini_pool_status()', 'EXECUTE')
+  AND has_function_privilege('admira_operator', 'admira.register_gemini_pool_project(text,integer,text)', 'EXECUTE')
+  AND has_function_privilege('admira_operator', 'admira.register_gemini_pool_credential(uuid,text,text,text,text)', 'EXECUTE')
+  AND NOT has_function_privilege('admira_operator', 'admira.assign_hosted_gemini_trial(text)', 'EXECUTE')
+  AND NOT has_table_privilege('admira_operator', 'admira.gemini_pool_projects', 'SELECT,INSERT,UPDATE,DELETE')
+  AND NOT has_table_privilege('admira_operator', 'admira.tenant_license_contacts', 'SELECT');"
+  if printf '%s\n' "$operator_check_sql" | \
+      docker compose --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compose.yaml" exec -T postgres \
+      sh -ec 'export PGPASSWORD="$(cat /run/secrets/postgres_password)"; exec psql -qAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+      2>/dev/null | grep -qx t; then
+    ok 'operator dashboard migration and dedicated least-privilege login are visible in PostgreSQL'
+  else
+    fail 'operator dashboard migration or dedicated login boundary is missing'
+  fi
 else
   grep -q 'admira-ia:r90' "$ROOT_DIR/tenantctl.py" && ok 'tenant image pin is admira-ia:r90' || fail 'tenant image pin is not admira-ia:r90'
   grep -q 'status = '\''active'\''' "$ROOT_DIR/db/migrations/004_active_tenant_runtime_gate.sql" && ok 'active-tenant migration contains gate' || fail 'active-tenant migration gate missing'
@@ -454,6 +564,14 @@ else
     ok 'Gemini operator pool migration and disposable validator are present'
   else
     fail 'Gemini operator pool safety gates missing'
+  fi
+  if grep -q 'CREATE ROLE admira_operator NOLOGIN NOBYPASSRLS' "$ROOT_DIR/db/migrations/011_operator_dashboard.sql" \
+    && grep -q 'operator_gemini_pool_status' "$ROOT_DIR/db/migrations/011_operator_dashboard.sql" \
+    && grep -q 'REVOKE admira_provisioner FROM admira_operator_login' "$ROOT_DIR/db/bootstrap_service_roles.sql" \
+    && grep -q 'operator_dashboard_validation=passed' "$ROOT_DIR/db/validate_operator_dashboard.sql"; then
+    ok 'operator dashboard migration, dedicated role and disposable validator are present'
+  else
+    fail 'operator dashboard database boundary is missing'
   fi
   grep -q 'assign_hosted_gemini_trial' "$ROOT_DIR/gemini_pool_admin.py" \
     && grep -q 'runtime_fence' "$ROOT_DIR/gemini_pool_admin.py" \

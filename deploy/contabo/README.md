@@ -117,13 +117,16 @@ sudo ./install-runtime-broker.sh
 ```
 
 The generated `secrets/` directory and `.env` are git-ignored and must be
-backed up through the server's encrypted backup process, never committed.
+included in private recovery backups, never committed. Encrypt any off-host
+backup export; local deployment backups must not be described as encrypted
+unless that has actually been verified.
 Any bot token pasted into a ticket, chat or transcript is canary-only and must
 be revoked and replaced out of band before commercial traffic.
 Gemini trial keys are never seeded by provisioning or by a host-wide secret.
-Only `gemini_pool_admin.py register` and `gemini_pool_admin.py assign` may
-install an audited operator-pool credential after its project quota and auth
-key type have been verified. The central image route remains explicitly disabled until the broker has passed its canary:
+The internal dashboard or `gemini_pool_admin.py register` can register an
+operator-pool credential; `gemini_pool_admin.py assign` installs it for a
+specific trial after its project quota and auth-key type have been verified.
+The central image route remains explicitly disabled until the broker has passed its canary:
 `ADMIRA_CENTRAL_IMAGE_READY=false`.
 
 Migration `010_operator_gemini_pool.sql` reserves the durable operator pool for
@@ -136,6 +139,22 @@ assignment functions and never print or store key material in PostgreSQL.
 Migration 010 and its disposable validator are present in this worktree, but
 the pool is not claimed deployed or live until real projects and keys have
 been created, restricted and validated out of band.
+
+### Internal credential-preparation dashboard
+
+The opt-in `operator-dashboard` profile serves a Spanish operator panel on
+`127.0.0.1:8791` only. Follow [OPERATOR_DASHBOARD.md](OPERATOR_DASHBOARD.md) for
+the exact private-directory, migration, first-password and SSH-tunnel sequence.
+On the configured Mac, [open-operator-dashboard.command](open-operator-dashboard.command)
+opens that tunnel using the existing `admira-contabo` alias.
+
+The panel registers Gemini keys without returning them, and runs the official
+device-login flow separately for `primary` and `secondary`. Migration 011
+adds a dedicated least-privilege login: no tenant provisioning, customer data,
+Docker socket, bot token, or ability to activate the image broker. It does not
+assign keys to clients or change licenses. First-run password creation and
+provider authentication are performed by the operator in the browser, never
+by pasting credentials into chat.
 
 ### Central image broker: prepared but dormant
 
@@ -188,11 +207,13 @@ The trial/first-month image pool requires at least two independently authorized
 central accounts. Each account has its own private 0700 auth directory and
 0600 credential files under the host root
 `/srv/admira/shared/central-codex-auth/{primary,secondary}/`, mounted into the
-broker at `/app/runtime/hermes/codex-auth-pool`. This bind mount is writable by
-the service because Codex may refresh its home; no tenant mounts it. Login is
-performed out of band in a private terminal; credentials must never appear in
-chat, commands, arguments, environment variables, logs, PostgreSQL, Git or a
-tenant. The broker may try the other account at most once per request, for a
+broker and the private operator dashboard at `/app/runtime/hermes/codex-auth-pool`.
+This bind mount is writable because Codex may refresh its home; no tenant
+mounts it. Login is performed through the private panel's official device
+flow or a private terminal; credentials must never appear in chat, command
+arguments, environment variables, logs, PostgreSQL, Git or a tenant. Stop the
+central broker before rotating or disconnecting accounts: the two services
+do not share a credential-rotation lock. The broker may try the other account at most once per request, for a
 maximum of two provider attempts total, including when the primary reports a
 quota or image-limit failure. The failed account enters its per-account
 cooldown, and no further attempt is made against it during that cooldown.

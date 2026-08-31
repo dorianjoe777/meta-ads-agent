@@ -21,7 +21,8 @@ BEGIN
     ('admira_provisioner_login','admira_provisioner','/run/admira-db-secrets/provisioner_db_password'),
     ('admira_image_login',    'admira_image',    '/run/admira-db-secrets/image_db_password'),
     ('admira_recovery_login','admira_recovery','/run/admira-db-secrets/recovery_db_password'),
-    ('admira_email_delivery_login','admira_email_delivery','/run/admira-db-secrets/email_delivery_db_password')
+    ('admira_email_delivery_login','admira_email_delivery','/run/admira-db-secrets/email_delivery_db_password'),
+    ('admira_operator_login','admira_operator','/run/admira-db-secrets/operator_db_password')
   ) AS roles(login_role, group_role, secret_path)
   LOOP
     -- bootstrap-control-plane.sh terminates each secret with one newline.
@@ -41,3 +42,10 @@ BEGIN
   END LOOP;
 END;
 $$;
+
+-- A short-lived pre-release dashboard build inherited the broad provisioner
+-- group. Re-running the bootstrap must remove that membership, not merely add
+-- the dedicated role beside it.
+REVOKE admira_provisioner FROM admira_operator_login;
+ALTER ROLE admira_operator_login
+  NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
