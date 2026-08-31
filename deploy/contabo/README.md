@@ -221,14 +221,15 @@ Tenants remain pinned to `admira-ia:r90` while this central canary is pending.
 
 #### Hosted clean-canary evidence
 
-On 2026-08-30, the hosted clean canary was validated in a disposable clone of
-the live control plane. Migrations 001–010 are current on the VPS and were
-applied idempotently; the server preflight returned `PASS`. The deployed
-control-plane marker is commit `d9a623a6388b62df369ab97091386f6692e0c231`,
-with image `admira-control-plane:r91-d9a623a6388b`; tenant runtimes remain
-deliberately pinned to `admira-ia:r90`. The dormant hosted image is
-`admira-ia-hosted:r91-canary-d9a623a6388b`; its deployed source manifest is
-`908d1bdd4cce784339588535b85f8188cc7ef9be882686edb8afa9f90b13d993`.
+On 2026-08-31, the private operator release was deployed after the disposable
+PostgreSQL rehearsal and actual-image tests. Migrations 001–011 are current on
+the VPS and were applied idempotently; the final server preflight returned
+`PASS`. The deployed control-plane marker is commit
+`bb4c5979184af9724d14ffc6a7bd3cd8e8753a6e`, with image
+`admira-control-plane:r91-bb4c5979184a`; tenant runtimes remain deliberately
+pinned to `admira-ia:r90`. The private dashboard uses hosted image
+`admira-ia-hosted:r91-canary-bb4c5979184a`; its source manifest is
+`704e819ee084e1856ffc8cd03c4e75ea331989b77ed20232ddffed894cef3ed2`.
 
 The synthetic/code canary uses two fake isolated auth homes and a fake provider:
 it forces a primary image-limit failure, verifies exactly one fallback attempt
@@ -236,13 +237,13 @@ to the secondary account, cooldown bookkeeping, idempotency and tenant
 isolation. This is only a local pool/code result; it does not verify real
 ChatGPT authentication. The separate real-provider canary exercises the
 external image route and requires both central-provider authentications; that
-authentication is still pending: both central auth directories are prepared
-0700 but their `auth.json` files are absent, so the central service is stopped
-and `ADMIRA_CENTRAL_IMAGE_READY=false`. Recovery and capacity soak remain
-deferred and off. The real-provider canary is blocked only on the two
-authorized out-of-band logins and that canary; this is not commercial
-readiness. The promotion backup is
-`/srv/admira/backups/deploy-d9a623a-20260830T230305Z/`.
+authentication is still pending: the dashboard first password has not been
+created and both 0700 central auth directories lack `auth.json`. The central
+image service is stopped and `ADMIRA_CENTRAL_IMAGE_READY=false`. Recovery and
+capacity soak remain deferred and off. The remaining image gate is operator
+first-run setup, two distinct authorized logins, and the real image/fallback
+test; this is not commercial readiness. The validated private recovery backup
+is `/srv/admira/backups/operator-panel-20260831T024651Z-Zv9LS9/`.
 
 ## Central Telegram path
 

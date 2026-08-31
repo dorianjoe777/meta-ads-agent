@@ -70,23 +70,26 @@ python3 src/daily_agent.py approve APPROVAL_ID
 
 ## Hosted clean canary status
 
-The hosted r91 clean canary was validated on 2026-08-30 in a disposable clone
-of the live control plane. Migrations 001–010 are current on Contabo and were
-applied idempotently; the server preflight returned `PASS`. The control plane
-is live at deployed commit `d9a623a6388b62df369ab97091386f6692e0c231` with
-image `admira-control-plane:r91-d9a623a6388b`; tenant runtimes remain
-deliberately pinned to image `r90`. The dormant hosted image is
-`admira-ia-hosted:r91-canary-d9a623a6388b`.
+The hosted r91 release was deployed and rechecked on 2026-08-31. Migrations
+001–011 are current on Contabo and were applied idempotently; the final server
+preflight returned `PASS`. The control plane is live at deployed commit
+`bb4c5979184af9724d14ffc6a7bd3cd8e8753a6e` with image
+`admira-control-plane:r91-bb4c5979184a`; tenant runtimes remain deliberately
+pinned to image `r90`. The hosted image used by the private operator panel, and
+reserved for the dormant central image service, is
+`admira-ia-hosted:r91-canary-bb4c5979184a`.
 
 The synthetic/code canary uses a fake provider and verifies local contracts,
 idempotency, and tenant isolation. A separate real-provider canary is required
 to verify the external route; it remains pending central-provider
-authentication. Both central auth directories are prepared 0700 but lack
-`auth.json`, so the central service remains stopped and
-`ADMIRA_CENTRAL_IMAGE_READY=false`. The real-provider canary is blocked only
-on the two authorized out-of-band logins and their canary; this is not
-commercial readiness. Recovery and soak are deferred/off. This hosted canary
-does not publish a buyer dashboard or turn the deployment into a SaaS product.
+authentication. The private operator panel is running on VPS loopback, but its
+first password and provider credentials are intentionally unset. Both central
+auth directories are 0700 and lack `auth.json`, so the central image service is
+stopped and `ADMIRA_CENTRAL_IMAGE_READY=false`. The real-provider check still
+requires operator first-run setup, two distinct authorized account logins and
+the real image/fallback test; this is not commercial readiness. Recovery and
+capacity soak remain deferred/off. This release does not publish a buyer
+dashboard or turn the deployment into a SaaS product.
 
 ## Private hosted operator panel
 

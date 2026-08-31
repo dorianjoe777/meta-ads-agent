@@ -162,3 +162,20 @@ startup, registering a Gemini key, and connecting two accounts do not activate
 checks, real-provider image canary, failover checks, and tenant-isolation canary
 have passed under the existing approved activation procedure. The dashboard
 cannot change that flag or start the broker.
+
+## Current Contabo deployment evidence
+
+Deployed on 2026-08-31 at commit
+`bb4c5979184af9724d14ffc6a7bd3cd8e8753a6e`, manifest
+`704e819ee084e1856ffc8cd03c4e75ea331989b77ed20232ddffed894cef3ed2`.
+The service is running from `admira-ia-hosted:r91-canary-bb4c5979184a`, with
+read-only root, UID 1001, all capabilities dropped, two dedicated networks and
+only `127.0.0.1:8791` published. Migration 011 and the dedicated database login
+passed the final server preflight. Buyer workers have zero restarts and both
+tenant Compose files still resolve to `admira-ia:r90`.
+
+First-run setup is deliberately pending: `password.hash`, both account
+`auth.json` files and Gemini pool projects are absent. The central image broker
+is stopped and both image and recovery readiness flags are false. The validated
+pre-deployment recovery backup is
+`/srv/admira/backups/operator-panel-20260831T024651Z-Zv9LS9/`.

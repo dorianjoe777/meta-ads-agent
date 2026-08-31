@@ -20,27 +20,39 @@ Estado live verificado tras el último despliegue (la marca
 | Elemento | Valor |
 | --- | --- |
 | Rama de trabajo | `feat/contabo-multitenant` |
-| Último commit desplegado | `d9a623a6388b62df369ab97091386f6692e0c231` |
+| Último commit desplegado | `bb4c5979184af9724d14ffc6a7bd3cd8e8753a6e` |
 | SHA exacto activo | `/srv/admira/control-plane/DEPLOYED_COMMIT` (mismo SHA) |
-| Imagen del control plane | `admira-control-plane:r91-d9a623a6388b` |
-| Imagen hosted canaria de imágenes | `admira-ia-hosted:r91-canary-d9a623a6388b` (presente, ruta dormida) |
-| Manifiesto del release desplegado | `908d1bdd4cce784339588535b85f8188cc7ef9be882686edb8afa9f90b13d993` |
-| Migraciones live | `001`–`010` actuales y aplicadas idempotentemente |
+| Imagen del control plane | `admira-control-plane:r91-bb4c5979184a` |
+| Imagen hosted del panel y servicio central | `admira-ia-hosted:r91-canary-bb4c5979184a` (panel privado activo; imágenes dormidas) |
+| Manifiesto del release desplegado | `704e819ee084e1856ffc8cd03c4e75ea331989b77ed20232ddffed894cef3ed2` |
+| Migraciones live | `001`–`011` actuales y aplicadas idempotentemente |
 | Imagen de cada tenant live | `admira-ia:r90` |
 | Commit de la imagen tenant | `d03707465a5fedf7e5d1bb6b528365b299795540` |
 | Manifiesto de la imagen tenant | `5df0e07e8b4a10e59a5b9c3659336f9b3a55ab556beaa67c2faba218dabc99db` |
 | Servidor | Contabo Cloud VPS 4, Ubuntu 24.04, Docker 29.1.3 |
 | Bot central canario | `@admiraia_bot` (`bot_id=8884068904`) |
 | Estado de compradores | **Canary operativo**: cuatro buyer workers activos, cero reinicios, un `runtime-worker`; tenants aún en `r90` |
+| Panel interno | Activo sólo en `127.0.0.1:8791`; primera contraseña pendiente; sin claves/cuentas instaladas |
 
-Backup de esta promoción: `/srv/admira/backups/deploy-d9a623a-20260830T230305Z/`.
-El server preflight terminó en `PASS`. Las raíces de auth central
+Backup privado validado de esta promoción:
+`/srv/admira/backups/operator-panel-20260831T024651Z-Zv9LS9/`.
+El server preflight terminó en `PASS` después de fijar la marca activa. Las
+raíces de auth central
 `/srv/admira/shared/central-codex-auth/primary` y `secondary` están preparadas
 con modo 0700, pero todavía no contienen `auth.json`; por eso el servicio
 central está detenido, `ADMIRA_CENTRAL_IMAGE_READY=false` y la autenticación de
 recuperación también permanece desactivada. El canary real-provider está
-bloqueado únicamente por instalar fuera de banda las dos autenticaciones
-autorizadas y ejecutar su canary; esto no constituye readiness comercial.
+bloqueado por completar la primera contraseña del panel, instalar las dos
+autenticaciones autorizadas y ejecutar su prueba real; esto no constituye
+readiness comercial.
+
+El despliegue del 31 de agosto conservó dos tenants, tres updates procesados,
+dos updates muertos históricos, cuatro envíos Telegram entregados y los dos
+leases detenidos. PostgreSQL se recreó sólo para unir la red privada del panel;
+los datos permanecieron iguales al backup previo. Los cuatro buyer workers y
+el panel quedaron activos con cero reinicios. Ambos Compose de tenant siguen
+resolviendo exclusivamente `admira-ia:r90`; el broker central de imágenes está
+detenido.
 
 ### Acceso SSH operativo
 
