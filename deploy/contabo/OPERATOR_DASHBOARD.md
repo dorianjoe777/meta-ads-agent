@@ -100,12 +100,16 @@ ssh -N -L 127.0.0.1:8791:127.0.0.1:8791 admiraops@your-vps
 
 On this Mac, the executable `open-operator-dashboard.command` is a convenience
 launcher using the existing `admira-contabo` SSH alias/key. Double-click it or run
-it from the local checkout; it creates a loopback-only tunnel and opens the
+it from the local checkout; it creates a loopback-only tunnel on the first free
+local port from `18792` through `18820`, prints the exact URL, and opens the
 browser without handling any password or provider credential. Keep its terminal
-open. Closing it closes only its own tunnel, not the VPS dashboard.
+open. Closing it closes only its own tunnel, not the VPS dashboard. Set
+`ADMIRA_OPERATOR_LOCAL_PORT` only when you intentionally need a specific free
+local port.
 
-Open `http://127.0.0.1:8791` in your local browser. The service itself is HTTP;
-SSH encrypts the transport to the VPS. Its session cookie is HttpOnly and
+Open the exact `http://127.0.0.1:<local-port>` printed by the launcher in your
+local browser. The service itself is HTTP; SSH encrypts the transport to the
+VPS. Its session cookie is HttpOnly and
 SameSite=Strict; Secure is disabled solely for this loopback HTTP tunnel.
 Never visit the dashboard through a non-loopback HTTP hostname.
 

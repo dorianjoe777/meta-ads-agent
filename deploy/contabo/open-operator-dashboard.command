@@ -8,7 +8,8 @@ if [[ "${1:-}" == "--help" ]]; then
   printf '%s\n' \
     'Abre el panel privado de Admira a través del alias SSH admira-contabo.' \
     'Uso: open-operator-dashboard.command [--help]' \
-    'Opcionales: ADMIRA_OPERATOR_SSH_HOST, ADMIRA_OPERATOR_LOCAL_PORT, ADMIRA_OPERATOR_REMOTE_PORT.'
+    'Opcionales: ADMIRA_OPERATOR_SSH_HOST, ADMIRA_OPERATOR_LOCAL_PORT, ADMIRA_OPERATOR_REMOTE_PORT.' \
+    'Sin ADMIRA_OPERATOR_LOCAL_PORT, elige un puerto local libre entre 18792 y 18820.'
   exit 0
 fi
 if [[ $# -ne 0 ]]; then
@@ -17,11 +18,28 @@ if [[ $# -ne 0 ]]; then
 fi
 
 admira_tunnel_host="${ADMIRA_OPERATOR_SSH_HOST:-admira-contabo}"
-admira_local_port="${ADMIRA_OPERATOR_LOCAL_PORT:-8791}"
 admira_remote_port="${ADMIRA_OPERATOR_REMOTE_PORT:-8791}"
 if [[ ! "$admira_tunnel_host" =~ ^[A-Za-z0-9][A-Za-z0-9._@-]*$ ]]; then
   printf '%s\n' 'El alias SSH no es válido.' >&2
   exit 2
+fi
+if [[ -n "${ADMIRA_OPERATOR_LOCAL_PORT:-}" ]]; then
+  admira_local_port="$ADMIRA_OPERATOR_LOCAL_PORT"
+else
+  admira_local_port=''
+  # A local development service may already own 8791 even though the VPS
+  # dashboard is correctly isolated there. Choose a loopback-only local port
+  # deterministically instead of opening an unrelated app in the browser.
+  for admira_port_candidate in {18792..18820}; do
+    if ! lsof -nP -iTCP:"$admira_port_candidate" -sTCP:LISTEN >/dev/null 2>&1; then
+      admira_local_port="$admira_port_candidate"
+      break
+    fi
+  done
+  if [[ -z "$admira_local_port" ]]; then
+    printf '%s\n' 'No encontré un puerto local libre entre 18792 y 18820. Define ADMIRA_OPERATOR_LOCAL_PORT.' >&2
+    exit 1
+  fi
 fi
 for admira_port_candidate in "$admira_local_port" "$admira_remote_port"; do
   if [[ ! "$admira_port_candidate" =~ ^[0-9]{1,5}$ ]] \

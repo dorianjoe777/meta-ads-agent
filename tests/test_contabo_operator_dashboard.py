@@ -76,6 +76,7 @@ class ContaboOperatorDashboardTests(unittest.TestCase):
         cls.dashboard = (DEPLOY / "operator_dashboard.py").read_text(encoding="utf-8")
         cls.html = (DEPLOY / "operator_dashboard.html").read_text(encoding="utf-8")
         cls.javascript = (DEPLOY / "operator_dashboard.js").read_text(encoding="utf-8")
+        cls.launcher = (DEPLOY / "open-operator-dashboard.command").read_text(encoding="utf-8")
 
     def test_operator_profile_is_loopback_and_isolated(self):
         service = self.compose.split("  operator-dashboard:\n", 1)[1].split("\n  telegram-poller:\n", 1)[0]
@@ -96,6 +97,12 @@ class ContaboOperatorDashboardTests(unittest.TestCase):
         self.assertIn('max-size: "10m"', service)
         for forbidden in ("telegram_bot_token", "runtime_broker_key", "provisioner_db_password", "/srv/admira/tenants"):
             self.assertNotIn(forbidden, service)
+
+    def test_local_launcher_avoids_an_unrelated_service_on_port_8791(self):
+        self.assertIn('for admira_port_candidate in {18792..18820}', self.launcher)
+        self.assertIn('lsof -nP -iTCP:"$admira_port_candidate" -sTCP:LISTEN', self.launcher)
+        self.assertIn('ADMIRA_OPERATOR_LOCAL_PORT', self.launcher)
+        self.assertIn('admira_remote_port="${ADMIRA_OPERATOR_REMOTE_PORT:-8791}"', self.launcher)
 
     def test_operator_has_only_dedicated_private_and_provider_networks(self):
         service = self.compose.split("  operator-dashboard:\n", 1)[1].split("\n  telegram-poller:\n", 1)[0]
