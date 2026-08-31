@@ -45,7 +45,7 @@
       invalid_setup_password: "La contraseña debe tener al menos 16 caracteres y coincidir con la confirmación.",
       rate_limited: "Se han realizado demasiadas operaciones. Espera unos segundos e inténtalo de nuevo.",
       invalid_capacity: "La capacidad debe ser un número entero entre 1 y 10.000.",
-      invalid_project_ref: "Comprueba la referencia del proyecto.",
+      invalid_project_ref: "Usa una referencia sin espacios, por ejemplo gemini-pruebas-01.",
       invalid_gemini_key: "La clave Gemini no tiene un formato válido. Introdúcela de nuevo.",
       gemini_health_check_failed: "Gemini no validó la clave. Revisa sus permisos y vuelve a introducirla.",
       gemini_registration_failed: "La clave no pudo registrarse. Revisa el servicio de control e inténtalo de nuevo.",
@@ -464,6 +464,10 @@
     const capacity = Number($("#gemini-capacity").value);
     if (!project) {
       invalidField($("#gemini-project"), $("#gemini-error"), "Escribe una referencia válida para el proyecto.");
+      return;
+    }
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{2,199}$/.test(project)) {
+      invalidField($("#gemini-project"), $("#gemini-error"), "Usa una referencia sin espacios, por ejemplo gemini-pruebas-01.");
       return;
     }
     if (!Number.isInteger(capacity) || capacity < 1 || capacity > 10000) {

@@ -1035,8 +1035,25 @@ class OperatorHandler(BaseHTTPRequestHandler):
             self._json({"ok": True, "authenticated": False}, cookie=self._cookie())
             return
         if path == "/api/operator/gemini/register":
-            result = self.state.register_gemini(self._string(body, "api_key", body.get("key", "")),
-                                                self._string(body, "project_ref"), body.get("capacity", 1))
+            try:
+                result = self.state.register_gemini(
+                    self._string(body, "api_key", body.get("key", "")),
+                    self._string(body, "project_ref"), body.get("capacity", 1)
+                )
+            except ValueError as exc:
+                # These are an intentionally small, safe allow-list.  Do not
+                # serialize arbitrary provider or filesystem exceptions, as a
+                # Gemini credential may be present in their details.
+                code = str(exc)
+                if code in {"invalid_gemini_key", "invalid_project_ref", "invalid_capacity"}:
+                    raise RequestError(code, 400) from None
+                if code == "gemini_health_check_failed":
+                    raise RequestError(code, 422) from None
+                raise RequestError("operator_operation_failed", 400) from None
+            except RuntimeError as exc:
+                if str(exc) == "gemini_registration_failed":
+                    raise RequestError("gemini_registration_failed", 503) from None
+                raise
         elif path == "/api/operator/sponsorship/extend":
             try:
                 result = self.state.extend_sponsorship(

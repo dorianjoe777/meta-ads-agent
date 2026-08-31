@@ -647,6 +647,27 @@ class OperatorHTTPTests(PrivateFixture):
         self.assertEqual(headers["Retry-After"], "60")
         self.assertNotIn(PASSWORD, body.decode())
 
+    def test_gemini_registration_returns_allowlisted_safe_errors(self):
+        cookie, csrf = self.login()
+        cases = (
+            (ValueError("invalid_project_ref"), 400, "invalid_project_ref"),
+            (ValueError("gemini_health_check_failed"), 422, "gemini_health_check_failed"),
+            (RuntimeError("gemini_registration_failed"), 503, "gemini_registration_failed"),
+            (ValueError(KEY), 400, "operator_operation_failed"),
+        )
+        for error, expected_status, expected_code in cases:
+            with self.subTest(error=type(error).__name__, expected_code=expected_code):
+                with mock.patch.object(self.state, "register_gemini", side_effect=error):
+                    status, _headers, body = self.request(
+                        "POST", "/api/operator/gemini/register",
+                        {"api_key": KEY, "project_ref": "fixture-project", "capacity": 2},
+                        {"Cookie": cookie, "X-CSRF-Token": csrf},
+                    )
+                decoded = body.decode()
+                self.assertEqual(status, expected_status)
+                self.assertEqual(json.loads(decoded)["error_code"], expected_code)
+                self.assertNotIn(KEY, decoded)
+
     def test_json_request_body_is_bounded_and_static_routes_cannot_read_secrets(self):
         status, _headers, body = self.request("POST", "/api/operator/login",
                                              {"password": "X" * (dashboard.MAX_BODY + 1)})

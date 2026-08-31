@@ -132,7 +132,10 @@ Register each Gemini project's auth key and quota capacity through the dashboard
 The key is checked against Google's official endpoint and stored only in the
 private Gemini pool; PostgreSQL gets an opaque reference and fingerprint, never
 the key. Capacity is per project: multiple keys do not multiply project quota.
-The status screen is metadata, not proof that a commercial trial was provisioned.
+Use a short operational project reference without spaces, such as
+`gemini-pruebas-01`; it may contain letters, numbers, `.`, `_`, `:`, `/`, and
+`-`, but never the key itself. The status screen is metadata, not proof that a
+commercial trial was provisioned.
 
 In the image-account section, connect both fixed slots, `primary` and `secondary`:
 
