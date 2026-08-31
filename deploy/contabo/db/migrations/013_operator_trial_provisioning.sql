@@ -116,7 +116,7 @@ RETURNS TABLE (
   image_sponsorship_ends_at timestamptz,
   gemini_pool_ready boolean
 )
-LANGUAGE plpgsql
+LANGUAGE sql
 SECURITY DEFINER
 STABLE
 SET search_path = admira, pg_catalog
