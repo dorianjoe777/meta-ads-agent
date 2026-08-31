@@ -117,8 +117,8 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-# `gemini_pool_admin.assign` reads the private pool key through this root and
-# normalizes its private mode. `tenantctl.provision` also creates only the
+# gemini_pool_admin.assign reads the private pool key through this root and
+# normalizes its private mode. tenantctl.provision also creates only the
 # per-tenant central-image verifier and exchange directory when those host
 # roots were explicitly prepared. Keep all of these narrow capabilities on
 # this host daemon only; the dashboard has no mount or write access to them.
