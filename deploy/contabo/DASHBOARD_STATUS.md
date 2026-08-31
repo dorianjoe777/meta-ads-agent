@@ -58,6 +58,13 @@ El launcher [open-operator-dashboard.command](open-operator-dashboard.command)
 sigue disponible como respaldo manual; elige un puerto temporal distinto y no
 debe ser necesario mientras el LaunchAgent esté sano.
 
+Para el uso diario también existe el acceso directo
+`/Users/macminim1/Desktop/Admira Operator Dashboard.app`. Al abrirlo, comprueba
+que el LaunchAgent esté cargado, solicita su reconexión, espera hasta veinte
+segundos por el loopback y abre la URL fija en el navegador. No crea un túnel
+adicional ni publica ningún puerto. El antiguo `127.0.0.1:18792` era un puerto
+temporal del launcher manual y no debe usarse como enlace permanente.
+
 ## Qué contiene el panel live
 
 La interfaz tiene las pestañas separadas **Pruebas** y **Licenciadas**. Las
