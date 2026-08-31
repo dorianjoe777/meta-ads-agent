@@ -327,6 +327,15 @@ if [[ "$MODE" == server && "$CHECK_OPERATOR" == true ]]; then
   else
     fail 'tenant provisioner is not active'
   fi
+  provisioner_write_paths="$(systemctl show admira-tenant-provisioner.service -p ReadWritePaths --value 2>/dev/null || true)"
+  if [[ "$provisioner_write_paths" == *"/srv/admira/tenants"* \
+     && "$provisioner_write_paths" == *"/etc/admira/gemini-pool"* \
+     && "$provisioner_write_paths" == *"/etc/admira/central-image-keys"* \
+     && "$provisioner_write_paths" == *"/srv/admira/shared/central-image-exchange"* ]]; then
+    ok 'tenant provisioner sandbox permits only required tenant and provider roots'
+  else
+    fail 'tenant provisioner sandbox is missing a required lifecycle write root'
+  fi
   if [[ -S /run/admira-tenant-provisioner/provisioner.sock ]]; then
     provisioner_socket_group="$(stat -c '%g' /run/admira-tenant-provisioner/provisioner.sock 2>/dev/null || stat -f '%g' /run/admira-tenant-provisioner/provisioner.sock)"
     [[ "$provisioner_socket_group" == "$provisioner_gid" ]] \
@@ -657,6 +666,8 @@ else
     && grep -q 'license_trial' "$ROOT_DIR/tenant_provisioner.py" \
     && grep -q 'tenant_provisioner_key' "$ROOT_DIR/bootstrap-control-plane.sh" \
     && grep -q 'SupplementaryGroups=docker' "$ROOT_DIR/install-tenant-provisioner.sh" \
+    && grep -q '/etc/admira/central-image-keys' "$ROOT_DIR/install-tenant-provisioner.sh" \
+    && grep -q '/srv/admira/shared/central-image-exchange' "$ROOT_DIR/install-tenant-provisioner.sh" \
     && grep -q 'ADMIRA_PROVISIONER_SOCKET' "$ROOT_DIR/compose.yaml" \
     && ! grep -q '/var/run/docker.sock' "$ROOT_DIR/compose.yaml"; then
     ok 'customer lifecycle uses the signed host provisioner without dashboard Docker access'

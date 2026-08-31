@@ -18,8 +18,6 @@ STATE_DIR="/var/lib/admira/tenant-provisioner"
 die() { printf '%s\n' "$1" >&2; exit 1; }
 
 if [[ "$(id -u)" -ne 0 ]]; then die 'Run with sudo.'; fi
-if ! id "$SERVICE_USER" >/dev/null 2>&1; then die 'The Admira service user does not exist.'; fi
-if [[ ! "$GID" =~ ^[1-9][0-9]{3,4}$ || "$GID" -gt 65534 ]]; then die 'Provisioner GID is invalid.'; fi
 
 safe_secret_source() {
   local path="$1"
@@ -52,6 +50,13 @@ read_config() {
   fi
   printf '%s' "${result:-$fallback}"
 }
+
+SERVICE_USER="$(read_config ADMIRA_SERVICE_USER "$SERVICE_USER")"
+GROUP="$(read_config ADMIRA_PROVISIONER_GROUP "$GROUP")"
+GID="$(read_config ADMIRA_PROVISIONER_GID "$GID")"
+if ! id "$SERVICE_USER" >/dev/null 2>&1; then die 'The Admira service user does not exist.'; fi
+if [[ ! "$GROUP" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then die 'Provisioner group is invalid.'; fi
+if [[ ! "$GID" =~ ^[1-9][0-9]{3,4}$ || "$GID" -gt 65534 ]]; then die 'Provisioner GID is invalid.'; fi
 
 BOT_USERNAME="$(read_config ADMIRA_TELEGRAM_BOT_USERNAME admiraia_bot)"
 LICENSE_URL="$(read_config ADMIRA_LICENSE_API_URL https://admiraia.uboost.lat/api/admin/licenses)"
@@ -113,9 +118,11 @@ PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
 # `gemini_pool_admin.assign` reads the private pool key through this root and
-# normalizes its private mode.  Keep that capability on the host daemon only;
-# the dashboard has no mount or write access to it.
-ReadWritePaths=/srv/admira/tenants /etc/admira/gemini-pool $STATE_DIR /run/admira-tenant-provisioner
+# normalizes its private mode. `tenantctl.provision` also creates only the
+# per-tenant central-image verifier and exchange directory when those host
+# roots were explicitly prepared. Keep all of these narrow capabilities on
+# this host daemon only; the dashboard has no mount or write access to them.
+ReadWritePaths=/srv/admira/tenants /etc/admira/gemini-pool /etc/admira/central-image-keys /srv/admira/shared/central-image-exchange $STATE_DIR /run/admira-tenant-provisioner
 CapabilityBoundingSet=
 RestrictSUIDSGID=true
 LockPersonality=true

@@ -49,9 +49,12 @@ pending_claim -> trial -> trial_expired
 trial_expired ---------------> licensed
 ```
 
-La activación de la prueba debe ocurrir al consumir el claim de Telegram, no al
-preparar el tenant. Así, los cinco días corresponden a uso real y no al tiempo
-que el enlace estuvo esperando al comprador.
+El flujo histórico de `pending_claim` activa la prueba al consumir el claim de
+Telegram. Las altas comerciales creadas desde el panel privado usan el contrato
+posterior de migration 013: los cinco días exactos comienzan al crear la cuenta
+del cliente, no al emitir ni consumir el enlace. Reemitir un enlace nunca mueve
+esa fecha; así el operador puede ver y caducar la prueba aun si el cliente aún
+no abrió Telegram.
 
 ## 3. Datos del plano de control
 
@@ -90,20 +93,24 @@ fuera del repositorio. PostgreSQL conserva referencias, estado y auditoría.
 
 ## 4. Alta diaria y expiración
 
-La CLI privada de operador debe ofrecer una operación `Crear prueba` que:
+El panel privado de operador debe ofrecer una operación `Crear prueba` que:
 
 1. cree o valide el tenant durable;
 2. asigne una entrada sana del pool Gemini sin exponer su valor;
-3. cree un entitlement pendiente;
-4. emita el claim de Telegram de un solo uso;
+3. cree un entitlement `trial` anclado a `tenant.created_at` y a su fecha
+   exacta de vencimiento cinco días después;
+4. emita el claim de Telegram de un solo uso sin reiniciar ni extender el
+   vencimiento;
 5. no arranque el contenedor;
 6. registre un evento de auditoría.
 
-Al consumir el claim, una única transacción inicia `trial_started_at`, fija
-`trial_ends_at = trial_started_at + 5 días` y activa el entitlement. Un trabajo
-periódico vence pruebas, drena trabajo en curso y bloquea nuevos turns y cronjobs.
-No debe depender solamente de ocultar comandos en una interfaz; la regla debe
-estar aplicada en el plano de control.
+En el flujo histórico, consumir el claim inicia `trial_started_at` y fija
+`trial_ends_at = trial_started_at + 5 días`. Para una alta de panel, la misma
+relación se fija en la transacción de creación con
+`trial_started_at = tenant.created_at`; consumir el claim sólo vincula Telegram.
+Un trabajo periódico vence pruebas, drena trabajo en curso y bloquea nuevos
+turns y cronjobs. No debe depender solamente de ocultar comandos en una
+interfaz; la regla debe estar aplicada en el plano de control.
 
 Los comandos de consulta y reportes de la CLI deben mostrar como mínimo:
 

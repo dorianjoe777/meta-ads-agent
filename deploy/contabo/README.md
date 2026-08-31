@@ -392,10 +392,13 @@ in a canary with an authorized SMTP provider.
 
 ## Trial and licensing operator flow
 
-Migration `007_trial_provider_lifecycle.sql` makes the lifecycle durable. A
-claim starts the five-day clock exactly once; preparing a tenant does not start
-it. Expired trials are suspended and cannot be bypassed by issuing a new claim.
-The same durable tenant is licensed in place.
+Migration `007_trial_provider_lifecycle.sql` makes the legacy claim-first
+lifecycle durable. For an account created through the operator dashboard,
+migration `013_operator_trial_provisioning.sql` deliberately supersedes that
+start rule: the exact five-day clock is anchored to the account creation time,
+not the later Telegram claim. Reissuing its link never moves the clock. Expired
+trials are suspended and cannot be bypassed by issuing a new claim; the same
+durable tenant can still be licensed in place.
 
 The supported credential CLI accepts the Gemini key only from stdin or a
 private regular file (mode 0600); it never accepts a key in an argument:

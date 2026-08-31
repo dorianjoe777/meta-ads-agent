@@ -528,17 +528,20 @@ no forman parte de este gate.
 La migración 007 es la fuente durable del ciclo comercial actual (no es un
 dashboard público):
 
-- al consumir un claim se inicia una sola vez una prueba de cinco días;
+- para el flujo histórico `pending_claim`, consumir un claim inicia una sola
+  vez una prueba de cinco días; para cuentas nuevas creadas desde el dashboard,
+  migration 013 ancla los cinco días a la creación de la cuenta y el claim sólo
+  vincula Telegram;
 - al vencer, el tenant queda suspendido y no puede reactivarse con otro claim;
 - `gemini-license` cambia el mismo tenant a `licensed` y registra la credencial
   Gemini del cliente mediante referencia/fingerprint, sin guardar la clave. El
   identificador de licencia sí se conserva en PostgreSQL para permitir la
   recuperación; nunca se guardan allí claves Gemini ni credenciales
   ChatGPT/Codex;
-- la ruta de imágenes central sigue el mismo reloj de cinco días iniciado por
-  el primer claim. Licenciar no lo reinicia. Migration 012 permite al operador
-  ampliar una fecha exacta por cliente desde el panel, con auditoría y sin poder
-  acortarla;
+- la ruta de imágenes central sigue el mismo reloj de cinco días: para cuentas
+  nuevas, desde su creación; para el legado claim-first, desde el primer claim.
+  Licenciar no lo reinicia. Migration 012 permite al operador ampliar una fecha
+  exacta por cliente desde el panel, con auditoría y sin poder acortarla;
 - `/conectar_chatgpt` está disponible desde el primer día y guarda el login sólo
   dentro del tenant. La conexión personal no modifica la ruta patrocinada ni su
   fecha. `/model` puede usar un modelo Codex que la cuenta anuncie; si Gemini es
@@ -1019,10 +1022,11 @@ registrar API keys, tokens, códigos de dispositivo, correos ni contenido de
    desechable y pasar `release-preflight.sh --server --operator-dashboard`.
    Confirmar roles sin acceso directo a tablas, tenants aún fijados a r90 y los
    flags de imágenes/recovery apagados.
-2. **Crear y reclamar un tenant canario nuevo.** Consumir un claim desde
-   Telegram y comprobar una sola identidad/binding, `trial_started_at` y
-   `trial_ends_at = inicio + 5 días`, ruta `central_sponsored` y ninguna
-   ampliación implícita.
+2. **Crear y reclamar un tenant canario nuevo.** Crear la cuenta desde el
+   dashboard y comprobar antes y después de consumir el claim una sola
+   identidad/binding, `trial_started_at = tenant.created_at` y
+   `trial_ends_at = tenant.created_at + 5 días`, ruta `central_sponsored` y
+   ninguna ampliación implícita.
 3. **Probar continuidad y entradas reales.** Conversar, guardar un dato
    reconocible, enviar foto, video corto y PDF, ejecutar un job programado,
    suspender y despertar el runtime. Confirmar el mismo historial, memoria,

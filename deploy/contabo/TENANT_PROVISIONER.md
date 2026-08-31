@@ -59,6 +59,13 @@ It must remain confined to this service; **never** mount `/var/run/docker.sock`
 or `/srv/admira/tenants` into the dashboard, and never add the dashboard user
 to Docker's group.
 
+When the separate central-image host roots have already been prepared, tenant
+creation also writes only a per-tenant verifier under
+`/etc/admira/central-image-keys/` and that tenant's isolated exchange directory
+under `/srv/admira/shared/central-image-exchange/`. Those two paths are the
+only additional sandbox write exceptions; they do not activate central images
+or expose either central ChatGPT account to the dashboard or a tenant.
+
 ## Verification
 
 ```bash
