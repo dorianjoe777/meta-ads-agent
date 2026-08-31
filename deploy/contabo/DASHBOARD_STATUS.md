@@ -3,7 +3,7 @@
 Este documento es el punto de control conciso del **dashboard privado del
 operador** que está desplegado en Contabo. No es un dashboard para compradores
 y no convierte el panel en una URL pública. La fecha/hora de la última lectura
-directa del VPS fue `2026-08-31T21:08:35Z`.
+directa del VPS fue `2026-08-31T23:10:12Z`.
 
 ## Despliegue live verificado
 
@@ -14,8 +14,11 @@ directa del VPS fue `2026-08-31T21:08:35Z`.
 | Contenedor del dashboard | En ejecución; `GET /` respondió `200` |
 | Broker de runtimes | `admira-runtime-broker.service` activo |
 | Provisioner de lifecycle | `admira-tenant-provisioner.service` activo |
+| Broker central de imágenes | Activo mediante el perfil `central-images`; socket Unix presente |
+| Readiness central | `ADMIRA_CENTRAL_IMAGE_READY=true`; workers recreados con la bandera nueva |
 | API de licencias | Salud `ok`; backend Upstash y Blob configurados |
-| Imagen de tenants existentes | `admira-ia:r90` (sin reemplazo por el dashboard) |
+| Imagen de tenants existentes | `canary-one` y clientes: `admira-ia:r90`; `canary-two`: r91 canary pinneado |
+| Pool central ChatGPT/Codex | Dos slots privados (`primary`, `secondary`), ambos con autenticación presente |
 | Migraciones del control plane | `001`–`013`, verificadas al promover el release |
 | Backup recuperable | `/srv/admira/backups/operator-lifecycle-caeb723-20260831T201433Z/` |
 
@@ -99,27 +102,44 @@ Estos números no incluyen secretos ni nombres de clientes:
 | Proyectos Gemini saludables registrados | 1 |
 | Credenciales Gemini activas/saludables | 1 |
 | Capacidad saludable declarada de prueba | 2 |
-| Asignaciones Gemini de pool activas | 0 |
+| Asignaciones Gemini de pool activas | 1 (canary reservado) |
+| Slots centrales ChatGPT/Codex | 2 (`primary`, `secondary`) |
 
-Por tanto, el mecanismo está live, pero la capacidad registrada actual es sólo
-dos pruebas; todavía no representa el objetivo operativo de al menos tres altas
+El mecanismo central está live para tenants que tengan el cliente r91 y una
+entitlement patrocinada. La capacidad Gemini registrada actual es sólo dos
+pruebas; todavía no representa el objetivo operativo de al menos tres altas
 nuevas por día ni quince pruebas simultáneas. Antes de ofrecer ese volumen hay
 que registrar y verificar más capacidad Gemini en el panel, sin copiar claves a
 chat, Git o PostgreSQL.
 
+## Canary central de imágenes verificado
+
+`canary-two` es un tenant reservado sin binding de Telegram; se promovió de
+r90 a `admira-ia-hosted:r91-canary-e6fa64f85138` sólo para esta comprobación.
+Con su ruta `central_sponsored` se ejecutó una generación real y el cliente
+recuperó un PNG válido de 810157 bytes. El mismo `update_id` se repitió después:
+el ledger devolvió el trabajo ya `succeeded` sin otra llamada al proveedor y la
+idempotencia quedó verificada. El archivo de entitlement temporal se eliminó al
+finalizar.
+
+La prueba sintética también verificó aislamiento HMAC entre tenants y el
+fallback del selector de dos cuentas. No se provocó deliberadamente un límite
+real de ChatGPT para probar fallback externo, porque eso consumiría créditos o
+forzaría un fallo; ambas autenticaciones permanecen instaladas y privadas.
+
 ## Lo que está configurado y lo que sigue pendiente
 
 Configurado: contraseña de operador (hash privado), panel, broker, provisioner,
-base de datos/migraciones, el bridge de licencia y un proyecto Gemini saludable.
+base de datos/migraciones, el bridge de licencia, un proyecto Gemini saludable,
+el broker central activo y el canary real de imágenes aprobado.
 
 Pendiente deliberadamente:
 
-- La segunda autenticación central de ChatGPT/Codex. Sólo la raíz `primary`
-  contiene `auth.json`; `secondary` sigue vacía.
-- El canary real de generación de imágenes y fallback. No hay verificadores de
-  imagen central por tenant y `ADMIRA_CENTRAL_IMAGE_READY=false`.
 - Recuperación por correo/Telegram: `ADMIRA_TELEGRAM_RECOVERY_READY=false`.
 - La prueba de capacidad/colas (soak) para el volumen comercial.
+- Probar una caída real de una cuenta central no forma parte del smoke test;
+  el fallback de dos slots ya está cubierto por la prueba sintética y la
+  selección permanece limitada a dos intentos por solicitud.
 
 El dashboard no recibe Docker, el árbol de tenants, el token del bot, las API
 keys del pool ni la clave del bridge. Sus mutaciones cruzan únicamente un socket
@@ -128,7 +148,8 @@ Unix HMAC hacia el provisioner host-only.
 ## Alcance de la evidencia
 
 Esta lectura verificó el contenedor, HTTP, servicios, flags, inventario
-secret-free y presencia de las rutas/UI. La promoción anterior pasó el
-preflight del servidor y la suite de lifecycle. No se creó ni licenció un cliente
-nuevo durante este snapshot: eso requerirá una prueba operativa autorizada con
-una identidad Telegram y una Gemini API key real.
+secret-free y presencia de las rutas/UI. La promoción del canary pasó el
+preflight del servidor; el broker central pasó la prueba sintética, la
+generación real y la repetición idempotente. No se creó ni licenció un cliente
+real ni se expuso ninguna identidad Telegram; `canary-two` sigue reservado para
+pruebas operativas.
