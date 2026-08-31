@@ -175,8 +175,8 @@ BEGIN
      OR resolved_trial_end <= now() THEN
     RAISE EXCEPTION 'tenant is not an active trial' USING ERRCODE = '55000';
   END IF;
-  UPDATE admira.tenant_telegram_claims SET used_at = now()
-  WHERE tenant_id = resolved_tenant AND used_at IS NULL;
+  UPDATE admira.tenant_telegram_claims AS c SET used_at = now()
+  WHERE c.tenant_id = resolved_tenant AND c.used_at IS NULL;
   expiry := now() + make_interval(secs => p_ttl_seconds);
   INSERT INTO admira.tenant_telegram_claims (tenant_id, token_hash, expires_at)
   VALUES (resolved_tenant, decode(p_token_hash_hex, 'hex'), expiry);

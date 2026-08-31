@@ -3,7 +3,7 @@
 Este documento es el punto de control conciso del **dashboard privado del
 operador** que está desplegado en Contabo. No es un dashboard para compradores
 y no convierte el panel en una URL pública. La fecha/hora de la última lectura
-directa del VPS fue `2026-08-31T23:10:12Z`.
+directa del VPS fue `2026-08-31T23:22:09Z`.
 
 ## Despliegue live verificado
 
@@ -17,7 +17,7 @@ directa del VPS fue `2026-08-31T23:10:12Z`.
 | Broker central de imágenes | Activo mediante el perfil `central-images`; socket Unix presente |
 | Readiness central | `ADMIRA_CENTRAL_IMAGE_READY=true`; workers recreados con la bandera nueva |
 | API de licencias | Salud `ok`; backend Upstash y Blob configurados |
-| Imagen de tenants existentes | `canary-one` y clientes: `admira-ia:r90`; `canary-two`: r91 canary pinneado |
+| Imagen de tenants existentes | `canary-one` y clientes: `admira-ia:r90`; `canary-two`/`canary-three`: r91 canary pinneado |
 | Pool central ChatGPT/Codex | Dos slots privados (`primary`, `secondary`), ambos con autenticación presente |
 | Migraciones del control plane | `001`–`013`, verificadas al promover el release |
 | Backup recuperable | `/srv/admira/backups/operator-lifecycle-caeb723-20260831T201433Z/` |
@@ -96,21 +96,22 @@ Estos números no incluyen secretos ni nombres de clientes:
 
 | Inventario | Valor |
 | --- | --- |
-| Cuentas en **Pruebas** | 2 |
-| Estados de esas pruebas | 1 `pending_claim`, 1 `trial` |
+| Cuentas en **Pruebas** | 3 |
+| Estados de esas pruebas | 3 `trial` (canarios reservados) |
 | Cuentas en **Licenciadas** | 0 |
 | Proyectos Gemini saludables registrados | 1 |
 | Credenciales Gemini activas/saludables | 1 |
 | Capacidad saludable declarada de prueba | 2 |
-| Asignaciones Gemini de pool activas | 1 (canary reservado) |
+| Asignaciones Gemini de pool activas | 2 (canarios reservados; capacidad 2/2) |
 | Slots centrales ChatGPT/Codex | 2 (`primary`, `secondary`) |
 
 El mecanismo central está live para tenants que tengan el cliente r91 y una
-entitlement patrocinada. La capacidad Gemini registrada actual es sólo dos
-pruebas; todavía no representa el objetivo operativo de al menos tres altas
-nuevas por día ni quince pruebas simultáneas. Antes de ofrecer ese volumen hay
-que registrar y verificar más capacidad Gemini en el panel, sin copiar claves a
-chat, Git o PostgreSQL.
+entitlement patrocinada. La capacidad Gemini registrada actual está ocupada
+2/2 por los canarios; hay que liberar o ampliar capacidad antes de crear una
+prueba de cliente real. Todavía no representa el objetivo operativo de al menos
+tres altas nuevas por día ni quince pruebas simultáneas. Antes de ofrecer ese
+volumen hay que registrar y verificar más capacidad Gemini en el panel, sin
+copiar claves a chat, Git o PostgreSQL.
 
 ## Canary central de imágenes verificado
 
@@ -121,6 +122,12 @@ recuperó un PNG válido de 810157 bytes. El mismo `update_id` se repitió despu
 el ledger devolvió el trabajo ya `succeeded` sin otra llamada al proveedor y la
 idempotencia quedó verificada. El archivo de entitlement temporal se eliminó al
 finalizar.
+
+`canary-three` se creó como segundo tenant reservado, recibió su Gemini del
+pool y también quedó pinneado a r91. La función de claims de la migración 013
+se corrigió para calificar `tenant_telegram_claims.tenant_id`; se verificó la
+reemisión de ambos enlaces sin reiniciar el reloj de cinco días. Sus claims
+siguen pendientes de consumo en Telegram.
 
 La prueba sintética también verificó aislamiento HMAC entre tenants y el
 fallback del selector de dos cuentas. No se provocó deliberadamente un límite
@@ -135,6 +142,9 @@ el broker central activo y el canary real de imágenes aprobado.
 
 Pendiente deliberadamente:
 
+- Ejecutar la entrevista y el flujo real de Facebook (Página, cuenta
+  publicitaria y permisos) en Telegram para cada canario; requiere un
+  `channel_id` distinto por tenant.
 - Recuperación por correo/Telegram: `ADMIRA_TELEGRAM_RECOVERY_READY=false`.
 - La prueba de capacidad/colas (soak) para el volumen comercial.
 - Probar una caída real de una cuenta central no forma parte del smoke test;
