@@ -178,7 +178,7 @@ try:
     assert {entry["source"] for entry in operator["secrets"]} == {"operator_db_password"}
     assert operator["environment"]["ADMIRA_DB_USER"] == "admira_operator_login"
     assert operator["environment"]["ADMIRA_PROVISIONER_SOCKET"] == "/run/admira-tenant-provisioner/provisioner.sock"
-    assert operator["environment"]["ADMIRA_PROVISIONER_KEY_FILE"] == "/run/admira-tenant-provisioner/tenant-provisioner.key"
+    assert operator["environment"]["ADMIRA_PROVISIONER_KEY_FILE"] == "/run/admira-tenant-provisioner.key"
     mounts = {mount.get("source", "") for mount in operator["volumes"]}
     assert "/run/admira-tenant-provisioner" in mounts
     assert "/etc/admira/tenant-provisioner.key" in mounts

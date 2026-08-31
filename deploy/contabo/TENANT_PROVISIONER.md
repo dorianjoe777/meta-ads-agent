@@ -9,8 +9,11 @@ key.
 It listens only on `/run/admira-tenant-provisioner/provisioner.sock`. Every
 request is one bounded JSON line, HMAC-SHA256 signed with
 `/etc/admira/tenant-provisioner.key`. The browser never sees that key; the
-dashboard reads its private bind-mounted copy only to authenticate to the
-fixed Unix socket. Requests must be younger than 90 seconds and their nonces
+dashboard reads its private bind-mounted copy at
+`/run/admira-tenant-provisioner.key` only to authenticate to the fixed Unix
+socket. The socket directory itself remains a separate read-only bind so the
+key is not nested below a read-only mount. Requests must be younger than 90
+seconds and their nonces
 are durably remembered across a daemon restart.
 
 The only accepted actions are:

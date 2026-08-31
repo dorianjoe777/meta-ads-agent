@@ -8,6 +8,12 @@ the dashboard itself still has no direct Docker, tenant-root, pool-secret, or
 provisioner-database authority. Never open 8791 in a firewall or put this
 service behind a public reverse proxy.
 
+The dashboard receives the socket directory read-only at
+`/run/admira-tenant-provisioner`. The HMAC key is mounted separately at
+`/run/admira-tenant-provisioner.key`; keeping the file outside that read-only
+directory avoids Docker's nested-file-mount failure while preserving the same
+least-privilege boundary.
+
 The service has its own provider-egress network. Only PostgreSQL shares its
 internal `operator_private` network; buyer workers and the central image broker
 share neither operator network. This isolates the first-run password screen
