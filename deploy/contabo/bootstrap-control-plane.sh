@@ -107,7 +107,7 @@ if [[ ! -s "$SECRETS_DIR/redis_users.acl" ]]; then
   unset redis_password
 fi
 
-for secret_name in ingress_db_password runtime_db_password delivery_db_password scheduler_db_password provisioner_db_password image_db_password recovery_db_password email_delivery_db_password operator_db_password runtime_broker_key recovery_hmac_key; do
+for secret_name in ingress_db_password runtime_db_password delivery_db_password scheduler_db_password provisioner_db_password image_db_password recovery_db_password email_delivery_db_password operator_db_password runtime_broker_key recovery_hmac_key tenant_provisioner_key license_hosted_bridge_key; do
   secret_path="$SECRETS_DIR/${secret_name}.txt"
   if [[ -L "$secret_path" || ( -e "$secret_path" && ! -f "$secret_path" ) ]]; then
     printf 'Refusing unsafe service secret file: %s\n' "$secret_name" >&2

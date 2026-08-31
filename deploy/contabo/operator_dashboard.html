@@ -256,6 +256,59 @@
             </div>
           </section>
 
+          <section id="customers-section" class="operation-card panel" aria-labelledby="customers-title" aria-busy="true">
+            <div class="operation-rail" aria-hidden="true"><span>03</span><span>ALTA</span></div>
+            <div class="operation-body">
+              <div class="operation-head">
+                <div>
+                  <p class="eyebrow">Cuentas de clientes · Ciclo de vida</p>
+                  <h2 id="customers-title">Clientes Admira</h2>
+                  <p>Crea cuentas de prueba con cinco días exactos desde su creación. La misma cuenta puede pasar a licenciada sin perder su espacio ni su historial.</p>
+                </div>
+                <button id="customers-refresh" class="button button-quiet" type="button"><span class="button-label">Actualizar clientes</span></button>
+              </div>
+
+              <form id="trial-form" class="gemini-form customer-create-form" novalidate>
+                <div class="field-group">
+                  <label for="trial-runtime-key">Referencia del cliente</label>
+                  <input id="trial-runtime-key" name="runtime_key" type="text" autocomplete="off" spellcheck="false" required maxlength="63" pattern="[a-z0-9][a-z0-9-]{2,62}" placeholder="cliente-001" aria-describedby="trial-runtime-help trial-error">
+                  <p id="trial-runtime-help" class="field-help">Sólo minúsculas, números y guiones. Se usará para identificar su espacio en Telegram.</p>
+                </div>
+                <div class="field-group">
+                  <label for="trial-display-name">Nombre visible</label>
+                  <input id="trial-display-name" name="display_name" type="text" autocomplete="off" required maxlength="200" placeholder="Nombre del cliente" aria-describedby="trial-error">
+                </div>
+                <div class="form-actions">
+                  <button id="trial-submit" class="button button-primary" type="submit"><span class="button-label">Crear cuenta de prueba</span></button>
+                </div>
+                <p id="trial-error" class="form-message form-message-error form-wide" role="alert"></p>
+              </form>
+
+              <div class="customer-tabs" role="tablist" aria-label="Cuentas por estado">
+                <button id="trials-tab" class="tab-button is-active" type="button" role="tab" aria-selected="true" aria-controls="trials-panel" tabindex="0">Pruebas <span id="trials-count" class="tab-count">0</span></button>
+                <button id="licensed-tab" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="licensed-panel" tabindex="-1">Licenciadas <span id="licensed-count" class="tab-count">0</span></button>
+              </div>
+
+              <div id="trials-panel" role="tabpanel" aria-labelledby="trials-tab">
+                <div class="table-wrap" tabindex="0" role="region" aria-label="Cuentas de prueba desplazable">
+                  <table><caption class="sr-only">Cuentas de prueba y acciones operativas</caption>
+                    <thead><tr><th scope="col">Cliente</th><th scope="col">Creada</th><th scope="col">Vence</th><th scope="col">Gemini</th><th scope="col">Estado</th><th scope="col"><span class="sr-only">Acciones</span></th></tr></thead>
+                    <tbody id="trials-rows"><tr class="loading-row"><td colspan="6"><span class="skeleton-line"></span><span class="sr-only">Cargando cuentas de prueba</span></td></tr></tbody>
+                  </table>
+                </div>
+              </div>
+              <div id="licensed-panel" role="tabpanel" aria-labelledby="licensed-tab" hidden>
+                <div class="table-wrap" tabindex="0" role="region" aria-label="Cuentas licenciadas desplazable">
+                  <table><caption class="sr-only">Cuentas licenciadas, licencia redactada y beneficio de imágenes</caption>
+                    <thead><tr><th scope="col">Cliente</th><th scope="col">Licencia</th><th scope="col">Activada</th><th scope="col">Imágenes centrales</th><th scope="col">Estado</th></tr></thead>
+                    <tbody id="licensed-rows"><tr class="loading-row"><td colspan="5"><span class="skeleton-line"></span><span class="sr-only">Cargando cuentas licenciadas</span></td></tr></tbody>
+                  </table>
+                </div>
+              </div>
+              <p id="customers-error" class="form-message form-message-error" role="alert"></p>
+            </div>
+          </section>
+
           <section id="sponsorship-section" class="operation-card panel" aria-labelledby="sponsorship-title" aria-busy="true">
             <div class="operation-rail" aria-hidden="true"><span>03</span><span>TIME</span></div>
             <div class="operation-body">
@@ -263,7 +316,7 @@
                 <div>
                   <p class="eyebrow">Beneficio de imágenes · Control por cliente</p>
                   <h2 id="sponsorship-title">Patrocinio central</h2>
-                  <p>Todos reciben 5 días desde su primera activación. Conectar su ChatGPT personal no elimina el beneficio. Usa este control sólo para ampliar una fecha; nunca puede acortarla.</p>
+                  <p>Todos reciben 5 días desde la creación de su cuenta de prueba. Conectar su ChatGPT personal no elimina el beneficio. Usa este control sólo para ampliar una fecha; nunca puede acortarla.</p>
                 </div>
                 <button id="sponsorship-refresh" class="button button-quiet" type="button"><span class="button-label">Actualizar clientes</span></button>
               </div>
@@ -311,7 +364,7 @@
 
         <aside class="handoff-note" aria-label="Siguiente paso operativo">
           <span class="handoff-index" aria-hidden="true">→</span>
-          <div><strong>Siguiente paso</strong><p>Este panel prepara credenciales; no activa el servicio de imágenes ni asigna clientes. Después de validar Gemini y guardar las dos conexiones, ejecuta la prueba real de imágenes antes de habilitar el servicio desde el procedimiento de operaciones.</p></div>
+          <div><strong>Siguiente paso</strong><p>Este panel administra altas y credenciales privadas; no activa el servicio de imágenes. Después de validar Gemini y guardar las dos conexiones, ejecuta la prueba real de imágenes antes de habilitar el servicio desde el procedimiento de operaciones.</p></div>
         </aside>
       </section>
     </main>
@@ -359,6 +412,29 @@
         <button id="confirm-cancel" class="button button-quiet" type="button">Volver</button>
         <button id="confirm-accept" class="button button-primary" type="button">Confirmar</button>
       </div>
+    </div>
+  </dialog>
+
+  <dialog id="claim-dialog" class="dialog" aria-labelledby="claim-title" aria-describedby="claim-description">
+    <div class="dialog-frame">
+      <div class="dialog-head"><div><p class="eyebrow">Activación de Telegram</p><h2 id="claim-title">Enlace temporal</h2></div><button id="claim-close" class="icon-button" type="button" aria-label="Cerrar enlace temporal">×</button></div>
+      <p id="claim-description" class="dialog-description">Envía este enlace al cliente o ábrelo en Telegram. Sólo sirve para activar su cuenta y se borra al cerrar esta ventana.</p>
+      <code id="claim-link" class="claim-link" tabindex="0">Esperando…</code>
+      <div class="dialog-actions"><button id="claim-copy" class="button button-primary" type="button" disabled><span class="button-label">Copiar enlace</span></button><button id="claim-done" class="button button-quiet" type="button">Cerrar</button></div>
+    </div>
+  </dialog>
+
+  <dialog id="extend-trial-dialog" class="dialog" aria-labelledby="extend-trial-title" aria-describedby="extend-trial-description">
+    <div class="dialog-frame"><div class="dialog-head"><div><p class="eyebrow">Cuenta de prueba</p><h2 id="extend-trial-title">Ampliar prueba</h2></div><button id="extend-trial-close" class="icon-button" type="button" aria-label="Cerrar ampliación">×</button></div>
+      <p id="extend-trial-description" class="dialog-description">Elige la nueva fecha exacta de vencimiento. La ampliación se aplica a la misma cuenta.</p>
+      <form id="extend-trial-form" class="stack-form" novalidate><div class="field-group"><label for="extend-trial-end">Nueva fecha de vencimiento</label><input id="extend-trial-end" type="datetime-local" required step="60" aria-describedby="extend-trial-error"><p id="extend-trial-error" class="form-message form-message-error" role="alert"></p></div><div class="dialog-actions"><button id="extend-trial-cancel" class="button button-quiet" type="button">Cancelar</button><button id="extend-trial-submit" class="button button-primary" type="submit"><span class="button-label">Guardar fecha</span></button></div></form>
+    </div>
+  </dialog>
+
+  <dialog id="license-dialog" class="dialog" aria-labelledby="license-title" aria-describedby="license-description">
+    <div class="dialog-frame"><div class="dialog-head"><div><p class="eyebrow">Cambio de estado</p><h2 id="license-title">Asignar licencia</h2></div><button id="license-close" class="icon-button" type="button" aria-label="Cerrar licencia">×</button></div>
+      <p id="license-description" class="dialog-description">Introduce la API key Gemini del cliente. Se envía una sola vez, se borra inmediatamente del formulario y no se guarda en este navegador.</p>
+      <form id="license-form" class="stack-form" novalidate><div class="field-group"><label for="license-gemini-key">API key Gemini del cliente</label><div class="password-field"><input id="license-gemini-key" type="password" autocomplete="off" spellcheck="false" required maxlength="512" aria-describedby="license-key-help license-error"><button class="reveal-button" type="button" data-password-toggle="license-gemini-key" aria-pressed="false" aria-label="Mostrar API key del cliente">Mostrar</button></div><p id="license-key-help" class="field-help">La cuenta conserva su espacio e historial. El correo de recuperación queda pendiente.</p></div><p id="license-error" class="form-message form-message-error" role="alert"></p><div class="dialog-actions"><button id="license-cancel" class="button button-quiet" type="button">Cancelar</button><button id="license-submit" class="button button-primary" type="submit"><span class="button-label">Crear y asignar licencia</span></button></div></form>
     </div>
   </dialog>
 

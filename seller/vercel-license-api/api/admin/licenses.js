@@ -17,6 +17,50 @@ import {
 import { setCloudNetworkMode } from "../portal/cloud/digitalocean.js";
 import { readLicense, readRegistry, writeLicense, writeRegistry } from "../../lib/store.js";
 import { encryptPortalSecret } from "../../lib/secret-vault.js";
+import { timingSafeEqual } from "node:crypto";
+import { buildHostedTenantLicense, hostedTenantReference } from "../../lib/hosted-license.js";
+
+function hostedBridgeAllowed(request) {
+  const supplied = String(request.headers.authorization || "").replace(/^Bearer\s+/i, "");
+  const expected = String(process.env.LICENSE_HOSTED_BRIDGE_KEY || "");
+  if (!supplied || expected.length < 32 || expected.length > 512) return false;
+  const suppliedBuffer = Buffer.from(supplied);
+  const expectedBuffer = Buffer.from(expected);
+  return suppliedBuffer.length === expectedBuffer.length && timingSafeEqual(suppliedBuffer, expectedBuffer);
+}
+
+async function createHostedTenantLicense({ request, response, registry, body }) {
+  if (!hostedBridgeAllowed(request)) {
+    return response.status(401).json({ ok: false, error: "hosted_bridge_unauthorized" });
+  }
+  const tenantReference = hostedTenantReference(body.external_customer_id || body.tenant_reference);
+  if (!tenantReference) {
+    return response.status(400).json({ ok: false, error: "external_customer_id_invalid" });
+  }
+  const requestedPlan = String(body.plan || "individual").trim().toLowerCase();
+  if (!["individual", "agency"].includes(requestedPlan)) {
+    return response.status(400).json({ ok: false, error: "plan_invalid" });
+  }
+  if (String(process.env.LICENSE_STORE_BACKEND || "auto").trim().toLowerCase() === "blob"
+    || !process.env.UPSTASH_REDIS_REST_URL
+    || !process.env.UPSTASH_REDIS_REST_TOKEN) {
+    return response.status(503).json({ ok: false, error: "upstash_not_configured" });
+  }
+  const existing = registry.licenses.find((item) => item?.license_kind === "hosted_tenant"
+    && String(item?.hosted_tenant_reference || "") === tenantReference);
+  if (existing) {
+    return response.status(200).json({ ok: true, created: false, license: existing });
+  }
+  const record = buildHostedTenantLicense({
+    tenantReference,
+    displayName: body.display_name || body.buyer_name,
+    plan: requestedPlan,
+    bridgeKey: process.env.LICENSE_HOSTED_BRIDGE_KEY
+  });
+  registry.licenses.push(record);
+  await Promise.all([writeRegistry(registry), writeLicense(record)]);
+  return response.status(201).json({ ok: true, created: true, license: record });
+}
 
 function cloudSummary(cloud = {}) {
   const rawNetworkMode = String(cloud?.network_mode || "").trim().toLowerCase();
@@ -88,7 +132,10 @@ export default async function handler(request, response) {
     return handleHotmartWebhook(request, response);
   }
 
-  if (!bearerAllowed(request)) {
+  const body = request.body || {};
+  const action = String(body.action || "").trim().toLowerCase();
+  const authenticated = bearerAllowed(request) || (action === "create_hosted_tenant_license" && hostedBridgeAllowed(request));
+  if (!authenticated) {
     return response.status(401).json({ ok: false, error: "unauthorized" });
   }
   const registry = await readRegistry();
@@ -117,8 +164,9 @@ export default async function handler(request, response) {
   if (request.method !== "POST") {
     return response.status(405).json({ ok: false, error: "method_not_allowed" });
   }
-  const body = request.body || {};
-  const action = String(body.action || "").trim().toLowerCase();
+  if (action === "create_hosted_tenant_license") {
+    return createHostedTenantLicense({ request, response, registry, body });
+  }
   if (action === "adopt_cloud_installation") {
     const licenseKey = String(body.license_key || "").trim().toUpperCase();
     const confirmation = String(body.confirm_license_key || "").trim().toUpperCase();

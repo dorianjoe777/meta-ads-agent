@@ -1015,7 +1015,7 @@ registrar API keys, tokens, códigos de dispositivo, correos ni contenido de
 `auth.json`.
 
 1. **Instalar el candidato como una sola unidad.** Guardar backup recuperable,
-   aplicar migraciones 001–012, ejecutar los validators sólo en PostgreSQL
+   aplicar migraciones 001–013, ejecutar los validators sólo en PostgreSQL
    desechable y pasar `release-preflight.sh --server --operator-dashboard`.
    Confirmar roles sin acceso directo a tablas, tenants aún fijados a r90 y los
    flags de imágenes/recovery apagados.

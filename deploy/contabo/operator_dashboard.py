@@ -21,6 +21,7 @@ import re
 import secrets
 import shutil
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -30,7 +31,7 @@ import time
 import tomllib
 import urllib.parse
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Mapping
@@ -48,11 +49,14 @@ DEFAULT_PORT = 8791
 DEFAULT_GEMINI_ROOT = Path("/etc/admira/gemini-pool")
 DEFAULT_CODEX_ROOT = Path("/app/runtime/hermes/codex-auth-pool")
 DEFAULT_PASSWORD_FILE = Path("/etc/admira/operator-password.hash")
+DEFAULT_PROVISIONER_SOCKET = Path("/run/admira-tenant-provisioner/provisioner.sock")
+DEFAULT_PROVISIONER_KEY_FILE = Path("/run/admira-tenant-provisioner/tenant-provisioner.key")
 MAX_BODY = 16 * 1024
 MAX_OUTPUT = 8192
 MAX_TOTAL_OUTPUT = 128 * 1024
 MAX_AUTH_BYTES = 64 * 1024
 MAX_PASSWORD_BYTES = 1024
+MAX_PROVISIONER_RESPONSE = 64 * 1024
 MAX_SESSIONS = 128
 MAX_CLIENTS = 1024
 PBKDF2_ITERATIONS = 600_000
@@ -65,6 +69,8 @@ TERMINAL_PHASES = {"completed", "cancelled", "expired", "failed"}
 COOKIE_NAME = "admira_operator"
 DEVICE_URL = "https://auth.openai.com/codex/device"
 ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
+RUNTIME_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,62}$")
+LICENSE_CODE_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 
 
 def _text_equal(left: str, right: str) -> bool:
@@ -520,6 +526,93 @@ class CodexDeviceLoginManager:
                 self._stop(job, "cancelled" if job.phase not in TERMINAL_PHASES else job.phase)
 
 
+class OperatorActionError(Exception):
+    """A deliberately small error contract for customer lifecycle actions."""
+
+    def __init__(self, code: str, status: int):
+        self.code = code
+        self.status = status
+        super().__init__(code)
+
+
+class ProvisionerClient:
+    """Signed client for the host-only tenant provisioner Unix socket."""
+
+    def __init__(self, socket_path=DEFAULT_PROVISIONER_SOCKET, key_file=DEFAULT_PROVISIONER_KEY_FILE,
+                 *, timeout: float = 40.0):
+        self.socket_path = Path(socket_path)
+        self.key_file = Path(key_file)
+        self.timeout = float(timeout)
+
+    @staticmethod
+    def _canonical(value: object) -> bytes:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+    def _socket_is_private(self) -> None:
+        try:
+            _safe_parents(self.socket_path)
+            info = self.socket_path.lstat()
+        except OSError as exc:
+            raise RuntimeError("provisioner_unavailable") from exc
+        if (self.socket_path.is_symlink() or not stat.S_ISSOCK(info.st_mode)
+                or stat.S_IMODE(info.st_mode) & 0o007
+                or info.st_uid not in {0, os.geteuid()}):
+            raise RuntimeError("provisioner_unavailable")
+
+    def request(self, body: Mapping[str, object]) -> dict[str, Any]:
+        if not isinstance(body, Mapping):
+            raise RuntimeError("provisioner_protocol_error")
+        self._socket_is_private()
+        try:
+            key = _private_file(self.key_file, max_bytes=512).encode("utf-8")
+            if not 32 <= len(key) <= 512:
+                raise RuntimeError("provisioner_unavailable")
+            envelope: dict[str, object] = {
+                "timestamp": int(time.time()), "nonce": secrets.token_hex(16), "body": dict(body),
+            }
+            envelope["signature"] = hmac.new(key, self._canonical(envelope), hashlib.sha256).hexdigest()
+            wire = self._canonical(envelope) + b"\n"
+            if len(wire) > MAX_BODY:
+                raise RuntimeError("provisioner_protocol_error")
+            key = b""
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError("provisioner_unavailable") from exc
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            client.settimeout(self.timeout)
+            client.connect(str(self.socket_path))
+            client.sendall(wire)
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                piece = client.recv(4096)
+                if not piece:
+                    break
+                total += len(piece)
+                if total > MAX_PROVISIONER_RESPONSE or b"\n" in piece:
+                    chunks.append(piece)
+                    break
+                chunks.append(piece)
+        except socket.timeout as exc:
+            raise RuntimeError("provisioner_timeout") from exc
+        except OSError as exc:
+            raise RuntimeError("provisioner_unavailable") from exc
+        finally:
+            client.close()
+        raw = b"".join(chunks)
+        if not raw or len(raw) > MAX_PROVISIONER_RESPONSE or raw.count(b"\n") != 1 or not raw.endswith(b"\n"):
+            raise RuntimeError("provisioner_protocol_error")
+        try:
+            response = json.loads(raw[:-1].decode("utf-8"))
+        except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError("provisioner_protocol_error") from exc
+        if not isinstance(response, dict) or not isinstance(response.get("ok"), bool):
+            raise RuntimeError("provisioner_protocol_error")
+        return response
+
+
 @dataclass
 class Session:
     csrf: str
@@ -529,7 +622,7 @@ class Session:
 
 class OperatorState:
     def __init__(self, *, password_file=DEFAULT_PASSWORD_FILE, gemini_root=DEFAULT_GEMINI_ROOT,
-                 codex_root=DEFAULT_CODEX_ROOT, connect=None, clock=time.monotonic):
+                 codex_root=DEFAULT_CODEX_ROOT, connect=None, provisioner=None, clock=time.monotonic):
         self.password_file = Path(password_file)
         self.gemini_root = Path(gemini_root)
         self.sessions: dict[str, Session] = {}
@@ -540,6 +633,10 @@ class OperatorState:
         self.clock = clock
         self.login = CodexDeviceLoginManager(codex_root, clock=clock)
         self.connect = connect
+        self.provisioner = provisioner or ProvisionerClient(
+            Path(os.environ.get("ADMIRA_PROVISIONER_SOCKET", DEFAULT_PROVISIONER_SOCKET)),
+            Path(os.environ.get("ADMIRA_PROVISIONER_KEY_FILE", DEFAULT_PROVISIONER_KEY_FILE)),
+        )
 
     def cleanup(self) -> None:
         now = self.clock()
@@ -767,6 +864,217 @@ class OperatorState:
             "route": str(row[4])[:32],
         }
 
+    @staticmethod
+    def _customer_runtime_key(value: str) -> str:
+        result = value.strip().lower() if isinstance(value, str) else ""
+        if not RUNTIME_KEY_RE.fullmatch(result):
+            raise OperatorActionError("invalid_tenant_key", 400)
+        return result
+
+    @staticmethod
+    def _customer_display_name(value: str) -> str:
+        result = value.strip() if isinstance(value, str) else ""
+        if not result or len(result) > 200 or any(ord(char) < 32 or ord(char) == 127 for char in result):
+            raise OperatorActionError("invalid_display_name", 400)
+        return result
+
+    @staticmethod
+    def _customer_trial_end(value: str) -> str:
+        if not isinstance(value, str) or not 20 <= len(value) <= 64:
+            raise OperatorActionError("invalid_trial_extension", 400)
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise OperatorActionError("invalid_trial_extension", 400) from exc
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise OperatorActionError("invalid_trial_extension", 400)
+        instant = parsed.astimezone(timezone.utc)
+        now = datetime.now(timezone.utc)
+        if instant <= now or instant > now + timedelta(days=365):
+            raise OperatorActionError("invalid_trial_extension", 400)
+        return instant.isoformat(timespec="seconds")
+
+    @staticmethod
+    def _action_failure(code: object) -> OperatorActionError:
+        safe = str(code or "")
+        invalid = {
+            "invalid_tenant_key", "invalid_display_name", "invalid_trial_extension",
+            "invalid_customer_gemini_key", "invalid_actor",
+        }
+        conflict = {"trial_not_active", "trial_create_failed", "trial_update_failed", "trial_expire_failed"}
+        if safe in invalid:
+            return OperatorActionError(safe, 400)
+        if safe in conflict:
+            return OperatorActionError(safe, 409)
+        if safe in {
+            "gemini_pool_unavailable", "tenant_provision_failed", "claim_unavailable",
+            "runtime_suspend_pending", "license_bridge_unavailable", "license_bridge_rejected",
+            "license_transition_failed", "provisioner_unavailable", "provisioner_timeout",
+            "provisioner_protocol_error", "provisioner_failure",
+        }:
+            return OperatorActionError(safe, 503)
+        return OperatorActionError("operator_operation_failed", 503)
+
+    def _provisioner_action(self, body: Mapping[str, object]) -> dict[str, Any]:
+        try:
+            response = self.provisioner.request(body)
+        except RuntimeError as exc:
+            raise self._action_failure(str(exc)) from None
+        except Exception:
+            raise OperatorActionError("provisioner_unavailable", 503) from None
+        if not isinstance(response, dict):
+            raise OperatorActionError("provisioner_protocol_error", 503)
+        if not response.get("ok"):
+            raise self._action_failure(response.get("error_code"))
+        return response
+
+    @staticmethod
+    def _claim_url(response: Mapping[str, object]) -> str:
+        claim = response.get("claim")
+        raw = claim.get("telegram_url") if isinstance(claim, dict) else ""
+        if not isinstance(raw, str) or len(raw) > 512:
+            raise OperatorActionError("provisioner_protocol_error", 503)
+        try:
+            parsed = urllib.parse.urlsplit(raw)
+            query = urllib.parse.parse_qs(parsed.query, strict_parsing=True)
+        except ValueError as exc:
+            raise OperatorActionError("provisioner_protocol_error", 503) from exc
+        token = query.get("start", [])
+        if (parsed.scheme != "https" or parsed.hostname != "t.me" or parsed.port is not None
+                or parsed.path != "/admiraia_bot" or set(query) != {"start"} or len(token) != 1
+                or not re.fullmatch(r"[A-Za-z0-9_-]{20,128}", token[0])):
+            raise OperatorActionError("provisioner_protocol_error", 503)
+        return raw
+
+    @staticmethod
+    def _projection_text(value: object, maximum: int) -> str:
+        result = str(value or "")[:maximum]
+        return "".join(char for char in result if ord(char) >= 32 and ord(char) != 127)
+
+    def trial_accounts(self) -> list[dict[str, Any]]:
+        connect = self.connect or _default_connect
+        try:
+            with connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT runtime_key, display_name, lifecycle_state, tenant_created_at, trial_started_at, "
+                        "trial_ends_at, image_sponsorship_ends_at, gemini_pool_ready "
+                        "FROM admira.operator_trial_accounts() ORDER BY tenant_created_at DESC, runtime_key"
+                    )
+                    rows = cur.fetchall()
+        except Exception:
+            raise RuntimeError("trial_accounts_unavailable") from None
+        result: list[dict[str, Any]] = []
+        for row in rows[:1000]:
+            key = self._projection_text(row[0], 63).lower()
+            if not RUNTIME_KEY_RE.fullmatch(key):
+                continue
+            state = self._projection_text(row[2], 32)
+            if state not in {"pending_claim", "trial", "trial_expired"}:
+                state = "unknown"
+            result.append({
+                "runtime_key": key,
+                "display_name": self._projection_text(row[1], 200),
+                "lifecycle_state": state,
+                "tenant_created_at": row[3].isoformat() if hasattr(row[3], "isoformat") else None,
+                "trial_started_at": row[4].isoformat() if hasattr(row[4], "isoformat") else None,
+                "trial_ends_at": row[5].isoformat() if hasattr(row[5], "isoformat") else None,
+                "image_sponsorship_ends_at": row[6].isoformat() if hasattr(row[6], "isoformat") else None,
+                "gemini_pool_ready": bool(row[7]),
+            })
+        return result
+
+    def licensed_accounts(self) -> list[dict[str, Any]]:
+        connect = self.connect or _default_connect
+        try:
+            with connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT runtime_key, display_name, lifecycle_state, license_mask, licensed_at, "
+                        "paid_through, image_sponsorship_ends_at "
+                        "FROM admira.operator_licensed_accounts() ORDER BY licensed_at DESC NULLS LAST, runtime_key"
+                    )
+                    rows = cur.fetchall()
+        except Exception:
+            raise RuntimeError("licensed_accounts_unavailable") from None
+        result: list[dict[str, Any]] = []
+        for row in rows[:1000]:
+            key = self._projection_text(row[0], 63).lower()
+            if not RUNTIME_KEY_RE.fullmatch(key):
+                continue
+            result.append({
+                "runtime_key": key,
+                "display_name": self._projection_text(row[1], 200),
+                "lifecycle_state": "licensed" if str(row[2]) == "licensed" else "unknown",
+                "license_mask": self._projection_text(row[3], 32) if row[3] is not None else None,
+                "licensed_at": row[4].isoformat() if hasattr(row[4], "isoformat") else None,
+                "paid_through": row[5].isoformat() if hasattr(row[5], "isoformat") else None,
+                "image_sponsorship_ends_at": row[6].isoformat() if hasattr(row[6], "isoformat") else None,
+            })
+        return result
+
+    def create_trial(self, runtime_key: str, display_name: str) -> dict[str, Any]:
+        key = self._customer_runtime_key(runtime_key)
+        name = self._customer_display_name(display_name)
+        response = self._provisioner_action({
+            "action": "create_trial", "tenant_key": key, "display_name": name,
+            "actor_id": "operator-dashboard",
+        })
+        return {"ok": True, "runtime_key": key, "claim_url": self._claim_url(response)}
+
+    def reissue_trial_claim(self, runtime_key: str) -> dict[str, Any]:
+        key = self._customer_runtime_key(runtime_key)
+        response = self._provisioner_action({
+            "action": "reissue_trial_claim", "tenant_key": key, "actor_id": "operator-dashboard",
+        })
+        return {"ok": True, "runtime_key": key, "claim_url": self._claim_url(response)}
+
+    def extend_trial(self, runtime_key: str, ends_at: str) -> dict[str, Any]:
+        key = self._customer_runtime_key(runtime_key)
+        end = self._customer_trial_end(ends_at)
+        response = self._provisioner_action({
+            "action": "extend_trial", "tenant_key": key, "ends_at": end, "actor_id": "operator-dashboard",
+        })
+        return {
+            "ok": True, "runtime_key": key,
+            "lifecycle_state": self._projection_text(response.get("lifecycle_state"), 32),
+            "trial_ends_at": self._projection_text(response.get("trial_ends_at"), 64),
+        }
+
+    def expire_trial(self, runtime_key: str) -> dict[str, Any]:
+        key = self._customer_runtime_key(runtime_key)
+        response = self._provisioner_action({
+            "action": "expire_trial", "tenant_key": key, "actor_id": "operator-dashboard",
+        })
+        return {"ok": True, "runtime_key": key, "lifecycle_state": "trial_expired"}
+
+    def license_trial(self, runtime_key: str, gemini_api_key: str) -> dict[str, Any]:
+        key = self._customer_runtime_key(runtime_key)
+        if not isinstance(gemini_api_key, str):
+            raise OperatorActionError("invalid_customer_gemini_key", 400)
+        try:
+            customer_key = validate_gemini_key(gemini_api_key)
+        except Exception as exc:
+            raise OperatorActionError("invalid_customer_gemini_key", 400) from exc
+        try:
+            trials = self.trial_accounts()
+        except RuntimeError as exc:
+            raise OperatorActionError("trial_accounts_unavailable", 503) from exc
+        display_name = next((item["display_name"] for item in trials if item["runtime_key"] == key), "")
+        if not display_name:
+            raise OperatorActionError("trial_not_active", 409)
+        try:
+            response = self._provisioner_action({
+                "action": "license_trial", "tenant_key": key, "display_name": display_name,
+                "gemini_api_key": customer_key, "actor_id": "operator-dashboard",
+            })
+        finally:
+            customer_key = ""
+        license_key = str(response.get("license_key") or "")
+        if not LICENSE_CODE_RE.fullmatch(license_key):
+            raise OperatorActionError("provisioner_protocol_error", 503)
+        return {"ok": True, "runtime_key": key, "license_key": license_key}
+
 
 def _default_connect():
     import psycopg
@@ -988,6 +1296,16 @@ class OperatorHandler(BaseHTTPRequestHandler):
         self._auth()
         if path == "/api/operator/gemini/status":
             self._json({"ok": True, "projects": self.state.gemini_status()})
+        elif path == "/api/operator/trials":
+            try:
+                self._json({"ok": True, "trials": self.state.trial_accounts()})
+            except RuntimeError:
+                raise RequestError("trial_accounts_unavailable", 503) from None
+        elif path == "/api/operator/licensed":
+            try:
+                self._json({"ok": True, "licensed": self.state.licensed_accounts()})
+            except RuntimeError:
+                raise RequestError("licensed_accounts_unavailable", 503) from None
         elif path == "/api/operator/sponsorship/status":
             try:
                 tenants = self.state.sponsorship_status()
@@ -1054,6 +1372,33 @@ class OperatorHandler(BaseHTTPRequestHandler):
                 if str(exc) == "gemini_registration_failed":
                     raise RequestError("gemini_registration_failed", 503) from None
                 raise
+        elif path == "/api/operator/trials":
+            try:
+                result = self.state.create_trial(
+                    self._string(body, "runtime_key"), self._string(body, "display_name")
+                )
+            except OperatorActionError as exc:
+                raise RequestError(exc.code, exc.status) from None
+        elif match := re.fullmatch(r"/api/operator/trials/([a-z0-9][a-z0-9-]{2,62})/claim", path):
+            try:
+                result = self.state.reissue_trial_claim(match[1])
+            except OperatorActionError as exc:
+                raise RequestError(exc.code, exc.status) from None
+        elif match := re.fullmatch(r"/api/operator/trials/([a-z0-9][a-z0-9-]{2,62})/extend", path):
+            try:
+                result = self.state.extend_trial(match[1], self._string(body, "ends_at"))
+            except OperatorActionError as exc:
+                raise RequestError(exc.code, exc.status) from None
+        elif match := re.fullmatch(r"/api/operator/trials/([a-z0-9][a-z0-9-]{2,62})/expire", path):
+            try:
+                result = self.state.expire_trial(match[1])
+            except OperatorActionError as exc:
+                raise RequestError(exc.code, exc.status) from None
+        elif match := re.fullmatch(r"/api/operator/trials/([a-z0-9][a-z0-9-]{2,62})/license", path):
+            try:
+                result = self.state.license_trial(match[1], self._string(body, "gemini_api_key"))
+            except OperatorActionError as exc:
+                raise RequestError(exc.code, exc.status) from None
         elif path == "/api/operator/sponsorship/extend":
             try:
                 result = self.state.extend_sponsorship(

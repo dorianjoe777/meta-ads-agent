@@ -74,6 +74,8 @@ resolve_compose_value() {
       [[ -n "${ADMIRA_CENTRAL_CODEX_ACCOUNT_IDS+x}" ]] && { printf '%s' "$ADMIRA_CENTRAL_CODEX_ACCOUNT_IDS"; return; } ;;
     ADMIRA_OPERATOR_SETUP_CIDRS)
       [[ -n "${ADMIRA_OPERATOR_SETUP_CIDRS+x}" ]] && { printf '%s' "$ADMIRA_OPERATOR_SETUP_CIDRS"; return; } ;;
+    ADMIRA_PROVISIONER_GID)
+      [[ -n "${ADMIRA_PROVISIONER_GID+x}" ]] && { printf '%s' "$ADMIRA_PROVISIONER_GID"; return; } ;;
   esac
   if [[ -r "$ROOT_DIR/.env" ]]; then
     while IFS='=' read -r config_key config_value; do
@@ -92,7 +94,8 @@ resolve_compose_value() {
 for file in compose.yaml Control.Dockerfile app-requirements.txt \
   apply-control-plane.sh runtime_broker.py tenant_turn.py telegram_ingress.py \
   hosted_service.py hosted_worker.py tenant_admin.py tenantctl.py provider_admin.py \
-  gemini_pool_admin.py operator_dashboard.py operator_dashboard.html operator_dashboard.css operator_dashboard.js OPERATOR_DASHBOARD.md open-operator-dashboard.command \
+  gemini_pool_admin.py tenant_provisioner.py install-tenant-provisioner.sh TENANT_PROVISIONER.md \
+  operator_dashboard.py operator_dashboard.html operator_dashboard.css operator_dashboard.js OPERATOR_DASHBOARD.md open-operator-dashboard.command \
   image_broker.py central_image_service.py central_codex_account_pool.py prepare-central-image-broker.sh \
   recovery_identity.py recovery_service.py recovery_email_worker.py recovery_smtp.py \
   capacity-preflight.sh \
@@ -105,7 +108,8 @@ for file in compose.yaml Control.Dockerfile app-requirements.txt \
   db/validate_telegram_license_recovery.sql db/migrations/010_operator_gemini_pool.sql \
   db/validate_operator_gemini_pool.sql db/migrations/011_operator_dashboard.sql \
   db/validate_operator_dashboard.sql db/migrations/012_personal_chatgpt_sponsorship.sql \
-  db/validate_personal_chatgpt_sponsorship.sql; do
+  db/validate_personal_chatgpt_sponsorship.sql db/migrations/013_operator_trial_provisioning.sql \
+  db/validate_operator_trial_provisioning.sql; do
   need_file "$ROOT_DIR/$file"
 done
 
@@ -114,13 +118,13 @@ import ast
 import pathlib
 import sys
 root = pathlib.Path(sys.argv[1])
-names = ("runtime_broker.py", "tenant_turn.py", "telegram_ingress.py", "hosted_service.py", "hosted_worker.py", "tenant_admin.py", "tenantctl.py", "provider_admin.py", "gemini_pool_admin.py", "operator_dashboard.py", "image_broker.py", "central_image_service.py", "central_codex_account_pool.py", "recovery_identity.py", "recovery_service.py", "recovery_email_worker.py", "recovery_smtp.py")
+names = ("runtime_broker.py", "tenant_turn.py", "telegram_ingress.py", "hosted_service.py", "hosted_worker.py", "tenant_admin.py", "tenantctl.py", "provider_admin.py", "gemini_pool_admin.py", "tenant_provisioner.py", "operator_dashboard.py", "image_broker.py", "central_image_service.py", "central_codex_account_pool.py", "recovery_identity.py", "recovery_service.py", "recovery_email_worker.py", "recovery_smtp.py")
 files = [root / name for name in names]
 for path in files:
     ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 PY
 then ok 'Python syntax'; else fail 'Python syntax'; fi
-if bash -n "$ROOT_DIR/bootstrap-control-plane.sh" "$ROOT_DIR/install-runtime-broker.sh" "$ROOT_DIR/prepare-central-image-broker.sh" "$ROOT_DIR/apply-control-plane.sh" "$ROOT_DIR/capacity-preflight.sh" "$ROOT_DIR/open-operator-dashboard.command"; then
+if bash -n "$ROOT_DIR/bootstrap-control-plane.sh" "$ROOT_DIR/install-runtime-broker.sh" "$ROOT_DIR/install-tenant-provisioner.sh" "$ROOT_DIR/prepare-central-image-broker.sh" "$ROOT_DIR/apply-control-plane.sh" "$ROOT_DIR/capacity-preflight.sh" "$ROOT_DIR/open-operator-dashboard.command"; then
   ok 'shell syntax'
 else
   fail 'shell syntax'
@@ -173,7 +177,13 @@ try:
     assert "no-new-privileges:true" in operator["security_opt"] and operator.get("tmpfs")
     assert {entry["source"] for entry in operator["secrets"]} == {"operator_db_password"}
     assert operator["environment"]["ADMIRA_DB_USER"] == "admira_operator_login"
-    assert all("docker.sock" not in mount.get("source", "") for mount in operator["volumes"])
+    assert operator["environment"]["ADMIRA_PROVISIONER_SOCKET"] == "/run/admira-tenant-provisioner/provisioner.sock"
+    assert operator["environment"]["ADMIRA_PROVISIONER_KEY_FILE"] == "/run/admira-tenant-provisioner/tenant-provisioner.key"
+    mounts = {mount.get("source", "") for mount in operator["volumes"]}
+    assert "/run/admira-tenant-provisioner" in mounts
+    assert "/etc/admira/tenant-provisioner.key" in mounts
+    assert "19094" in {str(item) for item in operator.get("group_add", [])}
+    assert all("docker.sock" not in source and "/srv/admira/tenants" not in source for source in mounts)
 except (KeyError, TypeError, ValueError, AssertionError):
     sys.exit(1)
 '; then
@@ -310,6 +320,31 @@ if [[ "$MODE" == server && "$CHECK_OPERATOR" == true ]]; then
     [[ "$operator_mode" =~ ^(0*600|0*400)$ && "$operator_owner" == "$operator_uid" ]] \
       && ok 'operator secret is private and service-owned' \
       || fail 'operator secret must be mode 0600/0400 and service-owned'
+  done
+  provisioner_gid="$(resolve_compose_value ADMIRA_PROVISIONER_GID 19094)"
+  if systemctl is-active --quiet admira-tenant-provisioner.service; then
+    ok 'tenant provisioner is active'
+  else
+    fail 'tenant provisioner is not active'
+  fi
+  if [[ -S /run/admira-tenant-provisioner/provisioner.sock ]]; then
+    provisioner_socket_group="$(stat -c '%g' /run/admira-tenant-provisioner/provisioner.sock 2>/dev/null || stat -f '%g' /run/admira-tenant-provisioner/provisioner.sock)"
+    [[ "$provisioner_socket_group" == "$provisioner_gid" ]] \
+      && ok 'tenant provisioner socket uses the dashboard-only group' \
+      || fail 'tenant provisioner socket group does not match ADMIRA_PROVISIONER_GID'
+  else
+    fail 'tenant provisioner socket is missing'
+  fi
+  for provisioner_secret in /etc/admira/tenant-provisioner.key /etc/admira/hosted-license-bridge.key; do
+    if [[ -L "$provisioner_secret" || ! -f "$provisioner_secret" || ! -s "$provisioner_secret" ]]; then
+      fail 'tenant provisioner private key is absent or unsafe'
+      continue
+    fi
+    provisioner_mode="$(stat -c '%a' "$provisioner_secret" 2>/dev/null || stat -f '%Lp' "$provisioner_secret")"
+    provisioner_owner="$(stat -c '%u' "$provisioner_secret" 2>/dev/null || stat -f '%u' "$provisioner_secret")"
+    [[ "$provisioner_mode" =~ ^0*600$ && "$provisioner_owner" == "$operator_uid" ]] \
+      && ok 'tenant provisioner private key is service-owned' \
+      || fail 'tenant provisioner private key must be mode 0600 and service-owned'
   done
 elif [[ "$CHECK_OPERATOR" != true ]]; then
   warn 'operator profile remains opt-in; use --operator-dashboard for its host readiness gate'
@@ -509,6 +544,12 @@ WHERE n.nspname = 'admira'
   to_regprocedure('admira.operator_gemini_pool_status()') IS NOT NULL
   AND to_regprocedure('admira.operator_tenant_sponsorship_status()') IS NOT NULL
   AND to_regprocedure('admira.operator_set_image_sponsorship_end(text,timestamp with time zone)') IS NOT NULL
+  AND to_regprocedure('admira.operator_trial_accounts()') IS NOT NULL
+  AND to_regprocedure('admira.operator_licensed_accounts()') IS NOT NULL
+  AND to_regprocedure('admira.operator_create_trial(text,text,text)') IS NOT NULL
+  AND to_regprocedure('admira.operator_extend_trial(text,timestamp with time zone,text)') IS NOT NULL
+  AND to_regprocedure('admira.operator_expire_trial(text,text)') IS NOT NULL
+  AND to_regprocedure('admira.issue_trial_telegram_claim(text,text,integer)') IS NOT NULL
   AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'admira_operator' AND NOT rolcanlogin AND NOT rolsuper AND NOT rolbypassrls)
   AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'admira_operator_login' AND rolcanlogin AND NOT rolsuper AND NOT rolbypassrls)
   AND pg_has_role('admira_operator_login', 'admira_operator', 'MEMBER')
@@ -518,6 +559,15 @@ WHERE n.nspname = 'admira'
   AND has_function_privilege('admira_operator', 'admira.register_gemini_pool_credential(uuid,text,text,text,text)', 'EXECUTE')
   AND has_function_privilege('admira_operator', 'admira.operator_tenant_sponsorship_status()', 'EXECUTE')
   AND has_function_privilege('admira_operator', 'admira.operator_set_image_sponsorship_end(text,timestamp with time zone)', 'EXECUTE')
+  AND has_function_privilege('admira_operator', 'admira.operator_trial_accounts()', 'EXECUTE')
+  AND has_function_privilege('admira_operator', 'admira.operator_licensed_accounts()', 'EXECUTE')
+  AND NOT has_function_privilege('admira_operator', 'admira.operator_create_trial(text,text,text)', 'EXECUTE')
+  AND NOT has_function_privilege('admira_operator', 'admira.operator_extend_trial(text,timestamp with time zone,text)', 'EXECUTE')
+  AND NOT has_function_privilege('admira_operator', 'admira.operator_expire_trial(text,text)', 'EXECUTE')
+  AND has_function_privilege('admira_provisioner', 'admira.operator_create_trial(text,text,text)', 'EXECUTE')
+  AND has_function_privilege('admira_provisioner', 'admira.operator_extend_trial(text,timestamp with time zone,text)', 'EXECUTE')
+  AND has_function_privilege('admira_provisioner', 'admira.operator_expire_trial(text,text)', 'EXECUTE')
+  AND has_function_privilege('admira_provisioner', 'admira.issue_trial_telegram_claim(text,text,integer)', 'EXECUTE')
   AND NOT has_function_privilege('admira_operator', 'admira.assign_hosted_gemini_trial(text)', 'EXECUTE')
   AND NOT has_table_privilege('admira_operator', 'admira.gemini_pool_projects', 'SELECT,INSERT,UPDATE,DELETE')
   AND NOT has_table_privilege('admira_operator', 'admira.tenant_entitlements', 'SELECT,INSERT,UPDATE,DELETE')
@@ -578,8 +628,11 @@ else
     && grep -q 'sponsorship cannot be shortened' "$ROOT_DIR/db/migrations/012_personal_chatgpt_sponsorship.sql" \
     && grep -q 'REVOKE admira_provisioner FROM admira_operator_login' "$ROOT_DIR/db/bootstrap_service_roles.sql" \
     && grep -q 'operator_dashboard_validation=passed' "$ROOT_DIR/db/validate_operator_dashboard.sql" \
-    && grep -q 'personal_chatgpt_sponsorship_validation=passed' "$ROOT_DIR/db/validate_personal_chatgpt_sponsorship.sql"; then
-    ok 'operator dashboard, sponsorship policy and disposable validators are present'
+    && grep -q 'personal_chatgpt_sponsorship_validation=passed' "$ROOT_DIR/db/validate_personal_chatgpt_sponsorship.sql" \
+    && grep -q 'operator_create_trial' "$ROOT_DIR/db/migrations/013_operator_trial_provisioning.sql" \
+    && grep -q 'issue_trial_telegram_claim' "$ROOT_DIR/db/migrations/013_operator_trial_provisioning.sql" \
+    && grep -q 'operator_trial_provisioning_validation=passed' "$ROOT_DIR/db/validate_operator_trial_provisioning.sql"; then
+    ok 'operator dashboard, customer lifecycle, sponsorship policy and disposable validators are present'
   else
     fail 'operator dashboard database boundary is missing'
   fi
@@ -598,6 +651,17 @@ else
     ok 'Gemini credential health check is official-endpoint, header-only and required by default'
   else
     fail 'Gemini credential health-check gate is missing'
+  fi
+  if grep -q 'class ProvisionerClient' "$ROOT_DIR/operator_dashboard.py" \
+    && grep -q 'class ProvisionerCore' "$ROOT_DIR/tenant_provisioner.py" \
+    && grep -q 'license_trial' "$ROOT_DIR/tenant_provisioner.py" \
+    && grep -q 'tenant_provisioner_key' "$ROOT_DIR/bootstrap-control-plane.sh" \
+    && grep -q 'SupplementaryGroups=docker' "$ROOT_DIR/install-tenant-provisioner.sh" \
+    && grep -q 'ADMIRA_PROVISIONER_SOCKET' "$ROOT_DIR/compose.yaml" \
+    && ! grep -q '/var/run/docker.sock' "$ROOT_DIR/compose.yaml"; then
+    ok 'customer lifecycle uses the signed host provisioner without dashboard Docker access'
+  else
+    fail 'customer lifecycle host boundary is incomplete'
   fi
 fi
 

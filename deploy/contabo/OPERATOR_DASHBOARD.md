@@ -2,8 +2,11 @@
 
 This is an operator-only control surface, not a buyer dashboard. It publishes
 exactly `127.0.0.1:8791` on the VPS and has no Docker socket, tenant volumes,
-Telegram token, public endpoint, or tenant-provisioning authority. Never open
-8791 in a firewall or put this service behind a public reverse proxy.
+Telegram token, or public endpoint. Customer lifecycle actions cross only an
+authenticated Unix socket to the host-side `admira-tenant-provisioner` daemon;
+the dashboard itself still has no direct Docker, tenant-root, pool-secret, or
+provisioner-database authority. Never open 8791 in a firewall or put this
+service behind a public reverse proxy.
 
 The service has its own provider-egress network. Only PostgreSQL shares its
 internal `operator_private` network; buyer workers and the central image broker
@@ -14,13 +17,14 @@ from those containers. Root and the host service user remain trusted operators.
 
 Make a private recovery backup of PostgreSQL and the existing `secrets/`
 directory; encrypt the backup before any off-host export. Rehearse migrations
-001–012 on a disposable database and run `db/validate_operator_dashboard.sql`
-and `db/validate_personal_chatgpt_sponsorship.sql` there; both validators roll
+001–013 on a disposable database and run `db/validate_operator_dashboard.sql`,
+`db/validate_personal_chatgpt_sponsorship.sql`, and
+`db/validate_operator_trial_provisioning.sql` there; every validator rolls
 their fixtures back. Never run disposable validators on production. Migration
 011 creates the dedicated `admira_operator` boundary. Migration 012 adds only a
 secret-free tenant sponsorship projection and an exact, audited extension
 operation; the role still has no direct table access and cannot provision,
-license, recover or delete a tenant.
+license, recover or delete a tenant directly.
 
 As `admiraops` (the configured service UID, normally 1001):
 
@@ -28,13 +32,20 @@ As `admiraops` (the configured service UID, normally 1001):
 cd /srv/admira/control-plane
 ./bootstrap-control-plane.sh
 ./apply-control-plane.sh
+sudo ./install-tenant-provisioner.sh
 ```
 
-Bootstrap generates a separate `operator_db_password.txt` and creates private
-`secrets/operator-password/` with mode 0700. It does not create a default password,
-an empty hash, or a provider credential. The directory is mounted read/write so
+Bootstrap generates a separate `operator_db_password.txt`, a private
+tenant-provisioner HMAC key, and a hosted-license bridge key, then creates
+private `secrets/operator-password/` with mode 0700. It does not create a
+default password, an empty hash, or a provider credential. The directory is mounted read/write so
 first-run setup can persist `password.hash` with mode 0600. Preserve the directory
 across release swaps and include it in the private secrets recovery backup.
+
+Before starting the daemon, configure the *same* private value of
+`LICENSE_HOSTED_BRIDGE_KEY` in the Vercel license project. The deploy procedure
+copies it without printing it. Until that matching configuration exists, the
+panel correctly refuses to convert a trial into a licensed account.
 
 The fixed provider bind sources must exist before Docker starts the service:
 
@@ -152,10 +163,33 @@ are temporary and cleared from expired/finished jobs. Disconnect removes only
 that selected slot's auth file; the other account is preserved. A connected
 status alone does not establish usable image quota or successful failover.
 
+## Create and manage customer accounts
+
+Use **Clientes Admira** to create the actual customer account—not a throwaway
+demo account. Its `runtime_key` must be unique and permanent; the same tenant
+directory, Telegram history and configuration continue after licensing.
+
+Creation anchors the five-day trial to the database account-creation time,
+assigns one active Gemini pool entry, and returns a temporary `t.me` activation
+link. Do not send a link until the panel shows that operation as successful.
+The link can be reissued without moving the expiration clock. The trial list
+shows the exact creation and expiration timestamps, whether Gemini is ready,
+and safe actions to extend the exact expiration time or manually expire the
+account. Expiry fails closed and suspends the runtime.
+
+**Crear y asignar licencia** asks for the customer’s Gemini API key. It creates
+one idempotent hosted license record in the existing Upstash-backed license
+registry, replaces only that tenant’s private Gemini key, and moves the same
+account to the **Licenciadas** tab. The generated license code is shown once;
+store it using the approved operator procedure. No recovery email is invented
+or sent in this stage. The customer may use `/conectar_chatgpt` at any time;
+that personal connection remains independent of the temporary central image
+benefit.
+
 ## Extend one customer's sponsored-image period
 
 The normal central-image benefit is the same five days that start with the
-customer's first Telegram claim. Licensing never restarts it, and the customer
+customer's account creation. Licensing never restarts it, and the customer
 may use `/conectar_chatgpt` at any time without cancelling that benefit.
 
 The sponsorship section lists a bounded, secret-free view of tenants. Select an
@@ -187,16 +221,18 @@ checks, real-provider image canary, failover checks, and tenant-isolation canary
 have passed under the existing approved activation procedure. The dashboard
 cannot change that flag or start the broker.
 
-## Current Contabo deployment evidence
+## Previous Contabo baseline
 
-Deployed on 2026-08-31 at commit
+This was the baseline deployed on 2026-08-31 at commit
 `bb4c5979184af9724d14ffc6a7bd3cd8e8753a6e`, manifest
 `704e819ee084e1856ffc8cd03c4e75ea331989b77ed20232ddffed894cef3ed2`.
 The service is running from `admira-ia-hosted:r91-canary-bb4c5979184a`, with
 read-only root, UID 1001, all capabilities dropped, two dedicated networks and
 only `127.0.0.1:8791` published. Migration 011 and the dedicated database login
-passed the final server preflight. Buyer workers have zero restarts and both
-tenant Compose files still resolve to `admira-ia:r90`.
+passed the final server preflight. It does **not** constitute evidence for this
+lifecycle release; rerun preflight after migration 013 and provisioner
+installation. Buyer workers have zero restarts and both tenant Compose files
+still resolve to `admira-ia:r90`.
 
 First-run setup is deliberately pending: `password.hash`, both account
 `auth.json` files and Gemini pool projects are absent. The central image broker

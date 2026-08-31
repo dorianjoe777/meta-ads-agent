@@ -21,6 +21,15 @@
     geminiRequest: null,
     codexRequest: null,
     sponsorshipRequest: null,
+    trials: null,
+    licensed: null,
+    trialsError: false,
+    licensedError: false,
+    customerRequest: null,
+    customerTab: "trials",
+    claim: null,
+    claimKind: "claim",
+    trialActionKey: "",
     accountBusy: new Set(),
     device: null,
     confirmResolve: null,
@@ -61,6 +70,25 @@
       network_error: "No hay respuesta del servidor. Comprueba el túnel de acceso y vuelve a intentarlo.",
       invalid_response: "El servidor devolvió una respuesta no válida. Vuelve a intentarlo.",
       operator_unavailable: "El servicio de operaciones no está disponible. Comprueba su estado en el servidor e inténtalo de nuevo.",
+      invalid_tenant_key: "La referencia debe tener entre 3 y 63 caracteres, usando minúsculas, números y guiones.",
+      invalid_display_name: "Escribe un nombre visible válido.",
+      invalid_trial_extension: "Elige una fecha futura válida para la ampliación.",
+      trial_not_active: "La cuenta ya no tiene una prueba activa.",
+      gemini_pool_unavailable: "No hay una clave Gemini disponible para asignar a esta prueba.",
+      gemini_assignment_failed: "No se pudo asignar el pool Gemini. La cuenta no recibió un enlace todavía.",
+      license_bridge_unavailable: "El servicio de licencias no está disponible. La cuenta no cambió.",
+      license_transition_failed: "No se pudo convertir la cuenta. La API key se borró del formulario; inténtalo de nuevo.",
+      invalid_customer_gemini_key: "La API key Gemini del cliente no tiene un formato válido.",
+      trial_create_failed: "No se pudo crear la prueba; revisa que la referencia no exista ni haya vencido.",
+      trial_update_failed: "La prueba ya no puede ampliarse con esa fecha.",
+      trial_expire_failed: "La cuenta ya no está en una prueba que pueda caducarse.",
+      runtime_suspend_pending: "La cuenta ya quedó caducada, pero el runtime debe volver a suspenderse. Reintenta Caducar.",
+      claim_unavailable: "No se pudo emitir el enlace temporal. La cuenta sigue sin activarse.",
+      tenant_provision_failed: "No se pudo preparar el espacio privado del cliente.",
+      provisioner_unavailable: "El servicio privado de altas no está disponible en el VPS.",
+      provisioner_timeout: "La operación tardó demasiado. Actualiza la lista antes de reintentar.",
+      trial_accounts_unavailable: "No se pudo consultar las cuentas de prueba.",
+      licensed_accounts_unavailable: "No se pudo consultar las cuentas licenciadas.",
     };
     if (error?.status === 429) return messages.rate_limited;
     return messages[error?.code] || fallback || "No se pudo completar la operación. Inténtalo de nuevo.";
@@ -131,9 +159,10 @@
   }
 
   function clearSensitiveInputs() {
-    ["#setup-secret", "#setup-confirm", "#login-secret", "#gemini-key"].forEach((selector) => {
-      resetSecret($(selector));
+    ["#setup-secret", "#setup-confirm", "#login-secret", "#gemini-key", "#license-gemini-key"].forEach((selector) => {
+      if ($(selector)) resetSecret($(selector));
     });
+    clearClaim();
   }
 
   function normalizeResult(payload) {
@@ -733,6 +762,135 @@
     }
   }
 
+  function customerRows(items, kind) {
+    const rows = $(kind === "trial" ? "#trials-rows" : "#licensed-rows");
+    rows.replaceChildren();
+    if (!Array.isArray(items) || !items.length) {
+      const row = document.createElement("tr");
+      const cell = textElement("td", "empty-cell", kind === "trial" ? "Todavía no hay cuentas de prueba." : "Todavía no hay cuentas licenciadas.");
+      cell.colSpan = kind === "trial" ? 6 : 5; row.append(cell); rows.append(row); return;
+    }
+    items.forEach((item) => {
+      const row = document.createElement("tr");
+      const customer = document.createElement("td");
+      customer.append(textElement("strong", "", String(item.runtime_key || "")), textElement("span", "table-secondary", String(item.display_name || "")));
+      if (kind === "trial") {
+        const actions = document.createElement("td");
+        // An expired trial may still become a licensed account with the same
+        // tenant/history, but it can no longer receive a claim, extension, or
+        // second expiry action.  Keep that distinction visible instead of
+        // sending the operator into an avoidable failing request.
+        const lifecycle = String(item.lifecycle_state || "");
+        const actionSet = lifecycle === "trial"
+          ? [["claim", "Enlace"], ["extend", "Ampliar"], ["expire", "Caducar"], ["license", "Licenciar"]]
+          : lifecycle === "trial_expired"
+            ? [["license", "Licenciar"]]
+            : [];
+        actionSet.forEach(([action, label]) => {
+          const button = textElement("button", "table-action" + (action === "expire" ? " is-danger" : ""), label);
+          button.type = "button"; button.dataset.trialAction = action; button.dataset.runtimeKey = String(item.runtime_key || "");
+          actions.append(button);
+        });
+        if (!actionSet.length) actions.append(textElement("span", "table-secondary", "Sin acción disponible"));
+        row.append(customer, textElement("td", "", formatDate(item.tenant_created_at)), textElement("td", "", formatDate(item.trial_ends_at)), textElement("td", "", item.gemini_pool_ready ? "Asignado" : "Pendiente"), textElement("td", "", lifecycleLabel(item.lifecycle_state)), actions);
+      } else {
+        row.append(customer, textElement("td", "", String(item.license_mask || "Sin licencia")), textElement("td", "", formatDate(item.licensed_at)), textElement("td", "", formatDate(item.image_sponsorship_ends_at)), textElement("td", "", lifecycleLabel(item.lifecycle_state)));
+      }
+      rows.append(row);
+    });
+  }
+
+  function renderCustomers() {
+    const trials = Array.isArray(state.trials) ? state.trials : [];
+    const licensed = Array.isArray(state.licensed) ? state.licensed : [];
+    $("#trials-count").textContent = String(trials.length);
+    $("#licensed-count").textContent = String(licensed.length);
+    customerRows(trials, "trial"); customerRows(licensed, "licensed");
+    $("#customers-error").textContent = state.trialsError || state.licensedError ? "No se pudo consultar una de las listas. Actualiza para reintentar." : "";
+    renderOverview();
+  }
+
+  async function refreshCustomers({ announce = false } = {}) {
+    if (state.customerRequest) return state.customerRequest;
+    const sessionVersion = state.sessionVersion;
+    $("#customers-section").setAttribute("aria-busy", "true"); setBusy($("#customers-refresh"), true, "Consultando…");
+    state.customerRequest = (async () => {
+      try {
+        const [trialData, licensedData] = await Promise.all([request("/api/operator/trials"), request("/api/operator/licensed")]);
+        if (!state.authenticated || sessionVersion !== state.sessionVersion) return false;
+        state.trials = Array.isArray(trialData?.trials || trialData?.items || trialData) ? (trialData.trials || trialData.items || trialData) : [];
+        state.licensed = Array.isArray(licensedData?.licensed || licensedData?.items || licensedData) ? (licensedData.licensed || licensedData.items || licensedData) : [];
+        state.trialsError = false; state.licensedError = false; renderCustomers();
+        if (announce) setNotice("Cuentas de prueba y licenciadas actualizadas.", "success"); return true;
+      } catch (error) {
+        if (!state.authenticated || sessionVersion !== state.sessionVersion) return false;
+        state.trialsError = true; state.licensedError = true; $("#customers-error").textContent = messageFor(error, "No se pudo consultar las cuentas."); renderCustomers(); return false;
+      } finally { $("#customers-section").setAttribute("aria-busy", "false"); setBusy($("#customers-refresh"), false); state.customerRequest = null; }
+    })();
+    return state.customerRequest;
+  }
+
+  function setCustomerTab(tab) {
+    state.customerTab = tab === "licensed" ? "licensed" : "trials";
+    const trial = state.customerTab === "trials";
+    $("#trials-tab").classList.toggle("is-active", trial); $("#licensed-tab").classList.toggle("is-active", !trial);
+    $("#trials-tab").setAttribute("aria-selected", String(trial)); $("#licensed-tab").setAttribute("aria-selected", String(!trial));
+    $("#trials-tab").tabIndex = trial ? 0 : -1; $("#licensed-tab").tabIndex = trial ? -1 : 0;
+    $("#trials-panel").hidden = !trial; $("#licensed-panel").hidden = trial;
+  }
+
+  async function createTrial(event) {
+    event.preventDefault(); const form = event.currentTarget; const error = $("#trial-error");
+    if (form.getAttribute("aria-busy") === "true" || !validateForm(form, error)) return;
+    const runtimeKey = $("#trial-runtime-key").value.trim(); const displayName = $("#trial-display-name").value.trim();
+    if (!/^[a-z0-9][a-z0-9-]{2,62}$/.test(runtimeKey)) { invalidField($("#trial-runtime-key"), error, messageFor({ code: "invalid_tenant_key" })); return; }
+    if (displayName.length < 1) { invalidField($("#trial-display-name"), error, messageFor({ code: "invalid_display_name" })); return; }
+    setFormBusy(form, true); setBusy($("#trial-submit"), true, "Creando…");
+    try { const data = await request("/api/operator/trials", { method: "POST", body: JSON.stringify({ runtime_key: runtimeKey, display_name: displayName }) });
+      form.reset(); await refreshCustomers(); setNotice("Cuenta de prueba creada. " + (data?.claim_url ? "Se generó un enlace temporal." : "Usa Enlace para activarla en Telegram."), "success"); if (data?.claim_url) showClaim(data.claim_url); }
+    catch (e) { error.textContent = messageFor(e, "No se pudo crear la cuenta de prueba."); }
+    finally { setFormBusy(form, false); setBusy($("#trial-submit"), false); }
+  }
+
+  function clearClaim() {
+    state.claim = null;
+    state.claimKind = "claim";
+    if (!$("#claim-link")) return;
+    $("#claim-link").textContent = "Esperando…";
+    $("#claim-copy").disabled = true;
+    $("#claim-copy .button-label").textContent = "Copiar enlace";
+  }
+  function showClaim(value, kind = "claim") {
+    const link = typeof value === "string" ? value : "";
+    const license = kind === "license";
+    state.claim = link;
+    state.claimKind = license ? "license" : "claim";
+    $("#claim-title").textContent = license ? "Código de licencia" : "Enlace temporal";
+    $("#claim-description").textContent = license
+      ? "Guarda este código ahora en tu registro seguro. No se conserva en este navegador ni se envía por correo todavía."
+      : "Envía este enlace al cliente o ábrelo en Telegram. Sólo sirve para activar su cuenta y se borra al cerrar esta ventana.";
+    $("#claim-copy .button-label").textContent = license ? "Copiar código" : "Copiar enlace";
+    $("#claim-link").textContent = link || "No disponible";
+    $("#claim-copy").disabled = !link;
+    $("#claim-dialog").showModal();
+    $("#claim-copy").focus();
+  }
+  async function copyClaim() { if (!state.claim) return; try { await navigator.clipboard.writeText(state.claim); $("#claim-copy .button-label").textContent = "Copiado"; window.setTimeout(() => { $("#claim-copy .button-label").textContent = state.claimKind === "license" ? "Copiar código" : "Copiar enlace"; }, 1800); } catch (_) { $("#assertive-status").textContent = state.claimKind === "license" ? "Selecciona y copia el código de licencia." : "Selecciona y copia el enlace temporal."; } }
+
+  async function trialAction(action, runtimeKey) {
+    const encoded = encodeURIComponent(runtimeKey);
+    if (action === "claim") { try { const data = await request("/api/operator/trials/" + encoded + "/claim", { method: "POST", body: "{}" }); showClaim(data?.claim_url || data?.url || data?.deep_link || ""); } catch (e) { setNotice(messageFor(e, "No se pudo generar el enlace temporal."), "error"); } return; }
+    state.trialActionKey = runtimeKey;
+    if (action === "extend") { const item = (state.trials || []).find((x) => x.runtime_key === runtimeKey); const end = Date.parse(item?.trial_ends_at || ""); const input = $("#extend-trial-end"); input.min = localDateTimeValue(new Date(Date.now() + 60000)); input.max = localDateTimeValue(new Date(Date.now() + 365 * 86400000)); input.value = Number.isFinite(end) ? localDateTimeValue(new Date(end)) : ""; $("#extend-trial-error").textContent = ""; $("#extend-trial-dialog").showModal(); input.focus(); return; }
+    if (action === "license") { $("#license-error").textContent = ""; resetSecret($("#license-gemini-key")); $("#license-dialog").showModal(); $("#license-gemini-key").focus(); return; }
+    if (action === "expire") { const ok = await confirmAction({ title: "¿Caducar esta prueba?", description: runtimeKey + " perderá el acceso de prueba y su runtime se suspenderá.", accept: "Caducar cuenta", danger: true }); if (!ok) return; }
+    try { await request("/api/operator/trials/" + encoded + "/" + action, { method: "POST", body: "{}" }); await refreshCustomers(); setNotice(action === "expire" ? "La cuenta fue caducada." : "Operación completada.", "success"); } catch (e) { setNotice(messageFor(e, "No se pudo completar la operación."), "error"); }
+  }
+
+  async function extendTrial(event) { event.preventDefault(); const end = new Date($("#extend-trial-end").value); const error = $("#extend-trial-error"); if (Number.isNaN(end.getTime()) || end <= new Date()) { error.textContent = messageFor({ code: "invalid_trial_extension" }); return; } setBusy($("#extend-trial-submit"), true, "Guardando…"); try { await request("/api/operator/trials/" + encodeURIComponent(state.trialActionKey) + "/extend", { method: "POST", body: JSON.stringify({ ends_at: end.toISOString() }) }); $("#extend-trial-dialog").close(); await refreshCustomers(); setNotice("Prueba ampliada para " + state.trialActionKey + ".", "success"); } catch (e) { error.textContent = messageFor(e, "No se pudo ampliar la prueba."); } finally { setBusy($("#extend-trial-submit"), false); } }
+
+  async function licenseTrial(event) { event.preventDefault(); const keyInput = $("#license-gemini-key"); const key = keyInput.value.trim(); const error = $("#license-error"); if (!key) { invalidField(keyInput, error, "Introduce la API key Gemini del cliente."); return; } const body = JSON.stringify({ gemini_api_key: key }); resetSecret(keyInput); setFormBusy(event.currentTarget, true); setBusy($("#license-submit"), true, "Asignando…"); try { const data = await request("/api/operator/trials/" + encodeURIComponent(state.trialActionKey) + "/license", { method: "POST", body }); $("#license-dialog").close(); await refreshCustomers(); setNotice(data?.license_key ? "Licencia creada y asignada. Guarda el código ahora." : "Cuenta convertida a licenciada. El correo queda pendiente.", "success"); if (data?.license_key) showClaim(data.license_key, "license"); } catch (e) { error.textContent = messageFor(e, "No se pudo asignar la licencia. La key fue borrada."); } finally { resetSecret(keyInput); setFormBusy(event.currentTarget, false); setBusy($("#license-submit"), false); } }
+
   function finishConfirmation(accepted) {
     const resolve = state.confirmResolve;
     state.confirmResolve = null;
@@ -1068,7 +1226,7 @@
   }
 
   async function refreshAll() {
-    await Promise.all([refreshGemini(), refreshCodex(), refreshSponsorship()]);
+    await Promise.all([refreshGemini(), refreshCodex(), refreshSponsorship(), refreshCustomers()]);
   }
 
   document.querySelectorAll("[data-password-toggle]").forEach((button) => {
@@ -1095,6 +1253,22 @@
   $("#codex-refresh").addEventListener("click", () => refreshCodex({ announce: true }));
   $("#sponsorship-form").addEventListener("submit", extendSponsorship);
   $("#sponsorship-refresh").addEventListener("click", () => refreshSponsorship({ announce: true }));
+  $("#trial-form").addEventListener("submit", createTrial);
+  $("#customers-refresh").addEventListener("click", () => refreshCustomers({ announce: true }));
+  $("#trials-tab").addEventListener("click", () => setCustomerTab("trials"));
+  $("#licensed-tab").addEventListener("click", () => setCustomerTab("licensed"));
+  [$("#trials-tab"), $("#licensed-tab")].forEach((tab) => tab.addEventListener("keydown", (event) => { if (event.key === "ArrowRight" || event.key === "ArrowLeft") { event.preventDefault(); const next = tab.id === "trials-tab" ? "licensed" : "trials"; setCustomerTab(next); $("#" + next + "-tab").focus(); } }));
+  $("#trials-rows").addEventListener("click", (event) => { const button = event.target.closest("[data-trial-action]"); if (button) trialAction(button.dataset.trialAction, button.dataset.runtimeKey); });
+  $("#extend-trial-form").addEventListener("submit", extendTrial);
+  $("#extend-trial-cancel").addEventListener("click", () => $("#extend-trial-dialog").close());
+  $("#extend-trial-close").addEventListener("click", () => $("#extend-trial-dialog").close());
+  $("#license-form").addEventListener("submit", licenseTrial);
+  $("#license-cancel").addEventListener("click", () => { resetSecret($("#license-gemini-key")); $("#license-dialog").close(); });
+  $("#license-close").addEventListener("click", () => { resetSecret($("#license-gemini-key")); $("#license-dialog").close(); });
+  $("#claim-copy").addEventListener("click", copyClaim);
+  $("#claim-close").addEventListener("click", () => { $("#claim-dialog").close(); clearSensitiveInputs(); });
+  $("#claim-done").addEventListener("click", () => { $("#claim-dialog").close(); clearSensitiveInputs(); });
+  $("#claim-dialog").addEventListener("cancel", (event) => { event.preventDefault(); $("#claim-dialog").close(); clearSensitiveInputs(); });
   $("#sponsorship-tenant").addEventListener("change", updateSponsorshipDateBounds);
   $("#notice-close").addEventListener("click", () => setNotice(""));
   $("#codex-slots").addEventListener("click", (event) => {

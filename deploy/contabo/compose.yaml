@@ -280,10 +280,27 @@ services:
       ADMIRA_OPERATOR_SETUP_CIDRS: "${ADMIRA_OPERATOR_SETUP_CIDRS:-127.0.0.1/32,::1/128}"
       ADMIRA_GEMINI_POOL_ROOT: /etc/admira/gemini-pool
       ADMIRA_CENTRAL_CODEX_AUTH_ROOT: /app/runtime/hermes/codex-auth-pool
+      # This is a narrow authenticated Unix-socket capability, not Docker or
+      # a tenant-root mount. The key signs only the allowlisted lifecycle
+      # actions implemented by the host provisioner service.
+      ADMIRA_PROVISIONER_SOCKET: /run/admira-tenant-provisioner/provisioner.sock
+      ADMIRA_PROVISIONER_KEY_FILE: /run/admira-tenant-provisioner/tenant-provisioner.key
       PYTHONPATH: /app/deploy/contabo
     secrets:
       - operator_db_password
     volumes:
+      - type: bind
+        source: /run/admira-tenant-provisioner
+        target: /run/admira-tenant-provisioner
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /etc/admira/tenant-provisioner.key
+        target: /run/admira-tenant-provisioner/tenant-provisioner.key
+        read_only: true
+        bind:
+          create_host_path: false
       - type: bind
         source: /etc/admira/gemini-pool
         target: /etc/admira/gemini-pool
@@ -299,6 +316,8 @@ services:
         target: /var/lib/admira/operator-password
         bind:
           create_host_path: false
+    group_add:
+      - "${ADMIRA_PROVISIONER_GID:-19094}"
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=0700,uid=${ADMIRA_SERVICE_UID:-1001},gid=${ADMIRA_SERVICE_GID:-1001}
     ports:

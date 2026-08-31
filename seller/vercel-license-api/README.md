@@ -96,6 +96,13 @@ Routes:
 - `GET /api/admin/licenses` with `Authorization: Bearer ...`
 - `POST /api/admin/licenses` with `Authorization: Bearer ...`
 - `/admin/licenses` opens the protected browser table for reviewing licenses and changing the associated buyer email.
+
+Hosted tenant bridge (server-to-server only):
+
+- `POST /api/admin/licenses` with `Authorization: Bearer $LICENSE_HOSTED_BRIDGE_KEY` and `{ "action": "create_hosted_tenant_license", "external_customer_id": "tenant_01", "display_name": "Client", "plan": "individual" }` creates one active Upstash-backed license for a Contabo tenant.
+- `external_customer_id` is the idempotency key; repeating the request returns the same record with `created: false` instead of creating a second license. Its stable license code is derived with the private bridge key, never from a visible tenant identifier.
+- This action intentionally stores `buyer_email: ""`, marks `buyer_email_deferred: true`, leaves delivery as `deferred`, and never sends an email. Attach the real buyer email later through the protected `update_email` action before normal `/api/license/activate` use.
+- It returns the generated `license_key` only to the authenticated bridge response. Configure `LICENSE_HOSTED_BRIDGE_KEY`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`, and do not use the bridge key in browser code. The endpoint rejects this action when Upstash is not configured.
 - `GET /api/admin/releases` with `Authorization: Bearer ...`
 - `POST /api/admin/releases` with `Authorization: Bearer ...`
 
