@@ -3,7 +3,7 @@
 Este documento es el punto de control conciso del **dashboard privado del
 operador** que está desplegado en Contabo. No es un dashboard para compradores
 y no convierte el panel en una URL pública. La fecha/hora de la última lectura
-directa del VPS fue `2026-08-31T23:22:09Z`.
+directa del VPS fue `2026-09-01T00:08:10Z`.
 
 ## Despliegue live verificado
 
@@ -128,6 +128,13 @@ pool y también quedó pinneado a r91. La función de claims de la migración 01
 se corrigió para calificar `tenant_telegram_claims.tenant_id`; se verificó la
 reemisión de ambos enlaces sin reiniciar el reloj de cinco días. Sus claims
 siguen pendientes de consumo en Telegram.
+
+El binding de Telegram de `canary-one` fue revocado a petición del operador el
+`2026-09-01T00:07Z` para liberar el chat de prueba y permitir su reclamación por
+`canary-two`. Se conservaron el tenant, el historial, las credenciales y los
+archivos; sólo se eliminó el binding activo. No había mensajes pendientes en la
+cola de salida y el evento quedó registrado como `telegram_binding_revoked`.
+El poller se detuvo durante la transacción y volvió a quedar activo después.
 
 La prueba sintética también verificó aislamiento HMAC entre tenants y el
 fallback del selector de dos cuentas. No se provocó deliberadamente un límite
