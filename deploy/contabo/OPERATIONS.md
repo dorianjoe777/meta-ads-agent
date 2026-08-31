@@ -20,22 +20,22 @@ Estado live verificado tras el último despliegue (la marca
 | Elemento | Valor |
 | --- | --- |
 | Rama de trabajo | `feat/contabo-multitenant` |
-| Último commit desplegado | `bb4c5979184af9724d14ffc6a7bd3cd8e8753a6e` |
+| Último commit desplegado | `d1bef249927c96e38cbd1ccd51bad1fe17f31b00` |
 | SHA exacto activo | `/srv/admira/control-plane/DEPLOYED_COMMIT` (mismo SHA) |
-| Imagen del control plane | `admira-control-plane:r91-bb4c5979184a` |
-| Imagen hosted del panel y servicio central | `admira-ia-hosted:r91-canary-bb4c5979184a` (panel privado activo; imágenes dormidas) |
-| Manifiesto del release desplegado | `704e819ee084e1856ffc8cd03c4e75ea331989b77ed20232ddffed894cef3ed2` |
-| Migraciones live | `001`–`011` actuales y aplicadas idempotentemente |
+| Imagen del control plane | `admira-control-plane:r91-63698e348dc8` (workers buyer existentes) |
+| Imagen hosted del panel y servicio central | `admira-ia-hosted:r91-canary-e6fa64f85138` (panel privado activo; imágenes dormidas) |
+| Manifiesto de la imagen hosted | `sha256:346e893c33cf3cdff7e4e8d3be2067536afc433b97c506925c9acef0e4a2714b` |
+| Migraciones live | `001`–`013` actuales y aplicadas idempotentemente |
 | Imagen de cada tenant live | `admira-ia:r90` |
 | Commit de la imagen tenant | `d03707465a5fedf7e5d1bb6b528365b299795540` |
 | Manifiesto de la imagen tenant | `5df0e07e8b4a10e59a5b9c3659336f9b3a55ab556beaa67c2faba218dabc99db` |
 | Servidor | Contabo Cloud VPS 4, Ubuntu 24.04, Docker 29.1.3 |
 | Bot central canario | `@admiraia_bot` (`bot_id=8884068904`) |
 | Estado de compradores | **Canary operativo**: cuatro buyer workers activos, cero reinicios, un `runtime-worker`; tenants aún en `r90` |
-| Panel interno | Activo sólo en `127.0.0.1:8791`; primera contraseña pendiente; sin claves/cuentas instaladas |
+| Panel interno | Activo sólo en `127.0.0.1:8791`; protegido por la contraseña inicial; pool Gemini y cuentas centrales siguen siendo configuración del operador |
 
 Backup privado validado de esta promoción:
-`/srv/admira/backups/operator-panel-20260831T024651Z-Zv9LS9/`.
+`/srv/admira/backups/operator-lifecycle-caeb723-20260831T201433Z/`.
 El server preflight terminó en `PASS` después de fijar la marca activa. Las
 raíces de auth central
 `/srv/admira/shared/central-codex-auth/primary` y `secondary` están preparadas

@@ -228,14 +228,13 @@ Tenants remain pinned to `admira-ia:r90` while this central canary is pending.
 #### Hosted clean-canary evidence
 
 On 2026-08-31, the private operator release was deployed after the disposable
-PostgreSQL rehearsal and actual-image tests. Migrations 001–011 are current on
-the VPS and were applied idempotently; the final server preflight returned
-`PASS`. The deployed control-plane marker is commit
-`bb4c5979184af9724d14ffc6a7bd3cd8e8753a6e`, with image
-`admira-control-plane:r91-bb4c5979184a`; tenant runtimes remain deliberately
+PostgreSQL rehearsal and the dashboard mount-boundary fix. Migrations 001–013
+are current on the VPS and were applied idempotently; the final server
+preflight returned `PASS`. The deployed control-plane marker is commit
+`d1bef249927c96e38cbd1ccd51bad1fe17f31b00`; tenant runtimes remain deliberately
 pinned to `admira-ia:r90`. The private dashboard uses hosted image
-`admira-ia-hosted:r91-canary-bb4c5979184a`; its source manifest is
-`704e819ee084e1856ffc8cd03c4e75ea331989b77ed20232ddffed894cef3ed2`.
+`admira-ia-hosted:r91-canary-e6fa64f85138` (manifest
+`sha256:346e893c33cf3cdff7e4e8d3be2067536afc433b97c506925c9acef0e4a2714b`).
 
 The synthetic/code canary uses two fake isolated auth homes and a fake provider:
 it forces a primary image-limit failure, verifies exactly one fallback attempt
@@ -243,8 +242,8 @@ to the secondary account, cooldown bookkeeping, idempotency and tenant
 isolation. This is only a local pool/code result; it does not verify real
 ChatGPT authentication. The separate real-provider canary exercises the
 external image route and requires both central-provider authentications; that
-authentication is still pending: the dashboard first password has not been
-created and both 0700 central auth directories lack `auth.json`. The central
+authentication is still pending: the dashboard password is configured, but only
+one of the two 0700 central auth directories currently contains `auth.json`. The central
 image service is stopped and `ADMIRA_CENTRAL_IMAGE_READY=false`. Recovery and
 capacity soak remain deferred and off. The remaining image gate is operator
 first-run setup, two distinct authorized logins, and the real image/fallback
