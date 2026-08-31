@@ -29,11 +29,13 @@ The only accepted actions are:
 - `expire_trial` — changes the database to a fail-closed trial-expired state
   and stops the tenant runtime. Retrying it is safe if Docker was temporarily
   unavailable during the first stop attempt.
-- `license_trial` — calls the deployed hosted-license endpoint with the
-  server-to-server bridge key, validates and installs the customer's Gemini
-  key in the tenant's private environment, and executes the matching licensed
-  transition. It returns the newly generated license code once to the logged-in
-  operator dashboard. It does not fabricate an email or configure recovery.
+- `license_trial` — calls the deployed Vercel hosted-license bridge with the
+  server-to-server key. That bridge creates one idempotent record in the
+  Upstash-backed registry; the provisioner then validates and installs the
+  customer's Gemini key in the tenant's private environment and executes the
+  matching licensed transition. It returns the newly generated license code
+  once to the logged-in operator dashboard. It does not fabricate an email or
+  configure recovery.
 
 The code deliberately returns generic stable error codes and discards Docker,
 database, Google, and hosted-license error text. Raw Gemini keys are never put

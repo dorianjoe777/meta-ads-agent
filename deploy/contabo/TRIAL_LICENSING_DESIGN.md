@@ -1,7 +1,7 @@
 # Diseño operativo de pruebas, licencias e identidad
 
-Estado: **diseño operativo; no implica que el broker central de imágenes esté
-activado**.
+Estado: **ciclo de prueba/licencia y panel privado desplegados; no implica que
+el broker central de imágenes esté activado**.
 
 Este documento define el plano de control mínimo para admitir tres clientes
 nuevos por día con una prueba de cinco días. No describe un dashboard para el

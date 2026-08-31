@@ -44,12 +44,14 @@ The host also owns that tenant's private `compose.yaml` and, only after a
 complete reset, a 0600 idempotency receipt outside every container mount.
 
 New tenants select Gemini 3.5 Flash Lite as the initial text-brain configuration,
-with live Meta actions disabled. During the five-day trial, the operator may
-assign a private, host-funded Gemini key. On licensing, `gemini-license`
-atomically records the customer's Gemini credential and changes the tenant to
-licensed state; the tenant directory and Telegram binding remain the same.
-Admira-sponsored central image access follows the same five-day clock that
-starts with the first Telegram claim. Licensing never restarts that clock. A
+with live Meta actions disabled. For a dashboard-created account, the host
+provisioner assigns one registered, private, host-funded Gemini-pool entry when
+the five-day trial is created. On licensing, the customer's Gemini credential
+replaces only that tenant's assignment; the tenant directory and Telegram
+binding remain the same. Admira-sponsored central image access follows the same
+five-day clock: it starts at account creation for dashboard-created accounts
+and at the first Telegram claim only for the legacy claim-first flow. Licensing
+never restarts that clock. A
 private operator may extend its exact end date for one customer through the
 internal dashboard; the change is durable, audited, idempotent and cannot
 shorten an existing benefit. `/conectar_chatgpt` remains available from day one
@@ -128,10 +130,11 @@ backup export; local deployment backups must not be described as encrypted
 unless that has actually been verified.
 Any bot token pasted into a ticket, chat or transcript is canary-only and must
 be revoked and replaced out of band before commercial traffic.
-Gemini trial keys are never seeded by provisioning or by a host-wide secret.
-The internal dashboard or `gemini_pool_admin.py register` can register an
-operator-pool credential; `gemini_pool_admin.py assign` installs it for a
-specific trial after its project quota and auth-key type have been verified.
+Gemini trial keys are never pre-seeded as a host-wide secret or committed into a
+tenant template. The internal dashboard or `gemini_pool_admin.py register` can
+register an operator-pool credential; the host-only provisioner assigns one
+active registered entry to a new trial after its project quota and auth-key type
+have been verified.
 The central image route remains explicitly disabled until the broker has passed its canary:
 `ADMIRA_CENTRAL_IMAGE_READY=false`.
 
@@ -154,13 +157,19 @@ the exact private-directory, migration, first-password and SSH-tunnel sequence.
 On the configured Mac, [open-operator-dashboard.command](open-operator-dashboard.command)
 opens that tunnel using the existing `admira-contabo` alias.
 
-The panel registers Gemini keys without returning them, and runs the official
-device-login flow separately for `primary` and `secondary`. Migration 011
-adds a dedicated least-privilege login: no tenant provisioning, customer data,
-Docker socket, bot token, or ability to activate the image broker. It does not
-assign keys to clients or change licenses. First-run password creation and
-provider authentication are performed by the operator in the browser, never
-by pasting credentials into chat.
+The live panel registers Gemini keys without returning them, runs the official
+device-login flow separately for `primary` and `secondary`, and manages actual
+customer accounts. Migration 013 adds the host-only lifecycle route: create a
+five-day trial, issue or reissue its Telegram claim, set a later exact expiry,
+expire it manually, or convert the same tenant to licensed with the customer's
+Gemini key. The **Licenciadas** tab separately lists licensed accounts with a
+redacted license reference and their image-sponsorship status. Conversion calls
+the deployed Vercel bridge, which writes one idempotent license record in
+Upstash and returns the new code once; email/recovery is intentionally deferred.
+The dashboard itself still has no Docker socket, tenant-root mount, bot token,
+pool key, or ability to activate the image broker. First-run password creation
+and provider authentication are performed by the operator in the browser,
+never by pasting credentials into chat.
 
 ### Central image broker: prepared but dormant
 
@@ -243,12 +252,12 @@ isolation. This is only a local pool/code result; it does not verify real
 ChatGPT authentication. The separate real-provider canary exercises the
 external image route and requires both central-provider authentications; that
 authentication is still pending: the dashboard password is configured, but only
-one of the two 0700 central auth directories currently contains `auth.json`. The central
-image service is stopped and `ADMIRA_CENTRAL_IMAGE_READY=false`. Recovery and
-capacity soak remain deferred and off. The remaining image gate is operator
-first-run setup, two distinct authorized logins, and the real image/fallback
-test; this is not commercial readiness. The validated private recovery backup
-is `/srv/admira/backups/operator-panel-20260831T024651Z-Zv9LS9/`.
+one of the two 0700 central auth directories currently contains `auth.json`.
+The central image service is stopped and `ADMIRA_CENTRAL_IMAGE_READY=false`.
+Recovery and capacity soak remain deferred and off. The remaining image gate is
+a second distinct authorized login and the real image/fallback test; this is
+not commercial readiness. The validated private recovery backup is
+`/srv/admira/backups/operator-lifecycle-caeb723-20260831T201433Z/`.
 
 ## Central Telegram path
 
@@ -399,8 +408,15 @@ not the later Telegram claim. Reissuing its link never moves the clock. Expired
 trials are suspended and cannot be bypassed by issuing a new claim; the same
 durable tenant can still be licensed in place.
 
-The supported credential CLI accepts the Gemini key only from stdin or a
-private regular file (mode 0600); it never accepts a key in an argument:
+The normal path for a dashboard-created customer is the live **Pruebas** →
+**Licenciadas** conversion: it preserves the tenant, history and Telegram
+binding, creates the hosted license through Vercel/Upstash, installs the
+customer Gemini key privately and displays the code once. It deliberately does
+not ask for or send recovery email yet.
+
+The supported credential CLI below is a separate host-only legacy/repair path.
+It accepts the Gemini key only from stdin or a private regular file (mode 0600);
+it never accepts a key in an argument:
 
 ```bash
 ./gemini_pool_admin.py register my-gemini-project --capacity 15 --key-kind auth --key-file /secure/operator-gemini.txt

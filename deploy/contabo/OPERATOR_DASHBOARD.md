@@ -192,6 +192,11 @@ or sent in this stage. The customer may use `/conectar_chatgpt` at any time;
 that personal connection remains independent of the temporary central image
 benefit.
 
+The **Licenciadas** tab lists only safe operational metadata: customer,
+redacted license reference, licensing time, effective end of central-image
+sponsorship and lifecycle state. It never shows a Gemini key, email, ChatGPT
+authentication or the full license code again.
+
 ## Extend one customer's sponsored-image period
 
 The normal central-image benefit is the same five days that start with the
@@ -227,21 +232,23 @@ checks, real-provider image canary, failover checks, and tenant-isolation canary
 have passed under the existing approved activation procedure. The dashboard
 cannot change that flag or start the broker.
 
-## Previous Contabo baseline
+## Live Contabo state (verified 2026-08-31)
 
-This was the baseline deployed on 2026-08-31 at commit
-`bb4c5979184af9724d14ffc6a7bd3cd8e8753a6e`, manifest
-`704e819ee084e1856ffc8cd03c4e75ea331989b77ed20232ddffed894cef3ed2`.
-The service is running from `admira-ia-hosted:r91-canary-bb4c5979184a`, with
-read-only root, UID 1001, all capabilities dropped, two dedicated networks and
-only `127.0.0.1:8791` published. Migration 011 and the dedicated database login
-passed the final server preflight. It does **not** constitute evidence for this
-lifecycle release; rerun preflight after migration 013 and provisioner
-installation. Buyer workers have zero restarts and both tenant Compose files
-still resolve to `admira-ia:r90`.
+The actual VPS dashboard is running in
+`admira-ia-hosted:r91-canary-e6fa64f85138`; the active release marker is
+`d1bef249927c96e38cbd1ccd51bad1fe17f31b00`. Its `/` route returned `200`, the
+dashboard, runtime broker and tenant provisioner were active, and the final
+server preflight passed with migrations `001`–`013` and both operator canaries.
+The panel is still private: read-only root, UID 1001, no Docker or tenant-root
+mount, dedicated networks, and only VPS loopback `127.0.0.1:8791` published.
 
-First-run setup is deliberately pending: `password.hash`, both account
-`auth.json` files and Gemini pool projects are absent. The central image broker
-is stopped and both image and recovery readiness flags are false. The validated
-pre-deployment recovery backup is
-`/srv/admira/backups/operator-panel-20260831T024651Z-Zv9LS9/`.
+The live HTML contains the separate **Pruebas** and **Licenciadas** tabs, and
+the live API exposes creation, claim reissue, exact extension, manual expiry
+and license conversion. Buyer tenant Compose files deliberately remain pinned
+to `admira-ia:r90`; activating this panel did not replace their runtime image.
+
+The operator password hash is already configured. One central account home has
+an `auth.json`; the second account, real provider/failover canary and Gemini
+trial-pool credentials remain operator tasks. The central image broker and
+recovery remain disabled by their readiness flags. The recoverable deployment
+backup is `/srv/admira/backups/operator-lifecycle-caeb723-20260831T201433Z/`.

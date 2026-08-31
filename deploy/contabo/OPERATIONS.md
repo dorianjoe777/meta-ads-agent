@@ -39,12 +39,11 @@ Backup privado validado de esta promoción:
 El server preflight terminó en `PASS` después de fijar la marca activa. Las
 raíces de auth central
 `/srv/admira/shared/central-codex-auth/primary` y `secondary` están preparadas
-con modo 0700, pero todavía no contienen `auth.json`; por eso el servicio
-central está detenido, `ADMIRA_CENTRAL_IMAGE_READY=false` y la autenticación de
-recuperación también permanece desactivada. El canary real-provider está
-bloqueado por completar la primera contraseña del panel, instalar las dos
-autenticaciones autorizadas y ejecutar su prueba real; esto no constituye
-readiness comercial.
+con modo 0700. La primaria ya contiene `auth.json`; la secundaria aún no. Por
+eso el servicio central sigue detenido con `ADMIRA_CENTRAL_IMAGE_READY=false` y
+la autenticación de recuperación también permanece desactivada. El canary
+real-provider está bloqueado por completar la segunda autenticación autorizada
+y ejecutar su prueba real; esto no constituye readiness comercial.
 
 El despliegue del 31 de agosto conservó dos tenants, tres updates procesados,
 dos updates muertos históricos, cuatro envíos Telegram entregados y los dos
@@ -570,21 +569,30 @@ registran el resultado sin guardar la clave. La CLI/pool no se considera
 desplegada o live hasta validar proyectos/keys reales y el validator en una
 base desechable.
 
-La migración 011 (`operator_dashboard`) añade el acceso limitado
-del panel interno: registrar proyectos/credenciales Gemini y consultar su
-estado sin secretos. Migration 012 añade sólo la proyección de vigencia y la
-operación auditada para ampliar el fin del patrocinio de un cliente activo; no
-expone credenciales, licencia ni contactos y no puede acortar fechas. El panel
-permite guardar claves, conectar las dos cuentas centrales y realizar esa
-ampliación, pero no crea clientes, asigna sus claves, cambia licencias ni activa imágenes. Se accede por
-SSH a `127.0.0.1:8791`; nunca se publica el puerto en Internet. El procedimiento
-de primera contraseña, conexión y mantenimiento está en
-[OPERATOR_DASHBOARD.md](OPERATOR_DASHBOARD.md). En el Mac configurado,
-[open-operator-dashboard.command](open-operator-dashboard.command) abre el
-túnel y el navegador sin manejar contraseñas o claves de proveedor.
+Las migraciones 011–013 forman el panel interno y su ciclo de vida privado.
+La 011 (`operator_dashboard`) permite registrar proyectos/credenciales Gemini
+y consultar su estado sin secretos; la 012 proyecta y amplía de forma auditada
+la fecha de patrocinio sin poder acortarla; la 013 añade las listas de sólo
+lectura y deja las mutaciones en el provisioner host-only. El panel live crea
+la cuenta real del cliente como prueba de cinco días, muestra **Pruebas** y
+**Licenciadas** en pestañas separadas, puede reemitir el link de Telegram,
+ampliar o caducar la prueba, y convertir la misma cuenta en licenciada con la
+Gemini API key del cliente. Esa conversión crea la licencia una sola vez vía
+el endpoint desplegado respaldado por Upstash y muestra el código una sola vez;
+el correo y la recuperación siguen deliberadamente fuera de este flujo.
 
-La operación segura de licencia es host-only. La clave se lee por stdin o desde
-un archivo regular 0600; `--replace` es obligatorio para sustituir una clave
+El dashboard no recibe Docker, el árbol de tenants, claves del pool, ni la
+clave del bridge de licencias. Sólo firma solicitudes permitidas a un socket
+Unix host-only. Se accede por SSH al loopback del VPS `127.0.0.1:8791`; nunca
+se publica el puerto en Internet. El procedimiento de contraseña, conexión y
+mantenimiento está en [OPERATOR_DASHBOARD.md](OPERATOR_DASHBOARD.md). En el
+Mac configurado, [open-operator-dashboard.command](open-operator-dashboard.command)
+abre el túnel y el navegador sin manejar contraseñas o claves de proveedor.
+
+La ruta normal para cuentas creadas en el panel es la conversión desde
+**Pruebas**: no requiere email y no se debe sustituir por la CLI histórica.
+La siguiente operación host-only queda sólo para reparación/operación legacy
+revisada; exige un archivo regular 0600 y `--replace` para sustituir una clave
 distinta:
 
 ```bash
@@ -693,6 +701,11 @@ corren con UID 1001. Usa `sudo` sólo para la instalación del broker systemd.
 /run/admira-runtime-broker/docker-config/   # config CLI privada; permite Compose con ProtectHome
 /etc/admira/runtime-broker.key              # clave del servicio systemd (modo 600)
 /etc/admira/gemini-pool/                      # credenciales auth del pool, registradas por gemini_pool_admin.py
+/run/admira-tenant-provisioner/provisioner.sock # socket HMAC lifecycle (GID 19094, modo 660)
+/etc/admira/tenant-provisioner.key          # clave HMAC del provisioner (modo 600)
+/etc/admira/hosted-license-bridge.key       # bridge privado hacia Vercel/Upstash (modo 600)
+/etc/admira/central-image-keys/             # verificadores aislados por tenant; no son auth central
+/srv/admira/shared/central-image-exchange/  # intercambio aislado por tenant para imágenes centrales
 /srv/admira/backups/                         # dumps y copias de recuperación
 ```
 
@@ -706,10 +719,13 @@ La carpeta `control-plane` debe contener una marca `DEPLOYED_COMMIT` después de
 cada despliegue. Las carpetas de release intermedias se mueven a backups con
 modo restrictivo; no se copian archivos sueltos desde una versión anterior.
 
-## 8. Último estado verificado de la instalación Contabo
+## 8. Registro histórico previo a la promoción del lifecycle dashboard
 
-La siguiente verificación se hizo sobre el servidor Contabo
-(`169.58.246.232`) después de desplegar `665a93399097a01462f4075a18717933fb9cbc24`:
+La siguiente verificación corresponde al corte histórico del 30 de agosto,
+después de desplegar `665a93399097a01462f4075a18717933fb9cbc24`. Se conserva
+como evidencia de los canarios iniciales; no describe el release actual. Para
+el estado live de migrations `001`–`013` y el panel con **Pruebas**/**Licenciadas**,
+usar la sección 1:
 
 - Host `vmi3537882`; Docker responde correctamente.
 - PostgreSQL y Redis están activos y saludables.
@@ -993,11 +1009,14 @@ del proveedor.
 
 ## 15. Evidencia local y pendientes antes de vender/activar
 
-La base durable de lifecycle trial/licencia y la CLI segura de administración
-Gemini están implementadas y las migraciones 007–010 ya están aplicadas en
-live. El servicio `central-image-broker` sigue dormido en `central-images` y
+El lifecycle de prueba/licencia, el provisioner host-only y el dashboard live
+están desplegados; las migraciones `007`–`013` pasaron el preflight de servidor.
+El panel privado ya crea cuentas, asigna una entrada Gemini de pool, muestra
+**Pruebas** y **Licenciadas**, reemite claims, amplía/caduca pruebas y licencia
+la misma cuenta mediante el bridge Vercel/Upstash. El servicio
+`central-image-broker` sigue dormido en `central-images` y
 `ADMIRA_CENTRAL_IMAGE_READY=false`: la imagen hosted canaria está construida y
-pinneada, pero falta autenticación central autorizada y el canary
+pinneada, pero falta una segunda autenticación central autorizada y el canary
 real-provider. Los tenants live continúan en `admira-ia:r90`.
 
 Migration `009_telegram_license_recovery.sql` reserva la identidad licenciada,
@@ -1017,11 +1036,12 @@ tenants desechables del operador y registrar por paso: hora UTC, `runtime_key`,
 registrar API keys, tokens, códigos de dispositivo, correos ni contenido de
 `auth.json`.
 
-1. **Instalar el candidato como una sola unidad.** Guardar backup recuperable,
-   aplicar migraciones 001–013, ejecutar los validators sólo en PostgreSQL
-   desechable y pasar `release-preflight.sh --server --operator-dashboard`.
-   Confirmar roles sin acceso directo a tablas, tenants aún fijados a r90 y los
-   flags de imágenes/recovery apagados.
+1. **Confirmar el baseline ya desplegado.** El release lifecycle ya tiene backup
+   recuperable, migrations 001–013 y `release-preflight.sh --server
+   --operator-dashboard` en `PASS`. Antes de continuar, volver a comprobar el
+   marcador activo, roles sin acceso directo a tablas, tenants fijados a r90 y
+   flags de imágenes/recovery apagados; no reinstalar ni reconstruir por este
+   canary.
 2. **Crear y reclamar un tenant canario nuevo.** Crear la cuenta desde el
    dashboard y comprobar antes y después de consumir el claim una sola
    identidad/binding, `trial_started_at = tenant.created_at` y
@@ -1050,11 +1070,12 @@ registrar API keys, tokens, códigos de dispositivo, correos ni contenido de
    debe ser no-op, dejar un solo evento real, no cambiar `trial_ends_at`, el
    modelo, el login personal ni otro tenant, y rechazar fecha anterior,
    suspendido o más de 365 días.
-8. **Convertir el mismo tenant a licencia y cruzar el límite.** Instalar la key
-   Gemini del cliente con `gemini-license`; conservar Telegram, memoria,
-   archivos, jobs y ChatGPT personal. Confirmar que comprar no reinicia los
-   cinco días ni borra una ampliación manual. Al vencer la fecha efectiva, la
-   ruta debe pasar a `personal_chatgpt`; una prueba expirada sin licencia sigue
+8. **Convertir el mismo tenant a licencia y cruzar el límite.** Desde la acción
+   **Licenciar** del panel, instalar la key Gemini del cliente y conservar
+   Telegram, memoria, archivos, jobs y ChatGPT personal. Guardar el código que
+   el panel muestra una sola vez. Confirmar que comprar no reinicia los cinco
+   días ni borra una ampliación manual. Al vencer la fecha efectiva, la ruta
+   debe pasar a `personal_chatgpt`; una prueba expirada sin licencia sigue
    suspendida.
 
 El canary se aprueba sólo si los ocho pasos tienen evidencia y no hubo fuga de
@@ -1082,14 +1103,13 @@ detenido. Si el canary llegó a mutar datos, restaurar el backup validado
 siguiendo la sección 12 y conservar los logs/auditoría; no borrar challenges,
 outboxes o bindings manualmente ni activar con credenciales inventadas.
 
-Antes de vender o activar imágenes patrocinadas todavía se necesita: instalar
-dos conexiones centrales autorizadas sólo en los mounts del broker; preparar las
-raíces host-only; aplicar y validar migration 008 y el rol `admira_image`; y
-ejecutar el canary real-provider con un tenant operador. El clean canary de r91
-ya verificó en clon la cadena 007–010 (dos aplicaciones, todos los validators
-`PASS`), idempotencia y aislamiento; aún debe conservarse evidencia equivalente
-del proveedor real, leases/reintentos, hash/tipo de salida y recursos. Recovery
-y soak permanecen diferidos/apagados.
+Antes de vender o activar imágenes patrocinadas todavía se necesita: completar
+dos conexiones centrales autorizadas sólo en los mounts del broker y ejecutar
+el canary real-provider con un tenant operador. Las raíces host-only, migration
+008 y el rol `admira_image` ya están aplicados; el clean canary verificó en clon
+la cadena 007–013, idempotencia y aislamiento. Aún debe conservarse evidencia
+equivalente del proveedor real, leases/reintentos, hash/tipo de salida y
+recursos. Recovery y soak permanecen diferidos/apagados.
 
 En Contabo se verificaron hashes del release, backup, imagen tenant r90,
 imagen hosted canaria, broker/socket, salud de PostgreSQL/Redis y el flujo
