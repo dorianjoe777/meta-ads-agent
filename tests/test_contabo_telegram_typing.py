@@ -153,6 +153,13 @@ class TelegramTypingTests(unittest.TestCase):
         self.assertIn("GRANT EXECUTE ON FUNCTION admira.telegram_update_pending(text, bigint) TO admira_ingress", sql)
         self.assertNotIn("GRANT SELECT", sql)
 
+    def test_retry_continuity_migration_keeps_typing_visible_until_terminal_state(self):
+        sql = (ROOT / "deploy/contabo/db/migrations/015_telegram_typing_retry_continuity.sql").read_text()
+        self.assertIn("u.status IN ('received', 'retry')", sql)
+        self.assertIn("u.status = 'processing'", sql)
+        self.assertIn("GRANT EXECUTE ON FUNCTION admira.telegram_update_pending(text, bigint) TO admira_ingress", sql)
+        self.assertNotIn("GRANT SELECT", sql)
+
     def test_typing_watcher_stops_when_update_is_no_longer_pending(self):
         events = []
 

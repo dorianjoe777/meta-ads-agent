@@ -13,7 +13,7 @@ failures=0
 pass() { printf 'PASS  %s\n' "$1"; }
 fail() { printf 'FAIL  %s\n' "$1" >&2; failures=$((failures + 1)); }
 
-expected=(007_trial_provider_lifecycle.sql 008_central_image_jobs.sql 009_telegram_license_recovery.sql 010_operator_gemini_pool.sql 011_operator_dashboard.sql 012_personal_chatgpt_sponsorship.sql 013_operator_trial_provisioning.sql 014_telegram_typing_indicator.sql)
+expected=(007_trial_provider_lifecycle.sql 008_central_image_jobs.sql 009_telegram_license_recovery.sql 010_operator_gemini_pool.sql 011_operator_dashboard.sql 012_personal_chatgpt_sponsorship.sql 013_operator_trial_provisioning.sql 014_telegram_typing_indicator.sql 015_telegram_typing_retry_continuity.sql)
 for name in "${expected[@]}"; do
   path="$MIGRATIONS_DIR/$name"
   if [[ -f "$path" && -s "$path" ]]; then pass "present: $name"; else fail "missing or empty: $name"; fi
@@ -66,4 +66,4 @@ fi
 if (( failures > 0 )); then
   exit 1
 fi
-printf '%s\n' 'Migration chain 007-014 passed read-only checks; no database was changed.'
+printf '%s\n' 'Migration chain 007-015 passed read-only checks; no database was changed.'

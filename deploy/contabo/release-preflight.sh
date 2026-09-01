@@ -109,7 +109,8 @@ for file in compose.yaml Control.Dockerfile app-requirements.txt \
   db/validate_operator_gemini_pool.sql db/migrations/011_operator_dashboard.sql \
   db/validate_operator_dashboard.sql db/migrations/012_personal_chatgpt_sponsorship.sql \
   db/validate_personal_chatgpt_sponsorship.sql db/migrations/013_operator_trial_provisioning.sql \
-  db/validate_operator_trial_provisioning.sql db/migrations/014_telegram_typing_indicator.sql; do
+  db/validate_operator_trial_provisioning.sql db/migrations/014_telegram_typing_indicator.sql \
+  db/migrations/015_telegram_typing_retry_continuity.sql; do
   need_file "$ROOT_DIR/$file"
 done
 
@@ -433,7 +434,9 @@ WHERE n.nspname = 'admira'
   )
   AND NOT has_function_privilege(
     'admira_runtime', 'admira.telegram_update_pending(text,bigint)', 'EXECUTE'
-  );"
+  )
+  AND pg_get_functiondef('admira.telegram_update_pending(text,bigint)'::regprocedure)
+      LIKE '%u.status IN (''received'', ''retry'')%';"
   if printf '%s\n' "$typing_check_sql" | \
       docker compose --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compose.yaml" exec -T postgres \
       sh -ec 'export PGPASSWORD="$(cat /run/secrets/postgres_password)"; exec psql -qAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
@@ -609,9 +612,10 @@ else
   grep -q 'admira-ia:r90' "$ROOT_DIR/tenantctl.py" && ok 'tenant image pin is admira-ia:r90' || fail 'tenant image pin is not admira-ia:r90'
   grep -q 'status = '\''active'\''' "$ROOT_DIR/db/migrations/004_active_tenant_runtime_gate.sql" && ok 'active-tenant migration contains gate' || fail 'active-tenant migration gate missing'
   grep -q "p_error_code = 'telegram_rate_limited'" "$ROOT_DIR/db/migrations/005_telegram_rate_limit_retry.sql" && ok 'Telegram rate-limit migration preserves retries' || fail 'Telegram rate-limit retry migration gate missing'
-  grep -q 'CREATE OR REPLACE FUNCTION admira.telegram_update_pending' "$ROOT_DIR/db/migrations/014_telegram_typing_indicator.sql" \
-    && grep -q 'TO admira_ingress' "$ROOT_DIR/db/migrations/014_telegram_typing_indicator.sql" \
-    && ok 'Telegram typing indicator has a narrow ingress-only status probe' \
+  grep -q 'CREATE OR REPLACE FUNCTION admira.telegram_update_pending' "$ROOT_DIR/db/migrations/015_telegram_typing_retry_continuity.sql" \
+    && grep -q "u.status IN ('received', 'retry')" "$ROOT_DIR/db/migrations/015_telegram_typing_retry_continuity.sql" \
+    && grep -q 'TO admira_ingress' "$ROOT_DIR/db/migrations/015_telegram_typing_retry_continuity.sql" \
+    && ok 'Telegram typing indicator stays visible through runtime retries with ingress-only access' \
     || fail 'Telegram typing-indicator migration safety gate missing'
   grep -q 'attempt_count = greatest(0, attempt_count - 1)' "$ROOT_DIR/db/migrations/006_runtime_capacity_queue.sql" \
     && grep -q 'FOR UPDATE OF runtime SKIP LOCKED' "$ROOT_DIR/db/migrations/006_runtime_capacity_queue.sql" \

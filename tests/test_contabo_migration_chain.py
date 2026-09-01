@@ -13,9 +13,10 @@ class MigrationChainValidationTests(unittest.TestCase):
             [str(CHECK)], cwd=ROOT, capture_output=True, text=True, check=False
         )
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
-        self.assertIn("Migration chain 007-014 passed read-only checks", result.stdout)
+        self.assertIn("Migration chain 007-015 passed read-only checks", result.stdout)
         self.assertIn("present: 012_personal_chatgpt_sponsorship.sql", result.stdout)
         self.assertIn("present: 014_telegram_typing_indicator.sql", result.stdout)
+        self.assertIn("present: 015_telegram_typing_retry_continuity.sql", result.stdout)
         self.assertIn("no database was changed", result.stdout)
 
     def test_checker_is_explicitly_non_mutating(self):
