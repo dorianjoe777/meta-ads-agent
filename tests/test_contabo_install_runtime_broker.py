@@ -30,7 +30,7 @@ class RuntimeBrokerInstallerTests(unittest.TestCase):
     def test_optional_central_image_reference_is_strictly_pinned(self):
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("CENTRAL_IMAGE_IMAGE", text)
-        self.assertIn("admira-ia-hosted:r91-canary-[0-9a-f]{12}", text)
+        self.assertIn("admira-ia-hosted:r(91|99)-canary-[0-9a-f]{12}", text)
         self.assertNotIn("docker pull", text)
         self.assertNotIn("docker build", text)
 

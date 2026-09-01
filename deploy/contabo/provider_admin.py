@@ -95,7 +95,7 @@ def check_gemini_api_key(value: str, *, opener: Callable[..., object] | None = N
         GEMINI_MODELS_URL,
         headers={
             "x-goog-api-key": key,
-            "x-goog-api-client": "admira-hosted/r91",
+            "x-goog-api-client": "admira-hosted/r99",
             "Accept": "application/json",
         },
         method="GET",

@@ -197,7 +197,7 @@ if [[ -r "$ROOT_DIR/.env.example" ]] && grep -Eq '^ADMIRA_TELEGRAM_RECOVERY_READ
 else
   fail 'Telegram recovery must remain disabled by default in .env.example'
 fi
-CENTRAL_IMAGE_PLACEHOLDER='admira-ia-hosted:r91-canary-000000000000'
+CENTRAL_IMAGE_PLACEHOLDER='admira-ia-hosted:r99-canary-000000000000'
 CENTRAL_IMAGE_IMAGE="$(resolve_compose_value CENTRAL_IMAGE_IMAGE "$CENTRAL_IMAGE_PLACEHOLDER")"
 CENTRAL_IMAGE_READY="$(resolve_compose_value ADMIRA_CENTRAL_IMAGE_READY false | tr '[:upper:]' '[:lower:]')"
 CENTRAL_CODEX_ACCOUNT_IDS="$(resolve_compose_value ADMIRA_CENTRAL_CODEX_ACCOUNT_IDS 'primary,secondary')"
@@ -269,11 +269,11 @@ fi
 if [[ "$CENTRAL_IMAGE_IMAGE" == "$CENTRAL_IMAGE_PLACEHOLDER" && "$CENTRAL_IMAGE_READY" == true ]]; then
   fail 'central images cannot be enabled with the all-zero image placeholder'
 elif [[ "$CENTRAL_IMAGE_IMAGE" == "$CENTRAL_IMAGE_PLACEHOLDER" ]]; then
-  warn 'central image uses the dormant all-zero placeholder; install the clean canary tag before activation'
-elif [[ "$CENTRAL_IMAGE_IMAGE" =~ ^admira-ia-hosted:r91-canary-[0-9a-f]{12}$ ]]; then
+  warn 'central image uses the dormant all-zero placeholder; install the clean r99 canary tag before activation'
+elif [[ "$CENTRAL_IMAGE_IMAGE" =~ ^admira-ia-hosted:r(91|99)-canary-[0-9a-f]{12}$ ]]; then
   ok "central image is pinned to exact hosted canary tag: $CENTRAL_IMAGE_IMAGE"
 else
-  fail 'CENTRAL_IMAGE_IMAGE must be an exact admira-ia-hosted:r91-canary-<12 lowercase commit hex> tag'
+  fail 'CENTRAL_IMAGE_IMAGE must be an exact admira-ia-hosted:r91-canary-<12 lowercase commit hex> or r99-canary-<12 lowercase commit hex> tag'
 fi
 
 if [[ "$MODE" == server ]] && docker compose --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compose.yaml" \
@@ -391,7 +391,7 @@ if [[ "$MODE" == server ]]; then
   fi
   if docker image inspect admira-ia:r90 >/dev/null 2>&1; then ok 'tenant image admira-ia:r90 is present'; else fail 'tenant image admira-ia:r90 is missing'; fi
   if [[ "$CENTRAL_IMAGE_IMAGE" == "$CENTRAL_IMAGE_PLACEHOLDER" ]]; then
-    warn 'pinned central canary image is not selected; central images remain dormant'
+    warn 'pinned central r99 canary image is not selected; central images remain dormant'
   elif docker image inspect "$CENTRAL_IMAGE_IMAGE" >/dev/null 2>&1; then
     ok "pinned central canary image is present: $CENTRAL_IMAGE_IMAGE"
   elif [[ "$CENTRAL_IMAGE_READY" == true || "$CHECK_OPERATOR" == true ]]; then
@@ -677,7 +677,7 @@ else
     && ok 'operator pool CLI enforces hosted assignment, runtime fence, DB finalization and cleanup reporting' \
     || fail 'operator pool CLI safety gates missing'
   if grep -q 'GEMINI_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1"' "$ROOT_DIR/provider_admin.py" \
-    && grep -q 'x-goog-api-client.*admira-hosted/r91' "$ROOT_DIR/provider_admin.py" \
+    && grep -q 'x-goog-api-client.*admira-hosted/r99' "$ROOT_DIR/provider_admin.py" \
     && grep -q 'x-goog-api-key' "$ROOT_DIR/provider_admin.py" \
     && grep -q 'allow-unverified' "$ROOT_DIR/provider_admin.py" \
     && grep -q 'effective_health_check = health_check or gemini_health_check' "$ROOT_DIR/provider_admin.py"; then

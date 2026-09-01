@@ -169,7 +169,7 @@ services:
     mem_limit: 64m
     cpus: 0.1
 
-  # Dormant r91 service for Admira-sponsored image generation. It is in its
+  # Dormant r99 service for Admira-sponsored image generation. It is in its
   # own profile and never starts with the buyer workers. The central Codex
   # credential pool is mounted only here and in the internal operator
   # dashboard; tenant runtimes receive only a scoped HMAC key, the Unix socket
@@ -179,7 +179,7 @@ services:
     # There is no mutable/default central image. The operator must pin the
     # exact output of build-hosted-runtime.sh in .env before enabling this
     # dormant profile; r90 tenant runtimes remain the normal default.
-    image: ${CENTRAL_IMAGE_IMAGE:-admira-ia-hosted:r91-canary-000000000000}
+    image: ${CENTRAL_IMAGE_IMAGE:-admira-ia-hosted:r99-canary-000000000000}
     restart: unless-stopped
     init: true
     # The broker's primary group is deliberately separate from the control
@@ -250,7 +250,7 @@ services:
     # This is the same immutable hosted canary selected for the dormant image
     # broker. It contains the pinned Codex CLI; preflight rejects mutable or
     # malformed CENTRAL_IMAGE_IMAGE values before operators enable the profile.
-    image: ${CENTRAL_IMAGE_IMAGE:-admira-ia-hosted:r91-canary-000000000000}
+    image: ${CENTRAL_IMAGE_IMAGE:-admira-ia-hosted:r99-canary-000000000000}
     restart: unless-stopped
     init: true
     user: "${ADMIRA_SERVICE_UID:-1001}:${ADMIRA_SERVICE_GID:-1001}"

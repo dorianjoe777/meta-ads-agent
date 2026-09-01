@@ -9664,9 +9664,7 @@ def strategic_product_action_eligibility(action_category, profile=None, page_id=
     if not decision.get("allowed"):
         return decision
     if category in {
-        "campaign_create", "campaign_edit", "campaign_brief", "campaign_activate",
-        "spend_increase", "paid_creative", "organic_creative", "organic_publish",
-        "ad_motion_graphics",
+        "paid_creative", "organic_creative", "organic_publish", "ad_motion_graphics",
     }:
         branding = branding_creative_readiness(require_product=False, payload=None)
         if not branding.get("ready"):
@@ -9679,6 +9677,13 @@ def strategic_product_action_eligibility(action_category, profile=None, page_id=
                 "unresolved_topics": [item.get("key") for item in branding.get("missing") or []],
                 "next_question": branding.get("next_question") or "Antes de producir, terminemos juntos el branding y el logo.",
             }
+    # A paused campaign is not a request to manufacture a new visual.  Its
+    # compiler separately requires a buyer-approved *exact* creative, copy,
+    # budget and destination before it can reach Meta.  Requiring the wider
+    # future-content checklist here (references, real assets, or an official
+    # logo) made it impossible to test a campaign with a buyer-selected
+    # existing asset, even though that asset was already specified in the
+    # campaign contract.  The strategic-profile gate above remains mandatory.
     return decision
 
 
@@ -10001,6 +10006,15 @@ _MEMORY_AUTH_INTERNAL_FIELDS = {
     "profile_review_confirmation",
     "confirm_strategic_profile",
     "confirm_master_plan",
+    # These fields identify a server-owned generated-logo candidate.  They
+    # are provenance, not buyer-facing brand facts, and must not make a
+    # short confirmation fail exact draft matching merely because the model
+    # did not echo internal metadata.
+    "generated_logo_candidate",
+    "generated_logo_candidate_id",
+    "generated_logo_source_path",
+    "generated_logo_asset_id",
+    "generated_logo_purpose",
 }
 
 _MASTER_PLAN_FIELDS = (
@@ -14319,6 +14333,150 @@ def copy_brand_logo_from_path(source_path, logo_notes=""):
         "logo_notes": str(logo_notes or "").strip() or "Logo enviado por el comprador en el chat.",
         "logo_usage": "Usar el logo oficial guardado en futuros creativos salvo que el comprador pida explícitamente sin logo.",
     }
+
+
+_GENERATED_LOGO_BRAND_FIELDS = (
+    "brand_name",
+    "category",
+    "market",
+    "website",
+    "offer",
+    "colors",
+    "typography",
+    "visual_style",
+    "personality",
+    "tone",
+    "references",
+    "asset_notes",
+    "restrictions",
+)
+
+
+def _safe_generated_logo_source(result):
+    """Return a real Image result only when it lives in Admira's creative root."""
+    try:
+        source = Path(str((result or {}).get("image_path") or "")).resolve(strict=True)
+        source.relative_to(CREATIVE_ASSET_ROOT.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if source.suffix.lower() not in BRAND_LOGO_EXTENSIONS or not source.is_file():
+        return None
+    return source
+
+
+def register_generated_logo_candidate(arguments, result):
+    """Keep a real generated logo reviewable without making it official.
+
+    Image generation proves that a file exists; it never proves that the
+    buyer selected it.  We therefore copy a verified file into the protected
+    brand-asset area and save only a draft that can later be promoted by the
+    existing one-use, exact-confirmation capability.
+    """
+    source = _safe_generated_logo_source(result)
+    if source is None:
+        return {}
+    scope = active_meta_page_id() or "unscoped"
+    draft = _memory_draft_record("brand", scope=scope)
+    previous = (draft.get("payload") or {}) if isinstance(draft, dict) else {}
+    current = ((guide_library().get("general") or {}).get("fields") or {})
+    incoming = normalize_general_payload(arguments or {})
+    candidate = {}
+    for values in (current, previous, incoming):
+        normalized = normalize_general_payload(values or {})
+        for field in _GENERATED_LOGO_BRAND_FIELDS:
+            value = normalized.get(field)
+            if value not in (None, "", [], {}):
+                candidate[field] = value
+    if not candidate.get("brand_name") and not candidate.get("offer"):
+        # The normal image gate normally prevents this.  Retain the image as
+        # a normal creative if it somehow occurs; do not create an identity
+        # draft with an invented brand core.
+        return {}
+    copied = copy_brand_logo_from_path(
+        source,
+        "Logotipo generado por Admira y pendiente de aprobación explícita del comprador.",
+    )
+    relative_source = str(source.relative_to(CREATIVE_ASSET_ROOT.resolve()))
+    candidate_id = hashlib.sha256(
+        f"{scope}\0{relative_source}\0{copied['logo_path']}".encode("utf-8")
+    ).hexdigest()[:20]
+    candidate.update(copied)
+    # The final proposed guide intentionally carries the eventual official
+    # fields.  It is still just a draft: no general guide references this
+    # path until `save_general_brand_memory` receives buyer confirmation.
+    candidate.update({
+        "confirmation_state": "agent_proposal",
+        "generated_logo_candidate": True,
+        "generated_logo_candidate_id": candidate_id,
+        "generated_logo_source_path": str(source),
+        "generated_logo_asset_id": str((result or {}).get("asset_id") or relative_source),
+        "generated_logo_purpose": "logo",
+    })
+    saved = save_memory_draft("brand", candidate, scope=scope)
+    return {
+        "candidate_id": candidate_id,
+        "draft_id": saved.get("draft_id") or "",
+        "logo_path": copied["logo_path"],
+        "asset_id": candidate["generated_logo_asset_id"],
+        "status": "pending_buyer_approval",
+    }
+
+
+def _candidate_string_values(value, depth=0):
+    if depth > 5:
+        return []
+    if isinstance(value, dict):
+        values = []
+        for item in value.values():
+            values.extend(_candidate_string_values(item, depth + 1))
+        return values
+    if isinstance(value, (list, tuple, set)):
+        values = []
+        for item in value:
+            values.extend(_candidate_string_values(item, depth + 1))
+        return values
+    if isinstance(value, str):
+        return [value]
+    return []
+
+
+def generated_logo_candidate_for_short_confirmation(arguments, scope=""):
+    """Resolve only the exact candidate that the model explicitly references.
+
+    This accepts a candidate ID, its protected brand path, or the immutable
+    source path returned by the image tool.  It does not inspect the buyer's
+    wording for trigger words and never promotes a candidate on its own.
+    """
+    raw = dict(arguments or {})
+    if str(raw.get("confirmation_state") or "").strip().lower() != "buyer_confirmed":
+        return {}
+    turn = _trusted_buyer_turn()
+    if not turn or not _short_natural_confirmation(turn.get("message") or ""):
+        return {}
+    scope = str(scope or active_meta_page_id() or "unscoped")
+    draft = _memory_draft_record("brand", scope=scope)
+    candidate = (draft.get("payload") or {}) if isinstance(draft, dict) else {}
+    if not candidate.get("generated_logo_candidate"):
+        return {}
+    references = {
+        str(candidate.get(key) or "").strip()
+        for key in (
+            "generated_logo_candidate_id",
+            "logo_path",
+            "generated_logo_source_path",
+            "generated_logo_asset_id",
+        )
+        if str(candidate.get(key) or "").strip()
+    }
+    if not references:
+        return {}
+    strings = _candidate_string_values(raw)
+    if not any(reference in value for reference in references for value in strings):
+        return {}
+    resolved = dict(candidate)
+    resolved["confirmation_state"] = raw.get("confirmation_state")
+    resolved["buyer_evidence"] = raw.get("buyer_evidence")
+    return resolved
 
 
 def save_brand_logo_asset(payload):
@@ -19414,6 +19572,17 @@ def handle_save_durable_memory_tool(arguments, chat_payload, tool):
 def handle_save_brand_guide_tool(arguments, chat_payload, tool):
     raw_arguments = dict(arguments or {})
     arguments = normalize_general_payload(raw_arguments)
+    # A generated logo is a server-owned candidate, not an official file.  On
+    # a short buyer approval, resolve it only when this exact tool call names
+    # the candidate ID/path that Image returned.  This preserves the existing
+    # exact-draft authorization model while sparing the model from recreating
+    # every brand field after it has already shown the file to the buyer.
+    candidate = generated_logo_candidate_for_short_confirmation(
+        raw_arguments,
+        scope=active_meta_page_id() or "unscoped",
+    )
+    if candidate:
+        arguments = candidate
     image_paths = safe_image_paths(chat_payload)
     logo_signal = (
         "logo" in json.dumps(raw_arguments, ensure_ascii=False).lower()
@@ -19657,11 +19826,36 @@ def handle_codex_image_generate_tool(arguments, chat_payload, tool):
         )
     result = codex_image_generate(arguments)
     if result.get("ok"):
+        purpose = str(arguments.get("purpose") or "ad_creative").strip().lower().replace("-", "_")
+        candidate = {}
+        if purpose == "logo":
+            try:
+                candidate = register_generated_logo_candidate(arguments, result)
+            except (OSError, RuntimeError, ValueError):
+                # The image itself is still valid.  Do not label it official
+                # when candidate registration fails; the normal output can be
+                # reviewed or regenerated safely.
+                candidate = {}
+            if candidate:
+                result["brand_candidate"] = candidate
         preview = result.get("preview_url") or ""
+        if candidate:
+            message_es = (
+                "Listo. Generé y adjunté un logo candidato para revisión. "
+                "Está guardado como propuesta, pero todavía no es el logo oficial: "
+                "muéstralo y espera una aprobación natural del comprador antes de guardarlo."
+            )
+            message_en = (
+                "Done. I generated and attached a logo candidate for review. "
+                "It is saved as a proposal, not yet the official logo: show it and wait for a natural buyer approval before saving it."
+            )
+        else:
+            message_es = f"Listo. Generé una imagen final con Codex/Image y la dejé guardada en Creativos. Vista previa: {preview}"
+            message_en = f"Done. I generated a final image with Codex/Image and saved it in Creatives. Preview: {preview}"
         reply = chat_reply(
             chat_payload,
-            f"Listo. Generé una imagen final con Codex/Image y la dejé guardada en Creativos. Vista previa: {preview}",
-            f"Done. I generated a final image with Codex/Image and saved it in Creatives. Preview: {preview}",
+            message_es,
+            message_en,
         )
         return agent_action_result(tool, True, reply, result=result)
     if result.get("reason") == "hybrid_required":

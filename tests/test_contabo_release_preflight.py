@@ -122,7 +122,7 @@ class ReleasePreflightTests(unittest.TestCase):
     def test_operator_preflight_rejects_dormant_image_when_requested(self):
         result = subprocess.run(
             [str(SCRIPT), "--local", "--operator-dashboard"], text=True, capture_output=True,
-            env={**os.environ, "CENTRAL_IMAGE_IMAGE": "admira-ia-hosted:r91-canary-000000000000"},
+            env={**os.environ, "CENTRAL_IMAGE_IMAGE": "admira-ia-hosted:r99-canary-000000000000"},
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("requires a real pinned CENTRAL_IMAGE_IMAGE", result.stderr)

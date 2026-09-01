@@ -203,7 +203,7 @@ class ContaboComposeTests(unittest.TestCase):
     def test_central_image_service_is_dormant_and_credential_isolated(self):
         central = self._service("central-image-broker", "telegram-poller")
         self.assertIn('profiles: ["central-images"]', central)
-        self.assertIn("image: ${CENTRAL_IMAGE_IMAGE:-admira-ia-hosted:r91-canary-000000000000}", central)
+        self.assertIn("image: ${CENTRAL_IMAGE_IMAGE:-admira-ia-hosted:r99-canary-000000000000}", central)
         self.assertNotIn("admira-ia:r91", central)
         self.assertIn("ADMIRA_DB_USER: admira_image_login", central)
         self.assertIn("image_db_password", central)

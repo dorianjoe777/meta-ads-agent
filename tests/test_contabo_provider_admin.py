@@ -267,7 +267,7 @@ class ProviderAdminTests(unittest.TestCase):
         self.assertEqual(request.full_url, provider_admin.GEMINI_MODELS_URL)
         self.assertNotIn(key, request.full_url)
         self.assertEqual(request.get_header("X-goog-api-key"), key)
-        self.assertEqual(request.get_header("X-goog-api-client"), "admira-hosted/r91")
+        self.assertEqual(request.get_header("X-goog-api-client"), "admira-hosted/r99")
         self.assertEqual(kwargs["timeout"], provider_admin.GEMINI_HEALTH_TIMEOUT_SECONDS)
 
     def test_gemini_health_check_rejects_empty_or_invalid_model_response(self):

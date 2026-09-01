@@ -44,6 +44,7 @@ DEFAULT_BURST_MIN_AVAILABLE_MB = 2048
 MAX_CONFIGURED_ACTIVE_TENANTS = 8
 MAX_WIRE_BYTES = 524_288
 MAX_MEDIA_BYTES = 50 * 1024 * 1024
+MAX_HERMES_ATTACHMENTS = 6
 MEDIA_REF_RE = re.compile(r"^[a-f0-9]{32,64}\.(?:jpg|jpeg|png|webp|gif|mp4|mov|pdf|bin)$", re.IGNORECASE)
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
@@ -623,7 +624,7 @@ class BrokerCore:
                     "size": int(source.stat().st_size),
                     "sha256": digest.hexdigest(),
                 })
-                if suffix in IMAGE_SUFFIXES and len(images) < 4:
+                if suffix in IMAGE_SUFFIXES and len(images) < MAX_HERMES_ATTACHMENTS:
                     images.append(hosted_path)
         except Exception:
             shutil.rmtree(target_dir, ignore_errors=True)

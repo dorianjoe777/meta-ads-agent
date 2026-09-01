@@ -1,4 +1,4 @@
-"""Opt-in client for the hosted central image broker (r91).
+"""Opt-in client for the hosted central image broker (r99).
 
 The client is intentionally inert unless the control-plane writes a private,
 per-turn entitlement file.  It is safe to import from the existing image
@@ -175,7 +175,7 @@ def maybe_generate_central_image(prompt: str, *, output_root: str | Path, output
                                  purpose: str = "image_generation", aspect: str | None = None,
                                  update_id: object = None,
                                  timeout: float = 270, now: float | None = None) -> dict[str, Any] | None:
-    """Call r91 only for an explicitly entitled central-sponsored turn.
+    """Call r99 only for an explicitly entitled central-sponsored turn.
 
     Returns ``None`` for disabled/personal/blocked routes so the caller may
     select its normal local path.  A central-not-ready entitlement returns a

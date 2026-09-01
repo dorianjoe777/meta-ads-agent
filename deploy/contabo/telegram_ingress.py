@@ -14,6 +14,7 @@ from typing import Any, Protocol, Sequence
 
 MAX_INPUT_TEXT = 5000
 MAX_MEDIA_BYTES = 50 * 1024 * 1024
+MAX_HERMES_ATTACHMENTS = 6
 ID_RE = re.compile(r"^-?[0-9]{1,32}$")
 FILE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,256}$")
 SAFE_FILE_RE = re.compile(r"^[^/\\\x00]{1,180}$")
@@ -136,7 +137,7 @@ def parse_update(raw: object, *, bot_id: str) -> TelegramMessage | None:
         candidate = _media("video" if kind in {"video", "animation"} else "document", message.get(kind), default_name=f"telegram-{kind}.bin")
         if candidate:
             media.append(candidate)
-    if len(media) > 4:
+    if len(media) > MAX_HERMES_ATTACHMENTS:
         raise ValueError("too many Telegram attachments")
     if not text and not media:
         return None

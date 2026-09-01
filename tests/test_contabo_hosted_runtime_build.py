@@ -27,7 +27,9 @@ class HostedRuntimeBuildContractTests(unittest.TestCase):
         self.assertIn("hosted-shared-vps", source)
         self.assertIn("ADMIRA_SOURCE_MANIFEST=${manifest}", source)
         self.assertIn("org.opencontainers.image.source-manifest", source)
-        self.assertIn("same committed r91 product source and Dockerfile", source)
+        self.assertIn("same committed r99 product source and Dockerfile", source)
+        self.assertIn('[[ "$version" == r99 ]]', source)
+        self.assertIn("Hosted r99 builder requires VERSION=r99", source)
         self.assertIn('if [[ "$inspect_only" != true ]]; then', source)
         self.assertIn("provenance contract inspected (Docker build not run)", source)
 

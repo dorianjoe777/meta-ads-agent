@@ -135,6 +135,26 @@ class TenantTurnTests(unittest.TestCase):
         result = tenant_turn.validate_turn({"message": "Mira esto", "chat_id": "123", "user_id": "456", "image_paths": [path]})
         self.assertEqual(result["image_paths"], [path])
 
+    def test_accepts_r99_six_image_contract_and_rejects_seven(self):
+        paths = [
+            f"/app/output/telegram_uploads/a1b2c3d4e5f60718/{index:016x}.png"
+            for index in range(1, 8)
+        ]
+        result = tenant_turn.validate_turn({
+            "message": "Usa estas fotos",
+            "chat_id": "123",
+            "user_id": "456",
+            "image_paths": paths[:6],
+        })
+        self.assertEqual(result["image_paths"], paths[:6])
+        with self.assertRaisesRegex(ValueError, "at most 6 images"):
+            tenant_turn.validate_turn({
+                "message": "Usa estas fotos",
+                "chat_id": "123",
+                "user_id": "456",
+                "image_paths": paths,
+            })
+
     def test_accepts_bounded_broker_attachment_contract(self):
         path = "/app/output/telegram_uploads/a1b2c3d4e5f60718/0011223344556677.pdf"
         result = tenant_turn.validate_turn({

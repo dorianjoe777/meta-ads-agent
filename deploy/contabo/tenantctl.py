@@ -24,8 +24,8 @@ DEFAULT_IMAGE = "admira-ia:r90"
 # Hosted candidates are deliberately accepted only when their tag contains
 # the exact 12-character commit prefix emitted by build-hosted-runtime.sh.
 # This keeps r90 the normal path while allowing an operator to pin one tenant
-# to one immutable canary with ADMIRA_TENANT_IMAGE or --runtime-image.
-HOSTED_CANARY_IMAGE_RE = re.compile(r"^admira-ia-hosted:r91-canary-[0-9a-f]{12}$")
+# to one immutable r91/r99 canary with ADMIRA_TENANT_IMAGE or --runtime-image.
+HOSTED_CANARY_IMAGE_RE = re.compile(r"^admira-ia-hosted:r(?:91|99)-canary-[0-9a-f]{12}$")
 IMAGE = DEFAULT_IMAGE  # compatibility for callers that imported the old name
 TENANT_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,62}$")
 DEFAULT_BASE = "/srv/admira/tenants"
@@ -44,12 +44,13 @@ CPU_RE = re.compile(r"^(?:0\.[1-9][0-9]*|[1-9][0-9]*(?:\.[0-9]+)?)$")
 
 
 def validate_runtime_image(value: str) -> str:
-    """Allow only the live r90 image or an exact hosted r91 canary tag."""
+    """Allow only the live r90 image or an exact hosted r91/r99 canary tag."""
     if value == DEFAULT_IMAGE or HOSTED_CANARY_IMAGE_RE.fullmatch(value):
         return value
     raise ValueError(
         "runtime image must be admira-ia:r90 or "
-        "admira-ia-hosted:r91-canary-<12 lowercase commit hex>"
+        "admira-ia-hosted:r91-canary-<12 lowercase commit hex> or "
+        "admira-ia-hosted:r99-canary-<12 lowercase commit hex>"
     )
 
 
@@ -454,7 +455,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--memory-limit", default=None, help=f"per-tenant memory limit (default: {DEFAULT_MEMORY_LIMIT})")
     p.add_argument("--cpu-limit", default=None, help=f"per-tenant CPU limit (default: {DEFAULT_CPU_LIMIT})")
     p.add_argument("--pids-limit", default=None, type=int, help=f"per-tenant PID limit (default: {DEFAULT_PIDS_LIMIT})")
-    p.add_argument("--runtime-image", default=None, help="optional exact hosted r91 canary tag for this tenant; default is r90")
+    p.add_argument("--runtime-image", default=None, help="optional exact hosted r91/r99 canary tag for this tenant; default is r90")
     p.add_argument("--dry-run", action="store_true", help="show the operation without writing or running Docker")
     return p
 

@@ -40,8 +40,8 @@ BURST_MIN_AVAILABLE_MB="${BURST_MIN_AVAILABLE_MB:-2048}"
 # This installer never builds or pulls tenant images. If the optional
 # central-images profile is configured, reject mutable/ambiguous references
 # before a later operator activation can select one accidentally.
-if [[ -n "$CENTRAL_IMAGE_IMAGE" ]] && [[ ! "$CENTRAL_IMAGE_IMAGE" =~ ^admira-ia-hosted:r91-canary-[0-9a-f]{12}$ ]]; then
-  printf '%s\n' 'CENTRAL_IMAGE_IMAGE must be an exact admira-ia-hosted:r91-canary-<12 lowercase commit hex> tag.' >&2
+if [[ -n "$CENTRAL_IMAGE_IMAGE" ]] && [[ ! "$CENTRAL_IMAGE_IMAGE" =~ ^admira-ia-hosted:r(91|99)-canary-[0-9a-f]{12}$ ]]; then
+  printf '%s\n' 'CENTRAL_IMAGE_IMAGE must be an exact admira-ia-hosted:r91-canary-<12 lowercase commit hex> or r99-canary-<12 lowercase commit hex> tag.' >&2
   exit 1
 fi
 

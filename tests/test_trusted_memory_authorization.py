@@ -298,6 +298,114 @@ class TrustedMemoryAuthorizationTests(unittest.TestCase):
             rejected["reason"], "short_confirmation_has_no_matching_draft"
         )
 
+    def test_generated_logo_candidate_promotes_only_when_the_tool_names_that_exact_candidate(self):
+        root = Path(self.temp.name)
+        creative_root = root / "output" / "creatives"
+        source = creative_root / "codex-test" / "logo.png"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"\x89PNG\r\n\x1a\nvalid-logo-candidate")
+        asset_root = root / "brand_guides" / "assets"
+        initial_library = {"general_exists": False, "general": {"fields": {}}}
+        arguments = {
+            "brand_name": "La Esquina de Palmita",
+            "business_category": "Restaurante",
+            "colors": "Azul y blanco",
+            "visual_style": "Limpio y cálido",
+            "tone": "Cercano",
+            "purpose": "logo",
+        }
+        with patch.object(self.dashboard, "CREATIVE_ASSET_ROOT", creative_root), patch.object(
+            self.dashboard, "BRAND_ASSET_DIR", asset_root
+        ), patch.object(
+            self.dashboard,
+            "product_reference",
+            side_effect=lambda path: str(Path(path).relative_to(root)),
+        ), patch.object(self.dashboard, "guide_library", return_value=initial_library):
+            candidate = self.dashboard.register_generated_logo_candidate(
+                arguments,
+                {"ok": True, "image_path": str(source), "asset_id": "codex-test/logo.png"},
+            )
+
+        self.assertEqual(candidate["status"], "pending_buyer_approval")
+        self.assertTrue(candidate["logo_path"].startswith("brand_guides/assets/"))
+        draft = self.dashboard._memory_draft_record("brand", scope="page_1")
+        self.assertTrue(draft["payload"]["generated_logo_candidate"])
+        self.assertFalse(initial_library["general_exists"])
+
+        confirmation = "Sí, usemos este"
+        self.dashboard.record_trusted_buyer_turn(
+            "123", "agent:main:telegram:dm:123", 56, confirmation, transport="telegram"
+        )
+        saved_payloads = []
+
+        def save_general(payload):
+            saved_payloads.append(dict(payload))
+            return {"general": {"fields": dict(payload)}}
+
+        with patch.object(self.dashboard, "save_general_guide", side_effect=save_general), patch.object(
+            self.dashboard, "agent_onboarding_phase", return_value={"next_step": "continuar"}
+        ):
+            approved = self.dashboard.handle_save_brand_guide_tool(
+                {
+                    "confirmation_state": "buyer_confirmed",
+                    "buyer_evidence": confirmation,
+                    # This mirrors a model carrying the returned Image path
+                    # inside an ordinary note instead of rebuilding the full
+                    # brand payload from scratch.
+                    "asset_notes": f"Usar el archivo generado: {source}",
+                },
+                {"language": "es", "message": confirmation},
+                "save_brand_guide",
+            )
+
+        self.assertTrue(approved["executed"])
+        self.assertTrue(approved["saved"])
+        self.assertEqual(saved_payloads[0]["logo_path"], candidate["logo_path"])
+        self.assertEqual(saved_payloads[0]["brand_name"], "La Esquina de Palmita")
+
+        # A different short acknowledgement without the candidate reference
+        # cannot turn an arbitrary identity into the official guide.
+        self.dashboard.record_trusted_buyer_turn(
+            "123", "agent:main:telegram:dm:123", 57, "Sí", transport="telegram"
+        )
+        rejected = self.dashboard.generated_logo_candidate_for_short_confirmation(
+            {"confirmation_state": "buyer_confirmed", "buyer_evidence": "Sí", "brand_name": "Otra marca"},
+            scope="page_1",
+        )
+        self.assertEqual(rejected, {})
+
+    def test_campaign_uses_its_exact_creative_contract_not_the_future_content_checklist(self):
+        strategic = {"status": "complete", "revision": 4, "confirmed_revision": 4}
+        allowed = {
+            "allowed": True,
+            "profile_status": "complete",
+            "revision": 4,
+            "confirmed_revision": 4,
+        }
+        blocked_branding = {
+            "ready": False,
+            "missing": [{"key": "reference_decision"}],
+            "next_question": "¿Tienes referencias?",
+        }
+        with patch.object(
+            self.dashboard, "strategic_profile_for_page", return_value=strategic
+        ), patch.object(
+            self.dashboard, "strategic_profile_action_eligibility", return_value=allowed
+        ), patch.object(
+            self.dashboard, "branding_creative_readiness", return_value=blocked_branding
+        ) as readiness:
+            campaign = self.dashboard.strategic_product_action_eligibility(
+                "campaign_create", profile={}, page_id="page_1"
+            )
+            paid_creative = self.dashboard.strategic_product_action_eligibility(
+                "paid_creative", profile={}, page_id="page_1"
+            )
+
+        self.assertTrue(campaign["allowed"])
+        self.assertFalse(paid_creative["allowed"])
+        self.assertEqual(paid_creative["code"], "branding_required")
+        self.assertEqual(readiness.call_count, 1)
+
     def test_short_brand_confirmation_cannot_change_official_fields(self):
         official_fields = {
             "brand_name": "Rodeo - Car Detailing",

@@ -23,18 +23,19 @@ class TenantCtlTests(unittest.TestCase):
                     tenantctl.validate_tenant_id(value)
         self.assertEqual(tenantctl.validate_tenant_id("client-001"), "client-001")
 
-    def test_runtime_image_defaults_to_r90_and_accepts_only_exact_hosted_canary(self):
+    def test_runtime_image_defaults_to_r90_and_accepts_exact_hosted_transition_canaries(self):
         self.assertEqual(tenantctl.selected_runtime_image(), "admira-ia:r90")
-        canary = "admira-ia-hosted:r91-canary-0123456789ab"
-        self.assertEqual(tenantctl.validate_runtime_image(canary), canary)
-        for value in ("latest", "admira-ia:r91", "admira-ia-hosted:r91-canary-latest",
-                      "admira-ia-hosted:r91-canary-aa3313f80bc", "admira-ia-hosted:r91-canary-AA3313F80BCB"):
+        for canary in ("admira-ia-hosted:r91-canary-0123456789ab", "admira-ia-hosted:r99-canary-0123456789ab"):
+            self.assertEqual(tenantctl.validate_runtime_image(canary), canary)
+        for value in ("latest", "admira-ia:r91", "admira-ia-hosted:r90-canary-0123456789ab",
+                      "admira-ia-hosted:r91-canary-latest", "admira-ia-hosted:r99-canary-latest",
+                      "admira-ia-hosted:r91-canary-aa3313f80bc", "admira-ia-hosted:r99-canary-AA3313F80BCB"):
             with self.subTest(value=value):
                 with self.assertRaises(ValueError):
                     tenantctl.validate_runtime_image(value)
 
     def test_operator_can_pin_one_tenant_to_exact_hosted_canary(self):
-        canary = "admira-ia-hosted:r91-canary-0123456789ab"
+        canary = "admira-ia-hosted:r99-canary-0123456789ab"
         with tempfile.TemporaryDirectory() as raw:
             base = Path(raw)
             tenantctl.provision(base, "client-001", runtime_image=canary)

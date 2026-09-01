@@ -26,6 +26,7 @@ from tenantctl import DEFAULT_BASE, compose_argv, tenant_path, validate_tenant_i
 
 
 MESSAGE_LIMIT = 5000
+MAX_HERMES_ATTACHMENTS = 6
 CHAT_ID_RE = re.compile(r"^-?[0-9]{1,32}$")
 MEDIA_RE = re.compile(r"(?m)^\s*MEDIA:(/app/output/[^\s]+)\s*$")
 INBOUND_IMAGE_RE = re.compile(
@@ -49,6 +50,8 @@ from urllib.parse import urlparse
 sys.path.insert(0, "/app/src")
 from hermes_bridge import chat
 from product_config import load_config
+
+MAX_HERMES_ATTACHMENTS = 6
 
 # Every hosted tenant runs its own dashboard process and owns its own durable
 # recovery token under /app/dashboard/data.  Point the injected command bridge
@@ -259,7 +262,7 @@ def prepare_attachments(payload):
     attachments = payload.get("attachments") if isinstance(payload.get("attachments"), list) else []
     if not attachments:
         return payload
-    images = list(payload.get("image_paths") or [])[:4]
+    images = list(payload.get("image_paths") or [])[:MAX_HERMES_ATTACHMENTS]
     notes = []
     documents = []
     for item in attachments[:8]:
@@ -275,7 +278,7 @@ def prepare_attachments(payload):
                 preview = {"frames": [], "reason": "frame_extraction_failed"}
             frames = [str(value) for value in (preview.get("frames") or []) if str(value).strip()]
             for frame in frames:
-                if frame not in images and len(images) < 4:
+                if frame not in images and len(images) < MAX_HERMES_ATTACHMENTS:
                     images.append(frame)
             if frames:
                 duration = preview.get("duration_seconds") or 0
@@ -300,7 +303,7 @@ def prepare_attachments(payload):
             f"{listed}\n[END HOSTED PRODUCT DOCUMENT]"
         )
     if images:
-        payload["image_paths"] = images[:4]
+        payload["image_paths"] = images[:MAX_HERMES_ATTACHMENTS]
     if notes:
         payload["message"] = ("\n\n".join(notes) + "\n\n" + str(payload.get("message") or "")).strip()
     return payload
@@ -363,8 +366,10 @@ def validate_turn(payload: object) -> dict[str, object]:
     if payload.get("image_path") or payload.get("document_path"):
         raise ValueError("singular or document paths are not accepted")
     raw_images = payload.get("image_paths") or []
-    if not isinstance(raw_images, list) or len(raw_images) > 4:
-        raise ValueError("image_paths must contain at most four images")
+    if not isinstance(raw_images, list) or len(raw_images) > MAX_HERMES_ATTACHMENTS:
+        raise ValueError(
+            f"image_paths must contain at most {MAX_HERMES_ATTACHMENTS} images"
+        )
     images = []
     for value in raw_images:
         candidate = str(value or "").strip()

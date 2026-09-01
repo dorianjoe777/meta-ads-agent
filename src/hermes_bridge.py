@@ -3391,14 +3391,19 @@ def localized_retry_hint(hint, language="es"):
     return localized_textual_hint(hint, language)
 
 
-def model_usage_limit_reply(language="es", error_text=""):
+def model_usage_limit_reply(language="es", error_text="", provider=""):
     if codex_plan_type_from_text(error_text) == "go":
         return codex_go_limit_reply(error_text, language)
+    provider_key = str(provider or "").strip().lower()
+    codex_backed = "codex" in provider_key or "openai" in provider_key
     hint = retry_delay_hint(error_text, language)
     if language == "en":
         base = (
             "ChatGPT/Codex is connected, but the model hit a temporary usage limit. "
             "I will not invent an answer or execute actions while the brain cannot respond."
+            if codex_backed else
+            "The connected AI model hit a temporary usage limit. "
+            "I will not invent an answer or execute actions while it cannot respond."
         )
         model_hint = lighter_model_switch_hint("en")
         if hint:
@@ -3407,6 +3412,9 @@ def model_usage_limit_reply(language="es", error_text=""):
     base = (
         "Tu ChatGPT/Codex sí está conectado, pero el modelo alcanzó su límite temporal de uso. "
         "No voy a inventar una respuesta ni ejecutar acciones mientras el cerebro no pueda responder."
+        if codex_backed else
+        "El modelo de IA conectado alcanzó su límite temporal de uso. "
+        "No voy a inventar una respuesta ni ejecutar acciones mientras no pueda responder."
     )
     model_hint = lighter_model_switch_hint("es")
     if hint:
@@ -3684,16 +3692,35 @@ def library_chat(config, payload):
             # real-conversation canary) do not pass through GatewayRunner's
             # outbound guards. Apply the same evidence check here so a model
             # cannot turn a failed/cleaned-up Meta mutation into "created".
-            guarded_result = result if isinstance(result, dict) else {
+            guarded_result = dict(result) if isinstance(result, dict) else {
                 "final_response": str(
                     getattr(result, "final_response", "")
                     or getattr(result, "response", "")
                     or result
                 ),
                 "messages": getattr(result, "messages", []) or [],
+                "error": getattr(result, "error", ""),
+                "failure_reason": getattr(result, "failure_reason", ""),
+                "failed": bool(getattr(result, "failed", False)),
+                "completed": getattr(result, "completed", None),
+                "partial": bool(getattr(result, "partial", False)),
             }
+            failed_result = bool(guarded_result.get("failed") or guarded_result.get("partial"))
+            failed_result = failed_result or guarded_result.get("completed") is False
+            if failed_result:
+                error_text = " ".join(
+                    str(guarded_result.get(key) or "").strip()
+                    for key in ("error", "failure_reason", "final_response")
+                    if str(guarded_result.get(key) or "").strip()
+                )
+                if error_text:
+                    # Preserve an upstream 429/RESOURCE_EXHAUSTED signal for
+                    # `chat()` rather than converting a failed library result
+                    # into ordinary assistant prose or a second CLI attempt.
+                    raise RuntimeError(error_text[:4000])
             try:
                 from admira_hermes_runtime_patch import (
+                    _apply_authoritative_tool_result_guards,
                     _guard_unconfirmed_campaign_claim,
                     _guard_unconfirmed_campaign_edit_claim,
                 )
@@ -3702,6 +3729,7 @@ def library_chat(config, payload):
                     guarded_result,
                     buyer_message=str(payload.get("message") or "")[:5000],
                 )
+                guarded_result = _apply_authoritative_tool_result_guards(guarded_result)
             except Exception:
                 pass
             return str(guarded_result.get("final_response") or guarded_result.get("response") or "").strip()
@@ -3840,6 +3868,7 @@ def pending_campaign_edit_snapshot():
 def chat(config, payload):
     payload = _record_bridge_trusted_buyer_turn(payload)
     language = payload.get("language", "es")
+    brain = {}
     try:
         brain = hermes_brain_settings(config)
         if getattr(config, "hermes_require_codex_auth", True) or brain.get("requires_codex_auth"):
@@ -3955,7 +3984,11 @@ def chat(config, payload):
                 "fallback": True,
                 "error_type": "model_usage_limit",
                 "retry_after_hint": model_usage_limit_retry_hint(error_text),
-                "reply": model_usage_limit_reply(language, error_text),
+                "reply": model_usage_limit_reply(
+                    language,
+                    error_text,
+                    provider=brain.get("provider") or brain.get("brain"),
+                ),
                 "error": error_text,
             }
         return {"ok": False, "provider": "hermes", "fallback": True, "reply": runtime_failure_reply(language), "error": error_text}

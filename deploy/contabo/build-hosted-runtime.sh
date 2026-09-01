@@ -5,7 +5,7 @@ set -euo pipefail
 #
 # This is intentionally separate from scripts/run-docker.sh: the latter is
 # the developer/local installer and may build the generic admira-ia image.
-# Hosted images use the same committed r91 product source and Dockerfile, but
+# Hosted images use the same committed r99 product source and Dockerfile, but
 # have a separate deployment tag/provenance contract. This is a deployment
 # variant, not a fork of Admira's product code.
 
@@ -41,7 +41,7 @@ if [[ -n "$untracked" ]]; then
 fi
 
 version="$(tr -d '[:space:]' < VERSION)"
-[[ "$version" == r91 ]] || die "Hosted r91 builder requires VERSION=r91 (got '$version')"
+[[ "$version" == r99 ]] || die "Hosted r99 builder requires VERSION=r99 (got '$version')"
 
 build_sha="$(git rev-parse HEAD)"
 manifest="$(python3 scripts/source_manifest.py --root "$ROOT_DIR")"

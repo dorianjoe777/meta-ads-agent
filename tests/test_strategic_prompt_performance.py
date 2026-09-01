@@ -328,6 +328,49 @@ class StrategicPromptPerformanceTests(unittest.TestCase):
         self.assertEqual(reply, original["final_response"])
         self.assertEqual(edit_guard.call_args.kwargs["buyer_message"], "hola")
 
+    def test_library_chat_surfaces_failed_provider_result_as_an_exception(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        workspace = Path(temporary.name)
+        failure = {
+            "final_response": "API call failed after retries: Gemini quota exhausted",
+            "messages": [],
+            "completed": False,
+            "failed": True,
+            "error": "GeminiAPIError: HTTP 429 RESOURCE_EXHAUSTED",
+            "failure_reason": "rate_limit",
+        }
+
+        class FakeAgent:
+            def __init__(self, **_kwargs):
+                pass
+
+            def run_conversation(self, **_kwargs):
+                return dict(failure)
+
+        fake_run_agent = ModuleType("run_agent")
+        fake_run_agent.AIAgent = FakeAgent
+        config = SimpleNamespace(
+            hermes_max_iterations=8,
+            hermes_enabled_toolsets="",
+            hermes_disabled_toolsets="",
+        )
+        with patch.dict(sys.modules, {"run_agent": fake_run_agent}), patch.object(
+            hermes_bridge, "_record_bridge_trusted_buyer_turn", side_effect=lambda value: value
+        ), patch.object(
+            hermes_bridge,
+            "prepare_hermes_workspace",
+            return_value={"path": str(workspace), "files": [], "image_paths": []},
+        ), patch.object(hermes_bridge, "hermes_brain_settings", return_value={}), patch.object(
+            hermes_bridge,
+            "inference_runtime_policy",
+            return_value={"max_turns": 8, "disable_delegation": False},
+        ), patch.object(hermes_bridge, "admira_inference_fallback_chain", return_value=[]), patch.object(
+            hermes_bridge, "hermes_environment", return_value={}
+        ), patch.object(hermes_bridge, "hermes_prompt", return_value="system"):
+            with self.assertRaisesRegex(RuntimeError, "429.*RESOURCE_EXHAUSTED"):
+                hermes_bridge.library_chat(config, {"message": "hola", "channel": "telegram"})
+
     def test_terminal_transaction_is_history_not_active_workflow(self):
         memory = {
             "business_profile": {},
