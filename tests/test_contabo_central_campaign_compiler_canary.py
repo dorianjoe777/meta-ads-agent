@@ -1,4 +1,10 @@
+import json
+import os
+import subprocess
+import sys
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 import sys
 from pathlib import Path
@@ -8,6 +14,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from deploy.contabo import central_campaign_compiler_canary as canary
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class CentralCampaignCompilerCanaryTests(unittest.TestCase):
@@ -36,6 +45,23 @@ class CentralCampaignCompilerCanaryTests(unittest.TestCase):
                 canary, "maybe_compile_central_campaign", return_value={"ok": True, "compiled": compiled}
             ):
                 self.assertEqual(canary.run_real_canary(timeout=5)["status"], "invalid_output")
+
+    def test_module_runs_from_the_image_style_app_root_without_pythonpath(self):
+        with tempfile.TemporaryDirectory() as raw:
+            env = dict(os.environ)
+            env.pop("PYTHONPATH", None)
+            env["ADMIRA_HOSTED_IMAGE_ACCESS_FILE"] = str(Path(raw) / "missing-access.json")
+            env["ADMIRA_TENANT_ID"] = "tenant-001"
+            result = subprocess.run(
+                [sys.executable, "-m", "deploy.contabo.central_campaign_compiler_canary", "--timeout", "1"],
+                cwd=ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(json.loads(result.stdout)["status"], "not_configured")
 
 
 if __name__ == "__main__":

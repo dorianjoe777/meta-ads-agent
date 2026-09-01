@@ -18,7 +18,13 @@ import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
-from hosted_central_image_client import _canonical, _json_file, _private_file, _tenant
+try:
+    # Normal Hermes execution puts /app/src on PYTHONPATH and imports this as
+    # a top-level module. The operational canary uses ``python -m deploy...``
+    # from /app, where the same helper must be imported through ``src``.
+    from hosted_central_image_client import _canonical, _json_file, _private_file, _tenant
+except ModuleNotFoundError:
+    from src.hosted_central_image_client import _canonical, _json_file, _private_file, _tenant
 
 
 MAX_PROMPT = 100_000
