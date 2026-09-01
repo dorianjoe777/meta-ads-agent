@@ -62,6 +62,12 @@ imagen nueva pero intente iniciarla bajo el proyecto predeterminado
   precedencia exacta: entorno explícito, `.env` de la instalación y, sólo si
   ambos faltan, `admira-ia`. Nunca se debe cargar el `.env` completo con
   `source`, porque contiene credenciales y no es código de shell confiable.
+- Al iniciar desde un checkout versionado, `VERSION` gobierna
+  `ADMIRA_BUILD_VERSION`. Si `.env` conserva un `ADMIRA_IMAGE_NAME` canónico
+  antiguo (`repositorio:rNN`), el arranque conserva el repositorio pero cambia
+  el tag al `VERSION` actual. El cierre debe fallar si el tag activo, los labels
+  OCI o el contenido empotrado no coinciden exactamente, aunque los otros dos
+  parezcan correctos.
 
 El empaquetado ya bloquea un worktree sucio:
 

@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -700,6 +701,67 @@ def latest_content_asset_batch(*, pending_only=False, approved_for_ads=False, li
     return {"paths": paths[:limit], "asset_ids": asset_ids[:limit]}
 
 
+def _bridge_file_inputs(args):
+    if not isinstance(args, dict):
+        return []
+    values = []
+    for key in (
+        "file_path", "file_paths", "image_path", "image_paths",
+        "reference_image_paths", "video_frame_paths", "video_preview_frame_paths",
+    ):
+        raw = args.get(key)
+        if isinstance(raw, (list, tuple)):
+            values.extend(str(value).strip() for value in raw if str(value).strip())
+        elif raw not in (None, ""):
+            values.append(str(raw).strip())
+    return values
+
+
+def resolve_archived_content_asset_paths(values):
+    """Resolve ephemeral upload names only when one durable asset is unambiguous."""
+    requested = [str(value).strip() for value in (values or []) if str(value).strip()]
+    if not requested:
+        return []
+    indexed = []
+    for item in content_asset_library_items():
+        if not isinstance(item, dict):
+            continue
+        paths = safe_image_paths({"image_paths": item.get("file_paths") or []}, limit=32)
+        if not paths:
+            continue
+        names = {Path(path).name.casefold() for path in paths}
+        source_name = str(item.get("source_file_name") or "").strip()
+        if source_name:
+            names.add(Path(source_name).name.casefold())
+        indexed.append((paths, names, str(item.get("source_sha256") or "").casefold()))
+    resolved = []
+    for raw in requested:
+        direct = safe_image_paths({"image_paths": [raw]}, limit=1)
+        if direct:
+            resolved.extend(direct)
+            continue
+        basename = Path(raw).name.casefold()
+        token = re.search(r"(?<![0-9a-f])([0-9a-f]{8,64})(?![0-9a-f])", basename)
+        prefix = token.group(1) if token else ""
+        candidates = [
+            paths for paths, names, source_sha in indexed
+            if basename in names or bool(prefix and source_sha.startswith(prefix))
+        ]
+        if len(candidates) != 1:
+            # Attachment hydration is atomic. Returning a partial subset here
+            # would hide the unresolved paths from the dashboard transaction
+            # and could falsely report a multi-file batch as saved.
+            return []
+        resolved.extend(candidates[0])
+    output = []
+    seen = set()
+    for path in resolved:
+        if path not in seen:
+            seen.add(path)
+            output.append(path)
+    return output
+
+
 def empty_tool_arguments_result(tool):
     required = list(EMPTY_ARGUMENT_GUARDED_TOOLS.get(tool) or ())
     recovered = {}
@@ -752,11 +814,24 @@ def hydrate_archived_content_asset_paths(tool, args):
     """
     if tool != "admira_save_content_asset" or not args:
         return args
+    explicit_inputs = _bridge_file_inputs(args)
     if safe_image_paths(args, limit=1):
         return args
     if any(str(args.get(key) or "").strip() for key in ("url", "asset_url", "source_url", "public_url", "video_url", "direct_url")):
         return args
     if not any(str(args.get(key) or "").strip() for key in ("category", "purpose", "notes", "preservation_mode")):
+        return args
+    resolved = resolve_archived_content_asset_paths(explicit_inputs)
+    if resolved:
+        hydrated = dict(args)
+        hydrated["file_paths"] = resolved
+        hydrated["recovered_archived_paths"] = True
+        return hydrated
+    # If the model supplied a path but it is not safely resolvable, leave it in
+    # place so the dashboard rejects it truthfully instead of saving metadata
+    # without the requested file. Ambient newest-batch recovery is retained
+    # only for the genuinely path-less compacted call.
+    if explicit_inputs:
         return args
     recovered = latest_content_asset_batch(pending_only=True)
     if not recovered.get("paths"):

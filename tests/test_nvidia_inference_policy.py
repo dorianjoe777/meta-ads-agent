@@ -23,6 +23,22 @@ from tools import memory_tool
 
 class NvidiaInferencePolicyTests(unittest.TestCase):
     def setUp(self):
+        # Most cases below exercise the retained legacy router directly.  The
+        # product default is freeform, so legacy expectations must opt into
+        # that compatibility mode instead of relying on a missing marker.
+        previous_freeform = admira_hermes_runtime_patch.os.environ.get(
+            "ADMIRA_FREEFORM_AGENT_MODE"
+        )
+        admira_hermes_runtime_patch.os.environ["ADMIRA_FREEFORM_AGENT_MODE"] = "false"
+        self.addCleanup(
+            lambda: (
+                admira_hermes_runtime_patch.os.environ.pop("ADMIRA_FREEFORM_AGENT_MODE", None)
+                if previous_freeform is None
+                else admira_hermes_runtime_patch.os.environ.__setitem__(
+                    "ADMIRA_FREEFORM_AGENT_MODE", previous_freeform
+                )
+            )
+        )
         # Guard unit tests must never spend buyer provider quota. Individual
         # semantic-classifier integration cases override this deterministic
         # unavailable result explicitly.
@@ -133,6 +149,33 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
                 admira_hermes_runtime_patch.os.environ.pop("ADMIRA_FREEFORM_AGENT_MODE", None)
             else:
                 admira_hermes_runtime_patch.os.environ["ADMIRA_FREEFORM_AGENT_MODE"] = previous
+
+    def test_freeform_agent_mode_is_the_reset_safe_default(self):
+        previous_mode = admira_hermes_runtime_patch.os.environ.pop(
+            "ADMIRA_FREEFORM_AGENT_MODE", None
+        )
+        previous_root = admira_hermes_runtime_patch.os.environ.get("ADMIRA_PRODUCT_ROOT")
+        original_bridge_root = hermes_bridge.ROOT_DIR
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                admira_hermes_runtime_patch.os.environ["ADMIRA_PRODUCT_ROOT"] = directory
+                hermes_bridge.ROOT_DIR = Path(directory)
+                self.assertTrue(admira_hermes_runtime_patch._admira_freeform_agent_mode())
+                self.assertTrue(hermes_bridge.freeform_agent_mode_enabled())
+
+                admira_hermes_runtime_patch.os.environ["ADMIRA_FREEFORM_AGENT_MODE"] = "false"
+                self.assertFalse(admira_hermes_runtime_patch._admira_freeform_agent_mode())
+                self.assertFalse(hermes_bridge.freeform_agent_mode_enabled())
+        finally:
+            if previous_mode is None:
+                admira_hermes_runtime_patch.os.environ.pop("ADMIRA_FREEFORM_AGENT_MODE", None)
+            else:
+                admira_hermes_runtime_patch.os.environ["ADMIRA_FREEFORM_AGENT_MODE"] = previous_mode
+            if previous_root is None:
+                admira_hermes_runtime_patch.os.environ.pop("ADMIRA_PRODUCT_ROOT", None)
+            else:
+                admira_hermes_runtime_patch.os.environ["ADMIRA_PRODUCT_ROOT"] = previous_root
+            hermes_bridge.ROOT_DIR = original_bridge_root
 
     def test_freeform_bridge_sends_unmodified_buyer_language(self):
         previous = hermes_bridge.os.environ.get("ADMIRA_FREEFORM_AGENT_MODE")
@@ -439,77 +482,40 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
         self.assertNotIn("codex_image_generate", names)
         self.assertIn("CONVERSATION REPAIR RULE", str(routed.get("messages")))
 
-    def test_image_quota_claim_requires_current_image_error(self):
-        stale = {
-            "final_response": "ChatGPT/Codex alcanzó el límite de generación de imágenes.",
-            "messages": [
-                {"role": "tool", "name": "mcp_admira_codex_image_generate", "content": '{"error_type":"rate_limit"}'},
-                {"role": "user", "content": "Dije creativo"},
-                {"role": "assistant", "content": "ChatGPT/Codex alcanzó el límite de generación de imágenes."},
-            ],
-        }
-        guarded = admira_hermes_runtime_patch._guard_unconfirmed_image_unavailable_claim(stale)
-        self.assertIn("No hay evidencia de un límite ni de un fallo de conexión", guarded["final_response"])
-
-        irrelevant_empty_call = {
-            "final_response": "La herramienta de generación no está autenticada; no puedo generar la imagen.",
-            "messages": [
-                {"role": "user", "content": "aproximadamente 40 mil pesos al dia"},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "mcp_admira_codex_image_generate"}}]},
-                {"role": "tool", "name": "mcp_admira_codex_image_generate", "content": '{"ok":false,"reason":"empty_tool_arguments"}'},
-                {"role": "assistant", "content": "La herramienta de generación no está autenticada; no puedo generar la imagen."},
-            ],
-        }
-        corrected_budget = admira_hermes_runtime_patch._guard_unconfirmed_image_unavailable_claim(irrelevant_empty_call)
-        self.assertIn("No hay evidencia", corrected_budget["final_response"])
-        self.assertNotIn("autenticada", corrected_budget["final_response"])
-
-        invented_auth = {
-            "final_response": "Codex en este servidor requiere autenticación activa para generar imágenes.",
-            "messages": [
-                {"role": "user", "content": "si, pero no tenemos creativo aun"},
-                {"role": "assistant", "content": "Codex en este servidor requiere autenticación activa para generar imágenes."},
-            ],
-        }
-        corrected_creative = admira_hermes_runtime_patch._guard_unconfirmed_image_unavailable_claim(invented_auth)
-        self.assertIn("No hay evidencia", corrected_creative["final_response"])
-        self.assertNotIn("todavía no tenemos el creativo", corrected_creative["final_response"])
-        self.assertNotIn("autenticación", corrected_creative["final_response"])
-
-        invented_credentials = {
-            "final_response": "La herramienta de imagen automática no está disponible en este momento por credenciales.",
-            "messages": [
-                {"role": "user", "content": "si, pero no tenemos creativo aun"},
-                {"role": "assistant", "content": "La herramienta de imagen automática no está disponible en este momento por credenciales."},
-            ],
-        }
-        corrected_credentials = admira_hermes_runtime_patch._guard_unconfirmed_image_unavailable_claim(invented_credentials)
-        self.assertIn("No hay evidencia", corrected_credentials["final_response"])
-        self.assertNotIn("todavía no tenemos el creativo", corrected_credentials["final_response"])
-        self.assertNotIn("credenciales", corrected_credentials["final_response"])
-
-        current_timeout = {
-            "final_response": "ChatGPT/Codex alcanzó el límite de generación de imágenes.",
-            "messages": [
-                {"role": "user", "content": "Dije creativo"},
-                {"role": "tool", "name": "mcp_admira_codex_image_generate", "content": '{"ok":false,"error_type":"timeout"}'},
-                {"role": "assistant", "content": "ChatGPT/Codex alcanzó el límite de generación de imágenes."},
-            ],
-        }
-        corrected = admira_hermes_runtime_patch._guard_unconfirmed_image_unavailable_claim(current_timeout)
-        self.assertIn("tiempo de espera", corrected["final_response"])
-        self.assertIn("no hay evidencia", corrected["final_response"])
-
-        current_quota = {
-            "final_response": "ChatGPT/Codex alcanzó el límite de generación de imágenes.",
-            "messages": [
-                {"role": "user", "content": "Dije creativo"},
-                {"role": "tool", "name": "mcp_admira_codex_image_generate", "content": '{"ok":false,"error_type":"rate_limit","error":"usage limit"}'},
-                {"role": "assistant", "content": "ChatGPT/Codex alcanzó el límite de generación de imágenes."},
-            ],
-        }
-        kept = admira_hermes_runtime_patch._guard_unconfirmed_image_unavailable_claim(current_quota)
-        self.assertIn("alcanzó el límite", kept["final_response"])
+    def test_image_availability_prose_is_never_replaced_by_a_global_guard(self):
+        previous = admira_hermes_runtime_patch.os.environ.get("ADMIRA_FREEFORM_AGENT_MODE")
+        admira_hermes_runtime_patch.os.environ["ADMIRA_FREEFORM_AGENT_MODE"] = "false"
+        try:
+            response = {
+                "final_response": (
+                    "La herramienta informó un límite temporal en este intento. "
+                    "Mientras tanto, este es el plan aprobado que me pediste: priorizar Full Detail."
+                ),
+                "messages": [
+                    {"role": "user", "content": "¿Cuál es el plan aprobado?"},
+                    {
+                        "role": "tool",
+                        "name": "mcp_admira_codex_image_generate",
+                        "content": '{"ok":false,"error_type":"rate_limit","error":"usage limit"}',
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "La herramienta informó un límite temporal y este es el plan.",
+                    },
+                ],
+            }
+            original = response["final_response"]
+            guarded = admira_hermes_runtime_patch._apply_conversational_output_guards(response)
+            self.assertEqual(guarded["final_response"], original)
+            self.assertNotIn("Continuaré sin asumir", guarded["final_response"])
+            self.assertFalse(
+                hasattr(admira_hermes_runtime_patch, "_guard_unconfirmed_image_unavailable_claim")
+            )
+        finally:
+            if previous is None:
+                admira_hermes_runtime_patch.os.environ.pop("ADMIRA_FREEFORM_AGENT_MODE", None)
+            else:
+                admira_hermes_runtime_patch.os.environ["ADMIRA_FREEFORM_AGENT_MODE"] = previous
 
     def test_missing_creative_correction_is_reconciled_by_agent_not_canned_guard(self):
         rules = hermes_bridge.combined_agent_rules()
@@ -538,12 +544,11 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
                 {"role": "assistant", "content": "Codex requiere autenticación."},
             ],
         }
-        guarded = admira_hermes_runtime_patch._guard_unconfirmed_image_unavailable_claim(
+        guarded = admira_hermes_runtime_patch._apply_conversational_output_guards(
             unsupported_failure
         )
-        self.assertIn("No hay evidencia", guarded["final_response"])
-        self.assertNotIn("todavía no tenemos el creativo", guarded["final_response"])
-        self.assertNotIn("Puedo generarlo", guarded["final_response"])
+        self.assertEqual(guarded["final_response"], unsupported_failure["final_response"])
+        self.assertNotIn("No hay evidencia", guarded["final_response"])
 
     def test_recent_generated_creatives_enter_continuity_without_implying_approval(self):
         with tempfile.TemporaryDirectory() as directory:

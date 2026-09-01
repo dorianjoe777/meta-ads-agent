@@ -57,6 +57,14 @@ class CanaryIntegrityCheckerTests(unittest.TestCase):
         self.assertIn("awk -F '\\t'", text)
         self.assertNotIn("awk -F ' \\| '", text)
 
+    def test_checker_requires_active_image_tag_to_match_version(self):
+        text = CHECKER.read_text(encoding="utf-8")
+        self.assertIn('image_without_digest="${image%@*}"', text)
+        self.assertIn('image_leaf="${image_without_digest##*/}"', text)
+        self.assertIn('[[ "$image_leaf" == *:* ]]', text)
+        self.assertIn('[[ "$image_tag" == "$version" ]]', text)
+        self.assertIn("active image tag", text)
+
 
 if __name__ == "__main__":
     unittest.main()

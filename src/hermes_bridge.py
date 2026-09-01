@@ -74,6 +74,7 @@ BRAND_GUIDES_DIR = ROOT_DIR / "brand_guides"
 AGENT_SKILLS_DIR = ROOT_DIR / "agent" / "skills"
 HERMES_WORKSPACE_DIR = DATA_DIR / "hermes-workspace" / "current"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+MAX_HERMES_ATTACHMENTS = 6
 ADMIRA_MINIMAX_KEY_ENV = "ADMIRA_MINIMAX_API_KEY"
 ADMIRA_MINIMAX_BASE_URL_ENV = "ADMIRA_MINIMAX_BASE_URL"
 ADMIRA_MINIMAX_PROVIDER = "admira-minimax"
@@ -1042,7 +1043,7 @@ def image_path_candidates(value, scan_all_strings=False):
     return candidates
 
 
-def safe_image_paths(payload, limit=4):
+def safe_image_paths(payload, limit=MAX_HERMES_ATTACHMENTS):
     safe = []
     seen = set()
     for raw_path in image_path_candidates(payload):
@@ -1070,8 +1071,93 @@ def safe_image_paths(payload, limit=4):
     try:
         bounded = max(0, int(limit))
     except (TypeError, ValueError):
-        bounded = 4
+        bounded = MAX_HERMES_ATTACHMENTS
     return safe[:bounded]
+
+
+def _attachment_manifest(image_paths):
+    """Build an ordered, non-semantic manifest for the current turn.
+
+    The manifest is transport metadata only.  It deliberately does not infer
+    roles (before/after/hero); Hermes and the MCP tool own that interpretation.
+    Keeping the original order gives a tool an unambiguous mapping even when a
+    legacy Hermes CLI can receive only one visual input.
+    """
+    return [
+        {
+            "index": index,
+            "source_path": str(path),
+            "basename": Path(path).name,
+        }
+        for index, path in enumerate(image_paths, start=1)
+    ]
+
+
+def _attachment_turn_token(payload):
+    """Give each turn's visual transport a non-reusable filename."""
+    canonical = json.dumps(
+        {
+            "message_sequence": payload.get("message_sequence"),
+            "message": str(payload.get("message") or ""),
+            "chat_id": str(payload.get("_admira_trusted_chat_id") or payload.get("chat_id") or ""),
+            "session_id": str(payload.get("_admira_trusted_session_id") or payload.get("session_id") or ""),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
+def _make_hermes_contact_sheet(image_paths, output_path):
+    """Create a labelled vision sheet without changing any source image.
+
+    Older Hermes CLI versions expose a single ``--image`` flag.  For multiple
+    safe attachments, the sheet lets vision inspect every original in one
+    request while the ordered manifest remains the source of truth for MCP
+    arguments.  The generated sheet is ephemeral workspace transport data.
+    """
+    if len(image_paths) <= 1:
+        return str(image_paths[0]) if image_paths else ""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        return str(image_paths[0])
+    try:
+        opened = [Image.open(path).convert("RGB") for path in image_paths]
+        thumb_w, thumb_h = 640, 460
+        margin, label_h = 24, 48
+        columns = 2 if len(opened) > 1 else 1
+        rows = (len(opened) + columns - 1) // columns
+        sheet = Image.new(
+            "RGB",
+            (columns * thumb_w + (columns + 1) * margin, rows * (thumb_h + label_h) + (rows + 1) * margin),
+            "#f4f5f7",
+        )
+        draw = ImageDraw.Draw(sheet)
+        try:
+            font = ImageFont.truetype("DejaVuSans-Bold.ttf", 28)
+        except OSError:
+            font = ImageFont.load_default()
+        for index, image in enumerate(opened, start=1):
+            row, column = divmod(index - 1, columns)
+            left = margin + column * (thumb_w + margin)
+            top = margin + row * (thumb_h + label_h + margin)
+            image.thumbnail((thumb_w, thumb_h), Image.Resampling.LANCZOS)
+            x = left + (thumb_w - image.width) // 2
+            y = top + label_h + (thumb_h - image.height) // 2
+            draw.rectangle((left, top, left + thumb_w, top + label_h - 4), fill="#172033")
+            draw.text((left + 14, top + 8), f"ATTACHMENT {index}", fill="white", font=font)
+            draw.rectangle((left, top + label_h, left + thumb_w, top + label_h + thumb_h), outline="#c7ccd6", width=2)
+            sheet.paste(image, (x, y))
+        output = Path(output_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        sheet.save(output, format="PNG", optimize=True)
+        for image in opened:
+            image.close()
+        return str(output)
+    except (OSError, ValueError, RuntimeError):
+        return str(image_paths[0])
 
 def read_text(path, limit=MEMORY_TEXT_LIMIT):
     try:
@@ -2688,6 +2774,48 @@ Use the compact procedure injected for the current trusted product state and the
     uploads_dir.mkdir(parents=True, exist_ok=True)
     for image_path in safe_image_paths(payload):
         workspace_images.append(copy_workspace_file(image_path, "uploads"))
+    attachment_manifest = _attachment_manifest(workspace_images)
+    manifest_path = ""
+    cli_image_path = workspace_images[0] if workspace_images else ""
+    if len(workspace_images) > 1:
+        manifest_path = write_workspace_file(
+            "memory/attachment_manifest.json",
+            {
+                "version": 1,
+                "count": len(attachment_manifest),
+                "items": attachment_manifest,
+                "transport": "contact_sheet_for_single_image_cli",
+            },
+        )
+        cli_image_path = _make_hermes_contact_sheet(
+            workspace_images,
+            uploads_dir / f"hermes-attachments-contact-sheet-{_attachment_turn_token(payload)}.png",
+        )
+    elif workspace_images:
+        manifest_path = write_workspace_file(
+            "memory/attachment_manifest.json",
+            {"version": 1, "count": 1, "items": attachment_manifest, "transport": "single_image"},
+        )
+    # Rewrite the turn context after copying attachments so Hermes can resolve
+    # every uploaded file to the exact ordered workspace asset. Originals are
+    # never modified; the contact sheet is legacy-CLI transport only.
+    written.append(
+        write_workspace_file(
+            "CURRENT_CONTEXT.json",
+            scrub_memory(
+                redact_payload(
+                    {
+                        "channel": payload.get("channel") or "dashboard",
+                        "language": payload.get("language") or "",
+                        "account_context": payload.get("account_context") or {},
+                        "attachment_manifest": attachment_manifest,
+                        "attachment_manifest_path": manifest_path,
+                        "cli_image_path": cli_image_path,
+                    }
+                )
+            ),
+        )
+    )
     # Hermes reads this curated workspace but never writes policy or buyer
     # state into it. Official MCP tools update backend-owned stores; the next
     # turn rebuilds this complete snapshot from those confirmed stores.
@@ -2700,6 +2828,9 @@ Use the compact procedure injected for the current trusted product state and the
         "path": str(HERMES_WORKSPACE_DIR),
         "files": written,
         "image_paths": workspace_images,
+        "attachment_manifest": attachment_manifest,
+        "attachment_manifest_path": manifest_path,
+        "cli_image_path": cli_image_path,
         "protected_files": protected_files,
         "memory": memory,
         "continuity_status": continuity_status,
@@ -2740,7 +2871,10 @@ def freeform_agent_mode_enabled():
             "1", "true", "yes", "on", "enabled"
         }
     except OSError:
-        return False
+        # Natural-language behavior is the durable default.  Resetting a
+        # tenant may remove runtime markers, but it must not re-enable legacy
+        # keyword routing or canned response rewriting.
+        return True
 
 
 def hermes_user_query(payload, workspace_info):
@@ -2751,6 +2885,34 @@ def hermes_user_query(payload, workspace_info):
     # buyer-authored message. Product state and procedure guidance are added at
     # the provider boundary, so a per-message execution nudge cannot turn an
     # ordinary answer (for example, a budget) into campaign authorization.
+    # The legacy Hermes CLI accepts one visual flag, so multi-attachment turns
+    # use a labelled contact sheet. Keep the authoritative ordered originals
+    # in the query as backend-generated metadata so the agent passes exact
+    # files/IDs to the MCP instead of archiving the transport sheet.
+    manifest = workspace_info.get("attachment_manifest") or []
+    if manifest:
+        public_manifest = [
+            {"index": item.get("index"), "basename": item.get("basename")}
+            for item in manifest if isinstance(item, dict)
+        ]
+        is_contact_sheet = Path(str(workspace_info.get("cli_image_path") or "")).name.startswith("hermes-attachments-contact-sheet-")
+        metadata = {
+            "count": len(manifest),
+            "ordered_originals": public_manifest,
+            "contact_sheet": is_contact_sheet,
+            "contact_sheet_role": "transport_only" if is_contact_sheet else "not_used",
+            "save_instruction": (
+                "Classify/save the attached transport image; the backend expands it to the ordered originals and returns their durable asset IDs."
+                if is_contact_sheet else
+                "Classify/save the attached original image and use the returned durable asset ID."
+            ),
+        }
+        return (
+            f"{message}\n\n"
+            "[ADMIRA_BACKEND_ATTACHMENT_METADATA_JSON]\n"
+            f"{json.dumps(metadata, ensure_ascii=False, separators=(',', ':'))}\n"
+            "[/ADMIRA_BACKEND_ATTACHMENT_METADATA_JSON]"
+        )
     return message
 
 
@@ -3432,8 +3594,9 @@ def hermes_prompt(config, payload, workspace_info=None):
         image_note = (
             "\n\nUploaded reference images:\n"
             + "\n".join(f"- {path}" for path in images)
-            + "\nThe first image is attached to Hermes directly when the CLI supports it. Use vision to understand the image. "
-            + "If you request `codex_creative_plan` or `codex_image_generate`, include a concise visual summary in the request arguments; do not rely on Codex reading arbitrary local files."
+            + "\nThe ordered attachment manifest is in `memory/attachment_manifest.json`; it maps each attachment index to its exact workspace file. "
+            + "When Hermes CLI accepts only one image, the attached visual is a labelled contact sheet showing every attachment; the originals remain available through the manifest for MCP arguments. "
+            + "Use vision to understand all images and preserve their order. If you request `codex_creative_plan` or `codex_image_generate`, pass the manifest's exact mapping; do not rely on arbitrary local-file discovery."
         )
     system_prompt = build_system_prompt(config, language)
     return (
@@ -3584,8 +3747,12 @@ def cli_chat(config, payload):
         enabled = ",".join(cli_toolsets(config, payload))
         if enabled:
             command.extend(["--toolsets", enabled])
-        if images:
-            command.extend(["--image", images[0]])
+        cli_image_path = workspace_info.get("cli_image_path") or (images[0] if images else "")
+        if cli_image_path:
+            # Hermes versions in the field expose one --image argument. For
+            # multiple attachments this is the generated labelled contact
+            # sheet; the ordered originals are carried in the manifest.
+            command.extend(["--image", cli_image_path])
         return command
 
     def run_command(command):

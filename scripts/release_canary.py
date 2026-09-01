@@ -176,6 +176,10 @@ def main() -> None:
         fail("Docker installs must pin the MCP SDK exactly")
     if 'MCP_SDK_VERSION="${MCP_SDK_VERSION:-' not in installer or '"mcp==${MCP_SDK_VERSION}"' not in installer:
         fail("native installs must pin the MCP SDK exactly")
+    if "ARG PILLOW_VERSION=" not in dockerfile or '"Pillow==${PILLOW_VERSION}"' not in dockerfile:
+        fail("Docker installs must pin Pillow exactly for hybrid image composition")
+    if 'PILLOW_VERSION="${PILLOW_VERSION:-' not in installer or '"Pillow==${PILLOW_VERSION}"' not in installer:
+        fail("native installs must pin Pillow exactly for hybrid image composition")
     provenance_contract = (
         "ARG ADMIRA_BUILD_SHA=",
         "ARG ADMIRA_SOURCE_MANIFEST=",

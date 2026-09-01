@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEX_CLI_VERSION="${CODEX_CLI_VERSION:-0.147.0}"
 HERMES_AGENT_VERSION="${HERMES_AGENT_VERSION:-0.18.0}"
 MCP_SDK_VERSION="${MCP_SDK_VERSION:-2.0.0}"
+PILLOW_VERSION="${PILLOW_VERSION:-12.2.0}"
 cd "$ROOT_DIR"
 
 echo "Self-Hosted Meta Ads Agent installer"
@@ -128,12 +129,12 @@ if command -v hermes >/dev/null 2>&1; then
 else
   echo "Hermes Agent was not found."
   echo "Attempting to install Hermes Agent so the manager can use ChatGPT/Codex OAuth through Hermes."
-  python3 -m pip install --user --break-system-packages "mcp==${MCP_SDK_VERSION}" "python-telegram-bot>=21,<22" "openpyxl>=3.1,<4" "pypdf>=5,<7" "xlrd>=2,<3" "hermes-agent==${HERMES_AGENT_VERSION}" || echo "Hermes install failed. Install it manually, then run: hermes auth add openai-codex --no-browser"
+  python3 -m pip install --user --break-system-packages "mcp==${MCP_SDK_VERSION}" "python-telegram-bot>=21,<22" "openpyxl>=3.1,<4" "pypdf>=5,<7" "xlrd>=2,<3" "Pillow==${PILLOW_VERSION}" "hermes-agent==${HERMES_AGENT_VERSION}" || echo "Hermes install failed. Install it manually, then run: hermes auth add openai-codex --no-browser"
 fi
 
-python3 - <<'PY' || python3 -m pip install --user --break-system-packages "mcp==${MCP_SDK_VERSION}" "python-telegram-bot>=21,<22" "openpyxl>=3.1,<4" "pypdf>=5,<7" "xlrd>=2,<3" || echo "Required package install failed. Product catalog documents may need: python3 -m pip install --user openpyxl pypdf xlrd"
+python3 - <<'PY' || python3 -m pip install --user --break-system-packages "mcp==${MCP_SDK_VERSION}" "python-telegram-bot>=21,<22" "openpyxl>=3.1,<4" "pypdf>=5,<7" "xlrd>=2,<3" "Pillow==${PILLOW_VERSION}" || echo "Required package install failed. Product catalog documents may need: python3 -m pip install --user openpyxl pypdf xlrd Pillow"
 import importlib.util
-required = ("mcp", "telegram", "openpyxl", "pypdf", "xlrd")
+required = ("mcp", "telegram", "openpyxl", "pypdf", "xlrd", "PIL")
 raise SystemExit(0 if all(importlib.util.find_spec(name) for name in required) else 1)
 PY
 
