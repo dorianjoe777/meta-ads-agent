@@ -48,6 +48,7 @@ OUTBOUND_RETENTION_SECONDS = 14 * 86400
 MAX_TELEGRAM_RETRY_AFTER_SECONDS = 900
 _TELEGRAM_MARKDOWN_V2_SPECIALS = frozenset("\\_*[]()~`>#+-=|{}.!")
 _TELEGRAM_BOLD_RE = re.compile(r"(?<!\*)\*\*(.+?)(?<!\*)\*\*(?!\*)", re.DOTALL)
+_TELEGRAM_ESCAPED_BOLD_RE = re.compile(r"\\\*\\\*(.+?)\\\*\\\*", re.DOTALL)
 
 
 def _read_secret(path: str | Path) -> str:
@@ -431,6 +432,14 @@ def _telegram_rate_limit(body: object, *, status: int | None = None) -> Telegram
 
 def _telegram_markdown_v2(text: str) -> str:
     """Escape text for MarkdownV2 while translating the supported bold form."""
+    # Hermes/model responses sometimes contain Markdown delimiters already
+    # escaped as ``\*\*bold\*\*``.  Treat that representation as the same
+    # supported bold form before escaping the rest for Telegram; otherwise the
+    # backslashes are escaped a second time and Telegram displays them.
+    text = _TELEGRAM_ESCAPED_BOLD_RE.sub(
+        lambda match: "**" + match.group(1) + "**", text,
+    )
+
     def escape(value: str) -> str:
         return "".join(f"\\{char}" if char in _TELEGRAM_MARKDOWN_V2_SPECIALS else char for char in value)
 
@@ -446,6 +455,9 @@ def _telegram_markdown_v2(text: str) -> str:
 
 def _telegram_plain_text(text: str) -> str:
     """Keep a readable fallback if Telegram rejects a formatted payload."""
+    text = _TELEGRAM_ESCAPED_BOLD_RE.sub(
+        lambda match: "**" + match.group(1) + "**", text,
+    )
     return _TELEGRAM_BOLD_RE.sub(lambda match: match.group(1), text).replace("**", "")
 
 

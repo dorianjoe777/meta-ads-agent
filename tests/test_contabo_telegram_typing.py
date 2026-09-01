@@ -28,6 +28,16 @@ service = load("hosted_service", "hosted_service.py")
 
 
 class TelegramTypingTests(unittest.TestCase):
+    def test_telegram_api_normalizes_pre_escaped_bold_markers(self):
+        self.assertEqual(
+            service._telegram_markdown_v2(r"\*\*Pregunta importante\*\*"),
+            r"*Pregunta importante*",
+        )
+        self.assertEqual(
+            service._telegram_plain_text(r"\*\*Pregunta importante\*\*"),
+            "Pregunta importante",
+        )
+
     def test_telegram_api_sends_typing_action(self):
         api = object.__new__(service.TelegramAPI)
         api._bot_id = "bot-1"
