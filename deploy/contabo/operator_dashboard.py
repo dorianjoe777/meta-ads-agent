@@ -864,6 +864,42 @@ class OperatorState:
             "route": str(row[4])[:32],
         }
 
+    def set_licensed_central_image_pool(self, runtime_key: str, enabled: bool) -> dict[str, Any]:
+        """Toggle only the central route for one active licensed tenant.
+
+        The database function is the authorization boundary.  It has no
+        access to tenant-local ChatGPT files, and this projection intentionally
+        contains no OAuth or provider credential material.
+        """
+        if (not isinstance(runtime_key, str)
+                or not re.fullmatch(r"[a-z0-9][a-z0-9-]{2,62}", runtime_key)
+                or type(enabled) is not bool):
+            raise ValueError("invalid_licensed_central_image_pool")
+        connect = self.connect or _default_connect
+        try:
+            with connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT runtime_key, lifecycle_state, central_image_pool_enabled, route "
+                        "FROM admira.operator_set_licensed_central_image_pool(%s, %s)",
+                        (runtime_key, enabled),
+                    )
+                    row = cur.fetchone()
+                conn.commit()
+        except Exception as exc:
+            if getattr(exc, "sqlstate", "") in {"22023", "55000"}:
+                raise ValueError("invalid_licensed_central_image_pool") from None
+            raise RuntimeError("licensed_central_image_pool_update_failed") from None
+        if not row:
+            raise RuntimeError("licensed_central_image_pool_update_failed")
+        return {
+            "ok": True,
+            "runtime_key": str(row[0])[:63],
+            "lifecycle_state": str(row[1])[:32],
+            "central_image_pool_enabled": row[2] is True,
+            "route": str(row[3])[:32],
+        }
+
     @staticmethod
     def _customer_runtime_key(value: str) -> str:
         result = value.strip().lower() if isinstance(value, str) else ""
@@ -1408,6 +1444,18 @@ class OperatorHandler(BaseHTTPRequestHandler):
                 raise RequestError("invalid_sponsorship_extension", 400) from None
             except RuntimeError:
                 raise RequestError("sponsorship_update_failed", 503) from None
+        elif path == "/api/operator/sponsorship/licensed-pool":
+            enabled = body.get("enabled")
+            if type(enabled) is not bool:
+                raise RequestError("invalid_licensed_central_image_pool", 400)
+            try:
+                result = self.state.set_licensed_central_image_pool(
+                    self._string(body, "runtime_key"), enabled
+                )
+            except ValueError:
+                raise RequestError("invalid_licensed_central_image_pool", 400) from None
+            except RuntimeError:
+                raise RequestError("licensed_central_image_pool_update_failed", 503) from None
         elif path == "/api/operator/codex/login":
             result = self.state.login.start(self._string(body, "account", body.get("slot", "")))
         elif match := re.fullmatch(r"/api/operator/codex/(primary|secondary)/login", path):

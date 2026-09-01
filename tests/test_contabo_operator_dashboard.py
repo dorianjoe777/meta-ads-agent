@@ -129,11 +129,14 @@ class ContaboOperatorDashboardTests(unittest.TestCase):
             self.assertIn(element_id, self.html)
         self.assertIn('label for="sponsorship-tenant"', self.html)
         self.assertIn('label for="sponsorship-end"', self.html)
-        self.assertIn("Conectar su ChatGPT personal no elimina el beneficio", self.html)
+        self.assertIn("Pool OAuth central", self.html)
+        self.assertIn("/conectar_chatgpt", self.html)
         self.assertIn("/api/operator/sponsorship/status", self.javascript)
         self.assertIn("/api/operator/sponsorship/extend", self.javascript)
+        self.assertIn("/api/operator/sponsorship/licensed-pool", self.javascript)
+        self.assertIn("data-licensed-pool-switch", self.javascript)
         self.assertIn("365 * 24 * 60 * 60 * 1000", self.javascript)
-        self.assertIn("Su conexión ChatGPT personal no se modifica", self.javascript)
+        self.assertIn("Su ChatGPT personal no se modifica", self.javascript)
 
     def test_bootstrap_prepares_private_storage_without_password(self):
         self.assertIn("--prepare-operator-host-dirs", self.bootstrap)
@@ -403,6 +406,32 @@ class OperatorProviderTests(PrivateFixture):
         connection.commit.assert_called_once()
         self.assertEqual(result["image_sponsorship_ends_at"], requested.isoformat())
 
+    def test_licensed_central_pool_switch_uses_narrow_database_function(self):
+        cursor = mock.MagicMock()
+        cursor.__enter__.return_value = cursor
+        cursor.fetchone.return_value = (
+            "buyer-001", "licensed", True, "central_sponsored"
+        )
+        connection = mock.MagicMock()
+        connection.__enter__.return_value = connection
+        connection.cursor.return_value = cursor
+        self.state.connect = lambda: connection
+        with self.assertRaisesRegex(ValueError, "invalid_licensed_central_image_pool"):
+            self.state.set_licensed_central_image_pool("buyer-001", 1)
+        result = self.state.set_licensed_central_image_pool("buyer-001", True)
+        statement, parameters = cursor.execute.call_args.args
+        self.assertIn("admira.operator_set_licensed_central_image_pool", statement)
+        self.assertEqual(parameters, ("buyer-001", True))
+        self.assertEqual(result, {
+            "ok": True,
+            "runtime_key": "buyer-001",
+            "lifecycle_state": "licensed",
+            "central_image_pool_enabled": True,
+            "route": "central_sponsored",
+        })
+        self.assertNotIn("token", json.dumps(result).lower())
+        connection.commit.assert_called_once()
+
     def test_codex_status_requires_real_private_token_shape_not_file_presence(self):
         path = self.auth_file()
         result = self.state.login.account_status()
@@ -602,6 +631,33 @@ class OperatorHTTPTests(PrivateFixture):
         self.assertEqual(status, 400)
         self.assertEqual(json.loads(body)["error_code"], "invalid_sponsorship_extension")
         self.assertNotIn("private detail", body.decode())
+
+        status, _headers, _body = self.request(
+            "POST", "/api/operator/sponsorship/licensed-pool",
+            {"runtime_key": "buyer-001", "enabled": True},
+            {"Cookie": cookie},
+        )
+        self.assertEqual(status, 403)
+        with mock.patch.object(self.state, "set_licensed_central_image_pool", return_value={
+            "ok": True, "runtime_key": "buyer-001", "lifecycle_state": "licensed",
+            "central_image_pool_enabled": True, "route": "central_sponsored",
+        }) as switch:
+            status, _headers, body = self.request(
+                "POST", "/api/operator/sponsorship/licensed-pool",
+                {"runtime_key": "buyer-001", "enabled": True},
+                {"Cookie": cookie, "X-CSRF-Token": csrf},
+            )
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["ok"])
+        switch.assert_called_once_with("buyer-001", True)
+
+        status, _headers, body = self.request(
+            "POST", "/api/operator/sponsorship/licensed-pool",
+            {"runtime_key": "buyer-001", "enabled": "true"},
+            {"Cookie": cookie, "X-CSRF-Token": csrf},
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body)["error_code"], "invalid_licensed_central_image_pool")
 
     def test_host_and_fetch_site_reject_dns_rebinding_and_cross_site_requests(self):
         for headers in ({"Host": "attacker.example"}, {"Host": "127.0.0.1.evil.example"},

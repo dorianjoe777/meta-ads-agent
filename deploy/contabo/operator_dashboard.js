@@ -656,6 +656,31 @@
     input.max = localDateTimeValue(maximum);
   }
 
+  function centralPoolControl(tenant) {
+    const cell = document.createElement("td");
+    if (tenant.lifecycle_state === "trial") {
+      cell.append(badge("Automático en prueba", "ready"));
+      return cell;
+    }
+    if (tenant.lifecycle_state !== "licensed") {
+      cell.append(textElement("span", "table-secondary", "No disponible"));
+      return cell;
+    }
+    const enabled = tenant.route === "central_sponsored";
+    const unavailable = tenant.route === "blocked";
+    const button = textElement("button", "pool-switch" + (enabled ? " is-on" : ""), enabled ? "Incluida" : "Excluida");
+    button.type = "button";
+    button.setAttribute("role", "switch");
+    button.setAttribute("aria-checked", String(enabled));
+    button.setAttribute("aria-label", (enabled ? "Retirar" : "Incluir") + " " + String(tenant.runtime_key || "") + " del pool OAuth central");
+    button.dataset.licensedPoolSwitch = "true";
+    button.dataset.runtimeKey = String(tenant.runtime_key || "");
+    button.disabled = unavailable;
+    cell.append(button);
+    if (unavailable) cell.append(textElement("span", "table-secondary", " Cuenta no activa"));
+    return cell;
+  }
+
   function renderSponsorship() {
     const tenants = Array.isArray(state.sponsorship) ? state.sponsorship : [];
     const tbody = $("#sponsorship-rows");
@@ -664,7 +689,7 @@
     if (!tenants.length) {
       const row = document.createElement("tr");
       const cell = textElement("td", "", state.sponsorshipError ? "No se pudo cargar el inventario." : "Todavía no hay clientes preparados.");
-      cell.colSpan = 4;
+      cell.colSpan = 5;
       row.append(cell);
       tbody.append(row);
     } else {
@@ -674,18 +699,20 @@
         customer.append(textElement("strong", "", String(tenant.runtime_key || "")));
         customer.append(textElement("span", "table-secondary", String(tenant.display_name || "")));
         const status = textElement("td", "", lifecycleLabel(tenant.lifecycle_state));
-        const end = textElement("td", "", formatDate(tenant.effective_sponsorship_ends_at));
+        const end = textElement("td", "", tenant.lifecycle_state === "trial"
+          ? formatDate(tenant.effective_sponsorship_ends_at)
+          : "Control por switch");
         const route = document.createElement("td");
         const routeInfo = sponsorshipRoute(tenant.route);
         route.append(badge(routeInfo.label, routeInfo.tone));
-        row.append(customer, status, end, route);
+        row.append(customer, status, end, centralPoolControl(tenant), route);
         tbody.append(row);
       });
     }
 
     const selector = $("#sponsorship-tenant");
     selector.replaceChildren(new Option("Selecciona un cliente", ""));
-    tenants.filter((tenant) => ["trial", "licensed"].includes(tenant.lifecycle_state)).forEach((tenant) => {
+    tenants.filter((tenant) => tenant.lifecycle_state === "trial").forEach((tenant) => {
       const label = String(tenant.runtime_key || "") + (tenant.display_name ? " · " + String(tenant.display_name) : "");
       selector.append(new Option(label, String(tenant.runtime_key || "")));
     });
@@ -706,7 +733,7 @@
         state.sponsorshipError = false;
         $("#sponsorship-error").textContent = "";
         renderSponsorship();
-        if (announce) setNotice("Vigencias de patrocinio actualizadas.", "success");
+        if (announce) setNotice("Rutas de generación actualizadas.", "success");
         return true;
       } catch (error) {
         if (!state.authenticated || sessionVersion !== state.sessionVersion) return false;
@@ -733,7 +760,7 @@
     const requestedEnd = new Date(rawEnd);
     const tenant = (state.sponsorship || []).find((item) => item.runtime_key === runtimeKey);
     const currentEnd = Date.parse(tenant?.effective_sponsorship_ends_at || "");
-    if (!tenant || Number.isNaN(requestedEnd.getTime()) || requestedEnd.getTime() <= Date.now()
+    if (!tenant || tenant.lifecycle_state !== "trial" || Number.isNaN(requestedEnd.getTime()) || requestedEnd.getTime() <= Date.now()
         || (Number.isFinite(currentEnd) && requestedEnd.getTime() <= currentEnd)) {
       invalidField($("#sponsorship-end"), errorElement, "Elige una fecha posterior a la vigencia actual del cliente.");
       return;
@@ -759,6 +786,37 @@
     } finally {
       setFormBusy(form, false);
       setBusy($("#sponsorship-submit"), false);
+    }
+  }
+
+  async function setLicensedCentralImagePool(control) {
+    if (!control || control.disabled) return;
+    const runtimeKey = String(control.dataset.runtimeKey || "");
+    const tenant = (state.sponsorship || []).find((item) => item.runtime_key === runtimeKey);
+    if (!tenant || tenant.lifecycle_state !== "licensed" || tenant.route === "blocked") return;
+    const enabled = control.getAttribute("aria-checked") !== "true";
+    control.disabled = true;
+    try {
+      const confirmed = await confirmAction({
+        title: enabled ? "¿Incluir en el pool OAuth central?" : "¿Retirar del pool OAuth central?",
+        description: enabled
+          ? runtimeKey + " usará el pool central compartido para generación de imágenes y compilación de campañas. Su ChatGPT personal no se modifica."
+          : runtimeKey + " dejará de usar el pool central compartido. Para imágenes y campañas dependerá de su propio /conectar_chatgpt, sin borrar esa conexión.",
+        accept: enabled ? "Incluir cuenta" : "Retirar cuenta",
+      });
+      if (!confirmed || !state.authenticated) return;
+      await request("/api/operator/sponsorship/licensed-pool", {
+        method: "POST",
+        body: JSON.stringify({ runtime_key: runtimeKey, enabled }),
+      });
+      await Promise.all([refreshSponsorship(), refreshCustomers()]);
+      setNotice(enabled
+        ? "Pool OAuth central activado para " + runtimeKey + ". La conexión personal no cambió."
+        : "Pool OAuth central desactivado para " + runtimeKey + ". El cliente conserva su conexión personal.", "success");
+    } catch (error) {
+      $("#sponsorship-error").textContent = messageFor(error, "No se pudo cambiar la ruta de generación.");
+    } finally {
+      control.disabled = false;
     }
   }
 
@@ -1270,6 +1328,10 @@
   $("#claim-done").addEventListener("click", () => { $("#claim-dialog").close(); clearSensitiveInputs(); });
   $("#claim-dialog").addEventListener("cancel", (event) => { event.preventDefault(); $("#claim-dialog").close(); clearSensitiveInputs(); });
   $("#sponsorship-tenant").addEventListener("change", updateSponsorshipDateBounds);
+  $("#sponsorship-rows").addEventListener("click", (event) => {
+    const control = event.target.closest("[data-licensed-pool-switch]");
+    if (control) setLicensedCentralImagePool(control);
+  });
   $("#notice-close").addEventListener("click", () => setNotice(""));
   $("#codex-slots").addEventListener("click", (event) => {
     const button = event.target.closest("[data-slot-action]");

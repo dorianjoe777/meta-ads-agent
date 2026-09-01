@@ -315,8 +315,8 @@
               <div class="operation-head">
                 <div>
                   <p class="eyebrow">Beneficio de imágenes · Control por cliente</p>
-                  <h2 id="sponsorship-title">Patrocinio central</h2>
-                  <p>Todos reciben 5 días desde la creación de su cuenta de prueba. Conectar su ChatGPT personal no elimina el beneficio. Usa este control sólo para ampliar una fecha; nunca puede acortarla.</p>
+                  <h2 id="sponsorship-title">Pool OAuth central</h2>
+                  <p>Las cuentas de prueba usan el pool central durante su vigencia. En una cuenta licenciada, el switch decide si sigue incluida: apagado significa que sus imágenes y campañas dependen de su propio <code>/conectar_chatgpt</code>. El switch nunca modifica ni muestra esa conexión personal.</p>
                 </div>
                 <button id="sponsorship-refresh" class="button button-quiet" type="button"><span class="button-label">Actualizar clientes</span></button>
               </div>
@@ -327,12 +327,12 @@
                   <select id="sponsorship-tenant" name="runtime_key" required aria-describedby="sponsorship-tenant-help sponsorship-error">
                     <option value="">Selecciona un cliente</option>
                   </select>
-                  <p id="sponsorship-tenant-help" class="field-help">Se muestra la referencia interna y el nombre operativo; nunca credenciales ni licencia.</p>
+                  <p id="sponsorship-tenant-help" class="field-help">Sólo se muestran pruebas activas para ampliar su vigencia temporal. Nunca se muestran credenciales ni licencia.</p>
                 </div>
                 <div class="field-group">
-                  <label for="sponsorship-end">Nueva fecha de finalización</label>
+                  <label for="sponsorship-end">Nueva fecha de finalización de prueba</label>
                   <input id="sponsorship-end" name="ends_at" type="datetime-local" required step="60" aria-describedby="sponsorship-end-help sponsorship-error">
-                  <p id="sponsorship-end-help" class="field-help">Debe ser posterior a la vigencia actual y no más de 365 días hacia adelante.</p>
+                  <p id="sponsorship-end-help" class="field-help">Debe ser posterior a la vigencia temporal actual y no más de 365 días hacia adelante.</p>
                 </div>
                 <div class="form-actions">
                   <button id="sponsorship-submit" class="button button-primary" type="submit"><span class="button-label">Ampliar patrocinio</span></button>
@@ -342,19 +342,19 @@
 
               <div class="inventory-head">
                 <div>
-                  <h3>Vigencia por cliente</h3>
-                  <p id="sponsorship-inventory-description">La conexión ChatGPT personal es independiente y puede realizarse desde el primer día.</p>
+                  <h3>Ruta de generación por cliente</h3>
+                  <p id="sponsorship-inventory-description">Las pruebas usan el pool automáticamente. En cuentas licenciadas, usa el switch para incluir o retirar el pool OAuth central; la conexión ChatGPT personal siempre permanece independiente.</p>
                 </div>
                 <span class="redacted-chip"><span aria-hidden="true"></span>SIN SECRETOS</span>
               </div>
-              <div class="table-wrap" tabindex="0" role="region" aria-label="Vigencia de patrocinio desplazable" aria-describedby="sponsorship-inventory-description">
+              <div class="table-wrap" tabindex="0" role="region" aria-label="Ruta de generación desplazable" aria-describedby="sponsorship-inventory-description">
                 <table>
-                  <caption class="sr-only">Clientes y fecha efectiva de patrocinio central de imágenes</caption>
+                  <caption class="sr-only">Clientes, vigencia de prueba y ruta de generación de imágenes</caption>
                   <thead>
-                    <tr><th scope="col">Cliente</th><th scope="col">Estado</th><th scope="col">Fin efectivo</th><th scope="col">Ruta de imágenes</th></tr>
+                    <tr><th scope="col">Cliente</th><th scope="col">Estado</th><th scope="col">Vigencia de prueba</th><th scope="col">Pool OAuth central</th><th scope="col">Ruta de imágenes</th></tr>
                   </thead>
                   <tbody id="sponsorship-rows">
-                    <tr class="loading-row"><td colspan="4"><span class="skeleton-line"></span><span class="sr-only">Cargando clientes</span></td></tr>
+                    <tr class="loading-row"><td colspan="5"><span class="skeleton-line"></span><span class="sr-only">Cargando clientes</span></td></tr>
                   </tbody>
                 </table>
               </div>

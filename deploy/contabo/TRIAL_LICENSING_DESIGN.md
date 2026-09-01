@@ -16,8 +16,9 @@ comprador ni amplía Admira a API pública, CRM, ecommerce, webhooks o MCP.
 - La prueba dura cinco días y usa capacidad de Gemini financiada por Admira.
 - Al licenciar, Gemini cambia de forma atómica a una credencial del cliente.
 - La generación de imágenes financiada por Admira dura los mismos cinco días
-  iniciales; licenciar no reinicia el reloj. El operador puede ampliar una
-  fecha exacta por cliente desde el panel privado.
+  iniciales de una prueba. Una cuenta licenciada usa su ruta personal por defecto;
+  el operador puede incluirla explícitamente en el pool OAuth central mediante
+  un switch auditable del panel privado.
 - El cliente puede conectar su propia cuenta ChatGPT/Codex desde el primer día;
   esa conexión no cancela ni sustituye el patrocinio central vigente.
 - Si cambia el teléfono, número o cuenta de Telegram, el cliente puede recuperar
@@ -37,8 +38,8 @@ El estado comercial no debe confundirse con el origen de cada proveedor.
 | Preparado | `pending_claim` | sin consumo | sin consumo |
 | Prueba activa | `trial` | pool de Admira | servicio central patrocinado |
 | Prueba vencida | `trial_expired` | bloqueado | bloqueado |
-| Licenciado, dentro de los 5 días o extensión | `licensed` | credencial del cliente | servicio central patrocinado |
-| Licenciado después del beneficio | `licensed` | credencial del cliente | conexión del cliente, add-on o bloqueado |
+| Licenciado, switch central activado | `licensed` | credencial del cliente | servicio central patrocinado |
+| Licenciado, switch central desactivado | `licensed` | credencial del cliente | conexión del cliente mediante `/conectar_chatgpt`, add-on o bloqueado |
 | Suspendido/cancelado | `suspended`/`cancelled` | bloqueado | bloqueado |
 
 Las transiciones válidas son:
@@ -67,8 +68,9 @@ implementación debe ampliar ese fundamento con tablas o campos equivalentes.
 - `tenant_license_contacts`: correo cifrado para entrega, hash/HMAC del correo
   normalizado para búsqueda, verificación y versión de identidad.
 - `tenant_entitlements`: estado comercial, identificador de licencia aleatorio,
-  hash/HMAC de la prueba de licencia, `licensed_at` e
-  `image_sponsorship_ends_at`. El identificador de licencia sí se almacena en
+  hash/HMAC de la prueba de licencia, `licensed_at`,
+  `image_sponsorship_ends_at` y el opt-in booleano
+  `licensed_central_image_pool_enabled`. El identificador de licencia sí se almacena en
   PostgreSQL porque forma parte de la identidad recuperable; nunca se almacenan
   aquí la clave Gemini ni credenciales de ChatGPT/Codex.
 

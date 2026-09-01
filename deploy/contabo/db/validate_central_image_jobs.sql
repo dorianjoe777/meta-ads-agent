@@ -55,8 +55,8 @@ BEGIN
 END;
 $$;
 
--- A licensed tenant outside the sponsored window is still active, but the
--- runtime-keyed boundary returns personal_chatgpt and creates no job.
+-- A licensed tenant whose explicit central-pool switch is off stays active,
+-- but the runtime-keyed boundary returns personal_chatgpt and creates no job.
 SET ROLE admira_provisioner;
 SELECT * FROM admira.transition_hosted_tenant_to_licensed(
   'image-cycle-001', 'ADMIRA-IMAGE-LICENSE-001',
@@ -79,6 +79,13 @@ RESET ROLE;
 UPDATE admira.tenant_entitlements
 SET image_sponsorship_ends_at = now() + interval '1 day'
 WHERE tenant_id = :'image_tenant'::uuid;
+
+-- The timestamp above is intentionally insufficient for a licensed tenant.
+-- Only the narrow operator switch admits the shared central image pool.
+SET ROLE admira_operator;
+SELECT route AS central_pool_route
+FROM admira.operator_set_licensed_central_image_pool('image-cycle-001', true) \gset
+RESET ROLE;
 
 -- An expired lease can be reclaimed. The former token is fenced and only the
 -- new token can complete the exact request.

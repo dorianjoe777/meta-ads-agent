@@ -111,7 +111,9 @@ for file in compose.yaml Control.Dockerfile app-requirements.txt \
   db/validate_personal_chatgpt_sponsorship.sql db/migrations/013_operator_trial_provisioning.sql \
   db/validate_operator_trial_provisioning.sql db/migrations/014_telegram_typing_indicator.sql \
   db/migrations/015_telegram_typing_retry_continuity.sql \
-  db/migrations/016_central_campaign_compiler.sql; do
+  db/migrations/016_central_campaign_compiler.sql \
+  db/migrations/017_licensed_central_image_pool_switch.sql \
+  db/validate_licensed_central_image_pool_switch.sql; do
   need_file "$ROOT_DIR/$file"
 done
 
@@ -555,6 +557,36 @@ WHERE n.nspname = 'admira'
   else
     fail 'central campaign compiler entitlement migration is not visible in PostgreSQL'
   fi
+  licensed_pool_switch_check_sql="SELECT
+  EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'admira' AND table_name = 'tenant_entitlements'
+      AND column_name = 'licensed_central_image_pool_enabled'
+  )
+  AND to_regprocedure('admira.operator_set_licensed_central_image_pool(text,boolean)') IS NOT NULL
+  AND has_function_privilege(
+    'admira_operator',
+    'admira.operator_set_licensed_central_image_pool(text,boolean)', 'EXECUTE'
+  )
+  AND NOT has_function_privilege(
+    'admira_runtime',
+    'admira.operator_set_licensed_central_image_pool(text,boolean)', 'EXECUTE'
+  )
+  AND NOT has_table_privilege('admira_operator', 'admira.tenant_entitlements', 'SELECT')
+  AND EXISTS (
+    SELECT 1 FROM pg_proc AS p JOIN pg_namespace AS n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'admira' AND p.proname = 'resolve_tenant_image_access'
+      AND pg_get_functiondef(p.oid) LIKE '%licensed_central_image_pool_enabled%'
+      AND pg_get_functiondef(p.oid) LIKE '%personal_chatgpt%'
+  );"
+  if printf '%s\n' "$licensed_pool_switch_check_sql" | \
+      docker compose --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compose.yaml" exec -T postgres \
+      sh -ec 'export PGPASSWORD="$(cat /run/secrets/postgres_password)"; exec psql -qAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+      2>/dev/null | grep -qx t; then
+    ok 'licensed central-pool switch is explicit, operator-only and preserves personal ChatGPT routing'
+  else
+    fail 'licensed central-pool switch migration or least-privilege grant is missing'
+  fi
   recovery_check_sql="SELECT
   to_regclass('admira.tenant_license_contacts') IS NOT NULL
   AND to_regclass('admira.tenant_recovery_challenges') IS NOT NULL
@@ -604,6 +636,7 @@ WHERE n.nspname = 'admira'
   to_regprocedure('admira.operator_gemini_pool_status()') IS NOT NULL
   AND to_regprocedure('admira.operator_tenant_sponsorship_status()') IS NOT NULL
   AND to_regprocedure('admira.operator_set_image_sponsorship_end(text,timestamp with time zone)') IS NOT NULL
+  AND to_regprocedure('admira.operator_set_licensed_central_image_pool(text,boolean)') IS NOT NULL
   AND to_regprocedure('admira.operator_trial_accounts()') IS NOT NULL
   AND to_regprocedure('admira.operator_licensed_accounts()') IS NOT NULL
   AND to_regprocedure('admira.operator_create_trial(text,text,text)') IS NOT NULL
@@ -619,6 +652,7 @@ WHERE n.nspname = 'admira'
   AND has_function_privilege('admira_operator', 'admira.register_gemini_pool_credential(uuid,text,text,text,text)', 'EXECUTE')
   AND has_function_privilege('admira_operator', 'admira.operator_tenant_sponsorship_status()', 'EXECUTE')
   AND has_function_privilege('admira_operator', 'admira.operator_set_image_sponsorship_end(text,timestamp with time zone)', 'EXECUTE')
+  AND has_function_privilege('admira_operator', 'admira.operator_set_licensed_central_image_pool(text,boolean)', 'EXECUTE')
   AND has_function_privilege('admira_operator', 'admira.operator_trial_accounts()', 'EXECUTE')
   AND has_function_privilege('admira_operator', 'admira.operator_licensed_accounts()', 'EXECUTE')
   AND NOT has_function_privilege('admira_operator', 'admira.operator_create_trial(text,text,text)', 'EXECUTE')
@@ -675,6 +709,15 @@ else
     && grep -q 'CentralCampaignCompilerServer' "$ROOT_DIR/central_image_service.py" \
     && ok 'central Terra compiler shares the isolated Codex pool with signed tenant access' \
     || fail 'central campaign compiler safety gates missing'
+  grep -q 'licensed_central_image_pool_enabled boolean NOT NULL DEFAULT false' "$ROOT_DIR/db/migrations/017_licensed_central_image_pool_switch.sql" \
+    && grep -q 'operator_set_licensed_central_image_pool' "$ROOT_DIR/db/migrations/017_licensed_central_image_pool_switch.sql" \
+    && grep -q "WHEN entitlement.lifecycle_state = 'licensed'" "$ROOT_DIR/db/migrations/017_licensed_central_image_pool_switch.sql" \
+    && grep -q "THEN 'personal_chatgpt'" "$ROOT_DIR/db/migrations/017_licensed_central_image_pool_switch.sql" \
+    && grep -q '/api/operator/sponsorship/licensed-pool' "$ROOT_DIR/operator_dashboard.py" \
+    && grep -q 'data-licensed-pool-switch' "$ROOT_DIR/operator_dashboard.js" \
+    && grep -q 'licensed_central_image_pool_switch_validation=passed' "$ROOT_DIR/db/validate_licensed_central_image_pool_switch.sql" \
+    && ok 'licensed accounts use an explicit central-pool switch and preserve their personal route' \
+    || fail 'licensed central-pool switch safety gates missing'
   grep -q 'CREATE TABLE IF NOT EXISTS admira.tenant_license_contacts' "$ROOT_DIR/db/migrations/009_telegram_license_recovery.sql" \
     && grep -q 'CREATE TABLE IF NOT EXISTS admira.tenant_recovery_challenges' "$ROOT_DIR/db/migrations/009_telegram_license_recovery.sql" \
     && grep -q 'CREATE TABLE IF NOT EXISTS admira.telegram_recovery_chat_outbox' "$ROOT_DIR/db/migrations/009_telegram_license_recovery.sql" \

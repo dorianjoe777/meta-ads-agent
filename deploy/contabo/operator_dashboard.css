@@ -138,6 +138,12 @@ h3 {
 .table-action { margin: 2px; border: 1px solid var(--line); padding: 5px 7px; background: var(--surface-strong); color: var(--muted); cursor: pointer; font-size: .75rem; }
 .table-action:hover, .table-action:focus-visible { border-color: var(--mint); color: var(--mint); }
 .table-action.is-danger:hover, .table-action.is-danger:focus-visible { border-color: var(--red); color: var(--red); }
+.pool-switch { display: inline-flex; min-height: 31px; align-items: center; gap: 7px; border: 1px solid var(--line-strong); border-radius: 99px; padding: 5px 10px 5px 7px; background: var(--surface-muted); color: var(--muted); cursor: pointer; font-size: .78rem; font-weight: 700; }
+.pool-switch::before { width: 12px; height: 12px; border: 1px solid var(--quiet); border-radius: 50%; background: transparent; content: ""; }
+.pool-switch.is-on { border-color: var(--mint); background: rgb(104 230 188 / 12%); color: var(--mint); }
+.pool-switch.is-on::before { border-color: var(--mint); background: var(--mint); box-shadow: 0 0 0 3px rgb(104 230 188 / 16%); }
+.pool-switch:hover, .pool-switch:focus-visible { border-color: var(--mint); color: var(--mint); outline: none; box-shadow: var(--focus); }
+.pool-switch:disabled { cursor: not-allowed; opacity: .55; }
 .claim-link { display: block; overflow-wrap: anywhere; margin: 18px 0; padding: 14px; border: 1px solid var(--line-strong); background: var(--surface-muted); color: var(--mint); }
 
 @media (max-width: 760px) {

@@ -197,24 +197,27 @@ that personal connection remains independent of the temporary central image
 benefit.
 
 The **Licenciadas** tab lists only safe operational metadata: customer,
-redacted license reference, licensing time, effective end of central-image
-sponsorship and lifecycle state. It never shows a Gemini key, email, ChatGPT
-authentication or the full license code again.
+redacted license reference, licensing time, trial-benefit history and lifecycle
+state. It never shows a Gemini key, email, ChatGPT authentication or the full
+license code again.
 
-## Extend one customer's sponsored-image period
+## Trial benefit and licensed central-pool switch
 
 The normal central-image benefit is the same five days that start with the
-customer's account creation. Licensing never restarts it, and the customer
-may use `/conectar_chatgpt` at any time without cancelling that benefit.
+customer's account creation. A trial is admitted automatically while that
+benefit is active. A licensed account is not admitted to the shared pool
+by default: its image and campaign route is its own `/conectar_chatgpt`.
 
-The sponsorship section lists a bounded, secret-free view of tenants. Select an
-active trial/licensed customer and set the exact new end date. The server accepts
-only timezone-qualified timestamps in the future, at most 365 days ahead, and
-never allows shortening the existing effective end. Repeating the same exact
-date is idempotent; a real change writes one tenant audit event. It changes only
-`image_sponsorship_ends_at`: it does not extend the trial itself, change a
-license, rotate Gemini, choose a model or alter the customer's tenant-local
-ChatGPT connection.
+The sponsorship section lists a bounded, secret-free view of tenants. For an
+active trial, the operator can still set an exact later benefit end date; the
+server accepts only timezone-qualified timestamps in the future, at most 365
+days ahead, and never allows shortening it. For a licensed account, the row has
+an explicit **Pool OAuth central** switch. Turning it on routes both image
+generation and the central campaign compiler through the shared pool. Turning
+it off immediately restores the `personal_chatgpt` route. Each real switch
+change writes one audit event. Neither control extends a license, rotates
+Gemini, chooses a model, deletes a tenant-local ChatGPT connection, nor exposes
+its credentials.
 
 ## Status, stop, and activation boundary
 
