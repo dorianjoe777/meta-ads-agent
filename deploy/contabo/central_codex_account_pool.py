@@ -36,6 +36,7 @@ _DEFAULT_COOLDOWNS = {
 }
 _SAFE_RESULT_KEYS = {"image_path", "path", "asset_id", "preview_url", "output_ref", "sha256", "size"}
 MAX_ATTEMPTS_PER_REQUEST = 2
+COMPILER_MODEL = "gpt-5.6-terra"
 
 
 class AccountPoolConfigError(ValueError):
@@ -147,6 +148,7 @@ class CentralCodexAccountPool:
 
     def __init__(self, accounts: Sequence[Mapping[str, Any] | CodexAccount], *,
                  provider: Callable[..., object] | None = None,
+                 compiler_provider: Callable[..., object] | None = None,
                  clock: Callable[[], float] = time.monotonic,
                  cooldowns: Mapping[str, float] | None = None):
         if not 2 <= len(accounts) <= 8:
@@ -161,6 +163,7 @@ class CentralCodexAccountPool:
             parsed.append(account)
         self._slots = [_Slot(account) for account in parsed]
         self._provider = provider or self._default_provider
+        self._compiler_provider = compiler_provider or self._default_compiler_provider
         self._clock = clock
         self._cooldowns = {**_DEFAULT_COOLDOWNS, **dict(cooldowns or {})}
         self._selection_lock = threading.Lock()
@@ -195,6 +198,11 @@ class CentralCodexAccountPool:
                     break
             return safe
         return result
+
+    def _default_compiler_provider(self, prompt: str, schema: Mapping[str, Any], *,
+                                   codex_home: Path, timeout: int, model: str) -> object:
+        """Keep compilation unavailable unless an explicit compiler is wired in."""
+        return {"ok": False, "failure_category": "provider_unavailable"}
 
     def _ordered_slots(self, now: float) -> list[_Slot]:
         with self._selection_lock:
@@ -235,6 +243,68 @@ class CentralCodexAccountPool:
                     safe.update({"ok": True, "account_id": slot.account.account_id,
                                  "duration_ms": int(max(0.0, (self._clock() - started) * 1000))})
                     return safe
+                last_category = _category(result)
+                hint = _retry_hint(result)
+                slot.cooldown_until[last_category] = self._clock() + (
+                    hint if hint is not None else max(0.0, float(self._cooldowns.get(last_category, 15.0)))
+                )
+            finally:
+                slot.lock.release()
+        return {
+            "ok": False,
+            "error_type": last_category,
+            "failure_category": last_category,
+            "attempted_accounts": attempted,
+            "duration_ms": int(max(0.0, (self._clock() - started) * 1000)),
+        }
+
+    def compile(self, prompt: str, schema: Mapping[str, Any], *, timeout: int = 270,
+                model: str = COMPILER_MODEL) -> dict[str, Any]:
+        """Compile through the shared account pool using Terra only.
+
+        The compiler receives the same per-account lock and cooldown handling
+        as image generation and is capped at two account attempts.  Provider
+        responses are reduced to the small public contract before returning.
+        """
+        started = self._clock()
+        if model != COMPILER_MODEL:
+            return {
+                "ok": False,
+                "error_type": "provider_failed",
+                "failure_category": "provider_failed",
+                "attempted_accounts": 0,
+                "duration_ms": 0,
+            }
+        attempted = 0
+        last_category = "provider_unavailable"
+        for slot in self._ordered_slots(started):
+            if attempted >= MAX_ATTEMPTS_PER_REQUEST:
+                break
+            if not slot.lock.acquire(blocking=False):
+                continue
+            try:
+                now = self._clock()
+                if any(until > now for until in slot.cooldown_until.values()):
+                    continue
+                attempted += 1
+                slot.last_used = now
+                try:
+                    result = self._compiler_provider(
+                        prompt, schema, codex_home=slot.account.codex_home,
+                        timeout=timeout, model=COMPILER_MODEL,
+                    )
+                except Exception:
+                    result = None
+                compiled = result.get("compiled") if isinstance(result, Mapping) else None
+                if (isinstance(result, Mapping) and result.get("ok") is True
+                        and isinstance(compiled, Mapping)):
+                    return {
+                        "ok": True,
+                        "compiled": dict(compiled),
+                        "model": COMPILER_MODEL,
+                        "account_id": slot.account.account_id,
+                        "duration_ms": int(max(0.0, (self._clock() - started) * 1000)),
+                    }
                 last_category = _category(result)
                 hint = _retry_hint(result)
                 slot.cooldown_until[last_category] = self._clock() + (

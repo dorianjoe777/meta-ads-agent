@@ -21,7 +21,11 @@ from codex_brand_guides import codex_cli_environment, codex_cli_error_message
 from product_config import ROOT_DIR, load_config
 
 
-GEMINI_COMPILER_MODELS = ("gemini-3.5-flash", "gemini-3.6-flash")
+GEMINI_COMPILER_MODELS = (
+    "gemini-3.5-flash",
+    "gemini-3.6-flash",
+    "gemini-3.7-flash",
+)
 TERRA_COMPILER_MODEL = "gpt-5.6-terra"
 COMPILER_MODELS = GEMINI_COMPILER_MODELS + (TERRA_COMPILER_MODEL,)
 # Backwards-compatible name used by older diagnostics and tests.
@@ -655,7 +659,16 @@ def _gemini_compile(model, prompt, schema, *, api_key, base_url, timeout):
 
 
 def _terra_compile(
-    prompt, schema, *, config, timeout, model=None, reasoning_effort=None,
+    prompt,
+    schema,
+    *,
+    config,
+    timeout,
+    model=None,
+    reasoning_effort=None,
+    tool="",
+    codex_home=None,
+    use_central=True,
 ):
     """Run one isolated Codex compilation request.
 
@@ -667,8 +680,16 @@ def _terra_compile(
     selected_effort = str(reasoning_effort or "").strip().lower()
     if selected_effort not in {"none", "low", "medium", "high", "xhigh", "max"}:
         selected_effort = ""
+    if use_central and tool:
+        try:
+            from hosted_central_campaign_compiler import maybe_compile_central_campaign
+            central = maybe_compile_central_campaign(tool, prompt, timeout=timeout)
+        except ImportError:
+            central = None
+        if central is not None:
+            return central
     executable = str(getattr(config, "codex_cli", "codex") or "codex")
-    environment = codex_cli_environment(config)
+    environment = codex_cli_environment(config, codex_home=codex_home)
     with tempfile.TemporaryDirectory(prefix="admira-campaign-compiler-") as isolated:
         isolated_path = Path(isolated)
         schema_path = isolated_path / "output-schema.json"
@@ -992,6 +1013,9 @@ Obey every contract below. Output the supplied wrapper JSON only.
     providers = []
     if api_key:
         providers.extend(("gemini", model) for model in GEMINI_COMPILER_MODELS)
+    # This ordering is part of the proven campaign contract. DigitalOcean
+    # uses its local Codex OAuth; hosted tenants route the same final Terra
+    # attempt through the isolated central pool.
     providers.append(("terra", TERRA_COMPILER_MODEL))
 
     final_failure = None
@@ -1013,7 +1037,13 @@ Obey every contract below. Output the supplied wrapper JSON only.
                 timeout=max(1, min(GEMINI_ATTEMPT_TIMEOUT_SECONDS, remaining)),
             )
         else:
-            candidate = _terra_compile(prompt, schema, config=config, timeout=max(1, remaining))
+            candidate = _terra_compile(
+                prompt,
+                schema,
+                config=config,
+                timeout=max(1, remaining),
+                tool=tool,
+            )
         attempts.append({
             "model": model,
             "ok": bool(candidate.get("ok")),

@@ -11,11 +11,16 @@ import time
 import unittest
 from pathlib import Path
 
-from deploy.contabo.central_image_service import (CentralImageServer, EntitlementStore,
-    PostgresCentralImageLedger, _private_password, central_codex_account_pool_from_env,
-    central_codex_provider, postgres_connect_factory_from_env)
+from deploy.contabo.central_image_service import (
+    CentralCampaignCompilerServer, CentralImageServer, EntitlementStore,
+    PostgresCentralCampaignCompilerEntitlement, PostgresCentralImageLedger,
+    _private_password, central_campaign_compiler_provider,
+    central_codex_account_pool_from_env, central_codex_campaign_compiler_provider,
+    central_codex_provider, postgres_connect_factory_from_env,
+)
 from deploy.contabo.central_codex_account_pool import CentralCodexAccountPool
 from deploy.contabo.image_broker import ImageBroker, sign_request
+from deploy.contabo.campaign_compiler_broker import CampaignCompilerBroker, sign_request as sign_compiler_request
 
 
 PNG = b"\x89PNG\r\n\x1a\ncentral"
@@ -238,9 +243,128 @@ class CentralImageServiceTests(unittest.TestCase):
         from deploy.contabo import central_image_service as module
         source = inspect.getsource(module.main)
         self.assertIn("ledger=ledger", source)
-        self.assertIn("central_codex_account_pool_from_env()", source)
+        self.assertIn("compiler_provider=central_codex_campaign_compiler_provider", source)
         self.assertIn("partial(central_codex_provider, pool=account_pool)", source)
+        self.assertIn("CampaignCompilerBroker(", source)
+        self.assertIn("CentralCampaignCompilerServer(", source)
         self.assertNotIn("CentralImageServer(broker, Path(args.socket), ledger=", source)
+
+    def test_compiler_socket_signs_entitlement_and_returns_only_structured_output(self):
+        compiler_broker = CampaignCompilerBroker(
+            {"tenant-one": self.key},
+            lambda tool: {"type": "object", "tool": tool},
+            lambda tenant, purpose: "central_sponsored",
+            lambda request, schema: {"ready": True, "missing_fields": [], "payload_json": "{}"},
+            freshness_seconds=30,
+        )
+        socket_path = self.socket_path.with_name("compiler.sock")
+        server = CentralCampaignCompilerServer(compiler_broker, socket_path)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        for _ in range(100):
+            if socket_path.exists():
+                break
+            time.sleep(0.01)
+        try:
+            envelope = sign_compiler_request(self.key, {
+                "tenant_id": "tenant-one", "request_id": "compiler-001",
+                "purpose": "campaign_compile", "tool": "admira_create_whatsapp_campaign",
+                "prompt": "approved buyer brief",
+            }, timestamp=int(time.time()), nonce="c" * 32)
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(2)
+                client.connect(str(socket_path))
+                client.sendall(json.dumps(envelope).encode() + b"\n")
+                result = json.loads(client.makefile("rb").readline())
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["model"], "gpt-5.6-terra")
+            self.assertEqual(result["compiled"]["payload_json"], "{}")
+            self.assertNotIn("prompt", result)
+            self.assertNotIn("account_id", result)
+        finally:
+            server.close()
+            worker.join(timeout=2)
+
+    def test_compiler_entitlement_rechecks_runtime_key_in_postgres(self):
+        calls = []
+
+        class Tx:
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+
+        class Cursor:
+            description = [object()]
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def execute(self, sql, params): calls.append((sql, params))
+            def fetchone(self): return {"route": "central_sponsored", "lifecycle_state": "trial"}
+
+        class Connection:
+            closed = False
+            def transaction(self): return Tx()
+            def cursor(self): return Cursor()
+            def close(self): self.closed = True
+
+        connection = Connection()
+        entitlement = PostgresCentralCampaignCompilerEntitlement(lambda: connection)
+        self.assertEqual(entitlement("tenant-one", "campaign_compile"), "central_sponsored")
+        self.assertEqual(entitlement("tenant-one", "image_generation"), "blocked")
+        self.assertTrue(connection.closed)
+        self.assertIn("resolve_central_campaign_compiler_access_for_runtime", calls[0][0])
+        self.assertEqual(calls[0][1], ("tenant-one",))
+
+    def test_central_compiler_provider_uses_slot_and_cannot_reenter_tenant_route(self):
+        import types
+        observed = {}
+        fake = types.SimpleNamespace()
+
+        def compile_once(prompt, schema, **kwargs):
+            observed.update({"prompt": prompt, "schema": schema, **kwargs})
+            return {"ok": True, "compiled": {"ready": False, "payload_json": "{}", "missing_fields": []}}
+
+        fake._terra_compile = compile_once
+        previous = sys.modules.get("campaign_payload_compiler")
+        sys.modules["campaign_payload_compiler"] = fake
+        try:
+            result = central_codex_campaign_compiler_provider(
+                "buyer brief", {"type": "object"}, codex_home=Path("/pool/primary"),
+                timeout=10, model="gpt-5.6-terra",
+            )
+        finally:
+            if previous is None:
+                sys.modules.pop("campaign_payload_compiler", None)
+            else:
+                sys.modules["campaign_payload_compiler"] = previous
+        self.assertTrue(result["ok"])
+        self.assertEqual(observed["codex_home"], Path("/pool/primary"))
+        self.assertIs(observed["use_central"], False)
+        self.assertEqual(observed["model"], "gpt-5.6-terra")
+        self.assertEqual(observed["timeout"], 10)
+
+    def test_central_campaign_compiler_provider_propagates_tenant_timeout(self):
+        observed = {}
+
+        class Pool:
+            def compile(self, prompt, schema, *, timeout):
+                observed.update(prompt=prompt, schema=schema, timeout=timeout)
+                return {"ok": True, "compiled": {"ready": True}}
+
+        result = central_campaign_compiler_provider(
+            {"prompt": "buyer brief", "timeout_seconds": 17},
+            {"type": "object"},
+            pool=Pool(),
+        )
+        self.assertEqual(result, {"ready": True})
+        self.assertEqual(observed["timeout"], 17)
+
+    def test_compiler_provider_discards_pool_diagnostics(self):
+        _, accounts = self.central_accounts()
+        pool = CentralCodexAccountPool(
+            accounts,
+            compiler_provider=lambda *args, **kwargs: {"ok": False, "error": "OAuth secret"},
+        )
+        with self.assertRaisesRegex(RuntimeError, "provider_failed"):
+            central_campaign_compiler_provider({"prompt": "private brief"}, {}, pool=pool)
 
     def test_pool_from_env_requires_two_private_authenticated_homes(self):
         root, _ = self.central_accounts()

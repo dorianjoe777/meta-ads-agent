@@ -269,6 +269,7 @@ def compose_text(
         ]
         central_environment = [
             "      ADMIRA_CENTRAL_IMAGE_SOCKET: /run/admira-central-image-broker/broker.sock",
+            "      ADMIRA_CENTRAL_CAMPAIGN_COMPILER_SOCKET: /run/admira-central-image-broker/compiler.sock",
             "      ADMIRA_CENTRAL_IMAGE_CLIENT_KEY_FILE: /app/runtime/central_image_client.key",
             "      ADMIRA_CENTRAL_IMAGE_EXCHANGE_ROOT: /run/admira-central-images",
         ]

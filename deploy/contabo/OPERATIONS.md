@@ -456,6 +456,15 @@ cuenta conserva salud, fingerprint, causa del último fallo, cooldown y
 contador de intentos por separado. Si ambas fallan, el trabajo se encola o
 falla de forma recuperable.
 
+El mismo proceso central y los mismos slots OAuth atienden también el
+compilador estructurado de campañas: primero se prueban los modelos Gemini
+configurados en el tenant (`gemini-3.5-flash`, `gemini-3.6-flash` y
+`gemini-3.7-flash`) y sólo después Terra. El tenant no recibe `auth.json`:
+envía por un segundo socket Unix una petición HMAC con su runtime key y el
+servicio vuelve a verificar que el tenant activo tiene ruta
+`central_sponsored`. Terra sólo devuelve el JSON compilado; no crea objetos en
+Meta, no guarda prompts ni expone salida de CLI, cuentas OAuth o credenciales.
+
 El broker sigue dormant (`ADMIRA_CENTRAL_IMAGE_READY=false`) hasta completar
 los dos logins fuera de banda, verificar cada cuenta individualmente y ejecutar
 un canary real que cubra selección, fallback único, cooldown, idempotencia y

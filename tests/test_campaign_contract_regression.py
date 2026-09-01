@@ -1049,7 +1049,9 @@ class CampaignContractRegressionTests(unittest.TestCase):
                 )
                 self.assertTrue(result["ok"])
                 self.assertEqual(result["model"], "gpt-5.6-terra")
-                self.assertEqual(calls, ["gemini-3.5-flash", "gemini-3.6-flash", "gpt-5.6-terra"])
+                self.assertEqual(calls, [
+                    "gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.7-flash", "gpt-5.6-terra",
+                ])
                 self.assertEqual([item["model"] for item in result["compiler_attempts"]], calls)
             finally:
                 compiler.LATEST_BRIEF_FILE = original["LATEST_BRIEF_FILE"]

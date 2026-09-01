@@ -74,10 +74,23 @@ class ReleasePreflightTests(unittest.TestCase):
         self.assertIn("central Codex auth.json is missing or empty", text)
         self.assertIn("central Codex auth home must be mode 0700", text)
         self.assertIn("central_codex_account_pool.py", text)
+        self.assertIn("campaign_compiler_broker.py", text)
+        self.assertIn("central_campaign_compiler_canary.py", text)
+        self.assertIn("transport-only central campaign compiler canary is present", text)
+        self.assertIn("016_central_campaign_compiler.sql", text)
+        self.assertIn("central Terra compiler shares the isolated Codex pool with signed tenant access", text)
+        self.assertIn("central campaign compiler entitlement is visible in PostgreSQL without table access", text)
         self.assertIn("auth_mode\" =~ ^(0*600|0*400)$", text)
         self.assertIn('[[ -L "$central_codex_host_root"', text)
         self.assertIn('[[ -L "$account_home"', text)
         self.assertIn('[[ -L "$auth_json"', text)
+
+    def test_release_preflight_requires_transport_only_canary(self):
+        canary = SCRIPT.parent / "central_campaign_compiler_canary.py"
+        self.assertTrue(canary.is_file())
+        canary_text = canary.read_text(encoding="utf-8")
+        self.assertIn("maybe_compile_central_campaign", canary_text)
+        self.assertIn("never invokes a campaign MCP", canary_text)
 
     def test_recovery_defaults_are_dormant_and_activation_is_fail_closed(self):
         env_example = (SCRIPT.parent / ".env.example").read_text(encoding="utf-8")

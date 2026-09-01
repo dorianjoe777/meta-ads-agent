@@ -122,6 +122,10 @@ class TenantCtlTests(unittest.TestCase):
             self.assertIn('group_add:\n      - "${ADMIRA_CENTRAL_IMAGE_GID:-19093}"', compose)
             self.assertIn(f'"{socket_dir}:/run/admira-central-image-broker:ro"', compose)
             self.assertIn(
+                "ADMIRA_CENTRAL_CAMPAIGN_COMPILER_SOCKET: /run/admira-central-image-broker/compiler.sock",
+                compose,
+            )
+            self.assertIn(
                 f'"{exchange / "client-001" / "output"}:/run/admira-central-images"',
                 compose,
             )

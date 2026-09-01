@@ -1342,7 +1342,16 @@ def validate_campaign_customer_messages(args):
     return {"ok": True}
 
 
-def persist_pending_campaign_workflow(tool, args, reason, *, result=None, status="pending", proposal_markdown=""):
+def persist_pending_campaign_workflow(
+    tool,
+    args,
+    reason,
+    *,
+    result=None,
+    status="pending",
+    proposal_markdown="",
+    preserve_existing_contract=False,
+):
     """Keep one structured buyer workflow across /reset without claiming Meta creation."""
     if tool not in CAMPAIGN_CREATION_TOOLS:
         return False
@@ -1358,6 +1367,26 @@ def persist_pending_campaign_workflow(tool, args, reason, *, result=None, status
         "success_metrics",
     )
     contract = {key: source.get(key) for key in allowed if source.get(key) not in (None, "", [], {})}
+    existing = {}
+    if preserve_existing_contract:
+        try:
+            candidate = json.loads(PENDING_CAMPAIGN_WORKFLOW_FILE.read_text(encoding="utf-8"))
+        except (OSError, TypeError, ValueError):
+            candidate = {}
+        destination = tool.removeprefix("admira_create_").removesuffix("_campaign")
+        if (
+            isinstance(candidate, dict)
+            and candidate.get("tool") == tool
+            and candidate.get("destination") == destination
+            and candidate.get("meta_creation_verified") is not True
+        ):
+            existing = candidate
+            previous_contract = candidate.get("campaign_contract")
+            if isinstance(previous_contract, dict):
+                # A compiler-provider outage happens before a new payload
+                # exists. Keep the exact approved contract and overlay only
+                # concrete fields supplied by the current call.
+                contract = {**previous_contract, **contract}
     if not contract.get("budget_confirmation") and contract.get("daily_budget_raw"):
         # Destination normalization keeps the buyer's exact quote under
         # ``daily_budget_raw``.  Mirror it into the durable campaign contract
@@ -1376,11 +1405,14 @@ def persist_pending_campaign_workflow(tool, args, reason, *, result=None, status
     }
     creation_receipt = paused_campaign_creation_receipt(result)
     completed_verified = status == "completed" and bool(creation_receipt)
+    creation_fingerprint = campaign_creation_fingerprint(tool, {**contract, **source})
+    if existing and not any(key in source for key in allowed):
+        creation_fingerprint = str(existing.get("creation_fingerprint") or "") or creation_fingerprint
     payload = {
         "status": status,
         "destination": destination,
         "tool": tool,
-        "creation_fingerprint": campaign_creation_fingerprint(tool, source),
+        "creation_fingerprint": creation_fingerprint,
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "campaign_contract": contract,
         "blocker": "" if completed_verified else str(reason or "campaign_creation_not_verified"),
@@ -1394,7 +1426,12 @@ def persist_pending_campaign_workflow(tool, args, reason, *, result=None, status
     }
     if creation_receipt:
         payload["creation_receipt"] = creation_receipt
-    proposal_brief = str(proposal_markdown or source.get("brief_markdown") or "").strip()
+    proposal_brief = str(
+        proposal_markdown
+        or source.get("brief_markdown")
+        or existing.get("proposal_brief_markdown")
+        or ""
+    ).strip()
     if proposal_brief:
         # Keep the exact held proposal private so a later short “sí” can
         # approve what was shown, without treating an empty pending blocker as
@@ -1586,7 +1623,12 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
             if not campaign_compilation.get("ok"):
                 reason = str(campaign_compilation.get("reason") or "campaign_compiler_failed")
                 persist_pending_campaign_workflow(
-                    tool, original_campaign_args, reason, proposal_markdown=brief_markdown
+                    tool,
+                    original_campaign_args,
+                    reason,
+                    result=campaign_compilation,
+                    proposal_markdown=brief_markdown,
+                    preserve_existing_contract=True,
                 )
                 missing = campaign_compilation.get("missing_fields") or []
                 if reason == "campaign_brief_incomplete":
@@ -1600,7 +1642,11 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
                     detail = ", ".join(labels.get(str(value), str(value)) for value in missing) or "datos de campaña"
                     reply = f"No se creó nada en Meta: el briefing aún necesita confirmar {detail}."
                 else:
-                    reply = str(campaign_compilation.get("error") or "Terra no pudo compilar el briefing de campaña. Intenta de nuevo sin cambiar los datos aprobados.")
+                    reply = (
+                        "No se creó nada en Meta: el servicio que prepara la campaña tuvo una falla temporal "
+                        "en este turno. Conservé el presupuesto, la imagen, el texto, el título, el mensaje "
+                        "de WhatsApp y sus aprobaciones; puedes reintentar la misma campaña sin confirmarlos otra vez."
+                    )
                 return {
                     "ok": False,
                     "tool": tool,
@@ -1608,8 +1654,9 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
                     "blocked": True,
                     "executed": False,
                     "reason": reason,
+                    "retryable": False,
                     "missing_fields": missing,
-                    "compiler_model": campaign_compilation.get("model") or "gpt-5.6-terra",
+                    "compiler_model": campaign_compilation.get("model") or "",
                     "reply": reply,
                 }
             args = dict(campaign_compilation.get("payload") or {})

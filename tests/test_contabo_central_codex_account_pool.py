@@ -120,6 +120,74 @@ class CentralCodexAccountPoolTests(unittest.TestCase):
             self.assertEqual(result["attempted_accounts"], 2)
             self.assertEqual(len(calls), 2)
 
+    def test_compile_falls_back_between_accounts_and_returns_safe_contract(self):
+        with tempfile.TemporaryDirectory() as raw:
+            calls = []
+            def compiler(prompt, schema, **kwargs):
+                calls.append((prompt, schema, kwargs))
+                if len(calls) == 1:
+                    return {"ok": False, "error": "secret prompt", "failure_category": "provider_failed"}
+                return {"ok": True, "compiled": {"name": "campaign", "count": 2},
+                        "stdout": "credential", "prompt": prompt}
+            pool = CentralCodexAccountPool(
+                self._accounts(Path(raw)), compiler_provider=compiler,
+                cooldowns={"provider_failed": 60},
+            )
+            result = pool.compile("private prompt", {"type": "object"}, timeout=12)
+            self.assertEqual(result["compiled"], {"name": "campaign", "count": 2})
+            self.assertEqual(result["model"], "gpt-5.6-terra")
+            self.assertEqual(result["account_id"], "account-1")
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[0][0], "private prompt")
+            self.assertEqual(calls[0][2]["model"], "gpt-5.6-terra")
+            self.assertNotIn("stdout", result)
+            self.assertNotIn("credential", repr(result))
+
+    def test_compile_shares_locks_and_cooldowns_with_generate(self):
+        with tempfile.TemporaryDirectory() as raw:
+            calls = []
+            def provider(prompt, **kwargs):
+                calls.append(("generate", kwargs["codex_home"].name))
+                return {"ok": False, "failure_category": "provider_failed"}
+            def compiler(prompt, schema, **kwargs):
+                calls.append(("compile", kwargs["codex_home"].name))
+                return {"ok": True, "compiled": {"ok": True}}
+            pool = CentralCodexAccountPool(
+                self._accounts(Path(raw)), provider=provider,
+                compiler_provider=compiler, cooldowns={"provider_failed": 60},
+            )
+            pool.generate("x")
+            result = pool.compile("x", {})
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["failure_category"], "provider_unavailable")
+            self.assertEqual(result["attempted_accounts"], 0)
+            self.assertEqual([account for kind, account in calls if kind == "compile"], [])
+
+    def test_compile_rejects_invalid_output_without_leaking_sensitive_fields(self):
+        with tempfile.TemporaryDirectory() as raw:
+            def compiler(prompt, schema, **kwargs):
+                return {"ok": True, "compiled": "not-a-mapping", "stderr": "TOKEN", "prompt": prompt}
+            pool = CentralCodexAccountPool(self._accounts(Path(raw)), compiler_provider=compiler)
+            result = pool.compile("private prompt", {"secret": "schema"})
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["failure_category"], "unknown")
+            self.assertNotIn("private prompt", repr(result))
+            self.assertNotIn("schema", repr(result))
+            self.assertNotIn("TOKEN", repr(result))
+            self.assertNotIn("stderr", result)
+
+    def test_compile_allows_only_terra_model(self):
+        with tempfile.TemporaryDirectory() as raw:
+            calls = []
+            pool = CentralCodexAccountPool(
+                self._accounts(Path(raw)),
+                compiler_provider=lambda *args, **kwargs: calls.append(True),
+            )
+            result = pool.compile("x", {}, model="gpt-5.6-sol")
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["failure_category"], "provider_failed")
+            self.assertEqual(calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -96,7 +96,7 @@ for file in compose.yaml Control.Dockerfile app-requirements.txt \
   hosted_service.py hosted_worker.py tenant_admin.py tenantctl.py provider_admin.py \
   gemini_pool_admin.py tenant_provisioner.py install-tenant-provisioner.sh TENANT_PROVISIONER.md \
   operator_dashboard.py operator_dashboard.html operator_dashboard.css operator_dashboard.js OPERATOR_DASHBOARD.md DASHBOARD_STATUS.md open-operator-dashboard.command \
-  image_broker.py central_image_service.py central_codex_account_pool.py prepare-central-image-broker.sh \
+  image_broker.py central_image_service.py central_codex_account_pool.py campaign_compiler_broker.py central_campaign_compiler_canary.py prepare-central-image-broker.sh \
   recovery_identity.py recovery_service.py recovery_email_worker.py recovery_smtp.py \
   capacity-preflight.sh \
   db/migrations/001_initial_multitenant.sql db/migrations/002_telegram_ingress_control.sql \
@@ -110,7 +110,8 @@ for file in compose.yaml Control.Dockerfile app-requirements.txt \
   db/validate_operator_dashboard.sql db/migrations/012_personal_chatgpt_sponsorship.sql \
   db/validate_personal_chatgpt_sponsorship.sql db/migrations/013_operator_trial_provisioning.sql \
   db/validate_operator_trial_provisioning.sql db/migrations/014_telegram_typing_indicator.sql \
-  db/migrations/015_telegram_typing_retry_continuity.sql; do
+  db/migrations/015_telegram_typing_retry_continuity.sql \
+  db/migrations/016_central_campaign_compiler.sql; do
   need_file "$ROOT_DIR/$file"
 done
 
@@ -119,12 +120,19 @@ import ast
 import pathlib
 import sys
 root = pathlib.Path(sys.argv[1])
-names = ("runtime_broker.py", "tenant_turn.py", "telegram_ingress.py", "hosted_service.py", "hosted_worker.py", "tenant_admin.py", "tenantctl.py", "provider_admin.py", "gemini_pool_admin.py", "tenant_provisioner.py", "operator_dashboard.py", "image_broker.py", "central_image_service.py", "central_codex_account_pool.py", "recovery_identity.py", "recovery_service.py", "recovery_email_worker.py", "recovery_smtp.py")
+names = ("runtime_broker.py", "tenant_turn.py", "telegram_ingress.py", "hosted_service.py", "hosted_worker.py", "tenant_admin.py", "tenantctl.py", "provider_admin.py", "gemini_pool_admin.py", "tenant_provisioner.py", "operator_dashboard.py", "image_broker.py", "central_image_service.py", "central_codex_account_pool.py", "campaign_compiler_broker.py", "central_campaign_compiler_canary.py", "recovery_identity.py", "recovery_service.py", "recovery_email_worker.py", "recovery_smtp.py")
 files = [root / name for name in names]
 for path in files:
     ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 PY
 then ok 'Python syntax'; else fail 'Python syntax'; fi
+if [[ -f "$ROOT_DIR/central_campaign_compiler_canary.py" ]] \
+   && grep -Fq 'maybe_compile_central_campaign' "$ROOT_DIR/central_campaign_compiler_canary.py" \
+   && grep -Fq 'never invokes a campaign MCP' "$ROOT_DIR/central_campaign_compiler_canary.py"; then
+  ok 'transport-only central campaign compiler canary is present'
+else
+  fail 'transport-only central campaign compiler canary is missing'
+fi
 if bash -n "$ROOT_DIR/bootstrap-control-plane.sh" "$ROOT_DIR/install-runtime-broker.sh" "$ROOT_DIR/install-tenant-provisioner.sh" "$ROOT_DIR/prepare-central-image-broker.sh" "$ROOT_DIR/apply-control-plane.sh" "$ROOT_DIR/capacity-preflight.sh" "$ROOT_DIR/open-operator-dashboard.command"; then
   ok 'shell syntax'
 else
@@ -523,6 +531,30 @@ WHERE n.nspname = 'admira'
   else
     fail 'central-image ledger migration is not visible in PostgreSQL'
   fi
+  central_compiler_check_sql="SELECT
+  to_regprocedure('admira.resolve_central_campaign_compiler_access_for_runtime(text)') IS NOT NULL
+  AND has_function_privilege(
+    'admira_image',
+    'admira.resolve_central_campaign_compiler_access_for_runtime(text)',
+    'EXECUTE'
+  )
+  AND NOT has_table_privilege('admira_image', 'admira.tenants', 'SELECT')
+  AND NOT has_table_privilege('admira_image', 'admira.tenant_runtime_leases', 'SELECT')
+  AND EXISTS (
+    SELECT 1 FROM pg_proc AS p JOIN pg_namespace AS n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'admira'
+      AND p.proname = 'resolve_central_campaign_compiler_access_for_runtime'
+      AND pg_get_functiondef(p.oid) LIKE '%SECURITY DEFINER%'
+      AND pg_get_functiondef(p.oid) LIKE '%resolve_tenant_image_access%'
+  );"
+  if printf '%s\n' "$central_compiler_check_sql" | \
+      docker compose --project-directory "$ROOT_DIR" -f "$ROOT_DIR/compose.yaml" exec -T postgres \
+      sh -ec 'export PGPASSWORD="$(cat /run/secrets/postgres_password)"; exec psql -qAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+      2>/dev/null | grep -qx t; then
+    ok 'central campaign compiler entitlement is visible in PostgreSQL without table access'
+  else
+    fail 'central campaign compiler entitlement migration is not visible in PostgreSQL'
+  fi
   recovery_check_sql="SELECT
   to_regclass('admira.tenant_license_contacts') IS NOT NULL
   AND to_regclass('admira.tenant_recovery_challenges') IS NOT NULL
@@ -636,6 +668,13 @@ else
     && grep -q "existing.available_at > now()" "$ROOT_DIR/db/migrations/008_central_image_jobs.sql" \
     && ok 'central image ledger is runtime-keyed, fenced and backoff-aware' \
     || fail 'central image ledger safety gates missing'
+  grep -q 'resolve_central_campaign_compiler_access_for_runtime' "$ROOT_DIR/db/migrations/016_central_campaign_compiler.sql" \
+    && grep -q 'SECURITY DEFINER' "$ROOT_DIR/db/migrations/016_central_campaign_compiler.sql" \
+    && grep -q 'REVOKE ALL ON ALL TABLES IN SCHEMA admira FROM admira_image' "$ROOT_DIR/db/migrations/016_central_campaign_compiler.sql" \
+    && grep -q 'CampaignCompilerBroker' "$ROOT_DIR/campaign_compiler_broker.py" \
+    && grep -q 'CentralCampaignCompilerServer' "$ROOT_DIR/central_image_service.py" \
+    && ok 'central Terra compiler shares the isolated Codex pool with signed tenant access' \
+    || fail 'central campaign compiler safety gates missing'
   grep -q 'CREATE TABLE IF NOT EXISTS admira.tenant_license_contacts' "$ROOT_DIR/db/migrations/009_telegram_license_recovery.sql" \
     && grep -q 'CREATE TABLE IF NOT EXISTS admira.tenant_recovery_challenges' "$ROOT_DIR/db/migrations/009_telegram_license_recovery.sql" \
     && grep -q 'CREATE TABLE IF NOT EXISTS admira.telegram_recovery_chat_outbox' "$ROOT_DIR/db/migrations/009_telegram_license_recovery.sql" \

@@ -198,6 +198,7 @@ services:
       ADMIRA_DB_USER: admira_image_login
       ADMIRA_DB_PASSWORD_FILE: /run/secrets/image_db_password
       ADMIRA_CENTRAL_IMAGE_SOCKET: /run/admira-central-image-broker/broker.sock
+      ADMIRA_CENTRAL_CAMPAIGN_COMPILER_SOCKET: /run/admira-central-image-broker/compiler.sock
       ADMIRA_CENTRAL_IMAGE_EXCHANGE_ROOT: /srv/admira-central-image-exchange
       ADMIRA_CENTRAL_IMAGE_KEY_ROOT: /etc/admira/central-image-keys
       ADMIRA_CENTRAL_IMAGE_MAX_GLOBAL: ${ADMIRA_CENTRAL_IMAGE_MAX_GLOBAL:-2}

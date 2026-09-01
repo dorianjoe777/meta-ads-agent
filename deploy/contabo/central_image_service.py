@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed Unix-socket service for centrally sponsored images.
+"""Fail-closed Unix-socket service for centrally sponsored Codex work.
 
 The service is intentionally small: authentication, tenant entitlement and
 artifact validation remain in :mod:`image_broker`; this process only exposes
@@ -19,26 +19,42 @@ import stat
 import threading
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Mapping
 
 try:  # service is copied beside image_broker.py in the container
-    from image_broker import ImageBroker
+    from image_broker import ImageBroker, _private_key
 except ImportError:  # package imports used by tests
-    from deploy.contabo.image_broker import ImageBroker
+    from deploy.contabo.image_broker import ImageBroker, _private_key
 
 try:  # service is copied beside central_codex_account_pool.py in the container
     from central_codex_account_pool import CentralCodexAccountPool
 except ImportError:  # package imports used by tests
     from deploy.contabo.central_codex_account_pool import CentralCodexAccountPool
 
+try:  # service is copied beside campaign_compiler_broker.py in the container
+    from campaign_compiler_broker import (
+        CampaignCompilerBroker,
+        MAX_PROVIDER_TIMEOUT_SECONDS,
+        MODEL as CENTRAL_COMPILER_MODEL,
+    )
+except ImportError:  # package imports used by tests
+    from deploy.contabo.campaign_compiler_broker import (
+        CampaignCompilerBroker,
+        MAX_PROVIDER_TIMEOUT_SECONDS,
+        MODEL as CENTRAL_COMPILER_MODEL,
+    )
+
 
 MAX_LINE = 128 * 1024
 DEFAULT_SOCKET = "/run/admira-central-image-broker/broker.sock"
+DEFAULT_COMPILER_SOCKET = "/run/admira-central-image-broker/compiler.sock"
 DEFAULT_TENANTS_ROOT = "/srv/admira/shared/central-image-exchange"
 DEFAULT_KEY_ROOT = "/etc/admira/central-image-keys"
 DEFAULT_DB_USER = "admira_image_login"
 DEFAULT_CODEX_AUTH_ROOT = "/app/runtime/hermes/codex-auth-pool"
 DEFAULT_CODEX_ACCOUNT_IDS = "primary,secondary"
+COMPILER_RESPONSE_LIMIT = MAX_LINE - 2048
 
 
 class EntitlementStore:
@@ -53,6 +69,44 @@ class EntitlementStore:
         try:
             return str(self._query(tenant_id))
         except Exception:
+            return "blocked"
+
+
+class PostgresCentralCampaignCompilerEntitlement:
+    """Resolve one central compiler entitlement without retaining request text.
+
+    The tenant client presents a runtime key rather than a database tenant ID.
+    PostgreSQL resolves it again at this trust boundary, so an entitlement file
+    in a tenant never grants access on its own.
+    """
+
+    def __init__(self, connect: Callable[[], Any]):
+        self._connect = connect
+
+    def __call__(self, runtime_key: str, purpose: str) -> str:
+        if purpose != "campaign_compile":
+            return "blocked"
+        try:
+            connection = self._connect()
+            try:
+                with connection.transaction():
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            "SELECT * FROM admira.resolve_central_campaign_compiler_access_for_runtime(%s)",
+                            (runtime_key,),
+                        )
+                        row = cursor.fetchone() if cursor.description else None
+                        if row is None:
+                            return "blocked"
+                        values = dict(row) if isinstance(row, Mapping) else dict(
+                            zip([item.name for item in cursor.description], row)
+                        )
+                        return "central_sponsored" if values.get("route") == "central_sponsored" else "blocked"
+            finally:
+                connection.close()
+        except Exception:
+            # Keep database/provider diagnostics on the service boundary. A
+            # tenant gets only the stable entitlement-blocked outcome.
             return "blocked"
 
 
@@ -151,7 +205,7 @@ def postgres_connect_factory_from_env() -> Callable[[], Any]:
     return connect
 
 
-def central_codex_account_pool_from_env() -> CentralCodexAccountPool:
+def central_codex_account_pool_from_env(*, compiler_provider: Callable[..., object] | None = None) -> CentralCodexAccountPool:
     """Build the central account pool once, failing closed on unsafe homes."""
     root = Path(os.environ.get("ADMIRA_CENTRAL_CODEX_AUTH_ROOT", DEFAULT_CODEX_AUTH_ROOT))
     if not root.is_absolute():
@@ -165,7 +219,7 @@ def central_codex_account_pool_from_env() -> CentralCodexAccountPool:
     account_ids = os.environ.get("ADMIRA_CENTRAL_CODEX_ACCOUNT_IDS", DEFAULT_CODEX_ACCOUNT_IDS).split(",")
     accounts = [{"id": account_id, "codex_home": str(root / account_id)} for account_id in account_ids]
     try:
-        return CentralCodexAccountPool(accounts)
+        return CentralCodexAccountPool(accounts, compiler_provider=compiler_provider)
     except Exception as exc:
         # Configuration details are deliberately not copied into service or
         # tenant responses. The activation preflight reports the exact slot.
@@ -196,6 +250,93 @@ def central_codex_provider(body: Mapping[str, Any], workdir: Path, *,
     if not output:
         raise RuntimeError("provider_failed")
     return Path(str(output))
+
+
+def _compiler_failure_category(result: object) -> str:
+    """Reduce a local Codex result before it reaches the shared pool."""
+    if not isinstance(result, Mapping):
+        return "provider_failed"
+    detail = " ".join(
+        str(result.get(key) or "")
+        for key in ("reason", "error", "diagnostic", "error_type")
+    ).lower()
+    if "timeout" in detail:
+        return "provider_timeout"
+    if any(token in detail for token in ("auth", "not logged", "unauthorized", "missing bearer")):
+        return "provider_auth"
+    if any(token in detail for token in ("usage limit", "rate limit", "quota", "limit reached")):
+        return "codex_usage_limit"
+    if "unavailable" in detail or "connection" in detail:
+        return "provider_unavailable"
+    return "provider_failed"
+
+
+def central_codex_campaign_compiler_provider(
+    prompt: str,
+    schema: Mapping[str, Any],
+    *,
+    codex_home: Path,
+    timeout: int,
+    model: str,
+) -> dict[str, Any]:
+    """Run Terra in a central OAuth slot, never in the tenant container.
+
+    ``_terra_compile`` is reused so the central path has the exact same
+    Codex CLI invocation and structured-output contract as the proven
+    single-runtime DigitalOcean canary.  ``use_central=False`` prevents a
+    broker loop; ``codex_home`` selects the pool-owned OAuth session.
+    """
+    try:
+        from campaign_payload_compiler import _terra_compile
+        config = SimpleNamespace(
+            codex_cli=os.environ.get("CODEX_CLI", "codex"),
+            hermes_home=os.environ.get("HERMES_HOME", "/app/runtime/hermes"),
+        )
+        result = _terra_compile(
+            prompt,
+            schema,
+            config=config,
+            timeout=max(1, min(int(timeout), 300)),
+            model=model,
+            codex_home=codex_home,
+            use_central=False,
+        )
+    except Exception:
+        return {"ok": False, "failure_category": "provider_failed"}
+    compiled = result.get("compiled") if isinstance(result, Mapping) else None
+    if isinstance(result, Mapping) and result.get("ok") is True and isinstance(compiled, Mapping):
+        return {"ok": True, "compiled": dict(compiled)}
+    return {"ok": False, "failure_category": _compiler_failure_category(result)}
+
+
+def central_campaign_compiler_schema(tool: str) -> Mapping[str, Any]:
+    """Select the output schema on the central side, not from a tenant."""
+    from campaign_payload_compiler import compiler_output_schema
+    schema = compiler_output_schema(tool)
+    if not isinstance(schema, Mapping):
+        raise ValueError("schema_failed")
+    return schema
+
+
+def central_campaign_compiler_provider(
+    request: Mapping[str, Any], schema: Mapping[str, Any], *, pool: CentralCodexAccountPool
+) -> Mapping[str, Any]:
+    """Use the same slots/locks/cooldowns as central image generation."""
+    requested_timeout = request.get("timeout_seconds", MAX_PROVIDER_TIMEOUT_SECONDS)
+    if isinstance(requested_timeout, bool) or not isinstance(requested_timeout, int):
+        raise RuntimeError("provider_failed")
+    result = pool.compile(
+        str(request.get("prompt") or ""),
+        schema,
+        timeout=max(1, min(requested_timeout, MAX_PROVIDER_TIMEOUT_SECONDS)),
+    )
+    compiled = result.get("compiled") if isinstance(result, Mapping) else None
+    if not isinstance(result, Mapping) or result.get("ok") is not True or not isinstance(compiled, Mapping):
+        # The broker deliberately maps this to one stable provider code. Do
+        # not let account IDs, CLI diagnostics, or raw provider categories
+        # cross the Unix-socket boundary.
+        raise RuntimeError("provider_failed")
+    return dict(compiled)
 
 
 class CentralImageServer:
@@ -292,8 +433,13 @@ class CentralImageServer:
         finally:
             connection.close()
 
+    def bind(self) -> socket.socket:
+        if self._listener is None:
+            self._listener = self._bind()
+        return self._listener
+
     def serve_forever(self) -> None:
-        self._listener = self._bind()
+        self.bind()
         try:
             while not self.stop_event.is_set():
                 try:
@@ -348,15 +494,61 @@ class CentralImageServer:
             pass
 
 
+class CentralCampaignCompilerServer(CentralImageServer):
+    """Serve only the small structured campaign-compiler protocol."""
+
+    @staticmethod
+    def _safe_response(result: object) -> dict[str, Any]:
+        if not isinstance(result, Mapping):
+            return {"ok": False, "error_code": "internal_error"}
+        if result.get("ok") is True:
+            tenant_id = result.get("tenant_id")
+            request_id = result.get("request_id")
+            model = result.get("model")
+            compiled = result.get("compiled")
+            if not all(isinstance(item, str) and item for item in (tenant_id, request_id, model)) \
+                    or model != CENTRAL_COMPILER_MODEL \
+                    or not isinstance(compiled, Mapping):
+                return {"ok": False, "error_code": "compiled_invalid"}
+            response = {
+                "ok": True,
+                "tenant_id": tenant_id,
+                "request_id": request_id,
+                "model": model,
+                "compiled": dict(compiled),
+            }
+            try:
+                encoded = json.dumps(response, separators=(",", ":")).encode()
+            except (TypeError, ValueError):
+                return {"ok": False, "error_code": "compiled_invalid"}
+            if len(encoded) > COMPILER_RESPONSE_LIMIT:
+                return {"ok": False, "error_code": "response_too_large"}
+            return response
+        code = str(result.get("error_code") or "internal_error")
+        safe = {
+            "invalid_request", "invalid_signature", "expired_request", "replayed_request",
+            "entitlement_blocked", "tool_not_allowed", "tenant_busy", "global_busy",
+            "schema_failed", "provider_failed", "compiled_invalid", "response_too_large",
+            "tenant_not_found", "internal_error",
+        }
+        return {"ok": False, "error_code": code if code in safe else "internal_error"}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--socket", default=os.environ.get("ADMIRA_CENTRAL_IMAGE_SOCKET", DEFAULT_SOCKET))
+    parser.add_argument(
+        "--compiler-socket",
+        default=os.environ.get("ADMIRA_CENTRAL_CAMPAIGN_COMPILER_SOCKET", DEFAULT_COMPILER_SOCKET),
+    )
     parser.add_argument("--tenants-root", default=os.environ.get("ADMIRA_CENTRAL_IMAGE_EXCHANGE_ROOT", DEFAULT_TENANTS_ROOT))
     parser.add_argument("--key-root", default=os.environ.get("ADMIRA_CENTRAL_IMAGE_KEY_ROOT", DEFAULT_KEY_ROOT))
     args = parser.parse_args(argv)
     connect = postgres_connect_factory_from_env()
     ledger = PostgresCentralImageLedger(connect)
-    account_pool = central_codex_account_pool_from_env()
+    account_pool = central_codex_account_pool_from_env(
+        compiler_provider=central_codex_campaign_compiler_provider,
+    )
     provider = partial(central_codex_provider, pool=account_pool)
     max_global = min(
         int(os.environ.get("ADMIRA_CENTRAL_IMAGE_MAX_GLOBAL", "2")),
@@ -371,13 +563,53 @@ def main(argv: list[str] | None = None) -> int:
         Path(args.socket),
         max_clients=int(os.environ.get("ADMIRA_CENTRAL_IMAGE_MAX_CLIENTS", "32")),
     )
-    signal.signal(signal.SIGTERM, lambda *_: server.close())
-    signal.signal(signal.SIGINT, lambda *_: server.close())
+    compiler_broker = CampaignCompilerBroker(
+        lambda tenant: _private_key(Path(args.key_root), tenant),
+        central_campaign_compiler_schema,
+        PostgresCentralCampaignCompilerEntitlement(connect),
+        partial(central_campaign_compiler_provider, pool=account_pool),
+        max_global=max_global,
+        max_response_bytes=COMPILER_RESPONSE_LIMIT,
+    )
+    compiler_server = CentralCampaignCompilerServer(
+        compiler_broker,
+        Path(args.compiler_socket),
+        max_clients=int(os.environ.get("ADMIRA_CENTRAL_COMPILER_MAX_CLIENTS", "16")),
+    )
+
+    # Bind both listeners before exposing either. A partial activation would
+    # make an entitled tenant fall back to a local credential that it must not
+    # possess, so a socket failure stops the central service as a whole.
+    compiler_server.bind()
+    server.bind()
+    compiler_failed = threading.Event()
+
+    def serve_compiler() -> None:
+        try:
+            compiler_server.serve_forever()
+        except Exception:
+            compiler_failed.set()
+            server.close()
+
+    compiler_thread = threading.Thread(
+        target=serve_compiler,
+        name="admira-central-campaign-compiler",
+        daemon=True,
+    )
+    compiler_thread.start()
+
+    def close_servers(*_args: object) -> None:
+        compiler_server.close()
+        server.close()
+
+    signal.signal(signal.SIGTERM, close_servers)
+    signal.signal(signal.SIGINT, close_servers)
     try:
         server.serve_forever()
     finally:
-        server.close()
-    return 0
+        close_servers()
+        compiler_thread.join(timeout=5)
+    return 1 if compiler_failed.is_set() else 0
 
 
 if __name__ == "__main__":
