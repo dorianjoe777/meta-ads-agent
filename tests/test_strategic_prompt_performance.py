@@ -665,6 +665,135 @@ class StrategicPromptPerformanceTests(unittest.TestCase):
             },
         ])
 
+    def test_direct_bridge_canonicalizes_and_records_profile_review(self):
+        class FakeConfig:
+            hermes_require_codex_auth = False
+            hermes_use_python_library = False
+
+        payload = {
+            "channel": "telegram",
+            "session_key": "agent:main:telegram:dm:123:g0",
+            "message_sequence": 41,
+            "message": "¿puedes revisar el resumen?",
+            "language": "es",
+            "_admira_trusted_session_id": "agent:main:legacy_telegram:agent:main:telegram:dm:123:g0",
+            "_admira_trusted_chat_id": "legacy_telegram:agent:main:telegram:dm:123:g0",
+        }
+        canonical = "Resumen del negocio — revisión 1\n\n- Servicios y productos [confirmado]: restaurante"
+
+        with patch.object(hermes_bridge, "_record_bridge_trusted_buyer_turn", side_effect=lambda value: value), \
+                patch.object(hermes_bridge, "hermes_brain_settings", return_value={
+                    "requires_codex_auth": False, "brain": "openai_codex", "model": "gpt-5.6-luna",
+                }), \
+                patch.object(hermes_bridge, "hermes_brain_ready", return_value=(True, "ready")), \
+                patch.object(hermes_bridge, "cli_chat", return_value="Aquí está el resumen del negocio. ¿Lo confirmas?"), \
+                patch.object(runtime, "_resolve_business_lifecycle_transition", return_value={}) as resolve, \
+                patch.object(runtime, "_attach_current_turn_tool_receipts", side_effect=lambda value, _session: value), \
+                patch.object(runtime, "_admira_strategic_profile_state", return_value={"complete": False}), \
+                patch.object(runtime, "_ensure_business_lifecycle_artifact_visible", return_value={"text": canonical}) as ensure, \
+                patch.object(runtime, "_record_business_lifecycle_artifact_presented", return_value=True) as record:
+            result = hermes_bridge.chat(FakeConfig(), payload)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["reply"], canonical)
+        resolve.assert_called_once_with(
+            session_id=payload["_admira_trusted_session_id"],
+            chat_id=payload["_admira_trusted_chat_id"],
+            raw_message=payload["message"],
+            target="",
+        )
+        ensure.assert_called_once_with(
+            session_id=payload["_admira_trusted_session_id"],
+            chat_id=payload["_admira_trusted_chat_id"],
+            assistant_text="Aquí está el resumen del negocio. ¿Lo confirmas?",
+            target="business_profile",
+        )
+        record.assert_called_once_with(
+            session_id=payload["_admira_trusted_session_id"],
+            chat_id=payload["_admira_trusted_chat_id"],
+            assistant_text=canonical,
+            target="business_profile",
+        )
+
+    def test_direct_bridge_resolves_confirmation_without_model_reinterpretation(self):
+        class FakeConfig:
+            hermes_require_codex_auth = False
+            hermes_use_python_library = False
+
+        payload = {
+            "channel": "telegram",
+            "session_key": "agent:main:telegram:dm:123:g0",
+            "message_sequence": 42,
+            "message": "sí, confirmo el resumen",
+            "language": "es",
+            "_admira_trusted_session_id": "agent:main:legacy_telegram:agent:main:telegram:dm:123:g0",
+            "_admira_trusted_chat_id": "legacy_telegram:agent:main:telegram:dm:123:g0",
+        }
+        canonical = "Propuesta inicial de anuncios\n\n1. Diagnóstico\nPlan completo"
+
+        with patch.object(hermes_bridge, "_record_bridge_trusted_buyer_turn", side_effect=lambda value: value), \
+                patch.object(hermes_bridge, "hermes_brain_settings", return_value={
+                    "requires_codex_auth": False, "brain": "openai_codex", "model": "gpt-5.6-luna",
+                }), \
+                patch.object(hermes_bridge, "hermes_brain_ready", return_value=(True, "ready")), \
+                patch.object(hermes_bridge, "cli_chat") as cli, \
+                patch.object(runtime, "_resolve_business_lifecycle_transition", return_value={
+                    "transitioned": True, "target": "business_profile",
+                }), \
+                patch.object(runtime, "_ensure_initial_business_master_plan", return_value={
+                    "ok": True, "attempted": True, "created": True,
+                }) as ensure_plan, \
+                patch.object(runtime, "_attach_current_turn_tool_receipts", side_effect=lambda value, _session: value), \
+                patch.object(runtime, "_admira_strategic_profile_state", return_value={
+                    "complete": True, "master_plan_status": "proposed",
+                }), \
+                patch.object(runtime, "_ensure_business_lifecycle_artifact_visible", return_value={"text": canonical}), \
+                patch.object(runtime, "_record_business_lifecycle_artifact_presented", return_value=True):
+            result = hermes_bridge.chat(FakeConfig(), payload)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["reply"], canonical)
+        cli.assert_not_called()
+        ensure_plan.assert_called_once_with(expected_turn={
+            "chat_id": payload["_admira_trusted_chat_id"],
+            "session_id": payload["_admira_trusted_session_id"],
+            "transport": "legacy_telegram",
+            "raw_message": payload["message"],
+            "message_sequence": 42,
+        })
+
+    def test_direct_bridge_removes_unverified_profile_save_claim(self):
+        class FakeConfig:
+            hermes_require_codex_auth = False
+            hermes_use_python_library = False
+
+        payload = {
+            "channel": "telegram",
+            "session_key": "agent:main:telegram:dm:123:g0",
+            "message_sequence": 43,
+            "message": "sí",
+            "language": "es",
+            "_admira_trusted_session_id": "agent:main:legacy_telegram:agent:main:telegram:dm:123:g0",
+            "_admira_trusted_chat_id": "legacy_telegram:agent:main:telegram:dm:123:g0",
+        }
+
+        with patch.object(hermes_bridge, "_record_bridge_trusted_buyer_turn", side_effect=lambda value: value), \
+                patch.object(hermes_bridge, "hermes_brain_settings", return_value={
+                    "requires_codex_auth": False, "brain": "openai_codex", "model": "gpt-5.6-luna",
+                }), \
+                patch.object(hermes_bridge, "hermes_brain_ready", return_value=(True, "ready")), \
+                patch.object(hermes_bridge, "cli_chat", return_value="El perfil quedó oficialmente confirmado y guardado."), \
+                patch.object(runtime, "_resolve_business_lifecycle_transition", return_value={}), \
+                patch.object(runtime, "_attach_current_turn_tool_receipts", side_effect=lambda value, _session: value), \
+                patch.object(runtime, "_admira_strategic_profile_state", return_value={"complete": False}), \
+                patch.object(runtime, "_ensure_business_lifecycle_artifact_visible", side_effect=lambda **kwargs: {"text": kwargs["assistant_text"]}), \
+                patch.object(runtime, "_record_business_lifecycle_artifact_presented", return_value=False):
+            result = hermes_bridge.chat(FakeConfig(), payload)
+
+        self.assertTrue(result["ok"])
+        self.assertNotIn("guardado", result["reply"].lower())
+        self.assertNotIn("oficialmente confirmado", result["reply"].lower())
+
     def test_prompts_require_onboarding_without_campaign_first_option(self):
         english = hermes_gateway.gateway_prompt("en")
         spanish = hermes_gateway.gateway_prompt("es")

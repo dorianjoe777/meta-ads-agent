@@ -56,7 +56,7 @@ class CentralClientTests(unittest.TestCase):
             thread=threading.Thread(target=serve); thread.start()
             env={"ADMIRA_HOSTED_IMAGE_ACCESS_FILE":str(access),"ADMIRA_CENTRAL_IMAGE_CLIENT_KEY_FILE":str(key),"ADMIRA_CENTRAL_IMAGE_SOCKET":str(sock),"ADMIRA_CENTRAL_IMAGE_EXCHANGE_ROOT":str(exchange),"ADMIRA_TENANT_ID":"tenant-001"}
             with patch.dict(os.environ,env): result=maybe_generate_central_image("x",output_root=root/"out",reference_image_paths=[ref],update_id=3)
-            thread.join(); self.assertTrue(result["ok"], result); generated=Path(result["image_path"]); self.assertEqual(generated.read_bytes(),PNG); self.assertEqual(stat.S_IMODE(generated.stat().st_mode),0o600); self.assertTrue(result["request_id"])
+            thread.join(); self.assertTrue(result["ok"], result); generated=Path(result["image_path"]); self.assertEqual(generated.read_bytes(),PNG); self.assertEqual(stat.S_IMODE(generated.parent.stat().st_mode),0o755); self.assertEqual(stat.S_IMODE(generated.stat().st_mode),0o644); self.assertTrue(result["request_id"])
 
     def test_rejects_symlink_reference_and_bad_response(self):
         with tempfile.TemporaryDirectory() as d:

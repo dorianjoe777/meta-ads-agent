@@ -2834,6 +2834,128 @@ def _record_bridge_trusted_buyer_turn(payload):
     return prepared
 
 
+def _bridge_lifecycle_expected_turn(payload):
+    """Describe the already-recorded direct bridge turn for lifecycle hooks.
+
+    Hosted Telegram uses :func:`chat` rather than Hermes' native
+    ``GatewayRunner``.  Keep the same backend-owned confirmation contract by
+    forwarding the exact turn identity that `_record_bridge_trusted_buyer_turn`
+    just wrote; do not infer confirmation from a reply or from conversation
+    history.
+    """
+    if not isinstance(payload, dict):
+        return {}
+    channel = str(payload.get("channel") or "").strip().lower().replace("-", "_")
+    if channel not in {"dashboard", "telegram", "simulated_telegram"}:
+        return {}
+    raw_message = payload.get("message")
+    raw_message = raw_message if isinstance(raw_message, str) else str(raw_message or "")
+    session_id = str(payload.get("_admira_trusted_session_id") or "").strip()
+    chat_id = str(payload.get("_admira_trusted_chat_id") or "").strip()
+    try:
+        message_sequence = int(payload.get("message_sequence"))
+    except (TypeError, ValueError):
+        return {}
+    if not raw_message or not session_id or not chat_id or message_sequence < 0:
+        return {}
+    return {
+        "chat_id": chat_id,
+        "session_id": session_id,
+        "transport": "legacy_telegram" if channel == "telegram" else channel,
+        "raw_message": raw_message,
+        "message_sequence": message_sequence,
+    }
+
+
+def _resolve_bridge_business_lifecycle(payload):
+    """Resolve a prior canonical review before a direct Hermes turn runs."""
+    expected_turn = _bridge_lifecycle_expected_turn(payload)
+    if not expected_turn:
+        return {"transition": {}, "plan_generation": {}}
+    try:
+        from admira_hermes_runtime_patch import (
+            _ensure_initial_business_master_plan,
+            _resolve_business_lifecycle_transition,
+        )
+
+        transition = _resolve_business_lifecycle_transition(
+            session_id=expected_turn["session_id"],
+            chat_id=expected_turn["chat_id"],
+            raw_message=expected_turn["raw_message"],
+            target="",
+        )
+        transition = transition if isinstance(transition, dict) else {}
+        # Planning is backend-owned.  Only compile it on the exact turn that
+        # just confirmed the profile; unrelated greetings and logo work must
+        # stay natural model decisions.
+        if transition.get("transitioned") and transition.get("target") == "business_profile":
+            plan_generation = _ensure_initial_business_master_plan(expected_turn=expected_turn)
+            plan_generation = plan_generation if isinstance(plan_generation, dict) else {}
+        else:
+            plan_generation = {}
+        return {"transition": transition, "plan_generation": plan_generation}
+    except Exception:
+        # Lifecycle persistence is fail-closed in the backend.  A rolling
+        # upgrade must not silence an otherwise ordinary buyer conversation.
+        return {"transition": {}, "plan_generation": {}}
+
+
+def _finalize_bridge_lifecycle_reply(payload, reply, language, lifecycle):
+    """Apply direct-bridge truth guards and record a visible lifecycle review."""
+    try:
+        from admira_hermes_runtime_patch import (
+            _admira_strategic_profile_state,
+            _append_generated_media_attachments,
+            _attach_current_turn_tool_receipts,
+            _ensure_business_lifecycle_artifact_visible,
+            _guard_authoritative_image_outcome,
+            _guard_unconfirmed_persistence_claim,
+            _record_business_lifecycle_artifact_presented,
+            normalize_telegram_outbound_text,
+        )
+
+        finalized, _metadata = normalize_telegram_outbound_text(reply, language)
+        response = {"final_response": finalized}
+        session_name = hermes_session_name(payload)
+        if session_name:
+            response = _attach_current_turn_tool_receipts(response, session_name)
+        # A backend lifecycle transition is itself durable evidence.  In all
+        # other cases, a CLI model cannot claim that it saved the profile
+        # unless the current tool receipt proves it.
+        transition = lifecycle.get("transition") if isinstance(lifecycle, dict) else {}
+        if not isinstance(transition, dict) or not transition.get("transitioned"):
+            response = _guard_unconfirmed_persistence_claim(response)
+        response = _guard_authoritative_image_outcome(response)
+        response = _append_generated_media_attachments(response)
+        finalized = str(response.get("final_response") or "")
+
+        expected_turn = _bridge_lifecycle_expected_turn(payload)
+        if not expected_turn:
+            return finalized
+        state = _admira_strategic_profile_state()
+        target = (
+            "business_profile" if not state.get("complete")
+            else ("strategic_plan" if state.get("master_plan_status") == "proposed" else "")
+        )
+        ensured = _ensure_business_lifecycle_artifact_visible(
+            session_id=expected_turn["session_id"],
+            chat_id=expected_turn["chat_id"],
+            assistant_text=finalized,
+            target=target,
+        )
+        if isinstance(ensured, dict) and isinstance(ensured.get("text"), str):
+            finalized = ensured["text"]
+        _record_business_lifecycle_artifact_presented(
+            session_id=expected_turn["session_id"],
+            chat_id=expected_turn["chat_id"],
+            assistant_text=finalized,
+            target=target,
+        )
+        return finalized
+    except Exception:
+        return str(reply or "")
+
+
 def hermes_environment(config):
     env = os.environ.copy()
     # Every Hermes subprocess must load Admira's compatibility hooks. This is
@@ -3574,26 +3696,46 @@ def chat(config, payload):
                     "error": f"Hermes brain is not ready: {detail}",
                 }
         pending_edits_before = pending_campaign_edit_snapshot()
-        images = safe_image_paths(payload)
+        lifecycle = _resolve_bridge_business_lifecycle(payload)
+        plan_generation = lifecycle.get("plan_generation") if isinstance(lifecycle, dict) else {}
         used_cli = False
-        if images:
-            used_cli = True
-            reply = cli_chat(config, payload)
-        elif hermes_session_name(payload):
-            used_cli = True
-            reply = cli_chat(config, payload)
-        elif getattr(config, "hermes_use_python_library", True):
-            try:
-                reply = library_chat(config, payload)
-            except (ImportError, ModuleNotFoundError):
-                used_cli = True
-                reply = cli_chat(config, payload)
-            if not str(reply or "").strip():
-                used_cli = True
-                reply = cli_chat(config, payload)
+        if isinstance(plan_generation, dict) and plan_generation.get("created"):
+            # The backend owns the initial plan draft.  The final outbound
+            # lifecycle hook replaces this short placeholder with the exact
+            # canonical proposal and records that the buyer saw it.
+            reply = "Preparé una propuesta inicial de anuncios para que la pulamos juntos."
+        elif (
+            isinstance(plan_generation, dict)
+            and plan_generation.get("attempted")
+            and not plan_generation.get("ok")
+            and str(plan_generation.get("reason") or "")
+            != "strategic_plan_generation_compare_and_swap_failed"
+        ):
+            reply = (
+                "El resumen del negocio quedó confirmado, pero no pude preparar todavía la propuesta publicitaria "
+                "con la evidencia necesaria. No voy a inventar una dirección genérica. "
+                "Tu información está guardada y volveré a intentarlo de forma segura."
+            )
         else:
-            used_cli = True
-            reply = cli_chat(config, payload)
+            images = safe_image_paths(payload)
+            if images:
+                used_cli = True
+                reply = cli_chat(config, payload)
+            elif hermes_session_name(payload):
+                used_cli = True
+                reply = cli_chat(config, payload)
+            elif getattr(config, "hermes_use_python_library", True):
+                try:
+                    reply = library_chat(config, payload)
+                except (ImportError, ModuleNotFoundError):
+                    used_cli = True
+                    reply = cli_chat(config, payload)
+                if not str(reply or "").strip():
+                    used_cli = True
+                    reply = cli_chat(config, payload)
+            else:
+                used_cli = True
+                reply = cli_chat(config, payload)
         try:
             from admira_hermes_runtime_patch import (
                 normalize_telegram_outbound_text,
@@ -3623,15 +3765,7 @@ def chat(config, payload):
                 )
         except Exception:
             pass
-        try:
-            from admira_hermes_runtime_patch import _record_strategic_review_presented
-            _record_strategic_review_presented(
-                session_id=payload.get("_admira_trusted_session_id") or "",
-                chat_id=payload.get("_admira_trusted_chat_id") or "",
-                assistant_text=reply,
-            )
-        except Exception:
-            pass
+        reply = _finalize_bridge_lifecycle_reply(payload, reply, language, lifecycle)
         if not str(reply or "").strip():
             return {
                 "ok": False,

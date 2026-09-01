@@ -313,9 +313,15 @@ def maybe_generate_central_image(prompt: str, *, output_root: str | Path, output
                 return _error("output_invalid")
             stem = Path(name).stem or "creative"
             target_dir = root / f"central-{body['request_id'][:12]}"
-            target_dir.mkdir(mode=0o700, exist_ok=True)
+            target_dir.mkdir(mode=0o755, exist_ok=True)
             if target_dir.is_symlink() or not target_dir.is_dir():
                 return _error("output_invalid")
+            # ``root`` is the tenant's private 0700 output mount.  The host
+            # runtime broker must be able to traverse this generated child in
+            # order to stage the verified file into Telegram's private spool;
+            # it is not a cross-tenant share.  Repair an idempotent directory
+            # from an older attempt as well as creating new ones correctly.
+            target_dir.chmod(0o755)
             destination = target_dir / f"{stem}.{extension}"
             fd, temporary = tempfile.mkstemp(prefix=f".{stem}.", dir=str(target_dir))
             try:
@@ -323,7 +329,10 @@ def maybe_generate_central_image(prompt: str, *, output_root: str | Path, output
                     handle.write(data)
                     handle.flush()
                     os.fsync(handle.fileno())
-                os.chmod(temporary, 0o600)
+                # The enclosing tenant output mount remains private.  This
+                # file mode grants the host-side delivery broker read access
+                # for the one-way Telegram staging handoff.
+                os.chmod(temporary, 0o644)
                 os.replace(temporary, destination)
                 directory_fd = os.open(target_dir, os.O_RDONLY)
                 try:
