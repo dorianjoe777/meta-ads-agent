@@ -1043,6 +1043,82 @@ class NvidiaInferencePolicyTests(unittest.TestCase):
             "Propuesta exacta aprobada con 40.000 COP",
         )
 
+    def test_license_required_campaign_is_blocked_and_persists_approved_workflow(self):
+        tool = "admira_create_whatsapp_campaign"
+        compiled = {
+            "name": "Campaña WhatsApp aprobada",
+            "budget_confirmation": "10 dolares al dia",
+            "daily_budget": 10,
+            "locations": ["Bogotá, Colombia"],
+            "placements": {"automatic": True},
+            "primary_text": "Escríbenos para conocer la oferta.",
+            "headline": "Conoce nuestra oferta",
+            "primary_text_approved": True,
+            "headline_approved": True,
+            "prefilled_message": "Hola, quiero conocer la oferta.",
+            "prefilled_message_approved": True,
+            "creative_decision": "reuse_approved_creative",
+            "creative_approved": True,
+        }
+
+        class FakeDashboard:
+            class LicenseRequiredError(ValueError):
+                pass
+
+            @staticmethod
+            def configured_ad_account_currency():
+                return "USD"
+
+            @staticmethod
+            def confirmed_budget_contract(value):
+                return {
+                    "ok": value == "10 dolares al dia",
+                    "amount": 10,
+                    "currency": "USD",
+                }
+
+            @classmethod
+            def execute_agent_tool(cls, *_args, **_kwargs):
+                raise cls.LicenseRequiredError("entitlement required")
+
+        with tempfile.TemporaryDirectory() as directory:
+            workflow_path = Path(directory) / "pending_campaign_workflow.json"
+            with (
+                mock.patch.object(admira_tool_bridge, "PENDING_CAMPAIGN_WORKFLOW_FILE", workflow_path),
+                mock.patch.object(admira_tool_bridge, "load_dashboard", return_value=FakeDashboard()),
+                mock.patch.object(admira_tool_bridge, "strategic_profile_gate_result", return_value=None),
+                mock.patch.object(admira_tool_bridge, "campaign_has_verified_creative", return_value=True),
+                mock.patch.object(
+                    admira_tool_bridge,
+                    "compile_campaign_brief",
+                    return_value={
+                        "ok": True,
+                        "payload": compiled,
+                        "model": "test-compiler",
+                        "destination": "whatsapp",
+                    },
+                ),
+            ):
+                response = admira_tool_bridge.call_tool(
+                    tool,
+                    {"brief_markdown": "Propuesta aprobada: 10 dolares al dia"},
+                )
+            persisted = json.loads(workflow_path.read_text(encoding="utf-8"))
+
+        self.assertFalse(response["ok"])
+        self.assertTrue(response["blocked"])
+        self.assertFalse(response["executed"])
+        self.assertEqual(response["reason"], "license_required")
+        self.assertFalse(response["retryable"])
+        contract = persisted["campaign_contract"]
+        self.assertEqual(contract["daily_budget"], 10)
+        self.assertEqual(contract["budget_confirmation"], "10 dolares al dia")
+        self.assertTrue(contract["primary_text_approved"])
+        self.assertTrue(contract["headline_approved"])
+        self.assertTrue(contract["prefilled_message_approved"])
+        self.assertTrue(contract["creative_approved"])
+        self.assertEqual(persisted["blocker"], "license_required")
+
     def test_identical_completed_campaign_retry_reads_graph_and_never_mutates(self):
         args = {
             "name": "Rodeo - Full Detail en Taller (WhatsApp)",

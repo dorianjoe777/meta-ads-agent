@@ -1366,6 +1366,8 @@ def persist_pending_campaign_workflow(tool, args, reason, *, result=None, status
         "missing_prefilled_message": "Propose the exact WhatsApp prefilled message and show it to the buyer.",
         "prefilled_message_not_approved": "Show the exact WhatsApp prefilled message and obtain explicit approval.",
         "budget_currency_mismatch": "Ask only for the exact daily amount in the selected ad account currency; keep every other approved campaign field unchanged.",
+        "license_required": "Keep every approved field unchanged and retry only after a valid entitlement is available; do not ask for campaign confirmation again.",
+        "campaign_retry_ready": "Retry this exact approved campaign once; do not request another confirmation.",
     }
     creation_receipt = paused_campaign_creation_receipt(result)
     completed_verified = status == "completed" and bool(creation_receipt)
@@ -1978,7 +1980,34 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
     elif tool == "admira_reject_action":
         product_args["decision"] = "reject"
 
-    result = dashboard.execute_agent_tool({"tool": product_tool, "arguments": product_args}, payload)
+    try:
+        result = dashboard.execute_agent_tool({"tool": product_tool, "arguments": product_args}, payload)
+    except ValueError as exc:
+        license_error_type = getattr(dashboard, "LicenseRequiredError", None)
+        is_license_error = isinstance(license_error_type, type) and isinstance(exc, license_error_type)
+        if tool not in CAMPAIGN_CREATION_TOOLS or not is_license_error:
+            raise
+        persist_pending_campaign_workflow(
+            tool,
+            product_args,
+            "license_required",
+            proposal_markdown=brief_markdown,
+        )
+        return redact_payload({
+            "ok": False,
+            "tool": tool,
+            "product_tool": product_tool,
+            "blocked": True,
+            "executed": False,
+            "reason": "license_required",
+            "retryable": False,
+            "error": str(exc),
+            "reply": (
+                "No se creó nada en Meta: esta instalación necesita un entitlement de licencia activo. "
+                "Conservé el brief exacto, el presupuesto y todas las aprobaciones para reintentar la misma campaña "
+                "cuando el entitlement esté disponible; no hace falta confirmar la campaña otra vez."
+            ),
+        })
     response = {
         "ok": result_ok(result),
         "tool": tool,

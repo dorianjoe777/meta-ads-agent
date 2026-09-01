@@ -6,6 +6,7 @@ import json
 import os
 import re
 import socket
+import stat
 import subprocess
 import tempfile
 import threading
@@ -30,6 +31,8 @@ PLAN_DEFAULTS = {
 }
 LICENSE_REFRESH_WINDOW = timedelta(hours=24)
 LICENSE_REFRESH_RETRY_SECONDS = 300
+HOSTED_ENTITLEMENT_MAX_BYTES = 4096
+HOSTED_ENTITLEMENT_LIFECYCLES = {"trial", "licensed"}
 _LICENSE_REFRESH_LOCK = threading.Lock()
 _LICENSE_REFRESH_ATTEMPTS = {}
 
@@ -101,6 +104,82 @@ def normalize_license_entitlements(status=None):
         "is_agency": plan == "agency",
         "can_use_agency_workspaces": plan == "agency" and "agency_workspaces" in features,
         "can_use_multi_telegram_profiles": plan == "agency" and "multi_telegram_profiles" in features,
+    }
+
+
+def hosted_entitlement_status():
+    """Read the control-plane entitlement bound to the current hosted turn.
+
+    Hosted tenants are commercially admitted by the control plane before the
+    runtime broker starts a turn or scheduled job.  The broker writes this
+    private, tenant-bound claim immediately before that execution.  Requiring
+    the hosted gateway marker, an absolute regular file, private permissions,
+    the exact tenant identity and a per-request marker keeps self-hosted
+    installs on the signed-license path and makes malformed/stale inputs fail
+    closed.
+    """
+    if str(os.environ.get("ADMIRA_HOSTED_TELEGRAM_GATEWAY") or "").strip().lower() != "true":
+        return {}
+    tenant_id = str(os.environ.get("ADMIRA_TENANT_ID") or "").strip()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{2,62}", tenant_id):
+        return {}
+    raw_path = str(os.environ.get("ADMIRA_HOSTED_IMAGE_ACCESS_FILE") or "").strip()
+    path = Path(raw_path)
+    if not raw_path or not path.is_absolute() or ".." in path.parts:
+        return {}
+
+    descriptor = None
+    try:
+        path_details = path.lstat()
+        if stat.S_ISLNK(path_details.st_mode) or not stat.S_ISREG(path_details.st_mode):
+            return {}
+        if path_details.st_mode & 0o077 or path_details.st_size <= 0 or path_details.st_size > HOSTED_ENTITLEMENT_MAX_BYTES:
+            return {}
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        opened_details = os.fstat(descriptor)
+        if not stat.S_ISREG(opened_details.st_mode):
+            return {}
+        if (opened_details.st_dev, opened_details.st_ino) != (path_details.st_dev, path_details.st_ino):
+            return {}
+        if opened_details.st_mode & 0o077 or opened_details.st_size <= 0 or opened_details.st_size > HOSTED_ENTITLEMENT_MAX_BYTES:
+            return {}
+        raw = os.read(descriptor, HOSTED_ENTITLEMENT_MAX_BYTES + 1)
+        if len(raw) > HOSTED_ENTITLEMENT_MAX_BYTES:
+            return {}
+        claim = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+    if not isinstance(claim, dict) or str(claim.get("tenant_id") or "").strip() != tenant_id:
+        return {}
+    lifecycle_state = str(claim.get("lifecycle_state") or "").strip().lower()
+    if lifecycle_state not in HOSTED_ENTITLEMENT_LIFECYCLES:
+        return {}
+    request_marker = str(claim.get("update_id") or claim.get("request_marker") or "").strip()
+    if (
+        not request_marker
+        or len(request_marker) > 128
+        or any(ord(char) < 32 or ord(char) == 127 for char in request_marker)
+    ):
+        return {}
+
+    trial = lifecycle_state == "trial"
+    return {
+        "online": True,
+        "valid": True,
+        "status": "hosted_trial" if trial else "active",
+        "detail": "Hosted trial entitlement active" if trial else "Hosted license entitlement active",
+        "cloud_required": True,
+        "hosted": True,
+        "lifecycle_state": lifecycle_state,
+        **normalize_license_entitlements({"plan": "individual", "features": INDIVIDUAL_FEATURES}),
     }
 
 
@@ -335,6 +414,9 @@ def mark_license_install_state(config, event):
 
 
 def license_status(config):
+    hosted = hosted_entitlement_status()
+    if hosted:
+        return hosted
     offline = validate_license_key(config.license_key)
     if not offline["valid"]:
         return offline

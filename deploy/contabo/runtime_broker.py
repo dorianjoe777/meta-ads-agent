@@ -235,12 +235,14 @@ def _cron_snapshot(root: Path) -> list[dict[str, object]]:
 def _write_hosted_image_access(
     root: Path, tenant_id: str, raw: object, *, request_marker: object = ""
 ) -> Path:
-    """Persist one trusted, non-secret image route for the tenant tool process.
+    """Persist one trusted, non-secret hosted execution claim for the tenant.
 
     The central service independently rechecks the database entitlement.  This
-    file only prevents r91 from accidentally selecting a local ChatGPT account
-    during a sponsored or blocked turn, and is rewritten before every turn/job
-    so a persistent MCP process cannot retain stale authorization.
+    file carries both the image route and the lifecycle already admitted by the
+    control plane.  It prevents r91 from selecting a local ChatGPT account and
+    lets the hosted runtime distinguish an admitted trial/license from an
+    unlicensed self-hosted install.  It is rewritten before every turn/job so a
+    persistent MCP process cannot retain authorization across requests.
     """
     tenant_id = validate_tenant_id(tenant_id)
     values = raw if isinstance(raw, dict) else {}

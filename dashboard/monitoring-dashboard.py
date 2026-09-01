@@ -20407,13 +20407,17 @@ def execute_agent_tool(tool_request, chat_payload):
     }
 
 
+class LicenseRequiredError(ValueError):
+    """A commercial entitlement blocked the operation before any mutation."""
+
+
 def require_license_unlock(action_name="action"):
     config = load_config()
     if not config.license_required_for_live:
         return
     status = license_status(config)
     if not status.get("valid"):
-        raise ValueError(f"License unlock required for {action_name}: {status.get('detail')}")
+        raise LicenseRequiredError(f"License unlock required for {action_name}: {status.get('detail')}")
 
 
 def require_cloud_license(action_name="buyer feature"):
@@ -20422,7 +20426,7 @@ def require_cloud_license(action_name="buyer feature"):
         return
     status = license_status(config)
     if not status.get("valid"):
-        raise ValueError(f"{action_name}: {status.get('detail')}")
+        raise LicenseRequiredError(f"{action_name}: {status.get('detail')}")
 
 
 def migrate_nvidia_primary_model(config=None):
