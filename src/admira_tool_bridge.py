@@ -1365,6 +1365,7 @@ def persist_pending_campaign_workflow(tool, args, reason, *, result=None, status
         "missing_verified_creative": "Create, recover, or receive the exact creative before retrying campaign creation.",
         "missing_prefilled_message": "Propose the exact WhatsApp prefilled message and show it to the buyer.",
         "prefilled_message_not_approved": "Show the exact WhatsApp prefilled message and obtain explicit approval.",
+        "budget_currency_mismatch": "Ask only for the exact daily amount in the selected ad account currency; keep every other approved campaign field unchanged.",
     }
     creation_receipt = paused_campaign_creation_receipt(result)
     completed_verified = status == "completed" and bool(creation_receipt)
@@ -1605,6 +1606,7 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
                     "reply": reply,
                 }
             args = dict(campaign_compilation.get("payload") or {})
+        compiled_campaign_args = dict(args)
         args, destination_error = destination_campaign_arguments(
             tool,
             args,
@@ -1612,8 +1614,22 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
             budget_contract=getattr(dashboard, "confirmed_budget_contract", None),
         )
         if destination_error:
+            configured_currency = getattr(dashboard, "configured_ad_account_currency", None)
+            account_currency = (
+                str(configured_currency() or "").strip().upper()
+                if callable(configured_currency)
+                else ""
+            )
+            budget_confirmation = str(
+                compiled_campaign_args.get("budget_confirmation") or ""
+            ).strip()
+            if account_currency:
+                compiled_campaign_args["account_currency"] = account_currency
             persist_pending_campaign_workflow(
-                tool, original_campaign_args, destination_error, proposal_markdown=brief_markdown
+                tool,
+                compiled_campaign_args,
+                destination_error,
+                proposal_markdown=brief_markdown,
             )
             replies = {
                 "missing_creative_decision": "No se creó nada en Meta: primero pregunta si el cliente quiere crear un creativo nuevo, reutilizar uno reciente o usar una imagen subida.",
@@ -1625,6 +1641,15 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
                 "missing_prefilled_message": "No se creó nada en Meta: falta definir el mensaje exacto que aparecerá al abrir WhatsApp.",
                 "prefilled_message_not_approved": "No se creó nada en Meta: muestra el mensaje exacto de WhatsApp y obtén la aprobación del cliente.",
             }
+            if destination_error == "budget_currency_mismatch":
+                currency_label = account_currency or "la moneda principal de la cuenta"
+                budget_label = f'«{budget_confirmation}»' if budget_confirmation else "una moneda diferente"
+                replies[destination_error] = (
+                    f"No se creó nada en Meta: la cuenta publicitaria seleccionada usa {currency_label}, "
+                    f"pero el presupuesto aprobado está expresado como {budget_label}. "
+                    "No lo convertí automáticamente. Confirma solo el monto diario exacto en "
+                    f"{currency_label}; conservaré el creativo, texto, título, mensaje y estado PAUSED ya aprobados."
+                )
             return {
                 "ok": False,
                 "tool": tool,
@@ -1632,6 +1657,8 @@ def call_tool(name, arguments=None, channel="telegram", language="es"):
                 "blocked": True,
                 "executed": False,
                 "reason": destination_error,
+                "account_currency": account_currency,
+                "budget_confirmation": budget_confirmation,
                 "reply": replies.get(destination_error) or (
                     "No se creó nada en Meta: falta confirmar el presupuesto diario exacto en moneda principal."
                     if "budget" in destination_error

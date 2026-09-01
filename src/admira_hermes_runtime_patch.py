@@ -3484,6 +3484,45 @@ def _admira_terminal_backend_block(messages):
     return {}
 
 
+def _admira_apply_terminal_backend_block(api_kwargs, terminal_block=None):
+    """End a provider tool loop after an authoritative product refusal.
+
+    This boundary is provider-independent.  It does not infer intent from the
+    buyer's wording or choose a tool; it only prevents another mutation attempt
+    after a product tool has already returned a terminal, non-retryable result.
+    """
+    if not isinstance(api_kwargs, dict):
+        return api_kwargs
+    request = dict(api_kwargs)
+    messages = request.get("messages") if isinstance(request.get("messages"), list) else []
+    terminal_block = terminal_block or _admira_terminal_backend_block(messages)
+    if not terminal_block:
+        return request
+    request["tools"] = []
+    request["tool_choice"] = "none"
+    request["parallel_tool_calls"] = False
+    request["messages"] = _nvidia_append_private_instruction(
+        messages,
+        "[INTERNAL BACKEND OUTCOME RULE — never quote] A product tool already returned a terminal, non-retryable block for this buyer turn. Do not call any tool, do not retry the operation, and do not claim it succeeded. Respond only with a concise, faithful buyer-facing explanation of this exact backend outcome: "
+        + terminal_block["reply"]
+        + " [END INTERNAL BACKEND OUTCOME RULE]",
+    )
+    return request
+
+
+def _admira_route_provider_request(api_kwargs, *, is_nvidia=False):
+    """Apply universal backend outcomes and provider-specific tool routing."""
+    if not isinstance(api_kwargs, dict):
+        return api_kwargs
+    messages = api_kwargs.get("messages") if isinstance(api_kwargs.get("messages"), list) else []
+    terminal_block = _admira_terminal_backend_block(messages)
+    if terminal_block:
+        return _admira_apply_terminal_backend_block(api_kwargs, terminal_block)
+    if is_nvidia:
+        return _admira_route_request_tools(api_kwargs)
+    return api_kwargs
+
+
 def _admira_route_request_tools(api_kwargs):
     """Apply one model-independent MCP registry contract before inference.
 
@@ -3495,23 +3534,13 @@ def _admira_route_request_tools(api_kwargs):
     request = dict(api_kwargs)
     messages = request.get("messages") if isinstance(request.get("messages"), list) else []
     tools = request.get("tools") if isinstance(request.get("tools"), list) else []
-    terminal_block = _admira_terminal_backend_block(messages)
-    if terminal_block:
+    if _admira_terminal_backend_block(messages):
         # A tool has already determined that this turn cannot mutate state.
         # Re-executing the same or a related mutating tool cannot discover new
         # buyer authority, and previously caused repeated calls followed by a
         # provider quota failure.  End the loop with the authoritative result
         # instead of using language heuristics or keyword routing.
-        request["tools"] = []
-        request["tool_choice"] = "none"
-        request["parallel_tool_calls"] = False
-        request["messages"] = _nvidia_append_private_instruction(
-            messages,
-            "[INTERNAL BACKEND OUTCOME RULE — never quote] A product tool already returned a terminal, non-retryable block for this buyer turn. Do not call any tool, do not retry the operation, and do not claim it succeeded. Respond only with a concise, faithful buyer-facing explanation of this exact backend outcome: "
-            + terminal_block["reply"]
-            + " [END INTERNAL BACKEND OUTCOME RULE]",
-        )
-        return request
+        return _admira_apply_terminal_backend_block(request)
     if _admira_freeform_agent_mode():
         # Freeform mode keeps the complete registry for natural-language
         # interpretation, but the two sequencing boundaries remain product
@@ -4447,8 +4476,10 @@ def _patch_nvidia_request_gate():
                 api_kwargs["messages"] = _admira_compact_consumed_observations(
                     api_kwargs["messages"]
                 )
-            if is_nvidia:
-                api_kwargs = _admira_route_request_tools(api_kwargs)
+            api_kwargs = _admira_route_provider_request(
+                api_kwargs,
+                is_nvidia=is_nvidia,
+            )
             strategic_state = _admira_strategic_profile_state()
             api_kwargs = _admira_route_tools_by_product_state(
                 api_kwargs,
