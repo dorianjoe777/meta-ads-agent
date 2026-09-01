@@ -1358,6 +1358,11 @@ def persist_pending_campaign_workflow(tool, args, reason, *, result=None, status
         "success_metrics",
     )
     contract = {key: source.get(key) for key in allowed if source.get(key) not in (None, "", [], {})}
+    if not contract.get("budget_confirmation") and contract.get("daily_budget_raw"):
+        # Destination normalization keeps the buyer's exact quote under
+        # ``daily_budget_raw``.  Mirror it into the durable campaign contract
+        # so a blocker never makes the next turn ask for the same budget again.
+        contract["budget_confirmation"] = contract["daily_budget_raw"]
     destination = tool.removeprefix("admira_create_").removesuffix("_campaign")
     next_step_by_reason = {
         "missing_creative_decision": "Ask once whether to create a new creative, reuse a recent creative, or use a buyer upload.",
