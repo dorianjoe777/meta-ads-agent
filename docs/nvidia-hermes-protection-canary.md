@@ -20,8 +20,9 @@ El gate comprueba:
   orgánico;
 - presupuesto de entrada de 48.000 tokens después de ventana deslizante y
   recorte de último recurso;
-- MiniMax M3 como principal, DeepSeek V4 Flash como primer pool alterno para
-  timeout específico, y cero reintentos del mismo NIM tras 429/cuota/auth;
+- MiniMax M3 como principal, DeepSeek V4 Flash como único pool alterno acotado
+  para timeout o 429 de modelo; cuota, billing y auth compartidos bloquean el
+  fallback y el mismo NIM conserva cero reintentos;
 - diagnósticos sin mensajes, tokens, API keys ni secretos.
 
 Ejemplo local:

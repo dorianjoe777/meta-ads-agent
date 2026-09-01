@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -24,7 +25,7 @@ import hermes_bridge  # noqa: E402
 NATIVE_TOOLS = ("read_file", "memory_search", "web_search", "vision_analyze")
 CASES = (
     ("metrics", "Revisa métricas, gasto, CTR, checkout y compras de la campaña", 8192, "get_real_meta_context"),
-    ("campaign", "Prepara campaña de ventas con targeting, presupuesto, creativo y aprobación en pausa", 8192, "stage_campaign"),
+    ("campaign", "Prepara campaña de ventas con targeting, presupuesto, creativo y aprobación en pausa", 8192, "preflight_campaign"),
     ("creative", "Crea video con Image 2, storyboard, recetas y render", 12288, "generate_motion_graphic_video"),
     ("organic", "Prepara imagen y video orgánico para Facebook en borrador aprobable", 12288, "stage_organic_social_post"),
     ("organic_en", "Create an organic social media post and leave it as a draft", 12288, "stage_organic_social_post"),
@@ -44,6 +45,11 @@ def _names(tools: list[dict]) -> set[str]:
 
 
 def run_matrix() -> dict:
+    # This historical diagnostic exercises the legacy NVIDIA request-budget
+    # profile only.  The current product defaults to freeform model routing;
+    # setting this in the dedicated child process never changes buyer runtime
+    # behavior or reintroduces keyword routing there.
+    os.environ["ADMIRA_FREEFORM_AGENT_MODE"] = "false"
     all_names = sorted(set().union(*runtime.ADMIRA_NVIDIA_TOOL_PROFILES.values()))
     tools = [_tool(name) for name in all_names]
     tools.extend({"type": "function", "function": {"name": name}} for name in NATIVE_TOOLS)
@@ -109,7 +115,8 @@ def run_matrix() -> dict:
     fallback = {
         "primary": "minimaxai/minimax-m3",
         "first_model_specific_alternate": "deepseek-ai/deepseek-v4-flash-0731",
-        "same_key_429_blocked": runtime._admira_same_nvidia_fallback_blocked("429 upstream rate limit"),
+        "single_alternate_429_allowed": not runtime._admira_same_nvidia_fallback_blocked("429 upstream rate limit"),
+        "shared_quota_blocked": runtime._admira_same_nvidia_fallback_blocked("quota exhausted"),
         "same_key_timeout_allowed": not runtime._admira_same_nvidia_fallback_blocked("model timeout"),
         "api_max_retries": int(policy.get("api_max_retries") or 0),
         "stream_retries": int(policy.get("stream_retries") or 0),
@@ -122,7 +129,8 @@ def run_matrix() -> dict:
         "rows": rows,
         "fallback": fallback,
         "passed": all(row["passed"] for row in rows)
-        and fallback["same_key_429_blocked"]
+        and fallback["single_alternate_429_allowed"]
+        and fallback["shared_quota_blocked"]
         and fallback["same_key_timeout_allowed"]
         and fallback["api_max_retries"] == 0
         and fallback["stream_retries"] == 0,
