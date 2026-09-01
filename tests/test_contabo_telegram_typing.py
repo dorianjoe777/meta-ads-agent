@@ -89,11 +89,19 @@ class TelegramTypingTests(unittest.TestCase):
             def stop(self):
                 self.stopped.set()
 
-        api, store = API(), Store()
+        class Database:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        api, ingress_store, typing_store = API(), Store(), Store()
+        ingress_db, typing_db = Database(), Database()
         with tempfile.TemporaryDirectory() as directory, \
              patch.object(service, "TelegramAPI", return_value=api), \
-             patch.object(service, "Pg", return_value=object()), \
-             patch.object(service, "IngressStore", return_value=store), \
+             patch.object(service, "Pg", side_effect=(ingress_db, typing_db)) as pg, \
+             patch.object(service, "IngressStore", side_effect=(ingress_store, typing_store)), \
              patch.object(service, "TelegramIngress", return_value=Ingress()), \
              patch.object(service, "TelegramMediaStager"), \
              patch.object(service, "TelegramTypingHeartbeat", Heartbeat), \
@@ -112,8 +120,11 @@ class TelegramTypingTests(unittest.TestCase):
         self.assertEqual(heartbeat.args[1:], ("bot-1", "123"))
         self.assertTrue(heartbeat.started.wait(1))
         self.assertTrue(heartbeat.stopped.wait(1))
-        self.assertEqual(store.advanced, [("bot-1", 43)])
-        self.assertEqual(store.pending_calls, [("bot-1", 42)])
+        self.assertEqual(pg.call_count, 2)
+        self.assertEqual(ingress_store.advanced, [("bot-1", 43)])
+        self.assertEqual(ingress_store.pending_calls, [])
+        self.assertEqual(typing_store.pending_calls, [("bot-1", 42)])
+        self.assertTrue(typing_db.closed)
 
     def test_ingress_store_uses_narrow_pending_function(self):
         class DB:

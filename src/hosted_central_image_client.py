@@ -194,7 +194,13 @@ def maybe_generate_central_image(prompt: str, *, output_root: str | Path, output
         return _error("entitlement_blocked")
     if access.get("central_ready") is not True:
         return _error("central_not_ready")
-    expected_tenant = _tenant(os.environ.get("ADMIRA_TENANT_ID"))
+    try:
+        expected_tenant = _tenant(os.environ.get("ADMIRA_TENANT_ID"))
+    except ValueError:
+        # A filtered child environment is a safe central-route failure, never
+        # a reason to throw into the conversational tool runner or fall back
+        # to a different tenant/account.
+        return _error("invalid_request")
     if access.get("tenant_id") != expected_tenant:
         return _error("invalid_request")
     request_tenant = expected_tenant

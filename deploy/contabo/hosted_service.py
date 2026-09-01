@@ -93,6 +93,12 @@ class Pg:
                 pass
             raise
 
+    def close(self) -> None:
+        connection = self._connection
+        self._connection = None
+        if connection is not None and not connection.closed:
+            connection.close()
+
 
 class IngressStore:
     def __init__(self, db: Pg) -> None:
@@ -697,6 +703,7 @@ def _watch_telegram_typing(
     pending: Callable[[], bool],
     *,
     poll_interval: float = 0.5,
+    cleanup: Callable[[], None] | None = None,
 ) -> None:
     """Keep typing visible until the durable update leaves active states."""
     heartbeat.start()
@@ -708,7 +715,11 @@ def _watch_telegram_typing(
         # indicator running indefinitely, and never affect message delivery.
         pass
     finally:
-        heartbeat.stop()
+        try:
+            heartbeat.stop()
+        finally:
+            if cleanup is not None:
+                cleanup()
 
 
 def run_poller(*, once: bool = False) -> None:
@@ -776,15 +787,22 @@ def run_poller(*, once: bool = False) -> None:
                 chat_id = str(result.get("chat_id") or "")
                 if not chat_id:
                     continue
+                # The watcher runs in a separate thread.  It must not share
+                # the poller's psycopg connection: concurrent transactions on
+                # one connection corrupt psycopg's transaction nesting and
+                # can restart the poller mid-turn.
+                typing_db = Pg()
+                typing_store = IngressStore(typing_db)
                 heartbeat = TelegramTypingHeartbeat(typing_transport, bot_id, chat_id)
                 threading.Thread(
                     target=_watch_telegram_typing,
                     args=(
                         heartbeat,
-                        lambda bot_id=bot_id, update_id=update_id: store.telegram_update_pending(
+                        lambda bot_id=bot_id, update_id=update_id: typing_store.telegram_update_pending(
                             bot_id=bot_id, update_id=update_id,
                         ),
                     ),
+                    kwargs={"cleanup": typing_db.close},
                     name=f"telegram-typing-{update_id}",
                     daemon=True,
                 ).start()

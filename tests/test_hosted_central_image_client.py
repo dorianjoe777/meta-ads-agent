@@ -33,6 +33,14 @@ class CentralClientTests(unittest.TestCase):
             with patch.dict(os.environ, {"ADMIRA_HOSTED_IMAGE_ACCESS_FILE":str(p), "ADMIRA_TENANT_ID":"tenant-001"}):
                 self.assertEqual(maybe_generate_central_image("x", output_root=d)["reason"], "central_not_ready")
 
+    def test_missing_tenant_identity_fails_closed_without_raising(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "access"; p.write_text(json.dumps({"route":"central_sponsored", "central_ready":True, "tenant_id":"tenant-001"})); p.chmod(0o600)
+            with patch.dict(os.environ, {"ADMIRA_HOSTED_IMAGE_ACCESS_FILE":str(p), "ADMIRA_TENANT_ID":""}):
+                result = maybe_generate_central_image("x", output_root=d)
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["reason"], "invalid_request")
+
     def test_signed_round_trip_and_atomic_copy(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d); access=root/"access"; key=root/"key"; sock=root/"broker.sock"; exchange=root/"exchange"; ref=root/"ref.png"

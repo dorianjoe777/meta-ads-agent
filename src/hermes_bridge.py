@@ -94,6 +94,16 @@ ADMIRA_GEMINI_PROVIDER = "gemini"
 ADMIRA_GEMINI_PROVIDER_NAME = "Google AI Studio"
 ADMIRA_GEMINI_DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 ADMIRA_GEMINI_DEFAULT_MODEL = "gemini-3.5-flash-lite"
+# Hermes launches MCP servers with an explicit environment allowlist. These
+# entries are routing identifiers and private-file *paths* only; the central
+# image client still reads the actual credential from its 0600-mounted file.
+HOSTED_CENTRAL_IMAGE_MCP_ENV_NAMES = (
+    "ADMIRA_TENANT_ID",
+    "ADMIRA_HOSTED_IMAGE_ACCESS_FILE",
+    "ADMIRA_CENTRAL_IMAGE_SOCKET",
+    "ADMIRA_CENTRAL_IMAGE_CLIENT_KEY_FILE",
+    "ADMIRA_CENTRAL_IMAGE_EXCHANGE_ROOT",
+)
 BASE_ALLOWED_IMAGE_DIRS = (
     ROOT_DIR / "output",
     ROOT_DIR / "dashboard" / "data" / "uploads",
@@ -227,6 +237,15 @@ def enforce_official_skill_catalog(home):
 
 def _quote_yaml(value):
     return json.dumps(str(value or ""), ensure_ascii=False)
+
+
+def hosted_central_image_mcp_environment():
+    """Return non-secret hosted image routing variables for Hermes' MCP child."""
+    return {
+        name: value
+        for name in HOSTED_CENTRAL_IMAGE_MCP_ENV_NAMES
+        if (value := str(os.environ.get(name) or "").strip())
+    }
 
 
 def hermes_home_path(config):
@@ -824,6 +843,9 @@ def _cli_hermes_config_needs_write(config_text, brain, config=None):
     )
     if f'CODEX_IMAGE_HERMES_MODEL: "{image_model}"' not in config_text:
         return True
+    for name, value in hosted_central_image_mcp_environment().items():
+        if f"{name}: {_quote_yaml(value)}" not in config_text:
+            return True
     if re.search(r"(?m)^\s*-\s+skills\s*$", config_text):
         return True
     if brain.get("brain") == "minimax":
@@ -912,6 +934,7 @@ def write_cli_hermes_config(config, workspace_info, payload=None):
     timezone_name = str(getattr(config, "daily_brief_timezone", "UTC") or "UTC")
     workspace_path = str(workspace_info.get("path") or HERMES_WORKSPACE_DIR)
     mcp_server_path = ROOT_DIR / "src" / "admira_mcp_server.py"
+    central_image_mcp_environment = hosted_central_image_mcp_environment()
     disabled = split_csv(getattr(config, "hermes_disabled_toolsets", ""))
     for protected in ("clarify", "terminal", "code_execution", "image_gen", "skills"):
         if protected not in disabled:
@@ -946,6 +969,7 @@ def write_cli_hermes_config(config, workspace_info, payload=None):
         f"      ADMIRA_PRODUCT_ROOT: {_quote_yaml(str(ROOT_DIR))}",
         f"      CODEX_IMAGE_HERMES_MODEL: {_quote_yaml(normalize_hermes_model(getattr(config, 'codex_image_hermes_model', '') or getattr(config, 'hermes_model', '')))}",
         '      ADMIRA_HEAVY_TOOL_TIMEOUT_SECONDS: "300"',
+        *[f"      {name}: {_quote_yaml(value)}" for name, value in central_image_mcp_environment.items()],
         # Hermes filters the parent process environment before launching MCP.
         # Declare both paths explicitly so a stale product .env cannot send the
         # image bridge back to dashboard/data/hermes-home or runtime/codex.
