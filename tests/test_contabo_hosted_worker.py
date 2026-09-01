@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import random
 import sys
+import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -89,6 +90,7 @@ class Telegram:
     def __init__(self): self.calls = []
     def send_text(self, bot, chat, text): self.calls.append(("text", chat, text)); return 10
     def send_media(self, bot, chat, kind, ref, caption="", sha256=""): self.calls.append((kind, chat, ref)); return 11
+    def send_chat_action(self, bot, chat, action="typing"): self.calls.append(("action", bot, chat, action))
     def cleanup_media(self, ref): self.calls.append(("cleanup", ref))
 
 
@@ -125,6 +127,71 @@ class SchedulerStore:
 
 
 class HostedWorkerTests(unittest.TestCase):
+    def test_runtime_stores_reply_without_leaked_tirith_review_preamble(self):
+        store = RuntimeStore([runtime_update()])
+        broker = Broker({
+            "ok": True,
+            "reply": (
+                "Tirith security scanner review\n"
+                "Review diff\n"
+                "a/deploy/worker.py -> b/deploy/worker.py\n"
+                "@@ -1,2 +1,2 @@\n"
+                "- internal detail\n"
+                "+ another detail\n"
+                "Hola **comprador**, tu pedido está listo.\n"
+                "¿Necesitas algo más?"
+            ),
+            "media": [],
+        })
+        result = worker.RuntimeWorker(store, broker).process_once()
+        self.assertEqual(result["completed"], 1)
+        complete = next(event for event in store.events if event[0] == "complete")
+        self.assertEqual(
+            complete[2]["reply"],
+            "Hola **comprador**, tu pedido está listo.\n¿Necesitas algo más?",
+        )
+
+    def test_scheduler_preserves_ordinary_reply_content_when_cleaning(self):
+        work = worker.ScheduledWork("j-db", "tenant-uuid", "client-001", "hermes-1", {},
+                                    datetime.now(timezone.utc), "run-1", 1, "job-lease")
+        store = SchedulerStore([work])
+        broker = Broker({
+            "ok": True,
+            "reply": "tirith security scanner\n@@ review\n- leaked\n**Oferta especial** para ti",
+            "media": [], "cron_jobs": [],
+        })
+        result = worker.SchedulerWorker(store, broker).process_once()
+        self.assertEqual(result["completed"], 1)
+        self.assertEqual(store.events[0][2]["reply"], "**Oferta especial** para ti")
+
+    def test_typing_heartbeat_starts_refreshes_and_stops(self):
+        telegram = Telegram()
+        heartbeat = worker.TelegramTypingHeartbeat(telegram, "bot-1", "123", interval=0.01)
+        heartbeat.start()
+        deadline = time.monotonic() + 1
+        while len([call for call in telegram.calls if call[0] == "action"]) < 2 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        heartbeat.stop()
+        count = len([call for call in telegram.calls if call[0] == "action"])
+        time.sleep(0.03)
+        self.assertGreaterEqual(count, 2)
+        self.assertEqual(count, len([call for call in telegram.calls if call[0] == "action"]))
+        self.assertTrue(all(call == ("action", "bot-1", "123", "typing")
+                            for call in telegram.calls if call[0] == "action"))
+
+    def test_typing_heartbeat_ignores_send_failures_and_stops(self):
+        class FailingTelegram:
+            def __init__(self): self.calls = 0
+            def send_chat_action(self, *_args):
+                self.calls += 1
+                raise RuntimeError("token must not escape")
+
+        telegram = FailingTelegram()
+        heartbeat = worker.TelegramTypingHeartbeat(telegram, "bot-1", "123", interval=0.01).start()
+        time.sleep(0.25)
+        heartbeat.stop()
+        self.assertGreaterEqual(telegram.calls, 2)
+
     def test_runtime_turn_is_queued_transactionally_and_syncs_cron(self):
         store = RuntimeStore([runtime_update()])
         broker = Broker({"ok": True, "reply": "respuesta", "media": [], "cron_jobs": [{"id": "j1"}]})

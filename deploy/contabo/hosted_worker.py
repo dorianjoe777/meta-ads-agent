@@ -14,6 +14,11 @@ from typing import Callable, Protocol, Sequence
 
 
 MEDIA_REF_RE = re.compile(r"^[a-f0-9]{32,64}\.(?:jpg|jpeg|png|webp|gif|mp4|mov|pdf|bin)$")
+TIRITH_PREAMBLE_RE = re.compile(r"tirith security scanner", re.IGNORECASE)
+REVIEW_DIFF_LINE_RE = re.compile(r"^\s*review\s+diff\b", re.IGNORECASE)
+PATH_ARROW_LINE_RE = re.compile(r"\b[ab]/\S+\s*(?:->|→)\s*[ab]/\S+\b")
+DIFF_HUNK_LINE_RE = re.compile(r"^\s*@@")
+DIFF_CONTENT_LINE_RE = re.compile(r"^\s*(?:---|\+\+\+|[+-])(?:\s|$)")
 CAPACITY_ERROR_CODES = frozenset({"runtime_capacity_exhausted", "runtime_capacity_headroom_low"})
 CAPACITY_DEFER_SECONDS = 2
 # The intended 6-normal/8-hard profile needs at most three idle evictions to
@@ -134,7 +139,46 @@ class Broker(Protocol):
 class TelegramTransport(Protocol):
     def send_text(self, bot_id: str, chat_id: str, text: str) -> int: ...
     def send_media(self, bot_id: str, chat_id: str, kind: str, media_ref: str, caption: str = "", sha256: str = "") -> int: ...
+    def send_chat_action(self, bot_id: str, chat_id: str, action: str = "typing") -> None: ...
     def cleanup_media(self, media_ref: str) -> None: ...
+
+
+class TelegramTypingHeartbeat:
+    """Best-effort Telegram typing indicator for one in-flight tenant turn."""
+
+    def __init__(self, telegram: TelegramTransport, bot_id: str, chat_id: str, *,
+                 interval: float = 4.0, join_timeout: float = 1.0) -> None:
+        self.telegram, self.bot_id, self.chat_id = telegram, bot_id, chat_id
+        self.interval = max(0.1, float(interval))
+        self.join_timeout = max(0.0, float(join_timeout))
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def _send(self) -> None:
+        try:
+            self.telegram.send_chat_action(self.bot_id, self.chat_id, "typing")
+        except Exception:
+            # Typing is UX-only. A Telegram outage must never affect the
+            # durable turn or outbox processing.
+            pass
+
+    def _run(self) -> None:
+        self._send()
+        while not self._stop.wait(self.interval):
+            self._send()
+
+    def start(self) -> "TelegramTypingHeartbeat":
+        if self._thread is None:
+            self._thread = threading.Thread(
+                target=self._run, name="telegram-typing", daemon=True
+            )
+            self._thread.start()
+        return self
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None and self._thread is not threading.current_thread():
+            self._thread.join(self.join_timeout)
 
 
 class DeliveryRateLimiter:
@@ -199,6 +243,28 @@ def _safe_media(raw: object) -> list[dict[str, str]]:
             continue
         result.append({"kind": kind, "ref": ref, "sha256": digest, "caption": caption})
     return result[:8]
+
+
+def _strip_tirith_review_preamble(reply: str) -> str:
+    """Remove leaked scanner/diff lines while preserving the buyer reply."""
+    lines = reply.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if not TIRITH_PREAMBLE_RE.search(line):
+            continue
+        kept = lines[:index]
+        cursor = index + 1
+        while cursor < len(lines):
+            candidate = lines[cursor]
+            if not candidate.strip() or any(pattern.search(candidate) for pattern in (
+                REVIEW_DIFF_LINE_RE, PATH_ARROW_LINE_RE, DIFF_HUNK_LINE_RE,
+                DIFF_CONTENT_LINE_RE,
+            )):
+                cursor += 1
+                continue
+            kept.extend(lines[cursor:])
+            break
+        return "".join(kept).strip()
+    return reply.strip()
 
 
 class RuntimeWorker:
@@ -285,7 +351,7 @@ class RuntimeWorker:
                     busy += 1
                     deferred += 1
                     continue
-                reply = str(result.get("reply") or "").strip()
+                reply = _strip_tirith_review_preamble(str(result.get("reply") or ""))
                 media = _safe_media(result.get("media"))
                 if not result.get("ok") and not reply and not media:
                     raise RuntimeError(error_code)
@@ -423,7 +489,7 @@ class SchedulerWorker:
                     "action": "run_job", "tenant_id": work.runtime_key,
                     "job_id": work.job_key, "image_access": image_access,
                 })
-                reply = str(result.get("reply") or "").strip()
+                reply = _strip_tirith_review_preamble(str(result.get("reply") or ""))
                 media = _safe_media(result.get("media"))
                 if not result.get("ok") and not reply and not media:
                     error_code = _safe_error(result.get("error_code"), "cron_execution_failed")

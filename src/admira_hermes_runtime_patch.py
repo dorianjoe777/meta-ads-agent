@@ -1343,6 +1343,41 @@ def _strip_internal_reasoning(value):
     return cleaned, cleaned != original.strip()
 
 
+def _strip_technical_preamble(value):
+    """Remove leaked local-tool diagnostics before buyer-facing delivery."""
+    lines = str(value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    kept = []
+    skipping = False
+    removed = False
+    for line in lines:
+        normalized = line.strip()
+        lowered = normalized.lower()
+        starts_noise = (
+            "tirith security scanner" in lowered
+            or lowered in {"┊ review diff", "review diff"}
+            or re.match(r"^(a|b)/.+\s(→|->)\s.+$", normalized)
+            or normalized.startswith("@@ ")
+        )
+        if starts_noise:
+            removed = True
+            skipping = True
+            continue
+        if skipping:
+            diff_like = (
+                not normalized
+                or normalized.startswith(("+", "-", "@@"))
+                or re.match(r'^[+\- ]*["{}\[\],]', line)
+                or re.match(r"^[+\-]?\}?\]?[,]?$", normalized)
+                or re.match(r"^(a|b)/", normalized)
+            )
+            if diff_like:
+                removed = True
+                continue
+            skipping = False
+        kept.append(line)
+    return "\n".join(kept), removed
+
+
 def _patch_model_aware_compression_threshold():
     """Keep Gemini's quota guard from leaking into Codex subscription chats.
 
@@ -1574,6 +1609,7 @@ def normalize_telegram_outbound_text(value, language=None):
     cleaned = ADMIRA_TELEGRAM_INVISIBLE_RE.sub("", original)
     cleaned, context_notice_removed = _strip_internal_context_notices(cleaned)
     cleaned, internal_reasoning_removed = _strip_internal_reasoning(cleaned)
+    cleaned, technical_preamble_removed = _strip_technical_preamble(cleaned)
     cleaned, table_changed = _render_markdown_tables_as_text(cleaned)
     cleaned, media_path_attached = _attach_safe_media_paths_leaked_in_visible_text(cleaned, language)
     cleaned, duplicate_media_removed = _dedupe_native_media_directives(cleaned)
@@ -1599,6 +1635,8 @@ def normalize_telegram_outbound_text(value, language=None):
         reasons.append("internal_context_notice_removed")
     if internal_reasoning_removed:
         reasons.append("internal_reasoning_removed")
+    if technical_preamble_removed:
+        reasons.append("technical_preamble_removed")
     if media_path_attached:
         reasons.append("internal_media_path_attached")
     if duplicate_media_removed:

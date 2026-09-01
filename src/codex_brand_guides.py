@@ -2244,12 +2244,14 @@ def hermes_image_environment(config, image_model=""):
 def infer_image_aspect_ratio(prompt):
     text = str(prompt or "").lower()
     if any(token in text for token in ["1:1", "1080x1080", "1024x1024", "square", "cuadrado"]):
-        return "square"
-    if any(token in text for token in ["4:5", "9:16", "1080x1350", "1080x1920", "portrait", "vertical", "reel", "story", "historia"]):
-        return "portrait"
+        return "1:1"
+    if any(token in text for token in ["9:16", "1080x1920"]):
+        return "9:16"
+    if any(token in text for token in ["4:5", "1080x1350", "portrait", "vertical", "reel", "story", "historia"]):
+        return "4:5"
     if any(token in text for token in ["16:9", "1536x1024", "landscape", "horizontal"]):
-        return "landscape"
-    return "square"
+        return "16:9"
+    return "1:1"
 
 
 HERMES_IMAGE_BRIDGE_SCRIPT = r"""
@@ -2297,7 +2299,9 @@ try:
     reference_paths = [str(path) for path in reference_paths if str(path or "").strip()]
     base_kwargs = {
         "prompt": payload.get("prompt") or "",
-        "aspect_ratio": payload.get("aspect_ratio") or "square",
+        # The provider contract uses literal ratios, not the broker's
+        # internal square/portrait/landscape enum names.
+        "aspect_ratio": payload.get("aspect_ratio") or "1:1",
     }
     used_reference_arg = ""
     if reference_paths:

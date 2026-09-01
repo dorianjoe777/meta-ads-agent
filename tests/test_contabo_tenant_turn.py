@@ -113,6 +113,13 @@ class TenantTurnTests(unittest.TestCase):
         self.assertNotIn('os.environ.setdefault(\n    "ADMIRA_INTERNAL_MODEL_RECOVERY', script)
         self.assertIn("A buyer may connect on day one", script)
 
+    def test_inner_script_deterministically_gates_hosted_turns_on_facebook_oauth(self):
+        script = tenant_turn.INNER_SCRIPT
+        self.assertIn("ADMIRA_HOSTED_TELEGRAM_GATEWAY", script)
+        self.assertIn("META_OAUTH_BROKER_URL", script)
+        self.assertIn("def hosted_meta_oauth_gate(payload)", script)
+        self.assertIn("result = hosted_meta_oauth_gate(payload)", script)
+
     def test_rejects_paths_and_malformed_ids(self):
         for payload in (
             {"message": "Hola", "chat_id": "not-an-id", "user_id": "456"},

@@ -38,6 +38,7 @@ DEFAULT_CENTRAL_IMAGE_EXCHANGE_ROOT = Path("/srv/admira/shared/central-image-exc
 DEFAULT_CENTRAL_IMAGE_SOCKET_DIR = Path("/run/admira-central-image-broker")
 DEFAULT_CENTRAL_IMAGE_GID = 19093
 CENTRAL_IMAGE_CLIENT_KEY = "central_image_client.key"
+DEFAULT_META_OAUTH_BROKER_URL = "https://admiraia.uboost.lat/api/meta-oauth"
 MEMORY_RE = re.compile(r"^[1-9][0-9]*(?:b|k|m|g)?$", re.IGNORECASE)
 CPU_RE = re.compile(r"^(?:0\.[1-9][0-9]*|[1-9][0-9]*(?:\.[0-9]+)?)$")
 
@@ -72,6 +73,7 @@ HERMES_USE_PYTHON_LIBRARY=true
 HERMES_REQUIRE_CODEX_AUTH=false
 HERMES_RESPONSE_TIMEOUT_SECONDS=300
 HERMES_TIMEOUT_SECONDS=300
+META_OAUTH_BROKER_URL=https://admiraia.uboost.lat/api/meta-oauth
 """
 
 
@@ -304,6 +306,11 @@ def compose_text(
             "      HERMES_HOME: /app/runtime/hermes",
             "      CODEX_HOME: /app/runtime/hermes/codex-auth",
             "      TELEGRAM_AGENT_ENABLED: \"false\"",
+            # This is a public broker URL, not an app secret. The host may
+            # override it for a future broker migration without putting any
+            # credential in the tenant compose file.
+            f'      META_OAUTH_BROKER_URL: "${{ADMIRA_META_OAUTH_BROKER_URL:-{DEFAULT_META_OAUTH_BROKER_URL}}}"',
+            "      ADMIRA_HOSTED_TELEGRAM_GATEWAY: \"true\"",
             *central_environment,
             "      ADMIRA_HOSTED_IMAGE_ACCESS_FILE: /app/runtime/hosted_image_access.json",
             "    volumes:",

@@ -244,6 +244,7 @@ class TelegramIngress:
             "status": "queued" if inserted else "duplicate",
             "tenant_id": tenant_id,
             "update_id": message.update_id,
+            "chat_id": message.chat_id,
         }
 
     def enqueue_media_fallback(

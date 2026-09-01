@@ -15,6 +15,14 @@ import hosted_central_image_client as central_client  # noqa: E402
 
 
 class CentralImageHookTests(unittest.TestCase):
+    def test_image_bridge_uses_provider_ratio_contract(self):
+        self.assertEqual(brand.infer_image_aspect_ratio("Crear un anuncio 4:5"), "4:5")
+        self.assertEqual(brand.infer_image_aspect_ratio("Crear una historia 9:16"), "9:16")
+        self.assertEqual(brand.infer_image_aspect_ratio("Crear una historia vertical"), "4:5")
+        self.assertEqual(brand.infer_image_aspect_ratio("Crear un banner 16:9"), "16:9")
+        self.assertEqual(brand.infer_image_aspect_ratio("Crear una imagen cuadrada"), "1:1")
+        self.assertIn('"aspect_ratio": payload.get("aspect_ratio") or "1:1"', brand.HERMES_IMAGE_BRIDGE_SCRIPT)
+
     def test_image_failure_classifier_is_conservative_and_product_specific(self):
         self.assertEqual(
             brand.classify_image_failure("Codex usage limit reached after 5 hours", provider="openai-codex"),

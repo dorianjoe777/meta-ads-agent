@@ -64,6 +64,10 @@ class TenantCtlTests(unittest.TestCase):
             env_text = runtime_env.read_text()
             self.assertIn("AGENT_BRAIN_PROVIDER=gemini", env_text)
             self.assertIn("AGENT_CHAT_MODEL=gemini-3.5-flash-lite", env_text)
+            self.assertIn(
+                f"META_OAUTH_BROKER_URL={tenantctl.DEFAULT_META_OAUTH_BROKER_URL}",
+                env_text,
+            )
             self.assertNotIn("nvidia", env_text.lower())
             tenantctl.provision(base, "client-001")
             self.assertEqual(runtime_env.read_text(), env_text)
@@ -82,6 +86,8 @@ class TenantCtlTests(unittest.TestCase):
             self.assertNotIn("read_only: true", text)
             self.assertIn("HERMES_HOME: /app/runtime/hermes", text)
             self.assertIn("CODEX_HOME: /app/runtime/hermes/codex-auth", text)
+            self.assertIn("META_OAUTH_BROKER_URL:", text)
+            self.assertIn("ADMIRA_HOSTED_TELEGRAM_GATEWAY", text)
             self.assertNotIn("/run/admira-central-image-broker", text)
             self.assertNotIn("/run/admira-central-images", text)
             self.assertNotIn("ADMIRA_CENTRAL_IMAGE_CLIENT_KEY_FILE", text)

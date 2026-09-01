@@ -279,6 +279,52 @@ class HostedServiceTests(unittest.TestCase):
         self.assertEqual(raised.exception.retry_after, 4)
         self.assertEqual(str(raised.exception), "telegram_rate_limited")
 
+    def test_send_message_escapes_markdown_v2_and_formats_bold(self):
+        api = object.__new__(service.TelegramAPI)
+        calls = []
+
+        def request(method, payload, *, timeout):
+            calls.append((method, payload, timeout))
+            return {"message_id": 17}
+
+        api._request = request
+        self.assertEqual(api.send_message("123", "Resumen **importante**: 2 + 2 = 4. [ok]"), 17)
+        self.assertEqual(calls, [(
+            "sendMessage",
+            {"chat_id": "123", "text": "Resumen *importante*: 2 \\+ 2 \\= 4\\. \\[ok\\]", "parse_mode": "MarkdownV2"},
+            45,
+        )])
+
+    def test_send_message_falls_back_to_plain_text_when_markdown_is_rejected(self):
+        api = object.__new__(service.TelegramAPI)
+        calls = []
+
+        def request(method, payload, *, timeout):
+            calls.append(payload)
+            if len(calls) == 1:
+                raise service.TelegramError("telegram_api_rejected")
+            return {"message_id": 18}
+
+        api._request = request
+        self.assertEqual(api.send_message("123", "**bold** + [literal]"), 18)
+        self.assertEqual(calls, [
+            {"chat_id": "123", "text": "*bold* \\+ \\[literal\\]", "parse_mode": "MarkdownV2"},
+            {"chat_id": "123", "text": "bold + [literal]"},
+        ])
+
+    def test_send_message_does_not_fallback_on_rate_limit(self):
+        api = object.__new__(service.TelegramAPI)
+        calls = []
+
+        def request(method, payload, *, timeout):
+            calls.append(payload)
+            raise service.TelegramRateLimit(9)
+
+        api._request = request
+        with self.assertRaises(service.TelegramRateLimit):
+            api.send_message("123", "**bold**")
+        self.assertEqual(len(calls), 1)
+
     def test_multipart_non_json_429_is_typed_rate_limit(self):
         class Response:
             status = 429

@@ -5765,7 +5765,7 @@ Perfecto. Ya entendí que tienes algo de experiencia con anuncios. Ahora cuénta
             self.assert_true(result["ok"] is True and Path(result["image_path"]).exists(), "Codex/Image bridge copies the generated image into creative assets")
             self.assert_true(result["asset_id"].startswith("codex-") and result["preview_url"].startswith("/api/creative-asset?id="), "Codex/Image bridge returns protected preview metadata")
             self.assert_true(result.get("backend") == "hermes-openai-codex" and result.get("provider") == "openai-codex", "Codex/Image bridge uses Hermes OpenAI-Codex provider")
-            self.assert_true(captured["payload"]["aspect_ratio"] == "portrait", "Codex/Image bridge infers vertical Meta creative aspect ratio")
+            self.assert_true(captured["payload"]["aspect_ratio"] == "4:5", "Codex/Image bridge sends the provider's literal vertical aspect ratio")
             self.assert_true("Genera un anuncio" in captured["payload"]["prompt"], "Codex/Image bridge sends the buyer prompt to Hermes")
             self.assert_true(captured["bridge_kwargs"].get("timeout") == 270, "Codex/Image keeps its worker timeout below the five-minute MCP ceiling")
             self.assert_true(not direct_attempts, "OpenAI-Codex image provider runs before the optional Terra/Sol/Luna Codex CLI fallback")

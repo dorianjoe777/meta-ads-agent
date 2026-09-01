@@ -109,6 +109,27 @@ class MetaOAuthConnectionTests(unittest.TestCase):
         self.assertEqual(sent[0]["chat_id"], "123456")
         self.assertEqual(self.dashboard._meta_oauth_pending()["telegram_chat_id"], "123456")
 
+    def test_hosted_start_returns_link_to_the_central_outbox_without_a_bot_token(self):
+        self.config.telegram_bot_token = ""
+        with patch.dict(os.environ, {"ADMIRA_HOSTED_TELEGRAM_GATEWAY": "true"}, clear=False), \
+             patch.object(self.dashboard, "load_config", return_value=self.config), \
+             patch.object(self.dashboard, "resolved_device_id", return_value="device"), \
+             patch.object(self.dashboard, "_meta_oauth_request", return_value={
+                 "ok": True,
+                 "request_id": "r" * 43,
+                 "authorization_url": "https://www.facebook.com/v26.0/dialog/oauth?state=one-time",
+                 "expires_in_seconds": 900,
+             }), \
+             patch.object(self.dashboard, "telegram_bot_request") as send_message:
+            result = self.dashboard.social_oauth_start({"telegram_chat_id": "123"})
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["pending"])
+        self.assertFalse(result["sent_to_telegram"])
+        self.assertEqual(result["delivery"], "hosted_outbox")
+        self.assertIn("facebook.com", result["authorization_url"])
+        send_message.assert_not_called()
+        self.assertEqual(self.dashboard._meta_oauth_pending()["telegram_chat_id"], "123")
+
     def test_apply_keeps_all_assets_and_waits_for_explicit_workspace_choice(self):
         credentials = {
             "user_token": "x" * 40,

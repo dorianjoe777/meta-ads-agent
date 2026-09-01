@@ -44,6 +44,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 sys.path.insert(0, "/app/src")
 from hermes_bridge import chat
@@ -59,6 +60,56 @@ os.environ["ADMIRA_INTERNAL_MODEL_RECOVERY_URL"] = (
 os.environ["ADMIRA_INTERNAL_MODEL_RECOVERY_TOKEN_FILE"] = (
     "/app/dashboard/data/internal_model_recovery.token"
 )
+# Hosted tenant containers intentionally do not receive the shared Telegram
+# credential. They return an OAuth handoff URL in their ordinary turn reply,
+# and the central outbox delivers it to the already-bound private chat.
+os.environ.setdefault(
+    "META_OAUTH_BROKER_URL", "https://admiraia.uboost.lat/api/meta-oauth"
+)
+os.environ["ADMIRA_HOSTED_TELEGRAM_GATEWAY"] = "true"
+
+
+def hosted_meta_oauth_gate(payload):
+    """Deliver the first Facebook handoff deterministically before an LLM turn."""
+    language = str(payload.get("language") or "es").lower()
+    english = language.startswith("en")
+    try:
+        from admira_tool_bridge import load_dashboard
+        dashboard = load_dashboard()
+        status = dashboard.social_oauth_status()
+        if status.get("connected"):
+            return None
+        handoff = dashboard.social_oauth_start({
+            "telegram_chat_id": str(payload.get("chat_id") or ""),
+            "source": "hosted_telegram_gate",
+        })
+        url = str(handoff.get("authorization_url") or "").strip()
+        parsed = urlparse(url)
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname not in {"facebook.com", "www.facebook.com", "m.facebook.com"}
+            or not parsed.path.endswith("/dialog/oauth")
+        ):
+            raise ValueError("oauth_handoff_invalid")
+        if english:
+            reply = (
+                "Before we continue, connect Facebook and Meta Ads using this secure link:\n"
+                f"{url}\n\nSign in with the account that administers your business assets. "
+                "When you finish, return here and write “done”."
+            )
+        else:
+            reply = (
+                "Antes de continuar, conecta Facebook y Meta Ads con este enlace seguro:\n"
+                f"{url}\n\nInicia sesión con la cuenta que administra los activos de tu negocio. "
+                "Cuando termines, vuelve aquí y escribe “listo”."
+            )
+        return {"ok": True, "reply": reply}
+    except Exception:
+        return {"ok": True, "reply": (
+            "No pude preparar el enlace seguro de Facebook todavía. Inténtalo nuevamente en un minuto; no necesitas compartir ninguna clave por este chat."
+            if not english else
+            "I could not prepare the secure Facebook link yet. Try again in a minute; you do not need to share any key in this chat."
+        )}
 
 
 def personal_connection_ready_reply(reply, access, language):
@@ -256,6 +307,8 @@ def prepare_attachments(payload):
 
 payload = json.load(sys.stdin)
 result = hosted_command(payload)
+if result is None:
+    result = hosted_meta_oauth_gate(payload)
 if result is None:
     result = chat(load_config(), prepare_attachments(payload))
     if (

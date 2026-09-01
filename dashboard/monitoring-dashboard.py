@@ -4947,6 +4947,11 @@ def social_oauth_select_page(page_id):
 def social_oauth_start(payload=None):
     payload = payload or {}
     config = load_config()
+    # Hosted tenants deliberately never receive the shared Telegram bot token.
+    # Their central runtime is already responsible for delivering this turn's
+    # reply through the durable outbox, so hand the short-lived Facebook URL
+    # back to that runtime instead of attempting a legacy direct Bot API call.
+    hosted_delivery = str(os.environ.get("ADMIRA_HOSTED_TELEGRAM_GATEWAY") or "").strip().lower() == "true"
     broker_url = _meta_oauth_broker_url(config)
     if not broker_url:
         raise ValueError("La conexión segura de Facebook aún no está configurada en esta versión. Actualiza o contacta soporte.")
@@ -4986,9 +4991,12 @@ def social_oauth_start(payload=None):
         chat_id = _meta_oauth_chat_id(config, str(payload.get("telegram_chat_id") or ""))
         resent = False
         if existing_url and chat_id:
-            _send_meta_oauth_link(config, existing_url, chat_id)
-            resent = True
-        return {
+            if hosted_delivery:
+                resent = True
+            else:
+                _send_meta_oauth_link(config, existing_url, chat_id)
+                resent = True
+        response = {
             "ok": True,
             "sent_to_telegram": bool(resent),
             "pending": True,
@@ -4996,6 +5004,12 @@ def social_oauth_start(payload=None):
             "link_resent": bool(resent),
             "expires_in_seconds": 900,
         }
+        if hosted_delivery and existing_url:
+            response.update({
+                "authorization_url": existing_url,
+                "delivery": "hosted_outbox",
+            })
+        return response
     # A new browser handoff supersedes every outstanding workspace prompt or
     # capability from an older OAuth inventory.
     _clear_meta_oauth_selection_authorization()
@@ -5021,6 +5035,23 @@ def social_oauth_start(payload=None):
         "telegram_chat_id": chat_id,
     }
     write_private_json(META_OAUTH_PENDING_FILE, pending)
+    if hosted_delivery:
+        # The host will put the returned URL in the same ordered Telegram
+        # reply as this buyer turn. The URL is intentionally short-lived and
+        # never written to the shared control-plane database or logs.
+        log_action(
+            "meta_oauth_started",
+            {"telegram_sent": False, "request_id_present": True, "delivery": "hosted_outbox"},
+            "completed",
+        )
+        return {
+            "ok": True,
+            "sent_to_telegram": False,
+            "pending": True,
+            "expires_in_seconds": int(result.get("expires_in_seconds") or 900),
+            "authorization_url": str(result["authorization_url"]),
+            "delivery": "hosted_outbox",
+        }
     _send_meta_oauth_link(config, str(result["authorization_url"]), chat_id)
     # Completion is intentionally lazy: the next workspace-status request
     # consumes the broker handoff. Hermes MCP calls can be short-lived, so a

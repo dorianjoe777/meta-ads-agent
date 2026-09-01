@@ -24,9 +24,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from hosted_worker import OutboxItem, OutboxWorker, RecoveryOutboxItem, RuntimeUpdate, RuntimeWorker, ScheduledWork, SchedulerWorker
+from hosted_worker import (
+    OutboxItem, OutboxWorker, RecoveryOutboxItem, RuntimeUpdate, RuntimeWorker,
+    ScheduledWork, SchedulerWorker, TelegramTypingHeartbeat,
+)
 from recovery_email_worker import RecoveryEmailItem, RecoveryEmailWorker
 from recovery_identity import read_private_hmac_key
 from recovery_service import RecoveryEnvelopeCipher, TelegramRecoveryService, read_private_envelope_key
@@ -43,6 +46,8 @@ JANITOR_INTERVAL_SECONDS = 3600
 INBOUND_RETENTION_SECONDS = 7 * 86400
 OUTBOUND_RETENTION_SECONDS = 14 * 86400
 MAX_TELEGRAM_RETRY_AFTER_SECONDS = 900
+_TELEGRAM_MARKDOWN_V2_SPECIALS = frozenset("\\_*[]()~`>#+-=|{}.!")
+_TELEGRAM_BOLD_RE = re.compile(r"(?<!\*)\*\*(.+?)(?<!\*)\*\*(?!\*)", re.DOTALL)
 
 
 def _read_secret(path: str | Path) -> str:
@@ -122,6 +127,13 @@ class IngressStore:
     def advance(self, bot_id: str, next_update_id: int) -> int:
         rows = self.db.query("SELECT admira.advance_telegram_ingress_cursor(%s,%s) AS value", (bot_id, next_update_id))
         return int(rows[0]["value"])
+
+    def telegram_update_pending(self, *, bot_id: str, update_id: int) -> bool:
+        rows = self.db.query(
+            "SELECT admira.telegram_update_pending(%s,%s) AS pending",
+            (bot_id, update_id),
+        )
+        return bool(rows and rows[0]["pending"])
 
 
 class RecoveryStore:
@@ -411,6 +423,26 @@ def _telegram_rate_limit(body: object, *, status: int | None = None) -> Telegram
     return None
 
 
+def _telegram_markdown_v2(text: str) -> str:
+    """Escape text for MarkdownV2 while translating the supported bold form."""
+    def escape(value: str) -> str:
+        return "".join(f"\\{char}" if char in _TELEGRAM_MARKDOWN_V2_SPECIALS else char for char in value)
+
+    parts: list[str] = []
+    position = 0
+    for match in _TELEGRAM_BOLD_RE.finditer(text):
+        parts.append(escape(text[position:match.start()]))
+        parts.append("*" + escape(match.group(1)) + "*")
+        position = match.end()
+    parts.append(escape(text[position:]))
+    return "".join(parts)
+
+
+def _telegram_plain_text(text: str) -> str:
+    """Keep a readable fallback if Telegram rejects a formatted payload."""
+    return _TELEGRAM_BOLD_RE.sub(lambda match: match.group(1), text).replace("**", "")
+
+
 class TelegramAPI:
     def __init__(self, token_file: str | Path) -> None:
         self.token = _read_secret(token_file)
@@ -433,6 +465,8 @@ class TelegramAPI:
             rate_limit = _telegram_rate_limit(body, status=exc.code)
             if rate_limit is not None:
                 raise rate_limit from exc
+            if exc.code == 400:
+                raise TelegramError("telegram_api_rejected") from exc
             raise TelegramError("telegram_transport_error") from exc
         except (urllib.error.URLError, TimeoutError, ValueError) as exc:
             raise TelegramError("telegram_transport_error") from exc
@@ -485,8 +519,25 @@ class TelegramAPI:
         return total, digest.hexdigest()
 
     def send_message(self, chat_id: str, text: str) -> int:
-        result = self._request("sendMessage", {"chat_id": chat_id, "text": text}, timeout=45)
+        payload = {
+            "chat_id": chat_id,
+            "text": _telegram_markdown_v2(text),
+            "parse_mode": "MarkdownV2",
+        }
+        try:
+            result = self._request("sendMessage", payload, timeout=45)
+        except TelegramError as exc:
+            # A malformed/unsupported Telegram entity should not strand the
+            # outbox item. Keep rate limits and transport errors retryable.
+            if str(exc) != "telegram_api_rejected":
+                raise
+            result = self._request(
+                "sendMessage", {"chat_id": chat_id, "text": _telegram_plain_text(text)}, timeout=45,
+            )
         return int((result or {}).get("message_id") or 0)
+
+    def send_chat_action(self, chat_id: str, action: str = "typing") -> None:
+        self._request("sendChatAction", {"chat_id": chat_id, "action": action}, timeout=8)
 
     def send_file(self, chat_id: str, kind: str, path: Path, caption: str = "") -> int:
         field = {"photo": "photo", "video": "video", "document": "document"}[kind]
@@ -570,6 +621,10 @@ class TelegramTransport:
         self._check_bot(bot_id)
         return self.api.send_message(chat_id, text)
 
+    def send_chat_action(self, bot_id: str, chat_id: str, action: str = "typing") -> None:
+        self._check_bot(bot_id)
+        self.api.send_chat_action(chat_id, action)
+
     def send_media(self, bot_id: str, chat_id: str, kind: str, media_ref: str,
                    caption: str = "", sha256: str = "") -> int:
         self._check_bot(bot_id)
@@ -591,6 +646,18 @@ class TelegramTransport:
     def cleanup_media(self, media_ref: str) -> None:
         if MEDIA_REF_RE.fullmatch(media_ref):
             (self.root / media_ref).unlink(missing_ok=True)
+
+
+class TelegramTypingTransport:
+    """Poller-only adapter that cannot send messages or access media."""
+
+    def __init__(self, api: TelegramAPI) -> None:
+        self.api = api
+
+    def send_chat_action(self, bot_id: str, chat_id: str, action: str = "typing") -> None:
+        if str(bot_id) != self.api.bot_id():
+            raise TelegramError("telegram_bot_mismatch")
+        self.api.send_chat_action(chat_id, action)
 
 
 def _stop_event() -> threading.Event:
@@ -625,6 +692,25 @@ def clean_spool(directory: Path, *, retention_seconds: int, now: float | None = 
     return removed
 
 
+def _watch_telegram_typing(
+    heartbeat: TelegramTypingHeartbeat,
+    pending: Callable[[], bool],
+    *,
+    poll_interval: float = 0.5,
+) -> None:
+    """Keep typing visible until the durable update leaves active states."""
+    heartbeat.start()
+    try:
+        while pending():
+            time.sleep(max(0.1, poll_interval))
+    except Exception:
+        # A status lookup failure must fail closed: never leave a background
+        # indicator running indefinitely, and never affect message delivery.
+        pass
+    finally:
+        heartbeat.stop()
+
+
 def run_poller(*, once: bool = False) -> None:
     spool = Path(os.environ.get("ADMIRA_SPOOL_ROOT", DEFAULT_SPOOL))
     api, store = TelegramAPI(os.environ["TELEGRAM_BOT_TOKEN_FILE"]), IngressStore(Pg())
@@ -640,6 +726,7 @@ def run_poller(*, once: bool = False) -> None:
             envelope_key_version=os.environ.get("ADMIRA_RECOVERY_DELIVERY_KEY_VERSION", "v1"),
         )
     bot_id = api.bot_id()
+    typing_transport = TelegramTypingTransport(api)
     ingress = TelegramIngress(
         store, store, TelegramMediaStager(api, spool), recovery=recovery,
     )
@@ -685,6 +772,22 @@ def run_poller(*, once: bool = False) -> None:
             if result.get("status") == "failed":
                 break
             store.advance(bot_id, update_id + 1)
+            if result.get("status") == "queued":
+                chat_id = str(result.get("chat_id") or "")
+                if not chat_id:
+                    continue
+                heartbeat = TelegramTypingHeartbeat(typing_transport, bot_id, chat_id)
+                threading.Thread(
+                    target=_watch_telegram_typing,
+                    args=(
+                        heartbeat,
+                        lambda bot_id=bot_id, update_id=update_id: store.telegram_update_pending(
+                            bot_id=bot_id, update_id=update_id,
+                        ),
+                    ),
+                    name=f"telegram-typing-{update_id}",
+                    daemon=True,
+                ).start()
         if once:
             return
 
