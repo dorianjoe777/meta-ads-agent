@@ -373,11 +373,15 @@ def admira_connected_model_config_lines(config, primary_settings=None):
         *([f"  context_length: {int(brain['context_length'])}"] if brain.get("context_length") else []),
     ]
     # Native Gemini is registered by Hermes itself. Do not shadow it
-    # with a named OpenAI-compatible provider block. Other saved
-    # connections remain available as explicit fallbacks.
+    # with a named OpenAI-compatible provider block. NVIDIA is different:
+    # when it is the active primary it is an Admira-named OpenAI-compatible
+    # provider and Hermes needs its declaration to resolve the primary model.
+    # Keep it out of a Gemini-primary catalog so a saved NVIDIA connection
+    # cannot become an implicit fallback.
     custom_configured = [
         item for item in configured
-        if item["provider"] not in {"gemini", "nvidia_nim"}
+        if item["provider"] != "gemini"
+        and (item["provider"] != "nvidia_nim" or primary_brain == "nvidia_nim")
     ]
     if not custom_configured:
         return lines

@@ -2652,6 +2652,32 @@ compression:
         finally:
             hermes_bridge.agent_model_connections = original_connections
 
+    def test_connected_model_catalog_declares_nvidia_when_it_is_primary(self):
+        original_connections = hermes_bridge.agent_model_connections
+        try:
+            hermes_bridge.agent_model_connections = lambda _config, include_secrets=False: {
+                "nvidia_nim": {
+                    "configured": True,
+                    "base_url": hermes_bridge.ADMIRA_NVIDIA_DEFAULT_BASE_URL,
+                    "model": "minimaxai/minimax-m3",
+                }
+            }
+            lines = hermes_bridge.admira_connected_model_config_lines(
+                object(),
+                {
+                    "brain": "nvidia_nim",
+                    "provider": hermes_bridge.ADMIRA_NVIDIA_PROVIDER,
+                    "model": "minimaxai/minimax-m3",
+                    "context_length": 80000,
+                },
+            )
+            config_text = "\n".join(lines)
+            self.assertIn("providers:", config_text)
+            self.assertIn("admira-nvidia:", config_text)
+            self.assertIn('key_env: "ADMIRA_NVIDIA_API_KEY"', config_text)
+        finally:
+            hermes_bridge.agent_model_connections = original_connections
+
     def test_always_on_meta_context_is_compact_and_not_persisted(self):
         metric_row = {
             "id": "1",
