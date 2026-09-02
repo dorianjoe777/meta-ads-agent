@@ -114,6 +114,11 @@ ADMIRA_GEMINI_CONVERSATION_FALLBACK_MODELS = (
 # image client still reads the actual credential from its 0600-mounted file.
 HOSTED_CENTRAL_IMAGE_MCP_ENV_NAMES = (
     "ADMIRA_TENANT_ID",
+    # The product-tool MCP rechecks the hosted commercial entitlement before
+    # campaign creation.  Hermes launches it with an explicit environment
+    # allowlist, so omitting this non-secret gateway marker made an admitted
+    # trial look unlicensed only inside the tool process.
+    "ADMIRA_HOSTED_TELEGRAM_GATEWAY",
     "ADMIRA_HOSTED_IMAGE_ACCESS_FILE",
     "ADMIRA_CENTRAL_IMAGE_SOCKET",
     "ADMIRA_CENTRAL_CAMPAIGN_COMPILER_SOCKET",

@@ -16,9 +16,11 @@ class HermesMcpEnvironmentTests(unittest.TestCase):
     def test_hosted_central_image_routes_are_forwarded_and_rewrite_stale_config(self):
         environment = {
             "ADMIRA_TENANT_ID": "canary-two",
+            "ADMIRA_HOSTED_TELEGRAM_GATEWAY": "true",
             "ADMIRA_HOSTED_IMAGE_ACCESS_FILE": "/app/runtime/hosted_image_access.json",
             "ADMIRA_CENTRAL_IMAGE_SOCKET": "/run/admira-central-image-broker/broker.sock",
             "ADMIRA_CENTRAL_CAMPAIGN_COMPILER_SOCKET": "/run/admira-central-image-broker/compiler.sock",
+            "ADMIRA_CENTRAL_CONVERSATION_SOCKET": "/run/admira-central-image-broker/conversation.sock",
             "ADMIRA_CENTRAL_IMAGE_CLIENT_KEY_FILE": "/app/runtime/central_image_client.key",
             "ADMIRA_CENTRAL_IMAGE_EXCHANGE_ROOT": "/run/admira-central-images",
         }
