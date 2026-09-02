@@ -654,6 +654,29 @@ class StrategicPromptPerformanceTests(unittest.TestCase):
         self.assertIn("¿Qué colores debe respetar la marca?", guarded["final_response"])
         self.assertNotIn("aparecerá", guarded["final_response"])
 
+    def test_private_blocked_image_receipt_overrides_assistant_text_and_media(self):
+        response = {
+            "final_response": "Aquí está el diseño.\nMEDIA:/app/output/codex-test/design.png",
+            # This is the provider shape from the hosted incident: a current
+            # assistant message exists, while the authoritative receipt is
+            # attached separately after the model returns.
+            "messages": [{"role": "assistant", "content": "Aquí está el diseño."}],
+            runtime.ADMIRA_CURRENT_TURN_TOOL_RECEIPTS_KEY: [{
+                "name": "mcp_admira_codex_image_generate",
+                "content": json.dumps({
+                    "type": "codex_image_generate",
+                    "ok": False,
+                    "blocked": True,
+                    "executed": False,
+                    "error": "Primero necesito la decisión de logo.",
+                }, ensure_ascii=False),
+            }],
+        }
+        guarded = runtime._apply_authoritative_tool_result_guards(response)
+        self.assertIn("No se generó ni se envió", guarded["final_response"])
+        self.assertIn("Primero necesito", guarded["final_response"])
+        self.assertNotIn("MEDIA:", guarded["final_response"])
+
     def test_transport_success_does_not_count_as_durable_save(self):
         response = {
             "final_response": "Ya lo guardé.",

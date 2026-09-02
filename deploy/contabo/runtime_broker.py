@@ -713,7 +713,10 @@ class BrokerCore:
                 if attempt < 9:
                     time.sleep(2)
             reply = str(result.get("reply") or "")
-            staged = self._stage_outbound(root, result.get("media_paths") or [])
+            # The tenant boundary marks a failed image receipt explicitly.
+            # Keep this second check here so a future transport change cannot
+            # accidentally stage a model-written MEDIA path after failure.
+            staged = [] if result.get("image_generation_failed") else self._stage_outbound(root, result.get("media_paths") or [])
             visible = MEDIA_RE.sub("", reply).strip()
             if result.get("control_action") == "complete_reset":
                 try:

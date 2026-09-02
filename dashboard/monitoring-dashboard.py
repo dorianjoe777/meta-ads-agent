@@ -9634,7 +9634,7 @@ def strategic_business_profile_readiness(profile=None, page_id=""):
     return strategic_profile_readiness(strategic, active_page_id=page_id)
 
 
-def strategic_product_action_eligibility(action_category, profile=None, page_id=""):
+def strategic_product_action_eligibility(action_category, profile=None, page_id="", payload=None):
     profile = profile if isinstance(profile, dict) else read_json(BUSINESS_PROFILE_FILE, {})
     if not isinstance(profile, dict):
         profile = {}
@@ -9666,7 +9666,19 @@ def strategic_product_action_eligibility(action_category, profile=None, page_id=
     if category in {
         "paid_creative", "organic_creative", "organic_publish", "ad_motion_graphics",
     }:
-        branding = branding_creative_readiness(require_product=False, payload=None)
+        # A real-photo creative can carry a tightly scoped, explicit choice
+        # such as `include_logo: false`.  That choice is useful only for this
+        # requested asset; it must not silently turn into durable brand memory.
+        # The selected photo is still validated against the content library
+        # before it can satisfy a request-scoped reference/real-asset check.
+        request_scoped = category in {"paid_creative", "organic_creative", "ad_motion_graphics"}
+        purpose = str((payload or {}).get("purpose") or "ad_creative").strip().lower()
+        branding = branding_creative_readiness(
+            require_product=False,
+            payload=payload,
+            creative_request=request_scoped,
+            purpose=purpose,
+        )
         if not branding.get("ready"):
             return {
                 "allowed": False,
@@ -11558,7 +11570,61 @@ def approved_logo_decision(fields):
     ))
 
 
-def branding_creative_readiness(require_product=True, payload=None, allow_inline=False):
+def explicitly_disabled_payload_option(payload, key):
+    """Return True only for an explicit structured opt-out in this request."""
+    if not isinstance(payload, dict) or key not in payload:
+        return False
+    value = payload.get(key)
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value == 0
+    return str(value or "").strip().lower() in {"0", "false", "no", "off", "none", "without"}
+
+
+def request_scoped_content_asset_ids(payload):
+    """Collect explicitly selected library assets, including hybrid-media slots."""
+    payload = payload if isinstance(payload, dict) else {}
+    selected = []
+    for asset_id in requested_content_asset_ids(payload):
+        if asset_id not in selected:
+            selected.append(asset_id)
+    for entry in payload.get("real_media") or []:
+        if not isinstance(entry, dict):
+            continue
+        asset_id = str(entry.get("content_asset_id") or entry.get("asset_id") or "").strip()
+        if asset_id and asset_id not in selected:
+            selected.append(asset_id)
+    return selected[:12]
+
+
+def creative_request_branding_evidence(payload=None, purpose="ad_creative"):
+    """Return validated *turn-scoped* evidence for a creative request.
+
+    This intentionally does not accept prose or arbitrary filesystem paths.
+    It lets a buyer choose no logo and select an already-classified real photo
+    for one design without claiming that the brand itself is permanently
+    complete or that an official logo exists.
+    """
+    payload = payload if isinstance(payload, dict) else {}
+    asset_ids = request_scoped_content_asset_ids(payload)
+    selected = {"all": [], "protected": [], "style": [], "items": []}
+    if asset_ids:
+        candidate = dict(payload)
+        candidate["content_asset_ids"] = asset_ids
+        selected = selected_content_asset_references(candidate, purpose=purpose)
+    return {
+        "explicit_no_logo": explicitly_disabled_payload_option(payload, "include_logo"),
+        "selected_reference": bool(selected.get("all")),
+        # A design may rely on a buyer photo as a real-asset decision only
+        # when it is protected/pixel-locked and approved for this purpose.
+        "selected_real_asset": bool(selected.get("protected")),
+        "asset_ids": asset_ids,
+        "selected": selected,
+    }
+
+
+def branding_creative_readiness(require_product=True, payload=None, allow_inline=False, creative_request=False, purpose="ad_creative"):
     payload = payload or {}
     # Final organic/paid production is authorized only by durable,
     # buyer-confirmed brand memory. Inline model payload can describe the
@@ -11569,6 +11635,7 @@ def branding_creative_readiness(require_product=True, payload=None, allow_inline
     if not isinstance(profile, dict):
         profile = {}
     general = (library.get("general") or {}).get("fields") or {}
+    request_evidence = creative_request_branding_evidence(payload, purpose=purpose) if creative_request else {}
     missing = []
     requirements = [
         ("brand_core", bool((library.get("general_exists") and (general.get("brand_name") or general.get("offer"))) or brand_payload.get("brand_name") or brand_payload.get("offer")), "¿Cómo se llama la marca y qué vende exactamente?"),
@@ -11577,17 +11644,17 @@ def branding_creative_readiness(require_product=True, payload=None, allow_inline
         ("tone", bool(general.get("tone") or general.get("personality") or brand_payload.get("tone")), "¿Cómo debe sonar la marca: cercana, experta, directa, divertida u otra combinación?"),
         (
             "logo_decision",
-            approved_logo_decision(general) or approved_logo_decision(brand_payload),
+            approved_logo_decision(general) or approved_logo_decision(brand_payload) or bool(request_evidence.get("explicit_no_logo")),
             "¿Quieres subir tu logo oficial, crear y aprobar uno conmigo, o trabajar explícitamente sin logo?",
         ),
         (
             "reference_decision",
-            bool(general.get("references") or library.get("creative_references_exists") or brand_payload.get("references")),
+            bool(general.get("references") or library.get("creative_references_exists") or brand_payload.get("references") or request_evidence.get("selected_reference")),
             "¿Tienes algún diseño, anuncio o marca de referencia que te guste? Puedes subirlo; si no tienes, dímelo y busco direcciones contigo.",
         ),
         (
             "real_asset_decision",
-            bool(general.get("asset_notes") or brand_payload.get("asset_notes")),
+            bool(general.get("asset_notes") or brand_payload.get("asset_notes") or request_evidence.get("selected_real_asset")),
             "¿Tienes fotos reales del producto, fundador, clientes, local o empaque para usar, o debemos generar las imágenes?",
         ),
     ]
@@ -11609,6 +11676,12 @@ def branding_creative_readiness(require_product=True, payload=None, allow_inline
         "next_question": missing[0]["question"] if missing else "",
         "general": general,
         "library": library,
+        "request_evidence": {
+            "explicit_no_logo": bool(request_evidence.get("explicit_no_logo")),
+            "selected_reference": bool(request_evidence.get("selected_reference")),
+            "selected_real_asset": bool(request_evidence.get("selected_real_asset")),
+            "asset_ids": list(request_evidence.get("asset_ids") or []),
+        },
     }
 
 
@@ -11725,7 +11798,12 @@ def creative_strategy_readiness(require_brief=False, purpose="ad_creative", payl
         return brand_exploration_readiness(payload, purpose=purpose)
     is_ad = True
     payload = normalize_ad_brief_payload(payload or {})
-    branding = branding_creative_readiness(require_product=not image_purpose_is_organic(purpose), payload=None)
+    branding = branding_creative_readiness(
+        require_product=not image_purpose_is_organic(purpose),
+        payload=payload,
+        creative_request=True,
+        purpose=purpose,
+    )
     missing = list(branding["missing"])
     library = branding["library"]
     profile = read_json(BUSINESS_PROFILE_FILE, {})
@@ -20371,7 +20449,7 @@ def execute_agent_tool(tool_request, chat_payload):
             "organic_creative" if image_purpose_is_organic(purpose) else "paid_creative"
         )
     if category:
-        decision = strategic_product_action_eligibility(category)
+        decision = strategic_product_action_eligibility(category, payload=arguments)
         if not decision.get("allowed"):
             branding_block = decision.get("code") == "branding_required"
             reply = (

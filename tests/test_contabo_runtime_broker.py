@@ -535,6 +535,32 @@ class RuntimeBrokerTests(unittest.TestCase):
             self.assertEqual(result["media"][0]["kind"], "photo")
             self.assertNotIn("MEDIA:", result["reply"])
 
+    def test_failed_image_result_never_stages_a_media_path(self):
+        with tempfile.TemporaryDirectory() as raw:
+            base, spool = Path(raw) / "tenants", Path(raw) / "spool"
+            root = base / "client-001"
+            (root / "output").mkdir(parents=True)
+            (root / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            (root / "output" / "result.png").write_bytes(b"must-not-send")
+            core = broker.BrokerCore(tenants_base=base, spool_base=spool)
+            run_result = {
+                "ok": True,
+                "reply": "No se generó ninguna imagen.",
+                "media_paths": ["/app/output/result.png"],
+                "image_generation_failed": True,
+                "error_code": "",
+            }
+            with patch.object(core, "_active_managed_tenants", return_value=set()), \
+                 patch.object(broker, "lifecycle", return_value={"ok": True}), \
+                 patch.object(broker, "run_turn", return_value=run_result), \
+                 patch.object(core, "_stage_outbound") as stage:
+                result = core.handle({
+                    "action": "turn", "tenant_id": "client-001",
+                    "turn": {"message": "hola", "chat_id": "1", "update_id": 1}, "media": [],
+                })
+            stage.assert_not_called()
+            self.assertEqual(result["media"], [])
+
     def test_handle_rejects_unsupported_action_and_status_uses_mock_lifecycle(self):
         with tempfile.TemporaryDirectory() as raw:
             base, spool = Path(raw) / "tenants", Path(raw) / "spool"

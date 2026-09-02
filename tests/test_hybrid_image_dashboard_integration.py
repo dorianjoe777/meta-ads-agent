@@ -399,6 +399,123 @@ class HybridImageDashboardIntegrationTests(unittest.TestCase):
         self.assertIn("$110.000 COP", context["active_offer"])
         self.assertEqual(context["objective"], "Mensajes de WhatsApp")
 
+    def test_real_photo_request_can_use_explicit_no_logo_without_creating_global_brand_memory(self):
+        brand_library = {
+            "general_exists": True,
+            "creative_references_exists": False,
+            "general": {"fields": {
+                "brand_name": "La Esquina de Palmita",
+                "offer": "platos de mariscos",
+                "colors": "azules",
+                "visual_style": "cálido y moderno",
+                "tone": "cercano",
+            }},
+            "products": [],
+        }
+        payload = {
+            "purpose": "ad_creative",
+            "include_logo": False,
+            "content_asset_ids": ["photo-before"],
+            "real_media": [{"slot_id": "hero", "content_asset_id": "photo-before", "role": "hero"}],
+        }
+        with patch.object(dashboard, "guide_library", return_value=brand_library), \
+             patch.object(dashboard, "load_content_asset_library", return_value=self.library):
+            readiness = dashboard.branding_creative_readiness(
+                require_product=False,
+                payload=payload,
+                creative_request=True,
+                purpose="ad_creative",
+            )
+        self.assertTrue(readiness["ready"], readiness)
+        self.assertEqual(readiness["missing"], [])
+        self.assertEqual(readiness["request_evidence"]["asset_ids"], ["photo-before"])
+        self.assertTrue(readiness["request_evidence"]["explicit_no_logo"])
+        self.assertTrue(readiness["request_evidence"]["selected_real_asset"])
+        self.assertNotIn("logo_status", brand_library["general"]["fields"])
+
+    def test_missing_logo_choice_or_unapproved_photo_remains_a_branding_question(self):
+        brand_library = {
+            "general_exists": True,
+            "creative_references_exists": False,
+            "general": {"fields": {
+                "brand_name": "La Esquina de Palmita",
+                "offer": "platos de mariscos",
+                "colors": "azules",
+                "visual_style": "cálido y moderno",
+                "tone": "cercano",
+            }},
+            "products": [],
+        }
+        base = {
+            "purpose": "ad_creative",
+            "content_asset_ids": ["photo-before"],
+            "real_media": [{"slot_id": "hero", "content_asset_id": "photo-before", "role": "hero"}],
+        }
+        with patch.object(dashboard, "guide_library", return_value=brand_library), \
+             patch.object(dashboard, "load_content_asset_library", return_value=self.library):
+            missing_logo = dashboard.branding_creative_readiness(
+                require_product=False, payload=base, creative_request=True, purpose="ad_creative",
+            )
+        self.assertIn("logo_decision", [item["key"] for item in missing_logo["missing"]])
+
+        unapproved = {"items": [dict(self.library["items"][0], approved_for_ads=False)]}
+        with patch.object(dashboard, "guide_library", return_value=brand_library), \
+             patch.object(dashboard, "load_content_asset_library", return_value=unapproved):
+            missing_asset = dashboard.branding_creative_readiness(
+                require_product=False,
+                payload={**base, "include_logo": False},
+                creative_request=True,
+                purpose="ad_creative",
+            )
+        keys = [item["key"] for item in missing_asset["missing"]]
+        self.assertIn("reference_decision", keys)
+        self.assertIn("real_asset_decision", keys)
+
+    def test_real_photo_creative_reaches_provider_after_request_scoped_brand_choice(self):
+        calls = []
+        brand_library = {
+            "general_exists": True,
+            "creative_references_exists": False,
+            "general": {"fields": {
+                "brand_name": "La Esquina de Palmita",
+                "offer": "platos de mariscos",
+                "colors": "azules",
+                "visual_style": "cálido y moderno",
+                "tone": "cercano",
+            }},
+            "products": [{"id": "mariscos", "ready": True, "fields": {"name": "Plato de mariscos"}}],
+            "ad_briefs": [],
+        }
+
+        def provider(_prompt, **kwargs):
+            calls.append(kwargs)
+            output = Path(kwargs["output_root"])
+            output.mkdir(parents=True, exist_ok=True)
+            result = output / "real-photo-overlay.png"
+            shutil.copy2(self.overlay, result)
+            return {"ok": True, "image_path": str(result), "asset_id": "real-photo-overlay.png"}
+
+        payload = {
+            "request": "Diseño promocional para el plato de mariscos",
+            "purpose": "ad_creative",
+            "product_name": "plato de mariscos",
+            "layout_intent": "hero",
+            "include_logo": False,
+            "content_asset_ids": ["photo-before"],
+            "real_media": [{"slot_id": "hero", "content_asset_id": "photo-before", "role": "hero"}],
+            "style_reference": {"mode": "none"},
+        }
+        with patch.object(dashboard, "guide_library", return_value=brand_library), \
+             patch.object(dashboard, "load_content_asset_library", return_value=self.library), \
+             patch.object(dashboard, "selected_product_guide_for_creative", return_value=("mariscos", "test")), \
+             patch.object(dashboard, "creative_direct_context", return_value=""), \
+             patch.object(dashboard, "official_brand_logo_path", return_value=None), \
+             patch.object(dashboard, "call_codex_image_cli", side_effect=provider):
+            result = dashboard.codex_image_generate(payload)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(Path(result["image_path"]).is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

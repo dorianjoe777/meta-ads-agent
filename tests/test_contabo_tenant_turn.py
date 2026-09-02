@@ -74,6 +74,25 @@ class TenantTurnTests(unittest.TestCase):
             "ok": True, "reply": "ok", "control_action": "delete_everything",
         }))
 
+    def test_blocked_image_receipt_cannot_escape_tenant_boundary_as_media(self):
+        result = tenant_turn._public_runtime_result({
+            "ok": True,
+            "reply": "Aquí está el diseño.\nMEDIA:/app/output/codex-test/design.png",
+            "messages": [{"role": "assistant", "content": "Aquí está el diseño."}],
+            "_admira_current_turn_tool_receipts": [{
+                "name": "mcp_admira_codex_image_generate",
+                "content": json.dumps({
+                    "type": "codex_image_generate",
+                    "ok": False,
+                    "blocked": True,
+                    "executed": False,
+                }),
+            }],
+        })
+        self.assertTrue(result["image_generation_failed"])
+        self.assertEqual(result["media_paths"], [])
+        self.assertIn("No se generó", result["reply"])
+
     def test_validate_turn_derives_stable_telegram_session(self):
         result = tenant_turn.validate_turn({"message": "Hola", "chat_id": "-100123", "user_id": "456", "update_id": 7})
         self.assertEqual(result["channel"], "telegram")

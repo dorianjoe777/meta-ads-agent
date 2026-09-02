@@ -517,14 +517,82 @@ def _session_generation(
     return generation
 
 
+def _image_receipt_failed(value: object, *, image_context: bool = False, depth: int = 0) -> bool:
+    """Return whether a current Image-tool receipt explicitly failed.
+
+    The tenant boundary must fail closed before a model-authored ``MEDIA:``
+    directive reaches the shared Telegram spool.  We only trust an explicit
+    image-tool identity plus an explicit failure state; unrelated tool errors
+    must not suppress a valid generated asset.
+    """
+    if depth > 12:
+        return False
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith(("{", "[")):
+            try:
+                return _image_receipt_failed(json.loads(text), image_context=image_context, depth=depth + 1)
+            except (TypeError, ValueError):
+                return False
+        return False
+    if isinstance(value, (list, tuple)):
+        return any(_image_receipt_failed(item, image_context=image_context, depth=depth + 1) for item in value)
+    if not isinstance(value, dict):
+        return False
+    identity = " ".join(
+        str(value.get(key) or "")
+        for key in ("name", "tool", "type", "action", "function")
+    ).lower()
+    is_image_receipt = image_context or "codex_image_generate" in identity
+    if is_image_receipt and (
+        value.get("blocked") is True
+        or value.get("executed") is False
+        or value.get("ok") is False
+    ):
+        return True
+    return any(
+        _image_receipt_failed(item, image_context=is_image_receipt, depth=depth + 1)
+        for item in value.values()
+    )
+
+
+def _current_turn_image_generation_failed(raw: dict[str, object]) -> bool:
+    """Inspect only current-turn image evidence supplied by the tenant."""
+    sources = [
+        raw.get(key)
+        for key in (
+            "tool_result", "tool_results", "tool_response", "tool_responses",
+            "result", "results", "action_result", "action_results",
+            "mcp_result", "mcp_results", "_admira_current_turn_tool_receipts",
+        )
+        if key in raw
+    ]
+    messages = raw.get("messages")
+    if isinstance(messages, list):
+        start = 0
+        for index, message in enumerate(messages):
+            if isinstance(message, dict) and str(message.get("role") or "").lower() == "user":
+                start = index + 1
+        sources.extend(messages[start:])
+    return any(_image_receipt_failed(source) for source in sources)
+
+
 def _public_runtime_result(raw: object) -> dict[str, object]:
     if not isinstance(raw, dict):
         return _error("runtime_protocol_error")
     reply = str(raw.get("reply") or raw.get("final_response") or "").strip()
+    image_generation_failed = _current_turn_image_generation_failed(raw)
+    if image_generation_failed:
+        # Do not preserve an optimistic model claim or a media directive when
+        # the only authoritative image receipt says the call did not execute.
+        # The detailed, buyer-facing reason is normally supplied by the
+        # runtime guard; this is the independent last-resort boundary guard.
+        reply = "No se generó ni se envió ninguna imagen en este intento."
     result: dict[str, object] = {
         "ok": bool(raw.get("ok")) and bool(reply),
         "reply": reply,
-        "media_paths": MEDIA_RE.findall(reply),
+        "media_paths": [] if image_generation_failed else MEDIA_RE.findall(reply),
+        "image_generation_failed": image_generation_failed,
     }
     if raw.get("control_action") == "complete_reset":
         result["control_action"] = "complete_reset"

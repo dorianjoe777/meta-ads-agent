@@ -4964,11 +4964,14 @@ def _guard_authoritative_image_outcome(response):
     """
     if not isinstance(response, dict):
         return response
+    # Hermes frequently returns a current assistant message alongside the
+    # private receipt persisted for this same turn.  Do not let the presence
+    # of that message hide the receipt: the receipt is the authority for
+    # whether an image actually exists and may be delivered.
     sources = list(_current_turn_messages(response.get("messages")))
-    if not sources:
-        for key in ("tool_result", "tool_results", "result", "results", "mcp_result", "mcp_results", ADMIRA_CURRENT_TURN_TOOL_RECEIPTS_KEY):
-            if key in response:
-                sources.append(response.get(key))
+    for key in ("tool_result", "tool_results", "result", "results", "mcp_result", "mcp_results", ADMIRA_CURRENT_TURN_TOOL_RECEIPTS_KEY):
+        if key in response:
+            sources.append(response.get(key))
     try:
         evidence = json.dumps(sources, ensure_ascii=False, default=str).replace('\\"', '"')
     except (TypeError, ValueError):
