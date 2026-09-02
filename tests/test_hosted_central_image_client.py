@@ -103,4 +103,37 @@ class CentralClientTests(unittest.TestCase):
                 with patch.dict(os.environ,env): result=maybe_generate_central_image("x",output_root=root,timeout=1)
                 thread.join(timeout=2); self.assertFalse(result["ok"])
 
+    def test_native_quota_is_honest_and_untrusted_metadata_is_dropped(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); access = root / "a"; key = root / "k"; sock = root / "s"; exchange = root / "e"
+            access.write_text(json.dumps({"route": "central_sponsored", "central_ready": True,
+                                          "tenant_id": "tenant-001"})); access.chmod(0o600)
+            key.write_bytes(b"k" * 32); key.chmod(0o600); exchange.mkdir(mode=0o700)
+
+            def serve():
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+                    server.bind(str(sock)); server.listen(1)
+                    conn, _ = server.accept()
+                    with conn:
+                        conn.recv(65536)
+                        conn.sendall((json.dumps({
+                            "ok": False, "error_code": "provider_failed",
+                            "failure_category": "chatgpt_images_limit",
+                            "stderr": "oauth-secret", "account_id": "primary",
+                        }) + "\n").encode())
+
+            thread = threading.Thread(target=serve); thread.start()
+            env = {"ADMIRA_HOSTED_IMAGE_ACCESS_FILE": str(access),
+                   "ADMIRA_CENTRAL_IMAGE_CLIENT_KEY_FILE": str(key),
+                   "ADMIRA_CENTRAL_IMAGE_SOCKET": str(sock),
+                   "ADMIRA_CENTRAL_IMAGE_EXCHANGE_ROOT": str(exchange),
+                   "ADMIRA_TENANT_ID": "tenant-001"}
+            with patch.dict(os.environ, env):
+                result = maybe_generate_central_image("x", output_root=root, timeout=1)
+            thread.join(timeout=2)
+            self.assertEqual(result["reason"], "provider_failed")
+            self.assertEqual(result["failure_category"], "chatgpt_images_limit")
+            self.assertIn("límite del proveedor de imágenes", result["error"])
+            self.assertNotIn("oauth-secret", str(result)); self.assertNotIn("primary", str(result))
+
 if __name__ == "__main__": unittest.main()

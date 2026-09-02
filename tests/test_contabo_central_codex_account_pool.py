@@ -92,20 +92,23 @@ class CentralCodexAccountPoolTests(unittest.TestCase):
             self.assertEqual(sum(result["ok"] for result in results), 2)
             self.assertEqual(sum(result.get("error_type") == "provider_unavailable" for result in results), 2)
 
-    def test_default_provider_classifies_direct_codex_limit_without_raw_output(self):
+    def test_default_provider_uses_native_images_without_cli_or_raw_output(self):
         with tempfile.TemporaryDirectory() as raw:
             accounts = self._accounts(Path(raw))
             pool = CentralCodexAccountPool(accounts)
             with patch.object(
-                brand, "call_codex_image_cli_direct",
-                return_value={"ok": False, "error": "generic usage limit; secret", "error_type": "rate_limit", "stdout": "secret"},
-            ):
+                brand, "call_codex_image_native",
+                return_value={"ok": False, "failure_category": "provider_limited", "stdout": "secret"},
+            ) as native, patch.object(brand, "call_codex_image_cli_direct") as cli:
                 result = pool._default_provider(
                     "private prompt", codex_home=Path(accounts[0]["codex_home"]),
                     timeout=1, model=None, output_root=None, output_name="x",
                     reference_image_paths=(), purpose="ad_creative",
                 )
-            self.assertEqual(result, {"ok": False, "failure_category": "codex_usage_limit"})
+            self.assertEqual(result, {"ok": False, "failure_category": "provider_limited"})
+            native.assert_called_once()
+            self.assertEqual(native.call_args.kwargs["codex_home"], Path(accounts[0]["codex_home"]))
+            cli.assert_not_called()
             self.assertNotIn("secret", repr(result))
 
     def test_three_account_pool_attempts_at_most_two_accounts_per_request(self):

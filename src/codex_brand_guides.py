@@ -2304,7 +2304,11 @@ try:
         "aspect_ratio": payload.get("aspect_ratio") or "1:1",
     }
     used_reference_arg = ""
-    if reference_paths:
+    if payload.get("pool_native") is True:
+        from codex_native_image_adapter import generate_pool_image
+        result = generate_pool_image(provider, reference_paths=reference_paths, **base_kwargs)
+        used_reference_arg = "input_image" if reference_paths else ""
+    elif reference_paths:
         try:
             signature = inspect.signature(provider.generate)
             params = signature.parameters
@@ -2363,10 +2367,17 @@ except Exception as exc:
 """
 
 
-def run_hermes_image_bridge(payload, timeout=540, config=None, image_model=""):
+def run_hermes_image_bridge(payload, timeout=540, config=None, image_model="", codex_home=None):
     config = config or load_config()
     python = hermes_python_executable(config)
     env = hermes_image_environment(config, image_model=image_model)
+    if codex_home is not None:
+        # Override after configuration resolution: neither a dedicated image
+        # profile nor an inherited global home may replace a selected slot.
+        home = str(Path(codex_home).expanduser().resolve())
+        env["HERMES_HOME"] = home
+        env["CODEX_HOME"] = home
+        payload = dict(payload, pool_native=True)
     command = [python, "-c", HERMES_IMAGE_BRIDGE_SCRIPT]
     try:
         completed = subprocess.run(
@@ -2400,6 +2411,51 @@ def run_hermes_image_bridge(payload, timeout=540, config=None, image_model=""):
     result.setdefault("stderr", completed.stderr[-3000:])
     result.setdefault("command", [python, "-c", "[hermes image bridge]"])
     return result
+
+
+def call_codex_image_native(prompt, timeout=270, model=None, output_root=None,
+                            output_name="creative", reference_image_paths=None,
+                            purpose="ad_creative", codex_home=None):
+    """Generate for a central pool slot via Hermes images, never Codex CLI."""
+    request = str(prompt or "").strip()
+    if not request or codex_home is None:
+        return {"ok": False, "failure_category": "provider_failed"}
+    # These are broker-owned snapshots in its private work directory, not
+    # tenant upload paths. The ordinary product allowlist would discard them.
+    references = []
+    try:
+        for raw in reference_image_paths or []:
+            path = Path(raw)
+            path.resolve(strict=True).relative_to(Path(output_root).resolve(strict=True))
+            if path.is_symlink() or not path.is_file():
+                raise ValueError("invalid_reference")
+            references.append(path.resolve())
+        if len(references) > 8:
+            raise ValueError("invalid_reference")
+    except (OSError, TypeError, ValueError, RuntimeError):
+        return {"ok": False, "failure_category": "provider_failed"}
+    result = run_hermes_image_bridge(
+        {"mode": "generate", "prompt": request,
+         "aspect_ratio": infer_image_aspect_ratio(request),
+         "reference_image_paths": [str(path) for path in references]},
+        timeout=timeout, codex_home=codex_home,
+        image_model=str(model or "") if str(model or "").startswith("gpt-image-2") else "",
+    )
+    if result.get("success") and result.get("image"):
+        published = publish_generated_image(result["image"], output_root=output_root,
+                                            output_name=output_name, batch_prefix="codex")
+        return {**published, "backend": "hermes-openai-codex",
+                "provider": "openai-codex", "model": result.get("model"),
+                "reference_image_count": result.get("reference_image_count", 0)}
+    category = classify_image_failure(result.get("error"), result.get("error_type"),
+                                      backend="hermes-openai-codex", provider="openai-codex")
+    # A native provider's generic 429 proves a limit, not which subscription
+    # allowance it belongs to. Do not mislabel it as the Codex CLI quota.
+    detail = str(result.get("error") or "").lower()
+    if category == "unknown" and any(marker in detail for marker in
+        ("429", "usage_limit", "usage limit", "rate limit", "rate_limit", "quota")):
+        category = "provider_limited"
+    return {"ok": False, "failure_category": category, "backend": "hermes-openai-codex"}
 
 
 CODEX_IMAGE_DIRECT_FALLBACK_ERROR_TYPES = {

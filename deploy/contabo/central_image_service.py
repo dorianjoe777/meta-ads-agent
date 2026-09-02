@@ -22,9 +22,9 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 try:  # service is copied beside image_broker.py in the container
-    from image_broker import ImageBroker, _private_key
+    from image_broker import ImageBroker, SafeProviderFailure, _private_key
 except ImportError:  # package imports used by tests
-    from deploy.contabo.image_broker import ImageBroker, _private_key
+    from deploy.contabo.image_broker import ImageBroker, SafeProviderFailure, _private_key
 
 try:  # service is copied beside central_codex_account_pool.py in the container
     from central_codex_account_pool import CentralCodexAccountPool
@@ -304,10 +304,11 @@ def central_codex_provider(body: Mapping[str, Any], workdir: Path, *,
         purpose="ad_creative",
     )
     if not isinstance(result, Mapping) or not result.get("ok"):
-        raise RuntimeError("provider_failed")
+        category = result.get("failure_category") if isinstance(result, Mapping) else None
+        raise SafeProviderFailure(category)
     output = result.get("image_path") or result.get("path")
     if not output:
-        raise RuntimeError("provider_failed")
+        raise SafeProviderFailure()
     return Path(str(output))
 
 
@@ -517,7 +518,15 @@ class CentralImageServer:
                 "entitlement_blocked", "personal_provider_required", "tenant_busy",
                 "reference_invalid", "provider_failed", "output_invalid", "output_too_large",
                 "tenant_not_found", "internal_error"}
-        return {"ok": False, "error_code": code if code in safe else "internal_error"}
+        response = {"ok": False, "error_code": code if code in safe else "internal_error"}
+        if response["error_code"] == "provider_failed":
+            category = str(result.get("failure_category") or "").strip().lower()
+            if category in {
+                "codex_usage_limit", "chatgpt_images_limit", "provider_limited",
+                "provider_auth", "provider_timeout", "provider_unavailable", "provider_failed",
+            }:
+                response["failure_category"] = category
+        return response
 
     def _handle(self, connection: socket.socket) -> None:
         try:

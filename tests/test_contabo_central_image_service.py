@@ -20,7 +20,7 @@ from deploy.contabo.central_image_service import (
     central_codex_provider, postgres_connect_factory_from_env,
 )
 from deploy.contabo.central_codex_account_pool import CentralCodexAccountPool
-from deploy.contabo.image_broker import ImageBroker, sign_request
+from deploy.contabo.image_broker import ImageBroker, SafeProviderFailure, sign_request
 from deploy.contabo.campaign_compiler_broker import CampaignCompilerBroker, sign_request as sign_compiler_request
 from deploy.contabo.central_conversation_broker import ConversationBroker, sign_request as sign_conversation_request
 
@@ -459,7 +459,7 @@ class CentralImageServiceTests(unittest.TestCase):
     def test_production_provider_does_not_leak_provider_exception(self):
         class FakeCodex:
             @staticmethod
-            def call_codex_image_cli_direct(*args, **kwargs):
+            def call_codex_image_native(*args, **kwargs):
                 raise RuntimeError("provider secret")
         previous = sys.modules.get("codex_brand_guides")
         sys.modules["codex_brand_guides"] = FakeCodex
@@ -474,6 +474,29 @@ class CentralImageServiceTests(unittest.TestCase):
                 sys.modules.pop("codex_brand_guides", None)
             else:
                 sys.modules["codex_brand_guides"] = previous
+
+    def test_native_quota_failure_survives_broker_as_safe_category(self):
+        broker = ImageBroker(
+            self.tenants, self.keys,
+            lambda body, work: (_ for _ in ()).throw(SafeProviderFailure("chatgpt_images_limit")),
+            lambda tenant, purpose: "central_sponsored",
+        )
+        result = broker.submit(self.envelope(request="quota-001"), now=int(time.time()))
+        self.assertEqual(result, {
+            "ok": False, "error_code": "provider_failed", "failure_category": "chatgpt_images_limit",
+        })
+        self.assertNotIn("account", str(result).lower())
+
+    def test_image_socket_safe_response_allowlists_category_only(self):
+        safe = CentralImageServer._safe_response({
+            "ok": False, "error_code": "provider_failed",
+            "failure_category": "chatgpt_images_limit", "stderr": "oauth-secret", "account_id": "primary",
+        })
+        self.assertEqual(safe, {"ok": False, "error_code": "provider_failed",
+                                "failure_category": "chatgpt_images_limit"})
+        self.assertEqual(CentralImageServer._safe_response({
+            "ok": False, "error_code": "provider_failed", "failure_category": "oauth-secret",
+        }), {"ok": False, "error_code": "provider_failed"})
 
 
 if __name__ == "__main__":

@@ -42,6 +42,21 @@ SAFE_ERRORS = {
     "reference_invalid", "provider_failed", "output_invalid", "output_too_large",
     "tenant_not_found", "internal_error",
 }
+SAFE_PROVIDER_FAILURE_CATEGORIES = frozenset({
+    "codex_usage_limit", "chatgpt_images_limit", "provider_limited",
+    "provider_auth", "provider_timeout", "provider_unavailable", "provider_failed",
+})
+
+
+class SafeProviderFailure(RuntimeError):
+    """Provider failure carrying only a bounded, non-sensitive category."""
+
+    def __init__(self, failure_category: object = "provider_failed"):
+        category = str(failure_category or "provider_failed").strip().lower()
+        if category not in SAFE_PROVIDER_FAILURE_CATEGORIES:
+            category = "provider_failed"
+        super().__init__("provider_failed")
+        self.failure_category = category
 
 
 def validate_tenant_id(value: object) -> str:
@@ -508,6 +523,19 @@ class ImageBroker:
                             except Exception:
                                 pass
                         return {"ok": False, "error_code": code}
+                    except SafeProviderFailure as exc:
+                        if final_output is not None:
+                            try:
+                                final_output.unlink()
+                            except OSError:
+                                pass
+                        if self.ledger is not None and job_id is not None and lease is not None:
+                            try:
+                                self.ledger.fail(job_id, lease, "provider_failed")
+                            except Exception:
+                                pass
+                        return {"ok": False, "error_code": "provider_failed",
+                                "failure_category": exc.failure_category}
                     except Exception:
                         if final_output is not None:
                             try:

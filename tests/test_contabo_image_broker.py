@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from deploy.contabo.image_broker import ImageBroker, sign_request
+from deploy.contabo.image_broker import ImageBroker, SafeProviderFailure, sign_request
 
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"payload"
@@ -66,6 +66,17 @@ class ImageBrokerTests(unittest.TestCase):
         output = self.tenants / "tenant-one" / "output" / result["output_ref"]
         self.assertEqual(output.read_bytes(), PNG)
         self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+
+    def test_safe_provider_failure_preserves_category_without_changing_ledger_contract(self):
+        ledger = FakeLedger()
+        self.broker.ledger = ledger
+        def fail(body, work):
+            raise SafeProviderFailure("provider_limited")
+        self.broker.provider = fail
+        result = self.broker.submit(self.envelope(), now=1000)
+        self.assertEqual(result, {"ok": False, "error_code": "provider_failed",
+                                  "failure_category": "provider_limited"})
+        self.assertEqual(ledger.fail_calls, [("job-1", "lease-1", "provider_failed")])
 
     def test_idempotency_with_new_nonce(self):
         first = self.broker.submit(self.envelope(), now=1000)

@@ -153,8 +153,26 @@ def _canonical(value: Mapping[str, Any]) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
 
 
-def _error(reason: str) -> dict[str, Any]:
-    return {"ok": False, "reason": reason, "error": "No se pudo generar la imagen central."}
+_SAFE_PROVIDER_FAILURE_CATEGORIES = {
+    "codex_usage_limit", "chatgpt_images_limit", "provider_limited",
+    "provider_auth", "provider_timeout", "provider_unavailable", "provider_failed",
+}
+_SAFE_PROVIDER_MESSAGES = {
+    "codex_usage_limit": "Se alcanzó el límite del proveedor de imágenes; inténtalo más tarde.",
+    "chatgpt_images_limit": "Se alcanzó el límite del proveedor de imágenes; inténtalo más tarde.",
+    "provider_limited": "Se alcanzó el límite del proveedor de imágenes; inténtalo más tarde.",
+    "provider_auth": "El proveedor de imágenes no está disponible para esta cuenta.",
+    "provider_timeout": "El proveedor de imágenes tardó demasiado en responder.",
+    "provider_unavailable": "El proveedor de imágenes no está disponible en este momento.",
+}
+
+
+def _error(reason: str, *, failure_category: str | None = None) -> dict[str, Any]:
+    result = {"ok": False, "reason": reason, "error": "No se pudo generar la imagen central."}
+    if reason == "provider_failed" and failure_category in _SAFE_PROVIDER_FAILURE_CATEGORIES:
+        result["failure_category"] = failure_category
+        result["error"] = _SAFE_PROVIDER_MESSAGES.get(failure_category, result["error"])
+    return result
 
 
 def _request_uuid(tenant_id: str, update_id: str, prompt: str, purpose: str, aspect: str,
@@ -290,7 +308,12 @@ def maybe_generate_central_image(prompt: str, *, output_root: str | Path, output
                     "central_not_ready", "internal_error",
                 }:
                     safe_reason = "provider_failed"
-                return _error(safe_reason)
+                category = None
+                if safe_reason == "provider_failed" and isinstance(response, dict):
+                    reported = str(response.get("failure_category") or "").strip().lower()
+                    if reported in _SAFE_PROVIDER_FAILURE_CATEGORIES:
+                        category = reported
+                return _error(safe_reason, failure_category=category)
             if response.get("tenant_id") != request_tenant or response.get("request_id") != body["request_id"]:
                 return _error("invalid_response")
             ref = response.get("output_ref")

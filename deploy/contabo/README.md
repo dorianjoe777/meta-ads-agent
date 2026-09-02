@@ -236,6 +236,14 @@ quota or image-limit failure. The failed account enters its per-account
 cooldown, and no further attempt is made against it during that cooldown.
 Tenants remain pinned to `admira-ia:r90` while this central canary is pending.
 
+The shared image adapter uses Hermes' native `openai-codex` image provider,
+not `codex exec`. A private Python child selects exactly one account home and
+attaches broker-owned reference snapshots as Responses `input_image` parts.
+It never falls back to CLI or a tenant/global account. Native provider limits
+are reported as safe categories; a generic 429 does not establish which
+subscription allowance was exhausted. The account lock covers OAuth refresh
+and generation, including mirroring a refreshed session before a long request.
+
 #### Hosted clean-canary evidence
 
 On 2026-08-31, the private operator release was deployed after the disposable
