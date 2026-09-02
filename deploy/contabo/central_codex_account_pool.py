@@ -23,12 +23,13 @@ from typing import Any, Callable, Mapping, Sequence
 _ACCOUNT_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _CATEGORIES = {
     "codex_usage_limit", "chatgpt_images_limit", "provider_auth",
-    "provider_unavailable", "provider_timeout", "provider_failed", "unknown",
+    "provider_limited", "provider_unavailable", "provider_timeout", "provider_failed", "unknown",
 }
 _DEFAULT_COOLDOWNS = {
     "codex_usage_limit": 300.0,
     "chatgpt_images_limit": 900.0,
     "provider_auth": 300.0,
+    "provider_limited": 300.0,
     "provider_unavailable": 30.0,
     "provider_timeout": 30.0,
     "provider_failed": 15.0,
@@ -149,6 +150,7 @@ class CentralCodexAccountPool:
     def __init__(self, accounts: Sequence[Mapping[str, Any] | CodexAccount], *,
                  provider: Callable[..., object] | None = None,
                  compiler_provider: Callable[..., object] | None = None,
+                 conversation_provider: Callable[..., object] | None = None,
                  clock: Callable[[], float] = time.monotonic,
                  cooldowns: Mapping[str, float] | None = None):
         if not 2 <= len(accounts) <= 8:
@@ -164,6 +166,7 @@ class CentralCodexAccountPool:
         self._slots = [_Slot(account) for account in parsed]
         self._provider = provider or self._default_provider
         self._compiler_provider = compiler_provider or self._default_compiler_provider
+        self._conversation_provider = conversation_provider or self._default_conversation_provider
         self._clock = clock
         self._cooldowns = {**_DEFAULT_COOLDOWNS, **dict(cooldowns or {})}
         self._selection_lock = threading.Lock()
@@ -202,6 +205,12 @@ class CentralCodexAccountPool:
     def _default_compiler_provider(self, prompt: str, schema: Mapping[str, Any], *,
                                    codex_home: Path, timeout: int, model: str) -> object:
         """Keep compilation unavailable unless an explicit compiler is wired in."""
+        return {"ok": False, "failure_category": "provider_unavailable"}
+
+    def _default_conversation_provider(self, messages: Sequence[Mapping[str, Any]], *,
+                                       tools: Sequence[Mapping[str, Any]], tool_choice: object,
+                                       codex_home: Path, timeout: int, model: str) -> object:
+        """Keep central conversation unavailable until explicitly wired in."""
         return {"ok": False, "failure_category": "provider_unavailable"}
 
     def _ordered_slots(self, now: float) -> list[_Slot]:
@@ -301,6 +310,69 @@ class CentralCodexAccountPool:
                     return {
                         "ok": True,
                         "compiled": dict(compiled),
+                        "model": COMPILER_MODEL,
+                        "account_id": slot.account.account_id,
+                        "duration_ms": int(max(0.0, (self._clock() - started) * 1000)),
+                    }
+                last_category = _category(result)
+                hint = _retry_hint(result)
+                slot.cooldown_until[last_category] = self._clock() + (
+                    hint if hint is not None else max(0.0, float(self._cooldowns.get(last_category, 15.0)))
+                )
+            finally:
+                slot.lock.release()
+        return {
+            "ok": False,
+            "error_type": last_category,
+            "failure_category": last_category,
+            "attempted_accounts": attempted,
+            "duration_ms": int(max(0.0, (self._clock() - started) * 1000)),
+        }
+
+    def chat(self, messages: Sequence[Mapping[str, Any]], *,
+             tools: Sequence[Mapping[str, Any]] = (), tool_choice: object = None,
+             timeout: int = 270, model: str = COMPILER_MODEL) -> dict[str, Any]:
+        """Run one Terra chat through an account slot without exposing OAuth.
+
+        Like ``compile``, each pooled slot receives at most one attempt.  The
+        central conversation broker owns request validation and strips the
+        account identifier before the result reaches a tenant.
+        """
+        started = self._clock()
+        if model != COMPILER_MODEL:
+            return {
+                "ok": False, "error_type": "provider_failed",
+                "failure_category": "provider_failed", "attempted_accounts": 0,
+                "duration_ms": 0,
+            }
+        attempted = 0
+        last_category = "provider_unavailable"
+        for slot in self._ordered_slots(started):
+            if attempted >= MAX_ATTEMPTS_PER_REQUEST:
+                break
+            if not slot.lock.acquire(blocking=False):
+                continue
+            try:
+                now = self._clock()
+                if any(until > now for until in slot.cooldown_until.values()):
+                    continue
+                attempted += 1
+                slot.last_used = now
+                try:
+                    result = self._conversation_provider(
+                        tuple(messages), tools=tuple(tools), tool_choice=tool_choice,
+                        codex_home=slot.account.codex_home, timeout=timeout,
+                        model=COMPILER_MODEL,
+                    )
+                except Exception:
+                    result = None
+                message = result.get("message") if isinstance(result, Mapping) else None
+                if (isinstance(result, Mapping) and result.get("ok") is True
+                        and isinstance(message, Mapping)):
+                    return {
+                        "ok": True,
+                        "message": dict(message),
+                        "finish_reason": str(result.get("finish_reason") or "stop"),
                         "model": COMPILER_MODEL,
                         "account_id": slot.account.account_id,
                         "duration_ms": int(max(0.0, (self._clock() - started) * 1000)),

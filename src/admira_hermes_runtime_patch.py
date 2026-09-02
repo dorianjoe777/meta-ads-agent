@@ -38,6 +38,7 @@ from complete_reset import (
 )
 
 ADMIRA_MINIMAX_PROVIDER = "admira-minimax"
+ADMIRA_CENTRAL_CODEX_PROVIDER = "admira-central-codex"
 ADMIRA_MINIMAX_PROVIDER_NAME = "MiniMax M3 oficial"
 ADMIRA_MINIMAX_MODEL = "MiniMax-M3"
 ADMIRA_MINIMAX_KEY_ENV = "ADMIRA_MINIMAX_API_KEY"
@@ -6058,6 +6059,61 @@ def _patch_minimax_runtime_provider():
     return True
 
 
+def _patch_central_codex_runtime_provider():
+    """Register the hosted Terra fallback without exporting central OAuth.
+
+    Hermes resolves a fallback into a client and later rebuilds that client for
+    every request.  The normal OpenAI rebuild cannot speak a Unix socket, so
+    this narrow patch recognizes only Admira's internal provider identifier
+    and supplies its signed-capability client.  Any unavailable entitlement
+    returns ``None`` and Hermes continues to the next configured fallback.
+    """
+    try:
+        import agent.auxiliary_client as auxiliary_client
+        import agent.agent_runtime_helpers as runtime_helpers
+    except Exception:
+        return False
+
+    patched_any = False
+    original_resolve = getattr(auxiliary_client, "resolve_provider_client", None)
+    if callable(original_resolve) and not getattr(auxiliary_client, "_admira_central_codex_provider_patch", False):
+        def patched_resolve_provider_client(provider, model=None, *args, **kwargs):
+            if _admira_provider_name(provider) == ADMIRA_CENTRAL_CODEX_PROVIDER:
+                if kwargs.get("async_mode"):
+                    return None, None
+                try:
+                    from hosted_central_conversation_client import central_codex_runtime_client
+                except Exception:
+                    return None, None
+                return central_codex_runtime_client(model=str(model or ""))
+            return original_resolve(provider, model, *args, **kwargs)
+
+        auxiliary_client._admira_original_resolve_provider_client = original_resolve
+        auxiliary_client.resolve_provider_client = patched_resolve_provider_client
+        auxiliary_client._admira_central_codex_provider_patch = True
+        patched_any = True
+
+    original_create = getattr(runtime_helpers, "create_openai_client", None)
+    if callable(original_create) and not getattr(runtime_helpers, "_admira_central_codex_provider_patch", False):
+        def patched_create_openai_client(agent, client_kwargs, *, reason, shared):
+            if _admira_provider_name(getattr(agent, "provider", "")) == ADMIRA_CENTRAL_CODEX_PROVIDER:
+                try:
+                    from hosted_central_conversation_client import central_codex_runtime_client
+                    client, _ = central_codex_runtime_client(model=str(getattr(agent, "model", "") or ""))
+                except Exception:
+                    client = None
+                if client is None:
+                    raise RuntimeError("central Codex provider unavailable")
+                return client
+            return original_create(agent, client_kwargs, reason=reason, shared=shared)
+
+        runtime_helpers._admira_original_create_openai_client = original_create
+        runtime_helpers.create_openai_client = patched_create_openai_client
+        runtime_helpers._admira_central_codex_provider_patch = True
+        patched_any = True
+    return patched_any or bool(getattr(auxiliary_client, "_admira_central_codex_provider_patch", False))
+
+
 def _patch_gateway_rate_limit_reply():
     try:
         import gateway.run as gateway_run
@@ -7344,6 +7400,7 @@ def apply():
     mcp_skill_gate_patched = _patch_mcp_primary_skill_gate()
     minimax_patched = _patch_minimax_model_switch()
     runtime_patched = _patch_minimax_runtime_provider()
+    central_codex_patched = _patch_central_codex_runtime_provider()
     media_patched = _patch_gateway_generated_media_delivery()
     video_patched = _patch_gateway_inbound_video_frames()
     reset_scope_patched = _patch_gateway_reset_campaign_scope()
@@ -7355,4 +7412,4 @@ def apply():
     telegram_complete_reset_patched = _patch_telegram_complete_reset_command()
     gateway_complete_reset_patched = _patch_gateway_complete_reset_command()
     telegram_update_patched = _patch_telegram_update_install_callback()
-    return bool(compression_patched or product_prompt_patched or chatgpt_slash_patched or rate_limit_patched or credential_pool_patched or same_nvidia_guard_patched or nvidia_gate_patched or nvidia_title_patched or mcp_result_patched or mcp_skill_gate_patched or minimax_patched or runtime_patched or media_patched or video_patched or reset_scope_patched or cron_create_patched or cron_run_patched or context_patched or telegram_chat_capture_patched or telegram_reset_menu_patched or telegram_complete_reset_patched or gateway_complete_reset_patched or telegram_update_patched)
+    return bool(compression_patched or product_prompt_patched or chatgpt_slash_patched or rate_limit_patched or credential_pool_patched or same_nvidia_guard_patched or nvidia_gate_patched or nvidia_title_patched or mcp_result_patched or mcp_skill_gate_patched or minimax_patched or runtime_patched or central_codex_patched or media_patched or video_patched or reset_scope_patched or cron_create_patched or cron_run_patched or context_patched or telegram_chat_capture_patched or telegram_reset_menu_patched or telegram_complete_reset_patched or gateway_complete_reset_patched or telegram_update_patched)

@@ -83,6 +83,8 @@ ADMIRA_NVIDIA_KEY_ENV = "ADMIRA_NVIDIA_API_KEY"
 ADMIRA_NVIDIA_BASE_URL_ENV = "ADMIRA_NVIDIA_BASE_URL"
 ADMIRA_NVIDIA_PROVIDER = "admira-nvidia"
 ADMIRA_CODEX_SUBSCRIPTION_FALLBACK_MODEL = "gpt-5.6-luna"
+ADMIRA_CENTRAL_CODEX_PROVIDER = "admira-central-codex"
+ADMIRA_CENTRAL_CODEX_FALLBACK_MODEL = "admira-terra"
 ADMIRA_NVIDIA_PROVIDER_NAME = "NVIDIA NIM API"
 ADMIRA_NVIDIA_DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
 ADMIRA_NVIDIA_DEFAULT_MODEL = DEFAULT_NVIDIA_NIM_MODEL
@@ -95,6 +97,14 @@ ADMIRA_GEMINI_PROVIDER = "gemini"
 ADMIRA_GEMINI_PROVIDER_NAME = "Google AI Studio"
 ADMIRA_GEMINI_DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 ADMIRA_GEMINI_DEFAULT_MODEL = "gemini-3.5-flash-lite"
+# This is the conversational recovery sequence only.  Campaign compilation
+# has its own stronger policy in ``campaign_payload_compiler`` and must never
+# add Lite or 3.7 to its tool-invocation route.
+ADMIRA_GEMINI_CONVERSATION_FALLBACK_MODELS = (
+    "gemini-3.5-flash",
+    "gemini-3.6-flash",
+    "gemini-3.7-flash",
+)
 # Hermes launches MCP servers with an explicit environment allowlist. These
 # entries are routing identifiers and private-file *paths* only; the central
 # image client still reads the actual credential from its 0600-mounted file.
@@ -103,6 +113,7 @@ HOSTED_CENTRAL_IMAGE_MCP_ENV_NAMES = (
     "ADMIRA_HOSTED_IMAGE_ACCESS_FILE",
     "ADMIRA_CENTRAL_IMAGE_SOCKET",
     "ADMIRA_CENTRAL_CAMPAIGN_COMPILER_SOCKET",
+    "ADMIRA_CENTRAL_CONVERSATION_SOCKET",
     "ADMIRA_CENTRAL_IMAGE_CLIENT_KEY_FILE",
     "ADMIRA_CENTRAL_IMAGE_EXCHANGE_ROOT",
 )
@@ -557,8 +568,9 @@ def inference_runtime_policy(primary_settings=None):
     brain = dict(primary_settings or {})
     is_nvidia = _runtime_provider_for_brain(brain) == ADMIRA_NVIDIA_PROVIDER
     gemini_model = str(brain.get("model") or "").strip().lower()
+    is_gemini = _runtime_provider_for_brain(brain) == ADMIRA_GEMINI_PROVIDER
     is_gemini_35 = (
-        _runtime_provider_for_brain(brain) == ADMIRA_GEMINI_PROVIDER
+        is_gemini
         # Product defaults can move between Flash and Flash Lite. Both 3.5
         # Flash routes share the free-tier token-pressure behavior this policy
         # protects against, so do not key the guard to one default constant.
@@ -569,7 +581,10 @@ def inference_runtime_policy(primary_settings=None):
         # after a 429 is not useful and can turn one user turn into a burst;
         # the cross-process request gate plus an independent configured
         # provider fallback are safer than retrying the same NIM call.
-        "api_max_retries": 0 if is_nvidia else (1 if is_gemini_35 else 3),
+        # Gemini quota errors must advance to the next explicitly configured
+        # model. Retrying Lite first is what previously multiplied one 429
+        # into a context-pressure loop before the fallback chain was reached.
+        "api_max_retries": 0 if (is_nvidia or is_gemini) else 3,
         # One buyer message can consume one inference call per tool turn. Keep
         # the free hosted NVIDIA route bounded so a normal request cannot fan
         # out into dozens of calls and exhaust its shared capacity.
@@ -578,8 +593,8 @@ def inference_runtime_policy(primary_settings=None):
         # save → execute → verify workflows without allowing one buyer
         # message to fan out into dozens of provider calls.
         "max_turns": 8,
-        "cron_max_parallel": 1 if (is_nvidia or is_gemini_35) else 0,
-        "disable_delegation": is_nvidia or is_gemini_35,
+        "cron_max_parallel": 1 if (is_nvidia or is_gemini) else 0,
+        "disable_delegation": is_nvidia or is_gemini,
         # A failed summary must never freeze a buyer session. Hermes keeps the
         # protected head/tail and drops the middle window as a last resort;
         # Admira's durable workspace memory remains available to recover it.
@@ -718,12 +733,14 @@ def hermes_compression_config_lines(config, brain, policy=None):
 
 
 def admira_inference_fallback_chain(config, primary_settings=None):
-    """Return the single supported subscription fallback for non-Codex brains.
+    """Return the bounded per-provider recovery chain for a buyer turn.
 
-    Admira no longer fails over to NVIDIA/NIM or another API provider. A
-    connected ChatGPT/Codex subscription may provide one fallback route through
-    Luna. The buyer selected this exact model; it is therefore not inferred
-    from an unordered cache and never silently changes to another Codex tier.
+    Gemini conversations try the strong Flash models once each after Lite.
+    A hosted trial or a licensed tenant with the central-pool switch enabled
+    then gets the tenant-isolated Terra OAuth capability.  If that switch is
+    off, a healthy buyer-owned Codex OAuth session remains the final route.
+    Campaign tool compilation intentionally uses a separate 3.6 → 3.5 →
+    Terra policy and never calls this helper.
     """
     brain = dict(primary_settings or hermes_brain_settings(config))
     primary_provider = _runtime_provider_for_brain(brain)
@@ -732,6 +749,31 @@ def admira_inference_fallback_chain(config, primary_settings=None):
         return []
     if primary_provider == "openai-codex":
         return []
+
+    chain = []
+    if primary_provider == ADMIRA_GEMINI_PROVIDER:
+        primary_key = primary_model.lower()
+        for model in ADMIRA_GEMINI_CONVERSATION_FALLBACK_MODELS:
+            if model.lower() != primary_key:
+                chain.append({"provider": ADMIRA_GEMINI_PROVIDER, "model": model})
+
+    # The hosted per-turn access claim is deliberately only a routing hint;
+    # the central Unix broker repeats the database entitlement check. When a
+    # central pool is selected, never silently cross into a buyer's personal
+    # account if the pool happens to be unavailable.
+    try:
+        from hosted_central_conversation_client import central_conversation_route
+        central_route = central_conversation_route()
+    except Exception:
+        central_route = "local"
+    if central_route == "central":
+        chain.append({
+            "provider": ADMIRA_CENTRAL_CODEX_PROVIDER,
+            "model": ADMIRA_CENTRAL_CODEX_FALLBACK_MODEL,
+        })
+        return chain
+    if central_route == "blocked":
+        return chain
 
     # A cached Codex model catalog only says which model names Hermes has seen;
     # it does not prove that this buyer has a live Codex OAuth session.  Never
@@ -747,11 +789,12 @@ def admira_inference_fallback_chain(config, primary_settings=None):
     except Exception:
         codex_fallback_ready = False
     if not codex_fallback_ready:
-        return []
-    return [{
+        return chain
+    chain.append({
         "provider": "openai-codex",
         "model": ADMIRA_CODEX_SUBSCRIPTION_FALLBACK_MODEL,
-    }]
+    })
+    return chain
 
 
 def admira_fallback_config_lines(config, primary_settings=None):
@@ -855,7 +898,11 @@ def _cli_hermes_config_needs_write(config_text, brain, config=None):
         return "admira-minimax" not in config_text or "providers:" not in config_text or "api.minimax.io/v1" not in config_text or "openrouter" in lowered or "custom:admira-minimax" in config_text
     if brain.get("brain") == "gemini":
         policy = inference_runtime_policy(brain)
-        fallback_model_line = f'    model: "{ADMIRA_CODEX_SUBSCRIPTION_FALLBACK_MODEL}"'
+        expected_chain = admira_inference_fallback_chain(config, brain)
+        expected_fallback_lines = [
+            f'  - provider: "{entry["provider"]}"\n    model: "{entry["model"]}"'
+            for entry in expected_chain
+        ]
         return (
             'provider: "gemini"' not in config_text
             or f'default: "{brain.get("model")}"' not in config_text
@@ -863,8 +910,7 @@ def _cli_hermes_config_needs_write(config_text, brain, config=None):
             or f"  protect_last_n: {policy['compression_protect_last_n']}" not in config_text
             or f"  hygiene_hard_message_limit: {policy['compression_hard_message_limit']}" not in config_text
             or "admira-nvidia" in config_text.lower()
-            or '- provider: "openai-codex"' not in config_text
-            or fallback_model_line not in config_text
+            or any(line not in config_text for line in expected_fallback_lines)
         )
     if brain.get("brain") == "nvidia_nim":
         lowered = config_text.lower()
@@ -3209,13 +3255,16 @@ def hermes_environment(config):
         env[ADMIRA_GEMINI_KEY_ENV] = settings["api_key"]
         env["GEMINI_BASE_URL"] = settings.get("base_url") or ADMIRA_GEMINI_DEFAULT_BASE_URL
         env["GEMINI_MODEL"] = settings.get("model") or ADMIRA_GEMINI_DEFAULT_MODEL
+        # The outer fallback chain owns model changes. Never let an internal
+        # stream retry replay the same Gemini request before that chain sees a
+        # 429/5xx, regardless of which Flash model is primary.
+        env["HERMES_STREAM_RETRIES"] = "0"
+        env["HERMES_CRON_MAX_PARALLEL"] = "1"
         if str(settings.get("model") or "").strip().lower() == ADMIRA_GEMINI_DEFAULT_MODEL:
             policy = inference_runtime_policy(settings)
             env["ADMIRA_GEMINI_DAILY_REQUEST_LIMIT"] = str(policy["daily_request_limit"])
             env["ADMIRA_GEMINI_REQUESTS_PER_MINUTE"] = str(policy["requests_per_minute"])
             env["ADMIRA_GEMINI_MIN_REQUEST_INTERVAL_SECONDS"] = str(policy["min_request_interval_seconds"])
-            env["HERMES_STREAM_RETRIES"] = "0"
-            env["HERMES_CRON_MAX_PARALLEL"] = "1"
             env["ADMIRA_HERMES_RUNTIME_PATCHES"] = "1"
     if settings.get("provider") == "custom" and settings.get("api_key"):
         env["OPENAI_API_KEY"] = settings["api_key"]

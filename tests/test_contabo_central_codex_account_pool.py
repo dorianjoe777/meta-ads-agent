@@ -188,6 +188,30 @@ class CentralCodexAccountPoolTests(unittest.TestCase):
             self.assertEqual(result["failure_category"], "provider_failed")
             self.assertEqual(calls, [])
 
+    def test_chat_uses_each_slot_once_and_discards_raw_provider_data(self):
+        with tempfile.TemporaryDirectory() as raw:
+            calls = []
+            def conversation(messages, **kwargs):
+                calls.append(kwargs["codex_home"].name)
+                if len(calls) == 1:
+                    return {"ok": False, "failure_category": "provider_limited", "diagnostic": "secret"}
+                return {
+                    "ok": True,
+                    "message": {"role": "assistant", "content": "Listo", "tool_calls": []},
+                    "finish_reason": "stop",
+                    "diagnostic": "credential",
+                }
+            pool = CentralCodexAccountPool(
+                self._accounts(Path(raw)), conversation_provider=conversation,
+                cooldowns={"provider_limited": 60},
+            )
+            result = pool.chat([{"role": "user", "content": "private"}], timeout=12)
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["account_id"], "account-1")
+            self.assertEqual(len(calls), 2)
+            self.assertNotIn("credential", repr(result))
+            self.assertNotIn("diagnostic", result)
+
 
 if __name__ == "__main__":
     unittest.main()

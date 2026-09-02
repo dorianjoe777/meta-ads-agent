@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT / "src"))
 import admira_hermes_runtime_patch as runtime_patch
 import admira_tool_bridge as bridge
 import campaign_payload_compiler as compiler
+import codex_oauth_compiler as oauth_compiler
 import hosted_central_campaign_compiler as central_client
 
 
@@ -52,9 +53,7 @@ class CampaignProviderResilienceTests(unittest.TestCase):
                 mock.patch.object(compiler, "_buyer_decision_gaps", return_value=[]), \
                 mock.patch.object(compiler, "_held_campaign_proposal", return_value=""), \
                 mock.patch.object(compiler, "_gemini_compile", side_effect=gemini), \
-                mock.patch.object(compiler, "_terra_compile", side_effect=terra), \
-                mock.patch.object(compiler, "codex_auth_artifact_present", return_value=True, create=True), \
-                mock.patch.object(compiler, "codex_cli_environment", return_value={}, create=True):
+                mock.patch.object(compiler, "_terra_compile", side_effect=terra):
             result = compiler.compile_campaign_brief(
                 "admira_create_whatsapp_campaign",
                 "## Verbatim recent buyer messages (authoritative)\n\nCrear campaña con todos los datos aprobados.",
@@ -65,53 +64,51 @@ class CampaignProviderResilienceTests(unittest.TestCase):
         self.assertEqual(
             [model for provider, model in calls],
             [
-                "gemini-3.5-flash",
                 "gemini-3.6-flash",
-                "gemini-3.7-flash",
+                "gemini-3.5-flash",
                 "gpt-5.6-terra",
             ],
         )
         self.assertNotIn("gemini-3.5-flash-lite", [model for provider, model in calls])
+        self.assertNotIn("gemini-3.7-flash", [model for provider, model in calls])
 
-    def test_terra_uses_central_pool_when_hosted_and_preserves_local_do_path(self):
+    def test_campaign_terra_uses_central_oauth_and_local_hermes_oauth(self):
         central = {
             "ok": True,
             "compiled": {"ready": False, "missing_fields": [], "payload_json": "{}"},
             "model": compiler.TERRA_COMPILER_MODEL,
-            "provider": "hosted-central-codex",
+            "provider": "openai-codex-oauth",
         }
         config = SimpleNamespace(codex_cli="codex", hermes_home="/tmp/hermes-test")
         with mock.patch.object(central_client, "maybe_compile_central_campaign", return_value=central), \
-                mock.patch.object(compiler.subprocess, "Popen", side_effect=AssertionError("must not use tenant Codex")):
+                mock.patch.object(oauth_compiler, "compile_with_codex_oauth", side_effect=AssertionError("must not bypass central OAuth")):
             hosted = compiler._terra_compile(
                 "approved brief", {"type": "object"}, config=config, timeout=10,
                 tool="admira_create_whatsapp_campaign",
             )
         self.assertEqual(hosted, central)
 
-        compiled_output = {"ready": False, "missing_fields": [], "payload_json": "{}"}
-
-        class LocalProcess:
-            def __init__(self, command, **_kwargs):
-                self.command = command
-                self.returncode = 0
-                self.pid = 1
-
-            def communicate(self, _prompt, timeout=None):
-                output = Path(self.command[self.command.index("-o") + 1])
-                output.write_text(json.dumps(compiled_output), encoding="utf-8")
-                return "", ""
-
+        local_result = {
+            "ok": True,
+            "compiled": {"ready": False, "missing_fields": [], "payload_json": "{}"},
+            "model": compiler.TERRA_COMPILER_MODEL,
+            "provider": "openai-codex-oauth",
+        }
         with mock.patch.object(central_client, "maybe_compile_central_campaign", return_value=None), \
-                mock.patch.object(compiler, "codex_cli_environment", return_value={"CODEX_HOME": "/tmp/do-codex"}) as environment, \
-                mock.patch.object(compiler.subprocess, "Popen", LocalProcess):
+                mock.patch.object(oauth_compiler, "compile_with_codex_oauth", return_value=local_result) as local_oauth:
             local = compiler._terra_compile(
                 "approved brief", {"type": "object"}, config=config, timeout=10,
                 tool="admira_create_whatsapp_campaign",
             )
         self.assertTrue(local["ok"])
         self.assertEqual(local["model"], compiler.TERRA_COMPILER_MODEL)
-        environment.assert_called_once_with(config, codex_home=None)
+        local_oauth.assert_called_once_with(
+            "approved brief",
+            {"type": "object"},
+            model=compiler.TERRA_COMPILER_MODEL,
+            timeout=10,
+            hermes_home="/tmp/hermes-test",
+        )
 
     def pending_contract(self):
         return {

@@ -21,10 +21,12 @@ from codex_brand_guides import codex_cli_environment, codex_cli_error_message
 from product_config import ROOT_DIR, load_config
 
 
+# Campaign creation is intentionally separate from the general conversation
+# brain.  It starts with the stronger Flash model and never spends a campaign
+# compilation attempt on Lite or 3.7 before the proven OAuth Terra fallback.
 GEMINI_COMPILER_MODELS = (
-    "gemini-3.5-flash",
     "gemini-3.6-flash",
-    "gemini-3.7-flash",
+    "gemini-3.5-flash",
 )
 TERRA_COMPILER_MODEL = "gpt-5.6-terra"
 COMPILER_MODELS = GEMINI_COMPILER_MODELS + (TERRA_COMPILER_MODEL,)
@@ -688,6 +690,30 @@ def _terra_compile(
             central = None
         if central is not None:
             return central
+    if tool:
+        # Campaign creation must use the Hermes/Codex OAuth transport rather
+        # than spawning ``codex exec``.  On hosted deployments the central
+        # broker owns that OAuth profile; DigitalOcean/local deployments use
+        # the already-connected Hermes profile.  Never fall back to the CLI
+        # here: doing so would make the provider path depend on an unrelated
+        # executable/session and hide an OAuth configuration problem.
+        try:
+            from codex_oauth_compiler import compile_with_codex_oauth
+            return compile_with_codex_oauth(
+                prompt,
+                schema,
+                model=selected_model,
+                timeout=timeout,
+                hermes_home=str(getattr(config, "hermes_home", "") or "") or None,
+            )
+        except Exception:
+            return {
+                "ok": False,
+                "reason": "campaign_compiler_provider_failed",
+                "model": selected_model,
+                "failure_category": "provider_failed",
+                "provider": "openai-codex-oauth",
+            }
     executable = str(getattr(config, "codex_cli", "codex") or "codex")
     environment = codex_cli_environment(config, codex_home=codex_home)
     with tempfile.TemporaryDirectory(prefix="admira-campaign-compiler-") as isolated:

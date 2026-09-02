@@ -3075,7 +3075,7 @@ compression:
             hermes_bridge.agent_model_connections = original_connections
             hermes_bridge.codex_credential_health = original_codex_health
 
-    def test_gemini_uses_only_luna_subscription_fallback_and_omits_nvidia_catalog(self):
+    def test_gemini_advances_full_flash_models_before_personal_subscription_fallback(self):
         original_connections = hermes_bridge.agent_model_connections
         original_health = hermes_bridge.codex_credential_health
         try:
@@ -3096,7 +3096,12 @@ compression:
             }
             self.assertEqual(
                 hermes_bridge.admira_inference_fallback_chain(object(), brain),
-                [{"provider": "openai-codex", "model": "gpt-5.6-luna"}],
+                [
+                    {"provider": "gemini", "model": "gemini-3.5-flash"},
+                    {"provider": "gemini", "model": "gemini-3.6-flash"},
+                    {"provider": "gemini", "model": "gemini-3.7-flash"},
+                    {"provider": "openai-codex", "model": "gpt-5.6-luna"},
+                ],
             )
             config_text = "\n".join(hermes_bridge.admira_connected_model_config_lines(object(), brain))
             self.assertNotIn("admira-nvidia", config_text)

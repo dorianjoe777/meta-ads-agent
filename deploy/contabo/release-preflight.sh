@@ -96,7 +96,7 @@ for file in compose.yaml Control.Dockerfile app-requirements.txt \
   hosted_service.py hosted_worker.py tenant_admin.py tenantctl.py provider_admin.py \
   gemini_pool_admin.py tenant_provisioner.py install-tenant-provisioner.sh TENANT_PROVISIONER.md \
   operator_dashboard.py operator_dashboard.html operator_dashboard.css operator_dashboard.js OPERATOR_DASHBOARD.md DASHBOARD_STATUS.md open-operator-dashboard.command \
-  image_broker.py central_image_service.py central_codex_account_pool.py campaign_compiler_broker.py central_campaign_compiler_canary.py prepare-central-image-broker.sh \
+  image_broker.py central_image_service.py central_codex_account_pool.py campaign_compiler_broker.py central_conversation_broker.py central_campaign_compiler_canary.py prepare-central-image-broker.sh \
   recovery_identity.py recovery_service.py recovery_email_worker.py recovery_smtp.py \
   capacity-preflight.sh \
   db/migrations/001_initial_multitenant.sql db/migrations/002_telegram_ingress_control.sql \
@@ -122,7 +122,7 @@ import ast
 import pathlib
 import sys
 root = pathlib.Path(sys.argv[1])
-names = ("runtime_broker.py", "tenant_turn.py", "telegram_ingress.py", "hosted_service.py", "hosted_worker.py", "tenant_admin.py", "tenantctl.py", "provider_admin.py", "gemini_pool_admin.py", "tenant_provisioner.py", "operator_dashboard.py", "image_broker.py", "central_image_service.py", "central_codex_account_pool.py", "campaign_compiler_broker.py", "central_campaign_compiler_canary.py", "recovery_identity.py", "recovery_service.py", "recovery_email_worker.py", "recovery_smtp.py")
+names = ("runtime_broker.py", "tenant_turn.py", "telegram_ingress.py", "hosted_service.py", "hosted_worker.py", "tenant_admin.py", "tenantctl.py", "provider_admin.py", "gemini_pool_admin.py", "tenant_provisioner.py", "operator_dashboard.py", "image_broker.py", "central_image_service.py", "central_codex_account_pool.py", "campaign_compiler_broker.py", "central_conversation_broker.py", "central_campaign_compiler_canary.py", "recovery_identity.py", "recovery_service.py", "recovery_email_worker.py", "recovery_smtp.py")
 files = [root / name for name in names]
 for path in files:
     ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -709,6 +709,12 @@ else
     && grep -q 'CentralCampaignCompilerServer' "$ROOT_DIR/central_image_service.py" \
     && ok 'central Terra compiler shares the isolated Codex pool with signed tenant access' \
     || fail 'central campaign compiler safety gates missing'
+  grep -q 'ConversationBroker' "$ROOT_DIR/central_conversation_broker.py" \
+    && grep -q 'PostgresCentralConversationEntitlement' "$ROOT_DIR/central_image_service.py" \
+    && grep -q 'ADMIRA_CENTRAL_CONVERSATION_SOCKET' "$ROOT_DIR/compose.yaml" \
+    && grep -q 'conversation_provider=central_codex_conversation_provider' "$ROOT_DIR/central_image_service.py" \
+    && ok 'central Terra conversation fallback stays signed, socket-only and pool-isolated' \
+    || fail 'central conversation fallback safety gates missing'
   grep -q 'licensed_central_image_pool_enabled boolean NOT NULL DEFAULT false' "$ROOT_DIR/db/migrations/017_licensed_central_image_pool_switch.sql" \
     && grep -q 'operator_set_licensed_central_image_pool' "$ROOT_DIR/db/migrations/017_licensed_central_image_pool_switch.sql" \
     && grep -q "WHEN entitlement.lifecycle_state = 'licensed'" "$ROOT_DIR/db/migrations/017_licensed_central_image_pool_switch.sql" \

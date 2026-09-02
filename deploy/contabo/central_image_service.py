@@ -19,7 +19,6 @@ import stat
 import threading
 import uuid
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, Callable, Mapping
 
 try:  # service is copied beside image_broker.py in the container
@@ -45,16 +44,34 @@ except ImportError:  # package imports used by tests
         MODEL as CENTRAL_COMPILER_MODEL,
     )
 
+try:  # service is copied beside central_conversation_broker.py in the container
+    from central_conversation_broker import (
+        ConversationBroker,
+        MAX_PROVIDER_TIMEOUT_SECONDS as MAX_CONVERSATION_TIMEOUT_SECONDS,
+        MODEL as CENTRAL_CONVERSATION_MODEL,
+        SAFE_ERRORS as CONVERSATION_SAFE_ERRORS,
+    )
+except ImportError:  # package imports used by tests
+    from deploy.contabo.central_conversation_broker import (
+        ConversationBroker,
+        MAX_PROVIDER_TIMEOUT_SECONDS as MAX_CONVERSATION_TIMEOUT_SECONDS,
+        MODEL as CENTRAL_CONVERSATION_MODEL,
+        SAFE_ERRORS as CONVERSATION_SAFE_ERRORS,
+    )
+
 
 MAX_LINE = 128 * 1024
 DEFAULT_SOCKET = "/run/admira-central-image-broker/broker.sock"
 DEFAULT_COMPILER_SOCKET = "/run/admira-central-image-broker/compiler.sock"
+DEFAULT_CONVERSATION_SOCKET = "/run/admira-central-image-broker/conversation.sock"
 DEFAULT_TENANTS_ROOT = "/srv/admira/shared/central-image-exchange"
 DEFAULT_KEY_ROOT = "/etc/admira/central-image-keys"
 DEFAULT_DB_USER = "admira_image_login"
 DEFAULT_CODEX_AUTH_ROOT = "/app/runtime/hermes/codex-auth-pool"
 DEFAULT_CODEX_ACCOUNT_IDS = "primary,secondary"
 COMPILER_RESPONSE_LIMIT = MAX_LINE - 2048
+CONVERSATION_RESPONSE_LIMIT = 320 * 1024
+CONVERSATION_MAX_LINE = 1024 * 1024
 
 
 class EntitlementStore:
@@ -107,6 +124,43 @@ class PostgresCentralCampaignCompilerEntitlement:
         except Exception:
             # Keep database/provider diagnostics on the service boundary. A
             # tenant gets only the stable entitlement-blocked outcome.
+            return "blocked"
+
+
+class PostgresCentralConversationEntitlement:
+    """Recheck central-pool eligibility for a live fallback request.
+
+    The durable lifecycle function already represents both trial sponsorship
+    and the licensed-pool dashboard switch.  Reusing it at this independent
+    trust boundary means a tenant-side access file can never grant OAuth
+    access after the operator has disabled that switch.
+    """
+
+    def __init__(self, connect: Callable[[], Any]):
+        self._connect = connect
+
+    def __call__(self, runtime_key: str, purpose: str) -> str:
+        if purpose != "conversation_inference":
+            return "blocked"
+        try:
+            connection = self._connect()
+            try:
+                with connection.transaction():
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            "SELECT * FROM admira.resolve_central_campaign_compiler_access_for_runtime(%s)",
+                            (runtime_key,),
+                        )
+                        row = cursor.fetchone() if cursor.description else None
+                        if row is None:
+                            return "blocked"
+                        values = dict(row) if isinstance(row, Mapping) else dict(
+                            zip([item.name for item in cursor.description], row)
+                        )
+                        return "central_sponsored" if values.get("route") == "central_sponsored" else "blocked"
+            finally:
+                connection.close()
+        except Exception:
             return "blocked"
 
 
@@ -205,7 +259,8 @@ def postgres_connect_factory_from_env() -> Callable[[], Any]:
     return connect
 
 
-def central_codex_account_pool_from_env(*, compiler_provider: Callable[..., object] | None = None) -> CentralCodexAccountPool:
+def central_codex_account_pool_from_env(*, compiler_provider: Callable[..., object] | None = None,
+                                        conversation_provider: Callable[..., object] | None = None) -> CentralCodexAccountPool:
     """Build the central account pool once, failing closed on unsafe homes."""
     root = Path(os.environ.get("ADMIRA_CENTRAL_CODEX_AUTH_ROOT", DEFAULT_CODEX_AUTH_ROOT))
     if not root.is_absolute():
@@ -219,7 +274,11 @@ def central_codex_account_pool_from_env(*, compiler_provider: Callable[..., obje
     account_ids = os.environ.get("ADMIRA_CENTRAL_CODEX_ACCOUNT_IDS", DEFAULT_CODEX_ACCOUNT_IDS).split(",")
     accounts = [{"id": account_id, "codex_home": str(root / account_id)} for account_id in account_ids]
     try:
-        return CentralCodexAccountPool(accounts, compiler_provider=compiler_provider)
+        return CentralCodexAccountPool(
+            accounts,
+            compiler_provider=compiler_provider,
+            conversation_provider=conversation_provider,
+        )
     except Exception as exc:
         # Configuration details are deliberately not copied into service or
         # tenant responses. The activation preflight reports the exact slot.
@@ -256,6 +315,11 @@ def _compiler_failure_category(result: object) -> str:
     """Reduce a local Codex result before it reaches the shared pool."""
     if not isinstance(result, Mapping):
         return "provider_failed"
+    reported = str(result.get("failure_category") or "").strip().lower()
+    if reported == "provider_limited":
+        return "codex_usage_limit"
+    if reported in {"provider_auth", "provider_timeout", "provider_unavailable", "provider_failed"}:
+        return reported
     detail = " ".join(
         str(result.get(key) or "")
         for key in ("reason", "error", "diagnostic", "error_type")
@@ -279,33 +343,59 @@ def central_codex_campaign_compiler_provider(
     timeout: int,
     model: str,
 ) -> dict[str, Any]:
-    """Run Terra in a central OAuth slot, never in the tenant container.
+    """Run Terra through the slot's Hermes/Codex OAuth session.
 
-    ``_terra_compile`` is reused so the central path has the exact same
-    Codex CLI invocation and structured-output contract as the proven
-    single-runtime DigitalOcean canary.  ``use_central=False`` prevents a
-    broker loop; ``codex_home`` selects the pool-owned OAuth session.
+    The private slot remains in the central broker and the tenant never sees
+    its credential.  Unlike the legacy deployment path this does not spawn
+    ``codex exec``: Hermes' Responses transport speaks directly to the
+    already-authorized Codex OAuth session.
     """
     try:
-        from campaign_payload_compiler import _terra_compile
-        config = SimpleNamespace(
-            codex_cli=os.environ.get("CODEX_CLI", "codex"),
-            hermes_home=os.environ.get("HERMES_HOME", "/app/runtime/hermes"),
-        )
-        result = _terra_compile(
+        from codex_oauth_compiler import compile_with_codex_oauth
+        result = compile_with_codex_oauth(
             prompt,
             schema,
-            config=config,
             timeout=max(1, min(int(timeout), 300)),
             model=model,
-            codex_home=codex_home,
-            use_central=False,
+            hermes_home=codex_home,
         )
     except Exception:
         return {"ok": False, "failure_category": "provider_failed"}
     compiled = result.get("compiled") if isinstance(result, Mapping) else None
     if isinstance(result, Mapping) and result.get("ok") is True and isinstance(compiled, Mapping):
         return {"ok": True, "compiled": dict(compiled)}
+    return {"ok": False, "failure_category": _compiler_failure_category(result)}
+
+
+def central_codex_conversation_provider(
+    messages: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
+    *,
+    tools: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
+    tool_choice: object,
+    codex_home: Path,
+    timeout: int,
+    model: str,
+) -> dict[str, Any]:
+    """Run one Terra turn through a central slot's Hermes OAuth transport."""
+    try:
+        from codex_oauth_chat import chat_with_codex_oauth
+        result = chat_with_codex_oauth(
+            messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            timeout=max(1, min(int(timeout), MAX_CONVERSATION_TIMEOUT_SECONDS)),
+            model=model,
+            hermes_home=codex_home,
+        )
+    except Exception:
+        return {"ok": False, "failure_category": "provider_failed"}
+    message = result.get("message") if isinstance(result, Mapping) else None
+    if isinstance(result, Mapping) and result.get("ok") is True and isinstance(message, Mapping):
+        return {
+            "ok": True,
+            "message": dict(message),
+            "finish_reason": str(result.get("finish_reason") or "stop"),
+        }
     return {"ok": False, "failure_category": _compiler_failure_category(result)}
 
 
@@ -339,6 +429,27 @@ def central_campaign_compiler_provider(
     return dict(compiled)
 
 
+def central_conversation_provider(
+    messages: list[Mapping[str, Any]], *, tools: list[Mapping[str, Any]],
+    tool_choice: object, timeout: int, pool: CentralCodexAccountPool,
+) -> Mapping[str, Any]:
+    """Use the same two isolated OAuth slots for the final text fallback."""
+    result = pool.chat(
+        messages,
+        tools=tools,
+        tool_choice=tool_choice,
+        timeout=max(1, min(int(timeout), MAX_CONVERSATION_TIMEOUT_SECONDS)),
+    )
+    message = result.get("message") if isinstance(result, Mapping) else None
+    if not isinstance(result, Mapping) or result.get("ok") is not True or not isinstance(message, Mapping):
+        raise RuntimeError("provider_failed")
+    return {
+        "ok": True,
+        "message": dict(message),
+        "finish_reason": str(result.get("finish_reason") or "stop"),
+    }
+
+
 class CentralImageServer:
     def __init__(self, broker: ImageBroker, socket_path: Path = Path(DEFAULT_SOCKET), *,
                  backlog: int = 16, max_clients: int = 32):
@@ -351,6 +462,7 @@ class CentralImageServer:
         self._threads: set[threading.Thread] = set()
         self._lock = threading.Lock()
         self._client_slots = threading.BoundedSemaphore(self.max_clients)
+        self.max_line = MAX_LINE
 
     def _bind(self) -> socket.socket:
         self.socket_path.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
@@ -411,14 +523,14 @@ class CentralImageServer:
         try:
             connection.settimeout(10)
             data = bytearray()
-            while len(data) <= MAX_LINE:
-                chunk = connection.recv(min(8192, MAX_LINE + 1 - len(data)))
+            while len(data) <= self.max_line:
+                chunk = connection.recv(min(8192, self.max_line + 1 - len(data)))
                 if not chunk:
                     break
                 data.extend(chunk)
                 if b"\n" in chunk:
                     break
-            if len(data) > MAX_LINE or b"\n" not in data:
+            if len(data) > self.max_line or b"\n" not in data:
                 response = {"ok": False, "error_code": "invalid_request"}
             else:
                 line = bytes(data).split(b"\n", 1)[0]
@@ -534,12 +646,55 @@ class CentralCampaignCompilerServer(CentralImageServer):
         return {"ok": False, "error_code": code if code in safe else "internal_error"}
 
 
+class CentralConversationServer(CentralImageServer):
+    """Serve normalized text/tool responses from central Terra only."""
+
+    def __init__(self, broker: ConversationBroker, socket_path: Path, **kwargs: Any):
+        super().__init__(broker, socket_path, **kwargs)
+        self.max_line = CONVERSATION_MAX_LINE
+
+    @staticmethod
+    def _safe_response(result: object) -> dict[str, Any]:
+        if not isinstance(result, Mapping):
+            return {"ok": False, "error_code": "internal_error"}
+        if result.get("ok") is True:
+            tenant_id = result.get("tenant_id")
+            request_id = result.get("request_id")
+            model = result.get("model")
+            message = result.get("message")
+            finish_reason = result.get("finish_reason")
+            if (not all(isinstance(item, str) and item for item in (tenant_id, request_id, model, finish_reason))
+                    or model != CENTRAL_CONVERSATION_MODEL or finish_reason not in {"stop", "tool_calls"}
+                    or not isinstance(message, Mapping)):
+                return {"ok": False, "error_code": "response_invalid"}
+            response = {
+                "ok": True,
+                "tenant_id": tenant_id,
+                "request_id": request_id,
+                "model": model,
+                "finish_reason": finish_reason,
+                "message": dict(message),
+            }
+            try:
+                if len(json.dumps(response, ensure_ascii=False, separators=(",", ":")).encode()) > CONVERSATION_RESPONSE_LIMIT:
+                    return {"ok": False, "error_code": "response_too_large"}
+            except (TypeError, ValueError):
+                return {"ok": False, "error_code": "response_invalid"}
+            return response
+        code = str(result.get("error_code") or "internal_error")
+        return {"ok": False, "error_code": code if code in CONVERSATION_SAFE_ERRORS else "internal_error"}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--socket", default=os.environ.get("ADMIRA_CENTRAL_IMAGE_SOCKET", DEFAULT_SOCKET))
     parser.add_argument(
         "--compiler-socket",
         default=os.environ.get("ADMIRA_CENTRAL_CAMPAIGN_COMPILER_SOCKET", DEFAULT_COMPILER_SOCKET),
+    )
+    parser.add_argument(
+        "--conversation-socket",
+        default=os.environ.get("ADMIRA_CENTRAL_CONVERSATION_SOCKET", DEFAULT_CONVERSATION_SOCKET),
     )
     parser.add_argument("--tenants-root", default=os.environ.get("ADMIRA_CENTRAL_IMAGE_EXCHANGE_ROOT", DEFAULT_TENANTS_ROOT))
     parser.add_argument("--key-root", default=os.environ.get("ADMIRA_CENTRAL_IMAGE_KEY_ROOT", DEFAULT_KEY_ROOT))
@@ -548,6 +703,7 @@ def main(argv: list[str] | None = None) -> int:
     ledger = PostgresCentralImageLedger(connect)
     account_pool = central_codex_account_pool_from_env(
         compiler_provider=central_codex_campaign_compiler_provider,
+        conversation_provider=central_codex_conversation_provider,
     )
     provider = partial(central_codex_provider, pool=account_pool)
     max_global = min(
@@ -576,19 +732,40 @@ def main(argv: list[str] | None = None) -> int:
         Path(args.compiler_socket),
         max_clients=int(os.environ.get("ADMIRA_CENTRAL_COMPILER_MAX_CLIENTS", "16")),
     )
+    conversation_broker = ConversationBroker(
+        lambda tenant: _private_key(Path(args.key_root), tenant),
+        PostgresCentralConversationEntitlement(connect),
+        partial(central_conversation_provider, pool=account_pool),
+        max_global=max_global,
+    )
+    conversation_server = CentralConversationServer(
+        conversation_broker,
+        Path(args.conversation_socket),
+        max_clients=int(os.environ.get("ADMIRA_CENTRAL_CONVERSATION_MAX_CLIENTS", "16")),
+    )
 
     # Bind both listeners before exposing either. A partial activation would
     # make an entitled tenant fall back to a local credential that it must not
     # possess, so a socket failure stops the central service as a whole.
     compiler_server.bind()
+    conversation_server.bind()
     server.bind()
-    compiler_failed = threading.Event()
+    auxiliary_failed = threading.Event()
 
     def serve_compiler() -> None:
         try:
             compiler_server.serve_forever()
         except Exception:
-            compiler_failed.set()
+            auxiliary_failed.set()
+            conversation_server.close()
+            server.close()
+
+    def serve_conversation() -> None:
+        try:
+            conversation_server.serve_forever()
+        except Exception:
+            auxiliary_failed.set()
+            compiler_server.close()
             server.close()
 
     compiler_thread = threading.Thread(
@@ -597,9 +774,16 @@ def main(argv: list[str] | None = None) -> int:
         daemon=True,
     )
     compiler_thread.start()
+    conversation_thread = threading.Thread(
+        target=serve_conversation,
+        name="admira-central-conversation",
+        daemon=True,
+    )
+    conversation_thread.start()
 
     def close_servers(*_args: object) -> None:
         compiler_server.close()
+        conversation_server.close()
         server.close()
 
     signal.signal(signal.SIGTERM, close_servers)
@@ -609,7 +793,8 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         close_servers()
         compiler_thread.join(timeout=5)
-    return 1 if compiler_failed.is_set() else 0
+        conversation_thread.join(timeout=5)
+    return 1 if auxiliary_failed.is_set() else 0
 
 
 if __name__ == "__main__":

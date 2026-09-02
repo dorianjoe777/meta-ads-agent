@@ -10,9 +10,10 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from deploy.contabo.central_image_service import (
-    CentralCampaignCompilerServer, CentralImageServer, EntitlementStore,
+    CentralCampaignCompilerServer, CentralConversationServer, CentralImageServer, EntitlementStore,
     PostgresCentralCampaignCompilerEntitlement, PostgresCentralImageLedger,
     _private_password, central_campaign_compiler_provider,
     central_codex_account_pool_from_env, central_codex_campaign_compiler_provider,
@@ -21,6 +22,7 @@ from deploy.contabo.central_image_service import (
 from deploy.contabo.central_codex_account_pool import CentralCodexAccountPool
 from deploy.contabo.image_broker import ImageBroker, sign_request
 from deploy.contabo.campaign_compiler_broker import CampaignCompilerBroker, sign_request as sign_compiler_request
+from deploy.contabo.central_conversation_broker import ConversationBroker, sign_request as sign_conversation_request
 
 
 PNG = b"\x89PNG\r\n\x1a\ncentral"
@@ -285,6 +287,45 @@ class CentralImageServiceTests(unittest.TestCase):
             server.close()
             worker.join(timeout=2)
 
+    def test_conversation_socket_accepts_signed_text_and_returns_only_normalized_message(self):
+        conversation_broker = ConversationBroker(
+            {"tenant-one": self.key},
+            lambda tenant, purpose: "central_sponsored",
+            lambda messages, *, tools, tool_choice, timeout: {
+                "ok": True,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "Listo", "tool_calls": []},
+            },
+            freshness_seconds=30,
+        )
+        socket_path = self.socket_path.with_name("conversation.sock")
+        server = CentralConversationServer(conversation_broker, socket_path)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        for _ in range(100):
+            if socket_path.exists():
+                break
+            time.sleep(0.01)
+        try:
+            envelope = sign_conversation_request(self.key, {
+                "tenant_id": "tenant-one", "request_id": "conversation-001",
+                "purpose": "conversation_inference",
+                "messages": [{"role": "user", "content": "Hola"}],
+                "tools": [], "tool_choice": None, "timeout_seconds": 10,
+            }, timestamp=int(time.time()), nonce="d" * 32)
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(2)
+                client.connect(str(socket_path))
+                client.sendall(json.dumps(envelope).encode() + b"\n")
+                result = json.loads(client.makefile("rb").readline())
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["model"], "gpt-5.6-terra")
+            self.assertEqual(result["message"], {"role": "assistant", "content": "Listo", "tool_calls": []})
+            self.assertNotIn("account_id", result)
+        finally:
+            server.close()
+            worker.join(timeout=2)
+
     def test_compiler_entitlement_rechecks_runtime_key_in_postgres(self):
         calls = []
 
@@ -314,30 +355,20 @@ class CentralImageServiceTests(unittest.TestCase):
         self.assertEqual(calls[0][1], ("tenant-one",))
 
     def test_central_compiler_provider_uses_slot_and_cannot_reenter_tenant_route(self):
-        import types
+        import codex_oauth_compiler
         observed = {}
-        fake = types.SimpleNamespace()
 
         def compile_once(prompt, schema, **kwargs):
             observed.update({"prompt": prompt, "schema": schema, **kwargs})
             return {"ok": True, "compiled": {"ready": False, "payload_json": "{}", "missing_fields": []}}
 
-        fake._terra_compile = compile_once
-        previous = sys.modules.get("campaign_payload_compiler")
-        sys.modules["campaign_payload_compiler"] = fake
-        try:
+        with mock.patch.object(codex_oauth_compiler, "compile_with_codex_oauth", side_effect=compile_once):
             result = central_codex_campaign_compiler_provider(
                 "buyer brief", {"type": "object"}, codex_home=Path("/pool/primary"),
                 timeout=10, model="gpt-5.6-terra",
             )
-        finally:
-            if previous is None:
-                sys.modules.pop("campaign_payload_compiler", None)
-            else:
-                sys.modules["campaign_payload_compiler"] = previous
         self.assertTrue(result["ok"])
-        self.assertEqual(observed["codex_home"], Path("/pool/primary"))
-        self.assertIs(observed["use_central"], False)
+        self.assertEqual(observed["hermes_home"], Path("/pool/primary"))
         self.assertEqual(observed["model"], "gpt-5.6-terra")
         self.assertEqual(observed["timeout"], 10)
 
