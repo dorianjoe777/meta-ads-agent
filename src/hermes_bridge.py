@@ -83,7 +83,11 @@ ADMIRA_NVIDIA_KEY_ENV = "ADMIRA_NVIDIA_API_KEY"
 ADMIRA_NVIDIA_BASE_URL_ENV = "ADMIRA_NVIDIA_BASE_URL"
 ADMIRA_NVIDIA_PROVIDER = "admira-nvidia"
 ADMIRA_CODEX_SUBSCRIPTION_FALLBACK_MODEL = "gpt-5.6-luna"
-ADMIRA_CENTRAL_CODEX_PROVIDER = "admira-central-codex"
+# Hermes validates provider names before its runtime hooks get a chance to
+# replace their transport.  ``custom`` is a built-in provider, while the
+# reserved model marker below lets the hook distinguish this signed internal
+# capability from a buyer's ordinary custom API connection.
+ADMIRA_CENTRAL_CODEX_PROVIDER = "custom"
 ADMIRA_CENTRAL_CODEX_FALLBACK_MODEL = "admira-terra"
 ADMIRA_NVIDIA_PROVIDER_NAME = "NVIDIA NIM API"
 ADMIRA_NVIDIA_DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"

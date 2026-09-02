@@ -25,7 +25,7 @@ class ConversationalProviderFallbackTests(unittest.TestCase):
             {"provider": "gemini", "model": "gemini-3.5-flash"},
             {"provider": "gemini", "model": "gemini-3.6-flash"},
             {"provider": "gemini", "model": "gemini-3.7-flash"},
-            {"provider": "admira-central-codex", "model": "admira-terra"},
+            {"provider": "custom", "model": "admira-terra"},
         ])
         self.assertNotIn({"provider": "gemini", "model": "gemini-3.5-flash-lite"}, chain)
 
@@ -33,7 +33,7 @@ class ConversationalProviderFallbackTests(unittest.TestCase):
         with mock.patch.object(hosted_central_conversation_client, "central_conversation_route", return_value="central"), \
                 mock.patch.object(hermes_bridge, "codex_credential_health", side_effect=AssertionError("must not read personal OAuth")):
             chain = hermes_bridge.admira_inference_fallback_chain(object(), self._brain())
-        self.assertEqual(chain[-1], {"provider": "admira-central-codex", "model": "admira-terra"})
+        self.assertEqual(chain[-1], {"provider": "custom", "model": "admira-terra"})
 
     def test_pool_off_uses_buyer_oauth_only_after_flash_models(self):
         with mock.patch.object(hosted_central_conversation_client, "central_conversation_route", return_value="local"), \

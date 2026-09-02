@@ -38,7 +38,8 @@ from complete_reset import (
 )
 
 ADMIRA_MINIMAX_PROVIDER = "admira-minimax"
-ADMIRA_CENTRAL_CODEX_PROVIDER = "admira-central-codex"
+ADMIRA_CENTRAL_CODEX_PROVIDER = "custom"
+ADMIRA_CENTRAL_CODEX_MODEL = "admira-terra"
 ADMIRA_MINIMAX_PROVIDER_NAME = "MiniMax M3 oficial"
 ADMIRA_MINIMAX_MODEL = "MiniMax-M3"
 ADMIRA_MINIMAX_KEY_ENV = "ADMIRA_MINIMAX_API_KEY"
@@ -6064,8 +6065,10 @@ def _patch_central_codex_runtime_provider():
 
     Hermes resolves a fallback into a client and later rebuilds that client for
     every request.  The normal OpenAI rebuild cannot speak a Unix socket, so
-    this narrow patch recognizes only Admira's internal provider identifier
-    and supplies its signed-capability client.  Any unavailable entitlement
+    Hermes validates provider names before its runtime hook is reached, so the
+    fallback uses its built-in ``custom`` provider plus the reserved internal
+    model marker.  The pair is unambiguous and supplies the signed-capability
+    client without exporting central OAuth.  Any unavailable entitlement
     returns ``None`` and Hermes continues to the next configured fallback.
     """
     try:
@@ -6074,11 +6077,17 @@ def _patch_central_codex_runtime_provider():
     except Exception:
         return False
 
+    def is_central_target(provider, model):
+        return (
+            _admira_provider_name(provider) == ADMIRA_CENTRAL_CODEX_PROVIDER
+            and str(model or "").strip().lower() == ADMIRA_CENTRAL_CODEX_MODEL
+        )
+
     patched_any = False
     original_resolve = getattr(auxiliary_client, "resolve_provider_client", None)
     if callable(original_resolve) and not getattr(auxiliary_client, "_admira_central_codex_provider_patch", False):
         def patched_resolve_provider_client(provider, model=None, *args, **kwargs):
-            if _admira_provider_name(provider) == ADMIRA_CENTRAL_CODEX_PROVIDER:
+            if is_central_target(provider, model):
                 if kwargs.get("async_mode"):
                     return None, None
                 try:
@@ -6096,7 +6105,7 @@ def _patch_central_codex_runtime_provider():
     original_create = getattr(runtime_helpers, "create_openai_client", None)
     if callable(original_create) and not getattr(runtime_helpers, "_admira_central_codex_provider_patch", False):
         def patched_create_openai_client(agent, client_kwargs, *, reason, shared):
-            if _admira_provider_name(getattr(agent, "provider", "")) == ADMIRA_CENTRAL_CODEX_PROVIDER:
+            if is_central_target(getattr(agent, "provider", ""), getattr(agent, "model", "")):
                 try:
                     from hosted_central_conversation_client import central_codex_runtime_client
                     client, _ = central_codex_runtime_client(model=str(getattr(agent, "model", "") or ""))
