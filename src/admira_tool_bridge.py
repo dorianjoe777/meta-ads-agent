@@ -1278,6 +1278,15 @@ def campaign_creation_failure_receipt(result):
                 and value.get("ok") is False
             ):
                 capture_error(value)
+                # Dashboard action results keep the actual Graph record under
+                # ``step.result``.  Read it before walking proposal/signal
+                # metadata elsewhere in the response: those records can
+                # contain a useful but unrelated recommendation such as the
+                # suggested messaging optimization event.  The concrete Meta
+                # error from the failed request is the buyer-actionable fact.
+                nested_result = value.get("result")
+                if isinstance(nested_result, (dict, list)):
+                    capture_error(nested_result)
                 return True
             for item in value.values():
                 if capture_failed_operation(item, depth + 1):

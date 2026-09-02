@@ -76,6 +76,44 @@ class CampaignCreationErrorPreservationTests(unittest.TestCase):
         self.assertTrue(receipt["cleanup"]["partial_campaign_deleted"])
         self.assertEqual(receipt["cleanup"]["campaign_id"], "120250875379410425")
 
+    def test_failure_receipt_prioritizes_failed_graph_error_over_signal_recommendation(self):
+        """A campaign diagnostic must not hide the concrete Graph blocker."""
+        result = {
+            "payload": {
+                "signal_quality_review": {
+                    "checks": [
+                        {"message": "Use MessagingConversationStarted for a mensajes objective."},
+                    ],
+                },
+            },
+            "result": {
+                "failed_step": "create_adset",
+                "steps": [
+                    {
+                        "step": "create_adset",
+                        "ok": False,
+                        "result": {
+                            "returncode": 400,
+                            "stderr": json.dumps({
+                                "error": {
+                                    "code": 100,
+                                    "error_subcode": 2446886,
+                                    "error_user_msg": (
+                                        "Your Page is not linked to a WhatsApp Business account."
+                                    ),
+                                },
+                            }),
+                        },
+                    },
+                ],
+            },
+        }
+        receipt = bridge.campaign_creation_failure_receipt(result)
+        self.assertEqual(receipt["failed_step"], "create_adset")
+        self.assertEqual(receipt["error_code"], "100")
+        self.assertIn("WhatsApp Business account", receipt["error_message"])
+        self.assertNotIn("MessagingConversationStarted", receipt["error_message"])
+
     def test_pending_workflow_preserves_brief_approvals_and_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             prior = bridge.PENDING_CAMPAIGN_WORKFLOW_FILE
